@@ -33,6 +33,10 @@ function buildEmail(opts, audience) {
     note:      opts.note || (audience === 'borrower'
                  ? 'You are receiving this because you have an active file with YS Capital Group.'
                  : ''),
+    // #146: chat emails pass a reply-above-this-line delimiter so a reply-by-email
+    // posts only the freshly typed text back into the thread. Absent on every
+    // other email (unchanged there).
+    replyMarker: opts.replyMarker || '',
     audience,
   });
 }

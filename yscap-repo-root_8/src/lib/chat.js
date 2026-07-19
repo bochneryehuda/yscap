@@ -30,9 +30,18 @@ const { can } = require('./permissions');
 const { scrubText } = require('./borrower-safe');
 const { fileReplyTo } = require('./file-address');   // #68 per-file shared reply-to
 
-const CHAT_EMAIL_DELAY_MIN = 10;      // email fallback only if still unread after this
+const CHAT_EMAIL_DELAY_MIN = 5;       // online recipient: wait this long, email only if STILL unread
 const URGENT_RENOTIFY_MIN = 2;        // Teams-style urgent re-ping cadence
 const URGENT_MAX_ATTEMPTS = 10;       // ... for at most 20 minutes
+
+// #146 (owner-directed 2026-07-19) — EVERY new chat message emails the other
+// members IMMEDIATELY (borrower + team), not a 10-minute "only if you missed it"
+// digest. The reply-above-this-line delimiter lets a reply-by-email post ONLY the
+// freshly typed text back into the thread; the inbound parser cuts at this exact
+// phrase, so it must match the token inbound-chat.js keys on ("reply above this
+// line"). Kept as one shared constant so the outbound copy and the inbound cut can
+// never drift apart.
+const CHAT_REPLY_MARKER = '— — — — —  Reply above this line and it posts straight into the chat  — — — — —';
 
 /* ---------------------------------------------------------------- ensure */
 
@@ -236,6 +245,9 @@ async function emailExternalParticipants(conv, message, senderName) {
       note: canReply
         ? 'You were added to this conversation by the YS Capital team. Reply to this email and your message goes straight into the chat, or open it online above.'
         : 'You were added to this conversation by the YS Capital team. Open the chat online above to reply.',
+      // Only worth printing the reply-above-this-line delimiter when replies route
+      // back (an inbound domain is configured); otherwise it's noise.
+      replyMarker: canReply ? CHAT_REPLY_MARKER : '',
     }, 'staff');
     email.sendMail({ to: [ep.email], subject: msg.subject, text: msg.text, html: msg.html,
       replyTo: replyToFor(ep.reply_key) }).catch(() => {});
@@ -584,17 +596,116 @@ async function postMessage({ conv, actor, body, attachment = null, entityRefs = 
   return { message, seq };
 }
 
+/** Load a message's single attachment as an email-ready payload (bytes ≤ 3 MB —
+    the provider ceiling; a larger file makes the whole send fail, so we only NAME
+    it then). Returns { attachments:[{filename,contentType,content}], name, tooBig }.
+    Best-effort: any read error degrades to naming the file, never throws. */
+async function chatAttachmentBytes(message) {
+  const ATT_CAP = 3 * 1024 * 1024;
+  if (!message || !message.attachment_document_id) return { attachments: [], name: null, tooBig: false };
+  const d = await db.query(
+    `SELECT filename, content_type, storage_ref, size_bytes FROM documents WHERE id=$1`,
+    [message.attachment_document_id]).catch(() => ({ rows: [] }));
+  const doc = d.rows[0];
+  const name = (doc && doc.filename) || message.attachment_name || 'attachment';
+  if (!doc || !doc.storage_ref) return { attachments: [], name: message.attachment_document_id ? name : null, tooBig: false };
+  if (Number(doc.size_bytes) > ATT_CAP) return { attachments: [], name, tooBig: true };
+  try {
+    const buf = await storage.read(doc.storage_ref);
+    if (buf && buf.length && buf.length <= ATT_CAP) {
+      return { attachments: [{ filename: name, contentType: doc.content_type || 'application/octet-stream', content: buf.toString('base64') }], name, tooBig: false };
+    }
+  } catch (_) { /* unreadable — fall back to naming it */ }
+  return { attachments: [], name, tooBig: true };
+}
+
+/** Email ONE member about ONE new chat message, immediately (#146). Resolves the
+    recipient's address + opt-outs (mirrors the deferred path's rules: a staffer's
+    notifications switch + active flag; a borrower's "messages" email preference),
+    then sends the branded chat email — subject naming the chat + property, the
+    message text, the actual attachment, the recipient's reply-into-chat address,
+    and the reply-above-this-line delimiter. Borrower-facing copy is scrubbed of any
+    capital-partner name (frozen rule). Best-effort: the caller swallows errors. */
+async function sendChatEmailToMember({ conv, member, message, ctx, senderName, att, link, isBorrower }) {
+  let to = [];
+  if (isBorrower) {
+    const pref = await db.query(
+      `SELECT email FROM notification_prefs WHERE borrower_id=$1 AND category='messages'`, [member.member_id]);
+    if (pref.rows[0] && pref.rows[0].email === false) return;   // borrower silenced this email category
+    const b = await db.query(`SELECT email FROM borrowers WHERE id=$1`, [member.member_id]);
+    to = b.rows[0] && b.rows[0].email ? [b.rows[0].email] : [];
+  } else {
+    const s = await db.query(
+      `SELECT email, notifications_enabled FROM staff_users WHERE id=$1 AND is_active=true`, [member.member_id]);
+    if (!s.rows[0] || s.rows[0].notifications_enabled === false) return;   // manager turned notifications off
+    to = s.rows[0].email ? [s.rows[0].email] : [];
+  }
+  if (!to.length) return;
+
+  const clean = (t) => (isBorrower ? scrubText(String(t || '')) : String(t || ''));
+  const who = clean(senderName || 'Your loan team');
+  const convName = clean(conv.name || 'your loan file');
+  // Address / loan number are the file's OWN clean data — never run them through
+  // the partner-name scrubber (it could mangle a legit street like "Churchill Ave";
+  // notify.js protects these same meta values from scrubbing for the same reason).
+  const addr = ctx ? String(ctx.addr || '') : '';
+  const loanNo = ctx ? ctx.loanNo : '';
+
+  // Subject SAYS it's a new chat message, WHICH chat it's on, and WHICH property /
+  // file it belongs to (owner-directed).
+  let subject = `New chat message in “${convName}”`;
+  if (addr) subject += ` — ${addr}`;
+  if (loanNo) subject += ` (${loanNo})`;
+
+  // Body: exactly what the chat was, plus any attachment.
+  const lines = [];
+  const text = String(message.body || '').trim();
+  if (text) lines.push(`${who}: “${clean(text)}”`);
+  if (att && att.name) {
+    lines.push(att.attachments && att.attachments.length
+      ? `${who} shared a file (attached): ${clean(att.name)}`
+      : `${who} shared a file — open it in the portal: ${clean(att.name)}`);
+  } else if (!text && message.attachment_kind) {
+    lines.push(message.attachment_kind === 'voice'
+      ? `${who} sent a voice message — listen in the portal`
+      : `${who} shared an attachment — open it in the portal`);
+  }
+  if (!lines.length) lines.push(`${who} sent a message.`);
+
+  const attachments = (att && att.attachments) || [];
+  const msg = notify.buildEmail({
+    title: subject,
+    body: `${who} sent a new message${addr ? ` on ${addr}` : ''}${loanNo ? ` · ${loanNo}` : ''}:`,
+    lines,
+    link, ctaLabel: 'Open the conversation',
+    meta: ctx ? ctx.meta : [],
+    attachments,
+    replyMarker: CHAT_REPLY_MARKER,
+  }, isBorrower ? 'borrower' : 'staff');
+
+  // The recipient's own per-member chat+ reply key routes their email reply
+  // straight back INTO this conversation as themselves (#144); fall back to the
+  // file+ inbox reply-to only when no inbound domain is configured (#68).
+  const chatReplyTo = await memberReplyToFor(conv.id, member.member_kind, member.member_id);
+  await email.sendMail({ to, subject: msg.subject, text: msg.text, html: msg.html, attachments,
+    replyTo: chatReplyTo || fileReplyTo(conv.application_id) });
+}
+
 async function queueMessageNotifications({ conv, actor, message, members }) {
   const ctx = await notify.fileContext(conv.application_id);
   const senderName = message.sender_name || (actor.kind === 'staff' ? 'Your loan team' : 'A borrower');
   const now = new Date();
+  // Load the message's attachment ONCE (same bytes for every recipient) so each
+  // notification email carries the actual file, not just a "open the portal" line.
+  const att = await chatAttachmentBytes(message).catch(() => ({ attachments: [], name: null, tooBig: false }));
   for (const m of members) {
     if (m.member_kind === actor.kind && m.member_id === actor.id) continue;
     if (m.muted_until && new Date(m.muted_until) > now) continue;
     const isBorrower = m.member_kind === 'borrower';
-    const link = isBorrower ? `/app/${conv.application_id}` : `/internal/chat?c=${conv.id}`;
-    // In-app bell row, written directly (NOT via notify.*) so no immediate
-    // email fires — the deferred job owns the email decision.
+    // Deep-link straight into the conversation (borrower: their file with the chat
+    // auto-opened; staff: the chat hub focused on this thread).
+    const link = isBorrower ? `/app/${conv.application_id}?chat=${conv.id}` : `/internal/chat?c=${conv.id}`;
+    // In-app bell row (instant, in addition to the email below).
     try {
       if (isBorrower) {
         // Respect the borrower's "messages" in-app preference (significance
@@ -618,11 +729,28 @@ async function queueMessageNotifications({ conv, actor, message, members }) {
       }
     } catch (_) { /* bell row is best-effort */ }
 
-    // Deferred email fallback.
-    await db.query(
-      `INSERT INTO chat_notification_jobs (job_kind, conversation_id, message_id, message_seq, recipient_kind, recipient_id, run_after)
-       VALUES ('chat_email',$1,$2,$3,$4,$5, now() + ($6 || ' minutes')::interval)`,
-      [conv.id, message.id, message.seq, m.member_kind, m.member_id, String(CHAT_EMAIL_DELAY_MIN)]).catch(() => {});
+    // #146 — chat notification email (owner-directed 2026-07-19). The root bug:
+    // the email used to be DEFERRED 10 minutes and sent only if still unread, so
+    // opening the other side to check (which marks it read) or not waiting cancelled
+    // it and NO notification ever arrived. New rule (owner-directed): if the
+    // recipient is NOT online in the portal, email them RIGHT AWAY; if they ARE
+    // online (they can see it live), wait 5 minutes and email only if it's STILL
+    // unread. Either way the email carries the message text, the actual attachment,
+    // a subject naming the chat + property, the recipient's own reply-into-chat
+    // address, and the reply-above-this-line delimiter.
+    const online = events.isOnline(m.member_kind, m.member_id);
+    if (online) {
+      // Deferred: the sweeper re-checks the read watermark after the delay and
+      // sends only if the recipient never caught up.
+      await db.query(
+        `INSERT INTO chat_notification_jobs (job_kind, conversation_id, message_id, message_seq, recipient_kind, recipient_id, run_after)
+         VALUES ('chat_email',$1,$2,$3,$4,$5, now() + ($6 || ' minutes')::interval)`,
+        [conv.id, message.id, message.seq, m.member_kind, m.member_id, String(CHAT_EMAIL_DELAY_MIN)]).catch(() => {});
+    } else {
+      // Offline: notify immediately, fire-and-forget.
+      sendChatEmailToMember({ conv, member: m, message, ctx, senderName, att, link, isBorrower })
+        .catch((e) => console.error('[chat] immediate notification email failed:', e && e.message));
+    }
 
     // Urgent: re-ping every 2 minutes until read (max 20 minutes).
     if (message.priority === 'urgent') {
@@ -852,14 +980,21 @@ async function fireChatEmail(j) {
       // Only "…and N more" for messages we didn't FETCH (past the LIMIT 12) — an
       // empty-body row that rendered no line was still fetched, so it isn't "more".
       if (n > unreadMsgs.rows.length) lines.push(`…and ${n - unreadMsgs.rows.length} more.`);
+      // Subject SAYS it's a new chat message, WHICH chat, and WHICH property/file —
+      // same shape as the immediate path (address/loan# are the file's own clean
+      // data, so they are never scrubbed; only the chat name is).
+      const convName = isBorrower ? scrubText(conv.name) : conv.name;
+      let subject = n === 1 ? `New chat message in “${convName}”` : `${n} new chat messages in “${convName}”`;
+      if (ctx) { subject += ` — ${ctx.addr}`; if (ctx.loanNo) subject += ` (${ctx.loanNo})`; }
       const msg = notify.buildEmail({
-        title: n === 1 ? 'New message from your loan team' : `${n} new messages`,
-        body: `${n === 1 ? 'You have a new message' : `You have ${n} new messages`} in “${isBorrower ? scrubText(conv.name) : conv.name}”` +
+        title: subject,
+        body: `${n === 1 ? 'You have a new message' : `You have ${n} new messages`} in “${convName}”` +
               (ctx ? ` on ${ctx.loanNo} (${ctx.addr})` : '') + ':',
         lines,
         link, ctaLabel: 'Open the conversation',
         meta: ctx ? ctx.meta : [],
         attachments,
+        replyMarker: CHAT_REPLY_MARKER,
       }, isBorrower ? 'borrower' : 'staff');
       // #144 — the recipient's own per-member chat+ reply key routes their email
       // reply straight back INTO this conversation as themselves (they see it in

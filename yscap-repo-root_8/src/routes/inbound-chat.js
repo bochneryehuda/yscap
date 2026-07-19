@@ -28,12 +28,34 @@ function replyKeyFromRecipients(list) {
   return null;
 }
 
-// Best-effort: strip a quoted reply/signature so we only post what they typed.
-// Cuts at the first "On <date> … wrote:" line or a leading-">" quote block.
+// Strip the quoted reply/signature so ONLY what the person typed posts to the
+// chat. A reply email is [fresh reply] followed by the quoted original below it,
+// so we cut at the EARLIEST quote boundary and keep everything before it:
+//   • our own "Reply above this line" delimiter (#146) — printed at the TOP of
+//     every chat notification email, so in the quote it sits just below the fresh
+//     reply; the stable token both sides key on.
+//   • the client's own quote attribution ("On <date> … wrote:", Outlook "From:"),
+//   • a "--" signature rule, or a leading-">" quote block.
+// Whichever appears first wins — Gmail/Outlook add an attribution line ABOVE our
+// marker, so taking the minimum index keeps the reply clean even then.
 function topReply(text) {
   const s = String(text || '').replace(/\r\n/g, '\n');
-  const cut = s.search(/\n\s*On .+ wrote:\n|\n\s*-{2,}\s*\n|\n>{1,}/);
-  return (cut > 0 ? s.slice(0, cut) : s).trim();
+  const patterns = [
+    /reply above this line/i,          // our delimiter (#146)
+    /\n\s*On .+ wrote:/,               // Gmail / Apple Mail attribution
+    /\n\s*-{2,}\s*\n/,                 // "--" signature separator
+    /\n>{1,}/,                          // quoted block
+    /\n\s*From:\s.+/i,                 // Outlook "From:" header block
+    /\n\s*_{5,}\s*\n/,                 // Outlook horizontal rule
+  ];
+  let cut = -1;
+  for (const p of patterns) {
+    const idx = s.search(p);
+    if (idx > 0 && (cut === -1 || idx < cut)) cut = idx;
+  }
+  const out = cut > 0 ? s.slice(0, cut) : s;
+  // Trim trailing decorative dashes / quote glyphs the cut may leave behind.
+  return out.replace(/[—\-\s>]+$/, '').trim();
 }
 
 function collectRecipients(body) {
