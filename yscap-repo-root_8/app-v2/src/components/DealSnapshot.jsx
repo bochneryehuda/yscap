@@ -105,7 +105,7 @@ export default function DealSnapshot({ app, gating }) {
 
         <div className="snap-cluster">
           <div className="snap-cluster-h">Leverage{stale && <span style={{ color: 'var(--warning)', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}> · as last registered</span>}</div>
-          {stale && <div style={{ fontSize: '.8em', color: 'var(--warning)', margin: '2px 0 6px', lineHeight: 1.3 }}>A deal number changed since this product was registered — the loan amount and these ratios are as last registered. Re-price the product to update them.</div>}
+          {stale && <div style={{ fontSize: '.8em', color: 'var(--warning)', margin: '2px 0 6px', lineHeight: 1.3 }}>A pricing detail changed since this product was registered — the loan amount and these ratios are as last registered. Re-price the product to update them.</div>}
           {row('LTC', ltc || '—')}
           {row('Initial LTV', acqLtv || '—')}
           {row('Loan-to-ARV', arvLtv || '—')}

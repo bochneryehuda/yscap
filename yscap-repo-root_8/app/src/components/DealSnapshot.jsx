@@ -59,7 +59,7 @@ export default function DealSnapshot({ app, gating }) {
           </div>
         )}
       </div>
-      {stale && <div style={{ fontSize: '.82em', color: 'var(--warning)', margin: '2px 2px 8px', lineHeight: 1.3 }}>A deal number changed since this product was registered — the loan amount and the leverage ratios (LTC / Initial LTV / Loan-to-ARV) below are as last registered. Re-price the product to update them.</div>}
+      {stale && <div style={{ fontSize: '.82em', color: 'var(--warning)', margin: '2px 2px 8px', lineHeight: 1.3 }}>A pricing detail changed since this product was registered — the loan amount and the leverage ratios (LTC / Initial LTV / Loan-to-ARV) below are as last registered. Re-price the product to update them.</div>}
       <div className="snap-grid">
         {cell('Borrower', [app.first_name, app.last_name].filter(Boolean).join(' ') || '—')}
         {app.co_borrower_id && cell('Co-borrower', [app.co_first_name, app.co_last_name].filter(Boolean).join(' ') || '—')}

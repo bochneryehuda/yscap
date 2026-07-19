@@ -1098,13 +1098,13 @@ router.get('/applications/:id', async (req, res) => {
             pr.program AS registered_program, pr.product_label AS registered_product_label,
             pr.status AS registered_product_status, pr.note_rate AS registered_note_rate,
             pr.total_loan AS registered_total_loan, pr.quote AS registered_quote,
-            pr.inputs AS registered_inputs,
+            pr.stale AS registered_stale,
             pr.created_at AS registered_at
      FROM applications a JOIN borrowers b ON b.id=a.borrower_id
      LEFT JOIN llcs l ON l.id=a.llc_id
      LEFT JOIN borrowers cb ON cb.id=a.co_borrower_id
      LEFT JOIN LATERAL (
-       SELECT program, product_label, status, note_rate, total_loan, quote, inputs, created_at
+       SELECT program, product_label, status, note_rate, total_loan, quote, stale, created_at
          FROM product_registrations
         WHERE application_id=a.id AND is_current
         ORDER BY created_at DESC LIMIT 1
@@ -1112,18 +1112,16 @@ router.get('/applications/:id', async (req, res) => {
      WHERE a.id=$1`, [req.params.id]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
   const fileRow = r.rows[0];
-  // Flag the overview when the file's economics have moved since the CURRENT product
-  // was registered — the leverage %/loan amount on the snapshot are "as last
-  // registered" until a re-price, so they must not read as live numbers next to the
-  // freshly-edited ARV/rehab/purchase (audit 2026-07-19). Computed server-side because
-  // the registered inputs carry the internal per-file markup, which must never reach
-  // the client; the raw inputs are stripped before the response.
-  if (fileRow.registered_quote && fileRow.registered_inputs) {
-    let rInp = fileRow.registered_inputs;
-    if (typeof rInp === 'string') { try { rInp = JSON.parse(rInp); } catch (e) { rInp = null; } }
-    fileRow.pricing_stale = pricing.basisChanged(rInp, fileRow);
-  }
-  delete fileRow.registered_inputs;
+  // Flag the overview when the CURRENT registration is stale — the leverage %/loan
+  // amount on the snapshot are "as last registered" until a re-price, so they must
+  // not read as live numbers next to freshly-edited economics (audit 2026-07-19).
+  // Use the authoritative, trigger-maintained flag: product_registrations.stale is
+  // set true by db/096+126 whenever ANY pricing input on the file changes after it
+  // was registered (ARV/rehab/purchase/term/program/rehab-type/sq-ft/co-borrower/
+  // FICO/assignment/…), and cleared on re-register — so this covers every driver and
+  // never fetches the internal per-file markup to the client.
+  fileRow.pricing_stale = !!(fileRow.registered_quote && fileRow.registered_stale);
+  delete fileRow.registered_stale;
   res.json(fileRow);
 });
 

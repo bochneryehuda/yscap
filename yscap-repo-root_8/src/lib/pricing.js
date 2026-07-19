@@ -462,48 +462,8 @@ function econVersionFor(app) {
   return crypto.createHash('sha1').update(basis).digest('hex').slice(0, 16);
 }
 
-// Has the file's PRICING BASIS moved since this registration was priced? The
-// registered `inputs` (buildInputs shape, stored on product_registrations.inputs)
-// captures exactly what the quote was sized on; compare it to the file's CURRENT
-// basis so the overview can honestly flag stale leverage / loan (audit 2026-07-19).
-// Same field set as econVersionFor, minus FICO (the pricing FICO is co-borrower-
-// adjusted onto the app by loadFileForPricing, not the raw borrower FICO here, so
-// comparing it would false-positive) and the sticky markups (a rate driver, not a
-// leverage/loan driver, and internal). Works for existing files — inputs is stored
-// on every registration, so no migration/backfill is needed.
-function basisChanged(registeredInputs, app) {
-  const rInp = registeredInputs;
-  if (!rInp || typeof rInp !== 'object' || !app) return false;
-  const isAsg = loanTypeOf(app) === 'Purchase' && !!app.is_assignment && num(app.underlying_contract_price) > 0;
-  const realTotal = isAsg ? num(app.underlying_contract_price) + num(app.assignment_fee) : num(app.purchase_price);
-  const curAsIs = num(app.as_is_value) > 0 ? num(app.as_is_value) : realTotal;
-  const state = clean((app.property_address && app.property_address.state) || '').toUpperCase();
-  const dNe = (a, b) => Math.abs(num(a) - num(b)) >= 1;                 // dollar-level
-  const nNe = (a, b) => num(a) !== num(b);                             // exact number
-  const bNe = (a, b) => (!!a) !== (!!b);                               // boolean
-  const sNe = (a, b) => clean(a).toLowerCase() !== clean(b).toLowerCase();
-  return (
-    dNe(realTotal, rInp.purchasePrice) ||
-    dNe(isAsg ? num(app.underlying_contract_price) : 0, rInp.sellerPrice || 0) ||
-    dNe(curAsIs, rInp.asIsValue) ||
-    dNe(app.arv, rInp.arv || 0) ||
-    dNe(app.rehab_budget, rInp.rehabBudget || 0) ||
-    nNe(parseTermMonths(app.term), rInp.term) ||
-    nNe(app.requested_ir_months, rInp.irMonths) ||
-    dNe(app.requested_ir_amount, rInp.irAmount) ||
-    nNe(app.requested_exp_flips, rInp.expFlips) ||
-    nNe(app.requested_exp_holds, rInp.expHolds) ||
-    nNe(app.requested_exp_ground, rInp.expGround) ||
-    bNe(isAsg, rInp.isAssignment) ||
-    nNe(app.units || 0, rInp.units || 0) ||
-    sNe(normPropertyType(app.property_type), rInp.propertyType) ||
-    sNe(loanTypeOf(app), rInp.loanType) ||
-    sNe(state, rInp.state)
-  );
-}
-
 module.exports = {
   enginesReady, loadErr: () => loadErr,
   buildInputs, quoteProgram, quoteAll, parseTermMonths, PROGRAM_LABEL,
-  econVersionFor, basisChanged,
+  econVersionFor,
 };
