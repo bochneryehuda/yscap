@@ -106,6 +106,47 @@ BEGIN
   IF NOT blocked THEN RAISE EXCEPTION 'FAIL T7: a later in_doubt re-pull MASKED the imported fatal finding'; END IF;
   RAISE NOTICE 'PASS T7: a failed/in_doubt re-pull does not mask an earlier imported fatal finding';
 
+  -- ==== db/170: the GENERALIZED findings[] wrapper (E2) ====================
+  -- Reset to a clean received condition + a fresh report carrying a multi-finding
+  -- wrapper (one fatal fraud alert + one warning high-risk score).
+  DELETE FROM checklist_items WHERE application_id=aid;
+  DELETE FROM credit_reports WHERE application_id=aid;
+  INSERT INTO credit_reports (application_id, provider_id, status, underwriting_finding, created_at)
+    VALUES (aid, 1, 'imported',
+      '{"severity":"fatal","types":["fraud_alert","high_risk_score"],"message":"fraud",
+        "findings":[{"type":"fraud_alert","severity":"fatal","reconciled":false},
+                    {"type":"high_risk_score","severity":"warning","reconciled":false}]}'::jsonb,
+      timestamptz '2021-01-01 00:00:00+00')
+    RETURNING id INTO crid;
+  INSERT INTO checklist_items (scope,label,application_id,template_id,status)
+    VALUES ('application','Credit report',aid,tmpl,'received');
+
+  -- T8: a fatal element in findings[] blocks completion.
+  blocked := false;
+  BEGIN UPDATE checklist_items SET status='satisfied' WHERE application_id=aid AND template_id=tmpl;
+  EXCEPTION WHEN check_violation THEN blocked := true; END;
+  IF NOT blocked THEN RAISE EXCEPTION 'FAIL T8: a fatal element in findings[] did NOT block'; END IF;
+  RAISE NOTICE 'PASS T8: a fatal element in the findings[] wrapper blocks completion';
+
+  -- T9: per-finding reconcile of the ONLY fatal element => completion SUCCEEDS
+  -- (the warning element never blocks). Recompute the top-level severity too.
+  UPDATE credit_reports SET underwriting_finding =
+    '{"severity":"warning","types":["fraud_alert","high_risk_score"],"message":"",
+      "findings":[{"type":"fraud_alert","severity":"fatal","reconciled":true},
+                  {"type":"high_risk_score","severity":"warning","reconciled":false}]}'::jsonb
+    WHERE id=crid;
+  UPDATE checklist_items SET status='satisfied' WHERE application_id=aid AND template_id=tmpl;
+  RAISE NOTICE 'PASS T9: per-finding reconcile of the only fatal element opens the gate';
+  UPDATE checklist_items SET status='received' WHERE application_id=aid AND template_id=tmpl;
+
+  -- T10: a wrapper of only WARNING findings never blocks.
+  UPDATE credit_reports SET underwriting_finding =
+    '{"severity":"warning","types":["high_risk_score"],"message":"",
+      "findings":[{"type":"high_risk_score","severity":"warning","reconciled":false}]}'::jsonb
+    WHERE id=crid;
+  UPDATE checklist_items SET status='satisfied' WHERE application_id=aid AND template_id=tmpl;
+  RAISE NOTICE 'PASS T10: a warning-only findings[] wrapper never blocks';
+
   DELETE FROM checklist_items WHERE application_id=aid;
   DELETE FROM credit_reports WHERE application_id=aid;
   DELETE FROM applications WHERE id=aid;

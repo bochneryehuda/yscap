@@ -2597,11 +2597,17 @@ async function signOffGate(itemId, actor) {
         -- same-timestamp tie -- otherwise the two layers could disagree (one allows,
         -- the other raises).
         ORDER BY created_at DESC, id DESC LIMIT 1`, [item.application_id])).rows[0];
-    const f = cr && cr.underwriting_finding;
-    if (f && typeof f === 'object' && f.severity === 'fatal' && !cr.underwriting_finding_reconciled_at) {
-      const ve = f.verified != null ? f.verified : '—';
-      const cl = f.claimed != null ? f.claimed : '—';
-      return `The credit report does not match the file — the verified FICO (${ve}, ${f.verifiedBracket || 'bracket —'}) is in a different pricing bracket than the score the loan was structured on (${cl}, ${f.claimedBracket || 'bracket —'}). This is a FATAL Underwriting finding: correct the file and re-pull the report so the scores match, or have an underwriter reconcile the finding, before signing off this credit condition.`;
+    // Generalized (E2): block on ANY unreconciled FATAL finding — a FICO mismatch
+    // OR a fraud / OFAC / deceased / SSN / address-discrepancy bureau alert. Reads
+    // both the new findings[] wrapper and the pre-E2 single-finding shape via the
+    // shared engine helper, so the app layer and the db/170 trigger always agree.
+    const underwriting = require('../lib/credit/underwriting');
+    const fatal = cr ? underwriting.activeFatalFindings(cr.underwriting_finding, cr.underwriting_finding_reconciled_at) : [];
+    if (fatal.length) {
+      const lead = fatal.length === 1
+        ? 'This credit report has a FATAL Underwriting finding'
+        : `This credit report has ${fatal.length} FATAL Underwriting findings`;
+      return `${lead}: ${fatal.map((x) => x.message).join(' • ')} Correct the file and re-pull the report, or have an underwriter reconcile the finding(s), before signing off this credit condition.`;
     }
     return null;
   }

@@ -284,31 +284,67 @@ router.patch('/credit/adverse-action/:id', requirePull, async (req, res) => {
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 
-// ---- reconcile a fatal FICO-mismatch finding (documented exception) ---------
-// A fatal FICO-mismatch finding (the verified representative score lands in a
-// different pricing bracket than the claimed score the loan was structured on)
-// HARD-blocks completing the credit condition (signOffGate + the db/168 trigger).
-// The normal resolution is to correct the file and re-pull — a fresh, matching
-// report clears the finding on its own. This route is the deliberate escape
-// hatch: an underwriter/processor attests the discrepancy is understood and
-// accepted, which clears the gate WITHOUT changing the verified score. A short
-// note is required (it lands in the audit trail), and it can be undone.
+// ---- reconcile a fatal underwriting finding (documented exception) ----------
+// A report can now carry a LIST of fatal findings — a FICO mismatch AND/OR a
+// bureau alert (fraud / OFAC / deceased / SSN / address-discrepancy). Any
+// unreconciled fatal finding HARD-blocks completing the credit condition
+// (signOffGate + the db/170 trigger). The normal resolution is to correct the
+// file and re-pull (a fresh, clean report clears everything). This route is the
+// deliberate escape hatch: an underwriter/processor attests a specific finding
+// (or all of them) is understood and accepted, clearing the gate WITHOUT changing
+// the verified score. A short note is required (audit trail); it can be undone.
+//
+//   body { creditReportId, note, undo?, findingType? }
+//   - findingType present → reconcile just THAT finding (flip findings[].reconciled)
+//   - findingType absent   → whole-report reconcile (the reconciled_at flag)
+// OFAC / deceased findings are COMPLIANCE-ONLY: a loan officer or processor may
+// NOT clear them — only an admin (compliance/BSA-AML) after a documented review.
+const underwritingEngine = require('../lib/credit/underwriting');
+const isComplianceReconcilable = (f) => f && f.reconcilableBy === 'compliance';
 router.post('/credit/reconcile-finding', requirePull, async (req, res) => {
   const b = req.body || {};
   const reportId = b.creditReportId;
+  const findingType = b.findingType ? String(b.findingType) : null;
   if (!reportId) return res.status(400).json({ error: 'creditReportId is required' });
   // Reconciling a fatal underwriting finding is an underwriting decision — a
-  // higher bar than merely pulling credit. Require the sign-off capability (the
-  // same processors/underwriters/admins who complete conditions).
+  // higher bar than merely pulling credit. Require the sign-off capability.
   if (!can(req.actor, 'sign_off_conditions')) {
     return res.status(403).json({ error: 'Only a processor or underwriter can reconcile a credit finding.' });
   }
+  const isAdmin = ['admin', 'super_admin'].includes(req.actor.role);
   try {
     const r = (await db.query(
-      `SELECT application_id, underwriting_finding FROM credit_reports WHERE id=$1`, [reportId])).rows[0];
+      `SELECT application_id, underwriting_finding, underwriting_finding_reconciled_at FROM credit_reports WHERE id=$1`, [reportId])).rows[0];
     if (!r) return res.status(404).json({ error: 'report not found' });
     if (!(await canSeeApp(req, r.application_id))) return res.status(403).json({ error: 'forbidden' });
 
+    // ---------- PER-FINDING reconcile (E2) ----------
+    if (findingType) {
+      const findings = underwritingEngine.normalizeFindings(r.underwriting_finding);
+      const target = findings.find((f) => f.type === findingType || f.code === findingType);
+      if (!target) return res.status(422).json({ error: 'this report has no finding of that type' });
+      if (isComplianceReconcilable(target) && !isAdmin) {
+        return res.status(403).json({ error: 'This is a compliance finding (OFAC / deceased). Only an admin can clear it, after a documented compliance review — not a loan officer or processor.' });
+      }
+      const reconcile = b.undo !== true;
+      if (reconcile && !String(b.note || '').trim()) {
+        return res.status(400).json({ error: 'a short note explaining the reconciliation is required' });
+      }
+      const note = String(b.note || '').trim();
+      const updated = underwritingEngine.recomputeWrapper({
+        findings: findings.map((f) => (f === target
+          ? (reconcile
+            ? { ...f, reconciled: true, reconcileNote: note, reconciledBy: req.actor.id }
+            : { ...f, reconciled: false, reconcileNote: undefined, reconciledBy: undefined })
+          : f)),
+      });
+      await db.query(`UPDATE credit_reports SET underwriting_finding=$2::jsonb WHERE id=$1`, [reportId, JSON.stringify(updated)]);
+      await audit(req, reconcile ? 'credit_finding_reconcile' : 'credit_finding_reconcile_undo',
+        { creditReportId: reportId, applicationId: r.application_id, findingType, note: reconcile ? note : undefined });
+      return res.json({ ok: true, reconciled: reconcile, findingType });
+    }
+
+    // ---------- WHOLE-REPORT reconcile (clears every finding at once) ----------
     if (b.undo === true) {
       await db.query(
         `UPDATE credit_reports
@@ -318,10 +354,14 @@ router.post('/credit/reconcile-finding', requirePull, async (req, res) => {
       await audit(req, 'credit_finding_reconcile_undo', { creditReportId: reportId, applicationId: r.application_id });
       return res.json({ ok: true, reconciled: false });
     }
-
-    const f = r.underwriting_finding;
-    if (!f || typeof f !== 'object' || f.severity !== 'fatal') {
+    const fatal = underwritingEngine.activeFatalFindings(r.underwriting_finding, r.underwriting_finding_reconciled_at);
+    if (!fatal.length) {
       return res.status(422).json({ error: 'this report has no unresolved fatal finding to reconcile' });
+    }
+    // A whole-report reconcile that would clear an OFAC/deceased finding needs an
+    // admin — an officer can't blanket-clear a compliance finding by omitting the type.
+    if (fatal.some(isComplianceReconcilable) && !isAdmin) {
+      return res.status(403).json({ error: 'This report has a compliance finding (OFAC / deceased). Only an admin can clear it, after a documented compliance review. Reconcile the other findings individually if needed.' });
     }
     const note = String(b.note || '').trim();
     if (!note) return res.status(400).json({ error: 'a short note explaining the reconciliation is required' });

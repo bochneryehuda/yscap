@@ -23,15 +23,15 @@ const score = (id, bid, bureau, val, model, withFactors) =>
   `<CREDIT_SCORE CreditScoreID="${id}" BorrowerID="${bid}" CreditFileID="F${id}" CreditReportIdentifier="RPT1" CreditRepositorySourceType="${bureau}" _Date="2026-07-19" _Value="${val}" _ModelNameType="${model}">${
     withFactors ? '<_FACTOR _Code="038" _Text="Serious delinquency"/><_FACTOR _Code="008" _Text="Too many recent inquiries"/>' : ''
   }</CREDIT_SCORE>`;
-function responseXml({ withCo = false, coNoScore = false, issuedDate = '2026-07-19' } = {}) {
+function responseXml({ withCo = false, coNoScore = false, issuedDate = '2026-07-19', alerts = '', badBlockDate = false } = {}) {
   // When a caller passes a malformed issuedDate, swap it in for EVERY date in the
   // template (report issued/updated dates + each score _Date) so the whole import
   // sees the bad vendor date — proving the persist path sanitizes rather than
   // throwing on the ::date cast.
   const fixup = (xml) => (issuedDate === '2026-07-19' ? xml : xml.split('2026-07-19').join(issuedDate));
-  return fixup(_responseXml({ withCo, coNoScore }));
+  return fixup(_responseXml({ withCo, coNoScore, alerts, badBlockDate }));
 }
-function _responseXml({ withCo = false, coNoScore = false } = {}) {
+function _responseXml({ withCo = false, coNoScore = false, alerts = '', badBlockDate = false } = {}) {
   const b1 = `<BORROWER BorrowerID="B1" _FirstName="NICKIE" _LastName="GREEN" _SSN="123003333" _BirthDate="1985-03-12" _UnparsedEmployment="ACME CORP">
           <_RESIDENCE _StreetAddress="100 Terrace Ave" _City="West Haven" _State="CT" _PostalCode="06516"/>
           <_RESIDENCE _StreetAddress="55 Old Rd" _City="Milford" _State="CT" _PostalCode="06460"/>
@@ -64,8 +64,7 @@ function _responseXml({ withCo = false, coNoScore = false } = {}) {
           <_CREDITOR _Name="CAPITAL ONE"/>
         </CREDIT_LIABILITY>
         <CREDIT_INQUIRY BorrowerID="B1" CreditRepositorySourceType="Equifax" _Date="2026-06-01" _Name="ROCKET MORTGAGE" CreditBusinessType="Mortgage" CreditLoanType="Conventional"/>
-        <CREDIT_PUBLIC_RECORD BorrowerID="B1" CreditRepositorySourceType="Experian" _Type="Bankruptcy" _FiledDate="2018-04-10" _Amount="0" _CourtName="US Bankruptcy Court" _DispositionType="Discharged" _DispositionDate="2018-10-01" _DocketIdentifier="18-12345" _PlaintiffName="US Trustee"/>
-        <ALERT_MESSAGE BorrowerID="B1" _Type="FACTAFraudVictimInitial" MessageText="Initial fraud alert on file. Verify consumer identity before extending credit."/>`;
+        <CREDIT_PUBLIC_RECORD BorrowerID="B1" CreditRepositorySourceType="Experian" _Type="Bankruptcy" _FiledDate="2018-04-10" _Amount="0" _CourtName="US Bankruptcy Court" _DispositionType="Discharged" _DispositionDate="2018-10-01" _DocketIdentifier="18-12345" _PlaintiffName="US Trustee"/>`;
   const coScores = coNoScore
     ? `${score('4', 'C1', 'Equifax', '9002', 'EquifaxBeacon5.0')}`   // reject code → no score
     : `${score('4', 'C1', 'Equifax', '700', 'EquifaxBeacon5.0')}
@@ -82,6 +81,8 @@ function _responseXml({ withCo = false, coNoScore = false } = {}) {
         ${b1}
         ${co}
         ${blocks}
+        ${alerts || ''}
+        ${badBlockDate ? '<CREDIT_LIABILITY BorrowerID="B1" CreditRepositorySourceType="Equifax" _AccountType="Installment" _AccountReportedDate="N/A" _AccountIdentifier="777" _UnpaidBalanceAmount="100"><_CREDITOR _Name="JUNK DATE CO"/><_LATE_COUNT _30Days="99999999999"/></CREDIT_LIABILITY>' : ''}
         <EMBEDDED_FILE _Type="PDF" _Name="report.pdf" _Extension="pdf" MIMEType="application/pdf" _EncodingType="base64">
           <DOCUMENT><![CDATA[${MINI_PDF}]]></DOCUMENT>
         </EMBEDDED_FILE>
@@ -218,12 +219,8 @@ async function seedBorrower(email, first, ssnRaw = '123-00-3333') {
   ok('identity employer captured', Array.isArray(idr[0].employers) && idr[0].employers.includes('ACME CORP'));
   ok('identity attributed', idr[0].borrower_id === bId);
 
-  const alr = (await db.query(`SELECT category, raw_type, message_text, borrower_id FROM credit_alerts WHERE credit_report_id=$1`, [out.reportId])).rows;
-  eq('1 alert stored', alr.length, 1);
-  eq('fraud alert categorized', alr[0].category, 'fraud_alert');
-  eq('alert raw type preserved', alr[0].raw_type, 'FACTAFraudVictimInitial');
-  ok('alert text preserved', /Initial fraud alert/.test(alr[0].message_text));
-  ok('alert attributed to the borrower', alr[0].borrower_id === bId);
+  const alr = (await db.query(`SELECT category FROM credit_alerts WHERE credit_report_id=$1`, [out.reportId])).rows;
+  eq('clean happy-path report has no alerts', alr.length, 0);
 
   // ---- DATE SAFETY: a MALFORMED vendor date must NOT roll back an already-billed
   // import (the persist path sanitizes bad dates to NULL instead of throwing on
@@ -414,13 +411,18 @@ async function seedBorrower(email, first, ssnRaw = '123-00-3333') {
     idempotencyKey: `uw-${suffix}`, transport: transportOf(responseXml()),
   });
   ok('mismatch → underwriting finding returned', !!uwOut.underwritingFinding);
-  eq('mismatch finding is fatal', uwOut.underwritingFinding && uwOut.underwritingFinding.severity, 'fatal');
-  eq('mismatch finding type', uwOut.underwritingFinding && uwOut.underwritingFinding.type, 'fico_mismatch');
+  eq('mismatch wrapper severity is fatal', uwOut.underwritingFinding && uwOut.underwritingFinding.severity, 'fatal');
+  ok('mismatch wrapper lists fico_mismatch', uwOut.underwritingFinding && Array.isArray(uwOut.underwritingFinding.types) && uwOut.underwritingFinding.types.includes('fico_mismatch'));
   const uwRpt = (await db.query(`SELECT underwriting_finding FROM credit_reports WHERE id=$1`, [uwOut.reportId])).rows[0];
-  ok('mismatch finding persisted on the report', uwRpt.underwriting_finding && uwRpt.underwriting_finding.verified === 732 && uwRpt.underwriting_finding.claimed === 650);
+  const uwFico = uwRpt.underwriting_finding && (uwRpt.underwriting_finding.findings || []).find((f) => f.type === 'fico_mismatch');
+  ok('mismatch finding persisted in findings[] with both scores', uwFico && uwFico.verified === 732 && uwFico.claimed === 650);
   const uwCond = (await db.query(`SELECT status FROM checklist_items WHERE application_id=$1 AND template_id=$2`, [appUw, credTmpl])).rows[0];
   eq('mismatch blocks the credit condition (issue, not received)', uwCond.status, 'issue');
   ok('mismatch still froze the verified FICO', uwOut.froze === true);
+  // the DB gate refuses to complete the condition while the fatal finding stands
+  let uwGateBlocked = false;
+  try { await db.query(`UPDATE checklist_items SET status='satisfied' WHERE application_id=$1 AND template_id=$2`, [appUw, credTmpl]); } catch (_) { uwGateBlocked = true; }
+  ok('db/170 gate blocks completing the condition with a fatal fico finding', uwGateBlocked);
   // uw cleanup
   await db.query(`DELETE FROM checklist_items WHERE application_id=$1`, [appUw]);
   await db.query(`DELETE FROM credit_scores WHERE credit_report_id IN (SELECT id FROM credit_reports WHERE application_id=$1)`, [appUw]);
@@ -431,6 +433,100 @@ async function seedBorrower(email, first, ssnRaw = '123-00-3333') {
   await db.query(`DELETE FROM borrowers WHERE id=$1`, [bUw]);
   await db.query(`DELETE FROM user_credit_credentials WHERE user_id=$1`, [uwStaff]);
   await db.query(`DELETE FROM staff_users WHERE id=$1`, [uwStaff]);
+
+  // ---- E2: BUREAU ALERTS → underwriting findings + gate + reconcile ----------
+  // A fraud alert (staff-reconcilable) + an OFAC hit (compliance-only) both become
+  // FATAL findings that block the credit condition even though the FICO matched
+  // and the pull succeeded. Proves: alerts persist as blocks, the wrapper carries
+  // findings[] with reconcilableBy, the condition is blocked, the db/170 gate
+  // refuses completion, per-finding reconcile of one finding leaves the other
+  // blocking, and clearing all fatal findings opens the gate.
+  const U = require('../src/lib/credit/underwriting');
+  const alStaff = await seedStaff(`al-officer-${suffix}@t.test`);
+  await credentials.setForUser(alStaff, { providerKey: 'xactus', operatorIdentifier: 'LO_AL', secret: 'p@ss', verify: false });
+  const bAl = await seedBorrower(`bal-${suffix}@t.test`, 'Alertha', '123-00-8833');
+  await db.query(`UPDATE borrowers SET fico=730 WHERE id=$1`, [bAl]);   // matches verified 732 → NO fico finding, isolates the alerts
+  const appAl = (await db.query(`INSERT INTO applications (borrower_id) VALUES ($1) RETURNING id`, [bAl])).rows[0].id;
+  await db.query(`INSERT INTO checklist_items (scope,label,application_id,template_id,status) VALUES ('application','Credit report',$1,$2,'outstanding')`, [appAl, credTmpl]);
+  const alertXml = '<ALERT_MESSAGE BorrowerID="B1" _Type="FACTAFraudVictimInitial" MessageText="Initial fraud alert on file. Verify consumer identity before extending credit."/>'
+    + '<ALERT_MESSAGE _Type="Other" MessageText="Possible OFAC SDN match found — verify before funding."/>';
+  const alOut = await creditImport.orderAndImport({
+    applicationId: appAl, actorId: alStaff, action: 'Reissue', creditReportIdentifier: 'RPT1',
+    idempotencyKey: `al-${suffix}`, transport: transportOf(responseXml({ alerts: alertXml })),
+  });
+  // the pull succeeded → report is imported; the fatal alerts block the CONDITION.
+  eq('alert report still imported (pull ok)', alOut.status, 'imported');
+  ok('alert wrapper is fatal', alOut.underwritingFinding && alOut.underwritingFinding.severity === 'fatal');
+  eq('two fatal findings returned (fraud + ofac)', (alOut.fatalFindings || []).length, 2);
+  const alRows = (await db.query(`SELECT category, borrower_id FROM credit_alerts WHERE credit_report_id=$1 ORDER BY category`, [alOut.reportId])).rows;
+  eq('two alerts persisted', alRows.map((r) => r.category), ['fraud_alert', 'ofac']);
+  ok('fraud alert attributed to the borrower', alRows.find((r) => r.category === 'fraud_alert').borrower_id === bAl);
+  ok('report-level OFAC alert has no borrower', alRows.find((r) => r.category === 'ofac').borrower_id === null);
+  const alRpt = (await db.query(`SELECT underwriting_finding FROM credit_reports WHERE id=$1`, [alOut.reportId])).rows[0];
+  const alF = alRpt.underwriting_finding.findings;
+  ok('ofac finding is compliance-only', alF.find((f) => f.type === 'ofac').reconcilableBy === 'compliance');
+  ok('fraud finding is staff-reconcilable', alF.find((f) => f.type === 'fraud_alert').reconcilableBy === 'staff');
+  const alCond = (await db.query(`SELECT status FROM checklist_items WHERE application_id=$1 AND template_id=$2`, [appAl, credTmpl])).rows[0];
+  eq('alert finding blocks the credit condition', alCond.status, 'issue');
+  let alBlocked = false;
+  try { await db.query(`UPDATE checklist_items SET status='satisfied' WHERE application_id=$1 AND template_id=$2`, [appAl, credTmpl]); } catch (_) { alBlocked = true; }
+  ok('db/170 gate refuses completion with a fatal alert finding', alBlocked);
+  // per-finding reconcile the fraud finding — OFAC remains, still blocks
+  const reFraud = U.recomputeWrapper({ findings: alF.map((f) => (f.type === 'fraud_alert' ? { ...f, reconciled: true } : f)) });
+  await db.query(`UPDATE credit_reports SET underwriting_finding=$2::jsonb WHERE id=$1`, [alOut.reportId, JSON.stringify(reFraud)]);
+  let stillBlocked = false;
+  try { await db.query(`UPDATE checklist_items SET status='satisfied' WHERE application_id=$1 AND template_id=$2`, [appAl, credTmpl]); } catch (_) { stillBlocked = true; }
+  ok('reconciling only the fraud finding still blocks (OFAC remains)', stillBlocked);
+  // clear OFAC too → gate opens
+  const reAll = U.recomputeWrapper({ findings: reFraud.findings.map((f) => ({ ...f, reconciled: true })) });
+  await db.query(`UPDATE credit_reports SET underwriting_finding=$2::jsonb WHERE id=$1`, [alOut.reportId, JSON.stringify(reAll)]);
+  await db.query(`UPDATE checklist_items SET status='received' WHERE application_id=$1 AND template_id=$2`, [appAl, credTmpl]);
+  let nowAllowed = true;
+  try { await db.query(`UPDATE checklist_items SET status='satisfied', signed_off_at=now() WHERE application_id=$1 AND template_id=$2`, [appAl, credTmpl]); } catch (_) { nowAllowed = false; }
+  ok('clearing all fatal findings opens the gate', nowAllowed);
+
+  // ---- MINOR-1 regression: a malformed block field (bad date + out-of-int4 late
+  // count) must NOT roll back the billed/scored/frozen import — blocks are dropped.
+  const bJunk = await seedBorrower(`bjunk-${suffix}@t.test`, 'Junky', '123-00-4455');
+  await db.query(`UPDATE borrowers SET fico=730 WHERE id=$1`, [bJunk]);
+  const appJunk = (await db.query(`INSERT INTO applications (borrower_id) VALUES ($1) RETURNING id`, [bJunk])).rows[0].id;
+  const junkOut = await creditImport.orderAndImport({
+    applicationId: appJunk, actorId: alStaff, action: 'Reissue', creditReportIdentifier: 'RPT1',
+    idempotencyKey: `junk-${suffix}`, transport: transportOf(responseXml({ badBlockDate: true })),
+  });
+  eq('malformed block did NOT roll back the import', junkOut.status, 'imported');
+  ok('malformed block import still froze the FICO', junkOut.froze === true);
+  const junkScores = (await db.query(`SELECT count(*)::int n FROM credit_scores WHERE credit_report_id=$1`, [junkOut.reportId])).rows[0];
+  eq('scores still persisted despite the bad block', junkScores.n, 3);
+
+  // ---- MINOR-2: JOINT 2.3.1 blocks attribute to the CORRECT borrower ----------
+  const jStaff = await seedStaff(`j-officer-${suffix}@t.test`);
+  await credentials.setForUser(jStaff, { providerKey: 'xactus', operatorIdentifier: 'LO_J', secret: 'p@ss', verify: false });
+  const jB1 = await seedBorrower(`jb1-${suffix}@t.test`, 'Nickie', '123-00-3333');
+  const jC1 = await seedBorrower(`jc1-${suffix}@t.test`, 'Ann', '992-70-0027');
+  await db.query(`UPDATE borrowers SET fico=730 WHERE id = ANY($1)`, [[jB1, jC1]]);
+  const appJ = (await db.query(`INSERT INTO applications (borrower_id, co_borrower_id) VALUES ($1,$2) RETURNING id`, [jB1, jC1])).rows[0].id;
+  // a co-borrower (C1) tradeline injected alongside the B1 blocks
+  const coTradeline = '<CREDIT_LIABILITY BorrowerID="C1" CreditRepositorySourceType="Equifax" _AccountType="Revolving" _AccountStatusType="Open" _AccountIdentifier="C0B0R0W1" _UnpaidBalanceAmount="500"><_CREDITOR _Name="CO BORROWER BANK"/></CREDIT_LIABILITY>';
+  const jOut = await creditImport.orderAndImport({
+    applicationId: appJ, actorId: jStaff, action: 'Reissue', creditReportIdentifier: 'RPT1',
+    idempotencyKey: `j-${suffix}`, transport: transportOf(responseXml({ withCo: true, alerts: coTradeline })),
+  });
+  const jB1tl = (await db.query(`SELECT creditor_name FROM credit_tradelines WHERE credit_report_id=$1 AND borrower_id=$2 ORDER BY creditor_name`, [jOut.reportId, jB1])).rows.map((r) => r.creditor_name);
+  const jC1tl = (await db.query(`SELECT creditor_name FROM credit_tradelines WHERE credit_report_id=$1 AND borrower_id=$2`, [jOut.reportId, jC1])).rows.map((r) => r.creditor_name);
+  ok('joint: B1 tradelines attributed to the primary', jB1tl.includes('CHASE AUTO') && !jB1tl.includes('CO BORROWER BANK'));
+  eq('joint: co-borrower tradeline attributed to the co-borrower', jC1tl, ['CO BORROWER BANK']);
+
+  // E2/junk/joint cleanup
+  await db.query(`DELETE FROM checklist_items WHERE application_id = ANY($1)`, [[appAl, appJunk, appJ]]);
+  await db.query(`DELETE FROM credit_scores WHERE credit_report_id IN (SELECT id FROM credit_reports WHERE application_id = ANY($1))`, [[appAl, appJunk, appJ]]);
+  await db.query(`DELETE FROM credit_reports WHERE application_id = ANY($1)`, [[appAl, appJunk, appJ]]);
+  await db.query(`DELETE FROM documents WHERE application_id = ANY($1)`, [[appAl, appJunk, appJ]]);
+  await db.query(`DELETE FROM applications WHERE id = ANY($1)`, [[appAl, appJunk, appJ]]);
+  await db.query(`DELETE FROM credit_fico_audit WHERE borrower_id = ANY($1)`, [[bAl, bJunk, jB1, jC1]]);
+  await db.query(`DELETE FROM borrowers WHERE id = ANY($1)`, [[bAl, bJunk, jB1, jC1]]);
+  await db.query(`DELETE FROM user_credit_credentials WHERE user_id = ANY($1)`, [[alStaff, jStaff]]);
+  await db.query(`DELETE FROM staff_users WHERE id = ANY($1)`, [[alStaff, jStaff]]);
 
   // cleanup
   await db.query(`DELETE FROM checklist_items WHERE application_id = ANY($1)`, [[appId, app2, app3, appD]]);

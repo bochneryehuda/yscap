@@ -56,7 +56,9 @@ const ok = (name, cond) => { console.log(`${cond ? 'PASS' : 'FAIL'} - ${name}`);
   let r = await fetch(`${base}/checklist/${item}`, { method: 'PATCH', headers: H(token), body: JSON.stringify({ signedOff: true }) });
   let j = await r.json().catch(() => ({}));
   ok('sign-off blocked 422 while fatal finding unreconciled', r.status === 422);
-  ok('422 message names the FICO mismatch', /does not match the file|FICO/i.test(j.error || ''));
+  // The generalized gate (E2) echoes the finding's own message + a "FATAL
+  // Underwriting finding" lead, so it names the mismatch either way.
+  ok('422 message names the finding', /does not match|FICO|Underwriting finding/i.test(j.error || ''));
   let it = (await db.query(`SELECT status, signed_off_at FROM checklist_items WHERE id=$1`, [item])).rows[0];
   ok('condition not satisfied after the blocked attempt', it.status !== 'satisfied' && !it.signed_off_at);
 
@@ -96,13 +98,51 @@ const ok = (name, cond) => { console.log(`${cond ? 'PASS' : 'FAIL'} - ${name}`);
   j = await r.json().catch(() => ({}));
   ok('GET /credit/reports exposes the reconcile fields', !!(j.reports && j.reports[0] && ('underwriting_finding_reconciled_at' in j.reports[0])));
 
+  // 8. PER-FINDING reconcile + COMPLIANCE gating (E2). A report with a fraud
+  //    finding (staff-reconcilable) + an OFAC finding (compliance-only). A
+  //    processor may clear the fraud finding but NOT the OFAC one; an admin can.
+  const proc = (await db.query(`INSERT INTO staff_users (email,full_name,role,token_version) VALUES ($1,'Gate Proc','processor',0) RETURNING id`, [`gate.proc.${sfx}@t.test`])).rows[0].id;
+  const appId2 = (await db.query(`INSERT INTO applications (borrower_id, loan_officer_id, processor_id) VALUES ($1,$2,$3) RETURNING id`, [bor, onFile, proc])).rows[0].id;
+  const wrapper = {
+    severity: 'fatal', types: ['fraud_alert', 'ofac'], message: 'fraud • ofac',
+    findings: [
+      { type: 'fraud_alert', code: 'fraud_alert', severity: 'fatal', reconciled: false, reconcilableBy: 'staff', message: 'fraud alert on file' },
+      { type: 'ofac', code: 'ofac', severity: 'fatal', reconciled: false, reconcilableBy: 'compliance', message: 'possible OFAC match' },
+    ],
+  };
+  const rep2 = (await db.query(
+    `INSERT INTO credit_reports (application_id,provider_id,status,underwriting_finding,completed_at)
+     VALUES ($1,$2,'imported',$3::jsonb,now()) RETURNING id`, [appId2, prov, JSON.stringify(wrapper)])).rows[0].id;
+  const procToken = C.signJwt({ sub: proc, kind: 'staff', role: 'processor', tv: 0 });
+
+  // processor is on the file + has sign-off, but the OFAC finding is compliance-only
+  r = await fetch(`${base}/credit/reconcile-finding`, { method: 'POST', headers: H(procToken), body: JSON.stringify({ creditReportId: rep2, findingType: 'ofac', note: 'trying to clear ofac' }) });
+  ok('processor CANNOT reconcile a compliance (OFAC) finding (403)', r.status === 403);
+  // a whole-report reconcile that would sweep the OFAC finding is also refused
+  r = await fetch(`${base}/credit/reconcile-finding`, { method: 'POST', headers: H(procToken), body: JSON.stringify({ creditReportId: rep2, note: 'sweep everything' }) });
+  ok('processor CANNOT whole-report reconcile when an OFAC finding is present (403)', r.status === 403);
+  // processor CAN reconcile the staff-reconcilable fraud finding
+  r = await fetch(`${base}/credit/reconcile-finding`, { method: 'POST', headers: H(procToken), body: JSON.stringify({ creditReportId: rep2, findingType: 'fraud_alert', note: 'identity verified per §605A' }) });
+  j = await r.json().catch(() => ({}));
+  ok('processor CAN reconcile the fraud finding (200)', r.status === 200 && j.reconciled === true && j.findingType === 'fraud_alert');
+  let uf = (await db.query(`SELECT underwriting_finding FROM credit_reports WHERE id=$1`, [rep2])).rows[0].underwriting_finding;
+  ok('fraud finding flipped reconciled=true; OFAC still active', uf.findings.find((f) => f.type === 'fraud_alert').reconciled === true && uf.findings.find((f) => f.type === 'ofac').reconciled === false);
+  // admin CAN reconcile the OFAC finding
+  r = await fetch(`${base}/credit/reconcile-finding`, { method: 'POST', headers: H(token), body: JSON.stringify({ creditReportId: rep2, findingType: 'ofac', note: 'compliance reviewed, false positive' }) });
+  ok('admin CAN reconcile the OFAC finding (200)', r.status === 200);
+  uf = (await db.query(`SELECT underwriting_finding FROM credit_reports WHERE id=$1`, [rep2])).rows[0].underwriting_finding;
+  ok('both fatal findings now reconciled → top-level severity drops', uf.findings.every((f) => f.reconciled === true) && uf.severity !== 'fatal');
+  // reconciling an unknown finding type → 422
+  r = await fetch(`${base}/credit/reconcile-finding`, { method: 'POST', headers: H(token), body: JSON.stringify({ creditReportId: rep2, findingType: 'no_such_type', note: 'x' }) });
+  ok('reconciling an unknown finding type → 422', r.status === 422);
+
   // cleanup
   await db.query(`DELETE FROM documents WHERE application_id=$1`, [appId]).catch(() => {});
-  await db.query(`DELETE FROM checklist_items WHERE application_id=$1`, [appId]);
-  await db.query(`DELETE FROM credit_reports WHERE application_id=$1`, [appId]);
-  await db.query(`DELETE FROM applications WHERE id=$1`, [appId]);
+  await db.query(`DELETE FROM checklist_items WHERE application_id = ANY($1::uuid[])`, [[appId, appId2]]);
+  await db.query(`DELETE FROM credit_reports WHERE application_id = ANY($1::uuid[])`, [[appId, appId2]]);
+  await db.query(`DELETE FROM applications WHERE id = ANY($1::uuid[])`, [[appId, appId2]]);
   await db.query(`DELETE FROM borrowers WHERE id=$1`, [bor]);
-  await db.query(`DELETE FROM staff_users WHERE id = ANY($1::uuid[])`, [[onFile, offFile]]);
+  await db.query(`DELETE FROM staff_users WHERE id = ANY($1::uuid[])`, [[onFile, offFile, proc]]);
 
   await new Promise((res) => server.close(res));
   await db.pool.end();

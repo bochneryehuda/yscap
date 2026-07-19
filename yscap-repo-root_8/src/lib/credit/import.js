@@ -270,14 +270,22 @@ async function persistImport({ reportRowId, applicationId, actorId, providerId, 
       return byLabel != null ? byLabel : null;
     };
 
-    // ---- UNDERWRITING FICO-MATCH FINDING ------------------------------------
-    // "Does the file match?" — compare the VERIFIED representative FICO against the
-    // FICO the file was BUILT ON (the borrowers' claimed scores, read BEFORE the
-    // freeze overwrites them). A bracket-level mismatch is a FATAL finding: the loan
-    // was sized on a score the bureau did not confirm, so a human must reconcile
-    // (re-register on the verified score) before clear-to-close. Only computed on a
-    // clean IMPORTED verification (a review/frozen outcome is already human-routed).
-    let finding = null;
+    // ---- UNDERWRITING FINDINGS ----------------------------------------------
+    // A report can raise MORE than one thing to look at. We collect them into a
+    // LIST stored on the report as a back-compatible wrapper:
+    //   1) FICO-MATCH — the VERIFIED representative FICO vs the FICO the file was
+    //      BUILT ON (read BEFORE the freeze overwrites the claimed scores). A
+    //      bracket-level mismatch is FATAL (the loan was sized on a score the bureau
+    //      didn't confirm). Only meaningful on a clean IMPORTED verification.
+    //   2) BUREAU ALERTS — fraud / active-duty / deceased / OFAC / SSN / address-
+    //      discrepancy (FATAL → underwriting review) and high-risk / freeze / etc.
+    //      (WARNING → file alert). Surfaced on ANY outcome, since an alert matters
+    //      even on a frozen/review report.
+    // A FATAL finding forces the credit condition to 'issue' and blocks sign-off
+    // (signOffGate + the db/170 trigger) until reconciled. Identity mismatches are
+    // taken from the bureau's OWN alerts (authoritative); self-computed diffing is a
+    // later, tuned refinement (kept out here to avoid false-positive blocks).
+    let ficoInput = {};
     if (assessment.decision === 'imported') {
       const dbIds = [...new Set(scored.perBorrower.map(dbIdFor).filter(Boolean))];
       const claimedById = {};
@@ -292,8 +300,12 @@ async function persistImport({ reportRowId, applicationId, actorId, providerId, 
         return { name: (pb.identity && pb.identity.firstName) || (c && c.name) || pb.reportBorrowerId,
           claimed: c ? c.fico : null, verified: pb.middle.middle };
       });
-      finding = underwriting.ficoMatchFinding({ verified: scored.rep.score, claimed: claimedRep, perBorrower: perBorrowerDetail });
+      ficoInput = { verified: scored.rep.score, claimed: claimedRep, perBorrower: perBorrowerDetail };
     }
+    const findingList = underwriting.collectFindings({ ...ficoInput, alerts: parsed.alerts });
+    const finding = underwriting.wrapFindings(findingList);          // wrapper or null
+    const fatalFindings = underwriting.activeFatalFindings(finding, null);
+    const hasFatalFinding = fatalFindings.length > 0;
 
     await client.query(
       `UPDATE credit_reports
@@ -335,6 +347,14 @@ async function persistImport({ reportRowId, applicationId, actorId, providerId, 
     // DB boundary. Account numbers: an ENCRYPTED copy (bytea, AES-256-GCM) + a
     // masked last-4 for display — never plaintext (GLBA Safeguards). SSN is
     // NEVER stored here — only a masked last-4 on the identity row.
+    //
+    // SAVEPOINT-guarded (like the PDF documents insert): the blocks are DISPLAY /
+    // audit data. A malformed vendor field (e.g. an out-of-int4-range late count)
+    // must NEVER roll back an already-billed, scored, and FROZEN import — the
+    // scores are the payload. On any block error we roll back just the blocks and
+    // keep the verified import.
+    try {
+      await client.query('SAVEPOINT credit_blocks');
     await client.query(`DELETE FROM credit_tradelines        WHERE credit_report_id=$1`, [reportRowId]);
     await client.query(`DELETE FROM credit_inquiries         WHERE credit_report_id=$1`, [reportRowId]);
     await client.query(`DELETE FROM credit_public_records    WHERE credit_report_id=$1`, [reportRowId]);
@@ -347,7 +367,10 @@ async function persistImport({ reportRowId, applicationId, actorId, providerId, 
       const n = Number(String(v).replace(/[^0-9.\-]/g, ''));
       return Number.isFinite(n) ? n : null;
     };
-    const intOrNull = (v) => { const n = numOrNull(v); return n == null ? null : Math.trunc(n); };
+    // Integer columns are int4 — clamp out-of-range vendor junk to NULL rather
+    // than letting Postgres throw "integer out of range" and abort the blocks.
+    const INT4_MAX = 2147483647, INT4_MIN = -2147483648;
+    const intOrNull = (v) => { const n = numOrNull(v); if (n == null) return null; const t = Math.trunc(n); return (t > INT4_MAX || t < INT4_MIN) ? null : t; };
     const dtOrNull = (v) => sanitizeDateOnly(v) || null;
     const boolOrNull = (v) => (v == null ? null : !!v);
     // last-4 of an account/SSN identifier for DISPLAY only (strip separators).
@@ -377,9 +400,9 @@ async function persistImport({ reportRowId, applicationId, actorId, providerId, 
            numOrNull(t.unpaidBalance), numOrNull(t.creditLimit), numOrNull(t.highCredit), numOrNull(t.monthlyPayment), numOrNull(t.pastDueAmount), numOrNull(t.chargeOffAmount),
            dtOrNull(t.dateOpened), dtOrNull(t.dateReported), dtOrNull(t.dateClosed), dtOrNull(t.lastActivityDate), intOrNull(t.monthsReviewedCount),
            t.currentRatingCode || null, t.currentRatingType || null, intOrNull(t.late30Count), intOrNull(t.late60Count), intOrNull(t.late90Count),
-           // NEVER persist the full account number in the audit blob — the masked
-           // last-4 + the encrypted copy are the only forms allowed to land (GLBA).
            t.paymentPattern || null, boolOrNull(t.derogatoryIndicator), !!t.isCollection, !!t.isAuthorizedUser,
+           // raw ($33): NEVER persist the full account number in the audit blob —
+           // the masked last-4 + the encrypted copy are the only forms allowed (GLBA).
            jsonOrNull({ ...t, accountIdentifier: undefined })]);
       }
 
@@ -441,6 +464,12 @@ async function persistImport({ reportRowId, applicationId, actorId, providerId, 
         [reportRowId, dbBorrowerId, al.borrowerId != null ? al.borrowerId : null, al.bureau || null,
          al.category || 'other', al.rawType || null, al.text || null, jsonOrNull(al)]);
     }
+      await client.query('RELEASE SAVEPOINT credit_blocks');
+    } catch (blockErr) {
+      // Blocks are non-critical: drop them, keep the billed/scored/frozen import.
+      try { await client.query('ROLLBACK TO SAVEPOINT credit_blocks'); } catch (_) { /* tx already broken — outer catch handles it */ }
+      try { logEvent({ reportId: reportRowId, applicationId, actorId, providerId, phase: 'persist', action: 'blocks_skipped', outcome: String((blockErr && blockErr.message) || blockErr).slice(0, 200) }); } catch (_) { /* best-effort */ }
+    }
 
     // Freeze the verified FICO — ONLY on a fully-usable import. Under the
     // sanctioned reverify GUC (transaction-local) so the belt permits it and the
@@ -484,20 +513,21 @@ async function persistImport({ reportRowId, applicationId, actorId, providerId, 
         [applicationId, scored.rep.score]);
     }
 
-    // Wire the internal credit-report condition to the outcome. A FATAL FICO-match
-    // finding forces the condition to 'issue' (blocks sign-off) even on a clean
-    // import — the report pulled fine, but the file was built on the wrong FICO and
-    // underwriting must reconcile first.
-    const effectiveDecision = finding ? 'review' : assessment.decision;
-    const condNote = finding
-      ? `[auto] FATAL underwriting finding — ${finding.message} This credit condition cannot be signed off until it is reconciled.`
+    // Wire the internal credit-report condition to the outcome. ANY FATAL finding
+    // (FICO mismatch OR a fraud/OFAC/deceased/SSN/address bureau alert) forces the
+    // condition to 'issue' (blocks sign-off) even on a clean import — the report
+    // pulled fine, but a human must reconcile first. A WARNING-only finding (e.g. a
+    // high-risk score) does NOT block; it rides through as a file alert.
+    const effectiveDecision = hasFatalFinding ? 'review' : assessment.decision;
+    const condNote = hasFatalFinding
+      ? `[auto] ${fatalFindings.length} FATAL underwriting finding${fatalFindings.length > 1 ? 's' : ''} — ${fatalFindings.map((f) => f.message).join(' • ')} This credit condition cannot be signed off until reconciled.`
       : assessment.decision === 'imported'
         ? `[auto] Credit report imported from Xactus and FICO verified (representative ${scored.rep.score ?? 'n/a'}). Review and sign off.`
         : `[auto] Credit report needs manual review: ${assessment.reason || 'see report'}. It cannot be signed off until cleared.`;
     await wireCreditCondition(client, applicationId, effectiveDecision, condNote);
 
     await client.query('COMMIT');
-    return { pdfDocumentId, froze, finding };
+    return { pdfDocumentId, froze, finding, fatalFindings, warningFindings: underwriting.normalizeFindings(finding).filter((f) => f.severity !== 'fatal') };
   } catch (e) {
     try { await client.query('ROLLBACK'); } catch (_) { /* already broken */ }
     throw e;
@@ -798,6 +828,8 @@ async function orderAndImport(opts = {}) {
     representativeBracket: scored.rep.bracket,
     froze: persisted.froze,
     underwritingFinding: persisted.finding || null,
+    fatalFindings: persisted.fatalFindings || [],
+    warningFindings: persisted.warningFindings || [],
     reviewReason: assessment.reason,
     pdfDocumentId: persisted.pdfDocumentId,
     borrowerScores: scored.perBorrower.map((pb) => ({
