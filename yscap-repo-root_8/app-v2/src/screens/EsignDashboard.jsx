@@ -75,7 +75,8 @@ function EnvelopeCard({ e }) {
     <div className="panel esign-card" style={{ marginBottom: 12 }}>
       <div className="row" style={{ gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
         <span className="pill muted">{PURPOSE[e.purpose] || e.purpose}</span>
-        <strong>{e.loanNumber || who || `File #${e.applicationId}`}</strong>
+        {e.isTest ? <span className="pill" style={{ background: '#AE8746', color: '#fff' }} title="A self-test — not a real loan file">TEST</span> : null}
+        <strong>{e.loanNumber || who || (e.applicationId ? `File #${e.applicationId}` : 'Test')}</strong>
         {e.propertyAddress ? <span className="muted small">{e.propertyAddress}</span> : null}
         <div className="spacer" />
         {e.waitingOn && lvl ? (
@@ -84,7 +85,7 @@ function EnvelopeCard({ e }) {
         <span className={`pill ${ph.cls}`} title={`DocuSign envelope ${e.envelopeId || '(not created yet)'}`}>
           <span className="esign-dot" style={{ background: ph.dot }} aria-hidden="true" />{ph.label}
         </span>
-        <Link className="btn ghost btn-sm" to={`/internal/app/${e.applicationId}`}>Open file</Link>
+        {e.applicationId ? <Link className="btn ghost btn-sm" to={`/internal/app/${e.applicationId}`}>Open file</Link> : null}
       </div>
 
       {e.waitingOn ? (
@@ -146,7 +147,9 @@ export default function EsignDashboard() {
     setTestBusy(true); setTestMsg(''); setErr('');
     try {
       const r = await api.post('/api/staff/esign/test-send', {});
-      setTestMsg(`Test envelope sent to ${r.to} — check your email to review and sign the sample documents.`);
+      const n = (r.packages && r.packages.length) || 1;
+      setTestMsg(`Sent ${n} test package${n > 1 ? 's' : ''} to ${r.to} — check your email to review and sign. They appear below marked TEST, and you can open and track them as they move.`);
+      load(true);
     } catch (e) {
       setErr(e.message || 'Could not send the test envelope.');
     } finally { setTestBusy(false); }
