@@ -421,6 +421,75 @@ const PRINT_CSS = `
 }
 `;
 
+// PILOT collateral read — a 1–5 roll-up + (staff) the ARV-defensibility cross-check. Honest and
+// explainable: every factor that moved the score is listed on demand; nothing is fabricated. All
+// advisory — it never changes the file or blocks a deal.
+function ScoreCard({ score }) {
+  const [open, setOpen] = useState(false);
+  if (!score || (!score.collateral && !score.arv)) return null;
+  const col = score.collateral;
+  const arv = score.arv;
+  const colTone = (n) => (n >= 4 ? { fg: 'var(--good,#3F7A5B)', bg: 'var(--good-bg,#E9F1EA)' }
+    : n === 3 ? { fg: 'var(--teal-deep,#256168)', bg: 'rgba(47,127,134,.12)' }
+      : n === 2 ? { fg: 'var(--amber,#B7791F)', bg: 'var(--amber-bg,#F6EEDD)' }
+        : { fg: 'var(--crit,#B4483C)', bg: 'var(--crit-bg,#F6E7E4)' });
+  const arvToneMap = {
+    strong: { fg: 'var(--good,#3F7A5B)', bg: 'var(--good-bg,#E9F1EA)' },
+    moderate: { fg: 'var(--amber,#B7791F)', bg: 'var(--amber-bg,#F6EEDD)' },
+    thin: { fg: 'var(--crit,#B4483C)', bg: 'var(--crit-bg,#F6E7E4)' },
+    no_uplift: { fg: 'var(--crit,#B4483C)', bg: 'var(--crit-bg,#F6E7E4)' },
+    no_budget: { fg: 'var(--amber,#B7791F)', bg: 'var(--amber-bg,#F6EEDD)' },
+  };
+  return (
+    <div className="appr-avoid" style={{ display: 'grid', gridTemplateColumns: arv ? 'repeat(auto-fit,minmax(260px,1fr))' : '1fr', gap: 14, marginBottom: 18 }}>
+      {col && (() => {
+        const t = colTone(col.score);
+        return (
+          <div style={{ background: 'var(--card,#fff)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 14, padding: 16 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+              <div style={{ flex: 'none', width: 58, height: 58, borderRadius: 12, background: t.bg, color: t.fg, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--serif,Georgia,serif)', lineHeight: 1 }}>
+                <span style={{ fontSize: 24, fontWeight: 700 }}>{col.score}</span>
+                <span style={{ fontSize: 10, opacity: .8 }}>/ 5</span>
+              </div>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--gold,#AE8746)' }}>PILOT collateral read</div>
+                <div style={{ fontSize: 17, fontWeight: 700, fontFamily: 'var(--serif,Georgia,serif)', color: t.fg }}>{col.band}</div>
+                {col.factors && col.factors.length > 0 && (
+                  <button onClick={() => setOpen((v) => !v)} style={{ marginTop: 2, background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--muted,#4B585C)', fontSize: 12, textDecoration: 'underline' }}>
+                    {open ? 'Hide why' : `Why — ${col.factors.length} factor${col.factors.length === 1 ? '' : 's'}`}
+                  </button>
+                )}
+              </div>
+            </div>
+            {open && col.factors && (
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--line-soft,#EFEADD)', display: 'grid', gap: 7 }}>
+                {col.factors.map((f, i) => (
+                  <div key={i} style={{ display: 'flex', alignItems: 'baseline', gap: 8, fontSize: 12.5 }}>
+                    <span style={{ flex: 'none', width: 26, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: f.effect > 0 ? 'var(--good,#3F7A5B)' : 'var(--crit,#B4483C)' }}>{f.effect > 0 ? '+' : ''}{f.effect}</span>
+                    <span><b>{f.label}</b> — <span style={{ color: 'var(--muted,#4B585C)' }}>{f.detail}</span></span>
+                  </div>
+                ))}
+                <div style={{ fontSize: 11, color: 'var(--muted,#4B585C)', marginTop: 4 }}>An advisory read of the appraisal's own signals — it never changes the file.</div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+      {arv && (() => {
+        const t = arvToneMap[arv.band] || arvToneMap.moderate;
+        return (
+          <div style={{ background: 'var(--card,#fff)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 14, padding: 16 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--gold,#AE8746)', marginBottom: 6 }}>ARV defensibility</div>
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, background: t.bg, color: t.fg, borderRadius: 999, padding: '4px 12px', fontSize: 12.5, fontWeight: 700, marginBottom: 8 }}>{arv.verdict}</div>
+            <div style={{ fontSize: 13.5, fontWeight: 600, marginBottom: 4 }}>{arv.title}</div>
+            <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)' }}>{arv.detail}</div>
+          </div>
+        );
+      })()}
+    </div>
+  );
+}
+
 export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -527,6 +596,9 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
               ? 'This valuation reflects the After-Repair Value (ARV) — subject to completion of the repairs described in the appraisal.'
               : 'This is the current As-Is market value of the property.'}</span>
           </div>
+
+          {/* PILOT collateral read (1–5) + ARV-defensibility (staff only) */}
+          <ScoreCard score={data.score} />
 
           {/* collateral snapshot + risk rail */}
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 18 }}>
