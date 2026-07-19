@@ -5,9 +5,12 @@ build a full **Appraisal screen** — every subject detail, all comps, the photo
 the appraiser/company/license, and (critically) the **As-Is** and **ARV** values — then use
 that data to check the appraisal against the file before clear-to-close (CTC).
 
-This folder is the research output from analyzing **all 21 uploaded appraisals**
-(11× Form **1004** single-family / URAR, 10× Form **1025** 2–4-unit / Small Income),
+This folder is the research output from analyzing **all 25 uploaded appraisals**
+(15× Form **1004** single-family / URAR, 10× Form **1025** 2–4-unit / Small Income),
 produced by four parallel research passes plus a working prototype parser run against every file.
+(The two detailed field-map docs were written against the first 21 files — 11× 1004, 10× 1025;
+the 4 additional files are all Form 1004 and were confirmed consistent with the 1004 map. The
+prototype parser and `per-file-extraction-proof.md` cover all 25.)
 
 ## Documents in this folder
 
@@ -37,7 +40,7 @@ Same MISMO attribute *names* across both; different *elements are populated*.
 This is the highest-risk part and was verified against all 21 files. **Never trust a single
 attribute or the condition-type enum alone.**
 
-### ARV (After-Repair Value) — 21/21 recovered
+### ARV (After-Repair Value) — 25/25 recovered
 
 1. Start with the one structured figure: `VALUATION/@PropertyAppraisedValueAmount`
    (present in every file; also mirrored by `SALES_COMPARISON/@ValueIndicatedBySalesComparisonApproachAmount`
@@ -52,7 +55,7 @@ attribute or the condition-type enum alone.**
 3. If the report is genuinely an As-Is report, the ARV may only be in narrative
    (`as-repaired value $X`) or estimated from the ARV comp cluster (flagged).
 
-### As-Is value — 14/21 exact, 4 estimated, 3 PDF-only
+### As-Is value — 15/25 exact, 6 estimated, 4 PDF-only
 
 There is **no dedicated As-Is attribute** in these XMLs. Mine it in priority order:
 
@@ -69,7 +72,7 @@ There is **no dedicated As-Is attribute** in these XMLs. Mine it in priority ord
    (flag as an estimate to confirm in the PDF).
 4. If none of the above → flag **"As-Is only in PDF — needs manual entry / OCR"**. Never guess silently.
 
-Files where As-Is is genuinely only in the PDF: **10182152, 10394133, 10484851**.
+Files where As-Is is genuinely only in the PDF: **10182152, 10394133, 10484851, nan_LOEFFLER**.
 
 ## Other high-value traps (verified across files)
 
