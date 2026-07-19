@@ -25,6 +25,11 @@ const onDeadLetter = require('./dead-letter');
 
 const POLL_SEC = parseInt(process.env.DOCUSIGN_POLL_SEC || '60', 10);
 const STALE_MIN = parseInt(process.env.DOCUSIGN_RECONCILE_STALE_MIN || '30', 10);
+// A freshly-sent, not-yet-finished envelope is ACTIVELY being signed — reconcile it
+// EVERY tick (not just after STALE_MIN of quiet) so a signature is reflected within
+// one poll cycle even if the real-time Connect webhook isn't delivering/verifying.
+// After this window it falls back to the STALE_MIN missed-webhook belt.
+const ACTIVE_MIN = parseInt(process.env.DOCUSIGN_ACTIVE_RECONCILE_MIN || '180', 10);
 
 let timer = null;
 
@@ -62,13 +67,33 @@ async function reconcileStale(opts = {}) {
     `SELECT * FROM esign_envelopes
       WHERE envelope_id IS NOT NULL
         AND status IN ('sent','delivered')
-        AND (last_event_at IS NULL OR last_event_at < now() - ($1 || ' minutes')::interval)
+        AND (sent_at > now() - ($2 || ' minutes')::interval    -- fresh: reconcile every tick
+             OR last_event_at IS NULL
+             OR last_event_at < now() - ($1 || ' minutes')::interval)
       ORDER BY COALESCE(last_event_at, sent_at) NULLS FIRST
-      LIMIT 25`, [String(STALE_MIN)])).rows;
+      LIMIT 25`, [String(STALE_MIN), String(ACTIVE_MIN)])).rows;
   const out = [];
   for (const row of rows) {
     try { out.push({ id: row.id, status: await webhook.reconcileEnvelope(db, docusign, opts.storage || require('../storage'), row) }); }
     catch (e) { out.push({ id: row.id, error: e.message }); }
+  }
+  // Certificate-of-Completion backfill: a transient cert-download failure at
+  // completion time is otherwise never retried (this scan only covers sent/delivered).
+  // Re-drive completed REAL envelopes whose cert never landed — handleCompletion is
+  // idempotent and only re-fetches the still-missing certificate.
+  const certless = (await db.query(
+    `SELECT e.* FROM esign_envelopes e
+      WHERE e.status = 'completed' AND e.application_id IS NOT NULL AND e.envelope_id IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM documents d
+           WHERE d.application_id = e.application_id
+             AND d.doc_kind = 'esign_certificate'
+             AND d.filename = 'esign_certificate_' || e.envelope_id || '.pdf')
+      ORDER BY e.completed_at NULLS FIRST
+      LIMIT 10`)).rows;
+  for (const row of certless) {
+    try { await webhook.handleCompletion(db, docusign, opts.storage || require('../storage'), row); out.push({ id: row.id, cert: 'redriven' }); }
+    catch (e) { out.push({ id: row.id, certError: e.message }); }
   }
   return out;
 }

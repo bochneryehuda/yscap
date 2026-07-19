@@ -72,7 +72,8 @@ function guardTestEmails(docusign, signers) {
 /** DB-backed send circuit breaker — counts on SEND time (L-3), not created_at. */
 async function breakerOpen(db) {
   const r = await db.query(
-    `SELECT count(*)::int AS n FROM esign_envelopes WHERE sent_at > now() - interval '10 minutes'`);
+    `SELECT count(*)::int AS n FROM esign_envelopes
+      WHERE sent_at > now() - interval '10 minutes' AND application_id IS NOT NULL`);
   return (r.rows[0] && r.rows[0].n) >= cfg.maxSends10min;
 }
 
@@ -91,13 +92,24 @@ async function sendClaimedEnvelope(rowId, opts = {}) {
     `UPDATE esign_envelopes
         SET send_claimed_at = now(), attempts = attempts + 1, updated_at = now()
       WHERE id = $1
+        AND application_id IS NOT NULL   -- the engine drives REAL-file sends only; app-less test envelopes are sent directly by test-send.js
         AND envelope_id IS NULL
         AND dead_lettered_at IS NULL
         AND (send_claimed_at IS NULL OR send_claimed_at < now() - ($2 || ' minutes')::interval)
         AND (next_attempt_at IS NULL OR next_attempt_at <= now())
       RETURNING *`,
     [rowId, String(CLAIM_STALE_MIN)]);
-  if (!claimed.rows.length) return { skipped: true };   // already sent / dead / held by another / backing off
+  if (!claimed.rows.length) {
+    // Claim missed — disambiguate so a caller never reports a false "Sent." The row
+    // is already sent (a real success), dead-lettered, or merely backing off / held
+    // by a concurrent worker (NOT delivered on this attempt).
+    const cur = (await db.query(
+      `SELECT envelope_id, dead_lettered_at, last_error FROM esign_envelopes WHERE id = $1`, [rowId])).rows[0];
+    if (!cur) return { skipped: true, disposition: 'gone' };
+    if (cur.envelope_id) return { skipped: true, alreadySent: true, disposition: 'already_sent', envelopeId: cur.envelope_id };
+    if (cur.dead_lettered_at) return { dead: true, disposition: 'dead', error: cur.last_error };
+    return { skipped: true, queued: true, disposition: 'queued', error: cur.last_error };
+  }
   const row = claimed.rows[0];
 
   try {
@@ -166,7 +178,8 @@ async function drainDue(opts = {}) {
   const limit = opts.limit || 25;
   const due = await db.query(
     `SELECT id FROM esign_envelopes
-      WHERE envelope_id IS NULL AND dead_lettered_at IS NULL AND status = 'not_sent'
+      WHERE application_id IS NOT NULL   -- never claim an app-less test envelope (test-send.js sends those directly)
+        AND envelope_id IS NULL AND dead_lettered_at IS NULL AND status = 'not_sent'
         AND (next_attempt_at IS NULL OR next_attempt_at <= now())
         AND (send_claimed_at IS NULL OR send_claimed_at < now() - interval '5 minutes')
       ORDER BY created_at

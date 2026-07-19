@@ -173,6 +173,7 @@ function fillField(xml, token, value) {
 
 // ---- value formatting -------------------------------------------------------
 function fmtMoney(n) {
+  if (n == null) return '';           // a missing amount is blank, never a real-looking $0.00
   const v = Number(n);
   if (!isFinite(v)) return '';
   return v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -181,18 +182,22 @@ function fmtDate(d) {
   if (!d) return '';
   // A date-only 'YYYY-MM-DD' string must NEVER go through new Date() — that reads
   // it as UTC midnight and shifts the day back one in any west-of-UTC timezone
-  // (the repo's hard date-only rule / the DOB-date incident). Format its parts
-  // directly, and format everything else in UTC so the rendered day is
-  // deterministic regardless of the server's timezone.
+  // (the repo's hard date-only rule / the DOB-date incident). Format its parts directly.
   if (typeof d === 'string') {
     const m = d.match(/^(\d{4})-(\d{2})-(\d{2})/);
     if (m) return `${m[2]}/${m[3]}/${m[1]}`;
   }
+  // A timestamp INSTANT (a timestamptz from pg → a JS Date, or new Date() for the
+  // execution date) must render on the BUSINESS calendar (America/New_York), NOT UTC.
+  // The server runs UTC, so an evening-ET instant formatted in UTC prints TOMORROW's
+  // date on a legal document — format it in ET so the rendered day matches the day
+  // the borrower actually submitted / the document was actually prepared.
   const dt = (d instanceof Date) ? d : new Date(d);
-  if (isNaN(dt.getTime())) return String(d);
-  const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
-  const dd = String(dt.getUTCDate()).padStart(2, '0');
-  return `${mm}/${dd}/${dt.getUTCFullYear()}`;
+  if (isNaN(dt.getTime())) return '';
+  const p = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(dt).reduce((o, x) => ((o[x.type] = x.value), o), {});
+  return `${p.month}/${p.day}/${p.year}`;
 }
 
 // ---- signature rule runs (replace the leftover yellow "Sign Here" tag image) --
