@@ -82,9 +82,11 @@ export default function EsignFileSection({ appId, role }) {
     finally { setBusy(''); }
   }
 
-  const send = (purpose) => act(`send:${purpose}`,
-    () => api.post(`/api/staff/applications/${appId}/esign/send`, { purpose }),
-    'Sent for signature.');
+  const send = (purpose) => act(`send:${purpose}`, async () => {
+    const r = await api.post(`/api/staff/applications/${appId}/esign/send`, { purpose });
+    // A dead-lettered send returns 200 with ok:false — don't show a false success.
+    if (r && (r.dead || r.ok === false)) throw new Error(r.error || 'The document could not be sent — check the file and try again.');
+  }, 'Sent for signature.');
   const resend = (rowId) => act(`resend:${rowId}`, () => api.post(`/api/staff/esign/${rowId}/resend`), 'Reminder resent.');
   const voidEnv = (rowId) => {
     const reason = window.prompt('Void this envelope — reason (required):');
@@ -93,7 +95,11 @@ export default function EsignFileSection({ appId, role }) {
   };
   const countersign = (rowId) => act(`cs:${rowId}`, async () => {
     const { url } = await api.post(`/api/staff/esign/${rowId}/countersign-view`);
-    if (url) window.open(url, '_blank', 'noopener');
+    // Navigate in the SAME tab — window.open() after an await is outside the user
+    // gesture and gets popup-blocked (Safari especially). DocuSign bounces staff
+    // back to the file when done.
+    if (!url) throw new Error('Could not open the signing view — please try again.');
+    window.location.assign(url);
   });
   const download = (doc) => act(`dl:${doc.documentId}`, async () => {
     const { blob, filename } = await api.staffDownloadDoc(doc.documentId);
@@ -185,9 +191,9 @@ export default function EsignFileSection({ appId, role }) {
                   <button className="btn ghost btn-sm" disabled={busy === `void:${e.id}`} onClick={() => voidEnv(e.id)}>Void</button>
                 </>
               )}
-              {(e.phase === 'declined' || e.phase === 'voided') && gate.ready && (
+              {(e.phase === 'declined' || e.phase === 'voided' || e.phase === 'error') && gate.ready && (
                 <button className="btn primary btn-sm" disabled={busy === `send:${e.purpose}`} title="Send a fresh envelope for this package"
-                  onClick={() => send(e.purpose)}>{busy === `send:${e.purpose}` ? '…' : 'Re-issue'}</button>
+                  onClick={() => send(e.purpose)}>{busy === `send:${e.purpose}` ? '…' : (e.phase === 'error' ? 'Retry send' : 'Re-issue')}</button>
               )}
               {(e.documents || []).map((d) => (
                 <button key={d.documentId} className="btn ghost btn-sm" disabled={busy === `dl:${d.documentId}`} onClick={() => download(d)}

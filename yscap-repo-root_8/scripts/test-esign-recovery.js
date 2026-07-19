@@ -124,6 +124,23 @@ const goodInputs = () => ({ subject: 'x', documents: [{ base64: 'AAAA', document
     ok(condDone.rows[0].status === 'received', 'B2: condition cleared to received after recovery');
   }
 
+  // ---- B5: a re-issue's signed doc supersedes the prior copy ------------------
+  {
+    const env2 = await newEnvelope('sent');
+    await db.query(`UPDATE esign_envelopes SET envelope_id='ENV-C2' WHERE id=$1`, [env2.id]);
+    await db.query(`INSERT INTO esign_envelope_docs(envelope_row_id,document_id,doc_kind) VALUES($1,1,'term_sheet_signed')`, [env2.id]);
+    // First envelope's signed copy.
+    const first = await webhook.storeSignedDocument(db, require(R + '/src/lib/storage'),
+      { applicationId: env2.application_id, docKind: 'term_sheet_signed', filename: 'term_sheet_signed_ENV-A.pdf', bytes: Buffer.from('v1') });
+    // Re-issue: a NEW envelope's signed copy (new deterministic filename).
+    const second = await webhook.storeSignedDocument(db, require(R + '/src/lib/storage'),
+      { applicationId: env2.application_id, docKind: 'term_sheet_signed', filename: 'term_sheet_signed_ENV-B.pdf', bytes: Buffer.from('v2') });
+    const cur = await db.query(`SELECT id,is_current FROM documents WHERE application_id=$1 AND doc_kind='term_sheet_signed' ORDER BY created_at`, [env2.application_id]);
+    const currentIds = cur.rows.filter((r) => r.is_current).map((r) => r.id);
+    ok(currentIds.length === 1 && currentIds[0] === second, 'B5: only the latest signed copy stays is_current (no duplicate into TPR/SharePoint)');
+    ok(cur.rows.find((r) => r.id === first).is_current === false, 'B5: prior signed copy superseded');
+  }
+
   console.log(`\n${fail === 0 ? '✓' : '✗'} esign recovery: ${pass} passed, ${fail} failed`);
   await db.pool.end().catch(() => {});
   process.exit(fail === 0 ? 0 : 1);

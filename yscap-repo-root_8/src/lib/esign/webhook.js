@@ -67,6 +67,16 @@ async function storeSignedDocument(db, storage, { applicationId, checklistItemId
        VALUES ($1,$2,$3,'application/pdf',$4,$5,$6,'staff',NULL,$7,'system',$8,true,'pending')
        RETURNING id`,
       [applicationId, checklistItemId || null, filename, Buffer.from(bytes).length, provider, ref, docKind, visibility || 'borrower']);
+    // Supersede any PRIOR current copy of the same signed kind on this file. A
+    // re-issue signs a NEW envelope → a new deterministic filename → a fresh
+    // documents row; without this the old signed copy stays is_current=true and
+    // BOTH would ride into the TPR note-buyer package and the SharePoint mirror
+    // (mirrors tpr-export's supersede). Latest signed copy wins.
+    await db.query(
+      `UPDATE documents SET is_current=false,
+          review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
+        WHERE application_id=$1 AND doc_kind=$2 AND id<>$3 AND is_current=true`,
+      [applicationId, docKind, ins.rows[0].id]);
     return ins.rows[0].id;
   } catch (e) {
     // A concurrent drain (poller tick + manual /esign/drain interleaving at an
