@@ -98,8 +98,13 @@ function ValueStory({ a }) {
 // lightbox. Object URLs are revoked on unmount so nothing leaks.
 function PhotoGallery({ photos, readOnly }) {
   const [urls, setUrls] = useState({});   // documentId -> objectURL
+  const [failed, setFailed] = useState({}); // documentId -> true (fetch failed)
   const [open, setOpen] = useState(-1);
   const madeRef = useRef([]);
+  // Key on the SET of document ids, not the array identity — so resolving a finding (which
+  // reloads `data` and rebuilds the photos array with the SAME ids) does not revoke + refetch
+  // every image. Only a real change to the photo set (a re-import) re-runs the effect.
+  const photoKey = photos.map((p) => p.document_id).join(',');
   useEffect(() => {
     let alive = true;
     const fetcher = readOnly ? api.appraisalPhotoBlobBorrower : api.appraisalPhotoBlob;
@@ -113,11 +118,12 @@ function PhotoGallery({ photos, readOnly }) {
           const u = URL.createObjectURL(blob);
           madeRef.current.push(u);
           setUrls((prev) => ({ ...prev, [p.document_id]: u }));
-        } catch (_) { /* skip a photo that won't load */ }
+        } catch (_) { if (alive) setFailed((prev) => ({ ...prev, [p.document_id]: true })); }
       }
     })();
     return () => { alive = false; madeRef.current.forEach((u) => { try { URL.revokeObjectURL(u); } catch (_) { /* noop */ } }); madeRef.current = []; };
-  }, [photos, readOnly]);
+    // deps: photoKey (the id set) not `photos` (new array each load) — avoids needless refetch.
+  }, [photoKey, readOnly]);
 
   if (!photos || !photos.length) return null;
   const withUrl = photos.filter((p) => urls[p.document_id]);
@@ -131,7 +137,7 @@ function PhotoGallery({ photos, readOnly }) {
             aspectRatio: '4 / 3', background: 'var(--line-soft,#EFEADD)', display: 'block' }}>
             {urls[p.document_id]
               ? <img src={urls[p.document_id]} alt={p.caption || 'Appraisal photo'} loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
-              : <span style={{ display: 'flex', width: '100%', height: '100%', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: 'var(--muted,#4B585C)' }}>loading…</span>}
+              : <span style={{ display: 'flex', width: '100%', height: '100%', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: 'var(--muted,#4B585C)' }}>{failed[p.document_id] ? 'unavailable' : 'loading…'}</span>}
           </button>
         ))}
       </div>
@@ -441,16 +447,17 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
 // Hero photo tile — loads its own blob (independent of the gallery so the hero shows immediately).
 function HeroPhoto({ photo, readOnly }) {
   const [url, setUrl] = useState('');
+  const docId = photo && photo.document_id;
   useEffect(() => {
     let alive = true, made = '';
     const fetcher = readOnly ? api.appraisalPhotoBlobBorrower : api.appraisalPhotoBlob;
     (async () => {
-      if (!photo || !photo.document_id) return;
-      try { const blob = await fetcher(photo.document_id); if (!alive) return; made = URL.createObjectURL(blob); setUrl(made); }
+      if (!docId) return;
+      try { const blob = await fetcher(docId); if (!alive) return; made = URL.createObjectURL(blob); setUrl(made); }
       catch (_) { /* no hero image */ }
     })();
     return () => { alive = false; if (made) { try { URL.revokeObjectURL(made); } catch (_) { /* noop */ } } };
-  }, [photo, readOnly]);
+  }, [docId, readOnly]);
   return (
     <div style={{ borderRadius: 14, overflow: 'hidden', border: '1px solid var(--line,#E7E1D3)', background: 'var(--line-soft,#EFEADD)', minHeight: 200, display: 'flex' }}>
       {url
