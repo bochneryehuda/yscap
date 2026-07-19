@@ -17,6 +17,7 @@ import { PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.
 import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
 import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
+import CreditReportPanel from '../components/CreditReportPanel.jsx';
 import StaticToolFrame from '../components/StaticToolFrame.jsx';
 import AddConditionPanel from '../components/AddConditionPanel.jsx';
 import StaffChangeRequests from '../components/StaffChangeRequests.jsx';
@@ -2683,6 +2684,11 @@ export default function StaffApplication() {
         badge={app.registered_program ? 'Registered ✓' : 'Not registered'}>
       <ProductStudioPanel ref={studioRef} appId={id} app={app} onRegistered={load} mode="staff" staffRole={role}
         toolItemId={(items.find(it => it.tool_key === 'product_pricing') || {}).id} />
+      </Section>
+
+      <Section id="sec-credit" title="Credit report"
+        info="Pull or reissue the borrower's credit report from the bureau (Xactus) and verify the FICO. The verified score is imported from the report data and locked across the portal, term sheet, and ClickUp. A score that lands in a different pricing bracket reopens Products & Pricing for a human to re-register.">
+      <CreditReportPanel appId={id} />
       </Section>
 
       <Section id="sec-conditions" title="Conditions to close"

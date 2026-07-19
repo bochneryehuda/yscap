@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { scenarioToDraft, scenarioLabelFromState } from '../lib/scenario.js';
+import BorrowerCreditCard from '../components/BorrowerCreditCard.jsx';
 
 // Files that are muted OUTSIDE the file (owner-directed): funded/terminal AND
 // ON-HOLD loans never nag in the cross-file "to complete" rollup or the per-loan
@@ -396,6 +397,8 @@ export default function Dashboard() {
           </div>
         );
       })()}
+
+      <BorrowerCreditCard />
 
       {notifs.length > 0 && (
         <div className="panel" style={{ marginTop: 18 }}>
