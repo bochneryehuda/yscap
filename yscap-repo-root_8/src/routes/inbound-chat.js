@@ -38,10 +38,14 @@ function replyKeyFromRecipients(list) {
 //   • a "--" signature rule, or a leading-">" quote block.
 // Whichever appears first wins — Gmail/Outlook add an attribution line ABOVE our
 // marker, so taking the minimum index keeps the reply clean even then.
+// The delimiter phrase is imported from chat.js (single source of truth) so the
+// outbound copy and this inbound cut can never drift apart. Escaped for regex use.
+const MARKER_RE = new RegExp(chat.CHAT_REPLY_MARKER_PHRASE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+
 function topReply(text) {
   const s = String(text || '').replace(/\r\n/g, '\n');
   const patterns = [
-    /reply above this line/i,          // our delimiter (#146)
+    MARKER_RE,                         // our delimiter (#146) — imported from chat.js
     /\n\s*On .+ wrote:/,               // Gmail / Apple Mail attribution
     /\n\s*-{2,}\s*\n/,                 // "--" signature separator
     /\n>{1,}/,                          // quoted block
