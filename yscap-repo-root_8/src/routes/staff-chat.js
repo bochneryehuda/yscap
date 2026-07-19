@@ -26,10 +26,14 @@ async function audit(req, action, entity_type, entity_id, detail) {
   // so a logging write can never fail an otherwise-successful request.
   let d = detail;
   if (d != null && typeof d !== 'object') d = { note: String(d) };
-  await db.query(
-    `INSERT INTO audit_log (actor_kind,actor_id,action,entity_type,entity_id,ip_address,user_agent,detail)
-     VALUES ('staff',$1,$2,$3,$4,$5,$6,$7)`,
-    [req.actor.id, action, entity_type, entity_id || null, req.ip, req.get('user-agent') || null, d || null]);
+  try {
+    await db.query(
+      `INSERT INTO audit_log (actor_kind,actor_id,action,entity_type,entity_id,ip_address,user_agent,detail)
+       VALUES ('staff',$1,$2,$3,$4,$5,$6,$7)`,
+      [req.actor.id, action, entity_type, entity_id || null, req.ip, req.get('user-agent') || null, d || null]);
+  } catch (e) {   // best-effort — a log write must never fail a completed action
+    console.warn(`[audit] failed to log ${action}: ${db.describeError ? db.describeError(e) : e.message}`);
+  }
 }
 async function actorName(req) {
   const r = await db.query(`SELECT full_name FROM staff_users WHERE id=$1`, [req.actor.id]);

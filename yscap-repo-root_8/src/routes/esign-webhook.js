@@ -53,6 +53,12 @@ router.post('/', async (req, res) => {
     return res.status(503).json({ error: 'webhook not configured' });
   }
   if (!docusign.verifyConnectHmac(raw, sigs)) {
+    // Diagnostic only — does NOT change the fail-closed decision. Tells the operator
+    // WHY real-time notifications are rejected: 0 signatures = account HMAC not
+    // enabled; N signatures = key mismatch. (Meanwhile the poller reconcile covers it.)
+    console.warn(`[esign-webhook] rejected (401): ${(sigs || []).length === 0
+      ? 'no X-DocuSign-Signature headers — enable "Include HMAC Signature" in DocuSign Connect and add a key equal to DOCUSIGN_CONNECT_HMAC_SECRET'
+      : `${sigs.length} signature(s) present, none matched — DOCUSIGN_CONNECT_HMAC_SECRET does not match the account HMAC key`}`);
     return res.status(401).json({ error: 'bad signature' });
   }
 
