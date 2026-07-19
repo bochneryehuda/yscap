@@ -15,27 +15,61 @@ const STATUS_BADGE = {
   ordering: { text: 'In progress…', cls: '' },
 };
 
-function ScoreChips({ scores }) {
-  if (!scores || !scores.length) return <span className="muted small">no scores</span>;
+/* FATAL underwriting finding: the verified FICO landed in a different pricing
+   bracket than the FICO the file was built on. Blocks the credit condition. */
+function FindingBanner({ finding }) {
+  if (!finding) return null;
   return (
-    <span style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap' }}>
-      {scores.map((s, i) => (
-        <span key={i} className="tchip" title={s.reason || ''}>
-          {s.bureau}: {s.usable && s.value != null ? s.value : '—'}
-        </span>
-      ))}
-    </span>
+    <div className="notice err" style={{ marginTop: 8, borderLeft: '4px solid var(--danger)' }} role="alert">
+      <strong>⚠ Fatal underwriting finding — the FICO does not match the file.</strong>
+      <div style={{ marginTop: 4 }}>{finding.message}</div>
+      {Array.isArray(finding.perBorrower) && finding.perBorrower.length > 0 && (
+        <ul style={{ margin: '6px 0 0 18px' }}>
+          {finding.perBorrower.map((b, i) => (
+            <li key={i}>
+              {b.name}: file <strong>{b.claimed}</strong> ({b.claimedBracket}) → verified <strong>{b.verified}</strong> ({b.verifiedBracket})
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="muted small" style={{ marginTop: 4 }}>
+        Re-register the product on the verified score, then sign off the credit condition.
+      </div>
+    </div>
+  );
+}
+
+/* One bureau's score with its model, date, and (when excluded) the reason. */
+function BureauLine({ s }) {
+  const factors = Array.isArray(s.factors) ? s.factors.filter((f) => f && (f.text || f.code)) : [];
+  return (
+    <div style={{ marginTop: 3 }}>
+      <span className="tchip" title={s.model || ''}
+        style={{ borderColor: s.usable ? 'var(--teal)' : 'var(--muted)' }}>
+        {s.bureau}: <strong>{s.usable && s.value != null ? s.value : '—'}</strong>
+      </span>
+      {s.model && <span className="muted small" style={{ marginLeft: 6 }}>{s.model}</span>}
+      {s.score_date && <span className="muted small" style={{ marginLeft: 6 }}>· {s.score_date}</span>}
+      {!s.usable && (s.exclusion_reason || s.reason) && (
+        <span className="small" style={{ marginLeft: 6, color: 'var(--danger)' }}>({s.exclusion_reason || s.reason})</span>
+      )}
+      {factors.length > 0 && (
+        <div className="muted small" style={{ marginLeft: 6, marginTop: 2 }}>
+          Factors: {factors.map((f) => f.text || f.code).join('; ')}
+        </div>
+      )}
+    </div>
   );
 }
 
 function ReportRow({ r }) {
   const badge = STATUS_BADGE[r.status] || { text: r.status, cls: '' };
-  // group scores by report borrower id
+  // group scores by report borrower id (joint → one block each)
   const byBorrower = new Map();
   for (const s of (r.scores || [])) {
     const k = s.report_borrower_id || '—';
     if (!byBorrower.has(k)) byBorrower.set(k, []);
-    byBorrower.get(k).push({ bureau: s.bureau, value: s.value, usable: s.usable, reason: s.reason });
+    byBorrower.get(k).push(s);
   }
   return (
     <div className="panel" style={{ marginTop: 8 }}>
@@ -44,14 +78,19 @@ function ReportRow({ r }) {
           <strong>{r.action_type || 'Order'}</strong>{' '}
           <span className="muted small">
             {r.other_description || r.report_type}{r.first_issued_date ? ` · ${r.first_issued_date}` : ''}
+            {r.mismo_version ? ` · MISMO ${r.mismo_version}` : ''}
           </span>
         </div>
         <span className={`notice ${badge.cls}`} style={{ padding: '2px 8px', fontSize: 12 }}>{badge.text}</span>
       </div>
+
+      <FindingBanner finding={r.underwriting_finding} />
+
       {r.representative_score != null && (
         <div style={{ marginTop: 6 }}>
-          Representative FICO: <strong>{r.representative_score}</strong>{' '}
+          Representative FICO: <strong style={{ fontSize: 16 }}>{r.representative_score}</strong>{' '}
           <span className="muted small">({r.representative_bracket})</span>
+          <span className="muted small"> — the highest of the borrowers’ middle scores</span>
         </div>
       )}
       {r.bureau_status && r.bureau_status.perBureau && (
@@ -68,14 +107,17 @@ function ReportRow({ r }) {
       {r.status === 'review' && r.review_reason && (
         <div className="notice err" style={{ marginTop: 6 }}>Manual review: {r.review_reason}</div>
       )}
+
       {[...byBorrower.entries()].map(([bid, scores]) => (
-        <div key={bid} style={{ marginTop: 6 }}>
-          <span className="muted small">{bid}:</span> <ScoreChips scores={scores} />
+        <div key={bid} style={{ marginTop: 8, paddingTop: 6, borderTop: '1px solid var(--hair)' }}>
+          <div className="muted small" style={{ fontWeight: 600 }}>Borrower {bid}</div>
+          {scores.map((s, i) => <BureauLine key={i} s={s} />)}
         </div>
       ))}
+
       {r.pdf_document_id && (
         <div style={{ marginTop: 8 }}>
-          <a className="btn ghost" href={api.creditReportPdfUrl(r.id)} target="_blank" rel="noopener noreferrer">Open PDF</a>
+          <a className="btn ghost" href={api.creditReportPdfUrl(r.id)} target="_blank" rel="noopener noreferrer">Open full report PDF</a>
         </div>
       )}
     </div>
@@ -119,9 +161,11 @@ export default function CreditReportPanel({ appId }) {
       });
       setMsg(out.deduped
         ? (out.inflight ? 'An order is already in progress — showing it.' : 'That order was already placed — showing the existing report.')
-        : out.status === 'review'
-          ? `Imported, but it needs manual review: ${out.reviewReason || ''}`
-          : `Done — representative FICO ${out.representativeScore ?? 'n/a'} (${out.representativeBracket || '—'}).`);
+        : out.underwritingFinding
+          ? `Imported (FICO ${out.representativeScore ?? 'n/a'}), but it does NOT match the file — a fatal underwriting finding was raised. Reconcile before sign-off.`
+          : out.status === 'review'
+            ? `Imported, but it needs manual review: ${out.reviewReason || ''}`
+            : `Done — representative FICO ${out.representativeScore ?? 'n/a'} (${out.representativeBracket || '—'}).`);
       await load();
     } catch (e) {
       // An in-doubt (timeout) outcome must NOT invite a blind re-order.
