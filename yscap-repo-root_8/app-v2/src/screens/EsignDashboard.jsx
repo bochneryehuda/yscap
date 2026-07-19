@@ -67,10 +67,19 @@ function EnvelopeCard({ e, onReload }) {
   const [busy, setBusy] = useState(false);
   const [actErr, setActErr] = useState('');
   const canResend = !!e.envelopeId && !['completed', 'declined', 'voided'].includes(e.phase);
+  const canVoid = canResend;   // same window: sent but not yet finished
   async function resend() {
     setBusy(true); setActErr('');
     try { await api.post(`/api/staff/esign/${e.id}/resend`); if (onReload) onReload(); }
     catch (err) { setActErr(err.message || 'Could not resend the email.'); }
+    finally { setBusy(false); }
+  }
+  async function voidEnv() {
+    const reason = window.prompt('Cancel (void) this package — the signer can no longer sign it. Reason (required):');
+    if (!reason || !reason.trim()) return;
+    setBusy(true); setActErr('');
+    try { await api.post(`/api/staff/esign/${e.id}/void`, { reason: reason.trim() }); if (onReload) onReload(); }
+    catch (err) { setActErr(err.message || 'Could not cancel the package.'); }
     finally { setBusy(false); }
   }
   const ph = PHASE[e.phase] || { label: e.phase, cls: 'muted', dot: '#4B585C' };
@@ -96,6 +105,7 @@ function EnvelopeCard({ e, onReload }) {
         </span>
         {e.applicationId ? <Link className="btn ghost btn-sm" to={`/internal/app/${e.applicationId}`}>Open file</Link> : null}
         {canResend ? <button className="btn ghost btn-sm" disabled={busy} onClick={resend} title="Resend the DocuSign email to the current signer">{busy ? 'Resending…' : 'Resend email'}</button> : null}
+        {canVoid ? <button className="btn ghost btn-sm" disabled={busy} onClick={voidEnv} title="Cancel this package — the signer can no longer sign">Void</button> : null}
       </div>
       {actErr ? <div role="alert" className="notice err" style={{ margin: '8px 0 0' }}>{actErr}</div> : null}
 

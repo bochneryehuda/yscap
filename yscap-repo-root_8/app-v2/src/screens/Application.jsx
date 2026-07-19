@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { useParams, useLocation, Link } from 'react-router-dom';
+import { useParams, useLocation, useNavigate, Link } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import { fmtDay } from '../lib/dates.js';
 import { formatSSN, cleanFICO, ficoValid } from '../lib/validators.js';
+import { ESIGN_RETURN_MSG } from '../lib/esign.js';
 import ChatThread from '../components/ChatThread.jsx';
 import { useAuth } from '../lib/auth.jsx';
 import PropertyPhoto from '../components/PropertyPhoto.jsx';
@@ -534,6 +535,17 @@ export default function Application() {
   // the Messages section so the recipient lands ON the conversation instead of at
   // the top of the file (owner-reported 2026-07-14). Runs once the file paints.
   const wantsChat = /(?:^|[?&])chat=/.test(loc.search || '');
+  // A signer bouncing back from DocuSign's embedded view lands on …?esign=<state>.
+  // Show a friendly confirmation, then strip the param so a refresh doesn't re-show it.
+  const nav = useNavigate();
+  const esignReturn = new URLSearchParams(loc.search || '').get('esign');
+  const [esignMsg] = useState(() => ESIGN_RETURN_MSG[esignReturn] || null);
+  useEffect(() => {
+    if (!esignReturn) return;   // strip whenever the param is present, even if unmapped
+    const sp = new URLSearchParams(loc.search);
+    sp.delete('esign');
+    nav({ pathname: loc.pathname, search: sp.toString() ? `?${sp.toString()}` : '' }, { replace: true });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [app, setApp] = useState(null);
   const [items, setItems] = useState([]);
   const [uploads, setUploads] = useState([]);
@@ -761,6 +773,7 @@ export default function Application() {
         <span className={`pill ${app.status}`} style={{ flex: 'none' }}>{LABEL[app.status] || app.status}</span>
       </div>
 
+      {esignMsg && <div className={`notice ${esignMsg.tone}`} role="status">{esignMsg.text}</div>}
       {msg && <div className="notice ok">{msg}</div>}
       {err && <div role="alert" className="notice err">{err}</div>}
 
