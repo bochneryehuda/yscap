@@ -1345,32 +1345,134 @@ async function reconciliation() {
   };
 }
 
+// The ACTUAL stuck documents behind a backlog — WITH identity and the real
+// reason, so an alert/report is interpretable and actionable (owner-reported
+// 2026-07-17: "I got an SLO email but nothing in review and I don't understand
+// it"). A document that has been un-mirrored past the SLO threshold, oldest
+// first, each with a plain-language diagnosis of WHY it isn't progressing.
+async function stuckDocuments(limit = 25) {
+  const hrs = Number(process.env.SHAREPOINT_BACKLOG_SLO_HOURS || 6);
+  const { rows } = await db.query(
+    `SELECT d.id, d.filename, d.doc_kind, d.is_current,
+            d.sharepoint_backup_attempts AS attempts,
+            d.sharepoint_backup_error    AS last_error,
+            d.sharepoint_skipped_reason  AS skipped_reason,
+            round(EXTRACT(EPOCH FROM (now() - d.created_at)) / 3600.0, 1) AS age_hours,
+            COALESCE(d.application_id, ci.application_id)                        AS app_id,
+            COALESCE(d.borrower_id, ci.borrower_id, l.borrower_id, a.borrower_id) AS borrower_id,
+            TRIM(CONCAT_WS(' ', b.first_name, b.last_name))                     AS borrower_name,
+            ${REGEN_KIND_SQL} AS is_regen
+       FROM documents d
+       LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
+       LEFT JOIN llcs l             ON l.id = COALESCE(d.llc_id, ci.llc_id)
+       LEFT JOIN applications a     ON a.id = COALESCE(d.application_id, ci.application_id)
+       LEFT JOIN borrowers b        ON b.id = COALESCE(d.borrower_id, ci.borrower_id, l.borrower_id, a.borrower_id)
+      WHERE d.sharepoint_backed_up_at IS NULL
+        AND d.storage_ref IS NOT NULL
+        AND COALESCE(d.storage_provider,'local') = 'local'
+        AND d.created_at < now() - make_interval(hours => $1)
+      ORDER BY d.created_at ASC
+      LIMIT $2`,
+    [hrs, limit]);
+  return rows.map((r) => {
+    const noScope = !r.app_id && !r.borrower_id;
+    let why;
+    if (r.is_regen && r.is_current === false) why = 'a superseded auto-saved copy that should have auto-settled (self-healing now)';
+    else if (noScope) why = 'no borrower or loan file to file it under — a human must link or remove it';
+    else if (Number(r.attempts) >= MAX_ATTEMPTS) why = `failed every automatic retry — last error: ${r.last_error || 'unknown'}`;
+    else why = `keeps failing to upload — last error: ${r.last_error || '(not yet attempted)'}`;
+    return { ...r, phantom: r.is_regen && r.is_current === false, noScope, why };
+  });
+}
+
+// Escalate genuinely-stuck documents so they STOP being invisible (the
+// 2026-07-17 blind spot): a doc past the escalation threshold either
+//   (a) self-heals if it's a phantom (superseded snapshot that slipped the
+//       settle pass) — settle it, no human needed; or
+//   (b) gets a REVIEW CARD regardless of error class — a "transient" error that
+//       has persisted this long is NOT transient, it's stuck, and a human must
+//       see it (this is what #300's transient-suppression was missing).
+function stuckEscalateHours() {
+  const slo = Number(process.env.SHAREPOINT_BACKLOG_SLO_HOURS || 6);
+  const v = Number(process.env.SHAREPOINT_STUCK_ESCALATE_HOURS || 0);
+  return v > 0 ? v : Math.max(12, slo * 2);
+}
+async function escalateStuckDocs() {
+  const escalateHrs = stuckEscalateHours();
+  const docs = (await stuckDocuments(50)).filter((d) => Number(d.age_hours) >= escalateHrs);
+  let settled = 0, carded = 0;
+  for (const d of docs) {
+    if (d.phantom) {
+      // Self-heal: settle the superseded snapshot exactly like the settle pass.
+      await db.query(
+        `UPDATE documents SET sharepoint_backed_up_at = now(),
+            sharepoint_skipped_reason = 'superseded before mirror — a newer copy of this snapshot mirrors instead (stuck-heal)',
+            sharepoint_backup_error = NULL
+          WHERE id = $1 AND sharepoint_backed_up_at IS NULL`, [d.id]);
+      settled++;
+      try {
+        await require('./sync-review').closeStaleReviews({
+          taskId: `spdoc:${d.id}`, fieldKey: 'sharepoint_doc', note: 'auto-closed — superseded snapshot settled' });
+      } catch (_) { /* best-effort */ }
+      continue;
+    }
+    // Anything else stuck this long is human-actionable — ensure a card exists
+    // (queueReview dedups per doc, so this is idempotent across sweeps).
+    try {
+      await require('./sync-review').queueReview({
+        applicationId: d.app_id || null, borrowerId: d.borrower_id || null,
+        taskId: `spdoc:${d.id}`, direction: 'outbound', fieldKey: 'sharepoint_doc',
+        reason: 'sharepoint_mirror_failed', suppressIfRejected: true,
+        clickupValue: null,
+        portalValue: `${d.filename || 'document'} — stuck ${d.age_hours}h: ${d.why}`.slice(0, 300),
+        rawValue: JSON.stringify({ docId: d.id, attempts: d.attempts, stuckHours: d.age_hours,
+          error: (d.last_error || d.why || '').slice(0, 300), escalated: true }).slice(0, 500) });
+      carded++;
+    } catch (_) { /* visibility best-effort */ }
+  }
+  if (settled || carded) console.log(`[sp-sync] stuck-escalation: settled ${settled} phantom(s), carded ${carded} stuck doc(s)`);
+  return { settled, carded, considered: docs.length };
+}
+
 // R4 — the SLO watchdog: on each interval sweep, if the oldest un-mirrored doc
-// is past the threshold (or anything is exhausted), notify admins ONCE per
-// breach episode (dedup via a simple in-process latch that re-arms when the
-// backlog recovers). Silent degradation becomes a signal.
+// is past the threshold (or anything is exhausted), ESCALATE the stuck docs
+// (settle phantoms, card the rest) and notify admins ONCE per breach episode
+// WITH the offending documents named (dedup via a simple in-process latch that
+// re-arms when the backlog recovers). Silent degradation becomes a signal you
+// can actually act on.
 let _sloBreaching = false;
 async function checkBacklogSlo() {
   if (!enabled()) return;
   try {
     const recon = await reconciliation();
     const breaching = recon.slo.breached || recon.slo.exhausted > 0;
-    if (breaching && !_sloBreaching) {
-      _sloBreaching = true;
-      const notify = require('./notify');
-      await notify.notifyAdmins({
-        type: 'sharepoint_backlog_slo',
-        title: 'SharePoint sync backlog needs attention',
-        body: `The mirror is behind SLO: ${recon.exhausted} document(s) exhausted their retries` +
-              (recon.oldest_pending_hours != null ? `, oldest un-mirrored is ${recon.oldest_pending_hours}h old (threshold ${recon.slo.thresholdHours}h).` : '.') +
-              ' Open the SharePoint Control screen to review and retry.',
-        meta: [
-          { label: 'Exhausted', value: String(recon.exhausted) },
-          { label: 'Pending', value: String(recon.pending) },
-          { label: 'Oldest pending', value: recon.oldest_pending_hours != null ? `${recon.oldest_pending_hours}h` : '—' },
-        ],
-        link: '/internal/sync-reviews', ctaLabel: 'Open Sync review',
-      }).catch(() => {});
+    if (breaching) {
+      // Make the stuck docs visible + actionable BEFORE alerting, so the email
+      // and the review queue agree.
+      const esc = await escalateStuckDocs().catch(() => ({ settled: 0, carded: 0 }));
+      // Re-read after self-healing phantoms so the alert reflects reality.
+      const stuck = (await stuckDocuments(8)).filter((d) => !d.phantom);
+      if (!_sloBreaching && (stuck.length > 0 || recon.exhausted > 0)) {
+        _sloBreaching = true;
+        const named = stuck.slice(0, 6).map((d) =>
+          ({ label: (d.borrower_name || 'document') + (d.filename ? ` — ${d.filename}` : ''),
+             value: `${d.age_hours}h · ${d.why}` }));
+        const notify = require('./notify');
+        await notify.notifyAdmins({
+          type: 'sharepoint_backlog_slo',
+          title: 'SharePoint sync — document(s) need attention',
+          body: `${stuck.length} document(s) have not mirrored to SharePoint within the ${recon.slo.thresholdHours}h target` +
+                (esc.carded ? ` (${esc.carded} now in Sync review with the exact reason)` : '') +
+                (esc.settled ? `; ${esc.settled} superseded copy(ies) auto-resolved` : '') +
+                '. Each is listed below with why — open Sync review to see the error and Retry. Nothing is lost; every document is safe in PILOT.',
+          meta: [
+            { label: 'Stuck documents', value: String(stuck.length) },
+            { label: 'Oldest', value: recon.oldest_pending_hours != null ? `${recon.oldest_pending_hours}h` : '—' },
+            ...named,
+          ],
+          link: '/internal/sync-reviews', ctaLabel: 'Open Sync review',
+        }).catch(() => {});
+      }
     } else if (!breaching && _sloBreaching) {
       _sloBreaching = false;   // recovered — re-arm for the next episode
     }
@@ -1382,6 +1484,6 @@ async function checkBacklogSlo() {
 module.exports = {
   start, stop, kick, runOnce, drain, enabled, health, categoryFor, mirrorRow,
   verifyOnce, drainVerify, settleSupersededSnapshots, isRegenKind,
-  reconciliation, checkBacklogSlo,
+  reconciliation, checkBacklogSlo, stuckDocuments, escalateStuckDocs,
   MAX_ATTEMPTS, VERIFY_RECHECK_DAYS,
 };

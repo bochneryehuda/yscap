@@ -99,6 +99,11 @@ ok('term_sheet is NOT regen (point-in-time offer, keeps versions)', !backup.isRe
 ok('track_record_doc is NOT regen (human verification doc)', !backup.isRegenKind('track_record_doc'));
 ok('chat attachment kind (null) is NOT regen', !backup.isRegenKind(null));
 
+// -------------------------------- stuck-document visibility + escalation (R4+)
+ok('stuckDocuments is exported', typeof backup.stuckDocuments === 'function');
+ok('escalateStuckDocs is exported', typeof backup.escalateStuckDocs === 'function');
+ok('reconciliation is exported', typeof backup.reconciliation === 'function');
+
 // ---------------------------------------- metadata ID stamping (roadmap R1)
 eq('PILOT_COLUMNS are the four identity columns', sp.PILOT_COLUMNS,
   ['PilotDocumentId', 'PilotFileId', 'PilotBorrower', 'PilotSyncedAt']);
