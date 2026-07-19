@@ -673,3 +673,23 @@ Once 1–3 are set in the environment, JWT auth + envelope send can be built and
 Integration Key / User ID / Account ID / base URI go into env as `DOCUSIGN_INTEGRATION_KEY` /
 `DOCUSIGN_USER_ID` / `DOCUSIGN_ACCOUNT_ID` / `DOCUSIGN_BASE_URI` / `DOCUSIGN_OAUTH_BASE` (the config
 block `src/config.js:251-260` already reads these).
+
+**Status (2026-07-19):** the six demo `DOCUSIGN_*` env vars are set on the Render service
+(`srv-d94sqalckfvc73ahlqh0`), pinned to demo (`DOCUSIGN_BASE_URI=https://demo.docusign.net/restapi`,
+`DOCUSIGN_OAUTH_BASE=account-d.docusign.com`). Auth + a first envelope send were **verified live** on
+demo (a signed test application). Production switch is a later, deliberate step (fresh key + Go-Live).
+
+### A.9 Signed-document distribution — TPR export + SharePoint (owner-directed 2026-07-19)
+When a signed document comes back from DocuSign into its condition, it is saved and distributed like any
+other file document — **stored in the condition, mirrored to the SharePoint folder, and INCLUDED in the
+TPR export — everywhere, always** — with **ONE hard exception**:
+
+- **The Heter Iska is NEVER included in the TPR export and is NEVER synced to SharePoint.** It is kept
+  only in our system and on DocuSign. Enforcement: `rtl_cond_iska` is already `tpr_exclude=true`
+  (verified `db/051:83`); the `heter_iska_signed` `doc_kind` must be **denylisted** from both the TPR
+  export builder (`src/lib/tpr-export.js`) and SharePoint routing (`src/lib/sharepoint-backup.js`
+  `KIND_STREAM`/`folderPathFor`). Add an explicit guard so it can never leak into either, present or
+  future.
+- **Every other signed doc_kind** (`term_sheet_signed`, `application_signed`, `bp_disclosure_signed`,
+  `esign_certificate`) is `tpr_exclude=false` and mirrors to SharePoint normally — the signed copies must
+  appear in the TPR/clean-file export and in the borrower's SharePoint tree.
