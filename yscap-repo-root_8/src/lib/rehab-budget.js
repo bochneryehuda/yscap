@@ -132,10 +132,16 @@ function sowContingency(payload) {
 // tolerance for float noise). Unknowable composition → false (fail closed).
 function goldContingencyOk(payload) {
   const info = sowContingency(payload);
-  if (info.cont && info.cont.mode === 'pct' && (toNum(info.cont.value) || 0) + 1e-9 >= GOLD_CONTINGENCY_PCT) return true;
-  if (info.subtotal != null && info.subtotal > 0 && info.contingency != null) {
-    return info.contingency + 0.5 >= (GOLD_CONTINGENCY_PCT / 100) * info.subtotal;
+  // Real dollar amounts are AUTHORITATIVE: when a construction subtotal is present,
+  // the contingency (explicit, or pct-mode × subtotal — both resolved by
+  // sowContingency) must actually be >= 5% of it. Never accept a self-declared
+  // "pct mode 5%" flag the numbers don't back up — a crafted payload could claim
+  // pct-mode 5 with $0 real contingency and slip past (audit #57, 2026-07-17).
+  if (info.subtotal != null && info.subtotal > 0) {
+    return info.contingency != null && info.contingency + 0.5 >= (GOLD_CONTINGENCY_PCT / 100) * info.subtotal;
   }
+  // Only a legacy pct-only payload with NO usable subtotal falls back to the claim.
+  if (info.cont && info.cont.mode === 'pct' && (toNum(info.cont.value) || 0) + 1e-9 >= GOLD_CONTINGENCY_PCT) return true;
   return false;
 }
 
