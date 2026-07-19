@@ -228,6 +228,7 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   const [importing, setImporting] = useState(false);
+  const [expanded, setExpanded] = useState(false);   // full-screen "open the whole report" view
 
   const load = useCallback(async () => {
     setLoading(true); setErr('');
@@ -268,8 +269,8 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
   const isArvBasis = num(a && a.arv_value) != null && /subject|hypothetical|as.?repair|as.?complet/i.test(String((a && a.condition_of_appraisal) || ''));
   const chips = a ? riskChips(a, comps, sum) : [];
 
-  return (
-    <div>
+  const body = (
+    <>
       {err && <p style={{ color: 'var(--crit,#B4483C)', fontSize: 13 }}>{err}</p>}
 
       {/* import row — staff only. Borrowers see the report, never the upload. */}
@@ -280,9 +281,15 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
             <input type="file" accept=".xml,text/xml,application/xml" onChange={onFile} disabled={importing} style={{ display: 'none' }} />
           </label>
           {a && <span style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)' }}>Form {or(a.form_type)} · effective {or(a.effective_date)} · imported {a.imported_at ? String(a.imported_at).slice(0, 10) : '—'}</span>}
+          {a && !expanded && <button onClick={() => setExpanded(true)} style={{ ...btn(), marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6 }} title="Open the full property report">⤢ Open full report</button>}
         </div>
       ) : (
-        a && <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', marginBottom: 16 }}>Form {or(a.form_type)} · effective {or(a.effective_date)}</div>
+        a && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)' }}>Form {or(a.form_type)} · effective {or(a.effective_date)}</span>
+            {!expanded && <button onClick={() => setExpanded(true)} style={{ ...btn(true), marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6 }} title="Open the full property report">⤢ Open full report</button>}
+          </div>
+        )
       )}
 
       {!a && !importing && (
@@ -440,8 +447,34 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
           )}
         </>
       )}
-    </div>
+    </>
   );
+
+  // Full-screen "open the whole report" view — the same report, given room to breathe (and to
+  // print / save as a branded PDF). Click the dimmed backdrop or Close to return. Esc-friendly.
+  if (expanded) {
+    return (
+      <div
+        role="dialog" aria-modal="true"
+        onClick={(e) => { if (e.target === e.currentTarget) setExpanded(false); }}
+        onKeyDown={(e) => { if (e.key === 'Escape') setExpanded(false); }}
+        style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(20,27,34,.55)', display: 'flex', flexDirection: 'column', padding: 'clamp(8px,2vh,28px) clamp(8px,2vw,28px)', overflowY: 'auto' }}>
+        <div style={{ maxWidth: 1080, width: '100%', margin: '0 auto', background: 'var(--paper,#F6F3EC)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 16, boxShadow: '0 24px 70px rgba(0,0,0,.4)' }}>
+          <div style={{ position: 'sticky', top: 0, zIndex: 2, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '12px 18px', borderBottom: '1px solid var(--line,#E7E1D3)', background: 'var(--card,#fff)', borderRadius: '16px 16px 0 0' }}>
+            <b style={{ fontFamily: 'var(--serif,Georgia,serif)', fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              Property report{a && a.subject_address ? ` — ${a.subject_address}` : ''}
+            </b>
+            <div style={{ display: 'flex', gap: 8, flex: 'none' }}>
+              <button onClick={() => window.print()} style={btn()} title="Print or save the report as a PDF">Print / Save PDF</button>
+              <button onClick={() => setExpanded(false)} style={btn(true)}>✕ Close</button>
+            </div>
+          </div>
+          <div style={{ padding: 'clamp(14px,2.4vw,26px)' }}>{body}</div>
+        </div>
+      </div>
+    );
+  }
+  return <div>{body}</div>;
 }
 
 // Hero photo tile — loads its own blob (independent of the gallery so the hero shows immediately).
