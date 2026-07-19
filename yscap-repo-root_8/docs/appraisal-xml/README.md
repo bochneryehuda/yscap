@@ -5,12 +5,12 @@ build a full **Appraisal screen** — every subject detail, all comps, the photo
 the appraiser/company/license, and (critically) the **As-Is** and **ARV** values — then use
 that data to check the appraisal against the file before clear-to-close (CTC).
 
-This folder is the research output from analyzing **all 25 uploaded appraisals**
-(15× Form **1004** single-family / URAR, 10× Form **1025** 2–4-unit / Small Income),
+This folder is the research output from analyzing **all 33 uploaded appraisals**
+(20× Form **1004** single-family / URAR, 13× Form **1025** 2–4-unit / Small Income),
 produced by four parallel research passes plus a working prototype parser run against every file.
 (The two detailed field-map docs were written against the first 21 files — 11× 1004, 10× 1025;
-the 4 additional files are all Form 1004 and were confirmed consistent with the 1004 map. The
-prototype parser and `per-file-extraction-proof.md` cover all 25.)
+8 additional files arrived in two batches (all consistent with the maps) and were confirmed consistent with the 1004 map. The
+prototype parser and `per-file-extraction-proof.md` cover all 33.)
 
 ## Documents in this folder
 
@@ -20,7 +20,9 @@ prototype parser and `per-file-extraction-proof.md` cover all 25.)
 | `1025-SmallIncome-field-map.md` | Complete field map for **Form 1025 (2–4 unit)** — adds units, per-unit rent schedule, income/GRM approach. |
 | `industry-research.md` | MISMO 2.6 / UAD standards, As-Is vs ARV encoding, RTL underwriting ratios, DSCR, parsing pitfalls, 20 CTC match rules. |
 | `photos-comps-variation.md` | Image/photo taxonomy, comparable structure, comp As-Is/ARV split signal, cross-vendor gotchas + primary/fallback strategy. |
-| `per-file-extraction-proof.md` | The prototype parser's output for **every one of the 21 files** — evidence placement was verified per file. |
+| `field-reliability.md` | Every field + how often it's present across all 33 (ALWAYS/USUALLY/SOMETIMES/RARELY) + borrower/LLC matching rule + error-handling principles. |
+| `placement-variability.md` | The "can't use one-size-fits-all" map: which fields are ONE-WAY (safe) vs NEEDS-FALLBACK (same field, different spot/format — error-prone) vs SOMETIMES-MISSING. |
+| `per-file-extraction-proof.md` | The prototype parser's output for **every one of the 33 files** — evidence placement was verified per file. |
 | `prototype/` | Runnable prototype scripts (`strip.py`, `extract2.py`, `asis_miner.py`, `value_engine.py`). |
 
 ## The two logics (why the form split matters)
@@ -40,7 +42,7 @@ Same MISMO attribute *names* across both; different *elements are populated*.
 This is the highest-risk part and was verified against all 21 files. **Never trust a single
 attribute or the condition-type enum alone.**
 
-### ARV (After-Repair Value) — 25/25 recovered
+### ARV (After-Repair Value) — 29/29 recovered
 
 1. Start with the one structured figure: `VALUATION/@PropertyAppraisedValueAmount`
    (present in every file; also mirrored by `SALES_COMPARISON/@ValueIndicatedBySalesComparisonApproachAmount`
@@ -55,7 +57,7 @@ attribute or the condition-type enum alone.**
 3. If the report is genuinely an As-Is report, the ARV may only be in narrative
    (`as-repaired value $X`) or estimated from the ARV comp cluster (flagged).
 
-### As-Is value — 15/25 exact, 6 estimated, 4 PDF-only
+### As-Is value — see per-file-extraction-proof.md (exact where narrative present; estimate or PDF-only flagged otherwise)
 
 There is **no dedicated As-Is attribute** in these XMLs. Mine it in priority order:
 
@@ -109,6 +111,6 @@ Files where As-Is is genuinely only in the PDF: **10182152, 10394133, 10484851, 
 
 ## Status
 
-Research + a working prototype parser (proven on all 21 files) are complete. **Next step is a
+Research + a working prototype parser (proven on all 33 files) are complete. **Next step is a
 review with the owner to prioritize which fields matter most**, then build: DB schema → parser
 module (Node) → XML import → Appraisal screen (app-v2) → underwriting match rules.

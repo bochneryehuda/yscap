@@ -1,8 +1,8 @@
-# Per-File Extraction Proof — all 25 appraisal XMLs
+# Per-File Extraction Proof — all 33 appraisal XMLs
 
-Prototype parser (`prototype/value_engine.py` + `extract2.py`) run against **every** uploaded file — evidence field placement was verified per file, not inferred from one. 15× Form 1004 (SFR), 10× Form 1025 (2–4 unit).
+Prototype parser run against **every** uploaded file — 20× Form 1004, 13× Form 1025.
 
-## Value extraction (the critical fields)
+## As-Is & ARV
 
 | File | Form | ARV | As-Is | ARV source | As-Is source |
 |---|---|---|---|---|---|
@@ -23,15 +23,21 @@ Prototype parser (`prototype/value_engine.py` + `extract2.py`) run against **eve
 | CP_10636060 | FNM1025 | 2230000 | 1700000 | structured (condition=SubjectToRepairs) | narrative (as-is text) |
 | CP_10736314 | FNM1004 | 240000 | 156948 | structured (condition=SubjectToCompletion) | ESTIMATE from 3 as-is comps (confirm in PDF) |
 | CP_10736526 | FNM1004 | 240000 | 152993 | structured (condition=SubjectToCompletion) | ESTIMATE from 3 as-is comps (confirm in PDF) |
+| nan_Altman | FNM1025 | 845000 | — | structured (condition=SubjectToRepairs) | NOT IN XML — PDF/OCR |
 | nan_Coto(NAN1602682113)-V1 | FNM1004 | 435000 | 410000 | structured (condition=SubjectToRepairs) | narrative (as-is text) |
 | nan_Kaufman(NAN1602681854)-V5 | FNM1025 | 530000 | 360000 | structured (condition=SubjectToRepairs) | narrative (as-is text) |
+| nan_Kleinman | FNM1025 | 540000 | 410000 | structured (condition=SubjectToRepairs) | narrative (as-is text) |
 | nan_LOEFFLER | FNM1004 | 400000 | — | structured (condition=SubjectToCompletion) | NOT IN XML — PDF/OCR |
 | nan_LOWY | FNM1004 | 460000 | 342667 | structured (condition=SubjectToRepairs) | ESTIMATE from 3 as-is comps (confirm in PDF) |
 | nan_Lev(NAN1602681973)-V2 | FNM1004 | 216000 | 76000 | structured (condition=SubjectToRepairs) | narrative (as-is text) |
 | nan_Morgenstern | FNM1004 | 610000 | 500000 | structured (condition=SubjectToCompletion) | narrative (as-is text) |
+| nan_Morgenstern2 | FNM1004 | 350000 | 230000 | structured (condition=SubjectToRepairs) | narrative (as-is text) |
+| nan_Morgenstern3 | FNM1004 | 284000 | 129900 | structured (condition=SubjectToRepairs) | narrative (as-is text) |
 | nan_ROSS | FNM1004 | 140000 | 100017 | structured (condition=SubjectToRepairs) | ESTIMATE from 4 as-is comps (confirm in PDF) |
+| nan_Salamon | FNM1004 | 520000 | 265000 | structured (condition=SubjectToRepairs) | narrative (as-is text) |
 | nan_Steiner(NAN1602680642)-V6 | FNM1004 | 625000 | 430000 | structured (condition=SubjectToRepairs) | narrative (as-is text) |
+| nan_THORPE | FNM1004 | 910000 | 640000 | structured (condition=SubjectToRepairs) | narrative (as-is text) |
+| nan_Weil | FNM1004 | 410000 | 308567 | structured (condition=SubjectToRepairs) | ESTIMATE from 3 as-is comps (confirm in PDF) |
+| nan_Werzberger | FNM1025 | 190500 | 160000 | structured (condition=SubjectToRepairs) | narrative (as-is text) |
 
-## Coverage: **ARV 25/25** · As-Is **15 exact + 6 comp-estimates + 4 PDF-only**
-
-PDF-only As-Is files: CP_10182152, CP_10394133, CP_10484851, nan_LOEFFLER.
+## Coverage: **ARV 33/33** · As-Is **21 exact + 7 estimates + 5 PDF-only**
