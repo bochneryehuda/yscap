@@ -6149,6 +6149,10 @@ router.post('/sync-reviews/:id/resolve-file', async (req, res) => {
     const out = await SFR.applyFileReviewAction({
       row, action,
       targetApplicationId: (req.body && req.body.targetApplicationId) || null,
+      // relink_task (dead/unlinked file → move an existing ClickUp card onto it)
+      // carries a card id/link + an explicit move confirmation.
+      targetTaskId: (req.body && req.body.targetTaskId) || null,
+      confirmMove: !!(req.body && req.body.confirmMove),
       actorId: req.actor.id,
     });
     await db.query(
@@ -6158,7 +6162,65 @@ router.post('/sync-reviews/:id/resolve-file', async (req, res) => {
     await audit(req, 'sync_review_resolve_file', row.application_id || out.applicationId ? 'application' : 'borrower',
       row.application_id || out.applicationId || row.borrower_id, { reviewId: row.id, reason: row.reason, action, note: out.note });
     res.json({ ok: true, ...out });
+  } catch (e) {
+    // relink_task on a held card asks the reviewer to confirm the move first.
+    if (e && e.needsConfirm) return res.status(409).json({ error: e.message, needsConfirm: true, holder: e.holder || null });
+    return sendReviewActionError(res, e);
+  }
+});
+
+// ---------------- ADMIN manual ClickUp link / unlink ----------------
+// Owner-directed 2026-07-19 (the Pinches Lichtman / 129 Carlisle St incident):
+// the sync bound the live ClickUp card to the near-empty twin file while the
+// real, worked file was orphaned. A REAL ADMIN (admin/super_admin ONLY — never a
+// processor/loan_officer/underwriter, and NOT via a grantable capability) can
+// detach a file from its card and move a card onto the correct file. The heavy
+// lifting + all data-safety guards live in the single chokepoint
+// src/clickup/relink.js; these routes are thin, role-gated wrappers.
+//
+// requireRole('admin') admits admin AND super_admin only (super_admin satisfies
+// every gate). The /applications/:id path middleware (above) already ran and
+// admitted the actor (admins are seesAll), so req.params.id is a file the actor
+// may touch; the role gate then narrows to real admins.
+
+// Preview a move for the confirm dialog: does the pasted card exist, and is it
+// currently linked to another file? Never changes anything.
+router.get('/applications/:id/clickup/relink-preview', requireRole('admin'), async (req, res) => {
+  try {
+    const out = await require('../clickup/relink').relinkPreview({ appId: req.params.id, taskInput: req.query.taskId });
+    res.json({ ok: true, ...out });
   } catch (e) { return sendReviewActionError(res, e); }
+});
+
+// Detach this file from its ClickUp card. Pure portal-side unlink — the card is
+// left untouched; the file parks in 'manual_review' so it won't get an auto
+// re-created card and stays visible for follow-up.
+router.post('/applications/:id/clickup/unlink', requireRole('admin'), async (req, res) => {
+  try {
+    const out = await require('../clickup/relink').unlinkFileFromTask({
+      appId: req.params.id, actorId: req.actor.id, note: (req.body && req.body.note) || null });
+    await audit(req, 'clickup_manual_unlink', 'application', req.params.id, { previousTaskId: out.previousTaskId });
+    res.json({ ok: true, ...out });
+  } catch (e) { return sendReviewActionError(res, e); }
+});
+
+// Link this file to a ClickUp card (admin override). Moves the card off any
+// current holder ONLY when confirmMove is set; without it, a held card returns
+// 409 { needsConfirm:true, holder } so the UI can ask first.
+router.post('/applications/:id/clickup/relink', requireRole('admin'), async (req, res) => {
+  try {
+    const out = await require('../clickup/relink').relinkFileToTask({
+      appId: req.params.id,
+      taskInput: (req.body && (req.body.taskId != null ? req.body.taskId : req.body.taskInput)) || '',
+      confirmMove: !!(req.body && req.body.confirmMove),
+      actorId: req.actor.id });
+    await audit(req, 'clickup_manual_relink', 'application', req.params.id, { taskId: out.taskId, movedFrom: out.movedFrom || null });
+    res.json({ ok: true, ...out });
+  } catch (e) {
+    // A held-card conflict carries the holder detail so the UI can confirm the move.
+    if (e && e.needsConfirm) return res.status(409).json({ error: e.message, needsConfirm: true, holder: e.holder || null });
+    return sendReviewActionError(res, e);
+  }
 });
 
 // BULK resolution (mega-audit enhancement #4): boot heal passes can queue

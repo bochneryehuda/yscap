@@ -1975,9 +1975,10 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
    YS loan number, the note buyer (internal only — never borrower-facing), the
    link to the ClickUp task, and last-synced time. Admins (platform_setup) can
    force a re-push / re-pull. */
-function ClickupSyncPanel({ app, canSetup, onResynced }) {
+function ClickupSyncPanel({ app, canSetup, isAdmin, onResynced }) {
   const [busy, setBusy] = useState('');
   const [note, setNote] = useState('');
+  const [linkInput, setLinkInput] = useState('');
   const taskId = app.clickup_pipeline_task_id;
   const state = app.sync_state || 'unlinked';
   const onHold = app.status === 'on_hold' || /hold/i.test(app.internal_status || '');
@@ -1988,6 +1989,42 @@ function ClickupSyncPanel({ app, canSetup, onResynced }) {
       setNote(dir === 'push' ? `Pushed to ClickUp ✓${r && r.taskId ? ` (task ${r.taskId})` : ''}` : 'Pulled from ClickUp ✓');
       if (onResynced) onResynced();
     } catch (e) { setNote(e.message || 'Re-sync failed'); }
+    finally { setBusy(''); }
+  }
+  // ADMIN: detach this file from its ClickUp card. Plain-language confirm; the
+  // card is never deleted, the file just stops syncing until it is relinked.
+  async function doUnlink() {
+    if (!window.confirm(`Unlink this file from its ClickUp card?\n\nThe ClickUp card is NOT deleted — the file just stops syncing with it until you link a card again. Use this when the wrong file is connected to the card.`)) return;
+    setBusy('unlink'); setNote('');
+    try {
+      await api.clickupUnlink(app.id);
+      setNote('Unlinked from ClickUp ✓ — this file no longer syncs with any card.');
+      if (onResynced) onResynced();
+    } catch (e) { setNote(e.message || 'Unlink failed'); }
+    finally { setBusy(''); }
+  }
+  // ADMIN: link this file to a ClickUp card. If the card is currently on another
+  // file (the twin-file case), the server asks us to confirm the move.
+  async function doRelink(confirmMove) {
+    const val = linkInput.trim();
+    if (!val) { setNote('Paste a ClickUp card link or id first.'); return; }
+    setBusy('relink'); setNote('');
+    try {
+      const r = await api.clickupRelink(app.id, val, confirmMove);
+      setNote(`Linked to ClickUp card ${r.taskId}${r.movedFrom ? ' ✓ (moved it off the file that was wrongly holding it)' : ' ✓'}.`);
+      setLinkInput('');
+      if (onResynced) onResynced();
+    } catch (e) {
+      // Held card → the server returns the current holder so we can confirm.
+      if (e && e.data && e.data.needsConfirm) {
+        const h = e.data.holder || {};
+        const who = [h.borrower, h.address].filter(Boolean).join(' — ') || 'another file';
+        if (window.confirm(`That ClickUp card is currently linked to:\n\n${who}\n\nMove the card to THIS file? The other file will be unlinked (nothing is deleted) and left for you to review/archive.`)) {
+          return doRelink(true);
+        }
+        setNote('Move cancelled — nothing changed.');
+      } else { setNote(e.message || 'Link failed'); }
+    }
     finally { setBusy(''); }
   }
   return (
@@ -2006,6 +2043,9 @@ function ClickupSyncPanel({ app, canSetup, onResynced }) {
             <button className="btn ghost small" disabled={!!busy} onClick={() => resync('push')}>{busy === 'push' ? 'Pushing…' : 'Push → ClickUp'}</button>
           </>
         )}
+        {isAdmin && taskId && (
+          <button className="btn ghost small" disabled={!!busy} onClick={doUnlink} title="Detach this file from its ClickUp card (the card is not deleted)">{busy === 'unlink' ? 'Unlinking…' : 'Unlink card'}</button>
+        )}
       </div>
       <div className="row" style={{ gap: 16, flexWrap: 'wrap', marginTop: 8 }}>
         <span className="muted small">Internal status (ClickUp mirror): <b>{app.internal_status || '—'}</b></span>
@@ -2014,6 +2054,15 @@ function ClickupSyncPanel({ app, canSetup, onResynced }) {
         {app.lender && <span className="muted small" title="Note buyer / capital partner — internal only, never shown to the borrower">Note buyer: <b>{app.lender}</b></span>}
         {app.clickup_last_synced_at && <span className="muted small">Last synced: {new Date(app.clickup_last_synced_at).toLocaleString()}</span>}
       </div>
+      {/* ADMIN relink: only when this file has NO card. Paste the correct card's
+          link/id; if that card is on another file, we confirm the move. */}
+      {isAdmin && !taskId && (
+        <div className="row" style={{ gap: 8, flexWrap: 'wrap', marginTop: 10, alignItems: 'center' }}>
+          <input className="input small" style={{ minWidth: 220, flex: '1 1 240px' }} placeholder="Paste the correct ClickUp card link or id…"
+            value={linkInput} onChange={(e) => setLinkInput(e.target.value)} disabled={!!busy} />
+          <button className="btn primary small" disabled={!!busy || !linkInput.trim()} onClick={() => doRelink(false)}>{busy === 'relink' ? 'Linking…' : 'Link this card'}</button>
+        </div>
+      )}
       {note && <div className="muted small" style={{ marginTop: 6 }}>{note}</div>}
     </div>
   );
@@ -2449,7 +2498,7 @@ export default function StaffApplication() {
       <Section id="sec-overview" title="File overview"
         info="Status, milestone gating, assignments and the deal at a glance — the control panel for this file.">
       <DealSnapshot app={app} gating={gating} />
-      <ClickupSyncPanel app={app} canSetup={can('platform_setup')} onResynced={load} />
+      <ClickupSyncPanel app={app} canSetup={can('platform_setup')} isAdmin={isAdmin} onResynced={load} />
       {/* Status, ClickUp status & closing — one clean labeled control panel. The
           old version crammed the selects + buttons into loose rows and cut off the
           long ClickUp-status field; labels now sit above full-width fields in a

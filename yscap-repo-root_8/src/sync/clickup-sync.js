@@ -212,6 +212,51 @@ async function flagUnsyncableFilesOnce() {
   return queued;
 }
 
+// DEAD / ORPHANED-BUT-STILL-LIVE files → review queue WITH OPTIONS (owner-directed
+// 2026-07-19, the Pinches Lichtman / 129 Carlisle St incident: the real 73%-done
+// file lost its ClickUp card and went orphaned while its card stuck to the empty
+// twin). A file that carries NO card but is STILL a live file (deleted_at IS NULL)
+// and sits in 'dead' or 'manual_review' is invisible to flagUnsyncableFilesOnce
+// above — that sweep deliberately EXCLUDES those states and only covers
+// 'unlinked'/NULL portal-origin files. So these orphaned real files never
+// surfaced anywhere actionable. This boot one-shot queues a file_dead_unlinked
+// review row for each, offering relink_task (move the correct existing card onto
+// it — the twin fix), create_task, archive, or keep. The two sweeps' sync_state
+// sets are DISJOINT, so a file is flagged by exactly one of them. Bounded
+// (100/boot, 365-day lookback so an ancient archive can't flood the queue),
+// deduped by the synthetic app:<id> key, and a dismiss sticks (suppressIfRejected).
+async function flagDeadUnlinkedFilesOnce() {
+  const SFR = require('../lib/sync-file-review');
+  const review = require('../lib/sync-review');
+  const r = await db.query(
+    `SELECT id, borrower_id, sync_state, property_address->>'oneLine' AS one_line FROM applications a
+      WHERE clickup_pipeline_task_id IS NULL AND deleted_at IS NULL
+        AND sync_state IN ('dead','manual_review')
+        AND created_at > now() - interval '365 days'
+        -- Files that ALREADY have their row (open, or dismissed-for-good) must
+        -- not hold LIMIT slots — a backlog wider than one boot's cap would
+        -- otherwise starve the tail forever (mirrors flagUnsyncableFilesOnce).
+        AND NOT EXISTS (SELECT 1 FROM sync_review_queue q
+                         WHERE q.task_id = 'app:' || a.id::text
+                           AND q.field_key='file_link' AND q.status IN ('open','rejected'))
+      ORDER BY created_at DESC LIMIT 100`).catch(() => ({ rows: [] }));
+  let queued = 0;
+  for (const row of r.rows) {
+    try {
+      await review.queueReview({
+        applicationId: row.id, borrowerId: row.borrower_id || null,
+        taskId: SFR.syntheticTaskKey(row.id),
+        direction: 'outbound', fieldKey: 'file_link', reason: 'file_dead_unlinked',
+        suppressIfRejected: true,   // this sweep re-runs every boot — a dismiss must stick
+        clickupValue: null, portalValue: row.one_line || null,
+        rawValue: JSON.stringify({ applicationId: row.id, syncState: row.sync_state }) });
+      queued++;
+    } catch (e) { console.warn('[clickup-sync] dead-unlinked-flag skipped', row.id, e.message); }
+  }
+  if (r.rows.length) console.log(`[clickup-sync] dead-unlinked sweep: ${queued}/${r.rows.length} review rows ensured`);
+  return queued;
+}
+
 // FULL-PORTFOLIO IDENTITY MISMATCH AUDIT (owner-directed 2026-07-15 night:
 // "a real audit on every single mismatch"). The inbound heal is deliberately
 // fill-only for borrower identity (email / cell / name / home address / SSN),
@@ -1331,7 +1376,11 @@ function start() {
     recoverUnlinkedFilesOnce()
       .catch((e) => console.error('[clickup-sync] unlinked-recovery', e.message))
       .then(() => flagUnsyncableFilesOnce())
-      .catch((e) => console.error('[clickup-sync] unsyncable sweep', e.message));
+      .catch((e) => console.error('[clickup-sync] unsyncable sweep', e.message))
+      // Orphaned-but-live files ('dead'/'manual_review', no card) → review queue
+      // with a relink option (the disjoint other half of the unsyncable sweep).
+      .then(() => flagDeadUnlinkedFilesOnce())
+      .catch((e) => console.error('[clickup-sync] dead-unlinked sweep', e.message));
     // And re-drive every NON-materialized task ('ambiguous'/'duplicate_pending')
     // through the current resolver, so a root-cause fix (like copied-loan-number
     // handling) heals the entire stuck backlog on deploy — not only the tasks
@@ -1389,7 +1438,7 @@ function start() {
   }
 }
 
-module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, redriveInboxErrorsOnce, ingestOne, reconcileOnce, reconcileLinkedProgramsOnce, recoverUnlinkedFilesOnce, retryStuckTasksOnce, flagUnsyncableFilesOnce, auditIdentityMismatchesOnce, sharedEmailReviewSweepOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, backfillMemberLinksOnce, canMaterialize, PIPELINE_FOLDERS,
+module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, redriveInboxErrorsOnce, ingestOne, reconcileOnce, reconcileLinkedProgramsOnce, recoverUnlinkedFilesOnce, retryStuckTasksOnce, flagUnsyncableFilesOnce, flagDeadUnlinkedFilesOnce, auditIdentityMismatchesOnce, sharedEmailReviewSweepOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, backfillMemberLinksOnce, canMaterialize, PIPELINE_FOLDERS,
   reconcileSince, nextWatermark, // WO-4: exported for the durable-watermark test
   isTaskDeletedError, // WO-6: exported for the token-rotation-safety test
   shouldSkipOrphanResolution }; // WO-4b: exported for the orphan-breaker test
