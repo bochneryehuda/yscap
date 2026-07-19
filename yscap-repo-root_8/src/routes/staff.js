@@ -6512,9 +6512,11 @@ router.get('/applications/:id/esign', async (req, res) => {
 
 // ---------------- e-signature management actions ----------------------------
 // Send / resend / void / mint the admin counter-sign view. Every action is
-// gated (DOCUSIGN_SEND_ENABLED off => sending refused) and audited. The
-// send-engine's test-mode allow-list is the final backstop before any real
-// borrower is mailed.
+// gated (DOCUSIGN_SEND_ENABLED off => sending refused, in the route AND the send
+// engine) and audited. In TEST mode the engine's allow-list is the final backstop;
+// once LIVE (test mode off) that backstop is gone by design — the appraisal gate,
+// validateGenerated, roster completeness, and the stale-document guard protect the
+// real borrower instead.
 const esignOrchestrate = require('../lib/esign/orchestrate');
 const esignWebhook = require('../lib/esign/webhook');
 const docusignLib = require('../lib/integrations/docusign');
@@ -6587,6 +6589,28 @@ router.post('/esign/:rowId/resend', async (req, res) => {
     const { row, status, error } = await loadEsignEnvelope(req, req.params.rowId);
     if (!row) return res.status(status).json({ error });
     if (!row.envelope_id) return res.status(409).json({ error: 'envelope not sent yet' });
+    if (['completed', 'declined', 'voided'].includes(row.status)) return res.status(409).json({ error: `envelope already ${row.status}` });
+    // Resend is a real borrower email — the master kill-switch must gate it too.
+    if (!cfg.docusign.sendEnabled) return res.status(409).json({ error: 'Sending is paused right now. Turn sending back on before resending.' });
+    // A resend can only re-notify the address DocuSign baked into the envelope at
+    // send time — it cannot re-address. If the file's borrower email changed since,
+    // a resend would nudge the STALE address. Refuse and steer staff to void +
+    // re-issue so the new address is used. (Test envelopes are app-less — no file
+    // borrower to compare against, so they skip this check.)
+    if (row.application_id) {
+      const cur = (await db.query(
+        `SELECT b.email AS file_email, r.email AS env_email
+           FROM applications a JOIN borrowers b ON b.id = a.borrower_id
+           LEFT JOIN esign_recipients r ON r.envelope_row_id = $1 AND r.role = 'borrower'
+          WHERE a.id = $2
+          ORDER BY r.id DESC NULLS LAST
+          LIMIT 1`, [row.id, row.application_id])).rows[0];
+      const fileEmail = cur && cur.file_email && String(cur.file_email).trim().toLowerCase();
+      const envEmail = cur && cur.env_email && String(cur.env_email).trim().toLowerCase();
+      if (fileEmail && envEmail && fileEmail !== envEmail) {
+        return res.status(409).json({ error: 'The borrower’s email on file changed since this package was sent. A resend can’t update the address — void this package and re-issue it so the new email is used.' });
+      }
+    }
     await docusignLib.resendEnvelope(row.envelope_id);
     await audit(req, 'esign_resend', 'application', row.application_id, { purpose: row.purpose });
     res.json({ ok: true });

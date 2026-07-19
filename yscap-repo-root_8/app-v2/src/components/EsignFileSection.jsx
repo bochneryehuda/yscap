@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api, saveBlob } from '../lib/api.js';
 import {
-  PHASE, PURPOSE, ROLE, timeAgo, absTime, recipientSteps, recipientState,
+  PHASE, PURPOSE, ROLE, TERMINAL, timeAgo, absTime, recipientSteps, recipientState,
   agingHours, agingLevel, agingLabel,
 } from '../lib/esign.js';
 
@@ -150,7 +150,7 @@ export default function EsignFileSection({ appId, role }) {
         const ph = PHASE[e.phase] || { label: e.phase, cls: 'muted', dot: '#4B585C' };
         const h = agingHours(e);
         const lvl = agingLevel(h);
-        const terminal = ['completed', 'declined', 'voided', 'error'].includes(e.phase);
+        const terminal = TERMINAL.includes(e.phase);   // shared vocabulary (esign.js) — no drift
         const recips = (e.recipients || []).slice().sort((a, b) => Number(a.routingOrder) - Number(b.routingOrder) || String(a.role).localeCompare(String(b.role)));
         return (
           <div className="panel esign-card" key={e.id} style={{ marginBottom: 12 }}>

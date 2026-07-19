@@ -188,15 +188,73 @@ async function reconcileEnvelope(db, docusign, storage, envelopeRow) {
     await handleCompletion(db, docusign, storage, envelopeRow);
   }
 
-  if (map) {
+  const terminal = map && ['completed', 'declined', 'voided'].includes(map.status);
+  if (terminal) {
+    // Terminal transition. Stamp the terminal timestamp ONLY if it's still NULL, so
+    // exactly ONE reconcile wins the first transition (RETURNING a row) and fires the
+    // alert — a concurrent poll tick + inbox drain can't double-notify. A
+    // staff-initiated void already set voided_at locally, so this correctly matches
+    // 0 rows and stays silent (the staff already know).
     const voidReason = status === 'voided' ? (envelope.voidedReason || null) : null;
+    const won = await db.query(
+      `UPDATE esign_envelopes
+          SET status = $2, ${map.col} = now(), void_reason = COALESCE($3, void_reason),
+              last_event_at = now(), updated_at = now()
+        WHERE id = $1 AND ${map.col} IS NULL
+        RETURNING id`, [envelopeRow.id, map.status, voidReason]);
+    if (!won.rows.length) {
+      // Already stamped by an earlier pass — keep status/last_event_at fresh, no alert.
+      await db.query(
+        `UPDATE esign_envelopes SET status = $2, last_event_at = now(), updated_at = now() WHERE id = $1`,
+        [envelopeRow.id, map.status]);
+    } else if (envelopeRow.application_id) {
+      // A decline / expiry / cancellation (or completion) otherwise updates SILENTLY
+      // and the deal stalls unseen. Alert the file's team. App-less test envelopes
+      // have no team. Best-effort — a notify failure must never break reconcile.
+      try { await notifyTerminal(db, envelopeRow, map.status, voidReason); }
+      catch (e) { console.warn(`[esign] terminal notify failed for ${envelopeRow.id}: ${e.message}`); }
+    }
+  } else if (map) {
+    // Non-terminal mapped status (sent/delivered) — refresh + advance the aging clock.
     await db.query(
       `UPDATE esign_envelopes
-          SET status = $2, ${map.col} = COALESCE(${map.col}, now()),
-              void_reason = COALESCE($3, void_reason), last_event_at = now(), updated_at = now()
-        WHERE id = $1`, [envelopeRow.id, map.status, voidReason]);
+          SET status = $2, ${map.col} = COALESCE(${map.col}, now()), last_event_at = now(), updated_at = now()
+        WHERE id = $1`, [envelopeRow.id, map.status]);
+  } else if (status) {
+    // Unrecognized DocuSign status (e.g. 'timedout', 'authoritativecopy'). Don't
+    // silently ignore it — that would leave last_event_at stale and hot-loop the
+    // poller (re-fetching this envelope every tick forever). Advance last_event_at
+    // so the STALE belt paces it, and log so a new status surfaces rather than hides.
+    await db.query(`UPDATE esign_envelopes SET last_event_at = now(), updated_at = now() WHERE id = $1`, [envelopeRow.id]);
+    console.warn(`[esign] envelope ${envelopeRow.id}: unrecognized DocuSign status '${status}' — awaiting a mapped status`);
   }
   return status;
+}
+
+const PURPOSE_LABEL = { term_sheet_package: 'term-sheet package', heter_iska: 'Heter Iska' };
+
+/** Alert the file's team on the FIRST terminal transition of a real envelope. */
+async function notifyTerminal(db, envelopeRow, status, voidReason) {
+  const notify = require('../notify');
+  const cfg = require('../../config');
+  const label = PURPOSE_LABEL[envelopeRow.purpose] || 'e-signature package';
+  let title, body;
+  if (status === 'declined') {
+    title = `Borrower declined to sign — ${label}`;
+    body = `The borrower declined to sign the ${label}${voidReason ? ` (reason: ${voidReason})` : ''}. Open the file's e-signature section to follow up or re-issue.`;
+  } else if (status === 'voided') {
+    title = `E-signature cancelled/expired — ${label}`;
+    body = `The ${label} is no longer active${voidReason ? ` (${voidReason})` : ''} and nothing was signed. Open the file to re-issue it if the borrower still needs to sign.`;
+  } else { // completed
+    title = `Documents signed — ${label}`;
+    body = `The borrower completed signing the ${label}. The signed copies are now on the file.`;
+  }
+  const opts = {
+    type: 'status_change', title, body, applicationId: envelopeRow.application_id,
+    link: `${cfg.appUrl || ''}${cfg.portalPath}/#/internal/app/${envelopeRow.application_id}`,
+  };
+  const sent = await notify.notifyAppStaff(envelopeRow.application_id, opts);
+  if (!sent || !sent.length) await notify.notifyAdmins(opts);   // unassigned file → admins
 }
 
 // ---- inbox drainer ----------------------------------------------------------

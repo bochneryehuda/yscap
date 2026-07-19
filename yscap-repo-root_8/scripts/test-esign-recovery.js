@@ -43,7 +43,8 @@ const goodInputs = () => ({ subject: 'x', documents: [{ base64: 'AAAA', document
 
 (async () => {
   const dcfg = require(R + '/src/config').docusign;
-  dcfg.testMode = false;   // send-mechanics as if live (gate tested elsewhere)
+  dcfg.testMode = false;    // send-mechanics as if live (gate tested elsewhere)
+  dcfg.sendEnabled = true;  // master switch ON — the engine now refuses to send when it's off
 
   // ---- B1: drainDue WITHOUT buildDefinition no-ops (the old poller bug) --------
   {

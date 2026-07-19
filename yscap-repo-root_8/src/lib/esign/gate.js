@@ -62,4 +62,23 @@ async function esignSendGate(applicationId, { db = dbDefault } = {}) {
   return { ready: apprOk && reviewOk && ppOk, outstanding };
 }
 
-module.exports = { esignSendGate, APPRAISAL_BACK, APPRAISAL_REVIEW, PRODUCT_PRICING };
+/**
+ * The moment the appraisal came back (its condition's signed_off_at) — the same
+ * anchor the gate uses to prove "P&P re-signed AFTER the appraisal." Used to prove
+ * a stored package document (term sheet / application export) was ALSO produced on
+ * the appraised value: a doc created before this instant predates the appraisal and
+ * may carry a pre-appraisal loan figure. Returns a Date or null (no appraisal yet).
+ */
+async function appraisalBackAt(applicationId, { db = dbDefault } = {}) {
+  const r = await db.query(
+    `SELECT ci.signed_off_at
+       FROM checklist_items ci
+       JOIN checklist_templates t ON t.id = ci.template_id
+      WHERE ci.application_id = $1 AND t.code = $2 AND ci.status = 'satisfied'
+      ORDER BY ci.created_at DESC
+      LIMIT 1`, [applicationId, APPRAISAL_BACK]);
+  const at = r.rows[0] && r.rows[0].signed_off_at;
+  return at ? new Date(at) : null;
+}
+
+module.exports = { esignSendGate, appraisalBackAt, APPRAISAL_BACK, APPRAISAL_REVIEW, PRODUCT_PRICING };
