@@ -82,6 +82,14 @@ async function mkItem(appId, code, over = {}) {
     await db.query(`INSERT INTO application_service_contacts (application_id,service_contact_id,contact_type) VALUES ($1,$2,'insurance_agent')`, [appId, sci]);
     assert((await so(insC)).status === 200, 'insurance-contact sign-off allowed once the contact is linked');
 
+    // Government-ID REUSE: the photo ID is collected once on the borrower profile
+    // and reused across files. A file's gov-ID condition with NO document linked
+    // to its own item, but the borrower carrying photo_id_document_id, must still
+    // be signable — the strict doc gate must NOT falsely block a reused ID.
+    const docId = (await db.query(`INSERT INTO documents (filename) VALUES ('gov-id.pdf') RETURNING id`)).rows[0].id;
+    await db.query(`UPDATE borrowers SET photo_id_document_id=$2 WHERE id=$1`, [borrowerId, docId]);
+    assert((await so(govId)).status === 200, 'reused gov-ID (photo on profile, none linked to this item) is signable');
+
     console.log(failures ? `\n${failures} assertion(s) failed` : '\nALL condition sign-off gate assertions passed');
   } catch (e) {
     console.error('ERROR', e); failures++;

@@ -2514,7 +2514,7 @@ router.post('/change-requests/:cid/reject', async (req, res) => {
 //                     verify more, until they agree).
 async function signOffGate(itemId, actor) {
   const it = await db.query(
-    `SELECT ci.application_id, ci.tool_key, ci.tool_payload, ci.item_kind, ci.is_required,
+    `SELECT ci.application_id, ci.borrower_id, ci.tool_key, ci.tool_payload, ci.item_kind, ci.is_required,
             (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code
        FROM checklist_items ci WHERE ci.id=$1`, [itemId]);
   const item = it.rows[0];
@@ -2552,8 +2552,25 @@ async function signOffGate(itemId, actor) {
     const has = await db.query(
       `SELECT 1 FROM documents WHERE checklist_item_id=$1 AND is_current
          AND COALESCE(review_status,'') <> 'rejected' LIMIT 1`, [itemId]);
-    if (!has.rows.length)
+    if (!has.rows.length) {
+      // Government-ID REUSE exception: the photo ID is collected ONCE on the
+      // borrower profile and reused across every file (borrower.js). On files
+      // other than the one it was uploaded to, this condition carries NO document
+      // linked to its own item — the ID lives on borrowers.photo_id_document_id,
+      // and the reuse logic marks the item 'received' without a per-file doc. So a
+      // strict "must have a doc on THIS item" gate would falsely block a reused
+      // gov-ID. Accept the borrower's on-file photo ID as fulfillment (mirrors the
+      // reuse rule, which keys off the file's borrower's photo_id_document_id).
+      if (code === 'rtl_p1_id' || code === 'gov_id') {
+        const pid = await db.query(
+          `SELECT 1 FROM borrowers b
+            WHERE b.photo_id_document_id IS NOT NULL
+              AND (b.id = $1 OR b.id = (SELECT borrower_id FROM applications WHERE id = $2))
+            LIMIT 1`, [item.borrower_id || null, item.application_id || null]);
+        if (pid.rows.length) return null;
+      }
       return 'Upload a document to this condition before signing it off — a document-based condition cannot be completed with nothing uploaded.';
+    }
   }
 
   // Document-gated conditions: cannot be signed off until the required upload(s)
