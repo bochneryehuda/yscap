@@ -181,12 +181,26 @@ async function _captureSentEmail(notificationId, to, opts, audience, msg, replyT
       attMeta.push(meta);
     }
   } catch (_) { attMeta = []; }
-  await db.query(
-    `INSERT INTO sent_emails (notification_id, application_id, audience, recipient_kind, subject, from_email, to_emails, reply_to, html, body_text, attachments, status)
-     VALUES ($1,$2,$3,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11)`,
-    [notificationId, opts.applicationId, audience, msg.subject || null, opts.from || cfg.notifyFrom || null,
-     (Array.isArray(to) ? to : [to]).filter(Boolean), replyTo || null, msg.html || null, msg.text || null,
-     JSON.stringify(attMeta), status]).catch((e) => { console.warn('[notify] sent-email capture failed:', e && e.message); });
+  const params = [notificationId, opts.applicationId, audience, msg.subject || null, opts.from || cfg.notifyFrom || null,
+    (Array.isArray(to) ? to : [to]).filter(Boolean), replyTo || null, msg.html || null, msg.text || null,
+    JSON.stringify(attMeta), status];
+  // Best-effort, but retry on a transient deadlock/serialization failure. Concurrent file
+  // fan-out (notifyAppStaff/Borrowers) contends on the shared applications/notifications FK
+  // parents; without a retry a lost row is permanently missing from the draw email view
+  // (sent_emails has no backfill, unlike email_messages). Deadlocks=40P01, serialization=40001.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await db.query(
+        `INSERT INTO sent_emails (notification_id, application_id, audience, recipient_kind, subject, from_email, to_emails, reply_to, html, body_text, attachments, status)
+         VALUES ($1,$2,$3,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11)`, params);
+      return;
+    } catch (e) {
+      const transient = e && (e.code === '40P01' || e.code === '40001');
+      if (transient && attempt < 3) { await new Promise((r) => setTimeout(r, 40 * (attempt + 1))); continue; }
+      console.warn('[notify] sent-email capture failed:', e && e.message);
+      return;
+    }
+  }
 }
 async function _mark(id, status) {
   await db.query(
