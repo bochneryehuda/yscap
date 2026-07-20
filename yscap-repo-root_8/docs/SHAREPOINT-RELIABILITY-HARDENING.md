@@ -144,3 +144,55 @@ card auto-closes).
 - Graph token-field validation (F5), Office size==0 band (F3), marker-strip anchor
   (matcher A2), appraisal-import kick / chat-attach filename (ingress F3/F4) —
   cosmetic/defensive; no correctness or data-safety impact.
+
+## 7. Test-coverage round 2 + industry-standards assessment (2026-07-20)
+
+Owner asked for another round of end-to-end testing on sections not yet covered,
+plus industry research to make the integration top-notch. Two new suites close the
+two highest-risk coverage gaps, and an industry-standards checklist confirms the
+table-stakes items are already implemented.
+
+### New test suites (both no-DB, in `npm test`, CI-safe)
+- **`scripts/test-sharepoint-matcher.js` (44)** — the fuzzy folder matcher
+  (`sharepoint-map.js`) was previously exercised only indirectly (the e2e test
+  stubs `resolveSyncFolder` out entirely), so the "which person's folder does a
+  document land in" logic — the A1 bug class — had no direct coverage. Pins:
+  marker stripping (new "Synced by Pilot" + legacy "YS portal syncing"),
+  house-number-anchored address matching with suffix/directional normalization,
+  unit/apt isolation, the Damerau-Levenshtein typo layer incl. the length>64
+  cap, middle-name tolerance, officer names (no typo tolerance), and the CRITICAL
+  "Moshe Katz" ≠ "Moshe Katzman" guard at BOTH the exact and typo layers.
+- **`scripts/test-sharepoint-graph-guards.js` (24)** — fault injection over a
+  stubbed global `fetch` (WireMock/Toxiproxy-style programmed Graph failures)
+  drives the REAL `uploadNew`/`moveOwnItem`/`deleteReplacedCorruptMirror`
+  (the e2e test stubs `uploadNew`, so its integrity check + the delete/move
+  guards never ran under test). Proves: `conflictBehavior=fail` (never
+  `replace`), size-mismatch/unverifiable-upload rejection with Office
+  property-promotion tolerated, >4MB → resumable upload session, 409 → no
+  clobber, `moveOwnItem` expected-parent + If-Match, and EACH of the seven
+  delete guards tripped independently (G1 kill switch, required args, G3
+  replacement-verified, G4 same-bytes, G5 expected-parent, G6 Pilot-tree
+  ancestry, G7 If-Match) with the all-pass delete pinned by eTag.
+
+### Industry-standards checklist — status against a best-in-class one-way mirror
+Table-stakes items, all ALREADY implemented (verified in code this round):
+- QuickXorHash-based verify tolerating Office property-promotion drift — yes
+  (`isOfficeFormat` warn-only; provenance identity for Office).
+- If-Match / eTag concurrency guard on the sanctioned delete AND the move — yes.
+- Resumable upload session for >4 MB (5 MB chunks, Content-Range, session throttle
+  handling) — yes; simple PUT only ≤4 MB.
+- `Retry-After` honored on 429 AND 503/504 (seconds-or-HTTP-date safe) on both the
+  core call and the upload-session loop — yes.
+- `conflictBehavior=fail` (never `replace`) — yes, now asserted in a test.
+- Malware facet selected + classified as its own parked verdict (never treated as
+  corruption → never auto-deleted) — yes.
+- Typed poison/park reason codes + reconciliation/chain-of-custody report + worker
+  liveness SLO/watchdog — yes (§1–§5).
+
+Genuinely-additive future ideas (NOT gaps, logged for later, none blocking):
+- Transactional-outbox enqueue in the same txn as the portal save (today the
+  reconciler scans for un-mirrored rows — robust, but an outbox would make the
+  zero-loss guarantee structural rather than scan-based).
+- Delta-query engine for the periodic audit (today a direct metadata compare —
+  correct; delta would cut Graph calls at scale and surface human tombstones).
+- Self-pacing token-bucket rate governor (today reactive backoff/breaker only).
