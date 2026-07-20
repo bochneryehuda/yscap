@@ -43,6 +43,11 @@ ok('3.4 hard-reissue carries the prior id', /<CreditReportIdentifier>2598227<\/C
 // soft pull, REISSUE — "reissue a soft" default (needs a prior id).
 const softReissue3 = R.buildCreditRequest({ requestingPartyName: 'Y', submittingPartyName: 'Y LOS', lenderCaseIdentifier: 'L', requestId: 'r', product: 'prequal', action: 'Reissue', creditReportIdentifier: '2598227', borrowers: [borrower()] });
 ok('3.4 soft-reissue SoftCheck + Reissue', /SoftCheck/.test(softReissue3) && /<CreditReportRequestActionType>Reissue<\/CreditReportRequestActionType>/.test(softReissue3));
+// a brand-new (Submit) request must OMIT the identifier element entirely — not send an empty one.
+ok('3.4 brand-new omits the identifier element', !/<CreditReportIdentifier>/.test(hard) && !/<CreditReportIdentifier>/.test(soft));
+ok('3.4 reissue DOES carry the identifier element', /<CreditReportIdentifier>2598227<\/CreditReportIdentifier>/.test(hardReissue3));
+// hard reissue without a prior id throws too (the needs-id guard is action-based, so it covers the hard corner).
+throws('3.4 hard-reissue needs id', () => R.buildCreditRequest({ requestingPartyName: 'Y', submittingPartyName: 'Y', lenderCaseIdentifier: 'L', requestId: 'r', product: 'creditreport', action: 'Reissue', borrowers: [borrower()] }));
 
 const joint = R.buildCreditRequest({ requestingPartyName: 'Y', submittingPartyName: 'Y LOS', lenderCaseIdentifier: 'L', requestId: 'r', product: 'prequal', action: 'Submit', borrowers: [borrower(), borrower({ firstName: 'Ann', ssn: '992-70-0027' })] });
 ok('3.4 joint two parties', (joint.match(/<PARTY SequenceNumber=/g) || []).length >= 2);

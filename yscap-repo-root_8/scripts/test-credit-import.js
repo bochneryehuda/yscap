@@ -341,12 +341,21 @@ async function seedBorrower(email, first, ssnRaw = '123-00-3333') {
   const inQueue = (await db.query(`SELECT count(*)::int n FROM credit_reports WHERE application_id=$1 AND status IN ('review','in_doubt')`, [app3])).rows[0];
   ok('in_doubt visible to review queue', inQueue.n >= 1);
 
-  // IN-FLIGHT DEDUP: an existing 'ordering' row for the same app+action collapses
-  // a second order (fresh key) instead of double-billing.
-  await db.query(`INSERT INTO credit_reports (application_id, provider_id, ordered_by, action_type, status, ordered_at) VALUES ($1,$2,$3,'Reissue','ordering',now())`, [app3, provider.id, actorId]);
+  // IN-FLIGHT DEDUP: an existing 'ordering' row for the same app+action+PULL TYPE
+  // collapses a second order (fresh key) instead of double-billing. report_type
+  // 'Other' = a SOFT (prequal) order — orderAndImport defaults product='prequal'.
+  await db.query(`INSERT INTO credit_reports (application_id, provider_id, ordered_by, action_type, report_type, status, ordered_at) VALUES ($1,$2,$3,'Reissue','Other','ordering',now())`, [app3, provider.id, actorId]);
   const dedupOut = await creditImport.orderAndImport({ applicationId: app3, actorId, action: 'Reissue', creditReportIdentifier: 'RPT1',
     idempotencyKey: `k-${suffix}-dedup`, nowMs: 6000, transport: transportOf('<SHOULD_NOT_CALL/>') });
-  ok('in-flight dedup returns ordering', dedupOut.deduped === true && dedupOut.inflight === true);
+  ok('in-flight dedup returns ordering (same soft pull)', dedupOut.deduped === true && dedupOut.inflight === true);
+
+  // 2×2 DISTINCTNESS: that in-flight SOFT ('Other') order must NOT dedup a HARD
+  // ('Merge') order on the same file+action — they are distinct billable pulls.
+  // (Was a MAJOR: dedup keyed on action only, so a hard pull got served the soft
+  // report.) The hard order proceeds to a real order instead of being swallowed.
+  const hardVsSoft = await creditImport.orderAndImport({ applicationId: app3, actorId, product: 'creditreport', action: 'Reissue', creditReportIdentifier: 'RPT1',
+    idempotencyKey: `k-${suffix}-hvs`, nowMs: 6050, transport: transportOf(responseXml()) });
+  ok('a HARD order is NOT deduped by an in-flight SOFT order (2×2 stays distinct)', !hardVsSoft.deduped);
 
   // STALE-ORDER SWEEP: an old 'ordering' row → in_doubt.
   await db.query(`UPDATE credit_reports SET ordered_at = now() - interval '30 minutes' WHERE application_id=$1 AND status='ordering'`, [app3]);

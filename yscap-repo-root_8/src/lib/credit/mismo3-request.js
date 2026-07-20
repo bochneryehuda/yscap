@@ -194,8 +194,8 @@ ${relationshipsXml}
 												<CreditRepositoryIncludedTransUnionIndicator>${tuB}</CreditRepositoryIncludedTransUnionIndicator>
 											</CREDIT_REPOSITORY_INCLUDED>
 											<CREDIT_REQUEST_DATA_DETAIL>
-												<CreditReportIdentifier>${esc(creditReportIdentifier || '')}</CreditReportIdentifier>
-												<CreditReportRequestActionType>${esc(action)}</CreditReportRequestActionType>
+${creditReportIdentifier ? `												<CreditReportIdentifier>${esc(creditReportIdentifier)}</CreditReportIdentifier>
+` : ''}												<CreditReportRequestActionType>${esc(action)}</CreditReportRequestActionType>
 												<CreditReportType>${esc(creditReportType)}</CreditReportType>${otherDesc ? `
 												<CreditReportTypeOtherDescription>${esc(otherDesc)}</CreditReportTypeOtherDescription>` : ''}
 												<CreditRequestDatetime>${esc(requestDatetime)}</CreditRequestDatetime>

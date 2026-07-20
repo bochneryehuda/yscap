@@ -2716,7 +2716,7 @@ export default function StaffApplication() {
 
       <Section id="sec-credit" title="Credit report"
         info="Pull or reissue the borrower's credit report from the bureau (Xactus) and verify the FICO. The verified score is imported from the report data and locked across the portal, term sheet, and ClickUp. A score that lands in a different pricing bracket reopens Products & Pricing for a human to re-register.">
-      <CreditReportPanel appId={id} />
+      <CreditReportPanel key={id} appId={id} />
       </Section>
 
       <Section id="sec-appraisal" title="Appraisal & PILOT findings"

@@ -589,6 +589,14 @@ async function orderAndImport(opts = {}) {
 
   const product = opts.product || 'prequal';
   const action = opts.action || 'Reissue';
+  // Soft (prequal) and hard (creditreport) are DISTINCT billable orders, not the
+  // same order — so the in-flight dedup + the per-file advisory lock must key on
+  // the pull type too, not just the action. report_type ('Other' soft / 'Merge'
+  // hard) is the stored discriminator (it's set on the 'ordering' row at insert,
+  // below). Without this, a concurrent soft-reissue + hard-reissue on one file
+  // collide on action_type='Reissue' and the hard order is silently served the
+  // soft report (and symmetrically for the two brand-new corners).
+  const reportType = product === 'prequal' ? 'Other' : 'Merge';
   const kit = versionKit(opts.mismoVersion || cfg.xactus.mismoVersion);
   if (!kit.endpoint) throw httpError(400, `Xactus ${kit.version} endpoint is not configured`);
 
@@ -606,9 +614,9 @@ async function orderAndImport(opts = {}) {
   // two billable orders for the same file + action. Return the in-flight one.
   const inflight = (await db.query(
     `SELECT id FROM credit_reports
-      WHERE application_id=$1 AND action_type=$2 AND status='ordering'
+      WHERE application_id=$1 AND action_type=$2 AND report_type=$4 AND status='ordering'
         AND ordered_at > now() - ($3 || ' seconds')::interval
-      ORDER BY ordered_at DESC LIMIT 1`, [applicationId, action, String(inflightWindowSec)])).rows[0];
+      ORDER BY ordered_at DESC LIMIT 1`, [applicationId, action, String(inflightWindowSec), reportType])).rows[0];
   if (inflight) return { reportId: inflight.id, status: 'ordering', deduped: true, inflight: true };
 
   // Spend/volume circuit breaker (billable-path guard) — cap pulls per 10 min.
@@ -663,12 +671,12 @@ async function orderAndImport(opts = {}) {
   const jc = await db.getClient();
   try {
     await jc.query('BEGIN');
-    await jc.query('SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))', [String(applicationId), String(action)]);
+    await jc.query('SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))', [String(applicationId), `${reportType}:${action}`]);
     const dup = (await jc.query(
       `SELECT id FROM credit_reports
-        WHERE application_id=$1 AND action_type=$2 AND status='ordering'
+        WHERE application_id=$1 AND action_type=$2 AND report_type=$4 AND status='ordering'
           AND ordered_at > now() - ($3 || ' seconds')::interval
-        ORDER BY ordered_at DESC LIMIT 1`, [applicationId, action, String(inflightWindowSec)])).rows[0];
+        ORDER BY ordered_at DESC LIMIT 1`, [applicationId, action, String(inflightWindowSec), reportType])).rows[0];
     if (dup) {
       await jc.query('COMMIT');
       dedupResult = { reportId: dup.id, status: 'ordering', deduped: true, inflight: true };
@@ -678,7 +686,7 @@ async function orderAndImport(opts = {}) {
            (application_id, provider_id, ordered_by, credential_id, action_type, report_type, request_type,
             request_id, idempotency_key, status, ordered_at)
          VALUES ($1,$2,$3,NULL,$4,$5,$6,$7,$8,'ordering',now()) RETURNING id`,
-        [applicationId, provider.id, actorId, action, product === 'prequal' ? 'Other' : 'Merge', requestType, requestId, idempotencyKey]);
+        [applicationId, provider.id, actorId, action, reportType, requestType, requestId, idempotencyKey]);
       reportRowId = journal.rows[0].id;
       await jc.query('COMMIT');
     }
