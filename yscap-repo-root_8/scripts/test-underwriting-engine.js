@@ -61,6 +61,22 @@ async function main() {
     assert.strictEqual(res.findings[0].blocksCtc, false);
   }
 
+  // 2b. The failure finding NAMES the outcome — a content-filter block reads differently from a
+  // transient timeout, so the underwriter knows whether to retry or handle it manually.
+  {
+    const blocked = await analyzeDocument(
+      { docType: 'purchase_contract', base64: 'x', mimeType: 'application/pdf', subject: {}, today: TODAY },
+      { reader: reader({ ok: true, text: 'contract text' }), analyzer: analyzer({ ok: false, reason: 'blocked', blocked: true, outcome: 'content_filtered' }) },
+    );
+    assert.match(blocked.findings[0].title, /content filter/i, 'a content-filter block is named');
+    const transient = await analyzeDocument(
+      { docType: 'purchase_contract', base64: 'x', mimeType: 'application/pdf', subject: {}, today: TODAY },
+      { reader: reader({ ok: true, text: 'contract text' }), analyzer: analyzer({ ok: false, reason: 'the analyzer timed out', retryable: true, outcome: 'transient' }) },
+    );
+    assert.match(transient.findings[0].title, /temporarily unavailable/i, 'a transient failure invites a retry');
+    assert.strictEqual(transient.findings[0].code, 'needs_manual_review', 'still the same never-drop code');
+  }
+
   // 3. Reader failure but analyzer still reads the image → still succeeds (OCR is best-effort).
   {
     const res = await analyzeDocument(

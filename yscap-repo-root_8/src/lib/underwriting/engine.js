@@ -17,12 +17,28 @@ const registry = require('./registry');
 const { analyzePdf } = require('./pdf-forensics');
 const { groundFields, groundingFinding } = require('./grounding');
 
-function verifyFinding(docType, reason) {
+// Turn a read/understand failure into a single, honest "verify by hand" finding — NEVER a false
+// mismatch and never a guess onto the file. The `meta` (from the analyzer's classified result)
+// lets the message name the OUTCOME so the underwriter knows why: blocked by a content filter
+// (manual handling), temporarily unavailable (retry), or simply unreadable (re-scan / re-upload).
+function verifyFinding(docType, reason, meta = {}) {
+  let title = 'This document could not be read or understood automatically';
+  let lead = 'Review it by hand and confirm the details on the file — nothing is filled in automatically.';
+  if (meta.blocked || meta.outcome === 'content_filtered') {
+    title = 'This document was blocked by a safety/content filter';
+    lead = 'The AI declined to process this document, so it needs manual handling — review it by hand; nothing is filled in automatically.';
+  } else if (meta.retryable || meta.outcome === 'transient') {
+    title = 'The reader/analyzer was temporarily unavailable for this document';
+    lead = 'This was a temporary problem (a timeout or the AI service being busy). Try analyzing again shortly, or review it by hand — nothing is filled in automatically.';
+  } else if (meta.outcome === 'truncated') {
+    title = 'This document was too large to finish reading in one pass';
+    lead = 'The analyzer ran out of room before finishing. Try again, or review it by hand — nothing is filled in automatically.';
+  }
   return {
     source: docType, code: 'needs_manual_review', severity: 'warning', status: 'open',
     field: 'document', blocksCtc: false,
-    title: 'This document could not be read or understood automatically',
-    howTo: `Review it by hand and confirm the details on the file — nothing is filled in automatically.${reason ? ` (Reason: ${reason})` : ''}`,
+    title,
+    howTo: `${lead}${reason ? ` (Reason: ${reason})` : ''}`,
     actions: ['open_condition', 'request_revision', 'dismiss'],
     opensCondition: 'underwriting_review_cleared',
   };
@@ -75,10 +91,11 @@ async function analyzeDocument({ docType, buffer, base64, mimeType, subject, tod
     imageMime: mimeType,
   });
   if (!ext.ok) {
+    const meta = { blocked: ext.blocked, retryable: ext.retryable || ext.retriable, truncated: ext.truncated, outcome: ext.outcome };
     return {
-      ok: false, reason: ext.reason,
+      ok: false, reason: ext.reason, outcome: ext.outcome || null,
       extraction: Object.assign(baseExtraction, { reason: ext.reason }),
-      findings: [verifyFinding(docType, ext.reason), ...forensic],
+      findings: [verifyFinding(docType, ext.reason, meta), ...forensic],
     };
   }
 
