@@ -50,7 +50,24 @@ assert(withOS >= 30, `off_site_improvements extracted on a strong majority (${wi
 assert(!badType, 'every land-use row carries a whitelisted type');
 assert(!badPct, 'every land-use percent is a number in 0–100');
 assert(!badMerge, 'every off-site row has a type and a valid Public/Private ownership (or none)');
-assert(privWarn > 0, `the private-street/alley tripwire fires across the corpus (${privWarn} files)`);
+// _OFF_SITE_IMPROVEMENT is a CHECKBOX PAIR (Public row + Private row, _ExistsIndicator marks the
+// ticked box). Ownership must come from the Y row. This corpus contains NO genuine private street
+// or alley (every ticked ownership box is Public), so the tripwire must fire ZERO times — a nonzero
+// count means the reader is back to last-row-wins and inverting the signal (the original bug).
+assert(privWarn === 0, `no false private-street warnings — this corpus has no private streets/alleys (${privWarn} fired)`);
+
+// Correctness on a known checkbox-pair file: 09282104's street is Public (the ticked box) and there
+// is NO alley record (both alley boxes are un-ticked → dropped, never a phantom Private alley).
+const pair = path.join(DIR, 'Completed_Product_(Data)_09282104.xml');
+if (fs.existsSync(pair)) {
+  const os = (extract(fs.readFileSync(pair, 'utf8')).enrich || {}).off_site_improvements || [];
+  const street = os.find((o) => o.type === 'Street');
+  const alley = os.find((o) => o.type === 'Alley');
+  assert(street && street.ownership === 'Public', 'checkbox-pair: street ownership reads the ticked (Public) box, not last-row-wins');
+  assert(!alley, 'checkbox-pair: an all-un-ticked alley is dropped (no phantom Private alley)');
+} else {
+  console.log('NOTE checkbox-pair file not in corpus — skipped');
+}
 
 // Merge proof on a known file: 08108509's Street row carries BOTH description and ownership.
 const known = path.join(DIR, 'Completed_Product_(Data)_08108509.xml');
