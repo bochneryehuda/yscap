@@ -77,6 +77,8 @@ CREATE TABLE esign_envelopes (
   declined_at timestamptz,
   voided_at timestamptz,
   void_reason text,
+  is_test boolean NOT NULL DEFAULT false,
+  test_label text,
   idempotency_key text,
   embedded boolean NOT NULL DEFAULT false,
   recipients jsonb,
