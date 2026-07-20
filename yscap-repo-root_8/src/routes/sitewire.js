@@ -157,6 +157,25 @@ router.get('/files/:id/draws/:drawId/archived-media', requirePermission('manage_
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
+// ---- GET /files/:id/draws/:drawId/media/:mediaId — stream a DURABLE inspection photo/video (staff) ----
+// PILOT's own stored copy, so the staff gallery never breaks when Sitewire's pre-signed link expires.
+// manage_draws + canSeeFile + the media must belong to this file's draw (IDOR).
+router.get('/files/:id/draws/:drawId/media/:mediaId', requirePermission('manage_draws'), async (req, res) => {
+  if (!/^\d+$/.test(req.params.drawId) || !/^\d{1,18}$/.test(String(req.params.mediaId))) return res.status(404).end();
+  if (!(await canSeeFile(req, req.params.id))) return res.status(404).end();
+  const m = (await db.query(
+    `SELECT storage_ref, content_type, kind FROM draw_media WHERE id=$1 AND application_id=$2 AND sitewire_draw_id=$3 AND kind IN ('image','video')`,
+    [req.params.mediaId, req.params.id, req.params.drawId])).rows[0];
+  if (!m || !m.storage_ref) return res.status(404).end();
+  let buf; try { buf = await storage.read(m.storage_ref); } catch (_) { return res.status(404).end(); }
+  if (!buf || !buf.length) return res.status(404).end();
+  res.setHeader('Content-Type', m.content_type || (m.kind === 'video' ? 'video/mp4' : 'image/jpeg'));
+  res.setHeader('Cache-Control', 'private, max-age=3600');
+  res.setHeader('Content-Disposition', 'inline');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  return res.end(buf);
+});
+
 // ---- PILOT-branded inspection reports (phase 2b) ----
 // Turn the persisted inspector findings + the DURABLE archived photos into a branded PDF the coordinator
 // can file and the borrower can see. mode=staff (full: fee/net + GPS) | mode=borrower (borrower-safe: no
