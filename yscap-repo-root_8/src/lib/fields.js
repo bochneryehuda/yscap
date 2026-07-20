@@ -22,6 +22,21 @@ function sanitizeSsnDigits(v) {
   return d.length === 9 ? d : null;
 }
 
+// The REAL Social-Security-number format, XXX-XX-XXXX (owner-directed 2026-07-20).
+// PILOT stores SSNs as 9 bare digits (the encryption layer consumes digits), but
+// wherever we PRESENT one — the ClickUp push, the staff reveal — it should read as
+// a properly-formatted SSN. Mirrors the frontend formatSSN (progressive dashing)
+// so a partial value never throws. Returns '' for empty input. This is a DISPLAY /
+// interchange format only; it never changes what we store, and the sync compares
+// SSNs DIGITS-ONLY (mapper.fieldValueEquivalent) so a dashed value and ClickUp's
+// dash-less one are still recognized as the same — no false conflict.
+function formatSsn(v) {
+  const d = String(v == null ? '' : v).replace(/\D/g, '').slice(0, 9);
+  if (d.length <= 3) return d;
+  if (d.length <= 5) return d.slice(0, 3) + '-' + d.slice(3);
+  return d.slice(0, 3) + '-' + d.slice(3, 5) + '-' + d.slice(5);
+}
+
 // A loan_type is a loan PURPOSE — Purchase or Refinance — never a program.
 // "Ground up"/"Ground-Up" is a program that was wrongly offered as a loan type
 // (#95); null it out at the write chokepoint so no surface (V1, V2, API, or a
@@ -198,4 +213,4 @@ function loanNumberProblem(v) {
   return null;
 }
 
-module.exports = { sanitizeFico, sanitizeSsnDigits, sanitizeLoanType, assignmentFields, sqftRelevantType, sqftForType, sanitizeDateOnly, normalizeTypedDate, sanitizeDob, dobProblem, sanitizeLoanNumber, normalizeLoanNumber, loanNumberProblem };
+module.exports = { sanitizeFico, sanitizeSsnDigits, formatSsn, sanitizeLoanType, assignmentFields, sqftRelevantType, sqftForType, sanitizeDateOnly, normalizeTypedDate, sanitizeDob, dobProblem, sanitizeLoanNumber, normalizeLoanNumber, loanNumberProblem };

@@ -4257,7 +4257,10 @@ router.get('/borrowers/:id/ssn', async (req, res) => {
     const r = await db.query(`SELECT ssn_encrypted FROM borrowers WHERE id=$1`, [req.params.id]);
     if (!r.rows[0]?.ssn_encrypted) return res.status(404).json({ error: 'no ssn on file' });
     await audit(req, 'view_ssn', 'borrower', req.params.id);
-    res.json({ ssn: C.decryptSSN(r.rows[0].ssn_encrypted) });
+    // Reveal in the REAL SSN format XXX-XX-XXXX (owner-directed 2026-07-20) — stored
+    // as bare digits, presented dashed. The edit input re-formats on change, so a
+    // dashed reveal round-trips cleanly.
+    res.json({ ssn: require('../lib/fields').formatSsn(C.decryptSSN(r.rows[0].ssn_encrypted)) });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
