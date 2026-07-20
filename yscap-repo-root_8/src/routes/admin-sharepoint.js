@@ -44,7 +44,8 @@ router.get('/health', async (req, res) => {
     ]);
     res.json({ ok: true, probe, sync: backup.health(), backlog: counts.rows[0], integrity: integrity.rows });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.warn('[admin-sharepoint] handler error:', db.describeError(e));
+    res.status(500).json({ error: 'server error' });
   }
 });
 
@@ -59,7 +60,8 @@ router.get('/reconciliation', async (req, res) => {
     await audit(req, 'sharepoint_reconciliation_viewed', { healthy: recon.healthy, stuck: stuck.length });
     res.json({ ok: true, ...recon, stuck });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.warn('[admin-sharepoint] handler error:', db.describeError(e));
+    res.status(500).json({ error: 'server error' });
   }
 });
 
@@ -77,7 +79,8 @@ router.post('/escalate-stuck', async (req, res) => {
       .catch((e) => console.warn('[sp-sync] escalate-stuck (admin) error:', e.message));
     res.json({ ok: true, started: true });
   } catch (e) {
-    res.status(500).json({ error: db.describeError(e) });
+    console.warn('[admin-sharepoint] handler error:', db.describeError(e));
+    res.status(500).json({ error: 'server error' });
   }
 });
 
@@ -95,7 +98,8 @@ router.post('/verify', async (req, res) => {
     await audit(req, 'sharepoint_verify_started', { pending });
     res.json({ ok: true, started: true, toVerify: pending });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.warn('[admin-sharepoint] handler error:', db.describeError(e));
+    res.status(500).json({ error: 'server error' });
   }
 });
 
@@ -108,7 +112,8 @@ router.post('/mirror', async (req, res) => {
     await audit(req, 'sharepoint_mirror_kicked', {});
     res.json({ ok: true, started: true });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.warn('[admin-sharepoint] handler error:', db.describeError(e));
+    res.status(500).json({ error: 'server error' });
   }
 });
 
@@ -128,7 +133,8 @@ router.post('/retry-exhausted', async (req, res) => {
     await audit(req, 'sharepoint_retry_exhausted', { requeued: r.rowCount });
     res.json({ ok: true, requeued: r.rowCount });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.warn('[admin-sharepoint] handler error:', db.describeError(e));
+    res.status(500).json({ error: 'server error' });
   }
 });
 
@@ -153,7 +159,8 @@ router.post('/doc/:id/remirror', async (req, res) => {
     await audit(req, 'sharepoint_doc_remirror', { documentId: req.params.id, filename: r.rows[0].filename });
     res.json({ ok: true, documentId: r.rows[0].id });
   } catch (e) {
-    res.status(500).json({ error: db.describeError(e) });
+    console.warn('[admin-sharepoint] handler error:', db.describeError(e));
+    res.status(500).json({ error: 'server error' });
   }
 });
 
