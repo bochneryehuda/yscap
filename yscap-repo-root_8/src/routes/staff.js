@@ -842,8 +842,16 @@ router.post('/applications', async (req, res) => {
       const o = await db.query(`SELECT id,full_name FROM staff_users WHERE id=$1 AND is_active=true`, [b.loanOfficerId]);
       if (o.rows[0]) { officerId = o.rows[0].id; officerName = o.rows[0].full_name; }
     }
-    if (!officerId && req.actor.role === 'loan_officer') {
-      const meRow = await db.query(`SELECT id,full_name FROM staff_users WHERE id=$1`, [req.actor.id]);
+    // Self-assign default (owner-directed 2026-07-20): the staffer OPENING the
+    // file is put on it automatically — they never have to pick, and it never
+    // falls to Lead Capture — as long as they hold an officer-eligible role
+    // (loan_officer / admin / super_admin; those are exactly the roles the
+    // new-file officer dropdown offers). A processor/underwriter creator is not a
+    // valid LO, so they fall through to borrower stickiness / Lead Capture. An
+    // explicit pick above still wins (an admin opening on behalf of an LO just
+    // picks them).
+    if (!officerId && ['loan_officer', 'admin', 'super_admin'].includes(req.actor.role)) {
+      const meRow = await db.query(`SELECT id,full_name FROM staff_users WHERE id=$1 AND is_active=true`, [req.actor.id]);
       if (meRow.rows[0]) { officerId = meRow.rows[0].id; officerName = meRow.rows[0].full_name; }
     }
     // #98 LO stickiness: an admin/processor creating a file for an EXISTING
@@ -2511,7 +2519,7 @@ router.post('/change-requests/:cid/reject', async (req, res) => {
 //                     verify more, until they agree).
 async function signOffGate(itemId, actor) {
   const it = await db.query(
-    `SELECT ci.application_id, ci.tool_key, ci.tool_payload, ci.item_kind, ci.is_required,
+    `SELECT ci.application_id, ci.borrower_id, ci.tool_key, ci.tool_payload, ci.item_kind, ci.is_required,
             (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code
        FROM checklist_items ci WHERE ci.id=$1`, [itemId]);
   const item = it.rows[0];
@@ -2550,8 +2558,25 @@ async function signOffGate(itemId, actor) {
     const has = await db.query(
       `SELECT 1 FROM documents WHERE checklist_item_id=$1 AND is_current
          AND COALESCE(review_status,'') <> 'rejected' LIMIT 1`, [itemId]);
-    if (!has.rows.length)
+    if (!has.rows.length) {
+      // Government-ID REUSE exception: the photo ID is collected ONCE on the
+      // borrower profile and reused across every file (borrower.js). On files
+      // other than the one it was uploaded to, this condition carries NO document
+      // linked to its own item — the ID lives on borrowers.photo_id_document_id,
+      // and the reuse logic marks the item 'received' without a per-file doc. So a
+      // strict "must have a doc on THIS item" gate would falsely block a reused
+      // gov-ID. Accept the borrower's on-file photo ID as fulfillment (mirrors the
+      // reuse rule, which keys off the file's borrower's photo_id_document_id).
+      if (code === 'rtl_p1_id' || code === 'gov_id') {
+        const pid = await db.query(
+          `SELECT 1 FROM borrowers b
+            WHERE b.photo_id_document_id IS NOT NULL
+              AND (b.id = $1 OR b.id = (SELECT borrower_id FROM applications WHERE id = $2))
+            LIMIT 1`, [item.borrower_id || null, item.application_id || null]);
+        if (pid.rows.length) return null;
+      }
       return 'Upload a document to this condition before signing it off — a document-based condition cannot be completed with nothing uploaded.';
+    }
   }
 
   // Document-gated conditions: cannot be signed off until the required upload(s)
@@ -4230,6 +4255,46 @@ router.patch('/applications/:id/details', async (req, res) => {
     }
     res.json({ ok: true, changed: Object.keys(changes), conditions });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Backfill / set the file's YS loan number. Needed at send time: the term-sheet
+// package prints the loan number on the business-purpose disclosure, so a file
+// missing it can't send — staff enter it right where the send failed. RULES
+// (owner-directed 2026-07-20): must start with "YSCAP" and be UNIQUE across files
+// (never a duplicate of another file's number). Filling a BLANK is open to anyone
+// who can touch the file; CHANGING an existing number is an admin action (it's a key
+// already shared with the LOS/ClickUp — a stray edit must never clobber it). Rides
+// the /applications/:id scope guard for access control.
+router.post('/applications/:id/loan-number', async (req, res) => {
+  const { sanitizeLoanNumber } = require('../lib/fields');
+  const ln = sanitizeLoanNumber((req.body || {}).loanNumber);
+  if (!ln) return res.status(400).json({ error: 'A YS loan number must start with “YSCAP” (for example YSCAP258134628).' });
+  try {
+    const cur = await db.query(`SELECT ys_loan_number FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id]);
+    if (!cur.rows.length) return res.status(404).json({ error: 'application not found' });
+    const existing = cur.rows[0].ys_loan_number;
+    if (existing && String(existing).toUpperCase() === ln) return res.json({ ok: true, loanNumber: existing, unchanged: true });
+    if (existing && !seesAll(req)) return res.status(403).json({ error: 'This file already has a loan number — only an admin can change it.' });
+    // Uniqueness (case-insensitive): no OTHER non-deleted file may carry this number.
+    // The db/048 partial-unique index is the final backstop; we check first for a
+    // friendly message and to catch a case-only collision the index would also reject.
+    const dup = await db.query(
+      `SELECT ys_loan_number FROM applications WHERE upper(ys_loan_number)=$1 AND id<>$2 AND deleted_at IS NULL LIMIT 1`,
+      [ln, req.params.id]);
+    if (dup.rows.length) return res.status(409).json({ error: `Loan number ${dup.rows[0].ys_loan_number} is already used on another file — loan numbers must be unique.` });
+    let upd;
+    try {
+      upd = await db.query(`UPDATE applications SET ys_loan_number=$1, updated_at=now() WHERE id=$2 AND deleted_at IS NULL RETURNING ys_loan_number`, [ln, req.params.id]);
+    } catch (e) {
+      // Partial-unique index caught a race (two files grabbing the same number at once).
+      if (e && e.code === '23505') return res.status(409).json({ error: 'That loan number was just taken by another file — loan numbers must be unique.' });
+      throw e;
+    }
+    if (!upd.rows.length) return res.status(404).json({ error: 'application not found' });
+    await audit(req, 'set_loan_number', 'application', req.params.id, { from: existing || null, to: ln });
+    enqueueClickupPush(req.params.id, ['ys_loan_number']).catch(() => {});   // keep ClickUp/LOS in sync (self-gates; no-op when unmapped/unlinked)
+    res.json({ ok: true, loanNumber: upd.rows[0].ys_loan_number });
+  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
 });
 
 // Nudge the borrower with a friendly reminder of what's still outstanding on
@@ -6529,6 +6594,45 @@ router.get('/esign/dashboard', async (req, res) => {
   } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
 });
 
+// ---- e-signature CONNECTION + MODE status (admin) ---------------------------
+// The plain-English "are we live?" readout so an admin can see exactly what still
+// keeps DocuSign in test mode. Reveals no secrets — just the mode flags and, if the
+// credentials authenticate, which DocuSign ACCOUNT we're bound to (practice vs live).
+// `liveToBorrowers` is the single yes/no: will a REAL borrower actually be emailed?
+router.get('/esign/connection', requireRole('admin'), async (req, res) => {
+  const ds = require('../lib/integrations/docusign');
+  const c = cfg.docusign;
+  const out = {
+    configured: ds.configured(),
+    demo: ds.isDemoHost(),                 // true = DocuSign PRACTICE/sandbox world
+    oauthHost: c.oauthBase || null,
+    sendEnabled: !!c.sendEnabled,          // master switch (DOCUSIGN_SEND_ENABLED)
+    testMode: !!c.testMode,                // gates sends to the allow-list on ANY host
+    allowlist: c.testEmailAllowlist || [], // the only emails reachable while in test mode
+    reachable: null,
+  };
+  if (out.configured) {
+    // Best-effort live auth check — never throws (bad/absent creds just report not-reachable),
+    // and time-boxed so the page can't hang on a slow DocuSign.
+    try {
+      const p = await Promise.race([
+        ds.ping(),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('timed out reaching DocuSign')), 8000)),
+      ]);
+      out.reachable = true;
+      out.demo = !!p.demo;                 // authoritative from the live host
+      out.accountName = p.accountName || null;
+      out.accountId = p.accountId || null;
+      out.userName = p.name || null;
+      out.userEmail = p.email || null;
+    } catch (e) { out.reachable = false; out.reachError = e.message; }
+  }
+  // Real borrowers are emailed ONLY when: configured + credentials reach a LIVE (non-demo)
+  // account + the master switch is on + test mode is off.
+  out.liveToBorrowers = !!(out.configured && out.reachable && !out.demo && out.sendEnabled && !out.testMode);
+  res.json(out);
+});
+
 router.get('/applications/:id/esign', async (req, res) => {
   try {
     res.json(await esignTracking.fileEsign(db, req.params.id));
@@ -6589,19 +6693,33 @@ router.post('/esign/test-send', requireRole('admin'), async (req, res) => {
 router.post('/applications/:id/esign/send', async (req, res) => {
   const purpose = String((req.body && req.body.purpose) || '');
   if (!esignOrchestrate.PACKAGES[purpose]) return res.status(400).json({ error: 'unknown package' });
+  const reissue = !!(req.body && req.body.reissue);
   try {
-    const out = await esignOrchestrate.sendPackage(req.params.id, purpose, req.actor, { db, docusign: docusignLib });
-    await audit(req, 'esign_send', 'application', req.params.id, { purpose });
-    // Return the REAL outcome — a dead-lettered send (missing document, recipient
-    // not on the pre-go-live allow-list, validation error) must NOT report success
-    // (that showed a false "Sent for signature." toast). ok mirrors sendPackage's
-    // ok (sent OR already-in-flight); on a dead-letter we surface the reason.
+    const out = await esignOrchestrate.sendPackage(req.params.id, purpose, req.actor, { db, docusign: docusignLib, reissue });
+    await audit(req, 'esign_send', 'application', req.params.id, { purpose, reissue });
+    // Return the REAL outcome — never a false "Sent for signature." toast. ok mirrors
+    // sendPackage's ok (a genuine send / already-sent). Every non-success disposition
+    // gets its OWN plain-language reason so staff always know the true state:
+    //   terminal — a prior envelope is finished; a plain re-send is a no-op → use Re-issue
+    //   dead     — permanently failed (missing document, recipient off the pre-go-live
+    //              allow-list, validation error)
+    //   queued   — claimed but not delivered yet; the retry engine will send it
+    //   retry    — a transient failure; it will auto-retry
+    //   paused   — the master send switch is off right now
+    //   gone     — the envelope row vanished (deleted/superseded) — refresh
     const r = out.result || {};
+    const reason =
+        out.terminal ? 'This package was already sent for this file. Use “Re-issue” on the envelope below to send a fresh one.'
+      : r.dead ? (r.error || 'The document could not be sent.')
+      : r.queued ? 'Not delivered yet — the send is queued and will retry automatically. Refresh in a minute.'
+      : (r.held || r.disposition === 'paused') ? 'Sending is paused right now (the master switch is off). Try again once it’s back on.'
+      : r.retry ? 'Not delivered yet — a temporary hiccup; it will retry automatically. Refresh in a minute.'
+      : r.disposition === 'gone' ? 'That envelope is no longer on the file — refresh and try again.'
+      : (out.ok ? undefined : 'The document could not be sent — check the file and try again.');
     res.json({
       ok: out.ok, envelopeRowId: out.envelopeRowId, result: r,
-      dead: !!r.dead, queued: !!r.queued,
-      error: r.dead ? (r.error || 'The document could not be sent.')
-           : (r.queued ? 'Not delivered yet — the send is queued and will retry automatically. Refresh in a minute.' : undefined),
+      dead: !!r.dead, queued: !!r.queued, terminal: !!out.terminal,
+      error: reason,
     });
   } catch (e) {
     res.status(esignErrStatus(e)).json({ error: e.message, outstanding: e.outstanding });

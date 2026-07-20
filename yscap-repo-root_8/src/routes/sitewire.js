@@ -24,6 +24,7 @@ const { planReallocation } = require('../sitewire/reallocation');
 const M = require('../sitewire/mapper');
 const T = require('../sitewire/transforms');
 const rehab = require('../lib/rehab-budget');
+const { sanitizeDateOnly } = require('../lib/fields'); // strict YYYY-MM-DD validation for date inputs
 const notify = require('../lib/notify');
 const { enqueueSitewirePush } = require('../sitewire/enqueue');
 const { buildXlsx } = require('../lib/xlsx');
@@ -316,8 +317,17 @@ router.post('/requests/:reqId/approve', requirePermission('manage_draws'), async
     }
     res.json({ dryrun: true, approved_cents: approvedCents });
   } catch (e) {
-    if (e.status === 422) return res.status(422).json({ error: `Sitewire rejected: ${JSON.stringify(e.body || {}).slice(0, 200)}` });
-    res.status(502).json({ error: e.message });
+    // A genuine Sitewire refusal (422 bad value / 403 not authorized) shows its specific reason and is NOT
+    // parked for retry — retrying won't change a "no". Matches the draw-transition route's 422/403 handling.
+    if (e.status === 422 || e.status === 403) return res.status(e.status).json({ error: `Sitewire ${e.status === 403 ? 'refused this approval' : 'rejected'}: ${JSON.stringify(e.body || {}).slice(0, 200)}` });
+    // G1: a TRANSIENT/outage failure (5xx, network, circuit open, auth blip) must never silently drop a
+    // money decision if the coordinator walks away — capture the intended approval as a retryable review
+    // row, then return a clean, generic 502 (never the raw internal error).
+    if (e.retryable || e.code === 'SITEWIRE_CIRCUIT_OPEN' || (e.status >= 500 && e.status <= 599)) {
+      try { await orchestrator.park({ appId: own.application_id, dedupe: `approve:${reqId}`, reason: `sitewire_approve_failed: could not set the approved amount ${T.usd(approvedCents)} on draw line ${reqId} — Sitewire was briefly unavailable. Retry when it's back.`, current: String(approvedCents) }); } catch (_) {}
+      return res.status(502).json({ error: 'Sitewire is briefly unavailable — we saved this approval to retry. Please try again in a moment.' });
+    }
+    res.status(502).json({ error: 'Could not save this approval to Sitewire — please try again.' });
   }
 });
 
@@ -339,7 +349,13 @@ router.post('/draws/:drawId/:action', requirePermission('manage_draws'), async (
     res.json({ ok: true, status: r && r.status });
   } catch (e) {
     if (e.status === 422 || e.status === 403) return res.status(e.status).json({ error: `Sitewire ${action} refused: ${JSON.stringify(e.body || {}).slice(0, 200)}` });
-    res.status(502).json({ error: e.message });
+    // G1: a TRANSIENT/outage failure must not silently drop the transition — park it (retryable) so the
+    // coordinator's ${action} isn't lost, then return a clean generic 502 (never the raw internal error).
+    if (e.retryable || e.code === 'SITEWIRE_CIRCUIT_OPEN' || (e.status >= 500 && e.status <= 599)) {
+      try { await orchestrator.park({ appId: own.application_id, dedupe: `draw${action}:${drawId}`, reason: `sitewire_draw_transition_failed: could not ${action} draw ${drawId} — Sitewire was briefly unavailable. Retry when it's back.` }); } catch (_) {}
+      return res.status(502).json({ error: 'Sitewire is briefly unavailable — we saved this for retry. Please try again in a moment.' });
+    }
+    res.status(502).json({ error: `Could not ${action} this draw in Sitewire — please try again.` });
   }
 });
 
@@ -356,7 +372,10 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
   const approved = Math.round(approvedRaw);
   const fee = Math.round(feeRaw);
   const feeKind = ['virtual', 'physical'].includes(req.body.fee_kind) ? req.body.fee_kind : null;
-  const releaseDate = req.body.release_date || null;
+  // Validate a supplied date up front — a malformed value hitting the `date` column throws Postgres 22007;
+  // reject it as a clean 400 instead. Blank/absent = no date (allowed).
+  let releaseDate = req.body.release_date == null || req.body.release_date === '' ? null : sanitizeDateOnly(req.body.release_date);
+  if (req.body.release_date && !releaseDate) return res.status(400).json({ error: 'The release date must be a valid calendar date (YYYY-MM-DD).' });
   const fundedStatus = ['pending', 'released', 'held'].includes(req.body.funded_status) ? req.body.funded_status : 'pending';
   // validate the draw id: if supplied it must be numeric AND belong to THIS file (never store a
   // draw id from another file — the lien gate reads that draw's waivers). Audit #3.
@@ -394,12 +413,12 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
     const row = (await db.query(
       `INSERT INTO draw_disbursements (application_id, sitewire_draw_id, approved_cents, fee_cents, fee_kind, retainage_held_cents, net_release_cents, release_date, funded_status, kind, note, created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'draw',$10,$11) RETURNING *`,
-      [application_id, drawId, approved, fee, feeKind, split.retainage_held_cents, split.net_release_cents, releaseDate, fundedStatus, req.body.note || null, req.actor.id])).rows[0];
+      [application_id, drawId, approved, fee, feeKind, split.retainage_held_cents, split.net_release_cents, releaseDate, fundedStatus, req.body.note ? String(req.body.note).slice(0, 2000) : null, req.actor.id])).rows[0];
     res.json({ ok: true, disbursement: row });
   } catch (e) {
     // db/148 unique index — a second draw release raced past the pre-check
     if (e.code === '23505') return res.status(409).json({ error: 'A release is already recorded for this draw.' });
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ error: 'Could not record this release — please try again.' });
   }
 });
 
@@ -407,6 +426,10 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
 router.post('/files/:id/retainage-release', requirePermission('manage_draws'), async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  // Validate the date before opening the money transaction (a bad date would 22007 → 500 mid-txn).
+  const relDate = req.body.release_date == null || req.body.release_date === '' ? null : sanitizeDateOnly(req.body.release_date);
+  if (req.body.release_date && !relDate) return res.status(400).json({ error: 'The release date must be a valid calendar date (YYYY-MM-DD).' });
+  const relNote = req.body.note ? String(req.body.note).slice(0, 2000) : 'Retainage released at completion';
   // Serialize with a per-file transaction lock so two concurrent releases can't both read the
   // same "already released" and double-pay the holdback (audit #2 — this is real money).
   const client = await db.getClient();
@@ -420,10 +443,10 @@ router.post('/files/:id/retainage-release', requirePermission('manage_draws'), a
     const row = (await client.query(
       `INSERT INTO draw_disbursements (application_id, approved_cents, fee_cents, retainage_held_cents, net_release_cents, release_date, funded_status, kind, note, created_by)
        VALUES ($1,$2,0,0,$2,$3,'released','retainage_release',$4,$5) RETURNING *`,
-      [appId, toRelease, req.body.release_date || null, req.body.note || 'Retainage released at completion', req.actor.id])).rows[0];
+      [appId, toRelease, relDate, relNote, req.actor.id])).rows[0];
     await client.query('COMMIT');
     res.json({ ok: true, disbursement: row, released_cents: toRelease });
-  } catch (e) { try { await client.query('ROLLBACK'); } catch (_) {} res.status(500).json({ error: e.message }); }
+  } catch (e) { try { await client.query('ROLLBACK'); } catch (_) {} res.status(500).json({ error: 'Could not release the retainage — please try again.' }); }
   finally { client.release(); }
 });
 
@@ -440,7 +463,13 @@ router.post('/files/:id/waivers', requirePermission('manage_draws'), async (req,
   const kind = ['conditional', 'unconditional'].includes(b.kind) ? b.kind : 'conditional';
   const scope = ['progress', 'final'].includes(b.scope) ? b.scope : 'progress';
   const tier = ['gc', 'subcontractor', 'supplier'].includes(b.tier) ? b.tier : 'gc';
-  const amt = Math.max(0, Math.round(Number(b.amount_cents) || 0));
+  // amount is informational (not moved money), but reject garbage/negative rather than silently → $0.
+  let amt = 0;
+  if (b.amount_cents != null && b.amount_cents !== '') {
+    const a = Number(b.amount_cents);
+    if (!Number.isFinite(a) || a < 0) return res.status(400).json({ error: 'The waiver amount must be a non-negative dollar amount (in cents).' });
+    amt = Math.round(a);
+  }
   // if a draw is named, it MUST belong to THIS file — never store a draw id from another file (the lien
   // gate + packet key on the draw id only, so a foreign draw id would block/leak the other file's draw).
   let waiverDrawId = null;
@@ -454,9 +483,9 @@ router.post('/files/:id/waivers', requirePermission('manage_draws'), async (req,
     const row = (await db.query(
       `INSERT INTO draw_lien_waivers (application_id, sitewire_draw_id, kind, scope, tier, party_name, amount_cents, status, note, created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,'required',$8,$9) RETURNING *`,
-      [appId, waiverDrawId, kind, scope, tier, b.party_name || null, amt, b.note || null, req.actor.id])).rows[0];
+      [appId, waiverDrawId, kind, scope, tier, b.party_name ? String(b.party_name).slice(0, 200) : null, amt, b.note ? String(b.note).slice(0, 2000) : null, req.actor.id])).rows[0];
     res.json({ ok: true, waiver: row });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(500).json({ error: 'Could not save the lien waiver — please try again.' }); }
 });
 router.patch('/waivers/:wid', requirePermission('manage_draws'), async (req, res) => {
   if (!/^\d+$/.test(req.params.wid)) return res.status(404).json({ error: 'not found' });
@@ -464,7 +493,7 @@ router.patch('/waivers/:wid', requirePermission('manage_draws'), async (req, res
   if (!status) return res.status(400).json({ error: 'status must be required, received, waived, or na' });
   const w = (await db.query(`SELECT application_id FROM draw_lien_waivers WHERE id=$1`, [req.params.wid])).rows[0];
   if (!w || !(await canSeeFile(req, w.application_id))) return res.status(403).json({ error: 'forbidden' });
-  await db.query(`UPDATE draw_lien_waivers SET status=$2, received_at=CASE WHEN $2 IN ('received','waived') THEN now() ELSE NULL END, note=COALESCE($3,note), updated_at=now() WHERE id=$1`, [req.params.wid, status, req.body.note || null]);
+  await db.query(`UPDATE draw_lien_waivers SET status=$2, received_at=CASE WHEN $2 IN ('received','waived') THEN now() ELSE NULL END, note=COALESCE($3,note), updated_at=now() WHERE id=$1`, [req.params.wid, status, req.body.note ? String(req.body.note).slice(0, 2000) : null]);
   res.json({ ok: true, status });
 });
 
@@ -666,10 +695,30 @@ router.get('/settings', requirePermission(['manage_draws', 'platform_setup']), a
 });
 router.patch('/settings', requirePermission('platform_setup'), async (req, res) => {
   const allowed = new Set(['wire_turnaround_hours', 'variance_pct', 'stale_days', 'no_draw_days', 'pacing_gap_pct', 'front_load_pct', 'first_draw_max_pct', 'retainage_pct', 'require_lien_waivers']);
+  const PCT = new Set(['variance_pct', 'pacing_gap_pct', 'front_load_pct', 'first_draw_max_pct', 'retainage_pct']);
+  const DAYS = new Set(['stale_days', 'no_draw_days']);
+  // Validate + coerce each value BEFORE storing — never persist garbage a reader must defensively clamp
+  // (a stored "banana" / 500% / negative is a latent surprise). `undefined` = invalid → 400.
+  const coerce = (k, v) => {
+    if (k === 'require_lien_waivers') {
+      if (typeof v === 'boolean') return v;
+      if (v === 'true' || v === 1 || v === '1') return true;
+      if (v === 'false' || v === 0 || v === '0') return false;
+      return undefined;
+    }
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < 0) return undefined;
+    if (PCT.has(k)) return n <= 100 ? n : undefined;              // percentages: 0..100
+    if (k === 'wire_turnaround_hours') return n <= 8760 ? Math.round(n) : undefined; // ≤ 1 year of hours
+    if (DAYS.has(k)) return n <= 3650 ? Math.round(n) : undefined; // ≤ 10 years of days
+    return Math.round(n);
+  };
   const updates = [];
   for (const k of Object.keys(req.body || {})) {
     if (!allowed.has(k)) continue;
-    await db.query(`INSERT INTO sitewire_settings (key, value, updated_at) VALUES ($1,$2,now()) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`, [k, JSON.stringify(req.body[k])]);
+    const val = coerce(k, req.body[k]);
+    if (val === undefined) return res.status(400).json({ error: `Invalid value for “${k}”. Percentages must be 0–100; hours/days a non-negative whole number; lien-waivers on/off.` });
+    await db.query(`INSERT INTO sitewire_settings (key, value, updated_at) VALUES ($1,$2,now()) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`, [k, JSON.stringify(val)]);
     updates.push(k);
   }
   res.json({ ok: true, updated: updates });
@@ -1154,7 +1203,7 @@ router.post('/files/:id/change-requests', requirePermission('manage_draws'), asy
     const cr = (await db.query(
       `INSERT INTO change_requests (application_id, field, field_label, old_value, new_value, reason, status, requested_by_kind, requested_by_id)
        VALUES ($1,'sow_reallocation','Scope of Work reallocation',$2,$3,$4,'pending','staff',NULL) RETURNING id`,
-      [appId, JSON.stringify(oldCells), JSON.stringify(newCells), req.body.reason || null])).rows[0];
+      [appId, JSON.stringify(oldCells), JSON.stringify(newCells), req.body.reason ? String(req.body.reason).slice(0, 2000) : null])).rows[0];
     await db.query(
       `INSERT INTO sow_change_request_details (change_request_id, application_id, proposed_payload, deltas, net_zero, after_ctc, needs_capital_partner, capital_partner_status)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,

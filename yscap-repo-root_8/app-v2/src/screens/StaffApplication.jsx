@@ -1669,12 +1669,64 @@ function StaffCardEntry({ appId, onSaved }) {
   );
 }
 
+// Staff can enter/EDIT the title or insurance contact directly ON the condition
+// (owner-directed 2026-07-20) — the same structured contact form the borrower
+// fills, so the LO/processor can complete it on the borrower's behalf. Saving
+// writes the file's title_company / insurance_agent service contact (which the
+// backend also flips the condition to 'received'); the condition still can't be
+// signed off until the contact exists (the signOffGate structured-data check).
+function StaffContactEntry({ appId, toolKey, current, onSaved }) {
+  const contactType = toolKey === 'title_contact' ? 'title_company' : 'insurance_agent';
+  const [open, setOpen] = useState(false);
+  const [f, setF] = useState({ companyName: '', contactName: '', email: '', phone: '' });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const set = (k) => (e) => setF((p) => ({ ...p, [k]: e.target.value }));
+  function startEdit() {
+    setF({ companyName: current?.company_name || '', contactName: current?.contact_name || '', email: current?.email || '', phone: current?.phone || '' });
+    setErr(''); setOpen(true);
+  }
+  async function save() {
+    if (!f.companyName && !f.contactName && !f.email && !f.phone) { setErr('Enter at least one detail (company, name, email or phone).'); return; }
+    setBusy(true); setErr('');
+    try {
+      if (current && current.link_id) await api.staffEditFileContact(current.link_id, { ...f, contactType });
+      else await api.staffAddFileContact(appId, { ...f, contactType });
+      setOpen(false);
+      if (onSaved) await onSaved();
+    } catch (e) { setErr((e && e.message) || 'Could not save the contact.'); }
+    finally { setBusy(false); }
+  }
+  if (!open) return <button className="btn ghost small" onClick={startEdit}>{current ? 'Edit contact' : 'Enter contact'}</button>;
+  return (
+    <div className="small" style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', justifyContent: 'flex-end' }}>
+      <input className="input" style={{ maxWidth: 180 }} placeholder="Company" value={f.companyName} onChange={set('companyName')} />
+      <input className="input" style={{ maxWidth: 150 }} placeholder="Contact name" value={f.contactName} onChange={set('contactName')} />
+      <EmailInput style={{ maxWidth: 190 }} placeholder="Email" value={f.email} onChange={v => setF(p => ({ ...p, email: v }))} />
+      <PhoneInput style={{ maxWidth: 150 }} placeholder="Phone" value={f.phone} onChange={v => setF(p => ({ ...p, phone: v }))} />
+      <button className="btn small" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save contact'}</button>
+      <button className="btn ghost small" disabled={busy} onClick={() => { setOpen(false); setErr(''); }}>Cancel</button>
+      {err && <span style={{ color: 'var(--bad, #c0392b)', flexBasis: '100%', textAlign: 'right' }}>{err}</span>}
+    </div>
+  );
+}
+
 function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview, onOpenStudio }) {
   const completer = canComplete(role);
   const [sowOpen, setSowOpen] = useState(null);   // itemId of the SOW being edited
   const [trOpen, setTrOpen] = useState(null);    // track record open full-screen (staff): holds the borrower id, or null
   const [card, setCard] = useState(null);         // decrypted appraisal card (revealed on demand)
   const [cardBusy, setCardBusy] = useState(false);
+  // File service contacts (title / insurance) so staff can see + edit them right
+  // on the condition. contactFor() maps a contact-form condition's tool_key to
+  // the matching linked contact row.
+  const [fileContacts, setFileContacts] = useState([]);
+  const loadContacts = useCallback(() => api.staffFileContacts(appId).then(setFileContacts).catch(() => setFileContacts([])), [appId]);
+  useEffect(() => { loadContacts(); }, [loadContacts]);
+  const contactFor = (toolKey) => {
+    const want = toolKey === 'title_contact' ? ['title_company'] : ['insurance_agent', 'flood_insurance'];
+    return (fileContacts || []).find(c => want.includes(c.contact_type)) || null;
+  };
   // #66 — role-aware visibility: default hides what's already off THIS viewer's
   // plate (LO clears on review/"complete"; processor·underwriter on sign-off;
   // anyone on satisfied). The picker re-shows cleared items or everything —
@@ -1828,7 +1880,14 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                       })()
                     : it.tool_key === 'product_pricing' ? (app.registered_program ? `Registered · ${app.registered_program === 'gold' ? 'Gold Standard' : 'Standard'} · ${money(app.registered_total_loan)}` : 'No product registered yet')
                     : it.tool_key === 'appraisal_card' ? 'Card for ordering the appraisal (reveal is audited)'
-                    : ['title_contact', 'insurance_contact'].includes(it.tool_key) ? 'Contact information form'
+                    : ['title_contact', 'insurance_contact'].includes(it.tool_key) ? (() => {
+                        const c = contactFor(it.tool_key);
+                        const who = c ? [c.company_name, c.contact_name].filter(Boolean).join(' · ') : '';
+                        const reach = c ? [c.email, c.phone].filter(Boolean).join(' · ') : '';
+                        return c
+                          ? `${it.tool_key === 'title_contact' ? 'Title' : 'Insurance'} contact: ${who || reach || 'on file'}${who && reach ? ` — ${reach}` : ''}`
+                          : `${it.tool_key === 'title_contact' ? 'Title' : 'Insurance'} contact — none entered yet`;
+                      })()
                     : it.template_code === 'rtl_p3_assets' ? (() => {
                         // Assets & liquidity: show the registered requirement summary
                         // on the internal login too (#85), not just a bare "document".
@@ -1836,6 +1895,17 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                         return liq && liq.required != null
                           ? `Required liquidity ${money2(liq.required)}${liq.cashToClose ? ` · cash to close ${money2(liq.cashToClose)}` : ''}${liq.reserveRequirement ? ` · reserves ${money2(liq.reserveRequirement)}` : ''}`
                           : 'Assets & bank statements — the required liquidity is set the moment a product is registered';
+                      })()
+                    : it.template_code === 'rtl_p5_assign' ? (() => {
+                        // Assignment-of-contract: show the assignment amount (purchase −
+                        // original contract) so the officer knows what the uploaded
+                        // assignment letter must reflect (owner-directed 2026-07-20).
+                        const fee = app.assignment_fee != null ? Number(app.assignment_fee)
+                          : (app.purchase_price != null && app.underlying_contract_price != null
+                              ? Math.max(0, Number(app.purchase_price) - Number(app.underlying_contract_price)) : null);
+                        if (fee == null) return 'Assignment of contract — upload the assignment letter';
+                        return `Assignment ${money(fee)}${app.purchase_price != null && app.underlying_contract_price != null
+                          ? ` (purchase ${money(app.purchase_price)} − original contract ${money(app.underlying_contract_price)})` : ''} — upload the assignment letter`;
                       })()
                     : it.item_kind}
                   {` · ${it.status}`}
@@ -1901,6 +1971,10 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                   </button>
                   <StaffCardEntry appId={appId} onSaved={onChanged} />
                 </div>
+              )}
+              {['title_contact', 'insurance_contact'].includes(it.tool_key) && (
+                <StaffContactEntry appId={appId} toolKey={it.tool_key} current={contactFor(it.tool_key)}
+                  onSaved={async () => { await loadContacts(); if (onChanged) await onChanged(); }} />
               )}
               {!it.tool_key && onUploadTo && (
                 <button className="btn ghost small"
