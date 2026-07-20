@@ -132,14 +132,6 @@ router.post('/:appId/import', async (req, res, next) => {
     let pdfB64 = null;
     try { pdfB64 = b.pdfBase64 || X.embeddedPdfBase64(xml); } catch (_) { pdfB64 = null; }
     try {
-      // Re-import supersedes the appraisal ROW; retire the PRIOR source docs too so a second import
-      // doesn't leave two 'current' appraisal_xml / appraisal_pdf side by side (duplicates on the
-      // Documents list, in TPR, and mirrored twice to SharePoint). Mirrors the slot-supersede pattern.
-      await db.query(
-        `UPDATE documents SET is_current=false,
-           review_status = CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
-          WHERE application_id=$1 AND is_current=true AND doc_kind IN ('appraisal_xml','appraisal_pdf')`,
-        [app.id]);
       const xbuf = Buffer.from(xml, 'utf8');
       const s = await storage.save(xbuf, { filename: b.filename || 'appraisal.xml' });
       // STAFF-ONLY: the source appraisal XML carries lender_name/amc_name/owner_of_record/
@@ -164,6 +156,17 @@ router.post('/:appId/import', async (req, res, next) => {
            VALUES ($1,$2,$3,'application/pdf',$4,$5,$6,'staff',$7,'appraisal_pdf','staff_only','staff_upload','accepted',now()) RETURNING id`,
           [app.id, app.borrower_id, 'appraisal.pdf', pbuf.length, ps.provider, ps.ref, req.actor.id])).rows[0].id;
       }
+      // Retire the PRIOR current source docs ONLY NOW — after the fresh ones are safely stored —
+      // excluding the just-inserted ids. A re-import must not leave two 'current' appraisal_xml/pdf
+      // side by side (duplicates on the Documents list, in TPR, mirrored twice); but doing this AFTER
+      // the inserts means a storage/DB failure above can never leave the file with ZERO current source
+      // docs (the old ones simply stay). Mirrors the slot-supersede pattern.
+      await db.query(
+        `UPDATE documents SET is_current=false,
+           review_status = CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
+          WHERE application_id=$1 AND is_current=true AND doc_kind IN ('appraisal_xml','appraisal_pdf')
+            AND id <> $2 AND ($3::uuid IS NULL OR id <> $3)`,
+        [app.id, xmlDocId, pdfDocId]);
     } catch (e) { console.error('[appraisal] document storage failed (import continues):', e && e.message); }
 
     // Shared desk flow: import + reconcile + materialize the two internal conditions +
