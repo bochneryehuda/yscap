@@ -25,7 +25,7 @@ const { requireAuth, requireStaff, requirePermission } = require('../auth');
 const { can, assigneeExistsSql } = require('../lib/permissions');
 const storage = require('../lib/storage');
 const { decodeUploadBase64 } = require('../lib/upload-bytes');
-const { runAppraisalImport } = require('../lib/appraisal/desk');
+const { runAppraisalImport, undoAppraisalImport } = require('../lib/appraisal/desk');
 const { collateralScore, arvDefensibility, compImpliedValue } = require('../lib/appraisal/scoring');
 const X = require('../lib/appraisal/xml');
 
@@ -158,6 +158,24 @@ router.post('/:appId/import', async (req, res, next) => {
       { appraisalId: out.appraisalId, findings: out.summary, warnings: (out.warnings || []).map((w) => w.code) });
 
     res.json({ ok: true, appraisalId: out.appraisalId, summary: out.summary, needsAsIsCondition: out.needsAsIsCondition, warnings: out.warnings });
+  } catch (e) { next(e); }
+});
+
+// ---- POST /:appId/undo-import ----------------------------------------------
+// Undo the current appraisal import (owner-directed 2026-07-20): the wrong
+// appraisal was uploaded and must be removed before a replacement exists. Clears
+// the findings + imported appraisal data, restores the file fields the import
+// changed, and resets the two internal conditions + the source documents so the
+// appraisal-documents condition is ready for a fresh upload. Gated like a
+// sign-off (processor / underwriter / admin) since it discards review data.
+router.post('/:appId/undo-import', requirePermission('sign_off_conditions'), async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const out = await undoAppraisalImport(app.id, { actor: req.actor.id });
+    if (!out.ok) return res.status(400).json({ error: out.error });
+    await audit(req.actor.id, 'appraisal_import_undone', app.id, { removedAppraisalId: out.removedAppraisalId });
+    res.json({ ok: true, removedAppraisalId: out.removedAppraisalId });
   } catch (e) { next(e); }
 });
 
