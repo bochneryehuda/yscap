@@ -85,12 +85,12 @@ async function dashboard(db, scope = { where: '', params: [] }) {
   const keyOf = (e) => (e.isTest ? `test:${e.id}` : `${e.applicationId}:${e.purpose}`);
   const latestByKey = new Map();
   for (const e of envelopes) { const k = keyOf(e); if (!latestByKey.has(k)) latestByKey.set(k, e.id); }
-  // A 'voided' latest envelope counts too: an expired (auto-voided after 30 days)
-  // or cancelled package with no re-issue is a stalled signing that needs a look. A
-  // deliberate void that IS re-issued stops counting — the newer envelope supersedes
-  // it (latestByKey), so only an unreplaced void shows.
+  // Voiding is deliberate (owner-directed 2026-07-20): a voided/cancelled package is
+  // a resolved terminal state, NOT something to chase — it belongs in the
+  // "Declined / voided" tab, never under "needs attention." Only a DECLINE (borrower
+  // refused), a send ERROR, or a dead-letter genuinely needs a human.
   counts.needsAttention = envelopes.filter((e) =>
-    (['declined', 'voided', 'error'].includes(e.phase) || e.deadLetteredAt)
+    (['declined', 'error'].includes(e.phase) || e.deadLetteredAt)
     && latestByKey.get(keyOf(e)) === e.id).length;
   counts.awaitingCountersign = envelopes.filter((e) => e.phase === 'awaiting_countersign').length;
 

@@ -226,7 +226,7 @@ export default function EsignDashboard() {
   const counts = (data && data.counts) || {};
   const envelopes = (data && data.envelopes) || [];
   const sendHealth = (data && data.sendHealth) || null;
-  const attention = (e) => ['declined', 'voided', 'error'].includes(e.phase) || e.deadLetteredAt;
+  const attention = (e) => ['declined', 'error'].includes(e.phase) || e.deadLetteredAt;   // a deliberate void is resolved, not "needs attention"
   const isOutstanding = (e) => !TERMINAL.includes(e.phase);   // still in flight: awaiting borrower / counter-sign
   const outstandingCount = envelopes.filter(isOutstanding).length;
   const shown = envelopes.filter((e) => {
