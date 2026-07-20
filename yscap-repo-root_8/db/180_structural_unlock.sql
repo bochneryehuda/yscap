@@ -1,4 +1,6 @@
--- 174 — Super-admin structural UNLOCK for locked (clear-to-close / funded) files.
+-- 180 — Super-admin structural UNLOCK for locked (clear-to-close / funded) files.
+-- (Renumbered from a colliding 177 to the next free number; idempotent, so
+-- re-applying under the new filename is a no-op where the columns already exist.)
 --
 -- #84 (file-lock.js) freezes a file's loan STRUCTURE — registered product/pricing,
 -- loan amount, rehab budget, vesting entity, and the core economics — once it
