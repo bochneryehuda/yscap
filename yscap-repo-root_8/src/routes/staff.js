@@ -920,6 +920,26 @@ router.post('/applications', async (req, res) => {
       console.error('[staff-origination] checklist failed:', db.describeError(e));
       try { await audit(req, 'conditions_generation_failed', 'application', appId, { error: String(e.message || e).slice(0, 300) }); } catch (_) {}
     }
+    // Vesting entity (owner-directed 2026-07-20): persist which LLC the property is
+    // purchased under, straight from the new-file form. A picked llcId owned by
+    // this borrower wins; otherwise a typed entity name is resolved-or-created on
+    // the borrower. All wiring (llc_id + LLC doc checklist + condition + re-eval)
+    // goes through the vesting chokepoint — never a raw UPDATE. Best-effort: a
+    // vesting hiccup never fails the already-created file.
+    try {
+      let vestLlcId = null;
+      if (b.llcId) {
+        const o = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, borrowerId]);
+        if (o.rows[0]) vestLlcId = b.llcId;
+      }
+      if (!vestLlcId && b.entityName && String(b.entityName).trim()) {
+        const nm = String(b.entityName).trim();
+        const ex = await db.query(`SELECT id FROM llcs WHERE borrower_id=$1 AND lower(llc_name)=lower($2) LIMIT 1`, [borrowerId, nm]);
+        vestLlcId = ex.rows[0] ? ex.rows[0].id
+          : (await db.query(`INSERT INTO llcs (borrower_id, llc_name) VALUES ($1,$2) RETURNING id`, [borrowerId, nm])).rows[0].id;
+      }
+      if (vestLlcId) await require('../lib/vesting').setVestingLlc(appId, vestLlcId, { source: 'staff', actor: req.actor.id });
+    } catch (e) { console.error('[staff-origination] vesting failed:', db.describeError(e)); }
     // Optionally add a CO-BORROWER right at creation (#98) — same identity-graph
     // linking as adding one later. A bad co-borrower payload must not fail the
     // whole file (it's already created); surface it as a soft warning instead.
@@ -5433,6 +5453,7 @@ router.post('/applications/:id/documents', async (req, res) => {
   // internal conditions) — the officer never has to use the separate import screen, though it
   // still works. Best-effort: a bad/unparseable XML notes the failure on the condition and
   // never breaks the upload.
+  let apprImport = null;   // surfaced in the response so the UI can show the findings immediately
   if (b.checklistItemId && !llcId && /xml/i.test(slot || '')) {
     try {
       const tc = (await db.query(
@@ -5449,9 +5470,13 @@ router.post('/applications/:id/documents', async (req, res) => {
           xmlDocumentId: r.rows[0].id, pdfDocumentId: pdfDoc && pdfDoc.id,
         });
         if (out && out.ok) {
+          // Surface the result so the upload UI can announce "findings built" and
+          // refresh the appraisal panel — no separate re-import into the findings.
+          apprImport = { ok: true, appraisalId: out.appraisalId, summary: out.summary };
           await audit(req, 'appraisal_import', 'application', req.params.id,
             { via: 'condition_slot', appraisalId: out.appraisalId, findings: out.summary });
         } else {
+          apprImport = { ok: false, error: (out && out.error) || 'the appraisal XML could not be imported' };
           // Never silent: tell the officer the XML didn't import and why.
           try {
             await db.query(
@@ -5465,7 +5490,7 @@ router.post('/applications/:id/documents', async (req, res) => {
 
   await audit(req, 'upload_document', 'document', r.rows[0].id, { filename: b.filename, docKind, checklistItemId: b.checklistItemId || null, llcId });
   try { require('../lib/sharepoint-backup').kick(); } catch (_) {}
-  res.status(201).json({ ok: true, documentId: r.rows[0].id });
+  res.status(201).json({ ok: true, documentId: r.rows[0].id, ...(apprImport ? { appraisal: apprImport } : {}) });
 });
 
 // Approve or reject an uploaded document. Rejection requires a reason, keeps the
