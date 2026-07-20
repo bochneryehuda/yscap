@@ -59,6 +59,24 @@ function assignmentFields(b) {
   return { isAssignment, underlying, assignFee, purchasePrice };
 }
 
+// sqft_pre / sqft_post are only meaningful for a square-footage-adding or
+// ground-up rehab. The intake forms show those inputs only for such rehab types
+// but ALWAYS submit the fields, so switching the rehab type to e.g. "Cosmetic"
+// after entering square footage leaves stale values behind. The pricing engine
+// then flips sqftAddition on via its `sqft_post > sqft_pre` clause even though
+// the file is no longer an addition. Every write path routes sqft through this
+// so an irrelevant rehab type hard-nulls the pair (a blank/unknown type is left
+// alone — the file may just be incomplete). Mirrors the form's needsSqft plus
+// the pricing regex, so a legitimately sqft-relevant type is never nulled.
+function sqftRelevantType(rehabType) {
+  const rt = String(rehabType || '');
+  return !rt || /square|sf|addition|adding|ground/i.test(rt);
+}
+function sqftForType(rehabType, sqftPre, sqftPost) {
+  const ok = sqftRelevantType(rehabType);
+  return { sqftPre: ok ? sqftPre : null, sqftPost: ok ? sqftPost : null };
+}
+
 // A date-only value (DOB, closing, acquisition, track-record exit) → canonical
 // 'YYYY-MM-DD', or null when it isn't a REAL calendar date inside [1900, 2100].
 // The year window is the root fix for the 2026-07-14/15 incident where a date
@@ -167,4 +185,4 @@ function loanNumberProblem(v) {
   return null;
 }
 
-module.exports = { sanitizeFico, sanitizeSsnDigits, sanitizeLoanType, assignmentFields, sanitizeDateOnly, normalizeTypedDate, sanitizeDob, dobProblem, sanitizeLoanNumber, loanNumberProblem };
+module.exports = { sanitizeFico, sanitizeSsnDigits, sanitizeLoanType, assignmentFields, sqftRelevantType, sqftForType, sanitizeDateOnly, normalizeTypedDate, sanitizeDob, dobProblem, sanitizeLoanNumber, loanNumberProblem };

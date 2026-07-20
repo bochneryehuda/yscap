@@ -398,6 +398,7 @@ router.post('/applications', async (req, res) => {
   // purchase price is the underlying + the (derived) fee so leverage/pricing
   // size off seller price + fee and the record is internally consistent.
   const asg = require('../lib/fields').assignmentFields(b);
+  const sqf = require('../lib/fields').sqftForType(b.rehabType, intField(b.sqftPre) || null, intField(b.sqftPost) || null);
   const r = await db.query(
     `INSERT INTO applications
        (borrower_id,llc_id,property_address,property_type,units,program,loan_type,
@@ -408,7 +409,7 @@ router.post('/applications', async (req, res) => {
     [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
      b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), asg.purchasePrice, b.asIsValue || null,   // #95: never a program
      b.arv || null, b.rehabBudget || null, b.loanOfficerName || null,
-     b.rehabType || null, intField(b.sqftPre) || null, intField(b.sqftPost) || null,
+     b.rehabType || null, sqf.sqftPre, sqf.sqftPost,
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
      asg.isAssignment, asg.underlying, asg.assignFee, JSON.stringify(redactPII(b))]);
   const appId = r.rows[0].id;
@@ -2851,6 +2852,9 @@ router.post('/drafts/:id/submit', async (req, res) => {
   // hard-null underlying/fee off an assignment and store purchase = underlying +
   // (derived) fee, so the submitted file is internally consistent.
   const asg = require('../lib/fields').assignmentFields(b);
+  // sqft only applies to a square-footage / ground-up rehab — null it otherwise
+  // so a stale value can't force the pricing sqftAddition flag.
+  const sqf = require('../lib/fields').sqftForType(b.rehabType, intField(b.sqftPre) || null, intField(b.sqftPost) || null);
   const ins = await db.query(
     `INSERT INTO applications
        (borrower_id,llc_id,property_address,property_type,units,program,loan_type,
@@ -2866,7 +2870,7 @@ router.post('/drafts/:id/submit', async (req, res) => {
     [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
      b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), asg.purchasePrice, b.asIsValue || null,   // #95: never a program
      b.arv || null, b.rehabBudget || null, officerId, b.loanOfficerName || null,
-     b.rehabType || null, intField(b.sqftPre) || null, intField(b.sqftPost) || null,
+     b.rehabType || null, sqf.sqftPre, sqf.sqftPost,
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
      asg.isAssignment, asg.underlying, asg.assignFee, JSON.stringify(redactPII(b)),
      b.termMonths ? String(b.termMonths) : null, intField(b.irMonths),

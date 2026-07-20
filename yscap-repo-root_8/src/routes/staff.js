@@ -894,6 +894,9 @@ router.post('/applications', async (req, res) => {
     // has ONE definition and can never drift between staff and borrower surfaces.
     const { isAssignment, underlying, assignFee, purchasePrice } =
       require('../lib/fields').assignmentFields(b);
+    // sqft only applies to a square-footage / ground-up rehab — null it otherwise
+    // so a stale value can't force the pricing sqftAddition flag.
+    const sqf = require('../lib/fields').sqftForType(b.rehabType, intField(b.sqftPre) || null, intField(b.sqftPost) || null);
 
     const ins = await db.query(
       `INSERT INTO applications
@@ -906,7 +909,7 @@ router.post('/applications', async (req, res) => {
       [borrowerId, JSON.stringify(addr), b.propertyType || null, b.units || null,
        b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), purchasePrice, b.asIsValue || null,   // #95: never a program
        b.arv || null, b.rehabBudget || null, officerId, officerName,
-       b.rehabType || null, intField(b.sqftPre) || null, intField(b.sqftPost) || null,
+       b.rehabType || null, sqf.sqftPre, sqf.sqftPost,
        intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
        processorId, isAssignment, underlying, assignFee, intField(b.requestedExpReo)]);   // #97: General REO slot
     const appId = ins.rows[0].id;
@@ -4257,6 +4260,13 @@ router.get('/applications/:id/status-history', async (req, res) => {
 // file's Activity feed shows exactly what changed.
 router.patch('/applications/:id/details', async (req, res) => {
   const b = req.body || {};
+  // sqft only applies to a square-footage / ground-up rehab. When the rehab type
+  // is being changed to something else, null any stale sqft in the SAME update so
+  // it can't keep flipping the pricing engine's sqftAddition flag (its
+  // `sqft_post > sqft_pre` clause). The forms always send both together.
+  if ('rehabType' in b && !require('../lib/fields').sqftRelevantType(b.rehabType)) {
+    b.sqftPre = null; b.sqftPost = null;
+  }
   const NUM = { units: 'units', purchasePrice: 'purchase_price', asIsValue: 'as_is_value',
     arv: 'arv', rehabBudget: 'rehab_budget', sqftPre: 'sqft_pre', sqftPost: 'sqft_post',
     requestedExpFlips: 'requested_exp_flips', requestedExpHolds: 'requested_exp_holds', requestedExpGround: 'requested_exp_ground',
