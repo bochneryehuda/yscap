@@ -67,11 +67,11 @@ can surface in the roll-up but can never flip the fatal clear-to-close gate.
   `Retry-After`, an error taxonomy (retry only 408/429/5xx + transient network), a per-endpoint
   circuit breaker (fail-fast + single half-open probe). Never throws. Surfaced on `/api/health`
   (`documentAi` block).
-- **Analyze-once idempotency** (`db/199`, `fingerprint.js`): skip a paid re-read when the content
+- **Analyze-once idempotency** (`db/202`, `fingerprint.js`): skip a paid re-read when the content
   hash + doc type + analyzer version + file-state fingerprint (incl. `today`, so date-relative
   fatals can't be served stale) are unchanged. Scoped per-application.
 - **Clear-to-close gate**: `underwriting_review_cleared` — enforced in the app layer
-  (`staff.js signOffGate`, `file-review.js fileFatalCount`) AND a DB trigger (`db/198`). The loan
+  (`staff.js signOffGate`, `file-review.js fileFatalCount`) AND a DB trigger (`db/201`). The loan
   ADVANCEMENT gate (`advancementBlockers`) also checks `fileFatalCount` (stored + tie-out) DIRECTLY,
   so a derived cross-document fatal blocks clear-to-close / funding even when no condition row was
   materialized (previous + future files, no backfill). CLOSING a fatal blocking dealbreaker — by
@@ -80,14 +80,14 @@ can surface in the roll-up but can never flip the fatal clear-to-close gate.
   `request_document` (keep it open) and `decline` (kill the loan) stay at base.
 - **Analyze/classify are throttled** (`underwriting.js`): a per-(user, document) cooldown + an
   oversized-document guard bound the paid Azure calls, so a `force:true` loop can't run up spend.
-- **One current extraction per (document, file)** — `db/200` unique partial index; two racing
+- **One current extraction per (document, file)** — `db/203` unique partial index; two racing
   first-time analyses can't both leave a current extraction (which would double-count fatals).
 - **PII**: government-ID/account/EIN numbers masked to last-4 before storage (`store.js`, GLBA).
 
 ## Schema
 
-`db/196` (extractions + findings + the gate condition), `db/197` (suggested actions + opens
-condition), `db/198` (CTC guard trigger), `db/199` (idempotency columns), `db/200` (one-current-
+`db/199` (extractions + findings + the gate condition), `db/200` (suggested actions + opens
+condition), `db/201` (CTC guard trigger), `db/202` (idempotency columns), `db/203` (one-current-
 extraction-per-file unique index). All idempotent.
 
 ## Route (`src/routes/underwriting.js`, `/api/underwriting`, staff-only, per-file scoped)
