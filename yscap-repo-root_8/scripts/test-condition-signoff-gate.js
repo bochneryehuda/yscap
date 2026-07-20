@@ -90,6 +90,16 @@ async function mkItem(appId, code, over = {}) {
     await db.query(`UPDATE borrowers SET photo_id_document_id=$2 WHERE id=$1`, [borrowerId, docId]);
     assert((await so(govId)).status === 200, 'reused gov-ID (photo on profile, none linked to this item) is signable');
 
+    // Vesting-entity (LLC) condition: required, fulfilled by VERIFYING the file's
+    // linked LLC. Blocked with no LLC / an unverified LLC; signable once verified.
+    const llcItem = await mkItem(appId, 'rtl_p1_llc');
+    assert((await so(llcItem)).status === 422, 'LLC condition blocked with no vesting LLC linked');
+    const llcId = (await db.query(`INSERT INTO llcs (borrower_id,llc_name,is_verified) VALUES ($1,'Gate LLC',false) RETURNING id`, [borrowerId])).rows[0].id;
+    await db.query(`UPDATE applications SET llc_id=$2 WHERE id=$1`, [appId, llcId]);
+    assert((await so(llcItem)).status === 422, 'LLC condition blocked while the vesting LLC is unverified');
+    await db.query(`UPDATE llcs SET is_verified=true WHERE id=$1`, [llcId]);
+    assert((await so(llcItem)).status === 200, 'LLC condition signable once the vesting LLC is verified');
+
     console.log(failures ? `\n${failures} assertion(s) failed` : '\nALL condition sign-off gate assertions passed');
   } catch (e) {
     console.error('ERROR', e); failures++;
