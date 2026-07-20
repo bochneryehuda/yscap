@@ -125,7 +125,8 @@ function injectOpenPixel(html, notifId) {
     if (!cfg.appUrl || !notifId || !html) return html;
     const base = String(cfg.appUrl).replace(/\/+$/, '');
     const px = `<img src="${base}/e/o/${notifId}.gif" alt="" width="1" height="1" border="0" style="display:none;width:1px;height:1px;max-width:0;max-height:0;opacity:0;overflow:hidden" />`;
-    return /<\/body>/i.test(html) ? html.replace(/<\/body>/i, px + '</body>') : html + px;
+    // function replacement so a literal '$' in APP_URL can't be mis-expanded by replace()
+    return /<\/body>/i.test(html) ? html.replace(/<\/body>/i, () => px + '</body>') : html + px;
   } catch (_) { return html; }
 }
 

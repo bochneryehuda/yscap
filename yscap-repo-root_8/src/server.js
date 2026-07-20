@@ -251,6 +251,11 @@ app.get('/link/:kind', (req, res, next) => {
 // PUBLIC + best-effort: it reveals nothing, always returns a 1x1 transparent GIF,
 // and the FK to notifications means a guessed/bogus id can't create a junk row.
 const OPEN_GIF = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
+// Generous per-IP cap so a pathological flood can't hammer the DB, but high enough
+// that a shared email-image proxy (Gmail routes many users' opens through a few
+// IPs) never suppresses a legitimate open. Best-effort: real open volume for this
+// shop is far below this.
+app.use('/e/o', rateLimit({ bucket: 'open-pixel', windowMs: 60000, max: 600 }));
 app.get('/e/o/:token', async (req, res) => {
   const sendPixel = () => {
     res.set('Content-Type', 'image/gif');
