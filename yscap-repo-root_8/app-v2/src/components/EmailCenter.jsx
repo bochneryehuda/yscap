@@ -245,7 +245,7 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) 
 }
 
 /* ---- reply / compose composer (shows who it reaches) ---- */
-function Composer({ appId, subject, onSent, isNew, onClose }) {
+function Composer({ appId, subject, onSent, isNew, onClose, scope }) {
   const [open, setOpen] = useState(!!isNew);
   const [body, setBody] = useState('');
   const [subj, setSubj] = useState(isNew ? '' : (subject && /^\s*re:/i.test(subject) ? subject : `Re: ${subject || 'your loan file'}`));
@@ -261,7 +261,7 @@ function Composer({ appId, subject, onSent, isNew, onClose }) {
     if (!body.trim()) return;
     setBusy(true); setMsg('');
     try {
-      const r = await api.staffAppEmailReply(appId, { body, subject: subj });
+      const r = await api.staffAppEmailReply(appId, { body, subject: subj, scope: scope || undefined });
       setMsg(`Sent to ${(r.sent_to || []).length} recipient${(r.sent_to || []).length === 1 ? '' : 's'}.`);
       setBody(''); if (!isNew) setOpen(false); if (isNew && onClose) onClose();
       onSent && onSent();
@@ -300,7 +300,7 @@ function Composer({ appId, subject, onSent, isNew, onClose }) {
 
 const PAGE = 120;
 
-export default function EmailCenter({ mode = 'file', appId = null }) {
+export default function EmailCenter({ mode = 'file', appId = null, scope = null }) {
   const globalMode = mode === 'global';
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState('');
@@ -324,7 +324,7 @@ export default function EmailCenter({ mode = 'file', appId = null }) {
     const offset = append && rows ? rows.length : 0;
     const p = globalMode
       ? api.staffEmails({ q: debouncedQ || undefined, status: filter === 'all' || filter === 'inbound' || filter === 'starred' || filter === 'unread' ? undefined : filter, direction: filter === 'inbound' ? 'inbound' : undefined, limit: PAGE, offset })
-      : api.staffAppEmails(appId);
+      : api.staffAppEmails(appId, scope);
     p.then((r) => {
       const arr = Array.isArray(r) ? r : [];
       if (globalMode) { setHasMore(arr.length >= PAGE); setRows((prev) => append && prev ? prev.concat(arr) : arr); }
@@ -455,7 +455,7 @@ export default function EmailCenter({ mode = 'file', appId = null }) {
       ) : null}
 
       <div className="ec-toolbar">
-        <input ref={searchRef} className="ec-search" placeholder={globalMode ? 'Search all emails — subject, person, address…  ( / )' : 'Search this file’s emails…  ( / )'}
+        <input ref={searchRef} className="ec-search" placeholder={globalMode ? 'Search all emails — subject, person, address…  ( / )' : (scope === 'draw' ? 'Search this file’s draw emails…  ( / )' : 'Search this file’s emails…  ( / )')}
           value={q} onChange={(e) => setQ(e.target.value)} />
         <div className="ec-filters">
           {FILTERS.map((f) => (<button key={f.k} className={`ec-filter${filter === f.k ? ' active' : ''}`} onClick={() => setFilter(f.k)}>{f.label}</button>))}
@@ -468,8 +468,8 @@ export default function EmailCenter({ mode = 'file', appId = null }) {
 
       {composing && !globalMode ? (
         <div className="ec-compose-panel">
-          <div className="ec-compose-head">New email to this file</div>
-          <Composer appId={appId} subject="" isNew onSent={() => load(false)} onClose={() => setComposing(false)} />
+          <div className="ec-compose-head">{scope === 'draw' ? 'New draw message to this file' : 'New email to this file'}</div>
+          <Composer appId={appId} subject="" isNew onSent={() => load(false)} onClose={() => setComposing(false)} scope={scope} />
         </div>
       ) : null}
 
@@ -527,7 +527,7 @@ export default function EmailCenter({ mode = 'file', appId = null }) {
                 ))}
               </div>
               {(!globalMode || selectedThread.application_id)
-                ? <Composer appId={globalMode ? selectedThread.application_id : appId} subject={selectedThread.subject} onSent={() => load(false)} />
+                ? <Composer appId={globalMode ? selectedThread.application_id : appId} subject={selectedThread.subject} onSent={() => load(false)} scope={scope} />
                 : null}
             </>
           )}

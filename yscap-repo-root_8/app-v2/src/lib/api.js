@@ -371,7 +371,7 @@ export const api = {
   staffConditions:  (appId) => req('GET', `/api/staff/applications/${appId}/conditions`),
   staffActivity:    (appId) => req('GET', `/api/staff/applications/${appId}/activity`),
   // ---- Email Center (per-file history + global mailbox + reply) ----
-  staffAppEmails:   (appId) => req('GET', `/api/staff/applications/${appId}/emails`),   // per-file email history
+  staffAppEmails:   (appId, scope) => req('GET', `/api/staff/applications/${appId}/emails` + (scope ? `?scope=${encodeURIComponent(scope)}` : '')),   // per-file email history (scope='draw' → draw inbox)
   staffAppEmailMsg: (appId, msgId) => req('GET', `/api/staff/applications/${appId}/emails/${msgId}`),   // full body of one message
   staffAppEmailReply: (appId, body) => req('POST', `/api/staff/applications/${appId}/emails/reply`, body),
   staffAppReplyRecipients: (appId) => req('GET', `/api/staff/applications/${appId}/emails/reply-recipients`),
