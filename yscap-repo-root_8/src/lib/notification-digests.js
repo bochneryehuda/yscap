@@ -216,7 +216,9 @@ async function weeklyAdminSummaryOnce() {
 /* 5) Draw result awaiting the borrower — a delivered inspection result the borrower hasn't accepted or
    disputed is HOLDING THEIR MONEY (the release clock only starts on accept), so nudge them if it's sat a
    few days. Borrower-safe (notifyAppBorrowers scrubs); per file, ≤ once / 2 days. draw_findings exist only
-   for PILOT-managed files (delivered via the created-only reconcile), so this is go-forward-only by data. */
+   for PILOT-managed files (delivered via the created-only reconcile), so this is go-forward-only by data.
+   The EXISTS on an ACTIVE created link both re-asserts go-forward-only at the query level and honors CLAUDE.md
+   Sitewire rule 10 — a finished/paid-off project is excluded, so a leftover finding on a closed loan never nudges. */
 async function drawFindingsAwaitingBorrowerOnce() {
   let sent = 0;
   const waitDays = Math.max(1, Number(process.env.DRAW_FINDINGS_REMINDER_DAYS || 3));
@@ -226,6 +228,8 @@ async function drawFindingsAwaitingBorrowerOnce() {
        JOIN applications a ON a.id=f.application_id AND a.deleted_at IS NULL
       WHERE f.status='delivered' AND f.delivered_at IS NOT NULL
         AND f.delivered_at < now() - ($1 || ' days')::interval
+        AND EXISTS (SELECT 1 FROM sitewire_property_links pl WHERE pl.application_id=f.application_id
+                      AND pl.matched_by='created' AND COALESCE(pl.lifecycle_state,'active')='active')
       GROUP BY f.application_id
       LIMIT 300`, [String(waitDays)])).rows;
   for (const r of rows) {
@@ -248,7 +252,9 @@ async function drawFindingsAwaitingBorrowerOnce() {
 
 /* 6) Draw release overdue — the borrower ACCEPTED, the wire SLA (wire_due_at) has passed, and no release
    is recorded. Nudge the assigned team so a borrower's approved money doesn't slip. Per file, ≤ once/2 days.
-   (The portfolio monitor flags this passively; this is the active push.) Staff surface — not borrower-safe-gated. */
+   (The portfolio monitor flags this passively; this is the active push.) Staff surface — not borrower-safe-gated.
+   The active-link EXISTS mirrors the passive monitor (rule 10): a finished/paid-off project is excluded, so an
+   accepted finding whose wire was handled outside PILOT on a closed loan never alerts the team forever. */
 async function drawReleaseOverdueOnce() {
   let sent = 0;
   const rows = (await db.query(
@@ -257,6 +263,8 @@ async function drawReleaseOverdueOnce() {
        JOIN applications a ON a.id=f.application_id AND a.deleted_at IS NULL
       WHERE f.status='accepted' AND f.wire_due_at IS NOT NULL AND f.wire_due_at < now()
         AND NOT EXISTS (SELECT 1 FROM draw_disbursements dd WHERE dd.sitewire_draw_id=f.sitewire_draw_id AND dd.funded_status='released')
+        AND EXISTS (SELECT 1 FROM sitewire_property_links pl WHERE pl.application_id=f.application_id
+                      AND pl.matched_by='created' AND COALESCE(pl.lifecycle_state,'active')='active')
       GROUP BY f.application_id
       LIMIT 300`)).rows;
   for (const r of rows) {

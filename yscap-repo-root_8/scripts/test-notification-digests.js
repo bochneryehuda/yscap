@@ -92,6 +92,11 @@ const to = (e) => sent.find((x) => (Array.isArray(x.to) ? x.to : [x.to]).include
 
   /* 5) Draw result awaiting the borrower — nudge, borrower-safe, idempotent. */
   const DRAW = 900000 + (suffix % 90000);
+  // A PILOT-managed (created), ACTIVE Sitewire link is required — the reminders only fire for go-forward-only
+  // files whose project is still active (CLAUDE.md Sitewire rule 10); a finished/paid-off link is excluded.
+  await db.query(
+    `INSERT INTO sitewire_property_links (application_id, sitewire_property_id, matched_by, state, lifecycle_state, pushed_at)
+     VALUES ($1,$2,'created','live','active',now())`, [app.id, DRAW + 1]);
   await db.query(
     `INSERT INTO draw_findings (application_id, sitewire_draw_id, status, total_requested_cents, total_approved_cents, delivered_at)
      VALUES ($1,$2,'delivered',2000000,1800000, now()-interval '5 days')`, [app.id, DRAW]);
@@ -118,7 +123,22 @@ const to = (e) => sent.find((x) => (Array.isArray(x.to) ? x.to : [x.to]).include
   reset(); await D.drawReleaseOverdueOnce();
   assert.ok(!to(semail), 'release-overdue alert gated on the 2nd run (once / 2 days)');
   ok('draw release overdue: team alerted, once-per-period');
+
+  /* 6b) Finished / paid-off project is EXCLUDED (CLAUDE.md Sitewire rule 10) — a leftover overdue finding on a
+     closed loan must NOT keep nudging. Flip the link to paid_off, clear the gate, and assert both reminders stay silent. */
+  await db.query(`UPDATE sitewire_property_links SET lifecycle_state='paid_off' WHERE application_id=$1`, [app.id]);
+  await db.query(`DELETE FROM audit_log WHERE action IN ('draw_findings_reminder','draw_release_overdue') AND entity_id=$1`, [app.id]).catch(() => {});
+  // Re-arm an un-accepted delivered finding so the borrower nudge would fire IF lifecycle weren't excluded.
+  await db.query(`UPDATE draw_findings SET status='delivered', delivered_at=now()-interval '5 days', accepted_at=NULL, wire_due_at=NULL WHERE application_id=$1`, [app.id]);
+  reset(); const cBorrowerClosed = await D.drawFindingsAwaitingBorrowerOnce();
+  assert.ok(cBorrowerClosed === 0 && !to(bemail), 'borrower nudge suppressed on a paid-off project');
+  await db.query(`UPDATE draw_findings SET status='accepted', accepted_at=now()-interval '3 days', wire_due_at=now()-interval '1 day' WHERE application_id=$1`, [app.id]);
+  reset(); const cStaffClosed = await D.drawReleaseOverdueOnce();
+  assert.ok(cStaffClosed === 0 && !to(semail), 'release-overdue alert suppressed on a paid-off project');
+  ok('finished/paid-off project excluded from both draw reminders (rule 10)');
+
   await db.query(`DELETE FROM draw_findings WHERE application_id=$1`, [app.id]).catch(() => {});
+  await db.query(`DELETE FROM sitewire_property_links WHERE application_id=$1`, [app.id]).catch(() => {});
 
   /* nyParts sanity */
   const p = D.nyParts();
