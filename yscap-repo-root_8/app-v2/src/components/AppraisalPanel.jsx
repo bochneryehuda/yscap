@@ -392,6 +392,11 @@ function NeighborhoodCard({ a }) {
           {landUse.map((u) => `${u.percent}% ${LAND_USE_LABEL[u.type] || human(u.type).toLowerCase()}`).join(' · ')}
         </div>
       )}
+      {a.nbhd_boundaries && (
+        <div style={{ marginTop: 8, fontSize: 12.5, color: 'var(--muted,#4B585C)', lineHeight: 1.4 }}>
+          <b style={{ color: 'var(--text,#141B22)' }}>Boundaries: </b>{a.nbhd_boundaries}
+        </div>
+      )}
       {hasMc && (
         <div style={{ marginTop: band || has ? 12 : 0, paddingTop: band || has ? 12 : 0, borderTop: band || has ? '1px solid var(--line-soft,#EFEADD)' : 'none' }}>
           <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)', marginBottom: 8 }}>Market conditions (1004MC · last 3 months)</div>
@@ -566,7 +571,7 @@ function ContractCard({ a, readOnly }) {
   if (a.seller_is_owner === false) flags.push(chip('Seller ≠ owner of record', 'warn'));
   if (a.contract_reviewed === false) flags.push(chip('Contract not analyzed', 'warn'));
   if (a.concession_indicator === true || (a.concession_amount != null && a.concession_amount > 0)) flags.push(chip(`Concessions ${a.concession_amount ? money(a.concession_amount) : ''}`.trim(), 'warn'));
-  const has = flags.length || a.contract_data_source || a.listing_history || a.concession_description || a.contract_review_comment;
+  const has = flags.length || a.contract_data_source || a.listing_history || a.concession_description || a.contract_review_comment || a.sales_agreement_analysis;
   if (!has) return null;
   return (
     <DCard title="Sale contract & terms">
@@ -579,6 +584,7 @@ function ContractCard({ a, readOnly }) {
         a.listed_within_year != null && ['Listed in last 12 mo', a.listed_within_year ? 'Yes' : 'No'],
       ]} />
       {a.contract_review_comment && <p style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', margin: '8px 0 0', lineHeight: 1.4 }}><b style={{ color: 'var(--text,#141B22)' }}>Appraiser’s contract note: </b>{a.contract_review_comment}</p>}
+      {a.sales_agreement_analysis && <p style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', margin: '8px 0 0', lineHeight: 1.4 }}><b style={{ color: 'var(--text,#141B22)' }}>Transfer history: </b>{a.sales_agreement_analysis}</p>}
       {a.listing_history && <p style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', margin: '8px 0 0', lineHeight: 1.4 }}>{a.listing_history}</p>}
     </DCard>
   );
@@ -1208,6 +1214,8 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
                 ['Stories', or(a.stories)],
                 ['Gross living area', a.gla ? `${Number(a.gla).toLocaleString('en-US')} sf` : '—'],
                 ['Year built', or(a.year_built)],
+                a.building_status && a.building_status !== 'Existing' && ['Building status',
+                  <span style={{ color: 'var(--crit,#B4483C)' }}>{human(a.building_status)}</span>],
               ]} />
               {(a.condition_uad || a.quality_uad) && (
                 <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--line-soft,#EFEADD)', display: 'grid', gap: 12 }}>
@@ -1251,6 +1259,8 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
                     priv ? 'private — confirm a road-maintenance agreement' : null];
                 })(),
                 ['Site value (cost)', a.site_value != null ? money(a.site_value) : '—'],
+                a.property_tax_amount != null && ['Annual property tax',
+                  `${money(a.property_tax_amount)}${a.property_tax_year != null ? ` (${a.property_tax_year})` : ''}`],
               ]} />
             </DCard>
 
@@ -1338,6 +1348,22 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
           {/* ===== WHAT IT'S WORTH ===== */}
           <SecHead eyebrow="Valuation" title="What it's worth" />
           <Approaches a={a} />
+          {/* The appraiser's OWN researched market bracket (from the appraisal's research block) —
+              context alongside our independent comp check below. */}
+          {(() => {
+            const cr = typeof a.comp_research === 'string' ? (() => { try { return JSON.parse(a.comp_research); } catch { return null; } })() : a.comp_research;
+            if (!cr) return null;
+            const parts = [];
+            if (cr.salesLow != null && cr.salesHigh != null) parts.push(`${cr.salesCount != null ? `${cr.salesCount} ` : ''}comparable sales ${money(cr.salesLow)}–${money(cr.salesHigh)}`);
+            if (cr.listingsLow != null && cr.listingsHigh != null) parts.push(`${cr.listingsCount != null ? `${cr.listingsCount} ` : ''}active listings ${money(cr.listingsLow)}–${money(cr.listingsHigh)}`);
+            if (!parts.length) return null;
+            return (
+              <div className="appr-avoid" style={{ marginTop: 12, display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', background: 'var(--card,#fff)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 12, padding: '12px 14px', fontSize: 13 }}>
+                <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--gold,#AE8746)' }}>Appraiser’s research</span>
+                <span style={{ color: 'var(--muted,#4B585C)' }}>The appraiser researched {parts.join(' · ')} in the subject’s market.</span>
+              </div>
+            );
+          })()}
           {/* Independent second opinion — what the comps themselves imply (not the appraiser's
               reconciliation). Shown only when we have enough comps to form one. */}
           {data.score && data.score.impliedValue && (
