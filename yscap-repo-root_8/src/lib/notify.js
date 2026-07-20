@@ -95,6 +95,9 @@ function buildEmail(opts, audience) {
     // explicit `files` list wins, else derive from whatever bytes were attached.
     files:     (Array.isArray(opts.files) && opts.files.length ? opts.files : (opts.attachments || []).map((a) => a && a.filename)).filter(Boolean),
     cta:       { label: opts.ctaLabel || (audience === 'borrower' ? 'Open your portal' : 'Open the loan file'), url: link },
+    // Optional SECONDARY button beside the primary (e.g. findings email: "Accept" + "Review /
+    // dispute"). Pass {cta2Label, cta2Link} (a portal route, tracker-safe bounced) or a raw cta2.
+    cta2:      (opts.cta2Label && opts.cta2Link) ? { label: opts.cta2Label, url: portalLink(opts.cta2Link) } : (opts.cta2 || null),
     note:      opts.note || (audience === 'borrower'
                  ? 'You are receiving this because you have an active file with YS Capital Group.'
                  : ''),

@@ -251,7 +251,7 @@ app.get('/link/:kind', (req, res, next) => {
 // --- Email OPEN tracking pixel -----------------------------------------------
 // A per-recipient notification email embeds <img src="/e/o/<notificationId>.gif">.
 // When the recipient's email client loads it, we stamp the open (email_opens,
-// db/193) so the Email Center can show whether/when the borrower opened it.
+// db/194) so the Email Center can show whether/when the borrower opened it.
 // PUBLIC + best-effort: it reveals nothing, always returns a 1x1 transparent GIF,
 // and the FK to notifications means a guessed/bogus id can't create a junk row.
 const OPEN_GIF = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');

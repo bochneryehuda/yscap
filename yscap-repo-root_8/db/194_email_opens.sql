@@ -1,4 +1,4 @@
--- 193_email_opens.sql — email OPEN tracking (owner-directed 2026-07-20).
+-- 194_email_opens.sql — email OPEN tracking (owner-directed 2026-07-20).
 --
 -- "Did the borrower actually open the email?" Every per-recipient notification
 -- email embeds an invisible 1x1 tracking pixel keyed on that recipient's
