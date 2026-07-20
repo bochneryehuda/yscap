@@ -472,7 +472,9 @@ function enrichment(root, prop, st, site, subject0, rep, formType) {
 
   // -- sales contract / concessions / listing --
   const sc = subjFind(root, 'SALES_CONTRACT');
-  o.sale_type = enumOf(A(X.find(sc || root, 'SALES_TRANSACTION'), 'GSESaleType'), ['ArmsLengthSale', 'Listing', 'REOSale', 'ShortSale', 'EstateSale', 'CourtOrderedSale']);
+  // Scope strictly to the subject contract — never fall back to a doc-wide find (a comp's
+  // SALES_TRANSACTION must not become the subject's sale type).
+  o.sale_type = enumOf(A(sc ? X.find(sc, 'SALES_TRANSACTION') : null, 'GSESaleType'), ['ArmsLengthSale', 'Listing', 'REOSale', 'ShortSale', 'EstateSale', 'CourtOrderedSale']);
   o.concession_indicator = yn(A(sc, 'SalesConcessionIndicator'));
   o.concession_amount = (() => { const n = toNum(A(sc, 'SalesConcessionAmount')); return n != null && n >= 0 && n < 1e9 ? n : null; })();
   o.concession_description = capText(A(sc, 'SalesConcessionDescription'), 400);
@@ -504,7 +506,7 @@ function enrichment(root, prop, st, site, subject0, rep, formType) {
 
   // -- income / rent --
   const inc = subjFind(root, 'INCOME_ANALYSIS');
-  o.est_market_monthly_rent = money(A(inc, 'EstimatedMarketMonthlyRentAmount'));
+  o.est_market_monthly_rent = bounded(A(inc, 'EstimatedMarketMonthlyRentAmount'), 1e8);  // numeric(12,2) — bounded, not money()'s 1e12
   const rentUtils = [];
   for (const ru of subjAll(root, 'RENT_INCLUDES_UTILITY')) { if (yn(X.attr(ru, '_Indicator')) === true) { const t = clean(X.attr(ru, '_Type')); if (t) rentUtils.push(t === 'Other' ? (clean(X.attr(ru, '_TypeOtherDescription')) || 'Other') : t); } }
   o.rent_included_utilities = rentUtils.length ? rentUtils : null;
@@ -768,8 +770,10 @@ function extract(xml) {
   if (enrich.concession_indicator === true || (enrich.concession_amount != null && enrich.concession_amount > 0)) warnings.push({ code: 'seller_concessions', msg: 'Seller concessions on the contract — effective price is lower' });
   if (enrich.inspection_type === 'None') warnings.push({ code: 'no_inspection', msg: 'Desktop / no-inspection appraisal — no property inspection recorded' });
   if (enrich.occupancy_status === 'TenantOccupied') warnings.push({ code: 'tenant_occupied', msg: 'Subject is tenant-occupied — possession/eviction risk on a flip' });
-  // expired appraiser license at signing (string YYYY-MM-DD compare; never new Date()).
-  if (ap.licenseExp && ap.reportSignedDate && ap.licenseExp < ap.reportSignedDate) warnings.push({ code: 'license_expired_at_signing', msg: `Appraiser license expired ${ap.licenseExp} before the report was signed ${ap.reportSignedDate}` });
+  // expired appraiser license at signing (string YYYY-MM-DD compare; never new Date()). Read the
+  // BUILT appraiser object (ap is the raw XML node and has no licenseExp; using it both crashed on
+  // an APPRAISER-less file and made this warning permanently silent — audit MAJOR).
+  if (appraiser.licenseExp && appraiser.reportSignedDate && appraiser.licenseExp < appraiser.reportSignedDate) warnings.push({ code: 'license_expired_at_signing', msg: `Appraiser license expired ${appraiser.licenseExp} before the report was signed ${appraiser.reportSignedDate}` });
   // condo owner-occupancy warrantability
   if (enrich.condo_units_sold != null && enrich.condo_units_sold > 0 && enrich.condo_owner_occupied != null) {
     const ooPct = enrich.condo_owner_occupied / enrich.condo_units_sold;
