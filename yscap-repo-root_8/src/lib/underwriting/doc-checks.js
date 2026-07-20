@@ -11,6 +11,8 @@
  * subject/opts are injected by the route (opts.today = 'YYYY-MM-DD').
  */
 const { num, withinMoney, namesMatchLoose, entityMatch, daysBetween, toISODate } = require('./compare');
+const { clauseNamesLender, clauseHasAddress, LENDER_MORTGAGEE_CLAUSE } = require('./lender');
+const insLoanKey = (s) => String(s == null ? '' : s).toUpperCase().replace(/[^A-Z0-9]/g, '');
 
 function mk(source, f) {
   return Object.assign(
@@ -191,6 +193,32 @@ function computeInsuranceFindings(ins, subject, opts = {}) {
       title: 'The insurance does not name the lender as mortgagee',
       howTo: 'The policy must carry the lender\'s mortgagee clause (ISAOA/ATIMA) so the lender is protected and gets notice. Have the agent add the correct mortgagee clause.',
       actions: ['request_document', 'post_condition', 'dismiss'] }));
+  } else {
+    // A clause IS present — is it OURS, worded correctly? (warning: the coverage exists but must be
+    // re-issued to the right mortgagee; distinct from the fatal "no mortgagee clause at all".)
+    const namesLender = clauseNamesLender(ins.mortgageeClause);
+    if (namesLender === false) {
+      out.push(mk('insurance', { code: 'insurance_wrong_mortgagee', severity: 'warning', field: 'mortgagee_clause',
+        docValue: ins.mortgageeClause, fileValue: LENDER_MORTGAGEE_CLAUSE,
+        title: 'The insurance mortgagee clause is not the lender\'s',
+        howTo: `The policy's mortgagee/loss-payee clause must read exactly "${LENDER_MORTGAGEE_CLAUSE.replace(/\n/g, ', ')}" (ISAOA/ATIMA). Have the agent re-issue the policy with the correct mortgagee clause.`,
+        actions: ['request_document', 'post_condition', 'dismiss'] }));
+    } else if (namesLender === true && clauseHasAddress(ins.mortgageeClause) === false) {
+      out.push(mk('insurance', { code: 'insurance_mortgagee_address', severity: 'info', field: 'mortgagee_clause',
+        docValue: ins.mortgageeClause, fileValue: LENDER_MORTGAGEE_CLAUSE,
+        title: 'Confirm the lender notice address on the insurance mortgagee clause',
+        howTo: `The policy names the lender but the notice address doesn't match "${LENDER_MORTGAGEE_CLAUSE.replace(/\n/g, ', ')}". Confirm the correct address so loss notices reach the lender.`,
+        actions: ['acknowledge', 'request_document', 'dismiss'] }));
+    }
+  }
+  // The policy must be tied to OUR loan number.
+  const fileLoanNo = subject && subject.loan_number;
+  if (fileLoanNo && ins.loanNumber && insLoanKey(fileLoanNo) !== insLoanKey(ins.loanNumber)) {
+    out.push(mk('insurance', { code: 'insurance_loan_number_mismatch', severity: 'warning', field: 'loan_number',
+      docValue: ins.loanNumber, fileValue: fileLoanNo,
+      title: 'Loan number on the insurance does not match the file',
+      howTo: `The policy shows loan number "${ins.loanNumber}" but the file's loan number is "${fileLoanNo}". Have the agent correct it so the binder is tied to this loan.`,
+      actions: ['request_document', 'fix_file', 'post_condition', 'dismiss'] }));
   }
   const cov = num(ins.dwellingCoverage), loan = subject && num(subject.loan_amount);
   if (cov != null && loan != null && loan > 0 && cov < loan - 1) {

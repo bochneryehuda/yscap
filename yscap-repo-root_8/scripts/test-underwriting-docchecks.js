@@ -85,6 +85,21 @@ assert.strictEqual(C.computeInsuranceFindings({ ...insGood, mortgageeClausePrese
   assert.ok(!noRehab.some((f) => f.code === 'insurance_no_builders_risk'), 'no rehab budget → builders-risk not required');
 }
 assert.ok(C.computeInsuranceFindings({ ...insGood, policyExpiration: '2026-01-01' }, { loan_amount: 300000 }, { today: TODAY }).some((f) => f.code === 'insurance_expired'));
+// Mortgagee-clause TEXT + loan number must be the lender's (owner-directed 2026-07-20).
+{
+  const { LENDER_MORTGAGEE_CLAUSE } = require('../src/lib/underwriting/lender');
+  const sub = { loan_amount: 300000, loan_number: 'YS-2026-0345' };
+  // A clause present but naming a different lender → warning (distinct from the fatal "no clause").
+  const wrong = C.computeInsuranceFindings({ ...insGood, mortgageeClause: 'Wells Fargo ISAOA/ATIMA', loanNumber: 'ZZ-1' }, sub, { today: TODAY });
+  assert.ok(wrong.some((f) => f.code === 'insurance_wrong_mortgagee' && f.severity === 'warning'));
+  assert.ok(wrong.some((f) => f.code === 'insurance_loan_number_mismatch'));
+  assert.ok(!wrong.some((f) => f.code === 'insurance_no_mortgagee'), 'a present-but-wrong clause is not the fatal no-clause case');
+  // The exact lender clause + matching loan number (formatting-insensitive) → clean.
+  const right = C.computeInsuranceFindings({ ...insGood, mortgageeClause: LENDER_MORTGAGEE_CLAUSE, loanNumber: 'YS 2026 0345' }, sub, { today: TODAY });
+  assert.deepStrictEqual(codes(right), [], 'correct clause + loan number → clean');
+  // An unread clause (null) never false-accuses.
+  assert.ok(!C.computeInsuranceFindings({ ...insGood, mortgageeClause: null }, sub, { today: TODAY }).some((f) => /mortgagee/.test(f.code)));
+}
 
 // ---- Flood ----
 assert.deepStrictEqual(codes(C.computeFloodFindings({ floodZone: 'X', inSfha: false, readable: true }, {})), []);

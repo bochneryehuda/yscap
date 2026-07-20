@@ -109,7 +109,11 @@ const TITLE = {
     "(the special exceptions list — e.g. easements, encroachments, lis pendens, notice of default, " +
     "bankruptcy, unpaid taxes, mechanic's liens) as an array of short strings, each the exception text " +
     "as printed. For each LIEN also capture its type (e.g. 'property tax', 'federal tax', 'mortgage', " +
-    "'deed of trust', 'judgment', 'mechanic', 'HOA') and amount. Use null/[] for anything absent or " +
+    "'deed of trust', 'judgment', 'mechanic', 'HOA') and amount. From SCHEDULE A also capture the LOAN " +
+    "NUMBER, the policy/insured LIABILITY AMOUNT (a plain number), and the LENDER MORTGAGEE CLAUSE / " +
+    "proposed-insured text verbatim. Capture any ENDORSEMENTS called for or attached (e.g. 'ALTA 9', " +
+    "'condominium', 'PUD', 'contiguity', 'survey') as an array of short strings, and the number of " +
+    "PARCELS in the insured legal description if stated. Use null/[] for anything absent or " +
     "unreadable — do NOT guess. Prices/amounts as plain numbers. Set readable=false if too poor to trust.",
   schema: {
     type: 'object',
@@ -132,13 +136,18 @@ const TITLE = {
         },
       },
       exceptions:    { type: 'array', items: { type: 'string' } },   // Schedule B special exceptions/exclusions
+      endorsements:  { type: 'array', items: { type: 'string' } },   // endorsements attached/called for (Schedule A/B)
+      loanNumber:    { type: ['string', 'null'] },           // the loan number shown on Schedule A
+      insuredAmount: { type: ['number', 'null'] },           // the policy liability amount (Schedule A)
+      mortgageeClause: { type: ['string', 'null'] },         // the lender vesting / mortgagee clause text on Schedule A
+      parcelCount:   { type: ['number', 'null'] },           // number of parcels in the insured legal description
       effectiveDate: { type: ['string', 'null'] },
       ownerAcquisitionDate:  { type: ['string', 'null'] },   // when the current owner/seller acquired it (YYYY-MM-DD)
       ownerAcquisitionPrice: { type: ['number', 'null'] },   // the prior sale price, if the report states it
       readable:      { type: 'boolean' },
       notes:         { type: ['string', 'null'] },
     },
-    required: ['propertyAddress', 'vestedOwners', 'buyerNames', 'legalDescription', 'liens', 'exceptions', 'effectiveDate', 'ownerAcquisitionDate', 'ownerAcquisitionPrice', 'readable', 'notes'],
+    required: ['propertyAddress', 'vestedOwners', 'buyerNames', 'legalDescription', 'liens', 'exceptions', 'endorsements', 'loanNumber', 'insuredAmount', 'mortgageeClause', 'parcelCount', 'effectiveDate', 'ownerAcquisitionDate', 'ownerAcquisitionPrice', 'readable', 'notes'],
   },
 };
 
@@ -302,8 +311,9 @@ const INSURANCE = {
     "a loan file. Extract the named insured EXACTLY as printed, the carrier, the policy number, the " +
     "property address, the dwelling/coverage-A amount, the policy effective and expiration dates, the " +
     "premium, whether the lender's mortgagee clause is present, and whether it is a builders-risk / " +
-    "vacant-property policy. Use null for anything absent or unreadable — do NOT guess. Amounts as plain " +
-    "numbers, dates YYYY-MM-DD. readable=false if poor.",
+    "vacant-property policy. Also capture the MORTGAGEE / LOSS-PAYEE clause text verbatim and the LOAN " +
+    "NUMBER shown on the policy/binder. Use null for anything absent or unreadable — do NOT guess. " +
+    "Amounts as plain numbers, dates YYYY-MM-DD. readable=false if poor.",
   schema: obj({
     namedInsured: { type: ['string', 'null'] },
     carrier: { type: ['string', 'null'] },
@@ -314,6 +324,8 @@ const INSURANCE = {
     policyExpiration: { type: ['string', 'null'] },
     premium: { type: ['number', 'null'] },
     mortgageeClausePresent: { type: ['boolean', 'null'] },
+    mortgageeClause: { type: ['string', 'null'] },
+    loanNumber: { type: ['string', 'null'] },
     buildersRisk: { type: ['boolean', 'null'] },
     readable: { type: 'boolean' },
     notes: { type: ['string', 'null'] },

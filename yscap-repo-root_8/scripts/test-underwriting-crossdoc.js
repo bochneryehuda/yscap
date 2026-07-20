@@ -88,6 +88,29 @@ assert.deepStrictEqual(codes(computeTitleFindings({ ...baseTitle, liens: [], exc
   assert.ok(!/labor or material/i.test(ex.docValue), 'the standard mechanic-lien exception is NOT surfaced');
 }
 
+// ===== TITLE Schedule A: loan number, policy amount, mortgagee clause, endorsements =====
+{
+  const { LENDER_MORTGAGEE_CLAUSE } = require('../src/lib/underwriting/lender');
+  const tfile = { property_address: titleFile.property_address, loan_amount: 240000, loan_number: 'YS-2026-0345', property_type: 'Condo' };
+  const base = { readable: true, propertyAddress: titleFile.property_address, vestedOwners: ['Jane Seller'], liens: [], exceptions: [] };
+  // Wrong mortgagee + policy below the loan + condo with no condo endorsement → three warnings.
+  const bad = computeTitleFindings({ ...base, loanNumber: 'YS-2026-0345', insuredAmount: 200000,
+    mortgageeClause: 'Wells Fargo ISAOA/ATIMA', endorsements: ['ALTA 9'], parcelCount: 1 }, tfile, { today: '2026-07-20' });
+  assert.deepStrictEqual(codes(bad), ['title_missing_condo_endorsement', 'title_policy_amount_low', 'title_wrong_mortgagee']);
+  assert.ok(bad.every((x) => x.blocksCtc === false), 'these are pre-funding conditions, not hard blocks');
+  // Loan number matches ignoring formatting; correct clause; policy ≥ loan; condo endorsement present → clean.
+  const good = computeTitleFindings({ ...base, loanNumber: 'YS 2026 0345', insuredAmount: 245000,
+    mortgageeClause: LENDER_MORTGAGEE_CLAUSE, endorsements: ['Condominium endorsement'], parcelCount: 1 }, tfile, { today: '2026-07-20' });
+  assert.deepStrictEqual(codes(good), [], 'correct Schedule A raises nothing');
+  // A different loan number IS flagged.
+  assert.ok(computeTitleFindings({ ...base, loanNumber: 'XX-999' }, tfile, {}).some((x) => x.code === 'title_loan_number_mismatch'));
+  // Multi-parcel with no contiguity endorsement → flagged; with one → clean.
+  assert.ok(computeTitleFindings({ ...base, parcelCount: 3, endorsements: [] }, { ...tfile, property_type: 'SFR' }, {}).some((x) => x.code === 'title_multiparcel_contiguity'));
+  assert.ok(!computeTitleFindings({ ...base, parcelCount: 3, endorsements: ['Contiguity endorsement'] }, { ...tfile, property_type: 'SFR' }, {}).some((x) => x.code === 'title_multiparcel_contiguity'));
+  // An unread mortgagee clause (null) is never a false accusation.
+  assert.ok(!computeTitleFindings({ ...base, mortgageeClause: null }, { ...tfile, property_type: 'SFR' }, {}).some((x) => /mortgagee/.test(x.code)));
+}
+
 // ===== BANK STATEMENT =====
 const assets = { borrower_name: 'John Smith', entity_names: ['Maple Grove Holdings LLC'] };
 const goodStmt = { accountHolderName: 'John Smith', holderIsBusiness: false, bankName: 'Chase', accountNumber: '1234567890', statementPeriod: 'Jun 2026', openingBalance: 10000, closingBalance: 15000, totalDeposits: 8000, totalWithdrawals: 3000, readable: true, notes: null };

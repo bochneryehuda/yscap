@@ -8,9 +8,14 @@
  * Pure. `title` = fields for the TITLE schema; `file` = { property_address }.
  */
 const { addrMatches, addrLine, norm, daysBetween, toISODate, num } = require('./compare');
+const { clauseNamesLender, clauseHasAddress, LENDER_MORTGAGEE_CLAUSE } = require('./lender');
 
 const SEASONING_DAYS = 90;   // FHA anti-flip line; a resale inside this window is a flip signal.
 const money = (n) => (num(n) == null ? null : `$${num(n).toLocaleString('en-US')}`);
+// Loan numbers compared identity-insensitively to formatting (dashes/spaces/case).
+const loanKey = (s) => String(s == null ? '' : s).toUpperCase().replace(/[^A-Z0-9]/g, '');
+const isCondoOrPud = (t) => /condo|pud|planned unit/i.test(String(t || ''));
+const hasEndorsement = (list, re) => Array.isArray(list) && list.some((e) => re.test(String(e || '')));
 
 function finding(f) {
   return Object.assign(
@@ -129,6 +134,60 @@ function computeTitleFindings(title, file, opts = {}) {
       title: 'Title has an unusual exception that may affect marketable title',
       howTo: `Schedule B lists ${abnormal.length} exception(s) that aren't routine: ${abnormal.slice(0, 6).join(' | ')}. These can threaten clear/marketable title (a pending lawsuit, foreclosure, bankruptcy, encroachment, or unpaid tax). Review each with the title company and confirm it will be removed or insured over before funding.`,
       actions: ['post_condition', 'request_document', 'grant_exception', 'dismiss'], opensCondition: 'underwriting_review_cleared' }));
+  }
+
+  // ---- Schedule A: our loan number, policy amount, and the lender mortgagee clause ----
+  // The title policy must insure OUR loan: carry our loan number, insure at least the full loan
+  // amount, and name us as the proposed insured with the exact ISAOA/ATIMA mortgagee clause. Each is
+  // a warning that opens a pre-funding condition — the title company corrects the commitment.
+  const fileLoanNo = f.loan_number, docLoanNo = title.loanNumber;
+  if (fileLoanNo && docLoanNo && loanKey(fileLoanNo) !== loanKey(docLoanNo)) {
+    out.push(finding({ code: 'title_loan_number_mismatch', severity: 'warning', field: 'loan_number',
+      docValue: docLoanNo, fileValue: fileLoanNo,
+      title: 'Loan number on the title does not match the file',
+      howTo: `Schedule A shows loan number "${docLoanNo}" but the file's loan number is "${fileLoanNo}". Have the title company correct Schedule A so the policy is tied to this loan.`,
+      actions: ['request_document', 'fix_file', 'post_condition', 'dismiss'], opensCondition: 'underwriting_review_cleared' }));
+  }
+  const insured = num(title.insuredAmount), loanAmt = num(f.loan_amount);
+  if (insured != null && loanAmt != null && loanAmt > 0 && insured < loanAmt - 1) {
+    out.push(finding({ code: 'title_policy_amount_low', severity: 'warning', field: 'insured_amount',
+      docValue: money(insured), fileValue: money(loanAmt),
+      title: 'Title policy amount is below the loan amount',
+      howTo: `The title policy insures ${money(insured)}, but the loan is ${money(loanAmt)}. The lender's policy must insure no less than the full loan amount — request an increased policy amount before funding.`,
+      actions: ['request_document', 'post_condition', 'dismiss'], opensCondition: 'underwriting_review_cleared' }));
+  }
+  const namesLender = clauseNamesLender(title.mortgageeClause);
+  if (namesLender === false) {
+    out.push(finding({ code: 'title_wrong_mortgagee', severity: 'warning', field: 'mortgagee_clause',
+      docValue: title.mortgageeClause, fileValue: LENDER_MORTGAGEE_CLAUSE,
+      title: 'Title does not name the lender with the correct mortgagee clause',
+      howTo: `Schedule A must name the lender as proposed insured with the exact clause "${LENDER_MORTGAGEE_CLAUSE.replace(/\n/g, ', ')}". Have the title company correct it before funding.`,
+      actions: ['request_document', 'post_condition', 'dismiss'], opensCondition: 'underwriting_review_cleared' }));
+  } else if (namesLender === true && clauseHasAddress(title.mortgageeClause) === false) {
+    out.push(finding({ code: 'title_mortgagee_address', severity: 'info', field: 'mortgagee_clause',
+      docValue: title.mortgageeClause, fileValue: LENDER_MORTGAGEE_CLAUSE,
+      title: 'Confirm the lender notice address on the title mortgagee clause',
+      howTo: `The title names the lender but the notice address doesn't match "${LENDER_MORTGAGEE_CLAUSE.replace(/\n/g, ', ')}". Confirm the correct address is on Schedule A.`,
+      actions: ['acknowledge', 'request_document', 'dismiss'] }));
+  }
+
+  // ---- Required endorsements by collateral type ----
+  // Condo/PUD collateral needs the condominium / PUD endorsement; multi-parcel collateral needs a
+  // contiguity/aggregation endorsement. We flag when the collateral calls for one and the title's
+  // endorsement list doesn't show it (or no list was read) so the underwriter confirms it's added.
+  if (isCondoOrPud(f.property_type) && !hasEndorsement(title.endorsements, /condo|pud|planned unit/i)) {
+    out.push(finding({ code: 'title_missing_condo_endorsement', severity: 'warning', field: 'endorsements',
+      docValue: (title.endorsements || []).join(', ') || '(none listed)', fileValue: `${f.property_type} collateral`,
+      title: 'Confirm the condominium / PUD endorsement',
+      howTo: `This is ${f.property_type} collateral, which requires the state condominium or PUD endorsement (confirming assessments, liens, and covenants don't impair our lien). Confirm it's on the title commitment before funding.`,
+      actions: ['request_document', 'post_condition', 'dismiss'], opensCondition: 'underwriting_review_cleared' }));
+  }
+  if (num(title.parcelCount) != null && num(title.parcelCount) > 1 && !hasEndorsement(title.endorsements, /contiguity|aggregation|multi.?parcel/i)) {
+    out.push(finding({ code: 'title_multiparcel_contiguity', severity: 'warning', field: 'endorsements',
+      docValue: `${num(title.parcelCount)} parcels`, fileValue: (title.endorsements || []).join(', ') || '(no contiguity endorsement)',
+      title: 'Confirm a contiguity endorsement for the multiple parcels',
+      howTo: `The collateral is ${num(title.parcelCount)} parcels. Confirm all parcels are in the insured legal description, each is a separate tax lot, and a contiguity/aggregation endorsement covers them (no gaps, strips, or access problems) before funding.`,
+      actions: ['request_document', 'post_condition', 'dismiss'], opensCondition: 'underwriting_review_cleared' }));
   }
 
   // Seller (vested owner) present — needed for the cross-document seller match.

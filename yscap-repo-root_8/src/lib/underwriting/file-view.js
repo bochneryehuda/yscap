@@ -21,8 +21,8 @@ const { sellerNames: contractSellers } = require('./purchase-contract-checks');
 async function loadContext(client, appId) {
   const app = (await client.query(
     `SELECT id, borrower_id, llc_id, property_address, purchase_price, loan_amount,
-            as_is_value, arv, rehab_budget, program,
-            is_assignment, assignment_fee, underlying_contract_price
+            as_is_value, arv, rehab_budget, program, property_type, units,
+            ys_loan_number, is_assignment, assignment_fee, underlying_contract_price
        FROM applications WHERE id = $1`, [appId])).rows[0] || null;
   if (!app) return null;
   const borrower = app.borrower_id
@@ -67,6 +67,11 @@ function subjectFor(docType, ctx) {
         is_assignment: !!(app && app.is_assignment),
         assignment_fee: app && app.assignment_fee,
         underlying_contract_price: app && app.underlying_contract_price,
+        // title-only: the policy must insure the full loan, carry our loan number + mortgagee clause,
+        // and the right endorsements for the collateral type.
+        loan_amount: app && app.loan_amount,
+        loan_number: (app && app.ys_loan_number) || null,
+        property_type: app && app.property_type,
       };
     case 'bank_statement':
       return { borrower_name: borrowerName(borrower), entity_names: entityNames || [] };
@@ -81,6 +86,7 @@ function subjectFor(docType, ctx) {
         property_address: app && app.property_address, entity_name: vestingName || null,
         loan_amount: app && app.loan_amount, purchase_price: app && app.purchase_price,
         rehab_budget: app && app.rehab_budget, // so the insurance check knows this is a construction/rehab deal
+        loan_number: (app && app.ys_loan_number) || null, // the policy must carry our loan number + mortgagee clause
       };
     case 'operating_agreement':
     case 'ein_letter':
