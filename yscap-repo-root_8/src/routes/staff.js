@@ -4639,7 +4639,12 @@ router.patch('/applications/:id', async (req, res) => {
       await notify.notifyAppStaff(req.params.id, {   // #113: whole team (primary + assistants), minus the actor
           type: 'status_change', title: `File moved to ${label}`,
           body: `This file moved from "${fromLabel}" to "${label}"${forced ? ' (advanced with an admin override)' : ''}.`,
-          applicationId: req.params.id, link: `/internal/app/${req.params.id}`, exceptStaffId: req.actor.id });
+          applicationId: req.params.id, link: `/internal/app/${req.params.id}`, exceptStaffId: req.actor.id,
+          // Owner-directed 2026-07-20: the team gets an EMAIL only on DECISION
+          // milestones (approved / clear-to-close / funded / declined / withdrawn).
+          // Routine working moves (in review, processing, underwriting) post
+          // in-app only — no inbox bombardment when a file advances a step.
+          inAppOnly: !MAJOR_STATUSES.has(status) });
     } catch (_) { /* notify best-effort */ }
     res.json({ ok: true, status });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
