@@ -316,8 +316,17 @@ router.post('/requests/:reqId/approve', requirePermission('manage_draws'), async
     }
     res.json({ dryrun: true, approved_cents: approvedCents });
   } catch (e) {
-    if (e.status === 422) return res.status(422).json({ error: `Sitewire rejected: ${JSON.stringify(e.body || {}).slice(0, 200)}` });
-    res.status(502).json({ error: e.message });
+    // A genuine Sitewire refusal (422 bad value / 403 not authorized) shows its specific reason and is NOT
+    // parked for retry — retrying won't change a "no". Matches the draw-transition route's 422/403 handling.
+    if (e.status === 422 || e.status === 403) return res.status(e.status).json({ error: `Sitewire ${e.status === 403 ? 'refused this approval' : 'rejected'}: ${JSON.stringify(e.body || {}).slice(0, 200)}` });
+    // G1: a TRANSIENT/outage failure (5xx, network, circuit open, auth blip) must never silently drop a
+    // money decision if the coordinator walks away — capture the intended approval as a retryable review
+    // row, then return a clean, generic 502 (never the raw internal error).
+    if (e.retryable || e.code === 'SITEWIRE_CIRCUIT_OPEN' || (e.status >= 500 && e.status <= 599)) {
+      try { await orchestrator.park({ appId: own.application_id, dedupe: `approve:${reqId}`, reason: `sitewire_approve_failed: could not set the approved amount ${T.usd(approvedCents)} on draw line ${reqId} — Sitewire was briefly unavailable. Retry when it's back.`, current: String(approvedCents) }); } catch (_) {}
+      return res.status(502).json({ error: 'Sitewire is briefly unavailable — we saved this approval to retry. Please try again in a moment.' });
+    }
+    res.status(502).json({ error: 'Could not save this approval to Sitewire — please try again.' });
   }
 });
 
@@ -339,7 +348,13 @@ router.post('/draws/:drawId/:action', requirePermission('manage_draws'), async (
     res.json({ ok: true, status: r && r.status });
   } catch (e) {
     if (e.status === 422 || e.status === 403) return res.status(e.status).json({ error: `Sitewire ${action} refused: ${JSON.stringify(e.body || {}).slice(0, 200)}` });
-    res.status(502).json({ error: e.message });
+    // G1: a TRANSIENT/outage failure must not silently drop the transition — park it (retryable) so the
+    // coordinator's ${action} isn't lost, then return a clean generic 502 (never the raw internal error).
+    if (e.retryable || e.code === 'SITEWIRE_CIRCUIT_OPEN' || (e.status >= 500 && e.status <= 599)) {
+      try { await orchestrator.park({ appId: own.application_id, dedupe: `draw${action}:${drawId}`, reason: `sitewire_draw_transition_failed: could not ${action} draw ${drawId} — Sitewire was briefly unavailable. Retry when it's back.` }); } catch (_) {}
+      return res.status(502).json({ error: 'Sitewire is briefly unavailable — we saved this for retry. Please try again in a moment.' });
+    }
+    res.status(502).json({ error: `Could not ${action} this draw in Sitewire — please try again.` });
   }
 });
 
