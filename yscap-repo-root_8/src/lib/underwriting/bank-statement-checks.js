@@ -89,6 +89,20 @@ function computeBankFindings(statement, subject, opts = {}) {
     }
   }
 
+  // ---- 3. Large deposit sourcing (Fannie B3-4.2-02) ----
+  // A single deposit that dominates the period's inflows needs to be SOURCED — an unsourced large
+  // deposit can't count toward funds and is a straw-buyer / gifted-funds signal. We don't have the
+  // borrower's income here, so we approximate "large" as a single deposit that is the majority
+  // (>50%) of total deposits AND a material amount. Warning-only; requires documentation.
+  const largest = num(statement.largestDeposit);
+  if (largest != null && dep != null && dep > 0 && largest > 5000 && largest > dep * 0.5) {
+    out.push(finding({ code: 'bank_large_deposit', severity: 'warning', field: 'deposits',
+      docValue: `${money(largest)} of ${money(dep)} total deposits (${Math.round((largest / dep) * 100)}%)`, fileValue: null,
+      title: 'A single large deposit needs to be sourced',
+      howTo: `One deposit of ${money(largest)} is most of the period's deposits (${money(dep)}). Source it (payroll, sale of an asset, transfer from another owned account) — an unsourced large deposit can't be counted toward the borrower's funds and can signal gifted or third-party money.`,
+      actions: ['request_document', 'open_condition', 'acknowledge', 'dismiss'], opensCondition: 'underwriting_review_cleared' }));
+  }
+
   return out;
 }
 

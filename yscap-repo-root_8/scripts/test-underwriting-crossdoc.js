@@ -50,6 +50,19 @@ const goodStmt = { accountHolderName: 'John Smith', holderIsBusiness: false, ban
 assert.deepStrictEqual(codes(computeBankFindings(goodStmt, assets)), [], 'borrower personal account, math adds up → clean');
 // Account under a known borrower entity → clean.
 assert.deepStrictEqual(codes(computeBankFindings({ ...goodStmt, accountHolderName: 'Maple Grove Holdings, L.L.C.', holderIsBusiness: true }, assets)), [], 'known entity account → clean (suffix/punct tolerant)');
+// Large-deposit sourcing: one deposit is >50% of total deposits AND material → warning.
+// (Balance math kept consistent: opening + deposits − withdrawals = closing.)
+const depStmt = { ...goodStmt, openingBalance: 5000, totalDeposits: 20000, totalWithdrawals: 3000, closingBalance: 22000 };
+{
+  const f = computeBankFindings({ ...depStmt, largestDeposit: 15000 }, assets);
+  assert.deepStrictEqual(codes(f), ['bank_large_deposit'], 'a dominant single deposit needs sourcing');
+  assert.strictEqual(f[0].severity, 'warning');
+}
+// A largest deposit that's a small share, or immaterial, is NOT flagged.
+assert.deepStrictEqual(codes(computeBankFindings({ ...depStmt, largestDeposit: 4000 }, assets)), [], 'a small-share deposit is fine');
+assert.deepStrictEqual(codes(computeBankFindings({ ...goodStmt, largestDeposit: 4500 }, assets)), [], 'a sub-$5k deposit is immaterial even if >50% of a small total');
+assert.deepStrictEqual(codes(computeBankFindings({ ...depStmt, largestDeposit: null }, assets)), [], 'no largest-deposit detail → no flag (never guesses)');
+
 // Account under a DIFFERENT LLC → FATAL, requires operating agreement.
 {
   const f = computeBankFindings({ ...goodStmt, accountHolderName: 'BRRRR Capital LLC', holderIsBusiness: true }, assets);

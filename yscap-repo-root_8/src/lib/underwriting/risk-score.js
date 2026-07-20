@@ -30,6 +30,7 @@ const SIGNAL_WEIGHTS = {
   id_dob_mismatch: 20,
   bank_account_not_borrower: 15,     // the funds aren't the borrower's
   bank_account_other_entity: 10,
+  bank_large_deposit: 8,             // an unsourced large deposit (gifted / third-party funds)
   values_unconfirmed_in_document: 10, // extracted value not found in the document (possible fabrication)
   beneficial_owner_unidentified: 10,
   // Value inflation / non-arm's-length (price + party inconsistencies).

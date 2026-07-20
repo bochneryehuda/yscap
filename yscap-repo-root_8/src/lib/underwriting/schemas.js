@@ -144,8 +144,9 @@ const BANK_STATEMENT = {
     "You are reviewing a bank statement for a loan file (assets / proof of funds). Extract the exact " +
     "account-holder name as printed, whether the holder is a person or a business/LLC, the bank name, " +
     "the account number, the statement period, and the opening balance, closing balance, total deposits, " +
-    "and total withdrawals as printed. Use null for anything absent/unreadable — do NOT guess or compute " +
-    "values that aren't printed. Amounts as plain numbers. Set readable=false if the copy is too poor to trust.",
+    "and total withdrawals as printed. Also capture the SINGLE LARGEST individual deposit/credit in the " +
+    "period (the amount) if the transaction detail is shown. Use null for anything absent/unreadable — do " +
+    "NOT guess or compute values that aren't printed. Amounts as plain numbers. Set readable=false if poor.",
   schema: {
     type: 'object',
     additionalProperties: false,
@@ -159,10 +160,11 @@ const BANK_STATEMENT = {
       closingBalance:    { type: ['number', 'null'] },
       totalDeposits:     { type: ['number', 'null'] },
       totalWithdrawals:  { type: ['number', 'null'] },
+      largestDeposit:    { type: ['number', 'null'] },     // the single biggest deposit/credit in the period
       readable:          { type: 'boolean' },
       notes:             { type: ['string', 'null'] },
     },
-    required: ['accountHolderName', 'holderIsBusiness', 'bankName', 'accountNumber', 'statementPeriod', 'openingBalance', 'closingBalance', 'totalDeposits', 'totalWithdrawals', 'readable', 'notes'],
+    required: ['accountHolderName', 'holderIsBusiness', 'bankName', 'accountNumber', 'statementPeriod', 'openingBalance', 'closingBalance', 'totalDeposits', 'totalWithdrawals', 'largestDeposit', 'readable', 'notes'],
   },
 };
 
