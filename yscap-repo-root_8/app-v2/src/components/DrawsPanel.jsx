@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
+import EmailCenter from './EmailCenter.jsx';
 
 /* Per-file construction-draw desk (staff). One place tying draws ↔ Scope of Work ↔
    construction budget: the unified per-line/per-unit rollup, each draw's per-line
@@ -131,6 +132,9 @@ export default function DrawsPanel({ appId }) {
           <StartDrawCard appId={appId} onStarted={load} />
           {/* Send the DocuSign Draw Request & Wire Instructions form right from the start-draw screen. */}
           <DrawRequestCard appId={appId} />
+          {/* The draw email center is visible on the construction-draw screen even BEFORE the file is
+              pushed to Sitewire — the draw-request form + any early draw messages already show here. */}
+          <DrawEmailCenter appId={appId} />
         </>
       ) : (
         <>
@@ -221,8 +225,8 @@ export default function DrawsPanel({ appId }) {
               finding={findingByDraw[d.sitewire_draw_id]} busy={busy} act={act} reload={load} writesOff={writesOff} readsOff={readsOff} quickStatuses={quickStatuses} />
           ))}
 
-          {/* ---- draw email / notification center (draw-related only) ---- */}
-          <DrawMailCenter appId={appId} />
+          {/* ---- draw email center — the full Gmail-style inbox, scoped to draw alerts ---- */}
+          <DrawEmailCenter appId={appId} />
 
           {/* ---- money ledger ---- */}
           <LedgerPanel appId={appId} ledger={ledger} draws={draws} retainage={retainage} onSaved={load} act={act} busy={busy} />
@@ -1292,206 +1296,23 @@ function WaiversPanel({ appId, waivers, draws, onChanged }) {
   );
 }
 
-/* The draw coordinator's per-file email section — a professional, email-style list of every DRAW-related
-   notification PILOT sent about this file (to the borrower or the team), each openable to see exactly who it
-   went to, when, its delivery status and full content, plus the borrower's email replies. Scoped to draw items
-   only. (Sitewire's own borrower emails aren't exposed by their API, so this is PILOT's own outbound + inbound
-   trail.) */
-const MAIL_KIND = {
-  draw: { label: 'Draw released', tone: 'var(--good,#3f7a4a)' },
-  draw_findings: { label: 'Inspection result', tone: 'var(--teal,#2f7f86)' },
-  draw_accepted: { label: 'Borrower accepted', tone: 'var(--good,#3f7a4a)' },
-  draw_disputed: { label: 'Borrower disputed', tone: 'var(--bad,#b04a3f)' },
-  draw_dispute_resolved: { label: 'Dispute resolved', tone: 'var(--good,#3f7a4a)' },
-  sow_change_request: { label: 'Budget change', tone: 'var(--gold,#ae8746)' },
-  sow_reallocation: { label: 'Budget change', tone: 'var(--gold,#ae8746)' },
-};
-const EMAIL_STATE = { sent: { label: 'Emailed', cls: 'sw-approved' }, skipped: { label: 'In-app only', cls: 'sw-draft' }, error: { label: 'Email failed', cls: 'sw-pending' }, pending: { label: 'Sending…', cls: 'sw-draft' } };
-function DrawMailCenter({ appId }) {
-  const [data, setData] = useState(null);
-  const [openId, setOpenId] = useState(null);
-  const [full, setFull] = useState({}); // notificationId -> { loading?, email?, error? }
-  const [fullscreen, setFullscreen] = useState(false);
-  const load = useCallback(() => api.get(`/api/sitewire/files/${appId}/notifications`).then(setData).catch(() => setData({ sent: [], replies: [] })), [appId]);
-  useEffect(() => { load(); }, [load]);
-  const openMessage = useCallback((m) => {
-    const id = m.id;
-    if (openId === id) { setOpenId(null); return; }
-    setOpenId(id);
-    if (m.has_full_email && !full[id]) {
-      setFull((s) => ({ ...s, [id]: { loading: true } }));
-      api.get(`/api/sitewire/files/${appId}/messages/${id}`)
-        .then((email) => setFull((s) => ({ ...s, [id]: { email } })))
-        .catch(() => setFull((s) => ({ ...s, [id]: { error: true } })));
-    }
-  }, [appId, openId, full]);
-  if (!data) return <div className="dd-card" style={{ marginTop: 18 }}>Loading draw messages…</div>;
-  const sent = data.sent || [];
-  const replies = data.replies || [];
-  const when = (v) => (v ? new Date(v).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '');
-
-  // The message list + replies + composer — rendered both inline and (bigger) in the full-screen inbox.
-  const inbox = (frameH) => (
-    <>
-      {sent.length === 0 && replies.length === 0 && <div className="dd-sub" style={{ marginTop: 8 }}>No draw messages have gone out on this file yet — send the first one below.</div>}
-      <div style={{ marginTop: 6 }}>
-        {sent.map((m) => {
-          const k = MAIL_KIND[m.type] || { label: m.type, tone: 'var(--text-muted)' };
-          const es = EMAIL_STATE[m.email_status] || EMAIL_STATE.pending;
-          const isOpen = openId === m.id;
-          const toWhom = m.recipient_kind === 'borrower' ? `Borrower${m.recipient_name ? ` · ${m.recipient_name}` : ''}` : `Team${m.recipient_name ? ` · ${m.recipient_name}` : ''}`;
-          const fe = full[m.id];
-          return (
-            <div key={m.id} style={{ borderTop: '1px solid var(--line)' }}>
-              <button onClick={() => openMessage(m)} className="row" style={{ width: '100%', textAlign: 'left', gap: 10, alignItems: 'center', padding: '10px 2px', background: isOpen ? 'var(--paper,#f6f3ec)' : 'none', border: 'none', cursor: 'pointer' }}>
-                <span style={{ flex: '0 0 auto', width: 8, height: 8, borderRadius: 999, background: k.tone }} />
-                <span style={{ flex: '1 1 auto', minWidth: 0 }}>
-                  <span className="row" style={{ gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
-                    <b style={{ fontSize: 13 }}>{m.title}</b>
-                    <span className="dd-sub" style={{ color: k.tone }}>{k.label}</span>
-                    {m.attachment_count > 0 && <span className="dd-sub" title="has attachments">📎 {m.attachment_count}</span>}
-                  </span>
-                  <span className="dd-sub" style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>To: {toWhom}{m.recipient_count > 1 ? ` +${m.recipient_count - 1}` : ''}{m.recipient_email ? ` · ${m.recipient_email}` : ''}</span>
-                </span>
-                <span className="dd-sub" style={{ flex: '0 0 auto', textAlign: 'right' }}>
-                  <span className={'pill ' + es.cls} style={{ marginRight: 6 }}>{es.label}</span>
-                  {when(m.created_at)}
-                </span>
-              </button>
-              {isOpen && (
-                <div style={{ padding: '0 2px 14px 18px' }}>
-                  {m.has_full_email && fe && fe.loading && <div className="dd-sub">Opening the full email…</div>}
-                  {m.has_full_email && fe && fe.email && (
-                    <>
-                      <div style={{ background: 'var(--paper,#f6f3ec)', border: '1px solid var(--line)', borderRadius: 8, padding: '10px 12px', marginBottom: 8, fontSize: 12.5 }}>
-                        <div><b>Subject:</b> {fe.email.subject || m.title}</div>
-                        <div><b>To:</b> {(fe.email.to || []).join(', ') || '—'}</div>
-                        {fe.email.from && <div><b>From:</b> {fe.email.from}</div>}
-                        {fe.email.reply_to && <div><b>Reply-to:</b> {fe.email.reply_to}</div>}
-                        <div><b>Sent:</b> {when(fe.email.created_at)} · {fe.email.status === 'sent' ? 'delivered by email' : fe.email.status === 'skipped' ? 'in-app only (not emailed)' : fe.email.status === 'error' ? 'email failed' : fe.email.status}</div>
-                        {Array.isArray(fe.email.attachments) && fe.email.attachments.length > 0 && (
-                          <div style={{ marginTop: 6 }}><b>Attachments:</b>{' '}
-                            {fe.email.attachments.map((a) => (
-                              <span key={a.index} className="row" style={{ display: 'inline-flex', gap: 4, alignItems: 'center', marginRight: 8 }}>
-                                {a.downloadable
-                                  ? <button className="btn btn-sm ghost" onClick={() => api.sitewireMessageAttachment(appId, m.id, a.index).catch(() => {})}>📎 {a.filename}</button>
-                                  : <span className="dd-sub">📎 {a.filename}</span>}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                      {fe.email.html
-                        ? <iframe title="email" sandbox="" srcDoc={fe.email.html} style={{ width: '100%', height: frameH, border: '1px solid var(--line)', borderRadius: 8, background: '#fff' }} />
-                        : <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.5 }}>{fe.email.text || m.body}</div>}
-                    </>
-                  )}
-                  {m.has_full_email && fe && fe.error && <div className="dd-sub" style={{ color: 'var(--bad,#b04a3f)' }}>Could not open the full email.</div>}
-                  {!m.has_full_email && (
-                    <>
-                      <div className="dd-sub" style={{ marginBottom: 6 }}>
-                        Sent {when(m.emailed_at || m.created_at)} · {m.email_status === 'sent' ? 'delivered by email' : m.email_status === 'skipped' ? 'shown in the portal only' : m.email_status === 'error' ? 'email failed to send' : 'sending'}{m.read_at ? ' · read' : ''} · (full design not captured for older messages)
-                      </div>
-                      <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.5, background: 'var(--paper,#f6f3ec)', border: '1px solid var(--line)', borderRadius: 8, padding: '12px 14px' }}>{m.body || '(no message body)'}</div>
-                    </>
-                  )}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      {replies.length > 0 && (
-        <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--line)' }}>
-          <div className="dd-field-l" style={{ textTransform: 'uppercase', letterSpacing: '.06em', fontSize: 11, marginBottom: 8 }}>Replies received from the borrower</div>
-          {replies.map((r) => (
-            <div key={r.id} className="row" style={{ gap: 10, alignItems: 'baseline', padding: '6px 0' }}>
-              <span className="dd-card-ic" style={{ width: 24, height: 24, background: 'var(--primary-soft)' }}><SdIcon name="reply" /></span>
-              <span style={{ flex: '1 1 auto', minWidth: 0 }}>
-                <b style={{ fontSize: 13 }}>{r.subject || '(no subject)'}</b>
-                <span className="dd-sub" style={{ display: 'block' }}>From: {r.from_email}{r.forwarded_count ? ` · forwarded to ${r.forwarded_count}` : ''}</span>
-              </span>
-              <span className="dd-sub" style={{ flex: '0 0 auto' }}>{when(r.created_at)}</span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* reply / compose — a direct message to the borrower, sent + captured here */}
-      <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--line)' }}>
-        <ReplyComposer appId={appId} onSent={load} />
-      </div>
-    </>
-  );
-
-  const header = (inFull) => (
-    <div className="dd-card-h" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
-      <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+/* The draw email center — the SAME rich, Gmail-style Email Center used on the regular file screen,
+   scoped to this file's draw conversations (draw + Scope-of-Work alerts and their reply threads):
+   search, threads, avatars, read/unread, star, per-recipient delivery + open tracking, the full
+   designed email in a reader, a full-screen window, and reply/compose. Every draw alert PILOT sends
+   to anyone on the file (borrower, coordinator, team) shows here; the borrower's replies come back in.
+   (Sitewire's own borrower/inspector emails aren't exposed by their API — this is PILOT's own trail.) */
+function DrawEmailCenter({ appId }) {
+  return (
+    <div className="dd-card" style={{ marginTop: 18 }}>
+      <div className="dd-card-h" style={{ marginBottom: 4 }}>
         <span className="dd-card-ic"><SdIcon name="mail" /></span>
         <div>
-          <h3>Draw messages</h3>
-          {!inFull && <div className="dd-sub" style={{ marginTop: 1 }}>Everything on this file’s draw — the draw start, results, releases, messages you send, and the borrower’s replies. Open any to see the whole email; reply right from here.</div>}
+          <h3>Draw emails</h3>
+          <div className="dd-sub" style={{ marginTop: 1 }}>Every draw alert on this file — the draw start, inspection results, releases, budget changes and messages you send — plus the borrower's replies. Open any to read the full email; search, star and reply right here.</div>
         </div>
       </div>
-      <div className="row" style={{ gap: 8, alignItems: 'center' }}>
-        <span className="dd-sub">{sent.length} sent{replies.length ? ` · ${replies.length} repl${replies.length === 1 ? 'y' : 'ies'}` : ''}</span>
-        {inFull
-          ? <button className="btn btn-sm ghost" onClick={() => setFullscreen(false)}>✕ Close</button>
-          : <button className="btn btn-sm ghost" onClick={() => setFullscreen(true)} title="Open the full-screen inbox">⛶ Full screen</button>}
-      </div>
-    </div>
-  );
-
-  return (
-    <>
-      <div className="dd-card" style={{ marginTop: 18 }}>
-        {header(false)}
-        {inbox(420)}
-      </div>
-      {fullscreen && (
-        <div onClick={(e) => { if (e.target === e.currentTarget) setFullscreen(false); }}
-          style={{ position: 'fixed', inset: 0, background: 'rgba(20,27,34,.5)', zIndex: 1000, display: 'flex', padding: '2.5vh 2.5vw' }}>
-          <div style={{ background: '#fff', borderRadius: 14, width: '100%', maxWidth: 1040, margin: '0 auto', display: 'flex', flexDirection: 'column', maxHeight: '95vh', overflow: 'hidden', boxShadow: '0 20px 60px rgba(20,27,34,.3)' }}>
-            <div style={{ padding: '4px 18px', borderBottom: '1px solid var(--line)', flex: '0 0 auto' }}>{header(true)}</div>
-            <div style={{ overflowY: 'auto', padding: '8px 18px 20px' }}>{inbox(620)}</div>
-          </div>
-        </div>
-      )}
-    </>
-  );
-}
-
-/* Compose + send a direct message to the borrower from the draw box — it emails the borrower (borrower-safe),
-   logs + captures the email so it appears in the thread, and the borrower's reply comes back into "Replies". */
-function ReplyComposer({ appId, onSent }) {
-  const [open, setOpen] = useState(false);
-  const [subject, setSubject] = useState('');
-  const [body, setBody] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState('');
-  async function send() {
-    if (!body.trim()) { setMsg('Type a message first.'); return; }
-    setBusy(true); setMsg('');
-    try {
-      await api.post(`/api/sitewire/files/${appId}/messages/reply`, { body: body.trim(), subject: subject.trim() || undefined });
-      setBody(''); setSubject(''); setOpen(false);
-      if (onSent) onSent();
-    } catch (e) { setMsg(e?.data?.error || e.message || 'Could not send your message.'); }
-    finally { setBusy(false); }
-  }
-  if (!open) return <button className="btn btn-sm primary" onClick={() => setOpen(true)}>✉️ Message the borrower</button>;
-  return (
-    <div style={{ border: '1px solid var(--line)', borderRadius: 8, padding: 12, background: '#fff' }}>
-      <div className="dd-field-l" style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>New message to the borrower</div>
-      <input className="input" style={{ width: '100%', marginBottom: 6 }} placeholder="Subject (optional)" value={subject} onChange={(e) => setSubject(e.target.value)} />
-      <textarea className="input" style={{ width: '100%', resize: 'vertical', minHeight: 90 }} rows={4} placeholder="Write a message about the draw…" value={body} onChange={(e) => setBody(e.target.value)} />
-      <div className="row" style={{ gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-        <button className="btn btn-sm primary" disabled={busy} onClick={send}>{busy ? 'Sending…' : 'Send to borrower'}</button>
-        <button className="btn btn-sm ghost" onClick={() => { setOpen(false); setMsg(''); }}>Cancel</button>
-        {msg && <span className="dd-sub" style={{ color: 'var(--bad,#b04a3f)' }}>{msg}</span>}
-      </div>
-      <div className="dd-sub" style={{ marginTop: 6 }}>Emails the borrower and appears in this thread. Their reply comes back to your team inbox and shows under “Replies received”. (No capital-partner names ever reach the borrower.)</div>
+      <EmailCenter mode="file" appId={appId} scope="draw" />
     </div>
   );
 }

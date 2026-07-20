@@ -2503,6 +2503,18 @@ router.get('/applications/:id/emails', async (req, res) => {
   if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   try {
     await emailLog.ensureFileBackfilled(req.params.id).catch(() => {});
+    // scope=draw → the DRAW email center: only draw/scope-of-work alerts (draw%, sow_%)
+    // plus every message in those same conversation THREADS (so borrower replies and
+    // coordinator follow-ups on a draw email stay attached). The unscoped call returns the
+    // file's whole email history (the regular file Email Center) — byte-identical to before.
+    const drawScope = String(req.query.scope || '') === 'draw';
+    const scopeSql = drawScope
+      ? `AND (em.msg_type LIKE 'draw%' OR em.msg_type LIKE 'sow_%'
+             OR (em.thread_key IS NOT NULL AND em.thread_key IN (
+                   SELECT thread_key FROM email_messages
+                    WHERE application_id = $1 AND thread_key IS NOT NULL
+                      AND (msg_type LIKE 'draw%' OR msg_type LIKE 'sow_%'))))`
+      : '';
     const r = await db.query(
       `SELECT em.id, em.direction, em.msg_type, em.category, em.subject, em.preview,
               em.from_email, em.from_name, em.to_emails, em.reply_to, em.recipient_kind,
@@ -2516,7 +2528,7 @@ router.get('/applications/:id/emails', async (req, res) => {
          LEFT JOIN notifications n ON n.id = em.notification_id
          LEFT JOIN staff_users su ON su.id = n.staff_id
          LEFT JOIN borrowers   bo ON bo.id = n.borrower_id
-        WHERE em.application_id = $1
+        WHERE em.application_id = $1 ${scopeSql}
         ORDER BY em.occurred_at DESC
         LIMIT 500`, [req.params.id]);
     res.json(consolidateEmailRows(r.rows));
@@ -2714,11 +2726,15 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
     }, audience);
     // From the officer by name so the reply reads as a person, not a robot.
     const fromName = email.fromWithName ? email.fromWithName(meRow.full_name || meRow.email) : null;
+    // A reply/compose sent FROM the draw email center is tagged 'draw_message' so it
+    // stays visible in that draw-scoped inbox (which filters on draw%/sow_% types);
+    // a normal file reply keeps 'staff_reply'. Cosmetic tag only — same delivery.
+    const replyType = String((req.body && req.body.scope) || '') === 'draw' ? 'draw_message' : 'staff_reply';
     await email.sendMail({
       to: toEmails, subject: built.subject, html: built.html, text: built.text,
       replyTo: fileReplyTo(appId) || cfg.replyToDefault || null,
       from: fromName || undefined,
-      _ctx: { applicationId: appId, type: 'staff_reply', audience },
+      _ctx: { applicationId: appId, type: replyType, audience },
     });
     await audit(req, 'email_reply_sent', 'application', appId, { to: toEmails.length, subject });
     res.json({ ok: true, sent_to: toEmails });

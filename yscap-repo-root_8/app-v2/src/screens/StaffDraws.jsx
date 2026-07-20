@@ -173,8 +173,15 @@ export default function StaffDraws() {
                     const s = STATUS[d.status] || { label: 'In progress', cls: 'sw-draft' };
                     return (
                       <tr key={d.sitewire_draw_id}>
-                        <td style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>{d.ys_loan_number || '—'}</td>
-                        <td className="muted"><div style={{ maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={d.address || ''}>{d.address || '—'}</div></td>
+                        <td style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
+                          <Link to={`/internal/app/${d.application_id}/draws`} style={{ color: 'var(--teal-br)', textDecoration: 'none' }}>{d.ys_loan_number || 'Open'}</Link>
+                        </td>
+                        <td>
+                          <Link to={`/internal/app/${d.application_id}/draws`} title={d.address || 'Open the construction-draw screen'}
+                            style={{ display: 'block', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--teal-br)', textDecoration: 'none', fontWeight: 500 }}>
+                            {d.address || 'Open draws'}
+                          </Link>
+                        </td>
                         <td>#{d.number ?? '—'}</td>
                         <td><span className={'pill ' + s.cls}>{s.label}</span>{(d.lifecycle_state || 'active') !== 'active' && <span className="pill sw-draft" style={{ marginLeft: 6 }}>{d.lifecycle_state === 'paid_off' ? 'Paid off' : 'Finished'}</span>}</td>
                         <td className="num">{usd(d.total_requested_cents)}</td>
