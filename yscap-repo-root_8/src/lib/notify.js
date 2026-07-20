@@ -59,7 +59,7 @@ async function enrichFileOpts(opts, audience) {
   const ctx = opts._fileCtx || await fileContext(opts.applicationId);
   if (!ctx) { opts._enriched = true; return opts; }
   const out = { ...opts, _enriched: true };
-  if (out.subjectTag == null) out.subjectTag = ctx.subjectTag || null;
+  if (out.subjectTag == null) out.subjectTag = (audience === 'borrower' ? (ctx.borrowerSubjectTag || ctx.subjectTag) : ctx.subjectTag) || null;
   if (!Array.isArray(out.meta) || !out.meta.length) {
     out.meta = audience === 'borrower' ? ctx.borrowerMeta : ctx.meta;
   }
@@ -211,6 +211,21 @@ async function _mark(id, status) {
     [id, status]);
 }
 
+// Routine, low-signal STAFF events — a borrower doing an ordinary workflow thing
+// (answering a tool/checklist question, uploading a document, adding the
+// appraisal card) — post the in-app row but do NOT email. Otherwise the whole
+// team (loan officer + processor + assistants) gets an inbox blast on EVERY
+// ordinary borrower action, which is exactly the bombardment the owner flagged
+// (2026-07-20 evening: "stop the bombardment with stuff that is not important").
+// The in-app queue still shows everything; only the EMAIL is suppressed. Mirrors
+// the #88 borrower "major-only email" policy and the status_change in-app gate.
+// A caller may force either way with an explicit opts.inAppOnly (status_change
+// passes its computed value; a genuinely action-needed staff event passes false).
+// These types are ONLY ever suppressed for STAFF — the borrower-facing versions
+// (condition_added / doc_requested / doc_rejected) go through notifyBorrower,
+// which has its own BORROWER_MAJOR_EMAIL policy and is untouched by this set.
+const STAFF_INAPP_TYPES = new Set(['tool_submitted', 'doc_uploaded', 'condition_added']);
+
 /** Notify one staff user. opts: {type,title,body,applicationId,link,emailTo,meta,lines,ctaLabel,greeting,note} */
 async function notifyStaff(staffId, opts) {
   // S1-01 control center: a manager can switch a member's notifications OFF. When
@@ -230,11 +245,14 @@ async function notifyStaff(staffId, opts) {
     // and every other caller. (Fixed at the chokepoint, not per call site.)
     if (p.rows[0] && p.rows[0].is_active === false) emailOn = false;
   } catch (_) { /* columns exist after migration; default on */ }
-  // opts.inAppOnly (owner-directed 2026-07-20): keep the in-app row but SKIP the
-  // email — for routine, low-signal staff events (e.g. a file moving to a working
-  // status like Processing) so the team's inbox isn't bombarded. Mirrors the #88
-  // borrower policy where only MAJOR moments email.
-  if (opts.inAppOnly) emailOn = false;
+  // Keep the in-app row but SKIP the email for routine, low-signal staff events
+  // (a file moving to a working status like Processing; a borrower answering a
+  // tool question / uploading a doc / adding the appraisal card) so the team's
+  // inbox isn't bombarded. An explicit opts.inAppOnly always wins (status_change
+  // passes its computed value); otherwise a STAFF_INAPP_TYPES type defaults to
+  // in-app-only. Mirrors the #88 borrower policy where only MAJOR moments email.
+  const inAppOnly = (opts.inAppOnly !== undefined) ? opts.inAppOnly : STAFF_INAPP_TYPES.has(opts.type);
+  if (inAppOnly) emailOn = false;
   // Auto-attach the file's identity (subject tag + detail block + default
   // link/CTA) so every staff file email says WHICH file, without every call
   // site building it. No-op when there's no applicationId. (#88/#150 unchanged.)
@@ -522,10 +540,16 @@ async function fileContext(appId, extraMeta = []) {
       a.loan_type ? { label: 'Loan type', value: a.loan_type } : null,
       a.loan_amount != null ? { label: 'Loan amount', value: money(a.loan_amount) } : null,
     ].filter(Boolean);
-    // Short tag for the SUBJECT line: loan number (when assigned) + street, kept
-    // concise so it reads cleanly in an inbox.
-    const subjectTag = [hasLoanNo ? loanNo : null, street].filter(Boolean).join(' · ') || (hasLoanNo ? loanNo : addr);
-    return { label: `${loanNo} · ${addr}`, addr, street, loanNo, hasLoanNo, borrowerName, officer, officerRow, meta, borrowerMeta, subjectTag };
+    // Short tag appended to the SUBJECT line. Owner's preferred layout
+    // (2026-07-20): loan number · borrower name · property (street), kept concise
+    // so it reads cleanly in an inbox. The BORROWER's OWN email drops the name
+    // (it's their file — showing them their own name is redundant): loan number ·
+    // street. enrichFileOpts picks the right one by audience; the template's dedup
+    // guard makes sure none of these segments ever doubles a title that already
+    // names the file.
+    const subjectTag = [hasLoanNo ? loanNo : null, borrowerName, street].filter(Boolean).join(' · ') || (hasLoanNo ? loanNo : addr);
+    const borrowerSubjectTag = [hasLoanNo ? loanNo : null, street].filter(Boolean).join(' · ') || (hasLoanNo ? loanNo : addr);
+    return { label: `${loanNo} · ${addr}`, addr, street, loanNo, hasLoanNo, borrowerName, officer, officerRow, meta, borrowerMeta, subjectTag, borrowerSubjectTag };
   } catch (_) { return null; }
 }
 

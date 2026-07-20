@@ -934,7 +934,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       const body = `${pricing.PROGRAM_LABEL[program]} registered by the borrower on ${ctx ? ctx.label : (row.ys_loan_number || 'a file')}: ${money(total)} @ ${rate} · cash to close ${money(quote.cashToClose)} · liquidity to verify ${money(quote.liquidity ?? quote.liquidityRequired)}.`;
       await notify.notifyAppStaff(appId, {   // #113: whole team (primary + assistants)
           type: 'product_registered',
-          title: 'Borrower registered a product on ' + (row.ys_loan_number || 'a file'),
+          title: 'Borrower registered a product',   // identity rides in the subject tag (loan# · borrower · property) — not the title
           body, applicationId: appId, meta: (ctx && ctx.meta) || undefined,
           link: `/internal/app/${appId}`, ctaLabel: 'Open the loan file',
         });
@@ -3162,14 +3162,14 @@ router.post('/drafts/:id/submit', async (req, res) => {
   try {
     if (officerRow) {
       await notify.notifyStaff(officerId, {
-        type: 'new_application', title: 'New application submitted' + (ctx ? ` — ${ctx.loanNo}` : ''),
+        type: 'new_application', title: 'New application submitted',   // loan# rides in the subject tag — not doubled in the title
         body: bodyLine,
         applicationId: appId, link: `/internal/app/${appId}`, meta,
         emailTo: officerRow.email, ctaLabel: 'Open the loan file',
       });
     } else {
       await notify.notifyAdmins({
-        type: 'unassigned_application', title: 'New application — Lead Capture' + (ctx ? ` — ${ctx.loanNo}` : ''),
+        type: 'unassigned_application', title: 'New application — Lead Capture',   // loan# rides in the subject tag — not doubled in the title
         body: bodyLine + ' No loan officer was selected — it is in Lead Capture.',
         applicationId: appId, link: `/internal`, meta, ctaLabel: 'Open Lead Capture',
       });
