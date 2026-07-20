@@ -300,8 +300,17 @@ function splitCityLine(v) {
 // 'closed' (a settled sale, the default the appraiser lists). Never guessed: only an explicit
 // listing marker demotes a comp out of the closed pool.
 function saleStatus(c) {
-  const t = ((clean(X.attr(c, 'DataSourceDescription')) || '') + ' ' + (clean(X.attr(c, 'DataSourceVerificationDescription')) || '')).toLowerCase();
-  if (/\b(active|for\s*sale|listing|expired|withdrawn|cancell?ed)\b/.test(t)) return 'active';
+  // The MISMO data-source string most often lives in GSEDataSourceDescription under COMPARISON_DETAIL,
+  // not the COMPARABLE_SALE's own DataSourceDescription — feed all three so a comp whose listing
+  // marker is only in the structured field isn't silently counted as closed. (Only runs when the
+  // authoritative GSEListingStatusType is absent.)
+  const t = [
+    clean(X.attr(c, 'DataSourceDescription')),
+    clean(X.attr(c, 'DataSourceVerificationDescription')),
+    clean(X.attr(X.find(c, 'COMPARISON_DETAIL'), 'GSEDataSourceDescription')),
+  ].filter(Boolean).join(' ').toLowerCase();
+  // Bare "listing" demotes to active EXCEPT "listing agent/broker/office" (a note on a closed comp).
+  if (/\b(active|for\s*sale|expired|withdrawn|cancell?ed)\b|\blisting\b(?!\s+(?:agent|broker|office))/.test(t)) return 'active';
   if (/\b(pending|under\s*contract|u\/c|contingent)\b/.test(t)) return 'pending';
   return 'closed';
 }
@@ -351,7 +360,19 @@ function comparables(root) {
       saleStatus: structStatus || saleStatus(c),
       salePrice: money(X.attr(c, 'PropertySalesAmount')),
       adjustedPrice: money(X.attr(c, 'AdjustedSalesPriceAmount')),
-      netAdjustment: signed(X.attr(c, 'SalePriceTotalAdjustmentAmount'), 1e12),   // numeric(14,2), can be < 0
+      // The aggregate net adjustment is often stored as an UNSIGNED magnitude with the sign carried
+      // in a separate SalesPriceTotalAdjustmentPositiveIndicator (Y/N). Reading the raw magnitude
+      // inverts the sign on every net-negative comp that uses the indicator (verified: ~1 in 10
+      // comps across the corpus, and it disagrees with the signed netAdjPct). Honor the indicator;
+      // fall back to the (already-signed) raw value when the indicator is absent.
+      netAdjustment: (() => {
+        const raw = signed(X.attr(c, 'SalePriceTotalAdjustmentAmount'), 1e12);   // numeric(14,2), can be < 0
+        if (raw == null) return null;
+        const ind = clean(X.attr(c, 'SalesPriceTotalAdjustmentPositiveIndicator'));
+        if (/^n/i.test(ind || '')) return -Math.abs(raw);
+        if (/^y/i.test(ind || '')) return Math.abs(raw);
+        return raw;
+      })(),
       netAdjPct: signed(X.attr(c, 'SalePriceTotalAdjustmentNetPercent'), 1e6),    // numeric(8,2), can be < 0
       grossAdjPct: signed(X.attr(c, 'SalesPriceTotalAdjustmentGrossPercent'), 1e6), // numeric(8,2)
       gla: g.gla, saleDate: g.saleDate, conditionUad: g.conditionUad, qualityUad: g.qualityUad,
