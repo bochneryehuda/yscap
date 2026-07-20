@@ -123,9 +123,11 @@ export default function EditFileDetails({ app, onSaved }) {
                 </select></label>
             ) : unitsMode(f.propertyType) === 'multi' ? (
               <label><span>Units</span><input className="input" type="number" min="5" value={f.units || ''} onChange={(e) => set('units', e.target.value)} placeholder="5 or more" /></label>
-            ) : f.propertyType ? (
+            ) : unitsMode(f.propertyType) === 'single' ? (
               <label><span>Units</span><input className="input" value="1 unit" disabled readOnly /></label>
             ) : (
+              // 'open' (e.g. New Construction / Commercial from ClickUp) or no type
+              // yet: a free, editable count — never locked or forced to 1.
               <label><span>Units</span><input className="input" type="number" min="0" value={f.units} onChange={(e) => set('units', e.target.value)} /></label>
             )}
             <label className="col-4"><span>Vesting entity / LLC</span>

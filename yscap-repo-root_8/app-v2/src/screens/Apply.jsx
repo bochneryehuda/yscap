@@ -546,6 +546,12 @@ export default function Apply() {
                 <div className="field"><label>Number of units</label>
                   <input className="input" value="1 unit" disabled readOnly /></div>
               )}
+              {unitsMode(form.propertyType) === 'open' && form.propertyType && (
+                // Unrecognized type (e.g. a "New Construction" file from ClickUp):
+                // a free, editable count — never locked or forced to 1.
+                <div className="field"><label>Number of units *</label>
+                  <input className={'input' + errCls('units')} type="number" min="1" value={form.units || ''} onChange={e => set('units', e.target.value)} /></div>
+              )}
             </div>
             {!step1Ready && <p className={showErrors ? 'small' : 'muted small'} style={showErrors ? { color: 'var(--danger)', marginTop: 4 } : undefined}>
               Property address and type{unitsMode(form.propertyType) !== 'single' ? ', plus the number of units,' : ''} are required before you submit — you can still fill the other sections first.</p>}
