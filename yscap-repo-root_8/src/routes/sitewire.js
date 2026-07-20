@@ -422,7 +422,9 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
         const amt = '$' + (split.net_release_cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         await notify.notifyAppBorrowers(application_id, {
           type: 'draw',
-          title: `A construction draw of ${amt} has been released`,
+          title: `Your construction draw has been released`,
+          hero: { label: 'Released to you', value: amt, sub: 'typically arrives in 1–2 business days', tone: 'positive' },
+          badge: { text: 'Draw released', tone: 'positive' },
           body: `Your loan team has released a construction draw of ${amt} on your file. Depending on your bank, funds typically take 1–2 business days to arrive.`,
           lines: ['Questions about this draw? Just reply to this email or reach your loan officer.'],
           applicationId: application_id, link: `/app/${application_id}`, ctaLabel: 'View your draws' });
@@ -464,7 +466,9 @@ router.post('/files/:id/retainage-release', requirePermission('manage_draws'), a
       const amt = '$' + (toRelease / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
       await notify.notifyAppBorrowers(appId, {
         type: 'draw',
-        title: `Your held-back retainage of ${amt} has been released`,
+        title: `Your held-back retainage has been released`,
+        hero: { label: 'Retainage released', value: amt, sub: 'your construction is complete', tone: 'positive' },
+        badge: { text: 'Complete', tone: 'positive' },
         body: `With your construction complete, the retainage held back across your draws — ${amt} — has now been released.`,
         applicationId: appId, link: `/app/${appId}`, ctaLabel: 'View your draws' });
     } catch (_) { /* best-effort */ }
