@@ -163,7 +163,21 @@ export default function DrawsPanel({ appId }) {
           <RollupTable rollup={rollup} />
 
           {/* ---- draws ---- */}
-          <h3 style={{ marginTop: 22, marginBottom: 6 }}>Draws</h3>
+          <div className="row between" style={{ marginTop: 22, marginBottom: 6, alignItems: 'baseline', flexWrap: 'wrap', gap: 8 }}>
+            <h3 style={{ margin: 0 }}>Draws</h3>
+            {draws.length > 0 && (
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                <button className="btn btn-sm ghost" title="A PILOT-branded PDF of the whole construction project — schedule of values + every draw's inspection photos + notes."
+                  onClick={() => { const w = window.open('', '_blank'); act('projreport', async () => { await api.sitewireProjectReport(appId, 'staff', w); return { msg: 'Opened the whole-project report in a new tab.' }; }); }}>
+                  Whole-project report
+                </button>
+                <button className="btn btn-sm ghost" title="The same whole-project report, borrower-safe (no capital-partner name, no fee/net, no photo GPS). Generating it shares it with the borrower."
+                  onClick={() => { if (!window.confirm('Share the borrower-safe whole-project report with the borrower? They’ll be able to see it in their portal.')) return; const w = window.open('', '_blank'); act('projreportb', async () => { await api.sitewireProjectReport(appId, 'borrower', w); return { msg: 'Shared the borrower-safe whole-project report with the borrower.' }; }); }}>
+                  Borrower copy
+                </button>
+              </div>
+            )}
+          </div>
           {draws.length === 0 && <div className="muted">No draws yet on this file.</div>}
           {draws.map((d) => (
             <DrawCard key={d.sitewire_draw_id} appId={appId} draw={d} requests={reqsByDraw[d.sitewire_draw_id] || []}
@@ -563,6 +577,10 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
           {showPhotos ? 'Hide inspection photos' : 'Inspection photos'}
         </button>
         <button className="btn btn-sm ghost" onClick={() => api.sitewireExportPacket(appId, draw.sitewire_draw_id).catch(() => {})}>Draw packet</button>
+        <button className="btn btn-sm ghost" title="A PILOT-branded PDF for this draw — schedule of values, approved vs not-approved, inspector notes and the inspection photos." disabled={busy === 'rep' + draw.sitewire_draw_id}
+          onClick={() => { const w = window.open('', '_blank'); act('rep' + draw.sitewire_draw_id, async () => { await api.sitewireDrawReport(appId, draw.sitewire_draw_id, 'staff', w); return { msg: 'Opened the PILOT report in a new tab.' }; }); }}>PILOT report (PDF)</button>
+        <button className="btn btn-sm ghost" title="The same report, borrower-safe (no capital-partner name, no fee/net, no photo GPS). Generating it shares it with the borrower." disabled={busy === 'repb' + draw.sitewire_draw_id}
+          onClick={() => { if (!window.confirm('Share the borrower-safe report for this draw with the borrower? They’ll be able to see it in their portal.')) return; const w = window.open('', '_blank'); act('repb' + draw.sitewire_draw_id, async () => { await api.sitewireDrawReport(appId, draw.sitewire_draw_id, 'borrower', w); return { msg: 'Shared the borrower-safe report with the borrower (opened in a new tab).' }; }); }}>Borrower copy</button>
         {draw.pdf_src && <a className="btn btn-sm ghost" href={draw.pdf_src} target="_blank" rel="noreferrer">Sitewire PDF</a>}
       </div>
 
@@ -603,6 +621,28 @@ function InspectionGallery({ appId, draw, finding, readsOff }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
+  const [archivedCount, setArchivedCount] = useState(null); // durable copies already in PILOT storage
+  const [archiving, setArchiving] = useState(false);
+  const [archiveMsg, setArchiveMsg] = useState('');
+  const loadArchived = useCallback(() => {
+    api.get(`/api/sitewire/files/${appId}/draws/${draw.sitewire_draw_id}/archived-media`)
+      .then((r) => setArchivedCount(r.count || 0)).catch(() => {});
+  }, [appId, draw.sitewire_draw_id]);
+  useEffect(() => { loadArchived(); }, [loadArchived]);
+  async function archive() {
+    setArchiving(true); setArchiveMsg('');
+    try {
+      const r = await api.post(`/api/sitewire/files/${appId}/draws/${draw.sitewire_draw_id}/archive-media`, {});
+      let m;
+      if (r.archived) m = `Saved ${r.archived} file${r.archived === 1 ? '' : 's'} to PILOT — durable now and can be included in the report.${r.failed ? ` (${r.failed} couldn’t be downloaded.)` : ''}`;
+      else if (r.failed) m = `Couldn’t download ${r.failed} file${r.failed === 1 ? '' : 's'} — the inspector’s links may have expired. Re-sync the draw, then try again.`;
+      else if (r.skipped) m = 'Already saved to PILOT — nothing new to archive.';
+      else m = 'Nothing to archive yet — deliver findings first, then archive.';
+      setArchiveMsg(m);
+      loadArchived();
+    } catch (e) { setArchiveMsg(e?.data?.error || 'Could not archive — please try again.'); }
+    finally { setArchiving(false); }
+  }
   useEffect(() => {
     let live = true;
     setLoading(true); setErr('');
@@ -624,7 +664,13 @@ function InspectionGallery({ appId, draw, finding, readsOff }) {
   const totalPhotos = lines.reduce((n, l) => n + (Array.isArray(l.media) ? l.media.filter((m) => m.type !== 'video').length : 0), 0);
   return (
     <div className="panel" style={{ marginTop: 8, background: 'var(--paper,#f6f3ec)' }}>
-      <div className="small" style={{ marginBottom: 6 }}><b>Inspection review</b>{!loading && lines.length ? ` · ${totalPhotos} photo${totalPhotos === 1 ? '' : 's'} across ${lines.length} line${lines.length === 1 ? '' : 's'}` : ''}</div>
+      <div className="row between" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'baseline', marginBottom: 6 }}>
+        <div className="small"><b>Inspection review</b>{!loading && lines.length ? ` · ${totalPhotos} photo${totalPhotos === 1 ? '' : 's'} across ${lines.length} line${lines.length === 1 ? '' : 's'}` : ''}
+          {archivedCount ? <span className="muted" style={{ marginLeft: 8, color: 'var(--good,#3f7a4a)' }}>✓ {archivedCount} saved to PILOT</span> : null}</div>
+        <button className="btn btn-sm ghost" disabled={archiving} title="Download the inspector’s photos/videos into PILOT’s own storage so they never expire (and so they can go into the branded report)."
+          onClick={archive}>{archiving ? 'Saving…' : 'Archive photos to PILOT'}</button>
+      </div>
+      {archiveMsg && <div className="muted small" style={{ marginBottom: 6 }}>{archiveMsg}</div>}
       {loading && <div className="muted small">Loading inspection photos…</div>}
       {err && !loading && <div className="muted small" style={{ color: 'var(--bad,#b04a3f)' }}>{err}</div>}
       {!loading && !err && lines.length === 0 && <div className="muted small">No inspection photos on this draw yet.</div>}

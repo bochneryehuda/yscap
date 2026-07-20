@@ -242,9 +242,10 @@ const TPR_DOC_SELECT = `
      AND COALESCE(d.source_type,'') <> 'chat_attachment'
      AND (ci.tpr_exclude IS NOT TRUE)
      -- system-regenerated artifacts (a prior TPR zip, autosaved track-record
-     -- printouts) are not source documents — and re-packing a previous export
-     -- inside the next one must never happen.
-     AND COALESCE(d.doc_kind,'') NOT IN ('track_record_html','tpr_export')
+     -- printouts, the PILOT-branded draw inspection reports) are not source
+     -- documents — and re-packing a regenerable export inside the next one must
+     -- never happen. Keep this list in step with sharepoint-backup.isRegenKind.
+     AND COALESCE(d.doc_kind,'') NOT IN ('track_record_html','tpr_export','draw_inspection_report')
      AND COALESCE(d.doc_kind,'') NOT LIKE '%\\_export'
      -- HARD RULE (owner-directed): the signed Heter Iska is NEVER in the TPR
      -- export (kept only in-system + on DocuSign). Belt-and-suspenders alongside

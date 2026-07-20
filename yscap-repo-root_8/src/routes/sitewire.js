@@ -28,6 +28,10 @@ const { sanitizeDateOnly } = require('../lib/fields'); // strict YYYY-MM-DD vali
 const notify = require('../lib/notify');
 const { enqueueSitewirePush } = require('../sitewire/enqueue');
 const { buildXlsx } = require('../lib/xlsx');
+const mediaArchive = require('../sitewire/media-archive');
+const drawReport = require('../sitewire/draw-report');
+const storage = require('../lib/storage');
+const { serveDocument } = require('../lib/serve-document');
 const { computeRelease, waiverGate } = require('../sitewire/money');
 
 // Resolve the retainage % for a file: per-file override on the link, else the global default.
@@ -126,6 +130,74 @@ router.get('/files/:id/findings/:drawId', requirePermission('manage_draws'), asy
     const findings = await reconcile.fetchDrawFindings(req.params.drawId);
     res.json(findings);
   } catch (e) { res.status(502).json({ error: e.message }); }
+});
+
+// ---- Durable inspector media (phase 2a): pull Sitewire's EXPIRING photo/video/PDF URLs into PILOT
+// storage so the gallery + branded reports never break. Best-effort + idempotent. manage_draws + IDOR. ----
+router.post('/files/:id/draws/:drawId/archive-media', requirePermission('manage_draws'), async (req, res) => {
+  if (!/^\d+$/.test(req.params.drawId)) return res.status(404).json({ error: 'draw not found' });
+  if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  const own = await db.query(`SELECT 1 FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [req.params.drawId, req.params.id]);
+  if (!own.rowCount) return res.status(404).json({ error: 'draw not found on this file' });
+  try {
+    const r = await mediaArchive.archiveDrawMedia(req.params.id, req.params.drawId);
+    res.json({ ok: true, ...r });
+  } catch (e) { res.status(500).json({ error: 'Could not archive the inspection media — please try again.' }); }
+});
+
+// how many media are already archived for a draw (for the gallery's "✓ archived" indicator).
+router.get('/files/:id/draws/:drawId/archived-media', requirePermission('manage_draws'), async (req, res) => {
+  if (!/^\d+$/.test(req.params.drawId)) return res.status(404).json({ error: 'draw not found' });
+  if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const rows = await mediaArchive.archivedMediaFor(req.params.id, req.params.drawId);
+    res.json({ count: rows.length, media: rows });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// ---- PILOT-branded inspection reports (phase 2b) ----
+// Turn the persisted inspector findings + the DURABLE archived photos into a branded PDF the coordinator
+// can file and the borrower can see. mode=staff (full: fee/net + GPS) | mode=borrower (borrower-safe: no
+// partner name, no fee/net, no GPS). Idempotent + cached by a version hash: an unchanged draw reuses the
+// stored `documents` row; a change mints a fresh one and supersedes the old. manage_draws + canSeeFile +
+// (per-draw) IDOR draw-owns-file.
+async function generateAndServeReport(req, res, { sitewireDrawId, scope }) {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const mode = req.query.mode === 'borrower' ? 'borrower' : 'staff';
+  try {
+    const meta = await drawReport.loadReportMeta(appId, { sitewireDrawId, mode });
+    if (!meta) return res.status(404).json({ error: 'file not found' });
+    if (!meta.hasScope || !meta.sections.length) {
+      return res.status(404).json({ error: 'No draw data to report on yet — start a draw and deliver findings first.' });
+    }
+    const drawNumber = scope === 'draw' && meta.sections[0] ? meta.sections[0].number : null;
+    const filename = drawReport.reportFilename({ scope, mode, drawNumber, version: meta.version, loanNo: meta.app.loanNo });
+    const borrowerId = (await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [appId])).rows[0] || {};
+    // cache hit: this exact version already stored → stream it back (no rebuild, no photo re-read)
+    let doc = (await db.query(
+      `SELECT * FROM documents WHERE application_id=$1 AND doc_kind='draw_inspection_report' AND filename=$2 LIMIT 1`,
+      [appId, filename])).rows[0];
+    if (!doc) {
+      await drawReport.attachPhotoBytes(meta.sections);         // read the durable photo bytes (bounded)
+      const bytes = drawReport.buildDrawReport({ app: meta.app, rollup: meta.rollup, sections: meta.sections, scope, mode });
+      const docId = await drawReport.storeDrawReport({ appId, borrowerId: borrowerId.borrower_id, filename, bytes, mode });
+      doc = (await db.query(`SELECT * FROM documents WHERE id=$1`, [docId])).rows[0];
+    }
+    return serveDocument(res, doc, { inline: true });
+  } catch (e) { res.status(500).json({ error: 'Could not build the report — please try again.' }); }
+}
+// per-draw report
+router.get('/files/:id/draws/:drawId/report', requirePermission('manage_draws'), async (req, res) => {
+  if (!/^\d+$/.test(req.params.drawId)) return res.status(404).json({ error: 'draw not found' });
+  if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  const own = await db.query(`SELECT 1 FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [req.params.drawId, req.params.id]);
+  if (!own.rowCount) return res.status(404).json({ error: 'draw not found on this file' });
+  return generateAndServeReport(req, res, { sitewireDrawId: req.params.drawId, scope: 'draw' });
+});
+// whole-project report (cumulative across all draws)
+router.get('/files/:id/report', requirePermission('manage_draws'), async (req, res) => {
+  return generateAndServeReport(req, res, { sitewireDrawId: null, scope: 'project' });
 });
 
 // ---- POST /api/sitewire/files/:id/reconcile — pull now ----
