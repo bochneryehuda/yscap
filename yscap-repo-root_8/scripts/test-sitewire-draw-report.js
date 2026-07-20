@@ -81,6 +81,16 @@ const app = { loanNo: 'YSCAP258134761', address: '109 Chapel St', csz: 'New Have
   ok('borrower report still shows Approved', text.includes('Approved'));
 }
 
+// ---- 2b. borrower copy NEVER reveals the capital-partner relationship (status neutralized) ----
+{
+  const s = section(false); s.status = 'pending_capital_partner';
+  const staff = R.buildDrawReport({ app, rollup, sections: [s], scope: 'draw', mode: 'staff' }).toString('latin1');
+  ok('staff status shows "With capital partner"', /With capital partner/.test(staff));
+  const bor = R.buildDrawReport({ app, rollup, sections: [s], scope: 'draw', mode: 'borrower' }).toString('latin1');
+  ok('borrower status NEVER says "capital partner"', !/capital partner/i.test(bor));
+  ok('borrower status neutralized to "Under review"', /Under review/.test(bor));
+}
+
 // ---- 3. whole-project report ----
 {
   const buf = R.buildDrawReport({ app, rollup, sections: [section(false)], scope: 'project', mode: 'staff' });

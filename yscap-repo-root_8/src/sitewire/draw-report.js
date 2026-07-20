@@ -98,7 +98,7 @@ function buildDrawReport({ app = {}, rollup = null, sections = [], scope = 'draw
     doc.setTextColor(243, 239, 230); doc.setFont('times', 'bold'); doc.setFontSize(15); doc.text(pdfSafe(title), W - M, 34, { align: 'right' });
     doc.setFont('times', 'italic'); doc.setFontSize(9); doc.setTextColor(201, 168, 106); doc.text(pdfSafe(subtitle), W - M, 50, { align: 'right' });
     doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(170, 178, 182);
-    doc.text(pdfSafe(LENDER.name + ' · NMLS ' + LENDER.nmls + (loanNo ? ' · Loan #' + loanNo : '')), W - M, 65, { align: 'right' });
+    doc.text(pdfSafe(LENDER.name + ' · NMLS ' + LENDER.nmls + (loanNo ? ' · Loan #' + clean(loanNo) : '')), W - M, 65, { align: 'right' });
   }
   function footer(pageNum) {
     doc.setFontSize(7); doc.setTextColor(150, 158, 162); doc.setFont('helvetica', 'normal');
@@ -138,7 +138,7 @@ function buildDrawReport({ app = {}, rollup = null, sections = [], scope = 'draw
   band('Property & loan');
   kv('Property', clean(app.address));
   kv('City / State / ZIP', clean(app.csz));
-  kv('Loan number', loanNo, { accent: true });
+  kv('Loan number', clean(loanNo), { accent: true });
   kv('Borrower', clean(app.borrowerName));
   if (!borrower && app.program) kv('Program', app.program);
   else if (borrower) kv('Program', 'Gold Standard program');
@@ -207,7 +207,7 @@ function buildDrawReport({ app = {}, rollup = null, sections = [], scope = 'draw
       kv('Requested', usd(s.requested_cents));
       kv('Approved', usd(s.approved_cents), { accent: true });
       if (Number(s.not_approved_cents) > 0) kv('Not approved (this inspection)', usd(s.not_approved_cents));
-      kv('Status', STATUS_LABEL(s.status));
+      kv('Status', STATUS_LABEL(s.status, true));
     } else {
       kv('Requested', usd(s.requested_cents));
       kv('Approved', usd(s.approved_cents), { accent: true });
@@ -215,7 +215,7 @@ function buildDrawReport({ app = {}, rollup = null, sections = [], scope = 'draw
       if (s.fee_cents != null) kv('Draw fee', usd(s.fee_cents));
       if (s.net_release_cents != null) kv('Net release', usd(s.net_release_cents), { accent: true });
       kv('Release date', s.release_date ? String(s.release_date).slice(0, 10) : (s.released ? '(released)' : ''));
-      kv('Status', STATUS_LABEL(s.status));
+      kv('Status', STATUS_LABEL(s.status, false));
     }
 
     const lines = Array.isArray(s.lines) ? s.lines : [];
@@ -289,7 +289,13 @@ function buildDrawReport({ app = {}, rollup = null, sections = [], scope = 'draw
   return Buffer.from(doc.output('arraybuffer'));
 }
 
-function STATUS_LABEL(s) {
+function STATUS_LABEL(s, borrower) {
+  // Borrower copy must NEVER reveal the capital-partner / note-buyer relationship (frozen borrower-safe
+  // rule) — collapse the review + capital-partner stages to a neutral "Under review" for the borrower.
+  if (borrower) {
+    return { drafting: 'Drafting', pending_borrower: 'Awaiting your submission', inspecting: 'Inspection in progress',
+      pending: 'Under review', pending_capital_partner: 'Under review', approved: 'Approved' }[s] || 'In progress';
+  }
   return { drafting: 'Drafting', pending_borrower: 'With borrower', inspecting: 'Inspecting', pending: 'Under review',
     pending_capital_partner: 'With capital partner', approved: 'Approved' }[s] || (s || 'In progress');
 }
@@ -391,7 +397,12 @@ async function loadReportMeta(appId, { sitewireDrawId = null, mode = 'staff' } =
       lines,
     });
   }
-  const version = await reportVersion(appId, drawId);
+  // The version also folds in the FILE HEADER fields (address/borrower/program/loan) so a correction to
+  // any of them mints a fresh report instead of serving the cached one with a stale header.
+  const baseVersion = await reportVersion(appId, drawId);
+  const version = crypto.createHash('sha256')
+    .update(baseVersion + '|' + [app.address, app.csz, app.borrowerName, app.program, app.loanNo].join('|'))
+    .digest('hex').slice(0, 12);
   return { app, rollup, sections, version, hasScope: drawIds.length > 0 };
 }
 
@@ -438,7 +449,12 @@ async function reportVersion(appId, drawId) {
   const lq = drawId != null
     ? await lazy.db.query(`SELECT COALESCE(sum(fee_cents),0) fee, COALESCE(sum(net_release_cents),0) net, max(created_at) m FROM draw_disbursements WHERE application_id=$1 AND sitewire_draw_id=$2`, [appId, drawId])
     : await lazy.db.query(`SELECT COALESCE(sum(fee_cents),0) fee, COALESCE(sum(net_release_cents),0) net, max(created_at) m FROM draw_disbursements WHERE application_id=$1`, [appId]);
-  const sig = JSON.stringify({ d: dq.rows, f: fq.rows, m: mq.rows, l: lq.rows });
+  // The "Schedule of values" is ALWAYS project-wide (loadRollup reads every job-item link + request for the
+  // file, not just this draw), so a net-zero reallocation that moves budget BETWEEN lines changes none of the
+  // tables above. Hash the two rollup-source tables (app-wide) so such a change refreshes the cached report.
+  const jq = await lazy.db.query(`SELECT COALESCE(max(updated_at)::text,'') m, count(*) c, COALESCE(sum(budgeted_cents),0) b, COALESCE(sum(CASE WHEN state='deleted' THEN 1 ELSE 0 END),0) del FROM sitewire_job_item_links WHERE application_id=$1`, [appId]);
+  const rq = await lazy.db.query(`SELECT COALESCE(max(r.updated_at)::text,'') m, count(*) c, COALESCE(sum(r.requested_cents),0) rq, COALESCE(sum(r.approved_cents),0) ap FROM sitewire_draw_requests r JOIN sitewire_draws d ON d.sitewire_draw_id=r.sitewire_draw_id WHERE d.application_id=$1`, [appId]);
+  const sig = JSON.stringify({ d: dq.rows, f: fq.rows, m: mq.rows, l: lq.rows, j: jq.rows, r: rq.rows });
   return crypto.createHash('sha256').update(sig).digest('hex').slice(0, 12);
 }
 
@@ -464,13 +480,17 @@ async function storeDrawReport({ appId, borrowerId, filename, bytes, mode }) {
        VALUES ($1,$2,$3,'application/pdf',$4,$5,$6,'staff',NULL,$7,'system',$8,true,'pending')
        RETURNING id`,
       [appId, borrowerId || null, filename, Buffer.from(bytes).length, provider, ref, docKind, visibility]);
-    // supersede the prior current report of the SAME mode (a borrower copy never supersedes the staff copy,
-    // and vice-versa — the visibility differs). Latest version of that mode wins.
+    // Supersede ONLY prior versions of the SAME report identity (same scope + mode + draw + loan) — never
+    // an UNRELATED report. The version-hashed filename is `...-<12hex>.pdf`; stripping the version yields the
+    // stable identity prefix (which encodes scope/who/loan), so generating draw #2's report can't mark
+    // draw #1's — or the project, or the borrower — report stale (that over-scoping would re-introduce the
+    // SharePoint Version-N churn class). The prefix contains only [A-Za-z0-9-] (no LIKE wildcards).
+    const identityPrefix = filename.replace(/-[0-9a-f]{12}\.pdf$/i, '-');
     await lazy.db.query(
       `UPDATE documents SET is_current=false,
           review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
-        WHERE application_id=$1 AND doc_kind=$2 AND visibility=$3 AND id<>$4 AND is_current=true`,
-      [appId, docKind, visibility, ins.rows[0].id]);
+        WHERE application_id=$1 AND doc_kind=$2 AND filename LIKE $3 || '%' AND id<>$4 AND is_current=true`,
+      [appId, docKind, identityPrefix, ins.rows[0].id]);
     return ins.rows[0].id;
   } catch (e) {
     if (e && e.code === '23505') {

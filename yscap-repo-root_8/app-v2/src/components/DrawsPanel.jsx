@@ -168,11 +168,11 @@ export default function DrawsPanel({ appId }) {
             {draws.length > 0 && (
               <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
                 <button className="btn btn-sm ghost" title="A PILOT-branded PDF of the whole construction project — schedule of values + every draw's inspection photos + notes."
-                  onClick={() => act('projreport', async () => { await api.sitewireProjectReport(appId, 'staff'); return { msg: 'Opened the whole-project report in a new tab.' }; })}>
+                  onClick={() => { const w = window.open('', '_blank'); act('projreport', async () => { await api.sitewireProjectReport(appId, 'staff', w); return { msg: 'Opened the whole-project report in a new tab.' }; }); }}>
                   Whole-project report
                 </button>
-                <button className="btn btn-sm ghost" title="The same whole-project report, borrower-safe (no capital-partner name, no fee/net, no photo GPS)."
-                  onClick={() => act('projreportb', async () => { await api.sitewireProjectReport(appId, 'borrower'); return { msg: 'Opened the borrower-safe whole-project report.' }; })}>
+                <button className="btn btn-sm ghost" title="The same whole-project report, borrower-safe (no capital-partner name, no fee/net, no photo GPS). Generating it shares it with the borrower."
+                  onClick={() => { if (!window.confirm('Share the borrower-safe whole-project report with the borrower? They’ll be able to see it in their portal.')) return; const w = window.open('', '_blank'); act('projreportb', async () => { await api.sitewireProjectReport(appId, 'borrower', w); return { msg: 'Shared the borrower-safe whole-project report with the borrower.' }; }); }}>
                   Borrower copy
                 </button>
               </div>
@@ -578,9 +578,9 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
         </button>
         <button className="btn btn-sm ghost" onClick={() => api.sitewireExportPacket(appId, draw.sitewire_draw_id).catch(() => {})}>Draw packet</button>
         <button className="btn btn-sm ghost" title="A PILOT-branded PDF for this draw — schedule of values, approved vs not-approved, inspector notes and the inspection photos." disabled={busy === 'rep' + draw.sitewire_draw_id}
-          onClick={() => act('rep' + draw.sitewire_draw_id, async () => { await api.sitewireDrawReport(appId, draw.sitewire_draw_id, 'staff'); return { msg: 'Opened the PILOT report in a new tab.' }; })}>PILOT report (PDF)</button>
-        <button className="btn btn-sm ghost" title="The same report, borrower-safe (no capital-partner name, no fee/net, no photo GPS)." disabled={busy === 'repb' + draw.sitewire_draw_id}
-          onClick={() => act('repb' + draw.sitewire_draw_id, async () => { await api.sitewireDrawReport(appId, draw.sitewire_draw_id, 'borrower'); return { msg: 'Opened the borrower-safe report.' }; })}>Borrower copy</button>
+          onClick={() => { const w = window.open('', '_blank'); act('rep' + draw.sitewire_draw_id, async () => { await api.sitewireDrawReport(appId, draw.sitewire_draw_id, 'staff', w); return { msg: 'Opened the PILOT report in a new tab.' }; }); }}>PILOT report (PDF)</button>
+        <button className="btn btn-sm ghost" title="The same report, borrower-safe (no capital-partner name, no fee/net, no photo GPS). Generating it shares it with the borrower." disabled={busy === 'repb' + draw.sitewire_draw_id}
+          onClick={() => { if (!window.confirm('Share the borrower-safe report for this draw with the borrower? They’ll be able to see it in their portal.')) return; const w = window.open('', '_blank'); act('repb' + draw.sitewire_draw_id, async () => { await api.sitewireDrawReport(appId, draw.sitewire_draw_id, 'borrower', w); return { msg: 'Shared the borrower-safe report with the borrower (opened in a new tab).' }; }); }}>Borrower copy</button>
         {draw.pdf_src && <a className="btn btn-sm ghost" href={draw.pdf_src} target="_blank" rel="noreferrer">Sitewire PDF</a>}
       </div>
 
