@@ -1,0 +1,481 @@
+[
+ {
+  "folder": "Encompass Loan / Audit Trail",
+  "name": "01 - Create Loan",
+  "method": "POST",
+  "url": "{{API_SERVER}}/encompass/v3/loans?loanFolder=My+Pipeline&view=entity",
+  "query": [
+   {
+    "key": "loanFolder",
+    "value": "My+Pipeline"
+   },
+   {
+    "key": "view",
+    "value": "entity"
+   }
+  ],
+  "desc": "",
+  "body": "{\n    \"applications\": [\n    \t{\n        \"borrower\": {\n            \"FirstName\": \"andy\",\n            \"LastName\": \"america\",\n            \"TaxIdentificationIdentifier\": \"999-60-3333\",\n            \"MaritalStatusType\": \"Married\",\n            \"TotalMonthlyIncomeMinusNetRentalAmount\": \"10000.00\"\n        },\n        \"coborrower\": {\n            \"FirstName\": \"amy\",\n            \"LastName\": \"america\",\n            \"EmailAddressText\": \"{{emailAddress}}\",\n            \"TaxIdentificationIdentifier\": \"500-60-2222\",\n            \"TotalMonthlyIncomeMinusNetRentalAmount\": \"3500.00\"\n        }\n    }\n    ],\n    \"property\": {\n        \"LoanPurposeType\": \"NoCash-Out Refinance\",\n        \"RefinancePropertyExistingLienAmount\": \"400000.00\",\n        \"RefinancePropertyAcquiredYear\": 1999,\n        \"RefinancePropertyOriginalCostAmount\": \"450000.00\",\n        \"StreetAddress\": \"4321 CulDeSac Street\",\n        \"City\": \"Someplace\",\n        \"State\": \"MA\",\n        \"PostalCode\": \"02723\",\n        \"FinancedNumberOfUnits\": 1\n    },\n    \"ratelock\":{\n    \"currentNumberOfDays\" : 10\n    },\n    \"customFields\": [\n    \t{\n    \t\t\"fieldName\": \"CX.123\",\n    \t\t\"value\": \"test1\"\n    \t},\n    \t{\n    \t\t\"fieldName\": \"LR.2146\",\n    \t\t\"value\": \"20\"\n    \t}\n    \t]\n}"
+ },
+ {
+  "folder": "Encompass Loan / Audit Trail",
+  "name": "02 - Retrieve Loan",
+  "method": "GET",
+  "url": "{{API_SERVER}}/encompass/v3/loans/{{loanId}}",
+  "query": [],
+  "desc": "",
+  "body": ""
+ },
+ {
+  "folder": "Encompass Loan / Audit Trail",
+  "name": "03 - Update Loan",
+  "method": "PATCH",
+  "url": "{{API_SERVER}}/encompass/v3/loans/{{loanId}}?view=entity",
+  "query": [
+   {
+    "key": "view",
+    "value": "entity"
+   }
+  ],
+  "desc": "",
+  "body": "{\n\"applications\": \n            [\n                {\n                \"id\": \"{{applicationId}}\",\n                \"borrower\": \n                    {\n                    \"id\": \"{{applicationId}}\",\n                    \"firstName\": \"Not Andy\"\n                    }\n                }\n            ]\n}"
+ },
+ {
+  "folder": "Encompass Loan / Audit Trail",
+  "name": "04 - Create Audit Trail",
+  "method": "POST",
+  "url": "{{API_SERVER}}/encompass/v3/loans/{{loanId}}/auditTrail?includeHistoricalData=false&ignoreInvalidFields=true&start=0&limit=10",
+  "query": [
+   {
+    "key": "includeHistoricalData",
+    "value": "false"
+   },
+   {
+    "key": "ignoreInvalidFields",
+    "value": "true"
+   },
+   {
+    "key": "start",
+    "value": "0"
+   },
+   {
+    "key": "limit",
+    "value": "10"
+   }
+  ],
+  "desc": "",
+  "body": "{\n    \"fieldIds\": [\n        \"4000\",\n        \"1109\",\n        \"Log.MS.Comments.Approval\"\n    ]\n}"
+ },
+ {
+  "folder": "Encompass Loan / Batch Update",
+  "name": "01 - Update Loans - with Loan Guids",
+  "method": "POST",
+  "url": "{{API_SERVER}}/encompass/v1/loanBatch/updateRequests",
+  "query": [],
+  "desc": "",
+  "body": "{\n\"loanFields\":\n[\n\n{ \"FieldId\": \"CUST01FV\", \"Value\": \"Test\" }\n],\n\"loanGuids\": [\n\"219f88d4-11f0-4f90-bac7-7e63d28aa1ef\",\n\"3a52b8ac-da28-4f8c-b1b0-a936506cac18\",\n\"eb33f713-2c87-4d65-9d36-fd31638aae2d\"\n]\n}"
+ },
+ {
+  "folder": "Encompass Loan / Batch Update",
+  "name": "02 - Update Loans - with filter",
+  "method": "POST",
+  "url": "{{API_SERVER}}/encompass/v1/loanBatch/updateRequests",
+  "query": [],
+  "desc": "",
+  "body": "{\n  \"loanData\": {\n    \"property\": {\n      \"buildingStatusType\": \"\",\n      \"city\": \"Fremont\",\n      \"county\": \"Alameda\",\n      \"loanPurposeType\": \"Purchase\",\n      \"postalCode\": \"09581\",\n      \"propertyRightsType\": \"\",\n      \"state\": \"CA\",\n      \"streetAddress\": \"51 Main St.\",\n      \"typeRecordingJurisdiction\": \"County\"\n    }\n  },\n  \"filter\": {\n    \"operator\": \"and\",\n    \"terms\": [\n      {\n        \"canonicalName\": \"Loan.LoanFolder\",\n        \"value\": \"My Pipeline\",\n        \"matchType\": \"exact\"\n      },\n      {\n            \"canonicalName\": \"Loan.LoanAmount\",\n            \"value\": \"2000\",\n            \"matchType\": \"greaterThanOrEquals\"\n      }\n      ]\n  }\n}"
+ },
+ {
+  "folder": "Encompass Loan / Batch Update",
+  "name": "03 - Get Status of Batch Update",
+  "method": "GET",
+  "url": "{{API_SERVER}}/encompass/v1/loanBatch/updateRequests/{{batchRequestId}}",
+  "query": [],
+  "desc": "",
+  "body": ""
+ },
+ {
+  "folder": "Encompass Loan / Loan Folder / V3 Loan Folders",
+  "name": "01 - Get list of Loan folders",
+  "method": "GET",
+  "url": "{{API_SERVER}}/encompass/v3/loanFolders",
+  "query": [],
+  "desc": "",
+  "body": ""
+ },
+ {
+  "folder": "Encompass Loan / Loan Folder / V3 Loan Folders",
+  "name": "02 - Get a specific loan folder",
+  "method": "GET",
+  "url": "{{API_SERVER}}/encompass/v3/loanFolders/{{loanFolders}}",
+  "query": [],
+  "desc": "",
+  "body": ""
+ },
+ {
+  "folder": "Encompass Loan / Loan Pipeline / V3 Loan Pipeline",
+  "name": "01 - Get Canonical Names",
+  "method": "GET",
+  "url": "{{API_SERVER}}/encompass/v3/loanPipeline/canonicalFields",
+  "query": [],
+  "desc": "Last modofied x days ",
+  "body": ""
+ },
+ {
+  "folder": "Encompass Loan / Loan Pipeline / V3 Loan Pipeline",
+  "name": "02 - Simple Query Pipeline",
+  "method": "POST",
+  "url": "{{API_SERVER}}/encompass/v3/loanPipeline?start=0&limit=1000",
+  "query": [
+   {
+    "key": "start",
+    "value": "0"
+   },
+   {
+    "key": "limit",
+    "value": "1000"
+   }
+  ],
+  "desc": "Last modofied x days ",
+  "body": "{\n    \"fields\": [\n        \"Loan.LoanFolder\",\n        \"Fields.4000\",\n        \"Loan.LoanNumber\",\n        \"Loan.LoanRate\",\n        \"Loan.LoanAmount\",\n        \"Loan.LastModified\",\n        \"Loan.BorrowerName\"\n    ],\n    \"sortOrder\": [\n        {\n            \"canonicalName\": \"Loan.LastModified\",\n            \"order\": \"Descending\"\n        }\n    ],\n    \"filter\": {\n        \"canonicalName\": \"Loan.LoanFolder\",\n        \"value\": \"(Trash)\",\n        \"matchType\": \"exact\",\n        \"precision\" : \"Day\"\n    },\n    \"orgType\": \"Internal\",\n    \"loanOwnership\": \"AllLoans\"\n}"
+ },
+ {
+  "folder": "Encompass Loan / Loan Pipeline / V3 Loan Pipeline",
+  "name": "03 - Complex Query Pipeline",
+  "method": "POST",
+  "url": "{{API_SERVER}}/encompass/v3/loanPipeline?limit=2000&include=LockInfo",
+  "query": [
+   {
+    "key": "limit",
+    "value": "2000"
+   },
+   {
+    "key": "include",
+    "value": "LockInfo"
+   }
+  ],
+  "desc": "Last modofied x days ",
+  "body": "{\n  \"filter\": {\n    \"operator\": \"and\",\n    \"terms\": [\n      {\n        \"canonicalName\": \"Loan.LoanFolder\",\n        \"value\": \"My Pipeline\",\n        \"matchType\": \"exact\",\n        \"include\": true\n      },\n      {\n        \"canonicalName\": \"Loan.LastModified\",\n        \"value\": \"02/25/2018\",\n        \"matchType\": \"greaterThanOrEquals\",\n        \"precision\": \"Day\"\n      },\n      {\n        \"operator\": \"and\",\n        \"terms\": [\n          {\n            \"canonicalName\": \"Loan.LoanRate\",\n            \"value\": \"10\",\n            \"matchType\": \"lessThanOrEquals\"\n          },\n          {\n            \"canonicalName\": \"Loan.LoanRate\",\n            \"value\": \"8\",\n            \"matchType\": \"greaterThanOrEquals\"\n          }\n      ]\n      }\n    ]\n  },\n  \"sortOrder\": [\n    {\n      \"canonicalName\": \"Loan.LastModified\",\n      \"order\": \"Descending\"\n    }\n  ]\n}"
+ },
+ {
+  "folder": "Encompass Loan / Loan Pipeline / V3 Loan Pipeline",
+  "name": "04 - Retrieve using loanIds (no pagination)",
+  "method": "POST",
+  "url": "{{API_SERVER}}/encompass/v3/loanPipeline",
+  "query": [],
+  "desc": "Last modofied x days ",
+  "body": "{\n  \"loanIds\":[\n  \t\"{{loanId}}\",\n  \t\"{{loanId}}\",\n    \"303a842b-db76-4cb0-ba37-065bb1c4d058\",\n    \"8978a155-6cd0-457c-b38a-fa6fec1b1883\",\n    \"17fc32c2-576c-4d5b-a193-ac896a4eb232\"\n  ],\n    \"fields\": [\n        \"Loan.LoanFolder\",\n        \"Loan.LoanNumber\",\n        \"Loan.LoanRate\",\n        \"Loan.LoanAmount\",\n        \"Fields.4002\",\n        \"Loan.LastModified\",\n        \"Loan.BorrowerName\"\n    ],\n    \"sortOrder\": [{\n        \"canonicalName\": \"Loan.LoanNumber\",\n        \"order\": \"Ascending\"\n    }, {\n        \"canonicalName\": \"Fields.4000\",\n        \"order\": \"Descending\"\n    }]\n}"
+ },
+ {
+  "folder": "Encompass Loan / Loan Pipeline / V3 Loan Pipeline",
+  "name": "05 - Include Archived Loans",
+  "method": "POST",
+  "url": "{{API_SERVER}}/encompass/v3/loanPipeline",
+  "query": [],
+  "desc": "Last modofied x days ",
+  "body": "{\n    \"loanIds\": [\n        \"{{loanId}}\"\n    ],\n    \"fields\": [\n        \"Loan.LoanFolder\",\n        \"Loan.LoanNumber\",\n        \"Loan.LoanRate\",\n        \"Loan.LoanAmount\",\n        \"Fields.4002\",\n        \"Loan.LastModified\",\n        \"Loan.BorrowerName\"\n    ],\n    \"sortOrder\": [\n        {\n            \"canonicalName\": \"Loan.LoanNumber\",\n            \"order\": \"Ascending\"\n        },\n        {\n            \"canonicalName\": \"Fields.4000\",\n            \"order\": \"Descending\"\n        }\n    ],\n    \"includeArchivedLoans\": \"true\"\n}"
+ },
+ {
+  "folder": "Encompass Loan / Loan Pipeline / V3 Loan Pipeline",
+  "name": "05 - Simple Pipeline Query with Loan Folder",
+  "method": "POST",
+  "url": "{{API_SERVER}}/encompass/v3/loanPipeline?start=0&limit=10",
+  "query": [
+   {
+    "key": "start",
+    "value": "0"
+   },
+   {
+    "key": "limit",
+    "value": "10"
+   }
+  ],
+  "desc": "Last modofied x days ",
+  "body": "{\n    \"fields\": [\n        \"Loan.LoanNumber\",\n        \"Loan.LoanType\",\n        \"Loan.LoanPurpose\",\n        \"Loan.BorrowerName\"\n    ],\n    \"loanFolders\": [\n        \"My Pipeline\",\n        \"Prospects\"\n    ],\n    \"filter\": {\n        \"canonicalName\": \"Loan.LoanNumber\",\n        \"value\": [\n            \"2402EM000002\",\n            \"2402EM000003\",\n            \"2402EM000004\",\n            \"2402EM000005\"\n        ],\n        \"matchType\": \"Multivalue\"\n    }\n}"
+ },
+ {
+  "folder": "Encompass Loan / Loan Pipeline / V3 Loan Pipeline",
+  "name": "06a - Loan Pipeline for Reports - Step 1",
+  "method": "POST",
+  "url": "{{API_SERVER}}/encompass/v3/loanPipeline/report",
+  "query": [
+   {
+    "key": "start",
+    "value": "0",
+    "disabled": true
+   },
+   {
+    "key": "limit",
+    "value": "10",
+    "disabled": true
+   },
+   {
+    "key": "ignoreInvalidFields",
+    "value": "true",
+    "disabled": true
+   }
+  ],
+  "desc": "Last modofied x days ",
+  "body": "{\r\n    \"fields\": [\r\n        \"Loan.LoanRate\",\r\n        \"Loan.Address1\",\r\n        \"Loan.City\",\r\n        \"Loan.LastModified\",\r\n        \"Loan.LoanNumber\",\r\n        \"Loan.BorrowerName\"\r\n    ],\r\n    \"loanFolders\": [\r\n        \"My Pipeline\",\r\n        \"Prospects\"\r\n    ],\r\n    \"filter\": {\r\n        \"operator\": \"And\",\r\n        \"terms\": [\r\n            {\r\n                \"canonicalName\": \"Loan.CurrentMilestoneName\",\r\n                \"value\": [\r\n                    \"Started\"\r\n                ],\r\n                \"matchType\": \"MultiValue\"\r\n            },\r\n            {\r\n                \"canonicalName\": \"Loan.LastModified\",\r\n                \"value\": \"2019-05-09\",\r\n                \"matchType\": \"GreaterThanOrEquals\"\r\n            }\r\n        ]\r\n    },\r\n    \"orgType\": \"internal\",\r\n    \"loanOwnership\": \"AllLoans\",\r\n    \"sortOrder\": [\r\n        {\r\n            \"order\": \"Ascending\",\r\n            \"canonicalName\": \"Loan.LastModified\"\r\n        }\r\n    ]\r\n}"
+ },
+ {
+  "folder": "Encompass Loan / Loan Pipeline / V3 Loan Pipeline",
+  "name": "06b - Loan Pipeline for Reports - Step 2",
+  "method": "POST",
+  "url": "{{API_SERVER}}/encompass/v3/loanPipeline/report?cursorId={{pip_cursor_id}}",
+  "query": [
+   {
+    "key": "start",
+    "value": "0",
+    "disabled": true
+   },
+   {
+    "key": "limit",
+    "value": "10",
+    "disabled": true
+   },
+   {
+    "key": "ignoreInvalidFields",
+    "value": "true",
+    "disabled": true
+   },
+   {
+    "key": "cursorId",
+    "value": "{{pip_cursor_id}}"
+   }
+  ],
+  "desc": "Last modofied x days ",
+  "body": "{\r\n    \"fields\": [\r\n        \"Loan.LoanRate\",\r\n        \"Loan.Address1\",\r\n        \"Loan.City\",\r\n        \"Loan.LastModified\",\r\n        \"Loan.LoanNumber\",\r\n        \"Loan.BorrowerName\"\r\n    ]\r\n}"
+ },
+ {
+  "folder": "Encompass Loan / Loan Pipeline / V1 Loan Pipeline",
+  "name": "01 - Create Cursor",
+  "method": "POST",
+  "url": "{{API_SERVER}}/encompass/v1/loanPipeline?cursortype=randomAccess&limit=10",
+  "query": [
+   {
+    "key": "cursortype",
+    "value": "randomAccess"
+   },
+   {
+    "key": "limit",
+    "value": "10"
+   }
+  ],
+  "desc": "Last modofied x days ",
+  "body": "{\n  \"filter\": {\n    \"terms\": [\n      {\n        \"canonicalName\": \"Loan.LoanFolder\",\n        \"value\": \"My Pipeline\",\n        \"matchType\": \"exact\"\n      }\n    ]\n  },\n  \"fields\": [\n    \"Loan.LoanNumber\", \"Loan.LoanAmount\",\"Loan.BorrowerName\",\"Fields.4000\"\n  ],\n\n  \"sortOrder\": [\n    {\n      \"canonicalName\": \"Loan.LoanNumber\",\n      \"order\": \"desc\"\n    },\n    {\n      \"canonicalName\": \"Fields.4000\",\n      \"order\": \"desc\"\n    }\n  ]\n}"
+ },
+ {
+  "folder": "Encompass Loan / Loan Pipeline / V1 Loan Pipeline",
+  "name": "02 - Create Cursor (Loan Rate)",
+  "method": "POST",
+  "url": "{{API_SERVER}}/encompass/v1/loanPipeline?cursortype=randomAccess&limit=10",
+  "query": [
+   {
+    "key": "cursortype",
+    "value": "randomAccess"
+   },
+   {
+    "key": "limit",
+    "value": "10"
+   }
+  ],
+  "desc": "Last modofied x days ",
+  "body": "{\n  \"filter\": {\n    \"operator\": \"AND\",\n    \"terms\": [\n      {\n        \"canonicalName\": \"Loan.LoanRate\",\n            \"value\": \"10\",\n            \"matchType\": \"lessThanOrEquals\",\n            \"precision\":\"exact\"\n      },\n      {\n  \n            \"canonicalName\": \"Loan.LastModified\",\n            \"value\": \"5/20/2017\",\n            \"matchType\": \"lessThanOrEquals\",\n            \"precision\": \"day\"\n          \n      }\n    ]\n  },\n  \"fields\": [\n        \"Loan.LoanFolder\",\n        \"Loan.LoanNumber\",\n        \"Loan.LoanRate\",\n        \"Loan.LoanAmount\",\n        \"Fields.4002\",\n        \"Loan.LastModified\",\n        \"Loan.BorrowerName\"\n    ],\n  \"sortOrder\": [\n    {\n      \"canonicalName\": \"Loan.LoanNumber\",\n      \"order\": \"asc\"\n    },\n    {\n      \"canonicalName\": \"Fields.4000\",\n      \"order\": \"desc\"\n    }\n  ]\n}"
+ },
+ {
+  "folder": "Encompass Loan / Loan Pipeline / V1 Loan Pipeline",
+  "name": "03 - Paginate",
+  "method": "POST",
+  "url": "{{API_SERVER}}/encompass/v1/loanPipeline?cursor={{pip_cursor_id}}&start=3&limit=200",
+  "query": [
+   {
+    "key": "cursor",
+    "value": "{{pip_cursor_id}}"
+   },
+   {
+    "key": "start",
+    "value": "3"
+   },
+   {
+    "key": "limit",
+    "value": "200"
+   }
+  ],
+  "desc": "Last modofied x days ",
+  "body": "{\n  \"fields\": [\n        \"Loan.LoanFolder\",\n        \"Loan.LoanNumber\",\n        \"Loan.LoanRate\",\n        \"Loan.LoanAmount\",\n        \"Fields.4002\",\n        \"Loan.LastModified\",\n        \"Loan.BorrowerName\"\n    ]\n}"
+ },
+ {
+  "folder": "Encompass Loan / Loan Pipeline / V1 Loan Pipeline",
+  "name": "04 - Retrieve Only GUID (No Pagination)",
+  "method": "POST",
+  "url": "{{API_SERVER}}/encompass/v1/loanPipeline?limit=2000",
+  "query": [
+   {
+    "key": "limit",
+    "value": "2000"
+   }
+  ],
+  "desc": "Last modofied x days ",
+  "body": "{\n  \"filter\": {\n    \"operator\": \"and\",\n    \"terms\": [\n      {\n        \"canonicalName\": \"Loan.LoanFolder\",\n        \"value\": \"(Trash)\",\n        \"matchType\": \"exact\",\n        \"include\": false\n      },\n      {\n        \"canonicalName\": \"Loan.LastModified\",\n        \"value\": \"02/25/2011\",\n        \"matchType\": \"greaterThanOrEquals\",\n        \"precision\": \"day\"\n      },\n      {\n        \"operator\": \"and\",\n        \"terms\": [\n          {\n            \"canonicalName\": \"Loan.LoanRate\",\n            \"value\": \"10\",\n            \"matchType\": \"lessThanOrEquals\",\n            \"precision\":\"exact\"\n          },\n          {\n            \"canonicalName\": \"Loan.LoanRate\",\n            \"value\": \"8\",\n            \"matchType\": \"greaterThanOrEquals\",\n            \"precision\":\"exact\"\n          }\n      ]\n      }\n    ]\n  },\n  \"sortOrder\": [\n    {\n      \"canonicalName\": \"Loan.LastModified\",\n      \"order\": \"desc\"\n    }\n  ]\n}"
+ },
+ {
+  "folder": "Encompass Loan / Loan Pipeline / V1 Loan Pipeline",
+  "name": "05 - Retrieve using ONLY GUID (No Pagination)",
+  "method": "POST",
+  "url": "{{API_SERVER}}/encompass/v1/loanPipeline",
+  "query": [],
+  "desc": "Last modofied x days ",
+  "body": "{\n  \"loanIds\":[\n    \"303a842b-db76-4cb0-ba37-065bb1c4d058\",\n    \"8978a155-6cd0-457c-b38a-fa6fec1b1883\",\n    \"17fc32c2-576c-4d5b-a193-ac896a4eb232\"\n  ],\n    \"fields\": [\n        \"Loan.LoanFolder\",\n        \"Loan.LoanNumber\",\n        \"Loan.LoanRate\",\n        \"Loan.LoanAmount\",\n        \"Fields.4002\",\n        \"Loan.LastModified\",\n        \"Loan.BorrowerName\"\n    ],\n    \"sortOrder\": [{\n        \"canonicalName\": \"Loan.LoanNumber\",\n        \"order\": \"asc\"\n    }, {\n        \"canonicalName\": \"Fields.4000\",\n        \"order\": \"desc\"\n    }]\n}"
+ },
+ {
+  "folder": "Encompass Loan / Loan Pipeline / V1 Loan Pipeline",
+  "name": "06 - Get Canonical Names",
+  "method": "GET",
+  "url": "{{API_SERVER}}/encompass/v1/loanPipeline/fieldDefinitions",
+  "query": [],
+  "desc": "Last modofied x days ",
+  "body": ""
+ },
+ {
+  "folder": "Encompass Loan / Resource Lock / V1 Resource Locks",
+  "name": "01 - Lock a resource (loan)",
+  "method": "POST",
+  "url": "{{API_SERVER}}/encompass/v1/resourceLocks?view=id",
+  "query": [
+   {
+    "key": "view",
+    "value": "id"
+   }
+  ],
+  "desc": "Create a loan based on the sample provided in the developer connect documentation",
+  "body": "{\n\t\"resource\":{\n\t\t\"entityId\": \"{{loanId}}\", \n\t\t\"entityType\": \"loan\"\t\n\t},\n\t\"lockType\": \"exclusive\"\n}"
+ },
+ {
+  "folder": "Encompass Loan / Resource Lock / V1 Resource Locks",
+  "name": "02 - Retrieve a lock",
+  "method": "GET",
+  "url": "{{API_SERVER}}/encompass/v1/resourceLocks/{{LockId}}?resourceType=loan&resourceId={{loanId}}",
+  "query": [
+   {
+    "key": "resourceType",
+    "value": "loan"
+   },
+   {
+    "key": "resourceId",
+    "value": "{{loanId}}"
+   }
+  ],
+  "desc": "This step retrieves the loan you created.",
+  "body": ""
+ },
+ {
+  "folder": "Encompass Loan / Resource Lock / V1 Resource Locks",
+  "name": "03 - Retrieve locks",
+  "method": "GET",
+  "url": "{{API_SERVER}}/encompass/v1/resourceLocks?resourceType=loan&resourceId={{loanId}}",
+  "query": [
+   {
+    "key": "resourceType",
+    "value": "loan"
+   },
+   {
+    "key": "resourceId",
+    "value": "{{loanId}}"
+   }
+  ],
+  "desc": "This step retrieves the loan you created.",
+  "body": ""
+ },
+ {
+  "folder": "Encompass Loan / Resource Lock / V1 Resource Locks",
+  "name": "04 - Unlock a resource (loan)",
+  "method": "DELETE",
+  "url": "{{API_SERVER}}/encompass/v1/resourceLocks/{{LockId}}?resourceType=loan&resourceId={{loanId}}",
+  "query": [
+   {
+    "key": "resourceType",
+    "value": "loan"
+   },
+   {
+    "key": "resourceId",
+    "value": "{{loanId}}"
+   }
+  ],
+  "desc": "This step deletes the loan you created and updated in the previous steps.",
+  "body": ""
+ },
+ {
+  "folder": "Encompass Loan / Resource Lock / V3 Resource Locks Copy",
+  "name": "01 - Lock a resource (loan)",
+  "method": "POST",
+  "url": "{{API_SERVER}}/encompass/v3/resourceLocks?view=id",
+  "query": [
+   {
+    "key": "view",
+    "value": "id"
+   }
+  ],
+  "desc": "Create a loan based on the sample provided in the developer connect documentation",
+  "body": "{\n\t\"resource\":{\n\t\t\"entityId\": \"{{loanId}}\", \n\t\t\"entityType\": \"loan\"\t\n\t},\n\t\"lockType\": \"exclusive\"\n}"
+ },
+ {
+  "folder": "Encompass Loan / Resource Lock / V3 Resource Locks Copy",
+  "name": "02 - Retrieve a lock",
+  "method": "GET",
+  "url": "{{API_SERVER}}/encompass/v3/resourceLocks/{{LockId}}?resourceType=loan&resourceId={{loanId}}",
+  "query": [
+   {
+    "key": "resourceType",
+    "value": "loan"
+   },
+   {
+    "key": "resourceId",
+    "value": "{{loanId}}"
+   }
+  ],
+  "desc": "This step retrieves the loan you created.",
+  "body": ""
+ },
+ {
+  "folder": "Encompass Loan / Resource Lock / V3 Resource Locks Copy",
+  "name": "03 - Retrieve locks",
+  "method": "GET",
+  "url": "{{API_SERVER}}/encompass/v3/resourceLocks?resourceType=loan&resourceId={{loanId}}",
+  "query": [
+   {
+    "key": "resourceType",
+    "value": "loan"
+   },
+   {
+    "key": "resourceId",
+    "value": "{{loanId}}"
+   }
+  ],
+  "desc": "This step retrieves the loan you created.",
+  "body": ""
+ },
+ {
+  "folder": "Encompass Loan / Resource Lock / V3 Resource Locks Copy",
+  "name": "04 - Unlock a resource (loan)",
+  "method": "DELETE",
+  "url": "{{API_SERVER}}/encompass/v3/resourceLocks/{{LockId}}?resourceType=loan&resourceId={{loanId}}",
+  "query": [
+   {
+    "key": "resourceType",
+    "value": "loan"
+   },
+   {
+    "key": "resourceId",
+    "value": "{{loanId}}"
+   },
+   {
+    "key": "force",
+    "value": "true",
+    "description": "Forcefully unlocks a loan. ",
+    "disabled": true
+   }
+  ],
+  "desc": "This step deletes the loan you created and updated in the previous steps.",
+  "body": ""
+ }
+]
