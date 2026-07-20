@@ -830,17 +830,36 @@ router.get('/applications/:id/appraisal', async (req, res) => {
         WHERE ap.appraisal_id=$1 AND d.is_current AND ap.document_id IS NOT NULL
         ORDER BY ap.sequence`, [appr.id]),
   ]);
-  const open = findings.rows.map((f) => ({ ...f, title: scrubText(f.title) }));
+  // Underwriting-scrutiny findings are STAFF-ONLY — they reveal how hard the lender is
+  // scrutinizing the deal (inflated-ARV signal, value not carried by the comps, over-paying vs
+  // as-is). A borrower must never see the lender's internal skepticism, so these codes are
+  // dropped from the borrower set entirely (they stay open + visible on the staff desk).
+  const SCRUTINY_CODES = new Set(['arv_defensibility', 'value_vs_comps', 'value_not_bracketed', 'asis_below_price', 'comp_split_review']);
+  const open = findings.rows
+    .filter((f) => !SCRUTINY_CODES.has(f.code))
+    .map((f) => ({ ...f, title: scrubText(f.title) }));
+  // A hidden scrutiny finding can still be a REAL clear-to-close blocker (asis_below_price is
+  // fatal). We must not tell the borrower their file is clear while it's actually gated — but we
+  // also can't reveal the underwriting reason. If a filtered-out finding is a live blocker, surface
+  // ONE neutral placeholder so the borrower's summary honestly shows "under review", not "clear".
+  const hiddenBlocker = findings.rows.some((f) => SCRUTINY_CODES.has(f.code) && f.severity === 'fatal' && f.blocks_ctc);
+  if (hiddenBlocker) {
+    open.push({ id: 'appraisal_review', code: 'appraisal_under_review', severity: 'fatal', field: 'value',
+      appraisal_value: null, file_value: null, blocks_ctc: true, created_at: null,
+      title: 'Your appraisal is in final underwriting review' });
+  }
   // Borrower-safe appraisal object: drop staff-only bookkeeping (who imported it, the
-  // source document ids) and defensively scrub the free-text lender/AMC/client fields so a
-  // capital-partner name can never reach a borrower even if one landed in the appraisal.
+  // source document ids) AND the free-text lender/AMC/client fields OUTRIGHT — a capital-partner
+  // name can never reach a borrower. Scrubbing a free-text field only strips the names we know;
+  // dropping the columns removes the whole class (the borrower UI never reads lender/AMC).
   const safeAppr = (() => {
     if (!appr) return null;
     // Also drop the `fields` jsonb catch-all: it carries appraiser.lender/appraiser.amc
-    // UN-scrubbed (buildFieldsJson), which would defeat the column scrub below. The borrower
+    // UN-scrubbed (buildFieldsJson), which would defeat the column drop below. The borrower
     // UI never reads it, so dropping it entirely is the safe, clean fix.
-    const { imported_by, source_xml_document_id, pdf_document_id, fields, ...rest } = appr; // eslint-disable-line no-unused-vars
-    return { ...rest, lender_name: scrubText(rest.lender_name), amc_name: scrubText(rest.amc_name) };
+    const { imported_by, source_xml_document_id, pdf_document_id, fields,
+      lender_name, amc_name, ...rest } = appr; // eslint-disable-line no-unused-vars
+    return rest;
   })();
   const bSummary = {
     fatal: open.filter((f) => f.severity === 'fatal').length,
@@ -850,10 +869,15 @@ router.get('/applications/:id/appraisal', async (req, res) => {
   };
   // Borrowers see the collateral read (a neutral quality summary of THEIR property) but NOT the
   // ARV-defensibility cross-check — that's an underwriting-scrutiny signal, staff-only.
+  // Implied-value cross-check over the operative grid's comps only (never a mix of As-Is + ARV).
+  // Pre-split appraisals (no comp_set) keep the old all-comps behavior.
+  const gridKey = safeAppr.arv_value != null ? 'arv' : 'as_is';
+  const hasSplit = comps.rows.some((c) => c.comp_set);
+  const impliedComps = hasSplit ? comps.rows.filter((c) => c.comp_set === gridKey) : comps.rows;
   const score = {
     collateral: apprScore.collateralScore({ a: safeAppr, comps: comps.rows, summary: bSummary }),
     arv: null,
-    impliedValue: apprScore.compImpliedValue({ comps: comps.rows, subjectGla: safeAppr.gla }),
+    impliedValue: apprScore.compImpliedValue({ comps: impliedComps, subjectGla: safeAppr.gla }),
   };
   res.json({
     appraisal: safeAppr, comparables: comps.rows, units: units.rows, findings: open, photos: photos.rows,

@@ -1,7 +1,7 @@
 /**
  * DB-level HTTP test of the credit FICO-mismatch sign-off GATE + reconcile
  * endpoint, through the real staff route stack (src/routes/staff.js signOffGate +
- * src/routes/staff-credit.js). The db/168 trigger is the backstop (covered by
+ * src/routes/staff-credit.js). The db/184 trigger is the backstop (covered by
  * scripts/test-credit-finding-gate.sql); this proves the APP layer:
  *   - a fatal, unreconciled finding makes PATCH /checklist 422 (friendly block),
  *   - reconcile requires a note, is capability + per-file gated, persists, undoes,
@@ -136,7 +136,7 @@ const ok = (name, cond) => { console.log(`${cond ? 'PASS' : 'FAIL'} - ${name}`);
   r = await fetch(`${base}/credit/reconcile-finding`, { method: 'POST', headers: H(token), body: JSON.stringify({ creditReportId: rep2, findingType: 'no_such_type', note: 'x' }) });
   ok('reconciling an unknown finding type → 422', r.status === 422);
 
-  // 9. FAIL-OPEN REGRESSION (db/171): a fatal alert on a REVIEW-status report must
+  // 9. FAIL-OPEN REGRESSION (db/187): a fatal alert on a REVIEW-status report must
   //    block sign-off through the APP layer too (not only the DB trigger).
   const appId3 = (await db.query(`INSERT INTO applications (borrower_id, loan_officer_id) VALUES ($1,$2) RETURNING id`, [bor, onFile])).rows[0].id;
   const reviewWrap = { severity: 'fatal', types: ['deceased'], message: 'deceased',

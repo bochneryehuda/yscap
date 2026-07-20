@@ -51,6 +51,19 @@ function withinTol(a, b, pct, abs) {
 }
 // normalize an address string for comparison (drop punctuation/case/whitespace, expand nothing fancy)
 function normAddr(s) { return String(s || '').toLowerCase().replace(/[.,#]/g, ' ').replace(/\s+/g, ' ').trim(); }
+// Whole-token containment: does `hayTokens` contain `needleTokens` as a CONTIGUOUS run? A plain
+// String.includes() substring test conflates "76 thompson" with "176 thompson" (a real
+// wrong-property mismatch that would be silently swallowed) and also false-matches a street word
+// buried inside a longer word. Compare whole tokens instead.
+function containsTokenSeq(hayTokens, needleTokens) {
+  if (!needleTokens.length || needleTokens.length > hayTokens.length) return false;
+  for (let i = 0; i + needleTokens.length <= hayTokens.length; i++) {
+    let ok = true;
+    for (let j = 0; j < needleTokens.length; j++) { if (hayTokens[i + j] !== needleTokens[j]) { ok = false; break; } }
+    if (ok) return true;
+  }
+  return false;
+}
 function fileAddress(file) {
   const pa = file && file.property_address;
   if (!pa) return null;
@@ -107,9 +120,9 @@ function computeFindings(appraisal, file, opts = {}) {
   // matching file address never triggers a false "wrong property" fatal.
   const faLine = fileAddrLine(file);
   const subjStreet = normAddr(A.subject.address);
-  const subjKey = subjStreet.split(' ').slice(0, 2).join(' ');
-  if (subjStreet && /\d/.test(subjStreet) && faLine && subjKey &&
-      !normAddr(faLine).includes(subjKey)) {
+  const subjTokens = subjStreet.split(' ').filter(Boolean).slice(0, 2); // house-number + first street word
+  if (subjStreet && /\d/.test(subjStreet) && faLine && subjTokens.length &&
+      !containsTokenSeq(normAddr(faLine).split(' ').filter(Boolean), subjTokens)) {
     out.push(finding({ code: 'address_mismatch', severity: 'fatal', field: 'address',
       appraisalValue: [A.subject.address, A.subject.city, A.subject.state].filter(Boolean).join(', '),
       fileValue: faLine,
@@ -255,7 +268,10 @@ function computeFindings(appraisal, file, opts = {}) {
   //   research — they inform the underwriter, they never block clear-to-close and never
   //   change the file). Each fires ONLY when the data it needs was actually read. ----
   const comps = A.comparables || [];
-  const closed = comps.filter((c) => num(c.salePrice) != null);
+  // The CLOSED pool excludes active/pending listings — their "sale price" is an asking price, not
+  // a settled sale, so they must not count toward pool adequacy or set the value bracket.
+  const isClosed = (c) => c.saleStatus == null || c.saleStatus === 'closed';
+  const closed = comps.filter((c) => num(c.salePrice) != null && isClosed(c));
 
   // 14. Comp pool adequacy — a thin closed-sale pool weakens the value opinion.
   if (comps.length > 0 && closed.length < o.minClosedComps) {
@@ -280,37 +296,53 @@ function computeFindings(appraisal, file, opts = {}) {
     }
   }
 
-  // 16. Value bracketing — the opinion of value should sit within the adjusted comp range.
-  const adj = closed.map((c) => num(c.adjustedPrice)).filter((n) => n != null);
+  // The reconciled opinion of value (used by the flip/resale markup in check 20). Equals the ARV
+  // on a reno file and the As-Is on a straight as-is file (both == appraisedValue).
   const subjVal = num(v.appraisedValue) != null ? num(v.appraisedValue) : num(v.valueSalesApproach);
-  if (subjVal != null && adj.length >= o.minClosedComps) {
-    const hi = Math.max(...adj), lo = Math.min(...adj);
-    if (subjVal > hi || subjVal < lo) {
-      const above = subjVal > hi;
-      out.push(finding({ code: 'value_not_bracketed', severity: 'warning', field: 'value',
-        appraisalValue: money(subjVal), fileValue: `${money(lo)}–${money(hi)}`,
-        title: `Opinion of value is ${above ? 'above' : 'below'} the adjusted comparable range`,
-        howTo: `The value ${money(subjVal)} sits ${above ? 'above the highest' : 'below the lowest'} adjusted comp (${money(lo)}–${money(hi)}). A value the comps don't bracket is worth a second look — confirm the adjustments support it.`,
-        actions: ['acknowledge', 'dismiss', 'request_revision'] }));
-    }
-  }
 
-  // 16b. Independent value cross-check — even WITHIN the comp range, a value well above what the
-  //   comps imply (their median adjusted price) is worth a second look. Fires only when the value
-  //   is inside the CLOSED-comp bracket (the same `adj`/`hi` value_not_bracketed uses, so the two
-  //   can never double-flag — even when a listing comp with no sale price lifts the implied high)
-  //   and materially above the comp median. Advisory.
-  if (subjVal != null && adj.length >= o.minClosedComps) {
-    const implied = compImpliedValue({ comps: A.comparables, subjectGla: A.subject.gla });
-    const hiClosed = Math.max(...adj);
-    if (implied && subjVal <= hiClosed && subjVal > implied.median * (1 + o.valueVsCompsPct / 100)) {
-      const overPct = Math.round(((subjVal - implied.median) / implied.median) * 100);
-      out.push(finding({ code: 'value_vs_comps', severity: 'warning', field: 'value',
-        appraisalValue: money(subjVal), fileValue: `comps imply ${money(implied.median)}`,
-        title: `Opinion of value is ${overPct}% above what the comps imply`,
-        howTo: `The reconciled value ${money(subjVal)} is ${overPct}% above the median adjusted comp (${money(implied.median)}${implied.perGlaValue ? `; $/sqft implies ${money(implied.perGlaValue)}` : ''}). It's still within the comp range, but sits at the top — confirm the adjustments carry it.`,
-        actions: ['acknowledge', 'dismiss', 'request_revision'] }));
-    }
+  // 16 / 16b. Value bracketing — PER GRID. A renovation appraisal supports the After-Repair Value
+  //   off the ARV comps and the As-Is value off the As-Is comps. Bracketing a value against the
+  //   WRONG comp set is exactly the corruption the two-grid split fixes, so each value is checked
+  //   ONLY against its own grid. When the split could not be determined (needsReview), bracketing
+  //   is SKIPPED — a corrupt check is worse than none — and one "verify the grids" finding is
+  //   raised instead (mirrors the officer-verify pattern).
+  const splitReview = !!(A.compSplit && A.compSplit.needsReview);
+  if (splitReview) {
+    out.push(finding({ code: 'comp_split_review', severity: 'warning', field: 'comps',
+      title: 'As-Is vs After-Repair comparable grids need manual verification',
+      howTo: 'Some comparables could not be confidently assigned to the As-Is or the After-Repair grid, so the automated value-bracketing was skipped. Confirm which comps support which value before relying on the value opinion.',
+      actions: ['acknowledge', 'request_revision', 'dismiss'] }));
+  } else {
+    const bracketGrid = (set, value, label) => {
+      if (value == null) return;
+      const gridComps = closed.filter((c) => c.comp_set === set);
+      const adjG = gridComps.map((c) => num(c.adjustedPrice)).filter((n) => n != null && n > 0);
+      if (adjG.length < o.minClosedComps) return;               // too thin to bracket this grid
+      const hi = Math.max(...adjG), lo = Math.min(...adjG);
+      if (value > hi || value < lo) {
+        const above = value > hi;
+        out.push(finding({ code: 'value_not_bracketed', severity: 'warning', field: 'value', grid: label,
+          appraisalValue: money(value), fileValue: `${money(lo)}–${money(hi)}`,
+          title: `${label} is ${above ? 'above' : 'below'} the ${label} comparable range`,
+          howTo: `The ${label} ${money(value)} sits ${above ? 'above the highest' : 'below the lowest'} ${label} comp (${money(lo)}–${money(hi)}). A value the comps don't bracket is worth a second look — confirm the adjustments support it.`,
+          actions: ['acknowledge', 'dismiss', 'request_revision'] }));
+        return;                                                 // out of range → don't ALSO flag "above the median"
+      }
+      // within range but materially above what THIS grid's CLOSED comps imply (median adjusted)
+      const implied = compImpliedValue({ comps: (A.comparables || []).filter((c) => c.comp_set === set && isClosed(c)), subjectGla: A.subject.gla });
+      if (implied && value > implied.median * (1 + o.valueVsCompsPct / 100)) {
+        const overPct = Math.round(((value - implied.median) / implied.median) * 100);
+        out.push(finding({ code: 'value_vs_comps', severity: 'warning', field: 'value', grid: label,
+          appraisalValue: money(value), fileValue: `${label} comps imply ${money(implied.median)}`,
+          title: `${label} is ${overPct}% above what the ${label} comps imply`,
+          howTo: `The ${label} ${money(value)} is ${overPct}% above the median adjusted ${label} comp (${money(implied.median)}${implied.perGlaValue ? `; $/sqft implies ${money(implied.perGlaValue)}` : ''}). It's within the comp range but sits at the top — confirm the adjustments carry it.`,
+          actions: ['acknowledge', 'dismiss', 'request_revision'] }));
+      }
+    };
+    // ARV value vs the ARV grid; As-Is value vs the As-Is grid. On a single-grid file every comp
+    // shares one comp_set, so exactly one of these runs (the file's operative value).
+    if (v.arvConfidence === 'definite') bracketGrid('arv', num(v.arv), 'After-Repair Value');
+    if (v.asIsConfidence === 'definite') bracketGrid('as_is', num(v.asIs), 'As-Is value');
   }
 
   // 17. GLA bracketing — the subject size should be bracketed by the comps.

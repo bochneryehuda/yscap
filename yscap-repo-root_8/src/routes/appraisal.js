@@ -88,10 +88,17 @@ router.get('/:appId', async (req, res, next) => {
     const rehab = (await db.query(`SELECT rehab_budget FROM applications WHERE id=$1`, [app.id])).rows[0] || {};
     // Match findings.js isReno (which excludes condo 1073) so the card and the finding agree.
     const isReno = appr.form_type !== 'FNM1073' && (appr.arv_value != null || /subject|hypothetical|as.?repair|as.?complet/i.test(String(appr.condition_of_appraisal || '')));
+    // The implied-value cross-check must run over ONE grid's comps — mixing As-Is and ARV comps
+    // into a single median is the exact lumping the split exists to prevent. Use the operative
+    // grid (ARV on a reno file, else As-Is). Pre-split appraisals (no comp_set) keep the old
+    // all-comps behavior so their advisory read doesn't blank out.
+    const gridKey = appr.arv_value != null ? 'arv' : 'as_is';
+    const hasSplit = comps.rows.some((c) => c.comp_set);
+    const impliedComps = hasSplit ? comps.rows.filter((c) => c.comp_set === gridKey) : comps.rows;
     const score = {
       collateral: collateralScore({ a: appr, comps: comps.rows, summary }),
       arv: arvDefensibility({ arv: appr.arv_value, asIs: appr.as_is_value, rehab: rehab.rehab_budget, isReno }),
-      impliedValue: compImpliedValue({ comps: comps.rows, subjectGla: appr.gla }),
+      impliedValue: compImpliedValue({ comps: impliedComps, subjectGla: appr.gla }),
     };
     res.json({ appraisal: appr, comparables: comps.rows, units: units.rows, findings: open, photos: photos.rows, summary, score });
   } catch (e) { next(e); }

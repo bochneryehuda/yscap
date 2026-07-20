@@ -422,7 +422,7 @@ async function seedBorrower(email, first, ssnRaw = '123-00-3333') {
   // the DB gate refuses to complete the condition while the fatal finding stands
   let uwGateBlocked = false;
   try { await db.query(`UPDATE checklist_items SET status='satisfied' WHERE application_id=$1 AND template_id=$2`, [appUw, credTmpl]); } catch (_) { uwGateBlocked = true; }
-  ok('db/170 gate blocks completing the condition with a fatal fico finding', uwGateBlocked);
+  ok('db/186 gate blocks completing the condition with a fatal fico finding', uwGateBlocked);
   // uw cleanup
   await db.query(`DELETE FROM checklist_items WHERE application_id=$1`, [appUw]);
   await db.query(`DELETE FROM credit_scores WHERE credit_report_id IN (SELECT id FROM credit_reports WHERE application_id=$1)`, [appUw]);
@@ -438,7 +438,7 @@ async function seedBorrower(email, first, ssnRaw = '123-00-3333') {
   // A fraud alert (staff-reconcilable) + an OFAC hit (compliance-only) both become
   // FATAL findings that block the credit condition even though the FICO matched
   // and the pull succeeded. Proves: alerts persist as blocks, the wrapper carries
-  // findings[] with reconcilableBy, the condition is blocked, the db/170 gate
+  // findings[] with reconcilableBy, the condition is blocked, the db/186 gate
   // refuses completion, per-finding reconcile of one finding leaves the other
   // blocking, and clearing all fatal findings opens the gate.
   const U = require('../src/lib/credit/underwriting');
@@ -470,7 +470,7 @@ async function seedBorrower(email, first, ssnRaw = '123-00-3333') {
   eq('alert finding blocks the credit condition', alCond.status, 'issue');
   let alBlocked = false;
   try { await db.query(`UPDATE checklist_items SET status='satisfied' WHERE application_id=$1 AND template_id=$2`, [appAl, credTmpl]); } catch (_) { alBlocked = true; }
-  ok('db/170 gate refuses completion with a fatal alert finding', alBlocked);
+  ok('db/186 gate refuses completion with a fatal alert finding', alBlocked);
   // per-finding reconcile the fraud finding — OFAC remains, still blocks
   const reFraud = U.recomputeWrapper({ findings: alF.map((f) => (f.type === 'fraud_alert' ? { ...f, reconciled: true } : f)) });
   await db.query(`UPDATE credit_reports SET underwriting_finding=$2::jsonb WHERE id=$1`, [alOut.reportId, JSON.stringify(reFraud)]);
