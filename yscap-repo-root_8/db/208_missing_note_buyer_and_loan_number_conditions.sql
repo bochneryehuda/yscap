@@ -43,7 +43,7 @@ SELECT
   'application', 'staff', 'condition', 'processor', '1',
   60, 'prior_to_approval',
   'No note buyer / capital partner is on this file yet. Pick the note buyer from the dropdown so the file can be mapped to the right capital partner (this also syncs to the ClickUp file list). Internal only — never shown to the borrower.',
-  true, true,
+  true, false,
   'rules',
   '{"combinator":"and","rules":[{"field":"note_buyer","operator":"is_empty"}]}'::jsonb
 WHERE NOT EXISTS (SELECT 1 FROM checklist_templates WHERE code = 'cond_note_buyer_missing');
@@ -57,7 +57,7 @@ SELECT
   'application', 'staff', 'condition', 'processor', '1',
   61, 'prior_to_approval',
   'No YS loan number is on this file yet. Enter the loan number (it must start with "YSCAP"). It has to be unique — not used on another file here or on any other file in ClickUp. Internal only — never shown to the borrower.',
-  true, true,
+  true, false,
   'rules',
   '{"combinator":"and","rules":[{"field":"ys_loan_number","operator":"is_empty"}]}'::jsonb
 WHERE NOT EXISTS (SELECT 1 FROM checklist_templates WHERE code = 'cond_loan_number_missing');
@@ -65,12 +65,12 @@ WHERE NOT EXISTS (SELECT 1 FROM checklist_templates WHERE code = 'cond_loan_numb
 -- Keep the definitions in lock-step if a prior boot seeded an earlier version
 -- (idempotent re-assert of audience/kind/rule — never touches instances on files).
 UPDATE checklist_templates
-   SET audience = 'staff', item_kind = 'condition', auto_apply = 'rules', is_active = true,
+   SET audience = 'staff', item_kind = 'condition', auto_apply = 'rules', is_active = true, is_required = false,
        rule_logic = '{"combinator":"and","rules":[{"field":"note_buyer","operator":"is_empty"}]}'::jsonb
  WHERE code = 'cond_note_buyer_missing';
 
 UPDATE checklist_templates
-   SET audience = 'staff', item_kind = 'condition', auto_apply = 'rules', is_active = true,
+   SET audience = 'staff', item_kind = 'condition', auto_apply = 'rules', is_active = true, is_required = false,
        rule_logic = '{"combinator":"and","rules":[{"field":"ys_loan_number","operator":"is_empty"}]}'::jsonb
  WHERE code = 'cond_loan_number_missing';
 
