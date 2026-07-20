@@ -264,7 +264,20 @@ const BACKFILL_NOTIF_SQL = `
      to_emails, subject, preview, recipient_kind, audience, status, reconstructed, occurred_at, created_at)
   SELECT n.application_id,
          COALESCE(n.application_id::text,'nofile') || ':' || lower(COALESCE(NULLIF(n.title,''),'(no subject)')),
-         'outbound', n.id, n.type, NULL,
+         'outbound', n.id, n.type,
+         -- keep the category filter complete for backdated rows (mirrors CATEGORY_OF)
+         CASE n.type
+           WHEN 'message' THEN 'messages' WHEN 'mention' THEN 'messages' WHEN 'inbound_reply' THEN 'messages' WHEN 'staff_reply' THEN 'messages'
+           WHEN 'status_change' THEN 'status' WHEN 'closing_date' THEN 'status' WHEN 'milestone' THEN 'status'
+           WHEN 'officer_assigned' THEN 'status' WHEN 'all_caught_up' THEN 'status' WHEN 'assignment' THEN 'status'
+           WHEN 'doc_rejected' THEN 'documents' WHEN 'doc_accepted' THEN 'documents' WHEN 'doc_uploaded' THEN 'documents' WHEN 'doc_requested' THEN 'documents'
+           WHEN 'condition_added' THEN 'conditions'
+           WHEN 'product_registered' THEN 'pricing' WHEN 'term_sheet' THEN 'pricing' WHEN 'pricing_update' THEN 'pricing'
+           WHEN 'reminder' THEN 'reminders' WHEN 'digest' THEN 'reminders'
+           WHEN 'draw' THEN 'draws' WHEN 'draw_request' THEN 'draws' WHEN 'draw_findings' THEN 'draws' WHEN 'draw_accepted' THEN 'draws'
+           WHEN 'draw_disputed' THEN 'draws' WHEN 'draw_dispute_resolved' THEN 'draws' WHEN 'sow_reallocation' THEN 'draws' WHEN 'sow_change_request' THEN 'draws'
+           WHEN 'security' THEN 'account' WHEN 'account' THEN 'account'
+           ELSE 'other' END,
          CASE WHEN r.email IS NOT NULL AND btrim(r.email) <> '' THEN jsonb_build_array(jsonb_build_object('email', lower(r.email))) ELSE '[]'::jsonb END,
          LEFT(n.title, 500), LEFT(COALESCE(n.body,''), 240),
          n.recipient_kind,
@@ -281,7 +294,8 @@ const BACKFILL_NOTIF_SQL = `
     LEFT JOIN LATERAL (SELECT CASE WHEN n.recipient_kind='staff' THEN r_s.email ELSE r_b.email END AS email) r ON true
    WHERE NOT EXISTS (SELECT 1 FROM email_messages em WHERE em.notification_id = n.id)
    ORDER BY n.created_at ASC
-   LIMIT $1`;
+   LIMIT $1
+  ON CONFLICT DO NOTHING`;
 
 const BACKFILL_INBOUND_SQL = `
   INSERT INTO email_messages
@@ -298,7 +312,8 @@ const BACKFILL_INBOUND_SQL = `
     FROM inbound_file_emails i
    WHERE NOT EXISTS (SELECT 1 FROM email_messages em WHERE em.inbound_id = i.id)
    ORDER BY i.received_at ASC
-   LIMIT $1`;
+   LIMIT $1
+  ON CONFLICT DO NOTHING`;
 
 /** Fill in ONE file's prior history on demand (fast, bounded) — called when the
     per-file Email Center is opened so it is always complete regardless of how far

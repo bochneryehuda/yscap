@@ -168,6 +168,16 @@ const uniq = `eh-${process.pid}-${Date.now()}`;
   const rEmpty = await post(`/api/staff/applications/${appId}/emails/reply`, loTok, { body: '   ' });
   assert(rEmpty.status === 400, 'empty reply is rejected');
 
+  // frozen rule: a note-buyer/capital-partner name a staffer types in the reply
+  // SUBJECT or BODY must never reach the borrower (the reply goes to the borrower).
+  const rScrub = await post(`/api/staff/applications/${appId}/emails/reply`, loTok,
+    { subject: 'Re: Fidelis payoff schedule', body: 'The Churchill payoff is attached.' });
+  assert(rScrub.status === 200, 'reply with a partner name sends');
+  const scrubRow = (await db.query(
+    `SELECT subject, body_html FROM email_messages WHERE application_id=$1 AND msg_type='staff_reply' AND subject ILIKE '%payoff%' ORDER BY occurred_at DESC LIMIT 1`, [appId])).rows[0];
+  assert(scrubRow && !/fidelis/i.test(scrubRow.subject), 'reply SUBJECT is borrower-safe scrubbed (no note-buyer name)');
+  assert(scrubRow && !/churchill/i.test(scrubRow.body_html || ''), 'reply BODY is borrower-safe scrubbed (no note-buyer name)');
+
   // ---- cleanup ----
   await db.query(`DELETE FROM email_messages WHERE application_id=$1`, [appId]);
   await db.query(`DELETE FROM inbound_file_emails WHERE application_id=$1`, [appId]);

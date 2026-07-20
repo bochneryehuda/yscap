@@ -2426,12 +2426,18 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
     const toEmails = recipients.map((r) => r.email);
     const anyBorrower = recipients.some((r) => r.kind === 'borrower');
     const audience = anyBorrower ? 'borrower' : 'staff';
-    // Borrower-safe: scrub a note-buyer/capital-partner name a staffer might type,
-    // protecting the file's own clean data (address/name/money) from the scrub.
-    const protect = ctx && Array.isArray(ctx.meta) ? ctx.meta.map((m) => m && m.value).filter((v) => typeof v === 'string') : [];
+    // Borrower-safe (frozen rule): the reply builds the borrower email directly
+    // (not via notifyBorrower), so we scrub a note-buyer/capital-partner name a
+    // staffer might type in the SUBJECT *and* the body before it can reach a
+    // borrower. Protect the file's own clean data from the scrub using the
+    // BORROWER-safe meta (borrowerMeta already scrubs the program label) — never
+    // the staff `meta`, whose raw program value could shield a partner name.
+    const protectSrc = anyBorrower ? (ctx && ctx.borrowerMeta) : (ctx && ctx.meta);
+    const protect = Array.isArray(protectSrc) ? protectSrc.map((m) => m && m.value).filter((v) => typeof v === 'string') : [];
     const safeBody = anyBorrower ? scrubTextExcept(bodyText, protect) : bodyText;
     const rawSubject = String((req.body && req.body.subject) || '').trim();
-    const subject = (rawSubject || (ctx ? `Re: ${ctx.loanNo}` : 'Re: your loan file')).slice(0, 200);
+    const safeSubject = anyBorrower ? scrubTextExcept(rawSubject, protect) : rawSubject;
+    const subject = (safeSubject || (ctx ? `Re: ${ctx.loanNo}` : 'Re: your loan file')).slice(0, 200);
     // Split the typed reply into paragraphs: the first is the intro (body), the
     // rest render as additional lines — never both, so the text isn't duplicated.
     const paras = safeBody.split(/\n{2,}/).map((s) => s.trim()).filter(Boolean);
