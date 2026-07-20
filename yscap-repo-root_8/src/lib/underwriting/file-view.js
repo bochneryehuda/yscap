@@ -35,7 +35,7 @@ async function loadContext(client, appId) {
     ? (await client.query(`SELECT llc_name, ein FROM llcs WHERE id = $1`, [app.llc_id])).rows[0] || null
     : null;
   const entities = app.borrower_id
-    ? (await client.query(`SELECT llc_name FROM llcs WHERE borrower_id = $1`, [app.borrower_id])).rows
+    ? (await client.query(`SELECT llc_name FROM llcs WHERE borrower_id = $1 ORDER BY llc_name`, [app.borrower_id])).rows
     : [];
   return {
     app, borrower,

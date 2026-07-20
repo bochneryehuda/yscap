@@ -54,7 +54,7 @@ function str(v) {
  * findings, insert the new extraction, then its findings. Returns the new ids.
  * @param {import('pg').ClientBase} client
  */
-async function saveAnalysis(client, { documentId, applicationId, borrowerId, docType, extraction, findings } = {}) {
+async function saveAnalysis(client, { documentId, applicationId, borrowerId, docType, extraction, findings, analyzedSha256, analyzerVersion, subjectHash } = {}) {
   if (!documentId) throw new Error('saveAnalysis requires a documentId');
   const appId = applicationId || null;
   const borId = borrowerId || null;
@@ -68,15 +68,18 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
     `UPDATE document_findings SET status = 'superseded'
        WHERE document_id = $1 AND status = 'open'`, [documentId]);
 
-  // 2. Insert the new extraction (PII-masked fields).
+  // 2. Insert the new extraction (PII-masked fields) + the idempotency fingerprint (the inputs
+  // that determined this result: content hash, analyzer version, and the file-state hash).
   const safeFields = maskFields(ext.fields || {});
   const { rows } = await client.query(
     `INSERT INTO document_extractions
-       (document_id, application_id, borrower_id, doc_type, fields, ocr_engine, ai_model, page_count, confidence, status, reason)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+       (document_id, application_id, borrower_id, doc_type, fields, ocr_engine, ai_model, page_count, confidence, status, reason,
+        analyzed_sha256, analyzer_version, subject_hash)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,
     [documentId, appId, borId, docType, JSON.stringify(safeFields),
      ext.ocrEngine || null, ext.aiModel || null, ext.pageCount || null,
-     ext.confidence || null, ext.status || 'analyzed', ext.reason || null]);
+     ext.confidence || null, ext.status || 'analyzed', ext.reason || null,
+     analyzedSha256 || null, analyzerVersion || null, subjectHash || null]);
   const extractionId = rows[0].id;
 
   // 3. Insert findings.
@@ -134,6 +137,40 @@ async function resolveFinding(client, { findingId, action, note, value, by } = {
   return rows[0] || null;
 }
 
+/**
+ * Idempotency lookup: is there already a CURRENT extraction of this exact document whose
+ * inputs (content hash + doc type + analyzer version + file-state hash) all match what we're
+ * about to analyze? If so, re-analysis would spend a paid Azure read+GPT call for a result we
+ * already have — the caller returns the stored extraction + its open findings instead.
+ * Only matches when a real content hash is present (legacy docs with no sha256 always re-run).
+ * @returns {Promise<object|null>} the reusable current extraction row, or null.
+ */
+async function findReusableExtraction(client, { documentId, applicationId, docType, analyzedSha256, analyzerVersion, subjectHash } = {}) {
+  if (!documentId || !docType || !analyzedSha256) return null;
+  // Scope to THIS application: a profile-level document (an ID, an operating agreement) can be
+  // analyzed under two files of the same borrower. Its findings + CTC gate live per-application,
+  // so file B must NOT reuse file A's extraction — otherwise B's gate never sees A's fatals.
+  const { rows } = await client.query(
+    `SELECT * FROM document_extractions
+       WHERE document_id = $1 AND is_current AND status = 'analyzed'
+         AND application_id IS NOT DISTINCT FROM $2
+         AND doc_type = $3 AND analyzed_sha256 = $4
+         AND analyzer_version IS NOT DISTINCT FROM $5
+         AND subject_hash IS NOT DISTINCT FROM $6
+       LIMIT 1`,
+    [documentId, applicationId || null, docType, analyzedSha256, analyzerVersion || null, subjectHash || null]);
+  return rows[0] || null;
+}
+
+/** The currently-open findings tied to one extraction (for the idempotency short-circuit). */
+async function findingsForExtraction(client, extractionId) {
+  const { rows } = await client.query(
+    `SELECT * FROM document_findings WHERE extraction_id = $1 AND status = 'open'
+      ORDER BY (CASE severity WHEN 'fatal' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END), created_at`,
+    [extractionId]);
+  return rows;
+}
+
 /** Open findings + roll-up for a whole loan file (all its documents). */
 async function getFileFindings(client, applicationId) {
   const { rows } = await client.query(
@@ -144,4 +181,5 @@ async function getFileFindings(client, applicationId) {
   return { findings: rows, summary: rollup(rows) };
 }
 
-module.exports = { saveAnalysis, resolveFinding, getFileFindings, rollup, maskFields, _internals: { maskValue } };
+module.exports = { saveAnalysis, resolveFinding, getFileFindings, rollup, maskFields,
+  findReusableExtraction, findingsForExtraction, _internals: { maskValue } };

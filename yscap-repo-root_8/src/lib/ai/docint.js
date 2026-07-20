@@ -22,12 +22,16 @@
  *   AZURE_DOCINT_API_VERSION  API version (default '2024-11-30')
  */
 const cfg = require('../../config');
+const { runWithRetry, classifyStatus, retryAfterMs, breakerFor } = require('./resilience');
 
 // The synchronous submit accepts large files, but we cap to keep memory + latency
 // sane; bigger documents can move to the batch path later.
 const MAX_BYTES = 50 * 1024 * 1024;
 const POLL_MS = 1500;        // Document Intelligence recommends ~1s between polls
 const MAX_POLL_MS = 90000;   // give a long scanned/many-page doc time to finish
+// Overall budget for the SUBMIT step including transient retries (the async poll has its
+// own MAX_POLL_MS budget below). Keeps a flaky submit from hanging the request.
+const SUBMIT_DEADLINE_MS = 60000;
 
 /** True when an endpoint + key are configured (surfaced on /api/health). */
 function configured() {
@@ -42,9 +46,11 @@ function analyzeUrl() {
 }
 
 async function pollResult(operationUrl, deadline) {
+  let nextWait = POLL_MS;
   while (Date.now() < deadline) {
-    const wait = Math.min(POLL_MS, Math.max(0, deadline - Date.now()));
+    const wait = Math.min(nextWait, Math.max(0, deadline - Date.now()));
     await new Promise((r) => setTimeout(r, wait));
+    nextWait = POLL_MS;  // reset unless a 429 tells us to wait longer
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), 15000);
     let r;
@@ -60,9 +66,14 @@ async function pollResult(operationUrl, deadline) {
     } finally {
       clearTimeout(timer);
     }
-    // Honor throttling / transient server errors — keep polling until the deadline
-    // rather than misreading a 429 body as "still running" and spinning to timeout.
-    if (r.status === 429 || r.status >= 500) continue;
+    // Honor throttling / transient server errors — keep polling until the deadline rather than
+    // misreading a 429 body as "still running" and spinning to timeout. On a 429, respect the
+    // service's Retry-After so the next poll waits the hinted cool-down instead of hammering.
+    if (r.status === 429 || r.status >= 500) {
+      const ra = retryAfterMs(r.headers);
+      if (ra != null) nextWait = Math.max(POLL_MS, ra);
+      continue;
+    }
     if (!r.ok) return { ok: false, reason: `the reader errored while reading (HTTP ${r.status})` };
     const j = await r.json().catch(() => ({}));
     const status = (j.status || '').toLowerCase();
@@ -74,6 +85,36 @@ async function pollResult(operationUrl, deadline) {
     // 'running' / 'notStarted' -> keep polling
   }
   return { ok: false, reason: 'the reader took too long on this document' };
+}
+
+// ONE submit attempt: POST the bytes, return the async operation URL on 202. A transient
+// 429/5xx is retryable + a breaker fault; a 400/413 (bad/oversized document) is terminal and
+// neutral to the breaker. A network drop / timeout THROWS — runWithRetry classifies it.
+async function attemptSubmit(b64) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 30000);
+  let r;
+  try {
+    r = await fetch(analyzeUrl(), {
+      method: 'POST',
+      headers: { 'Ocp-Apim-Subscription-Key': cfg.docint.key, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ base64Source: b64 }),
+      signal: ac.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+  if (r.status === 202) {
+    const operationUrl = r.headers.get('operation-location');
+    if (!operationUrl) return { ok: false, reason: 'the reader did not return a result location', retryable: false, breakerFault: false, outcome: 'bad_request' };
+    return { ok: true, operationUrl };
+  }
+  const j = await r.json().catch(() => ({}));
+  const cls = classifyStatus(r.status);
+  const msg = (j.error && j.error.message) || `HTTP ${r.status}`;
+  return { ok: false, reason: `the reader rejected this document (${msg})`,
+    retriable: cls.retryable, retryable: cls.retryable, breakerFault: cls.breakerFault,
+    outcome: cls.outcome, retryAfterMs: retryAfterMs(r.headers), status: r.status };
 }
 
 /**
@@ -90,36 +131,21 @@ async function read({ buffer, base64 } = {}) {
   const size = buffer ? buffer.length : Math.floor((b64.length * 3) / 4);
   if (size > MAX_BYTES) return { ok: false, reason: 'document is too large for the reader' };
 
-  // Submit. Document Intelligence auto-detects the file type from the bytes, so the
-  // request Content-Type is JSON and the file rides as base64Source.
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), 30000);
-  let r;
-  try {
-    r = await fetch(analyzeUrl(), {
-      method: 'POST',
-      headers: {
-        'Ocp-Apim-Subscription-Key': cfg.docint.key,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ base64Source: b64 }),
-      signal: ac.signal,
-    });
-  } catch (e) {
-    return { ok: false, reason: e.name === 'AbortError'
-      ? 'the reader timed out accepting this document'
-      : `the reader could not be reached (${e.message})` };
-  } finally {
-    clearTimeout(timer);
+  // Submit. Document Intelligence auto-detects the file type from the bytes, so the request
+  // Content-Type is JSON and the file rides as base64Source. Bounded retry on transient
+  // 429/5xx/network (honoring Retry-After) behind the reader's own circuit breaker; a bad or
+  // oversized document is terminal on the first try. Never throws.
+  const submit = await runWithRetry(() => attemptSubmit(b64), {
+    breaker: breakerFor('azure-docint'),
+    deadlineMs: SUBMIT_DEADLINE_MS,
+    label: 'the reader',
+  });
+  if (!submit.ok) {
+    return { ok: false,
+      reason: submit.reason || (submit.retryable ? 'the reader timed out accepting this document' : 'the reader could not accept this document'),
+      retriable: submit.retriable != null ? submit.retriable : submit.retryable };
   }
-
-  if (r.status !== 202) {
-    const j = await r.json().catch(() => ({}));
-    const msg = (j.error && j.error.message) || `HTTP ${r.status}`;
-    return { ok: false, reason: `the reader rejected this document (${msg})`, retriable: r.status === 429 || r.status >= 500 };
-  }
-  const operationUrl = r.headers.get('operation-location');
-  if (!operationUrl) return { ok: false, reason: 'the reader did not return a result location' };
+  const operationUrl = submit.operationUrl;
 
   const poll = await pollResult(operationUrl, Date.now() + MAX_POLL_MS);
   if (!poll.ok) return { ok: false, reason: poll.reason };

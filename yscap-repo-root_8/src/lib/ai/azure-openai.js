@@ -29,12 +29,18 @@
  * temperature, so we omit temperature entirely.
  */
 const cfg = require('../../config');
+const { runWithRetry, classifyStatus, retryAfterMs, breakerFor } = require('./resilience');
 
 const DEFAULT_API_VERSION = '2025-04-01-preview';
 // GPT-5 spends hidden reasoning tokens out of this same budget, so keep it generous
 // and default reasoning effort LOW for extraction (we want reading, not deliberation).
 const DEFAULT_MAX_TOKENS = 16000;
 const DEFAULT_REASONING = 'low';
+// Overall wall-clock budget for one completion INCLUDING retries (the per-attempt timeout is
+// separate, below). The retry loop starts no new attempt past this, so total time is bounded by
+// the deadline plus at most one in-flight attempt — it stops and surfaces the last failure for
+// human review, never silently dropping the document.
+const OPENAI_DEADLINE_MS = 90000;
 
 /** True when endpoint + key + deployment are configured (surfaced on /api/health). */
 function available() {
@@ -53,6 +59,58 @@ function chatUrl() {
  * (text / image_url). Returns the raw text the model produced.
  * @returns {Promise<{ ok:boolean, text?:string, usage?:object, reason?:string }>}
  */
+// ONE HTTP attempt at a completion. Returns a classified result the retry loop understands:
+// success is { ok, text, ... }; a transient failure carries retryable/breakerFault so the
+// loop backs off; a document-specific failure (content filter, truncation, empty) is terminal
+// and neutral to the breaker. A network drop / our timeout THROWS — runWithRetry classifies it.
+async function attemptComplete(body, timeoutMs) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs || 60000);
+  let r;
+  try {
+    r = await fetch(chatUrl(), {
+      method: 'POST',
+      headers: { 'api-key': cfg.azureOpenai.key, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: ac.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    // A PROMPT-side content filter returns HTTP 400 with a content_filter code — route it to
+    // human review, never a retry (a property of THIS document, not a transient outage).
+    const code = (j.error && (j.error.code || (j.error.innererror && j.error.innererror.code))) || '';
+    if (/content_filter|ResponsibleAIPolicy/i.test(String(code))) {
+      return { ok: false, reason: 'this document was blocked by a content filter — needs manual review', blocked: true, retryable: false, breakerFault: false, outcome: 'content_filtered' };
+    }
+    const cls = classifyStatus(r.status);
+    const msg = (j.error && j.error.message) || `HTTP ${r.status}`;
+    return { ok: false, reason: `the analyzer reported an error (${msg})`,
+      retriable: cls.retryable, retryable: cls.retryable, breakerFault: cls.breakerFault,
+      outcome: cls.outcome, retryAfterMs: retryAfterMs(r.headers), status: r.status };
+  }
+  const choice = (j.choices || [])[0] || {};
+  const msg = choice.message || {};
+  // Structured outputs can return a refusal instead of content; Azure content filters surface
+  // as finish_reason 'content_filter'. Treat both as a clean "declined" (terminal, not a fault).
+  if (msg.refusal) return { ok: false, reason: `the analyzer declined: ${msg.refusal}`, blocked: true, retryable: false, breakerFault: false, outcome: 'content_filtered' };
+  if (choice.finish_reason === 'content_filter') {
+    return { ok: false, reason: 'the analyzer was blocked by a content filter on this document', blocked: true, retryable: false, breakerFault: false, outcome: 'content_filtered' };
+  }
+  // Hit the token ceiling before finishing — under strict JSON this yields invalid/partial
+  // output. NOT retryable as-is (the same request re-fails); extract() retries with a bigger
+  // budget. Terminal + neutral to the breaker (the endpoint answered fine).
+  if (choice.finish_reason === 'length') {
+    return { ok: false, reason: 'the analyzer ran out of room before finishing (truncated)', truncated: true, retryable: false, breakerFault: false, outcome: 'truncated' };
+  }
+  const text = typeof msg.content === 'string' ? msg.content.trim() : '';
+  if (!text) return { ok: false, reason: 'the analyzer returned an empty result', retryable: false, breakerFault: false, outcome: 'empty' };
+  return { ok: true, text, usage: j.usage || null, finishReason: choice.finish_reason };
+}
+
 async function complete({ system, userContent, maxTokens, responseFormat, timeoutMs } = {}) {
   if (!available()) return { ok: false, reason: 'the AI analyzer is not configured (add the Azure OpenAI endpoint, key, and deployment)' };
   if (!userContent || (Array.isArray(userContent) && !userContent.length)) {
@@ -73,54 +131,17 @@ async function complete({ system, userContent, maxTokens, responseFormat, timeou
   };
   if (responseFormat) body.response_format = responseFormat;
 
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), timeoutMs || 60000);
-  let r;
-  try {
-    r = await fetch(chatUrl(), {
-      method: 'POST',
-      headers: {
-        'api-key': cfg.azureOpenai.key,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-      signal: ac.signal,
-    });
-  } catch (e) {
-    return { ok: false, reason: e.name === 'AbortError'
-      ? 'the analyzer timed out'
-      : `the analyzer could not be reached (${e.message})` };
-  } finally {
-    clearTimeout(timer);
-  }
-
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) {
-    // A PROMPT-side content filter returns HTTP 400 with a content_filter code — route
-    // it to human review, not a retry (distinct from a transient error).
-    const code = (j.error && (j.error.code || (j.error.innererror && j.error.innererror.code))) || '';
-    if (/content_filter|ResponsibleAIPolicy/i.test(String(code))) {
-      return { ok: false, reason: 'this document was blocked by a content filter — needs manual review', blocked: true };
-    }
-    const msg = (j.error && j.error.message) || `HTTP ${r.status}`;
-    return { ok: false, reason: `the analyzer reported an error (${msg})`, retriable: r.status === 429 || r.status >= 500 };
-  }
-  const choice = (j.choices || [])[0] || {};
-  const msg = choice.message || {};
-  // Structured outputs can return a refusal instead of content; Azure content filters
-  // surface as finish_reason 'content_filter'. Treat both as a clean "declined".
-  if (msg.refusal) return { ok: false, reason: `the analyzer declined: ${msg.refusal}`, blocked: true };
-  if (choice.finish_reason === 'content_filter') {
-    return { ok: false, reason: 'the analyzer was blocked by a content filter on this document', blocked: true };
-  }
-  // Hit the token ceiling before finishing — under strict JSON this yields invalid/partial
-  // output. Surface as retriable "truncated" so extract() can retry with a bigger budget.
-  if (choice.finish_reason === 'length') {
-    return { ok: false, reason: 'the analyzer ran out of room before finishing (truncated)', truncated: true };
-  }
-  const text = typeof msg.content === 'string' ? msg.content.trim() : '';
-  if (!text) return { ok: false, reason: 'the analyzer returned an empty result' };
-  return { ok: true, text, usage: j.usage || null, finishReason: choice.finish_reason };
+  // Bounded retry on transient 429/5xx/network, honoring Azure's Retry-After, behind a
+  // per-endpoint circuit breaker. A missing config / content-filter / truncation is terminal
+  // and returned on the first try. Never throws — a network drop becomes a classified result.
+  const res = await runWithRetry(() => attemptComplete(body, timeoutMs), {
+    breaker: breakerFor('azure-openai'),
+    deadlineMs: OPENAI_DEADLINE_MS,
+    label: 'the analyzer',
+  });
+  // A transient give-up (deadline / breaker-open) reads as a plain timeout to callers.
+  if (!res.ok && res.retryable && !res.reason) res.reason = 'the analyzer timed out';
+  return res;
 }
 
 /**
@@ -174,10 +195,12 @@ async function ping() {
   if (!available()) return { ok: false, reason: 'endpoint, key, or deployment not set' };
   const res = await complete({
     userContent: 'Reply with the word OK.',
-    maxTokens: 16,
+    maxTokens: 256,   // GPT-5 spends hidden reasoning tokens from this budget — leave room
     timeoutMs: 20000,
   });
-  if (res.ok) return { ok: true };
+  // A truncation means the model REPLIED (auth + deployment are fine) but ran past the tiny
+  // budget on hidden reasoning — that's a healthy endpoint, not a config failure.
+  if (res.ok || res.truncated) return { ok: true };
   if (/HTTP 401/.test(res.reason || '')) return { ok: false, reason: 'bad key (HTTP 401)' };
   if (/HTTP 404/.test(res.reason || '')) return { ok: false, reason: 'deployment name or endpoint looks wrong (HTTP 404)' };
   return { ok: false, reason: res.reason };

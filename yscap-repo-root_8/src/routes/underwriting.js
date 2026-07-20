@@ -38,6 +38,8 @@ const { underwriterActions } = require('../lib/underwriting/actions');
 const { falseAlarmReport } = require('../lib/underwriting/feedback');
 const { classify } = require('../lib/underwriting/classify');
 const { conditionsForDoc, purposeForDoc, docReadiness, fileConditionCoverage } = require('../lib/underwriting/condition-map');
+const { ANALYZER_VERSION, subjectHash } = require('../lib/underwriting/fingerprint');
+const { assessFile: assessStaleness } = require('../lib/underwriting/staleness');
 
 const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || ''));
 // today as a calendar string — no `new Date()` math in the date paths (CLAUDE.md rule).
@@ -148,9 +150,18 @@ router.get('/:appId', async (req, res, next) => {
     }));
     const conditionCoverage = fileConditionCoverage({ conditions: conds.rows, extractions: exts.rows, findings: ff.findings });
 
+    // Staleness / re-verification: project every dated document to the file's target closing
+    // date (from the current purchase contract) and surface a freshness board + the forward-
+    // looking advisories the today-based per-document checks can't produce ("fresh now, stale by
+    // closing"). These are non-blocking warnings, folded into the same roll-up.
+    const pc = exts.rows.find((e) => e.doc_type === 'purchase_contract');
+    const closingDate = pc && pc.fields && pc.fields.closingDate ? pc.fields.closingDate : null;
+    const staleness = assessStaleness(exts.rows, { today: todayISO(), closingDate });
+
     const perDoc = ff.findings.map(decorate);
-    // Roll the tie-out discrepancies into the same fatal/warning gate.
-    const openAll = [...perDoc, ...cross];
+    // Roll the tie-out discrepancies + the forward-looking staleness advisories into the same
+    // fatal/warning gate (staleness is warning-only, so it never changes the CTC-blocking count).
+    const openAll = [...perDoc, ...cross, ...staleness.findings];
     const summary = {
       fatal: openAll.filter((f) => f.severity === 'fatal').length,
       warning: openAll.filter((f) => f.severity === 'warning').length,
@@ -163,6 +174,7 @@ router.get('/:appId', async (req, res, next) => {
       tieout: { columns: tieout.columns, matrix: tieout.matrix, summary: tieout.summary },
       crossDocument: cross,
       conditionCoverage,
+      staleness: { closingDate, board: staleness.board, findings: staleness.findings.map(decorate) },
       summary,
       docTypes: registry.docTypes(),
       analyzers: { reader: docint.configured(), ai: azureOpenai.available() },
@@ -179,7 +191,7 @@ router.get('/:appId', async (req, res, next) => {
 // the borrower is matched, not the file's LLC — the staff document picker is scoped the same way.
 async function fileDoc(app, documentId) {
   return (await db.query(
-    `SELECT id, application_id, borrower_id, filename, content_type, storage_provider, storage_ref
+    `SELECT id, application_id, borrower_id, filename, content_type, storage_provider, storage_ref, sha256
        FROM documents
       WHERE id=$1 AND is_current
         AND (application_id=$2 OR (application_id IS NULL AND borrower_id IS NOT NULL AND borrower_id=$3))`,
@@ -228,15 +240,44 @@ router.post('/:appId/documents/:documentId/analyze', async (req, res, next) => {
     if (!doc) return res.status(404).json({ error: 'document not found on this file' });
     if (!doc.storage_ref) return res.status(422).json({ error: 'this document has no stored file to read' });
 
+    // Build the subject this document type compares against, from the loan file.
+    const ctx = await fileView.loadContext(db, app.id);
+    const subject = fileView.subjectFor(docType, ctx);
+    // Fingerprint EVERYTHING the checks compare against — the file subject AND `today` (several
+    // checks are date-relative: an insurance/ID expiry or a staleness window turns on the
+    // calendar day, not the document). Folding `today` in means the cache only reuses a result
+    // computed on the SAME day, so an expired-since-analysis fatal can never be served stale.
+    const subjHash = subjectHash({ subject, today: todayISO() });
+
+    // IDEMPOTENCY (db/168): if this exact document (same content hash) was already analyzed as
+    // THIS type, by THIS analyzer version, against THIS same file state, re-reading it would
+    // spend a paid Azure call for a result we already have. Return the stored extraction + its
+    // open findings instead. Never triggers for a legacy doc with no content hash (re-runs), and
+    // an explicit `force:true` always re-reads. This is safe because the subject hash is part of
+    // the key — any change to the loan file the check compares against re-analyzes.
+    const force = !!(req.body && req.body.force);
+    if (!force && doc.sha256) {
+      const cached = await store.findReusableExtraction(db, {
+        documentId: doc.id, applicationId: app.id, docType, analyzedSha256: doc.sha256,
+        analyzerVersion: ANALYZER_VERSION, subjectHash: subjHash,
+      });
+      if (cached) {
+        const findings = await store.findingsForExtraction(db, cached.id);
+        await audit(req.actor.id, 'underwriting_analyze', app.id,
+          { documentId: doc.id, docType, ok: true, cached: true });
+        return res.json({
+          ok: true, docType, cached: true, extractionId: cached.id,
+          status: cached.status, confidence: cached.confidence,
+          findings: findings.map(decorate), reason: null,
+        });
+      }
+    }
+
     // Read the bytes (best-effort; a storage miss is a clear 422, never a crash).
     let buffer;
     try { buffer = await storage.read(doc.storage_ref); }
     catch (e) { return res.status(422).json({ error: `could not read the stored document: ${e && e.message}` }); }
     const base64 = buffer.toString('base64');
-
-    // Build the subject this document type compares against, from the loan file.
-    const ctx = await fileView.loadContext(db, app.id);
-    const subject = fileView.subjectFor(docType, ctx);
 
     const result = await engine.analyzeDocument({
       docType, buffer, base64, mimeType: doc.content_type || 'application/octet-stream',
@@ -251,6 +292,7 @@ router.post('/:appId/documents/:documentId/analyze', async (req, res, next) => {
       saved = await store.saveAnalysis(client, {
         documentId: doc.id, applicationId: app.id, borrowerId: doc.borrower_id || app.borrower_id,
         docType, extraction: result.extraction, findings: result.findings,
+        analyzedSha256: doc.sha256 || null, analyzerVersion: ANALYZER_VERSION, subjectHash: subjHash,
       });
       await client.query('COMMIT');
     } catch (e) {
@@ -266,7 +308,7 @@ router.post('/:appId/documents/:documentId/analyze', async (req, res, next) => {
     });
 
     // Materialize the clear-to-close gate condition when analysis produced a blocking fatal, so
-    // there IS a condition for signOffGate (+ the db/164 trigger) to hold until it's resolved —
+    // there IS a condition for signOffGate (+ the db/167 trigger) to hold until it's resolved —
     // mirrors how the appraisal desk ensures appraisal_review_cleared on import. Best-effort.
     if ((result.findings || []).some((f) => f.severity === 'fatal' && f.blocksCtc)) {
       await ensureUnderwritingCondition(app.id).catch(() => {});
