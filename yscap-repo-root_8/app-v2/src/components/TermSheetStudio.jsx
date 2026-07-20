@@ -206,7 +206,16 @@ export function adminStateFromEngineInputs(inp) {
   put('tsFeeAppr', inp.appraisalFee); put('tsFeeTitle', inp.titleFee);
   put('tsMLtv', inp.ovrAcqLTVPct); put('tsMArv', inp.ovrARLTVPct);
   put('tsMLtc', inp.ovrLTCPct); put('tsMRate', inp.ovrRatePct); put('tsMIr', inp.ovrIrMonths);
-  return { v, c: inp.manualPricing ? { tsManualOn: true } : {} };
+  // Re-arm the manual-scenario toggle whenever ANY manual override value was
+  // registered — not only when inp.manualPricing is set. Otherwise reopening a
+  // manually-priced file restores the rate VALUE into the (hidden) field but leaves
+  // the toggle off, so the studio ignores it and a re-register silently reverts to
+  // the AUTO rate (the "typed 10.25, file shows 10.3" report — 10.3 is the auto
+  // rate). Older/other-path registrations that stored the override without the flag
+  // are covered too. The server (buildInputs) honors a present override regardless.
+  const hasManualOverride = ['ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths']
+    .some((k) => inp[k] != null && inp[k] !== '');
+  return { v, c: (inp.manualPricing || hasManualOverride) ? { tsManualOn: true } : {} };
 }
 
 /* A compact, human-readable copy of the priced structure — stored on the
