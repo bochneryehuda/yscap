@@ -54,12 +54,94 @@ function deriveTimes(events) {
 }
 
 // ---- reconcile ONE file's draws (scoped to a property WE created) ----
+// ---- Bidirectional Phase 1: react to inbound Sitewire changes ----
+// Append-only audit of a value the poll saw change on the Sitewire side (the analog of ClickUp's
+// clickup_pull_field_change). Best-effort — a logging failure never affects the reconcile.
+async function recordInboundChange(appId, drawId, entity, entityId, field, oldV, newV, reacted) {
+  try {
+    await db.query(
+      `INSERT INTO sitewire_pull_field_change (application_id, sitewire_draw_id, entity, entity_id, field, old_value, new_value, reacted)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [appId, drawId, entity, entityId, field, oldV == null ? null : String(oldV), newV == null ? null : String(newV), !!reacted]);
+  } catch (_) { /* best-effort audit */ }
+}
+
+// The inbound status transitions worth telling the team about. Keyed on the NEW Sitewire status;
+// intermediate/no-op statuses are intentionally omitted so the poll doesn't turn into noise.
+const REACT_STATUS = {
+  pending: { title: 'A draw was inspected — ready for your review', tone: 'gold',
+    body: (n, addr) => `Draw #${n} for ${addr} was inspected in Sitewire and is awaiting your review. Set the approved amounts and approve it, or deliver the findings to the borrower.` },
+  pending_capital_partner: { title: 'A draw is awaiting capital-partner approval', tone: 'gold',
+    body: (n, addr) => `Draw #${n} for ${addr} is now awaiting capital-partner approval in Sitewire.` },
+  approved: { title: 'A draw was approved in Sitewire', tone: 'positive',
+    body: (n, addr) => `Draw #${n} for ${addr} was approved in Sitewire. You can deliver the inspection findings to the borrower and record the release.` },
+};
+
+// Given the prior mirror row and the freshly-pulled draw, notify the team of a genuine inbound
+// transition and audit the change. GO-FORWARD: a draw seen for the first time after the watermark
+// was added (or on a file's first-ever reconcile) is BASELINED silently — we only react to changes
+// that happen while PILOT is watching, never to history. Staff-facing (notifyAppStaff) — the borrower
+// keeps getting the designed findings/release emails from the human deliver/release flows, unchanged.
+async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText) {
+  const notify = require('../lib/notify');
+  const drawId = draw.sitewire_draw_id;
+  const newStatus = draw.status || null;
+  const newAppr = Number(draw.total_approved_cents) || 0;
+
+  // A draw with no prior mirror row.
+  if (!prev) {
+    await db.query(`UPDATE sitewire_draws SET status_synced=$2 WHERE sitewire_draw_id=$1`, [drawId, newStatus]);
+    if (firstReconcile) { await recordInboundChange(appId, drawId, 'draw', drawId, 'baseline', null, newStatus, false); return; }
+    // A property PILOT created can only gain a draw AFTER we set it up, so a first-seen draw on an
+    // already-reconciled file is genuinely a new borrower submission — tell the coordinator.
+    await recordInboundChange(appId, drawId, 'draw', drawId, 'new_draw', null, newStatus, true);
+    await notify.notifyAppStaff(appId, {
+      type: 'draw_inbound', title: 'A new draw request came in', badge: { text: 'New draw', tone: 'gold' },
+      body: `A new draw request (Draw #${draw.number == null ? '—' : draw.number}) came in for ${addrText} through Sitewire. Review it and start the inspection.`,
+      applicationId: appId, link: `/internal/app/${appId}/draws` }).catch(() => {});
+    return;
+  }
+
+  // A legacy row seen for the first time after the watermark column was added: baseline it silently
+  // (never notify for a transition that happened before we started watching — go-forward cutover).
+  if (prev.status_synced == null) {
+    await db.query(`UPDATE sitewire_draws SET status_synced=$2 WHERE sitewire_draw_id=$1`, [drawId, newStatus]);
+    await recordInboundChange(appId, drawId, 'draw', drawId, 'baseline', prev.status, newStatus, false);
+    return;
+  }
+
+  // A real inbound status transition PILOT has not reacted to yet.
+  if (newStatus && newStatus !== prev.status_synced) {
+    await recordInboundChange(appId, drawId, 'draw', drawId, 'status', prev.status_synced, newStatus, true);
+    const r = REACT_STATUS[newStatus];
+    if (r) {
+      await notify.notifyAppStaff(appId, {
+        type: 'draw_inbound', title: r.title, badge: { text: 'Sitewire update', tone: r.tone },
+        body: r.body(draw.number == null ? '—' : draw.number, addrText),
+        applicationId: appId, link: `/internal/app/${appId}/draws` }).catch(() => {});
+    }
+    // advance the watermark whether or not this status is one we notify on, so we never re-fire it.
+    await db.query(`UPDATE sitewire_draws SET status_synced=$2 WHERE sitewire_draw_id=$1`, [drawId, newStatus]);
+  }
+
+  // An approved-amount change is audited (foundation for Phase 2 drift detection) but does NOT notify
+  // here — a partner nudging an approved amount is a money-drift concern, handled in Phase 2.
+  if (Number(prev.total_approved_cents || 0) !== newAppr) {
+    await recordInboundChange(appId, drawId, 'draw', drawId, 'total_approved_cents', String(prev.total_approved_cents || 0), String(newAppr), false);
+  }
+}
+
 async function reconcileOne(appId) {
-  const link = (await db.query(`SELECT sitewire_property_id, budget_version FROM sitewire_property_links WHERE application_id=$1 AND sitewire_property_id IS NOT NULL AND matched_by='created'`, [appId])).rows[0];
+  const link = (await db.query(`SELECT sitewire_property_id, budget_version, last_reconciled_at FROM sitewire_property_links WHERE application_id=$1 AND sitewire_property_id IS NOT NULL AND matched_by='created'`, [appId])).rows[0];
   if (!link) return { skipped: 'not linked' };
   let prop;
   try { prop = await client.getProperty(link.sitewire_property_id); } catch (e) { return { error: e.message }; }
   const draws = (prop.budget && prop.budget.draws) || [];
+  // Bidirectional Phase 1: on the file's FIRST reconcile ever, baseline the draw watermarks silently
+  // (no notification burst for draws that existed before PILOT started watching); react to changes after.
+  const firstReconcile = !link.last_reconciled_at;
+  const addr = (await db.query(`SELECT property_address->>'oneLine' AS a FROM applications WHERE id=$1`, [appId])).rows[0];
+  const addrText = (addr && addr.a) || 'the property';
   let n = 0;
   for (const d of draws) {
    // A poison draw (null id, bad cents, a constraint violation) must skip to the NEXT draw — not throw
@@ -70,6 +152,11 @@ async function reconcileOne(appId) {
     let full;
     try { full = await client.getDraw(d.id); } catch (_) { full = d; }
     const times = deriveTimes(full.draw_events);
+    // Read the PRIOR mirror state BEFORE the upsert overwrites it, so we can tell a real inbound
+    // status TRANSITION (a partner approved/released a draw, a borrower submitted one) from a value
+    // PILOT already reacted to. Best-effort — a read failure just skips the reaction, never the mirror.
+    let prevDraw = null;
+    try { prevDraw = (await db.query(`SELECT status, status_synced, total_approved_cents FROM sitewire_draws WHERE sitewire_draw_id=$1`, [d.id])).rows[0] || null; } catch (_) {}
     await db.query(
       `INSERT INTO sitewire_draws (application_id, sitewire_draw_id, sitewire_property_id, number, name, status, historical, total_requested_cents, total_approved_cents, coordinator_id, quick_notify_status_id, pdf_src, submitted_at, approved_at, budget_version_at_draw, events, sitewire_updated_at, updated_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,now())
@@ -100,6 +187,9 @@ async function reconcileOne(appId) {
         console.warn(`[sitewire] reconcile: skipped a bad request row (draw ${d.id}, request ${r && r.id}): ${db.describeError ? db.describeError(rowErr) : rowErr.message}`);
       }
     }
+    // React to any inbound status transition on this draw (notify the team + audit the change).
+    // Fully best-effort + self-guarded: it never throws out of the per-draw try, never blocks the mirror.
+    try { await reactToInboundDraw(appId, { sitewire_draw_id: d.id, number: d.number, status: d.status, total_approved_cents: d.total_approved_cents || 0 }, prevDraw, firstReconcile, addrText); } catch (_) {}
     n++;
    } catch (drawErr) {
      const emsg = db.describeError ? db.describeError(drawErr) : (drawErr && drawErr.message) || String(drawErr);

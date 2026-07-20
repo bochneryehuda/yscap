@@ -1270,6 +1270,23 @@ async function buildDrawActivity(appId) {
     push(c.created_at, 'reallocation', `Scope-of-Work change requested${c.reason ? ': ' + c.reason : ''}`);
     if (c.status === 'approved') push(c.decided_at, 'reallocation', 'Scope-of-Work change applied');
   }
+  // 6) INBOUND changes PILOT observed on the Sitewire side (bidirectional Phase 1) — the other half of
+  //    the two-way trail: what changed in Sitewire, not just what PILOT pushed. Baseline rows are the
+  //    go-forward cutover and aren't interesting to a reader, so they're skipped.
+  const IN_LABEL = { status: 'status', total_approved_cents: 'approved total', approved_cents: 'approved', new_draw: 'new draw request' };
+  const usdCents = (v) => { const n = Number(v); return Number.isFinite(n) ? T.usd(n) : v; };
+  for (const p of (await db.query(
+    `SELECT sitewire_draw_id, field, old_value, new_value, occurred_at FROM sitewire_pull_field_change
+       WHERE application_id=$1 AND field <> 'baseline' ORDER BY occurred_at DESC LIMIT 500`, [appId])).rows) {
+    const money = /cents$/.test(p.field);
+    const oldV = money ? usdCents(p.old_value) : String(p.old_value == null ? '—' : p.old_value).replace(/_/g, ' ');
+    const newV = money ? usdCents(p.new_value) : String(p.new_value == null ? '—' : p.new_value).replace(/_/g, ' ');
+    const label = IN_LABEL[p.field] || p.field;
+    const summary = p.field === 'new_draw'
+      ? `Sitewire: a new draw request came in (draw #${p.sitewire_draw_id})`
+      : `Sitewire changed ${label} on draw #${p.sitewire_draw_id}: ${oldV} → ${newV}`;
+    push(p.occurred_at, 'inbound', summary);
+  }
   ev.sort((a, b) => String(b.at).localeCompare(String(a.at)));
   return ev;
 }
