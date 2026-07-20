@@ -144,6 +144,14 @@ function breakerFor(name, opts) {
 }
 function _resetBreakers() { _breakers.clear(); }  // test hook
 
+// Read-only snapshot of every endpoint breaker's state — for operator visibility on /api/health
+// (so a sustained Azure outage / bad key shows up as "paused" instead of silent slow failures).
+function snapshotBreakers() {
+  const out = {};
+  for (const [name, b] of _breakers) out[name] = b.snapshot();
+  return out;
+}
+
 /**
  * Run one attempt-producing function with bounded retry.
  *
@@ -199,6 +207,6 @@ async function runWithRetry(attempt, opts = {}) {
 
 module.exports = {
   classifyStatus, classifyThrown, retryAfterMs, backoffMs, runWithRetry,
-  Breaker, breakerFor, _resetBreakers,
+  Breaker, breakerFor, snapshotBreakers, _resetBreakers,
   RETRYABLE_STATUS, TRANSIENT_ERR,
 };

@@ -143,6 +143,18 @@ app.get('/api/health', async (req, res) => {
     // SharePoint one-way sync status (config + last reconciliation pass; cheap —
     // no live Graph call on the health path).
     sharepointSync: (() => { try { return require('./lib/sharepoint-backup').health(); } catch (e) { return { enabled: false, error: e.message }; } })(),
+    // Document-AI (PILOT underwriting) reachability: whether the reader + analyzer are configured,
+    // plus each endpoint's circuit-breaker state (closed = healthy; open = paused after repeated
+    // failures — a sustained Azure outage or a bad key shows here instead of failing silently).
+    documentAi: (() => {
+      try {
+        return {
+          reader: require('./lib/ai/docint').configured(),
+          analyzer: require('./lib/ai/azure-openai').available(),
+          breakers: require('./lib/ai/resilience').snapshotBreakers(),
+        };
+      } catch (e) { return { error: e.message }; }
+    })(),
     ...(conditionsGuard ? { conditionsGuard } : {}),
     bundle: v2BundleHash(),   // deployed V2 bundle hash — the stale-build watchdog's truth
     ts: Date.now(),
