@@ -19,7 +19,6 @@ import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
 import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
 import EsignFileSection from '../components/EsignFileSection.jsx';
-import DrawsPanel from '../components/DrawsPanel.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
 import StaticToolFrame from '../components/StaticToolFrame.jsx';
 import AddConditionPanel from '../components/AddConditionPanel.jsx';
@@ -2999,12 +2998,24 @@ export default function StaffApplication() {
 
       {/* Construction draws — the LAST phase (post-funding), so the LAST section. Opens in its own full
           window too (everything about the draw process lives there). */}
+      {/* Construction draws is the post-funding PHASE — it lives in its own Draw Management workspace,
+          not inside the file. The file just hands off to it. */}
       {can('manage_draws') && app.status === 'funded' && (
-        <Section id="sec-draws" title="Construction draws"
-          info="The draw desk for this file: the Scope-of-Work budget vs. what's been drawn per line and per unit, each draw's approvals, our fee and net release, the inspection findings the borrower accepts or disputes, and Scope-of-Work reallocations. Powered by the Sitewire integration."
-          action={<button className="btn ghost btn-sm" title="Open the full draw desk in its own window"
-            onClick={() => window.open(`${window.location.pathname}#/internal/app/${id}/draws`, '_blank', 'noopener')}>Open in a new window ↗</button>}>
-          <DrawsPanel appId={id} />
+        <Section id="sec-draws" title="Construction draws" collapsible={false}>
+          <div className="panel" style={{ background: 'var(--paper,#f6f3ec)' }}>
+            <b>This file is funded — its draws are managed in Draw Management.</b>
+            <div className="muted small" style={{ marginTop: 3, marginBottom: 10 }}>
+              The construction-draw process is its own phase after funding: each draw, approvals, the inspector’s
+              photos and reports, our fee &amp; net release, and the borrower’s accept/dispute — all live in the Draw
+              Management workspace, not on this file screen.
+            </div>
+            <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+              <button className="btn primary btn-sm" onClick={() => nav(`/internal/app/${id}/draws`)}>Open this file’s draws →</button>
+              <button className="btn ghost btn-sm" onClick={() => nav('/internal/draws')}>All draws</button>
+              <button className="btn ghost btn-sm" title="Open the full draw desk in its own window"
+                onClick={() => window.open(`${window.location.pathname}#/internal/app/${id}/draws`, '_blank', 'noopener')}>Open in a new window ↗</button>
+            </div>
+          </div>
         </Section>
       )}
 
