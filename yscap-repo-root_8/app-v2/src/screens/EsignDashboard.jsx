@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api } from '../lib/api.js';
+import { api, saveBlob } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import {
   PHASE, PURPOSE, ROLE, TERMINAL, timeAgo, absTime as abs, recipientSteps,
@@ -85,6 +85,12 @@ function EnvelopeCard({ e, onReload, isAdmin }) {
     catch (err) { setActErr(err.message || 'Could not cancel the package.'); }
     finally { setBusy(false); }
   }
+  async function dl(documentId, fallbackName) {
+    setActErr('');
+    try { const { blob, filename } = await api.staffDownloadDoc(documentId); saveBlob(blob, filename || fallbackName); }
+    catch (err) { setActErr(err.message || 'Could not download the document.'); }
+  }
+  const docLabel = (kind) => String(kind || 'signed document').replace(/_signed$/, '').replace(/_/g, ' ');
   const ph = PHASE[e.phase] || { label: e.phase, cls: 'muted', dot: '#4B585C' };
   const who = [e.firstName, e.lastName].filter(Boolean).join(' ');
   const recips = (e.recipients || []).slice().sort(
@@ -134,6 +140,20 @@ function EnvelopeCard({ e, onReload, isAdmin }) {
           ? <p className="muted small" style={{ margin: '10px 0 0' }}>No recipients recorded yet.</p>
           : recips.map((r) => <Recipient key={r.id || `${r.role}-${r.routingOrder}`} r={r} />)}
       </div>
+
+      {(e.documents && e.documents.length) || e.certificate ? (
+        <div className="row" style={{ gap: 6, margin: '10px 0 0', flexWrap: 'wrap', alignItems: 'baseline' }}>
+          <span className="muted small">Signed:</span>
+          {(e.documents || []).map((d) => (
+            <button key={d.documentId} className="btn ghost btn-sm" onClick={() => dl(d.documentId, d.filename)}
+              title={`Download the signed ${docLabel(d.docKind)}`}>↓ {docLabel(d.docKind)}</button>
+          ))}
+          {e.certificate ? (
+            <button className="btn ghost btn-sm" onClick={() => dl(e.certificate.documentId, e.certificate.filename)}
+              title="DocuSign Certificate of Completion — the legal audit trail (signers, times, IP)">↓ certificate</button>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="esign-foot muted small">
         <span>{sentSummary}</span>

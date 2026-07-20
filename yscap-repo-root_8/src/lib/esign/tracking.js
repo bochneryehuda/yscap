@@ -111,28 +111,54 @@ async function dashboard(db, scope = { where: '', params: [] }) {
     backingOff: Number(sh.backingOff),
     deadLettered: Number(sh.deadLettered),
   };
+  await attachSignedArtifacts(db, envelopes);
   return { envelopes, counts, sendHealth };
+}
+
+/**
+ * Attach the downloadable signed artifacts to each envelope IN PLACE, so both the
+ * cockpit and the per-file view can offer download links + the legal record:
+ *   e.documents   — the stored signed PDFs (one per package document, filed into
+ *                   their conditions); the signed Heter Iska is included here (staff
+ *                   can download it) — it is only excluded from TPR/SharePoint.
+ *   e.certificate — the DocuSign Certificate of Completion (staff-only, one per
+ *                   envelope, keyed by the envelope id in its filename), or null.
+ */
+async function attachSignedArtifacts(db, envelopes) {
+  for (const e of envelopes) { e.documents = []; e.certificate = null; }
+  if (!envelopes.length) return;
+  const docs = (await db.query(
+    `SELECT ed.envelope_row_id AS "envelopeRowId", ed.doc_kind AS "docKind",
+            d.id AS "documentId", d.filename
+       FROM esign_envelope_docs ed
+       JOIN documents d ON d.id = ed.completed_document_id
+      WHERE ed.envelope_row_id = ANY($1) AND ed.completed_document_id IS NOT NULL
+      ORDER BY ed.document_id`, [envelopes.map((e) => e.id)])).rows;
+  const byEnv = {};
+  for (const d of docs) (byEnv[d.envelopeRowId] = byEnv[d.envelopeRowId] || []).push(d);
+  for (const e of envelopes) e.documents = byEnv[e.id] || [];
+
+  const withEnv = envelopes.filter((e) => e.envelopeId);
+  if (withEnv.length) {
+    const names = withEnv.map((e) => `esign_certificate_${e.envelopeId}.pdf`);
+    const certs = (await db.query(
+      `SELECT id AS "documentId", filename FROM documents
+        WHERE doc_kind = 'esign_certificate' AND filename = ANY($1)`, [names])).rows;
+    const byName = {};
+    for (const c of certs) byName[c.filename] = c;
+    for (const e of withEnv) {
+      const c = byName[`esign_certificate_${e.envelopeId}.pdf`];
+      if (c) e.certificate = { documentId: c.documentId, filename: c.filename };
+    }
+  }
 }
 
 /** Per-file: the send-gate + the two packages' envelopes (with signed-doc links). */
 async function fileEsign(db, applicationId) {
   const g = await gate.esignSendGate(applicationId, { db });
+  // dashboard() already attached e.documents (signed PDFs) + e.certificate via
+  // attachSignedArtifacts — the per-file view reuses them directly.
   const { envelopes } = await dashboard(db, { where: 'AND a.id = $1', params: [applicationId] });
-  // Attach the STORED signed documents per envelope (for download links); only
-  // rows whose completed copy has been filed. The signed Heter Iska is included
-  // here (staff can download it in-app) — it is only excluded from TPR/SharePoint.
-  if (envelopes.length) {
-    const docs = (await db.query(
-      `SELECT ed.envelope_row_id AS "envelopeRowId", ed.doc_kind AS "docKind",
-              d.id AS "documentId", d.filename
-         FROM esign_envelope_docs ed
-         JOIN documents d ON d.id = ed.completed_document_id
-        WHERE ed.envelope_row_id = ANY($1) AND ed.completed_document_id IS NOT NULL
-        ORDER BY ed.document_id`, [envelopes.map((e) => e.id)])).rows;
-    const byEnv = {};
-    for (const d of docs) (byEnv[d.envelopeRowId] = byEnv[d.envelopeRowId] || []).push(d);
-    for (const e of envelopes) e.documents = byEnv[e.id] || [];
-  }
   const byPurpose = { term_sheet_package: [], heter_iska: [] };
   for (const e of envelopes) { (byPurpose[e.purpose] = byPurpose[e.purpose] || []).push(e); }
   return { gate: g, packages: byPurpose, envelopes };
