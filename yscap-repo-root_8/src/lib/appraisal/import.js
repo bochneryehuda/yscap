@@ -18,7 +18,32 @@
 const { extract } = require('./extract');
 const { computeFindings, summarize } = require('./findings');
 
-async function importAppraisal(db, {
+// Public entry — runs the whole import ATOMICALLY. A single import touches many tables
+// (supersede prior appraisal + its findings, insert the new appraisal + comps + units + photos +
+// findings, fill the file). If any step threw mid-way we'd leave the file with the prior appraisal
+// SUPERSEDED but no replacement row and half its comps/findings — a corrupt half-import. So when
+// handed the pool (has getClient), grab ONE dedicated connection and wrap it in a transaction;
+// a caller that passes its own tx client keeps ownership and we just run inline on it.
+async function importAppraisal(db, args) {
+  if (!args || !args.applicationId) throw new Error('applicationId required');
+  if (db && typeof db.getClient === 'function') {
+    const client = await db.getClient();
+    try {
+      await client.query('BEGIN');
+      const out = await importAppraisalTx(client, args);
+      await client.query('COMMIT');
+      return out;
+    } catch (e) {
+      try { await client.query('ROLLBACK'); } catch (_) { /* connection already broken */ }
+      throw e;
+    } finally {
+      client.release();
+    }
+  }
+  return importAppraisalTx(db, args);
+}
+
+async function importAppraisalTx(db, {
   applicationId, xml, importedBy = null,
   sourceXmlDocumentId = null, pdfDocumentId = null,
   file = null, today = null, thresholds = {},
@@ -73,6 +98,10 @@ async function importAppraisal(db, {
     condo_project_name: condo.projectName, condo_project_type: condo.projectType,
     condo_unit_identifier: condo.unitIdentifier, condo_floor: condo.floor,
     hoa_fee_amount: condo.hoaFeeAmount, hoa_fee_period: condo.hoaFeePeriod,
+    // As-Is vs ARV comp-grid split provenance (db/156). as_is_value/arv_value above already carry
+    // the two values; these say how the per-comp split was determined and whether it needs review.
+    comp_split_confidence: (A.compSplit && A.compSplit.confidence) || null,
+    comp_split_needs_review: A.compSplit ? !!A.compSplit.needsReview : null,
     fields: JSON.stringify(fieldsJson), warnings: JSON.stringify(A.warnings || []),
     imported_by: importedBy,
   };
@@ -92,11 +121,11 @@ async function importAppraisal(db, {
         `INSERT INTO appraisal_comparables
            (appraisal_id, seq, is_subject, address, city, state, zip, proximity, sale_price, adjusted_price,
             gla, sale_date, condition_uad, quality_uad, days_on_market, price_per_gla,
-            net_adjustment, net_adj_pct, gross_adj_pct, adjustments)
-         VALUES ($1,$2,false,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+            net_adjustment, net_adj_pct, gross_adj_pct, adjustments, comp_set, sale_status)
+         VALUES ($1,$2,false,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
         [appraisalId, c.seq, c.address, c.city, c.state, c.zip, c.proximity, c.salePrice, c.adjustedPrice,
          c.gla, c.saleDate, c.conditionUad, c.qualityUad, c.dom == null ? null : String(c.dom), c.pricePerGla,
-         c.netAdjustment, c.netAdjPct, c.grossAdjPct, JSON.stringify(c.adjustments || [])]);
+         c.netAdjustment, c.netAdjPct, c.grossAdjPct, JSON.stringify(c.adjustments || []), c.comp_set || 'unknown', c.saleStatus || 'closed']);
     }
   }
 

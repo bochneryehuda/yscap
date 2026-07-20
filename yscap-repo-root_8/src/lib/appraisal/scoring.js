@@ -61,8 +61,11 @@ function collateralScore({ a, comps = [], summary = {} } = {}) {
   if (a.as_is_confidence === 'definite') { add('As-Is value present', 0.5, 'The appraisal carries an As-Is value.'); pts += 0.5; }
   else if (a.as_is_confidence === 'missing') { add('As-Is not read', -0.5, 'The As-Is value could not be read from the appraisal — an officer must confirm it.'); pts -= 0.5; }
 
-  // Comp support.
-  const closed = (comps || []).filter((x) => num(x.sale_price) != null);
+  // Comp support — CLOSED sales only. An active/pending listing's "sale price" is an asking price,
+  // not a settled comp, so it never counts toward the closed-comp credit (accepts either the
+  // stored snake_case sale_status or the parsed saleStatus).
+  const isClosedComp = (x) => { const s = x.sale_status != null ? x.sale_status : x.saleStatus; return s == null || s === 'closed'; };
+  const closed = (comps || []).filter((x) => num(x.sale_price) != null && isClosedComp(x));
   if (closed.length >= 3) { add(`${closed.length} closed comps`, 0.5, 'A full set of closed comparable sales supports the value.'); pts += 0.5; }
   else if (comps && comps.length > 0) { add(`Only ${closed.length} closed comp${closed.length === 1 ? '' : 's'}`, -0.75, 'A thin comp pool gives the value less support.'); pts -= 0.75; }
 
@@ -138,7 +141,9 @@ function median(arr) {
  * @returns {null|{median:number, low:number, high:number, perGlaValue:number|null, medianPerGla:number|null, n:number}}
  */
 function compImpliedValue({ comps, subjectGla } = {}) {
-  const real = (comps || []).filter((c) => !(c.is_subject));
+  // Exclude the subject AND any active/pending listing — the implied value is what CLOSED sales
+  // say, never an asking price (accepts stored sale_status or parsed saleStatus).
+  const real = (comps || []).filter((c) => !(c.is_subject) && (() => { const s = c.sale_status != null ? c.sale_status : c.saleStatus; return s == null || s === 'closed'; })());
   const adj = real.map((c) => num(c.adjusted_price != null ? c.adjusted_price : c.adjustedPrice)).filter((n) => n != null && n > 0);
   if (adj.length < 3) return null;                         // too thin to form an independent opinion
   const gSub = num(subjectGla);
