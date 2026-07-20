@@ -261,9 +261,19 @@ function fakeStorage() {
     const certAfter = (await pool.query(`SELECT count(*)::int n FROM documents WHERE application_id=$1 AND doc_kind='esign_certificate'`, [app])).rows[0].n;
     eq(certAfter, 1, 'no duplicate certificate on re-drain');
 
-    // ---- re-issue after completion gets a NEW row + DISTINCT version (M2) -----
-    const reissue = await orchestrate.sendPackage(app, 'term_sheet_package', { id: null }, { db: pool, docusign, storage });
-    ok(reissue.envelopeRowId !== env.id, 're-issue after completion creates a NEW envelope row');
+    // ---- a PLAIN re-send after completion is a NO-OP (no duplicate envelope) --
+    // Fixes the "click Send again and again → a pile of envelopes" bug: a plain send
+    // never mints a duplicate for a terminal (completed/declined/voided/error) package;
+    // it reports terminal so the UI steers to an explicit Re-issue instead of stacking.
+    const plainAfterDone = await orchestrate.sendPackage(app, 'term_sheet_package', { id: null }, { db: pool, docusign, storage });
+    ok(plainAfterDone.terminal === true && plainAfterDone.ok === false, 'plain re-send after completion is a no-op (terminal, not sent)');
+    eq(plainAfterDone.envelopeRowId, env.id, 'plain re-send returns the completed envelope, mints nothing');
+    const afterPlain = (await pool.query(`SELECT count(*)::int n FROM esign_envelopes WHERE application_id=$1 AND purpose='term_sheet_package'`, [app])).rows[0].n;
+    eq(afterPlain, 1, 'plain re-send did NOT create a duplicate envelope row');
+
+    // ---- an EXPLICIT re-issue after completion gets a NEW row + DISTINCT version (M2) -----
+    const reissue = await orchestrate.sendPackage(app, 'term_sheet_package', { id: null }, { db: pool, docusign, storage, reissue: true });
+    ok(reissue.envelopeRowId !== env.id, 'explicit re-issue after completion creates a NEW envelope row');
     const versions = (await pool.query(
       `SELECT product_version FROM esign_envelopes WHERE application_id=$1 AND purpose='term_sheet_package' ORDER BY created_at`, [app])).rows;
     eq(versions.length, 2, 'two envelope rows over the file life');

@@ -184,7 +184,16 @@ export default function EsignDashboard() {
   const [refreshedAt, setRefreshedAt] = useState(null);
   const [testBusy, setTestBusy] = useState(false);
   const [testMsg, setTestMsg] = useState('');
+  const [conn, setConn] = useState(null);   // DocuSign connection + mode (admin)
   const seq = useRef(0);
+
+  // Admin-only "are we live?" readout — fetched on mount + manual refresh (NOT on the
+  // 30s auto-tick, so it never hammers DocuSign). Best-effort: a failure just hides it.
+  const loadConn = useCallback(async () => {
+    if (!isAdmin) return;
+    try { setConn(await api.get('/api/staff/esign/connection')); } catch (_) { /* best-effort */ }
+  }, [isAdmin]);
+  useEffect(() => { loadConn(); }, [loadConn]);
 
   // Admin self-test: send a sample envelope to my own email to confirm DocuSign
   // renders our documents + the signing flow works, without a real loan file.
@@ -253,9 +262,35 @@ export default function EsignDashboard() {
             {testBusy ? 'Sending…' : 'Send myself a test'}
           </button>
         )}
-        <button className="btn ghost btn-sm" onClick={() => load()} title="Refresh now">Refresh</button>
+        <button className="btn ghost btn-sm" onClick={() => { load(); loadConn(); }} title="Refresh now">Refresh</button>
       </div>
       {testMsg && <div className="notice ok" style={{ marginBottom: 12 }}>{testMsg}</div>}
+
+      {/* Are we live? — the plain-English DocuSign mode readout (admins only). Tells the
+          owner exactly what still keeps real borrowers from being emailed. */}
+      {isAdmin && conn && (
+        <div className="notice" style={{ marginBottom: 12, borderLeft: `4px solid ${conn.liveToBorrowers ? 'var(--success, #2F7F86)' : 'var(--gold, #AE8746)'}` }}>
+          <strong>{conn.liveToBorrowers
+            ? '🟢 Live — real borrowers receive documents'
+            : '🟡 Test mode — real borrowers are NOT emailed yet'}</strong>
+          <ul className="muted small" style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+            <li>DocuSign account: <strong>{conn.reachable ? (conn.demo ? 'Practice (sandbox)' : 'Live') : (conn.configured ? 'not reachable — check the credentials' : 'not set up yet')}</strong>{conn.accountName ? ` — ${conn.accountName}` : ''}{conn.reachError ? ` (${conn.reachError})` : ''}</li>
+            <li>Sending switch: <strong>{conn.sendEnabled ? 'On' : 'Off'}</strong></li>
+            <li>Test mode: <strong>{conn.testMode ? 'On' : 'Off'}</strong>{conn.testMode && (conn.allowlist || []).length ? ` — only these emails receive documents: ${conn.allowlist.join(', ')}` : ''}</li>
+          </ul>
+          {!conn.liveToBorrowers && (
+            <div className="small" style={{ marginTop: 6 }}>
+              <strong>Still needed to go live:</strong> {[
+                !conn.configured && 'add the DocuSign credentials',
+                conn.configured && conn.reachable === false && 'fix the credentials so DocuSign connects',
+                conn.reachable && conn.demo && 'switch to the live DocuSign account (the DocuSign “Go-Live” promotion)',
+                !conn.sendEnabled && 'turn the sending switch on',
+                conn.testMode && 'turn test mode off',
+              ].filter(Boolean).join('; ') || 'checking…'}.
+            </div>
+          )}
+        </div>
+      )}
       {refreshedAt && (
         <p className="muted small" style={{ margin: '0 0 14px' }} aria-live="polite">
           <span className="esign-live" aria-hidden="true" /> Live — updated {timeAgo(refreshedAt.toISOString())}

@@ -133,4 +133,31 @@ function dobProblem(v) {
   return null;
 }
 
-module.exports = { sanitizeFico, sanitizeSsnDigits, sanitizeLoanType, assignmentFields, sanitizeDateOnly, normalizeTypedDate, sanitizeDob, dobProblem };
+// YS loan-number rule (owner-directed 2026-07-20): every YS loan number starts
+// with "YSCAP" and is unique across files. This helper enforces the FORMAT only
+// (prefix + at least one trailing character); UNIQUENESS is a DB check the caller
+// does (there's a partial-unique index in db/048). Normalizes: trims, collapses
+// inner whitespace, uppercases (loan numbers are all-caps alphanumerics, and the
+// "YSCAP" prefix / uniqueness must be case-insensitive so "yscap123" can't slip in
+// as a second file). Returns the normalized string, or null if it doesn't fit.
+function sanitizeLoanNumber(v) {
+  if (v == null) return null;
+  const s = String(v).trim().replace(/\s+/g, '').toUpperCase();
+  if (!/^YSCAP.+/.test(s)) return null;   // must start with YSCAP and have more after it
+  if (s.length > 40) return null;         // guardrail — a real loan number is short
+  return s;
+}
+
+// Plain-language reason a typed loan number is rejected (for inline UI copy).
+// Returns null when it's a well-formed YSCAP number, else a short sentence.
+function loanNumberProblem(v) {
+  const raw = v == null ? '' : String(v).trim();
+  if (!raw) return 'Enter the YS loan number.';
+  const up = raw.replace(/\s+/g, '').toUpperCase();
+  if (!up.startsWith('YSCAP')) return 'A YS loan number must start with "YSCAP".';
+  if (up === 'YSCAP') return 'Add the numbers after "YSCAP" (for example YSCAP258134628).';
+  if (up.length > 40) return 'That loan number is too long.';
+  return null;
+}
+
+module.exports = { sanitizeFico, sanitizeSsnDigits, sanitizeLoanType, assignmentFields, sanitizeDateOnly, normalizeTypedDate, sanitizeDob, dobProblem, sanitizeLoanNumber, loanNumberProblem };
