@@ -527,7 +527,10 @@ async function fileContext(appId, extraMeta = []) {
     const street = pa.street || pa.line1 || (typeof pa.oneLine === 'string' ? pa.oneLine.split(',')[0] : '') || '';
     const addr = pa.oneLine || [pa.street || pa.line1, pa.city, pa.state].filter(Boolean).join(', ') || '(no address yet)';
     const borrowerName = [a.first_name, a.last_name].filter(Boolean).join(' ') || a.email || 'Borrower';
-    const loanNo = a.ys_loan_number || 'Loan # pending';
+    // Always show the loan number capitalized ("YSCAP…") on every email/subject
+    // tag, even for a legacy row not yet normalized in storage (belt-and-suspenders
+    // on top of the write-path + backfill normalization).
+    const loanNo = (a.ys_loan_number ? String(a.ys_loan_number).toUpperCase() : '') || 'Loan # pending';
     const hasLoanNo = !!a.ys_loan_number;
     const money = (n) => (n == null ? null : '$' + Math.round(Number(n)).toLocaleString('en-US'));
     // Program shown to the BORROWER never carries a note-buyer/capital-partner
