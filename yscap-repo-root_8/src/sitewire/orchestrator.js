@@ -114,10 +114,21 @@ async function resolveCapitalPartnerId(lenderLabel) {
     return { id: null, ambiguous: false, linked: true, noPartner: true };
   }
 
-  const rows = (await db.query(`SELECT sitewire_id, name FROM sitewire_capital_partners`)).rows;
-  // 2) exact directory match (normalized) auto-binds.
+  const rows = (await db.query(`SELECT sitewire_id, name, on_our_lender FROM sitewire_capital_partners`)).rows;
+  // 2) exact directory match (normalized) auto-binds. Sitewire's directory can carry the SAME name
+  //    under more than one id (a duplicate partner entry) — after the owner renamed our note-buyer
+  //    labels to match Sitewire exactly (2026-07-20), a duplicate directory name is the one thing that
+  //    would otherwise PARK an otherwise-perfect exact match as ambiguous. When an exact name matches
+  //    more than one directory id, prefer the one attached to OUR lender (on_our_lender) — that's the
+  //    partner we actually work with, which is a fact, not a guess. Only a true tie with no single
+  //    on-our-lender winner stays ambiguous (never-guess).
   const exact = rows.filter((r) => linkNorm(r.name) === key);
   if (exact.length === 1) return { id: Number(exact[0].sitewire_id), ambiguous: false };
+  if (exact.length > 1) {
+    const ours = exact.filter((r) => r.on_our_lender);
+    if (ours.length === 1) return { id: Number(ours[0].sitewire_id), ambiguous: false, dedupedByLender: true };
+    return { id: null, ambiguous: true };
+  }
 
   // 3) fuzzy is NOT auto-bound (that would be a guess). Surface the single best CANDIDATE so the UI
   // can suggest it and the admin one-click confirms it into a durable link. Try a suffix-tolerant
@@ -188,7 +199,11 @@ function resolveInspection(link, rule) {
   if (method === 'mobile' && !allowVirtual) method = allowPhysical ? 'traditional' : dflt;
   if (method === 'traditional' && !allowPhysical) method = allowVirtual ? 'mobile' : dflt;
   const feeKind = T.feeKindFor(method);
-  const ruleFee = rule ? (feeKind === 'physical' ? (rule.fee_cents_physical != null ? rule.fee_cents_physical : rule.fee_cents_virtual) : rule.fee_cents_virtual) : 29900;
+  const ruleFeeRaw = rule ? (feeKind === 'physical' ? (rule.fee_cents_physical != null ? rule.fee_cents_physical : rule.fee_cents_virtual) : rule.fee_cents_virtual) : 29900;
+  // Belt-and-suspenders: clamp the rule fee to a finite, non-negative amount so a bad stored fee
+  // (e.g. a negative physical fee that slipped in) can NEVER push a negative processing_fee_cents.
+  const ruleFeeN = Number(ruleFeeRaw);
+  const ruleFee = Number.isFinite(ruleFeeN) && ruleFeeN >= 0 ? ruleFeeN : (feeKind === 'physical' && rule && Number.isFinite(Number(rule.fee_cents_virtual)) && Number(rule.fee_cents_virtual) >= 0 ? Number(rule.fee_cents_virtual) : 29900);
   // The coordinator's per-file fee override (Start-draw screen) wins over the rule fee when set.
   // NULL / negative / non-finite falls back to the rule fee — a bad value can never zero the fee.
   const override = link && link.fee_cents_override != null ? Number(link.fee_cents_override) : null;
@@ -229,15 +244,20 @@ async function pushFile(appId, opts = {}) {
   const budgetCents = Math.round(Number(budgetDollars) * 100);
   if (!a.sow_payload || !a.sow_payload.state) { await park({ appId, reason: 'sitewire_no_sow: no Scope of Work saved to explode into a budget' }); return { parked: 'no_sow' }; }
 
-  // G-UNITS: the property's unit count (from the file) must match the Scope of Work's unit count.
-  // We send total_units from the file but explode the budget from the SOW — if they disagree, Sitewire
-  // would show a unit total that doesn't match its per-unit budget lines. Never guess which is right — park.
-  if (a.units != null && Number(a.units) > 0) {
-    const sowUnits = M.unitCount(a.sow_payload.state);
-    if (Number(a.units) !== sowUnits) {
-      await park({ appId, reason: `sitewire_units_mismatch: the file says ${Number(a.units)} unit(s) but the Scope of Work is built for ${sowUnits} — reconcile them before pushing (Sitewire's unit count must match its budget lines)`, current: String(a.units), proposed: String(sowUnits) });
-      return { parked: 'units_mismatch' };
-    }
+  // G-UNITS (owner-directed 2026-07-20 — "use physical building units"): send the PHYSICAL building unit
+  // count and NEVER hard-block on a file-vs-SOW disagreement. A property can legitimately be a 4-family
+  // where the borrower only works the exterior + one unit — the SOW then models fewer/other unit sections
+  // than the building physically has, and that is NOT an error. The physical count = the LARGER of the
+  // file's unit count and the SOW's unit count: it is always >= every per-unit budget/media line the
+  // explosion references (those use the SOW's unit count), so Sitewire can never carry a "Unit N" line for
+  // a unit the property doesn't physically have; units with no work simply carry no budget lines. A
+  // disagreement only raises a NON-BLOCKING advisory (deduped) so staff can fix a stale file count — the
+  // push PROCEEDS (no return/park). The exploded-budget→frozen-budget tie-out (G-RECON) is the real gate.
+  const sowUnits = M.unitCount(a.sow_payload.state);
+  const fileUnits = (a.units != null && Number(a.units) > 0) ? Number(a.units) : 0;
+  const physicalUnits = Math.max(1, fileUnits, sowUnits);
+  if (fileUnits > 0 && fileUnits !== sowUnits) {
+    await park({ appId, dedupe: 'units', reason: `sitewire_units_note: the file lists ${fileUnits} unit(s) but the Scope of Work is built for ${sowUnits} — pushing the physical building count of ${physicalUnits} unit(s) (units with no work carry no budget lines). Update the file's unit count in the application if ${physicalUnits} is wrong.`, current: String(fileUnits), proposed: String(physicalUnits) });
   }
 
   // explode + G-RECON (must tie to the frozen budget to the cent BEFORE any write)
@@ -289,7 +309,7 @@ async function pushFile(appId, opts = {}) {
   // push) — omit a coordinator/checklist id that isn't a finite number (e.g. a mistyped env var).
   if (!Number.isFinite(propertyFields.default_draw_coordinator_id)) delete propertyFields.default_draw_coordinator_id;
   if (!Number.isFinite(propertyFields.draw_checklist_template_id)) delete propertyFields.draw_checklist_template_id;
-  if (a.units) propertyFields.total_units = Number(a.units);
+  propertyFields.total_units = physicalUnits;
   if (devType) propertyFields.development_type = devType;
   if (consType) propertyFields.construction_type = consType;
   // G-ENUM: a property/construction type we couldn't map is LEFT BLANK (never guessed) — but raise

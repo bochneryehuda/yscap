@@ -7,7 +7,11 @@
  * never a raw call from a route. Non-see-all staff are scoped to their assigned files.
  */
 const express = require('express');
-const router = express.Router();
+// safe-router forwards any async-handler rejection to the global JSON error middleware
+// (fast generic 500/503) instead of hanging the request — Express 4 does not catch
+// rejected promises from async handlers, and several draw-desk handlers await a DB read
+// before their own try/catch (a transient DB error or an out-of-range :id would hang).
+const router = require('../lib/safe-router')();
 const db = require('../db');
 const cfg = require('../config');
 const { requireAuth, requireStaff, requirePermission } = require('../auth');
@@ -168,6 +172,13 @@ router.get('/files/:id/draw-setup', requirePermission('manage_draws'), async (re
       capital_partner: !!cp.id,
     };
     const cpName = cp.id ? (await db.query(`SELECT name FROM sitewire_capital_partners WHERE sitewire_id=$1`, [cp.id])).rows[0] : null;
+    // Unit count preview (owner-directed 2026-07-20 — "use physical building units"). The count PUSHED to
+    // Sitewire = the physical building count = the LARGER of the file's unit count and the Scope of Work's.
+    // A disagreement is surfaced (not an error): units with no work simply carry no budget lines.
+    const hasSow = !!(a.sow_payload && a.sow_payload.state);
+    const sowUnits = M.unitCount(a.sow_payload && a.sow_payload.state);
+    const fileUnits = (a.units != null && Number(a.units) > 0) ? Number(a.units) : 0;
+    const physicalUnits = Math.max(1, fileUnits, sowUnits);
     res.json({
       started: !!(link && link.sitewire_property_id),
       state: link ? link.state : null,
@@ -185,6 +196,8 @@ router.get('/files/:id/draw-setup', requirePermission('manage_draws'), async (re
         fee_physical_cents: rule && rule.fee_cents_physical != null ? Number(rule.fee_cents_physical) : null,
       },
       requires: { sitewire_inspector: !!(rule && rule.require_sitewire_inspector), capital_partner_approval: !!(rule && rule.require_capital_partner_approval) },
+      // disagree only once a SOW exists (before that, sowUnits defaults to 1 and would falsely flag)
+      units: { file: fileUnits || null, sow: hasSow ? sowUnits : null, physical: physicalUnits, disagree: hasSow && fileUnits > 0 && fileUnits !== sowUnits },
       // handled externally = this capital partner runs draws in its own system; PILOT never pushes it.
       handled_externally: !!(rule && rule.handled_externally),
       prereqs,
@@ -477,21 +490,50 @@ router.get('/files/:id/gl-export', requirePermission('manage_draws'), async (req
 // ---- inspection + fee rules (admin/setup) ----
 router.get('/rules', requirePermission('platform_setup'), async (req, res) => {
   const rules = (await db.query(`SELECT r.*, cp.name AS capital_partner_name FROM sitewire_inspection_rules r LEFT JOIN sitewire_capital_partners cp ON cp.sitewire_id=r.capital_partner_id ORDER BY r.partner_label NULLS FIRST, r.capital_partner_id NULLS FIRST`)).rows;
-  // The partner dropdown is EVERY note buyer we have — the Sitewire directory PLUS every distinct
-  // note-buyer label actually used on our files (applications.lender). External partners aren't in
-  // the Sitewire directory, so the note-buyer field is the real source of truth (owner-directed).
+  // The rule-builder dropdown + the note-buyer link table list ONLY the note buyers actually on files
+  // we are actively using — NOT the whole Sitewire directory (owner-directed 2026-07-20: "we shouldn't
+  // have such a big list of investors to set up rules; the only investors we should need are ones that
+  // are part of files we are actively using"). The full directory stays available in GET /capital-partners
+  // as the link picker's TARGET list. A note buyer that already has a rule is kept too, so an existing
+  // rule is never orphaned out of the builder.
   const dir = (await db.query(`SELECT sitewire_id, name, on_our_lender FROM sitewire_capital_partners`)).rows;
-  const used = (await db.query(`SELECT DISTINCT btrim(lender) AS lender FROM applications WHERE lender IS NOT NULL AND btrim(lender) <> '' AND deleted_at IS NULL`)).rows.map((r) => r.lender);
+  // "Actively using" = alive files (not soft-deleted, not declined/withdrawn). FUNDED files COUNT —
+  // draws happen AFTER funding, so a funded construction file is exactly the one that needs a draw
+  // rule (do NOT reuse ACTIVE_FILE_SQL from staff.js, which excludes funded).
+  const used = (await db.query(
+    `SELECT DISTINCT btrim(lender) AS lender FROM applications
+      WHERE lender IS NOT NULL AND btrim(lender) <> '' AND deleted_at IS NULL
+        AND status NOT IN ('declined','withdrawn')`)).rows.map((r) => r.lender);
   const links = (await db.query(`SELECT label_norm, sitewire_id FROM sitewire_partner_links`)).rows;
   const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
   const linkByNorm = new Map(links.map((l) => [l.label_norm, l.sitewire_id == null ? null : Number(l.sitewire_id)]));
-  const byNorm = new Map();
-  for (const d of dir) byNorm.set(norm(d.name), { label: d.name, sitewire_id: Number(d.sitewire_id), directory_id: Number(d.sitewire_id), on_our_lender: !!d.on_our_lender, in_directory: true, in_use: false });
-  for (const l of used) {
-    const k = norm(l); if (!k) continue;
-    const ex = byNorm.get(k);
-    if (ex) ex.in_use = true; else byNorm.set(k, { label: l, sitewire_id: null, directory_id: null, on_our_lender: false, in_directory: false, in_use: true });
+  // Directory lookup for ENRICHMENT ONLY — a used label that matches the directory shows its Sitewire
+  // id + on_our_lender flag; the directory no longer SEEDS rows on its own. On a duplicate directory
+  // name (same investor under two Sitewire ids), keep the one attached to OUR lender so the enriched
+  // id matches what the resolver binds to.
+  const dirByNorm = new Map();
+  for (const d of dir) {
+    const k = norm(d.name); if (!k) continue;
+    const ex = dirByNorm.get(k);
+    if (!ex || (!ex.on_our_lender && d.on_our_lender)) dirByNorm.set(k, d);
   }
+  const byNorm = new Map();
+  const addLabel = (label, inUse) => {
+    const k = norm(label); if (!k) return;
+    let ex = byNorm.get(k);
+    if (!ex) {
+      const d = dirByNorm.get(k);
+      ex = d
+        ? { label: d.name, sitewire_id: Number(d.sitewire_id), directory_id: Number(d.sitewire_id), on_our_lender: !!d.on_our_lender, in_directory: true, in_use: false }
+        : { label, sitewire_id: null, directory_id: null, on_our_lender: false, in_directory: false, in_use: false };
+      byNorm.set(k, ex);
+    }
+    if (inUse) ex.in_use = true;
+  };
+  for (const l of used) addLabel(l, true);
+  // Keep any note buyer that already has a rule, even if it has since dropped off the active files —
+  // otherwise its still-active rule would be invisible in the builder while resolveRule keeps using it.
+  for (const r of rules) if (r.partner_label) addLabel(r.partner_label, false);
   // Enrich each partner with its smart-link state so the UI can show Linked / Exact / Suggested.
   const partners = [];
   for (const p of byNorm.values()) {
@@ -545,7 +587,9 @@ router.post('/rules', requirePermission('platform_setup'), async (req, res) => {
   const feeVirtual = Number.isFinite(vFee) && vFee >= 0 ? Math.round(vFee) : 29900;
   const pRaw = b.fee_cents_physical;
   const pFee = Number(pRaw);
-  const feePhysical = pRaw == null || pRaw === '' || !Number.isFinite(pFee) ? null : Math.round(pFee);
+  // A negative physical fee is invalid → null (falls back to the virtual fee downstream), matching the
+  // virtual guard above. Never store a negative fee — it would push a negative processing_fee_cents.
+  const feePhysical = pRaw == null || pRaw === '' || !Number.isFinite(pFee) || pFee < 0 ? null : Math.round(pFee);
   try {
     const row = (await db.query(
       `INSERT INTO sitewire_inspection_rules (capital_partner_id, partner_label, program, inspection_method, require_sitewire_inspector, require_capital_partner_approval, allow_reallocation, fee_cents_virtual, fee_cents_physical, allow_virtual, allow_physical, handled_externally)
@@ -559,8 +603,19 @@ router.post('/rules', requirePermission('platform_setup'), async (req, res) => {
 
 // ---- GET /capital-partners — the Sitewire directory, for the smart-link picker ----
 router.get('/capital-partners', requirePermission('platform_setup'), async (req, res) => {
-  const partners = (await db.query(`SELECT sitewire_id, name, on_our_lender FROM sitewire_capital_partners ORDER BY on_our_lender DESC, name`)).rows
-    .map((r) => ({ sitewire_id: Number(r.sitewire_id), name: r.name, on_our_lender: !!r.on_our_lender }));
+  const rows = (await db.query(`SELECT sitewire_id, name, on_our_lender FROM sitewire_capital_partners ORDER BY on_our_lender DESC, name`)).rows;
+  // Collapse duplicate investor NAMES so the picker never lists the same investor twice (owner-directed
+  // 2026-07-20: "make sure we are not having duplicate investor names"). Sitewire can carry one partner
+  // under two ids; ORDER BY on_our_lender DESC puts the one attached to our lender first, so the first
+  // row seen for a name is the one we keep. Genuinely distinct names (different investors) all remain.
+  const seen = new Set();
+  const partners = [];
+  for (const r of rows) {
+    const k = String(r.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+    if (k && seen.has(k)) continue;
+    if (k) seen.add(k);
+    partners.push({ sitewire_id: Number(r.sitewire_id), name: r.name, on_our_lender: !!r.on_our_lender });
+  }
   res.json({ partners });
 });
 
@@ -639,11 +694,13 @@ router.post('/reviews/:id/:action', requirePermission('manage_draws'), async (re
           WHERE entity_type='application' AND entity_id=$1 AND target='sitewire' AND direction='push' AND status='dead' RETURNING id`, [row.application_id]);
       // if nothing was dead-lettered, enqueue a fresh push so a fixed upstream cause re-attempts
       if (!dead.rows.length) await enqueueSitewirePush(row.application_id, 'push_file').catch(() => {});
-      await db.query(`UPDATE sync_review_queue SET status='resolved', resolved_by=$2, resolved_at=now(), resolution_note=$3, updated_at=now() WHERE id=$1`,
+      // sync_review_queue has NO updated_at column (resolved_at records the time). 'resolved' is the
+      // terminal "actioned" status used across the sync-review code (db/110 widened the CHECK to allow it).
+      await db.query(`UPDATE sync_review_queue SET status='resolved', resolved_by=$2, resolved_at=now(), resolution_note=$3 WHERE id=$1`,
         [id, req.actor.id, dead.rows.length ? `retried ${dead.rows.length} push job(s)` : 're-queued a fresh push']);
       return res.json({ ok: true, retried: dead.rows.length, requeued: !dead.rows.length });
     }
-    await db.query(`UPDATE sync_review_queue SET status='rejected', resolved_by=$2, resolved_at=now(), resolution_note='dismissed', updated_at=now() WHERE id=$1`, [id, req.actor.id]);
+    await db.query(`UPDATE sync_review_queue SET status='rejected', resolved_by=$2, resolved_at=now(), resolution_note='dismissed' WHERE id=$1`, [id, req.actor.id]);
     res.json({ ok: true, dismissed: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

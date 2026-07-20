@@ -338,7 +338,7 @@ export default function SyncReviews() {
                   title="Close this without action" onClick={() => sitewireAct(r.id, 'dismiss')}>Dismiss</button>
               </div>
             )}
-            {status === 'open' && canResolve && (
+            {status === 'open' && !isSitewire && canResolve && (
               <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                 <button className="btn primary btn-sm" disabled={busyId === r.id}
                   title="Apply ClickUp's current value to BOTH systems (re-read live, audited)"
@@ -363,7 +363,7 @@ export default function SyncReviews() {
                 </span>
               </div>
             )}
-            {status === 'open' && !canResolve && fileActions && (
+            {status === 'open' && !isSitewire && !canResolve && fileActions && (
               <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                 {fileActions.map((a) => {
                   const needsPick = a.needsTarget;
@@ -402,7 +402,7 @@ export default function SyncReviews() {
                   onClick={() => act(r.id, 'reject')}>Dismiss</button>
               </div>
             )}
-            {status === 'open' && !canResolve && !fileActions && (
+            {status === 'open' && !isSitewire && !canResolve && !fileActions && (
               <div className="row" style={{ gap: 8 }}>
                 <button className="btn primary btn-sm" disabled={busyId === r.id || !r.proposed_value}
                   title={r.proposed_value ? 'Apply the proposed value (audited)' : 'No valid proposal to apply — dismiss or fix manually'}
