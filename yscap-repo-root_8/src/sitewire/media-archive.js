@@ -28,7 +28,11 @@ const MAX_REDIRECTS = 4;
 // Extract the embedded IPv4 from an IPv4-mapped IPv6 literal, in either the dotted
 // (::ffff:192.168.0.1) or hex (::ffff:c0a8:0001) form; null if not mapped.
 function mappedIpv4(l) {
-  let m = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(l);
+  // ::ffff:a.b.c.d (mapped) OR ::a.b.c.d (deprecated IPv4-COMPATIBLE) dotted forms —
+  // both embed an unambiguous IPv4; extract it. The hex-compatible form (::hhhh:hhhh
+  // with no ffff) is deliberately NOT treated as mapped: it collides with legitimate
+  // public IPv6 low bits, and such literals are not returned by dns.lookup / not routed.
+  let m = /^::(?:ffff:)?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(l);
   if (m) return m[1];
   m = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(l);
   if (m) {

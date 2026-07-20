@@ -233,7 +233,7 @@ router.post('/files/:id/push', requirePermission('platform_setup'), async (req, 
   // not be able to birth a file it has no relationship to into Sitewire.
   if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   try { res.json(await orchestrator.pushFile(req.params.id, { force: !!req.body.force })); }
-  catch (e) { res.status(e.status === 422 ? 422 : 502).json({ error: e.message }); }
+  catch (e) { if (e.status === 422) return res.status(422).json({ error: e.message }); console.warn('[sitewire] push error:', e && e.message); res.status(502).json({ error: 'the draw service is temporarily unavailable — nothing was changed; try again shortly' }); }
 });
 
 // ---- GET /files/:id/draw-setup — what the coordinator sees before starting the draw process ----
@@ -375,7 +375,7 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
       await enqueueSitewirePush(appId, 'push_file').catch(() => {});
       return res.status(202).json({ ok: true, started: true, queued: true, note: 'Draw setup saved. Sitewire is briefly unavailable — the push will retry automatically.' });
     }
-  } catch (e) { res.status(e.status === 422 ? 422 : 500).json({ error: e.message }); }
+  } catch (e) { if (e.status === 422) return res.status(422).json({ error: e.message }); console.warn('[sitewire] start-draw error:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
 // ---- POST /api/sitewire/requests/:reqId/approve — set approved_cents on a draw line ----

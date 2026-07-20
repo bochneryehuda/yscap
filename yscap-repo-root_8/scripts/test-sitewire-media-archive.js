@@ -79,6 +79,9 @@ for (const ip of ['::ffff:192.168.1.1', '::ffff:172.16.0.1', '::ffff:10.1.2.3', 
 for (const ip of ['::ffff:8.8.8.8', '::ffff:0808:0808' /* =8.8.8.8 */]) {
   ok(`mapped-public IPv6 allowed: ${ip}`, ma.isPrivateIp(ip) === false);
 }
+// Deprecated IPv4-COMPATIBLE dotted form (::a.b.c.d, no ffff) must also not bypass.
+ok('compatible-private IPv6 blocked: ::192.168.1.1', ma.isPrivateIp('::192.168.1.1') === true);
+ok('compatible-public IPv6 allowed: ::8.8.8.8', ma.isPrivateIp('::8.8.8.8') === false);
 
 // ---- 6b. sha256 hashes a Buffer by RAW bytes (the content-hash fix) ----
 {
