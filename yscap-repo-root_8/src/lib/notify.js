@@ -34,6 +34,8 @@ const KICKER_OF = {
   new_application: 'New application', unassigned_application: 'Needs assignment',
   new_lead: 'New lead', sync_review: 'Sync review', security: 'Security', account: 'Account',
   sharepoint_backlog_slo: 'Document sync', inbound_reply: 'File reply',
+  officer_assigned: 'Your loan officer', all_caught_up: 'You’re all set',
+  milestone: 'Milestone', digest: 'Your loan file',
 };
 
 /**
@@ -57,6 +59,11 @@ async function enrichFileOpts(opts, audience) {
   if (!Array.isArray(out.meta) || !out.meta.length) {
     out.meta = audience === 'borrower' ? ctx.borrowerMeta : ctx.meta;
   }
+  // Borrower emails always carry the premium loan-officer contact CARD (from the
+  // file's assigned officer) so the borrower sees a real person + how to reach
+  // them on every message. Officer's own business contact only — never a note
+  // buyer. Staff already know the officer, so no card on staff emails.
+  if (audience === 'borrower' && !out.officer && ctx.officer) out.officer = ctx.officer;
   if (!out.link) out.link = audience === 'borrower' ? `/app/${opts.applicationId}` : `/internal/app/${opts.applicationId}`;
   if (!out.ctaLabel) out.ctaLabel = audience === 'borrower' ? 'Open your file' : 'Open the loan file';
   return out;
@@ -91,6 +98,17 @@ function buildEmail(opts, audience) {
     // posts only the freshly typed text back into the thread. Absent on every
     // other email (unchanged there).
     replyMarker: opts.replyMarker || '',
+    // Premium components (owner-directed 2026-07-20) — all optional and
+    // bulletproof: a status pill, a hero band for the one key fact, the loan
+    // journey stepper, a completion meter, a "next step" callout, and the
+    // loan-officer contact card. Passed straight through from the call site /
+    // enrichment; absent → the email renders exactly as before.
+    badge:     opts.badge || null,
+    hero:      opts.hero || null,
+    steps:     opts.steps || null,
+    progress:  opts.progress || null,
+    callout:   opts.callout || null,
+    officer:   opts.officer || null,
     audience,
   });
 }
@@ -163,6 +181,9 @@ const CATEGORY_OF = {
   // Sitewire draw-management events (findings delivery, accept/dispute, SOW reallocations)
   draw_findings: 'draws', draw_accepted: 'draws', draw_disputed: 'draws',
   sow_reallocation: 'draws', sow_change_request: 'draws',
+  // New borrower touchpoints (owner-directed 2026-07-20)
+  officer_assigned: 'status_updates', all_caught_up: 'status_updates',
+  milestone: 'status_updates', digest: 'reminders',
 };
 // These always reach the borrower in-app even if the category is muted — they
 // require action and can't be silently dropped (email can still be turned off).
@@ -190,6 +211,10 @@ const BORROWER_MAJOR_EMAIL = new Set([
   // The borrower must review inspection findings and accept/dispute within the wire SLA —
   // this is a borrower action item, so it emails them (not just in-app).
   'draw_findings',
+  // New borrower touchpoints (owner-directed 2026-07-20): meet-your-officer,
+  // caught-up reassurance, key milestones, and the weekly outstanding-items
+  // digest. Each is a deliberate, low-frequency moment — not busywork.
+  'officer_assigned', 'all_caught_up', 'milestone', 'digest',
 ]);
 
 /** Notify a borrower, respecting their per-category preferences. */
@@ -222,6 +247,17 @@ async function notifyBorrower(borrowerId, opts) {
   // scrubbing a partner name a staffer typed into the title/body. `meta` itself
   // is trusted DB data and is left as-is.
   const protect = Array.isArray(opts.meta) ? opts.meta.map((m) => m && m.value).filter((v) => typeof v === 'string') : [];
+  // Scrub the named string keys of a nested component object (callout/hero/badge)
+  // too — a callout body can be a STAFF-TYPED rejection reason, so a partner name
+  // typed there must never reach the borrower (the plain title/body scrub alone
+  // would miss it). officer/steps carry no free text (officer = business contact,
+  // steps = fixed stage labels), so they need no scrub.
+  const scrubObj = (o, keys) => {
+    if (!o || typeof o !== 'object') return o;
+    const out = { ...o };
+    for (const k of keys) if (typeof out[k] === 'string') out[k] = scrubTextExcept(out[k], protect);
+    return out;
+  };
   const sopts = {
     ...opts,
     title: scrubTextExcept(opts.title, protect),
@@ -230,6 +266,9 @@ async function notifyBorrower(borrowerId, opts) {
     greeting: scrubTextExcept(opts.greeting, protect),
     ctaLabel: scrubText(opts.ctaLabel),
     lines: Array.isArray(opts.lines) ? opts.lines.map((l) => scrubTextExcept(l, protect)) : opts.lines,
+    callout: scrubObj(opts.callout, ['title', 'body']),
+    hero: scrubObj(opts.hero, ['label', 'value', 'sub']),
+    badge: scrubObj(opts.badge, ['text']),
   };
   const { rows } = await db.query(
     `INSERT INTO notifications (recipient_kind,borrower_id,type,title,body,application_id,link)
@@ -315,8 +354,13 @@ async function fileContext(appId, extraMeta = []) {
     const r = await db.query(
       `SELECT a.ys_loan_number, a.property_address, a.program, a.loan_type, a.status,
               a.purchase_price, a.arv, a.rehab_budget, a.loan_amount,
-              b.first_name, b.last_name, b.email, b.cell_phone
-         FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [appId]);
+              b.first_name, b.last_name, b.email, b.cell_phone,
+              lo.full_name AS lo_name, lo.title AS lo_title, lo.email AS lo_email,
+              lo.phone AS lo_phone, lo.cell AS lo_cell, lo.nmls AS lo_nmls
+         FROM applications a
+         JOIN borrowers b ON b.id=a.borrower_id
+         LEFT JOIN staff_users lo ON lo.id=a.loan_officer_id AND lo.is_active=true
+        WHERE a.id=$1`, [appId]);
     const a = r.rows[0];
     if (!a) return null;
     const pa = a.property_address || {};
@@ -346,8 +390,26 @@ async function fileContext(appId, extraMeta = []) {
     // contact row) plus the borrower's own headline numbers. Never any
     // note-buyer / capital-provider data — fileContext reads only app+borrower
     // DB fields, and the program label is scrubbed above.
+    // The assigned loan officer — so a borrower ALWAYS knows who is handling
+    // their loan and how to reach them (owner-directed 2026-07-20). Safe on
+    // every surface (it's the officer's own business contact, never a note
+    // buyer). `reach` prefers cell, then desk phone, then email.
+    const officer = a.lo_name
+      ? { name: a.lo_name, title: a.lo_title || 'Loan Officer', email: a.lo_email || null,
+          phone: a.lo_cell || a.lo_phone || null, nmls: a.lo_nmls || null }
+      : null;
+    const officerRow = officer
+      ? { label: 'Your loan officer',
+          value: [officer.name, officer.title].filter(Boolean).join(' · ')
+                 + (officer.nmls ? ` · NMLS #${officer.nmls}` : '')
+                 + ([officer.phone, officer.email].filter(Boolean).length
+                     ? ` · ${[officer.phone, officer.email].filter(Boolean).join(' · ')}` : '') }
+      : null;
     // NOTE: extraMeta is intentionally NOT merged here — callers pass staff-
     // oriented extra rows, so borrowerMeta stays a clean file-identity block.
+    // The officer is surfaced as the premium contact CARD (via enrichFileOpts +
+    // template.officerCard), not a meta row — so borrowerMeta stays a clean file
+    // identity block and the officer isn't shown twice.
     const borrowerMeta = [
       { label: 'File', value: loanNo },
       { label: 'Property', value: addr },
@@ -358,7 +420,7 @@ async function fileContext(appId, extraMeta = []) {
     // Short tag for the SUBJECT line: loan number (when assigned) + street, kept
     // concise so it reads cleanly in an inbox.
     const subjectTag = [hasLoanNo ? loanNo : null, street].filter(Boolean).join(' · ') || (hasLoanNo ? loanNo : addr);
-    return { label: `${loanNo} · ${addr}`, addr, street, loanNo, hasLoanNo, borrowerName, meta, borrowerMeta, subjectTag };
+    return { label: `${loanNo} · ${addr}`, addr, street, loanNo, hasLoanNo, borrowerName, officer, officerRow, meta, borrowerMeta, subjectTag };
   } catch (_) { return null; }
 }
 

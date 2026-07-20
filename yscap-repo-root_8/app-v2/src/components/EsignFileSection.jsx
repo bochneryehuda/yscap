@@ -128,6 +128,97 @@ export default function EsignFileSection({ appId, role }) {
   const envelopes = data.envelopes || [];
   const hasLoanNumber = !!(data.loanNumber && String(data.loanNumber).trim());
 
+  // Group the envelopes so a succeeded/active package isn't buried under a pile of
+  // failed attempts (owner-directed 2026-07-20). Per package: the ones worth seeing now
+  // — completed or still in flight — stay expanded; older failed/voided/declined attempts
+  // collapse into a "past attempts" section you can open. If a package has ONLY failed
+  // attempts, its newest one stays visible so you can retry it.
+  const isFailedEnv = (e) => ['error', 'declined', 'voided'].includes(e.phase) || !!e.deadLetteredAt;
+  const shownEnv = [], pastEnv = [];
+  {
+    const byPurpose = {};
+    for (const e of envelopes) (byPurpose[e.purpose] = byPurpose[e.purpose] || []).push(e);   // server orders newest-first
+    for (const group of Object.values(byPurpose)) {
+      const good = group.filter((e) => !isFailedEnv(e));
+      if (good.length) { shownEnv.push(...good); pastEnv.push(...group.filter(isFailedEnv)); }
+      else { shownEnv.push(group[0]); pastEnv.push(...group.slice(1)); }
+    }
+    const byNewest = (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
+    shownEnv.sort(byNewest); pastEnv.sort(byNewest);
+  }
+
+  const renderEnvelope = (e) => {
+    const ph = PHASE[e.phase] || { label: e.phase, cls: 'muted', dot: '#4B585C' };
+    const h = agingHours(e);
+    const lvl = agingLevel(h);
+    const terminal = TERMINAL.includes(e.phase);   // shared vocabulary (esign.js) — no drift
+    const recips = (e.recipients || []).slice().sort((a, b) => Number(a.routingOrder) - Number(b.routingOrder) || String(a.role).localeCompare(String(b.role)));
+    return (
+      <div className="panel esign-card" key={e.id} style={{ marginBottom: 12 }}>
+        <div className="row" style={{ gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+          <span className="pill muted">{PURPOSE[e.purpose] || e.purpose}</span>
+          <span className={`pill ${ph.cls}`}><span className="esign-dot" style={{ background: ph.dot }} aria-hidden="true" />{ph.label}</span>
+          {e.waitingOn && lvl ? (
+            <span className={`pill esign-aging ${lvl}`} title={`No progress for ${agingLabel(h)}`}>⏱ {agingLabel(h)}</span>
+          ) : null}
+          <div className="spacer" />
+          {e.envelopeId ? <span className="muted small esign-env" title="DocuSign envelope ID">{e.envelopeId}</span> : null}
+        </div>
+
+        {e.waitingOn ? (
+          <div className={`esign-waiting ${e.phase === 'awaiting_countersign' ? 'is-admin' : ''}`}>
+            {e.phase === 'awaiting_countersign'
+              ? <>Ready for your counter-signature — <strong>{e.waitingOn.name}</strong></>
+              : <>Waiting on <strong>{e.waitingOn.name}</strong> ({ROLE[e.waitingOn.role] || e.waitingOn.role})</>}
+          </div>
+        ) : null}
+        {(e.phase === 'error' || e.deadLetteredAt) && e.lastError ? <div className="notice err" style={{ margin: '10px 0 0' }}><strong>Send failed.</strong> {e.lastError}</div> : null}
+        {e.phase === 'voided' && e.voidReason ? <div className="notice info" style={{ margin: '10px 0 0' }}>Voided: {e.voidReason}</div> : null}
+
+        <div className="esign-recips">
+          {recips.map((r) => <Recipient key={r.id || `${r.role}-${r.routingOrder}`} r={r} />)}
+        </div>
+
+        {/* Legally-binding summary once the package is fully signed */}
+        {e.phase === 'completed' ? (
+          <div className="notice ok" style={{ margin: '10px 0 0' }}>
+            <strong>Legally binding.</strong> All parties signed{e.completedAt ? ` — completed ${timeAgo(e.completedAt)}` : ''}.
+            {' '}The DocuSign <strong>Certificate of Completion</strong> — the legal record of who signed, when, and from where (signer identities, timestamps, IP addresses) — {e.certificate ? 'is available to download below.' : 'is being retrieved and will appear here shortly.'}
+          </div>
+        ) : null}
+
+        {/* Actions */}
+        <div className="row" style={{ gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+          {e.phase === 'awaiting_countersign' && isAdmin && (
+            <button className="btn primary btn-sm" disabled={busy === `cs:${e.id}`} onClick={() => countersign(e.id)}>
+              {busy === `cs:${e.id}` ? '…' : 'Counter-sign now'}
+            </button>
+          )}
+          {!terminal && e.envelopeId && (
+            <>
+              <button className="btn ghost btn-sm" disabled={busy === `resend:${e.id}`} onClick={() => resend(e.id)}>{busy === `resend:${e.id}` ? '…' : 'Resend reminder'}</button>
+              <button className="btn ghost btn-sm" disabled={busy === `void:${e.id}`} onClick={() => voidEnv(e.id)}>Void</button>
+            </>
+          )}
+          {(e.phase === 'declined' || e.phase === 'voided' || e.phase === 'error') && gate.ready && (
+            <button className="btn primary btn-sm"
+              disabled={busy === `send:${e.purpose}` || (e.purpose === 'term_sheet_package' && !hasLoanNumber)}
+              title={e.purpose === 'term_sheet_package' && !hasLoanNumber ? 'Enter the YS loan number above first' : 'Send a fresh envelope for this package'}
+              onClick={() => send(e.purpose, true)}>{busy === `send:${e.purpose}` ? '…' : (e.phase === 'error' ? 'Retry send' : 'Re-issue')}</button>
+          )}
+          {(e.documents || []).map((d) => (
+            <button key={d.documentId} className="btn ghost btn-sm" disabled={busy === `dl:${d.documentId}`} onClick={() => download(d)}
+              title={`Download ${d.filename}`}>{busy === `dl:${d.documentId}` ? '…' : `↓ ${(d.docKind || '').replace(/_signed$/, '').replace(/_/g, ' ')}`}</button>
+          ))}
+          {e.certificate ? (
+            <button className="btn ghost btn-sm" disabled={busy === `dl:${e.certificate.documentId}`} onClick={() => download(e.certificate)}
+              title="DocuSign Certificate of Completion — the legal audit trail (signers, timestamps, IP addresses)">{busy === `dl:${e.certificate.documentId}` ? '…' : '↓ certificate'}</button>
+          ) : null}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="esign-file">
       {err && <div role="alert" className="notice err" style={{ marginBottom: 10 }}>{err}</div>}
@@ -198,77 +289,19 @@ export default function EsignFileSection({ appId, role }) {
       </div>
       {envelopes.length === 0 ? (
         <p className="muted small">No packages sent yet. Once you send one above, it appears here with its live status, signers, signed PDFs and certificate.</p>
-      ) : envelopes.map((e) => {
-        const ph = PHASE[e.phase] || { label: e.phase, cls: 'muted', dot: '#4B585C' };
-        const h = agingHours(e);
-        const lvl = agingLevel(h);
-        const terminal = TERMINAL.includes(e.phase);   // shared vocabulary (esign.js) — no drift
-        const recips = (e.recipients || []).slice().sort((a, b) => Number(a.routingOrder) - Number(b.routingOrder) || String(a.role).localeCompare(String(b.role)));
-        return (
-          <div className="panel esign-card" key={e.id} style={{ marginBottom: 12 }}>
-            <div className="row" style={{ gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
-              <span className="pill muted">{PURPOSE[e.purpose] || e.purpose}</span>
-              <span className={`pill ${ph.cls}`}><span className="esign-dot" style={{ background: ph.dot }} aria-hidden="true" />{ph.label}</span>
-              {e.waitingOn && lvl ? (
-                <span className={`pill esign-aging ${lvl}`} title={`No progress for ${agingLabel(h)}`}>⏱ {agingLabel(h)}</span>
-              ) : null}
-              <div className="spacer" />
-              {e.envelopeId ? <span className="muted small esign-env" title="DocuSign envelope ID">{e.envelopeId}</span> : null}
-            </div>
-
-            {e.waitingOn ? (
-              <div className={`esign-waiting ${e.phase === 'awaiting_countersign' ? 'is-admin' : ''}`}>
-                {e.phase === 'awaiting_countersign'
-                  ? <>Ready for your counter-signature — <strong>{e.waitingOn.name}</strong></>
-                  : <>Waiting on <strong>{e.waitingOn.name}</strong> ({ROLE[e.waitingOn.role] || e.waitingOn.role})</>}
-              </div>
-            ) : null}
-            {(e.phase === 'error' || e.deadLetteredAt) && e.lastError ? <div className="notice err" style={{ margin: '10px 0 0' }}><strong>Send failed.</strong> {e.lastError}</div> : null}
-            {e.phase === 'voided' && e.voidReason ? <div className="notice info" style={{ margin: '10px 0 0' }}>Voided: {e.voidReason}</div> : null}
-
-            <div className="esign-recips">
-              {recips.map((r) => <Recipient key={r.id || `${r.role}-${r.routingOrder}`} r={r} />)}
-            </div>
-
-            {/* Legally-binding summary once the package is fully signed */}
-            {e.phase === 'completed' ? (
-              <div className="notice ok" style={{ margin: '10px 0 0' }}>
-                <strong>Legally binding.</strong> All parties signed{e.completedAt ? ` — completed ${timeAgo(e.completedAt)}` : ''}.
-                {' '}The DocuSign <strong>Certificate of Completion</strong> — the legal record of who signed, when, and from where (signer identities, timestamps, IP addresses) — {e.certificate ? 'is available to download below.' : 'is being retrieved and will appear here shortly.'}
-              </div>
-            ) : null}
-
-            {/* Actions */}
-            <div className="row" style={{ gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
-              {e.phase === 'awaiting_countersign' && isAdmin && (
-                <button className="btn primary btn-sm" disabled={busy === `cs:${e.id}`} onClick={() => countersign(e.id)}>
-                  {busy === `cs:${e.id}` ? '…' : 'Counter-sign now'}
-                </button>
-              )}
-              {!terminal && e.envelopeId && (
-                <>
-                  <button className="btn ghost btn-sm" disabled={busy === `resend:${e.id}`} onClick={() => resend(e.id)}>{busy === `resend:${e.id}` ? '…' : 'Resend reminder'}</button>
-                  <button className="btn ghost btn-sm" disabled={busy === `void:${e.id}`} onClick={() => voidEnv(e.id)}>Void</button>
-                </>
-              )}
-              {(e.phase === 'declined' || e.phase === 'voided' || e.phase === 'error') && gate.ready && (
-                <button className="btn primary btn-sm"
-                  disabled={busy === `send:${e.purpose}` || (e.purpose === 'term_sheet_package' && !hasLoanNumber)}
-                  title={e.purpose === 'term_sheet_package' && !hasLoanNumber ? 'Enter the YS loan number above first' : 'Send a fresh envelope for this package'}
-                  onClick={() => send(e.purpose, true)}>{busy === `send:${e.purpose}` ? '…' : (e.phase === 'error' ? 'Retry send' : 'Re-issue')}</button>
-              )}
-              {(e.documents || []).map((d) => (
-                <button key={d.documentId} className="btn ghost btn-sm" disabled={busy === `dl:${d.documentId}`} onClick={() => download(d)}
-                  title={`Download ${d.filename}`}>{busy === `dl:${d.documentId}` ? '…' : `↓ ${(d.docKind || '').replace(/_signed$/, '').replace(/_/g, ' ')}`}</button>
-              ))}
-              {e.certificate ? (
-                <button className="btn ghost btn-sm" disabled={busy === `dl:${e.certificate.documentId}`} onClick={() => download(e.certificate)}
-                  title="DocuSign Certificate of Completion — the legal audit trail (signers, timestamps, IP addresses)">{busy === `dl:${e.certificate.documentId}` ? '…' : '↓ certificate'}</button>
-              ) : null}
-            </div>
-          </div>
-        );
-      })}
+      ) : (
+        <>
+          {shownEnv.map(renderEnvelope)}
+          {pastEnv.length > 0 && (
+            <details className="esign-past-attempts" style={{ marginBottom: 12 }}>
+              <summary style={{ cursor: 'pointer', padding: '10px 12px', borderRadius: 8, background: 'var(--ink-2, #f4f2ec)', border: '1px solid var(--line, #e4e0d6)', color: 'var(--text-muted, #4B585C)', fontSize: 13, fontWeight: 600, listStyle: 'none' }}>
+                ▸ {pastEnv.length} earlier {pastEnv.length === 1 ? 'attempt' : 'attempts'} that didn’t go through (failed / voided / declined) — click to show
+              </summary>
+              <div style={{ marginTop: 10 }}>{pastEnv.map(renderEnvelope)}</div>
+            </details>
+          )}
+        </>
+      )}
     </div>
   );
 }

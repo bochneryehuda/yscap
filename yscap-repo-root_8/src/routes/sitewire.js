@@ -414,6 +414,22 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
       `INSERT INTO draw_disbursements (application_id, sitewire_draw_id, approved_cents, fee_cents, fee_kind, retainage_held_cents, net_release_cents, release_date, funded_status, kind, note, created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'draw',$10,$11) RETURNING *`,
       [application_id, drawId, approved, fee, feeKind, split.retainage_held_cents, split.net_release_cents, releaseDate, fundedStatus, req.body.note ? String(req.body.note).slice(0, 2000) : null, req.actor.id])).rows[0];
+    // Milestone → borrower (owner-directed 2026-07-20): a construction draw was
+    // released. Tell them the NET amount actually on its way (approved − fee −
+    // retainage), only on an actual release. type 'draw' emails the borrower.
+    if (fundedStatus === 'released' && split.net_release_cents > 0) {
+      try {
+        const amt = '$' + (split.net_release_cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        await notify.notifyAppBorrowers(application_id, {
+          type: 'draw',
+          title: `Your construction draw has been released`,
+          hero: { label: 'Released to you', value: amt, sub: 'typically arrives in 1–2 business days', tone: 'positive' },
+          badge: { text: 'Draw released', tone: 'positive' },
+          body: `Your loan team has released a construction draw of ${amt} on your file. Depending on your bank, funds typically take 1–2 business days to arrive.`,
+          lines: ['Questions about this draw? Just reply to this email or reach your loan officer.'],
+          applicationId: application_id, link: `/app/${application_id}`, ctaLabel: 'View your draws' });
+      } catch (_) { /* milestone email is best-effort */ }
+    }
     res.json({ ok: true, disbursement: row });
   } catch (e) {
     // db/148 unique index — a second draw release raced past the pre-check
@@ -445,6 +461,17 @@ router.post('/files/:id/retainage-release', requirePermission('manage_draws'), a
        VALUES ($1,$2,0,0,$2,$3,'released','retainage_release',$4,$5) RETURNING *`,
       [appId, toRelease, relDate, relNote, req.actor.id])).rows[0];
     await client.query('COMMIT');
+    // Milestone → borrower: the completion retainage has been released.
+    try {
+      const amt = '$' + (toRelease / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      await notify.notifyAppBorrowers(appId, {
+        type: 'draw',
+        title: `Your held-back retainage has been released`,
+        hero: { label: 'Retainage released', value: amt, sub: 'your construction is complete', tone: 'positive' },
+        badge: { text: 'Complete', tone: 'positive' },
+        body: `With your construction complete, the retainage held back across your draws — ${amt} — has now been released.`,
+        applicationId: appId, link: `/app/${appId}`, ctaLabel: 'View your draws' });
+    } catch (_) { /* best-effort */ }
     res.json({ ok: true, disbursement: row, released_cents: toRelease });
   } catch (e) { try { await client.query('ROLLBACK'); } catch (_) {} res.status(500).json({ error: 'Could not release the retainage — please try again.' }); }
   finally { client.release(); }
@@ -724,34 +751,54 @@ router.patch('/settings', requirePermission('platform_setup'), async (req, res) 
   res.json({ ok: true, updated: updates });
 });
 
-// ---- POST /reviews/:id/:action — resolve a parked Sitewire review (retry | dismiss) ----
-// Sitewire parks are "fix the file, then re-push" rows. `retry` re-queues any dead push jobs
-// for the file (or enqueues a fresh push after the human fixed the upstream cause) and marks the
-// row resolved; `dismiss` closes it without action. Guarded + scoped like every draw-desk write.
+// ---- Per-reason resolution actions for a Sitewire review (owner-directed 2026-07-20) ----
+// Each parked reason gets the action(s) that ACTUALLY fix its cause, so a resolution isn't a no-op that
+// loops: an advisory note only "acknowledges" (never re-pushes — that was the loop); GO-FORWARD ONLY means
+// there is NO adopt/link of a pre-existing property, so the "loan already in Sitewire" collision (and every
+// other blocker) offers "retry" — for the collision, a warned "delete it in Sitewire, then push a fresh
+// copy" — or "dismiss" (keep separate). See src/sitewire/review-actions.js (single source of truth).
+const { SITEWIRE_DUPE, sitewireReasonClass, sitewireAllowedActions } = require('../sitewire/review-actions');
 router.post('/reviews/:id/:action', requirePermission('manage_draws'), async (req, res) => {
   const { id, action } = req.params;
   if (!/^\d+$/.test(id)) return res.status(404).json({ error: 'not found' });
-  if (!['retry', 'dismiss'].includes(action)) return res.status(400).json({ error: 'action must be retry or dismiss' });
-  const row = (await db.query(`SELECT id, application_id, reason FROM sync_review_queue WHERE id=$1 AND field_key='sitewire' AND status='open'`, [id])).rows[0];
+  if (!['retry', 'dismiss', 'acknowledge'].includes(action)) return res.status(400).json({ error: 'action must be retry, acknowledge, or dismiss' });
+  const row = (await db.query(`SELECT id, application_id, reason, current_value FROM sync_review_queue WHERE id=$1 AND field_key='sitewire' AND status='open'`, [id])).rows[0];
   if (!row) return res.status(404).json({ error: 'review not found (or already resolved)' });
   if (!row.application_id || !(await canSeeFile(req, row.application_id))) return res.status(403).json({ error: 'forbidden' });
+  const reasonClass = sitewireReasonClass(row.reason);
+  // dismiss is always allowed; any other action must match the reason's action set (no acknowledging a
+  // blocker away without fixing it, no retrying an advisory into the loop).
+  if (action !== 'dismiss' && !sitewireAllowedActions(reasonClass).includes(action)) {
+    return res.status(400).json({ error: `That action isn't available for this review. Options: ${sitewireAllowedActions(reasonClass).join(', ')}.` });
+  }
   try {
-    if (action === 'retry') {
-      // re-arm every dead sitewire push job for this file (they re-run through all the guards)
-      const dead = await db.query(
-        `UPDATE sync_queue SET status='queued', attempts=0, run_after=now(), updated_at=now()
-          WHERE entity_type='application' AND entity_id=$1 AND target='sitewire' AND direction='push' AND status='dead' RETURNING id`, [row.application_id]);
-      // if nothing was dead-lettered, enqueue a fresh push so a fixed upstream cause re-attempts
-      if (!dead.rows.length) await enqueueSitewirePush(row.application_id, 'push_file').catch(() => {});
-      // sync_review_queue has NO updated_at column (resolved_at records the time). 'resolved' is the
-      // terminal "actioned" status used across the sync-review code (db/110 widened the CHECK to allow it).
-      await db.query(`UPDATE sync_review_queue SET status='resolved', resolved_by=$2, resolved_at=now(), resolution_note=$3 WHERE id=$1`,
-        [id, req.actor.id, dead.rows.length ? `retried ${dead.rows.length} push job(s)` : 're-queued a fresh push']);
-      return res.json({ ok: true, retried: dead.rows.length, requeued: !dead.rows.length });
+    if (action === 'dismiss') {
+      await db.query(`UPDATE sync_review_queue SET status='rejected', resolved_by=$2, resolved_at=now(), resolution_note='dismissed' WHERE id=$1`, [id, req.actor.id]);
+      return res.json({ ok: true, dismissed: true });
     }
-    await db.query(`UPDATE sync_review_queue SET status='rejected', resolved_by=$2, resolved_at=now(), resolution_note='dismissed' WHERE id=$1`, [id, req.actor.id]);
-    res.json({ ok: true, dismissed: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    if (action === 'acknowledge') {
+      // Advisory: just close it — NO push (this is what STOPS the units-note retry loop). The advisory was
+      // informational; the push already proceeded past it.
+      await db.query(`UPDATE sync_review_queue SET status='resolved', resolved_by=$2, resolved_at=now(), resolution_note='acknowledged' WHERE id=$1`, [id, req.actor.id]);
+      return res.json({ ok: true, acknowledged: true });
+    }
+    // action === 'retry'. If this file has a still-open loan-number COLLISION review (a pre-existing Sitewire
+    // property carries this loan), block retrying a DIFFERENT review — the push can't create the property while
+    // the collision stands, so it would just re-park (the loop the owner reported). Retrying the collision review
+    // ITSELF is allowed (id<>$2 excludes it): that is the go-forward "I deleted it in Sitewire — push a fresh
+    // copy" path, which creates a brand-new PILOT-managed property once the pre-existing one is gone.
+    const blocker = (await db.query(
+      `SELECT id FROM sync_review_queue WHERE application_id=$1 AND field_key='sitewire' AND status='open' AND id<>$2
+         AND split_part(reason,':',1) = $3 LIMIT 1`, [row.application_id, id, SITEWIRE_DUPE])).rows[0];
+    if (blocker) return res.status(409).json({ error: 'This loan is already on a property in Sitewire that PILOT didn’t create. Resolve that review first — either delete the property in Sitewire and push a fresh copy, or keep them separate — retrying now would just hit that block again.' });
+    const dead = await db.query(
+      `UPDATE sync_queue SET status='queued', attempts=0, run_after=now(), updated_at=now()
+        WHERE entity_type='application' AND entity_id=$1 AND target='sitewire' AND direction='push' AND status='dead' RETURNING id`, [row.application_id]);
+    if (!dead.rows.length) await enqueueSitewirePush(row.application_id, 'push_file').catch(() => {});
+    await db.query(`UPDATE sync_review_queue SET status='resolved', resolved_by=$2, resolved_at=now(), resolution_note=$3 WHERE id=$1`,
+      [id, req.actor.id, dead.rows.length ? `retried ${dead.rows.length} push job(s)` : 're-queued a fresh push']);
+    return res.json({ ok: true, retried: dead.rows.length, requeued: !dead.rows.length });
+  } catch (e) { res.status(500).json({ error: 'Could not resolve this review — please try again.' }); }
 });
 
 // ---- health/status (setup screen) ----
@@ -777,7 +824,15 @@ router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, r
     let sowState = null;
     try { const s = (await db.query(`SELECT tool_payload FROM checklist_items WHERE application_id=$1 AND tool_key='rehab_budget' ORDER BY created_at LIMIT 1`, [appId])).rows[0]; sowState = s && s.tool_payload && s.tool_payload.state ? s.tool_payload.state : null; } catch (_) {}
     const rollup = await rollupMod.loadRollup(db, appId, { sowState });
+    // Go-forward only (owner-directed 2026-07-20): PILOT surfaces/follows ONLY a property IT pushed
+    // (matched_by='created'). A pre-existing hand-entered Sitewire property is never adopted or followed.
     const link = (await db.query(`SELECT l.*, cs.full_name AS coordinator_name FROM sitewire_property_links l LEFT JOIN staff_users cs ON cs.id=l.coordinator_staff_id WHERE l.application_id=$1 AND l.matched_by='created'`, [appId])).rows[0] || null;
+    // Birth-phase setup status lives ON THE FILE (link.raw.setup_status), never the global error queue
+    // (go-forward only). It tells the draw section what happened on the last push attempt for a not-yet-
+    // managed file: a loan-number collision with a pre-existing Sitewire property (preexisting → the
+    // "already in Sitewire — not managed" banner), or another setup blocker (no SOW, budget mismatch, …).
+    const setupStatus = (link && link.raw && link.raw.setup_status) ? link.raw.setup_status : null;
+    const preexisting = !!(setupStatus && setupStatus.preexisting_property_id);
     const draws = (await db.query(`SELECT sitewire_draw_id, number, name, status, risk_level, risk_flags, submitted_at, approved_at, pdf_src FROM sitewire_draws WHERE application_id=$1 ORDER BY number DESC NULLS LAST`, [appId])).rows;
     const requests = (await db.query(
       `SELECT r.sitewire_request_id, r.sitewire_draw_id, r.sitewire_job_item_id, r.job_item_name, r.requested_cents, r.approved_cents, r.inspection_count, r.lender_comments
@@ -801,6 +856,10 @@ router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, r
     const lienWaiversEnabled = await lienGateEnabled(appId);
     res.json({ rollup, link, draws, requests, ledger, findings, change_requests: changeRequests, retainage, waivers,
       lien_waivers_enabled: lienWaiversEnabled, lien_waivers_file_override: link ? link.require_lien_waivers : null,
+      // go-forward-only status for the draw-section banner: preexisting = blocked on a pre-existing
+      // Sitewire property PILOT didn't create; setup_status = the last birth-phase outcome (inline, not a
+      // global error row); managed_since = when PILOT pushed (born) this property.
+      preexisting, setup_status: setupStatus, managed_since: link ? link.pushed_at : null, go_live_date: cfg.sitewireGoLiveDate,
       // so the desk can show a proactive read-only banner + disable write buttons when writes are off
       // (an approve/release/finding write 503s unless BOTH the master switch and the write gate are on).
       switches: { enabled: cfg.sitewireEnabled, outbound: cfg.sitewireOutboundEnabled, dryrun: cfg.sitewireDryrun } });

@@ -26,6 +26,28 @@ const STATUS = {
 };
 const RISK = { high: { label: 'High risk', cls: 'sw-pending' }, medium: { label: 'Review', cls: 'sw-insp' }, low: { label: 'Minor', cls: 'sw-draft' }, clear: { label: 'Clear', cls: 'sw-approved' } };
 
+// Friendly one-liner for a birth-phase setup problem stored on the file (link.raw.setup_status). Shown
+// inline in this file's draw section — never as a global error row (go-forward only).
+const SETUP_BLURB = {
+  sitewire_no_sow: 'There’s no saved Scope of Work to turn into a Sitewire budget yet.',
+  sitewire_no_budget: 'No frozen rehab budget is set on this file yet.',
+  sitewire_missing_loan_number: 'This file has no loan number yet.',
+  sitewire_budget_mismatch: 'The Scope of Work doesn’t add up to the frozen construction budget to the penny.',
+  sitewire_capital_partner_unmatched: 'The file’s capital partner couldn’t be matched to a Sitewire partner.',
+  sitewire_address_incomplete: 'The property address is missing part of the street / city / state / ZIP.',
+  sitewire_property_rejected: 'Sitewire rejected the property (usually the address wouldn’t geocode).',
+  sitewire_dupe_check_failed: 'PILOT couldn’t verify whether this loan is already in Sitewire.',
+  sitewire_bind_missing_property: 'Sitewire didn’t return the ids PILOT needs to bind the property.',
+  sitewire_units_note: 'A heads-up about the unit count — the push can still proceed.',
+  sitewire_type_unmapped: 'A property/loan type couldn’t be mapped — optional; the push can still proceed.',
+};
+function setupBlurb(s) {
+  if (!s) return '';
+  if (SETUP_BLURB[s.class]) return SETUP_BLURB[s.class];
+  const m = /^sitewire_[a-z0-9_]+:\s*(.+)$/is.exec(String(s.reason || ''));
+  return (m ? m[1] : (s.reason || 'Setup needs a quick check.')).trim();
+}
+
 export default function DrawsPanel({ appId }) {
   const { can } = useAuth();
   const [data, setData] = useState(null);
@@ -49,7 +71,8 @@ export default function DrawsPanel({ appId }) {
   if (err) return <div className="panel" style={{ marginTop: 12, color: 'var(--bad,#b04a3f)' }}>{err}</div>;
   if (!data) return null;
 
-  const { rollup, link, requests = [], ledger = [], findings = [], change_requests = [], retainage = null, waivers = [], lien_waivers_enabled = false } = data;
+  const { rollup, link, requests = [], ledger = [], findings = [], change_requests = [], retainage = null, waivers = [], lien_waivers_enabled = false,
+    preexisting = false, setup_status = null, managed_since = null, go_live_date = null } = data;
   // Render draw cards from rollup.draws — it carries the money (requested/approved/net_release),
   // the funded flag, and the merged risk flags + pdf_src. The top-level `draws` array has no
   // money fields, so using it would render $0.00 everywhere.
@@ -79,10 +102,44 @@ export default function DrawsPanel({ appId }) {
   return (
     <div>
       {notLinked ? (
-        <StartDrawCard appId={appId} onStarted={load} />
+        <>
+          {/* GO-FORWARD ONLY: a pre-existing Sitewire property (loan already there, not pushed by us) is
+              NOT followed. Say so plainly and explain the only way to bring it under PILOT management. */}
+          {preexisting && (
+            <div className="panel" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)', borderLeft: '3px solid var(--bad,#b04a3f)' }}>
+              <b>Already in Sitewire — PILOT is not managing this file’s draws.</b>
+              <div className="muted small" style={{ marginTop: 3 }}>
+                This loan is already on a property in Sitewire that PILOT did not create. PILOT only runs the draw
+                process for properties it pushes itself, so it will not adopt or follow this one. To have PILOT
+                manage the draws, <b>delete that property in Sitewire</b>, then start the draw process below to push a
+                fresh copy. Otherwise leave it as-is and continue managing that property directly in Sitewire.
+              </div>
+            </div>
+          )}
+          {/* A non-collision setup problem from the last push attempt — shown ON THE FILE (never a global
+              error row): the draw hasn't started because something needs fixing first (no Scope of Work,
+              a budget that doesn't tie out, an unmatched partner, an incomplete address, …). */}
+          {!preexisting && setup_status && (
+            <div className="panel" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)', borderLeft: '3px solid var(--gold,#ae8746)' }}>
+              <b>Draw setup hasn’t completed yet.</b>
+              <div className="muted small" style={{ marginTop: 3 }}>{setupBlurb(setup_status)} Fix the cause, then start the draw process below.</div>
+            </div>
+          )}
+          <StartDrawCard appId={appId} onStarted={load} />
+        </>
       ) : (
         <>
           {msg && <div className="panel" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)' }}>{msg}</div>}
+
+          {/* ---- "live in PILOT" banner: this property was pushed from our system; we're the source of record ---- */}
+          <div className="panel" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)', borderLeft: '3px solid var(--good,#3f7a4a)' }}>
+            <b>Live in PILOT{managed_since ? ` since ${fmtDay(managed_since)}` : ''}.</b>
+            <div className="muted small" style={{ marginTop: 3 }}>
+              PILOT pushed this property to Sitewire and is the source of record for its draw process — it follows the
+              draw requests, delivers the inspection findings, and runs our standard approval + release pipeline.
+              {go_live_date ? ` Draw-system go-live: ${fmtDay(go_live_date)}.` : ''}
+            </div>
+          </div>
 
           {/* ---- read-only notice when Sitewire writes are off (the default staged state) ---- */}
           {writesOff && (
@@ -221,7 +278,29 @@ function StartDrawCard({ appId, onStarted }) {
       if (method && method !== insp.method) body.inspection_method = method;
       if (!feeBlank && feeValid) body.fee_cents = feeCents; // a typed fee only; blank = leave the fee as-is (backend clears the override when it equals the rule fee)
       const r = await api.post(`/api/sitewire/files/${appId}/start-draw`, body);
-      setMsg(r && r.note ? r.note : 'Draw process started — everything was sent to Sitewire.');
+      // The push can succeed OR safely PARK (a review was opened) OR be skipped — never report a blanket
+      // "everything was sent" when it actually parked (e.g. clicking Start on a pre-existing-Sitewire file
+      // without deleting it first re-parks the collision). Surface the real outcome.
+      const res = r && r.result;
+      // Go-forward: a not-yet-pushed file records its status ON THE FILE (the banner right below), never a
+      // global review row — so point the coordinator there, never to the Sync review screen.
+      const PARKED = {
+        dupe_property: 'Not pushed — this loan is already on a property in Sitewire that PILOT didn’t create. Delete it in Sitewire and try again, or keep managing that property directly in Sitewire. (See the note below.)',
+        dupe_check_failed: 'Not pushed — PILOT couldn’t verify whether this loan is already in Sitewire. See the note on this file’s draw section below.',
+        budget_mismatch: 'Not pushed — the Scope of Work doesn’t add up to the frozen construction budget to the penny. See the note below.',
+        capital_partner: 'Not pushed — the file’s capital partner couldn’t be matched to Sitewire. See the note below.',
+        address: 'Not pushed — the property address is incomplete. See the note below.',
+        no_sow: 'Not pushed — there’s no saved Scope of Work to turn into a budget yet.',
+        no_budget: 'Not pushed — no frozen rehab budget is set on this file yet.',
+        missing_loan_number: 'Not pushed — this file has no loan number yet.',
+      };
+      let m;
+      if (r && r.note) m = r.note;                                            // Sitewire off / queued (transient)
+      else if (res && res.parked) m = PARKED[res.parked] || 'Couldn’t finish — the reason is shown on this file’s draw section below.';
+      else if (res && res.skipped) m = `Not pushed — ${res.skipped}.`;
+      else if (res && res.dryrun) m = 'Validated in dry-run mode — nothing was sent (Sitewire dry-run is on).';
+      else m = 'Draw process started — everything was sent to Sitewire.';
+      setMsg(m);
       load();
       if (onStarted) setTimeout(onStarted, 400);
     } catch (e) { setMsg(e?.data?.error || e.message || 'That didn\'t work.'); }
@@ -410,6 +489,7 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
   const flags = Array.isArray(draw.risk_flags) ? draw.risk_flags : [];
   const risk = RISK[draw.risk_level] || null;
   const [edits, setEdits] = useState({}); // reqId -> approved dollars string
+  const [showPhotos, setShowPhotos] = useState(false);
 
   async function setApproved(r) {
     // reject a blank / non-numeric box — never let a mis-clicked empty Save push $0 approved to
@@ -479,10 +559,14 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
           onClick={() => act('deliver' + draw.sitewire_draw_id, async () => { const r = await api.post(`/api/sitewire/files/${appId}/findings/${draw.sitewire_draw_id}/deliver`, {}); return { msg: `Findings delivered to the borrower (${r.lines} items).` }; })}>
           {finding ? 'Re-send findings' : 'Deliver findings to borrower'}
         </button>
+        <button className={'btn btn-sm ' + (showPhotos ? 'primary' : 'ghost')} onClick={() => setShowPhotos((s) => !s)}>
+          {showPhotos ? 'Hide inspection photos' : 'Inspection photos'}
+        </button>
         <button className="btn btn-sm ghost" onClick={() => api.sitewireExportPacket(appId, draw.sitewire_draw_id).catch(() => {})}>Draw packet</button>
         {draw.pdf_src && <a className="btn btn-sm ghost" href={draw.pdf_src} target="_blank" rel="noreferrer">Sitewire PDF</a>}
       </div>
 
+      {showPhotos && <InspectionGallery appId={appId} draw={draw} finding={finding} readsOff={readsOff} />}
       {finding && <FindingStatus appId={appId} finding={finding} reload={reload} />}
     </div>
   );
@@ -507,6 +591,75 @@ function FindingStatus({ appId, finding, reload }) {
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+/* Staff inspection review: the inspector's photos/videos + notes + approved/not-approved per line.
+   Loads the LIVE findings from Sitewire (works before delivery, so staff can review before approving);
+   falls back to the persisted findings (with media) if reads are off and findings were already delivered.
+   This is the gap the standalone Draw-Management phase closes — staff could previously see only a count. */
+function InspectionGallery({ appId, draw, finding, readsOff }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState('');
+  useEffect(() => {
+    let live = true;
+    setLoading(true); setErr('');
+    const persisted = () => (finding
+      ? api.get(`/api/sitewire/findings/${finding.id}`).then((d) => ({ lines: d.lines || [] }))
+      : Promise.reject(new Error(readsOff
+        ? 'Turn on Sitewire to load inspection photos (or deliver findings first).'
+        : 'No inspection photos available for this draw yet.')));
+    const p = readsOff
+      ? persisted()
+      : api.get(`/api/sitewire/files/${appId}/findings/${draw.sitewire_draw_id}`).catch(() => persisted());
+    p.then((d) => { if (live) setData(d); })
+      .catch((e) => { if (live) setErr(e?.data?.error || e.message || 'Could not load inspection photos'); })
+      .finally(() => { if (live) setLoading(false); });
+    return () => { live = false; };
+  }, [appId, draw.sitewire_draw_id, finding && finding.id, readsOff]);
+
+  const lines = (data && data.lines) || [];
+  const totalPhotos = lines.reduce((n, l) => n + (Array.isArray(l.media) ? l.media.filter((m) => m.type !== 'video').length : 0), 0);
+  return (
+    <div className="panel" style={{ marginTop: 8, background: 'var(--paper,#f6f3ec)' }}>
+      <div className="small" style={{ marginBottom: 6 }}><b>Inspection review</b>{!loading && lines.length ? ` · ${totalPhotos} photo${totalPhotos === 1 ? '' : 's'} across ${lines.length} line${lines.length === 1 ? '' : 's'}` : ''}</div>
+      {loading && <div className="muted small">Loading inspection photos…</div>}
+      {err && !loading && <div className="muted small" style={{ color: 'var(--bad,#b04a3f)' }}>{err}</div>}
+      {!loading && !err && lines.length === 0 && <div className="muted small">No inspection photos on this draw yet.</div>}
+      {!loading && !err && lines.map((l, i) => {
+        const media = Array.isArray(l.media) ? l.media : [];
+        // Only show approved/not-approved once the DRAW is actually approved (decided). Before that every
+        // line is under review — an undecided line must NOT read as a red "Not approved" rejection.
+        const decided = draw.status === 'approved';
+        const notAppr = l.not_approved_cents != null ? l.not_approved_cents : Math.max(0, (l.requested_cents || 0) - (l.approved_cents || 0));
+        return (
+          <div key={l.id || l.request_id || i} style={{ borderTop: '1px dashed var(--line,#e6e0d4)', paddingTop: 8, marginTop: 8 }}>
+            <div className="row between" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'baseline' }}>
+              <div className="small"><b>{l.name || `Line ${l.job_item_id || l.sitewire_job_item_id || ''}`}</b></div>
+              <div className="small muted" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                Requested {usd2(l.requested_cents)}{decided
+                  ? <> · Approved {usd2(l.approved_cents)}{notAppr > 0 ? <span style={{ color: 'var(--bad,#b04a3f)' }}> · Not approved {usd2(notAppr)}</span> : null}</>
+                  : <> · {l.approved_cents ? `Approved ${usd2(l.approved_cents)}` : 'Awaiting your decision'}</>}
+              </div>
+            </div>
+            {l.inspector_comments && <div className="small" style={{ marginTop: 3, fontStyle: 'italic' }}>Inspector: “{l.inspector_comments}”</div>}
+            {media.length > 0 ? (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 8, marginTop: 6 }}>
+                {media.map((m, j) => (
+                  <a key={j} href={m.src} target="_blank" rel="noreferrer" title={[m.type === 'video' ? 'Video' : 'Photo', m.note || '', m.captured_at ? new Date(m.captured_at).toLocaleString('en-US') : '', (m.lat && m.lng) ? `${m.lat}, ${m.lng}` : ''].filter(Boolean).join(' · ')}
+                    style={{ display: 'block', position: 'relative', aspectRatio: '4 / 3', borderRadius: 6, overflow: 'hidden', border: '1px solid var(--line,#e6e0d4)', background: '#000' }}>
+                    {m.type === 'video'
+                      ? <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 12 }}>▶ Video</div>
+                      : <img src={m.thumbnail || m.src} alt={l.name || 'inspection'} loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
+                  </a>
+                ))}
+              </div>
+            ) : <div className="muted small" style={{ marginTop: 4 }}>No photos on this line.</div>}
+          </div>
+        );
+      })}
     </div>
   );
 }

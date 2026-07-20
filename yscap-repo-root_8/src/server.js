@@ -462,6 +462,12 @@ if (require.main === module) {
     // Self-gated by SITEWIRE_ENABLED (+ SITEWIRE_OUTBOUND_ENABLED for writes); inert
     // otherwise. Manages ONLY properties PILOT created (only-ours rule).
     try { require('./sync/sitewire-sync').start(); } catch (e) { console.warn('sitewire sync not started:', e.message); }
+    // Scheduled notification digests (owner-directed 2026-07-20): weekly borrower
+    // "what's still needed", daily per-officer pipeline snapshot, stale-file
+    // alerts, and the Monday admin summary. Each self-gates via audit_log so it
+    // sends at most once per period; timed to the morning/business-hours window in
+    // the team's timezone. Kill-switch NOTIFY_DIGESTS_ENABLED=0.
+    try { require('./lib/notification-digests').start(); } catch (e) { console.warn('notification digests not started:', e.message); }
   });
 }
 module.exports = app;

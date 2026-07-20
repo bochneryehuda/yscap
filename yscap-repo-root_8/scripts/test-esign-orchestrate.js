@@ -117,9 +117,12 @@ function fakeStorage() {
     await mkItem('rtl_cond_signed_app', 'open', null);
     await mkItem('rtl_cond_disclosures', 'open', null);
 
-    // Stored source PDFs for the term-sheet package.
+    // Stored source PDF for the term-sheet package. Only the TERM SHEET is a stored
+    // (browser-jsPDF) document now; the application export + business-purpose
+    // disclosure are GENERATED on our server at send time, so no stored bytes for
+    // them — the send must still work without a stored application_export.
     const storage = fakeStorage();
-    for (const kind of ['term_sheet', 'application_export', 'bp_disclosure']) {
+    for (const kind of ['term_sheet']) {
       const { ref } = await storage.save(Buffer.from(`${kind}-bytes`));
       await pool.query(
         `INSERT INTO documents (application_id,filename,storage_provider,storage_ref,doc_kind,is_current)
@@ -167,21 +170,39 @@ function fakeStorage() {
     ok(adminSigner.tabsByDoc['1'].sign.includes('/ts_admin_sig/'), 'admin counter-signs the term sheet only');
     ok(borrowerSigner.clientUserId && borrowerSigner.embeddedRecipientStartURL === 'SIGN_AT_DOCUSIGN', 'borrower is hybrid embedded+email');
 
-    // ---- the disclosure is GENERATED on our server (docx), filled + anchored --
-    const { unzip } = require(R + '/src/lib/zip');
+    // ---- the disclosure is GENERATED on our server (jsPDF → branded PDF) --------
+    // Owner-directed (2026-07-20): the business-purpose disclosure now renders on the
+    // PILOT letterhead as a real PDF (disclosure-pdf.js), uploaded AS a PDF — the same
+    // path as the loan application. Its legal certification text is preserved verbatim.
     const bpdDoc = def.documents.find((d) => d.name === 'Business-Purpose Disclosure');
-    eq(bpdDoc.fileExtension, 'docx', 'disclosure is uploaded as .docx (DocuSign converts to PDF free)');
-    const bpdXml = unzip(Buffer.from(bpdDoc.base64, 'base64'))
-      .find((e) => e.name === 'word/document.xml').data.toString('utf8');
-    ok(bpdXml.includes('487,500.00'), 'disclosure filled with the loan amount');
-    ok(bpdXml.includes('YS-1001'), 'disclosure filled with the loan number');
-    ok(bpdXml.includes('1 Main St') && bpdXml.includes('10001'), 'disclosure filled with the subject property');
-    ok(bpdXml.includes('Borrower') && bpdXml.includes('/bpd_b1_sig/') && bpdXml.includes('/bpd_b1_dt/'), 'disclosure carries the borrower sign+date anchors');
-    ok(bpdXml.includes('/bpd_b2_sig/'), 'disclosure carries the co-borrower anchor');
-    ok(!/«[^»]+»/.test(bpdXml), 'no unfilled «merge fields» left in the disclosure');
-    ok(!/descr="(Borrower|Coborrower)Signature"/.test(bpdXml), 'leftover yellow "Sign Here" tag images removed');
+    eq(bpdDoc.fileExtension, 'pdf', 'disclosure uploads AS a branded PDF (not .docx)');
+    const bpdPdf = Buffer.from(bpdDoc.base64, 'base64');
+    eq(bpdPdf.slice(0, 5).toString('latin1'), '%PDF-', 'disclosure is a real PDF');
+    const bpdText = bpdPdf.toString('latin1');
+    ok(bpdText.includes('487,500.00'), 'disclosure filled with the loan amount');
+    ok(bpdText.includes('YS-1001'), 'disclosure filled with the loan number');
+    ok(bpdText.includes('1 Main St') && bpdText.includes('10001'), 'disclosure filled with the subject property');
+    ok(bpdText.includes('/bpd_b1_sig/') && bpdText.includes('/bpd_b1_dt/'), 'disclosure carries the borrower sign+date anchors');
+    ok(bpdText.includes('/bpd_b2_sig/'), 'disclosure carries the co-borrower anchor');
+    ok(bpdText.includes('Promissory') && bpdText.includes('Homeowners'), 'disclosure preserves the legal certification text');
+    ok(!/«[^»]+»/.test(bpdText), 'no unfilled «merge fields» left in the disclosure');
+
+    // ---- the LOAN APPLICATION is GENERATED on our server (jsPDF → real PDF) -----
+    // Nothing stores an application_export anymore; generation covers it. It must be
+    // in the envelope as a PDF carrying the borrower signature anchor + the file data.
+    const appDoc = def.documents.find((d) => d.name === 'Loan Application');
+    ok(appDoc, 'the generated Loan Application is in the envelope');
+    eq(appDoc.fileExtension, 'pdf', 'Loan Application uploads AS a PDF (not .docx)');
+    const appPdf = Buffer.from(appDoc.base64, 'base64');
+    eq(appPdf.slice(0, 5).toString('latin1'), '%PDF-', 'Loan Application is a real PDF');
+    const appText = appPdf.toString('latin1');
+    ok(appText.includes('/app_b1_sig/') && appText.includes('/app_b1_dt/'), 'Loan Application carries the borrower sign+date anchors');
+    ok(appText.includes('/app_b2_sig/'), 'Loan Application carries the co-borrower anchor (file has a co-borrower)');
+    ok(appText.includes('YS-1001'), 'Loan Application shows the loan number');
+    ok(appText.includes('Pat') && appText.includes('Borrower'), 'Loan Application shows the borrower name');
 
     // ---- the Heter Iska is ALSO generated on our server, nusach byte-preserved --
+    const { unzip } = require(R + '/src/lib/zip');   // the Iska is still a docx (Hebrew nusach)
     const iskaRes = await orchestrate.sendPackage(app, 'heter_iska', { id: null }, { db: pool, docusign, storage });
     ok(iskaRes.ok, 'Heter Iska package sent');
     const iskaDef = docusign._calls.created;
@@ -297,13 +318,15 @@ function fakeStorage() {
       try { await orchestrate.buildDefinition(tsRow, { db: pool, storage }); }
       catch (e) { freshFreshnessOk = !/before the appraisal/.test(e.message); }
       ok(freshFreshnessOk, 'HIGH-2: a term sheet refreshed after the appraisal passes the freshness guard');
-      // The application_export (borrower-submitted, no post-appraisal regen flow) is
-      // NOT freshness-checked — a pre-appraisal one must NOT block the send.
-      await pool.query(`UPDATE documents SET created_at='2026-07-01T00:00:00Z' WHERE application_id=$1 AND doc_kind='application_export'`, [app]);
-      let appExportNotBlocked = true;
-      try { await orchestrate.buildDefinition(tsRow, { db: pool, storage }); }
-      catch (e) { appExportNotBlocked = !/before the appraisal/.test(e.message); }
-      ok(appExportNotBlocked, 'HIGH-2: a pre-appraisal application_export is NOT freshness-blocked (no regen flow)');
+      // The application_export is GENERATED fresh at send time from the current file,
+      // so it can never be stale — no freshnessCheck applies to it. Instead of a
+      // (now-moot) staleness assertion, confirm buildDefinition PRODUCES the generated
+      // application PDF (with the borrower signature anchor) every time.
+      const freshDef = await orchestrate.buildDefinition(tsRow, { db: pool, storage });
+      const freshApp = freshDef.documents.find((dd) => dd.name === 'Loan Application');
+      ok(freshApp && freshApp.fileExtension === 'pdf', 'the Loan Application is generated fresh on every build (as a PDF)');
+      ok(Buffer.from(freshApp.base64, 'base64').toString('latin1').includes('/app_b1_sig/'),
+        'the freshly-generated Loan Application carries the borrower signature anchor');
     }
 
     // ---- gate blocks when product signed BEFORE the appraisal ----------------

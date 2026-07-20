@@ -240,9 +240,14 @@ function rezip(entries, xml) {
   return zip(out);
 }
 
-// ---- the two public builders ------------------------------------------------
+// ---- the public builders ----------------------------------------------------
 /**
- * Fill the Business-Purpose Disclosure and return a .docx Buffer.
+ * LEGACY (superseded 2026-07-20): fill the Business-Purpose Disclosure Word
+ * mail-merge template and return a .docx Buffer. The LIVE term-sheet package now
+ * renders the disclosure as a branded PILOT-letterhead PDF (disclosure-pdf.js,
+ * wired into BUILDERS below); this docx builder is retained + exported because it
+ * exercises the docx mail-merge toolkit (shared with the Heter Iska) and is a
+ * rollback path. Not reachable via generate('bp_disclosure') anymore.
  * `data`: { loanNumber, applicationDate, executionDate, loanAmount,
  *           propStreet, propCity, propState, propZip,
  *           bFirst, bLast, hasCoBorrower, cbFirst, cbLast }
@@ -318,7 +323,19 @@ function buildIska(data = {}) {
   return rezip(entries, xml);
 }
 
-const BUILDERS = { bp_disclosure: buildDisclosure, heter_iska: buildIska };
+// The application export AND the business-purpose disclosure are jsPDF-rendered PDFs
+// (their own modules) on the PILOT letterhead — not docx mail-merges like the Heter
+// Iska — but they plug into the same generate() contract.
+//   - The disclosure moved from the docx mail-merge (buildDisclosure below, still
+//     exported + tested as the mail-merge toolkit and a rollback path) to a branded
+//     PDF (disclosure-pdf.buildDisclosure) per the owner (2026-07-20: "on our PILOT
+//     letterhead"). The legal certification text is preserved VERBATIM in the PDF.
+//   - The Heter Iska stays docx for now (its Hebrew nusach can't render through the
+//     Latin-1 jsPDF core font); it keeps using the docx surgery helpers here.
+const { buildApplication } = require('./application-pdf');
+const { buildDisclosure: buildDisclosurePdf } = require('./disclosure-pdf');
+
+const BUILDERS = { bp_disclosure: buildDisclosurePdf, heter_iska: buildIska, application_export: buildApplication };
 
 /** Build a generated document by doc_kind. Returns a .docx Buffer. */
 function generate(docKind, data) {
@@ -328,7 +345,7 @@ function generate(docKind, data) {
 }
 
 module.exports = {
-  generate, buildDisclosure, buildIska,
+  generate, buildDisclosure, buildDisclosurePdf, buildIska, buildApplication,
   // exported for tests
   fillField, replaceNthTokenRun, replaceRunContaining, removeTableContaining,
   insertParaBefore, insertParaAfter, removeParaContaining, removeParaAndPrecedingLabel,

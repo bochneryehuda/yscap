@@ -117,6 +117,19 @@ eq('timeout is TRANSIENT', cls('the operation was aborted due to timeout'), 'tra
 eq('ECONNRESET is TRANSIENT', cls('read ECONNRESET'), 'transient');
 eq('unknown error defaults to TRANSIENT (safe — retry)', cls('some weird thing happened'), 'transient');
 ok('permanent verdict carries a plain-language cause', /borrower|file/i.test(backup.classifyMirrorError('document has no application or borrower to file under').cause));
+// A-Z audit #2: the numeric codes are digit-anchored — a byte count / hex id /
+// latency figure that merely CONTAINS 400/403 must NOT be misclassified permanent.
+eq('a byte-count containing "400" is NOT permanent (anchored)', cls('upload recorded 40012 bytes but committed 39900'), 'transient');
+eq('ECONNRESET near a hex id containing 4008 stays TRANSIENT', cls('read ECONNRESET while reading item 4008ab'), 'transient');
+eq('a real " 403 " IS permanent (boundary match)', cls('Graph PUT -> 403 Forbidden'), 'permanent');
+eq('a real " 400 " IS permanent (boundary match)', cls('Graph PUT -> 400 invalidRequest: bad path'), 'permanent');
+// A-Z audit #6: damaged local bytes park (retrying identical bytes can't help).
+eq('local-integrity mismatch is PERMANENT (parks, not churns)', cls('local integrity: stored file is 39900 bytes but the upload recorded 40000 — not mirroring damaged bytes'), 'permanent');
+// A HARD permanent must win even when a byte count coincidentally equals an HTTP code.
+eq('local-integrity stays PERMANENT even with a 503-byte count (hard wins over transient)', cls('local integrity: stored file is 503 bytes but the upload recorded 40000 — not mirroring damaged bytes'), 'permanent');
+eq('no-scope stays PERMANENT even if the message contains 500', cls('document has no application or borrower to file under (doc 500)'), 'permanent');
+// A SOFT 403 still yields to a transient signal (safe = retry) when both appear.
+eq('a 403 alongside a timeout yields to TRANSIENT (safe = retry)', cls('Graph 403 then the operation timed out'), 'transient');
 
 // ---------------------------------------- metadata ID stamping (roadmap R1)
 eq('PILOT_COLUMNS are the four identity columns', sp.PILOT_COLUMNS,
@@ -179,6 +192,16 @@ ok('clearSloAlert is exported', typeof backup.clearSloAlert === 'function');
 // attempted" incident: one hung mirror attempt must never freeze the pass.
 // (async behavior asserted inside the final IIFE below.)
 ok('withTimeout is exported', typeof backup.withTimeout === 'function');
+
+// ---------------------- worker-liveness / dead-man's-switch (2026-07-20 harden)
+ok('checkDrainLiveness is exported (watchdog)', typeof backup.checkDrainLiveness === 'function');
+ok('recordHeartbeat is exported', typeof backup.recordHeartbeat === 'function');
+ok('heartbeatStaleSec is exported', typeof backup.heartbeatStaleSec === 'function');
+ok('claimAlert/clearAlert generic dedup exported', typeof backup.claimAlert === 'function' && typeof backup.clearAlert === 'function');
+{
+  const g = backup.heartbeatGraceSec();
+  ok('heartbeat grace is a sane floor (>= 15 min)', Number.isFinite(g) && g >= 900);
+}
 
 // -------------------------------------- the ONE sanctioned delete: guardrails
 // (Graph-free checks: refusals must fire BEFORE any network call.)

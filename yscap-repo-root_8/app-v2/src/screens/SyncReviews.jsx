@@ -46,7 +46,7 @@ const SITEWIRE_REASON_COPY = {
   sitewire_capital_partner_unmatched: 'The file’s capital partner couldn’t be matched to a Sitewire partner, so the property wasn’t created. Set the correct capital partner, or add the rule, and it retries.',
   sitewire_address_incomplete: 'The property address is missing part of the street / city / state / ZIP, so Sitewire can’t place it. Complete the address on the file.',
   sitewire_property_rejected: 'Sitewire rejected the property (usually the address wouldn’t geocode). Fix the address and it retries — nothing was guessed.',
-  sitewire_loan_already_in_sitewire: 'A Sitewire property already carries this loan number (hand-entered earlier). PILOT will not duplicate or take it over — decide by hand whether to manage it here.',
+  sitewire_loan_already_in_sitewire: 'This loan number is already on a property in Sitewire that PILOT did NOT create. PILOT only manages the draw process for properties it pushes itself, so it will not adopt or follow this one. To manage it here, delete that property in Sitewire and then push a fresh copy from this file (you’ll be warned first). Otherwise, keep them separate.',
   sitewire_borrower_assign_failed: 'The borrower couldn’t be added to the Sitewire property by email. Check the borrower’s email on the file.',
   sitewire_budget_rejected: 'Sitewire rejected the budget push. The exact reason is in the details below — fix it and it retries.',
   sitewire_bind_missing: 'A budget line we created didn’t come back from Sitewire, so we couldn’t link it. This needs a quick manual check before draws reconcile.',
@@ -156,6 +156,15 @@ const FIELD_LABELS = {
 const RESOLVABLE = new Set(['date_of_birth', 'expected_closing', 'actual_closing', 'acquisition_date', 'ssn', 'status',
   'email', 'cell_phone', 'first_name', 'current_address']);
 const showVal = (v) => (v && /^\d{4}-\d{2}-\d{2}$/.test(String(v)) ? fmtDay(v) : (v == null || v === '' ? '—' : String(v)));
+
+// Per-reason resolution actions for a Sitewire draw review (mirror of the server's map in
+// src/sitewire/review-actions.js — kept in exact sync, enforced by test-sitewire-review-actions.js):
+// an advisory note only "acknowledges" (never re-pushes — that looped); everything else, INCLUDING the
+// "loan already in Sitewire" collision, offers "retry" (for a collision, a warned "delete it in Sitewire
+// then push a fresh copy" — PILOT never adopts a pre-existing property) or dismiss.
+const SW_ADVISORY = new Set(['sitewire_units_note', 'sitewire_type_unmapped', 'sitewire_reconcile_draw_error', 'sitewire_unknown_op']);
+const SW_DUPE = 'sitewire_loan_already_in_sitewire';
+const swReasonClass = (reason) => String(reason || '').split(':')[0];
 
 // Two-sided values: rows written since the upgrade carry clickup_value /
 // portal_value explicitly; older rows derive them from direction (inbound:
@@ -329,7 +338,34 @@ export default function SyncReviews() {
             {isSitewire && String(r.reason || '').includes(':') && (
               <p className="muted small" style={{ margin: '0 0 8px', fontStyle: 'italic' }}>{String(r.reason).split(':').slice(1).join(':').trim()}</p>
             )}
-            {status === 'open' && isSitewire && (
+            {status === 'open' && isSitewire && swReasonClass(r.reason) === SW_DUPE && (
+              <div style={{ margin: '0 0 4px' }}>
+                <p className="muted small" style={{ margin: '0 0 8px' }}>
+                  PILOT manages the draw process only for properties it pushed itself, so it will <b>not</b> follow this
+                  pre-existing Sitewire property{r.current_value ? ` (#${r.current_value})` : ''}. Keep them separate, or —
+                  if you want PILOT to run the draws — delete that property in Sitewire first, then push a fresh copy.
+                </p>
+                <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <button className="btn btn-sm" disabled={busyId === r.id}
+                    title="Recommended: leave the existing Sitewire property alone; PILOT will not manage this file’s draws."
+                    onClick={() => sitewireAct(r.id, 'dismiss')}>Keep separate</button>
+                  <button className="btn ghost btn-sm" disabled={busyId === r.id} style={{ color: 'var(--bad,#b04a3f)' }}
+                    title="Only after you have DELETED the property in Sitewire — this pushes a brand-new copy PILOT will manage."
+                    onClick={() => { if (window.confirm(`Push a fresh copy to Sitewire?\n\nOnly do this if you have ALREADY deleted the existing property${r.current_value ? ` (#${r.current_value})` : ''} in Sitewire. Otherwise you will create a DUPLICATE.\n\nPILOT will then create and manage a brand-new property for this file.`)) sitewireAct(r.id, 'retry'); }}>
+                    {busyId === r.id ? '…' : 'I removed it in Sitewire — push a fresh copy'}</button>
+                </div>
+              </div>
+            )}
+            {status === 'open' && isSitewire && SW_ADVISORY.has(swReasonClass(r.reason)) && (
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <button className="btn primary btn-sm" disabled={busyId === r.id}
+                  title="This is an informational note — nothing to re-push. Acknowledge to clear it."
+                  onClick={() => sitewireAct(r.id, 'acknowledge')}>{busyId === r.id ? '…' : 'Acknowledge'}</button>
+                <button className="btn btn-sm" disabled={busyId === r.id}
+                  title="Close this without action" onClick={() => sitewireAct(r.id, 'dismiss')}>Dismiss</button>
+              </div>
+            )}
+            {status === 'open' && isSitewire && swReasonClass(r.reason) !== SW_DUPE && !SW_ADVISORY.has(swReasonClass(r.reason)) && (
               <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                 <button className="btn primary btn-sm" disabled={busyId === r.id}
                   title="Re-attempt the Sitewire push for this file (after fixing the cause above)"

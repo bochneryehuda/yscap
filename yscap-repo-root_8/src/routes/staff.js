@@ -2900,11 +2900,48 @@ router.patch('/checklist/:itemId', async (req, res) => {
         await notify.notifyBorrower(row.borrower_id, {
           type: 'doc_rejected',
           title: `"${row.label}" needs your attention`,
-          body: `Your loan team sent "${row.label}" back${ctx ? ` (${ctx.label})` : ''}: ${String(b.issueReason).slice(0, 180)}`,
+          badge: { text: 'Action needed', tone: 'action' },
+          body: `Your loan team reviewed "${row.label}" and sent it back so it can be corrected.`,
+          callout: { title: 'What we need', body: String(b.issueReason).slice(0, 300), tone: 'action' },
           meta: (ctx && ctx.borrowerMeta) || undefined,
           applicationId: row.application_id,
           link: row.application_id ? `/app/${row.application_id}` : '/profile',
-          ctaLabel: 'Review the condition' });
+          ctaLabel: 'Fix this item' });
+      }
+    } catch (_) { /* best-effort */ }
+  }
+  // "You're all caught up" (owner-directed 2026-07-20): when a borrower-visible
+  // condition is signed off / waived and it was the LAST open item on the file,
+  // reassure the borrower there's nothing left for them to do right now. Gated to
+  // once per file per ~day (audit_log) so a batch of sign-offs sends ONE note, not
+  // one per item. Only when the file truly has zero outstanding borrower items.
+  if (b.signedOff === true || b.waived === true) {
+    try {
+      const it = await db.query(
+        `SELECT ci.application_id, ci.audience, a.borrower_id
+           FROM checklist_items ci LEFT JOIN applications a ON a.id=ci.application_id WHERE ci.id=$1`,
+        [req.params.itemId]);
+      const row = it.rows[0];
+      if (row && row.borrower_id && row.application_id && row.audience !== 'staff') {
+        const open = await require('../lib/reminders').outstandingItems(row.application_id);
+        if (open.length === 0) {
+          const recent = await db.query(
+            `SELECT 1 FROM audit_log WHERE action='all_caught_up_emailed' AND entity_id=$1 AND created_at > now() - interval '20 hours' LIMIT 1`,
+            [row.application_id]);
+          if (!recent.rows[0]) {
+            await notify.notifyAppBorrowers(row.application_id, {
+              type: 'all_caught_up',
+              title: 'You’re all caught up',
+              hero: { label: 'Nothing needed right now', value: '✓ All caught up', tone: 'positive' },
+              badge: { text: 'All clear', tone: 'positive' },
+              body: 'Great news — you’ve completed everything your loan team needs from you at the moment, so there’s nothing left for you to do right now.',
+              lines: ['We’ll email you the moment a new item needs your attention. In the meantime, you can always check your file in the portal.'],
+              applicationId: row.application_id, link: `/app/${row.application_id}`, ctaLabel: 'View your file' });
+            await db.query(
+              `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+               VALUES ('system',NULL,'all_caught_up_emailed','application',$1,'{}'::jsonb)`, [row.application_id]).catch(() => {});
+          }
+        }
       }
     } catch (_) { /* best-effort */ }
   }
@@ -2940,6 +2977,32 @@ router.post('/applications/:id/assign', async (req, res) => {
         body: `${req.actor.name || 'An admin'} assigned this file to you as loan officer. The file details are below — open it to get started.`,
         applicationId: req.params.id, ctaLabel: 'Open the loan file',
         link: `/internal/app/${req.params.id}` });
+      // "Meet your loan officer" (owner-directed 2026-07-20): when the officer
+      // CHANGES to a new person, introduce them to the borrower so the
+      // relationship is personal and they know exactly who to reach (fileContext
+      // now auto-adds the officer's contact card to every borrower email, so the
+      // copy just needs to be the warm intro). Fires once per real change.
+      if (String(cur.rows[0].loan_officer_id || '') !== String(loanOfficerId)) {
+        try {
+          const o = await db.query(`SELECT full_name, title, email, phone, cell FROM staff_users WHERE id=$1`, [loanOfficerId]);
+          const oa = o.rows[0] || {};
+          const oname = oa.full_name || 'Your loan officer';
+          const reach = [oa.cell || oa.phone, oa.email].filter(Boolean).join(' or ');
+          await notify.notifyAppBorrowers(req.params.id, {
+            type: 'officer_assigned',
+            title: `${oname} is your loan officer`,
+            body: `${oname}${oa.title ? `, ${oa.title},` : ''} will be your point of contact at YS Capital Group, guiding your loan from here through closing.`,
+            lines: [
+              reach ? `You can reach ${oname.split(' ')[0]} directly at ${reach} — or just reply to this email and it goes straight to your loan team.`
+                    : `Just reply to this email any time and it goes straight to your loan team.`,
+              'Your loan officer and their contact details are always shown at the bottom of these emails and in your portal.',
+            ],
+            applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Open your file',
+            from: require('../lib/email').fromWithName(oname),
+            replyTo: oa.email || null,
+          });
+        } catch (_) { /* intro email is best-effort */ }
+      }
       await audit(req, 'assign_application', 'application', req.params.id, { from: cur.rows[0].loan_officer_id || null, to: loanOfficerId });
     }
     if (processorId) {
@@ -4116,6 +4179,31 @@ const STATUS_LABEL = { file_intake: 'File intake', new: 'Submitted', in_review: 
 // change still posts in-app; only these also email (the in-between progress moves —
 // in_review / processing / underwriting — are in-app only, to keep the inbox quiet).
 const MAJOR_STATUSES = new Set(['approved', 'clear_to_close', 'funded', 'declined', 'withdrawn']);
+// Plain-language, borrower-facing explanation of what a status MEANS and what
+// happens next — so a status email is reassuring and actionable, not a bare label
+// (owner-directed 2026-07-20). Borrower-safe copy only (no capital-partner names,
+// no internal mechanics). Missing entry → no explanation line (graceful).
+const BORROWER_STATUS_EXPLAIN = {
+  in_review: 'Your loan team is reviewing your file and the documents you provided. We\'ll let you know as soon as we need anything else from you.',
+  processing: 'Your file is being prepared for underwriting. Keep an eye out for any document requests so nothing slows down your loan.',
+  underwriting: 'An underwriter is reviewing your loan for final approval. If they need anything, it will appear in your conditions.',
+  approved: 'Your loan has been approved. Next, we\'ll finish any remaining conditions and prepare to clear you to close.',
+  clear_to_close: 'You are clear to close — every condition is satisfied and your closing can be scheduled. Your loan officer will reach out to coordinate the details.',
+  funded: 'Your loan has funded — congratulations! If your loan includes renovation draws, you can request your first draw from the portal when you\'re ready.',
+  declined: 'After review, we are unable to move forward with this loan at this time. Your loan officer can walk you through why and discuss any options.',
+  withdrawn: 'This loan file has been withdrawn. If this wasn\'t expected, contact your loan officer and we\'ll help sort it out.',
+};
+// The borrower-facing loan journey, as a 6-stage progress path for the email
+// stepper. Each internal status maps to a stage index; stages before it are
+// done, the mapped stage is current, later stages upcoming. Terminal
+// declined/withdrawn statuses show no path (handled by returning null).
+const BORROWER_JOURNEY = ['Submitted', 'In review', 'Underwriting', 'Approved', 'Clear to close', 'Funded'];
+const STATUS_STAGE = { file_intake: 0, new: 0, in_review: 1, processing: 1, underwriting: 2, approved: 3, clear_to_close: 4, funded: 5 };
+function borrowerJourney(status) {
+  const idx = STATUS_STAGE[status];
+  if (idx == null) return null;   // declined / withdrawn → no progress path
+  return BORROWER_JOURNEY.map((label, i) => ({ label, state: i < idx ? 'done' : (i === idx ? 'current' : 'upcoming') }));
+}
 // Conditions-to-close gating. Reaching "clear to close" requires every open
 // prior-to-docs (and standard) condition cleared/waived and every gate item
 // signed off; "funded" additionally requires prior-to-funding conditions.
@@ -4549,9 +4637,16 @@ router.patch('/applications/:id', async (req, res) => {
     const label = STATUS_LABEL[status] || status;
     try {
       const fromLabel = STATUS_LABEL[cur.rows[0].status] || cur.rows[0].status;
+      const explain = BORROWER_STATUS_EXPLAIN[status];
+      const steps = borrowerJourney(status);
+      const positive = status === 'funded' || status === 'clear_to_close' || status === 'approved';
+      const badgeTone = positive ? 'positive' : (status === 'declined' || status === 'withdrawn' ? 'neutral' : 'teal');
       await notify.notifyAppBorrowers(req.params.id, {
         type: 'status_change', title: `Your loan status is now: ${label}`,
-        body: `Your loan file has moved from "${fromLabel}" to "${label}". The full file — conditions, documents, and messages — is in your portal.`,
+        body: `Your loan file has moved from "${fromLabel}" to "${label}".`,
+        badge: { text: label, tone: badgeTone },
+        steps: steps || undefined,   // the visual loan-journey path (null on declined/withdrawn)
+        callout: explain ? { title: 'What this means', body: explain, tone: positive ? 'positive' : 'gold' } : undefined,
         applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'View your file',
         major: MAJOR_STATUSES.has(status) });   // #88: only decision statuses email the borrower
       await notify.notifyAppStaff(req.params.id, {   // #113: whole team (primary + assistants), minus the actor
@@ -5606,11 +5701,48 @@ router.post('/documents/:id/review', async (req, res) => {
         await notify.notifyBorrower(doc.borrower_id, {
           type: 'doc_requested',
           title: condLabel ? `"${condLabel}" needs one more document` : 'One more document is needed',
-          body: `"${doc.filename}" was accepted ✓${condLabel ? ` — but condition "${condLabel}" needs one more document` : ''}${moreNote ? `: ${moreNote}` : '.'}${ctx ? ` (${ctx.label})` : ''}`,
+          badge: { text: 'Action needed', tone: 'action' },
+          body: `Good news — "${doc.filename}" was accepted. To finish this item, your loan team needs one more document.`,
+          callout: moreNote ? { title: 'What we still need', body: moreNote, tone: 'action' } : undefined,
           meta: (ctx && ctx.borrowerMeta) || undefined,
           applicationId: doc.application_id,
           link: doc.application_id ? `/app/${doc.application_id}` : '/profile',
           ctaLabel: 'Upload the document' });
+      } catch (_) { /* best-effort */ }
+    }
+
+    // Plain accept → confirm to the borrower that their document was accepted
+    // (owner-directed 2026-07-20 — closure, not busywork). Guarded to at most one
+    // EMAIL per file per ~12h (audit_log) so uploading a batch of documents does
+    // not trigger a flurry; extra accepts within the window still post in-app.
+    if (action === 'accept' && !requestMore && doc.borrower_id) {
+      try {
+        let condLabel = '';
+        if (doc.checklist_item_id) {
+          const it = await db.query(`SELECT COALESCE(borrower_label,label) AS label FROM checklist_items WHERE id=$1`, [doc.checklist_item_id]);
+          if (it.rows[0]) condLabel = it.rows[0].label;
+        }
+        let emailNow = true;
+        if (doc.application_id) {
+          const recent = await db.query(
+            `SELECT 1 FROM audit_log WHERE action='doc_accepted_emailed' AND entity_id=$1 AND created_at > now() - interval '12 hours' LIMIT 1`,
+            [doc.application_id]);
+          emailNow = !recent.rows[0];
+        }
+        await notify.notifyBorrower(doc.borrower_id, {
+          type: 'doc_accepted',
+          title: condLabel ? `Accepted: "${condLabel}"` : `Document accepted: ${doc.filename}`,
+          badge: { text: 'Accepted', tone: 'positive' },
+          body: `Your loan team reviewed and accepted "${doc.filename}"${condLabel ? ` for "${condLabel}"` : ''}. No further action is needed on this document — we'll let you know if anything else comes up.`,
+          applicationId: doc.application_id,
+          link: doc.application_id ? `/app/${doc.application_id}` : '/profile',
+          ctaLabel: 'View your file',
+          major: emailNow });   // throttle: email once per file per 12h, else in-app only
+        if (emailNow && doc.application_id) {
+          await db.query(
+            `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+             VALUES ('system',NULL,'doc_accepted_emailed','application',$1,'{}'::jsonb)`, [doc.application_id]).catch(() => {});
+        }
       } catch (_) { /* best-effort */ }
     }
 
@@ -5658,7 +5790,9 @@ router.post('/documents/:id/review', async (req, res) => {
         const ctx = doc.application_id ? await notify.fileContext(doc.application_id) : null;
         await notify.notifyBorrower(doc.borrower_id, {
           type: 'doc_rejected', title: condLabel ? `"${condLabel}" needs a new document` : 'A document needs to be re-uploaded',
-          body: `"${doc.filename}"${condLabel ? ` on condition "${condLabel}"` : ''}${ctx ? ` (${ctx.label})` : ''} couldn't be accepted: ${String(b.reason).slice(0, 180)}`,
+          badge: { text: 'Action needed', tone: 'action' },
+          body: `"${doc.filename}"${condLabel ? ` on "${condLabel}"` : ''} couldn't be accepted this time, so please upload a new version.`,
+          callout: { title: 'Why it was sent back', body: String(b.reason).slice(0, 300), tone: 'action' },
           meta: (ctx && ctx.borrowerMeta) || undefined,
           applicationId: doc.application_id,
           link: doc.application_id ? `/app/${doc.application_id}` : '/profile',
