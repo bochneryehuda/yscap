@@ -59,8 +59,8 @@ export default function StaffDraws() {
       <div className="dd-wrap">
         <div className="dd-head">
           <div>
-            <h1 className="dd-title">Construction draws</h1>
-            <div className="dd-sub">Every draw PILOT is tracking in Sitewire — what was requested, approved, and released.</div>
+            <h1 className="dd-title">Draw Management</h1>
+            <div className="dd-sub">The post-funding phase — every construction draw PILOT is managing in Sitewire: requested, approved, released, and inspected.</div>
           </div>
           {status && (
             <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
@@ -114,7 +114,7 @@ export default function StaffDraws() {
             <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 10 }}>
               {alertFiles.map((f) => (
                 <div key={f.application_id} style={{ paddingTop: 10, borderTop: '1px solid var(--line)' }}>
-                  <Link to={`/internal/app/${f.application_id}`} style={{ fontWeight: 600, color: 'var(--teal-br)', textDecoration: 'none' }}>{f.address || f.ys_loan_number || 'File'}</Link>
+                  <Link to={`/internal/app/${f.application_id}/draws`} style={{ fontWeight: 600, color: 'var(--teal-br)', textDecoration: 'none' }}>{f.address || f.ys_loan_number || 'File'}</Link>
                   <div style={{ marginTop: 5, display: 'flex', flexDirection: 'column', gap: 5 }}>
                     {f.alerts.map((a, i) => (
                       <div key={i} className="row" style={{ gap: 8, alignItems: 'flex-start' }}>
@@ -163,7 +163,7 @@ export default function StaffDraws() {
                         <td className="num">{usd(d.total_requested_cents)}</td>
                         <td className="num">{usd(d.total_approved_cents)}</td>
                         <td className="muted" style={{ whiteSpace: 'nowrap' }}>{fmtDay(d.updated_at)}</td>
-                        <td><Link className="btn btn-sm ghost" to={`/internal/app/${d.application_id}`}>Open file</Link></td>
+                        <td><Link className="btn btn-sm ghost" to={`/internal/app/${d.application_id}/draws`}>Open draws</Link></td>
                       </tr>
                     );
                   })}
