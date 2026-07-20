@@ -41,7 +41,12 @@ const usd = (c) => '$' + (N(c) / 100).toLocaleString('en-US', { minimumFractionD
  */
 function waiverGate(waivers, { enabled = false } = {}) {
   if (!enabled) return { ok: true, missing: [] };
-  const missing = (waivers || []).filter((w) => w.status === 'required')
+  // Block on any waiver that is NOT explicitly satisfied. "Satisfied" = received / waived / na ONLY —
+  // a null / blank / 'required' / unknown status BLOCKS (never guess a waiver is fine just because its
+  // status is missing). Previously only 'required' blocked, so a stray null/unknown status would have
+  // slipped a release through; this closes that.
+  const SATISFIED = new Set(['received', 'waived', 'na']);
+  const missing = (waivers || []).filter((w) => !SATISFIED.has(w && w.status))
     .map((w) => `${w.tier || 'party'}${w.party_name ? ' ' + w.party_name : ''} (${w.kind || 'conditional'})`);
   return { ok: missing.length === 0, missing };
 }

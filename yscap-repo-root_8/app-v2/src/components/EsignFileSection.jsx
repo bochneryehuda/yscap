@@ -54,10 +54,11 @@ function Recipient({ r }) {
 
 export default function EsignFileSection({ appId, role }) {
   const isAdmin = role === 'admin' || role === 'super_admin';
-  const [data, setData] = useState(null);   // { gate, packages, envelopes }
+  const [data, setData] = useState(null);   // { gate, packages, envelopes, loanNumber }
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState('');      // action key currently running
+  const [lnInput, setLnInput] = useState('');   // inline YS loan-number backfill
   const seq = useRef(0);
 
   const load = useCallback(async (quiet) => {
@@ -75,18 +76,34 @@ export default function EsignFileSection({ appId, role }) {
     return () => clearInterval(t);
   }, [load]);
 
+  const msgT = useRef(null);
   async function act(key, fn, okMsg) {
     setBusy(key); setErr(''); setMsg('');
-    try { await fn(); if (okMsg) setMsg(okMsg); await load(true); }
-    catch (e) { setErr(e.message || 'Action failed'); }
+    if (msgT.current) { clearTimeout(msgT.current); msgT.current = null; }
+    try {
+      await fn(); if (okMsg) { setMsg(okMsg); msgT.current = setTimeout(() => setMsg(''), 6000); }   // auto-dismiss so a stale "Sent" banner never sits above a failed card
+      await load(true);
+    } catch (e) { setErr(e.message || 'Action failed'); }
     finally { setBusy(''); }
   }
+  useEffect(() => () => { if (msgT.current) clearTimeout(msgT.current); }, []);
 
-  const send = (purpose) => act(`send:${purpose}`, async () => {
-    const r = await api.post(`/api/staff/applications/${appId}/esign/send`, { purpose });
-    // A dead-lettered send returns 200 with ok:false — don't show a false success.
-    if (r && (r.dead || r.ok === false)) throw new Error(r.error || 'The document could not be sent — check the file and try again.');
+  // A plain send (reissue=false) never re-sends a terminal package — the server
+  // returns terminal:true so we steer to the per-envelope Re-issue button. reissue=true
+  // (the card's Retry/Re-issue) mints a deliberate fresh envelope.
+  const send = (purpose, reissue) => act(`send:${purpose}`, async () => {
+    const r = await api.post(`/api/staff/applications/${appId}/esign/send`, { purpose, reissue: !!reissue });
+    if (r && (r.dead || r.terminal || r.ok === false)) throw new Error(r.error || 'The document could not be sent — check the file and try again.');
   }, 'Sent for signature.');
+  // Inline YS loan-number backfill — a term-sheet package can't send without a loan
+  // number (it prints on the disclosure). Validate the "YSCAP" prefix on the client
+  // for instant feedback; the server enforces prefix + uniqueness for real.
+  const lnValid = /^\s*yscap.+/i.test(lnInput);
+  const saveLoanNumber = () => act('loannum', async () => {
+    const r = await api.post(`/api/staff/applications/${appId}/loan-number`, { loanNumber: lnInput });
+    if (!r || !r.ok) throw new Error((r && r.error) || 'Could not save the loan number.');
+    setLnInput('');
+  }, 'Loan number saved.');
   const resend = (rowId) => act(`resend:${rowId}`, () => api.post(`/api/staff/esign/${rowId}/resend`), 'Reminder resent.');
   const voidEnv = (rowId) => {
     const reason = window.prompt('Void this envelope — reason (required):');
@@ -109,6 +126,7 @@ export default function EsignFileSection({ appId, role }) {
   if (data == null) return <p className="muted small">Loading…</p>;
   const gate = data.gate || { ready: false, outstanding: [] };
   const envelopes = data.envelopes || [];
+  const hasLoanNumber = !!(data.loanNumber && String(data.loanNumber).trim());
 
   return (
     <div className="esign-file">
@@ -129,23 +147,57 @@ export default function EsignFileSection({ appId, role }) {
             <li key={o.code} className="bad"><span className="esign-gate-ic">✗</span> <strong>{o.label}</strong> — <span className="muted small">{o.reason}</span></li>
           ))}
         </ul>
+        {/* Inline loan-number backfill — the term-sheet package prints the loan number
+            on the disclosure, so a file without one can't send. Enter it right here. */}
+        {!hasLoanNumber && (
+          <div className="notice info" style={{ margin: '2px 0 10px' }}>
+            <div><strong>This file has no YS loan number yet.</strong> A loan number is required to send the term-sheet package — enter it here to send right away.</div>
+            <div className="row" style={{ gap: 8, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              <input className="input" style={{ maxWidth: 240 }} placeholder="YSCAP…" value={lnInput}
+                onChange={(e) => setLnInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter' && lnValid && busy !== 'loannum') saveLoanNumber(); }} />
+              <button className="btn primary btn-sm" disabled={!lnValid || busy === 'loannum'} onClick={saveLoanNumber}>
+                {busy === 'loannum' ? 'Saving…' : 'Save loan number'}
+              </button>
+              {lnInput && !lnValid ? <span className="muted small">Must start with “YSCAP”.</span> : null}
+            </div>
+          </div>
+        )}
         <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-          {PACKAGES.map((p) => (
-            <button key={p.purpose} className="btn primary btn-sm" disabled={!gate.ready || busy === `send:${p.purpose}`}
-              title={gate.ready ? p.hint : 'Complete the prerequisites above first'}
-              onClick={() => send(p.purpose)}>
-              {busy === `send:${p.purpose}` ? 'Sending…' : `Send ${p.label}`}
-            </button>
-          ))}
+          {PACKAGES.map((p) => {
+            // The term-sheet package additionally needs a loan number; Heter Iska does not.
+            const needsLoan = p.purpose === 'term_sheet_package' && !hasLoanNumber;
+            // Once a package has ANY envelope on the file, the top Send is retired for it —
+            // otherwise clicking it again just piled up duplicate envelopes ("send send
+            // send"). Manage that package from its envelope card below (Resend / Void /
+            // Re-issue). The first send is the only one that starts here.
+            const already = envelopes.some((e) => e.purpose === p.purpose);
+            const blocked = !gate.ready || needsLoan || already;
+            const title = already ? 'This package is already started — manage it on its envelope below (Resend / Void / Re-issue)'
+              : needsLoan ? 'Enter the YS loan number above first'
+              : (gate.ready ? p.hint : 'Complete the prerequisites above first');
+            return (
+              <button key={p.purpose} className="btn primary btn-sm" disabled={blocked || busy === `send:${p.purpose}`}
+                title={title} onClick={() => send(p.purpose)}>
+                {busy === `send:${p.purpose}` ? 'Sending…' : already ? `${p.label} — see below` : `Send ${p.label}`}
+              </button>
+            );
+          })}
         </div>
         <p className="muted small" style={{ margin: '8px 0 0' }}>
-          Sending is gated while the integration is in test mode — a real borrower is never emailed until go-live.
+          Each signer is emailed a secure link to review and sign — you can watch every step below.
         </p>
       </div>
 
-      {/* Live envelopes */}
+      {/* Envelopes sent for this file — every package sent, with its live status,
+          signers, signed PDFs and the completion certificate, right here on the file. */}
+      <div className="row" style={{ alignItems: 'baseline', margin: '4px 0 8px' }}>
+        <h4 style={{ margin: 0 }}>Envelopes sent for this file</h4>
+        <div className="spacer" />
+        {envelopes.length ? <span className="muted small">{envelopes.length} {envelopes.length === 1 ? 'envelope' : 'envelopes'}</span> : null}
+      </div>
       {envelopes.length === 0 ? (
-        <p className="muted small">No packages sent yet.</p>
+        <p className="muted small">No packages sent yet. Once you send one above, it appears here with its live status, signers, signed PDFs and certificate.</p>
       ) : envelopes.map((e) => {
         const ph = PHASE[e.phase] || { label: e.phase, cls: 'muted', dot: '#4B585C' };
         const h = agingHours(e);
@@ -200,8 +252,10 @@ export default function EsignFileSection({ appId, role }) {
                 </>
               )}
               {(e.phase === 'declined' || e.phase === 'voided' || e.phase === 'error') && gate.ready && (
-                <button className="btn primary btn-sm" disabled={busy === `send:${e.purpose}`} title="Send a fresh envelope for this package"
-                  onClick={() => send(e.purpose)}>{busy === `send:${e.purpose}` ? '…' : (e.phase === 'error' ? 'Retry send' : 'Re-issue')}</button>
+                <button className="btn primary btn-sm"
+                  disabled={busy === `send:${e.purpose}` || (e.purpose === 'term_sheet_package' && !hasLoanNumber)}
+                  title={e.purpose === 'term_sheet_package' && !hasLoanNumber ? 'Enter the YS loan number above first' : 'Send a fresh envelope for this package'}
+                  onClick={() => send(e.purpose, true)}>{busy === `send:${e.purpose}` ? '…' : (e.phase === 'error' ? 'Retry send' : 'Re-issue')}</button>
               )}
               {(e.documents || []).map((d) => (
                 <button key={d.documentId} className="btn ghost btn-sm" disabled={busy === `dl:${d.documentId}`} onClick={() => download(d)}

@@ -47,4 +47,14 @@ g = waiverGate([{ status: 'received' }, { status: 'waived' }, { status: 'na' }],
 assert.strictEqual(g.ok, true, 'all required waivers received/waived → release allowed');
 ok('lien waivers: release allowed once every required waiver is received/waived');
 
+// A waiver with a NULL / blank / unknown status must BLOCK (never guess it's satisfied) — previously
+// only the exact string 'required' blocked, so a stray null status would have slipped a release through.
+g = waiverGate([{ status: null, tier: 'gc', party_name: 'Acme GC' }], { enabled: true });
+assert.strictEqual(g.ok, false, 'a null-status waiver blocks the release');
+g = waiverGate([{ status: 'pending' }], { enabled: true });
+assert.strictEqual(g.ok, false, 'an unknown-status waiver blocks the release');
+g = waiverGate([{ status: 'received' }, { status: null }], { enabled: true });
+assert.strictEqual(g.ok, false, 'one received + one null-status → still blocked');
+ok('lien waivers: any non-received/waived/na status (null/blank/unknown) blocks — never guesses satisfied');
+
 console.log(`\nAll ${n} Sitewire money checks passed.`);

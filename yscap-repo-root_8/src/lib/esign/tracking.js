@@ -167,7 +167,11 @@ async function fileEsign(db, applicationId) {
   const { envelopes } = await dashboard(db, { where: 'AND a.id = $1', params: [applicationId] });
   const byPurpose = { term_sheet_package: [], heter_iska: [] };
   for (const e of envelopes) { (byPurpose[e.purpose] = byPurpose[e.purpose] || []).push(e); }
-  return { gate: g, packages: byPurpose, envelopes };
+  // Surface the file's YS loan number so the per-file view can offer an inline
+  // backfill when it's missing — the term-sheet package prints the loan number on
+  // the disclosure, so a file with no loan number can't send until one is entered.
+  const meta = (await db.query(`SELECT ys_loan_number FROM applications WHERE id = $1`, [applicationId])).rows[0] || {};
+  return { gate: g, packages: byPurpose, envelopes, loanNumber: meta.ys_loan_number || null };
 }
 
 module.exports = { esignPhase, waitingOn, dashboard, fileEsign };
