@@ -1,5 +1,5 @@
 -- ============================================================================
--- 187 — The raw appraisal source documents (the MISMO XML + the appraisal PDF) are system/staff
+-- 189 — The raw appraisal source documents (the MISMO XML + the appraisal PDF) are system/staff
 -- artifacts stored during import, not human submissions to review — auto-accept them so they never
 -- show a stray "Accept" button on the staff Documents list (owner-reported class, 2026-07-20; same
 -- fix as db/186 for the extracted photos).
