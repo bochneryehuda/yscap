@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { formatSSN, cleanFICO, ficoValid } from '../lib/validators.js';
-import { CITIZENSHIP, MARITAL, HOUSING } from '../lib/enums.js';
+import { CITIZENSHIP, MARITAL, HOUSING, unitsMode, unitsForType } from '../lib/enums.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { useAutosave } from '../lib/useAutosave.js';
 import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
@@ -52,13 +52,9 @@ const needsSqft = (rehabType) => /square|adding|ground/i.test(rehabType || '');
 const isPurchase = (loanType) => !loanType || /purchase/i.test(loanType);
 const isRefi = (loanType) => /refi/i.test(loanType || '');
 
-// Property type drives the unit-count control. Single-unit types default to 1
-// and never ask; 2–4 offers a dropdown; 5+ / mixed-use take a number.
-function unitsMode(propType) {
-  if (/2.?4/.test(propType || '')) return 'select24';
-  if (/5\+|mixed/i.test(propType || '')) return 'multi';
-  return 'single'; // SFR / Condo / Townhouse
-}
+// Property type drives the unit-count control (single → 1 locked; 2–4 → dropdown;
+// 5+ / mixed → free number). The logic lives once in ../lib/enums.js (unitsMode /
+// unitsForType) so the borrower application and the staff forms never diverge.
 const money = (n) => (n || n === 0) ? '$' + Number(n).toLocaleString() : '—';
 
 function SaveChip({ status }) {
@@ -260,9 +256,7 @@ export default function Apply() {
   // borrower never has to answer "units" for a single-family / condo / townhouse.
   const setPropertyType = (v) => {
     setForm(f => {
-      const next = { ...(f || {}), propertyType: v };
-      if (unitsMode(v) === 'single') next.units = '1';
-      else if (String((f || {}).units) === '1') next.units = ''; // clear the auto value when switching to multi
+      const next = { ...(f || {}), propertyType: v, units: unitsForType(v, (f || {}).units) };
       save({ data: { propertyType: v, units: next.units } });
       return next;
     });
