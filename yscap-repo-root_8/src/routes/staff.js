@@ -975,7 +975,7 @@ router.post('/applications', async (req, res) => {
       ok: true, applicationId: appId, ysLoanNumber: ins.rows[0].ys_loan_number,
       borrowerId, borrowerCreated: br.rows[0].created, invited,
       coBorrowerId, coBorrowerWarning: coBorrowerWarning || undefined });
-  } catch (e) { res.status(500).json({ error: db.describeError(e) }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Invite the file's borrower to the portal (they need not have signed up yet).
@@ -1320,7 +1320,7 @@ router.post('/applications/:id/co-borrower-fields', async (req, res) => {
     await audit(req, 'complete_co_borrower_fields', 'application', req.params.id,
       { fields: sets.filter((s) => !s.startsWith('updated_at')).map((s) => s.split('=')[0]), coBorrowerId: coId });
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // #81 — the subject vesting LLC's borrower-owners and each one's ownership %.
@@ -3151,7 +3151,7 @@ router.post('/applications/:id/appraisal-card', async (req, res) => {
       number: v.number, cvc: v.cvc, expMonth: v.expMonth, expYear: v.expYear, zip: v.zip });
     await audit(req, 'save_appraisal_card', 'application', req.params.id, { last4, enteredByStaff: true });
     res.status(201).json({ ok: true, last4, brand });
-  } catch (e) { res.status(500).json({ error: db.describeError(e) }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 // Borrower name typeahead for staff origination (StaffNewFile): match prior
 // borrowers by name so a new file can LINK to the existing borrower instead of
@@ -3397,6 +3397,12 @@ router.patch('/borrowers/:id', async (req, res) => {
 router.get('/borrowers/:id/applications', async (req, res) => {
   try {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    // A scoped loan officer must not see the existence/loan#/address/amount of the
+    // borrower's OTHER files they aren't assigned to (round-2 audit F7); admins/
+    // underwriters/processors keep the borrower-wide view.
+    const params = [req.params.id];
+    let scope = '';
+    if (!seesAllBorrowers(req)) { params.push(req.actor.id); scope = `AND ${VISIBLE_OFFICERS_SQL('a', '$2')}`; }
     const r = await db.query(
       `SELECT a.id, a.ys_loan_number, a.program, a.loan_type, a.status, a.internal_status,
               a.property_address, a.loan_amount, a.created_at, a.expected_closing, a.actual_closing,
@@ -3405,10 +3411,10 @@ router.get('/borrowers/:id/applications', async (req, res) => {
          FROM applications a
          LEFT JOIN staff_users off ON off.id = a.loan_officer_id
          LEFT JOIN llcs l ON l.id = a.llc_id
-        WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND a.deleted_at IS NULL
-        ORDER BY a.created_at DESC`, [req.params.id]);
+        WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND a.deleted_at IS NULL ${scope}
+        ORDER BY a.created_at DESC`, params);
     res.json(r.rows);
-  } catch (e) { res.status(500).json({ error: 'server error' }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Open conditions/tasks-to-clear rolled up across ALL of the borrower's files —
@@ -3421,7 +3427,10 @@ router.get('/borrowers/:id/conditions', async (req, res) => {
     // isn't on (round-2 audit N4).
     const params = [req.params.id];
     let scope = '';
-    if (!seesAll(req)) { params.push(req.actor.id); scope = `AND ${VISIBLE_OFFICERS_SQL('a', '$2')}`; }
+    // seesAllBorrowers (admin/underwriter/processor) keep the borrower-wide view
+    // — only a genuinely file-scoped loan officer is restricted to assigned files
+    // (matches the canSeeBorrower gate; round-2 audit F6).
+    if (!seesAllBorrowers(req)) { params.push(req.actor.id); scope = `AND ${VISIBLE_OFFICERS_SQL('a', '$2')}`; }
     const r = await db.query(
       `SELECT c.id, c.application_id, c.title, c.status, c.audience, c.severity, c.created_at,
               a.ys_loan_number, a.property_address
@@ -3440,6 +3449,10 @@ router.get('/borrowers/:id/conditions', async (req, res) => {
 router.get('/borrowers/:id/reminders', async (req, res) => {
   try {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    // Scope reminders/tasks to the actor's files for a scoped loan officer (F7).
+    const params = [req.params.id];
+    let scope = '';
+    if (!seesAllBorrowers(req)) { params.push(req.actor.id); scope = `AND ${VISIBLE_OFFICERS_SQL('a', '$2')}`; }
     const r = await db.query(
       `SELECT r.id, r.application_id, r.kind, r.title, r.body, r.due_at, r.status,
               r.assignee_staff_id, r.completed_at, r.created_at,
@@ -3448,10 +3461,10 @@ router.get('/borrowers/:id/reminders', async (req, res) => {
          FROM reminders r
          JOIN applications a ON a.id = r.application_id
          LEFT JOIN staff_users asg ON asg.id = r.assignee_staff_id
-        WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND a.deleted_at IS NULL
-        ORDER BY (r.status='scheduled') DESC, r.due_at ASC`, [req.params.id]);
+        WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND a.deleted_at IS NULL ${scope}
+        ORDER BY (r.status='scheduled') DESC, r.due_at ASC`, params);
     res.json(r.rows);
-  } catch (e) { res.status(500).json({ error: 'server error' }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 router.post('/borrowers/:id/reminders', async (req, res) => {
   try {
@@ -3486,7 +3499,7 @@ router.get('/borrowers/:id/documents', async (req, res) => {
     // level docs (no application) keep the borrower-wide view they already have.
     const params = [req.params.id];
     let appVisible;
-    if (seesAll(req)) {
+    if (seesAllBorrowers(req)) {   // admin/underwriter/processor keep the borrower-wide view (F6)
       appVisible = `SELECT id FROM applications WHERE (borrower_id=$1 OR co_borrower_id=$1) AND deleted_at IS NULL`;
     } else {
       params.push(req.actor.id);
@@ -3519,7 +3532,7 @@ router.get('/borrowers/:id/activity', async (req, res) => {
     // the officer isn't on (round-2 audit N4). Borrower/entity-level entries stay.
     const params = [req.params.id];
     let appVisible;
-    if (seesAll(req)) {
+    if (seesAllBorrowers(req)) {   // admin/underwriter/processor keep the borrower-wide view (F6)
       appVisible = `SELECT id FROM applications WHERE (borrower_id=$1 OR co_borrower_id=$1)`;
     } else {
       params.push(req.actor.id);
@@ -3692,7 +3705,7 @@ router.put('/borrowers/:id/track-record/snapshot', async (req, res) => {
       html: b.html, filename: b.filename, uploadedByKind: 'staff', uploadedById: req.actor.id,
     });
     res.json({ ok: true, ...out });
-  } catch (e) { res.status(e.status || 500).json({ error: e.message || 'could not save the snapshot' }); }
+  } catch (e) { if (!e.status) console.warn('[staff] snapshot error:', db.describeError(e)); res.status(e.status || 500).json({ error: e.status ? e.message : 'could not save the snapshot' }); }
 });
 router.get('/borrowers/:id/track-record/snapshot', async (req, res) => {
   if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
@@ -4416,7 +4429,7 @@ router.post('/applications/:id/loan-number', async (req, res) => {
     await audit(req, 'set_loan_number', 'application', req.params.id, { from: existing || null, to: ln });
     enqueueClickupPush(req.params.id, ['ys_loan_number']).catch(() => {});   // keep ClickUp/LOS in sync (self-gates; no-op when unmapped/unlinked)
     res.json({ ok: true, loanNumber: upd.rows[0].ys_loan_number });
-  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Nudge the borrower with a friendly reminder of what's still outstanding on
@@ -4630,7 +4643,7 @@ async function completeFields(req, res, borrowerScoped) {
     }
     if (!borrowerScoped) await audit(req, 'complete_fields', 'application', req.params.id, { app: appKeys, borrower: brKeys, before: brBefore || undefined });
     res.json({ ok: true, appFields: appKeys.length, borrowerFields: brSets.length });
-  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 }
 router.post('/applications/:id/complete-fields', (req, res) => completeFields(req, res, false));
 
@@ -6478,7 +6491,7 @@ router.get('/sync-reviews', async (req, res) => {
         ORDER BY q.created_at DESC LIMIT 500`,
       scoped ? [status, req.actor.id] : [status]);
     res.json({ reviews: r.rows });
-  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Lightweight open-row count for the sidebar badge — same scope as the list,
@@ -6607,7 +6620,8 @@ router.post('/sync-reviews/:id/resolve', async (req, res) => {
 function sendReviewActionError(res, e) {
   if (e && e.status && e.expose) return res.status(e.status).json({ error: e.message });
   if (e && e.status) return res.status(502).json({ error: `ClickUp did not accept the request (upstream ${e.status}) — nothing was changed; try again shortly` });
-  return res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' });
+  console.warn('[staff] review-action error:', db.describeError(e));
+  return res.status(500).json({ error: 'server error' });
 }
 
 // FILE-LEVEL resolution (owner-directed 2026-07-15 night): a stuck FILE's
@@ -6766,7 +6780,7 @@ router.post('/sync-reviews/:id/reject', async (req, res) => {
     await audit(req, 'sync_review_reject', row.application_id ? 'application' : 'borrower',
       row.application_id || row.borrower_id, { reviewId: row.id, field: row.field_key, reason: row.reason });
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // ---------------- e-signature (DocuSign) tracking — read model --------------
@@ -6782,7 +6796,7 @@ router.get('/esign/dashboard', async (req, res) => {
       ? { where: '', params: [] }
       : { where: `AND ${VISIBLE_OFFICERS_SQL('a', '$1')}`, params: [req.actor.id] };
     res.json(await esignTracking.dashboard(db, scope));
-  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // ---- e-signature CONNECTION + MODE status (admin) ---------------------------
@@ -6827,7 +6841,7 @@ router.get('/esign/connection', requireRole('admin'), async (req, res) => {
 router.get('/applications/:id/esign', async (req, res) => {
   try {
     res.json(await esignTracking.fileEsign(db, req.params.id));
-  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // ---------------- e-signature management actions ----------------------------
@@ -6847,6 +6861,14 @@ function esignErrStatus(e) {
   if (e && e.code === 'DOCUSIGN_GATE_NOT_READY') return 409;
   if (e && e.retryable === false) return 400;
   return 500;
+}
+// Send an esign orchestration error safely: mapped 4xx/409 keep their curated
+// message; an unknown 500 logs the detail server-side and returns generic — never
+// leak raw pg/JS text to the client (round-2 audit F2).
+function sendEsignError(res, e, extra = {}) {
+  const st = esignErrStatus(e);
+  if (st >= 500) { console.warn('[staff] esign error:', db.describeError(e)); return res.status(st).json({ error: 'server error' }); }
+  return res.status(st).json({ error: e.message, ...extra });
 }
 
 // Load an envelope row and confirm the actor may see its file (the /esign/:rowId
@@ -6877,7 +6899,7 @@ router.post('/esign/test-send', requireRole('admin'), async (req, res) => {
     const out = await require('../lib/esign/test-send').sendTestEnvelope({ actorId: req.actor.id, db, docusign: docusignLib });
     await audit(req, 'esign_test_send', 'esign_test', null, { to: out.to, envelopeId: out.envelopeId });
     res.json({ ok: true, ...out });
-  } catch (e) { res.status(esignErrStatus(e)).json({ error: e.message }); }
+  } catch (e) { sendEsignError(res, e); }
 });
 
 // Send a package for a file. Rides the /applications/:id scope guard.
@@ -6913,7 +6935,7 @@ router.post('/applications/:id/esign/send', async (req, res) => {
       error: reason,
     });
   } catch (e) {
-    res.status(esignErrStatus(e)).json({ error: e.message, outstanding: e.outstanding });
+    sendEsignError(res, e, { outstanding: e.outstanding });
   }
 });
 
@@ -6988,7 +7010,7 @@ router.post('/esign/:rowId/countersign-view', async (req, res) => {
     });
     await audit(req, 'esign_countersign_view', 'application', row.application_id, { purpose: row.purpose });
     res.json({ url });
-  } catch (e) { res.status(esignErrStatus(e)).json({ error: e.message }); }
+  } catch (e) { sendEsignError(res, e); }
 });
 
 // Admin: manually drain the inbound event inbox + the send queue (ops button).
