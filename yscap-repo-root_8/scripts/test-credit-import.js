@@ -8,6 +8,13 @@
  * verified FICO + representative, stores scores + PDF; review path (no score)
  * stores but does not freeze; idempotency returns the prior report. */
 if (!process.env.DATABASE_URL) { console.log('SKIP test-credit-import (no DATABASE_URL)'); process.exit(0); }
+// Self-set the env this test needs so it can run in the `npm test` chain (mirrors
+// test-credit-api-db). orderAndImport requires a configured endpoint even though a
+// no-network transport is injected; keys stay deterministic for the crypto paths.
+process.env.XACTUS_ENDPOINT = process.env.XACTUS_ENDPOINT || 'http://x';
+process.env.JWT_SECRET = process.env.JWT_SECRET || 'import-secret-00000000000000000000000000';
+process.env.SSN_ENCRYPTION_KEY = process.env.SSN_ENCRYPTION_KEY || '0123456789abcdef0123456789abcdef';
+process.env.STORAGE_DIR = process.env.STORAGE_DIR || '/tmp/credit-import-storage';
 const db = require('../src/db');
 const crypto = require('../src/lib/crypto');
 const credentials = require('../src/lib/credit/credentials');
