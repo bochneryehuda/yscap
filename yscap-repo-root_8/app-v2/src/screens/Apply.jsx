@@ -233,6 +233,16 @@ export default function Apply() {
     save({ data: patch });
     return { ...cur, ...patch };
   });
+  // Assignment of contract is a purchase concept — switching the loan type to a
+  // refinance clears any assignment so it can't linger on a refi (the server and
+  // the db/173 condition trigger enforce the same rule).
+  const setLoanType = (v) => setForm(f => {
+    const cur = f || {};
+    const patch = { loanType: v };
+    if (isRefi(v) && cur.isAssignment) { patch.isAssignment = false; patch.underlyingContractPrice = ''; patch.assignmentFee = ''; }
+    save({ data: patch });
+    return { ...cur, ...patch };
+  });
   const mergeAddr = (patch) => {
     setForm(f => {
       const address = { ...((f && f.propertyAddress) || {}), ...patch };
@@ -567,7 +577,7 @@ export default function Apply() {
                   <option value="">Select…</option>{PROGRAMS.map(p => <option key={p}>{p}</option>)}
                 </select></div>
               <div className="field"><label>Loan type</label>
-                <select className="input" value={form.loanType || ''} onChange={e => set('loanType', e.target.value)}>
+                <select className="input" value={form.loanType || ''} onChange={e => setLoanType(e.target.value)}>
                   <option value="">Select…</option>{LOAN_TYPES.map(p => <option key={p}>{p}</option>)}
                 </select></div>
             </div>
@@ -607,7 +617,7 @@ export default function Apply() {
                 <span>This purchase is an <strong>assignment</strong> of contract</span>
               </label>
             )}
-            {form.isAssignment && (
+            {isPurchase(form.loanType) && form.isAssignment && (
               <>
                 <div className="grid cols-2">
                   <div className="field"><label>Original (underlying) purchase price</label>

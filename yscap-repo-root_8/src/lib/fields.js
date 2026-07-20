@@ -43,7 +43,14 @@ function sanitizeLoanType(v) {
 // bind values the INSERTs use.
 function assignmentFields(b) {
   b = b || {};
-  const isAssignment = !!b.isAssignment;
+  // An assignment of contract is a PURCHASE concept. On a refinance it can never
+  // apply, so a stale/hand-rolled "isAssignment=true" on a refi file is forced
+  // off here — otherwise the stored purchase price would be miscomputed as
+  // underlying + fee and the (borrower-facing) assignment condition would be
+  // requested on a refinance. Mirrors pricing.js loanTypeOf (refi iff the loan
+  // type mentions "refi") and the db/173 condition trigger.
+  const isRefi = /refi/i.test(String(b.loanType || ''));
+  const isAssignment = !!b.isAssignment && !isRefi;
   const underlying = isAssignment ? (b.underlyingContractPrice || null) : null;
   const assignFee = isAssignment ? (b.assignmentFee || null) : null;
   const purchasePrice = isAssignment
