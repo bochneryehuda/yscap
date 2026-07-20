@@ -25,7 +25,7 @@ const { pdfSafe, fit } = require('../lib/esign/application-pdf');
 const { scrubText } = require('../lib/borrower-safe');
 // DB / storage / rollup are required lazily inside the DB-side functions only, so the PURE builder path
 // (and its unit test) never touches the database or trips the "DATABASE_URL not set" boot log.
-const lazy = { get db() { return require('../db'); }, get storage() { return require('../lib/storage'); }, get rollup() { return require('./rollup'); } };
+const lazy = { get db() { return require('../db'); }, get storage() { return require('../lib/storage'); }, get rollup() { return require('./rollup'); }, get media() { return require('./media-archive'); } };
 
 // ---- jsPDF lazy loader (own cache; deliberately NOT sharing esign's, so a report can render even if the
 // esign module never loaded). Same UMD bundle. ----
@@ -502,6 +502,50 @@ async function storeDrawReport({ appId, borrowerId, filename, bytes, mode }) {
   }
 }
 
+/* Build (or reuse the cached) branded report `documents` row for a draw/project + mode. Returns
+   { doc, built } — or null when there is no draw data to report on yet. This is the ONE place the
+   load -> attach photos -> build PDF -> store+supersede -> cache-by-version sequence lives, shared by the
+   on-demand report route and the auto-deliver-on-findings path so both cache identically by version hash
+   (an unchanged draw reuses the stored row; a change mints a fresh one and supersedes the old). */
+async function buildOrGetReportDoc(appId, { sitewireDrawId = null, scope, mode = 'staff' } = {}) {
+  const meta = await loadReportMeta(appId, { sitewireDrawId, mode });
+  if (!meta || !meta.hasScope || !Array.isArray(meta.sections) || !meta.sections.length) return null;
+  const drawNumber = scope === 'draw' && meta.sections[0] ? meta.sections[0].number : null;
+  const filename = reportFilename({ scope, mode, drawNumber, version: meta.version, loanNo: meta.app.loanNo });
+  const borrowerRow = (await lazy.db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [appId])).rows[0] || {};
+  let doc = (await lazy.db.query(
+    `SELECT * FROM documents WHERE application_id=$1 AND doc_kind='draw_inspection_report' AND filename=$2 LIMIT 1`,
+    [appId, filename])).rows[0];
+  if (doc) return { doc, built: false };
+  await attachPhotoBytes(meta.sections);                                 // read the durable photo bytes (bounded)
+  const bytes = buildDrawReport({ app: meta.app, rollup: meta.rollup, sections: meta.sections, scope, mode });
+  const docId = await storeDrawReport({ appId, borrowerId: borrowerRow.borrower_id, filename, bytes, mode });
+  doc = (await lazy.db.query(`SELECT * FROM documents WHERE id=$1`, [docId])).rows[0];
+  return { doc, built: true };
+}
+
+/* On findings delivery: durably capture the inspector's (pre-signed, EXPIRING) media NOW, then pre-build
+   the branded PILOT (staff) + borrower-safe reports — so the durable copy and both reports exist the moment
+   findings are delivered, never dependent on someone clicking "archive" later (before this, a report built
+   pre-archive silently had ZERO photos). Media is archived FIRST so the reports embed it and the version
+   hash reflects it. Every step is best-effort and independently caught: a failure here can never block,
+   reverse, or un-notify the delivery the borrower was just told about. Off-switch: DRAW_AUTODELIVER_ENABLED=0. */
+async function autoDeliverArtifacts(appId, sitewireDrawId) {
+  const out = { archived: 0, reports: [] };
+  if (process.env.DRAW_AUTODELIVER_ENABLED === '0') return out;
+  try {
+    const r = await lazy.media.archiveDrawMedia(appId, sitewireDrawId);
+    out.archived = (r && r.archived) || 0;
+  } catch (e) { console.warn(`[sitewire] auto-archive on deliver failed (draw=${sitewireDrawId}): ${e && e.message}`); }
+  for (const mode of ['staff', 'borrower']) {
+    try {
+      const r = await buildOrGetReportDoc(appId, { sitewireDrawId, scope: 'draw', mode });
+      if (r && r.doc) out.reports.push(mode);
+    } catch (e) { console.warn(`[sitewire] auto-report on deliver failed (draw=${sitewireDrawId}, ${mode}): ${e && e.message}`); }
+  }
+  return out;
+}
+
 /** The deterministic, version-hashed filename for a report. */
 function reportFilename({ scope, mode, drawNumber, version, loanNo }) {
   const label = scope === 'project' ? 'project' : ('draw-' + (drawNumber != null ? drawNumber : 'x'));
@@ -512,5 +556,6 @@ function reportFilename({ scope, mode, drawNumber, version, loanNo }) {
 
 module.exports = {
   buildDrawReport, loadReportMeta, attachPhotoBytes, storeDrawReport, reportVersion, reportFilename,
+  buildOrGetReportDoc, autoDeliverArtifacts,
   imageFormat, getJsPDF, MAX_PHOTOS_TOTAL, MAX_PHOTOS_PER_LINE, EMBED_BYTE_BUDGET,
 };

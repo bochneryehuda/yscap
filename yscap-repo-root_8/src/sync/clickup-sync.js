@@ -667,11 +667,19 @@ async function retryStuckTasksOnce() {
   // Oldest-first so a backlog wider than one boot's cap ROTATES instead of
   // starving the tail (a retried-but-still-stuck task refreshes snapshot_at,
   // sending it to the back of the line for the next boot).
+  // 'skipped' is INCLUDED (owner-reported class of silently-stuck tasks): a task
+  // ingested while inbound-create was OFF, or one that lacked enough identity data
+  // to materialize at ingest time, is stored 'skipped' and — unlike ambiguous/
+  // duplicate_pending — produced no review row. Re-driving it here (only ever with
+  // create ON, per the guard above) materializes it the moment it's eligible
+  // (switch flipped, or the task gained an address/loan#). Genuine-stuck rows
+  // (ambiguous/duplicate_pending) are ordered FIRST so a large skipped backlog
+  // can never starve them within one boot's cap.
   const r = await db.query(
     `SELECT task_id, match_status FROM clickup_task_index
-      WHERE match_status IN ('ambiguous','duplicate_pending')
+      WHERE match_status IN ('ambiguous','duplicate_pending','skipped')
         AND application_id IS NULL
-      ORDER BY snapshot_at ASC NULLS FIRST LIMIT 200`).catch(() => ({ rows: [] }));
+      ORDER BY (match_status='skipped') ASC, snapshot_at ASC NULLS FIRST LIMIT 200`).catch(() => ({ rows: [] }));
   if (!r.rows.length) return 0;
   let materialized = 0, still = 0, failed = 0;
   for (const row of r.rows) {

@@ -137,6 +137,31 @@ const to = (e) => sent.find((x) => (Array.isArray(x.to) ? x.to : [x.to]).include
   assert.ok(cStaffClosed === 0 && !to(semail), 'release-overdue alert suppressed on a paid-off project');
   ok('finished/paid-off project excluded from both draw reminders (rule 10)');
 
+  /* 6c) F1 — a release recorded WITHOUT a draw id (lien gate off → sitewire_draw_id NULL) must still suppress
+     the overdue alert. Recording a release doesn't change the finding status, so without this the team would be
+     alerted every 2 days forever even though the money went out. Re-activate the link + accepted overdue finding. */
+  await db.query(`UPDATE sitewire_property_links SET lifecycle_state='active' WHERE application_id=$1`, [app.id]);
+  await db.query(`DELETE FROM audit_log WHERE action='draw_release_overdue' AND entity_id=$1`, [app.id]).catch(() => {});
+  await db.query(`UPDATE draw_findings SET status='accepted', accepted_at=now()-interval '3 days', wire_due_at=now()-interval '1 day' WHERE application_id=$1`, [app.id]);
+  await db.query(`INSERT INTO draw_disbursements (application_id, sitewire_draw_id, funded_status, kind) VALUES ($1, NULL, 'released', 'draw')`, [app.id]);
+  reset(); const cRelNull = await D.drawReleaseOverdueOnce();
+  assert.ok(cRelNull === 0 && !to(semail), 'overdue alert suppressed by a release recorded without a draw id');
+  await db.query(`DELETE FROM draw_disbursements WHERE application_id=$1`, [app.id]).catch(() => {});
+  ok('release recorded without a draw id suppresses the overdue alert (F1)');
+
+  /* 6d) F2 — a funded file later moved to withdrawn/declined (not deleted; lifecycle still 'active' since a
+     status change doesn't auto-close the link) is excluded from BOTH reminders. Only deleted_at was checked before. */
+  await db.query(`DELETE FROM audit_log WHERE action IN ('draw_findings_reminder','draw_release_overdue') AND entity_id=$1`, [app.id]).catch(() => {});
+  await db.query(`UPDATE applications SET status='withdrawn' WHERE id=$1`, [app.id]);
+  await db.query(`UPDATE draw_findings SET status='delivered', delivered_at=now()-interval '5 days', accepted_at=NULL, wire_due_at=NULL WHERE application_id=$1`, [app.id]);
+  reset(); const cWdBorrower = await D.drawFindingsAwaitingBorrowerOnce();
+  assert.ok(cWdBorrower === 0 && !to(bemail), 'borrower nudge suppressed on a withdrawn file');
+  await db.query(`UPDATE draw_findings SET status='accepted', accepted_at=now()-interval '3 days', wire_due_at=now()-interval '1 day' WHERE application_id=$1`, [app.id]);
+  reset(); const cWdStaff = await D.drawReleaseOverdueOnce();
+  assert.ok(cWdStaff === 0 && !to(semail), 'overdue alert suppressed on a withdrawn file');
+  await db.query(`UPDATE applications SET status='funded' WHERE id=$1`, [app.id]);
+  ok('withdrawn/declined file excluded from both draw reminders (F2)');
+
   await db.query(`DELETE FROM draw_findings WHERE application_id=$1`, [app.id]).catch(() => {});
   await db.query(`DELETE FROM sitewire_property_links WHERE application_id=$1`, [app.id]).catch(() => {});
 

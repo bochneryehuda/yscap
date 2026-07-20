@@ -781,7 +781,12 @@ async function applyChecklistStatuses(appId, task, options = {}) {
       if (!optId && checklist.normalizeInbound(fieldId, String(cf.value))) optId = String(cf.value);
       if (!optId) continue;
 
-      const inbound = checklist.normalizeInbound(fieldId, optId);
+      // Cap inbound so the sync can never COMPLETE a required condition:
+      // evidence from ClickUp lands at 'received' at most; the terminal
+      // 'satisfied' sign-off only happens through the portal's signOffGate,
+      // where fulfillment is verified (owner-directed root-cause fix — the
+      // inbound sync is a second door to 'satisfied' that bypasses the gate).
+      const inbound = checklist.capInbound(checklist.normalizeInbound(fieldId, optId));
       if (!inbound) continue;
 
       // Only mapped items are ever touched (clickup_field_id seeded by db/050).
@@ -794,9 +799,22 @@ async function applyChecklistStatuses(appId, task, options = {}) {
       const cur = row.rows[0].status;
       if (!checklist.shouldApplyInbound(inbound, cur)) continue;
 
-      await db.query(
-        `UPDATE checklist_items SET status=$2, clickup_option_id=$3, updated_at=now() WHERE id=$1`,
-        [row.rows[0].id, inbound, optId]);
+      // An inbound 'issue' is sticky and applies even over a signed-off condition
+      // (a real problem flagged in ClickUp) — so it must also DROP the sign-off,
+      // or the item lands at status='issue' with signed_off_at still set and the
+      // clear-to-close gate keeps counting it done. (Same "evidence/verification
+      // invalidated → clear the sign-off" rule as the document-review reject.)
+      if (inbound === 'issue') {
+        await db.query(
+          `UPDATE checklist_items SET status=$2, clickup_option_id=$3,
+                  signed_off_at=NULL, signed_off_by=NULL, reviewed_at=NULL, reviewed_by=NULL, updated_at=now()
+             WHERE id=$1`,
+          [row.rows[0].id, inbound, optId]);
+      } else {
+        await db.query(
+          `UPDATE checklist_items SET status=$2, clickup_option_id=$3, updated_at=now() WHERE id=$1`,
+          [row.rows[0].id, inbound, optId]);
+      }
     }
   } catch (_) { /* best-effort — a checklist glitch never breaks ingest */ }
 }

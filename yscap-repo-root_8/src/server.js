@@ -411,6 +411,12 @@ if (require.main === module) {
         require('./lib/appraisal/desk').backfillAppraisalPhotosOnce()
           .then((r) => r && r.filled && console.log('[boot] appraisal photo backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] appraisal photo backfill failed:', e.message));
+        // Previous-files fix: appraisals imported before the As-Is/ARV comp-grid split have every
+        // comp stored as 'unknown', so the report shows one mixed grid instead of two. Re-run the
+        // extractor on each pre-split appraisal's stored XML and write back the per-comp grid.
+        require('./lib/appraisal/desk').backfillAppraisalCompSplitOnce()
+          .then((r) => r && r.split && console.log('[boot] appraisal comp-split backfill:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] appraisal comp-split backfill failed:', e.message));
       } catch (e) {
         console.error('[migrate] unexpected error (continuing):', require('./db').describeError(e));
       }

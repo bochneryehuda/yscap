@@ -15,6 +15,7 @@ const db = require('../../db');
 const cfg = require('../../config');
 const storage = require('../storage');
 const { importAppraisal } = require('./import');
+const { extract } = require('./extract');
 const { ocrAsIsCandidate, buildOcrNote } = require('./ocr');
 const { extractPhotos } = require('./photos');
 const { crossCheckFlood } = require('./flood');
@@ -244,6 +245,72 @@ async function backfillAppraisalPhotosOnce(limit = 25) {
   return { scanned, filled, photos };
 }
 
+// Recover the appraisal's SOURCE XML bytes (the raw MISMO) from what we stored at import. Returns
+// the XML string or null. Used by the comp-split backfill to re-run the extractor on old files.
+async function xmlForAppraisal(appr) {
+  if (!appr.source_xml_document_id) return null;
+  try {
+    const d = (await db.query('SELECT storage_ref FROM documents WHERE id=$1', [appr.source_xml_document_id])).rows[0];
+    if (!d || !d.storage_ref) return null;
+    const b = await storage.read(d.storage_ref);
+    return b && b.length ? b.toString('utf8') : null;
+  } catch (_) { return null; }
+}
+
+// Boot backfill (previous AND future rule): appraisals imported BEFORE the As-Is/ARV comp-grid split
+// (or before a split fix) have every comp stored as comp_set='unknown' and comp_split_confidence
+// NULL, so the report renders ONE mixed grid instead of the separate As-Is and ARV grids. Re-run the
+// current extractor on each such appraisal's stored source XML and write back the per-comp comp_set
+// (matched by seq) + the appraisal's split metadata. `comp_split_confidence IS NULL` reliably marks a
+// pre-split row (a fresh import always sets it), and setting it here drains the row out of the query,
+// so this self-terminates. Bounded per boot; per-appraisal transactional; best-effort, never throws.
+async function backfillAppraisalCompSplitOnce(limit = 200) {
+  let scanned = 0, split = 0;
+  try {
+    const rows = (await db.query(
+      `SELECT a.id, a.source_xml_document_id
+         FROM appraisals a
+        WHERE a.superseded = false
+          AND a.source_xml_document_id IS NOT NULL
+          AND a.comp_split_confidence IS NULL
+          AND EXISTS (SELECT 1 FROM appraisal_comparables c WHERE c.appraisal_id = a.id AND c.is_subject = false)
+        ORDER BY a.imported_at DESC NULLS LAST
+        LIMIT $1`, [limit])).rows;
+    for (const r of rows) {
+      scanned++;
+      // If the source XML can't be recovered (bytes missing) or won't re-extract, we do NOT stamp
+      // the confidence — the row stays NULL and is retried on a later boot, so a TRANSIENT storage
+      // hiccup self-heals (a genuinely-broken appraisal is remedied by a re-import, which mints a
+      // fresh row). Each such re-scan is cheap (one documents lookup + one storage read); the 200/boot
+      // bound keeps it in check. A permanently-broken row re-scans indefinitely by design.
+      const xml = await xmlForAppraisal(r);
+      if (!xml) continue;
+      let A;
+      try { A = extract(xml); } catch (_) { continue; }
+      if (!A || !A.ok || !Array.isArray(A.comparables)) continue;
+      const bySeq = new Map();
+      for (const c of A.comparables) { if (c.seq != null) bySeq.set(String(c.seq), c.comp_set || 'unknown'); }
+      const client = await db.getClient();
+      try {
+        await client.query('BEGIN');
+        for (const [seq, cs] of bySeq) {
+          await client.query(
+            `UPDATE appraisal_comparables SET comp_set = $3 WHERE appraisal_id = $1 AND seq = $2 AND is_subject = false`,
+            [r.id, seq, cs]);
+        }
+        // Always stamp the split metadata (even 'single_grid'/'undetermined') so the row drains.
+        await client.query(
+          `UPDATE appraisals SET comp_split_confidence = $2, comp_split_needs_review = $3 WHERE id = $1`,
+          [r.id, (A.compSplit && A.compSplit.confidence) || 'undetermined', A.compSplit ? !!A.compSplit.needsReview : false]);
+        await client.query('COMMIT');
+        if ([...bySeq.values()].some((v) => v === 'as_is') && [...bySeq.values()].some((v) => v === 'arv')) split++;
+      } catch (_) { await client.query('ROLLBACK').catch(() => {}); }
+      finally { client.release(); }
+    }
+  } catch (_) { /* best-effort */ }
+  return { scanned, split };
+}
+
 // Undo the current appraisal import (owner-directed 2026-07-20): a WRONG appraisal
 // was uploaded and must be removed before a replacement exists. Clears the findings
 // + the imported appraisal data, restores the file fields the import changed, and
@@ -296,6 +363,18 @@ async function undoAppraisalImport(appId, { actor = null } = {}) {
       `UPDATE documents SET is_current=false
         WHERE application_id=$1 AND is_current AND doc_kind IN ('appraisal_xml','appraisal_pdf','appraisal_photo')`, [appId]);
 
+    // 6. Reopen the appraisal-documents condition — its evidence was just removed,
+    //    so a prior sign-off no longer corresponds to any current document and the
+    //    file must not clear-to-close on it. (Same class as the reject/supersede
+    //    reopen in the document routes.)
+    await client.query(
+      `UPDATE checklist_items ci
+          SET status='outstanding', signed_off_at=NULL, signed_off_by=NULL,
+              reviewed_at=NULL, reviewed_by=NULL, updated_at=now()
+         FROM checklist_templates t
+        WHERE ci.template_id=t.id AND ci.application_id=$1
+          AND t.code='rtl_cond_appraisaldocs'`, [appId]);
+
     await client.query('COMMIT');
     return { ok: true, removedAppraisalId: cur.id };
   } catch (e) {
@@ -306,4 +385,4 @@ async function undoAppraisalImport(appId, { actor = null } = {}) {
   }
 }
 
-module.exports = { ensureAppraisalCondition, runAppraisalImport, undoAppraisalImport, extractAndStorePhotos, repullAppraisalPhotos, backfillAppraisalPhotosOnce, todayNY };
+module.exports = { ensureAppraisalCondition, runAppraisalImport, undoAppraisalImport, extractAndStorePhotos, repullAppraisalPhotos, backfillAppraisalPhotosOnce, backfillAppraisalCompSplitOnce, todayNY };

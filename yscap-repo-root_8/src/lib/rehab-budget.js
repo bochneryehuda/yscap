@@ -168,7 +168,23 @@ async function enforceGoldSowContingency(appId, client = db) {
   try {
     const pr = (await client.query(
       `SELECT program FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`, [appId])).rows[0];
-    if (!pr || !/gold/i.test(String(pr.program || ''))) return { changed: false, program: pr && pr.program };
+    if (!pr || !/gold/i.test(String(pr.program || ''))) {
+      // Non-Gold (including a Gold→Standard downgrade): the 5% contingency rule no
+      // longer applies, so clear any stale Gold reopen this function stamped —
+      // otherwise the rehab-budget condition stays stuck at 'issue' showing a
+      // Gold-only requirement on a Standard file. Only rows whose note is EXACTLY
+      // the Gold [auto] note are touched (a human's note is never overwritten by
+      // the reopen, so it's never cleared here); the reopen's status is rolled
+      // back to 'received' so an underwriter can sign off normally.
+      const goldNote = '[auto] ' + GOLD_CONTINGENCY_MSG;
+      const cleared = await client.query(
+        `UPDATE checklist_items
+            SET status = CASE WHEN status='issue' THEN 'received' ELSE status END,
+                notes = NULL, updated_at = now()
+          WHERE application_id=$1 AND tool_key='rehab_budget' AND notes = $2
+          RETURNING id`, [appId, goldNote]);
+      return { changed: cleared.rowCount > 0, cleared: cleared.rowCount > 0, program: pr && pr.program };
+    }
     const it = (await client.query(
       `SELECT id, status, tool_payload, signed_off_at FROM checklist_items
         WHERE application_id=$1 AND tool_key='rehab_budget' ORDER BY created_at LIMIT 1`, [appId])).rows[0];
