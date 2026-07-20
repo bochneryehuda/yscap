@@ -1356,7 +1356,8 @@ function ActivityTrail({ appId }) {
   const [open, setOpen] = useState(false);
   const [rows, setRows] = useState(null);
   useEffect(() => { if (open && rows === null) api.get(`/api/sitewire/files/${appId}/activity`).then((d) => setRows(d.activity || [])).catch(() => setRows([])); }, [open, rows, appId]);
-  const KIND = { write: 'Sitewire', draw: 'Draw', money: 'Release', findings: 'Findings', reallocation: 'Budget' };
+  const KIND = { write: 'PILOT → Sitewire', inbound: 'Sitewire → PILOT', draw: 'Draw', money: 'Release', findings: 'Findings', reallocation: 'Budget' };
+  const KIND_CLS = { write: 'sw-insp', inbound: 'sw-approved', money: 'sw-approved', findings: 'sw-pending' };
   return (
     <div className="panel" style={{ marginTop: 18 }}>
       <div className="row between" style={{ alignItems: 'center' }}>
@@ -1373,7 +1374,7 @@ function ActivityTrail({ appId }) {
           {rows.map((a, i) => (
             <div key={i} className="row" style={{ gap: 8, padding: '5px 0', borderTop: i ? '1px solid var(--line,#e6e0d4)' : 'none', alignItems: 'baseline' }}>
               <span className="muted small" style={{ minWidth: 130, fontVariantNumeric: 'tabular-nums' }}>{a.date_only ? fmtDay(a.at) : new Date(a.at).toLocaleString('en-US')}</span>
-              <span className="pill sw-draft" style={{ flex: 'none' }}>{KIND[a.kind] || a.kind}</span>
+              <span className={'pill ' + (KIND_CLS[a.kind] || 'sw-draft')} style={{ flex: 'none' }}>{KIND[a.kind] || a.kind}</span>
               <span className="small">{a.summary}{a.actor ? <span className="muted"> · {a.actor}</span> : null}</span>
             </div>
           ))}
