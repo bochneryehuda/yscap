@@ -43,6 +43,7 @@ const { assessFile: assessStaleness } = require('../lib/underwriting/staleness')
 const { computeMetrics } = require('../lib/underwriting/metrics');
 const { buildChain } = require('../lib/underwriting/entity-chain');
 const { buildSellerChain } = require('../lib/underwriting/seller-chain');
+const { assessBankLiquidity, readRequiredLiquidity } = require('../lib/underwriting/bank-liquidity');
 const { assessCompleteness } = require('../lib/underwriting/completeness');
 const { computeRiskScore } = require('../lib/underwriting/risk-score');
 const { resolveEffectiveTerms } = require('../lib/underwriting/amendments');
@@ -227,6 +228,14 @@ router.get('/:appId', async (req, res, next) => {
     // the seller/buyer FATAL mismatch stays the tie-out's; this adds the view + that condition.
     const sellerChain = buildSellerChain(mctx || {}, exts.rows);
 
+    // Bank LIQUIDITY aggregation: sum every current bank statement's ending balance across the
+    // borrower's / verified-entity accounts and compare to the file's required liquidity (read off
+    // the registered product's assets condition). Raises the "short of required liquidity" and
+    // "no ending balance" advisories nobody else owns — the per-statement ownership FATAL (money in
+    // an unverified LLC → require the operating agreement) already lives in the bank-statement check.
+    const requiredLiquidity = await readRequiredLiquidity(db, app.id);
+    const bankLiquidity = assessBankLiquidity(mctx || {}, exts.rows, { requiredLiquidity });
+
     // File completeness / stipulations: diff the required-document matrix (adapted to this deal)
     // against what's analyzed on file → outstanding-items list + a completeness %. A VIEW only.
     const completeness = assessCompleteness(
@@ -250,7 +259,8 @@ router.get('/:appId', async (req, res, next) => {
     // fatal/warning gate (all warning-only → never change the CTC-blocking fatal count, but they
     // surface in the roll-up).
     const openRaw = [...perDoc, ...cross, ...staleness.findings, ...metrics.findings, ...amendments.findings,
-      ...(entityChain ? entityChain.findings : []), ...reasonability.findings, ...sellerChain.findings];
+      ...(entityChain ? entityChain.findings : []), ...reasonability.findings, ...sellerChain.findings,
+      ...bankLiquidity.findings];
     // De-duplicate the few FILE-economic findings that legitimately appear on more than one document
     // — the assignment fee over the cap shows on BOTH the purchase contract and the assignment, but
     // the desk should count/show it ONCE.
@@ -293,6 +303,10 @@ router.get('/:appId', async (req, res, next) => {
       sellerChain: { status: sellerChain.status, nodes: sellerChain.nodes, edges: sellerChain.edges,
         finalHolder: sellerChain.finalHolder, reachesVesting: sellerChain.reachesVesting,
         findings: sellerChain.findings.map(decorate) },
+      bankLiquidity: { requiredLiquidity: bankLiquidity.requiredLiquidity, qualifyingTotal: bankLiquidity.qualifyingTotal,
+        excludedTotal: bankLiquidity.excludedTotal, shortfall: bankLiquidity.shortfall,
+        accounts: bankLiquidity.accounts, statementsCount: bankLiquidity.statementsCount,
+        findings: bankLiquidity.findings.map(decorate) },
       completeness: { completenessPct: completeness.completenessPct, counts: completeness.counts,
         stipulations: completeness.stipulations, outstanding: completeness.outstanding,
         ctcBlockers: completeness.ctcBlockers, docsComplete: completeness.docsComplete },

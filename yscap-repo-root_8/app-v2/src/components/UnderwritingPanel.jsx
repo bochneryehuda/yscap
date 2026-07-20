@@ -445,6 +445,62 @@ function SellerChain({ sellerChain }) {
   );
 }
 
+// Bank liquidity — sum every account's ending balance and show it against the cash this deal needs.
+// The per-account table makes clear WHAT was counted (and what was excluded because it sits in an
+// account that isn't the borrower's / a verified entity's).
+function BankLiquidity({ bankLiquidity, appId, onChange }) {
+  if (!bankLiquidity || !(bankLiquidity.accounts || []).length) return null;
+  const money = (n) => n == null ? '—' : `$${Math.round(n).toLocaleString('en-US')}`;
+  const req = bankLiquidity.requiredLiquidity;
+  const total = bankLiquidity.qualifyingTotal || 0;
+  const covered = req != null ? total >= req - 1 : null;
+  const accounts = bankLiquidity.accounts || [];
+  return (
+    <div style={{ marginBottom: 22 }}>
+      <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px' }}>Bank liquidity — do the accounts cover the cash needed?</h4>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+        <div style={{ border: '1px solid var(--line,#E7E1D3)', borderRadius: 10, background: 'var(--card,#fff)', padding: '8px 12px', minWidth: 150 }}>
+          <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)' }}>Liquid assets on file</div>
+          <div style={{ fontSize: 16, fontWeight: 700 }}>{money(total)}</div>
+        </div>
+        <div style={{ border: '1px solid var(--line,#E7E1D3)', borderRadius: 10, background: 'var(--card,#fff)', padding: '8px 12px', minWidth: 150 }}>
+          <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)' }}>Required liquidity</div>
+          <div style={{ fontSize: 16, fontWeight: 700 }}>{req != null ? money(req) : <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--muted,#4B585C)' }}>set once a product is registered</span>}</div>
+        </div>
+        {covered != null && (
+          <div style={{ border: '1px solid var(--line,#E7E1D3)', borderRadius: 10, background: 'var(--card,#fff)', padding: '8px 12px', minWidth: 150 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)' }}>{covered ? 'Covered' : 'Short by'}</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: covered ? 'var(--good,#3F7A5B)' : 'var(--bad,#B4453B)' }}>{covered ? '✓' : money(bankLiquidity.shortfall)}</div>
+          </div>
+        )}
+      </div>
+      <div style={{ overflowX: 'auto', marginBottom: (bankLiquidity.findings || []).length ? 12 : 0 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+          <thead>
+            <tr style={{ textAlign: 'left', color: 'var(--muted,#4B585C)' }}>
+              <th style={{ padding: '4px 8px', fontWeight: 700 }}>Account holder</th>
+              <th style={{ padding: '4px 8px', fontWeight: 700 }}>Bank</th>
+              <th style={{ padding: '4px 8px', fontWeight: 700, textAlign: 'right' }}>Ending balance</th>
+              <th style={{ padding: '4px 8px', fontWeight: 700 }}>Counts?</th>
+            </tr>
+          </thead>
+          <tbody>
+            {accounts.map((a, i) => (
+              <tr key={i} style={{ borderTop: '1px solid var(--line,#EEE8DA)' }}>
+                <td style={{ padding: '4px 8px' }}>{a.holder || '—'}{a.statementCount > 1 ? <span style={{ color: 'var(--muted,#4B585C)' }}> · {a.statementCount} statements</span> : null}</td>
+                <td style={{ padding: '4px 8px' }}>{a.bankName || '—'}</td>
+                <td style={{ padding: '4px 8px', textAlign: 'right' }}>{money(a.ending)}</td>
+                <td style={{ padding: '4px 8px', color: a.tied ? 'var(--good,#3F7A5B)' : 'var(--muted,#4B585C)' }}>{a.tied ? 'yes' : 'not counted — needs entity docs'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {(bankLiquidity.findings || []).map((f, i) => <Finding key={f.id || `bl${i}`} appId={appId} f={f} onChange={onChange} resolvable={false} />)}
+    </div>
+  );
+}
+
 // Amendments — the GOVERNING contract terms (base overlaid by executed amendments) + their source.
 function Amendments({ amendments, appId, onChange }) {
   if (!amendments || !amendments.hasAmendments) return null;
@@ -546,6 +602,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
   const metrics = data && data.metrics;
   const entityChain = data && data.entityChain;
   const sellerChain = data && data.sellerChain;
+  const bankLiquidity = data && data.bankLiquidity;
   const completeness = data && data.completeness;
   const risk = data && data.risk;
   const amendments = data && data.amendments;
@@ -631,6 +688,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
       {/* entity-resolution chain */}
       <SellerChain sellerChain={sellerChain} />
       <EntityChain entityChain={entityChain} />
+      <BankLiquidity bankLiquidity={bankLiquidity} appId={appId} onChange={load} />
 
       {/* document freshness / staleness */}
       <StalenessBoard staleness={staleness} />
