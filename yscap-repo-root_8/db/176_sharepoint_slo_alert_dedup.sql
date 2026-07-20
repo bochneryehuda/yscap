@@ -1,0 +1,11 @@
+-- Per-document SLO-alert stamp: the "already told the owner about this stuck
+-- document" marker. Root fix for the alert BOMBARDMENT (owner-reported
+-- 2026-07-20: "the same email several times a day / within minutes"). The old
+-- dedup keyed on a hash of the OLDEST 8 stuck documents; any shift of that set —
+-- a document *resolving*, the 9th sliding into the top-8, a redeploy — changed
+-- the hash and bypassed the 6h cooldown, re-sending a near-identical email.
+-- Keying the dedup per-document instead means the alert fires only for a
+-- GENUINELY NEW stuck document and never for churn/resolution of the existing
+-- set. Idempotent; no backfill needed (NULL = never-alerted = eligible, which
+-- is the correct initial state).
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS sharepoint_slo_alerted_at timestamptz;

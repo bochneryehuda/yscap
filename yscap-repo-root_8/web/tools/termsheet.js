@@ -65,6 +65,45 @@
   function effPurchase() { return isRefi() ? num("asIs") : num("price"); }  // total purchase price
 
   /* ---------------- build the engine input ---------------- */
+  // ---------------- interest reserve: months <-> amount, "all one" ----------------
+  // Owner-directed 2026-07-20: the reserve is ONE value shown two ways. Fill EITHER the
+  // months field or the dollar field and the other fills in to match. The field the user
+  // drives is the SOURCE; the other is a DERIVED mirror (data-derived="1"), written for
+  // display only. gather() feeds the engine ONLY the source field (a derived field reads
+  // as 0), so the priced/registered result is byte-identical to the old "fill one, leave
+  // the other blank" behavior — no pricing math changes.
+  function irIsDerived(id) { var e = el(id); return !!(e && e.dataset && e.dataset.derived === "1"); }
+  function setIrSource(src) {
+    var m = el("irMonths"), a = el("irAmount");
+    if (src === "amount") { if (a) delete a.dataset.derived; if (m) m.dataset.derived = "1"; }
+    else { if (m) delete m.dataset.derived; if (a) a.dataset.derived = "1"; }
+  }
+  // Fill the non-source field with the equivalent, from the sized monthly payment.
+  function syncIrMirror(d, sized) {
+    var m = el("irMonths"), a = el("irAmount");
+    if (!m || !a) return;
+    var pay = (d && d.fullPayment > 0) ? d.fullPayment : 0;
+    // Source = the field NOT marked derived (the flags carry real user intent, set on
+    // input). Only when NEITHER is flagged (a fresh load / portal prefill) do we infer
+    // from the value: a real dollar amount wins (matches the engine's amount>0 override),
+    // otherwise months. Trusting the flag — not the current value — means clearing the
+    // source field can never resurrect the stale mirror as a phantom reserve.
+    var amountIsSource = (a.dataset.derived === "1") ? false
+      : (m.dataset.derived === "1") ? true
+      : num("irAmount") > 0;
+    if (amountIsSource) {
+      m.dataset.derived = "1"; delete a.dataset.derived;
+      var mo = (sized && pay > 0) ? (num("irAmount") / pay) : 0;
+      var mv = mo > 0 ? String(Math.round(mo * 10) / 10) : "";
+      if (m.value !== mv) m.value = mv;
+    } else {
+      a.dataset.derived = "1"; delete m.dataset.derived;
+      var amt = (sized && pay > 0 && num("irMonths") > 0) ? Math.round(num("irMonths") * pay) : 0;
+      var av = amt > 0 ? String(amt) : "";
+      if (a.value !== av) a.value = av;
+    }
+  }
+
   function gather() {
     var o = {
       loanType: isRefi() ? "Refinance" : "Purchase",
@@ -81,8 +120,8 @@
       arv: num("arv"),
       rehabBudget: num("construction"),
       term: num("tsTerm") || 12,
-      irMonths: num("irMonths"),
-      irAmount: num("irAmount"),   // exact interest-reserve $ amount (overrides months when > 0)
+      irMonths: irIsDerived("irMonths") ? 0 : num("irMonths"),
+      irAmount: irIsDerived("irAmount") ? 0 : num("irAmount"),   // exact $ reserve (overrides months when > 0); a DERIVED mirror reads as 0 so only the SOURCE field prices
       accrual: "Non-Dutch",
       sqftAddition: chk("sqft"),
       heavyRehab: (YSP.normStrategy(dealType()) === "FF") ? (val("rehabScope") === "heavy") : false,
@@ -641,6 +680,7 @@
     if (chosenProgram === "gold") { var gd = calcGold(); if (!gd || gd.unavailable) chosenProgram = null; else d = gd; }
     applyProgramView(ready);                                      // show/hide the detail; slider only for Standard
     var sized = ready && d.totalLoan > 0 && d.status !== "INELIGIBLE";
+    syncIrMirror(d, sized);   // reflect the reserve into the sibling months/amount field
     var EM = "\u2014";
 
     YS.put("rLoan", sized ? YS.fmtUSD(d.totalLoan) : EM);
@@ -1707,6 +1747,13 @@
         var f = inp.closest && inp.closest(".field"); if (f) f.classList.remove("invalid");
       };
       inp.addEventListener("input", h); inp.addEventListener("change", h);
+    });
+    // Interest reserve months<->amount: capture-phase so the SOURCE field is marked
+    // BEFORE the (bubble-phase) recompute above reads it. Programmatic mirror writes set
+    // .value directly and never fire "input", so this can never loop.
+    ["irMonths", "irAmount"].forEach(function (id) {
+      var e = el(id);
+      if (e) e.addEventListener("input", function () { setIrSource(id === "irAmount" ? "amount" : "months"); }, true);
     });
     ["origPrice", "price"].forEach(function (id) { var e = el(id); if (e) e.addEventListener("blur", validateAssign); });
     var slider = el("rLevSlider");

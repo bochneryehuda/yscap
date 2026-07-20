@@ -523,12 +523,13 @@ export default function StaffNewFile() {
             ) : unitsMode(f.propertyType) === 'multi' ? (
               <div className="field"><label>Units</label>
                 <input className="input" type="number" min="5" value={f.units || ''} onChange={e => set('units', e.target.value)} placeholder="5 or more" /></div>
-            ) : f.propertyType ? (
+            ) : unitsMode(f.propertyType) === 'single' ? (
               // Single-unit type (SFR / Condo / Townhouse): 1 unit, locked.
               <div className="field"><label>Units</label>
                 <input className="input" value="1 unit" disabled readOnly /></div>
             ) : (
-              // No type picked yet — plain entry as a fallback.
+              // 'open' type (New Construction / Commercial) or no type yet —
+              // plain, editable entry; never locked or forced to 1.
               <div className="field"><label>Units</label>
                 <input className="input" type="number" min="1" value={f.units} onChange={e => set('units', e.target.value)} /></div>
             )}

@@ -778,7 +778,12 @@ async function applyChecklistStatuses(appId, task, options = {}) {
       if (!optId && checklist.normalizeInbound(fieldId, String(cf.value))) optId = String(cf.value);
       if (!optId) continue;
 
-      const inbound = checklist.normalizeInbound(fieldId, optId);
+      // Cap inbound so the sync can never COMPLETE a required condition:
+      // evidence from ClickUp lands at 'received' at most; the terminal
+      // 'satisfied' sign-off only happens through the portal's signOffGate,
+      // where fulfillment is verified (owner-directed root-cause fix — the
+      // inbound sync is a second door to 'satisfied' that bypasses the gate).
+      const inbound = checklist.capInbound(checklist.normalizeInbound(fieldId, optId));
       if (!inbound) continue;
 
       // Only mapped items are ever touched (clickup_field_id seeded by db/050).
@@ -791,9 +796,22 @@ async function applyChecklistStatuses(appId, task, options = {}) {
       const cur = row.rows[0].status;
       if (!checklist.shouldApplyInbound(inbound, cur)) continue;
 
-      await db.query(
-        `UPDATE checklist_items SET status=$2, clickup_option_id=$3, updated_at=now() WHERE id=$1`,
-        [row.rows[0].id, inbound, optId]);
+      // An inbound 'issue' is sticky and applies even over a signed-off condition
+      // (a real problem flagged in ClickUp) — so it must also DROP the sign-off,
+      // or the item lands at status='issue' with signed_off_at still set and the
+      // clear-to-close gate keeps counting it done. (Same "evidence/verification
+      // invalidated → clear the sign-off" rule as the document-review reject.)
+      if (inbound === 'issue') {
+        await db.query(
+          `UPDATE checklist_items SET status=$2, clickup_option_id=$3,
+                  signed_off_at=NULL, signed_off_by=NULL, reviewed_at=NULL, reviewed_by=NULL, updated_at=now()
+             WHERE id=$1`,
+          [row.rows[0].id, inbound, optId]);
+      } else {
+        await db.query(
+          `UPDATE checklist_items SET status=$2, clickup_option_id=$3, updated_at=now() WHERE id=$1`,
+          [row.rows[0].id, inbound, optId]);
+      }
     }
   } catch (_) { /* best-effort — a checklist glitch never breaks ingest */ }
 }
@@ -1182,6 +1200,20 @@ async function ingestTask(task, options = {}, opts = {}) {
  * UPDATES an existing file — only new-file creation is gated.
  * Returns { applicationId, matchStatus, detail }.
  */
+// Decide the inbound processor from ClickUp's two fields (the resolved staff id from
+// the people-picker, and from the "Processor Email" text field). Pure + unit-tested.
+// GRACE WINDOW (owner-directed 2026-07-20): adopt a one-sided people-picker (the
+// email field is filled a moment later by a ClickUp automation, so people-set/
+// email-empty is a fresh assignment lagging). Clear a portal processor ONLY when
+// both fields are set and name DIFFERENT people (the stale-duplicate signature). A
+// stale email alone (people empty, email set — the Lisa Katz artifact) never asserts
+// nor clears; both-empty is silence.
+function decideInboundProcessor(userId, emailId) {
+  if (userId && emailId) return userId === emailId ? { adopt: userId, conflict: false } : { adopt: null, conflict: true };
+  if (userId && !emailId) return { adopt: userId, conflict: false };
+  return { adopt: null, conflict: false };
+}
+
 async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) {
   const { allowCreate = false, forceCreate = false, folderId = null, loanOfficerEmail = null, processorEmail = null, coBorrowerId = null, coBorrowerTaskId = null } = ctx;
   const a = read.app || {};
@@ -1191,18 +1223,20 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
   // "Processor Email" text field an automation fills from it. Duplicating a task can
   // leave the two DISAGREEING (e.g. the people-field cleared but the stale email left
   // pointing at the old processor) — that stale email is exactly how Lisa Katz kept
-  // syncing in as a processor nobody chose. Rule: adopt a processor from ClickUp ONLY
-  // when BOTH fields resolve to the SAME staff person. On a conflict, adopt nobody and
-  // CLEAR any stale portal processor (see the conflict-clear after the UPDATE below).
+  // syncing in as a processor nobody chose.
   // processorEmail was already translated to a staff email by routing.processorEmailFor.
   const prByEmail = await resolveStaffByEmail(processorEmail);
   const prByUser = await resolveStaffByClickupUserId(read.processorClickupId);
-  const processorsAgree = !!(prByUser.id && prByEmail.id && prByUser.id === prByEmail.id);
-  const agreedProcessorId = processorsAgree ? prByUser.id : null;
-  // Conflict = at least one field names someone, but they don't agree (this INCLUDES
-  // the duplicate-bug case: one field cleared, the other still populated). Both-empty
-  // is NOT a conflict (no signal) — never clobber a portal value on ClickUp silence.
-  const processorConflict = !!(prByUser.id || prByEmail.id) && !processorsAgree;
+  // GRACE WINDOW (owner-directed 2026-07-20, refines the two-field-agreement rule):
+  // a processor assigned the NORMAL way sets ClickUp's people-picker FIRST; the
+  // "Processor Email" text field is filled a few moments later by a ClickUp
+  // automation. So "people-field set, email empty" is a FRESH assignment whose email
+  // is still lagging — ADOPT it (the old strict rule refused it, and even cleared the
+  // portal, during that window). Only a genuine STALE-DUPLICATE signature — BOTH
+  // fields set but naming DIFFERENT people — clears a portal processor. A stale email
+  // ALONE (people-field empty, email still set = the Lisa Katz duplicate artifact)
+  // never asserts a processor NOR clears one; both-empty = silence = never clobber.
+  const { adopt: agreedProcessorId, conflict: processorConflict } = decideInboundProcessor(prByUser.id, prByEmail.id);
   // Underwriter comes from ClickUp's "Underwriter" users field (may hold several
   // users — take the first), matched to staff_users by clickup_user_id. Pull-only.
   const uw = await resolveStaffByClickupUserId(firstUserIdFromField(task, F.PIPELINE.underwriter));
@@ -1236,10 +1270,10 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     internal_status: internal, status: external,
     clickup_extra: Object.keys(read.extra).length ? JSON.stringify(read.extra) : null,
     // Officer + processor assignment (COALESCE on update: reassign when resolved,
-    // keep when not). Bidirectional: a real, AGREED ClickUp processor flows in here
-    // (agreedProcessorId is non-null only when BOTH ClickUp fields name the same
-    // person), and an explicit portal pick flows OUT via the outbound push (which
-    // now writes BOTH ClickUp processor fields so they always agree).
+    // keep when not). Bidirectional: a real ClickUp processor flows in here
+    // (agreedProcessorId — the two fields agree, OR the people-picker is set with the
+    // email still lagging), and an explicit portal pick flows OUT via the outbound
+    // push (which writes BOTH ClickUp processor fields so they always agree).
     loan_officer_id: lo.id, loan_officer_name: lo.name, processor_id: agreedProcessorId,
     // Underwriter assignment — same COALESCE semantics: set when resolved, keep when not.
     underwriter_id: uw.id,
@@ -1594,5 +1628,5 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
 
 module.exports = {
   ingestTask, resolveBorrower, upsertLlc, upsertTrackRecord, linkOrCreateApplication,
-  applyChecklistStatuses, identityFrom, RTL_PROGRAMS,
+  applyChecklistStatuses, identityFrom, RTL_PROGRAMS, decideInboundProcessor,
 };

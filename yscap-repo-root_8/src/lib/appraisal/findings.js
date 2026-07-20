@@ -213,7 +213,12 @@ function computeFindings(appraisal, file, opts = {}) {
   }
 
   // ---- 9. ARV must exist on a reno deal ----
-  if (v.arv == null && A.formType !== 'FNM1073' && v.conditionOfAppraisal && /SubjectTo/.test(v.conditionOfAppraisal)) {
+  // Trust the basis extract.js ALREADY computed (v.basis==='ARV' covers SubjectTo* AND the
+  // AsIs-plus-hypothetical-completion AND the inferred-from-narrative paths). The old case-sensitive
+  // /SubjectTo/ regex on the raw enum missed the latter two, so a reno appraisal with an unreadable
+  // ARV could slip past this FATAL gate to clear-to-close. Keep the enum test as a belt-and-suspenders.
+  const isRenoBasis = v.basis === 'ARV' || /SubjectTo/i.test(String(v.conditionOfAppraisal || ''));
+  if (v.arv == null && A.formType !== 'FNM1073' && isRenoBasis) {
     out.push(finding({ code: 'arv_unreadable', severity: 'fatal', field: 'arv',
       title: 'ARV could not be read on a subject-to (renovation) appraisal',
       howTo: 'ARV is required to price a renovation loan (LTARV). Verify the report and enter the ARV.',

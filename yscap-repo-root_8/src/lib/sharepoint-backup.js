@@ -911,7 +911,29 @@ async function mirrorRow(row, retried = false) {
 async function mirrorRowInner(row, scopeKey) {
   // Read the bytes FIRST: a missing/corrupt local file must fail the row
   // before any folder is created or a version counter is bumped.
-  const bytes = await storage.read(row.storage_ref);
+  let bytes;
+  try {
+    bytes = await storage.read(row.storage_ref);
+  } catch (e) {
+    // A read failure while the persistent disk is transiently unmounted (common
+    // at Render boot/redeploy) must NOT be parked permanent (ENOENT is a HARD
+    // permanent pattern) — the file is fine, the mount lagged. Only treat a
+    // missing file as permanent when the disk itself is confirmed healthy; if the
+    // disk is not writable/mounted, raise a TRANSIENT error so the row retries
+    // instead of requiring a human "Retry" (round-2 audit F4).
+    let diskOk = true;
+    try {
+      const p = storage.probe();
+      // Not healthy = the base is unwritable, OR a STORAGE_DIR was configured (prod
+      // intent) but we are NOT on it — i.e. the persistent mount hasn't come up and
+      // we fell back to an ephemeral dir. In that state a read of a real-disk file
+      // ENOENTs because the mount is lagging, not because the file is gone, so it
+      // must retry, not park permanent (round-2 audit item 4).
+      diskOk = !!(p && p.ok && !(p.configured && p.persistent === false));
+    } catch (_) { diskOk = false; }
+    if (!diskOk) throw new Error('storage temporarily unavailable (persistent disk not mounted/writable) — will retry');
+    throw e;   // disk healthy but the file is genuinely gone → permanent local-missing
+  }
 
   // Local integrity gate: the bytes on disk must be the bytes the upload
   // recorded. A mismatch means the local copy is damaged (or a ref collision)
@@ -1818,9 +1840,9 @@ async function reconciliation() {
         count(*) FILTER (WHERE sharepoint_backup_ref IS NOT NULL)::int                                  AS mirrored,
         count(*) FILTER (WHERE sharepoint_skipped_reason IS NOT NULL)::int                              AS skipped,
         count(*) FILTER (WHERE sharepoint_backed_up_at IS NULL AND storage_ref IS NOT NULL
-                          AND COALESCE(storage_provider,'local')='local')::int                          AS pending,
+                          AND COALESCE(storage_provider,'local')='local' AND ${NEVER_MIRROR_SQL})::int   AS pending,
         count(*) FILTER (WHERE sharepoint_backed_up_at IS NULL AND storage_ref IS NOT NULL
-                          AND sharepoint_backup_attempts >= $1)::int                                     AS exhausted,
+                          AND sharepoint_backup_attempts >= $1 AND ${NEVER_MIRROR_SQL})::int             AS exhausted,
         count(*) FILTER (WHERE sharepoint_backup_ref IS NOT NULL AND sharepoint_verified_at IS NULL)::int AS unverified,
         count(*) FILTER (WHERE sharepoint_integrity = 'ok'
                           OR sharepoint_integrity LIKE 'ok %')::int                                      AS verified_ok,
@@ -1838,8 +1860,8 @@ async function reconciliation() {
                           AND COALESCE(storage_provider,'local') <> 'local')::int                        AS nonlocal_pending,
         EXTRACT(EPOCH FROM (now() - min(created_at) FILTER (
            WHERE sharepoint_backed_up_at IS NULL AND storage_ref IS NOT NULL
-             AND COALESCE(storage_provider,'local')='local')))::bigint                                  AS oldest_pending_secs
-      FROM documents`,
+             AND COALESCE(storage_provider,'local')='local' AND ${NEVER_MIRROR_SQL})))::bigint          AS oldest_pending_secs
+      FROM documents d`,
     [MAX_ATTEMPTS]);
   const r = rows[0];
   const oldestHrs = r.oldest_pending_secs != null ? Math.round(r.oldest_pending_secs / 360) / 10 : null;
@@ -1920,6 +1942,7 @@ async function stuckDocuments(limit = 25) {
             d.sharepoint_backup_error    AS last_error,
             d.sharepoint_skipped_reason  AS skipped_reason,
             round(EXTRACT(EPOCH FROM (now() - d.created_at)) / 3600.0, 1) AS age_hours,
+            d.sharepoint_slo_alerted_at AS slo_alerted_at,
             COALESCE(d.application_id, ci.application_id)                        AS app_id,
             COALESCE(d.borrower_id, ci.borrower_id, l.borrower_id, a.borrower_id) AS borrower_id,
             TRIM(CONCAT_WS(' ', b.first_name, b.last_name))                     AS borrower_name,
@@ -1932,6 +1955,12 @@ async function stuckDocuments(limit = 25) {
       WHERE d.sharepoint_backed_up_at IS NULL
         AND d.storage_ref IS NOT NULL
         AND COALESCE(d.storage_provider,'local') = 'local'
+        -- Deliberately-never-mirrored kinds (heter iska, appraisal photos) and
+        -- lead-CRM attachments are NOT stuck backlog: the settle pass stamps them
+        -- skipped. Excluding them here keeps a not-yet-settled policy doc out of
+        -- the breach/alert (A-Z round-2 audit F2 — the alert and the settle set
+        -- derive from the same NEVER_MIRROR map so they can't diverge).
+        AND ${NEVER_MIRROR_SQL}
         AND d.created_at < now() - make_interval(hours => $1)
       ORDER BY d.created_at ASC
       LIMIT $2`,
@@ -2127,6 +2156,47 @@ async function clearAlert(lockKey) {
 async function claimSloAlert(signature) { return claimAlert('sp-slo-alert', signature, sloAlertCooldownMin()); }
 async function clearSloAlert() { return clearAlert('sp-slo-alert'); }
 
+// ---- per-document SLO-alert dedup (the bombardment fix, round-2 audit F1) ----
+// The old dedup keyed on a hash of the OLDEST 8 stuck docs, so any shift of that
+// set (a doc resolving, the 9th sliding in, a redeploy) changed the hash and
+// bypassed the cooldown — re-sending a near-identical email several times a day.
+// The dedup is now PER DOCUMENT: the alert fires only when a stuck doc has not
+// been alerted within the cooldown window (a genuinely NEW problem), never for
+// churn/resolution of the existing set. A global time-cooldown row is the floor.
+async function sloCooldownActive() {
+  try {
+    const r = await db.query(`SELECT 1 FROM sync_locks WHERE lock_key='sp-slo-alert' AND expires_at > now()`);
+    return r.rows.length > 0;
+  } catch (e) {
+    // Fail CLOSED (treat as active → suppress): a missed reminder beats a storm.
+    console.warn(`[sp-sync] SLO cooldown check failed (${e.message}) — suppressing`);
+    return true;
+  }
+}
+async function armSloCooldown() {
+  const cd = sloAlertCooldownMin();
+  try {
+    await db.query(
+      `INSERT INTO sync_locks (lock_key, holder, expires_at)
+       VALUES ('sp-slo-alert','backlog', now() + make_interval(mins => $1))
+       ON CONFLICT (lock_key) DO UPDATE SET holder='backlog', expires_at = now() + make_interval(mins => $1)`,
+      [cd]);
+  } catch (_) { /* best-effort; a failed arm leaves no active cooldown → fails SAFE toward re-alerting, never silent */ }
+}
+async function markSloAlerted(ids) {
+  if (!ids || !ids.length) return;
+  try { await db.query(`UPDATE documents SET sharepoint_slo_alerted_at = now() WHERE id = ANY($1)`, [ids]); }
+  catch (_) { /* best-effort; a failed stamp leaves slo_alerted_at NULL → the doc re-alerts next pass (fails SAFE, never silently suppressed) */ }
+}
+// A stuck doc is "genuinely new" (worth a fresh email even mid-cooldown) when it
+// has never been alerted, or its last alert has aged past the cooldown window
+// (the re-remind cadence for a doc that stays stuck).
+function sloDocIsNew(d, cooldownMin) {
+  if (!d.slo_alerted_at) return true;
+  const t = new Date(d.slo_alerted_at).getTime();
+  return !Number.isFinite(t) || (Date.now() - t) > cooldownMin * 60000;
+}
+
 // R4 — the SLO watchdog: on each interval sweep, if the oldest un-mirrored doc
 // is past the threshold (or anything is exhausted), ESCALATE the stuck docs
 // (settle phantoms, force-attempt never-tried ones, card the rest) and notify
@@ -2140,23 +2210,36 @@ async function checkBacklogSlo() {
     await closeResolvedDocCards();
     const recon = await reconciliation();
     const breaching = recon.slo.breached || recon.slo.exhausted > 0;
-    if (!breaching) { await clearSloAlert(); return; }
+    // NOTE: do NOT delete the cooldown row on a transient non-breach — that let
+    // threshold flapping reset the cooldown and re-alert. It expires on its own.
+    if (!breaching) return;
     // Make the stuck docs visible + actionable BEFORE alerting, so the email
     // and the review queue agree (this also force-attempts never-tried docs, so
     // a transient stray may resolve itself and drop out of the alert entirely).
     const esc = await escalateStuckDocs().catch(() => ({ settled: 0, carded: 0 }));
-    // Re-read after self-healing so the alert reflects reality.
-    const stuck = (await stuckDocuments(8)).filter((d) => !d.phantom);
+    // Re-read the FULL stuck set (not just the oldest 8 — that LIMIT was the
+    // churn source: a doc resolving slid the 9th in and re-alerted). We decide +
+    // stamp over the whole set; the email still only NAMES the oldest few.
+    const allStuck = (await stuckDocuments(200)).filter((d) => !d.phantom);
     // Only alert when there are named, past-SLO documents to show. If nothing is
     // nameable (escalation cleared it, or the only breach is a still-young
     // exhausted doc / a non-'local' doc that stuckDocuments can't list), skip the
     // email — a vague "0 document(s)…" alert helps no one, and those docs surface
     // through their own Sync-review cards (stray-sweep / permanent-error carding).
-    if (stuck.length === 0) return;
-    // Persistent dedup: only alert if we can claim the cooldown row for THIS
-    // stuck set. A redeploy mid-breach no longer re-sends the same email.
-    if (!(await claimSloAlert(sloSignature(stuck)))) return;
-    const named = stuck.slice(0, 6).map((d) =>
+    if (allStuck.length === 0) return;
+    // PER-DOCUMENT dedup (the bombardment fix): stay quiet while the cooldown is
+    // active UNLESS a genuinely NEW stuck doc appeared (one not alerted within the
+    // window). A doc resolving, the set reshuffling, or a redeploy never makes an
+    // existing doc "new", so none of those re-alert. A brand-new stuck doc still
+    // pages at once. Then re-arm the window and stamp the whole current set so it
+    // won't re-trigger until it ages past the cooldown (the ~6h re-remind cadence).
+    const cooldownMin = sloAlertCooldownMin();
+    const hasNewDoc = allStuck.some((d) => sloDocIsNew(d, cooldownMin));
+    if ((await sloCooldownActive()) && !hasNewDoc) return;
+    await armSloCooldown();
+    await markSloAlerted(allStuck.map((d) => d.id));
+    const stuck = allStuck;
+    const named = stuck.slice(0, 8).map((d) =>
       ({ label: (d.borrower_name || 'document') + (d.filename ? ` — ${d.filename}` : ''),
          value: `${d.age_hours}h · ${d.why}` }));
     const notify = require('./notify');

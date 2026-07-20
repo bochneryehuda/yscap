@@ -58,9 +58,10 @@ export default function EditFileDetails({ app, onSaved }) {
         payoffAmount: isRefi ? f.payoffAmount : '',
         originalPurchasePrice: isRefi ? f.originalPurchasePrice : '',
         acquisitionDate: isRefi ? f.acquisitionDate : '',
-        isAssignment: f.isAssignment,
-        underlyingContractPrice: f.isAssignment ? f.underlyingContractPrice : '',
-        assignmentFee: f.isAssignment ? Math.max(0, (Number(f.purchasePrice) || 0) - (Number(f.underlyingContractPrice) || 0)) : '',
+        // Assignment is a purchase concept — never send it on a refinance.
+        isAssignment: f.isAssignment && !isRefi,
+        underlyingContractPrice: (f.isAssignment && !isRefi) ? f.underlyingContractPrice : '',
+        assignmentFee: (f.isAssignment && !isRefi) ? Math.max(0, (Number(f.purchasePrice) || 0) - (Number(f.underlyingContractPrice) || 0)) : '',
       };
       if (addrChanged) {
         const line1 = f.addrLine1.trim();
@@ -123,9 +124,11 @@ export default function EditFileDetails({ app, onSaved }) {
                 </select></label>
             ) : unitsMode(f.propertyType) === 'multi' ? (
               <label><span>Units</span><input className="input" type="number" min="5" value={f.units || ''} onChange={(e) => set('units', e.target.value)} placeholder="5 or more" /></label>
-            ) : f.propertyType ? (
+            ) : unitsMode(f.propertyType) === 'single' ? (
               <label><span>Units</span><input className="input" value="1 unit" disabled readOnly /></label>
             ) : (
+              // 'open' (e.g. New Construction / Commercial from ClickUp) or no type
+              // yet: a free, editable count — never locked or forced to 1.
               <label><span>Units</span><input className="input" type="number" min="0" value={f.units} onChange={(e) => set('units', e.target.value)} /></label>
             )}
             <label className="col-4"><span>Vesting entity / LLC</span>
@@ -180,6 +183,8 @@ export default function EditFileDetails({ app, onSaved }) {
             <label><span>Exp: ground-up</span><input className="input" type="number" min="0" value={f.requestedExpGround} onChange={(e) => set('requestedExpGround', e.target.value)} /></label>
             <label><span>Exp: REO</span><input className="input" type="number" min="0" value={f.requestedExpReo} onChange={(e) => set('requestedExpReo', e.target.value)} /></label>
           </div>
+          {/* Assignment of contract is a purchase concept — hide it on a refinance. */}
+          {!isRefi && (
           <div className="edit-grid" style={{ marginTop: 12 }}>
             <label className="col-4" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               <input type="checkbox" checked={f.isAssignment} onChange={(e) => set('isAssignment', e.target.checked)} />
@@ -193,6 +198,7 @@ export default function EditFileDetails({ app, onSaved }) {
                 </div></label>
             </>}
           </div>
+          )}
           <p className="muted small" style={{ margin: '8px 0 0' }}>Editing the price/ARV/rehab/assignment re-drives the pricing engine when you re-register a product. Every change lands in the file's Activity log with its before/after values.</p>
           <div className="row" style={{ gap: 8, marginTop: 12 }}>
             <button className="btn primary" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save changes'}</button>

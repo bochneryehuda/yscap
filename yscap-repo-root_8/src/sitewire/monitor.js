@@ -14,14 +14,20 @@ const N = (x) => Number(x || 0) || 0;
 const DAY = 86400000;
 const fmt = (c) => '$' + Math.round(N(c) / 100).toLocaleString('en-US');
 
-// Parse a loan-term string ("12 months", "18 mo", "12") into whole months, or null if unclear.
+// Parse a loan-term string ("12 months", "18 mo", "12", "1 year", "1.5 yr") into
+// whole months, or null if unclear. Year-denominated terms are multiplied by 12 —
+// the old month-only regex read "1 year" as 1 MONTH, producing a false immediate
+// past-maturity alert (advisory monitor only; never moves money).
 function parseTermMonths(term) {
   if (term == null) return null;
-  const s = String(term).toLowerCase();
-  const m = s.match(/(\d{1,3})\s*(month|mo|mos)?/);
+  const s = String(term).toLowerCase().trim();
+  const m = s.match(/(\d+(?:\.\d+)?)\s*(years?|yrs?|y|months?|mos?|mo|m)?/);
   if (!m) return null;
-  const n = parseInt(m[1], 10);
-  return Number.isFinite(n) && n > 0 && n <= 600 ? n : null;
+  const num = parseFloat(m[1]);
+  if (!Number.isFinite(num) || num <= 0) return null;
+  const unit = m[2] || 'month';
+  const months = /^y/.test(unit) ? Math.round(num * 12) : Math.round(num);
+  return months > 0 && months <= 600 ? months : null;
 }
 
 const daysBetween = (aMs, bMs) => Math.floor((aMs - bMs) / DAY);

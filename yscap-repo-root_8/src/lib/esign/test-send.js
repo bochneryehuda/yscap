@@ -1,7 +1,7 @@
 /**
  * esign/test-send.js — the admin "send myself a test envelope" tool, now TRACKED.
  *
- * Confirms end-to-end that DocuSign renders our generated Word documents and the
+ * Confirms end-to-end that DocuSign renders our generated PDF documents and the
  * signing experience works — WITHOUT a real loan file. It sends the TWO packages a
  * real borrower would receive, mirroring production (the disclosure and the Heter
  * Iska are SEPARATE packages):
@@ -43,10 +43,11 @@ function sampleData() {
 // Iska are SEPARATE packages). Each carries only the generated doc(s) a test can
 // build — the term sheet + application are file-specific PDFs, absent for a test.
 // genExt MUST mirror orchestrate's package spec so DocuSign is told the true format
-// of the bytes we upload: the disclosure is now a branded PDF (disclosure-pdf.js), the
-// Heter Iska is still a docx (DocuSign converts it). A wrong extension makes DocuSign
-// run a PDF through its docx→PDF converter (corrupt/errored envelope) — the exact bug
-// the genExt indirection prevents on the real send path (orchestrate.buildDefinition).
+// of the bytes we upload: the disclosure AND the Heter Iska are now branded PDFs our
+// server builds (disclosure-pdf.js / iska-pdf.js) — DocuSign accepts PDF natively and
+// does NOT convert them. A wrong extension makes DocuSign run a PDF through its
+// docx→PDF converter (corrupt/errored envelope) — the exact bug the genExt indirection
+// prevents on the real send path (orchestrate.buildDefinition).
 const TEST_PACKAGES = [
   {
     label: 'Term-sheet package (TEST)',
@@ -56,7 +57,7 @@ const TEST_PACKAGES = [
   {
     label: 'Heter Iska (TEST)',
     subject: 'PILOT e-signature TEST — Heter Iska (please review the rendered document)',
-    docs: [{ kind: 'heter_iska', signedKind: 'heter_iska_signed', name: 'Heter Iska (TEST)', prefix: 'iska', genExt: 'docx' }],
+    docs: [{ kind: 'heter_iska', signedKind: 'heter_iska_signed', name: 'Heter Iska (TEST)', prefix: 'iska', genExt: 'pdf' }],
   },
 ];
 

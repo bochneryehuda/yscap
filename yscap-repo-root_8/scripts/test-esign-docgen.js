@@ -95,29 +95,47 @@ eq(dg.fmtDate(null), '', 'date: null → empty');
   ok(vis.includes('Yaakov M') && vis.includes("O'Brien"), 'solo disclosure: borrower still present');
 }
 
-// ---- 5. Heter Iska: nusach byte-preserved, filled, anchored ------------------
+// ---- 5. Heter Iska Word template (KEPT for the office's records): nusach
+//        byte-preserved, filled, anchored. This is dg.buildIska — the .docx the
+//        office keeps. The SENT artifact is now a PDF (dg.generate → buildIskaPdf,
+//        asserted in section 5b and fully in test-esign-iska-pdf.js).
 {
-  const buf = dg.generate('heter_iska', SAMPLE);
+  const buf = dg.buildIska(SAMPLE);
   const xml = docXml(buf), vis = visibleText(buf);
-  ok(!/«[^»]+»/.test(xml), 'iska: no unfilled «merge fields»');
-  ok(vis.includes('נאום'), 'iska: Hebrew nusach preserved');
-  ok(vis.includes('1,287,500.50'), 'iska: loan amount filled');
-  ok(vis.includes('Yaakov M') && vis.includes('Rivka'), 'iska: both declarant names filled');
+  ok(!/«[^»]+»/.test(xml), 'iska docx: no unfilled «merge fields»');
+  ok(vis.includes('נאום'), 'iska docx: Hebrew nusach preserved');
+  ok(vis.includes('1,287,500.50'), 'iska docx: loan amount filled');
+  ok(vis.includes('Yaakov M') && vis.includes('Rivka'), 'iska docx: both declarant names filled');
   for (const a of ['/iska_b1_sig/', '/iska_b1_dt/', '/iska_b2_sig/', '/iska_b2_dt/'])
-    ok(xml.includes(a), `iska carries anchor ${a}`);
-  ok(vis.includes('Date:'), 'iska: draws its own signature + Date line (cell has no border)');
+    ok(xml.includes(a), `iska docx carries anchor ${a}`);
+  ok(vis.includes('Date:'), 'iska docx: draws its own signature + Date line (cell has no border)');
 }
 
-// ---- 6. Heter Iska WITHOUT co-borrower ---------------------------------------
+// ---- 5b. Heter Iska SENT artifact is now a real PDF (owner 2026-07-20) --------
 {
-  const buf = dg.generate('heter_iska', { ...SAMPLE, hasCoBorrower: false, cbFirst: '', cbLast: '' });
+  const buf = dg.generate('heter_iska', SAMPLE);
+  ok(Buffer.isBuffer(buf), "generate('heter_iska') returns a Buffer");
+  eq(buf.slice(0, 5).toString('latin1'), '%PDF-', 'iska is now a real PDF, not a .docx handed to DocuSign');
+  const raw = buf.toString('latin1');
+  ok(raw.includes('1,287,500.50'), 'iska pdf: loan amount drawn');
+  ok(raw.includes('Yaakov M') && raw.includes('Rivka'), 'iska pdf: both declarant names drawn');
+  for (const a of ['/iska_b1_sig/', '/iska_b1_dt/', '/iska_b2_sig/', '/iska_b2_dt/'])
+    ok(raw.includes(a), `iska pdf carries anchor ${a}`);
+}
+
+// ---- 6. Heter Iska WITHOUT co-borrower (docx: cell/label surgery) -------------
+{
+  const buf = dg.buildIska({ ...SAMPLE, hasCoBorrower: false, cbFirst: '', cbLast: '' });
   const xml = docXml(buf), vis = visibleText(buf);
-  ok(!/<w:tc>(?:(?!<w:p[ >])[\s\S])*?<\/w:tc>/.test(xml), 'solo iska: no empty cell');
-  ok(!/\/iska_b2_/.test(xml), 'solo iska: no co-borrower anchors');
-  ok(!vis.includes('Co-Borrower'), 'solo iska: co-borrower name line removed');
-  ok(vis.includes('נאום'), 'solo iska: borrower נאום label kept');
+  ok(!/<w:tc>(?:(?!<w:p[ >])[\s\S])*?<\/w:tc>/.test(xml), 'solo iska docx: no empty cell');
+  ok(!/\/iska_b2_/.test(xml), 'solo iska docx: no co-borrower anchors');
+  ok(!vis.includes('Co-Borrower'), 'solo iska docx: co-borrower name line removed');
+  ok(vis.includes('נאום'), 'solo iska docx: borrower נאום label kept');
   // exactly one נאום label remains (the borrower's; the co one is gone)
-  eq((vis.match(/נאום/g) || []).length, 1, 'solo iska: exactly one declarant label remains');
+  eq((vis.match(/נאום/g) || []).length, 1, 'solo iska docx: exactly one declarant label remains');
+  // the SENT solo PDF carries only the borrower anchors, no co-borrower ones
+  const pdf = dg.generate('heter_iska', { ...SAMPLE, hasCoBorrower: false, cbFirst: '', cbLast: '' }).toString('latin1');
+  ok(pdf.includes('/iska_b1_sig/') && !pdf.includes('/iska_b2_sig/'), 'solo iska pdf: borrower anchor only, no co-borrower anchor');
 }
 
 // ---- 7. loadDocGenData address fallback (stub db) ----------------------------

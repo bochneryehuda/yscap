@@ -66,3 +66,22 @@ if (subjStreet) {
 }
 if (addrFail) { console.log(`\n${addrFail} ADDRESS REGRESSION FAILURE(S)`); process.exit(1); }
 console.log('\nALL address-mismatch regression assertions passed');
+
+// ---- HARD regression: arv_unreadable must key off the computed BASIS, not a raw enum regex ----
+// A reno appraisal whose basis extract() resolved to 'ARV' via the AsIs-plus-hypothetical or the
+// inferred path (conditionOfAppraisal is 'AsIs'/null, so the old /SubjectTo/ regex missed it) with
+// an UNREADABLE arv must still raise the FATAL — else it slips past clear-to-close.
+let basisFail = 0;
+const bAssert = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) basisFail++; };
+const codesFor = (vals) => computeFindings({ ...A, formType: 'FNM1004', values: { ...A.values, ...vals } }, base, { today: '2026-07-19' }).map((x) => x.code);
+console.log('\n--- arv_unreadable basis regression ---');
+bAssert(codesFor({ basis: 'ARV', arv: null, conditionOfAppraisal: 'AsIs' }).includes('arv_unreadable'),
+  'basis=ARV via AsIs+hypothetical, arv unreadable → FATAL fires');
+bAssert(codesFor({ basis: 'ARV', arv: null, conditionOfAppraisal: null }).includes('arv_unreadable'),
+  'basis=ARV inferred (no condition enum), arv unreadable → FATAL fires');
+bAssert(codesFor({ basis: 'ARV', arv: null, conditionOfAppraisal: 'SubjectToRepairs' }).includes('arv_unreadable'),
+  'belt-and-suspenders: the SubjectTo enum path still fires');
+bAssert(!codesFor({ basis: 'ASIS', arv: null, conditionOfAppraisal: 'AsIs' }).includes('arv_unreadable'),
+  'a pure As-Is deal (basis=ASIS) does NOT fire the reno-ARV fatal');
+if (basisFail) { console.log(`\n${basisFail} BASIS REGRESSION FAILURE(S)`); process.exit(1); }
+console.log('\nALL arv_unreadable basis regression assertions passed');
