@@ -7,7 +7,11 @@
  * never a raw call from a route. Non-see-all staff are scoped to their assigned files.
  */
 const express = require('express');
-const router = express.Router();
+// safe-router forwards any async-handler rejection to the global JSON error middleware
+// (fast generic 500/503) instead of hanging the request — Express 4 does not catch
+// rejected promises from async handlers, and several draw-desk handlers await a DB read
+// before their own try/catch (a transient DB error or an out-of-range :id would hang).
+const router = require('../lib/safe-router')();
 const db = require('../db');
 const cfg = require('../config');
 const { requireAuth, requireStaff, requirePermission } = require('../auth');
@@ -554,7 +558,9 @@ router.post('/rules', requirePermission('platform_setup'), async (req, res) => {
   const feeVirtual = Number.isFinite(vFee) && vFee >= 0 ? Math.round(vFee) : 29900;
   const pRaw = b.fee_cents_physical;
   const pFee = Number(pRaw);
-  const feePhysical = pRaw == null || pRaw === '' || !Number.isFinite(pFee) ? null : Math.round(pFee);
+  // A negative physical fee is invalid → null (falls back to the virtual fee downstream), matching the
+  // virtual guard above. Never store a negative fee — it would push a negative processing_fee_cents.
+  const feePhysical = pRaw == null || pRaw === '' || !Number.isFinite(pFee) || pFee < 0 ? null : Math.round(pFee);
   try {
     const row = (await db.query(
       `INSERT INTO sitewire_inspection_rules (capital_partner_id, partner_label, program, inspection_method, require_sitewire_inspector, require_capital_partner_approval, allow_reallocation, fee_cents_virtual, fee_cents_physical, allow_virtual, allow_physical, handled_externally)

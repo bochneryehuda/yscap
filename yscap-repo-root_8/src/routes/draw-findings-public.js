@@ -10,7 +10,10 @@
  * unknown/again token is a plain 404; acceptance only ever moves delivered → accepted.
  */
 const express = require('express');
-const router = express.Router();
+// safe-router forwards any async-handler rejection to the global JSON error middleware
+// (fast generic 500) instead of hanging the request. These are unauthenticated public
+// routes — a transient DB error must never leave the borrower's accept link spinning.
+const router = require('../lib/safe-router')();
 const db = require('../db');
 const notify = require('../lib/notify');
 const borrowerSafe = require('../lib/borrower-safe');

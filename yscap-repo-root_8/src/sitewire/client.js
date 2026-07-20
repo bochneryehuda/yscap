@@ -28,7 +28,14 @@ const TIMEOUT_MS = Math.max(1000, parseInt(process.env.SITEWIRE_TIMEOUT_MS || '2
 const BASE_BACKOFF_MS = 500, MAX_BACKOFF_MS = 8000, RETRY_AFTER_MAX_MS = 60000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function isRetryableStatus(s) { return s === 429 || (s >= 500 && s <= 599); }
+function isRetryableStatus(s) { return s === 429 || (s >= 500 && s <= 599); } // IN-CALL retry (idempotent GET/PATCH only)
+// Worker-facing OUTAGE classification (sets err.retryable, read by the durable queue in sitewire-sync.js):
+// a systemic/transient condition the queue should retry PATIENTLY (600s, dead ≈7h) rather than dead-letter
+// fast (8 attempts). Broader than in-call: a 401/403 is usually an expired/rotated token — fixed by an env
+// update + restart — so every in-flight money job should WAIT for it, not dead-letter; 408/409/425 are
+// transient timeout/conflict/too-early. A true bad-value (400/422) is handled by the orchestrator (parked),
+// so it never reaches here as a thrown httpError.
+function isOutageStatus(s) { return isRetryableStatus(s) || s === 401 || s === 403 || s === 408 || s === 409 || s === 425; }
 function backoffMs(attempt, retryAfterSec) {
   // Honor a server-requested Retry-After up to a higher ceiling than our own backoff cap — if
   // Sitewire asks for 30s and we only wait 8s we'd just re-hit the 429 (audit note E-API-429).
@@ -37,7 +44,7 @@ function backoffMs(attempt, retryAfterSec) {
 }
 function httpError(method, path, status, retryAfterSec, body) {
   const err = new Error(`Sitewire ${method} ${path} -> ${status}`);
-  err.status = status; err.retryable = isRetryableStatus(status);
+  err.status = status; err.retryable = isOutageStatus(status);
   if (retryAfterSec) err.retryAfter = retryAfterSec;
   if (body !== undefined) err.body = body;
   return err;
@@ -56,7 +63,15 @@ async function takeToken() {
 async function fetchWithTimeout(url, opts, ms) {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), ms);
-  try { return await fetch(url, { ...opts, signal: ac.signal }); } finally { clearTimeout(timer); }
+  // Read the body UNDER the same timeout/abort. If we cleared the timer the instant headers arrived,
+  // a stalled/half-open response body (200 headers then a hung read) would block `res.text()` forever
+  // and freeze the worker's drain loop. Reading here keeps the abort armed across the whole exchange;
+  // a body stall becomes a retryable AbortError, never a hang.
+  try {
+    const res = await fetch(url, { ...opts, signal: ac.signal });
+    const text = await res.text();
+    return { res, text };
+  } finally { clearTimeout(timer); }
 }
 
 // ---- write guards ----
@@ -93,10 +108,11 @@ async function call(path, { method = 'GET', body } = {}) {
   let lastErr;
   for (let attempt = 1; attempt <= MAX_TRIES; attempt++) {
     await takeToken();
-    let res;
+    let res, text;
     try {
-      res = await fetchWithTimeout(`${base()}${path}`, { method, headers: authHeaders(), body: payload }, TIMEOUT_MS);
+      ({ res, text } = await fetchWithTimeout(`${base()}${path}`, { method, headers: authHeaders(), body: payload }, TIMEOUT_MS));
     } catch (netErr) {
+      // AbortError (connect/header/body timeout) or a network error — both retryable (idempotent calls).
       netErr.retryable = true; lastErr = netErr;
       if (attempt < MAX_TRIES && retryInCall) { await sleep(backoffMs(attempt) + Math.floor(Math.random() * 250)); continue; }
       throw netErr;
@@ -106,7 +122,6 @@ async function call(path, { method = 'GET', body } = {}) {
       await sleep(backoffMs(attempt, ra) + Math.floor(Math.random() * 250));
       continue;
     }
-    const text = await res.text();
     let data; try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
     if (!res.ok) throw httpError(method, path, res.status, parseInt(res.headers.get('retry-after') || '0', 10) || undefined, data);
     return data;
