@@ -49,8 +49,15 @@ services:
       # provider by setting this to resend|graph|none instead.
       - key: EMAIL_PROVIDER
         value: auto
+      # Our emails ARE repliable, so the sender is a real monitored address, not
+      # "no-reply" (owner-directed 2026-07-20). For Resend only the DOMAIN must be
+      # verified; for Graph this must be a real mailbox UPN in the tenant.
       - key: NOTIFY_FROM
-        value: YS Capital Group <no-reply@yscapgroup.com>
+        value: PILOT by YS Capital <notifications@yscapgroup.com>
+      # Guaranteed Reply-To when no per-file reply address applies — so hitting
+      # "reply" on any notification always reaches a person.
+      - key: REPLY_TO
+        value: sales@yscapgroup.com
       # Base URL used for links inside emails (verify/reset) AND the email logo.
       # This is the live custom domain (owner-directed 2026-07-14) so every
       # notification link opens www.yscapgroup.com, not the onrender subdomain.

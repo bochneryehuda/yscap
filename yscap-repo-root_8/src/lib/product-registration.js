@@ -169,4 +169,62 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
   return registrationId;
 }
 
-module.exports = { persistProductRegistration };
+/**
+ * Build the BORROWER-facing "your loan terms are ready" notification for a
+ * product registration — the same rich, borrower-safe layout on BOTH register
+ * paths (staff registers, or the borrower self-registers), so the borrower is
+ * no longer left with a thin note while the loan team gets the full picture
+ * (owner-directed 2026-07-20). Returns notify opts (the caller adds
+ * `applicationId`). NEVER exposes a note-buyer / capital-partner name — it uses
+ * only the borrower program label + the borrower's own deal numbers, and the
+ * notify chokepoint scrubs again as defense-in-depth.
+ *
+ * @param {object} p
+ * @param {object} p.ctx        notify.fileContext(appId) result (for property/loan# identity) — optional
+ * @param {object} p.quote      the pricing quote
+ * @param {number} p.total      the sized total loan (whole dollars)
+ * @param {number} [p.termMonths] loan term in months (from inputs.term)
+ * @param {object} [p.officer]  { name, title, email, phone, nmls } assigned LO — for From/branding
+ */
+function borrowerTermsEmail({ ctx, quote, total, termMonths, officer } = {}) {
+  quote = quote || {};
+  const s = quote.sizing || {};
+  const cc = quote.closingCosts || {};
+  const rate = quote.noteRate != null ? (quote.noteRate * 100).toFixed(2) + '%' : null;
+  const programLabel = quote.programLabel || 'your program';
+  const officerLine = officer && officer.name
+    ? `${officer.name}${officer.title ? ' · ' + officer.title : ''}${officer.nmls ? ' · NMLS #' + officer.nmls : ''}`
+      + (officer.phone || officer.email ? ' · ' + [officer.phone, officer.email].filter(Boolean).join(' · ') : '')
+    : null;
+  const hasHoldback = num(s.rehabHoldback) > 0;
+  const meta = [
+    ctx ? { label: 'Property', value: ctx.addr } : null,
+    ctx && ctx.hasLoanNo ? { label: 'Loan #', value: ctx.loanNo } : null,
+    { label: 'Program', value: programLabel },
+    { label: 'Loan amount', value: money(total != null ? total : s.totalLoan) },
+    rate ? { label: 'Note rate', value: rate } : null,
+    termMonths ? { label: 'Term', value: `${termMonths} months` } : null,
+    num(s.monthlyPayment) > 0 ? { label: 'Monthly payment (interest only)', value: money(s.monthlyPayment) } : null,
+    hasHoldback ? { label: 'Initial advance at closing', value: money(s.initialAdvance) } : null,
+    hasHoldback ? { label: 'Rehab holdback (drawn as work completes)', value: money(s.rehabHoldback) } : null,
+    num(s.financedReserve) > 0 ? { label: 'Financed interest reserve', value: money(s.financedReserve) } : null,
+    quote.cashToClose != null ? { label: 'Estimated cash to close', value: money(quote.cashToClose) } : null,
+    (quote.liquidityRequired ?? quote.liquidity) != null ? { label: 'Reserves to verify', value: money(quote.liquidityRequired ?? quote.liquidity) } : null,
+    officerLine ? { label: 'Your loan officer', value: officerLine } : null,
+  ].filter(Boolean);
+  const lines = [
+    'This reflects the structure your loan team registered. Open your portal to review the full term sheet, including all estimated closing costs.',
+    'Minimum earned interest: 3 months. If the loan pays off before three full months, the remainder of the three-month minimum interest is still due — this is a minimum earned-interest provision, not a prepayment penalty.',
+  ];
+  if (officer && officer.name) lines.push(`Questions? Reach out to ${officer.name} directly — you can also just reply to this email.`);
+  return {
+    type: 'term_sheet',
+    title: 'Your loan terms are ready',
+    body: `Your ${programLabel} is registered${rate ? ` — ${money(total != null ? total : s.totalLoan)} at ${rate}` : ` — ${money(total != null ? total : s.totalLoan)}`}${quote.cashToClose != null ? `, with an estimated ${money(quote.cashToClose)} cash to close` : ''}.`,
+    lines,
+    meta,
+    ctaLabel: 'Review your full term sheet',
+  };
+}
+
+module.exports = { persistProductRegistration, borrowerTermsEmail, money, productName };

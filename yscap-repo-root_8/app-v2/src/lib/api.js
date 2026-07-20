@@ -520,6 +520,7 @@ export const api = {
   // ---- Appraisal desk: import the appraisal XML, read the property profile, resolve findings ----
   appraisalGet:            (appId) => req('GET', `/api/appraisal/${appId}`),
   appraisalImport:         (appId, b) => req('POST', `/api/appraisal/${appId}/import`, b),
+  appraisalUndoImport:     (appId) => req('POST', `/api/appraisal/${appId}/undo-import`),
   appraisalResolveFinding: (appId, fid, b) => req('POST', `/api/appraisal/${appId}/findings/${fid}/resolve`, b),
   appraisalRefreshPhotos:  (appId) => req('POST', `/api/appraisal/${appId}/photos/refresh`, {}),
   // Borrower READ-ONLY view of the same appraisal report + findings (no actions).
