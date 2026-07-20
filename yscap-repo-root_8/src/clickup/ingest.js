@@ -1292,6 +1292,14 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     clickup_created_at: task && task.date_created ? new Date(Number(task.date_created)) : null,
   };
 
+  // Store the YS loan number in the professional all-caps form ("YSCAP258134769").
+  // A number typed lowercase in ClickUp ("yscap258…") would otherwise flow in
+  // verbatim and leak lowercase into every file surface (emails, exports, the
+  // outbound push back to ClickUp). Normalizing here (the single inbound write
+  // chokepoint) keeps STORAGE uppercase; the case-insensitive ownership matching
+  // just below still uses lower(btrim(…)), so this changes storage only.
+  cols.ys_loan_number = require('../lib/fields').normalizeLoanNumber(cols.ys_loan_number);
+
   // INBOUND YEAR GUARD (2026-07-15 incident): a ClickUp date whose year is out
   // of range (a mid-typing artifact, or a literal 2-digit year — "26" typed as
   // the year lands in 0026) is NEVER persisted. It goes to the sync review

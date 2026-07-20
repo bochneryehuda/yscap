@@ -265,7 +265,7 @@ export default function EsignFileSection({ appId, role }) {
             <div><strong>This file has no YS loan number yet.</strong> A loan number is required to send the term-sheet package — enter it here to send right away.</div>
             <div className="row" style={{ gap: 8, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
               <input className="input" style={{ maxWidth: 240 }} placeholder="YSCAP…" value={lnInput}
-                onChange={(e) => setLnInput(e.target.value)}
+                onChange={(e) => setLnInput(e.target.value.toUpperCase())}
                 onKeyDown={(e) => { if (e.key === 'Enter' && lnValid && busy !== 'loannum') saveLoanNumber(); }} />
               <button className="btn primary btn-sm" disabled={!lnValid || busy === 'loannum'} onClick={saveLoanNumber}>
                 {busy === 'loannum' ? 'Saving…' : 'Save loan number'}
