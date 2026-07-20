@@ -374,6 +374,7 @@ export const api = {
   staffAppEmails:   (appId) => req('GET', `/api/staff/applications/${appId}/emails`),   // per-file email history
   staffAppEmailMsg: (appId, msgId) => req('GET', `/api/staff/applications/${appId}/emails/${msgId}`),   // full body of one message
   staffAppEmailReply: (appId, body) => req('POST', `/api/staff/applications/${appId}/emails/reply`, body),
+  staffAppReplyRecipients: (appId) => req('GET', `/api/staff/applications/${appId}/emails/reply-recipients`),
   staffEmails:      (params) => req('GET', '/api/staff/emails' + qs(params)),            // global mailbox (all visible files)
   staffEmailMsg:    (msgId) => req('GET', `/api/staff/emails/${msgId}`),                 // full body from the global mailbox
   staffEmailStats:  () => req('GET', '/api/staff/emails/stats'),

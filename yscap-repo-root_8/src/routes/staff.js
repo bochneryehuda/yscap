@@ -2411,6 +2411,26 @@ router.get('/applications/:id/emails', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
+// Who a reply on this file will reach — the borrower(s) + active assignees, minus
+// the viewer. Lets the composer show recipient chips before sending. Declared
+// BEFORE /emails/:msgId so 'reply-recipients' isn't read as a message id.
+router.get('/applications/:id/emails/reply-recipients', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const meEmail = String(((await db.query(`SELECT lower(email) AS email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {}).email || '').toLowerCase();
+    const r = await db.query(
+      `SELECT lower(bo.email) AS email, NULLIF(TRIM(COALESCE(bo.first_name,'')||' '||COALESCE(bo.last_name,'')),'') AS name, 'borrower' AS kind
+         FROM applications a JOIN borrowers bo ON bo.id IN (a.borrower_id, a.co_borrower_id)
+        WHERE a.id=$1 AND bo.email IS NOT NULL AND btrim(bo.email)<>''
+       UNION
+       SELECT lower(su.email) AS email, su.full_name AS name, 'staff' AS kind
+         FROM application_assignees aa JOIN staff_users su ON su.id=aa.staff_id
+        WHERE aa.application_id=$1 AND aa.removed_at IS NULL AND su.is_active=true
+          AND su.email IS NOT NULL AND btrim(su.email)<>''`, [req.params.id]);
+    res.json(r.rows.filter((p) => p.email && p.email !== meEmail));
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // Full body of one message. Stored body wins; a lightweight/historical row's body
 // is rendered on demand from its linked notification. Scoped to the file.
 router.get('/applications/:id/emails/:msgId', async (req, res) => {

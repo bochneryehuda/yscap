@@ -168,6 +168,10 @@ const uniq = `eh-${process.pid}-${Date.now()}`;
   const stats = await (await get('/api/staff/emails/stats', adminTok)).json();
   assert(stats && typeof stats.total === 'number' && stats.total >= 3, 'stats returns totals');
 
+  // reply-recipients preview: the borrower + assignees a reply would reach
+  const rr = await (await get(`/api/staff/applications/${appId}/emails/reply-recipients`, loTok)).json();
+  assert(Array.isArray(rr) && rr.some((p) => p.email === `${uniq}-bo@example.test` && p.kind === 'borrower'), 'reply-recipients lists the borrower (not read as a message id)');
+
   // reply — sends to the borrower (a file party), captured as staff_reply
   const rRes = await post(`/api/staff/applications/${appId}/emails/reply`, loTok, { body: 'Thanks — here is your update.' });
   const rJson = await rRes.json();
