@@ -683,7 +683,12 @@ async function sendChatEmailToMember({ conv, member, message, ctx, senderName, a
     body: `${who} sent a new message${addr ? ` on ${addr}` : ''}${loanNo ? ` · ${loanNo}` : ''}:`,
     lines,
     link, ctaLabel: 'Open the conversation',
-    meta: ctx ? ctx.meta : [],
+    // Borrower recipients get the borrower-SAFE meta (scrubbed program label, no
+    // internal contact row); staff get the full meta. This chat path builds via
+    // buildEmail directly (not notifyBorrower), so the borrower scrub doesn't run
+    // here — borrowerMeta is the clean source (defense-in-depth for the frozen
+    // note-buyer rule).
+    meta: ctx ? (isBorrower ? (ctx.borrowerMeta || []) : ctx.meta) : [],
     attachments,
     replyMarker: CHAT_REPLY_MARKER,
   }, isBorrower ? 'borrower' : 'staff');
@@ -1039,7 +1044,10 @@ async function fireChatEmail(j) {
               (ctx ? ` on ${ctx.loanNo} (${ctx.addr})` : '') + ':',
         lines,
         link, ctaLabel: 'Open the conversation',
-        meta: ctx ? ctx.meta : [],
+        // Borrower gets the scrubbed borrower-safe meta; staff gets the full meta
+        // (this digest path builds via buildEmail directly, so the borrower scrub
+        // does not run here — borrowerMeta is the clean source).
+        meta: ctx ? (isBorrower ? (ctx.borrowerMeta || []) : ctx.meta) : [],
         attachments,
         replyMarker: CHAT_REPLY_MARKER,
       }, isBorrower ? 'borrower' : 'staff');

@@ -1991,7 +1991,7 @@ router.post('/applications/:id/checklist', async (req, res) => {
   if (app.rows[0] && audience !== 'staff') {
     const ctx = await notify.fileContext(req.params.id);
     await notify.notifyBorrower(app.rows[0].borrower_id, {
-      type: 'condition_added', title: 'New document requested on your file',
+      type: 'condition_added', title: 'New document requested on your file', badge: { text: 'Action needed', tone: 'action' },
       body: `"${borrowerLabel || b.label}" was added to your conditions on ${ctx ? ctx.label : 'your file'}.`,
       meta: (ctx && ctx.borrowerMeta) || undefined,
       applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Open your conditions' });
@@ -2085,7 +2085,7 @@ router.post('/applications/:id/conditions/custom', async (req, res) => {
     try {
       const ctx = await notify.fileContext(req.params.id);
       await notify.notifyAppBorrowers(req.params.id, {
-        type: 'condition_added', title: 'A new item was added to your file',
+        type: 'condition_added', title: 'A new item was added to your file', badge: { text: 'Action needed', tone: 'action' },
         // Never interpolate the internal label — it can carry underwriting /
         // capital-partner (note-buyer) context. Borrower wording or a generic line.
         body: b.borrowerLabel
@@ -2119,7 +2119,7 @@ router.post('/applications/:id/conditions/attach', async (req, res) => {
     try {
       const ctx = await notify.fileContext(req.params.id);
       await notify.notifyAppBorrowers(req.params.id, {
-        type: 'condition_added', title: 'A new item was added to your file',
+        type: 'condition_added', title: 'A new item was added to your file', badge: { text: 'Action needed', tone: 'action' },
         // Borrower wording only — never fall back to the internal tpl.label.
         body: tpl.borrower_label
           ? `"${tpl.borrower_label}" was added to your conditions on ${ctx ? ctx.label : 'your file'}.`
@@ -2367,7 +2367,7 @@ router.post('/applications/:id/loan-conditions', async (req, res) => {
       if (a.rows[0]?.borrower_id) {
         try {
           await notify.notifyAppBorrowers(req.params.id, {
-            type: 'condition_added', title: 'A new item needs your attention',
+            type: 'condition_added', title: 'A new item needs your attention', badge: { text: 'Action needed', tone: 'action' },
             // Never surface the internal title to the borrower — use the
             // borrower-facing wording, or a generic prompt if none was given.
             body: b.borrowerTitle || 'Your loan team added an item to your file — sign in to see what we need.',
@@ -2484,7 +2484,7 @@ router.post('/change-requests/:cid/approve', async (req, res) => {
     try {
       const change = changeRequests.describeChange(cr);
       await notify.notifyAppBorrowers(cr.application_id, {
-        type: 'change_request', title: 'Your requested change was approved',
+        type: 'change_request', title: 'Your requested change was approved', badge: { text: 'Approved', tone: 'positive' },
         body: `Your loan team approved your update to ${cr.field_label}. ${change} is now on file.`,
         applicationId: cr.application_id, link: `/app/${cr.application_id}`, ctaLabel: 'Open your file' });
     } catch (_) {}
@@ -2515,7 +2515,7 @@ router.post('/change-requests/:cid/reject', async (req, res) => {
     try {
       const change = changeRequests.describeChange(cr);
       await notify.notifyAppBorrowers(cr.application_id, {
-        type: 'change_request', title: 'Update on your requested change',
+        type: 'change_request', title: 'Update on your requested change', badge: { text: 'Reviewed', tone: 'neutral' },
         body: `Your loan team reviewed your requested change (${change}) and it was not applied${note ? `: ${note}` : '. Reach out if you have questions.'}`,
         applicationId: cr.application_id, link: `/app/${cr.application_id}`, ctaLabel: 'Open your file' });
     } catch (_) {}
@@ -3994,7 +3994,7 @@ router.post('/llcs/:id/verify', async (req, res) => {
   } catch (e) { console.warn('[llc-revoke] chain revoke failed:', e.message); }
   try {
     await notify.notifyBorrower(own.rows[0].borrower_id, {
-      type: 'llc_unverified', title: 'Your LLC needs attention',
+      type: 'llc_unverified', title: 'Your LLC needs attention', badge: { text: 'Action needed', tone: 'action' },
       body: `Verification of "${own.rows[0].llc_name}" was revoked${reason ? `: ${reason}` : ''}.`
         + (revokedChildren.length ? ` Because it owns ${revokedChildren.map(n => `"${n}"`).join(', ')}, verification there was reopened too.` : '')
         + ' Please review the details and documents on your profile.',
@@ -4074,7 +4074,7 @@ router.post('/track-records/:id/verify', async (req, res) => {
     const addr = (tr.rows[0].property_address && (tr.rows[0].property_address.oneLine || tr.rows[0].property_address.line1)) || 'a property';
     try {
       await notify.notifyBorrower(tr.rows[0].borrower_id, {
-        type: 'track_record_unverified', title: 'A track-record project needs attention',
+        type: 'track_record_unverified', title: 'A track-record project needs attention', badge: { text: 'Action needed', tone: 'action' },
         body: `Verification of your project at ${addr} was revoked: ${reason}. Please review it and its documents on your track record.`,
         link: '/track-record', ctaLabel: 'Review your track record' });
     } catch (_) { /* best-effort */ }

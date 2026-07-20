@@ -283,8 +283,11 @@ async function notifyTerminal(db, envelopeRow, status, voidReason) {
       ? `The ${label} is fully executed — the borrower and the lender have both signed. The signed copies + Certificate of Completion are now on the file.`
       : `The borrower completed signing the ${label}. The signed copy + Certificate of Completion are now on the file.`;
   }
+  const badge = status === 'completed' ? { text: 'Fully signed', tone: 'positive' }
+    : status === 'declined' ? { text: 'Declined', tone: 'action' }
+    : { text: 'Cancelled', tone: 'neutral' };
   const opts = {
-    type: 'status_change', title, body, applicationId: envelopeRow.application_id,
+    type: 'status_change', title, body, badge, applicationId: envelopeRow.application_id,
     link: `${cfg.appUrl || ''}${cfg.portalPath}/#/internal/app/${envelopeRow.application_id}`,
   };
   const sent = await notify.notifyAppStaff(envelopeRow.application_id, opts);
@@ -320,6 +323,7 @@ async function maybeNotifyCountersign(db, envelopeRow) {
   const opts = {
     type: 'status_change',
     title: `Borrower signed — counter-signature needed on the ${label}`,
+    badge: { text: 'Counter-sign needed', tone: 'gold' },
     body: `The borrower has signed the ${label}. It now needs the lender's counter-signature to finish. The signer has been emailed the counter-signing link; open the file's e-signature section to counter-sign.`,
     applicationId: envelopeRow.application_id,
     link: `${cfg.appUrl || ''}${cfg.portalPath}/#/internal/app/${envelopeRow.application_id}`,
