@@ -535,6 +535,9 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
       type: 'draw_started', title: 'Draw process started',
       body: `The draw process was started for this file — property, construction budget, Scope of Work and fees ${cfg.sitewireEnabled ? 'were pushed to Sitewire.' : 'will push to Sitewire once it is turned on.'}`,
       badge: { text: 'Draw started', tone: 'teal' }, applicationId: appId, link: `/internal/app/${appId}/draws`,
+      // Owner-directed 2026-07-20: a confirmation of an action the coordinator
+      // just took is IN-APP ONLY — no whole-team email. It shows on the draw desk.
+      inAppOnly: true,
     }).catch(() => {});
     // push everything now (guarded). When Sitewire is off, the link row above (draw_setup_started_at)
     // is the durable birth record — the worker's stranded-birth backfill enqueues the push the moment
@@ -1540,7 +1543,10 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
         applicationId: appId, link: acceptLink, ctaLabel: 'Review & accept',
         cta2Label: 'Push back on a line', cta2Link: disputeLink }).catch(() => {});
     }
-    await notify.notifyAppStaff(appId, { type: 'draw_findings', title: 'Draw findings delivered to borrower',
+    // In-app only (owner-directed 2026-07-20): a confirmation that the coordinator
+    // just delivered findings is not a whole-team EMAIL — the borrower's own
+    // "results ready" email (above) is the real send; this is a desk marker.
+    await notify.notifyAppStaff(appId, { type: 'draw_findings', title: 'Draw findings delivered to borrower', inAppOnly: true,
       body: `Inspection findings for ${addr} were delivered to the borrower to accept or dispute.`, applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
     // Auto-deliver artifacts: durably archive the inspector's (expiring) media NOW and pre-build the PILOT +
     // borrower-safe reports, so the durable photos + both branded PDFs are ready the instant findings land —
@@ -1771,7 +1777,10 @@ router.post('/change-requests/:crId/apply', requirePermission('manage_draws'), a
       // Only claim a Sitewire push when the integration is actually on — otherwise the enqueue
       // no-ops and the DB SOW would silently diverge from Sitewire (audit E-REALLOC-FALSEPUSH).
       const willPush = !!cfg.sitewireEnabled;
-      await notify.notifyAppStaff(appId, { type: 'sow_reallocation', title: 'Budget reallocation applied', badge: { text: 'Applied', tone: 'positive' },
+      // In-app only (owner-directed 2026-07-20): a confirmation that a reallocation
+      // was APPLIED is a desk marker, not a whole-team email. (The "needs
+      // re-registration" variant below is Action-needed and still emails.)
+      await notify.notifyAppStaff(appId, { type: 'sow_reallocation', title: 'Budget reallocation applied', badge: { text: 'Applied', tone: 'positive' }, inAppOnly: true,
         body: willPush ? 'A net-zero Scope-of-Work reallocation was applied and is being pushed to Sitewire.' : 'A net-zero Scope-of-Work reallocation was applied to the Scope of Work (Sitewire is currently off — it will sync when turned on).',
         applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
       return res.json({ ok: true, applied: true, pushed_to_sitewire: willPush });
