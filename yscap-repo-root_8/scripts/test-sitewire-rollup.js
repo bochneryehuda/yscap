@@ -224,6 +224,21 @@ assert.strictEqual(twoLineRoll.project.unit_count, 2, 'two physical units across
 assert.strictEqual(twoLineRoll.project.line_count, 2, 'two SOW lines');
 ok('rollup: project.unit_count = distinct physical units, not per-unit cells (audit #4)');
 
+// Empty ($0, no activity) SOW line is NOT a real line item — hidden from the rollup lines but still
+// counted at $0 in the totals (owner-directed 2026-07-20). A funded line beside it stays. Contingency kept.
+const emptyLinks = [
+  { sitewire_job_item_id: 10, sow_line_key: 'paint:0', section_token: 'p', unit_index: null, name: 'Painting', budgeted_cents: 500000, is_media_item: false, state: 'live' },
+  { sitewire_job_item_id: 11, sow_line_key: 'siding:0', section_token: 's', unit_index: null, name: 'Siding', budgeted_cents: 0, is_media_item: false, state: 'live' },
+  { sitewire_job_item_id: 12, sow_line_key: '__contingency__', section_token: 'project', unit_index: null, name: 'Contingency', budgeted_cents: 0, is_media_item: false, state: 'live' },
+];
+const emptyRoll = R.computeRollup({ links: emptyLinks, draws: [], requests: [] });
+assert.ok(emptyRoll.lines.some((l) => l.label === 'Painting'), 'a funded line is kept');
+assert.ok(!emptyRoll.lines.some((l) => l.kind === 'line' && Number(l.budgeted) === 0), 'a $0 SOW line is hidden from the rollup lines');
+assert.strictEqual(emptyRoll.empty_line_count, 1, 'the one empty line is reported');
+assert.strictEqual(emptyRoll.project.budget, 500000, 'project budget is unchanged (empty line contributes $0)');
+assert.strictEqual(emptyRoll.project.line_count, 2, 'line_count still counts every real SOW line (totals unaffected)');
+ok('rollup: an empty $0 SOW line is not a real line item — hidden from lines, neutral in totals');
+
 // a totally clean draw -> no flags
 const risk7 = RISK.assessDraw({ draw: { number: 2, total_requested_cents: 200000 }, requests: [{ sitewire_job_item_id: 1001, requested_cents: 200000, approved_cents: 0, inspection_count: 4 }], links, rollup: roll });
 assert.strictEqual(risk7.flags.length, 0, 'a clean draw has no flags');
