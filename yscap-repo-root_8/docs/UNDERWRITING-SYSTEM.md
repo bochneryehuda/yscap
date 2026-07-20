@@ -52,6 +52,7 @@ can surface in the roll-up but can never flip the fatal clear-to-close gate.
 | Section | Module | What it does |
 |---|---|---|
 | **Tie-out matrix** | `tieout.js` + `facts.js` | Every canonical fact (borrower/entity/seller/price/address/…) must agree across every document AND the file. Disagreements are **fatal**. `PERDOC_COVERS` dedupes facts a per-doc check already owns. |
+| **Reasonability** | `reasonability.js` | Value-level data-integrity/plausibility: is a single value even sensible on its own? Negative/zero price, rehab > ARV, as-is > ARV, assignment math that doesn't add up, a document dated in the future, an ID that expired before issue (or was issued before birth), a DOB implying age < 18 / > 120, an ownership % outside 0–100, a FICO outside 300–850, a settlement that doesn't balance. **Advisory only** (warning/info) — a distinct layer from tie-out (agreement), the per-doc checks (semantics) and metrics (leverage); it never duplicates them and never flips the fatal gate. |
 | **Metrics** | `metrics.js` | LTP / LTV / LTC / ARV-LTV recomputed from the file; the binding cap (min of caps); over-leverage warnings. Caps are per-program config. |
 | **Entity chain** | `entity-chain.js` | The signing-authority / ownership chain composed into one status (intact/broken/incomplete). Raises only the ≥25%-beneficial-owner-without-ID gap (FinCEN CDD). Entity files only. |
 | **Completeness** | `completeness.js` | A required-document matrix per deal type → an outstanding-items list (owner + PTD/PTF) + a completeness %. |

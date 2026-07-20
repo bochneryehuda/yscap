@@ -434,6 +434,23 @@ function Amendments({ amendments, appId, onChange }) {
   );
 }
 
+// Reasonability — value-level data-integrity flags (a negative price, a loan bigger than the
+// purchase, an ID that expired before it was issued, a credit report dated in the future, a
+// settlement that doesn't balance). Advisory only; shown only when something actually fired.
+function Reasonability({ reasonability, appId, onChange }) {
+  const findings = (reasonability && reasonability.findings) || [];
+  if (!findings.length) return null;
+  return (
+    <div style={{ marginBottom: 22 }}>
+      <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px' }}>Data-integrity checks</h4>
+      <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginBottom: 10 }}>
+        Values that don’t look right on their own — usually a typo or a misread, occasionally a doctored document. These never block closing on their own, but each one should be confirmed.
+      </div>
+      {findings.map((f, i) => <Finding key={f.id || `rz${i}`} appId={appId} f={f} onChange={onChange} resolvable={false} />)}
+    </div>
+  );
+}
+
 export default function UnderwritingPanel({ appId, docs = [], readOnly = false, onSummary }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -489,6 +506,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
   const completeness = data && data.completeness;
   const risk = data && data.risk;
   const amendments = data && data.amendments;
+  const reasonability = data && data.reasonability;
   const verdict = data && data.verdict;
   const exts = (data && data.extractions) || [];
   const docTypes = (data && data.docTypes) || [];
@@ -560,6 +578,9 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
 
       {/* governing contract terms after amendments */}
       <Amendments amendments={amendments} appId={appId} onChange={load} />
+
+      {/* data-integrity / reasonability flags — values that don't look right on their own */}
+      <Reasonability reasonability={reasonability} appId={appId} onChange={load} />
 
       {/* loan metrics — LTP/LTV/LTC/ARV vs caps */}
       <Metrics metrics={metrics} />

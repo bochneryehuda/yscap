@@ -46,6 +46,7 @@ const { assessCompleteness } = require('../lib/underwriting/completeness');
 const { computeRiskScore } = require('../lib/underwriting/risk-score');
 const { resolveEffectiveTerms } = require('../lib/underwriting/amendments');
 const { computeVerdict } = require('../lib/underwriting/verdict');
+const { assessReasonability } = require('../lib/underwriting/reasonability');
 const { toISODate } = require('../lib/underwriting/compare');
 const exceptions = require('../lib/underwriting/exceptions');
 
@@ -202,11 +203,22 @@ router.get('/:appId', async (req, res, next) => {
       { isEntity, isAssignment: !!a.is_assignment },
       exts.rows, ff.findings);
 
+    // Reasonability / data-integrity: value-level plausibility of what the documents and the file
+    // actually say (a negative price, a loan bigger than the purchase, an ID that expired before it
+    // was issued, a credit report dated in the future, a settlement that doesn't balance). All
+    // warning/info — a distinct layer from the tie-out (agreement), the per-doc checks (semantics),
+    // and metrics (leverage); it surfaces in the roll-up but never flips the fatal gate.
+    const reasonability = assessReasonability({
+      extractions: exts.rows, today: todayISO(),
+      economics: { purchasePrice: a.purchase_price, loanAmount: a.loan_amount, asIsValue: a.as_is_value,
+        arv: a.arv, rehabBudget: a.rehab_budget, assignmentFee: a.assignment_fee, underlyingPrice: a.underlying_contract_price },
+    });
+
     const perDoc = ff.findings.map(decorate);
     // Roll the tie-out discrepancies + the forward-looking staleness advisories + over-leverage
-    // metric warnings into the same fatal/warning gate (all warning-only → never change the
-    // CTC-blocking fatal count, but they surface in the roll-up).
-    const openAll = [...perDoc, ...cross, ...staleness.findings, ...metrics.findings, ...amendments.findings, ...(entityChain ? entityChain.findings : [])];
+    // metric warnings + reasonability data-integrity flags into the same fatal/warning gate (all
+    // warning-only → never change the CTC-blocking fatal count, but they surface in the roll-up).
+    const openAll = [...perDoc, ...cross, ...staleness.findings, ...metrics.findings, ...amendments.findings, ...(entityChain ? entityChain.findings : []), ...reasonability.findings];
 
     // Fraud / red-flag score: aggregate every open signal above + the economic red flags into one
     // explainable 0-100 score. Its HIGH-band advisory is a non-blocking warning (folded into the
@@ -244,6 +256,7 @@ router.get('/:appId', async (req, res, next) => {
       amendments: { effective: amendments.effective, provenance: amendments.provenance,
         hasAmendments: amendments.hasAmendments, unexecuted: amendments.unexecuted,
         findings: amendments.findings.map(decorate) },
+      reasonability: { checks: reasonability.checks, findings: reasonability.findings.map(decorate) },
       summary,
       docTypes: registry.docTypes(),
       analyzers: { reader: docint.configured(), ai: azureOpenai.available() },
