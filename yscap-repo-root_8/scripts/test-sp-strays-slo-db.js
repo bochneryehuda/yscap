@@ -20,6 +20,19 @@ const ok = (name, cond) => { if (cond) pass++; else { fail++; console.log(`FAIL 
 (async () => {
   await ensureSchema();
 
+  // Idempotent setup: this suite runs in `npm test`, which may re-run against a
+  // persistent DB — clear any prior fixtures (anchored on the fixed email) so the
+  // fixed-email borrower insert never collides on a second run.
+  const prior = (await db.query(`SELECT id FROM borrowers WHERE email='t@example.com'`)).rows.map((r) => r.id);
+  if (prior.length) {
+    await db.query(`DELETE FROM sync_review_queue WHERE task_id IN (
+        SELECT 'spdoc:'||d.id FROM documents d WHERE d.borrower_id = ANY($1)
+        UNION SELECT 'app:'||a.id FROM applications a WHERE a.borrower_id = ANY($1))`, [prior]);
+    await db.query(`DELETE FROM documents WHERE borrower_id = ANY($1)`, [prior]);
+    await db.query(`DELETE FROM applications WHERE borrower_id = ANY($1)`, [prior]);
+    await db.query(`DELETE FROM borrowers WHERE id = ANY($1)`, [prior]);
+  }
+
   // ---- seed a borrower + application so a doc can have a real scope ----------
   const b = (await db.query(
     `INSERT INTO borrowers (first_name, last_name, email) VALUES ('Test','Borrower','t@example.com') RETURNING id`)).rows[0].id;
