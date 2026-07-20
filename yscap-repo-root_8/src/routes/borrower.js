@@ -282,11 +282,16 @@ router.post('/profile/photo-id', async (req, res) => {
        VALUES ($1,$7,$8,$2,$3,$4,$5,$6,'borrower',$1,'photo_id') RETURNING id`,
       [me(req), b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, appId, appItemId]);
     await db.query(`UPDATE borrowers SET photo_id_document_id=$2, updated_at=now() WHERE id=$1`, [me(req), d.rows[0].id]);
-    // Satisfy any outstanding government-ID checklist item on the borrower's files.
+    // Move any government-ID checklist item on the borrower's files to 'received'.
+    // A NEW (unreviewed) ID is fresh evidence, so even an already SIGNED-OFF gov-ID
+    // condition drops its sign-off and returns for re-review — the prior sign-off
+    // attested to the OLD ID (same "new evidence re-opens the condition" rule as a
+    // document new-version upload). A true duplicate short-circuits above (dedup),
+    // so this only runs for a genuinely different ID.
     await db.query(
-      `UPDATE checklist_items SET status='received', updated_at=now()
+      `UPDATE checklist_items SET status='received',
+              signed_off_at=NULL, signed_off_by=NULL, reviewed_at=NULL, reviewed_by=NULL, updated_at=now()
         WHERE template_id=(SELECT id FROM checklist_templates WHERE code='rtl_p1_id')
-          AND status NOT IN ('satisfied')
           AND application_id IN (SELECT id FROM applications WHERE ${OWN_FILE_SQL("", "$1")})`,
       [me(req)]);
     await audit(req, 'upload_photo_id', 'borrower', me(req));
@@ -487,6 +492,7 @@ router.post('/applications', async (req, res) => {
   // purchase price is the underlying + the (derived) fee so leverage/pricing
   // size off seller price + fee and the record is internally consistent.
   const asg = require('../lib/fields').assignmentFields(b);
+  const sqf = require('../lib/fields').sqftForType(b.rehabType, intField(b.sqftPre) || null, intField(b.sqftPost) || null);
   const r = await db.query(
     `INSERT INTO applications
        (borrower_id,llc_id,property_address,property_type,units,program,loan_type,
@@ -497,7 +503,7 @@ router.post('/applications', async (req, res) => {
     [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
      b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), asg.purchasePrice, b.asIsValue || null,   // #95: never a program
      b.arv || null, b.rehabBudget || null, b.loanOfficerName || null,
-     b.rehabType || null, intField(b.sqftPre) || null, intField(b.sqftPost) || null,
+     b.rehabType || null, sqf.sqftPre, sqf.sqftPost,
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
      asg.isAssignment, asg.underlying, asg.assignFee, JSON.stringify(redactPII(b))]);
   const appId = r.rows[0].id;
@@ -1612,6 +1618,18 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
       if (k === 'loan_type') v = require('../lib/fields').sanitizeLoanType(v);   // #95: never a program
       appVals.push(v); appSets.push(`${k}=$${appVals.length}`); appKeys.push(k);
     }
+    // Couple units to a live property_type change. The completeness panel doesn't
+    // collect units, so a single-family type must still auto-fill "1 unit" and a
+    // switch to a multi type must not keep a stale single "1" (mirrors the intake
+    // form's unitsForType, server-side). Only on the live-write path — a locked
+    // file's property_type change becomes a change request instead.
+    if (appKeys.includes('property_type')) {
+      const newPt = appVals[appKeys.indexOf('property_type') + 1];
+      const curU = (await db.query(`SELECT units FROM applications WHERE id=$1`, [req.params.id])).rows[0];
+      const prevUnits = curU ? curU.units : null;
+      const nextUnits = require('../lib/units').unitsForPropertyType(newPt, prevUnits);
+      if (nextUnits !== prevUnits) { appVals.push(nextUnits); appSets.push(`units=$${appVals.length}`); appKeys.push('units'); }
+    }
     if (appSets.length) {
       appSets.push('updated_at=now()');
       await db.query(`UPDATE applications SET ${appSets.join(', ')} WHERE id=$1`, appVals);
@@ -2268,7 +2286,10 @@ router.post('/documents', async (req, res) => {
     // S2-09: only a BORROWER-FACING item may be flipped by a borrower — never a
     // staff-only condition (the id is borrower-supplied, so ownership alone is not
     // enough). Mirrors the audience guard on the tool/info endpoints.
-    await db.query(`UPDATE checklist_items SET status='received', updated_at=now() WHERE id=$1 AND audience IN ('borrower','both') AND (application_id IN (SELECT id FROM applications WHERE ${OWN_FILE_SQL("", "$2")}) OR borrower_id=$2 OR llc_id IN (SELECT id FROM llcs WHERE borrower_id=$2))`, [b.checklistItemId, me(req)]);
+    // A new version is unreviewed evidence — clear any prior sign-off so the
+    // swapped-in file is re-reviewed (it must not ride a stale sign-off to
+    // clear-to-close). The audience + ownership guard is unchanged.
+    await db.query(`UPDATE checklist_items SET status='received', signed_off_at=NULL, signed_off_by=NULL, reviewed_at=NULL, reviewed_by=NULL, updated_at=now() WHERE id=$1 AND audience IN ('borrower','both') AND (application_id IN (SELECT id FROM applications WHERE ${OWN_FILE_SQL("", "$2")}) OR borrower_id=$2 OR llc_id IN (SELECT id FROM llcs WHERE borrower_id=$2))`, [b.checklistItemId, me(req)]);
     enqueueChecklistStatusPush(b.checklistItemId).catch(() => {}); // mapped conditions → ClickUp dropdown
   }
   // An LLC document changed — recompute the LLC condition on every open file
@@ -2944,6 +2965,9 @@ router.post('/drafts/:id/submit', async (req, res) => {
   // hard-null underlying/fee off an assignment and store purchase = underlying +
   // (derived) fee, so the submitted file is internally consistent.
   const asg = require('../lib/fields').assignmentFields(b);
+  // sqft only applies to a square-footage / ground-up rehab — null it otherwise
+  // so a stale value can't force the pricing sqftAddition flag.
+  const sqf = require('../lib/fields').sqftForType(b.rehabType, intField(b.sqftPre) || null, intField(b.sqftPost) || null);
   const ins = await db.query(
     `INSERT INTO applications
        (borrower_id,llc_id,property_address,property_type,units,program,loan_type,
@@ -2959,7 +2983,7 @@ router.post('/drafts/:id/submit', async (req, res) => {
     [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
      b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), asg.purchasePrice, b.asIsValue || null,   // #95: never a program
      b.arv || null, b.rehabBudget || null, officerId, b.loanOfficerName || null,
-     b.rehabType || null, intField(b.sqftPre) || null, intField(b.sqftPost) || null,
+     b.rehabType || null, sqf.sqftPre, sqf.sqftPost,
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
      asg.isAssignment, asg.underlying, asg.assignFee, JSON.stringify(redactPII(b)),
      b.termMonths ? String(b.termMonths) : null, intField(b.irMonths),
