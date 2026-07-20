@@ -1,16 +1,23 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { api } from '../lib/api.js';
+import { api, saveBlob } from '../lib/api.js';
 
 /* ════════════════════════════════════════════════════════════════════════════
    EMAIL CENTER — a modern Gmail/Outlook-style history of every email +
-   notification that went out (or came in) for a loan file. Two modes:
-     · mode="file"   — one file's whole thread history, with a reply box
+   notification that went out (or came in) for a loan file.
+     · mode="file"   — one file's whole thread history, reply + compose
      · mode="global" — every email across the files the viewer can see
-   Opening a message shows the ENTIRE email: the full designed body (in a
-   sandboxed iframe, scripts disabled), every recipient it reached with each
-   one's delivery status, attachments, and the inbound replies — with a
-   conversation view, avatars, date grouping, search highlight, and reply.
+   Opening a message shows the ENTIRE email: full designed body (sandboxed
+   iframe), every recipient with per-recipient delivery status, downloadable
+   attachments, and inbound replies — with a conversation view, avatars, read/
+   unread, starring, date grouping, search highlight, keyboard nav, and reply/
+   resend/compose. Read + star state is personal (kept in this browser).
    ════════════════════════════════════════════════════════════════════════════ */
+
+/* ---- personal read/star state (localStorage) ---- */
+const READ_KEY = 'ec_read_v2';
+const STAR_KEY = 'ec_star_v2';
+function loadJSON(k, fallback) { try { const v = JSON.parse(localStorage.getItem(k) || ''); return v && typeof v === 'object' ? v : fallback; } catch { return fallback; } }
+function saveJSON(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode */ } }
 
 /* ---- small helpers ---- */
 function when(ts, long) {
@@ -59,7 +66,6 @@ function recipStatus(s) {
   if (s === 'skipped') return { tone: 'muted', label: 'In-app only' };
   return { tone: 'muted', label: 'Pending' };
 }
-
 function StatusPill({ row }) {
   if (row.direction === 'inbound') {
     const map = {
@@ -76,7 +82,6 @@ function StatusPill({ row }) {
   const tone = s === 'sent' ? 'ok' : s === 'error' ? 'danger' : 'muted';
   return <span className={`ec-pill ec-pill-${tone}`}>{label}</span>;
 }
-
 function recipientsOf(row) {
   if (Array.isArray(row.recipients) && row.recipients.length) return row.recipients;
   if (Array.isArray(row.to) && row.to.length) return row.to.map((t) => ({ email: t.email, name: t.name, kind: row.recipient_kind, status: row.status }));
@@ -110,10 +115,11 @@ function RecipientRoster({ row }) {
 }
 
 /* ---- one message in the conversation (collapsible) ---- */
-function MessageCard({ appId, row, globalMode, expanded, onToggle }) {
+function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) {
   const [full, setFull] = useState(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
+  const [busy, setBusy] = useState('');
   const frameRef = useRef(null);
   const loadedFor = useRef(null);
 
@@ -130,6 +136,7 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle }) {
 
   const html = full && full.body_html;
   const text = full && full.body_text;
+  const attachments = (full && Array.isArray(full.attachments) && full.attachments.length) ? full.attachments : (Array.isArray(row.attachments) ? row.attachments : []);
   const onFrameLoad = () => {
     try {
       const doc = frameRef.current && frameRef.current.contentDocument;
@@ -137,9 +144,23 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle }) {
     } catch (_) { /* ignore */ }
   };
   const printFrame = () => { try { frameRef.current && frameRef.current.contentWindow && frameRef.current.contentWindow.print(); } catch (_) { /* ignore */ } };
+  const download = async (i, a) => {
+    if (!a.downloadable) return;
+    setBusy('att' + i);
+    try { const { blob, filename } = await api.staffAppEmailAttachment(appId, row.id, i); saveBlob(blob, filename || a.filename); }
+    catch (e) { setErr(e.message || 'Could not download this attachment.'); }
+    finally { setBusy(''); }
+  };
+  const resend = async () => {
+    setBusy('resend');
+    try { await api.staffAppEmailResend(appId, row.id); onChanged && onChanged(); }
+    catch (e) { setErr(e.message || 'Could not resend.'); }
+    finally { setBusy(''); }
+  };
 
   const inbound = row.direction === 'inbound';
   const senderName = inbound ? (row.from_name || row.from_email) : 'YS Capital';
+  const canResend = !globalMode && row.direction === 'outbound' && (row.status === 'error' || row.status === 'skipped');
 
   return (
     <div className={`ec-msg${expanded ? ' open' : ''}`}>
@@ -158,46 +179,55 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle }) {
         </div>
         <span className={`ec-chev${expanded ? ' up' : ''}`} aria-hidden="true">⌄</span>
       </button>
-      {expanded ? (
-        <div className="ec-msg-open">
-          <div className="ec-msg-meta">
-            {inbound
-              ? <div className="ec-metarow"><span className="ec-metalabel">From</span> <span>{row.from_name ? `${row.from_name} · ` : ''}{row.from_email || 'unknown'}</span></div>
-              : <div className="ec-metarow"><span className="ec-metalabel">To</span> <RecipientRoster row={row} /></div>}
-            {row.file_label && globalMode ? <div className="ec-metarow"><span className="ec-metalabel">File</span> <span className="ec-file-chip">{row.file_label}</span></div> : null}
-            {row.error ? <div className="ec-reader-error">Delivery error: {row.error}</div> : null}
-            {Array.isArray(row.attachments) && row.attachments.length
-              ? <div className="ec-attachments">
-                  <span className="ec-attach-label">{row.attachments.length} attachment{row.attachments.length === 1 ? '' : 's'}:</span>
-                  {row.attachments.map((a, i) => (
-                    <span className="ec-attach" key={i}>📎 {a.filename}{a.size ? <span className="muted"> · {Math.max(1, Math.round(a.size / 1024))} KB</span> : null}</span>))}
-                </div>
-              : null}
+      <div className="ec-msg-collapse" style={{ maxHeight: expanded ? 3600 : 0 }}>
+        {expanded ? (
+          <div className="ec-msg-open">
+            <div className="ec-msg-meta">
+              {inbound
+                ? <div className="ec-metarow"><span className="ec-metalabel">From</span> <span>{row.from_name ? `${row.from_name} · ` : ''}{row.from_email || 'unknown'}</span></div>
+                : <div className="ec-metarow"><span className="ec-metalabel">To</span> <RecipientRoster row={row} /></div>}
+              {row.file_label && globalMode ? <div className="ec-metarow"><span className="ec-metalabel">File</span> <span className="ec-file-chip">{row.file_label}</span></div> : null}
+              {row.error ? <div className="ec-reader-error">Delivery error: {row.error}</div> : null}
+              {attachments.length
+                ? <div className="ec-attachments">
+                    <span className="ec-attach-label">{attachments.length} attachment{attachments.length === 1 ? '' : 's'}:</span>
+                    {attachments.map((a, i) => (
+                      a.downloadable
+                        ? <button className="ec-attach ec-attach-dl" key={i} onClick={() => download(i, a)} disabled={busy === 'att' + i} title="Download">
+                            📎 {a.filename}{a.size ? <span className="muted"> · {Math.max(1, Math.round(a.size / 1024))} KB</span> : null} ⤓
+                          </button>
+                        : <span className="ec-attach" key={i}>📎 {a.filename}{a.size ? <span className="muted"> · {Math.max(1, Math.round(a.size / 1024))} KB</span> : null}</span>))}
+                  </div>
+                : null}
+            </div>
+            <div className="ec-msg-body">
+              {loading ? <div className="ec-skel" />
+                : err ? <div className="notice err" style={{ margin: 12 }}>{err}</div>
+                : html
+                  ? <iframe ref={frameRef} title="email" className="ec-frame" sandbox="allow-same-origin" srcDoc={html} onLoad={onFrameLoad} />
+                  : text ? <pre className="ec-plain">{text}</pre>
+                    : <p className="muted small" style={{ padding: 16 }}>{(full && full.body_unavailable) || 'No body was stored for this message.'}</p>}
+            </div>
+            <div className="ec-msg-actions">
+              {canResend ? <button className="btn ghost small" onClick={resend} disabled={busy === 'resend'}>{busy === 'resend' ? 'Resending…' : '↻ Resend'}</button> : null}
+              {html ? <button className="btn ghost small" onClick={printFrame}>🖨 Print</button> : null}
+            </div>
           </div>
-          <div className="ec-msg-body">
-            {loading ? <div className="ec-skel" />
-              : err ? <div className="notice err" style={{ margin: 12 }}>{err}</div>
-              : html
-                ? <iframe ref={frameRef} title="email" className="ec-frame" sandbox="allow-same-origin" srcDoc={html} onLoad={onFrameLoad} />
-                : text ? <pre className="ec-plain">{text}</pre>
-                  : <p className="muted small" style={{ padding: 16 }}>{(full && full.body_unavailable) || 'No body was stored for this message.'}</p>}
-          </div>
-          {html ? <div className="ec-msg-actions"><button className="btn ghost small" onClick={printFrame}>🖨 Print</button></div> : null}
-        </div>
-      ) : null}
+        ) : null}
+      </div>
     </div>
   );
 }
 
-/* ---- reply composer (shows who it reaches) ---- */
-function Composer({ appId, subject, onSent }) {
-  const [open, setOpen] = useState(false);
+/* ---- reply / compose composer (shows who it reaches) ---- */
+function Composer({ appId, subject, onSent, isNew, onClose }) {
+  const [open, setOpen] = useState(!!isNew);
   const [body, setBody] = useState('');
-  const [subj, setSubj] = useState(subject && /^\s*re:/i.test(subject) ? subject : `Re: ${subject || 'your loan file'}`);
+  const [subj, setSubj] = useState(isNew ? '' : (subject && /^\s*re:/i.test(subject) ? subject : `Re: ${subject || 'your loan file'}`));
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [recips, setRecips] = useState(null);
-  useEffect(() => { setSubj(subject && /^\s*re:/i.test(subject) ? subject : `Re: ${subject || 'your loan file'}`); }, [subject]);
+  useEffect(() => { if (!isNew) setSubj(subject && /^\s*re:/i.test(subject) ? subject : `Re: ${subject || 'your loan file'}`); }, [subject, isNew]);
   useEffect(() => {
     if (!open) return;
     api.staffAppReplyRecipients(appId).then((r) => setRecips(Array.isArray(r) ? r : [])).catch(() => setRecips([]));
@@ -208,7 +238,7 @@ function Composer({ appId, subject, onSent }) {
     try {
       const r = await api.staffAppEmailReply(appId, { body, subject: subj });
       setMsg(`Sent to ${(r.sent_to || []).length} recipient${(r.sent_to || []).length === 1 ? '' : 's'}.`);
-      setBody(''); setOpen(false);
+      setBody(''); if (!isNew) setOpen(false); if (isNew && onClose) onClose();
       onSent && onSent();
     } catch (e) { setMsg(e.message || 'Could not send.'); }
     finally { setBusy(false); }
@@ -232,16 +262,18 @@ function Composer({ appId, subject, onSent }) {
             : <span className="muted small">the borrower and everyone assigned to this file</span>}
       </div>
       <input className="ec-reply-subject" value={subj} onChange={(e) => setSubj(e.target.value)} placeholder="Subject" />
-      <textarea className="ec-reply-text" rows={5} placeholder="Type your reply…  (⌘/Ctrl + Enter to send)" value={body}
+      <textarea className="ec-reply-text" rows={5} placeholder="Type your message…  (⌘/Ctrl + Enter to send)" value={body}
         onChange={(e) => setBody(e.target.value)} onKeyDown={onKey} autoFocus />
       <div className="row" style={{ gap: 8, marginTop: 8, alignItems: 'center' }}>
-        <button className="btn primary small" onClick={send} disabled={busy || !body.trim()}>{busy ? 'Sending…' : 'Send reply'}</button>
-        <button className="btn ghost small" onClick={() => { setOpen(false); setBody(''); }} disabled={busy}>Cancel</button>
+        <button className="btn primary small" onClick={send} disabled={busy || !body.trim()}>{busy ? 'Sending…' : (isNew ? 'Send message' : 'Send reply')}</button>
+        <button className="btn ghost small" onClick={() => { if (isNew && onClose) onClose(); else setOpen(false); setBody(''); }} disabled={busy}>Cancel</button>
         {msg ? <span className="muted small">{msg}</span> : null}
       </div>
     </div>
   );
 }
+
+const PAGE = 120;
 
 export default function EmailCenter({ mode = 'file', appId = null }) {
   const globalMode = mode === 'global';
@@ -255,18 +287,32 @@ export default function EmailCenter({ mode = 'file', appId = null }) {
   const [expanded, setExpanded] = useState(() => new Set());
   const [mobileReader, setMobileReader] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [composing, setComposing] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
+  const [read, setRead] = useState(() => loadJSON(READ_KEY, {}));
+  const [stars, setStars] = useState(() => loadJSON(STAR_KEY, {}));
+  const searchRef = useRef(null);
 
-  const load = useCallback(() => {
+  const load = useCallback((append) => {
     setErr(''); setRefreshing(true);
+    const offset = append && rows ? rows.length : 0;
     const p = globalMode
-      ? api.staffEmails({ q: debouncedQ || undefined, status: filter === 'all' || filter === 'inbound' ? undefined : filter, direction: filter === 'inbound' ? 'inbound' : undefined, limit: 150 })
+      ? api.staffEmails({ q: debouncedQ || undefined, status: filter === 'all' || filter === 'inbound' || filter === 'starred' || filter === 'unread' ? undefined : filter, direction: filter === 'inbound' ? 'inbound' : undefined, limit: PAGE, offset })
       : api.staffAppEmails(appId);
-    p.then((r) => setRows(Array.isArray(r) ? r : [])).catch((e) => setErr(e.message || 'Could not load the emails')).finally(() => setRefreshing(false));
-    if (globalMode) api.staffEmailStats().then(setStats).catch(() => {});
-  }, [globalMode, appId, debouncedQ, filter]);
+    p.then((r) => {
+      const arr = Array.isArray(r) ? r : [];
+      if (globalMode) { setHasMore(arr.length >= PAGE); setRows((prev) => append && prev ? prev.concat(arr) : arr); }
+      else setRows(arr);
+    }).catch((e) => setErr(e.message || 'Could not load the emails')).finally(() => setRefreshing(false));
+    if (globalMode && !append) api.staffEmailStats().then(setStats).catch(() => {});
+  }, [globalMode, appId, debouncedQ, filter, rows]);
 
-  useEffect(() => { load(); }, [load]);
+  // reload on filter/search change (not on rows change — that would loop)
+  useEffect(() => { load(false); /* eslint-disable-next-line */ }, [globalMode, appId, debouncedQ, filter]);
   useEffect(() => { const t = setTimeout(() => setDebouncedQ(q.trim()), 300); return () => clearTimeout(t); }, [q]);
+
+  const persistRead = (next) => { setRead(next); saveJSON(READ_KEY, next); };
+  const toggleStar = (key) => { const next = { ...stars }; if (next[key]) delete next[key]; else next[key] = 1; setStars(next); saveJSON(STAR_KEY, next); };
 
   const filtered = useMemo(() => {
     let list = rows || [];
@@ -274,15 +320,17 @@ export default function EmailCenter({ mode = 'file', appId = null }) {
       if (filter === 'sent') list = list.filter((r) => r.direction === 'outbound' && r.status === 'sent');
       else if (filter === 'issues') list = list.filter((r) => r.status === 'error' || r.status === 'no_recipients' || r.status === 'failed_permanent');
       else if (filter === 'inbound') list = list.filter((r) => r.direction === 'inbound');
-      if (q.trim()) {
-        const s = q.trim().toLowerCase();
-        list = list.filter((r) => (r.subject || '').toLowerCase().includes(s) || (r.preview || '').toLowerCase().includes(s)
-          || partyList(r).toLowerCase().includes(s) || (r.from_email || '').toLowerCase().includes(s)
-          || recipientsOf(r).some((t) => (t.email || '').toLowerCase().includes(s)));
-      }
+    }
+    if (q.trim() && !globalMode) {
+      const s = q.trim().toLowerCase();
+      list = list.filter((r) => (r.subject || '').toLowerCase().includes(s) || (r.preview || '').toLowerCase().includes(s)
+        || partyList(r).toLowerCase().includes(s) || (r.from_email || '').toLowerCase().includes(s)
+        || recipientsOf(r).some((t) => (t.email || '').toLowerCase().includes(s)));
     }
     return list;
   }, [rows, filter, q, globalMode]);
+
+  const isUnread = useCallback((t) => !read[t.key] || new Date(t.lastAt) > new Date(read[t.key]), [read]);
 
   const threads = useMemo(() => {
     const map = new Map();
@@ -293,32 +341,64 @@ export default function EmailCenter({ mode = 'file', appId = null }) {
       t.rows.push(r);
       if (new Date(r.occurred_at) > new Date(t.lastAt)) { t.lastAt = r.occurred_at; t.subject = r.subject; t.file_label = r.file_label; t.application_id = r.application_id; }
     }
-    const arr = [...map.values()];
+    let arr = [...map.values()];
     arr.forEach((t) => t.rows.sort((a, b) => new Date(a.occurred_at) - new Date(b.occurred_at)));
     arr.sort((a, b) => new Date(b.lastAt) - new Date(a.lastAt));
+    if (filter === 'starred') arr = arr.filter((t) => stars[t.key]);
+    if (filter === 'unread') arr = arr.filter((t) => isUnread(t));
     return arr;
-  }, [filtered]);
+  }, [filtered, filter, stars, isUnread]);
+
+  const unreadCount = useMemo(() => threads.reduce((n, t) => n + (isUnread(t) ? 1 : 0), 0), [threads, isUnread]);
 
   const selectedThread = useMemo(() => {
     if (!selId) return threads[0] || null;
     return threads.find((t) => t.key === selId) || threads[0] || null;
   }, [threads, selId]);
 
-  // when the selected thread changes, expand its latest message by default
+  // expand latest message + mark the thread read when selection changes
   useEffect(() => {
     if (!selectedThread) return;
     const last = selectedThread.rows[selectedThread.rows.length - 1];
     setExpanded(new Set(last ? [last.id] : []));
+    if (isUnread(selectedThread)) persistRead({ ...read, [selectedThread.key]: selectedThread.lastAt });
+    // eslint-disable-next-line
   }, [selectedThread && selectedThread.key]);
 
-  const openThread = (key) => { setSelId(key); setMobileReader(true); };
+  const openThread = (key) => { setSelId(key); setMobileReader(true); setComposing(false); };
   const toggleMsg = (id) => setExpanded((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  const markAllRead = () => { const next = { ...read }; for (const t of threads) next[t.key] = t.lastAt; persistRead(next); };
+
+  // keyboard navigation
+  useEffect(() => {
+    const onKey = (e) => {
+      const tag = (e.target && e.target.tagName) || '';
+      const typing = tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable);
+      if (e.key === 'Escape') { if (mobileReader) setMobileReader(false); return; }
+      if (typing) return;
+      if (e.key === '/') { e.preventDefault(); searchRef.current && searchRef.current.focus(); return; }
+      if ((e.key === 'j' || e.key === 'k') && threads.length) {
+        e.preventDefault();
+        const idx = Math.max(0, threads.findIndex((t) => selectedThread && t.key === selectedThread.key));
+        const ni = e.key === 'j' ? Math.min(threads.length - 1, idx + 1) : Math.max(0, idx - 1);
+        openThread(threads[ni].key);
+      }
+      if (e.key === 'c' && !globalMode) { setComposing(true); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [threads, selectedThread, mobileReader, globalMode]);
 
   if (err) return <div className="notice err">{err}</div>;
-  if (!rows) return <div className="ec-wrap"><div className="ec-skel" style={{ height: 200 }} /></div>;
+  if (!rows) return <div className="ec-wrap"><div className="ec-skel" style={{ height: 220 }} /></div>;
 
   const FILTERS = [
-    { k: 'all', label: 'All' }, { k: 'sent', label: 'Emailed' }, { k: 'inbound', label: 'Replies' }, { k: 'issues', label: 'Needs attention' },
+    { k: 'all', label: 'All' },
+    { k: 'unread', label: `Unread${unreadCount ? ` (${unreadCount})` : ''}` },
+    { k: 'starred', label: '★ Starred' },
+    { k: 'sent', label: 'Emailed' },
+    { k: 'inbound', label: 'Replies' },
+    { k: 'issues', label: 'Needs attention' },
   ];
 
   // date-grouped thread list
@@ -343,13 +423,22 @@ export default function EmailCenter({ mode = 'file', appId = null }) {
       ) : null}
 
       <div className="ec-toolbar">
-        <input className="ec-search" placeholder={globalMode ? 'Search all emails — subject, person, address…' : 'Search this file’s emails…'}
+        <input ref={searchRef} className="ec-search" placeholder={globalMode ? 'Search all emails — subject, person, address…  ( / )' : 'Search this file’s emails…  ( / )'}
           value={q} onChange={(e) => setQ(e.target.value)} />
         <div className="ec-filters">
           {FILTERS.map((f) => (<button key={f.k} className={`ec-filter${filter === f.k ? ' active' : ''}`} onClick={() => setFilter(f.k)}>{f.label}</button>))}
         </div>
-        <button className="ec-refresh" onClick={load} title="Refresh" aria-label="Refresh">{refreshing ? '…' : '⟳'}</button>
+        {unreadCount ? <button className="ec-textbtn" onClick={markAllRead} title="Mark all as read">Mark all read</button> : null}
+        {!globalMode ? <button className="btn primary small" onClick={() => { setComposing(true); setMobileReader(true); }}>＋ New email</button> : null}
+        <button className="ec-refresh" onClick={() => load(false)} title="Refresh" aria-label="Refresh">{refreshing ? '…' : '⟳'}</button>
       </div>
+
+      {composing && !globalMode ? (
+        <div className="ec-compose-panel">
+          <div className="ec-compose-head">New email to this file</div>
+          <Composer appId={appId} subject="" isNew onSent={() => load(false)} onClose={() => setComposing(false)} />
+        </div>
+      ) : null}
 
       <div className="ec-split">
         <div className="ec-list">
@@ -362,11 +451,13 @@ export default function EmailCenter({ mode = 'file', appId = null }) {
                 const active = selectedThread && selectedThread.key === t.key;
                 const hasIssue = t.rows.some((r) => r.status === 'error' || r.status === 'no_recipients' || r.status === 'failed_permanent');
                 const inbound = last.direction === 'inbound';
+                const unread = isUnread(t);
                 return (
-                  <button key={t.key} className={`ec-item${active ? ' active' : ''}`} onClick={() => openThread(t.key)}>
+                  <div key={t.key} className={`ec-item${active ? ' active' : ''}${unread ? ' unread' : ''}`} onClick={() => openThread(t.key)}>
                     <Avatar name={inbound ? (last.from_name || last.from_email) : partyList(last)} email={inbound ? last.from_email : null} inbound={inbound} size={38} />
                     <div className="ec-item-main">
                       <div className="ec-item-top">
+                        {unread ? <span className="ec-unread-dot" title="Unread" /> : null}
                         <span className="ec-item-who">{highlight(inbound ? (last.from_name || last.from_email || 'Reply') : partyList(last), q)}</span>
                         <span className="ec-item-when">{when(t.lastAt)}</span>
                       </div>
@@ -377,11 +468,14 @@ export default function EmailCenter({ mode = 'file', appId = null }) {
                       <div className="ec-item-preview">{highlight(last.preview || '', q)}</div>
                       {globalMode && t.file_label ? <div className="ec-item-file">{t.file_label}</div> : null}
                     </div>
-                  </button>
+                    <button className={`ec-star${stars[t.key] ? ' on' : ''}`} title={stars[t.key] ? 'Unstar' : 'Star'}
+                      onClick={(e) => { e.stopPropagation(); toggleStar(t.key); }}>{stars[t.key] ? '★' : '☆'}</button>
+                  </div>
                 );
               })}
             </React.Fragment>
           ))}
+          {globalMode && hasMore ? <button className="ec-loadmore" onClick={() => load(true)} disabled={refreshing}>{refreshing ? 'Loading…' : 'Load more'}</button> : null}
         </div>
 
         <div className="ec-pane">
@@ -390,15 +484,17 @@ export default function EmailCenter({ mode = 'file', appId = null }) {
               <div className="ec-pane-head">
                 <button className="ec-back" onClick={() => setMobileReader(false)} aria-label="Back to list">←</button>
                 <div className="ec-pane-subject">{selectedThread.subject}</div>
+                <button className={`ec-star lg${stars[selectedThread.key] ? ' on' : ''}`} title={stars[selectedThread.key] ? 'Unstar' : 'Star'}
+                  onClick={() => toggleStar(selectedThread.key)}>{stars[selectedThread.key] ? '★' : '☆'}</button>
               </div>
               <div className="ec-conv">
                 {selectedThread.rows.map((r) => (
                   <MessageCard key={r.id} appId={globalMode ? r.application_id : appId} row={r} globalMode={globalMode}
-                    expanded={expanded.has(r.id)} onToggle={() => toggleMsg(r.id)} />
+                    expanded={expanded.has(r.id)} onToggle={() => toggleMsg(r.id)} onChanged={() => load(false)} />
                 ))}
               </div>
               {(!globalMode || selectedThread.application_id)
-                ? <Composer appId={globalMode ? selectedThread.application_id : appId} subject={selectedThread.subject} onSent={load} />
+                ? <Composer appId={globalMode ? selectedThread.application_id : appId} subject={selectedThread.subject} onSent={() => load(false)} />
                 : null}
             </>
           )}
