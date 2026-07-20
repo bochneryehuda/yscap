@@ -190,15 +190,14 @@ export function adminStateFromEngineInputs(inp) {
   put('tsFeeAppr', inp.appraisalFee); put('tsFeeTitle', inp.titleFee);
   put('tsMLtv', inp.ovrAcqLTVPct); put('tsMArv', inp.ovrARLTVPct);
   put('tsMLtc', inp.ovrLTCPct); put('tsMRate', inp.ovrRatePct); put('tsMIr', inp.ovrIrMonths);
-  // Re-arm the manual-scenario toggle whenever ANY manual override value was
-  // registered — not only when inp.manualPricing is set. Otherwise reopening a
-  // manually-priced file restores the rate VALUE into the (hidden) field but leaves
-  // the toggle off, so the studio ignores it and a re-register silently reverts to
-  // the AUTO rate (the "typed 10.25, file shows 10.3" report — 10.3 is the auto
-  // rate). The server (buildInputs) honors a present override regardless.
-  const hasManualOverride = ['ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths']
-    .some((k) => inp[k] != null && inp[k] !== '');
-  return { v, c: (inp.manualPricing || hasManualOverride) ? { tsManualOn: true } : {} };
+  // NOTE: the reopen re-arm fix (re-arming tsManualOn whenever a manual override
+  // value is present) lives in the canonical V2 studio only — V2 has the
+  // non-admin prefill guard (delete adm.c.tsManualOn) that keeps a non-admin from
+  // re-arming manual pricing. This frozen V1 (/v1) panel has no such guard, so
+  // widening the re-arm here would surface a 403 for non-admin staff reopening a
+  // manually-priced file. The server (buildInputs) still honors a present rate
+  // override for V1's register path, so a rate that IS sent still sticks.
+  return { v, c: inp.manualPricing ? { tsManualOn: true } : {} };
 }
 
 /* A compact, human-readable copy of the priced structure — stored on the
