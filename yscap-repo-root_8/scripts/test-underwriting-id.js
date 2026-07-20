@@ -79,4 +79,19 @@ assert.deepStrictEqual(codes(idFindings({ address: { line1: '9 Oak Ave', city: '
   assert.strictEqual(summarize(f).fatal, 2);
 }
 
+// --- Age at DOB (general identity/eligibility flag) ---
+{
+  // The borrower is a MINOR by the ID's DOB → underage flag (warning, and the DOB also mismatches the file).
+  const minor = computeIdFindings({ ...goodId, dateOfBirth: '2012-06-01' }, borrower, { today: TODAY });
+  assert.ok(minor.some((f) => f.code === 'id_underage' && f.severity === 'warning'), 'under-18 DOB is flagged');
+  assert.strictEqual(minor.find((f) => f.code === 'id_underage').blocksCtc, false, 'underage is a warning, not a hard block');
+  // A plausible adult DOB → no age flag.
+  assert.ok(!idFindings({}).some((f) => /id_underage|id_age_implausible/.test(f.code)), 'a 46-year-old raises no age flag');
+  // An impossible age (born 1902 → ~124) → implausible-age flag (a misread).
+  const oldId = computeIdFindings({ ...goodId, dateOfBirth: '1902-06-01' }, { ...borrower, date_of_birth: '1902-06-01' }, { today: TODAY });
+  assert.ok(oldId.some((f) => f.code === 'id_age_implausible'), 'age >120 is flagged as a misread');
+  // No `today` → no age flag (never guesses off the wall clock).
+  assert.ok(!computeIdFindings({ ...goodId, dateOfBirth: '2012-06-01' }, borrower, {}).some((f) => f.code === 'id_underage'), 'no today → no age flag');
+}
+
 console.log('✓ test-underwriting-id: all government-ID findings cases pass');

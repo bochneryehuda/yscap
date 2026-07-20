@@ -88,6 +88,30 @@ function computeIdFindings(id, borrower, opts = {}) {
       actions: ['fix_file', 'keep', 'custom', 'dismiss', 'decline'] }));
   }
 
+  // ---- 2b. Age at the DOB (general identity/eligibility flag) ----
+  // A borrower who is under 18 can't legally contract — almost always a misread DOB, occasionally a
+  // real problem, either way it must be caught. An implausibly high age (>120) is a misread too.
+  // Computed off the ID's own DOB (not the file's) so it fires even before the file DOB is entered.
+  if (idDob && today) {
+    const ageDays = daysBetween(idDob, today);
+    if (ageDays != null) {
+      const years = Math.floor(ageDays / 365.25);
+      if (years < 18) {
+        out.push(finding({ code: 'id_underage', severity: 'warning', field: 'date_of_birth',
+          docValue: `${idDob} (age ${years})`, fileValue: '18+ to contract',
+          title: 'The ID shows the borrower is under 18',
+          howTo: `The ID's date of birth (${idDob}) makes the borrower ${years} — under 18 cannot legally sign the loan. This is almost always a misread date; confirm the real date of birth (or the borrower's eligibility) before clear-to-close.`,
+          actions: ['fix_file', 'request_revision', 'custom', 'dismiss'], opensCondition: 'underwriting_review_cleared' }));
+      } else if (years > 120) {
+        out.push(finding({ code: 'id_age_implausible', severity: 'warning', field: 'date_of_birth',
+          docValue: `${idDob} (age ${years})`, fileValue: null,
+          title: 'The ID’s date of birth gives an impossible age',
+          howTo: `The ID's date of birth (${idDob}) works out to age ${years}, which is not plausible — the date was misread. Request a clearer copy and confirm the real date of birth.`,
+          actions: ['request_revision', 'fix_file', 'dismiss'], opensCondition: 'underwriting_review_cleared' }));
+      }
+    }
+  }
+
   // ---- 3. Primary address (warning — IDs lag a move; check prior too) ----
   const matchesCurrent = addrMatches(id.address, borrower && borrower.current_address);
   if (matchesCurrent === false) {
