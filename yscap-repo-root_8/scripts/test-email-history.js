@@ -19,6 +19,7 @@
  */
 if (!process.env.DATABASE_URL) { console.log('SKIP test-email-history (no DATABASE_URL)'); process.exit(0); }
 process.env.EMAIL_PROVIDER = process.env.EMAIL_PROVIDER || 'none';
+process.env.APP_URL = process.env.APP_URL || 'https://track.example';   // enables the open-tracking pixel
 
 const db = require('../src/db');
 const emailLog = require('../src/lib/email-log');
@@ -230,6 +231,63 @@ const uniq = `eh-${process.pid}-${Date.now()}`;
   // resend of an inbound message is rejected
   const inMsg = (await db.query(`SELECT id FROM email_messages WHERE application_id=$1 AND direction='inbound' LIMIT 1`, [appId])).rows[0];
   if (inMsg) { const rsIn = await post(`/api/staff/applications/${appId}/emails/${inMsg.id}/resend`, loTok, {}); assert(rsIn.status === 400, 'resend of an inbound reply is rejected'); }
+
+  // ---- open tracking ----
+  assert(/\/e\/o\/abc\.gif/.test(emailLog && require('../src/lib/notify').injectOpenPixel('<html><body>hi</body></html>', 'abc')),
+    'injectOpenPixel splices the tracking pixel into the sent body');
+  assert(require('../src/lib/notify').injectOpenPixel('<html><body>hi</body></html>', 'abc').includes('display:none'),
+    'the tracking pixel is invisible');
+  const notify = require('../src/lib/notify');
+  const nOpen = await notify.notifyStaff(officer, { type: 'message', title: 'Trackable', body: 'Open me', applicationId: appId });
+  await new Promise((r) => setTimeout(r, 500));   // let the fire-and-forget capture finish
+  const storedBody = (await db.query(`SELECT body_html FROM email_messages WHERE notification_id=$1`, [nOpen])).rows[0];
+  assert(storedBody && storedBody.body_html && !/\/e\/o\//.test(storedBody.body_html), 'the STORED Email Center body has NO tracking pixel (clean copy)');
+  // simulate the borrower's email client loading the pixel
+  const px = await fetch(`${base}/e/o/${nOpen}.gif`);
+  assert(px.status === 200 && String(px.headers.get('content-type') || '').includes('image/gif'), 'the open pixel returns a 1x1 gif');
+  const o1 = (await db.query(`SELECT open_count FROM email_opens WHERE notification_id=$1`, [nOpen])).rows[0];
+  assert(o1 && o1.open_count >= 1, 'an open is recorded in email_opens');
+  await fetch(`${base}/e/o/${nOpen}.gif`);
+  const o2 = (await db.query(`SELECT open_count FROM email_opens WHERE notification_id=$1`, [nOpen])).rows[0];
+  assert(o2.open_count === o1.open_count + 1, 'a repeat open increments the count');
+  // the per-file list now shows the recipient opened it
+  const listOpen = await (await get(`/api/staff/applications/${appId}/emails`, loTok)).json();
+  const openedMsg = (Array.isArray(listOpen) ? listOpen : []).find((r) => Array.isArray(r.recipients) && r.recipients.some((x) => x.opened_at));
+  assert(!!openedMsg, 'the per-file list surfaces a recipient opened_at');
+  // a bogus/guessed id returns a gif but records nothing (FK guard)
+  const pxBad = await fetch(`${base}/e/o/00000000-0000-0000-0000-000000000000.gif`);
+  const bogus = (await db.query(`SELECT count(*)::int c FROM email_opens WHERE notification_id='00000000-0000-0000-0000-000000000000'`)).rows[0].c;
+  assert(pxBad.status === 200 && bogus === 0, 'a bogus open id returns a gif but records no row (FK guard)');
+
+  // ---- open tracking: the BCC'd loan officer must NOT trip the borrower's pixel ----
+  // A borrower email silently BCCs the assigned LO. If the LO's copy carried the
+  // SAME pixel (keyed on the borrower's notification), their mail client / scanner
+  // loading it would record a FALSE borrower-open. So the pixel copy goes only to
+  // the borrower; the officer gets a separate, pixel-free copy.
+  const noop = require('../src/lib/email/noop');
+  const realNoopSend = noop.sendMail;
+  const provSends = [];
+  noop.sendMail = async (m) => { provSends.push(m); return realNoopSend(m); };
+  try {
+    const nBo = await notify.notifyBorrower(borrower, { type: 'status_change', title: 'Your file moved', body: 'Onward', applicationId: appId, major: true });
+    await new Promise((r) => setTimeout(r, 500));   // let the fire-and-forget officer copy + capture finish
+    const boSend = provSends.find((m) => [].concat(m.to || []).some((t) => String(t).includes(`${uniq}-bo@`)));
+    const loSend = provSends.find((m) => [].concat(m.to || []).some((t) => String(t).includes(`${uniq}-lo@`)));
+    assert(boSend && new RegExp(`/e/o/${nBo}\\.gif`).test(String(boSend.html || '')), 'the borrower copy carries the open pixel');
+    assert(boSend && !(Array.isArray(boSend.bcc) && boSend.bcc.length), 'the borrower copy is no longer BCC-ing the officer (split off)');
+    assert(loSend && !/\/e\/o\//.test(String(loSend.html || '')), "the officer's separate copy is pixel-free (cannot trip a false borrower-open)");
+    // the officer's split copy is NOT recorded in the Email Center (would clobber the borrower row)
+    const boRows = (await db.query(`SELECT to_emails FROM email_messages WHERE notification_id=$1`, [nBo])).rows;
+    assert(boRows.length === 1 && JSON.stringify(boRows[0].to_emails).includes(`${uniq}-bo@`),
+      'only the borrower send is captured (officer split copy is not double-recorded)');
+  } finally { noop.sendMail = realNoopSend; }
+  // _skipCapture keeps a send out of the Email Center entirely
+  const email = require('../src/lib/email');
+  const beforeSkip = (await db.query(`SELECT count(*)::int c FROM email_messages WHERE application_id=$1`, [appId])).rows[0].c;
+  await email.sendMail({ to: [`${uniq}-bo@example.test`], subject: 'skip me', html: '<p>x</p>',
+    replyTo: `file+${appId}@example.test`, _skipCapture: true });
+  const afterSkip = (await db.query(`SELECT count(*)::int c FROM email_messages WHERE application_id=$1`, [appId])).rows[0].c;
+  assert(afterSkip === beforeSkip, '_skipCapture suppresses the Email Center capture');
 
   // ---- cleanup ----
   await db.query(`DELETE FROM email_messages WHERE application_id=$1`, [appId]);

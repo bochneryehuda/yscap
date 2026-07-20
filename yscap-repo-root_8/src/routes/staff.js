@@ -2338,6 +2338,9 @@ function emailRowShape(r) {
     // every recipient this exact email reached (filled by consolidateEmailRows)
     recipients: r.recipients || null,
     recipient_count: r.recipient_count || null,
+    // open tracking (whether/when this recipient opened it)
+    opened_at: r.opened_at || null,
+    open_count: r.open_count || 0,
   };
 }
 
@@ -2346,12 +2349,13 @@ function emailRowShape(r) {
 // merges the whole fan-out below.
 function recipientsOfRow(r) {
   const to = Array.isArray(r.to_emails) ? r.to_emails : [];
-  if (!to.length) return r.recipient_name ? [{ email: null, name: r.recipient_name, kind: r.recipient_kind, status: r.status }] : [];
+  if (!to.length) return r.recipient_name ? [{ email: null, name: r.recipient_name, kind: r.recipient_kind, status: r.status, opened_at: r.opened_at || null }] : [];
   return to.map((t, i) => ({
     email: t.email || null,
     name: (i === 0 ? r.recipient_name : null) || t.name || null,
     kind: r.recipient_kind || null,
     status: r.status,
+    opened_at: r.opened_at || null,
   }));
 }
 const _STATUS_RANK = { error: 3, no_recipients: 3, failed_permanent: 3, skipped: 2, received: 1, forwarded: 1, sent: 1 };
@@ -2403,9 +2407,11 @@ router.get('/applications/:id/emails', async (req, res) => {
               em.from_email, em.from_name, em.to_emails, em.reply_to, em.recipient_kind,
               em.audience, em.status, em.error, em.attachments, em.meta, em.reconstructed,
               (em.body_html IS NOT NULL) AS has_body, em.thread_key, em.occurred_at, em.application_id,
+              eo.first_opened_at AS opened_at, eo.open_count,
               COALESCE(su.full_name,
                        NULLIF(TRIM(COALESCE(bo.first_name,'') || ' ' || COALESCE(bo.last_name,'')), '')) AS recipient_name
          FROM email_messages em
+         LEFT JOIN email_opens eo ON eo.notification_id = em.notification_id
          LEFT JOIN notifications n ON n.id = em.notification_id
          LEFT JOIN staff_users su ON su.id = n.staff_id
          LEFT JOIN borrowers   bo ON bo.id = n.borrower_id
@@ -2685,12 +2691,14 @@ router.get('/emails', async (req, res) => {
               em.from_email, em.from_name, em.to_emails, em.reply_to, em.recipient_kind,
               em.audience, em.status, em.error, em.attachments, em.meta, em.reconstructed,
               (em.body_html IS NOT NULL) AS has_body, em.thread_key, em.occurred_at, em.application_id,
+              eo.first_opened_at AS opened_at, eo.open_count,
               a.ys_loan_number, a.property_address, b.first_name AS b_first, b.last_name AS b_last,
               COALESCE(su.full_name,
                        NULLIF(TRIM(COALESCE(bo.first_name,'') || ' ' || COALESCE(bo.last_name,'')), '')) AS recipient_name
          FROM email_messages em
          LEFT JOIN applications a ON a.id = em.application_id
          LEFT JOIN borrowers   b ON b.id = a.borrower_id
+         LEFT JOIN email_opens eo ON eo.notification_id = em.notification_id
          LEFT JOIN notifications n ON n.id = em.notification_id
          LEFT JOIN staff_users su ON su.id = n.staff_id
          LEFT JOIN borrowers   bo ON bo.id = n.borrower_id
