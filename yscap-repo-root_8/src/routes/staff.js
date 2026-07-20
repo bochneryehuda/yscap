@@ -1605,7 +1605,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
   };
   try {
     if (!pricing.enginesReady()) return res.status(503).json({ error: 'pricing engines unavailable', detail: pricing.loadErr() });
-    const locked = await require('../lib/file-lock').structuralLockReason(appId);   // #84
+    const locked = await require('../lib/file-lock').structuralLockReason(appId, db, { actor: req.actor });   // #84
     if (locked) return refuse(409, { error: locked }, 'structural_lock');
     const b = req.body || {};
     const program = b.program === 'gold' ? 'gold' : 'standard';
@@ -1787,7 +1787,7 @@ router.post('/applications/:id/rehab-budget', async (req, res) => {
   const appId = req.params.id;
   const payload = (req.body && typeof req.body.payload === 'object') ? req.body.payload : null;
   if (!payload) return res.status(400).json({ error: 'payload required' });
-  const locked = await require('../lib/file-lock').structuralLockReason(appId);   // #84
+  const locked = await require('../lib/file-lock').structuralLockReason(appId, db, { actor: req.actor });   // #84
   if (locked) return res.status(409).json({ error: locked });
   try {
     let it = await db.query(`SELECT id FROM checklist_items WHERE application_id=$1 AND tool_key='rehab_budget' LIMIT 1`, [appId]);
@@ -1855,7 +1855,7 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   if (!it.rows[0]) return res.status(404).json({ error: 'tool task not found' });
   const toolKey = it.rows[0].tool_key;
   if (toolKey === 'rehab_budget') {   // #84 — rehab budget is loan structure, frozen at CTC
-    const locked = await require('../lib/file-lock').structuralLockReason(req.params.id);
+    const locked = await require('../lib/file-lock').structuralLockReason(req.params.id, db, { actor: req.actor });
     if (locked) return res.status(409).json({ error: locked, fatal: true });
   }
   const rawPayload = (req.body && typeof req.body.payload === 'object') ? req.body.payload : { submitted: true };
@@ -2465,6 +2465,12 @@ router.post('/change-requests/:cid/approve', async (req, res) => {
     if (!cr) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'not found' }); }
     if (!(await canTouchApp(req, cr.application_id))) { await client.query('ROLLBACK'); return res.status(403).json({ error: 'forbidden' }); }
     if (cr.status !== 'pending') { await client.query('ROLLBACK'); return res.status(409).json({ error: `this request is already ${cr.status}` }); }
+    // #84 — once a file is clear-to-close / funded its economics are frozen, so even
+    // an APPROVED change may not be written onto it (a super_admin can unlock the
+    // file to make the correction). Without this the CR-approve path is another door
+    // around the funded freeze.
+    const crLock = await require('../lib/file-lock').structuralLockReason(cr.application_id, client, { actor: req.actor });
+    if (crLock) { await client.query('ROLLBACK'); return res.status(409).json({ error: crLock, locked: true }); }
     const applied = await changeRequests.applyRequest(client, cr, req.actor.id, note);
     await client.query('COMMIT');
     // Propagate the approved value to ClickUp (#86). The governed economics fields
@@ -4264,6 +4270,12 @@ router.get('/applications/:id/status-history', async (req, res) => {
 // file's Activity feed shows exactly what changed.
 router.patch('/applications/:id/details', async (req, res) => {
   const b = req.body || {};
+  // #84 — a clear-to-close / funded file's loan structure is FROZEN for everyone,
+  // super_admin included. This economics editor is one of the write paths that
+  // used to skip the freeze (it could rewrite a funded loan's numbers). A
+  // super_admin can UNLOCK the file first to correct a mistake, then re-lock.
+  const detailsLock = await require('../lib/file-lock').structuralLockReason(req.params.id, db, { actor: req.actor });
+  if (detailsLock) return res.status(409).json({ error: detailsLock, locked: true });
   // sqft only applies to a square-footage / ground-up rehab. When the rehab type
   // is being changed to something else, null any stale sqft in the SAME update so
   // it can't keep flipping the pricing engine's sqftAddition flag (its
@@ -4686,6 +4698,19 @@ router.post('/applications/:id/internal-status', async (req, res) => {
     // is a second door into the decision-grade buckets — gate it the same way.
     if (DECISION_STATUSES.has(external) && !seesAll(req))
       return res.status(403).json({ error: 'Only an underwriter or admin can move a file to this status.' });
+    // S3-05 / H2: the internal-status path re-derives the borrower-facing status,
+    // so it is a SECOND door into clear-to-close / funded — gate it the SAME way as
+    // PATCH /:id, or a file could be advanced past unsatisfied required conditions
+    // and gate items. Admin may override with force.
+    let forced = false;
+    if (external === 'clear_to_close' || external === 'funded') {
+      const blockers = await advancementBlockers(req.params.id, external);
+      if (blockers.conditions.length || blockers.gates.length) {
+        const force = !!(req.body && req.body.force);
+        if (!(force && isAdmin(req))) return res.status(409).json({ error: 'blocked', target: external, blockers });
+        forced = true;
+      }
+    }
     await db.query(
       `UPDATE applications SET internal_status=$2, status=$3, status_changed_at=now(), updated_at=now() WHERE id=$1`,
       [req.params.id, internalStatus, external]);
@@ -4693,12 +4718,41 @@ router.post('/applications/:id/internal-status', async (req, res) => {
     // Record the (borrower-facing) transition on the file's timeline, like PATCH /:id.
     await db.query(
       `INSERT INTO application_status_history (application_id, from_status, to_status, changed_by, forced)
-       VALUES ($1,$2,$3,$4,$5)`, [req.params.id, cur.rows[0].status, external, req.actor.id, false]);
+       VALUES ($1,$2,$3,$4,$5)`, [req.params.id, cur.rows[0].status, external, req.actor.id, forced]);
+    // Funding seeds the post-closing trailing-doc checklist (parity with PATCH /:id).
+    if (external === 'funded') { try { await seedPostClosing(req.params.id); } catch (_) {} }
     await audit(req, 'internal_status_change', 'application', req.params.id,
-      { from: cur.rows[0].internal_status, to: internalStatus, external });
+      { from: cur.rows[0].internal_status, to: internalStatus, external, forced: forced || undefined });
     // Status is a rule-engine field — re-run conditions on the new external bucket.
     try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'status_change' }); } catch (_) {}
     res.json({ ok: true, internal_status: internalStatus, status: external });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// #84 — super-admin STRUCTURAL UNLOCK. A clear-to-close / funded file's loan
+// structure (price, loan amount, pricing, budget, vesting, program) is frozen for
+// EVERYONE, super_admin included. A super_admin may deliberately UNLOCK a specific
+// file to correct a genuine mistake, then re-lock it — every toggle is audited.
+// Only a super_admin (not a regular admin) may do this.
+router.post('/applications/:id/structural-lock', async (req, res) => {
+  if (!(req.actor && req.actor.role === 'super_admin'))
+    return res.status(403).json({ error: 'Only a super-admin can unlock a frozen file.' });
+  const unlock = !!(req.body && req.body.unlocked);
+  const reason = req.body && req.body.reason ? String(req.body.reason).slice(0, 500) : null;
+  try {
+    const cur = await db.query(`SELECT status FROM applications WHERE id=$1`, [req.params.id]);
+    if (!cur.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (unlock) {
+      await db.query(
+        `UPDATE applications SET structural_unlocked_at=now(), structural_unlocked_by=$2, structural_unlock_reason=$3, updated_at=now() WHERE id=$1`,
+        [req.params.id, req.actor.id, reason]);
+    } else {
+      await db.query(
+        `UPDATE applications SET structural_unlocked_at=NULL, structural_unlocked_by=NULL, structural_unlock_reason=NULL, updated_at=now() WHERE id=$1`,
+        [req.params.id]);
+    }
+    await audit(req, unlock ? 'structural_unlock' : 'structural_relock', 'application', req.params.id, { reason });
+    res.json({ ok: true, unlocked: unlock });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 

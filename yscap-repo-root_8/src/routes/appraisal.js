@@ -252,6 +252,12 @@ router.post('/:appId/findings/:fid/resolve', requirePermission('sign_off_conditi
       if (kind === 'numeric') { newValue = Number(String(raw).replace(/[,$]/g, '')); if (!Number.isFinite(newValue) || newValue <= 0) return res.status(400).json({ error: 'a positive number is required' }); }
       else if (kind === 'int') { newValue = parseInt(String(raw).replace(/\D/g, ''), 10); if (!Number.isInteger(newValue)) return res.status(400).json({ error: 'a whole number is required' }); }
       else { newValue = String(raw || '').trim(); if (!newValue) return res.status(400).json({ error: 'a value is required' }); }
+      // #84 — repricing off a finding rewrites the loan's economics (arv / as-is /
+      // price / units / type), so it is frozen on a clear-to-close / funded file
+      // (a super_admin can unlock to correct it). Non-reprice resolutions
+      // (keep / dismiss / acknowledge) are unaffected — they don't change the loan.
+      const lock = await require('../lib/file-lock').structuralLockReason(app.id, db, { actor: req.actor });
+      if (lock) return res.status(409).json({ error: lock, locked: true });
       const before = (await db.query(`SELECT ${col} AS v FROM applications WHERE id=$1`, [app.id])).rows[0];
       // Parameterized value; column is from the whitelist above (never user input).
       await db.query(`UPDATE applications SET ${col}=$2, updated_at=now() WHERE id=$1`, [app.id, newValue]);
