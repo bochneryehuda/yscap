@@ -3,7 +3,7 @@
 --       (audit MINOR, 2026-07-19): an empty REVIEW re-pull could still clear an
 --       earlier fatal finding that lived on ANOTHER review report.
 --
--- db/190 protected an imported fatal from being masked (via a separate "latest
+-- db/191 protected an imported fatal from being masked (via a separate "latest
 -- imported" check), but there was no symmetric protection for a fatal on an OLDER
 -- review report: review(fatal OFAC) then review(NULL, newer) cleared the gate —
 -- a soft clear-path for exactly the compliance-only findings (OFAC / deceased)
@@ -15,7 +15,7 @@
 -- in_doubt / ordering one, is NOT a re-verification and can never supersede a
 -- fatal. So a clean IMPORTED re-pull still clears everything; nothing else does.
 --
--- credit_active_fatal_count (db/190) is reused unchanged. Idempotent.
+-- credit_active_fatal_count (db/191) is reused unchanged. Idempotent.
 -- ============================================================================
 
 CREATE OR REPLACE FUNCTION credit_finding_gate() RETURNS trigger AS $$

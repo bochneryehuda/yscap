@@ -3,7 +3,7 @@
 --       SSN / address) on a REVIEW-status report escaped the sign-off gate.
 --       (Audit finding, 2026-07-19.)
 --
--- db/189's gate (like db/187) only looked at the latest `status='imported'`
+-- db/190's gate (like db/188) only looked at the latest `status='imported'`
 -- report. That was correct when the ONLY finding was fico_mismatch (computed only
 -- on imported reports). But E2 surfaces the bureau's own alerts on ANY outcome,
 -- so a first pull that returns a frozen bureau (→ status='review') PLUS a fatal

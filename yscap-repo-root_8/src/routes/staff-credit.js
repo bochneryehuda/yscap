@@ -341,7 +341,7 @@ router.get('/credit/review-queue', requirePull, async (req, res) => {
       .map((r) => ({ ...r, kind: r.status, reason: r.review_reason }));
 
     // (b) the LATEST imported report per file, kept ONLY when it carries an active
-    // fatal finding — filtered IN SQL via credit_active_fatal_count (db/190) so the
+    // fatal finding — filtered IN SQL via credit_active_fatal_count (db/191) so the
     // set is already just the blocked files (no LIMIT-before-filter that could hide
     // blocked files at scale). Matches the gate: a later clean import supersedes.
     const findingRows = (await db.query(
@@ -489,7 +489,7 @@ router.patch('/credit/adverse-action/:id', requirePull, async (req, res) => {
 // A report can now carry a LIST of fatal findings — a FICO mismatch AND/OR a
 // bureau alert (fraud / OFAC / deceased / SSN / address-discrepancy). Any
 // unreconciled fatal finding HARD-blocks completing the credit condition
-// (signOffGate + the db/189 trigger). The normal resolution is to correct the
+// (signOffGate + the db/190 trigger). The normal resolution is to correct the
 // file and re-pull (a fresh, clean report clears everything). This route is the
 // deliberate escape hatch: an underwriter/processor attests a specific finding
 // (or all of them) is understood and accepted, clearing the gate WITHOUT changing
