@@ -47,7 +47,7 @@ export default function ClearToClosePanel({ gating }) {
               </div>
               <div className="muted small">{it.reason}</div>
             </div>
-            <button className="btn ghost small" style={{ flex: 'none' }} onClick={() => goToSection(it.section)}
+            <button className="btn ghost small" style={{ flex: 'none' }} onClick={() => goToSection(it.section, it.condTab)}
               title="Open the section that clears this item">Go fix →</button>
           </div>
         ))}

@@ -20,7 +20,7 @@ import LoanProgress from '../components/LoanProgress.jsx';
 import { PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
 import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
-import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
+import FileSections, { Section, InfoTip, subscribeConditionsTab } from '../components/FileSections.jsx';
 import EsignFileSection from '../components/EsignFileSection.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
 import StaticToolFrame from '../components/StaticToolFrame.jsx';
@@ -2651,6 +2651,11 @@ export default function StaffApplication() {
   // view; the picker (persisted per user) re-shows everything, collapsed.
   const [itemFilter, setItemFilter] = useStickyFilter('checklist', 'todo');
   const [internalCondFilter, setInternalCondFilter] = useStickyFilter('internalConds', 'todo');
+  // The Conditions section is now ONE tabbed hub (Borrower · Underwriting ·
+  // Internal · LLC) instead of four separate sections. A "Go fix →" link can flip
+  // straight to the right tab via the section bus.
+  const [condTab, setCondTab] = useStickyFilter('condTab', 'borrower');
+  useEffect(() => subscribeConditionsTab(setCondTab), []);   // eslint-disable-line react-hooks/exhaustive-deps
   const bucketOf = (s) => s === 'issue' ? 'rejected' : s === 'received' ? 'submitted' : s === 'satisfied' ? 'satisfied' : 'outstanding';
   // ONE "off my plate" rule for every surface — see roleDone() above.
   const condOffPlate = (it) => roleDone(it, role);
@@ -2695,10 +2700,7 @@ export default function StaffApplication() {
     { id: 'sec-application', label: 'Application details', group: 'Application & pricing' },
     { id: 'sec-pricing', label: 'Structure & pricing', group: 'Application & pricing', badge: app.registered_program ? '✓' : '' },
     { id: 'sec-appraisal', label: 'Appraisal & findings', group: 'Application & pricing', badge: apprSummary && apprSummary.fatal ? `${apprSummary.fatal} ⚠` : '' },
-    { id: 'sec-conditions', label: 'Conditions to close', group: 'Conditions', badge: nCondOpen || '' },
-    { id: 'sec-internal-conds', label: 'Internal conditions', group: 'Conditions', badge: internalConds.length ? `${internalConds.filter(i => i.signed_off_at || i.status === 'satisfied').length}/${internalConds.length}` : '' },
-    { id: 'sec-checklist', label: 'Internal checklist', group: 'Conditions', badge: internalItems.length ? `${internalItems.filter(i => i.signed_off_at).length}/${internalItems.length}` : '' },
-    { id: 'sec-entity', label: 'LLC condition', group: 'Conditions', badge: app.llc_id && app.llc_verified ? '✓' : '' },
+    { id: 'sec-conditions', label: 'Conditions', group: 'Conditions', badge: nCondOpen || '' },
     { id: 'sec-esign', label: 'E-signatures', group: 'Signing & documents' },
     { id: 'sec-documents', label: 'Documents & exports', group: 'Signing & documents', badge: docs.length || '' },
     { id: 'sec-track', label: 'Track record', group: 'Signing & documents' },
@@ -2955,100 +2957,122 @@ export default function StaffApplication() {
         <AppraisalPanel appId={id} onSummary={onApprSummary} reloadSignal={apprReload} />
       </Section>
 
-      <Section id="sec-conditions" title="Conditions to close" defaultOpen={false}
-        info="The same list the borrower sees — upload on their behalf, accept to sign off, or send back with a reason."
-        badge={`${borrowerItems.filter(it => it.signed_off_at).length}/${borrowerItems.length} signed off`}>
+      {/* ONE Conditions hub with tabs (owner-directed cleanup): the borrower's
+          conditions, the underwriting conditions, the internal staff conditions +
+          checklist, and the LLC used to be four separate sections — they're now one
+          section you switch between with tabs, so there's a single place to look. */}
+      <Section id="sec-conditions" title="Conditions" defaultOpen={false}
+        info="Everything to clear on this file — the borrower's conditions, your underwriting conditions, internal staff conditions and checklist, and the LLC. Switch with the tabs."
+        badge={nCondOpen || ''}>
       <input ref={staffFileRef} type="file" multiple style={{ display: 'none' }} onChange={onStaffFile} />
-      <BorrowerConditions appId={id} app={app} items={items} docs={docs} role={role}
-        onPatch={patch} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc} dlBusy={dlBusy}
-        onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onChanged={load} onPreview={openPreview}
-        onOpenStudio={() => { studioRef.current ? studioRef.current.openStudio() : document.getElementById('sec-pricing')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }} />
-      <StaffChangeRequests appId={id} onChanged={load} />
-      <FileContacts appId={id} isStaff heading="File contacts (realtor, attorney, title, insurance, contractor…)" />
-      {/* Stacked, not a 2-col grid: the file page's centre column is narrow
-          (sub-nav + summary rail flank it), so side-by-side crushed each panel to
-          ~160px and pushed the Underwriting list off the page. Full-width, stacked,
-          each panel reads at the full section width. */}
-      <div className="stack" style={{ marginTop: 14 }}>
-        <AddConditionPanel appId={id} items={items} onChanged={load}
-          onError={(t) => setErr(t)} onFlash={flash} />
+      {(() => {
+        const uwOpen = conds.filter(c => c.status === 'open' || c.status === 'borrower_responded').length;
+        const intOpen = internalConds.filter(it => !condOffPlate(it)).length + internalItems.filter(it => !roleDone(it, role)).length;
+        const TABS = [
+          { k: 'borrower', label: 'Borrower', badge: nCondOpen || '' },
+          { k: 'underwriting', label: 'Underwriting', badge: uwOpen || '' },
+          { k: 'internal', label: 'Internal', badge: intOpen || '' },
+          { k: 'llc', label: 'LLC / entity', badge: app.llc_id ? (app.llc_verified ? '✓' : '!') : '' },
+        ];
+        return (
+          <div className="cond-tabs" role="tablist" aria-label="Conditions">
+            {TABS.map(t => (
+              <button key={t.k} type="button" role="tab" aria-selected={condTab === t.k}
+                className={`cond-tab${condTab === t.k ? ' active' : ''}`} onClick={() => setCondTab(t.k)}>
+                {t.label}{t.badge !== '' && <span className="cond-tab-badge">{t.badge}</span>}
+              </button>
+            ))}
+          </div>
+        );
+      })()}
+
+      {condTab === 'borrower' && <>
+        <BorrowerConditions appId={id} app={app} items={items} docs={docs} role={role}
+          onPatch={patch} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc} dlBusy={dlBusy}
+          onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onChanged={load} onPreview={openPreview}
+          onOpenStudio={() => { studioRef.current ? studioRef.current.openStudio() : document.getElementById('sec-pricing')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }} />
+        <StaffChangeRequests appId={id} onChanged={load} />
+        <FileContacts appId={id} isStaff heading="File contacts (realtor, attorney, title, insurance, contractor…)" />
+        <div className="stack" style={{ marginTop: 14 }}>
+          <AddConditionPanel appId={id} items={items} onChanged={load}
+            onError={(t) => setErr(t)} onFlash={flash} />
+        </div>
+      </>}
+
+      {condTab === 'underwriting' && (
         <LoanConditionsPanel conds={conds} condFilter={condFilter} setCondFilter={setCondFilter}
           cForm={cForm} setCForm={setCForm} addLoanCondition={addLoanCondition}
           clearCond={clearCond} waiveCond={waiveCond} isAdmin={isAdmin} completer={completer} reviewCond={reviewCond} />
-      </div>
-      </Section>
+      )}
 
-      <Section id="sec-internal-conds" title="Internal conditions" defaultOpen={false}
-        info="Staff-only document conditions (Insurance, Title) — they behave like any condition but are never shared with the borrower.">
-      <div className="panel" style={{ marginTop: 0 }}>
-        {(() => {
-          const sorted = [...internalConds].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
-          const vis = sorted.filter(it => internalCondFilter === 'all' ? true : internalCondFilter === 'cleared' ? condOffPlate(it) : !condOffPlate(it));
-          const isLO = role === 'loan_officer';
-          return (<>
-            {internalConds.length > 0 && (
-              <div className="row" style={{ marginBottom: 6, alignItems: 'center' }}>
-                <div className="spacer" />
-                <select className="input" style={{ maxWidth: 170 }} value={internalCondFilter} onChange={e => setInternalCondFilter(e.target.value)}>
-                  <option value="todo">{isLO ? 'To review' : 'To sign off'}</option>
-                  <option value="cleared">Cleared</option>
-                  <option value="all">Show all</option>
-                </select>
-                <span className="muted small">{internalConds.filter(i => i.signed_off_at || i.status === 'satisfied').length}/{internalConds.length} cleared</span>
-              </div>
-            )}
-            {internalConds.length === 0
-              ? <p className="muted small">No internal conditions on this file.</p>
-              : vis.length === 0
-                ? <p className="muted small">Nothing {isLO ? 'left to review' : 'left to sign off'} — switch to “Cleared” or “Show all”.</p>
-                : vis.map(it => (
-                  <Item key={it.id} it={it} team={team} onPatch={patch} role={role}
-                    docs={docs} onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
-                    dlBusy={dlBusy} onPreview={openPreview} />))}
-          </>);
-        })()}
-      </div>
-      </Section>
-
-      <Section id="sec-checklist" title="Internal checklist" defaultOpen={false}
-        info="The phase-by-phase internal work items — staff-only, never shown to the borrower.">
-      <div className="panel" style={{ marginTop: 0 }}>
-        <div className="row" style={{ marginBottom: 6, gap: 8, flexWrap: 'wrap' }}>
-          <h3>Internal checklist</h3>
-          <div className="spacer" />
-          <select className="input" style={{ maxWidth: 170 }} value={itemFilter} onChange={e => setItemFilter(e.target.value)}>
-            <option value="todo">Open for me ({internalItems.filter(it => !roleDone(it, role)).length})</option>
-            <option value="all">All ({internalItems.length})</option>
-            <option value="outstanding">Outstanding</option>
-            <option value="submitted">Submitted (in review)</option>
-            <option value="rejected">Needs attention</option>
-            <option value="satisfied">Satisfied</option>
-          </select>
-          <span className="muted small">
-            {internalItems.filter(i => i.signed_off_at).length}/{internalItems.length} signed off
-            {internalItems.some(i => !i.signed_off_at && i.reviewed_at) ? ` · ${internalItems.filter(i => !i.signed_off_at && i.reviewed_at).length} done, awaiting sign-off` : ''}
-          </span>
+      {condTab === 'internal' && <>
+        <p className="muted small" style={{ marginTop: 0 }}>Staff-only — never shared with the borrower.</p>
+        <div className="panel" style={{ marginTop: 0 }}>
+          <h3 style={{ margin: '0 0 8px' }}>Document conditions</h3>
+          {(() => {
+            const sorted = [...internalConds].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+            const vis = sorted.filter(it => internalCondFilter === 'all' ? true : internalCondFilter === 'cleared' ? condOffPlate(it) : !condOffPlate(it));
+            const isLO = role === 'loan_officer';
+            return (<>
+              {internalConds.length > 0 && (
+                <div className="row" style={{ marginBottom: 6, alignItems: 'center' }}>
+                  <div className="spacer" />
+                  <select className="input" style={{ maxWidth: 170 }} value={internalCondFilter} onChange={e => setInternalCondFilter(e.target.value)}>
+                    <option value="todo">{isLO ? 'To review' : 'To sign off'}</option>
+                    <option value="cleared">Cleared</option>
+                    <option value="all">Show all</option>
+                  </select>
+                  <span className="muted small">{internalConds.filter(i => i.signed_off_at || i.status === 'satisfied').length}/{internalConds.length} cleared</span>
+                </div>
+              )}
+              {internalConds.length === 0
+                ? <p className="muted small">No internal conditions on this file.</p>
+                : vis.length === 0
+                  ? <p className="muted small">Nothing {isLO ? 'left to review' : 'left to sign off'} — switch to “Cleared” or “Show all”.</p>
+                  : vis.map(it => (
+                    <Item key={it.id} it={it} team={team} onPatch={patch} role={role}
+                      docs={docs} onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
+                      dlBusy={dlBusy} onPreview={openPreview} />))}
+            </>);
+          })()}
         </div>
-        {phases.length === 0
-          ? (internalItems.length === 0
-              ? <p className="muted small">No internal-only checklist items. Borrower-facing conditions are in “Conditions to close” above.</p>
-              : <p className="muted small">Everything here is done on your side — switch to “All” to see the completed items (collapsed).</p>)
-          : phases.map(([k, arr]) => (
-            <div key={k} style={{ marginTop: 10 }}>
-              <div className="muted small" style={{ textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>{phaseName(k)}</div>
-              {arr.map(it => <Item key={it.id} it={it} team={team} onPatch={patch} role={role}
-                docs={docs} onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
-                dlBusy={dlBusy} onPreview={openPreview} />)}
-            </div>
-          ))}
-      </div>
-      </Section>
+        <div className="panel" style={{ marginTop: 14 }}>
+          <div className="row" style={{ marginBottom: 6, gap: 8, flexWrap: 'wrap' }}>
+            <h3 style={{ margin: 0 }}>Checklist</h3>
+            <div className="spacer" />
+            <select className="input" style={{ maxWidth: 170 }} value={itemFilter} onChange={e => setItemFilter(e.target.value)}>
+              <option value="todo">Open for me ({internalItems.filter(it => !roleDone(it, role)).length})</option>
+              <option value="all">All ({internalItems.length})</option>
+              <option value="outstanding">Outstanding</option>
+              <option value="submitted">Submitted (in review)</option>
+              <option value="rejected">Needs attention</option>
+              <option value="satisfied">Satisfied</option>
+            </select>
+            <span className="muted small">
+              {internalItems.filter(i => i.signed_off_at).length}/{internalItems.length} signed off
+              {internalItems.some(i => !i.signed_off_at && i.reviewed_at) ? ` · ${internalItems.filter(i => !i.signed_off_at && i.reviewed_at).length} done, awaiting sign-off` : ''}
+            </span>
+          </div>
+          {phases.length === 0
+            ? (internalItems.length === 0
+                ? <p className="muted small">No internal-only checklist items. Borrower-facing conditions are on the Borrower tab.</p>
+                : <p className="muted small">Everything here is done on your side — switch to “All” to see the completed items (collapsed).</p>)
+            : phases.map(([k, arr]) => (
+              <div key={k} style={{ marginTop: 10 }}>
+                <div className="muted small" style={{ textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>{phaseName(k)}</div>
+                {arr.map(it => <Item key={it.id} it={it} team={team} onPatch={patch} role={role}
+                  docs={docs} onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
+                  dlBusy={dlBusy} onPreview={openPreview} />)}
+              </div>
+            ))}
+        </div>
+      </>}
 
-      <Section id="sec-entity" title="LLC condition — vesting entity" defaultOpen={false}
-        info="Set up and verify the LLC taking title — this is the file's LLC condition; verifying it clears the condition everywhere it vests.">
-      <LlcReview appId={id} app={app} role={role} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
-        dlBusy={dlBusy} onChanged={load} reviewBusy={busyAct === 'review'} onPreview={openPreview} />
-      <VestingLlcOwners appId={id} app={app} />
+      {condTab === 'llc' && <>
+        <LlcReview appId={id} app={app} role={role} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
+          dlBusy={dlBusy} onChanged={load} reviewBusy={busyAct === 'review'} onPreview={openPreview} />
+        <VestingLlcOwners appId={id} app={app} />
+      </>}
       </Section>
 
       <Section id="sec-esign" title="E-signatures" defaultOpen={false}

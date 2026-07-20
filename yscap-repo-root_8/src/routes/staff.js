@@ -4736,15 +4736,22 @@ const SEV_LABEL = { standard: 'Standard', prior_to_docs: 'Prior to docs', prior_
 function sectionForBlocker(row) {
   const tk = row.tool_key || '';
   const code = row.template_code || '';
-  // First-class underwriting conditions (the `conditions` table) are all rendered
-  // in the Underwriting-conditions panel, which lives inside "Conditions to close".
-  if (row.source === 'underwriting') return 'sec-conditions';
+  // Pricing + appraisal blockers keep their own sections; EVERYTHING condition-ish
+  // (borrower conditions, underwriting conditions, internal staff conditions, LLC)
+  // now lives in the single tabbed "Conditions" hub — condTabForBlocker picks the tab.
   if (tk === 'product_pricing' || code === 'rtl_p1_product') return 'sec-pricing';
-  if (code === 'rtl_p1_llc') return 'sec-entity';
   if (code === 'appraisal_review_cleared' || code === 'rtl_p3_apprreview' || code === 'rtl_cond_appraisaldocs' || tk === 'appraisal_review') return 'sec-appraisal';
   if (tk === 'esign') return 'sec-esign';
-  if (row.audience === 'staff') return 'sec-internal-conds';
   return 'sec-conditions';
+}
+// Which tab inside the Conditions hub a blocker belongs to (only meaningful when
+// section === 'sec-conditions').
+function condTabForBlocker(row) {
+  const code = row.template_code || '';
+  if (row.source === 'underwriting') return 'underwriting';
+  if (code === 'rtl_p1_llc') return 'llc';
+  if (row.audience === 'staff') return 'internal';
+  return 'borrower';
 }
 // A short, plain-language "why this is still outstanding" for the list.
 function blockerReason(row) {
@@ -4758,6 +4765,7 @@ function blockerReason(row) {
 function decorateBlocker(row, kind) {
   const r = { ...row, kind, title: row.title || row.label };
   r.section = sectionForBlocker(r);
+  if (r.section === 'sec-conditions') r.condTab = condTabForBlocker(r);
   r.reason = blockerReason(r);
   return r;
 }
