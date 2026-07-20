@@ -323,19 +323,26 @@ function buildIska(data = {}) {
   return rezip(entries, xml);
 }
 
-// The application export AND the business-purpose disclosure are jsPDF-rendered PDFs
-// (their own modules) on the PILOT letterhead — not docx mail-merges like the Heter
-// Iska — but they plug into the same generate() contract.
+// The application export, the business-purpose disclosure, AND the Heter Iska are
+// all sent to DocuSign as real PDFs our server builds — no .docx handed to DocuSign
+// to convert — plugging into the same generate() contract.
 //   - The disclosure moved from the docx mail-merge (buildDisclosure below, still
 //     exported + tested as the mail-merge toolkit and a rollback path) to a branded
 //     PDF (disclosure-pdf.buildDisclosure) per the owner (2026-07-20: "on our PILOT
 //     letterhead"). The legal certification text is preserved VERBATIM in the PDF.
-//   - The Heter Iska stays docx for now (its Hebrew nusach can't render through the
-//     Latin-1 jsPDF core font); it keeps using the docx surgery helpers here.
+//   - The Heter Iska is now sent as a PDF too (owner 2026-07-20: "generate a PDF …
+//     and send the PDF … instead of sending a Word document to docusign"). Its sacred
+//     Hebrew nusach can't render through jsPDF's Latin-1 core, so iska-pdf.js lays a
+//     verified, byte-exact pre-render of the nusach (built from THIS same Word
+//     template — see templates/iska/build-assets.js) into the PDF and draws only the
+//     Latin loan amount + names + invisible anchors on top. The Word template is KEPT:
+//     buildIska still fills it (below, exported + tested) for the office's own records,
+//     and both fill from the same loadDocGenData values so they always agree.
 const { buildApplication } = require('./application-pdf');
 const { buildDisclosure: buildDisclosurePdf } = require('./disclosure-pdf');
+const { buildIskaPdf } = require('./iska-pdf');
 
-const BUILDERS = { bp_disclosure: buildDisclosurePdf, heter_iska: buildIska, application_export: buildApplication };
+const BUILDERS = { bp_disclosure: buildDisclosurePdf, heter_iska: buildIskaPdf, application_export: buildApplication };
 
 /** Build a generated document by doc_kind. Returns a .docx Buffer. */
 function generate(docKind, data) {
@@ -345,7 +352,7 @@ function generate(docKind, data) {
 }
 
 module.exports = {
-  generate, buildDisclosure, buildDisclosurePdf, buildIska, buildApplication,
+  generate, buildDisclosure, buildDisclosurePdf, buildIska, buildIskaPdf, buildApplication,
   // exported for tests
   fillField, replaceNthTokenRun, replaceRunContaining, removeTableContaining,
   insertParaBefore, insertParaAfter, removeParaContaining, removeParaAndPrecedingLabel,
