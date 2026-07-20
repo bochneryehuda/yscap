@@ -49,7 +49,8 @@ export default function DrawsPanel({ appId }) {
   if (err) return <div className="panel" style={{ marginTop: 12, color: 'var(--bad,#b04a3f)' }}>{err}</div>;
   if (!data) return null;
 
-  const { rollup, link, requests = [], ledger = [], findings = [], change_requests = [], retainage = null, waivers = [], lien_waivers_enabled = false } = data;
+  const { rollup, link, requests = [], ledger = [], findings = [], change_requests = [], retainage = null, waivers = [], lien_waivers_enabled = false,
+    preexisting = false, managed_since = null, go_live_date = null } = data;
   // Render draw cards from rollup.draws — it carries the money (requested/approved/net_release),
   // the funded flag, and the merged risk flags + pdf_src. The top-level `draws` array has no
   // money fields, so using it would render $0.00 everywhere.
@@ -79,10 +80,35 @@ export default function DrawsPanel({ appId }) {
   return (
     <div>
       {notLinked ? (
-        <StartDrawCard appId={appId} onStarted={load} />
+        <>
+          {/* GO-FORWARD ONLY: a pre-existing Sitewire property (loan already there, not pushed by us) is
+              NOT followed. Say so plainly and explain the only way to bring it under PILOT management. */}
+          {preexisting && (
+            <div className="panel" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)', borderLeft: '3px solid var(--bad,#b04a3f)' }}>
+              <b>Already in Sitewire — PILOT is not managing this file’s draws.</b>
+              <div className="muted small" style={{ marginTop: 3 }}>
+                This loan is already on a property in Sitewire that PILOT did not create. PILOT only runs the draw
+                process for properties it pushes itself, so it will not adopt or follow this one. To have PILOT
+                manage the draws, <b>delete that property in Sitewire</b>, then start the draw process below to push a
+                fresh copy. Otherwise leave it as-is and continue managing that property directly in Sitewire.
+              </div>
+            </div>
+          )}
+          <StartDrawCard appId={appId} onStarted={load} />
+        </>
       ) : (
         <>
           {msg && <div className="panel" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)' }}>{msg}</div>}
+
+          {/* ---- "live in PILOT" banner: this property was pushed from our system; we're the source of record ---- */}
+          <div className="panel" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)', borderLeft: '3px solid var(--good,#3f7a4a)' }}>
+            <b>Live in PILOT{managed_since ? ` since ${fmtDay(managed_since)}` : ''}.</b>
+            <div className="muted small" style={{ marginTop: 3 }}>
+              PILOT pushed this property to Sitewire and is the source of record for its draw process — it follows the
+              draw requests, delivers the inspection findings, and runs our standard approval + release pipeline.
+              {go_live_date ? ` Draw-system go-live: ${fmtDay(go_live_date)}.` : ''}
+            </div>
+          </div>
 
           {/* ---- read-only notice when Sitewire writes are off (the default staged state) ---- */}
           {writesOff && (
@@ -221,7 +247,27 @@ function StartDrawCard({ appId, onStarted }) {
       if (method && method !== insp.method) body.inspection_method = method;
       if (!feeBlank && feeValid) body.fee_cents = feeCents; // a typed fee only; blank = leave the fee as-is (backend clears the override when it equals the rule fee)
       const r = await api.post(`/api/sitewire/files/${appId}/start-draw`, body);
-      setMsg(r && r.note ? r.note : 'Draw process started — everything was sent to Sitewire.');
+      // The push can succeed OR safely PARK (a review was opened) OR be skipped — never report a blanket
+      // "everything was sent" when it actually parked (e.g. clicking Start on a pre-existing-Sitewire file
+      // without deleting it first re-parks the collision). Surface the real outcome.
+      const res = r && r.result;
+      const PARKED = {
+        dupe_property: 'Not pushed — this loan is already on a property in Sitewire that PILOT didn’t create. Delete it in Sitewire first, then try again (or keep them separate on the Sync review screen).',
+        dupe_check_failed: 'Not pushed — PILOT couldn’t verify whether this loan is already in Sitewire. A review was opened.',
+        budget_mismatch: 'Not pushed — the Scope of Work doesn’t add up to the frozen construction budget to the penny. A review was opened.',
+        capital_partner: 'Not pushed — the file’s capital partner couldn’t be matched to Sitewire. A review was opened.',
+        address: 'Not pushed — the property address is incomplete. A review was opened.',
+        no_sow: 'Not pushed — there’s no saved Scope of Work to turn into a budget yet.',
+        no_budget: 'Not pushed — no frozen rehab budget is set on this file yet.',
+        missing_loan_number: 'Not pushed — this file has no loan number yet.',
+      };
+      let m;
+      if (r && r.note) m = r.note;                                            // Sitewire off / queued (transient)
+      else if (res && res.parked) m = PARKED[res.parked] || 'Couldn’t finish — a review was opened. Open the Sync review screen to resolve it.';
+      else if (res && res.skipped) m = `Not pushed — ${res.skipped}.`;
+      else if (res && res.dryrun) m = 'Validated in dry-run mode — nothing was sent (Sitewire dry-run is on).';
+      else m = 'Draw process started — everything was sent to Sitewire.';
+      setMsg(m);
       load();
       if (onStarted) setTimeout(onStarted, 400);
     } catch (e) { setMsg(e?.data?.error || e.message || 'That didn\'t work.'); }
