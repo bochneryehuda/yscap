@@ -615,8 +615,12 @@ function InspectionGallery({ appId, draw, finding, readsOff }) {
     setArchiving(true); setArchiveMsg('');
     try {
       const r = await api.post(`/api/sitewire/files/${appId}/draws/${draw.sitewire_draw_id}/archive-media`, {});
-      setArchiveMsg(r.archived ? `Saved ${r.archived} file${r.archived === 1 ? '' : 's'} to PILOT — they’re durable now and will be in the report.`
-        : (r.skipped ? 'Already saved to PILOT — nothing new to archive.' : 'Nothing to archive yet (deliver findings first).'));
+      let m;
+      if (r.archived) m = `Saved ${r.archived} file${r.archived === 1 ? '' : 's'} to PILOT — durable now and can be included in the report.${r.failed ? ` (${r.failed} couldn’t be downloaded.)` : ''}`;
+      else if (r.failed) m = `Couldn’t download ${r.failed} file${r.failed === 1 ? '' : 's'} — the inspector’s links may have expired. Re-sync the draw, then try again.`;
+      else if (r.skipped) m = 'Already saved to PILOT — nothing new to archive.';
+      else m = 'Nothing to archive yet — deliver findings first, then archive.';
+      setArchiveMsg(m);
       loadArchived();
     } catch (e) { setArchiveMsg(e?.data?.error || 'Could not archive — please try again.'); }
     finally { setArchiving(false); }

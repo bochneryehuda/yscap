@@ -64,5 +64,23 @@ eq('pdf → pdf', ma.extFor('application/pdf', 'x'), 'pdf');
 eq('unknown ct falls back to URL ext', ma.extFor('', 'https://x/y/photo.JPG?sig=1'), 'jpg');
 eq('no ct, no ext → bin', ma.extFor('', 'https://x/y/noext'), 'bin');
 
-console.log(`\n${fail === 0 ? 'ALL' : fail + ' FAILED,'} ${pass} media-archive assertions ${fail === 0 ? 'passed' : ''}`);
-process.exit(fail === 0 ? 0 : 1);
+// ---- 6. SSRF guard: private/loopback/link-local/metadata IPs are rejected; public pass ----
+for (const ip of ['127.0.0.1', '10.1.2.3', '172.16.0.1', '172.31.255.1', '192.168.1.1', '169.254.169.254', '100.64.0.1', '0.0.0.0', '::1', 'fd00::1', 'fe80::1']) {
+  ok(`private IP blocked: ${ip}`, ma.isPrivateIp(ip) === true);
+}
+for (const ip of ['8.8.8.8', '1.1.1.1', '52.10.20.30', '172.15.0.1', '172.32.0.1', '192.167.0.1', '2600::1']) {
+  ok(`public IP allowed: ${ip}`, ma.isPrivateIp(ip) === false);
+}
+
+// assertPublicHttps is async; run those + the summary inside an async main.
+(async () => {
+  const rejects = async (name, url) => { let threw = false; try { await ma.assertPublicHttps(url); } catch (_) { threw = true; } ok(name, threw); };
+  await rejects('assertPublicHttps rejects http://', 'http://example.com/x.jpg');
+  await rejects('assertPublicHttps rejects https:// to a metadata IP literal', 'https://169.254.169.254/latest/meta-data/');
+  await rejects('assertPublicHttps rejects a private IP literal', 'https://10.0.0.5/photo.jpg');
+  await rejects('assertPublicHttps rejects a non-http(s) scheme', 'ftp://example.com/x');
+  await rejects('assertPublicHttps rejects a malformed url', 'not-a-url');
+
+  console.log(`\n${fail === 0 ? 'ALL' : fail + ' FAILED,'} ${pass} media-archive assertions ${fail === 0 ? 'passed' : ''}`);
+  process.exit(fail === 0 ? 0 : 1);
+})();

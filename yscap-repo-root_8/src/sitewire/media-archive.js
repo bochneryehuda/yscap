@@ -8,12 +8,50 @@
  * whole run on one bad download.
  */
 const crypto = require('crypto');
+const dns = require('dns').promises;
+const net = require('net');
 const db = require('../db');
 const storage = require('../lib/storage');
 
 const MAX_ITEMS = 80;                 // hard cap on media pulled per archive run
 const PER_FILE_CAP = 30 * 1024 * 1024; // 30 MB per photo/video/PDF
+const RUN_TOTAL_CAP = 600 * 1024 * 1024; // 600 MB total per archive run (disk guard)
 const FETCH_TIMEOUT_MS = 25000;
+const MAX_REDIRECTS = 4;
+
+// ---- SSRF guard ----------------------------------------------------------
+// The media URLs come from Sitewire's authenticated API (a trusted boundary), but this is the repo's
+// only server-side fetch of a stored, variable-host URL — so validate every hop: https-only, and the
+// resolved host must not be loopback/private/link-local/CGNAT/cloud-metadata. Redirects are followed
+// MANUALLY so a public URL can't 302 to an internal one. (Residual DNS-rebinding window is accepted
+// under the Sitewire trust model.)
+function isPrivateIp(ip) {
+  if (net.isIPv4(ip)) {
+    const p = ip.split('.').map(Number);
+    if (p[0] === 10 || p[0] === 127 || p[0] === 0) return true;
+    if (p[0] === 169 && p[1] === 254) return true;                 // link-local + metadata (169.254.169.254)
+    if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) return true;
+    if (p[0] === 192 && p[1] === 168) return true;
+    if (p[0] === 100 && p[1] >= 64 && p[1] <= 127) return true;    // CGNAT
+    return false;
+  }
+  if (net.isIPv6(ip)) {
+    const l = ip.toLowerCase().replace(/^\[|\]$/g, '');
+    return l === '::1' || l === '::' || l.startsWith('fc') || l.startsWith('fd') || l.startsWith('fe80') || l.startsWith('::ffff:127.') || l.startsWith('::ffff:10.') || l.startsWith('::ffff:169.254.');
+  }
+  return true; // unresolvable / unknown family → reject
+}
+async function assertPublicHttps(rawUrl) {
+  let u;
+  try { u = new URL(rawUrl); } catch (_) { throw new Error('bad media url'); }
+  if (u.protocol !== 'https:') throw new Error('media url is not https');
+  const host = u.hostname.replace(/^\[|\]$/g, '');
+  let ips;
+  if (net.isIP(host)) ips = [host];
+  else { ips = (await dns.lookup(host, { all: true })).map((r) => r.address); }
+  if (!ips.length) throw new Error('media host did not resolve');
+  for (const ip of ips) if (isPrivateIp(ip)) throw new Error('media url resolves to a private/internal address');
+}
 
 const sha256 = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
 
@@ -66,19 +104,31 @@ function planArchive({ lines = [], pdfSrc = null, archivedKeys = new Set() }) {
   return out.slice(0, MAX_ITEMS);
 }
 
-// Fetch a public URL into a Buffer with a timeout + size cap. Throws on any failure (caller skips per item).
+// Fetch a public URL into a Buffer with SSRF validation on every hop + a timeout + size cap. Throws on any
+// failure (caller skips per item). Redirects are followed MANUALLY so each hop's host is re-validated.
 async function fetchBinary(url) {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), FETCH_TIMEOUT_MS);
   try {
-    const r = await fetch(url, { signal: ac.signal, redirect: 'follow' });
-    if (!r || !r.ok) throw new Error(`fetch ${r ? r.status : 'failed'}`);
-    const len = Number(r.headers.get('content-length') || 0);
-    if (len && len > PER_FILE_CAP) throw new Error('too large');
-    const buf = Buffer.from(await r.arrayBuffer());
-    if (buf.length > PER_FILE_CAP) throw new Error('too large');
-    if (!buf.length) throw new Error('empty');
-    return { buf, contentType: (r.headers.get('content-type') || '').split(';')[0].trim() || null };
+    let current = url;
+    for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+      await assertPublicHttps(current);                 // https + non-private, every hop
+      const r = await fetch(current, { signal: ac.signal, redirect: 'manual' });
+      if (r.status >= 300 && r.status < 400) {
+        const loc = r.headers.get('location');
+        if (!loc) throw new Error(`redirect ${r.status} with no location`);
+        current = new URL(loc, current).href;           // resolve relative, re-validate next loop
+        continue;
+      }
+      if (!r.ok) throw new Error(`fetch ${r.status}`);
+      const len = Number(r.headers.get('content-length') || 0);
+      if (len && len > PER_FILE_CAP) throw new Error('too large');
+      const buf = Buffer.from(await r.arrayBuffer());
+      if (buf.length > PER_FILE_CAP) throw new Error('too large');
+      if (!buf.length) throw new Error('empty');
+      return { buf, contentType: (r.headers.get('content-type') || '').split(';')[0].trim() || null };
+    }
+    throw new Error('too many redirects');
   } finally { clearTimeout(t); }
 }
 
@@ -97,11 +147,13 @@ async function archiveDrawMedia(appId, sitewireDrawId) {
     `SELECT source_key FROM draw_media WHERE sitewire_draw_id = $1`, [drawId])).rows.map((r) => r.source_key));
 
   const plan = planArchive({ lines, pdfSrc: pdfSrc && pdfSrc.pdf_src, archivedKeys });
-  let archived = 0, failed = 0;
+  let archived = 0, failed = 0, totalBytes = 0;
   const items = [];
   for (const it of plan) {
+    if (totalBytes >= RUN_TOTAL_CAP) { failed++; continue; } // disk guard — stop pulling once the run cap is hit
     try {
       const { buf, contentType } = await fetchBinary(it.source_url);
+      totalBytes += buf.length;
       const filename = `draw${drawId}-${it.kind}-${it.source_key.slice(0, 12)}.${extFor(contentType, it.source_url)}`;
       const saved = await storage.save(buf, { filename });
       const ins = await db.query(
@@ -132,4 +184,4 @@ async function archivedMediaFor(appId, sitewireDrawId) {
     [appId, drawId])).rows;
 }
 
-module.exports = { planArchive, archiveDrawMedia, archivedMediaFor, fetchBinary, sha256, extFor, PER_FILE_CAP, MAX_ITEMS };
+module.exports = { planArchive, archiveDrawMedia, archivedMediaFor, fetchBinary, assertPublicHttps, isPrivateIp, sha256, extFor, PER_FILE_CAP, MAX_ITEMS };
