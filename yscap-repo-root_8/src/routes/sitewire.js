@@ -1253,8 +1253,14 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
     // borrower-safe reports, so the durable photos + both branded PDFs are ready the instant findings land —
     // never dependent on a later manual "archive" click (a report built pre-archive had zero photos). Fully
     // best-effort: it never throws or reverses the delivery just completed. (drawReport.autoDeliverArtifacts.)
-    const artifacts = await drawReport.autoDeliverArtifacts(appId, drawId).catch(() => ({ archived: 0, reports: [] }));
-    res.json({ ok: true, ...result, media_archived: artifacts.archived, reports_ready: artifacts.reports });
+    // Bounded on the response path: we await up to a short budget so the common (fast) case confirms
+    // "reports ready", but a slow/unreachable media CDN can NEVER hang this delivery request (the archive is
+    // a sequential per-item fetch with only a per-item timeout). Past the budget the work keeps running in the
+    // background to completion (every step is idempotent + independently caught) — we just answer promptly.
+    const work = drawReport.autoDeliverArtifacts(appId, drawId).catch(() => ({ archived: 0, reports: [] }));
+    const budgetMs = Number(process.env.DRAW_AUTODELIVER_BUDGET_MS) || 20000;
+    const artifacts = await Promise.race([work, new Promise((r) => { setTimeout(() => r({ archived: 0, reports: [], pending: true }), budgetMs); })]);
+    res.json({ ok: true, ...result, media_archived: artifacts.archived, reports_ready: artifacts.reports, reports_pending: !!artifacts.pending });
   } catch (e) { res.status(502).json({ error: e.message }); }
 });
 
