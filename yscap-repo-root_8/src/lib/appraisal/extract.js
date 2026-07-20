@@ -11,6 +11,7 @@
  * Pure + dependency-free. Input is the raw XML string. Output is a plain object.
  */
 const X = require('./xml');
+const { splitComps } = require('./comp-grid');
 
 const CUR_YEAR = 2026; // NOTE: injected constant — the codebase forbids new Date() in date-only paths.
 
@@ -25,6 +26,10 @@ function toNum(v) {
 // money must be a positive amount after comma-strip; reject meaningless 0 / decoys and an
 // absurd magnitude (defensive: keeps a corrupt value from overflowing numeric(14,2) on insert).
 function money(v) { const n = toNum(v); return n != null && n > 0 && n < 1e12 ? n : null; }
+// Magnitude-bounded number for a narrower fixed-precision column — gla/pricePerGla are
+// numeric(12,2) (max ~1e10) and grm is numeric(10,2) (max ~1e8). money()'s 1e12 ceiling would
+// overflow those and sink the whole import on one corrupt field; bound to a sane ceiling instead.
+function bounded(v, max) { const n = toNum(v); return n != null && n > 0 && n < max ? n : null; }
 function clean(v) {
   if (v == null) return null;
   const s = String(v).trim();
@@ -74,8 +79,11 @@ function narrativeTexts(root) {
 }
 // Bound the comma-less run so a longer digit string is rejected, not truncated (audit #4).
 const MONEY_RE = '\\$?\\s*(\\d{1,3}(?:,\\d{3})+|\\d{4,8}(?!\\d))(?:\\.\\d{2})?';
-const ASIS_RE = new RegExp('as[\\s\\-]*is\\b(?:\\s*(?:value|market\\s*value|opinion|amount))?[^$\\d]{0,30}' + MONEY_RE, 'i');
-const ARV_RE = new RegExp('(?:as[\\s\\-]*repaired|after[\\s\\-]*repair|as[\\s\\-]*complete[d]?|subject[\\s\\-]*to[\\s\\-]*completion)\\b(?:\\s*value)?[^$\\d]{0,30}' + MONEY_RE, 'i');
+// Leading (?<![a-z]) so the token is a real word start — otherwise "as is" false-matches inside
+// "basis"/"gas is" and "as complete" inside "gas complete", which could mine a FABRICATED value
+// and store it as `definite` (a never-guess violation — audit MAJOR).
+const ASIS_RE = new RegExp('(?<![a-z])as[\\s\\-]*is\\b(?:\\s*(?:value|market\\s*value|opinion|amount))?[^$\\d]{0,30}' + MONEY_RE, 'i');
+const ARV_RE = new RegExp('(?<![a-z])(?:as[\\s\\-]*repaired|after[\\s\\-]*repair|as[\\s\\-]*complete[d]?|subject[\\s\\-]*to[\\s\\-]*completion)\\b(?:\\s*value)?[^$\\d]{0,30}' + MONEY_RE, 'i');
 const HYPO_RE = /hypothetical condition.{0,80}(?:repair|budget|complet|renovat)|(?:repair|budget|renovat).{0,40}(?:have been |been )?complet/i;
 
 function mineMoney(re, texts, ceil) {
@@ -108,6 +116,7 @@ function valuation(root) {
   else { basis = hasHypo ? 'ARV' : 'ASIS'; basisNote = 'inferred'; }
 
   const out = { appraisedValue: structured, effectiveDate: effDate, conditionOfAppraisal: cond,
+    basis, // 'ARV' | 'ASIS' — which value the structured PropertyAppraisedValueAmount represents
     arv: null, arvConfidence: 'missing', arvSource: null,
     asIs: null, asIsConfidence: 'missing', asIsSource: null };
 
@@ -130,7 +139,7 @@ function valuation(root) {
   out.siteValue = money(X.attr(cost, 'SiteEstimatedValueAmount'));
   const inc = X.find(root, 'INCOME_ANALYSIS');
   out.valueIncomeApproach = money(X.attr(inc, 'ValueIndicatedByIncomeApproachAmount'));
-  out.grm = toNum(X.attr(inc, 'GrossRentMultiplierFactor'));
+  out.grm = bounded(X.attr(inc, 'GrossRentMultiplierFactor'), 1e6);
   const sc = X.find(root, 'SALES_CONTRACT');
   out.contractPrice = money(X.attr(sc, '_Amount'));
   out.contractDate = normDate(X.attr(sc, '_Date'));
@@ -148,19 +157,30 @@ function isoDate(v) {
   if (m && +m[1] >= 1 && +m[1] <= 12 && +m[2] >= 1 && +m[2] <= 31) return `${m[3]}-${String(m[1]).padStart(2, '0')}-${String(m[2]).padStart(2, '0')}`;
   return null;
 }
-// A comp's "s03/25;c07/25" DateOfSale → the SETTLED month as YYYY-MM-01 (s=settled, c=contract).
+// A comp's DateOfSale → the SETTLED month as YYYY-MM-01. Two real forms:
+//   * UAD abbreviated "s03/25;c07/25"  (s=settled MM/YY, c=contract MM/YY)
+//   * a full calendar date "06/20/2025" (MM/DD/YYYY) — the settled date.
+// The full-date form MUST be parsed FIRST: the loose MM/YY regex would otherwise read a
+// MM/DD/YYYY date's DAY as the year (06/20/2025 → month 06, year 20 → 2020) — corrupting the
+// sale year and firing false staleness findings (audit BLOCKER).
 function settledMonth(desc) {
   const s = String(desc || '');
-  const m = /s\s*(\d{1,2})\/(\d{2,4})/i.exec(s) || /(\d{1,2})\/(\d{2,4})/.exec(s);
-  if (!m) return null;
-  let mo = parseInt(m[1], 10), yr = parseInt(m[2], 10);
-  if (yr < 100) yr = 2000 + yr;
+  let mo, yr;
+  const full = /(\d{1,2})\/\d{1,2}\/(\d{4})(?!\d)/.exec(s);   // MM/DD/YYYY (settled)
+  if (full) { mo = parseInt(full[1], 10); yr = parseInt(full[2], 10); }
+  else {
+    // Prefer the settled 's MM/YY'; else any MM/YY (contract-only) as a fallback.
+    const m = /s\s*(\d{1,2})\/(\d{2,4})/i.exec(s) || /(\d{1,2})\/(\d{2,4})/.exec(s);
+    if (!m) return null;
+    mo = parseInt(m[1], 10); yr = parseInt(m[2], 10);
+    if (yr < 100) yr = 2000 + yr;
+  }
   if (mo < 1 || mo > 12 || yr < 2000 || yr > CUR_YEAR + 1) return null;
   return `${yr}-${String(mo).padStart(2, '0')}-01`;
 }
 // Comp-level grid data mined from a comp's SALE_PRICE_ADJUSTMENT rows + its COMPARISON_DETAIL.
 function compGrid(c) {
-  const out = { gla: null, saleDate: null, conditionUad: null, qualityUad: null, dom: null, pricePerGla: money(X.attr(c, 'SalesPricePerGrossLivingAreaAmount')), adjustments: [] };
+  const out = { gla: null, saleDate: null, conditionUad: null, qualityUad: null, dom: null, pricePerGla: bounded(X.attr(c, 'SalesPricePerGrossLivingAreaAmount'), 1e8), adjustments: [] };
   for (const spa of X.findAll(c, 'SALE_PRICE_ADJUSTMENT')) {
     const t = clean(X.attr(spa, '_Type'));
     const d = clean(X.attr(spa, '_Description'));
@@ -181,6 +201,17 @@ function compGrid(c) {
   return out;
 }
 
+// A comp's sale status from its data-source text. Returns 'active' / 'pending' when the source
+// EXPLICITLY marks a listing (MLS ACTIVE, pending, under contract, expired, for sale) — else
+// 'closed' (a settled sale, the default the appraiser lists). Never guessed: only an explicit
+// listing marker demotes a comp out of the closed pool.
+function saleStatus(c) {
+  const t = ((clean(X.attr(c, 'DataSourceDescription')) || '') + ' ' + (clean(X.attr(c, 'DataSourceVerificationDescription')) || '')).toLowerCase();
+  if (/\b(active|for\s*sale|listing|expired|withdrawn|cancell?ed)\b/.test(t)) return 'active';
+  if (/\b(pending|under\s*contract|u\/c|contingent)\b/.test(t)) return 'pending';
+  return 'closed';
+}
+
 function comparables(root) {
   const all = X.findAll(root, 'COMPARABLE_SALE');
   const subject0 = all.find((c) => X.attr(c, 'PropertySequenceIdentifier') === '0') || null;
@@ -199,6 +230,12 @@ function comparables(root) {
       state: upState(X.attr(loc, 'PropertyState')),
       zip: zip(X.attr(loc, 'PropertyPostalCode')),
       proximity: clean(X.attr(loc, 'ProximityToSubjectDescription')),
+      // A comp's PropertySalesAmount holds the LIST/asking price on an active or pending listing —
+      // NOT a closed sale. The review checks + scoring must not count a listing as a settled comp
+      // (it inflates the "closed comps" pool and pollutes the implied-value median with an asking
+      // price). saleStatus is 'active'/'pending' ONLY when the data source explicitly says so;
+      // everything else is a closed sale (the appraiser marks listings — never guessed).
+      saleStatus: saleStatus(c),
       salePrice: money(X.attr(c, 'PropertySalesAmount')),
       adjustedPrice: money(X.attr(c, 'AdjustedSalesPriceAmount')),
       netAdjustment: toNum(X.attr(c, 'SalePriceTotalAdjustmentAmount')),
@@ -291,6 +328,12 @@ function extract(xml) {
   const site = X.find(root, 'SITE');
   const val = valuation(root);
   const { comps, subject0 } = comparables(root);
+  // Split the comps into the As-Is grid vs the ARV grid (a renovation appraisal supports two
+  // values off two separate comp sets). NEVER guessed: prefers the appraiser's narrative naming,
+  // falls back to price-clustering only when both anchors are known and raw+adjusted agree, else
+  // marks the comp `unknown` and flags for review. Each comp gets a `comp_set`.
+  const gridSplit = splitComps({ basis: val.basis, asIsValue: val.asIs, arvValue: val.arv, texts: narrativeTexts(root), comps });
+  gridSplit.comps.forEach((gc, i) => { if (comps[i]) comps[i].comp_set = gc.comp_set; });
   const cq = subjectCQ(subject0);
   const bathsParsed = parseBaths(X.attr(st, 'TotalBathroomCount'));
 
@@ -307,7 +350,7 @@ function extract(xml) {
     propertyType: clean(X.attr(st, 'AttachmentType')),
     units: toNum(X.attr(st, 'LivingUnitCount')),
     yearBuilt: year(X.attr(st, 'PropertyStructureBuiltYear')),
-    gla: money(X.attr(st, 'GrossLivingAreaSquareFeetCount')),
+    gla: bounded(X.attr(st, 'GrossLivingAreaSquareFeetCount'), 1e8),
     beds: toNum(X.attr(st, 'TotalBedroomCount')),
     baths: bathsParsed.text, bathsFull: bathsParsed.full, bathsHalf: bathsParsed.half,
     rooms: toNum(X.attr(st, 'TotalRoomCount')),
@@ -395,11 +438,19 @@ function extract(xml) {
   const ver = X.attr(X.find(root, 'VALUATION_RESPONSE'), 'MISMOVersionID');
   if (ver && !/^2\./.test(String(ver))) warnings.push({ code: 'mismo_version', msg: `unexpected MISMO version ${ver} — parser targets 2.6; verify before trusting` });
 
+  // Surface the two-grid split summary so the underwriter (and the report) know which value each
+  // comp set supports, and whether the split needs a human eye. `compSplit.needsReview` on a
+  // reno file drives a review finding rather than a corrupt one-grid value check.
+  if (gridSplit.needsReview) warnings.push({ code: 'comp_split_review', msg: 'As-Is vs ARV comp split needs review — some comps could not be assigned to a grid with certainty' });
+
   return {
     ok: true, formType,
     subject, values: val, appraiser,
     borrower: { name: borrower, isLlc, hasPartyName: !!borrower },
     comparables: comps, units, income, condo, photos,
+    compSplit: { confidence: gridSplit.confidence, needsReview: gridSplit.needsReview, note: gridSplit.note,
+      asIsValue: gridSplit.asIsValue, arvValue: gridSplit.arvValue,
+      counts: { as_is: comps.filter((c) => c.comp_set === 'as_is').length, arv: comps.filter((c) => c.comp_set === 'arv').length, unknown: comps.filter((c) => c.comp_set === 'unknown').length } },
     warnings,
   };
 }
