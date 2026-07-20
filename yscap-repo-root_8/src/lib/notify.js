@@ -31,6 +31,7 @@ const KICKER_OF = {
   track_record_unverified: 'Track record',
   draw: 'Construction draw', draw_request: 'Construction draw', draw_findings: 'Draw inspection',
   draw_accepted: 'Construction draw', draw_disputed: 'Construction draw', draw_dispute_resolved: 'Draw inspection',
+  draw_message: 'Message from your loan team', draw_started: 'Construction draw',
   sow_reallocation: 'Budget change', sow_change_request: 'Budget change',
   change_request: 'Change request', assignment: 'File assignment',
   new_application: 'New application', unassigned_application: 'Needs assignment',
@@ -132,10 +133,45 @@ async function _emailRow(id, to, opts, audience) {
     // #150: an optional LO-branded From display name rides through untouched
     // (resend honors it; other providers ignore it).
     const res = await email.sendMail({ to, subject: msg.subject, text: msg.text, html: msg.html, attachments, replyTo, from: opts.from || null });
-    await _mark(id, res && res.ok ? 'sent' : 'skipped');
+    const status = res && res.ok ? 'sent' : 'skipped';
+    await _mark(id, status);
+    // Capture the FULL rendered email (design + recipients + attachments) so staff can open it later — the
+    // "see the whole email" center. Best-effort + independently caught: it can never break or delay the send.
+    _captureSentEmail(id, to, opts, audience, msg, replyTo, attachments, status).catch(() => {});
   } catch (e) {
     await db.query(`UPDATE notifications SET email_status='error', email_error=$2 WHERE id=$1`, [id, String(e.message).slice(0, 400)]);
+    // still capture what we tried to send (the reader shows why it failed) — best-effort.
+    try { const msg = buildEmail(opts, audience); _captureSentEmail(id, to, opts, audience, msg, opts.replyTo || null, [], 'error').catch(() => {}); } catch (_) { /* ignore */ }
   }
+}
+
+/* Persist the rendered email for a file notification so it can be OPENED in full later (owner-directed
+   2026-07-20). Stores the branded HTML, plaintext, real recipients, reply-to, and each attachment's bytes
+   (in PILOT storage) + metadata. Scoped to FILE emails (applicationId set). Never throws. */
+async function _captureSentEmail(notificationId, to, opts, audience, msg, replyTo, attachments, status) {
+  if (!opts.applicationId) return;                      // file emails only
+  let attMeta = [];
+  try {
+    const storage = require('./storage');
+    const { decodeUploadBase64 } = require('./upload-bytes');
+    for (const a of (Array.isArray(attachments) ? attachments : [])) {
+      const meta = { filename: a.filename, content_type: a.contentType || a.content_type || null };
+      try {
+        const buf = decodeUploadBase64(a.content);
+        if (buf && buf.length) {
+          meta.size = buf.length;
+          if (buf.length <= 25 * 1024 * 1024) { const saved = await storage.save(buf, { filename: a.filename }); meta.storage_provider = saved.provider; meta.storage_ref = saved.ref; }
+        }
+      } catch (_) { /* keep the name even if the bytes can't be stored */ }
+      attMeta.push(meta);
+    }
+  } catch (_) { attMeta = []; }
+  await db.query(
+    `INSERT INTO sent_emails (notification_id, application_id, audience, recipient_kind, subject, from_email, to_emails, reply_to, html, body_text, attachments, status)
+     VALUES ($1,$2,$3,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11)`,
+    [notificationId, opts.applicationId, audience, msg.subject || null, opts.from || cfg.notifyFrom || null,
+     (Array.isArray(to) ? to : [to]).filter(Boolean), replyTo || null, msg.html || null, msg.text || null,
+     JSON.stringify(attMeta), status]).catch((e) => { console.warn('[notify] sent-email capture failed:', e && e.message); });
 }
 async function _mark(id, status) {
   await db.query(
@@ -187,6 +223,7 @@ const CATEGORY_OF = {
   draw: 'draws', draw_request: 'draws',
   // Sitewire draw-management events (findings delivery, accept/dispute, SOW reallocations)
   draw_findings: 'draws', draw_accepted: 'draws', draw_disputed: 'draws', draw_dispute_resolved: 'draws',
+  draw_message: 'draws', draw_started: 'draws',
   sow_reallocation: 'draws', sow_change_request: 'draws',
   // New borrower touchpoints (owner-directed 2026-07-20)
   officer_assigned: 'status_updates', all_caught_up: 'status_updates',
@@ -215,6 +252,8 @@ const BORROWER_MAJOR_EMAIL = new Set([
   'doc_rejected', 'doc_requested', 'condition_added',
   'llc_unverified', 'track_record_unverified',
   'message', 'draw', 'draw_request', 'security', 'account',
+  // A coordinator's direct message to the borrower from the draw desk always emails them.
+  'draw_message',
   // The borrower must review inspection findings and accept/dispute within the wire SLA —
   // this is a borrower action item, so it emails them (not just in-app).
   'draw_findings',

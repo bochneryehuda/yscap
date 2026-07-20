@@ -12,6 +12,7 @@ const dns = require('dns').promises;
 const net = require('net');
 const db = require('../db');
 const storage = require('../lib/storage');
+const { stripLocationExif } = require('../lib/image-exif');
 
 const MAX_ITEMS = 80;                 // hard cap on media pulled per archive run
 const PER_FILE_CAP = 30 * 1024 * 1024; // 30 MB per photo/video/PDF
@@ -189,16 +190,30 @@ async function archiveDrawMedia(appId, sitewireDrawId) {
       WHERE f.application_id = $1 AND f.sitewire_draw_id = $2`, [appId, drawId])).rows;
   const pdfSrc = (await db.query(
     `SELECT pdf_src FROM sitewire_draws WHERE application_id = $1 AND sitewire_draw_id = $2`, [appId, drawId])).rows[0];
-  const archivedKeys = new Set((await db.query(
-    `SELECT source_key FROM draw_media WHERE sitewire_draw_id = $1`, [drawId])).rows.map((r) => r.source_key));
+  // Already-archived rows for this draw: both the URL key (planArchive dedup) AND the CONTENT hash — so a
+  // RE-DELIVERY under a rotated (freshly signed) Sitewire URL, whose source_key differs but whose bytes are
+  // identical, can't store the same photo twice (audit follow-up: dedup by content, not just URL).
+  const existing = (await db.query(
+    `SELECT source_key, sha256 FROM draw_media WHERE sitewire_draw_id = $1`, [drawId])).rows;
+  const archivedKeys = new Set(existing.map((r) => r.source_key));
+  const seenHashes = new Set(existing.map((r) => r.sha256).filter(Boolean));
 
   const plan = planArchive({ lines, pdfSrc: pdfSrc && pdfSrc.pdf_src, archivedKeys });
-  let archived = 0, failed = 0, totalBytes = 0;
+  let archived = 0, failed = 0, deduped = 0, totalBytes = 0;
   const items = [];
   for (const it of plan) {
     if (totalBytes >= RUN_TOTAL_CAP) { failed++; continue; } // disk guard — stop pulling once the run cap is hit
     try {
-      const { buf, contentType } = await fetchBinary(it.source_url);
+      const fetched = await fetchBinary(it.source_url);
+      // Strip GPS/location EXIF from photos BEFORE we hash + store, so the durable copy (gallery, staff +
+      // borrower reports) never carries the embedded capture location, and so the content hash is taken over
+      // the SAME clean bytes on every delivery (a rotated URL for the same photo hashes identically →
+      // dedup catches it). Non-images / undecodable bytes come back unchanged. (audit F-3.)
+      const buf = it.kind === 'image' ? stripLocationExif(fetched.buf) : fetched.buf;
+      const contentType = fetched.contentType;
+      const contentHash = sha256(buf);
+      if (seenHashes.has(contentHash)) { deduped++; continue; } // same bytes already archived under another URL
+      seenHashes.add(contentHash);
       totalBytes += buf.length;
       const filename = `draw${drawId}-${it.kind}-${it.source_key.slice(0, 12)}.${extFor(contentType, it.source_url)}`;
       const saved = await storage.save(buf, { filename });
@@ -210,7 +225,7 @@ async function archiveDrawMedia(appId, sitewireDrawId) {
          ON CONFLICT (sitewire_draw_id, source_key) DO NOTHING
          RETURNING id`,
         [appId, drawId, it.sitewire_request_id, it.sow_line_key, it.kind, it.source_url, it.source_key,
-         saved.provider, saved.ref, contentType, buf.length, sha256(buf), it.captured_at, it.lat, it.lng, it.note]);
+         saved.provider, saved.ref, contentType, buf.length, contentHash, it.captured_at, it.lat, it.lng, it.note]);
       if (ins.rows.length) { archived++; items.push({ source_url: it.source_url, media_id: ins.rows[0].id }); }
     } catch (e) {
       failed++;
@@ -218,7 +233,7 @@ async function archiveDrawMedia(appId, sitewireDrawId) {
       console.warn(`[sitewire] archive media failed (draw=${drawId}): ${e.message}`);
     }
   }
-  return { archived, skipped: archivedKeys.size, failed, items };
+  return { archived, skipped: archivedKeys.size, deduped, failed, items };
 }
 
 // The archived media for a draw, as a source_url → id map (so the gallery can prefer the durable copy).
