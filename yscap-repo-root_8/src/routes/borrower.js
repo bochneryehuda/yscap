@@ -873,11 +873,14 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
 
     const client = await db.getClient();
     let regId;
+    let economicsChanged = true;   // first registration always confirms to the borrower
     try {
       await client.query('BEGIN');
-      regId = await persistProductRegistration(client, {
+      const reg = await persistProductRegistration(client, {
         appId, program, inputs, quote, registeredByStaffId: null,
       });
+      regId = reg.id;
+      economicsChanged = reg.economicsChanged;
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK'); throw e; }
     finally { client.release(); }
@@ -939,10 +942,11 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
           link: `/internal/app/${appId}`, ctaLabel: 'Open the loan file',
         });
       // The borrower gets the SAME rich, borrower-safe loan-terms email as on the
-      // staff register path — a confirmation of exactly what they registered, with
-      // the full structure breakdown (owner-directed 2026-07-20). From/branded to
-      // the assigned officer when there is one.
-      try {
+      // staff register path — but ONLY when a headline number actually changed
+      // (owner-directed 2026-07-20): a re-register with the same loan amount /
+      // rate / cash-to-close / term / program is an internal no-op and must not
+      // nudge the borrower again. The team notice above still fires.
+      if (economicsChanged) try {
         let officer = null;
         if (row.loan_officer_id) {
           const o = await db.query(`SELECT full_name, title, email, phone, cell, nmls FROM staff_users WHERE id=$1`, [row.loan_officer_id]);

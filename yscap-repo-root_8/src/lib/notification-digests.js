@@ -234,32 +234,39 @@ async function weeklyAdminSummaryOnce() {
    Sitewire rule 10 — a finished/paid-off project is excluded, so a leftover finding on a closed loan never nudges. */
 async function drawFindingsAwaitingBorrowerOnce() {
   let sent = 0;
-  // NaN-safe: a non-numeric DRAW_FINDINGS_REMINDER_DAYS must fall back to the default, not become 'NaN'
-  // (which would make ('NaN'||' days')::interval throw and silently disable the nudge).
-  const wd = Number(process.env.DRAW_FINDINGS_REMINDER_DAYS || 3);
-  const waitDays = Number.isFinite(wd) ? Math.max(1, wd) : 3;
+  // Owner-directed 2026-07-20: the release is WAITING on the borrower's accept, so
+  // keep nudging them EVERY FEW HOURS (not days) until they accept or dispute —
+  // the moment they act, the finding leaves 'delivered' status and drops out of
+  // this query, so the nudges stop on their own. The dispatcher only runs this in
+  // the 8am–6pm NY window, so "every few hours" never means a 3am email.
+  // NaN-safe: a non-numeric DRAW_FINDINGS_REMINDER_HOURS must fall back to the
+  // default, not become 'NaN' (which would make ('NaN'||' hours')::interval throw
+  // and silently disable the nudge).
+  const wh = Number(process.env.DRAW_FINDINGS_REMINDER_HOURS || 4);
+  const waitHours = Number.isFinite(wh) ? Math.max(1, wh) : 4;
   const rows = (await db.query(
     `SELECT f.application_id, count(*)::int AS n, min(f.delivered_at) AS oldest
        FROM draw_findings f
        JOIN applications a ON a.id=f.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
       WHERE f.status='delivered' AND f.delivered_at IS NOT NULL
-        AND f.delivered_at < now() - ($1 || ' days')::interval
+        AND f.delivered_at < now() - ($1 || ' hours')::interval
         AND EXISTS (SELECT 1 FROM sitewire_property_links pl WHERE pl.application_id=f.application_id
                       AND pl.matched_by='created' AND COALESCE(pl.lifecycle_state,'active')='active')
       GROUP BY f.application_id
-      LIMIT 300`, [String(waitDays)])).rows;
+      LIMIT 300`, [String(waitHours)])).rows;
   for (const r of rows) {
     try {
-      if (!(await _gate('draw_findings_reminder', r.application_id, '2 days'))) continue;
-      const d = daysAt(r.oldest);
+      // At most one nudge per `waitHours` per file (the atomic gate), so within the
+      // business-hours window the borrower is reminded every few hours until they act.
+      if (!(await _gate('draw_findings_reminder', r.application_id, `${waitHours} hours`))) continue;
       await notify.notifyAppBorrowers(r.application_id, {
         type: 'draw_findings',
         title: r.n === 1 ? 'Your draw inspection result is waiting for you' : `${r.n} draw inspection results are waiting for you`,
         badge: { text: 'Action needed', tone: 'action' },
-        body: `Your inspection result${r.n === 1 ? ' has' : 's have'} been ready for ${d} day${d === 1 ? '' : 's'}. Your draw is released once you review and accept ${r.n === 1 ? 'it' : 'them'} — please take a moment to review ${r.n === 1 ? 'it' : 'them'} (or dispute a line) in your portal.`,
+        body: `Your inspection result${r.n === 1 ? ' is' : 's are'} ready and waiting for you. Your draw is released once you review and accept ${r.n === 1 ? 'it' : 'them'} — please take a moment to review ${r.n === 1 ? 'it' : 'them'} (or dispute a line) in your portal.`,
         callout: { title: 'Why this matters', body: 'The release clock for your draw only starts once you accept — reviewing promptly gets your money to you sooner.', tone: 'action' },
         applicationId: r.application_id, link: `/app/${r.application_id}`, ctaLabel: 'Review your draw' });
-      await _stamp('draw_findings_reminder', r.application_id, { awaiting: r.n, days: d });
+      await _stamp('draw_findings_reminder', r.application_id, { awaiting: r.n, hours: waitHours });
       sent++;
     } catch (e) { console.error('[digest] draw-findings-await', r.application_id, e && e.message); }
   }

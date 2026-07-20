@@ -1680,11 +1680,14 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
 
     const client = await db.getClient();
     let regId;
+    let economicsChanged = true;   // first registration always notifies the borrower
     try {
       await client.query('BEGIN');
-      regId = await persistProductRegistration(client, {
+      const reg = await persistProductRegistration(client, {
         appId, program, inputs, quote, registeredByStaffId: req.actor.id,
       });
+      regId = reg.id;
+      economicsChanged = reg.economicsChanged;
       // #101: STICK an explicit per-file markup override to the file so it re-applies
       // to every future quote — the borrower's self-service pricing can then never
       // reprice below it. Only touch a column the caller explicitly set: a blank/
@@ -1768,7 +1771,12 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       // Borrower-safe copy only (program label + the borrower's own deal numbers);
       // type 'term_sheet' is in the borrower MAJOR-email allowlist (#88), and the
       // subject line auto-carries the file (loan # · property) via notify.js.
-      try {
+      // Only send the borrower their "terms are ready" email when a headline
+      // number actually changed (owner-directed 2026-07-20): an internal
+      // re-register with the SAME loan amount / rate / cash-to-close / term /
+      // program must not nudge the borrower again. The team's own notice above
+      // still fires so staff always see the (re-)registration.
+      if (economicsChanged) try {
         let officer = null;
         if (row.loan_officer_id) {
           const o = await db.query(`SELECT full_name, title, email, phone, cell, nmls FROM staff_users WHERE id=$1`, [row.loan_officer_id]);
