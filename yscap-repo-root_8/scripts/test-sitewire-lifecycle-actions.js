@@ -90,6 +90,27 @@ const cleanup = async (app, bor) => { await db.query(`DELETE FROM applications W
     await cleanup(app, bor);
   }
 
+  // ============ 4b. audit G2 — verify GET THROWS → fail closed (state recorded, synced=false, re-drives) ============
+  {
+    updateImpl = async (id, body) => ({ id, ...body }); getImpl = async () => { throw new Error('network blip'); };
+    const { app, bor } = await seedManaged();
+    const r = await orch.setPropertyLifecycle(app, 'paid_off', null);
+    ok('verify-throws: not parked, not synced', r.ok === true && r.sitewire === 'unverified');
+    ok('verify-throws: PILOT state IS recorded (desk reflects it)', (await lifecycleOf(app)) === 'paid_off');
+    ok('verify-throws: lifecycle_synced=false so the backfill re-drives the deactivate', (await syncedOf(app)) === false);
+    await cleanup(app, bor);
+  }
+
+  // ============ 4c. audit G2 — verify returns ABSENT inactive → fail closed (not treated as confirmed) ============
+  {
+    updateImpl = async (id, body) => ({ id, ...body }); getImpl = async (id) => ({ id }); // no `inactive` field back
+    const { app, bor } = await seedManaged();
+    const r = await orch.setPropertyLifecycle(app, 'finished', null);
+    ok('verify-absent: not synced (absent inactive is not proof)', r.ok === true && r.sitewire === 'unverified');
+    ok('verify-absent: lifecycle_synced=false (backfill re-drives)', (await syncedOf(app)) === false);
+    await cleanup(app, bor);
+  }
+
   // ============ 5. a non-retryable 422 parks, never loops ============
   {
     getImpl = async (id) => ({ id, inactive: true });

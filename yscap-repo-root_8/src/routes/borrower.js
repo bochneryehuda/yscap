@@ -357,7 +357,7 @@ router.post('/profile/photo-id', async (req, res) => {
     await audit(req, 'upload_photo_id', 'borrower', me(req));
     try { require('../lib/sharepoint-backup').kick(); } catch (_) {}
     res.status(201).json({ ok: true, documentId: d.rows[0].id });
-  } catch (e) { res.status(500).json({ error: db.describeError(e) }); }
+  } catch (e) { console.warn('[borrower] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // ---------------- APPLICATIONS (one borrower : many; each a distinct address) ----------------
@@ -456,7 +456,8 @@ router.get('/action-items', async (req, res) => {
     };
     res.json({ items, counts });
   } catch (e) {
-    res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' });
+    console.warn('[borrower] handler error:', db.describeError(e));
+    res.status(500).json({ error: 'server error' });
   }
 });
 
@@ -1625,7 +1626,7 @@ router.post('/applications/:id/appraisal-card', async (req, res) => {
     await audit(req, 'save_appraisal_card', 'application', req.params.id, { last4, savedForReuse });
     await notifyAppraisalCardAdded(req.params.id, brand, last4);
     res.status(201).json({ ok: true, last4, brand, savedForReuse });
-  } catch (e) { res.status(500).json({ error: db.describeError(e) }); }
+  } catch (e) { console.warn('[borrower] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 // Masked view for the borrower's own condition row.
 router.get('/applications/:id/appraisal-card', async (req, res) => {
@@ -1662,7 +1663,7 @@ router.post('/applications/:id/scan-card', async (req, res) => {
 router.get('/saved-appraisal-card', async (req, res) => {
   try {
     res.json(await apprCard.getSavedCard(me(req)));
-  } catch (e) { res.status(500).json({ error: db.describeError(e) }); }
+  } catch (e) { console.warn('[borrower] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 // Copy the borrower's saved card onto THIS application (a new file) and satisfy
 // its appraisal_card condition — mirrors the direct-entry POST above. Only the
@@ -1681,7 +1682,7 @@ router.post('/applications/:id/appraisal-card/from-saved', async (req, res) => {
     await audit(req, 'save_appraisal_card', 'application', req.params.id, { last4: out.last4, reused: true });
     await notifyAppraisalCardAdded(req.params.id, out.brand, out.last4);
     res.status(201).json({ ok: true, last4: out.last4, brand: out.brand, reused: true });
-  } catch (e) { res.status(500).json({ error: db.describeError(e) }); }
+  } catch (e) { console.warn('[borrower] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Borrower-side application completeness: fill a missing field inline from the
@@ -1788,7 +1789,7 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
       // into pending change requests (so it can show "sent to your loan team").
       changeRequests: requested.map((r) => ({ field: r.field, label: r.field_label, newValue: r.new_value })),
     });
-  } catch (e) { res.status(500).json({ error: db.describeError(e) }); }
+  } catch (e) { console.warn('[borrower] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Tell the loan officer + processor a borrower has proposed an economics change
@@ -2279,7 +2280,11 @@ router.put('/track-record/snapshot', async (req, res) => {
       html: b.html, filename: b.filename, uploadedByKind: 'borrower', uploadedById: me(req),
     });
     res.json({ ok: true, ...out });
-  } catch (e) { res.status(e.status || 500).json({ error: e.message || 'could not save the snapshot' }); }
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    console.warn('[borrower] snapshot error:', db.describeError(e));
+    res.status(500).json({ error: 'could not save the snapshot' });
+  }
 });
 router.get('/track-record/snapshot', async (req, res) => {
   try { res.json(await require('../lib/track-record-snapshot').latestSnapshot(me(req))); }
@@ -2568,7 +2573,7 @@ router.post('/plaid/exchange', async (req, res) => {
     await plaid.exchangePublicToken(publicToken);   // access token handling wired when keys arrive
     await audit(req, 'link_bank', 'borrower', me(req));
     res.json({ ok: true, linked: true });
-  } catch (e) { res.status(502).json({ error: e.message }); }
+  } catch (e) { console.error('[plaid]', e && e.message); res.status(502).json({ error: 'bank verification is temporarily unavailable — please try again.' }); }
 });
 
 // ---------------- NOTIFICATIONS ----------------
