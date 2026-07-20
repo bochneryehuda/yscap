@@ -18,6 +18,7 @@ const DRAW_STATUS = {
 export default function BorrowerDraws({ appId }) {
   const [rollup, setRollup] = useState(null);
   const [findings, setFindings] = useState([]);
+  const [eligibility, setEligibility] = useState(null);
   const [loading, setLoading] = useState(true);
   const [has, setHas] = useState(true);
 
@@ -26,9 +27,11 @@ export default function BorrowerDraws({ appId }) {
     Promise.all([
       api.get(`/api/borrower/draws/${appId}/rollup`).catch(() => null),
       api.get(`/api/borrower/draws/${appId}/findings`).catch(() => ({ findings: [] })),
-    ]).then(([r, f]) => {
+      api.get(`/api/borrower/draws/${appId}/eligibility`).catch(() => null),
+    ]).then(([r, f, e]) => {
       setRollup(r && r.rollup ? r.rollup : null);
       setFindings((f && f.findings) || []);
+      setEligibility(e || null);
       setHas(!!(r && r.rollup && r.rollup.project && r.rollup.project.budget > 0));
     }).finally(() => setLoading(false));
   }, [appId]);
@@ -99,7 +102,99 @@ export default function BorrowerDraws({ appId }) {
         </div>
       )}
 
+      {/* Eligibility preview + guided hand-off to Sitewire (where draws are submitted) */}
+      {eligibility && <EligibilityCard e={eligibility} />}
+
       {findings.map((f) => <FindingCard key={f.id} finding={f} appId={appId} onChanged={load} />)}
+    </div>
+  );
+}
+
+/* The borrower's draw lifecycle at a glance — five plain-language steps from inspection to money in hand.
+   Driven only by borrower-safe finding state (status + a released flag), no capital-partner detail. */
+function DrawStepper({ finding }) {
+  const st = finding.status;
+  const disputed = st === 'disputed';
+  const accepted = st === 'accepted' || st === 'resolved';
+  const released = !!finding.released;
+  const steps = [
+    { key: 'inspected', label: 'Inspected', done: true },
+    { key: 'results', label: 'Results ready', done: true },
+    { key: 'review', label: disputed ? 'Under review' : 'You accept', done: accepted, active: st === 'delivered', warn: disputed },
+    { key: 'released', label: 'Funds released', done: released, active: accepted && !released },
+  ];
+  return (
+    <div className="row" style={{ gap: 0, alignItems: 'flex-start', margin: '4px 0 14px', flexWrap: 'nowrap', overflowX: 'auto' }}>
+      {steps.map((s, i) => {
+        const color = s.warn ? 'var(--warning, #b8860b)' : s.done ? 'var(--teal)' : s.active ? 'var(--gold, #ae8746)' : 'var(--ink-3, #c9cdd0)';
+        return (
+          <React.Fragment key={s.key}>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 66, flex: '0 0 auto' }}>
+              <span style={{ width: 22, height: 22, borderRadius: 999, display: 'grid', placeItems: 'center', background: (s.done || s.active || s.warn) ? color : 'transparent', border: `2px solid ${color}`, color: (s.done || s.active || s.warn) ? '#fff' : color, fontSize: 12, fontWeight: 800 }}>
+                {s.done ? '✓' : (s.warn ? '!' : i + 1)}
+              </span>
+              <span className="small" style={{ marginTop: 5, textAlign: 'center', color: (s.done || s.active || s.warn) ? 'var(--text)' : 'var(--text-muted)', fontWeight: (s.active || s.warn) ? 700 : 500, lineHeight: 1.15 }}>{s.label}</span>
+            </div>
+            {i < steps.length - 1 && <span style={{ flex: '1 1 18px', minWidth: 18, height: 2, background: steps[i + 1].done || steps[i].done ? 'var(--teal)' : 'var(--line)', marginTop: 10 }} />}
+          </React.Fragment>
+        );
+      })}
+    </div>
+  );
+}
+
+/* "Can I request another draw?" — an honest, guided preview: how much budget is left, whether anything is
+   holding a new draw, and the steps to submit one in Sitewire (where borrowers submit + photograph draws). */
+function EligibilityCard({ e }) {
+  const eligible = !!e.eligible;
+  const url = e.sitewire_portal_url || 'https://app.sitewire.co';
+  return (
+    <div className="dd-card">
+      <div className="dd-card-h" style={{ justifyContent: 'space-between' }}>
+        <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+          <span className="dd-card-ic" style={{ background: eligible ? 'var(--teal-soft, #e6f0f0)' : 'var(--warning-soft)', color: eligible ? 'var(--teal)' : 'var(--warning, #b8860b)' }}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ width: 16, height: 16 }}>{eligible ? <path d="M20 6L9 17l-5-5" /> : <><circle cx="12" cy="12" r="9" /><path d="M12 8v4M12 16h.01" /></>}</svg>
+          </span>
+          <div>
+            <h3>Request another draw</h3>
+            <div className="dd-sub" style={{ marginTop: 1 }}>{usd(e.remaining_cents)} of your budget is still available to draw.</div>
+          </div>
+        </div>
+      </div>
+
+      {e.blocking && e.blocking.length > 0 && (
+        <div style={{ marginTop: 8 }}>
+          {e.blocking.map((b, i) => (
+            <div key={i} className="row" style={{ gap: 8, alignItems: 'flex-start', marginTop: 4 }}>
+              <span style={{ flex: '0 0 auto', width: 7, height: 7, borderRadius: 999, marginTop: 6, background: 'var(--warning, #b8860b)' }} />
+              <span className="small" style={{ color: 'var(--text-muted)' }}>{b}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {e.next_steps && e.next_steps.length > 0 && (
+        <div style={{ marginTop: 8 }}>
+          {e.next_steps.map((s, i) => (
+            <div key={i} className="row" style={{ gap: 8, alignItems: 'flex-start', marginTop: 4 }}>
+              <span style={{ flex: '0 0 auto', width: 7, height: 7, borderRadius: 999, marginTop: 6, background: 'var(--gold, #ae8746)' }} />
+              <span className="small" style={{ color: 'var(--text-muted)' }}>{s}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {eligible && (
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--line)' }}>
+          <div className="small" style={{ fontWeight: 700, marginBottom: 6 }}>How to submit your next draw</div>
+          <ol className="small" style={{ margin: 0, paddingLeft: 18, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+            <li>Open Sitewire (below) — that’s where you submit draws and upload progress photos.</li>
+            <li>Choose the line items you’ve completed and enter the amount for each.</li>
+            <li>Add clear photos of the finished work — they speed up your inspection.</li>
+            <li>Submit. An inspection is scheduled, and your results appear right here for you to accept.</li>
+          </ol>
+          <a className="btn btn-sm primary" href={url} target="_blank" rel="noreferrer" style={{ marginTop: 12, display: 'inline-block' }}>Open Sitewire to submit a draw ↗</a>
+        </div>
+      )}
     </div>
   );
 }
@@ -137,8 +232,12 @@ function FindingCard({ finding, appId, onChanged }) {
       </div>
       <div className="dd-sub" style={{ marginTop: -2 }}>
         Approved {usd2(finding.total_approved_cents)} of {usd2(finding.total_requested_cents)} requested.
-        {finding.status === 'accepted' && finding.wire_due_at ? ` Your release is expected by ${new Date(finding.wire_due_at).toLocaleDateString('en-US')}.` : ''}
+        {finding.status === 'accepted' && !finding.released && finding.wire_due_at ? ` Your release is expected by ${new Date(finding.wire_due_at).toLocaleDateString('en-US')}.` : ''}
+        {finding.released ? ' Your funds have been released.' : ''}
       </div>
+
+      {/* Visual step tracker — inspection → results → your acceptance → funds released */}
+      <DrawStepper finding={finding} />
 
       <div className="dd-tablecard" style={{ overflowX: 'auto', marginTop: 12, boxShadow: 'none' }}>
         <table className="dd-table" style={{ minWidth: 520 }}>

@@ -9,6 +9,7 @@
  */
 const db = require('../db');
 const email = require('./email');
+const emailLog = require('./email-log');   // Email Center capture (in-app-only rows)
 const tpl = require('./email/template');
 const { link: portalLink } = require('./email/catalog');
 const cfg = require('../config');
@@ -31,6 +32,7 @@ const KICKER_OF = {
   track_record_unverified: 'Track record',
   draw: 'Construction draw', draw_request: 'Construction draw', draw_findings: 'Draw inspection',
   draw_accepted: 'Construction draw', draw_disputed: 'Construction draw', draw_dispute_resolved: 'Draw inspection',
+  draw_message: 'Message from your loan team', draw_started: 'Construction draw',
   sow_reallocation: 'Budget change', sow_change_request: 'Budget change',
   change_request: 'Change request', assignment: 'File assignment',
   new_application: 'New application', unassigned_application: 'Needs assignment',
@@ -116,7 +118,16 @@ function buildEmail(opts, audience) {
 }
 
 async function _emailRow(id, to, opts, audience) {
-  if (!to || !to.length) { await _mark(id, 'skipped'); return; }
+  if (!to || !to.length) {
+    await _mark(id, 'skipped');
+    // In-app-only (no email sent): still record a lightweight Email Center row so
+    // the file's history shows the notification with an "in-app only" status. Its
+    // body is rendered on demand from the notification when opened. Best-effort.
+    emailLog.captureOutbound({ to: [], replyTo: fileReplyTo(opts.applicationId) },
+      { applicationId: opts.applicationId, notificationId: id, type: opts.type, audience, status: 'skipped',
+        subjectTag: opts.subjectTag, kicker: opts.kicker }).catch(() => {});
+    return;
+  }
   try {
     const msg = buildEmail(opts, audience);
     // Attachments (owner-directed): doc-upload + chat emails carry the actual
@@ -130,11 +141,65 @@ async function _emailRow(id, to, opts, audience) {
     // reply ALWAYS reaches a human — no notification is ever a dead-end no-reply.
     const replyTo = opts.replyTo || fileReplyTo(opts.applicationId) || cfg.replyToDefault || null;
     // #150: an optional LO-branded From display name rides through untouched
-    // (resend honors it; other providers ignore it).
-    const res = await email.sendMail({ to, subject: msg.subject, text: msg.text, html: msg.html, attachments, replyTo, from: opts.from || null });
-    await _mark(id, res && res.ok ? 'sent' : 'skipped');
+    // (resend honors it; other providers ignore it). #447: `bcc` loops the LO into
+    // borrower emails. `_ctx` is stripped by the provider wrapper and drives the
+    // portal-wide Email Center capture (email_messages, src/lib/email-log.js), kept
+    // ALONGSIDE the #442 sent_emails capture below (two independent stores — the
+    // portal-wide Email Center and the Draw Management email view).
+    const res = await email.sendMail({ to, subject: msg.subject, text: msg.text, html: msg.html, attachments, replyTo, from: opts.from || null, bcc: opts.bcc || null,
+      _ctx: { applicationId: opts.applicationId, notificationId: id, type: opts.type, audience, subjectTag: opts.subjectTag, kicker: opts.kicker } });
+    const status = res && res.ok ? 'sent' : 'skipped';
+    await _mark(id, status);
+    // #442 draw email center: also persist the rendered email + attachment BYTES to the
+    // sent_emails store that the Draw Management email view reads. Best-effort + caught.
+    _captureSentEmail(id, to, opts, audience, msg, replyTo, attachments, status).catch(() => {});
   } catch (e) {
     await db.query(`UPDATE notifications SET email_status='error', email_error=$2 WHERE id=$1`, [id, String(e.message).slice(0, 400)]);
+    // still capture what we tried to send (the reader shows why it failed) — best-effort.
+    try { const msg = buildEmail(opts, audience); _captureSentEmail(id, to, opts, audience, msg, opts.replyTo || null, [], 'error').catch(() => {}); } catch (_) { /* ignore */ }
+  }
+}
+
+/* Persist the rendered email for a file notification so it can be OPENED in full later (owner-directed
+   2026-07-20). Stores the branded HTML, plaintext, real recipients, reply-to, and each attachment's bytes
+   (in PILOT storage) + metadata. Scoped to FILE emails (applicationId set). Never throws. */
+async function _captureSentEmail(notificationId, to, opts, audience, msg, replyTo, attachments, status) {
+  if (!opts.applicationId) return;                      // file emails only
+  let attMeta = [];
+  try {
+    const storage = require('./storage');
+    const { decodeUploadBase64 } = require('./upload-bytes');
+    for (const a of (Array.isArray(attachments) ? attachments : [])) {
+      const meta = { filename: a.filename, content_type: a.contentType || a.content_type || null };
+      try {
+        const buf = decodeUploadBase64(a.content);
+        if (buf && buf.length) {
+          meta.size = buf.length;
+          if (buf.length <= 25 * 1024 * 1024) { const saved = await storage.save(buf, { filename: a.filename }); meta.storage_provider = saved.provider; meta.storage_ref = saved.ref; }
+        }
+      } catch (_) { /* keep the name even if the bytes can't be stored */ }
+      attMeta.push(meta);
+    }
+  } catch (_) { attMeta = []; }
+  const params = [notificationId, opts.applicationId, audience, msg.subject || null, opts.from || cfg.notifyFrom || null,
+    (Array.isArray(to) ? to : [to]).filter(Boolean), replyTo || null, msg.html || null, msg.text || null,
+    JSON.stringify(attMeta), status];
+  // Best-effort, but retry on a transient deadlock/serialization failure. Concurrent file
+  // fan-out (notifyAppStaff/Borrowers) contends on the shared applications/notifications FK
+  // parents; without a retry a lost row is permanently missing from the draw email view
+  // (sent_emails has no backfill, unlike email_messages). Deadlocks=40P01, serialization=40001.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await db.query(
+        `INSERT INTO sent_emails (notification_id, application_id, audience, recipient_kind, subject, from_email, to_emails, reply_to, html, body_text, attachments, status)
+         VALUES ($1,$2,$3,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11)`, params);
+      return;
+    } catch (e) {
+      const transient = e && (e.code === '40P01' || e.code === '40001');
+      if (transient && attempt < 3) { await new Promise((r) => setTimeout(r, 40 * (attempt + 1))); continue; }
+      console.warn('[notify] sent-email capture failed:', e && e.message);
+      return;
+    }
   }
 }
 async function _mark(id, status) {
@@ -151,9 +216,22 @@ async function notifyStaff(staffId, opts) {
   // row falls back to enabled.
   let emailOn = true;
   try {
-    const p = await db.query(`SELECT notifications_enabled FROM staff_users WHERE id=$1`, [staffId]);
+    const p = await db.query(`SELECT notifications_enabled, is_active FROM staff_users WHERE id=$1`, [staffId]);
     if (p.rows[0] && p.rows[0].notifications_enabled === false) emailOn = false;
-  } catch (_) { /* column exists after migration 085; default on */ }
+    // NEVER email a DEACTIVATED staffer (owner-reported audit 2026-07-20): a fired
+    // employee stays an application_assignee until reassigned, so without this the
+    // notifyStaff/notifyAppStaff chokepoint kept sending them every file event —
+    // including borrower-uploaded documents WITH the file bytes attached. The
+    // in-app row is still written (harmless; they can't sign in), the EMAIL is
+    // skipped. This single guard also covers the sync-review inactive-LO fallback
+    // and every other caller. (Fixed at the chokepoint, not per call site.)
+    if (p.rows[0] && p.rows[0].is_active === false) emailOn = false;
+  } catch (_) { /* columns exist after migration; default on */ }
+  // opts.inAppOnly (owner-directed 2026-07-20): keep the in-app row but SKIP the
+  // email — for routine, low-signal staff events (e.g. a file moving to a working
+  // status like Processing) so the team's inbox isn't bombarded. Mirrors the #88
+  // borrower policy where only MAJOR moments email.
+  if (opts.inAppOnly) emailOn = false;
   // Auto-attach the file's identity (subject tag + detail block + default
   // link/CTA) so every staff file email says WHICH file, without every call
   // site building it. No-op when there's no applicationId. (#88/#150 unchanged.)
@@ -182,6 +260,7 @@ const CATEGORY_OF = {
   draw: 'draws', draw_request: 'draws',
   // Sitewire draw-management events (findings delivery, accept/dispute, SOW reallocations)
   draw_findings: 'draws', draw_accepted: 'draws', draw_disputed: 'draws', draw_dispute_resolved: 'draws',
+  draw_message: 'draws', draw_started: 'draws',
   sow_reallocation: 'draws', sow_change_request: 'draws',
   // New borrower touchpoints (owner-directed 2026-07-20)
   officer_assigned: 'status_updates', all_caught_up: 'status_updates',
@@ -210,6 +289,8 @@ const BORROWER_MAJOR_EMAIL = new Set([
   'doc_rejected', 'doc_requested', 'condition_added',
   'llc_unverified', 'track_record_unverified',
   'message', 'draw', 'draw_request', 'security', 'account',
+  // A coordinator's direct message to the borrower from the draw desk always emails them.
+  'draw_message',
   // The borrower must review inspection findings and accept/dispute within the wire SLA —
   // this is a borrower action item, so it emails them (not just in-app).
   'draw_findings',
@@ -274,6 +355,12 @@ async function notifyBorrower(borrowerId, opts) {
     callout: scrubObj(opts.callout, ['title', 'body']),
     hero: scrubObj(opts.hero, ['label', 'value', 'sub']),
     badge: scrubObj(opts.badge, ['text']),
+    // Owner-directed 2026-07-20: silently BCC the file's assigned loan officer on
+    // the borrower's email so the LO sees in real time exactly what their borrower
+    // received. The officer comes from enrichFileOpts (fileContext) — their own
+    // business contact. An explicit opts.bcc wins; the provider drops any BCC that
+    // is already a To recipient, so no self-duplicate.
+    bcc: opts.bcc || ((cfg.ccLoanOfficerOnBorrowerEmail && !opts._skipOfficerBcc && opts.officer && opts.officer.email) ? [opts.officer.email] : undefined),
   };
   const { rows } = await db.query(
     `INSERT INTO notifications (recipient_kind,borrower_id,type,title,body,application_id,link)
@@ -297,7 +384,10 @@ async function notifyAppBorrowers(appId, opts) {
   const ctx = await fileContext(appId).catch(() => null);
   const shared = { ...opts, applicationId: opts.applicationId || appId, _fileCtx: ctx || undefined };
   const out = [];
-  for (const id of ids) out.push(await notifyBorrower(id, { ...shared }));
+  // The loan-officer BCC (monitoring copy) rides on the PRIMARY borrower's email
+  // only — otherwise a file with a co-borrower would BCC the officer twice with
+  // near-identical copies (owner-reported duplicate sweep 2026-07-20).
+  for (let i = 0; i < ids.length; i++) out.push(await notifyBorrower(ids[i], { ...shared, _skipOfficerBcc: i > 0 }));
   return out;
 }
 

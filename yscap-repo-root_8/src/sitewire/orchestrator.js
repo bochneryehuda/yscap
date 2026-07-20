@@ -56,6 +56,18 @@ const SITEWIRE_BIRTH_REASONS = new Set([
 ]);
 
 // Is this file under PILOT draw management yet? True only once a push bound a live Sitewire property.
+/* PURE (no DB / no network): the loan-number collision decision. Returns the pre-existing Sitewire property
+ * that carries `loanNumber`, or null if none — EXCLUDING any id in `resetIds` (properties PILOT itself created
+ * for this file and then reset/deactivated, so a delete-and-re-push isn't blocked by its own old copy). Only
+ * ever skips ids WE recorded as our own reset; a genuine hand-entered property PILOT never created is always
+ * returned (→ park, never adopt). Unit-tested. */
+function collisionProperty(all, loanNumber, resetIds) {
+  if (loanNumber == null || loanNumber === '') return null;
+  const skip = new Set((Array.isArray(resetIds) ? resetIds : []).map(String));
+  return (Array.isArray(all) ? all : []).find(
+    (p) => p && String(p.loan_number || '') === String(loanNumber) && !skip.has(String(p.id))) || null;
+}
+
 async function isManaged(appId) {
   try { const lk = await getLink(appId); return !!(lk && lk.sitewire_property_id); } catch (_) { return false; }
 }
@@ -397,7 +409,10 @@ async function pushFile(appId, opts = {}) {
       let existing = null;
       try {
         const all = await client.listProperties();
-        existing = (all || []).find((p) => String(p.loan_number || '') === String(a.ys_loan_number));
+        // Pick a colliding property by loan number, EXCLUDING any this file previously created and reset
+        // (tombstoned in raw.reset_property_ids) — so delete-and-re-push works while a genuine pre-existing
+        // property PILOT never created still parks. Pure + tested (collisionProperty).
+        existing = collisionProperty(all, a.ys_loan_number, ((link && link.raw) || {}).reset_property_ids);
       } catch (e) {
         if (e.retryable) throw e; // transient → the queue retries the whole push
         // A NON-retryable failure of the dupe check must NEVER fall through to create — that
@@ -681,4 +696,163 @@ async function setPropertyLifecycle(appId, state, staffId = null) {
   return { ok: true, state, inactive, sitewire };
 }
 
-module.exports = { pushFile, pushBudget, setPropertyLifecycle, park, journal, circuitCheck, resolveCapitalPartnerId, resolveRule, resolveInspection, resolveCoordinatorId, getLink, loadFile, isManaged, recordSetupStatus, SITEWIRE_BIRTH_REASONS, LIFECYCLE_STATES };
+/**
+ * Reset a file's draw setup so the coordinator can start over / re-push (owner-directed 2026-07-20 — a
+ * delete-and-re-push control for testing). Sitewire has NO delete endpoint, so this does the closest safe
+ * thing: (1) DEACTIVATES the Sitewire property (`inactive=true`, guarded) so it accepts no more draws, then
+ * (2) UNLINKS it in PILOT — the property id is TOMBSTONED into raw.reset_property_ids so the next push skips
+ * only THIS previously-created copy in the loan-number collision check (a genuine pre-existing property PILOT
+ * never created still parks — the go-forward/only-ours rule is never weakened), the link's property/budget
+ * ids are cleared, and every mirrored Sitewire draw/finding/media/crosswalk row for the file is removed so
+ * `notLinked` becomes true and the Start-draw card (with all push options) reappears. The money LEDGER
+ * (`draw_disbursements`) and lien waivers are KEPT — financial records are never destroyed by a reset. Only
+ * a file PILOT actually created can be reset (`not_managed` otherwise). Requires manage_draws at the route.
+ */
+async function resetDrawSetup(appId, staffId = null) {
+  const link = await getLink(appId);
+  if (!link || link.matched_by !== 'created') return { error: 'not_managed' };
+  const oldPropId = link.sitewire_property_id;
+  if (!oldPropId) {
+    // Nothing was ever pushed (setup_status-only row) — just clear any birth-phase status so it's a clean slate.
+    await db.query(`UPDATE sitewire_property_links SET raw = COALESCE(raw,'{}'::jsonb) - 'setup_status', state='pending', updated_at=now() WHERE application_id=$1`, [appId]);
+    return { ok: true, was_managed: false, sitewire: 'skipped' };
+  }
+  // (1) deactivate in Sitewire — best-effort so a testing reset is never blocked by a transient Sitewire issue;
+  // the property id is tombstoned regardless, so the re-push is clean either way.
+  const canSync = cfg.sitewireEnabled && (cfg.sitewireOutboundEnabled || cfg.sitewireDryrun);
+  let sitewire = 'skipped', deactivated = false;
+  if (canSync) {
+    try {
+      await circuitCheck(1);
+      const property = await client.updateProperty(oldPropId, { inactive: true });
+      if (property && property.__dryrun) { sitewire = 'dryrun'; }
+      else {
+        await journal({ appId, propertyId: oldPropId, entity: 'property', entityId: oldPropId, field: 'inactive', oldValue: false, newValue: true, source: 'reset' });
+        sitewire = 'synced'; deactivated = true;
+      }
+    } catch (e) { sitewire = 'failed'; console.warn(`[sitewire] reset: could not deactivate property ${oldPropId} (app=${appId}): ${e && e.message}`); }
+  }
+  // (2) unlink + tombstone + clear the mirror, atomically. Children before parents; money ledger untouched.
+  const c = await db.getClient();
+  try {
+    await c.query('BEGIN');
+    await c.query(`DELETE FROM draw_finding_lines WHERE finding_id IN (SELECT id FROM draw_findings WHERE application_id=$1)`, [appId]);
+    await c.query(`DELETE FROM draw_findings WHERE application_id=$1`, [appId]);
+    await c.query(`DELETE FROM draw_media WHERE application_id=$1`, [appId]);
+    await c.query(`DELETE FROM sitewire_draw_requests WHERE sitewire_draw_id IN (SELECT sitewire_draw_id FROM sitewire_draws WHERE application_id=$1)`, [appId]);
+    await c.query(`DELETE FROM sitewire_draws WHERE application_id=$1`, [appId]);
+    await c.query(`DELETE FROM sitewire_job_item_links WHERE application_id=$1`, [appId]);
+    await c.query(
+      `UPDATE sitewire_property_links
+          SET sitewire_property_id=NULL, sitewire_budget_id=NULL, state='pending', pushed_at=NULL,
+              lifecycle_state='active',
+              raw = jsonb_set(COALESCE(raw,'{}'::jsonb) - 'setup_status', '{reset_property_ids}',
+                              COALESCE(raw->'reset_property_ids','[]'::jsonb) || to_jsonb($2::text)),
+              updated_at=now()
+        WHERE application_id=$1`, [appId, String(oldPropId)]);
+    await c.query('COMMIT');
+  } catch (e) { try { await c.query('ROLLBACK'); } catch (_) {} throw e; }
+  finally { c.release(); }
+  return { ok: true, was_managed: true, old_property_id: oldPropId, sitewire, deactivated };
+}
+
+/* Live read of Sitewire's borrower-invite state for a managed file (owner-directed 2026-07-20 — "see whether
+   Sitewire invited the borrower"). Sitewire owns the invite email + its status; we surface the state it exposes
+   on the property (`borrower.status`: unassigned → invited → assigned). Best-effort: null/unavailable when
+   Sitewire reads are off or the call fails. Staff-only (the route is manage_draws). */
+async function getBorrowerInviteStatus(appId) {
+  const link = await getLink(appId);
+  if (!link || !link.sitewire_property_id || link.matched_by !== 'created') return { managed: false };
+  if (!cfg.sitewireEnabled) return { managed: true, available: false, reason: 'sitewire_off' };
+  try {
+    const p = await client.getProperty(link.sitewire_property_id);
+    const b = (p && p.borrower) || {};
+    return { managed: true, available: true, status: b.status || 'unassigned', contact_email: b.contact_email || null };
+  } catch (e) { return { managed: true, available: false, reason: (e && e.message) || 'error' }; }
+}
+
+/* (Re)send the Sitewire borrower invite by re-asserting the borrower's contact email on the property — the
+   same guarded write the push uses (Sitewire sends its own invite on assign). Mirrors a real Sitewire action
+   we couldn't previously trigger on demand. GO-FORWARD ONLY (managed file) + guarded/journaled. */
+async function resendBorrowerInvite(appId) {
+  const link = await getLink(appId);
+  if (!link || !link.sitewire_property_id || link.matched_by !== 'created') return { error: 'not_managed' };
+  const a = await loadFile(appId);
+  if (!a || !a.borrower_email) return { error: 'no_borrower_email' };
+  if (!(cfg.sitewireEnabled && (cfg.sitewireOutboundEnabled || cfg.sitewireDryrun))) return { error: 'writes_off' };
+  await circuitCheck(1);
+  try {
+    const res = await client.assignBorrower(link.sitewire_property_id, a.borrower_email);
+    if (res && res.__dryrun) return { ok: true, sitewire: 'dryrun', email: a.borrower_email };
+    await journal({ appId, propertyId: link.sitewire_property_id, entity: 'borrower', field: 'contact_email', newValue: a.borrower_email, source: 'resend_invite' });
+    return { ok: true, sitewire: 'synced', email: a.borrower_email };
+  } catch (e) {
+    if (e.retryable) return { error: 'transient' };
+    return { error: 'sitewire_' + ((e && e.status) || 'error') };
+  }
+}
+
+/* Sitewire's pipeline / "quick-notify" status labels — the tags a draw can be moved through (e.g. "Sent to
+   wire department"). Live read; [] when Sitewire is off. (owner-directed 2026-07-20 — mirror every Sitewire
+   action into PILOT.) */
+async function listQuickNotifyStatuses() {
+  if (!cfg.sitewireEnabled) return [];
+  try {
+    const r = await client.listQuickNotifyStatuses();
+    const arr = Array.isArray(r) ? r : (r && (r.quick_notify_statuses || r.data)) || [];
+    return (Array.isArray(arr) ? arr : []).map((s) => ({ id: s.id, name: s.name || s.label || String(s.id) }));
+  } catch (_) { return []; }
+}
+
+/* Set a draw's pipeline/quick-notify status in Sitewire (the same status control Sitewire's own UI has),
+   through the guarded path: circuit check -> updateDraw -> read-after-write -> journal -> store locally.
+   GO-FORWARD ONLY (a managed draw on this file). Passing null clears it. */
+async function setDrawQuickNotify(appId, drawId, statusId) {
+  const own = (await db.query(`SELECT sitewire_draw_id FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [drawId, appId])).rows[0];
+  if (!own) return { error: 'draw_not_on_file' };
+  if (!(cfg.sitewireEnabled && (cfg.sitewireOutboundEnabled || cfg.sitewireDryrun))) return { error: 'writes_off' };
+  const sid = (statusId == null || statusId === '') ? null : Number(statusId);
+  if (sid != null && !Number.isFinite(sid)) return { error: 'bad_status' };
+  // A pipeline status can only be MOVED between real statuses, never CLEARED to null: the guarded client
+  // (guardNoUnsafeWrite) refuses any null-bearing body outright (a field-clearing null is never sent), so a
+  // "clear to none" write is impossible by design. Reject it cleanly here instead of letting it throw an
+  // opaque unsafe-write 502.
+  if (sid == null) return { error: 'clear_unsupported' };
+  await circuitCheck(1);
+  try {
+    const res = await client.updateDraw(drawId, { quick_notify_status_id: sid });
+    if (res && res.__dryrun) return { ok: true, sitewire: 'dryrun', quick_notify_status_id: sid };
+    // read-after-write: re-GET the draw and confirm the status persisted.
+    let confirmed = sid;
+    try {
+      const fresh = await client.getDraw(drawId);
+      const got = fresh && (fresh.quick_notify_status_id !== undefined ? fresh.quick_notify_status_id : (fresh.draw && fresh.draw.quick_notify_status_id));
+      if (got !== undefined) confirmed = got == null ? null : Number(got);
+    } catch (_) { /* verify best-effort; reconcile re-checks */ }
+    await db.query(`UPDATE sitewire_draws SET quick_notify_status_id=$3, updated_at=now() WHERE sitewire_draw_id=$1 AND application_id=$2`, [drawId, appId, confirmed]);
+    await journal({ appId, entity: 'draw', entityId: drawId, field: 'quick_notify_status_id', newValue: confirmed, source: 'quick_notify' });
+    return { ok: true, sitewire: 'synced', quick_notify_status_id: confirmed };
+  } catch (e) { if (e && e.retryable) return { error: 'transient' }; return { error: 'sitewire_' + ((e && e.status) || 'error') }; }
+}
+
+/* The Sitewire property's own documents (whatever the borrower/inspector uploaded on Sitewire's side) — a
+   LIVE read of property.documents[]. We surface them (name + open link) so the coordinator sees everything
+   Sitewire holds without leaving PILOT. Read-only; [] when off / not managed. URLs are Sitewire's (may expire). */
+async function getSitewireDocuments(appId) {
+  const link = await getLink(appId);
+  if (!link || !link.sitewire_property_id || link.matched_by !== 'created') return { managed: false, documents: [] };
+  if (!cfg.sitewireEnabled) return { managed: true, available: false, documents: [] };
+  try {
+    const p = await client.getProperty(link.sitewire_property_id);
+    const docs = (p && (p.documents || (p.property && p.property.documents))) || [];
+    const safeUrl = (u) => { try { const x = new URL(String(u)); return (x.protocol === 'http:' || x.protocol === 'https:') ? x.href : null; } catch (_) { return null; } };
+    return { managed: true, available: true, documents: (Array.isArray(docs) ? docs : []).map((d) => ({
+      name: d.name || d.filename || d.title || 'Document',
+      url: safeUrl(d.url || d.src || d.download_url || d.file_url), // only http(s) — never a javascript:/data: href
+      kind: d.kind || d.type || d.document_type || null,
+      uploaded_at: d.created_at || d.uploaded_at || d.inserted_at || null,
+    })) };
+  } catch (e) { return { managed: true, available: false, documents: [], error: (e && e.message) || 'error' }; }
+}
+
+module.exports = { pushFile, pushBudget, setPropertyLifecycle, resetDrawSetup, collisionProperty, getBorrowerInviteStatus, resendBorrowerInvite, listQuickNotifyStatuses, setDrawQuickNotify, getSitewireDocuments, park, journal, circuitCheck, resolveCapitalPartnerId, resolveRule, resolveInspection, resolveCoordinatorId, getLink, loadFile, isManaged, recordSetupStatus, SITEWIRE_BIRTH_REASONS, LIFECYCLE_STATES };

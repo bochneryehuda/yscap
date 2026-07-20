@@ -433,6 +433,14 @@ if (require.main === module) {
         require('./lib/appraisal/desk').backfillAppraisalCompSplitOnce()
           .then((r) => r && r.split && console.log('[boot] appraisal comp-split backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] appraisal comp-split backfill failed:', e.message));
+        // Email Center history (owner-directed 2026-07-20): mirror the prior
+        // notification + inbound-reply history into the email_messages store so
+        // every file's new Email Center shows its BACKDATED history. Lightweight
+        // rows (body rendered on demand); bounded per boot, idempotent, self-
+        // resuming (WHERE NOT EXISTS + unique indexes) until fully drained.
+        require('./lib/email-log').backfillEmailHistoryOnce()
+          .then((r) => r && (r.notifs || r.inbound) && console.log('[boot] email history backfill:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] email history backfill failed:', e.message));
       } catch (e) {
         console.error('[migrate] unexpected error (continuing):', require('./db').describeError(e));
       }

@@ -12,6 +12,7 @@ import ChatThread from '../components/ChatThread.jsx';
 import { NewChatModal } from './StaffChat.jsx';
 import PropertyPhoto from '../components/PropertyPhoto.jsx';
 import ActivityFeed from '../components/ActivityFeed.jsx';
+import EmailCenter from '../components/EmailCenter.jsx';
 import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
 import DealSnapshot from '../components/DealSnapshot.jsx';
 import { PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
@@ -1278,69 +1279,6 @@ function StaffTrackRecordPanel({ app, role }) {
    issues included) — the internal checklist Item already had one; this brings
    notes to every condition on the borrower-conditions view too (#126). Notes are
    staff-only (ci.notes is never sent to the borrower). */
-// #80 — per-file EMAIL NOTIFICATION MONITOR. A read-only running list of every
-// notification written for this file (to the borrower, co-borrower, and each
-// assigned staffer) with its EMAIL delivery status — so the team can see exactly
-// what has gone out, to whom, and whether the email actually sent.
-function EmailMonitor({ appId }) {
-  const [rows, setRows] = useState(null);
-  const [err, setErr] = useState('');
-  const [open, setOpen] = useState(false);
-  const load = useCallback(() => {
-    api.staffAppEmails(appId).then((r) => setRows(Array.isArray(r) ? r : [])).catch((e) => setErr(e.message || 'Could not load the email log'));
-  }, [appId]);
-  useEffect(() => { load(); }, [load]);
-  if (err) return <div className="notice err">{err}</div>;
-  if (!rows) return <p className="muted small">Loading…</p>;
-  if (!rows.length) return <p className="muted small">No notifications have been sent for this file yet.</p>;
-  const statusPill = (s) => {
-    const label = s === 'sent' ? 'Emailed' : s === 'skipped' ? 'In-app only' : s === 'error' ? 'Email failed' : 'Pending';
-    const color = s === 'sent' ? 'var(--ok)' : s === 'error' ? 'var(--danger)' : 'var(--muted-2)';
-    return <span className="pill small" style={{ borderColor: color, color }}>{label}</span>;
-  };
-  // #68 — inbound replies (direction:'inbound') interleave with outbound rows.
-  // Their email_status is the inbound processing status, not a delivery status.
-  const inboundPill = (s, n) => {
-    const label = s === 'forwarded' ? `Forwarded to the team${n > 1 ? ` (${n})` : ''}`
-      : s === 'auto_reply' ? 'Auto-reply (not forwarded)'
-        : s === 'no_recipients' ? 'No one to receive it'
-          : s === 'chat_posted' ? 'Posted to chat'
-            : s === 'archived_app' ? 'Archived file (not forwarded)'
-              : s === 'rate_limited' ? 'Rate limited'
-                : s === 'failed_permanent' ? 'Could not be processed'
-                  : ['retrieval_failed', 'forward_failed', 'lookup_failed', 'error'].includes(s) ? 'Delivery issue — retrying'
-                    : 'Processing';
-    const color = s === 'forwarded' || s === 'chat_posted' ? 'var(--ok)'
-      : (s === 'no_recipients' || s === 'failed_permanent') ? 'var(--danger)' : 'var(--muted-2)';
-    return <span className="pill small" style={{ borderColor: color, color }}>{label}</span>;
-  };
-  const when = (r) => { try { return new Date(r.emailed_at || r.created_at).toLocaleString(); } catch { return ''; } };
-  const shown = open ? rows : rows.slice(0, 8);
-  return (
-    <div className="panel" style={{ padding: 10 }}>
-      <div className="muted small" style={{ marginBottom: 6 }}>{rows.length} notification{rows.length === 1 ? '' : 's'} on this file · newest first · inbound replies included.</div>
-      {shown.map((r) => (
-        <div key={r.id} className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '5px 0', borderTop: '1px solid rgba(127,169,176,.15)' }}>
-          <span className="small" style={{ flex: 1, minWidth: 200 }}>
-            <strong>{r.title}</strong>
-            <span className="muted" style={{ marginLeft: 6 }}>
-              {r.direction === 'inbound'
-                ? <>← {r.recipient_email || 'unknown sender'}</>
-                : <>→ {r.recipient_name || r.recipient_email || (r.recipient_kind === 'staff' ? 'staff' : 'borrower')}{r.recipient_email ? ` · ${r.recipient_email}` : ''}</>}
-            </span>
-          </span>
-          {r.direction === 'inbound' ? inboundPill(r.email_status, r.forwarded_count) : statusPill(r.email_status)}
-          <span className="muted small" style={{ minWidth: 132, textAlign: 'right' }}>{when(r)}</span>
-        </div>
-      ))}
-      {rows.length > 8 && (
-        <button className="btn ghost small" style={{ marginTop: 8 }} onClick={() => setOpen((v) => !v)}>
-          {open ? 'Show fewer' : `Show all ${rows.length}`}
-        </button>
-      )}
-    </div>
-  );
-}
 
 function CondNote({ item, onPatch }) {
   const [v, setV] = useState(item.notes || '');
@@ -2613,6 +2551,7 @@ export default function StaffApplication() {
     { id: 'sec-checklist', label: 'Internal checklist', badge: internalItems.length ? `${internalItems.filter(i => i.signed_off_at).length}/${internalItems.length}` : '' },
     { id: 'sec-documents', label: 'Documents & exports', badge: docs.length || '' },
     { id: 'sec-messages', label: 'Conversations' },
+    { id: 'sec-emails', label: 'Email Center' },
     { id: 'sec-activity', label: 'Activity' },
     // Construction draws is the LAST phase (post-funding), so it's the LAST section — after Activity.
     ...(can('manage_draws') && app.status === 'funded' ? [{ id: 'sec-draws', label: 'Construction draws' }] : []),
@@ -3050,9 +2989,9 @@ export default function StaffApplication() {
       <ActivityFeed fetcher={activityFetcher} title="File activity" />
       </Section>
 
-      <Section id="sec-emails" title="Email notifications"
-        info="Every notification sent for this file — to the borrower, co-borrower, and each assigned staffer — with its email delivery status (sent, in-app only, or error). A running monitor of exactly what has gone out and to whom.">
-      <EmailMonitor appId={id} />
+      <Section id="sec-emails" title="Email Center"
+        info="A full inbox for this file — every email and notification that went out (to the borrower, co-borrower, each assigned staffer, and any external party) with its full designed body, exactly whom it reached and when, and whether it actually sent. Inbound replies show in full, and you can reply right here — it reaches the borrower and the whole file team on the shared thread.">
+      <EmailCenter mode="file" appId={id} />
       </Section>
 
       {/* Construction draws — the LAST phase (post-funding), so the LAST section. Opens in its own full
