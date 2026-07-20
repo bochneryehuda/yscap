@@ -4604,6 +4604,46 @@ function borrowerJourney(status) {
   if (idx == null) return null;   // declined / withdrawn → no progress path
   return BORROWER_JOURNEY.map((label, i) => ({ label, state: i < idx ? 'done' : (i === idx ? 'current' : 'upcoming') }));
 }
+// Announce a borrower-facing status transition to the borrower + the team.
+// Extracted so BOTH doors into the borrower-facing bucket notify IDENTICALLY:
+// the PATCH /:id status route AND the POST /:id/internal-status door (the
+// 38-status ClickUp workflow the team actually drives). Previously only PATCH
+// notified, so funding/approving a file via the internal-status dropdown gave
+// the borrower NO email — a real parity gap (owner-directed 2026-07-20). Only
+// call this when the borrower-facing bucket ACTUALLY changed (from !== to): the
+// internal door often moves between two internal statuses that map to the SAME
+// external bucket, and re-announcing an unchanged status would be a wrong-time /
+// duplicate email. A soft-deleted file is skipped (it's out of the pipeline —
+// "your loan is now …" would be a wrong-time send). Best-effort; never throws.
+async function notifyStatusTransition(appId, fromStatus, toStatus, opts = {}) {
+  try {
+    const live = await db.query(`SELECT deleted_at FROM applications WHERE id=$1`, [appId]);
+    if (!live.rows[0] || live.rows[0].deleted_at) return;
+    const label = STATUS_LABEL[toStatus] || toStatus;
+    const fromLabel = STATUS_LABEL[fromStatus] || fromStatus;
+    const explain = BORROWER_STATUS_EXPLAIN[toStatus];
+    const steps = borrowerJourney(toStatus);
+    const positive = toStatus === 'funded' || toStatus === 'clear_to_close' || toStatus === 'approved';
+    const badgeTone = positive ? 'positive' : (toStatus === 'declined' || toStatus === 'withdrawn' ? 'neutral' : 'teal');
+    await notify.notifyAppBorrowers(appId, {
+      type: 'status_change', title: `Your loan status is now: ${label}`,
+      body: `Your loan file has moved from "${fromLabel}" to "${label}".`,
+      badge: { text: label, tone: badgeTone },
+      steps: steps || undefined,   // the visual loan-journey path (null on declined/withdrawn)
+      callout: explain ? { title: 'What this means', body: explain, tone: positive ? 'positive' : 'gold' } : undefined,
+      applicationId: appId, link: `/app/${appId}`, ctaLabel: 'View your file',
+      major: MAJOR_STATUSES.has(toStatus) });   // #88: only decision statuses email the borrower
+    await notify.notifyAppStaff(appId, {   // #113: whole team (primary + assistants), minus the actor
+      type: 'status_change', title: `File moved to ${label}`,
+      body: `This file moved from "${fromLabel}" to "${label}"${opts.forced ? ' (advanced with an admin override)' : ''}.`,
+      applicationId: appId, link: `/internal/app/${appId}`, exceptStaffId: opts.actorId,
+      // Owner-directed 2026-07-20: the team gets an EMAIL only on DECISION
+      // milestones (approved / clear-to-close / funded / declined / withdrawn).
+      // Routine working moves (in review, processing, underwriting) post in-app
+      // only — no inbox bombardment when a file advances a step.
+      inAppOnly: !MAJOR_STATUSES.has(toStatus) });
+  } catch (_) { /* notify best-effort */ }
+}
 // Conditions-to-close gating. Reaching "clear to close" requires every open
 // prior-to-docs (and standard) condition cleared/waived and every gate item
 // signed off; "funded" additionally requires prior-to-funding conditions.
@@ -5077,31 +5117,10 @@ router.patch('/applications/:id', async (req, res) => {
     await audit(req, 'status_change', 'application', req.params.id, { from: cur.rows[0].status, to: status, forced: forced || undefined });
     // Status is a rule-engine field (e.g. "when the file reaches underwriting").
     try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'status_change' }); } catch (_) {}
-    const label = STATUS_LABEL[status] || status;
-    try {
-      const fromLabel = STATUS_LABEL[cur.rows[0].status] || cur.rows[0].status;
-      const explain = BORROWER_STATUS_EXPLAIN[status];
-      const steps = borrowerJourney(status);
-      const positive = status === 'funded' || status === 'clear_to_close' || status === 'approved';
-      const badgeTone = positive ? 'positive' : (status === 'declined' || status === 'withdrawn' ? 'neutral' : 'teal');
-      await notify.notifyAppBorrowers(req.params.id, {
-        type: 'status_change', title: `Your loan status is now: ${label}`,
-        body: `Your loan file has moved from "${fromLabel}" to "${label}".`,
-        badge: { text: label, tone: badgeTone },
-        steps: steps || undefined,   // the visual loan-journey path (null on declined/withdrawn)
-        callout: explain ? { title: 'What this means', body: explain, tone: positive ? 'positive' : 'gold' } : undefined,
-        applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'View your file',
-        major: MAJOR_STATUSES.has(status) });   // #88: only decision statuses email the borrower
-      await notify.notifyAppStaff(req.params.id, {   // #113: whole team (primary + assistants), minus the actor
-          type: 'status_change', title: `File moved to ${label}`,
-          body: `This file moved from "${fromLabel}" to "${label}"${forced ? ' (advanced with an admin override)' : ''}.`,
-          applicationId: req.params.id, link: `/internal/app/${req.params.id}`, exceptStaffId: req.actor.id,
-          // Owner-directed 2026-07-20: the team gets an EMAIL only on DECISION
-          // milestones (approved / clear-to-close / funded / declined / withdrawn).
-          // Routine working moves (in review, processing, underwriting) post
-          // in-app only — no inbox bombardment when a file advances a step.
-          inAppOnly: !MAJOR_STATUSES.has(status) });
-    } catch (_) { /* notify best-effort */ }
+    // Announce the transition to the borrower + team (shared with the
+    // internal-status door so both notify identically). The bucket always
+    // changed here (guarded by the unchanged-status early return above).
+    await notifyStatusTransition(req.params.id, cur.rows[0].status, status, { forced, actorId: req.actor.id });
     res.json({ ok: true, status });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -5150,6 +5169,14 @@ router.post('/applications/:id/internal-status', async (req, res) => {
       { from: cur.rows[0].internal_status, to: internalStatus, external, forced: forced || undefined });
     // Status is a rule-engine field — re-run conditions on the new external bucket.
     try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'status_change' }); } catch (_) {}
+    // Parity with PATCH /:id: if this internal-status move changed the
+    // BORROWER-FACING bucket, announce it exactly like the other door — so
+    // funding/approving via the 38-status dropdown emails the borrower too. Guard
+    // on a real external change: many internal statuses map to the same external
+    // bucket, and re-announcing an unchanged bucket would be a wrong-time email.
+    if (external !== cur.rows[0].status) {
+      await notifyStatusTransition(req.params.id, cur.rows[0].status, external, { forced, actorId: req.actor.id });
+    }
     res.json({ ok: true, internal_status: internalStatus, status: external });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
