@@ -41,6 +41,29 @@ async function backfillStrandedBirthsOnce() {
   } catch (e) { console.warn('[sitewire] birth backfill skipped:', e.message); }
 }
 
+/**
+ * Backfill unsynced lifecycle changes (audit #82 SF-1): the coordinator can "finish the draw process" /
+ * "mark paid off" while Sitewire WRITES are off — PILOT records the state but the property deactivate is
+ * skipped (lifecycle_synced=false). Once writes are on we re-drive setPropertyLifecycle for every managed
+ * link still marked unsynced, so the "no further draws" guarantee actually holds (a borrower can't submit a
+ * draw against a paid-off loan in Sitewire). setPropertyLifecycle is idempotent + guarded; a park/error just
+ * leaves synced=false to retry next start. Gated on the write gate (nothing to sync without it).
+ */
+async function backfillUnsyncedLifecycleOnce() {
+  if (!(cfg.sitewireOutboundEnabled || cfg.sitewireDryrun)) return;
+  try {
+    const rows = (await db.query(
+      `SELECT application_id, lifecycle_state FROM sitewire_property_links
+        WHERE matched_by='created' AND sitewire_property_id IS NOT NULL AND lifecycle_synced = false
+        LIMIT 500`)).rows;
+    let n = 0;
+    for (const r of rows) {
+      try { const res = await orchestrator.setPropertyLifecycle(r.application_id, r.lifecycle_state, null); if (res && res.sitewire === 'synced') n++; } catch (_) { /* retry next start */ }
+    }
+    if (n) console.log(`[sitewire] re-synced ${n} lifecycle change(s) recorded while writes were off`);
+  } catch (e) { console.warn('[sitewire] lifecycle backfill skipped:', e.message); }
+}
+
 async function pushOutboxOnce() {
   const claim = await db.query(
     `UPDATE sync_queue SET status='processing', updated_at=now()
@@ -118,6 +141,7 @@ function start() {
   reconcile.syncCapitalPartners().catch((e) => console.warn('[sitewire] partner sync:', e.message));
   reconcile.syncStaffUsers().catch(() => {});
   setTimeout(() => backfillStrandedBirthsOnce(), 3000);
+  setTimeout(() => backfillUnsyncedLifecycleOnce(), 5000);   // catch lifecycle changes recorded while writes were off
   const drain = async (fn, name) => { try { let guard = 0; while (await fn() && guard++ < 500) {} } catch (e) { console.warn('[sitewire]', name, 'error:', e.message); } };
   // Start the push drain when OUTBOUND is on OR DRYRUN is on — so the staged step "ENABLED=1, OUTBOUND=0,
   // DRYRUN=1" actually previews the push bodies (log-not-send) without first turning on real writes.
@@ -133,4 +157,4 @@ function start() {
   setTimeout(reconcileOnce, 8000);
 }
 
-module.exports = { start, pushOutboxOnce, reconcileOnce };
+module.exports = { start, pushOutboxOnce, reconcileOnce, backfillUnsyncedLifecycleOnce };
