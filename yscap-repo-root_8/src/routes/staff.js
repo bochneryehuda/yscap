@@ -5188,13 +5188,24 @@ router.post('/applications/:id/loan-number', async (req, res) => {
     const existing = cur.rows[0].ys_loan_number;
     if (existing && String(existing).toUpperCase() === ln) return res.json({ ok: true, loanNumber: existing, unchanged: true });
     if (existing && !seesAll(req)) return res.status(403).json({ error: 'This file already has a loan number — only an admin can change it.' });
-    // Uniqueness (case-insensitive): no OTHER non-deleted file may carry this number.
-    // The db/048 partial-unique index is the final backstop; we check first for a
-    // friendly message and to catch a case-only collision the index would also reject.
-    const dup = await db.query(
-      `SELECT ys_loan_number FROM applications WHERE upper(ys_loan_number)=$1 AND id<>$2 AND deleted_at IS NULL LIMIT 1`,
-      [ln, req.params.id]);
-    if (dup.rows.length) return res.status(409).json({ error: `Loan number ${dup.rows[0].ys_loan_number} is already used on another file — loan numbers must be unique.` });
+    // Uniqueness across BOTH our own files AND every ClickUp file — including a
+    // data-only (e.g. DSCR) task we pull for data but never turn into a loan file
+    // (owner-directed 2026-07-20). The db/048 partial-unique index is the final
+    // backstop for our own files; this is the friendly, ClickUp-wide front door.
+    // ANY collision is ALSO parked to manual review so nothing "bumping" is silent.
+    const loanNumber = require('../lib/loan-number');
+    const collision = await loanNumber.findLoanNumberCollision(ln, { excludeAppId: req.params.id });
+    if (collision) {
+      try {
+        await require('../lib/sync-review').queueReview({
+          applicationId: req.params.id, direction: 'outbound', fieldKey: 'ys_loan_number',
+          reason: 'loan_number_duplicate_entered', proposedValue: ln, portalValue: ln,
+          clickupValue: collision.where === 'clickup_file' ? ln : null,
+          suppressIfRejected: true,
+        });
+      } catch (_) { /* review is best-effort; the reject below is the hard stop */ }
+      return res.status(409).json({ error: loanNumber.collisionMessage(collision, ln), duplicate: true });
+    }
     let upd;
     try {
       upd = await db.query(`UPDATE applications SET ys_loan_number=$1, updated_at=now() WHERE id=$2 AND deleted_at IS NULL RETURNING ys_loan_number`, [ln, req.params.id]);

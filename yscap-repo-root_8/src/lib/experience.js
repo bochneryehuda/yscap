@@ -96,6 +96,13 @@ async function syncExperienceChecklistForApplication(appId, client = db) {
   // (#80): both borrowers' completed deals count toward the requirement.
   const ids = fileBorrowerIds(app);
   const counts = await countBorrowersExperience(ids, client);
+  // VERIFIED experience (owner-directed 2026-07-20) — the file's experience
+  // CONDITION is tied to VERIFIED deals, not merely ENTERED ones. `counts` above
+  // stays the ENTERED (on-record) figure for display; `verifiedCounts` is what
+  // drives "met" / the condition becoming ready to sign off. "If it's not
+  // verified experience, then you should not be able to sign off that experience
+  // condition even if you entered everything."
+  const verifiedCounts = await countBorrowersExperience(ids, client, { verifiedOnly: true });
   // Per-borrower breakdown (#103) — on a co-borrower file the experience
   // condition shows BOTH borrowers, each named, with their OWN 3-year-window
   // counts and a link to their OWN track record. The requirement is still the
@@ -113,6 +120,7 @@ async function syncExperienceChecklistForApplication(appId, client = db) {
         name: nameById[bid] || 'Borrower',
         isPrimary: bid === app.borrower_id,
         counts: await countBorrowersExperience([bid], client),
+        verifiedCounts: await countBorrowersExperience([bid], client, { verifiedOnly: true }),
       });
     }
   }
@@ -140,7 +148,7 @@ async function syncExperienceChecklistForApplication(appId, client = db) {
       // floor: only when the registration priced on MORE than the file now claims
       // AND more than is verified has the experience of record actually dropped.
       const claim = required;   // requestedFromApp(app) — the claimed-of-record floor
-      const verified = await countBorrowersExperience(ids, client, { verifiedOnly: true });
+      const verified = verifiedCounts;   // computed once above (verifiedOnly)
       const dropped =
            (pricedWith.flips  > int(claim.flips)  && pricedWith.flips  > int(verified.flips))
         || (pricedWith.holds  > int(claim.holds)  && pricedWith.holds  > int(verified.holds))
@@ -180,10 +188,16 @@ async function syncExperienceChecklistForApplication(appId, client = db) {
   // until experience is added (either on the application or written back from
   // Products & Pricing), at which point it reopens for real verification.
   const notApplicable = !requiredAny;
-  const met = requiredAny && requirementMet(counts, required);
+  // MET is judged on VERIFIED experience (owner-directed 2026-07-20) — the
+  // condition only reads "met"/ready-to-sign-off once the required deals are
+  // VERIFIED, never on entered-but-unverified deals. `enteredMet` is kept for the
+  // desk so the UI can say "entered enough, X still to verify".
+  const enteredMet = requiredAny && requirementMet(counts, required);
+  const met = requiredAny && requirementMet(verifiedCounts, required);
   const satisfied = notApplicable || met;
   const payload = {
-    autoExperienceTask: true, notApplicable, required, counts, satisfied,
+    autoExperienceTask: true, notApplicable, required, counts, verifiedCounts, satisfied,
+    enteredMet, verifiedMet: met,
     perBorrower,
     checkedAt: new Date().toISOString(),
   };
