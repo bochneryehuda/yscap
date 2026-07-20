@@ -8,6 +8,17 @@ import { api } from '../lib/api.js';
 
 const usd = (c) => '$' + (Math.round(Number(c) || 0) / 100).toLocaleString('en-US');
 const usd2 = (c) => '$' + (Number(c || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+// Read chosen files into the upload contract {filename, contentType, dataBase64} + keep a local
+// `preview` data-URL so the borrower sees a thumbnail immediately (no server round-trip).
+function filesToBase64(fileList) {
+  return Promise.all(Array.from(fileList || []).slice(0, 8).map((f) => new Promise((res) => {
+    const r = new FileReader();
+    r.onload = () => { const s = String(r.result || ''); res({ filename: f.name, contentType: f.type || 'image/jpeg', dataBase64: s.split(',')[1] || '', preview: s }); };
+    r.onerror = () => res(null);
+    r.readAsDataURL(f);
+  })));
+}
 // Borrower-friendly draw status (no capital-partner detail).
 const DRAW_STATUS = {
   drafting: { label: 'Being prepared', cls: 'sw-draft' }, pending_borrower: { label: 'Waiting on you', cls: 'sw-pending' },
@@ -101,6 +112,9 @@ export default function BorrowerDraws({ appId }) {
           </table>
         </div>
       )}
+
+      {/* whole-project inspection report (PDF) — all draws in one branded, borrower-safe document */}
+      {findings.length > 0 && <ProjectReportButton appId={appId} />}
 
       {/* Eligibility preview + guided hand-off to Sitewire (where draws are submitted) */}
       {eligibility && <EligibilityCard e={eligibility} />}
@@ -199,6 +213,44 @@ function EligibilityCard({ e }) {
   );
 }
 
+/* Per-line inspection photos/videos. Prefers PILOT's DURABLE copies (finding.lines[].photos —
+   token-scoped URLs that never expire), and only falls back to Sitewire's raw (expiring) src when a
+   line hasn't been archived yet. Videos render as a small play chip. */
+function MediaStrip({ line }) {
+  const durable = Array.isArray(line.photos) ? line.photos : [];
+  const raw = Array.isArray(line.media) ? line.media : [];
+  const items = durable.length
+    ? durable.slice(0, 6)
+    : raw.filter((m) => m && (m.type === 'image' || m.type === 'video')).slice(0, 6).map((m) => ({ url: m.thumbnail || m.src, full: m.src, kind: m.type }));
+  if (!items.length) return <span className="muted small">{(Number(line.photo_count) || 0) + (Number(line.video_count) || 0) || '—'}</span>;
+  return (
+    <div className="row" style={{ gap: 4, flexWrap: 'wrap' }}>
+      {items.map((m, i) => (
+        m.kind === 'video'
+          ? <a key={i} href={m.url || m.full} target="_blank" rel="noreferrer" title="Play video" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 11, fontWeight: 700, color: 'var(--teal)', border: '1px solid var(--line)', borderRadius: 6, padding: '3px 7px' }}>▶</a>
+          : <a key={i} href={m.full || m.url} target="_blank" rel="noreferrer"><img src={m.url} alt="" loading="lazy" style={{ width: 34, height: 34, objectFit: 'cover', borderRadius: 6, verticalAlign: 'middle', border: '1px solid var(--line)' }} /></a>
+      ))}
+    </div>
+  );
+}
+
+/* One button that opens the whole-project inspection report (every draw in one branded PDF). */
+function ProjectReportButton({ appId }) {
+  const [err, setErr] = useState('');
+  return (
+    <div className="dd-card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+      <div>
+        <div style={{ fontWeight: 700, color: 'var(--text)' }}>Full inspection report</div>
+        <div className="dd-sub" style={{ marginTop: 1 }}>Every draw, what was approved, the inspector’s notes and photos — one PDF.</div>
+        {err && <div className="small" style={{ color: 'var(--danger)', marginTop: 4, fontWeight: 600 }}>{err}</div>}
+      </div>
+      <button className="btn btn-sm ghost" onClick={() => { setErr(''); const w = window.open('', '_blank'); api.borrowerDrawReport(appId, null, w).catch((e) => setErr(e?.data?.error || e.message || 'Could not open your report — please try again.')); }}>
+        Download full report (PDF)
+      </button>
+    </div>
+  );
+}
+
 function FindingCard({ finding, appId, onChanged }) {
   const [mode, setMode] = useState(null); // null | 'dispute'
   const [busy, setBusy] = useState(false);
@@ -212,9 +264,9 @@ function FindingCard({ finding, appId, onChanged }) {
     catch (e) { setErr(e?.data?.error || e.message || 'Could not accept.'); } finally { setBusy(false); }
   }
   async function submitDispute() {
-    const lines = Object.entries(disp).filter(([, v]) => v && (v.desired !== '' || v.note))
-      .map(([line_id, v]) => ({ line_id, desired_cents: v.desired === '' || v.desired == null ? null : Math.round(Number(v.desired) * 100), note: v.note || '' }));
-    if (!lines.length) { setErr('Add a note or amount to at least one line you\'re disputing.'); return; }
+    const lines = Object.entries(disp).filter(([, v]) => v && (v.desired !== '' || v.note || (v.media && v.media.length)))
+      .map(([line_id, v]) => ({ line_id, desired_cents: v.desired === '' || v.desired == null ? null : Math.round(Number(v.desired) * 100), note: v.note || '', media: (v.media || []).map((m) => ({ filename: m.filename, contentType: m.contentType, dataBase64: m.dataBase64 })) }));
+    if (!lines.length) { setErr('Add a note, amount, or a photo to at least one line you\'re disputing.'); return; }
     setBusy(true); setErr('');
     try { await api.post(`/api/borrower/findings/${finding.id}/dispute`, { lines }); setMode(null); onChanged(); }
     catch (e) { setErr(e?.data?.error || e.message || 'Could not submit.'); } finally { setBusy(false); }
@@ -249,20 +301,31 @@ function FindingCard({ finding, appId, onChanged }) {
                 <td className="num">{usd2(l.requested_cents)}</td>
                 <td className="num">{usd2(l.approved_cents)}{l.not_approved_cents > 0 ? <span className="muted small"> (−{usd2(l.not_approved_cents)})</span> : null}</td>
                 <td className="muted small">{l.inspector_comments || '—'}</td>
-                <td>
-                  {Array.isArray(l.media) && l.media.filter((m) => m.type === 'image').slice(0, 4).map((m, i) => (
-                    <a key={i} href={m.src} target="_blank" rel="noreferrer" style={{ marginRight: 4 }}>
-                      <img src={m.thumbnail || m.src} alt="" style={{ width: 34, height: 34, objectFit: 'cover', borderRadius: 6, verticalAlign: 'middle' }} />
-                    </a>
-                  ))}
-                  {(!l.media || l.media.length === 0) && <span className="muted small">{l.photo_count || 0}</span>}
-                </td>
+                <td><MediaStrip line={l} /></td>
                 {mode === 'dispute' && (
                   <td>
-                    <input className="input" style={{ width: 90 }} placeholder="$ you expect" value={(disp[l.id] || {}).desired ?? ''}
+                    <input className="input" style={{ width: 100 }} inputMode="decimal" placeholder="$ you expect" value={(disp[l.id] || {}).desired ?? ''}
                       onChange={(e) => setDisp((s) => ({ ...s, [l.id]: { ...(s[l.id] || {}), desired: e.target.value } }))} />
-                    <input className="input" style={{ width: 150, marginTop: 4 }} placeholder="why (optional)" value={(disp[l.id] || {}).note ?? ''}
+                    <input className="input" style={{ width: 160, marginTop: 4 }} placeholder="why (optional)" value={(disp[l.id] || {}).note ?? ''}
                       onChange={(e) => setDisp((s) => ({ ...s, [l.id]: { ...(s[l.id] || {}), note: e.target.value } }))} />
+                    <div className="row" style={{ gap: 6, marginTop: 5, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <label className="btn btn-xs ghost" style={{ cursor: 'pointer', margin: 0 }}>
+                        📎 Add photos
+                        <input type="file" accept="image/*" multiple style={{ display: 'none' }}
+                          onChange={async (e) => { const arr = (await filesToBase64(e.target.files)).filter(Boolean); e.target.value = ''; setDisp((s) => ({ ...s, [l.id]: { ...(s[l.id] || {}), media: [...(((s[l.id] || {}).media) || []), ...arr].slice(0, 8) } })); }} />
+                      </label>
+                      {((disp[l.id] || {}).media || []).length > 0 && (
+                        <span className="row" style={{ gap: 4, flexWrap: 'wrap' }}>
+                          {((disp[l.id] || {}).media || []).map((m, i) => (
+                            <span key={i} style={{ position: 'relative', display: 'inline-block' }}>
+                              <img src={m.preview} alt="" style={{ width: 30, height: 30, objectFit: 'cover', borderRadius: 5, border: '1px solid var(--line)', verticalAlign: 'middle' }} />
+                              <button type="button" title="Remove" onClick={() => setDisp((s) => ({ ...s, [l.id]: { ...(s[l.id] || {}), media: ((s[l.id] || {}).media || []).filter((_, j) => j !== i) } }))}
+                                style={{ position: 'absolute', top: -6, right: -6, width: 16, height: 16, borderRadius: 999, border: 'none', background: 'var(--danger)', color: '#fff', fontSize: 10, lineHeight: '16px', cursor: 'pointer', padding: 0 }}>×</button>
+                            </span>
+                          ))}
+                        </span>
+                      )}
+                    </div>
                   </td>
                 )}
               </tr>

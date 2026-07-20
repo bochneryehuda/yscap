@@ -31,6 +31,7 @@ const { buildXlsx } = require('../lib/xlsx');
 const mediaArchive = require('../sitewire/media-archive');
 const drawReport = require('../sitewire/draw-report');
 const storage = require('../lib/storage');
+const { setMediaHeaders } = require('../lib/media-headers');
 const { serveDocument } = require('../lib/serve-document');
 const { computeRelease, waiverGate } = require('../sitewire/money');
 
@@ -155,6 +156,22 @@ router.get('/files/:id/draws/:drawId/archived-media', requirePermission('manage_
     const rows = await mediaArchive.archivedMediaFor(req.params.id, req.params.drawId);
     res.json({ count: rows.length, media: rows });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// ---- GET /files/:id/draws/:drawId/media/:mediaId — stream a DURABLE inspection photo/video (staff) ----
+// PILOT's own stored copy, so the staff gallery never breaks when Sitewire's pre-signed link expires.
+// manage_draws + canSeeFile + the media must belong to this file's draw (IDOR).
+router.get('/files/:id/draws/:drawId/media/:mediaId', requirePermission('manage_draws'), async (req, res) => {
+  if (!/^\d+$/.test(req.params.drawId) || !/^\d{1,18}$/.test(String(req.params.mediaId))) return res.status(404).end();
+  if (!(await canSeeFile(req, req.params.id))) return res.status(404).end();
+  const m = (await db.query(
+    `SELECT storage_ref, content_type, kind FROM draw_media WHERE id=$1 AND application_id=$2 AND sitewire_draw_id=$3 AND kind IN ('image','video')`,
+    [req.params.mediaId, req.params.id, req.params.drawId])).rows[0];
+  if (!m || !m.storage_ref) return res.status(404).end();
+  let buf; try { buf = await storage.read(m.storage_ref); } catch (_) { return res.status(404).end(); }
+  if (!buf || !buf.length) return res.status(404).end();
+  setMediaHeaders(res, m.content_type);   // safe-type allowlist + sandbox CSP (never serve a dangerous type inline)
+  return res.end(buf);
 });
 
 // ---- PILOT-branded inspection reports (phase 2b) ----
@@ -1455,12 +1472,40 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
     // notifyAppBorrowers (not notifyBorrower) so a co-borrower who can see the file
     // ALSO gets the "results ready" email — the primary-only send made the
     // co-borrower first hear of it via the later reminder (owner-reported audit).
-    if (f.borrower_id) await notify.notifyAppBorrowers(appId, {
-      type: 'draw_findings', title: 'Your draw inspection results are ready',
-      badge: { text: 'Action needed', tone: 'action' },
-      body: 'Your draw inspection results are in and ready for your review.',
-      callout: { title: 'Your next step', body: 'Review each line item and either accept the results or dispute a line with a quick note — this releases your draw, so please review promptly.', tone: 'action' },
-      applicationId: appId, link: acceptLink, ctaLabel: 'Review draw results' }).catch(() => {});
+    if (f.borrower_id) {
+      // Build the FULL findings email: the one-key-fact hero (approved of requested), a per-line
+      // grid (what the inspector approved on each line), the photo/video count, and TWO actions —
+      // Accept (releases the draw) + Push back (opens the review page in dispute mode). All
+      // borrower-safe: line names scrubbed here (defense-in-depth) and again in notifyBorrower.
+      const scrub = require('../lib/borrower-safe').scrubText;
+      const usd = (c) => '$' + (Math.round(Number(c) || 0) / 100).toLocaleString('en-US');
+      const flines = (await db.query(
+        `SELECT name, requested_cents, approved_cents, not_approved_cents, photo_count, video_count FROM draw_finding_lines WHERE finding_id=$1 ORDER BY id`, [result.id])).rows;
+      const totReq = flines.reduce((s, l) => s + (Number(l.requested_cents) || 0), 0);
+      const totAppr = flines.reduce((s, l) => s + (Number(l.approved_cents) || 0), 0);
+      const photos = flines.reduce((s, l) => s + (Number(l.photo_count) || 0), 0);
+      const videos = flines.reduce((s, l) => s + (Number(l.video_count) || 0), 0);
+      const CAP = 14; // keep the email readable — a huge draw links out to the full page for the rest
+      const meta = [{ label: 'Property', value: addr }];
+      for (const l of flines.slice(0, CAP)) {
+        meta.push({ label: scrub(l.name) || 'Line item',
+          value: Number(l.not_approved_cents) > 0 ? `${usd(l.approved_cents)} approved of ${usd(l.requested_cents)}` : `${usd(l.approved_cents)} approved` });
+      }
+      if (flines.length > CAP) meta.push({ label: `+ ${flines.length - CAP} more line item(s)`, value: 'open the results to see them all' });
+      const pv = [];
+      if (photos) pv.push(`${photos} photo${photos === 1 ? '' : 's'}`);
+      if (videos) pv.push(`${videos} video${videos === 1 ? '' : 's'}`);
+      const disputeLink = result.reply_token ? `/draw-accept/${result.reply_token}?tab=dispute` : `/app/${appId}`;
+      await notify.notifyAppBorrowers(appId, {
+        type: 'draw_findings', title: 'Your draw inspection results are ready',
+        badge: { text: 'Action needed', tone: 'action' },
+        hero: { label: 'Approved for release', value: usd(totAppr), sub: `of ${usd(totReq)} requested`, tone: 'positive' },
+        body: `Your inspection is complete${pv.length ? ` — ${pv.join(' and ')} on file` : ''}. Here is what the inspector approved on each line. When you’re ready, accept to release your draw — or push back on any line you disagree with.`,
+        meta,
+        callout: { title: 'What happens when you accept', body: 'Accepting releases your draw — your funds are typically wired within a day or two. Want to look first? Open the results to see every photo and download your inspection report (PDF).', tone: 'action' },
+        applicationId: appId, link: acceptLink, ctaLabel: 'Review & accept',
+        cta2Label: 'Push back on a line', cta2Link: disputeLink }).catch(() => {});
+    }
     await notify.notifyAppStaff(appId, { type: 'draw_findings', title: 'Draw findings delivered to borrower',
       body: `Inspection findings for ${addr} were delivered to the borrower to accept or dispute.`, applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
     // Auto-deliver artifacts: durably archive the inspector's (expiring) media NOW and pre-build the PILOT +
@@ -1485,8 +1530,39 @@ router.get('/findings/:findingId', requirePermission('manage_draws'), async (req
   if (!/^\d+$/.test(req.params.findingId)) return res.status(404).json({ error: 'not found' });
   const f = (await db.query(`SELECT * FROM draw_findings WHERE id=$1`, [req.params.findingId])).rows[0];
   if (!f || !(await canSeeFile(req, f.application_id))) return res.status(403).json({ error: 'forbidden' });
-  const lines = (await db.query(`SELECT * FROM draw_finding_lines WHERE finding_id=$1 ORDER BY id`, [f.id])).rows;
-  res.json({ finding: f, lines });
+  const lines = (await db.query(`SELECT * FROM draw_finding_lines WHERE finding_id=$1 ORDER BY id`, [f.id])).rows
+    // Never leak internal storage refs to the client: replace the raw dispute_media (which holds
+    // storage_ref) with a safe descriptor the UI turns into a serving URL. Borrower dispute evidence
+    // is fetched byte-by-byte through the guarded /dispute-media/:idx route below.
+    .map((l) => {
+      const ev = Array.isArray(l.dispute_media) ? l.dispute_media : [];
+      const dispute_evidence = ev.map((m, idx) => ({ idx, filename: (m && m.filename) || `evidence ${idx + 1}`, kind: (m && m.kind) || 'file', content_type: (m && m.content_type) || null }));
+      const { dispute_media, ...rest } = l;
+      return { ...rest, dispute_evidence };
+    });
+  // Never hand the borrower's no-login reply_token to a staff client — it is the borrower's own
+  // accept/dispute capability, and a staffer must act as staff, not impersonate the borrower (audit L1).
+  const { reply_token, ...findingSafe } = f;
+  res.json({ finding: findingSafe, lines });
+});
+
+// ---- GET /findings/lines/:lineId/dispute-media/:idx — serve one borrower dispute-evidence file (staff) ----
+// The borrower attached these when they pushed back on a line. Streamed from PILOT's durable storage
+// after the manage_draws + file-visibility + line-belongs-to-file checks. GPS was stripped on upload.
+router.get('/findings/lines/:lineId/dispute-media/:idx', requirePermission('manage_draws'), async (req, res) => {
+  if (!/^\d{1,18}$/.test(String(req.params.lineId)) || !/^\d{1,4}$/.test(String(req.params.idx))) return res.status(404).end();
+  const row = (await db.query(
+    `SELECT dfl.dispute_media, df.application_id
+       FROM draw_finding_lines dfl JOIN draw_findings df ON df.id=dfl.finding_id
+      WHERE dfl.id=$1`, [req.params.lineId])).rows[0];
+  if (!row || !(await canSeeFile(req, row.application_id))) return res.status(404).end();
+  const ev = Array.isArray(row.dispute_media) ? row.dispute_media : [];
+  const m = ev[Number(req.params.idx)];
+  if (!m || !m.storage_ref) return res.status(404).end();
+  let buf; try { buf = await storage.read(m.storage_ref); } catch (_) { return res.status(404).end(); }
+  if (!buf || !buf.length) return res.status(404).end();
+  setMediaHeaders(res, m.content_type);   // borrower-uploaded evidence: type is server-derived, but clamp on serve too
+  return res.end(buf);
 });
 
 // ---- POST /findings/:findingId/lines/:lineId/decide — admin decides a disputed line ----
