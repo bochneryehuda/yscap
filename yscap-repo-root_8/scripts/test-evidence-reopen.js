@@ -23,6 +23,8 @@ const db = require('../src/db');
 const C = require('../src/lib/crypto');
 const app = require('../src/server');
 const desk = require('../src/lib/appraisal/desk');
+const ingest = require('../src/clickup/ingest');
+const F = require('../src/clickup/fields');
 
 let failures = 0;
 const assert = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failures++; };
@@ -108,6 +110,25 @@ const st = async (id) => (await db.query(`SELECT status, signed_off_at FROM chec
     assert(undo.ok === true, 'undoAppraisalImport ran');
     s = await st(item4);
     assert(s.status === 'outstanding' && s.signed_off_at == null, 'appraisal UNDO re-opens the appraisal-documents condition (M1)');
+
+    // --- (audit follow-up) a NEW photo ID re-opens a signed-off gov-ID condition ---
+    // item2 is currently signed off (from the M2 block). Re-uploading a different ID
+    // must return it for re-review (the old sign-off attested to the old ID).
+    await db.query(`INSERT INTO borrower_auth (borrower_id,password_hash,token_version) VALUES ($1,'x',0) ON CONFLICT DO NOTHING`, [borrowerId]);
+    const boTok = C.signJwt({ sub: borrowerId, kind: 'borrower', role: 'borrower', tv: 0 });
+    const newId = Buffer.from(`%PDF-1.4\nnew id ${sfx}\n`).toString('base64');
+    const idUp = await call(server, 'POST', `/api/borrower/profile/photo-id`, boTok, { filename: `id-${sfx}.pdf`, dataBase64: newId, applicationId: appId });
+    assert(idUp.status >= 200 && idUp.status < 300, 'a new photo ID uploads');
+    s = await st(item2);
+    assert(s.status === 'received' && s.signed_off_at == null, 'a NEW photo ID re-opens a signed-off gov-ID condition (audit #3)');
+
+    // --- (audit follow-up) an inbound ClickUp "issue" drops a sign-off ---
+    const INS = F.CHECKLIST.insurance;
+    const item5 = await mkItem(appId, 'rtl_cond_insurance', 'satisfied');
+    await db.query(`UPDATE checklist_items SET signed_off_at=now(), signed_off_by=$2, clickup_field_id=$3 WHERE id=$1`, [item5, adminId, INS.fieldId]);
+    await ingest.applyChecklistStatuses(appId, { id: 'tsk_' + sfx, custom_fields: [{ id: INS.fieldId, type: 'drop_down', value: INS.options.issue }] });
+    s = await st(item5);
+    assert(s.status === 'issue' && s.signed_off_at == null, 'an inbound ClickUp "issue" re-opens a signed-off condition (audit #2)');
 
     console.log(failures ? `\n${failures} assertion(s) failed` : '\nALL evidence-reopen assertions passed');
   } catch (e) {

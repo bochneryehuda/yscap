@@ -282,11 +282,16 @@ router.post('/profile/photo-id', async (req, res) => {
        VALUES ($1,$7,$8,$2,$3,$4,$5,$6,'borrower',$1,'photo_id') RETURNING id`,
       [me(req), b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, appId, appItemId]);
     await db.query(`UPDATE borrowers SET photo_id_document_id=$2, updated_at=now() WHERE id=$1`, [me(req), d.rows[0].id]);
-    // Satisfy any outstanding government-ID checklist item on the borrower's files.
+    // Move any government-ID checklist item on the borrower's files to 'received'.
+    // A NEW (unreviewed) ID is fresh evidence, so even an already SIGNED-OFF gov-ID
+    // condition drops its sign-off and returns for re-review — the prior sign-off
+    // attested to the OLD ID (same "new evidence re-opens the condition" rule as a
+    // document new-version upload). A true duplicate short-circuits above (dedup),
+    // so this only runs for a genuinely different ID.
     await db.query(
-      `UPDATE checklist_items SET status='received', updated_at=now()
+      `UPDATE checklist_items SET status='received',
+              signed_off_at=NULL, signed_off_by=NULL, reviewed_at=NULL, reviewed_by=NULL, updated_at=now()
         WHERE template_id=(SELECT id FROM checklist_templates WHERE code='rtl_p1_id')
-          AND status NOT IN ('satisfied')
           AND application_id IN (SELECT id FROM applications WHERE ${OWN_FILE_SQL("", "$1")})`,
       [me(req)]);
     await audit(req, 'upload_photo_id', 'borrower', me(req));
