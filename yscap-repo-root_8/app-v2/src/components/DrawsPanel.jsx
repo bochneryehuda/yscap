@@ -163,7 +163,21 @@ export default function DrawsPanel({ appId }) {
           <RollupTable rollup={rollup} />
 
           {/* ---- draws ---- */}
-          <h3 style={{ marginTop: 22, marginBottom: 6 }}>Draws</h3>
+          <div className="row between" style={{ marginTop: 22, marginBottom: 6, alignItems: 'baseline', flexWrap: 'wrap', gap: 8 }}>
+            <h3 style={{ margin: 0 }}>Draws</h3>
+            {draws.length > 0 && (
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                <button className="btn btn-sm ghost" title="A PILOT-branded PDF of the whole construction project — schedule of values + every draw's inspection photos + notes."
+                  onClick={() => act('projreport', async () => { await api.sitewireProjectReport(appId, 'staff'); return { msg: 'Opened the whole-project report in a new tab.' }; })}>
+                  Whole-project report
+                </button>
+                <button className="btn btn-sm ghost" title="The same whole-project report, borrower-safe (no capital-partner name, no fee/net, no photo GPS)."
+                  onClick={() => act('projreportb', async () => { await api.sitewireProjectReport(appId, 'borrower'); return { msg: 'Opened the borrower-safe whole-project report.' }; })}>
+                  Borrower copy
+                </button>
+              </div>
+            )}
+          </div>
           {draws.length === 0 && <div className="muted">No draws yet on this file.</div>}
           {draws.map((d) => (
             <DrawCard key={d.sitewire_draw_id} appId={appId} draw={d} requests={reqsByDraw[d.sitewire_draw_id] || []}
@@ -563,6 +577,10 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
           {showPhotos ? 'Hide inspection photos' : 'Inspection photos'}
         </button>
         <button className="btn btn-sm ghost" onClick={() => api.sitewireExportPacket(appId, draw.sitewire_draw_id).catch(() => {})}>Draw packet</button>
+        <button className="btn btn-sm ghost" title="A PILOT-branded PDF for this draw — schedule of values, approved vs not-approved, inspector notes and the inspection photos." disabled={busy === 'rep' + draw.sitewire_draw_id}
+          onClick={() => act('rep' + draw.sitewire_draw_id, async () => { await api.sitewireDrawReport(appId, draw.sitewire_draw_id, 'staff'); return { msg: 'Opened the PILOT report in a new tab.' }; })}>PILOT report (PDF)</button>
+        <button className="btn btn-sm ghost" title="The same report, borrower-safe (no capital-partner name, no fee/net, no photo GPS)." disabled={busy === 'repb' + draw.sitewire_draw_id}
+          onClick={() => act('repb' + draw.sitewire_draw_id, async () => { await api.sitewireDrawReport(appId, draw.sitewire_draw_id, 'borrower'); return { msg: 'Opened the borrower-safe report.' }; })}>Borrower copy</button>
         {draw.pdf_src && <a className="btn btn-sm ghost" href={draw.pdf_src} target="_blank" rel="noreferrer">Sitewire PDF</a>}
       </div>
 

@@ -87,6 +87,14 @@ export function saveBlob(blob, filename) {
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1500);
 }
+// Open a fetched blob in a new browser tab (for a PDF the user wants to VIEW, not download). Falls back to
+// a download if the popup is blocked, so the report is never lost.
+export function openBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const w = window.open(url, '_blank');
+  if (!w) { const a = document.createElement('a'); a.href = url; a.download = filename || 'document'; document.body.appendChild(a); a.click(); a.remove(); }
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
 
 // Normalize any upload payload: the backend stores raw base64 (dataBase64), so
 // if a caller passes a full `data:` URL we strip the prefix here. This keeps a
@@ -363,6 +371,10 @@ export const api = {
   sitewireExportGl: async (appId) => { const { blob, filename } = await download(`/api/sitewire/files/${appId}/gl-export`); saveBlob(blob, filename); },
   // Sitewire draw desk: authenticated per-draw packet (schedule of values + findings + waivers).
   sitewireExportPacket: async (appId, drawId) => { const { blob, filename } = await download(`/api/sitewire/files/${appId}/draws/${drawId}/packet`); saveBlob(blob, filename); },
+  // PILOT-branded inspection report (phase 2b) — opens the PDF in a new tab. mode 'staff' (full) | 'borrower'
+  // (borrower-safe: no partner name / fee / net / GPS). Per-draw and whole-project variants.
+  sitewireDrawReport: async (appId, drawId, mode) => { const { blob, filename } = await download(`/api/sitewire/files/${appId}/draws/${drawId}/report${mode === 'borrower' ? '?mode=borrower' : ''}`); openBlob(blob, filename); },
+  sitewireProjectReport: async (appId, mode) => { const { blob, filename } = await download(`/api/sitewire/files/${appId}/report${mode === 'borrower' ? '?mode=borrower' : ''}`); openBlob(blob, filename); },
   staffTprPreview:  (appId) => req('GET', `/api/staff/applications/${appId}/export/tpr/preview`),
   staffTprExport:   (appId) => download(`/api/staff/applications/${appId}/export/tpr`),
   // MISMO 3.4 — the mortgage industry's shared file format. Export downloads the
