@@ -778,7 +778,12 @@ async function applyChecklistStatuses(appId, task, options = {}) {
       if (!optId && checklist.normalizeInbound(fieldId, String(cf.value))) optId = String(cf.value);
       if (!optId) continue;
 
-      const inbound = checklist.normalizeInbound(fieldId, optId);
+      // Cap inbound so the sync can never COMPLETE a required condition:
+      // evidence from ClickUp lands at 'received' at most; the terminal
+      // 'satisfied' sign-off only happens through the portal's signOffGate,
+      // where fulfillment is verified (owner-directed root-cause fix — the
+      // inbound sync is a second door to 'satisfied' that bypasses the gate).
+      const inbound = checklist.capInbound(checklist.normalizeInbound(fieldId, optId));
       if (!inbound) continue;
 
       // Only mapped items are ever touched (clickup_field_id seeded by db/050).
