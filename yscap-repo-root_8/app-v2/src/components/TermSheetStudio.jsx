@@ -125,6 +125,14 @@ function readSnapshot(win) {
   // strips defensively — belt and suspenders). Non-money fields (names/addresses)
   // keep val() untouched, since a comma can be meaningful there ("Smith, LLC").
   const moneyVal = (id) => val(id).replace(/,/g, '');
+  // Interest reserve months<->amount is ONE value shown two ways (owner-directed
+  // 2026-07-20). The field the user did NOT drive is a DERIVED mirror (data-derived="1")
+  // the tool fills for display only. The register/quote must send ONLY the source field,
+  // exactly as the studio priced it — sending the mirror instead would resize the loan
+  // off the rounded equivalent and diverge from the shown quote by a dollar or two. So a
+  // derived field is harvested as blank.
+  const derived = (id) => { const e = doc.getElementById(id); return !!(e && e.dataset && e.dataset.derived === '1'); };
+  const srcVal = (id) => derived(id) ? '' : val(id);
   const chk = (id) => { const e = doc.getElementById(id); return !!(e && e.checked); };
   const active = (id) => { const e = doc.getElementById(id); return !!(e && e.classList.contains('pcard-active')); };
   const program = active('pcardGold') ? 'gold' : active('pcardStd') ? 'standard' : null;
@@ -145,7 +153,7 @@ function readSnapshot(win) {
       asIs: moneyVal('asIs'), arv: moneyVal('arv'), construction: moneyVal('construction'),
       rehabScope: val('rehabScope'), sqft: chk('sqft'),
       fico: val('fico'), expFlips: val('expFlips'), expBrrrr: val('expBrrrr'), expGround: val('expGround'),
-      tsTerm: val('tsTerm'), irMonths: val('irMonths'), irAmount: moneyVal('irAmount'),
+      tsTerm: val('tsTerm'), irMonths: srcVal('irMonths'), irAmount: derived('irAmount') ? '' : moneyVal('irAmount'),
       tsEffPrice: moneyVal('tsEffPrice'),
       // admin pricing knobs (staff mode) — same names the staff pricing API takes
       tsYspStd: val('tsYspStd'), tsYspGold: val('tsYspGold'),
