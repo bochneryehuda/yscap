@@ -1,4 +1,4 @@
--- 182_email_messages.sql — the file EMAIL CENTER store (owner-directed 2026-07-20).
+-- 183_email_messages.sql — the file EMAIL CENTER store (owner-directed 2026-07-20).
 --
 -- Until now the exact email that went out was rendered on the fly at send time
 -- (src/lib/notify.js `_emailRow` and src/lib/email/catalog.js `deliver`) and

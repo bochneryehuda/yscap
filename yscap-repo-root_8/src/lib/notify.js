@@ -166,6 +166,11 @@ async function notifyStaff(staffId, opts) {
     const p = await db.query(`SELECT notifications_enabled FROM staff_users WHERE id=$1`, [staffId]);
     if (p.rows[0] && p.rows[0].notifications_enabled === false) emailOn = false;
   } catch (_) { /* column exists after migration 085; default on */ }
+  // opts.inAppOnly (owner-directed 2026-07-20): keep the in-app row but SKIP the
+  // email — for routine, low-signal staff events (e.g. a file moving to a working
+  // status like Processing) so the team's inbox isn't bombarded. Mirrors the #88
+  // borrower policy where only MAJOR moments email.
+  if (opts.inAppOnly) emailOn = false;
   // Auto-attach the file's identity (subject tag + detail block + default
   // link/CTA) so every staff file email says WHICH file, without every call
   // site building it. No-op when there's no applicationId. (#88/#150 unchanged.)
