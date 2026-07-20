@@ -1,4 +1,5 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
 
 /* Portfolio insights for the staff draws dashboard. Two honest, data-driven reads built
    entirely from the /portfolio response (no fabricated numbers):
@@ -66,11 +67,18 @@ export default function PortfolioInsights({ portfolio }) {
           const remaining = Number(f.remaining_cents);
           const rem = Number.isFinite(remaining) ? remaining : Math.max(0, budget - drawn);
           const pct = clampPct(f.pct_complete != null ? f.pct_complete : (budget > 0 ? (drawn / budget) * 100 : 0));
-          const label = f.ys_loan_number || f.address || 'File';
+          // Lead with the PROPERTY ADDRESS (the human-recognizable name), loan # as
+          // secondary context, and make it a link straight into the file's draw screen —
+          // the desk should never show a bare loan number you can't act on.
+          const label = f.address || f.ys_loan_number || 'File';
+          const sub = f.address && f.ys_loan_number ? f.ys_loan_number : '';
           return (
             <div key={f.application_id}>
               <div className="row" style={{ justifyContent: 'space-between', gap: 10, alignItems: 'baseline', marginBottom: 5 }}>
-                <span style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '55%' }} title={f.address || label}>{label}</span>
+                <Link to={`/internal/app/${f.application_id}/draws`} title={`${f.address || ''}${sub ? ` · ${sub}` : ''} — open the draw screen`}
+                  style={{ fontWeight: 600, fontSize: 13, color: 'var(--teal-br)', textDecoration: 'none', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '55%' }}>
+                  {label}{sub ? <span className="dd-sub" style={{ fontWeight: 500, marginLeft: 6 }}>· {sub}</span> : null}
+                </Link>
                 <span className="dd-sub" style={{ fontVariantNumeric: 'tabular-nums', flex: '0 0 auto' }}>
                   <b style={{ color: 'var(--teal-br)' }}>{usd(drawn)}</b> drawn · {usd(rem)} left · {pct}%
                 </span>
