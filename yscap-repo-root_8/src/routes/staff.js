@@ -2491,7 +2491,10 @@ router.get('/applications/:id/emails/:msgId/attachments/:idx', async (req, res) 
     if (!a || !a.storage_ref) return res.status(404).json({ error: 'attachment not available' });
     let buf; try { buf = await storage.read(a.storage_ref); } catch (_) { buf = null; }
     if (!buf) return res.status(404).json({ error: 'attachment bytes missing' });
-    res.setHeader('Content-Type', a.content_type || a.contentType || 'application/octet-stream');
+    // Sanitize the stored content-type before it becomes a response header (defense
+    // in depth — a header with illegal chars would otherwise throw a 500).
+    const ct = String(a.content_type || a.contentType || 'application/octet-stream').replace(/[^\w.+/-]/g, '').slice(0, 100) || 'application/octet-stream';
+    res.setHeader('Content-Type', ct);
     res.setHeader('Content-Disposition', `attachment; filename="${String(a.filename || 'attachment').replace(/[^\w.\- ]+/g, '_')}"`);
     res.send(buf);
   } catch (err) { res.status(500).json({ error: 'Could not download this attachment.' }); }

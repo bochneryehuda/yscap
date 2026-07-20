@@ -121,6 +121,7 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) 
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState('');
   const frameRef = useRef(null);
+  const wrapRef = useRef(null);
   const loadedFor = useRef(null);
 
   useEffect(() => {
@@ -137,12 +138,32 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) 
   const html = full && full.body_html;
   const text = full && full.body_text;
   const attachments = (full && Array.isArray(full.attachments) && full.attachments.length) ? full.attachments : (Array.isArray(row.attachments) ? row.attachments : []);
-  const onFrameLoad = () => {
-    try {
-      const doc = frameRef.current && frameRef.current.contentDocument;
-      if (doc) frameRef.current.style.height = Math.min(3200, Math.max(120, doc.body.scrollHeight + 24)) + 'px';
-    } catch (_) { /* ignore */ }
-  };
+  // Fit the email to the available width so a fixed-width (e.g. 600px) design is
+  // never cut off — scale it down to the reader's width and reserve the scaled
+  // height. Re-fits when the container resizes (e.g. the Open-large popup).
+  const fit = useCallback(() => {
+    const frame = frameRef.current, wrap = wrapRef.current;
+    if (!frame || !wrap) return;
+    let doc; try { doc = frame.contentDocument; } catch { return; }
+    if (!doc || !doc.body) return;
+    const naturalW = Math.max(doc.body.scrollWidth, doc.documentElement.scrollWidth, 1);
+    const naturalH = Math.max(doc.body.scrollHeight, doc.documentElement.scrollHeight, 1);
+    const containerW = wrap.clientWidth || naturalW;
+    const ratio = naturalW > containerW ? containerW / naturalW : 1;
+    frame.style.width = naturalW + 'px';
+    frame.style.height = naturalH + 'px';
+    frame.style.transformOrigin = 'top left';
+    frame.style.transform = ratio < 1 ? `scale(${ratio})` : 'none';
+    wrap.style.height = Math.min(6000, Math.round(naturalH * ratio) + 4) + 'px';
+  }, []);
+  // Re-fit when the reader width changes (opening/closing the large popup, window resize).
+  useEffect(() => {
+    if (!expanded || !html || typeof ResizeObserver === 'undefined') return undefined;
+    const wrap = wrapRef.current; if (!wrap) return undefined;
+    const ro = new ResizeObserver(() => fit());
+    ro.observe(wrap);
+    return () => ro.disconnect();
+  }, [expanded, html, fit]);
   const printFrame = () => { try { frameRef.current && frameRef.current.contentWindow && frameRef.current.contentWindow.print(); } catch (_) { /* ignore */ } };
   const download = async (i, a) => {
     if (!a.downloadable) return;
@@ -204,7 +225,7 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) 
               {loading ? <div className="ec-skel" />
                 : err ? <div className="notice err" style={{ margin: 12 }}>{err}</div>
                 : html
-                  ? <iframe ref={frameRef} title="email" className="ec-frame" sandbox="allow-same-origin" srcDoc={html} onLoad={onFrameLoad} />
+                  ? <div className="ec-frame-wrap" ref={wrapRef}><iframe ref={frameRef} title="email" className="ec-frame" sandbox="allow-same-origin" srcDoc={html} onLoad={fit} /></div>
                   : text ? <pre className="ec-plain">{text}</pre>
                     : <p className="muted small" style={{ padding: 16 }}>{(full && full.body_unavailable) || 'No body was stored for this message.'}</p>}
             </div>
@@ -288,6 +309,7 @@ export default function EmailCenter({ mode = 'file', appId = null }) {
   const [mobileReader, setMobileReader] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [composing, setComposing] = useState(false);
+  const [big, setBig] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [read, setRead] = useState(() => loadJSON(READ_KEY, {}));
   const [stars, setStars] = useState(() => loadJSON(STAR_KEY, {}));
@@ -356,16 +378,22 @@ export default function EmailCenter({ mode = 'file', appId = null }) {
     return threads.find((t) => t.key === selId) || threads[0] || null;
   }, [threads, selId]);
 
-  // expand latest message + mark the thread read when selection changes
+  // Expand the latest message when the selection changes (VISUAL only). Marking a
+  // thread read happens ONLY on a genuine user open (openThread) — never on the
+  // auto-default selection, or the Unread filter would mark-read-cascade itself
+  // empty and the newest thread would be marked read on mobile without being seen.
   useEffect(() => {
     if (!selectedThread) return;
     const last = selectedThread.rows[selectedThread.rows.length - 1];
     setExpanded(new Set(last ? [last.id] : []));
-    if (isUnread(selectedThread)) persistRead({ ...read, [selectedThread.key]: selectedThread.lastAt });
     // eslint-disable-next-line
   }, [selectedThread && selectedThread.key]);
 
-  const openThread = (key) => { setSelId(key); setMobileReader(true); setComposing(false); };
+  const openThread = (key) => {
+    setSelId(key); setMobileReader(true); setComposing(false);
+    const t = threads.find((x) => x.key === key);
+    if (t && isUnread(t)) persistRead({ ...read, [t.key]: t.lastAt });
+  };
   const toggleMsg = (id) => setExpanded((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const markAllRead = () => { const next = { ...read }; for (const t of threads) next[t.key] = t.lastAt; persistRead(next); };
 
@@ -374,7 +402,7 @@ export default function EmailCenter({ mode = 'file', appId = null }) {
     const onKey = (e) => {
       const tag = (e.target && e.target.tagName) || '';
       const typing = tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable);
-      if (e.key === 'Escape') { if (mobileReader) setMobileReader(false); return; }
+      if (e.key === 'Escape') { if (big) { setBig(false); return; } if (mobileReader) setMobileReader(false); return; }
       if (typing) return;
       if (e.key === '/') { e.preventDefault(); searchRef.current && searchRef.current.focus(); return; }
       if ((e.key === 'j' || e.key === 'k') && threads.length) {
@@ -387,7 +415,7 @@ export default function EmailCenter({ mode = 'file', appId = null }) {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [threads, selectedThread, mobileReader, globalMode]);
+  }, [threads, selectedThread, mobileReader, globalMode, big]);
 
   if (err) return <div className="notice err">{err}</div>;
   if (!rows) return <div className="ec-wrap"><div className="ec-skel" style={{ height: 220 }} /></div>;
@@ -410,8 +438,8 @@ export default function EmailCenter({ mode = 'file', appId = null }) {
     listGroups[listGroups.length - 1].items.push(t);
   }
 
-  return (
-    <div className={`ec-wrap${mobileReader ? ' mobile-reader' : ''}`}>
+  const main = (
+    <div className={`ec-wrap${mobileReader ? ' mobile-reader' : ''}${big ? ' big' : ''}`}>
       {globalMode && stats ? (
         <div className="ec-stats">
           <div className="ec-stat"><span className="ec-stat-n">{stats.total}</span><span className="ec-stat-l">total</span></div>
@@ -430,6 +458,7 @@ export default function EmailCenter({ mode = 'file', appId = null }) {
         </div>
         {unreadCount ? <button className="ec-textbtn" onClick={markAllRead} title="Mark all as read">Mark all read</button> : null}
         {!globalMode ? <button className="btn primary small" onClick={() => { setComposing(true); setMobileReader(true); }}>＋ New email</button> : null}
+        {!globalMode && !big ? <button className="ec-refresh" onClick={() => setBig(true)} title="Open the Email Center in a large window" aria-label="Open large">⤢</button> : null}
         <button className="ec-refresh" onClick={() => load(false)} title="Refresh" aria-label="Refresh">{refreshing ? '…' : '⟳'}</button>
       </div>
 
@@ -502,4 +531,19 @@ export default function EmailCenter({ mode = 'file', appId = null }) {
       </div>
     </div>
   );
+
+  if (big) {
+    return (
+      <div className="ec-modal-back" role="dialog" aria-modal="true" onMouseDown={(e) => { if (e.target === e.currentTarget) setBig(false); }}>
+        <div className="ec-modal-card">
+          <div className="ec-modal-head">
+            <b>Email Center</b>
+            <button className="btn ghost small" onClick={() => setBig(false)}>✕ Close</button>
+          </div>
+          <div className="ec-modal-body">{main}</div>
+        </div>
+      </div>
+    );
+  }
+  return main;
 }
