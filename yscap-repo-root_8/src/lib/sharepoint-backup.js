@@ -129,8 +129,21 @@ const KICK_DEBOUNCE_MS = 4000;     // collapse a burst of uploads into one pass;
                                    // or a kicked pass would skip the very doc
                                    // that kicked it and wait for the sweep
 const MAX_DRAIN_LOOPS = 200;       // backfill safety valve per drain (200*25 docs)
+// A single mirror attempt must never hang the whole pass. Every Graph HTTP call
+// already has its own 60s/120s socket timeout, but a DB query blocked on a lock
+// has NO timeout in pg — and one stalled attempt with the old code left the
+// in-memory _running flag stuck true, freezing EVERY later drain (the 2026-07-20
+// "nothing synced for 6h; docs stuck at not-yet-attempted" incident). This
+// bounds one attempt; a hang becomes a recorded error and the pass continues.
+const MIRROR_ATTEMPT_TIMEOUT_MS = 150000;   // > the 120s chunk-upload timeout + margin
+// If a drain has been "running" longer than this, treat it as dead (a hung
+// await that never settled) and let a fresh pass start instead of no-opping
+// forever — the freeze self-heals on the next interval, no restart needed.
+const DRAIN_STALL_CEILING_MS = 15 * 60 * 1000;
 
 let _running = false;              // single-flight: kick + interval never overlap
+let _runningSince = 0;             // wall-clock ms when the in-flight drain started
+let _runSeq = 0;                   // generation token — a stalled pass can't reset newer state
 let _rekick = false;               // an upload arrived mid-drain — drain again after
 let _kickTimer = null;
 let _interval = null;
@@ -139,6 +152,16 @@ let _sloInterval = null;
 let _lastPass = null;              // stats for /api/health
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Bound any promise so a stalled operation can't hang its caller forever. The
+// underlying work is not cancelled (it settles on its own socket/query timeout),
+// but the caller stops waiting — the difference between "one slow document" and
+// "the whole reconciler frozen until a restart".
+function withTimeout(promise, ms, message) {
+  let t;
+  const timeout = new Promise((_, rej) => { t = setTimeout(() => rej(new Error(message)), ms); if (t.unref) t.unref(); });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(t));
+}
 
 function enabled() {
   return !!cfg.sharepointBackupEnabled && sp.configured();
@@ -1334,8 +1357,14 @@ async function runOnce({ limit = DEFAULT_BATCH } = {}) {
   const rows = await pendingBatch(limit);
   let mirrored = 0, failed = 0;
   for (const row of rows) {
-    try { await mirrorRow(row); mirrored++; }
-    catch (e) {
+    try {
+      // Bound every attempt: a stalled Graph move or a lock-blocked DB query can
+      // no longer hang the whole pass (and, with it, all future drains). A hang
+      // becomes a normal recorded failure and the loop moves on.
+      await withTimeout(mirrorRow(row), MIRROR_ATTEMPT_TIMEOUT_MS,
+        'mirror attempt timed out (a Graph or database call stalled)');
+      mirrored++;
+    } catch (e) {
       failed++;
       console.warn(`[sp-sync] doc ${row.id} failed: ${e.message}`);
       try { await recordFailure(row, e); } catch (_) { /* best-effort */ }
@@ -1386,12 +1415,22 @@ async function runOnce({ limit = DEFAULT_BATCH } = {}) {
 
 /** Drain everything pending (the first-run backfill + burst catch-up). */
 async function drain() {
-  if (_running) return;
+  // Single-flight — BUT never permanently: if the in-flight pass has been
+  // "running" past the stall ceiling, its await hung (a lock-blocked DB query,
+  // a black-holed socket) and will never clear _running. Abandon it and start a
+  // fresh pass so the mirror self-heals on the next interval instead of staying
+  // frozen until a restart (root of the 2026-07-20 "nothing synced for hours").
+  if (_running) {
+    if (Date.now() - _runningSince < DRAIN_STALL_CEILING_MS) return;
+    console.warn(`[sp-sync] previous drain has been running ${Math.round((Date.now() - _runningSince) / 1000)}s — presumed stalled; abandoning it and starting a fresh pass`);
+  }
   if (!(await acquireLease('sp-drain'))) {
     console.log('[sp-sync] another instance holds the drain lease — skipping this pass');
     return;
   }
   _running = true;
+  _runningSince = Date.now();
+  const mySeq = ++_runSeq;   // generation token — see the finally
   try {
     // Documents that exhausted their attempts get one fresh chance per day —
     // a persistent outage (or a bug fixed by a deploy) must not orphan them.
@@ -1416,7 +1455,11 @@ async function drain() {
     console.warn('[sp-sync] drain error:', e.message);
   } finally {
     await releaseLease('sp-drain');
-    _running = false;
+    // Only the LATEST pass clears the busy flag. If this pass was abandoned as
+    // stalled and a fresher pass took over (mySeq !== _runSeq), leave _running
+    // as-is so a late-arriving finally from the zombie can't unlock a pass that
+    // is still legitimately running.
+    if (mySeq === _runSeq) { _running = false; _runningSince = 0; }
     // Lost-wakeup guard: an upload that arrived while this drain was running
     // re-queues one more pass instead of waiting for the interval sweep.
     if (_rekick) { _rekick = false; kick(); }
@@ -1430,7 +1473,10 @@ async function drain() {
  */
 function kick() {
   if (!enabled()) return;
-  if (_running) { _rekick = true; return; }   // drain in flight — run again after
+  // A genuinely in-flight drain: defer, run again after. A STALLED one (past the
+  // ceiling): fall through so this upload can start a fresh pass that abandons
+  // the zombie — a new document never has to wait out a hung drain.
+  if (_running && Date.now() - _runningSince < DRAIN_STALL_CEILING_MS) { _rekick = true; return; }
   if (_kickTimer) return;
   _kickTimer = setTimeout(() => {
     _kickTimer = null;
@@ -1622,10 +1668,8 @@ async function forceAttemptDoc(id) {
   if (!row) return { gone: true };
   if (row.sharepoint_backed_up_at) return { alreadyDone: true };
   try {
-    await Promise.race([
-      mirrorRow(row),
-      new Promise((_, rej) => setTimeout(() => rej(new Error('force-attempt timed out after 90s (possible poison-pill file)')), FORCE_ATTEMPT_TIMEOUT_MS)),
-    ]);
+    await withTimeout(mirrorRow(row), FORCE_ATTEMPT_TIMEOUT_MS,
+      'force-attempt timed out after 90s (possible poison-pill file)');
     return { mirrored: true };
   } catch (e) {
     // Give the real error a home: recordFailure classifies it (permanent →
@@ -1812,5 +1856,6 @@ module.exports = {
   classifyMirrorError, forceAttemptDoc,
   neverAttemptedStrays, explainExclusion,
   sloSignature, claimSloAlert, clearSloAlert,
+  withTimeout,
   MAX_ATTEMPTS, VERIFY_RECHECK_DAYS,
 };
