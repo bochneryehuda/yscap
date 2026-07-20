@@ -169,7 +169,7 @@ async function notifyLoanOfficer(reviewId) {
     title = `Draw review needed — ${place}`;
     body = `A construction-draw (Sitewire) review needs your decision${who}${swAddress ? ` — ${swAddress}` : ''}:\n\n` +
       `${humanizeSitewireReason(row.reason)}\n\n` +
-      `Open the Sync review screen to resolve it — the card shows the exact options (e.g. link the property, retry the push, or dismiss).`;
+      `Open the Sync review screen to resolve it — the card shows the exact options for this review (for example: acknowledge the note, retry the push after fixing the cause, or dismiss).`;
   } else {
     title = `Sync review needed: ${label}${who}`;
     body = fileLevel

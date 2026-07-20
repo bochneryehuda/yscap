@@ -375,8 +375,8 @@ async function pushFile(appId, opts = {}) {
     }
     if (property && property.__dryrun) return { dryrun: true, stage: 'property' };
     propertyId = (property && property.id) || (link && link.sitewire_property_id) || null;
-    // A linked/adopted property's UPDATE response may omit budget.id — fall back to the id we stored when
-    // the property was linked, so a re-push of an adopted property doesn't false-park on "no budget id".
+    // A re-push (UPDATE) of an already-created property may return a response that omits budget.id — fall
+    // back to the id we stored on the first push, so a re-push doesn't false-park on "no budget id".
     budgetId = (property && property.budget && property.budget.id) || (link && link.sitewire_budget_id) || null;
     // A 200 that came back without the ids we need to bind the crosswalk is NOT a success — never
     // proceed with undefined ids or write a link row we can't reconcile (G-RAW / E-RAW-NOID).
