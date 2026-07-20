@@ -43,8 +43,10 @@ export default function StaffDraws() {
   }, []);
 
   const shown = useMemo(() => {
+    if (filter === 'active') return draws.filter((d) => (d.lifecycle_state || 'active') === 'active');
     if (filter === 'action') return draws.filter((d) => d.status === 'pending');
     if (filter === 'open') return draws.filter((d) => d.status !== 'approved');
+    if (filter === 'closed') return draws.filter((d) => (d.lifecycle_state || 'active') !== 'active');
     return draws;
   }, [draws, filter]);
 
@@ -132,7 +134,7 @@ export default function StaffDraws() {
         {/* Draws table */}
         <div>
           <div className="row" style={{ gap: 8, marginBottom: 12 }}>
-            {[['all', 'All'], ['action', 'Awaiting approval'], ['open', 'Open']].map(([v, l]) => (
+            {[['all', 'All'], ['active', 'Active projects'], ['action', 'Awaiting approval'], ['open', 'Open'], ['closed', 'Finished / paid off']].map(([v, l]) => (
               <button key={v} className={'btn btn-sm ' + (filter === v ? 'primary' : 'ghost')} onClick={() => setFilter(v)}>{l}</button>
             ))}
           </div>
@@ -159,7 +161,7 @@ export default function StaffDraws() {
                         <td style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>{d.ys_loan_number || '—'}</td>
                         <td className="muted"><div style={{ maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={d.address || ''}>{d.address || '—'}</div></td>
                         <td>#{d.number ?? '—'}</td>
-                        <td><span className={'pill ' + s.cls}>{s.label}</span></td>
+                        <td><span className={'pill ' + s.cls}>{s.label}</span>{(d.lifecycle_state || 'active') !== 'active' && <span className="pill sw-draft" style={{ marginLeft: 6 }}>{d.lifecycle_state === 'paid_off' ? 'Paid off' : 'Finished'}</span>}</td>
                         <td className="num">{usd(d.total_requested_cents)}</td>
                         <td className="num">{usd(d.total_approved_cents)}</td>
                         <td className="muted" style={{ whiteSpace: 'nowrap' }}>{fmtDay(d.updated_at)}</td>
