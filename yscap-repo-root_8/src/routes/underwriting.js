@@ -40,6 +40,8 @@ const { classify } = require('../lib/underwriting/classify');
 const { conditionsForDoc, purposeForDoc, docReadiness, fileConditionCoverage } = require('../lib/underwriting/condition-map');
 const { ANALYZER_VERSION, subjectHash } = require('../lib/underwriting/fingerprint');
 const { assessFile: assessStaleness } = require('../lib/underwriting/staleness');
+const { computeMetrics } = require('../lib/underwriting/metrics');
+const { buildChain } = require('../lib/underwriting/entity-chain');
 
 const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || ''));
 // today as a calendar string — no `new Date()` math in the date paths (CLAUDE.md rule).
@@ -158,10 +160,24 @@ router.get('/:appId', async (req, res, next) => {
     const closingDate = pc && pc.fields && pc.fields.closingDate ? pc.fields.closingDate : null;
     const staleness = assessStaleness(exts.rows, { today: todayISO(), closingDate });
 
+    // Derived metrics: recompute LTP/LTV/LTC/ARV-LTV from the file's registered economics, report
+    // the binding cap, and warn on over-leverage. Pure math over the loan file (no document read).
+    const mctx = await fileView.loadContext(db, app.id);
+    const a = (mctx && mctx.app) || {};
+    const metrics = computeMetrics({
+      loanAmount: a.loan_amount, purchasePrice: a.purchase_price,
+      asIsValue: a.as_is_value, arv: a.arv, rehabBudget: a.rehab_budget,
+    });
+
+    // Entity-resolution chain: compose the signing-authority / ownership chain into one status
+    // (the name-consistency edges are tie-out's findings; the chain adds the >=25%-owner KYC gap).
+    const entityChain = buildChain({ vestingName: mctx && mctx.vestingName }, exts.rows);
+
     const perDoc = ff.findings.map(decorate);
-    // Roll the tie-out discrepancies + the forward-looking staleness advisories into the same
-    // fatal/warning gate (staleness is warning-only, so it never changes the CTC-blocking count).
-    const openAll = [...perDoc, ...cross, ...staleness.findings];
+    // Roll the tie-out discrepancies + the forward-looking staleness advisories + over-leverage
+    // metric warnings into the same fatal/warning gate (all warning-only → never change the
+    // CTC-blocking fatal count, but they surface in the roll-up).
+    const openAll = [...perDoc, ...cross, ...staleness.findings, ...metrics.findings, ...entityChain.findings];
     const summary = {
       fatal: openAll.filter((f) => f.severity === 'fatal').length,
       warning: openAll.filter((f) => f.severity === 'warning').length,
@@ -175,6 +191,10 @@ router.get('/:appId', async (req, res, next) => {
       crossDocument: cross,
       conditionCoverage,
       staleness: { closingDate, board: staleness.board, findings: staleness.findings.map(decorate) },
+      metrics: { loanAmount: metrics.loanAmount, maxLoan: metrics.maxLoan, binding: metrics.binding,
+        rows: metrics.metrics, findings: metrics.findings.map(decorate) },
+      entityChain: { status: entityChain.status, edges: entityChain.edges, owners: entityChain.owners,
+        vestingName: entityChain.vestingName, findings: entityChain.findings.map(decorate) },
       summary,
       docTypes: registry.docTypes(),
       analyzers: { reader: docint.configured(), ai: azureOpenai.available() },
