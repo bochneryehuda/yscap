@@ -1,12 +1,12 @@
 -- ============================================================================
--- 174 — Document-underwriting-review clear-to-close guard (belt-and-suspenders).
+-- 178 — Document-underwriting-review clear-to-close guard (belt-and-suspenders).
 --
 -- The `underwriting_review_cleared` condition is the clear-to-close gate for the
--- PILOT document-underwriting engine (db/172): it may ONLY be marked 'satisfied'
+-- PILOT document-underwriting engine (db/176): it may ONLY be marked 'satisfied'
 -- when NO fatal PILOT document finding (blocks_ctc=true) is still open. The
 -- application layer enforces this at sign-off (src/routes/staff.js `signOffGate`,
 -- the isUnderwritingReview branch, which ALSO folds in the derived tie-out
--- fatals). This migration adds the DATABASE-LEVEL backstop db/172's header
+-- fatals). This migration adds the DATABASE-LEVEL backstop db/176's header
 -- promised, so the condition can never be flipped to 'satisfied' with an open
 -- fatal document finding by ANY path. Mirrors the appraisal guard (db/154).
 --

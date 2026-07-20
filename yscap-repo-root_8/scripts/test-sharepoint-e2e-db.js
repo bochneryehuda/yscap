@@ -147,6 +147,16 @@ sp.uploadNew = async (driveId, parentId, name, bytes) => {
   const recL = await backup.reconciliation();
   ok('lead/CRM attachment does not count in the pending backlog', true /* settled → excluded from pending by backed_up_at */ && recL.pending != null);
 
+  // === 2026-07-20 root fix: an appraisal_photo (a never-mirror KIND) is settled-
+  // skipped too, so it never sits "(not yet attempted)" as permanent SLO noise.
+  // Regression guard for the NEVER_MIRROR_SQL-vs-settle-set divergence.
+  const photoDoc = await mkStoredDoc('appraisal-photo-1.png', 'PNGBYTES', { doc_kind: 'appraisal_photo', content_type: 'image/png', created_at: "now() - interval '7 hours'" });
+  await backup.runOnce({ limit: 50 });   // settleNeverMirror settles never-mirror kinds inside runOnce
+  const ps = (await db.query(`SELECT sharepoint_backed_up_at AS done, sharepoint_backup_ref AS ref, sharepoint_skipped_reason AS why FROM documents WHERE id=$1`, [photoDoc])).rows[0];
+  ok('appraisal photo is settled-skipped (never mirrored, never uploaded)', !!ps.done && !ps.ref && /appraisal|thumbnail/i.test(String(ps.why)));
+  const stuck = await backup.stuckDocuments(50);
+  ok('appraisal photo does NOT appear as a stuck "(not yet attempted)" document', !stuck.some((s) => String(s.id) === String(photoDoc)));
+
   // === A-Z audit #3: a "needs a human" verdict makes the mirror NOT healthy ===
   await db.query(
     `INSERT INTO documents (application_id, borrower_id, filename, content_type, size_bytes, storage_provider, storage_ref,
