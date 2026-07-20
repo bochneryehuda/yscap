@@ -151,6 +151,23 @@ assert.deepStrictEqual(codes(C.computeBackgroundFindings({ subjectName: 'John Sm
   assert.ok(!C.computeBackgroundFindings({ readable: true, subjectName: 'Michael Goldberg', ofacResult: 'clear' }, { borrower_name: 'Michael Goldberg' }).some((x) => /entity/.test(x.code)));
 }
 
+// ===== PAYOFF STATEMENT (the lien being refinanced) =====
+{
+  const subj = { property_address: { line1: '128 Elm St', city: 'Lakewood', state: 'NJ', zip: '08701' }, loan_amount: 200000, loan_type: 'Refi R&T' };
+  const good = { readable: true, servicerName: 'Fay', totalPayoffAmount: 180000, goodThroughDate: '2026-08-15', propertyAddress: subj.property_address };
+  // Clean, valid, under the loan → nothing.
+  assert.deepStrictEqual(codes(C.computePayoffFindings(good, subj, { today: '2026-07-20' })), []);
+  // Wrong property → warning.
+  assert.ok(C.computePayoffFindings({ ...good, propertyAddress: { line1: '9 Oak Ave', city: 'Dallas', state: 'TX', zip: '75201' } }, subj, { today: '2026-07-20' }).some((f) => f.code === 'payoff_address_mismatch'));
+  // Expired good-through date → warning; near-expiry (within 5 days) → info.
+  assert.ok(C.computePayoffFindings({ ...good, goodThroughDate: '2026-07-10' }, subj, { today: '2026-07-20' }).some((f) => f.code === 'payoff_expired' && f.severity === 'warning'));
+  assert.ok(C.computePayoffFindings({ ...good, goodThroughDate: '2026-07-22' }, subj, { today: '2026-07-20' }).some((f) => f.code === 'payoff_expiring_soon' && f.severity === 'info'));
+  // Payoff larger than the new loan → info (rate/term refi needs cash to close).
+  assert.ok(C.computePayoffFindings({ ...good, totalPayoffAmount: 230000 }, subj, { today: '2026-07-20' }).some((f) => f.code === 'payoff_exceeds_loan' && f.severity === 'info'));
+  // Unreadable → a single verify finding, no false mismatches.
+  assert.deepStrictEqual(codes(C.computePayoffFindings({ readable: false }, subj, { today: '2026-07-20' })), ['payoff_statement_unreadable']);
+}
+
 // ===== SCOPE OF WORK / rehab budget =====
 {
   const codes = (fs) => fs.map((f) => f.code).sort();

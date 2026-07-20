@@ -15,7 +15,7 @@ const DOC_LABEL = {
   assignment: 'Assignment of contract', ein_letter: 'EIN letter', good_standing: 'Good standing',
   llc_formation: 'LLC formation', insurance: 'Insurance', flood: 'Flood cert',
   settlement: 'Settlement statement', credit_report: 'Credit report', background_report: 'Background / OFAC',
-  contract_amendment: 'Contract amendment', scope_of_work: 'Scope of work',
+  contract_amendment: 'Contract amendment', scope_of_work: 'Scope of work', payoff_statement: 'Payoff statement',
 };
 const label = (t) => DOC_LABEL[t] || String(t || '').replace(/_/g, ' ');
 

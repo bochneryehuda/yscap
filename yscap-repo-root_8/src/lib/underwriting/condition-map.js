@@ -32,6 +32,7 @@ const DOC_CONDITIONS = {
   appraisal: { satisfies: ['rtl_cond_appraisaldocs'], purpose: 'The appraisal — the property valuation the loan is sized on (handled by the appraisal desk).' },
   scope_of_work: { satisfies: ['rtl_p1_contract'], purpose: 'The scope of work / rehab budget — the renovation plan the loan-to-cost and after-repair value are sized on.' },
   settlement: { satisfies: [], purpose: 'The closing settlement statement — the final sources & uses (reviewed at closing).' },
+  payoff_statement: { satisfies: [], purpose: 'The payoff statement for the loan being refinanced — the exact amount and good-through date to clear the existing lien.' },
 };
 
 function conditionsForDoc(docType) { return (DOC_CONDITIONS[docType] && DOC_CONDITIONS[docType].satisfies) || []; }

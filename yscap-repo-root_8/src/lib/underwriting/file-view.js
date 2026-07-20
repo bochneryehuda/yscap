@@ -99,6 +99,9 @@ function subjectFor(docType, ctx) {
         registered_fico: borrower && borrower.fico }; // the FICO the loan was PRICED on (borrowers.fico)
     case 'flood':
       return { property_address: app && app.property_address };
+    case 'payoff_statement':
+      return { property_address: app && app.property_address, loan_amount: app && app.loan_amount,
+        loan_type: app && app.loan_type };
     case 'scope_of_work':
       return { property_address: app && app.property_address, rehab_budget: app && app.rehab_budget };
     default:

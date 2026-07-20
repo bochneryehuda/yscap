@@ -10,7 +10,7 @@
  * Pure. Each compute*(fields, subject, opts) returns findings in the document_findings shape.
  * subject/opts are injected by the route (opts.today = 'YYYY-MM-DD').
  */
-const { num, withinMoney, namesMatchLoose, entityMatch, daysBetween, toISODate } = require('./compare');
+const { num, withinMoney, namesMatchLoose, entityMatch, daysBetween, toISODate, addrMatches, addrLine } = require('./compare');
 const { clauseNamesLender, clauseHasAddress, LENDER_MORTGAGEE_CLAUSE } = require('./lender');
 const insLoanKey = (s) => String(s == null ? '' : s).toUpperCase().replace(/[^A-Z0-9]/g, '');
 
@@ -479,9 +479,60 @@ function computeScopeOfWorkFindings(sow, subject, opts = {}) {
   return out;
 }
 
+// ---- Payoff statement (the lien being refinanced) ----
+// On a refinance the payoff statement is the exact figure to clear the existing loan. Underwriting
+// cares about three things: it's for THE SUBJECT property, the quote is still VALID at closing (the
+// "good through" date — a lapsed quote under-states the balance because interest keeps accruing),
+// and the new loan actually covers it. `subject` = { property_address, loan_amount, loan_type }.
+function computePayoffFindings(p, subject, opts = {}) {
+  const out = []; if (!p) return out;
+  if (unreadable('payoff_statement', p, ['totalPayoffAmount', 'goodThroughDate', 'servicerName'])) {
+    return [verify('payoff_statement', 'payoff statement')];
+  }
+  const s = subject || {};
+  // 1. Right property.
+  if (addrMatches(p.propertyAddress, s.property_address) === false) {
+    out.push(mk('payoff_statement', { code: 'payoff_address_mismatch', severity: 'warning', field: 'property_address',
+      docValue: addrLine(p.propertyAddress), fileValue: addrLine(s.property_address),
+      title: 'Payoff statement is for a different property than the file',
+      howTo: 'Confirm this payoff is for the subject property — the wrong payoff would clear the wrong lien. Request the correct servicer payoff if this isn\'t the subject.',
+      actions: ['request_document', 'post_condition', 'dismiss'] }));
+  }
+  // 2. Still valid at closing / today (a lapsed "good through" date under-states the real balance).
+  const horizon = opts.closingDate || opts.today;
+  const gtd = toISODate(p.goodThroughDate);
+  if (horizon && gtd) {
+    const days = daysBetween(toISODate(horizon), gtd);
+    if (days != null && days < 0) {
+      out.push(mk('payoff_statement', { code: 'payoff_expired', severity: 'warning', field: 'good_through',
+        docValue: p.goodThroughDate, fileValue: horizon,
+        title: 'The payoff quote has expired',
+        howTo: `The payoff is good through ${p.goodThroughDate}, which is before ${opts.closingDate ? 'closing' : 'today'}. Interest keeps accruing (per diem ${money(num(p.perDiemInterest)) || 'as stated'}) — request an updated payoff good through the funding date so the wire is exact.`,
+        actions: ['request_document', 'post_condition', 'dismiss'] }));
+    } else if (days != null && days <= 5) {
+      out.push(mk('payoff_statement', { code: 'payoff_expiring_soon', severity: 'info', field: 'good_through',
+        docValue: p.goodThroughDate, fileValue: horizon,
+        title: 'The payoff quote expires within days of closing',
+        howTo: `The payoff is only good through ${p.goodThroughDate} — at/near ${opts.closingDate ? 'closing' : 'today'}. Confirm an updated good-through date so the funding wire covers the full balance plus per-diem interest.`,
+        actions: ['acknowledge', 'request_document', 'dismiss'] }));
+    }
+  }
+  // 3. Does the new loan cover the payoff? (info — a rate/term refi that doesn't cover it needs cash
+  // to close; a cash-out refi is expected to exceed it, so this is a confirmation, not a block.)
+  const payoff = num(p.totalPayoffAmount), loan = num(s.loan_amount);
+  if (payoff != null && loan != null && loan > 0 && payoff > loan) {
+    out.push(mk('payoff_statement', { code: 'payoff_exceeds_loan', severity: 'info', field: 'amount',
+      docValue: money(payoff), fileValue: money(loan),
+      title: 'The payoff is larger than the new loan',
+      howTo: `The existing loan payoff (${money(payoff)}) is larger than the new loan (${money(loan)}). On a rate/term refinance the borrower must bring the difference plus closing costs to the table — confirm cash to close (a cash-out refinance would normally net cash, so re-check the loan purpose).`,
+      actions: ['acknowledge', 'post_condition', 'dismiss'] }));
+  }
+  return out;
+}
+
 module.exports = {
   computeAssignmentFindings, computeOperatingAgreementFindings, computeEinFindings,
   computeGoodStandingFindings, computeFormationFindings, computeInsuranceFindings,
   computeFloodFindings, computeSettlementFindings, computeCreditFindings, computeBackgroundFindings,
-  computeAmendmentFindings, computeScopeOfWorkFindings, representativeFico,
+  computeAmendmentFindings, computeScopeOfWorkFindings, computePayoffFindings, representativeFico,
 };

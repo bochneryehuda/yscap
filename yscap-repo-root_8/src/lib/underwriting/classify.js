@@ -31,6 +31,7 @@ const SIGNALS = [
   ['bank_statement', ['beginning balance', 'ending balance', 'statement period', 'available balance'], ['deposits', 'withdrawals', 'account number', 'account summary']],
   ['credit_report', ['credit report', 'tradeline', 'credit score', 'fico', 'trans union', 'transunion', 'equifax', 'experian'], ['inquiries', 'revolving', 'installment', 'derogatory']],
   ['background_report', ['ofac', 'specially designated nationals', 'sdn list', 'sanctions screening', 'watchlist', 'background check'], ['criminal', 'pep', 'politically exposed']],
+  ['payoff_statement', ['payoff statement', 'payoff quote', 'payoff demand', 'statement of payoff', 'good through date', 'unpaid principal balance', 'per diem interest'], ['payoff', 'servicer', 'reinstatement', 'loan number']],
 ];
 
 // Filename keyword → docType hints (a strong nudge when the OCR text is thin).
@@ -47,6 +48,7 @@ const FILENAME_HINTS = [
   [/acord|insur|dec.?page|binder|hazard/i, 'insurance'],
   [/flood/i, 'flood'],
   [/settle|closing.?disc|hud|alta/i, 'settlement'],
+  [/pay.?off|payoff.?demand/i, 'payoff_statement'], // before bank_statement — a "payoff statement" contains "statement"
   [/bank|statement/i, 'bank_statement'],
   [/credit/i, 'credit_report'],
   [/ofac|background|sanction/i, 'background_report'],
@@ -64,13 +66,19 @@ function countHits(hay, phrases) { let n = 0; for (const p of phrases) if (hay.i
 function classify({ text, filename } = {}) {
   const hay = norm(text);
   const fname = String(filename || '');
+  // The filename hints are an ORDERED list — the FIRST pattern that matches wins, and nudges exactly
+  // ONE docType. (A "payoff statement" matches both the payoff and the generic "statement"/bank
+  // pattern; taking only the first-listed match keeps the more specific payoff hint from tying with
+  // bank_statement.) So resolve the single hinted type once, up front.
+  let fnameHint = null;
+  for (const [re, t] of FILENAME_HINTS) { if (re.test(fname)) { fnameHint = t; break; } }
   const scores = {};
   for (const [docType, strong, weak] of SIGNALS) {
     const s = countHits(hay, strong), w = countHits(hay, weak);
     // A strong signal (a title unique to one document) dominates; generic weak terms are capped
     // so several of them can't outvote one strong match. A filename hint is a strong nudge.
     let score = s * 3 + Math.min(w, 2);
-    for (const [re, t] of FILENAME_HINTS) { if (t === docType && re.test(fname)) { score += 3; break; } }
+    if (fnameHint === docType) score += 3;
     if (score > 0) scores[docType] = score;
   }
   const ranked = Object.entries(scores).sort((a, b) => b[1] - a[1]);

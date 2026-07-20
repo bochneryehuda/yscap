@@ -481,8 +481,35 @@ const SCOPE_OF_WORK = {
   }),
 };
 
+// ---- Payoff statement (the lien being refinanced) ----
+const PAYOFF_STATEMENT = {
+  docType: 'payoff_statement',
+  instructions:
+    "You are reviewing a mortgage PAYOFF STATEMENT / demand from a loan servicer (the exact figure to " +
+    "pay off the existing loan being refinanced). Extract the servicer/lender name, the loan number, the " +
+    "borrower or entity named, the property address, the UNPAID PRINCIPAL BALANCE, the PER-DIEM (daily) " +
+    "interest amount, the TOTAL PAYOFF AMOUNT (the 'good through' total due), and the GOOD-THROUGH / " +
+    "payoff-expiration date (the date the quoted total is valid through, YYYY-MM-DD). Set " +
+    "wiringInstructionsPresent true if wire instructions are shown. Amounts as plain numbers. Use null " +
+    "for anything absent or unreadable — do NOT guess. readable=false if too poor to trust.",
+  schema: obj({
+    servicerName: { type: ['string', 'null'] },
+    loanNumber: { type: ['string', 'null'] },
+    borrowerName: { type: ['string', 'null'] },
+    propertyAddress: addr(),
+    unpaidPrincipalBalance: { type: ['number', 'null'] },
+    perDiemInterest: { type: ['number', 'null'] },
+    totalPayoffAmount: { type: ['number', 'null'] },
+    goodThroughDate: { type: ['string', 'null'] },
+    wiringInstructionsPresent: { type: ['boolean', 'null'] },
+    readable: { type: 'boolean' },
+    notes: { type: ['string', 'null'] },
+  }),
+};
+
 module.exports = {
   GOVERNMENT_ID, PURCHASE_CONTRACT, TITLE, BANK_STATEMENT,
   ASSIGNMENT, OPERATING_AGREEMENT, EIN_LETTER, GOOD_STANDING, LLC_FORMATION,
   INSURANCE, FLOOD, SETTLEMENT, CREDIT_REPORT, BACKGROUND_REPORT, CONTRACT_AMENDMENT, SCOPE_OF_WORK,
+  PAYOFF_STATEMENT,
 };
