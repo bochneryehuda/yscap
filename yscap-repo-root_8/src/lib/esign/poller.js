@@ -106,7 +106,7 @@ async function reconcileStale(opts = {}) {
       LIMIT 10`)).rows;
   for (const row of incomplete) {
     try { await webhook.handleCompletion(db, docusign, opts.storage || require('../storage'), row); out.push({ id: row.id, backfill: 'redriven' }); }
-    catch (e) { out.push({ id: row.id, backfillError: e.message }); }
+    catch (e) { await webhook.noteCompletionFailure(db, row, e); out.push({ id: row.id, backfillError: e.message }); }
   }
   return out;
 }
