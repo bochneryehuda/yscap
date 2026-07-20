@@ -2418,10 +2418,11 @@ export default function StaffApplication() {
   const [previewDoc, setPreviewDoc] = useState(null);
   const [chatOpen, setChatOpen] = useState(false);   // #94 — Message opens a popup, not a scroll
   const [remindOpen, setRemindOpen] = useState(false);   // #93 — Remind opens the reminder/task manager
-  // The ClickUp/pipeline plumbing (sync panel, the 38-status dropdown, the read-only
-  // pipeline dump) is needed only occasionally, so it hides behind one toggle in the
-  // overview instead of competing for attention with the everyday controls.
-  const [showPipeline, setShowPipeline] = useState(false);
+  // The ClickUp/pipeline plumbing — the sync panel (super-admin push/pull/refresh,
+  // link/unlink) and the 38-status internal-status dropdown — is shown by default so
+  // staff can change/maneuver the ClickUp status and re-sync right from the file. The
+  // toggle stays so it can be collapsed when someone wants a quieter overview.
+  const [showPipeline, setShowPipeline] = useState(true);
   const openPreview = useCallback((doc) => setPreviewDoc(doc), []);
 
   async function revealSsn() {
@@ -2712,7 +2713,9 @@ export default function StaffApplication() {
     { id: 'sec-track', label: 'Track record', group: 'Signing & documents' },
     { id: 'sec-messages', label: 'Communication & history', group: 'Communication' },
     // Construction draws is the LAST phase (post-funding), so it's the LAST section.
-    ...(can('manage_draws') && app.status === 'funded' ? [{ id: 'sec-draws', label: 'Construction draws', group: 'Construction draws' }] : []),
+    // Shown for anyone who manages draws — funded or not — so the Draw Center is
+    // always findable here (it just says "opens after funding" before funding).
+    ...(can('manage_draws') ? [{ id: 'sec-draws', label: 'Construction draws', group: 'Construction draws', badge: app.status === 'funded' ? '' : 'soon' }] : []),
   ];
 
   return (
@@ -3176,11 +3179,11 @@ export default function StaffApplication() {
           section with tabs — they're all the file's talk + trail, so they share a
           home instead of three separate sections. */}
       <Section id="sec-messages" title="Communication & history" defaultOpen={false}
-        info="Everything said and logged on this file — chats, the email history, and the full activity trail. Switch with the tabs.">
-      <div className="cond-tabs" role="tablist" aria-label="Communication">
-        {[{ k: 'messages', label: 'Conversations' }, { k: 'emails', label: 'Emails' }, { k: 'activity', label: 'Activity' }].map(t => (
+        info="Everything said and logged on this file — chats, the email history, and the full activity trail. Switch with the tabs below.">
+      <div className="comm-tabs" role="tablist" aria-label="Communication">
+        {[{ k: 'messages', label: '💬 Chats' }, { k: 'emails', label: '✉️ Email' }, { k: 'activity', label: '🕓 Activity' }].map(t => (
           <button key={t.k} type="button" role="tab" aria-selected={commTab === t.k}
-            className={`cond-tab${commTab === t.k ? ' active' : ''}`} onClick={() => setCommTab(t.k)}>{t.label}</button>
+            className={`comm-tab${commTab === t.k ? ' active' : ''}`} onClick={() => setCommTab(t.k)}>{t.label}</button>
         ))}
       </div>
       {commTab === 'messages' && <ChatPanel appId={id} onTaskCreated={load} />}
@@ -3192,19 +3195,21 @@ export default function StaffApplication() {
           window too (everything about the draw process lives there). */}
       {/* Construction draws is the post-funding PHASE — it lives in its own Draw Management workspace,
           not inside the file. The file just hands off to it. */}
-      {can('manage_draws') && app.status === 'funded' && (
+      {can('manage_draws') && (
         <Section id="sec-draws" title="Construction draws" collapsible={false}>
           <div className="panel" style={{ background: 'var(--paper,#f6f3ec)' }}>
-            <b>This file is funded — its draws are managed in Draw Management.</b>
+            {app.status === 'funded'
+              ? <b>This file is funded — its draws are managed in the Draw Center.</b>
+              : <b>Construction draws open once this file is funded — here’s the Draw Center for it.</b>}
             <div className="muted small" style={{ marginTop: 3, marginBottom: 10 }}>
               The construction-draw process is its own phase after funding: each draw, approvals, the inspector’s
               photos and reports, our fee &amp; net release, and the borrower’s accept/dispute — all live in the Draw
-              Management workspace, not on this file screen.
+              Center workspace, not on this file screen.{app.status === 'funded' ? '' : ' You can open it now to set things up ahead of funding.'}
             </div>
             <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-              <button className="btn primary btn-sm" onClick={() => nav(`/internal/app/${id}/draws`)}>Open this file’s draws →</button>
+              <button className="btn primary btn-sm" onClick={() => nav(`/internal/app/${id}/draws`)}>Open this file’s Draw Center →</button>
               <button className="btn ghost btn-sm" onClick={() => nav('/internal/draws')}>All draws</button>
-              <button className="btn ghost btn-sm" title="Open the full draw desk in its own window"
+              <button className="btn ghost btn-sm" title="Open the full Draw Center in its own window"
                 onClick={() => window.open(`${window.location.pathname}#/internal/app/${id}/draws`, '_blank', 'noopener')}>Open in a new window ↗</button>
             </div>
           </div>
