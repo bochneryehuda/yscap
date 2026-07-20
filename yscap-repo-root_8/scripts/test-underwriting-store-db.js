@@ -68,6 +68,22 @@ const store = require('../src/lib/underwriting/store');
     assert.strictEqual(prevExt.is_current, false, 'prior extraction superseded on re-analysis');
     assert.ok(r2.extractionId);
 
+    // 4. CROSS-FILE supersede scoping (deep-audit BLOCKER regression). A profile-level document
+    // (application_id NULL) can be analyzed under two files of the SAME borrower. Analyzing it on
+    // file B must NOT supersede file A's current extraction or its open findings — the supersede
+    // is scoped by application_id. Before the fix, file B's analyze wiped file A's fatal and falsely
+    // opened its clear-to-close gate.
+    const appB = (await client.query(`INSERT INTO applications (borrower_id) VALUES ($1) RETURNING id`, [b.id])).rows[0];
+    const pdoc = (await client.query(
+      `INSERT INTO documents (application_id,borrower_id,filename,content_type,storage_provider) VALUES (NULL,$1,'oa.pdf','application/pdf','local') RETURNING id`, [b.id])).rows[0];
+    const fatalF = [{ source: 'government_id', code: 'id_expired', severity: 'fatal', field: 'expiry', docValue: '2020-01-01', fileValue: null, title: 'ID expired', howTo: 'x', blocksCtc: true }];
+    await store.saveAnalysis(client, { documentId: pdoc.id, applicationId: app.id, borrowerId: b.id, docType: 'government_id', extraction: { fields: {}, status: 'analyzed' }, findings: fatalF });
+    await store.saveAnalysis(client, { documentId: pdoc.id, applicationId: appB.id, borrowerId: b.id, docType: 'government_id', extraction: { fields: {}, status: 'analyzed' }, findings: fatalF });
+    const aCur = (await client.query(`SELECT count(*)::int n FROM document_extractions WHERE application_id=$1 AND document_id=$2 AND is_current`, [app.id, pdoc.id])).rows[0].n;
+    const aFatal = (await client.query(`SELECT count(*)::int n FROM document_findings WHERE application_id=$1 AND status='open' AND severity='fatal'`, [app.id])).rows[0].n;
+    assert.strictEqual(aCur, 1, 'file A keeps its current extraction after the profile doc is analyzed on file B');
+    assert.strictEqual(aFatal, 1, 'file A keeps its open fatal (CTC gate) after file B analyzes the shared profile doc');
+
     await client.query('ROLLBACK');
     console.log('✓ test-underwriting-store-db: persistence, PII masking, supersede, roll-up pass');
   } catch (e) {

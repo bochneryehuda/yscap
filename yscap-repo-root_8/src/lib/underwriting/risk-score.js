@@ -35,10 +35,23 @@ const SIGNAL_WEIGHTS = {
   beneficial_owner_unidentified: 10,
   // Value inflation / non-arm's-length (price + party inconsistencies).
   title_short_seasoning: 15,         // rapid resale / property-flip signal
-  cross_price_mismatch: 15,
+  // Tie-out (data-comparison) disagreements — a fact that must agree across documents AND the
+  // file but doesn't. These are the LIVE codes the tie-out engine emits (`tieout_<factKey>`,
+  // tieout.js); the fraud score is fed the tie-out discrepancies in `openAll`. (Historic note:
+  // an earlier `cross-document.js` emitted `cross_price_mismatch`/`cross_seller_mismatch`; that
+  // module was superseded by the tie-out but the weights still keyed on its dead codes, so every
+  // cross-document mismatch silently scored 0 — the exact value-inflation/party-mismatch family
+  // this block exists to catch. Fixed 2026-07-20 to key on the live tieout_* codes.)
+  tieout_purchase_price: 15,         // price disagrees across documents / the file
+  tieout_seller_name: 12,            // seller party disagrees (non-arm's-length / straw signal)
+  tieout_entity_name: 12,            // vesting entity disagrees (identity / straw-buyer)
+  tieout_property_address: 12,       // collateral disagrees across documents
+  tieout_borrower_name: 12,          // borrower identity disagrees
+  tieout_borrower_dob: 12,           // borrower identity disagrees
+  tieout_underlying_price: 10,       // seller's original price disagrees
+  tieout_assignment_fee: 10,         // assignment fee disagrees
   contract_price_mismatch: 12,
   contract_buyer_mismatch: 12,
-  cross_seller_mismatch: 12,
   underlying_price_mismatch: 10,
   assignment_fee_over_cap: 10,
   occupancy_owner_occupied_flag: 12, // occupancy vs stated use

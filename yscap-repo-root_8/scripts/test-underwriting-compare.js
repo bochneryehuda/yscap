@@ -1,7 +1,7 @@
 'use strict';
 /** Unit tests for the shared comparison helpers (compare.js), esp. the address matcher. Pure. */
 const assert = require('assert');
-const { addrMatches, namesMatchLoose, entityMatch, withinMoney, toISODate } = require('../src/lib/underwriting/compare');
+const { addrMatches, namesMatchLoose, entityMatch, withinMoney, toISODate, num, namesMatch } = require('../src/lib/underwriting/compare');
 
 const A = (line1, zip) => ({ line1, city: 'x', state: 'NJ', zip });
 
@@ -22,5 +22,12 @@ assert.strictEqual(entityMatch('Maple Grove Holdings LLC', 'Maple Grove Holdings
 assert.strictEqual(withinMoney(412000, 412000.4, 1), true);
 assert.strictEqual(withinMoney(412000, 430000, 1), false);
 assert.strictEqual(toISODate('05/15/1980'), '1980-05-15');
+
+// ---- num: accounting-negative parentheses + diacritic-folded name matching (deep-audit) ----
+assert.strictEqual(num('($1,234.00)'), -1234, 'a parenthesized figure is negative');
+assert.strictEqual(num('$1,234.00'), 1234, 'a plain figure is positive');
+assert.strictEqual(num(''), null); assert.strictEqual(num(null), null); assert.strictEqual(num('abc'), null);
+assert.strictEqual(namesMatch('José Ramírez', 'Jose Ramirez'), true, 'diacritics fold so an accented name matches its OCR form');
+assert.strictEqual(namesMatchLoose('José Ramírez', 'Jose Ramirez'), true);
 
 console.log('✓ test-underwriting-compare: address street-matching + name/entity/money/date helpers pass');

@@ -76,6 +76,13 @@ async function analyzeDocument({ docType, buffer, base64, mimeType, subject, tod
     if (buf) forensic = analyzePdf(buf, { docType }).findings || [];
   } catch (_) { forensic = []; }
 
+  // Belt-and-suspenders: the AI clients + resilience layer provably never throw (a transient
+  // give-up returns a classified {ok:false}), and the pure grounding/check steps are null-safe,
+  // so this catch should be unreachable. But analyzeDocument's never-throw contract is load-
+  // bearing — the whole desk depends on a read NEVER crashing an analyze — so we net any surprise
+  // throw here and return the SAME honest error extraction + needs_manual_review finding as a
+  // transient give-up, rather than letting it propagate. (audit 2026-07-20)
+  try {
   // 1. READ (OCR) — best-effort; GPT can still read a clean image/text if OCR is thin.
   const ocr = await reader.read({ buffer, base64, mimeType });
   baseExtraction.ocrEngine = ocr.ok ? 'document_intelligence' : null;
@@ -118,6 +125,14 @@ async function analyzeDocument({ docType, buffer, base64, mimeType, subject, tod
     findings,
     usage: ext.usage || null,
   };
+  } catch (err) {
+    const reason = `unexpected error while analyzing this document (${(err && err.message) || 'unknown'})`;
+    return {
+      ok: false, reason, outcome: 'error',
+      extraction: Object.assign(baseExtraction, { reason }),
+      findings: [verifyFinding(docType, reason, { outcome: 'error' }), ...forensic],
+    };
+  }
 }
 
 module.exports = { analyzeDocument, _verifyFinding: verifyFinding };

@@ -28,6 +28,21 @@ assert.deepStrictEqual(codes(C.computeEinFindings({ ein: '123', entityLegalName:
 assert.deepStrictEqual(codes(C.computeGoodStandingFindings({ entityLegalName: 'Maple LLC', status: 'Active', issueDate: '2026-07-01', readable: true }, {}, { today: TODAY })), []);
 assert.strictEqual(C.computeGoodStandingFindings({ entityLegalName: 'Maple LLC', status: 'Revoked', readable: true }, {}, { today: TODAY }).find((f) => f.code === 'entity_not_in_good_standing').severity, 'fatal');
 assert.ok(C.computeGoodStandingFindings({ entityLegalName: 'Maple LLC', status: 'active', issueDate: '2026-01-01', readable: true }, {}, { today: TODAY }).some((f) => f.code === 'good_standing_stale'));
+// Tri-state status (deep-audit regression): recognized good-standing SYNONYMS are clean (no false
+// fatal), a clearly-negative status is fatal, and an UNRECOGNIZED word is a warning (not a fatal).
+for (const ok of ['Subsisting', 'Current', 'Valid', 'In Existence', 'Registered', 'Good Standing']) {
+  assert.deepStrictEqual(codes(C.computeGoodStandingFindings({ entityLegalName: 'Maple LLC', status: ok, issueDate: '2026-07-01', readable: true }, {}, { today: TODAY })), [],
+    `"${ok}" must be treated as good standing (no finding)`);
+}
+for (const bad of ['Dissolved', 'Suspended', 'Forfeited', 'Not in Good Standing', 'Void']) {
+  assert.strictEqual(C.computeGoodStandingFindings({ entityLegalName: 'Maple LLC', status: bad, readable: true }, {}, { today: TODAY }).find((f) => f.code === 'entity_not_in_good_standing').severity, 'fatal',
+    `"${bad}" must be a fatal not-in-good-standing`);
+}
+{
+  const unk = C.computeGoodStandingFindings({ entityLegalName: 'Maple LLC', status: 'Pending Review', issueDate: '2026-07-01', readable: true }, {}, { today: TODAY });
+  assert.strictEqual(unk.find((f) => f.code === 'entity_status_unrecognized').severity, 'warning', 'an unrecognized status is a WARNING, not a false fatal');
+  assert.ok(!unk.some((f) => f.code === 'entity_not_in_good_standing'), 'an unrecognized status is not a fatal');
+}
 
 // ---- Insurance ----
 const insGood = { namedInsured: 'Maple LLC', dwellingCoverage: 400000, policyEffective: '2026-06-01', policyExpiration: '2027-06-01', mortgageeClausePresent: true, readable: true };

@@ -60,13 +60,22 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
   const borId = borrowerId || null;
   const ext = extraction || {};
 
-  // 1. Supersede the prior read of THIS document (keep it for history).
+  // 1. Supersede the prior read of THIS document ON THIS FILE (keep it for history).
+  //    CRITICAL: scope by application_id, exactly like findReusableExtraction's read. A
+  //    profile-level document (a government ID, an operating agreement, an EIN letter) is
+  //    stored with application_id IS NULL but is analyzed UNDER a specific file, so the same
+  //    physical document can carry a CURRENT extraction + open findings on file A AND file B
+  //    at once. Superseding by document_id alone would let analyzing it on file B wipe file A's
+  //    current extraction and mark file A's open findings 'superseded' — silently dropping file
+  //    A's fatals (e.g. an expired-ID block) and falsely opening its clear-to-close gate. The
+  //    extraction row's application_id is the file it was analyzed under (= appId here), so we
+  //    supersede only rows for THIS file.
   await client.query(
     `UPDATE document_extractions SET is_current = false, superseded = true, updated_at = now()
-       WHERE document_id = $1 AND is_current`, [documentId]);
+       WHERE document_id = $1 AND application_id IS NOT DISTINCT FROM $2 AND is_current`, [documentId, appId]);
   await client.query(
     `UPDATE document_findings SET status = 'superseded'
-       WHERE document_id = $1 AND status = 'open'`, [documentId]);
+       WHERE document_id = $1 AND application_id IS NOT DISTINCT FROM $2 AND status = 'open'`, [documentId, appId]);
 
   // 2. Insert the new extraction (PII-masked fields) + the idempotency fingerprint (the inputs
   // that determined this result: content hash, analyzer version, and the file-state hash).

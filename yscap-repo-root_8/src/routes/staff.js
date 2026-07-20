@@ -4237,7 +4237,24 @@ async function advancementBlockers(appId, target) {
     `SELECT id, label FROM checklist_items
       WHERE application_id=$1 AND is_gate=true AND NOT (signed_off_at IS NOT NULL OR status='satisfied')
       ORDER BY sort_order, created_at`, [appId]);
-  return { conditions: [...conds.rows, ...checklistConds.rows], gates: gates.rows };
+  // Underwriting DEALBREAKERS gate clear-to-close AND funding directly — whether or not the
+  // `underwriting_review_cleared` condition was ever materialized. A derived tie-out (cross-
+  // document) fatal has NO stored condition row, so the checklist queries above are blind to it;
+  // relying on the materialized gate item alone let a file with an open cross-document fatal
+  // (e.g. a settlement price that disagrees with the file) advance to clear-to-close (audit
+  // 2026-07-20). fileFatalCount is the authoritative count — stored per-document fatals PLUS the
+  // derived tie-out fatals — computed live, so this covers previous AND future files with no
+  // backfill. Best-effort: a tie-out compute error must never silently OPEN the gate, so a
+  // failure leaves the stored-fatal count in place (fileFatalCount already swallows tie-out
+  // errors and still returns the stored count).
+  let underwritingFatals = [];
+  try {
+    const { fileFatalCount } = require('../lib/underwriting/file-review');
+    const { total } = await fileFatalCount(db, appId);
+    if (total > 0) underwritingFatals = [{ id: 'underwriting_fatal',
+      title: `Underwriting review — ${total} open dealbreaker finding${total === 1 ? '' : 's'} (resolve on the underwriting desk)` }];
+  } catch (_) { /* never break advancement gating on a tie-out compute error */ }
+  return { conditions: [...conds.rows, ...checklistConds.rows, ...underwritingFatals], gates: gates.rows };
 }
 
 // Readiness for the gated transitions — powers the "conditions to close" widget.

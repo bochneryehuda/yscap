@@ -7,13 +7,23 @@
  */
 
 function norm(s) {
-  return String(s == null ? '' : s).toLowerCase().replace(/[.,#]/g, ' ').replace(/\s+/g, ' ').trim();
+  // Fold diacritics (José -> jose) so an accented name/entity matches its plain-ASCII OCR form and
+  // grounding doesn't false-flag it as "unconfirmed". Every name/entity/address comparison routes
+  // through norm, so folding here fixes them all at once.
+  return String(s == null ? '' : s)
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase().replace(/[.,#]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 function digitsOnly(s) { return String(s == null ? '' : s).replace(/\D/g, ''); }
 function num(v) {
   if (v == null || v === '') return null;
-  const n = Number(String(v).replace(/[$,\s]/g, ''));
-  return Number.isFinite(n) ? n : null;
+  // Accounting notation: a parenthesized figure is negative ("($1,234.00)" -> -1234), so an
+  // overdrawn/negative balance parses instead of silently dropping out of a reconciliation.
+  const raw = String(v).trim();
+  const neg = /^\(.*\)$/.test(raw);
+  const n = Number(raw.replace(/[()$,\s]/g, ''));
+  if (!Number.isFinite(n)) return null;
+  return neg ? -n : n;
 }
 
 // Money "close enough" — a small absolute tolerance absorbs rounding/extraction noise

@@ -54,6 +54,27 @@ const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 // today as a calendar string — no `new Date()` math in the date paths (CLAUDE.md rule).
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
+// Analyze and classify each hit PAID Azure endpoints (OCR + GPT). A scoped staffer on their own
+// file could otherwise loop them — `force:true` bypasses the analyze idempotency cache, and
+// classify has no cache at all — and burn unbounded Azure spend (cost-DoS, audit 2026-07-20). A
+// lightweight in-process cooldown bounds one paid read per (user, document, kind) per window; the
+// idempotency cache already makes an unchanged re-analyze free, so this only bites a rapid loop.
+// In-process is enough to stop a runaway loop; it is NOT a security boundary (authz is elsewhere).
+const PAID_COOLDOWN_MS = 8000;
+const MAX_ANALYZE_BYTES = 50 * 1024 * 1024; // reject an oversized stored document before base64 amplification
+const _lastPaidCall = new Map(); // `${actorId}:${documentId}:${kind}` -> ms of last paid call
+function paidCooldownRemaining(actorId, documentId, kind) {
+  const key = `${actorId}:${documentId}:${kind}`;
+  const now = Date.now();
+  const prev = _lastPaidCall.get(key);
+  if (prev != null && now - prev < PAID_COOLDOWN_MS) return Math.ceil((PAID_COOLDOWN_MS - (now - prev)) / 1000);
+  _lastPaidCall.set(key, now);
+  if (_lastPaidCall.size > 5000) { // opportunistic cleanup so the map can't grow unbounded
+    for (const [k, t] of _lastPaidCall) if (now - t > PAID_COOLDOWN_MS) _lastPaidCall.delete(k);
+  }
+  return 0;
+}
+
 router.use(requireAuth, requireStaff);
 
 // Authorization: the file must exist AND the staffer must see it (see_all or assigned).
@@ -294,11 +315,16 @@ router.post('/:appId/documents/:documentId/classify', async (req, res, next) => 
     if (!doc) return res.status(404).json({ error: 'document not found on this file' });
 
     let text = null;
-    if (doc.storage_ref) {
+    // Read+OCR is a PAID call — skip it (fall back to the filename) when this (user, document)
+    // asked within the cooldown, so a rapid loop can't run up Azure spend. Classify is best-effort
+    // anyway, so throttling degrades gracefully rather than erroring.
+    if (doc.storage_ref && !paidCooldownRemaining(req.actor.id, doc.id, 'classify')) {
       try {
         const buffer = await storage.read(doc.storage_ref);
-        const ocr = await docint.read({ buffer, base64: buffer.toString('base64'), mimeType: doc.content_type || 'application/octet-stream' });
-        if (ocr && ocr.ok) text = ocr.text;
+        if (buffer && buffer.length <= MAX_ANALYZE_BYTES) {
+          const ocr = await docint.read({ buffer, base64: buffer.toString('base64'), mimeType: doc.content_type || 'application/octet-stream' });
+          if (ocr && ocr.ok) text = ocr.text;
+        }
       } catch (_) { /* OCR best-effort; fall back to the filename */ }
     }
     const guess = classify({ text, filename: doc.filename });
@@ -355,10 +381,19 @@ router.post('/:appId/documents/:documentId/analyze', async (req, res, next) => {
       }
     }
 
+    // Past the cache — this WILL make a paid Azure read+GPT call. Throttle one paid analyze per
+    // (user, document) per cooldown so a force:true loop can't run up unbounded spend (cost-DoS).
+    const cool = paidCooldownRemaining(req.actor.id, doc.id, 'analyze');
+    if (cool) return res.status(429).json({ error: `this document was just analyzed — try again in ${cool}s`, retryAfterSeconds: cool });
+
     // Read the bytes (best-effort; a storage miss is a clear 422, never a crash).
     let buffer;
     try { buffer = await storage.read(doc.storage_ref); }
-    catch (e) { return res.status(422).json({ error: `could not read the stored document: ${e && e.message}` }); }
+    catch (e) { return res.status(422).json({ error: 'could not read the stored document' }); }
+    // Guard against an oversized stored document (memory / base64 amplification before Azure).
+    if (buffer.length > MAX_ANALYZE_BYTES) {
+      return res.status(413).json({ error: `this document is too large to analyze (limit ${Math.round(MAX_ANALYZE_BYTES / (1024 * 1024))} MB)` });
+    }
     const base64 = buffer.toString('base64');
 
     const result = await engine.analyzeDocument({
@@ -444,8 +479,11 @@ router.post('/:appId/findings/:fid/resolve', requirePermission('sign_off_conditi
           findingId: fnd.id, action, note, value, by: req.actor.id,
         });
       } catch (e) {
-        // validateResolution rejects unknown actions / a missing required note or value.
         await client.query('ROLLBACK').catch(() => {});
+        // validateResolution throws a plain Error with a safe, user-facing reason (unknown action /
+        // missing required note or value). A DB error carries a pg SQLSTATE in e.code — never leak
+        // its internals (column/constraint names) to the client; hand it to the global handler.
+        if (e && e.code) throw e;
         return res.status(400).json({ error: e.message });
       }
       await client.query('COMMIT');

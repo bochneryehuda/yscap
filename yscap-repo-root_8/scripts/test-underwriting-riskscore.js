@@ -77,4 +77,22 @@ const f = (code, title, severity = 'warning') => ({ code, title: title || code, 
   assert.strictEqual(computeRiskScore({ findings: [f('ofac_confirmed_match')] }).band, 'high');            // 45 → high
 }
 
+// ---- Tie-out (cross-document) mismatches score (deep-audit regression) ----
+// The live tie-out engine emits `tieout_<factKey>` codes; the weight table used to key on the
+// dead cross-document.js codes, so a file riddled with cross-document disagreements scored 0.
+{
+  const r = computeRiskScore({ findings: [
+    f('tieout_purchase_price'), f('tieout_seller_name'), f('tieout_entity_name'),
+  ] });
+  assert.strictEqual(r.score, 39, 'tie-out price(15)+seller(12)+entity(12) score 39 — previously 0 (dead codes)');
+  assert.strictEqual(r.band, 'elevated', 'three fatal tie-out mismatches land ELEVATED');
+  assert.ok(r.reasons.some((x) => x.code === 'tieout_purchase_price'), 'tie-out price is a scored reason');
+  // Adding the property-address mismatch pushes it into HIGH (SAR territory).
+  const r2 = computeRiskScore({ findings: [
+    f('tieout_purchase_price'), f('tieout_seller_name'), f('tieout_entity_name'), f('tieout_property_address'),
+  ] });
+  assert.strictEqual(r2.band, 'high', 'four fatal tie-out mismatches reach HIGH');
+  assert.strictEqual(r2.sarRecommended, true);
+}
+
 console.log('test-underwriting-riskscore: weighted fraud scoring + banding + advisory pass');

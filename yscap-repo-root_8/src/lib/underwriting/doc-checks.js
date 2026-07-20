@@ -114,13 +114,27 @@ function computeEinFindings(e, subject, opts = {}) {
 function computeGoodStandingFindings(g, subject, opts = {}) {
   const out = []; if (!g) return out;
   if (unreadable('good_standing', g, ['entityLegalName', 'status'])) return [verify('good_standing', 'good-standing certificate')];
+  // Status wording varies a LOT by state — "Active" (most), "Good Standing", "Subsisting" (MD),
+  // "Current" / "Valid" / "In Existence" / "Registered" / "Authorized" all mean GOOD. Only a
+  // clearly-NEGATIVE status hard-blocks (revoked / dissolved / suspended / forfeited / …); an
+  // unrecognized word raises a WARNING to verify the wording, not a false clear-to-close FATAL on
+  // a clean entity whose state just phrases it unusually (audit 2026-07-20). Order matters: check
+  // NEGATIVE first, because "not in good standing" contains the word "good".
   const st = String(g.status || '').toLowerCase();
-  if (st && !/good|active|exist|compl/.test(st)) {
+  const NEGATIVE = /revoked|dissolv|forfeit|suspend|\bvoid\b|inactive|delinqu|terminat|expired|not in good|not good|cancel|withdrawn|defunct|bad standing|no longer|non[- ]?compl/;
+  const POSITIVE = /good stand|in good|\bactive\b|\bexist|subsist|\bcurrent\b|\bvalid\b|\bcompl|register|authoriz|in effect|effective|\bstanding\b/;
+  if (st && NEGATIVE.test(st)) {
     out.push(mk('good_standing', { code: 'entity_not_in_good_standing', severity: 'fatal', field: 'status',
       docValue: g.status, fileValue: 'good standing / active',
       title: 'The entity is not in good standing',
       howTo: `The certificate shows status "${g.status}". The entity must be active / in good standing to hold title and close. Reinstate the entity with the state.`,
       actions: ['request_document', 'post_condition', 'decline', 'dismiss'] }));
+  } else if (st && !POSITIVE.test(st)) {
+    out.push(mk('good_standing', { code: 'entity_status_unrecognized', severity: 'warning', field: 'status',
+      docValue: g.status, fileValue: 'good standing / active',
+      title: 'Confirm the entity’s status wording',
+      howTo: `The certificate shows status "${g.status}", which isn’t a recognized good-standing phrase. Confirm with the state that this means the entity is active / in good standing before clear-to-close.`,
+      actions: ['post_condition', 'request_document', 'dismiss'] }));
   }
   // Staleness: a good-standing certificate older than ~90 days should be refreshed.
   const today = opts.today;
