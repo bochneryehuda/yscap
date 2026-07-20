@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { api } from '../lib/api.js';
+import { AppraisalFinding } from './AppraisalPanel.jsx';
 
 /* The PILOT document-underwriting desk. For each uploaded document PILOT reads it (best-in-class
    OCR), understands it (AI, constrained to the document type's fields), and checks it against the
@@ -616,6 +617,7 @@ function Reasonability({ reasonability, appId, onChange }) {
 
 export default function UnderwritingPanel({ appId, docs = [], readOnly = false, onSummary }) {
   const [data, setData] = useState(null);
+  const [appr, setAppr] = useState(null); // appraisal findings folded into this ONE findings section
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   const [pick, setPick] = useState('');       // documentId to analyze
@@ -642,9 +644,16 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
       const d = await api.underwritingGet(appId);
       setData(d);
       if (onSummary) onSummary(d && d.summary ? d.summary : null);
+      // Fold the appraisal's findings (only the findings, not the property-profile report) into
+      // this ONE findings section. Best-effort + additive: a file with no appraisal returns an
+      // empty list, and a fetch error never blocks the underwriting desk. Staff-only endpoint.
+      if (!readOnly) {
+        try { const ap = await api.appraisalGet(appId); setAppr(ap || null); }
+        catch (_) { setAppr(null); }
+      }
     } catch (e) { setErr(e.message || 'Could not load the underwriting review'); }
     finally { setLoading(false); }
-  }, [appId, onSummary]);
+  }, [appId, onSummary, readOnly]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -674,6 +683,8 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
   const amendments = data && data.amendments;
   const reasonability = data && data.reasonability;
   const verdict = data && data.verdict;
+  const apprFindings = (appr && appr.findings) || [];
+  const apprSum = (appr && appr.summary) || { fatal: 0, warning: 0, info: 0 };
   const exts = (data && data.extractions) || [];
   const docTypes = (data && data.docTypes) || [];
   const analyzers = (data && data.analyzers) || {};
@@ -771,6 +782,27 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
         </div>
       )}
 
+      {/* Appraisal findings — folded into this ONE findings section (owner-directed 2026-07-20).
+          Only the FINDINGS (appraisal value vs the loan file), never the full property-profile
+          report — that stays in the Appraisal section. Reuses the appraisal desk's own Finding
+          component + resolve path, so resolving here updates the appraisal review too (and its
+          re-price preview / replace-with-appraisal actions come along unchanged). */}
+      {apprFindings.length > 0 && (
+        <div style={{ marginBottom: 22 }}>
+          <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px' }}>Appraisal findings — appraisal vs the loan file</h4>
+          <p style={{ fontSize: 12, color: 'var(--muted,#4B585C)', margin: '0 0 10px' }}>
+            From the imported appraisal. The full property profile stays in the Appraisal section.
+          </p>
+          {(apprSum.fatal > 0 || apprSum.warning > 0) && (
+            <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+              {apprSum.fatal > 0 && <span style={{ fontWeight: 700, color: SEV.fatal.fg, background: SEV.fatal.bg, borderRadius: 999, padding: '3px 11px', fontSize: 12 }}>{apprSum.fatal} fatal</span>}
+              {apprSum.warning > 0 && <span style={{ fontWeight: 700, color: SEV.warning.fg, background: SEV.warning.bg, borderRadius: 999, padding: '3px 11px', fontSize: 12 }}>{apprSum.warning} warning</span>}
+            </div>
+          )}
+          {apprFindings.map((f) => <AppraisalFinding key={f.id} appId={appId} f={f} onChange={load} readOnly={readOnly} />)}
+        </div>
+      )}
+
       {/* per-document findings */}
       {findings.length > 0 ? (
         <div style={{ marginBottom: 22 }}>
@@ -778,7 +810,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
           {findings.map((f) => <Finding key={f.id} appId={appId} f={f} onChange={load} resolvable={resolvable} />)}
         </div>
       ) : (
-        cross.length === 0 && <p style={{ color: 'var(--good,#3F7A5B)', fontSize: 13, marginBottom: 20 }}>✓ No open findings{exts.length ? ' — every analyzed document matches the file.' : ' yet — analyze a document to start the review.'}</p>
+        cross.length === 0 && apprFindings.length === 0 && <p style={{ color: 'var(--good,#3F7A5B)', fontSize: 13, marginBottom: 20 }}>✓ No open findings{exts.length ? ' — every analyzed document matches the file.' : ' yet — analyze a document to start the review.'}</p>
       )}
 
       {/* what was read */}
