@@ -138,16 +138,22 @@ async function attachSignedArtifacts(db, envelopes) {
   for (const d of docs) (byEnv[d.envelopeRowId] = byEnv[d.envelopeRowId] || []).push(d);
   for (const e of envelopes) e.documents = byEnv[e.id] || [];
 
-  const withEnv = envelopes.filter((e) => e.envelopeId);
+  // Certificate is a standalone staff-only doc keyed by the DocuSign envelope UUID in
+  // its filename. Scope the lookup by BOTH the file (application_id) AND the filename
+  // so it can never bind to a doc outside the envelope's own file — belt-and-suspenders
+  // even though the envelope UUID is already globally unique.
+  const withEnv = envelopes.filter((e) => e.envelopeId && e.applicationId);
   if (withEnv.length) {
+    const appIds = [...new Set(withEnv.map((e) => e.applicationId))];
     const names = withEnv.map((e) => `esign_certificate_${e.envelopeId}.pdf`);
     const certs = (await db.query(
-      `SELECT id AS "documentId", filename FROM documents
-        WHERE doc_kind = 'esign_certificate' AND filename = ANY($1)`, [names])).rows;
-    const byName = {};
-    for (const c of certs) byName[c.filename] = c;
+      `SELECT id AS "documentId", filename, application_id AS "applicationId" FROM documents
+        WHERE doc_kind = 'esign_certificate' AND application_id = ANY($1) AND filename = ANY($2)`,
+      [appIds, names])).rows;
+    const byKey = {};
+    for (const c of certs) byKey[`${c.applicationId}::${c.filename}`] = c;
     for (const e of withEnv) {
-      const c = byName[`esign_certificate_${e.envelopeId}.pdf`];
+      const c = byKey[`${e.applicationId}::esign_certificate_${e.envelopeId}.pdf`];
       if (c) e.certificate = { documentId: c.documentId, filename: c.filename };
     }
   }

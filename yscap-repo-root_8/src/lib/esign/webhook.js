@@ -45,7 +45,7 @@ function recipientStatus(r) {
 }
 
 // ---- store a signed document via the standard documents chokepoint ----------
-async function storeSignedDocument(db, storage, { applicationId, checklistItemId, docKind, filename, bytes, visibility }) {
+async function storeSignedDocument(db, storage, { applicationId, borrowerId, checklistItemId, docKind, filename, bytes, visibility }) {
   // Idempotent: the filename is deterministic (<kind>_<envelopeId>.pdf), so if a
   // prior pass (e.g. one that crashed after the INSERT but before stamping
   // completed_document_id) already stored it, reuse that row rather than writing
@@ -61,12 +61,12 @@ async function storeSignedDocument(db, storage, { applicationId, checklistItemId
   try {
     const ins = await db.query(
       `INSERT INTO documents
-         (application_id, checklist_item_id, filename, content_type, size_bytes,
+         (application_id, borrower_id, checklist_item_id, filename, content_type, size_bytes,
           storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id, doc_kind,
           source_type, visibility, is_current, review_status)
-       VALUES ($1,$2,$3,'application/pdf',$4,$5,$6,'staff',NULL,$7,'system',$8,true,'pending')
+       VALUES ($1,$2,$3,$4,'application/pdf',$5,$6,$7,'staff',NULL,$8,'system',$9,true,'pending')
        RETURNING id`,
-      [applicationId, checklistItemId || null, filename, Buffer.from(bytes).length, provider, ref, docKind, visibility || 'borrower']);
+      [applicationId, borrowerId || null, checklistItemId || null, filename, Buffer.from(bytes).length, provider, ref, docKind, visibility || 'borrower']);
     // Supersede any PRIOR current copy of the same signed kind on this file. A
     // re-issue signs a NEW envelope → a new deterministic filename → a fresh
     // documents row; without this the old signed copy stays is_current=true and
@@ -123,6 +123,14 @@ async function handleCompletion(db, docusign, storage, envelopeRow) {
       [envelopeRow.id]);
     return;
   }
+  // The signed copies are the borrower's own documents — stamp borrower_id so they
+  // appear in the borrower's in-portal document library (a NULL borrower_id would
+  // hide them there even though visibility='borrower'). The certificate stays
+  // staff-only (borrower_id null).
+  const borrowerId = (await db.query(
+    `SELECT borrower_id FROM applications WHERE id=$1`, [envelopeRow.application_id])).rows[0];
+  const bId = (borrowerId && borrowerId.borrower_id) || null;
+
   const docs = (await db.query(
     `SELECT id, document_id, doc_kind, checklist_item_id, completed_document_id
        FROM esign_envelope_docs WHERE envelope_row_id = $1 ORDER BY document_id`, [envelopeRow.id])).rows;
@@ -133,6 +141,7 @@ async function handleCompletion(db, docusign, storage, envelopeRow) {
     const filename = `${d.doc_kind}_${envelopeId}.pdf`;
     const storedId = await storeSignedDocument(db, storage, {
       applicationId: envelopeRow.application_id,
+      borrowerId: bId,
       checklistItemId: d.checklist_item_id,
       docKind: d.doc_kind,
       filename, bytes, visibility: 'borrower',

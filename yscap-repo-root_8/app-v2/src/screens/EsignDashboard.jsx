@@ -22,6 +22,7 @@ import {
 // Filter tabs: which phases each shows. "attention" is the human-action bucket.
 const TABS = [
   { key: 'all',       label: 'All' },
+  { key: 'outstanding', label: 'Outstanding' },   // everything still in flight (not completed/declined/voided/error)
   { key: 'borrower',  label: 'Awaiting borrower', phases: ['awaiting_borrower'] },
   { key: 'admin',     label: 'Awaiting my signature', phases: ['awaiting_countersign'] },
   { key: 'completed', label: 'Completed', phases: ['completed'] },
@@ -226,9 +227,12 @@ export default function EsignDashboard() {
   const envelopes = (data && data.envelopes) || [];
   const sendHealth = (data && data.sendHealth) || null;
   const attention = (e) => ['declined', 'voided', 'error'].includes(e.phase) || e.deadLetteredAt;
+  const isOutstanding = (e) => !TERMINAL.includes(e.phase);   // still in flight: awaiting borrower / counter-sign
+  const outstandingCount = envelopes.filter(isOutstanding).length;
   const shown = envelopes.filter((e) => {
     const t = TABS.find((x) => x.key === tab);
     if (!t || t.key === 'all') return true;
+    if (t.key === 'outstanding') return isOutstanding(e);
     if (t.key === 'attention') return attention(e);
     return (t.phases || []).includes(e.phase);
   });
@@ -279,6 +283,7 @@ export default function EsignDashboard() {
 
       <div className="esign-stats">
         <StatCard label="All packages" value={counts.total || 0} active={tab === 'all'} onClick={() => setTab('all')} />
+        <StatCard label="Outstanding" value={outstandingCount} tone="teal" active={tab === 'outstanding'} onClick={() => setTab('outstanding')} />
         <StatCard label="Awaiting borrower" value={counts.awaiting_borrower || 0} tone="teal" active={tab === 'borrower'} onClick={() => setTab('borrower')} />
         <StatCard label="Awaiting my signature" value={counts.awaitingCountersign || 0} tone="gold" active={tab === 'admin'} onClick={() => setTab('admin')} />
         <StatCard label="Completed" value={counts.completed || 0} tone="ok" active={tab === 'completed'} onClick={() => setTab('completed')} />
