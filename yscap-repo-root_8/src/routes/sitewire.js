@@ -316,7 +316,9 @@ router.post('/requests/:reqId/approve', requirePermission('manage_draws'), async
     }
     res.json({ dryrun: true, approved_cents: approvedCents });
   } catch (e) {
-    if (e.status === 422) return res.status(422).json({ error: `Sitewire rejected: ${JSON.stringify(e.body || {}).slice(0, 200)}` });
+    // A genuine Sitewire refusal (422 bad value / 403 not authorized) shows its specific reason and is NOT
+    // parked for retry — retrying won't change a "no". Matches the draw-transition route's 422/403 handling.
+    if (e.status === 422 || e.status === 403) return res.status(e.status).json({ error: `Sitewire ${e.status === 403 ? 'refused this approval' : 'rejected'}: ${JSON.stringify(e.body || {}).slice(0, 200)}` });
     // G1: a TRANSIENT/outage failure (5xx, network, circuit open, auth blip) must never silently drop a
     // money decision if the coordinator walks away — capture the intended approval as a retryable review
     // row, then return a clean, generic 502 (never the raw internal error).
