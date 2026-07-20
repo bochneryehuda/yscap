@@ -138,9 +138,13 @@ router.post('/:appId/import', async (req, res, next) => {
       // lender_address + the raw value & findings basis — the exact data safeAppr/SCRUTINY_CODES
       // scrub from the borrower. Without an explicit visibility it defaults to 'borrower' (db/014)
       // and the borrower could download the whole appraisal, bypassing the scrub. Force staff_only.
+      // review_status='accepted': these are SYSTEM/staff source docs, not human submissions to vet —
+      // without it they default to 'pending' (db/013) and show a stray "Accept" button on the staff
+      // Documents list (same class as the appraisal-photo fix, db/186). source_type stays
+      // 'staff_upload' so the staff "Replace" action remains available on the source files.
       xmlDocId = (await db.query(
-        `INSERT INTO documents (application_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,visibility,source_type)
-         VALUES ($1,$2,$3,'application/xml',$4,$5,$6,'staff',$7,'appraisal_xml','staff_only','staff_upload') RETURNING id`,
+        `INSERT INTO documents (application_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,visibility,source_type,review_status,reviewed_at)
+         VALUES ($1,$2,$3,'application/xml',$4,$5,$6,'staff',$7,'appraisal_xml','staff_only','staff_upload','accepted',now()) RETURNING id`,
         [app.id, app.borrower_id, b.filename || 'appraisal.xml', xbuf.length, s.provider, s.ref, req.actor.id])).rows[0].id;
 
       // PDF: use the uploaded slot if given, else the PDF embedded in the XML.
@@ -148,10 +152,21 @@ router.post('/:appId/import', async (req, res, next) => {
         const { buf: pbuf } = decodeUploadBase64(pdfB64, { maxBytes: MAX_UPLOAD_BYTES });
         const ps = await storage.save(pbuf, { filename: (b.filename || 'appraisal').replace(/\.xml$/i, '') + '.pdf' });
         pdfDocId = (await db.query(
-          `INSERT INTO documents (application_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,visibility,source_type)
-           VALUES ($1,$2,$3,'application/pdf',$4,$5,$6,'staff',$7,'appraisal_pdf','staff_only','staff_upload') RETURNING id`,
+          `INSERT INTO documents (application_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,visibility,source_type,review_status,reviewed_at)
+           VALUES ($1,$2,$3,'application/pdf',$4,$5,$6,'staff',$7,'appraisal_pdf','staff_only','staff_upload','accepted',now()) RETURNING id`,
           [app.id, app.borrower_id, 'appraisal.pdf', pbuf.length, ps.provider, ps.ref, req.actor.id])).rows[0].id;
       }
+      // Retire the PRIOR current source docs ONLY NOW — after the fresh ones are safely stored —
+      // excluding the just-inserted ids. A re-import must not leave two 'current' appraisal_xml/pdf
+      // side by side (duplicates on the Documents list, in TPR, mirrored twice); but doing this AFTER
+      // the inserts means a storage/DB failure above can never leave the file with ZERO current source
+      // docs (the old ones simply stay). Mirrors the slot-supersede pattern.
+      await db.query(
+        `UPDATE documents SET is_current=false,
+           review_status = CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
+          WHERE application_id=$1 AND is_current=true AND doc_kind IN ('appraisal_xml','appraisal_pdf')
+            AND id <> $2 AND ($3::uuid IS NULL OR id <> $3)`,
+        [app.id, xmlDocId, pdfDocId]);
     } catch (e) { console.error('[appraisal] document storage failed (import continues):', e && e.message); }
 
     // Shared desk flow: import + reconcile + materialize the two internal conditions +
@@ -173,12 +188,8 @@ router.post('/:appId/import', async (req, res, next) => {
       if (app.borrower_id) {
         // Atomically CLAIM the ~day slot (stamp-first) so a double/re-import in the
         // same instant can't send the milestone twice.
-        const claim = await db.query(
-          `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
-           SELECT 'system', NULL, 'appraisal_received_emailed', 'application', $1, '{}'::jsonb
-            WHERE NOT EXISTS (SELECT 1 FROM audit_log WHERE action='appraisal_received_emailed' AND entity_id=$1 AND created_at > now() - interval '20 hours')
-           RETURNING id`, [app.id]);
-        if (claim.rows[0]) {
+        const claimId = await require('../lib/throttle-claim').claimOncePerPeriod({ action: 'appraisal_received_emailed', entityId: app.id, interval: '20 hours' });
+        if (claimId) {
           await require('../lib/notify').notifyAppBorrowers(app.id, {
             type: 'milestone',
             title: 'Your property appraisal has been received',

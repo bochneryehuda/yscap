@@ -494,6 +494,17 @@ function resolveOnly(onlyKeys) {
 // ---- write guardrails (2026-07-15 DOB incident) — pure, unit-testable -------
 const FIELD_TYPE = new Map(FIELD_MAP.map((f) => [f.cu, f.type]));
 
+// Every ClickUp field that holds an EMAIL address. Emails are case-insensitive in
+// practice (the domain always, the local part for every real-world mailbox), so
+// fieldValueEquivalent compares them case/whitespace-insensitively — otherwise a
+// pure-case difference ("Shloimy6125@gmail.com" vs "shloimy6125@gmail.com") reads
+// as an overwrite and the PII shield queues a pointless review (owner-reported
+// 2026-07-20). Same class as the phone/address normalizations below.
+const EMAIL_FIELD_IDS = new Set([
+  F.SHARED.borrowerEmail, F.SHARED.loanOfficerEmail, F.PIPELINE.secondBorrowerEmail,
+  F.EXTRA.processorEmail, F.EXTRA.underwriterEmail,
+]);
+
 /** Is the value already on the task equivalent to what we're about to write?
  *  Conservative: any doubt → NOT equivalent (the caller writes, preserving old
  *  behavior). ClickUp reads dropdowns as orderindex INTEGERS while writes take
@@ -543,6 +554,22 @@ function fieldValueEquivalent(fieldId, oldVal, newVal, options) {
     if (fieldId === F.SHARED.borrowerCell || fieldId === F.PIPELINE.secondBorrowerCell || fieldId === F.CRM.phoneNumber) {
       const od = String(oldVal).replace(/\D/g, ''), nd = String(newVal == null ? '' : newVal).replace(/\D/g, '');
       if (od.length >= 10 && nd.length >= 10) return od.slice(-10) === nd.slice(-10);
+    }
+    // EMAIL fields: case- and whitespace-insensitive (owner-reported 2026-07-20 —
+    // a case-only difference was blocking a repush + queuing a review). Emails
+    // ALSO normalize on every OTHER sync surface (inbound heal / review applier);
+    // this closes the last gap, on the outbound no-op suppression.
+    if (EMAIL_FIELD_IDS.has(fieldId)) {
+      return String(oldVal).trim().toLowerCase() === String(newVal == null ? '' : newVal).trim().toLowerCase();
+    }
+    // SSN: PILOT stores 9 bare digits (decrypted on push); ClickUp usually holds a
+    // dashed "123-45-4776". Compare DIGITS-ONLY so a pure formatting difference is
+    // not read as an overwrite (both mask identically as ✱✱✱-✱✱-4776, which is
+    // exactly why such a review looked like "same SSN"). A garbled/short value
+    // falls through to the exact-string compare below.
+    if (fieldId === F.SHARED.borrowerSSN) {
+      const od = String(oldVal).replace(/\D/g, ''), nd = String(newVal == null ? '' : newVal).replace(/\D/g, '');
+      if (od.length === 9 && nd.length === 9) return od === nd;
     }
     return String(oldVal).trim() === String(newVal).trim();
   } catch (_) { return false; }

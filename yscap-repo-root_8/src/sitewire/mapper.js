@@ -291,7 +291,12 @@ function reconcileToBudget(ex, budgetCents, tolCents = 100) {
   let target = items.find((i) => i.sow_line_key === SENTINEL.CONTINGENCY)
             || items.find((i) => i.sow_line_key === SENTINEL.GC);
   if (target) {
-    target.budgeted_cents = (target.budgeted_cents || 0) + drift;
+    const adjusted = (target.budgeted_cents || 0) + drift;
+    // A negative residual larger than the absorber line would push it below zero —
+    // never construct a negative budget line (Sitewire 422s it). Don't fudge; let
+    // G-RECON see the true mismatch and block/park.
+    if (adjusted < 0) return ex;
+    target.budgeted_cents = adjusted;
   } else if (drift > 0) {
     // no contingency/GC line to absorb into — add a small Contingency line for the residual
     items.push({ sow_line_key: SENTINEL.CONTINGENCY, section_token: 'project', unit_index: null, name: 'Contingency', budgeted_cents: drift, is_media_item: false, mandatory: false, required_image_count: 0, required_video_count: 0 });

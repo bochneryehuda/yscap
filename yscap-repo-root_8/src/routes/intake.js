@@ -21,8 +21,15 @@ router.post('/', async (req, res) => {
   if (!cfg.intakeApiKey) {
     if (cfg.env === 'production')
       return res.status(503).json({ error: 'intake not configured (INTAKE_API_KEY unset)' });
-  } else if (req.get('x-intake-key') !== cfg.intakeApiKey) {
-    return res.status(401).json({ error: 'bad intake key' });
+  } else {
+    // Constant-time compare (matches the webhook verifiers) — a plain !== leaks
+    // the key byte-by-byte via response timing. Hash both sides to a fixed
+    // length first so the comparison is also independent of the key length.
+    const crypto = require('crypto');
+    const h = (s) => crypto.createHash('sha256').update(String(s == null ? '' : s), 'utf8').digest();
+    if (!crypto.timingSafeEqual(h(req.get('x-intake-key')), h(cfg.intakeApiKey))) {
+      return res.status(401).json({ error: 'bad intake key' });
+    }
   }
   const p = req.body || {};
   const email = p.email || p.b1Email;

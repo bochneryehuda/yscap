@@ -59,7 +59,7 @@ async function enrichFileOpts(opts, audience) {
   const ctx = opts._fileCtx || await fileContext(opts.applicationId);
   if (!ctx) { opts._enriched = true; return opts; }
   const out = { ...opts, _enriched: true };
-  if (out.subjectTag == null) out.subjectTag = ctx.subjectTag || null;
+  if (out.subjectTag == null) out.subjectTag = (audience === 'borrower' ? (ctx.borrowerSubjectTag || ctx.subjectTag) : ctx.subjectTag) || null;
   if (!Array.isArray(out.meta) || !out.meta.length) {
     out.meta = audience === 'borrower' ? ctx.borrowerMeta : ctx.meta;
   }
@@ -95,6 +95,9 @@ function buildEmail(opts, audience) {
     // explicit `files` list wins, else derive from whatever bytes were attached.
     files:     (Array.isArray(opts.files) && opts.files.length ? opts.files : (opts.attachments || []).map((a) => a && a.filename)).filter(Boolean),
     cta:       { label: opts.ctaLabel || (audience === 'borrower' ? 'Open your portal' : 'Open the loan file'), url: link },
+    // Optional SECONDARY button beside the primary (e.g. findings email: "Accept" + "Review /
+    // dispute"). Pass {cta2Label, cta2Link} (a portal route, tracker-safe bounced) or a raw cta2.
+    cta2:      (opts.cta2Label && opts.cta2Link) ? { label: opts.cta2Label, url: portalLink(opts.cta2Link) } : (opts.cta2 || null),
     note:      opts.note || (audience === 'borrower'
                  ? 'You are receiving this because you have an active file with YS Capital Group.'
                  : ''),
@@ -115,6 +118,19 @@ function buildEmail(opts, audience) {
     officer:   opts.officer || null,
     audience,
   });
+}
+
+// Build the invisible open-tracking pixel for a recipient's notification and
+// splice it into the email body just before </body> (or append). Returns the html
+// unchanged when there's no APP_URL or no id. Belt: never throws.
+function injectOpenPixel(html, notifId) {
+  try {
+    if (!cfg.appUrl || !notifId || !html) return html;
+    const base = String(cfg.appUrl).replace(/\/+$/, '');
+    const px = `<img src="${base}/e/o/${notifId}.gif" alt="" width="1" height="1" border="0" style="display:none;width:1px;height:1px;max-width:0;max-height:0;opacity:0;overflow:hidden" />`;
+    // function replacement so a literal '$' in APP_URL can't be mis-expanded by replace()
+    return /<\/body>/i.test(html) ? html.replace(/<\/body>/i, () => px + '</body>') : html + px;
+  } catch (_) { return html; }
 }
 
 async function _emailRow(id, to, opts, audience) {
@@ -140,16 +156,40 @@ async function _emailRow(id, to, opts, audience) {
     // available, fall back to the monitored company inbox (cfg.replyToDefault) so a
     // reply ALWAYS reaches a human — no notification is ever a dead-end no-reply.
     const replyTo = opts.replyTo || fileReplyTo(opts.applicationId) || cfg.replyToDefault || null;
+    // Open tracking: embed an invisible 1x1 pixel keyed on THIS recipient's
+    // notification id so we can tell if/when they opened it. The pixel rides ONLY
+    // in the SENT copy; the stored Email Center copy uses the clean body (passed
+    // via _ctx.bodyHtml) so a staffer opening the history never trips it.
+    const sentHtml = injectOpenPixel(msg.html, id);
+    const pixelInjected = sentHtml !== msg.html;
+    // #447: `bcc` loops the assigned loan officer into borrower emails. BUT that
+    // copy carries the SAME pixel, keyed on the BORROWER's notification — so when
+    // the LO's mail client (or their org's image-prefetching security scanner)
+    // loads it, we'd record a FALSE "borrower opened". So when we're tracking AND
+    // BCC'ing, the pixel copy goes only to the real recipients and the officer gets
+    // a separate, pixel-free copy (which can't trip the borrower's open). The
+    // capture layer records `to` only (not bcc), so the officer was never in the
+    // Email Center roster — splitting the send loses nothing from the history.
+    const officerBcc = (Array.isArray(opts.bcc) && opts.bcc.length) ? opts.bcc : null;
+    const splitOfficer = pixelInjected && officerBcc;
     // #150: an optional LO-branded From display name rides through untouched
-    // (resend honors it; other providers ignore it). #447: `bcc` loops the LO into
-    // borrower emails. `_ctx` is stripped by the provider wrapper and drives the
-    // portal-wide Email Center capture (email_messages, src/lib/email-log.js), kept
-    // ALONGSIDE the #442 sent_emails capture below (two independent stores — the
-    // portal-wide Email Center and the Draw Management email view).
-    const res = await email.sendMail({ to, subject: msg.subject, text: msg.text, html: msg.html, attachments, replyTo, from: opts.from || null, bcc: opts.bcc || null,
-      _ctx: { applicationId: opts.applicationId, notificationId: id, type: opts.type, audience, subjectTag: opts.subjectTag, kicker: opts.kicker } });
+    // (resend honors it; other providers ignore it). `_ctx` is stripped by the
+    // provider wrapper and drives the portal-wide Email Center capture
+    // (email_messages, src/lib/email-log.js), kept ALONGSIDE the #442 sent_emails
+    // capture below (two independent stores — the portal-wide Email Center and the
+    // Draw Management email view).
+    const res = await email.sendMail({ to, subject: msg.subject, text: msg.text, html: sentHtml, attachments, replyTo, from: opts.from || null,
+      bcc: splitOfficer ? null : (opts.bcc || null),
+      _ctx: { applicationId: opts.applicationId, notificationId: id, type: opts.type, audience, subjectTag: opts.subjectTag, kicker: opts.kicker, bodyHtml: msg.html } });
     const status = res && res.ok ? 'sent' : 'skipped';
     await _mark(id, status);
+    // Deliver the loan officer their pixel-free copy as a separate send. `_skipCapture`
+    // keeps it out of the Email Center (the borrower send above already recorded this
+    // notification's history; a second capture on the same notification_id would clobber
+    // the recorded recipient). Best-effort — never affects the borrower send's result.
+    if (splitOfficer) {
+      email.sendMail({ to: officerBcc, subject: msg.subject, text: msg.text, html: msg.html, attachments, replyTo, from: opts.from || null, _skipCapture: true }).catch(() => {});
+    }
     // #442 draw email center: also persist the rendered email + attachment BYTES to the
     // sent_emails store that the Draw Management email view reads. Best-effort + caught.
     _captureSentEmail(id, to, opts, audience, msg, replyTo, attachments, status).catch(() => {});
@@ -208,6 +248,21 @@ async function _mark(id, status) {
     [id, status]);
 }
 
+// Routine, low-signal STAFF events — a borrower doing an ordinary workflow thing
+// (answering a tool/checklist question, uploading a document, adding the
+// appraisal card) — post the in-app row but do NOT email. Otherwise the whole
+// team (loan officer + processor + assistants) gets an inbox blast on EVERY
+// ordinary borrower action, which is exactly the bombardment the owner flagged
+// (2026-07-20 evening: "stop the bombardment with stuff that is not important").
+// The in-app queue still shows everything; only the EMAIL is suppressed. Mirrors
+// the #88 borrower "major-only email" policy and the status_change in-app gate.
+// A caller may force either way with an explicit opts.inAppOnly (status_change
+// passes its computed value; a genuinely action-needed staff event passes false).
+// These types are ONLY ever suppressed for STAFF — the borrower-facing versions
+// (condition_added / doc_requested / doc_rejected) go through notifyBorrower,
+// which has its own BORROWER_MAJOR_EMAIL policy and is untouched by this set.
+const STAFF_INAPP_TYPES = new Set(['tool_submitted', 'doc_uploaded', 'condition_added']);
+
 /** Notify one staff user. opts: {type,title,body,applicationId,link,emailTo,meta,lines,ctaLabel,greeting,note} */
 async function notifyStaff(staffId, opts) {
   // S1-01 control center: a manager can switch a member's notifications OFF. When
@@ -227,11 +282,14 @@ async function notifyStaff(staffId, opts) {
     // and every other caller. (Fixed at the chokepoint, not per call site.)
     if (p.rows[0] && p.rows[0].is_active === false) emailOn = false;
   } catch (_) { /* columns exist after migration; default on */ }
-  // opts.inAppOnly (owner-directed 2026-07-20): keep the in-app row but SKIP the
-  // email — for routine, low-signal staff events (e.g. a file moving to a working
-  // status like Processing) so the team's inbox isn't bombarded. Mirrors the #88
-  // borrower policy where only MAJOR moments email.
-  if (opts.inAppOnly) emailOn = false;
+  // Keep the in-app row but SKIP the email for routine, low-signal staff events
+  // (a file moving to a working status like Processing; a borrower answering a
+  // tool question / uploading a doc / adding the appraisal card) so the team's
+  // inbox isn't bombarded. An explicit opts.inAppOnly always wins (status_change
+  // passes its computed value); otherwise a STAFF_INAPP_TYPES type defaults to
+  // in-app-only. Mirrors the #88 borrower policy where only MAJOR moments email.
+  const inAppOnly = (opts.inAppOnly !== undefined) ? opts.inAppOnly : STAFF_INAPP_TYPES.has(opts.type);
+  if (inAppOnly) emailOn = false;
   // Auto-attach the file's identity (subject tag + detail block + default
   // link/CTA) so every staff file email says WHICH file, without every call
   // site building it. No-op when there's no applicationId. (#88/#150 unchanged.)
@@ -271,6 +329,13 @@ const CATEGORY_OF = {
 const ALWAYS_IN_APP = new Set(['doc_rejected', 'condition_added', 'security', 'account', 'llc_unverified', 'track_record_unverified']);
 const NOTIFY_CATEGORIES = ['messages', 'status_updates', 'documents', 'conditions', 'pricing', 'reminders', 'draws', 'other'];
 const categoryOf = (type) => CATEGORY_OF[type] || 'other';
+// Whether a category sends email BY DEFAULT (i.e. at least one of its event types
+// is a "major" email moment). The preferences screen uses this so a borrower with
+// no saved preference sees the category's REAL starting state — showing "email on"
+// for a category that never emails by default (e.g. `other`) was misleading. Note
+// BORROWER_MAJOR_EMAIL is defined just below; this is a function so it reads it lazily.
+const categoryEmailsByDefault = (category) =>
+  Object.keys(CATEGORY_OF).some((type) => CATEGORY_OF[type] === category && BORROWER_MAJOR_EMAIL.has(type));
 
 // #88: keep the borrower's inbox to MAJOR moments. These types EMAIL the borrower
 // by default; every other type is in-app ONLY unless the borrower explicitly turns
@@ -512,11 +577,17 @@ async function fileContext(appId, extraMeta = []) {
       a.loan_type ? { label: 'Loan type', value: a.loan_type } : null,
       a.loan_amount != null ? { label: 'Loan amount', value: money(a.loan_amount) } : null,
     ].filter(Boolean);
-    // Short tag for the SUBJECT line: loan number (when assigned) + street, kept
-    // concise so it reads cleanly in an inbox.
-    const subjectTag = [hasLoanNo ? loanNo : null, street].filter(Boolean).join(' · ') || (hasLoanNo ? loanNo : addr);
-    return { label: `${loanNo} · ${addr}`, addr, street, loanNo, hasLoanNo, borrowerName, officer, officerRow, meta, borrowerMeta, subjectTag };
+    // Short tag appended to the SUBJECT line. Owner's preferred layout
+    // (2026-07-20): loan number · borrower name · property (street), kept concise
+    // so it reads cleanly in an inbox. The BORROWER's OWN email drops the name
+    // (it's their file — showing them their own name is redundant): loan number ·
+    // street. enrichFileOpts picks the right one by audience; the template's dedup
+    // guard makes sure none of these segments ever doubles a title that already
+    // names the file.
+    const subjectTag = [hasLoanNo ? loanNo : null, borrowerName, street].filter(Boolean).join(' · ') || (hasLoanNo ? loanNo : addr);
+    const borrowerSubjectTag = [hasLoanNo ? loanNo : null, street].filter(Boolean).join(' · ') || (hasLoanNo ? loanNo : addr);
+    return { label: `${loanNo} · ${addr}`, addr, street, loanNo, hasLoanNo, borrowerName, officer, officerRow, meta, borrowerMeta, subjectTag, borrowerSubjectTag };
   } catch (_) { return null; }
 }
 
-module.exports = { notifyStaff, notifyBorrower, notifyAppBorrowers, notifyAppStaff, notifyAdmins, buildEmail, fileContext, NOTIFY_CATEGORIES, ALWAYS_IN_APP };
+module.exports = { notifyStaff, notifyBorrower, notifyAppBorrowers, notifyAppStaff, notifyAdmins, buildEmail, fileContext, injectOpenPixel, NOTIFY_CATEGORIES, ALWAYS_IN_APP, categoryEmailsByDefault };

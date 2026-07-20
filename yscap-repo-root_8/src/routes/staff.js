@@ -12,6 +12,7 @@ const email = require('../lib/email');                    // Email Center: send 
 const emailLog = require('../lib/email-log');             // Email Center: capture + on-demand body
 const C = require('../lib/crypto');
 const notify = require('../lib/notify');
+const { claimOncePerPeriod } = require('../lib/throttle-claim');
 const changeRequests = require('../lib/change-requests');
 const mail = require('../lib/email/catalog');
 const { fileReplyTo } = require('../lib/file-address');   // #68 per-file shared reply-to
@@ -1143,13 +1144,13 @@ router.get('/applications/:id', async (req, res) => {
             pr.program AS registered_program, pr.product_label AS registered_product_label,
             pr.status AS registered_product_status, pr.note_rate AS registered_note_rate,
             pr.total_loan AS registered_total_loan, pr.quote AS registered_quote,
-            pr.stale AS registered_stale,
+            pr.stale AS registered_stale, pr.stale_reason AS registered_stale_reason,
             pr.created_at AS registered_at
      FROM applications a JOIN borrowers b ON b.id=a.borrower_id
      LEFT JOIN llcs l ON l.id=a.llc_id
      LEFT JOIN borrowers cb ON cb.id=a.co_borrower_id
      LEFT JOIN LATERAL (
-       SELECT program, product_label, status, note_rate, total_loan, quote, stale, created_at
+       SELECT program, product_label, status, note_rate, total_loan, quote, stale, stale_reason, created_at
          FROM product_registrations
         WHERE application_id=a.id AND is_current
         ORDER BY created_at DESC LIMIT 1
@@ -1168,7 +1169,11 @@ router.get('/applications/:id', async (req, res) => {
   // (The raw applications.file_markup_* columns still ride a.* here as before; keeping
   // those off non-admin staff clients is a separate pre-existing follow-up.)
   fileRow.pricing_stale = !!(fileRow.registered_quote && fileRow.registered_stale);
+  // The plain-language "why you must re-register" (which number changed, old → new).
+  // Only meaningful when the registration is actually stale.
+  fileRow.pricing_stale_reason = fileRow.pricing_stale ? (fileRow.registered_stale_reason || null) : null;
   delete fileRow.registered_stale;
+  delete fileRow.registered_stale_reason;
   res.json(fileRow);
 });
 
@@ -1752,7 +1757,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       ].filter(Boolean));
       const body = `${pricing.PROGRAM_LABEL[program]} · ${dollars} @ ${pctRate}${quote.status !== 'ELIGIBLE' ? ' (' + quote.status.toLowerCase() + ')' : ''} on ${ctx ? ctx.label : 'the file'} · cash to close ${money2(quote.cashToClose)} · liquidity ${money2(quote.liquidity ?? quote.liquidityRequired)}`;
       await notify.notifyAppStaff(appId, {   // #113: whole team (primary + assistants), minus the actor
-          type: 'product_registered', title: 'Product registered on ' + (row.ys_loan_number || 'a file'),
+          type: 'product_registered', title: 'Product registered',   // file identity (loan# · borrower · property) rides in the subject tag — never in the title (no double loan number)
           body, meta: (ctx && ctx.meta) || undefined, applicationId: appId,
           link: `/internal/app/${appId}`, ctaLabel: 'Open the loan file', exceptStaffId: req.actor.id });
 
@@ -2333,6 +2338,9 @@ function emailRowShape(r) {
     // every recipient this exact email reached (filled by consolidateEmailRows)
     recipients: r.recipients || null,
     recipient_count: r.recipient_count || null,
+    // open tracking (whether/when this recipient opened it)
+    opened_at: r.opened_at || null,
+    open_count: r.open_count || 0,
   };
 }
 
@@ -2341,12 +2349,13 @@ function emailRowShape(r) {
 // merges the whole fan-out below.
 function recipientsOfRow(r) {
   const to = Array.isArray(r.to_emails) ? r.to_emails : [];
-  if (!to.length) return r.recipient_name ? [{ email: null, name: r.recipient_name, kind: r.recipient_kind, status: r.status }] : [];
+  if (!to.length) return r.recipient_name ? [{ email: null, name: r.recipient_name, kind: r.recipient_kind, status: r.status, opened_at: r.opened_at || null }] : [];
   return to.map((t, i) => ({
     email: t.email || null,
     name: (i === 0 ? r.recipient_name : null) || t.name || null,
     kind: r.recipient_kind || null,
     status: r.status,
+    opened_at: r.opened_at || null,
   }));
 }
 const _STATUS_RANK = { error: 3, no_recipients: 3, failed_permanent: 3, skipped: 2, received: 1, forwarded: 1, sent: 1 };
@@ -2398,9 +2407,11 @@ router.get('/applications/:id/emails', async (req, res) => {
               em.from_email, em.from_name, em.to_emails, em.reply_to, em.recipient_kind,
               em.audience, em.status, em.error, em.attachments, em.meta, em.reconstructed,
               (em.body_html IS NOT NULL) AS has_body, em.thread_key, em.occurred_at, em.application_id,
+              eo.first_opened_at AS opened_at, eo.open_count,
               COALESCE(su.full_name,
                        NULLIF(TRIM(COALESCE(bo.first_name,'') || ' ' || COALESCE(bo.last_name,'')), '')) AS recipient_name
          FROM email_messages em
+         LEFT JOIN email_opens eo ON eo.notification_id = em.notification_id
          LEFT JOIN notifications n ON n.id = em.notification_id
          LEFT JOIN staff_users su ON su.id = n.staff_id
          LEFT JOIN borrowers   bo ON bo.id = n.borrower_id
@@ -2680,12 +2691,14 @@ router.get('/emails', async (req, res) => {
               em.from_email, em.from_name, em.to_emails, em.reply_to, em.recipient_kind,
               em.audience, em.status, em.error, em.attachments, em.meta, em.reconstructed,
               (em.body_html IS NOT NULL) AS has_body, em.thread_key, em.occurred_at, em.application_id,
+              eo.first_opened_at AS opened_at, eo.open_count,
               a.ys_loan_number, a.property_address, b.first_name AS b_first, b.last_name AS b_last,
               COALESCE(su.full_name,
                        NULLIF(TRIM(COALESCE(bo.first_name,'') || ' ' || COALESCE(bo.last_name,'')), '')) AS recipient_name
          FROM email_messages em
          LEFT JOIN applications a ON a.id = em.application_id
          LEFT JOIN borrowers   b ON b.id = a.borrower_id
+         LEFT JOIN email_opens eo ON eo.notification_id = em.notification_id
          LEFT JOIN notifications n ON n.id = em.notification_id
          LEFT JOIN staff_users su ON su.id = n.staff_id
          LEFT JOIN borrowers   bo ON bo.id = n.borrower_id
@@ -3035,6 +3048,15 @@ async function signOffGate(itemId, actor) {
     if (isAppraisalDocs) {
       if (!hasSlot('xml') || !hasSlot('pdf'))
         return 'Upload BOTH the appraisal data file (XML) and the appraisal report (PDF) before signing off — this condition cannot be completed without both.';
+      // The XML must have actually IMPORTED. If PILOT could not read the dropped file as a valid
+      // appraisal, no `appraisal_review_cleared` condition is ever materialized — and without it the
+      // whole PILOT findings engine (the fatal-finding clear-to-close gate) is silently skipped for
+      // this file. A successful import always creates a current appraisals row AND that condition,
+      // so require the row to exist before letting this document condition be signed off.
+      const imported = (await db.query(
+        `SELECT 1 FROM appraisals WHERE application_id=$1 AND superseded=false LIMIT 1`, [item.application_id])).rows[0];
+      if (!imported)
+        return 'The appraisal data file (XML) has not been read as a valid appraisal yet, so the PILOT appraisal review has not run. Re-upload a valid MISMO appraisal XML (PILOT imports it automatically) before signing off this condition.';
       return null;
     }
     if (isTitle) {
@@ -3139,11 +3161,14 @@ async function signOffGate(itemId, actor) {
     if (!eq(sowTotal, appBudget) || (regBudget != null && !eq(appBudget, regBudget)) || (fpSet && !eq(fpTarget, appBudget))) {
       return `Budgets do not match — first-page construction budget ${fpSet ? money(fpTarget) : '—'}, Scope of Work line-item total ${money(sowTotal)}, file budget ${money(appBudget)}${regBudget != null ? `, registered product budget ${money(regBudget)}` : ''}. They must ALL agree to the cent before sign-off: adjust the Scope of Work (start total + line items) or re-register the product so the numbers match.`;
     }
-    // Gold Standard Program: the Scope of Work must carry a >= 5% construction
-    // contingency (owner-directed 2026-07-12). The budget still matches exactly
-    // above — this is a composition requirement on top of it.
-    if (/gold/i.test(String(reg.program || '')) && !require('../lib/rehab-budget').goldContingencyOk(item.tool_payload)) {
-      return require('../lib/rehab-budget').GOLD_CONTINGENCY_MSG;
+    // 5% construction contingency requirement (owner-directed 2026-07-12; extended
+    // 2026-07-20): the Scope of Work must carry a >= 5% contingency when the file
+    // is registered Gold OR its note buyer is Blue Lake. The budget still matches
+    // exactly above — this is a composition requirement on top of it.
+    const RB = require('../lib/rehab-budget');
+    const contReq = await RB.sowContingencyRequired(item.application_id);
+    if (contReq.required && !RB.goldContingencyOk(item.tool_payload)) {
+      return RB.SOW_CONTINGENCY_MSG;
     }
     return null;
   }
@@ -3210,10 +3235,23 @@ router.patch('/checklist/:itemId', async (req, res) => {
   // so it needs the same capability as a sign-off, and only an OPTIONAL condition
   // may be waived — a required condition must actually be satisfied.
   if (b.waived === true) {
-    if (!canComplete) return res.status(403).json({ error: 'Only a processor or underwriter can waive a condition.' });
-    const cur = await db.query(`SELECT is_required FROM checklist_items WHERE id=$1`, [req.params.itemId]);
+    const cur = await db.query(
+      `SELECT ci.is_required, ci.tool_key, t.code AS template_code
+         FROM checklist_items ci LEFT JOIN checklist_templates t ON t.id = ci.template_id
+        WHERE ci.id=$1`, [req.params.itemId]);
     if (!cur.rows[0]) return res.status(404).json({ error: 'not found' });
-    if (cur.rows[0].is_required !== false) return res.status(422).json({ error: 'Only an optional condition can be waived — make it optional first, then waive.' });
+    // The appraisal credit-card condition may ALSO be waived by the loan officer
+    // (owner-directed): "The credit-card-for-appraisal condition should have a
+    // waive button… the super admin should be able to waive the condition, the
+    // loan officer should also be able to waive the condition." Every other
+    // condition still needs sign-off authority to waive.
+    const isApprCard = cur.rows[0].tool_key === 'appraisal_card' || cur.rows[0].template_code === 'rtl_p1_apprcard';
+    const mayWaive = canComplete || (isApprCard && can(req.actor, 'review_conditions'));
+    if (!mayWaive) return res.status(403).json({ error: 'Only a processor or underwriter can waive a condition.' });
+    // Normally only an OPTIONAL condition may be waived. The appraisal credit-card
+    // condition is an explicit exception (owner-directed): it is waivable directly
+    // even though it's a required task — the appraisal may simply be paid another way.
+    if (!isApprCard && cur.rows[0].is_required !== false) return res.status(422).json({ error: 'Only an optional condition can be waived — make it optional first, then waive.' });
   }
   // Push-back / reject / reopen: send a condition back to the borrower with a
   // BORROWER-VISIBLE reason (owner-directed 2026-07-12, LOS-grade management). One
@@ -3338,14 +3376,11 @@ router.patch('/checklist/:itemId', async (req, res) => {
       if (row && row.borrower_id && row.application_id && row.audience !== 'staff') {
         const open = await require('../lib/reminders').outstandingItems(row.application_id);
         if (open.length === 0) {
-          // Atomically CLAIM the 20h slot (stamp-first) so two conditions clearing
-          // the last item on the same file in the same instant can't both email.
-          const claim = await db.query(
-            `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
-             SELECT 'system', NULL, 'all_caught_up_emailed', 'application', $1, '{}'::jsonb
-              WHERE NOT EXISTS (SELECT 1 FROM audit_log WHERE action='all_caught_up_emailed' AND entity_id=$1 AND created_at > now() - interval '20 hours')
-             RETURNING id`, [row.application_id]);
-          if (claim.rows[0]) {
+          // Atomically CLAIM the 20h slot so two conditions clearing the last item
+          // on the same file in the same instant can't both email (advisory-locked
+          // shared helper — a plain INSERT…WHERE NOT EXISTS is not atomic).
+          const claimId = await claimOncePerPeriod({ action: 'all_caught_up_emailed', entityId: row.application_id, interval: '20 hours' });
+          if (claimId) {
             await notify.notifyAppBorrowers(row.application_id, {
               type: 'all_caught_up',
               title: 'You’re all caught up',
@@ -4649,40 +4684,16 @@ router.post('/llcs/:id/raise-issue', async (req, res) => {
 
 // ---------------- advance application status ----------------
 const APP_STATUS = ['file_intake', 'new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'declined', 'withdrawn'];
-const STATUS_LABEL = { file_intake: 'File intake', new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', declined: 'Declined', withdrawn: 'Withdrawn' };
-// #88: the DECISION milestones a borrower should be emailed about. Every status
-// change still posts in-app; only these also email (the in-between progress moves —
-// in_review / processing / underwriting — are in-app only, to keep the inbox quiet).
-const MAJOR_STATUSES = new Set(['approved', 'clear_to_close', 'funded', 'declined', 'withdrawn']);
-// Plain-language, borrower-facing explanation of what a status MEANS and what
-// happens next — so a status email is reassuring and actionable, not a bare label
-// (owner-directed 2026-07-20). Borrower-safe copy only (no capital-partner names,
-// no internal mechanics). Missing entry → no explanation line (graceful).
-const BORROWER_STATUS_EXPLAIN = {
-  in_review: 'Your loan team is reviewing your file and the documents you provided. We\'ll let you know as soon as we need anything else from you.',
-  processing: 'Your file is being prepared for underwriting. Keep an eye out for any document requests so nothing slows down your loan.',
-  underwriting: 'An underwriter is reviewing your loan for final approval. If they need anything, it will appear in your conditions.',
-  approved: 'Your loan has been approved. Next, we\'ll finish any remaining conditions and prepare to clear you to close.',
-  clear_to_close: 'You are clear to close — every condition is satisfied and your closing can be scheduled. Your loan officer will reach out to coordinate the details.',
-  funded: 'Your loan has funded — congratulations! If your loan includes renovation draws, you can request your first draw from the portal when you\'re ready.',
-  declined: 'After review, we are unable to move forward with this loan at this time. Your loan officer can walk you through why and discuss any options.',
-  withdrawn: 'This loan file has been withdrawn. If this wasn\'t expected, contact your loan officer and we\'ll help sort it out.',
-};
-// The borrower-facing loan journey, as a 6-stage progress path for the email
-// stepper. Each internal status maps to a stage index; stages before it are
-// done, the mapped stage is current, later stages upcoming. Terminal
-// declined/withdrawn statuses show no path (handled by returning null).
-const BORROWER_JOURNEY = ['Submitted', 'In review', 'Underwriting', 'Approved', 'Clear to close', 'Funded'];
-const STATUS_STAGE = { file_intake: 0, new: 0, in_review: 1, processing: 1, underwriting: 2, approved: 3, clear_to_close: 4, funded: 5 };
-function borrowerJourney(status) {
-  const idx = STATUS_STAGE[status];
-  if (idx == null) return null;   // declined / withdrawn → no progress path
-  return BORROWER_JOURNEY.map((label, i) => ({ label, state: i < idx ? 'done' : (i === idx ? 'current' : 'upcoming') }));
-}
+// Borrower-facing status labels, the DECISION-milestone email set, the
+// plain-language explanations, and the journey path all live in ONE shared
+// module (src/lib/status-notify.js) so the borrower sees identical copy whether
+// a status change originates in the portal OR directly in ClickUp (the inbound
+// sync reuses the same builder). Imported here (not redefined) to stay in sync.
+const { STATUS_LABEL, MAJOR_STATUSES, borrowerStatusOpts } = require('../lib/status-notify');
 // Announce a borrower-facing status transition to the borrower + the team.
 // Extracted so BOTH doors into the borrower-facing bucket notify IDENTICALLY:
 // the PATCH /:id status route AND the POST /:id/internal-status door (the
-// 38-status ClickUp workflow the team actually drives). Previously only PATCH
+// 38-status ClickUp workflow the team also drives). Previously only PATCH
 // notified, so funding/approving a file via the internal-status dropdown gave
 // the borrower NO email — a real parity gap (owner-directed 2026-07-20). Only
 // call this when the borrower-facing bucket ACTUALLY changed (from !== to): the
@@ -4690,24 +4701,16 @@ function borrowerJourney(status) {
 // external bucket, and re-announcing an unchanged status would be a wrong-time /
 // duplicate email. A soft-deleted file is skipped (it's out of the pipeline —
 // "your loan is now …" would be a wrong-time send). Best-effort; never throws.
+// (A status change made directly in ClickUp is handled by the inbound sync via
+// statusNotify.notifyInboundStatusChange, sharing borrowerStatusOpts below.)
 async function notifyStatusTransition(appId, fromStatus, toStatus, opts = {}) {
   try {
     const live = await db.query(`SELECT deleted_at FROM applications WHERE id=$1`, [appId]);
     if (!live.rows[0] || live.rows[0].deleted_at) return;
     const label = STATUS_LABEL[toStatus] || toStatus;
     const fromLabel = STATUS_LABEL[fromStatus] || fromStatus;
-    const explain = BORROWER_STATUS_EXPLAIN[toStatus];
-    const steps = borrowerJourney(toStatus);
-    const positive = toStatus === 'funded' || toStatus === 'clear_to_close' || toStatus === 'approved';
-    const badgeTone = positive ? 'positive' : (toStatus === 'declined' || toStatus === 'withdrawn' ? 'neutral' : 'teal');
-    await notify.notifyAppBorrowers(appId, {
-      type: 'status_change', title: `Your loan status is now: ${label}`,
-      body: `Your loan file has moved from "${fromLabel}" to "${label}".`,
-      badge: { text: label, tone: badgeTone },
-      steps: steps || undefined,   // the visual loan-journey path (null on declined/withdrawn)
-      callout: explain ? { title: 'What this means', body: explain, tone: positive ? 'positive' : 'gold' } : undefined,
-      applicationId: appId, link: `/app/${appId}`, ctaLabel: 'View your file',
-      major: MAJOR_STATUSES.has(toStatus) });   // #88: only decision statuses email the borrower
+    // Borrower half — identical copy to the inbound (ClickUp-driven) path.
+    await notify.notifyAppBorrowers(appId, borrowerStatusOpts(appId, fromStatus, toStatus));
     await notify.notifyAppStaff(appId, {   // #113: whole team (primary + assistants), minus the actor
       type: 'status_change', title: `File moved to ${label}`,
       body: `This file moved from "${fromLabel}" to "${label}"${opts.forced ? ' (advanced with an admin override)' : ''}.`,
@@ -4725,10 +4728,43 @@ async function notifyStatusTransition(appId, fromStatus, toStatus, opts = {}) {
 // post_closing conditions never block. An admin may force past blockers.
 const CTC_SEVERITIES = ['standard', 'prior_to_docs'];
 const FUND_SEVERITIES = ['standard', 'prior_to_docs', 'prior_to_funding'];
+const SEV_LABEL = { standard: 'Standard', prior_to_docs: 'Prior to docs', prior_to_funding: 'Prior to funding', post_closing: 'Post-closing' };
+// Which file SECTION resolves a given blocker — so the "clear to close"
+// outstanding list can link each item straight to where you fix it (the section
+// expands + scrolls). Keyed on tool_key / template_code / audience. Anything we
+// don't recognize points at the shared "Conditions to close" section.
+function sectionForBlocker(row) {
+  const tk = row.tool_key || '';
+  const code = row.template_code || '';
+  // First-class underwriting conditions (the `conditions` table) are all rendered
+  // in the Underwriting-conditions panel, which lives inside "Conditions to close".
+  if (row.source === 'underwriting') return 'sec-conditions';
+  if (tk === 'product_pricing' || code === 'rtl_p1_product') return 'sec-pricing';
+  if (code === 'rtl_p1_llc') return 'sec-entity';
+  if (code === 'appraisal_review_cleared' || code === 'rtl_p3_apprreview' || code === 'rtl_cond_appraisaldocs' || tk === 'appraisal_review') return 'sec-appraisal';
+  if (tk === 'esign') return 'sec-esign';
+  if (row.audience === 'staff') return 'sec-internal-conds';
+  return 'sec-conditions';
+}
+// A short, plain-language "why this is still outstanding" for the list.
+function blockerReason(row) {
+  if (row.kind === 'gate') return 'A gate — it must be signed off before this file can clear to close.';
+  if (row.severity) return `${SEV_LABEL[row.severity] || row.severity} condition — clear or waive it.`;
+  if (row.status === 'received') return 'A document is in — it just needs a final sign-off.';
+  if (row.status === 'issue') return 'Sent back to the borrower — waiting on a corrected item.';
+  if (String(row.hint || '').trim()) return String(row.hint).trim();
+  return 'Not completed and signed off yet.';
+}
+function decorateBlocker(row, kind) {
+  const r = { ...row, kind, title: row.title || row.label };
+  r.section = sectionForBlocker(r);
+  r.reason = blockerReason(r);
+  return r;
+}
 async function advancementBlockers(appId, target) {
   const sevs = target === 'funded' ? FUND_SEVERITIES : CTC_SEVERITIES;
   const conds = await db.query(
-    `SELECT id, COALESCE(borrower_title, title) AS title, severity
+    `SELECT id, COALESCE(borrower_title, title) AS title, severity, audience
        FROM conditions
       WHERE application_id=$1 AND status IN ('open','borrower_responded') AND severity = ANY($2::text[])
       ORDER BY severity, created_at`, [appId, sevs]);
@@ -4740,8 +4776,10 @@ async function advancementBlockers(appId, target) {
   // double count. Internal checklist TASKS are workflow, not conditions, so they
   // don't gate here (their milestone subset is captured by is_gate).
   const checklistConds = await db.query(
-    `SELECT ci.id, COALESCE(ci.label, ci.borrower_label, 'Condition') AS title
+    `SELECT ci.id, COALESCE(ci.label, ci.borrower_label, 'Condition') AS title,
+            ci.tool_key, t.code AS template_code, ci.audience, ci.status, ci.hint
        FROM checklist_items ci
+       LEFT JOIN checklist_templates t ON t.id = ci.template_id
       WHERE ci.application_id=$1
         AND ci.item_kind IN ('document','condition')
         AND COALESCE(ci.is_required, true) = true
@@ -4749,10 +4787,18 @@ async function advancementBlockers(appId, target) {
         AND NOT (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')
       ORDER BY ci.sort_order, ci.created_at`, [appId]);
   const gates = await db.query(
-    `SELECT id, label FROM checklist_items
-      WHERE application_id=$1 AND is_gate=true AND NOT (signed_off_at IS NOT NULL OR status='satisfied')
-      ORDER BY sort_order, created_at`, [appId]);
-  return { conditions: [...conds.rows, ...checklistConds.rows], gates: gates.rows };
+    `SELECT ci.id, ci.label, ci.tool_key, t.code AS template_code, ci.audience, ci.status
+       FROM checklist_items ci
+       LEFT JOIN checklist_templates t ON t.id = ci.template_id
+      WHERE ci.application_id=$1 AND ci.is_gate=true AND NOT (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')
+      ORDER BY ci.sort_order, ci.created_at`, [appId]);
+  // Tag the first-class `conditions`-table rows so navigation sends them to the
+  // Underwriting-conditions panel (which renders them) rather than a checklist section.
+  const underwriting = conds.rows.map(r => ({ ...r, source: 'underwriting' }));
+  return {
+    conditions: [...underwriting, ...checklistConds.rows].map(r => decorateBlocker(r, 'condition')),
+    gates: gates.rows.map(r => decorateBlocker(r, 'gate')),
+  };
 }
 
 // Readiness for the gated transitions — powers the "conditions to close" widget.
@@ -4956,12 +5002,8 @@ router.post('/applications/:id/nudge', async (req, res) => {
     // records the audit event AND enforces the throttle, so two simultaneous
     // "Remind" clicks can't both pass a SELECT and both email the borrower. The
     // loser gets the 429. (Old shape SELECTed then stamped after send — a race.)
-    const nudgeClaim = await db.query(
-      `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
-       SELECT 'staff', $2, 'nudge_borrower', 'application', $1, $3::jsonb
-        WHERE NOT EXISTS (SELECT 1 FROM audit_log WHERE action='nudge_borrower' AND entity_id=$1 AND created_at > now() - interval '30 minutes')
-       RETURNING id`, [req.params.id, req.actor.id, JSON.stringify({ count: list.length })]);
-    if (!nudgeClaim.rows[0]) return res.status(429).json({ error: 'This borrower was already reminded on this file in the last 30 minutes — please wait before sending another.' });
+    const nudgeClaimId = await claimOncePerPeriod({ action: 'nudge_borrower', entityId: req.params.id, interval: '30 minutes', actorKind: 'staff', actorId: req.actor.id, detail: { count: list.length } });
+    if (!nudgeClaimId) return res.status(429).json({ error: 'This borrower was already reminded on this file in the last 30 minutes — please wait before sending another.' });
     await notify.notifyAppBorrowers(req.params.id, {
       type: 'reminder', title: 'A friendly reminder on your loan file',
       body: `Still needed to keep things moving: ${shown}.`,
@@ -5081,7 +5123,12 @@ router.post('/applications/:id/closing-date', async (req, res) => {
 // SSN has its own secure reveal/enter flow and is NEVER set here. App-field
 // changes enqueue a scoped ClickUp push. Behind the /applications/:id guard.
 const COMPLETE_APP_FIELDS = { program: 'text', loan_type: 'text', property_type: 'text',
-  purchase_price: 'money', as_is_value: 'money', arv: 'money', rehab_budget: 'money' };
+  purchase_price: 'money', as_is_value: 'money', arv: 'money', rehab_budget: 'money',
+  // Note buyer / capital partner (applications.lender). Normally fed from ClickUp,
+  // but staff can fill/correct it here when ClickUp doesn't feed it or is empty —
+  // it's part of application completeness (owner-directed 2026-07-20). STAFF-ONLY;
+  // never offered on the borrower completeness panel.
+  lender: 'text' };
 const COMPLETE_BORROWER_FIELDS = { cell_phone: 'text', date_of_birth: 'date', fico: 'int', citizenship: 'text' };
 async function completeFields(req, res, borrowerScoped) {
   const b = req.body || {};
@@ -5113,13 +5160,23 @@ async function completeFields(req, res, borrowerScoped) {
       // #84 — this staff completeness path writes the SAME frozen economics fields
       // as PATCH /details (program / loan_type / property_type / price / as-is / ARV
       // / rehab budget), so it must honor the clear-to-close / funded freeze too — a
-      // super_admin can unlock the file to correct it. Only the economics UPDATE is
-      // guarded (a request with personal borrower fields only is unaffected).
-      const lock = await require('../lib/file-lock').structuralLockReason(req.params.id, db, { actor: req.actor });
-      if (lock) return res.status(409).json({ error: lock, locked: true });
+      // super_admin can unlock the file to correct it. The NOTE BUYER (lender) is
+      // pure staff metadata (not a frozen economics field), so a lender-only edit
+      // is allowed even on a locked file; the freeze only guards economics.
+      if (appKeys.some((k) => k !== 'lender')) {
+        const lock = await require('../lib/file-lock').structuralLockReason(req.params.id, db, { actor: req.actor });
+        if (lock) return res.status(409).json({ error: lock, locked: true });
+      }
       appSets.push('updated_at=now()');
       await db.query(`UPDATE applications SET ${appSets.join(', ')} WHERE id=$1`, appVals);
       enqueueClickupPush(req.params.id, appKeys).catch(() => {});
+      // Filling a rule-driven field here (most importantly the NOTE BUYER) may
+      // attach/retract a condition — e.g. the CorrFirst EMD verification — and can
+      // flip the 5% SOW-contingency requirement (a Blue Lake note buyer). Re-run
+      // the Condition Center engine and enforce the contingency, exactly like the
+      // details edit path does. Best-effort — never blocks the save.
+      try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'completeness_edited' }); } catch (_) {}
+      try { await require('../lib/rehab-budget').enforceSowContingency(req.params.id); } catch (_) {}
     }
     const brVals = [bid]; const brSets = []; const brKeys = [];
     for (const [k, t] of Object.entries(COMPLETE_BORROWER_FIELDS)) {
@@ -5155,6 +5212,17 @@ async function completeFields(req, res, borrowerScoped) {
 }
 router.post('/applications/:id/complete-fields', (req, res) => completeFields(req, res, false));
 
+// All note buyers available to pick in the completeness panel — every value from
+// the ClickUp note-buyer dropdown, PLUS the confirmed registry set and anything
+// already on a file (owner-directed 2026-07-20). Staff-only (this whole router is
+// staff-gated) — a note buyer name is never exposed to a borrower.
+router.get('/note-buyers', async (req, res) => {
+  try {
+    const noteBuyers = await require('../lib/note-buyers').listNoteBuyers();
+    res.json({ noteBuyers });
+  } catch (e) { console.warn('[staff] note-buyers error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
 // S3-05: DECISION-grade statuses are an underwriting call — only roles with
 // see_all_files authority (admin / underwriter / loan_coordinator) may move a file
 // into one. A loan officer or processor can advance a file through the working
@@ -5180,7 +5248,10 @@ router.patch('/applications/:id', async (req, res) => {
         forced = true;
       }
     }
-    await db.query(`UPDATE applications SET status=$2, status_changed_at=now(), updated_at=now() WHERE id=$1`,
+    // Advance the go-forward notification watermark in lock-step with the status
+    // we're about to announce, so a later ClickUp ECHO of this same change is
+    // recognized as already-notified and does not re-notify (db/187).
+    await db.query(`UPDATE applications SET status=$2, status_notified_external=$2, status_changed_at=now(), updated_at=now() WHERE id=$1`,
       [req.params.id, status]);
     enqueueClickupPush(req.params.id, ['status']).catch(() => {}); // propagate ONLY the status change to ClickUp promptly
     // Record the transition on the file's timeline.
@@ -5231,7 +5302,9 @@ router.post('/applications/:id/internal-status', async (req, res) => {
       }
     }
     await db.query(
-      `UPDATE applications SET internal_status=$2, status=$3, status_changed_at=now(), updated_at=now() WHERE id=$1`,
+      // status_notified_external tracks the announced status (db/187) so a ClickUp
+      // echo of this change never re-notifies the borrower.
+      `UPDATE applications SET internal_status=$2, status=$3, status_notified_external=$3, status_changed_at=now(), updated_at=now() WHERE id=$1`,
       [req.params.id, internalStatus, external]);
     enqueueClickupPush(req.params.id, ['internal_status']).catch(() => {}); // WO-16 (F-M1): a DELIBERATE internal-status change pushes the ClickUp task status + the mirror
     // Record the (borrower-facing) transition on the file's timeline, like PATCH /:id.

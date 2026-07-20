@@ -92,7 +92,11 @@ app.get('/api/health', async (req, res) => {
     ]);
   } catch (e) {
     dbStatus = 'down';
-    dbError = db.describeError(e);
+    // Log the full detail (host:port, pg message) server-side only; the health
+    // endpoint is publicly reachable, so the client body carries just a generic
+    // signal — never the DB host/port or pg internals.
+    console.warn('[health] db probe failed:', db.describeError(e));
+    dbError = 'database unreachable';
   }
   let storageInfo;
   try { storageInfo = require('./lib/storage').probe(); } catch (e) { storageInfo = { ok: false, error: e.message }; }
@@ -118,7 +122,7 @@ app.get('/api/health', async (req, res) => {
         new Promise((_, rej) => setTimeout(() => rej(new Error('guard timeout')), 2500)),
       ]);
       conditionsGuard = { filesZeroItems: g.rows[0].zero_items, rtlFilesMissingContract: g.rows[0].no_contract };
-    } catch (e) { conditionsGuard = { error: e.message }; }
+    } catch (e) { console.warn('[health] conditions guard failed:', db.describeError(e)); conditionsGuard = { error: 'unavailable' }; }
   }
   // Liveness: 200 unless the caller explicitly asked for a strict DB gate.
   const code = (strict && dbStatus !== 'up') ? 503 : 200;
@@ -242,6 +246,39 @@ app.get('/link/:kind', (req, res, next) => {
   }
   const qs = params.toString();
   res.set('Location', `${portal}/#${route}${qs ? '?' + qs : ''}`).status(302).end();
+});
+
+// --- Email OPEN tracking pixel -----------------------------------------------
+// A per-recipient notification email embeds <img src="/e/o/<notificationId>.gif">.
+// When the recipient's email client loads it, we stamp the open (email_opens,
+// db/194) so the Email Center can show whether/when the borrower opened it.
+// PUBLIC + best-effort: it reveals nothing, always returns a 1x1 transparent GIF,
+// and the FK to notifications means a guessed/bogus id can't create a junk row.
+const OPEN_GIF = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
+// Generous per-IP cap so a pathological flood can't hammer the DB, but high enough
+// that a shared email-image proxy (Gmail routes many users' opens through a few
+// IPs) never suppresses a legitimate open. Best-effort: real open volume for this
+// shop is far below this.
+app.use('/e/o', rateLimit({ bucket: 'open-pixel', windowMs: 60000, max: 600 }));
+app.get('/e/o/:token', async (req, res) => {
+  const sendPixel = () => {
+    res.set('Content-Type', 'image/gif');
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.set('Pragma', 'no-cache');
+    res.end(OPEN_GIF);
+  };
+  const id = String(req.params.token || '').replace(/\.(gif|png|jpg|jpeg)$/i, '');
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return sendPixel();
+  try {
+    await require('./db').query(
+      `INSERT INTO email_opens (notification_id, first_opened_at, last_opened_at, open_count, first_ua, last_ip)
+       VALUES ($1, now(), now(), 1, $2, $3)
+       ON CONFLICT (notification_id)
+         DO UPDATE SET last_opened_at = now(), open_count = email_opens.open_count + 1,
+                       last_ip = EXCLUDED.last_ip`,
+      [id, String(req.get('user-agent') || '').slice(0, 300), String(req.ip || '').slice(0, 60)]);
+  } catch (_) { /* bogus/absent id (FK) or a DB blip — never fail the pixel */ }
+  sendPixel();
 });
 
 // --- Static site ---

@@ -66,13 +66,18 @@ export default function DealSnapshot({ app, gating }) {
           <span className="snap-stat-v gold">{app.rate_pct != null ? Number(app.rate_pct).toFixed(2) + '%' : '—'}</span>
         </div>
         {g && (
-          <div className="snap-stat">
+          // Clickable (owner-directed): the count jumps to the "What's left to
+          // clear to close" list, which explains each item and links to the
+          // section that fixes it. Not-ready shows the count; ready shows "Ready".
+          <button type="button" className="snap-stat snap-stat-btn"
+            title={g.ready ? 'All prerequisites met — see the checklist' : `${openCount} item(s) to clear — click to see exactly what's left and jump to each`}
+            onClick={() => { const el = document.getElementById('ctc-outstanding'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}>
             <span className="snap-stat-k">Clear to close</span>
             <span className="snap-stat-v" style={{ color: g.ready ? 'var(--ok)' : 'var(--warning)' }}>
               {g.ready ? 'Ready' : openCount}
             </span>
-            {!g.ready && <span className="snap-stat-sub">to clear</span>}
-          </div>
+            <span className="snap-stat-sub">{g.ready ? 'view checklist →' : 'to clear — see what’s left →'}</span>
+          </button>
         )}
       </div>
 
@@ -105,7 +110,11 @@ export default function DealSnapshot({ app, gating }) {
 
         <div className="snap-cluster">
           <div className="snap-cluster-h">Leverage{stale && <span style={{ color: 'var(--warning)', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}> · as last registered</span>}</div>
-          {stale && <div style={{ fontSize: '.8em', color: 'var(--warning)', margin: '2px 0 6px', lineHeight: 1.3 }}>A pricing detail changed since this product was registered — the loan amount and these ratios are as last registered. Re-price the product to update them.</div>}
+          {stale && <div style={{ fontSize: '.8em', color: 'var(--warning)', margin: '2px 0 6px', lineHeight: 1.3 }}>
+            {app.pricing_stale_reason
+              ? <><strong>Re-register needed:</strong> {app.pricing_stale_reason.replace(/^\[auto\]\s*/, '')}</>
+              : 'A pricing detail changed since this product was registered — the loan amount and these ratios are as last registered. Re-price the product to update them.'}
+          </div>}
           {row('LTC', ltc || '—')}
           {row('Initial LTV', acqLtv || '—')}
           {row('Loan-to-ARV', arvLtv || '—')}

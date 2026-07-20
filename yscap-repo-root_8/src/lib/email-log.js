@@ -139,7 +139,11 @@ async function captureOutbound(send = {}, ctx = {}) {
     if (!recipients.length && !ctx.notificationId) return; // nothing meaningful to record
     const applicationId = deriveAppId(ctx.applicationId, send.replyTo);
     const subject = String(send.subject || '').slice(0, 500);
-    const html = send.html ? String(send.html).slice(0, MAX_BODY) : null;
+    // Store the CLEAN body (ctx.bodyHtml, sans the open-tracking pixel) when the
+    // caller supplies it, so a staffer opening the history never trips the pixel;
+    // fall back to what was sent.
+    const srcHtml = ctx.bodyHtml != null ? ctx.bodyHtml : send.html;
+    const html = srcHtml ? String(srcHtml).slice(0, MAX_BODY) : null;
     const text = send.text ? String(send.text).slice(0, MAX_TEXT) : null;
     const attachments = Array.isArray(send.attachments)
       ? send.attachments.filter(Boolean).slice(0, 25).map((a) => ({

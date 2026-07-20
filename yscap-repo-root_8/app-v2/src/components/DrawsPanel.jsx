@@ -809,6 +809,19 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
   );
 }
 
+/* An <img> for an authenticated endpoint — an <img src> can't send the Bearer token, so we fetch
+   the bytes as a blob and hand the tag an object URL. Used for borrower dispute-evidence photos. */
+function AuthImg({ path, alt, style, onOpen }) {
+  const [src, setSrc] = useState(null);
+  useEffect(() => {
+    let alive = true, url = null;
+    api.authedBlob(path).then((b) => { if (!alive) { return; } url = URL.createObjectURL(b); setSrc(url); }).catch(() => {});
+    return () => { alive = false; if (url) URL.revokeObjectURL(url); };
+  }, [path]);
+  if (!src) return <span style={{ display: 'inline-block', width: 40, height: 40, borderRadius: 6, background: 'var(--ink-2,#eee)', border: '1px solid var(--line)', ...style }} />;
+  return <img src={src} alt={alt || ''} onClick={onOpen} style={{ width: 40, height: 40, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--line)', cursor: onOpen ? 'pointer' : 'default', ...style }} />;
+}
+
 function FindingStatus({ appId, finding, reload }) {
   const [detail, setDetail] = useState(null);
   const badge = { delivered: 'Awaiting the borrower', accepted: 'Accepted', disputed: 'Disputed — needs review', resolved: 'Resolved' }[finding.status] || finding.status;
@@ -820,12 +833,25 @@ function FindingStatus({ appId, finding, reload }) {
     <div style={{ marginTop: 8, borderTop: '1px dashed var(--line,#e6e0d4)', paddingTop: 8 }}>
       <div className="small"><b>Inspection findings:</b> {badge}{finding.wire_due_at && finding.status === 'accepted' ? ` · release due ${new Date(finding.wire_due_at).toLocaleString('en-US')}` : ''}</div>
       {detail && detail.lines && detail.lines.filter((l) => l.dispute_status === 'open').map((l) => (
-        <div key={l.id} className="row between" style={{ marginTop: 6, gap: 8, flexWrap: 'wrap' }}>
-          <div className="small">{l.name}: borrower wants {l.dispute_desired_cents == null ? '(review)' : usd2(l.dispute_desired_cents)}{l.dispute_note ? ` — "${l.dispute_note}"` : ''}</div>
-          <div className="row" style={{ gap: 6 }}>
-            <button className="btn btn-sm primary" onClick={() => decide(l.id, 'approved')}>Approve</button>
-            <button className="btn btn-sm ghost" onClick={() => decide(l.id, 'rejected')}>Reject</button>
+        <div key={l.id} style={{ marginTop: 8, padding: '8px 10px', border: '1px solid var(--line)', borderRadius: 8 }}>
+          <div className="row between" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+            <div className="small">{l.name}: borrower wants {l.dispute_desired_cents == null ? '(review)' : usd2(l.dispute_desired_cents)}{l.dispute_note ? ` — "${l.dispute_note}"` : ''}</div>
+            <div className="row" style={{ gap: 6 }}>
+              <button className="btn btn-sm primary" onClick={() => decide(l.id, 'approved')}>Approve</button>
+              <button className="btn btn-sm ghost" onClick={() => decide(l.id, 'rejected')}>Reject</button>
+            </div>
           </div>
+          {/* borrower's photo/receipt evidence (durable, GPS-stripped), fetched with auth */}
+          {Array.isArray(l.dispute_evidence) && l.dispute_evidence.length > 0 && (
+            <div className="row" style={{ gap: 6, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              <span className="small muted">Evidence:</span>
+              {l.dispute_evidence.map((ev) => (
+                ev.kind === 'image'
+                  ? <AuthImg key={ev.idx} path={`/api/sitewire/findings/lines/${l.id}/dispute-media/${ev.idx}`} alt={ev.filename} onOpen={() => { const w = window.open('', '_blank'); api.sitewireOpenDisputeMedia(l.id, ev.idx, w).catch(() => {}); }} />
+                  : <button key={ev.idx} className="btn btn-xs ghost" onClick={() => { const w = window.open('', '_blank'); api.sitewireOpenDisputeMedia(l.id, ev.idx, w).catch(() => {}); }}>{ev.filename}</button>
+              ))}
+            </div>
+          )}
         </div>
       ))}
     </div>
@@ -841,12 +867,16 @@ function InspectionGallery({ appId, draw, finding, readsOff }) {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   const [archivedCount, setArchivedCount] = useState(null); // durable copies already in PILOT storage
+  const [archivedMedia, setArchivedMedia] = useState([]);   // the durable rows (id, kind, request id)
   const [archiving, setArchiving] = useState(false);
   const [archiveMsg, setArchiveMsg] = useState('');
   const loadArchived = useCallback(() => {
     api.get(`/api/sitewire/files/${appId}/draws/${draw.sitewire_draw_id}/archived-media`)
-      .then((r) => setArchivedCount(r.count || 0)).catch(() => {});
+      .then((r) => { setArchivedCount(r.count || 0); setArchivedMedia(Array.isArray(r.media) ? r.media : []); }).catch(() => {});
   }, [appId, draw.sitewire_draw_id]);
+  // durable copies grouped by the Sitewire request (draw line) they belong to.
+  const durableByReq = new Map();
+  for (const m of archivedMedia) { const k = String(m.sitewire_request_id); if (!durableByReq.has(k)) durableByReq.set(k, []); durableByReq.get(k).push(m); }
   useEffect(() => { loadArchived(); }, [loadArchived]);
   async function archive() {
     setArchiving(true); setArchiveMsg('');
@@ -910,18 +940,36 @@ function InspectionGallery({ appId, draw, finding, readsOff }) {
               </div>
             </div>
             {l.inspector_comments && <div className="small" style={{ marginTop: 3, fontStyle: 'italic' }}>Inspector: “{l.inspector_comments}”</div>}
-            {media.length > 0 ? (
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 8, marginTop: 6 }}>
-                {media.map((m, j) => (
-                  <a key={j} href={m.src} target="_blank" rel="noreferrer" title={[m.type === 'video' ? 'Video' : 'Photo', m.note || '', m.captured_at ? new Date(m.captured_at).toLocaleString('en-US') : '', (m.lat && m.lng) ? `${m.lat}, ${m.lng}` : ''].filter(Boolean).join(' · ')}
-                    style={{ display: 'block', position: 'relative', aspectRatio: '4 / 3', borderRadius: 6, overflow: 'hidden', border: '1px solid var(--line,#e6e0d4)', background: '#000' }}>
-                    {m.type === 'video'
-                      ? <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 12 }}>▶ Video</div>
-                      : <img src={m.thumbnail || m.src} alt={l.name || 'inspection'} loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
-                  </a>
-                ))}
-              </div>
-            ) : <div className="muted small" style={{ marginTop: 4 }}>No photos on this line.</div>}
+            {(() => {
+              // Prefer PILOT's DURABLE copies (they never expire) keyed by the draw line's request id;
+              // fall back to Sitewire's live (expiring) media only when this line hasn't been archived yet.
+              const reqId = l.request_id != null ? l.request_id : l.sitewire_request_id;
+              const durable = durableByReq.get(String(reqId)) || [];
+              if (durable.length > 0) {
+                return (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 8, marginTop: 6 }}>
+                    {durable.map((m) => {
+                      const path = `/api/sitewire/files/${appId}/draws/${draw.sitewire_draw_id}/media/${m.id}`;
+                      return m.kind === 'video'
+                        ? <button key={m.id} onClick={() => { const w = window.open('', '_blank'); api.authedBlob(path).then((b) => { const u = URL.createObjectURL(b); if (w) w.location.href = u; }).catch(() => {}); }} title="Video (saved to PILOT)" style={{ aspectRatio: '4 / 3', borderRadius: 6, border: '1px solid var(--line,#e6e0d4)', background: '#000', color: '#fff', fontSize: 12, cursor: 'pointer' }}>▶ Video</button>
+                        : <AuthImg key={m.id} path={path} alt={l.name || 'inspection'} style={{ width: '100%', height: 'auto', aspectRatio: '4 / 3', borderRadius: 6, border: '1px solid var(--line,#e6e0d4)' }} onOpen={() => { const w = window.open('', '_blank'); api.authedBlob(path).then((b) => { const u = URL.createObjectURL(b); if (w) w.location.href = u; }).catch(() => {}); }} />;
+                    })}
+                  </div>
+                );
+              }
+              return media.length > 0 ? (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 8, marginTop: 6 }}>
+                  {media.map((m, j) => (
+                    <a key={j} href={m.src} target="_blank" rel="noreferrer" title={[m.type === 'video' ? 'Video' : 'Photo', m.note || '', m.captured_at ? new Date(m.captured_at).toLocaleString('en-US') : '', (m.lat && m.lng) ? `${m.lat}, ${m.lng}` : ''].filter(Boolean).join(' · ')}
+                      style={{ display: 'block', position: 'relative', aspectRatio: '4 / 3', borderRadius: 6, overflow: 'hidden', border: '1px solid var(--line,#e6e0d4)', background: '#000' }}>
+                      {m.type === 'video'
+                        ? <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 12 }}>▶ Video</div>
+                        : <img src={m.thumbnail || m.src} alt={l.name || 'inspection'} loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
+                    </a>
+                  ))}
+                </div>
+              ) : <div className="muted small" style={{ marginTop: 4 }}>No photos on this line.</div>;
+            })()}
           </div>
         );
       })}
