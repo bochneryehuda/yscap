@@ -45,7 +45,7 @@ const LENDER = { name: 'YS Capital Group', nmls: '2609746', addr: '5 New Montros
 
 // jsPDF's core font is Latin-1 only — strip anything it can't draw (a fully
 // non-Latin legal name strips to empty and its row is omitted rather than drawn
-// blank; the Hebrew Heter Iska is handled by the docx path, not here).
+// blank; the Hebrew Heter Iska renders its nusach as a pre-built image, not here).
 function pdfSafe(s) {
   return String(s == null ? '' : s)
     .replace(/[‘’]/g, "'").replace(/[“”]/g, '"')
