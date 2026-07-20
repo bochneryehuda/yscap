@@ -40,8 +40,55 @@ async function journal(e) {
 // ---- park a stuck/ambiguous state for a human (never guess, never silently drop) ----
 // `dedupe` differentiates DISTINCT failures that share a reason class (e.g. a bind failure on
 // line A vs line B) so they don't collapse into one row and lose the second failure's detail.
+// GO-FORWARD ONLY error handling (owner-directed 2026-07-20): a file only enters the sync-review ERROR
+// QUEUE (and the bidirectional reconcile/findings workflow) once PILOT has actually pushed it — i.e. it
+// has a live created Sitewire property. Everything that can go wrong BEFORE that (no Scope of Work, a
+// budget that doesn't tie out, an unmatched capital partner, an incomplete address, a loan already in
+// Sitewire that PILOT didn't create, the unit/type advisories) is a SETUP problem on a not-yet-managed
+// file. Those are recorded ON THE FILE and shown in its own draw section — NEVER as a global error row or
+// an email — so an old funded file nobody has pushed can't clutter the review queue. Once the push
+// succeeds the setup_status is cleared and normal error handling takes over.
+const SITEWIRE_BIRTH_REASONS = new Set([
+  'sitewire_missing_loan_number', 'sitewire_no_budget', 'sitewire_no_sow', 'sitewire_units_note',
+  'sitewire_budget_mismatch', 'sitewire_capital_partner_unmatched', 'sitewire_address_incomplete',
+  'sitewire_type_unmapped', 'sitewire_dupe_check_failed', 'sitewire_loan_already_in_sitewire',
+  'sitewire_property_rejected', 'sitewire_bind_missing_property',
+]);
+
+// Is this file under PILOT draw management yet? True only once a push bound a live Sitewire property.
+async function isManaged(appId) {
+  try { const lk = await getLink(appId); return !!(lk && lk.sitewire_property_id); } catch (_) { return false; }
+}
+
+// Record a BIRTH-phase setup outcome on the file itself (raw.setup_status) instead of the global review
+// queue. matched_by='created' with sitewire_property_id STILL NULL — reconcile/portfolio ignore a
+// null-property link, so nothing is followed until a real push binds a property. Cleared on success.
+async function recordSetupStatus(appId, { reason, cls, current, proposed, preexisting }) {
+  const status = { reason: String(reason), class: cls };
+  if (current != null) status.file_value = String(current);
+  if (proposed != null) status.sow_value = String(proposed);
+  if (preexisting != null) status.preexisting_property_id = String(preexisting);
+  const raw = { setup_status: status };
+  try {
+    await db.query(
+      `INSERT INTO sitewire_property_links (application_id, matched_by, state, raw, updated_at)
+       VALUES ($1,'created','pending',$2::jsonb, now())
+       ON CONFLICT (application_id) DO UPDATE
+         SET raw = COALESCE(sitewire_property_links.raw,'{}'::jsonb) || $2::jsonb, updated_at=now()`,
+      [appId, JSON.stringify(raw)]);
+  } catch (err) {
+    console.warn(`[sitewire] could not record setup status (app=${appId}, reason="${reason}"): ${db.describeError ? db.describeError(err) : err.message}`);
+  }
+  return null;
+}
+
 async function park({ appId, reason, fieldKey = 'sitewire', current = null, proposed = null, dedupe = null, notify = true }) {
   const cls = String(reason).split(':')[0];
+  // Birth-phase problem on a file PILOT hasn't managed yet → record on the file, never the error queue.
+  if (fieldKey === 'sitewire' && SITEWIRE_BIRTH_REASONS.has(cls) && !(await isManaged(appId))) {
+    const preexisting = cls === 'sitewire_loan_already_in_sitewire' ? current : null;
+    return recordSetupStatus(appId, { reason, cls, current, proposed, preexisting });
+  }
   // The shared open-review unique index is (COALESCE(task_id,''), field_key, direction,
   // COALESCE(proposed_value,'')) and does NOT include application_id. Stamp a per-(file,
   // reason-class, instance) key into task_id (no FK; unused by sitewire rows) so distinct
@@ -259,7 +306,10 @@ async function pushFile(appId, opts = {}) {
   const fileUnits = (a.units != null && Number(a.units) > 0) ? Number(a.units) : 0;
   const physicalUnits = Math.max(1, fileUnits, sowUnits);
   if (fileUnits > 0 && fileUnits !== sowUnits) {
-    await park({ appId, dedupe: 'units', notify: false, reason: `sitewire_units_note: the file lists ${fileUnits} unit(s) but the Scope of Work is built for ${sowUnits} — pushing the physical building count of ${physicalUnits} unit(s) (units with no work carry no budget lines). Update the file's unit count in the application if ${physicalUnits} is wrong.`, current: String(fileUnits), proposed: String(physicalUnits) });
+    // current/proposed drive the review card's "expected · found" line — anchor them to the REAL
+    // discrepancy (Scope-of-Work unit count vs the file's unit count), NOT file-vs-physical (which are
+    // often equal and read as a confusing "expected 2 · found 2"). Owner-directed 2026-07-20.
+    await park({ appId, dedupe: 'units', notify: false, reason: `sitewire_units_note: the file lists ${fileUnits} unit(s) but the Scope of Work is built for ${sowUnits} — pushing the physical building count of ${physicalUnits} unit(s) (units with no work carry no budget lines). Update the file's unit count in the application if ${physicalUnits} is wrong.`, current: String(fileUnits), proposed: String(sowUnits) });
   }
 
   // explode + G-RECON (must tie to the frozen budget to the cent BEFORE any write)
@@ -390,7 +440,8 @@ async function pushFile(appId, opts = {}) {
     await db.query(
       `INSERT INTO sitewire_property_links (application_id, sitewire_property_id, sitewire_budget_id, capital_partner_id, matched_by, state, pushed_at, raw, updated_at)
        VALUES ($1,$2,$3,$4,'created','live',now(),$5,now())
-       ON CONFLICT (application_id) DO UPDATE SET sitewire_property_id=EXCLUDED.sitewire_property_id, sitewire_budget_id=EXCLUDED.sitewire_budget_id, capital_partner_id=EXCLUDED.capital_partner_id, state='live', pushed_at=now(), updated_at=now()`,
+       ON CONFLICT (application_id) DO UPDATE SET sitewire_property_id=EXCLUDED.sitewire_property_id, sitewire_budget_id=EXCLUDED.sitewire_budget_id, capital_partner_id=EXCLUDED.capital_partner_id, state='live', pushed_at=now(),
+         raw = (COALESCE(sitewire_property_links.raw,'{}'::jsonb) - 'setup_status') || EXCLUDED.raw, updated_at=now()`,
       [appId, propertyId, budgetId, cp.id, JSON.stringify({ inspectionMethod, feeCents })]);
     link = await getLink(appId);
   } finally {
@@ -559,4 +610,4 @@ async function pushBudgetInner(appId, budgetId, ex, budgetCents) {
   return { ok: true, created: diff.creates.length, updated: diff.updates.length, deleted: diff.deletes.length };
 }
 
-module.exports = { pushFile, pushBudget, park, journal, circuitCheck, resolveCapitalPartnerId, resolveRule, resolveInspection, resolveCoordinatorId, getLink, loadFile };
+module.exports = { pushFile, pushBudget, park, journal, circuitCheck, resolveCapitalPartnerId, resolveRule, resolveInspection, resolveCoordinatorId, getLink, loadFile, isManaged, recordSetupStatus, SITEWIRE_BIRTH_REASONS };

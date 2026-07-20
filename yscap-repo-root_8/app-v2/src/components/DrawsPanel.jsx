@@ -26,6 +26,28 @@ const STATUS = {
 };
 const RISK = { high: { label: 'High risk', cls: 'sw-pending' }, medium: { label: 'Review', cls: 'sw-insp' }, low: { label: 'Minor', cls: 'sw-draft' }, clear: { label: 'Clear', cls: 'sw-approved' } };
 
+// Friendly one-liner for a birth-phase setup problem stored on the file (link.raw.setup_status). Shown
+// inline in this file's draw section — never as a global error row (go-forward only).
+const SETUP_BLURB = {
+  sitewire_no_sow: 'There’s no saved Scope of Work to turn into a Sitewire budget yet.',
+  sitewire_no_budget: 'No frozen rehab budget is set on this file yet.',
+  sitewire_missing_loan_number: 'This file has no loan number yet.',
+  sitewire_budget_mismatch: 'The Scope of Work doesn’t add up to the frozen construction budget to the penny.',
+  sitewire_capital_partner_unmatched: 'The file’s capital partner couldn’t be matched to a Sitewire partner.',
+  sitewire_address_incomplete: 'The property address is missing part of the street / city / state / ZIP.',
+  sitewire_property_rejected: 'Sitewire rejected the property (usually the address wouldn’t geocode).',
+  sitewire_dupe_check_failed: 'PILOT couldn’t verify whether this loan is already in Sitewire.',
+  sitewire_bind_missing_property: 'Sitewire didn’t return the ids PILOT needs to bind the property.',
+  sitewire_units_note: 'A heads-up about the unit count — the push can still proceed.',
+  sitewire_type_unmapped: 'A property/loan type couldn’t be mapped — optional; the push can still proceed.',
+};
+function setupBlurb(s) {
+  if (!s) return '';
+  if (SETUP_BLURB[s.class]) return SETUP_BLURB[s.class];
+  const m = /^sitewire_[a-z0-9_]+:\s*(.+)$/is.exec(String(s.reason || ''));
+  return (m ? m[1] : (s.reason || 'Setup needs a quick check.')).trim();
+}
+
 export default function DrawsPanel({ appId }) {
   const { can } = useAuth();
   const [data, setData] = useState(null);
@@ -50,7 +72,7 @@ export default function DrawsPanel({ appId }) {
   if (!data) return null;
 
   const { rollup, link, requests = [], ledger = [], findings = [], change_requests = [], retainage = null, waivers = [], lien_waivers_enabled = false,
-    preexisting = false, managed_since = null, go_live_date = null } = data;
+    preexisting = false, setup_status = null, managed_since = null, go_live_date = null } = data;
   // Render draw cards from rollup.draws — it carries the money (requested/approved/net_release),
   // the funded flag, and the merged risk flags + pdf_src. The top-level `draws` array has no
   // money fields, so using it would render $0.00 everywhere.
@@ -92,6 +114,15 @@ export default function DrawsPanel({ appId }) {
                 manage the draws, <b>delete that property in Sitewire</b>, then start the draw process below to push a
                 fresh copy. Otherwise leave it as-is and continue managing that property directly in Sitewire.
               </div>
+            </div>
+          )}
+          {/* A non-collision setup problem from the last push attempt — shown ON THE FILE (never a global
+              error row): the draw hasn't started because something needs fixing first (no Scope of Work,
+              a budget that doesn't tie out, an unmatched partner, an incomplete address, …). */}
+          {!preexisting && setup_status && (
+            <div className="panel" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)', borderLeft: '3px solid var(--gold,#ae8746)' }}>
+              <b>Draw setup hasn’t completed yet.</b>
+              <div className="muted small" style={{ marginTop: 3 }}>{setupBlurb(setup_status)} Fix the cause, then start the draw process below.</div>
             </div>
           )}
           <StartDrawCard appId={appId} onStarted={load} />
