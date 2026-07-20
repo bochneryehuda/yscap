@@ -13,7 +13,7 @@
  *   • it requires the registrant to state how many months of liquidity/assets the
  *     file must show (there is no fixed reserve table for a manual product — the
  *     admin sets a default, the registrant can raise it);
- *   • it ALWAYS requires the flood certificate (db/206 rule);
+ *   • it ALWAYS requires the flood certificate (db/207 rule);
  *   • and every manual product goes to the super-admin ESCALATION box for approval
  *     — the file registers immediately, but the product stays "pending super-admin
  *     approval" until decided.
@@ -71,7 +71,7 @@ function resolveProgram(requestedProgram, overrides) {
 }
 
 // ---------------------------------------------------------------------------
-// Company-level Manual Program settings (manual_program_settings, db/206).
+// Company-level Manual Program settings (manual_program_settings, db/207).
 // Singleton current row: default liquidity months (REQUIRED) + advisory leverage
 // ceilings. Append-only history mirroring company_pricing_settings.
 // ---------------------------------------------------------------------------
@@ -146,7 +146,7 @@ async function saveSettings(patch, by, client = db) {
 }
 
 // ---------------------------------------------------------------------------
-// Escalation queue (manual_program_escalations, db/206). One OPEN (pending) row
+// Escalation queue (manual_program_escalations, db/207). One OPEN (pending) row
 // per file — a re-register supersedes the prior pending row so the box never
 // shows stale duplicates.
 // ---------------------------------------------------------------------------

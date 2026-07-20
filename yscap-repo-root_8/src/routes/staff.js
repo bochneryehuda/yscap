@@ -1731,7 +1731,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       });
       // Manual product → open a super-admin escalation in the same transaction.
       // The file registers now, but the product stays "pending super-admin
-      // approval" until the escalation is decided (db/206). Superseding any prior
+      // approval" until the escalation is decided (db/207). Superseding any prior
       // pending row is handled inside openEscalation.
       if (isManual) {
         // Escalation is REQUIRED for a manual product — if it can't open, the

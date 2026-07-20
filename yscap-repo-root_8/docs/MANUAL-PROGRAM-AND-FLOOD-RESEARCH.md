@@ -32,13 +32,13 @@ registered_program IN (gold, manual)  OR  in_flood_zone = true
 - The appraisal FEMA cross-check (`appraisal/desk.js`) re-runs the Condition
   Center after storing its result, so a newly-found flood zone attaches the cert
   immediately.
-- `db/206` re-asserts the rule and **deletes the untouched** flood items db/177
+- `db/207` re-asserts the rule and **deletes the untouched** flood items db/177
   put on Standard/no-flood files (untouched = still outstanding, no upload, no
   sign-off/review, no notes). The engine attaches/retracts it going forward
   (`origin_kind='auto'`, retract-only-if-clean).
 
 Note: db/177 still runs every boot and re-adds a flood item to any file missing
-it; db/206 runs *after* it (higher number) and re-removes the ones that should
+it; db/207 runs *after* it (higher number) and re-removes the ones that should
 not carry it, so the post-boot state is deterministic and correct. The re-add /
 re-remove only ever touches *untouched* items, so no work is lost.
 
@@ -88,10 +88,10 @@ month count for a manual product comes from the registration's `asset_months`
 
 ## 3. Escalation workflow + admin config
 
-- `manual_program_escalations` (db/206): one row per manual registration;
+- `manual_program_escalations` (db/207): one row per manual registration;
   `pending | approved | declined`; carries the leverage overrides + a summary +
   the stated asset months. Partial-unique index: one `pending` per file.
-- `manual_program_settings` (db/206): company-level Manual Program config —
+- `manual_program_settings` (db/207): company-level Manual Program config —
   advisory LTV/LTC/ARV ceilings + the **required** default asset months. Seeded
   with 2 months. Append-only history mirroring `company_pricing_settings`.
 - Routes (`src/routes/admin-manual-programs.js`, mounted `/api/admin/manual-programs`):

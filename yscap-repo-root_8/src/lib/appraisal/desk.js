@@ -144,7 +144,7 @@ function fireFloodCheck(appraisalId, appId) {
     }
     // A newly-known flood zone (SFHA) makes the flood-certificate condition
     // required on EVERY program — re-run the Condition Center so it attaches now
-    // rather than waiting for the next file edit (db/206 + engine.in_flood_zone).
+    // rather than waiting for the next file edit (db/207 + engine.in_flood_zone).
     try { await require('../conditions/engine').evaluateApplication(appId, { reason: 'appraisal_flood_check', notify: false }); } catch (_) {}
   })().catch(() => { /* best-effort advisory — never breaks the import */ });
 }
