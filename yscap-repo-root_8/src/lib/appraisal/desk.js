@@ -92,9 +92,14 @@ async function extractAndStorePhotos(appraisalId, appId, pdfB64, importedBy) {
   for (const ph of res.photos) {
     try {
       const s = await storage.save(ph.png, { filename: `appraisal-photo-${ph.seq + 1}.png` });
+      // These are photos the SYSTEM extracted from the appraisal PDF — not human uploads, so they
+      // must never sit in the document-review queue waiting to be accepted one by one. Store them
+      // pre-ACCEPTED (review_status='accepted') and marked source_type='system' (which also hides the
+      // "Replace" action). Without this they default to review_status='pending' (db/013) and every
+      // extracted image shows an Accept button on the file's Documents list.
       const doc = await db.query(
-        `INSERT INTO documents (application_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,visibility)
-         VALUES ($1,$2,$3,'image/png',$4,$5,$6,'staff',$7,'appraisal_photo','borrower') RETURNING id`,
+        `INSERT INTO documents (application_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,visibility,source_type,review_status,reviewed_at)
+         VALUES ($1,$2,$3,'image/png',$4,$5,$6,'staff',$7,'appraisal_photo','borrower','system','accepted',now()) RETURNING id`,
         [appId, borrowerId, `appraisal-photo-${ph.seq + 1}.png`, ph.png.length, s.provider, s.ref, importedBy || null]);
       await db.query(
         `INSERT INTO appraisal_photos (appraisal_id, document_id, sequence, width, height) VALUES ($1,$2,$3,$4,$5)`,
