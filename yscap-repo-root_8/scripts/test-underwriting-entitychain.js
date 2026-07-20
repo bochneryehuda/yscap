@@ -89,12 +89,25 @@ const ext = (arr) => arr.map(([doc_type, fields]) => ({ doc_type, fields }));
   assert.strictEqual(chain.owners.find((o) => o.name === 'Alice Managing').isBorrower, true);
   assert.strictEqual(chain.owners.find((o) => o.name === 'Sam Silent').isBorrower, false);
 }
-// A single-member LLC where the only owner IS the borrower surfaces no "other owners".
+// A single-member LLC surfaces no "other owners" — even if the lone member is a NICKNAME the matcher
+// can't equate to the borrower's legal name (Bob ↔ Robert). (audit fix: don't mis-list the borrower.)
 {
-  const chain = buildChain({ vestingName: 'Solo LLC', borrowerName: 'Alice Managing' }, ext([
-    ['operating_agreement', { entityLegalName: 'Solo LLC', members: [{ name: 'Alice Managing', ownershipPct: 100 }] }],
+  const chain = buildChain({ vestingName: 'Solo LLC', borrowerName: 'Robert Smith' }, ext([
+    ['operating_agreement', { entityLegalName: 'Solo LLC', members: [{ name: 'Bob Smith', ownershipPct: 100 }] }],
   ]));
-  assert.ok(!chain.findings.some((f) => f.code === 'entity_other_owners'), 'sole borrower-owner → no other-owners flag');
+  assert.ok(!chain.findings.some((f) => f.code === 'entity_other_owners'), 'sole member (even a nickname) → no other-owners flag');
+}
+// A same-name RELATIVE (Jr) in a multi-member LLC is a DIFFERENT person → surfaced, not suppressed.
+// (audit fix: a generational suffix distinguishes people.)
+{
+  const chain = buildChain({ vestingName: 'Family LLC', borrowerName: 'John Smith' }, ext([
+    ['operating_agreement', { entityLegalName: 'Family LLC', members: [
+      { name: 'John Smith', ownershipPct: 60 }, { name: 'John Smith Jr', ownershipPct: 40 }] }],
+  ]));
+  const other = chain.findings.find((f) => f.code === 'entity_other_owners');
+  assert.ok(other && /John Smith Jr/.test(other.docValue), 'John Smith Jr (a relative) is surfaced as a co-owner');
+  assert.strictEqual(chain.owners.find((o) => o.name === 'John Smith Jr').isBorrower, false);
+  assert.strictEqual(chain.owners.find((o) => o.name === 'John Smith').isBorrower, true);
 }
 
 // ---- REGRESSION (audit): TWO owners, TWO government IDs on file → neither falsely flagged ----

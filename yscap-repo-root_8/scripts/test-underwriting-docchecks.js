@@ -33,7 +33,9 @@ assert.ok(C.computeGoodStandingFindings({ entityLegalName: 'Maple LLC', status: 
   const soon = C.computeGoodStandingFindings({ entityLegalName: 'Maple LLC', status: 'Active', issueDate: '2026-07-15', expirationDate: '2026-08-10', readable: true }, {}, { today: TODAY });
   assert.strictEqual(soon.find((f) => f.code === 'good_standing_expiring_soon').severity, 'warning', 'expiring within 30 days → warning');
   const past = C.computeGoodStandingFindings({ entityLegalName: 'Maple LLC', status: 'Active', issueDate: '2026-04-01', expirationDate: '2026-07-01', readable: true }, {}, { today: TODAY });
-  assert.strictEqual(past.find((f) => f.code === 'good_standing_expired').severity, 'fatal', 'already expired → fatal');
+  // An expired CERTIFICATE date is a warning (documentation freshness), not a hard block — the fatal
+  // is a genuinely revoked ENTITY (entity_not_in_good_standing). (audit fix 2026-07-20)
+  assert.strictEqual(past.find((f) => f.code === 'good_standing_expired').severity, 'warning', 'expired cert date → warning, not fatal');
   const okFar = C.computeGoodStandingFindings({ entityLegalName: 'Maple LLC', status: 'Active', issueDate: '2026-07-01', expirationDate: '2027-07-01', readable: true }, {}, { today: TODAY });
   assert.ok(!okFar.some((f) => /good_standing_expir/.test(f.code)), 'a valid-through date far out → no expiry finding');
 }

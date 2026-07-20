@@ -22,6 +22,16 @@ const { entityMatch, namesMatchLoose } = require('./compare');
 
 const OWNERSHIP_PRONG_PCT = 25;   // FinCEN CDD: identify every individual owning >= 25%.
 
+// Is `member` the SAME natural person as the file's borrower? namesMatchLoose tolerates format, but
+// a distinguishing generational suffix (Jr / Sr / III) means a DIFFERENT person (John Smith vs John
+// Smith Jr — the classic same-family straw case), so a suffix mismatch is NOT the borrower.
+const GEN_SUFFIX = /\b(jr|sr|ii|iii|iv|v)\b/i;
+function suffixOf(s) { const m = GEN_SUFFIX.exec(String(s || '')); return m ? m[1].toLowerCase() : ''; }
+function isSameBorrower(memberName, borrowerNm) {
+  if (!borrowerNm || namesMatchLoose(memberName, borrowerNm) !== true) return false;
+  return suffixOf(memberName) === suffixOf(borrowerNm);
+}
+
 // Map current extractions to a docType -> ARRAY of fields. Several docs of the same type can be
 // current at once (a 50/50 LLC uploads BOTH owners' government IDs), so we must not collapse to
 // the first — the ID roster below is built from EVERY id/credit row, or a co-owner whose ID is
@@ -118,7 +128,7 @@ function buildChain(fileCtx = {}, extractions = []) {
       const pct = typeof m.ownershipPct === 'number' ? m.ownershipPct : null;
       const isBeneficial = pct != null && pct >= OWNERSHIP_PRONG_PCT;
       const identified = hasIdFor(m.name, idNames);
-      const isBorrower = borrowerNm ? namesMatchLoose(m.name, borrowerNm) === true : null;
+      const isBorrower = borrowerNm ? isSameBorrower(m.name, borrowerNm) : null;
       owners.push({ name: m.name, ownershipPct: pct, isManager: !!m.isManager, beneficialOwner: isBeneficial, identified, isBorrower });
       if (borrowerNm && isBorrower !== true) otherOwners.push({ name: m.name, ownershipPct: pct });
       if (isBeneficial && !identified) {
@@ -130,15 +140,19 @@ function buildChain(fileCtx = {}, extractions = []) {
       }
     }
   }
-  // Surface EVERY owner on the entity who isn't the borrower — the underwriter must confirm each is
-  // approved to be on the vesting entity (a co-owner nobody vetted is how straw / undisclosed-party
-  // deals happen). One acknowledgement finding listing them; the ≥25%-no-ID gap above is separate.
-  if (otherOwners.length) {
+  // Surface owners on the entity who aren't recognized as the borrower — the underwriter must
+  // confirm each is either the borrower (under a name/nickname the matcher couldn't resolve) or an
+  // approved co-owner (a co-owner nobody vetted is how straw / undisclosed-party deals happen). Only
+  // when the entity has MORE THAN ONE member: a single-member LLC's lone member is the borrower (or
+  // a data issue the `signer_in_oa` edge already catches), so surfacing "other owners" there is
+  // noise — e.g. a nickname (Bob ↔ Robert) the matcher can't equate. The ≥25%-no-ID gap is separate.
+  const memberCount = oa && Array.isArray(oa.members) ? oa.members.filter((m) => m && m.name).length : 0;
+  if (otherOwners.length && memberCount > 1) {
     const list = otherOwners.map((o) => `${o.name}${o.ownershipPct != null ? ` (${o.ownershipPct}%)` : ''}`).join(', ');
     findings.push({ source: 'operating_agreement', code: 'entity_other_owners', severity: 'warning', status: 'open',
       field: 'ownership', docValue: list, fileValue: borrowerNm, blocksCtc: false,
-      title: 'The entity has owner(s) besides the borrower',
-      howTo: `${borrowerNm} is the borrower, but the operating agreement also lists ${list}. Confirm each additional owner is approved to be on the vesting entity (identity, and whether they must guarantee/sign) before clear-to-close.`,
+      title: 'The entity has more than one owner',
+      howTo: `${borrowerNm} is the borrower, and the operating agreement also lists ${list}. Confirm each additional owner is either the borrower (under a different name/nickname) or an approved co-owner — identity, and whether they must guarantee/sign — before clear-to-close.`,
       actions: ['post_condition', 'request_document', 'dismiss'] });
   }
 

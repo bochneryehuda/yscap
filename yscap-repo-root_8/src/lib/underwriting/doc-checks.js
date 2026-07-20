@@ -155,11 +155,15 @@ function computeGoodStandingFindings(g, subject, opts = {}) {
   if (horizon && g.expirationDate) {
     const days = daysBetween(toISODate(horizon), toISODate(g.expirationDate));
     if (days != null && days < 0) {
-      out.push(mk('good_standing', { code: 'good_standing_expired', severity: 'fatal', field: 'expiration',
+      // WARNING, not fatal: an expired CERTIFICATE is a documentation-freshness issue (refresh it) —
+      // and a lapsed printed "valid until" date on an otherwise-Active cert is often a mis-extracted
+      // franchise-tax date, so it must not hard-block a clean file. A genuinely NOT-in-good-standing
+      // ENTITY is the fatal `entity_not_in_good_standing` (the status check above).
+      out.push(mk('good_standing', { code: 'good_standing_expired', severity: 'warning', field: 'expiration',
         docValue: g.expirationDate, fileValue: horizon,
-        title: 'The good-standing certificate has expired',
-        howTo: `The certificate's valid-through date (${g.expirationDate}) is before ${opts.closingDate ? 'closing' : 'today'}. Obtain a current certificate — the entity must be in good standing at closing.`,
-        actions: ['request_document', 'post_condition', 'decline', 'dismiss'] }));
+        title: 'The good-standing certificate’s valid-through date has passed',
+        howTo: `The certificate's valid-through date (${g.expirationDate}) is before ${opts.closingDate ? 'closing' : 'today'}. Obtain a current certificate so the entity is provably in good standing at funding (or confirm the printed date isn't a franchise-tax due date).`,
+        actions: ['request_document', 'post_condition', 'dismiss'] }));
     } else if (days != null && days <= 30) {
       out.push(mk('good_standing', { code: 'good_standing_expiring_soon', severity: 'warning', field: 'expiration',
         docValue: g.expirationDate, fileValue: horizon,
