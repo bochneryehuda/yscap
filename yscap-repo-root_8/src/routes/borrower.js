@@ -966,7 +966,11 @@ router.get('/applications/:id/appraisal', async (req, res) => {
     // UI never reads it, so dropping it entirely is the safe, clean fix.
     // owner_of_record + lender_address are STAFF-ONLY (db/158) — drop them like lender_name/amc_name
     // so they never reach the borrower JSON, even though the UI doesn't render them.
-    const { imported_by, source_xml_document_id, pdf_document_id, fields,
+    // `warnings` is the parser's raw underwriting-scrutiny array (comp_split_review, nbhd_declining,
+    // sale_type_risk, mc_*, etc.) — the SAME class the SCRUTINY_CODES filter hides from the borrower
+    // `findings` list. Drop it too so the scrutiny scrub can't be defeated via the appraisal payload;
+    // the borrower gets the filtered `findings`, never the raw warnings.
+    const { imported_by, source_xml_document_id, pdf_document_id, fields, warnings,
       lender_name, amc_name, owner_of_record, lender_address, ...rest } = appr; // eslint-disable-line no-unused-vars
     return rest;
   })();
