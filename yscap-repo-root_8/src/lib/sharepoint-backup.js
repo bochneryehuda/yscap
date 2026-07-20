@@ -922,7 +922,15 @@ async function mirrorRowInner(row, scopeKey) {
     // disk is not writable/mounted, raise a TRANSIENT error so the row retries
     // instead of requiring a human "Retry" (round-2 audit F4).
     let diskOk = true;
-    try { const p = storage.probe(); diskOk = !!(p && p.ok); } catch (_) { diskOk = false; }
+    try {
+      const p = storage.probe();
+      // Not healthy = the base is unwritable, OR a STORAGE_DIR was configured (prod
+      // intent) but we are NOT on it — i.e. the persistent mount hasn't come up and
+      // we fell back to an ephemeral dir. In that state a read of a real-disk file
+      // ENOENTs because the mount is lagging, not because the file is gone, so it
+      // must retry, not park permanent (round-2 audit item 4).
+      diskOk = !!(p && p.ok && !(p.configured && p.persistent === false));
+    } catch (_) { diskOk = false; }
     if (!diskOk) throw new Error('storage temporarily unavailable (persistent disk not mounted/writable) — will retry');
     throw e;   // disk healthy but the file is genuinely gone → permanent local-missing
   }
@@ -2173,12 +2181,12 @@ async function armSloCooldown() {
        VALUES ('sp-slo-alert','backlog', now() + make_interval(mins => $1))
        ON CONFLICT (lock_key) DO UPDATE SET holder='backlog', expires_at = now() + make_interval(mins => $1)`,
       [cd]);
-  } catch (_) { /* best-effort; the per-doc stamps still dedup */ }
+  } catch (_) { /* best-effort; a failed arm leaves no active cooldown → fails SAFE toward re-alerting, never silent */ }
 }
 async function markSloAlerted(ids) {
   if (!ids || !ids.length) return;
   try { await db.query(`UPDATE documents SET sharepoint_slo_alerted_at = now() WHERE id = ANY($1)`, [ids]); }
-  catch (_) { /* best-effort; dedup degrades to the time cooldown */ }
+  catch (_) { /* best-effort; a failed stamp leaves slo_alerted_at NULL → the doc re-alerts next pass (fails SAFE, never silently suppressed) */ }
 }
 // A stuck doc is "genuinely new" (worth a fresh email even mid-cooldown) when it
 // has never been alerted, or its last alert has aged past the cooldown window
