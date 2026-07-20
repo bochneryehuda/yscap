@@ -1585,6 +1585,15 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     if (llcId) {
       try { await require('../lib/vesting').setVestingLlc(targetId, llcId, { source: 'clickup', push: false }); } catch (_) { /* best-effort */ }
     }
+    // A status change made DIRECTLY in ClickUp (the team drives statuses there as
+    // well as in the portal) was giving the borrower no "your loan is now …"
+    // notification — the portal doors notified, the inbound sync did not. Notify
+    // the borrower here, GO-FORWARD ONLY: the shared helper silently BASELINES a
+    // file the first time it's seen (so previously-drifted files are never blasted
+    // on the first reconcile), skips an ECHO of a portal change (the portal door
+    // already advanced the watermark to this status), and loops the loan officer
+    // in via the borrower email's BCC. Best-effort; never breaks the pull. (db/187)
+    try { await require('../lib/status-notify').notifyInboundStatusChange(targetId, external); } catch (_) { /* best-effort */ }
     return { applicationId: targetId, matchStatus, detail, copiedLoanNumber };
   }
   if (!allowCreate) return { applicationId: null, matchStatus: 'skipped' };
