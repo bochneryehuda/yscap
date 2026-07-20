@@ -620,7 +620,7 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
           </button>
         ))}
         <button className="btn btn-sm ghost" title={readTip} disabled={readsOff || busy === 'deliver' + draw.sitewire_draw_id}
-          onClick={() => act('deliver' + draw.sitewire_draw_id, async () => { const r = await api.post(`/api/sitewire/files/${appId}/findings/${draw.sitewire_draw_id}/deliver`, {}); return { msg: `Findings delivered to the borrower (${r.lines} items).` }; })}>
+          onClick={() => act('deliver' + draw.sitewire_draw_id, async () => { const r = await api.post(`/api/sitewire/files/${appId}/findings/${draw.sitewire_draw_id}/deliver`, {}); const ready = Array.isArray(r.reports_ready) && r.reports_ready.length; return { msg: `Findings delivered to the borrower (${r.lines} items).${ready ? ' Photos archived + PILOT reports ready.' : (r.reports_pending ? ' Archiving photos + preparing reports…' : '')}` }; })}>
           {finding ? 'Re-send findings' : 'Deliver findings to borrower'}
         </button>
         <button className={'btn btn-sm ' + (showPhotos ? 'primary' : 'ghost')} onClick={() => setShowPhotos((s) => !s)}>

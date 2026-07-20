@@ -2161,6 +2161,54 @@ const IconBell = () => (
   </svg>
 );
 
+// #84 — a clear-to-close / funded (or terminal) file's loan STRUCTURE is frozen
+// for everyone. A super-admin can deliberately unlock a file to correct a genuine
+// mistake, then re-lock it. Shows the lock state to everyone; the Unlock / Re-lock
+// buttons are super-admin-only (the server enforces this too).
+const STRUCTURAL_LOCK_STATUSES = ['clear_to_close', 'funded', 'declined', 'withdrawn'];
+function StructuralLockBanner({ app, role, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  if (!STRUCTURAL_LOCK_STATUSES.includes(app.status)) return null;
+  const unlocked = !!app.structural_unlocked_at;
+  const isSuper = role === 'super_admin';
+  const label = APP_STATUS_LABEL[app.status] || app.status;
+  const toggle = async (next) => {
+    setErr('');
+    if (next) {
+      const reason = window.prompt('Unlock this file so its locked loan details can be corrected? Add a short reason (this is logged):', '');
+      if (reason === null) return;   // cancelled
+      setBusy(true);
+      try { await api.staffSetStructuralLock(app.id, true, reason || null); onChanged && await onChanged(); }
+      catch (e) { setErr((e && e.message) || 'Could not unlock the file.'); }
+      setBusy(false);
+    } else {
+      setBusy(true);
+      try { await api.staffSetStructuralLock(app.id, false); onChanged && await onChanged(); }
+      catch (e) { setErr((e && e.message) || 'Could not re-lock the file.'); }
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="panel" style={{ marginBottom: 12 }}>
+      <div className="panel-b" style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <div style={{ flex: 1, minWidth: 220 }}>
+          <b>{unlocked ? '🔓' : '🔒'} This file is {label} — its loan structure is {unlocked ? 'temporarily UNLOCKED' : 'locked'}.</b>
+          <div className="muted small" style={{ marginTop: 2 }}>
+            {unlocked
+              ? 'A super-admin unlocked it so the price, loan amount, pricing, rehab budget or vesting entity can be corrected. Re-lock it when the fix is done.'
+              : 'The price, loan amount, pricing, rehab budget and vesting entity can’t be changed while it’s locked.'}
+          </div>
+          {err && <div role="alert" className="notice err" style={{ marginTop: 6 }}>{err}</div>}
+        </div>
+        {isSuper && (unlocked
+          ? <button className="btn" disabled={busy} onClick={() => toggle(false)}>{busy ? '…' : 'Re-lock'}</button>
+          : <button className="btn primary" disabled={busy} onClick={() => toggle(true)}>{busy ? '…' : 'Unlock to correct'}</button>)}
+      </div>
+    </div>
+  );
+}
+
 export default function StaffApplication() {
   const { id } = useParams();
   const nav = useNavigate();
@@ -2782,6 +2830,7 @@ export default function StaffApplication() {
           address={app.co_current_address}
           name={`${app.co_first_name || ''} ${app.co_last_name || ''}`.trim() || 'Co-borrower'} onSaved={load} />
       )}
+      <StructuralLockBanner app={app} role={role} onChanged={load} />
       <EditFileDetails app={app} onSaved={load} />
       <ClickupFileData app={app} />
       </Section>

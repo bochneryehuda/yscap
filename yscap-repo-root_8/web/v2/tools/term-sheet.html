@@ -480,7 +480,7 @@
             <p class="panel-note cond hidden" data-cond="bridgeOnly">A bridge loan is sized against the as-is value only — there's no rehab holdback, after-repair value or interest reserve. Just set your requested term below.</p>
             <div class="field-rows two-col">
                 <div class="field cond" data-cond="hasRehab"><label for="irMonths">Interest reserve <em>(months)</em><span class="tip" tabindex="0" role="note" aria-label="Months of interest payments built into the loan so the project carries itself and you don’t pay out of pocket during construction. It’s added to the loan amount, not brought to closing.">i<span class="tip-bub">Months of interest payments built into the loan so the project carries itself and you don’t pay out of pocket during construction. It’s added to the loan amount, not brought to closing.</span></span></label><div class="input"><input id="irMonths" type="number" inputmode="numeric" min="0" max="24" placeholder="e.g. 6"></div></div>
-                <div class="field cond" data-cond="hasRehab"><label for="irAmount">…or exact reserve <em>(amount $)</em><span class="tip" tabindex="0" role="note" aria-label="Enter an exact dollar interest reserve instead of a number of months. When set, this OVERRIDES the months field. It is still fit under the same leverage caps. Leave blank to size the reserve from months.">i<span class="tip-bub">Enter an exact dollar interest reserve instead of a number of months. When set, this <b>overrides</b> the months field (still fit under the same leverage caps). Leave blank to size the reserve from months.</span></span></label><div class="input"><input id="irAmount" type="number" inputmode="numeric" min="0" step="1000" placeholder="e.g. 40,000"></div></div>
+                <div class="field cond" data-cond="hasRehab"><label for="irAmount">…or as a dollar amount <em>($)</em><span class="tip" tabindex="0" role="note" aria-label="The interest reserve is one thing shown two ways. Type a number of months or an exact dollar amount — fill in either one and the other fills in to match. It is fit under the same leverage caps and added to the loan, not brought to closing.">i<span class="tip-bub">The interest reserve is one thing shown two ways — type a number of <b>months</b> or an exact <b>dollar amount</b>, and the other fills in to match. Fit under the same leverage caps; added to the loan, not brought to closing.</span></span></label><div class="input"><input id="irAmount" type="number" inputmode="numeric" min="0" step="1000" placeholder="e.g. 40,000"></div></div>
                 <div class="field"><label for="tsTerm">Requested term <em>(months)</em></label><div class="input select"><select id="tsTerm">
                     <option value="6">6 months</option>
                     <option value="12" selected>12 months</option>
@@ -746,7 +746,7 @@
 <script src="gold-standard.js?v=asgseller19"></script>
 <script src="title-cost.js?v=admin8"></script>
 <script src="address-autocomplete.js?v=admin9"></script>
-<script src="termsheet.js?v=pilot19-esign"></script>
+<script src="termsheet.js?v=pilotirlink20-esign"></script>
 <script src="../float-actions.js?v=admin8"></script>
 <script>
 /* Property-address autocomplete (owner-directed 2026-07-17): same shared YSAddr

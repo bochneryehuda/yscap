@@ -43,13 +43,38 @@ function sanitizeLoanType(v) {
 // bind values the INSERTs use.
 function assignmentFields(b) {
   b = b || {};
-  const isAssignment = !!b.isAssignment;
+  // An assignment of contract is a PURCHASE concept. On a refinance it can never
+  // apply, so a stale/hand-rolled "isAssignment=true" on a refi file is forced
+  // off here — otherwise the stored purchase price would be miscomputed as
+  // underlying + fee and the (borrower-facing) assignment condition would be
+  // requested on a refinance. Mirrors pricing.js loanTypeOf (refi iff the loan
+  // type mentions "refi") and the db/173 condition trigger.
+  const isRefi = /refi/i.test(String(b.loanType || ''));
+  const isAssignment = !!b.isAssignment && !isRefi;
   const underlying = isAssignment ? (b.underlyingContractPrice || null) : null;
   const assignFee = isAssignment ? (b.assignmentFee || null) : null;
   const purchasePrice = isAssignment
     ? (Number(b.underlyingContractPrice || 0) + Number(b.assignmentFee || 0))
     : (b.purchasePrice || null);
   return { isAssignment, underlying, assignFee, purchasePrice };
+}
+
+// sqft_pre / sqft_post are only meaningful for a square-footage-adding or
+// ground-up rehab. The intake forms show those inputs only for such rehab types
+// but ALWAYS submit the fields, so switching the rehab type to e.g. "Cosmetic"
+// after entering square footage leaves stale values behind. The pricing engine
+// then flips sqftAddition on via its `sqft_post > sqft_pre` clause even though
+// the file is no longer an addition. Every write path routes sqft through this
+// so an irrelevant rehab type hard-nulls the pair (a blank/unknown type is left
+// alone — the file may just be incomplete). Mirrors the form's needsSqft plus
+// the pricing regex, so a legitimately sqft-relevant type is never nulled.
+function sqftRelevantType(rehabType) {
+  const rt = String(rehabType || '');
+  return !rt || /square|sf|addition|adding|ground/i.test(rt);
+}
+function sqftForType(rehabType, sqftPre, sqftPost) {
+  const ok = sqftRelevantType(rehabType);
+  return { sqftPre: ok ? sqftPre : null, sqftPost: ok ? sqftPost : null };
 }
 
 // A date-only value (DOB, closing, acquisition, track-record exit) → canonical
@@ -160,4 +185,4 @@ function loanNumberProblem(v) {
   return null;
 }
 
-module.exports = { sanitizeFico, sanitizeSsnDigits, sanitizeLoanType, assignmentFields, sanitizeDateOnly, normalizeTypedDate, sanitizeDob, dobProblem, sanitizeLoanNumber, loanNumberProblem };
+module.exports = { sanitizeFico, sanitizeSsnDigits, sanitizeLoanType, assignmentFields, sqftRelevantType, sqftForType, sanitizeDateOnly, normalizeTypedDate, sanitizeDob, dobProblem, sanitizeLoanNumber, loanNumberProblem };

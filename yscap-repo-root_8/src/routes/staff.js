@@ -894,6 +894,9 @@ router.post('/applications', async (req, res) => {
     // has ONE definition and can never drift between staff and borrower surfaces.
     const { isAssignment, underlying, assignFee, purchasePrice } =
       require('../lib/fields').assignmentFields(b);
+    // sqft only applies to a square-footage / ground-up rehab — null it otherwise
+    // so a stale value can't force the pricing sqftAddition flag.
+    const sqf = require('../lib/fields').sqftForType(b.rehabType, intField(b.sqftPre) || null, intField(b.sqftPost) || null);
 
     const ins = await db.query(
       `INSERT INTO applications
@@ -906,7 +909,7 @@ router.post('/applications', async (req, res) => {
       [borrowerId, JSON.stringify(addr), b.propertyType || null, b.units || null,
        b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), purchasePrice, b.asIsValue || null,   // #95: never a program
        b.arv || null, b.rehabBudget || null, officerId, officerName,
-       b.rehabType || null, intField(b.sqftPre) || null, intField(b.sqftPost) || null,
+       b.rehabType || null, sqf.sqftPre, sqf.sqftPost,
        intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
        processorId, isAssignment, underlying, assignFee, intField(b.requestedExpReo)]);   // #97: General REO slot
     const appId = ins.rows[0].id;
@@ -975,7 +978,7 @@ router.post('/applications', async (req, res) => {
       ok: true, applicationId: appId, ysLoanNumber: ins.rows[0].ys_loan_number,
       borrowerId, borrowerCreated: br.rows[0].created, invited,
       coBorrowerId, coBorrowerWarning: coBorrowerWarning || undefined });
-  } catch (e) { res.status(500).json({ error: db.describeError(e) }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Invite the file's borrower to the portal (they need not have signed up yet).
@@ -1274,7 +1277,8 @@ router.post('/applications/:id/co-borrower', async (req, res) => {
     res.json({ ok: true, coBorrowerId: coId });
   } catch (e) {
     if (e.status) return res.status(e.status).json({ error: e.message });
-    res.status(500).json({ error: 'server error', detail: e.message });
+    console.warn('[staff] handler error:', db.describeError(e));
+    res.status(500).json({ error: 'server error' });
   }
 });
 
@@ -1319,7 +1323,7 @@ router.post('/applications/:id/co-borrower-fields', async (req, res) => {
     await audit(req, 'complete_co_borrower_fields', 'application', req.params.id,
       { fields: sets.filter((s) => !s.startsWith('updated_at')).map((s) => s.split('=')[0]), coBorrowerId: coId });
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // #81 — the subject vesting LLC's borrower-owners and each one's ownership %.
@@ -1354,7 +1358,7 @@ router.post('/applications/:id/vesting-llc-owners', async (req, res) => {
     }
     await audit(req, 'set_vesting_llc_owners', 'application', req.params.id, { count: owners.length });
     res.json({ ok: true, owners: await lb.getOwners(a.llc_id) });
-  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // The entities that are VERIFIABLE from inside this file — NOT the borrower's
@@ -1415,7 +1419,7 @@ router.get('/applications/:id/verify-llcs', async (req, res) => {
     // Vesting entity first, then the rest by name for a stable order.
     out.sort((a2, b2) => (b2.vesting - a2.vesting) || String(a2.llc_name || '').localeCompare(String(b2.llc_name || '')));
     res.json({ vestingLlcId: app.llc_id || null, llcs: out });
-  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Set (or change) the file's vesting entity — staff parity with the borrower's
@@ -1446,7 +1450,7 @@ router.post('/applications/:id/vesting-llc', async (req, res) => {
     try { await require('../lib/vesting').setVestingLlc(req.params.id, b.llcId, { source: 'staff', actor: req.actor, force: true }); } catch (_) {}
     await audit(req, 'link_llc', 'application', req.params.id, { llcId: b.llcId, previous });
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 /* ---------------- Product registration / term sheet ----------------
@@ -1566,7 +1570,7 @@ router.post('/applications/:id/pricing/quote', async (req, res) => {
       return res.status(403).json({ error: 'Manual rate/leverage and experience overrides need an admin — clear the admin pricing fields to quote as your role.' });
     const out = pricing.quoteAll(f.app, f.exp, overrides);
     res.json({ ...out, experience: f.exp });
-  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Current registered product + history, plus a fresh default quote for the panel.
@@ -1586,7 +1590,7 @@ router.get('/applications/:id/pricing', async (req, res) => {
     // file's economics moved underneath the open sheet (409, never a silent
     // stale re-register).
     res.json({ current, history: hist.rows, quote, enginesReady: pricing.enginesReady(), econVersion: pricing.econVersionFor(f.app) });
-  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Register a product: recompute authoritatively, persist as the current terms,
@@ -1602,7 +1606,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
   };
   try {
     if (!pricing.enginesReady()) return res.status(503).json({ error: 'pricing engines unavailable', detail: pricing.loadErr() });
-    const locked = await require('../lib/file-lock').structuralLockReason(appId);   // #84
+    const locked = await require('../lib/file-lock').structuralLockReason(appId, db, { actor: req.actor });   // #84
     if (locked) return refuse(409, { error: locked }, 'structural_lock');
     const b = req.body || {};
     const program = b.program === 'gold' ? 'gold' : 'standard';
@@ -1774,7 +1778,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     } catch (_) { /* notification is best-effort */ }
 
     res.status(201).json({ ok: true, registrationId: regId, quote });
-  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Staff build/adjust a file's rehab budget (scope of work) — for staff-run
@@ -1784,7 +1788,7 @@ router.post('/applications/:id/rehab-budget', async (req, res) => {
   const appId = req.params.id;
   const payload = (req.body && typeof req.body.payload === 'object') ? req.body.payload : null;
   if (!payload) return res.status(400).json({ error: 'payload required' });
-  const locked = await require('../lib/file-lock').structuralLockReason(appId);   // #84
+  const locked = await require('../lib/file-lock').structuralLockReason(appId, db, { actor: req.actor });   // #84
   if (locked) return res.status(409).json({ error: locked });
   try {
     let it = await db.query(`SELECT id FROM checklist_items WHERE application_id=$1 AND tool_key='rehab_budget' LIMIT 1`, [appId]);
@@ -1852,7 +1856,7 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   if (!it.rows[0]) return res.status(404).json({ error: 'tool task not found' });
   const toolKey = it.rows[0].tool_key;
   if (toolKey === 'rehab_budget') {   // #84 — rehab budget is loan structure, frozen at CTC
-    const locked = await require('../lib/file-lock').structuralLockReason(req.params.id);
+    const locked = await require('../lib/file-lock').structuralLockReason(req.params.id, db, { actor: req.actor });
     if (locked) return res.status(409).json({ error: locked, fatal: true });
   }
   const rawPayload = (req.body && typeof req.body.payload === 'object') ? req.body.payload : { submitted: true };
@@ -2462,6 +2466,18 @@ router.post('/change-requests/:cid/approve', async (req, res) => {
     if (!cr) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'not found' }); }
     if (!(await canTouchApp(req, cr.application_id))) { await client.query('ROLLBACK'); return res.status(403).json({ error: 'forbidden' }); }
     if (cr.status !== 'pending') { await client.query('ROLLBACK'); return res.status(409).json({ error: `this request is already ${cr.status}` }); }
+    // #84 — once a file is clear-to-close / funded its economics are frozen, so even
+    // an APPROVED change may not be written onto it (a super_admin can unlock the
+    // file to make the correction). Without this the CR-approve path is another door
+    // around the funded freeze.
+    // The funded / clear-to-close structural freeze is ECONOMICS-only. A personal
+    // identity correction (name / DOB / SSN / phone / …) is not loan structure, so it
+    // must NOT be blocked by it — only an applications-entity (economics) change
+    // re-checks the freeze here.
+    if (cr.target_table !== 'borrowers') {
+      const crLock = await require('../lib/file-lock').structuralLockReason(cr.application_id, client, { actor: req.actor });
+      if (crLock) { await client.query('ROLLBACK'); return res.status(409).json({ error: crLock, locked: true }); }
+    }
     const applied = await changeRequests.applyRequest(client, cr, req.actor.id, note);
     await client.query('COMMIT');
     // Propagate the approved value to ClickUp (#86). The governed economics fields
@@ -2472,7 +2488,22 @@ router.post('/change-requests/:cid/approve', async (req, res) => {
     // multiple times"). Every other governed-field write path already enqueues
     // its touched columns; the CR-approve path was the one that forgot. Must run
     // AFTER COMMIT so the sync worker reads the committed value, not the stale one.
-    enqueueClickupPush(cr.application_id, [applied.field]).catch(() => {});
+    if (applied.entity === 'borrowers') {
+      // A personal change updates the SHARED borrower row — propagate to EVERY file
+      // where this borrower is the PRIMARY (their personal fields map to that task's
+      // primary-borrower fields), and a DOB rides as a HUMAN edit so the outbound DOB
+      // gate honors this explicit staff approval rather than treating it as an
+      // automated overwrite it would park for review.
+      try {
+        const bfiles = await db.query(
+          `SELECT id FROM applications WHERE borrower_id=$1 AND deleted_at IS NULL AND clickup_pipeline_task_id IS NOT NULL`,
+          [applied.borrowerId]);
+        const pushOpts = applied.field === 'date_of_birth' ? { humanEditKeys: ['date_of_birth'] } : {};
+        for (const row of bfiles.rows) enqueueClickupPush(row.id, [applied.field], pushOpts).catch(() => {});
+      } catch (_) { /* best-effort propagation */ }
+    } else {
+      enqueueClickupPush(cr.application_id, [applied.field]).catch(() => {});
+    }
     // The change is already committed — never let the audit/notify below turn a
     // successful apply into a 500.
     try {
@@ -2582,9 +2613,13 @@ async function signOffGate(itemId, actor) {
       // gov-ID. Accept the borrower's on-file photo ID as fulfillment (mirrors the
       // reuse rule, which keys off the file's borrower's photo_id_document_id).
       if (code === 'rtl_p1_id' || code === 'gov_id') {
+        // The on-file photo ID must itself be a CURRENT, non-rejected document —
+        // a rejected/superseded ID pointer is not fulfillment (the pointer is only
+        // cleared by FK-on-delete, so reject alone leaves it dangling).
         const pid = await db.query(
           `SELECT 1 FROM borrowers b
-            WHERE b.photo_id_document_id IS NOT NULL
+             JOIN documents d ON d.id = b.photo_id_document_id
+            WHERE d.is_current AND COALESCE(d.review_status,'') <> 'rejected'
               AND (b.id = $1 OR b.id = (SELECT borrower_id FROM applications WHERE id = $2))
             LIMIT 1`, [item.borrower_id || null, item.application_id || null]);
         if (pid.rows.length) return null;
@@ -3036,7 +3071,7 @@ router.post('/applications/:id/assign', async (req, res) => {
     }
     enqueueClickupPush(req.params.id, ['officer', 'processor']).catch(() => {}); // propagate officer/processor to ClickUp promptly
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // ---------------- multi-assignee team (#64): full-access assistants ----------------
@@ -3084,7 +3119,7 @@ router.post('/applications/:id/assignees', async (req, res) => {
       applicationId: req.params.id, ctaLabel: 'Open the loan file', link: `/internal/app/${req.params.id}` });
     await audit(req, 'add_assignee', 'application', req.params.id, { staffId, role });
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 router.delete('/applications/:id/assignees/:staffId', async (req, res) => {
@@ -3100,7 +3135,7 @@ router.delete('/applications/:id/assignees/:staffId', async (req, res) => {
       [req.params.id, role, req.params.staffId]);
     await audit(req, 'remove_assignee', 'application', req.params.id, { staffId: req.params.staffId, role });
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // ---------------- borrower profile view + SSN reveal (audited) ----------------
@@ -3163,7 +3198,7 @@ router.post('/applications/:id/appraisal-card', async (req, res) => {
       number: v.number, cvc: v.cvc, expMonth: v.expMonth, expYear: v.expYear, zip: v.zip });
     await audit(req, 'save_appraisal_card', 'application', req.params.id, { last4, enteredByStaff: true });
     res.status(201).json({ ok: true, last4, brand });
-  } catch (e) { res.status(500).json({ error: db.describeError(e) }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 // Borrower name typeahead for staff origination (StaffNewFile): match prior
 // borrowers by name so a new file can LINK to the existing borrower instead of
@@ -3255,7 +3290,7 @@ router.post('/borrowers/:id/portal-invite', async (req, res) => {
     if (!app) return res.status(400).json({ error: 'this borrower has no active file to invite them to' });
     const out = await inviteBorrowerToFile({ appId: app.id, borrowerId: b.id, email: b.email, firstName: b.first_name, req });
     res.json({ ok: true, ...out });
-  } catch (e) { res.status(500).json({ error: e.message || 'server error' }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Email the borrower a password-reset link (staff never see the password).
@@ -3271,7 +3306,7 @@ router.post('/borrowers/:id/reset-password', async (req, res) => {
     await mail.send('passwordReset', b.email, { firstName: b.first_name, resetUrl: mail.link('/reset?token=' + token), minutes: 60 });
     await audit(req, 'borrower_reset_password_email', 'borrower', b.id, {});
     res.json({ ok: true, emailed: true });
-  } catch (e) { res.status(500).json({ error: e.message || 'server error' }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Set a borrower's password directly (LO-assisted). Creates the login row if the
@@ -3303,7 +3338,7 @@ router.post('/borrowers/:id/set-password', async (req, res) => {
     await audit(req, 'borrower_set_password', 'borrower', b.id, {});
     try { if (b.email) await mail.send('passwordChanged', b.email, { firstName: b.first_name }); } catch (_) {}
     res.json({ ok: true, set: true, hadAccount: !!existing.rows[0] });
-  } catch (e) { res.status(500).json({ error: e.message || 'server error' }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 // (A borrower's entities live at GET /borrowers/:id/llcs below — the full
 // review bundle; its rows carry id/llc_name/is_verified for the track-record
@@ -3409,6 +3444,12 @@ router.patch('/borrowers/:id', async (req, res) => {
 router.get('/borrowers/:id/applications', async (req, res) => {
   try {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    // A scoped loan officer must not see the existence/loan#/address/amount of the
+    // borrower's OTHER files they aren't assigned to (round-2 audit F7); admins/
+    // underwriters/processors keep the borrower-wide view.
+    const params = [req.params.id];
+    let scope = '';
+    if (!seesAllBorrowers(req)) { params.push(req.actor.id); scope = `AND ${VISIBLE_OFFICERS_SQL('a', '$2')}`; }
     const r = await db.query(
       `SELECT a.id, a.ys_loan_number, a.program, a.loan_type, a.status, a.internal_status,
               a.property_address, a.loan_amount, a.created_at, a.expected_closing, a.actual_closing,
@@ -3417,10 +3458,10 @@ router.get('/borrowers/:id/applications', async (req, res) => {
          FROM applications a
          LEFT JOIN staff_users off ON off.id = a.loan_officer_id
          LEFT JOIN llcs l ON l.id = a.llc_id
-        WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND a.deleted_at IS NULL
-        ORDER BY a.created_at DESC`, [req.params.id]);
+        WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND a.deleted_at IS NULL ${scope}
+        ORDER BY a.created_at DESC`, params);
     res.json(r.rows);
-  } catch (e) { res.status(500).json({ error: 'server error' }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Open conditions/tasks-to-clear rolled up across ALL of the borrower's files —
@@ -3428,16 +3469,25 @@ router.get('/borrowers/:id/applications', async (req, res) => {
 router.get('/borrowers/:id/conditions', async (req, res) => {
   try {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    // Scope to files the actor is assigned to — a shared borrower must not expose
+    // the conditions (with property address + loan number) of a file the officer
+    // isn't on (round-2 audit N4).
+    const params = [req.params.id];
+    let scope = '';
+    // seesAllBorrowers (admin/underwriter/processor) keep the borrower-wide view
+    // — only a genuinely file-scoped loan officer is restricted to assigned files
+    // (matches the canSeeBorrower gate; round-2 audit F6).
+    if (!seesAllBorrowers(req)) { params.push(req.actor.id); scope = `AND ${VISIBLE_OFFICERS_SQL('a', '$2')}`; }
     const r = await db.query(
       `SELECT c.id, c.application_id, c.title, c.status, c.audience, c.severity, c.created_at,
               a.ys_loan_number, a.property_address
          FROM conditions c
          JOIN applications a ON a.id = c.application_id
         WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND a.deleted_at IS NULL
-          AND c.status IN ('open','borrower_responded')
-        ORDER BY c.created_at DESC`, [req.params.id]);
+          AND c.status IN ('open','borrower_responded') ${scope}
+        ORDER BY c.created_at DESC`, params);
     res.json(r.rows);
-  } catch (e) { res.status(500).json({ error: 'server error' }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Reminders + tasks across the borrower's files (the #93 system, rolled up per
@@ -3446,6 +3496,10 @@ router.get('/borrowers/:id/conditions', async (req, res) => {
 router.get('/borrowers/:id/reminders', async (req, res) => {
   try {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    // Scope reminders/tasks to the actor's files for a scoped loan officer (F7).
+    const params = [req.params.id];
+    let scope = '';
+    if (!seesAllBorrowers(req)) { params.push(req.actor.id); scope = `AND ${VISIBLE_OFFICERS_SQL('a', '$2')}`; }
     const r = await db.query(
       `SELECT r.id, r.application_id, r.kind, r.title, r.body, r.due_at, r.status,
               r.assignee_staff_id, r.completed_at, r.created_at,
@@ -3454,10 +3508,10 @@ router.get('/borrowers/:id/reminders', async (req, res) => {
          FROM reminders r
          JOIN applications a ON a.id = r.application_id
          LEFT JOIN staff_users asg ON asg.id = r.assignee_staff_id
-        WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND a.deleted_at IS NULL
-        ORDER BY (r.status='scheduled') DESC, r.due_at ASC`, [req.params.id]);
+        WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND a.deleted_at IS NULL ${scope}
+        ORDER BY (r.status='scheduled') DESC, r.due_at ASC`, params);
     res.json(r.rows);
-  } catch (e) { res.status(500).json({ error: 'server error' }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 router.post('/borrowers/:id/reminders', async (req, res) => {
   try {
@@ -3486,17 +3540,31 @@ router.post('/borrowers/:id/reminders', async (req, res) => {
 router.get('/borrowers/:id/documents', async (req, res) => {
   try {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    // An APPLICATION document is authorized solely by assignment to its own file —
+    // a shared borrower must not expose the filenames/loan numbers of a file the
+    // officer isn't on (round-2 audit N4; mirrors canSeeDocument). Borrower/entity-
+    // level docs (no application) keep the borrower-wide view they already have.
+    const params = [req.params.id];
+    let appVisible;
+    if (seesAllBorrowers(req)) {   // admin/underwriter/processor keep the borrower-wide view (F6)
+      appVisible = `SELECT id FROM applications WHERE (borrower_id=$1 OR co_borrower_id=$1) AND deleted_at IS NULL`;
+    } else {
+      params.push(req.actor.id);
+      appVisible = `SELECT a.id FROM applications a WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND a.deleted_at IS NULL
+                      AND ${VISIBLE_OFFICERS_SQL('a', '$2')}`;
+    }
     const r = await db.query(
       `SELECT d.id, d.filename, d.content_type, d.size_bytes, d.doc_kind, d.created_at,
               d.application_id, d.llc_id, d.track_record_id,
               a.ys_loan_number
          FROM documents d
          LEFT JOIN applications a ON a.id = d.application_id
-        WHERE d.borrower_id=$1
-           OR d.application_id IN (SELECT id FROM applications WHERE (borrower_id=$1 OR co_borrower_id=$1) AND deleted_at IS NULL)
-           OR d.llc_id IN (SELECT id FROM llcs WHERE borrower_id=$1)
-           OR d.track_record_id IN (SELECT id FROM track_records WHERE borrower_id=$1)
-        ORDER BY d.created_at DESC LIMIT 500`, [req.params.id]);
+        WHERE (d.application_id IS NOT NULL AND d.application_id IN (${appVisible}))
+           OR (d.application_id IS NULL AND (
+                 d.borrower_id=$1
+                 OR d.llc_id IN (SELECT id FROM llcs WHERE borrower_id=$1)
+                 OR d.track_record_id IN (SELECT id FROM track_records WHERE borrower_id=$1)))
+        ORDER BY d.created_at DESC LIMIT 500`, params);
     res.json(r.rows);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -3506,6 +3574,17 @@ router.get('/borrowers/:id/documents', async (req, res) => {
 router.get('/borrowers/:id/activity', async (req, res) => {
   try {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    // Scope the file audit trail (SSN reveals, edits, downloads) to files the actor
+    // is assigned to — a shared borrower must not expose the audit history of a file
+    // the officer isn't on (round-2 audit N4). Borrower/entity-level entries stay.
+    const params = [req.params.id];
+    let appVisible;
+    if (seesAllBorrowers(req)) {   // admin/underwriter/processor keep the borrower-wide view (F6)
+      appVisible = `SELECT id FROM applications WHERE (borrower_id=$1 OR co_borrower_id=$1)`;
+    } else {
+      params.push(req.actor.id);
+      appVisible = `SELECT a.id FROM applications a WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND ${VISIBLE_OFFICERS_SQL('a', '$2')}`;
+    }
     const r = await db.query(
       `SELECT g.id, g.action, g.entity_type, g.entity_id, g.detail, g.created_at,
               g.actor_kind, su.full_name AS actor_name
@@ -3514,10 +3593,10 @@ router.get('/borrowers/:id/activity', async (req, res) => {
         WHERE (g.entity_type='borrower' AND g.entity_id=$1)
            OR (g.entity_type IN ('application','document','track_record','llc')
                AND g.entity_id IN (
-                 SELECT id FROM applications WHERE (borrower_id=$1 OR co_borrower_id=$1)
+                 ${appVisible}
                  UNION SELECT id FROM llcs WHERE borrower_id=$1
                  UNION SELECT id FROM track_records WHERE borrower_id=$1))
-        ORDER BY g.created_at DESC LIMIT 200`, [req.params.id]);
+        ORDER BY g.created_at DESC LIMIT 200`, params);
     res.json(r.rows);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -3673,7 +3752,7 @@ router.put('/borrowers/:id/track-record/snapshot', async (req, res) => {
       html: b.html, filename: b.filename, uploadedByKind: 'staff', uploadedById: req.actor.id,
     });
     res.json({ ok: true, ...out });
-  } catch (e) { res.status(e.status || 500).json({ error: e.message || 'could not save the snapshot' }); }
+  } catch (e) { if (!e.status) console.warn('[staff] snapshot error:', db.describeError(e)); res.status(e.status || 500).json({ error: e.status ? e.message : 'could not save the snapshot' }); }
 });
 router.get('/borrowers/:id/track-record/snapshot', async (req, res) => {
   if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
@@ -3848,7 +3927,7 @@ router.get('/llcs/:id', async (req, res) => {
     const bundle = await llcLib.getLlcBundle(req.params.id);
     if (!bundle) return res.status(404).json({ error: 'not found' });
     res.json({ ...bundle, read_only: false });
-  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Staff upload of an entity document into a specific LLC checklist slot, WITHOUT a
@@ -3905,7 +3984,7 @@ router.post('/llcs/:id/documents', async (req, res) => {
     try { await llcLib.syncLlcConditions(req.params.id); } catch (_) { /* best-effort */ }
     await audit(req, 'upload_document', 'document', r.rows[0].id, { filename: b.filename, llcId: req.params.id });
     res.status(201).json({ ok: true, documentId: r.rows[0].id });
-  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 router.patch('/llcs/:id', async (req, res) => {
@@ -4297,6 +4376,19 @@ router.get('/applications/:id/status-history', async (req, res) => {
 // file's Activity feed shows exactly what changed.
 router.patch('/applications/:id/details', async (req, res) => {
   const b = req.body || {};
+  // #84 — a clear-to-close / funded file's loan structure is FROZEN for everyone,
+  // super_admin included. This economics editor is one of the write paths that
+  // used to skip the freeze (it could rewrite a funded loan's numbers). A
+  // super_admin can UNLOCK the file first to correct a mistake, then re-lock.
+  const detailsLock = await require('../lib/file-lock').structuralLockReason(req.params.id, db, { actor: req.actor });
+  if (detailsLock) return res.status(409).json({ error: detailsLock, locked: true });
+  // sqft only applies to a square-footage / ground-up rehab. When the rehab type
+  // is being changed to something else, null any stale sqft in the SAME update so
+  // it can't keep flipping the pricing engine's sqftAddition flag (its
+  // `sqft_post > sqft_pre` clause). The forms always send both together.
+  if ('rehabType' in b && !require('../lib/fields').sqftRelevantType(b.rehabType)) {
+    b.sqftPre = null; b.sqftPost = null;
+  }
   const NUM = { units: 'units', purchasePrice: 'purchase_price', asIsValue: 'as_is_value',
     arv: 'arv', rehabBudget: 'rehab_budget', sqftPre: 'sqft_pre', sqftPost: 'sqft_post',
     requestedExpFlips: 'requested_exp_flips', requestedExpHolds: 'requested_exp_holds', requestedExpGround: 'requested_exp_ground',
@@ -4325,6 +4417,16 @@ router.patch('/applications/:id/details', async (req, res) => {
   }
   if ('isAssignment' in b) { sets.push(`is_assignment=$${i++}`); vals.push(!!b.isAssignment); touchedCols.push('is_assignment'); }
   if (b.propertyAddress !== undefined) { sets.push(`property_address=$${i++}`); vals.push(b.propertyAddress ? JSON.stringify(b.propertyAddress) : null); touchedCols.push('property_address'); }
+  // Couple units to a property_type change when the caller didn't send units
+  // explicitly (a direct API call, or the completeness panel) — mirrors the
+  // intake form's unitsForType so a single-family type auto-fills "1 unit" and a
+  // switch to multi doesn't keep a stale single "1".
+  if ('propertyType' in b && !('units' in b)) {
+    const curU = (await db.query(`SELECT units FROM applications WHERE id=$1`, [req.params.id])).rows[0];
+    const prevUnits = curU ? curU.units : null;
+    const nextUnits = require('../lib/units').unitsForPropertyType(b.propertyType, prevUnits);
+    if (nextUnits !== prevUnits) { sets.push(`units=$${i++}`); vals.push(nextUnits); touchedCols.push('units'); }
+  }
   if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
   sets.push('updated_at=now()'); vals.push(req.params.id);
   try {
@@ -4414,7 +4516,7 @@ router.post('/applications/:id/loan-number', async (req, res) => {
     await audit(req, 'set_loan_number', 'application', req.params.id, { from: existing || null, to: ln });
     enqueueClickupPush(req.params.id, ['ys_loan_number']).catch(() => {});   // keep ClickUp/LOS in sync (self-gates; no-op when unmapped/unlinked)
     res.json({ ok: true, loanNumber: upd.rows[0].ys_loan_number });
-  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Nudge the borrower with a friendly reminder of what's still outstanding on
@@ -4594,6 +4696,13 @@ async function completeFields(req, res, borrowerScoped) {
         return res.status(403).json({ error: `Only an underwriter or admin can raise ${raised.join(' and ')} on a priced file.` });
     }
     if (appSets.length) {
+      // #84 — this staff completeness path writes the SAME frozen economics fields
+      // as PATCH /details (program / loan_type / property_type / price / as-is / ARV
+      // / rehab budget), so it must honor the clear-to-close / funded freeze too — a
+      // super_admin can unlock the file to correct it. Only the economics UPDATE is
+      // guarded (a request with personal borrower fields only is unaffected).
+      const lock = await require('../lib/file-lock').structuralLockReason(req.params.id, db, { actor: req.actor });
+      if (lock) return res.status(409).json({ error: lock, locked: true });
       appSets.push('updated_at=now()');
       await db.query(`UPDATE applications SET ${appSets.join(', ')} WHERE id=$1`, appVals);
       enqueueClickupPush(req.params.id, appKeys).catch(() => {});
@@ -4628,7 +4737,7 @@ async function completeFields(req, res, borrowerScoped) {
     }
     if (!borrowerScoped) await audit(req, 'complete_fields', 'application', req.params.id, { app: appKeys, borrower: brKeys, before: brBefore || undefined });
     res.json({ ok: true, appFields: appKeys.length, borrowerFields: brSets.length });
-  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 }
 router.post('/applications/:id/complete-fields', (req, res) => completeFields(req, res, false));
 
@@ -4710,6 +4819,19 @@ router.post('/applications/:id/internal-status', async (req, res) => {
     // is a second door into the decision-grade buckets — gate it the same way.
     if (DECISION_STATUSES.has(external) && !seesAll(req))
       return res.status(403).json({ error: 'Only an underwriter or admin can move a file to this status.' });
+    // S3-05 / H2: the internal-status path re-derives the borrower-facing status,
+    // so it is a SECOND door into clear-to-close / funded — gate it the SAME way as
+    // PATCH /:id, or a file could be advanced past unsatisfied required conditions
+    // and gate items. Admin may override with force.
+    let forced = false;
+    if (external === 'clear_to_close' || external === 'funded') {
+      const blockers = await advancementBlockers(req.params.id, external);
+      if (blockers.conditions.length || blockers.gates.length) {
+        const force = !!(req.body && req.body.force);
+        if (!(force && isAdmin(req))) return res.status(409).json({ error: 'blocked', target: external, blockers });
+        forced = true;
+      }
+    }
     await db.query(
       `UPDATE applications SET internal_status=$2, status=$3, status_changed_at=now(), updated_at=now() WHERE id=$1`,
       [req.params.id, internalStatus, external]);
@@ -4717,12 +4839,41 @@ router.post('/applications/:id/internal-status', async (req, res) => {
     // Record the (borrower-facing) transition on the file's timeline, like PATCH /:id.
     await db.query(
       `INSERT INTO application_status_history (application_id, from_status, to_status, changed_by, forced)
-       VALUES ($1,$2,$3,$4,$5)`, [req.params.id, cur.rows[0].status, external, req.actor.id, false]);
+       VALUES ($1,$2,$3,$4,$5)`, [req.params.id, cur.rows[0].status, external, req.actor.id, forced]);
+    // Funding seeds the post-closing trailing-doc checklist (parity with PATCH /:id).
+    if (external === 'funded') { try { await seedPostClosing(req.params.id); } catch (_) {} }
     await audit(req, 'internal_status_change', 'application', req.params.id,
-      { from: cur.rows[0].internal_status, to: internalStatus, external });
+      { from: cur.rows[0].internal_status, to: internalStatus, external, forced: forced || undefined });
     // Status is a rule-engine field — re-run conditions on the new external bucket.
     try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'status_change' }); } catch (_) {}
     res.json({ ok: true, internal_status: internalStatus, status: external });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// #84 — super-admin STRUCTURAL UNLOCK. A clear-to-close / funded file's loan
+// structure (price, loan amount, pricing, budget, vesting, program) is frozen for
+// EVERYONE, super_admin included. A super_admin may deliberately UNLOCK a specific
+// file to correct a genuine mistake, then re-lock it — every toggle is audited.
+// Only a super_admin (not a regular admin) may do this.
+router.post('/applications/:id/structural-lock', async (req, res) => {
+  if (!(req.actor && req.actor.role === 'super_admin'))
+    return res.status(403).json({ error: 'Only a super-admin can unlock a frozen file.' });
+  const unlock = !!(req.body && req.body.unlocked);
+  const reason = req.body && req.body.reason ? String(req.body.reason).slice(0, 500) : null;
+  try {
+    const cur = await db.query(`SELECT status FROM applications WHERE id=$1`, [req.params.id]);
+    if (!cur.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (unlock) {
+      await db.query(
+        `UPDATE applications SET structural_unlocked_at=now(), structural_unlocked_by=$2, structural_unlock_reason=$3, updated_at=now() WHERE id=$1`,
+        [req.params.id, req.actor.id, reason]);
+    } else {
+      await db.query(
+        `UPDATE applications SET structural_unlocked_at=NULL, structural_unlocked_by=NULL, structural_unlock_reason=NULL, updated_at=now() WHERE id=$1`,
+        [req.params.id]);
+    }
+    await audit(req, unlock ? 'structural_unlock' : 'structural_relock', 'application', req.params.id, { reason });
+    res.json({ ok: true, unlocked: unlock });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
@@ -5587,7 +5738,10 @@ router.post('/applications/:id/documents', async (req, res) => {
           AND ($3::text IS NOT NULL OR $4::uuid IS NULL)
           AND ($3::text IS NULL OR slot_label IS NOT DISTINCT FROM $3)`,
       [b.checklistItemId, r.rows[0].id, slot, b.replaceDocumentId || null]);
-    await db.query(`UPDATE checklist_items SET status='received', updated_at=now() WHERE id=$1`, [b.checklistItemId]);
+    // A superseding upload replaces the reviewed evidence with a new UNREVIEWED
+    // file, so a prior sign-off no longer matches what's on the item — drop it so
+    // the new version is re-reviewed before the file can clear-to-close.
+    await require('../lib/checklist-evidence').reopenConditionEvidence(db, b.checklistItemId, 'received');
     enqueueChecklistStatusPush(b.checklistItemId).catch(() => {}); // mapped conditions → ClickUp dropdown
     // The shared list works both ways — tell the borrower their team added it.
     // Staff-only (internal) conditions are never surfaced or emailed to them.
@@ -5703,10 +5857,11 @@ router.post('/documents/:id/review', async (req, res) => {
         const newHint = moreNote ? (baseHint ? `${baseHint} · Still needed: ${moreNote}` : `Still needed: ${moreNote}`) : null;
         await db.query(
           `UPDATE checklist_items SET status='outstanding',
+                  signed_off_at=NULL, signed_off_by=NULL, reviewed_at=NULL, reviewed_by=NULL,
                   notes=CASE WHEN $2 <> '' THEN $2 ELSE notes END,
                   borrower_hint=COALESCE($3, borrower_hint), updated_at=now() WHERE id=$1`,
           [doc.checklist_item_id, moreNote ? `Still needed: ${moreNote}` : '', newHint]);
-      } else {
+      } else if (action === 'accept') {
         // Accepting a document only marks the condition RECEIVED — NOT satisfied
         // (owner-directed 2026-07-12). The condition stays open on the list until
         // a reviewer explicitly SIGNS IT OFF (which routes through signOffGate and
@@ -5714,9 +5869,16 @@ router.post('/documents/:id/review', async (req, res) => {
         // criminal report, insurance binder AND invoice). This prevents a
         // multi-document condition from "flying away" the moment ONE of its
         // documents is accepted, and keeps accept (doc is good) distinct from
-        // sign-off (the whole condition is complete). Reject -> issue.
-        await db.query(`UPDATE checklist_items SET status=$2, updated_at=now() WHERE id=$1`,
-          [doc.checklist_item_id, action === 'accept' ? 'received' : 'issue']);
+        // sign-off (the whole condition is complete).
+        await db.query(`UPDATE checklist_items SET status='received', updated_at=now() WHERE id=$1`,
+          [doc.checklist_item_id]);
+      } else {
+        // Reject -> issue, AND drop any prior sign-off: the rejected document was
+        // the evidence the sign-off attested to, so the condition must re-open
+        // (otherwise a signed-off condition stays "cleared" for the clear-to-close
+        // gate with rejected/zero evidence). Same class as the LLC/track-record
+        // reject-revokes-verification handling below.
+        await require('../lib/checklist-evidence').reopenConditionEvidence(db, doc.checklist_item_id, 'issue');
       }
       enqueueChecklistStatusPush(doc.checklist_item_id).catch(() => {}); // mapped conditions → ClickUp dropdown
     }
@@ -6476,7 +6638,7 @@ router.get('/sync-reviews', async (req, res) => {
         ORDER BY q.created_at DESC LIMIT 500`,
       scoped ? [status, req.actor.id] : [status]);
     res.json({ reviews: r.rows });
-  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Lightweight open-row count for the sidebar badge — same scope as the list,
@@ -6605,7 +6767,8 @@ router.post('/sync-reviews/:id/resolve', async (req, res) => {
 function sendReviewActionError(res, e) {
   if (e && e.status && e.expose) return res.status(e.status).json({ error: e.message });
   if (e && e.status) return res.status(502).json({ error: `ClickUp did not accept the request (upstream ${e.status}) — nothing was changed; try again shortly` });
-  return res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' });
+  console.warn('[staff] review-action error:', db.describeError(e));
+  return res.status(500).json({ error: 'server error' });
 }
 
 // FILE-LEVEL resolution (owner-directed 2026-07-15 night): a stuck FILE's
@@ -6764,7 +6927,7 @@ router.post('/sync-reviews/:id/reject', async (req, res) => {
     await audit(req, 'sync_review_reject', row.application_id ? 'application' : 'borrower',
       row.application_id || row.borrower_id, { reviewId: row.id, field: row.field_key, reason: row.reason });
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // ---------------- e-signature (DocuSign) tracking — read model --------------
@@ -6780,7 +6943,7 @@ router.get('/esign/dashboard', async (req, res) => {
       ? { where: '', params: [] }
       : { where: `AND ${VISIBLE_OFFICERS_SQL('a', '$1')}`, params: [req.actor.id] };
     res.json(await esignTracking.dashboard(db, scope));
-  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // ---- e-signature CONNECTION + MODE status (admin) ---------------------------
@@ -6825,7 +6988,7 @@ router.get('/esign/connection', requireRole('admin'), async (req, res) => {
 router.get('/applications/:id/esign', async (req, res) => {
   try {
     res.json(await esignTracking.fileEsign(db, req.params.id));
-  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // ---------------- e-signature management actions ----------------------------
@@ -6845,6 +7008,14 @@ function esignErrStatus(e) {
   if (e && e.code === 'DOCUSIGN_GATE_NOT_READY') return 409;
   if (e && e.retryable === false) return 400;
   return 500;
+}
+// Send an esign orchestration error safely: mapped 4xx/409 keep their curated
+// message; an unknown 500 logs the detail server-side and returns generic — never
+// leak raw pg/JS text to the client (round-2 audit F2).
+function sendEsignError(res, e, extra = {}) {
+  const st = esignErrStatus(e);
+  if (st >= 500) { console.warn('[staff] esign error:', db.describeError(e)); return res.status(st).json({ error: 'server error' }); }
+  return res.status(st).json({ error: e.message, ...extra });
 }
 
 // Load an envelope row and confirm the actor may see its file (the /esign/:rowId
@@ -6875,7 +7046,7 @@ router.post('/esign/test-send', requireRole('admin'), async (req, res) => {
     const out = await require('../lib/esign/test-send').sendTestEnvelope({ actorId: req.actor.id, db, docusign: docusignLib });
     await audit(req, 'esign_test_send', 'esign_test', null, { to: out.to, envelopeId: out.envelopeId });
     res.json({ ok: true, ...out });
-  } catch (e) { res.status(esignErrStatus(e)).json({ error: e.message }); }
+  } catch (e) { sendEsignError(res, e); }
 });
 
 // Send a package for a file. Rides the /applications/:id scope guard.
@@ -6911,7 +7082,7 @@ router.post('/applications/:id/esign/send', async (req, res) => {
       error: reason,
     });
   } catch (e) {
-    res.status(esignErrStatus(e)).json({ error: e.message, outstanding: e.outstanding });
+    sendEsignError(res, e, { outstanding: e.outstanding });
   }
 });
 
@@ -6946,7 +7117,7 @@ router.post('/esign/:rowId/resend', async (req, res) => {
     await docusignLib.resendEnvelope(row.envelope_id);
     await audit(req, 'esign_resend', 'application', row.application_id, { purpose: row.purpose });
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Void a still-open envelope (reason required by DocuSign).
@@ -6964,7 +7135,7 @@ router.post('/esign/:rowId/void', async (req, res) => {
       [row.id, reason]);
     await audit(req, 'esign_void', 'application', row.application_id, { purpose: row.purpose, reason });
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Mint an embedded signing URL for the ADMIN counter-signer to sign from the
@@ -6986,7 +7157,7 @@ router.post('/esign/:rowId/countersign-view', async (req, res) => {
     });
     await audit(req, 'esign_countersign_view', 'application', row.application_id, { purpose: row.purpose });
     res.json({ url });
-  } catch (e) { res.status(esignErrStatus(e)).json({ error: e.message }); }
+  } catch (e) { sendEsignError(res, e); }
 });
 
 // Admin: manually drain the inbound event inbox + the send queue (ops button).
@@ -6995,7 +7166,7 @@ router.post('/esign/drain', async (req, res) => {
   try {
     const inbox = await esignWebhook.drainInbox({ db, docusign: docusignLib });
     res.json({ ok: true, inbox });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // ---------------- chat v3: conversations, receipts, presence ----------------

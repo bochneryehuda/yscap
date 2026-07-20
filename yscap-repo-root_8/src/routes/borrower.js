@@ -143,7 +143,18 @@ router.get('/profile', async (req, res) => {
   // Live residence duration from the anchored move-in date (owner-directed
   // 2026-07-14) — the stored years/months are recomputed to "now" so a profile
   // opened months after the count was entered shows the real elapsed time.
-  res.json(require('../lib/residence').withLiveResidence(r.rows[0]) || {});
+  const out = require('../lib/residence').withLiveResidence(r.rows[0]) || {};
+  // `locked` = this borrower has at least one ACCEPTED (registered) file, so their
+  // identity edits (name/DOB/SSN/phone/credit/citizenship) now go through loan-team
+  // approval rather than saving directly (owner-directed 2026-07-20). The profile
+  // screen uses this to switch off silent autosave for those fields and explain why.
+  try {
+    const lk = await db.query(
+      `SELECT 1 FROM applications a JOIN product_registrations pr ON pr.application_id=a.id AND pr.is_current
+        WHERE (${OWN_FILE_SQL("a", "$1")}) AND a.deleted_at IS NULL LIMIT 1`, [me(req)]);
+    out.locked = !!lk.rows[0];
+  } catch (_) { out.locked = false; }
+  res.json(out);
 });
 
 // Update the borrower's canonical profile. The client sends camelCase keys and
@@ -194,9 +205,42 @@ router.put('/profile', async (req, res) => {
     }
     fields.date_of_birth = dob;
   }
+  // Owner-directed 2026-07-20: once ANY of this borrower's files is ACCEPTED (a
+  // product is registered), the borrower can no longer change their identity on
+  // their side directly — name / DOB / SSN / phone / credit / citizenship each
+  // become a pending change request the loan team approves, showing before → after.
+  // Non-identity profile details (address, housing, residence, marital) stay
+  // directly editable. The request is anchored to the borrower's most-recently
+  // accepted file, whose team approves; approval writes the shared borrower row.
+  const changeRequested = [];
+  let ssnGated = false;
+  const anchor = (await db.query(
+    `SELECT a.id FROM applications a
+       JOIN product_registrations pr ON pr.application_id=a.id AND pr.is_current
+      WHERE (${OWN_FILE_SQL("a", "$1")}) AND a.deleted_at IS NULL
+      ORDER BY pr.created_at DESC LIMIT 1`, [me(req)])).rows[0];
+  if (anchor) {
+    for (const col of Object.keys(fields)) {
+      if (!changeRequests.isBorrowerField(col)) continue;   // identity fields only; keep address/housing/etc. live
+      try {
+        const cr = await changeRequests.openRequest(anchor.id, col, fields[col],
+          { reason: b.reason || null, requesterKind: 'borrower', requesterId: me(req), targetBorrowerId: me(req) });
+        if (!cr.unchanged) changeRequested.push(cr);
+      } catch (_) { /* skip an invalid field, keep the rest */ }
+      delete fields[col];   // never a live write on a locked borrower
+    }
+    if (b.ssn) {
+      try {
+        const cr = await changeRequests.openRequest(anchor.id, 'ssn', b.ssn,
+          { reason: b.reason || null, requesterKind: 'borrower', requesterId: me(req), targetBorrowerId: me(req) });
+        if (!cr.unchanged) changeRequested.push(cr);
+      } catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
+      ssnGated = true;
+    }
+  }
   const sets = [], vals = []; let i = 1;
   for (const [k, v] of Object.entries(fields)) { sets.push(`${k}=$${i++}`); vals.push(v); }
-  if (b.ssn) {
+  if (b.ssn && !ssnGated) {
     // #91/#92: validate server-side (the "Add SSN" button gates to 9 digits, but a
     // direct/old-client caller must not persist a partial or non-numeric SSN).
     const s = C.ssnForStorage(b.ssn);
@@ -204,21 +248,30 @@ router.put('/profile', async (req, res) => {
     sets.push(`ssn_encrypted=$${i++}`); vals.push(s.encrypted);
     sets.push(`ssn_last4=$${i++}`); vals.push(s.last4);
   }
-  if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
-  // Before-image of the identity-critical fields for the audit trail (incident
-  // gap: update_profile logged no values, so changes couldn't be reconstructed).
-  const CRITICAL = ['cell_phone', 'date_of_birth', 'fico', 'citizenship'];
-  const changedCritical = CRITICAL.filter((k) => k in fields);
-  let beforeImg;
-  if (changedCritical.length) {
-    try { beforeImg = (await db.query(`SELECT ${changedCritical.join(', ')} FROM borrowers WHERE id=$1`, [me(req)])).rows[0]; } catch (_) {}
+  // Nothing to do only when there is neither a live edit nor a proposed change.
+  if (!sets.length && !changeRequested.length) return res.status(400).json({ error: 'nothing to update' });
+  // The live write covers only the fields that stayed direct (a locked borrower's
+  // identity fields were split out into change requests above).
+  if (sets.length) {
+    // Before-image of the identity-critical fields for the audit trail (incident
+    // gap: update_profile logged no values, so changes couldn't be reconstructed).
+    const CRITICAL = ['cell_phone', 'date_of_birth', 'fico', 'citizenship'];
+    const changedCritical = CRITICAL.filter((k) => k in fields);
+    let beforeImg;
+    if (changedCritical.length) {
+      try { beforeImg = (await db.query(`SELECT ${changedCritical.join(', ')} FROM borrowers WHERE id=$1`, [me(req)])).rows[0]; } catch (_) {}
+    }
+    sets.push('updated_at=now()'); vals.push(me(req));
+    await db.query(`UPDATE borrowers SET ${sets.join(',')} WHERE id=$${i}`, vals);
+    await audit(req, 'update_profile', 'borrower', me(req), {
+      changed: Object.keys(fields), ssn: !!(b.ssn && !ssnGated),
+      before: beforeImg || undefined,
+      after: changedCritical.length ? Object.fromEntries(changedCritical.map((k) => [k, fields[k]])) : undefined });
   }
-  sets.push('updated_at=now()'); vals.push(me(req));
-  await db.query(`UPDATE borrowers SET ${sets.join(',')} WHERE id=$${i}`, vals);
-  await audit(req, 'update_profile', 'borrower', me(req), {
-    changed: Object.keys(fields), ssn: !!b.ssn,
-    before: beforeImg || undefined,
-    after: changedCritical.length ? Object.fromEntries(changedCritical.map((k) => [k, fields[k]])) : undefined });
+  // Team notice for the proposed identity changes (before → after), on the anchor file.
+  if (changeRequested.length && anchor) {
+    try { await notifyTeamOfChangeRequests(anchor.id, changeRequested); } catch (_) {}
+  }
   // Mapped borrower fields propagate to ClickUp immediately on every file this
   // borrower has that is ALREADY linked to a task (a profile edit must never
   // materialize a brand-new ClickUp task as a side effect — hence the filter).
@@ -239,11 +292,18 @@ router.put('/profile', async (req, res) => {
     }
   }
   // Profile fields (credit score, citizenship, home state…) feed the condition
-  // rule engine — re-check every open file this borrower is on.
-  if (b.fico !== undefined || b.citizenship !== undefined || b.currentAddress !== undefined) {
+  // rule engine — re-check every open file this borrower is on. Only for fields
+  // that were actually WRITTEN live; a gated (change-requested) field hasn't moved.
+  if (('fico' in fields) || ('citizenship' in fields) || ('current_address' in fields)) {
     try { await conditionEngine.evaluateBorrowerApplications(me(req), { reason: 'profile_updated' }); } catch (_) {}
   }
-  res.json({ ok: true });
+  res.json({
+    ok: true,
+    // When the borrower is locked (has an accepted file), tell the UI which identity
+    // edits became pending change requests so it can show "sent to your loan team".
+    locked: !!anchor,
+    changeRequested: changeRequested.map((r) => ({ field: r.field, label: r.field_label, newValue: r.new_value })),
+  });
 });
 
 // Government photo ID lives on the PROFILE, collected once and reused on every
@@ -282,11 +342,16 @@ router.post('/profile/photo-id', async (req, res) => {
        VALUES ($1,$7,$8,$2,$3,$4,$5,$6,'borrower',$1,'photo_id') RETURNING id`,
       [me(req), b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, appId, appItemId]);
     await db.query(`UPDATE borrowers SET photo_id_document_id=$2, updated_at=now() WHERE id=$1`, [me(req), d.rows[0].id]);
-    // Satisfy any outstanding government-ID checklist item on the borrower's files.
+    // Move any government-ID checklist item on the borrower's files to 'received'.
+    // A NEW (unreviewed) ID is fresh evidence, so even an already SIGNED-OFF gov-ID
+    // condition drops its sign-off and returns for re-review — the prior sign-off
+    // attested to the OLD ID (same "new evidence re-opens the condition" rule as a
+    // document new-version upload). A true duplicate short-circuits above (dedup),
+    // so this only runs for a genuinely different ID.
     await db.query(
-      `UPDATE checklist_items SET status='received', updated_at=now()
+      `UPDATE checklist_items SET status='received',
+              signed_off_at=NULL, signed_off_by=NULL, reviewed_at=NULL, reviewed_by=NULL, updated_at=now()
         WHERE template_id=(SELECT id FROM checklist_templates WHERE code='rtl_p1_id')
-          AND status NOT IN ('satisfied')
           AND application_id IN (SELECT id FROM applications WHERE ${OWN_FILE_SQL("", "$1")})`,
       [me(req)]);
     await audit(req, 'upload_photo_id', 'borrower', me(req));
@@ -487,6 +552,7 @@ router.post('/applications', async (req, res) => {
   // purchase price is the underlying + the (derived) fee so leverage/pricing
   // size off seller price + fee and the record is internally consistent.
   const asg = require('../lib/fields').assignmentFields(b);
+  const sqf = require('../lib/fields').sqftForType(b.rehabType, intField(b.sqftPre) || null, intField(b.sqftPost) || null);
   const r = await db.query(
     `INSERT INTO applications
        (borrower_id,llc_id,property_address,property_type,units,program,loan_type,
@@ -497,7 +563,7 @@ router.post('/applications', async (req, res) => {
     [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
      b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), asg.purchasePrice, b.asIsValue || null,   // #95: never a program
      b.arv || null, b.rehabBudget || null, b.loanOfficerName || null,
-     b.rehabType || null, intField(b.sqftPre) || null, intField(b.sqftPost) || null,
+     b.rehabType || null, sqf.sqftPre, sqf.sqftPost,
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
      asg.isAssignment, asg.underlying, asg.assignFee, JSON.stringify(redactPII(b))]);
   const appId = r.rows[0].id;
@@ -569,16 +635,30 @@ const BORROWER_HIDDEN_APP_FIELDS = [
   'raw_intake',
   'lender', 'investor_loan_number', 'channel', 'clickup_extra',
   'clickup_pipeline_task_id', 'clickup_folder_id', 'clickup_list_id',
-  'internal_status', 'sync_state', 'clickup_last_synced_at', 'clickup_status_updated_at', 'hot_poll_until',
+  'internal_status', 'sync_state', 'sync_status', 'clickup_last_synced_at', 'clickup_status_updated_at', 'hot_poll_until',
+  'clickup_created_at', 'clickup_shadow', 'clickup_shadow_hash', 'co_borrower_task_id', 'draw_setup_requested_at',
   // staff-only pipeline detail pulled from ClickUp (Round 3)
   'title_company', 'title_company_contact', 'insurance_company', 'insurance_company_contact',
   'appraiser_name', 'cda_value', 'first_lien', 'second_lien', 'actual_rate', 'desired_rate',
   'encompass_status', 'application_submitted', 'prepayment_penalty', 'property_taxes',
   'property_insurance', 'property_hoa', 'rental_income', 'appraised_rental_value', 'approx_appraised_rental_value',
+  // INTERNAL pricing margin + internal valuations — a borrower may see their loan
+  // structure but never OUR markup or the internal appraised figures.
+  'file_markup_std_pct', 'file_markup_gold_pct', 'actual_appraised_value', 'approx_appraised_value',
+  // staff identities + the structural-unlock bookkeeping (owner-directed funded lock).
+  'underwriter_id', 'processor_id', 'structural_unlocked_at', 'structural_unlocked_by', 'structural_unlock_reason',
+  // stored card fields (currently populated elsewhere, but never leak them from here).
+  'card_number_encrypted', 'card_cvv_encrypted', 'card_last4', 'card_exp',
 ];
+// A denylist over SELECT a.* "fails open": a NEW internal column leaks by default
+// until someone remembers to add it. This pattern catch-all removes anything whose
+// name matches a clearly-internal convention, so a future column can't silently
+// reach a borrower. None of these patterns can hit a borrower-facing field.
+const INTERNAL_FIELD_PATTERN = /(_encrypted$|^card_|^clickup_|_task_id$|^sync_|_synced_at$|markup|underwriter|structural_unlock|encompass|^cda_|_lien$)/i;
 function stripInternalAppFields(row) {
   if (!row || typeof row !== 'object') return row;
   for (const k of BORROWER_HIDDEN_APP_FIELDS) delete row[k];
+  for (const k of Object.keys(row)) if (INTERNAL_FIELD_PATTERN.test(k)) delete row[k];
   // Strip OUR internal margin from the registered product's quote. A borrower
   // may see their loan structure (rate, loan amount, appraised value) but never
   // the markup / fee build-up (S1-03). adminPricing is the internal block.
@@ -970,8 +1050,16 @@ router.get('/applications/:id/appraisal', async (req, res) => {
     // sale_type_risk, mc_*, etc.) — the SAME class the SCRUTINY_CODES filter hides from the borrower
     // `findings` list. Drop it too so the scrutiny scrub can't be defeated via the appraisal payload;
     // the borrower gets the filtered `findings`, never the raw warnings.
+    // The appraiser's DIRECT CONTACT + supervisor personnel + tooling vendor are internal — the
+    // borrower reaches their loan team, never the appraiser directly, so the personal phone/email,
+    // firm street address, supervisor identity/license and software vendor are dropped (M9). The
+    // "Prepared by" card still shows WHO appraised the property (name/firm/license) — standard
+    // appraisal disclosure — but not how to contact them or the internal desk detail.
     const { imported_by, source_xml_document_id, pdf_document_id, fields, warnings,
-      lender_name, amc_name, owner_of_record, lender_address, ...rest } = appr; // eslint-disable-line no-unused-vars
+      lender_name, amc_name, owner_of_record, lender_address,
+      appraiser_email, appraiser_phone, appraiser_company_address,
+      supervisor_name, supervisor_license_id, supervisor_license_state, supervisor_license_exp,
+      software_vendor, ...rest } = appr; // eslint-disable-line no-unused-vars
     return rest;
   })();
   const bSummary = {
@@ -1029,15 +1117,15 @@ router.get('/applications/:id/checklist', async (req, res) => {
   // before anything else uses `rows` — covers data where borrower_label was
   // defaulted from the internal label.
   for (const it of rows) { it.label = scrubText(it.label); it.hint = scrubText(it.hint); it.rejection_reason = scrubText(it.rejection_reason); }
+  // Co-borrower privacy (#82): personal fields (FICO / citizenship / home state)
+  // are per-borrower. loadRuleContext builds them from the PRIMARY borrower, so
+  // pre-fill those from the VIEWER's OWN record instead — a co-borrower must
+  // never see the primary's FICO, and vice-versa. App/deal fields stay from ctx.
+  const BORROWER_SCOPED = new Set(['fico', 'citizenship', 'borrower_state']);
   if (rows.some((it) => it.tool_key === 'info_field' && it.field_key)) {
     let ctx = null;
     try { const loaded = await conditionEngine.loadRuleContext(req.params.id); ctx = loaded && loaded.ctx; } catch (_) {}
     const fieldsByKey = await conditionRegistry.fieldMap(db);
-    // Co-borrower privacy (#82): personal fields (FICO / citizenship / home state)
-    // are per-borrower. loadRuleContext builds them from the PRIMARY borrower, so
-    // pre-fill those from the VIEWER's OWN record instead — a co-borrower must
-    // never see the primary's FICO, and vice-versa. App/deal fields stay from ctx.
-    const BORROWER_SCOPED = new Set(['fico', 'citizenship', 'borrower_state']);
     let selfVals = null;
     if (rows.some((it) => it.tool_key === 'info_field' && BORROWER_SCOPED.has(it.field_key))) {
       try {
@@ -1057,6 +1145,30 @@ router.get('/applications/:id/checklist', async (req, res) => {
       it.field_value = BORROWER_SCOPED.has(it.field_key)
         ? (selfVals ? (selfVals[it.field_key] ?? null) : null)
         : (ctx ? (ctx[it.field_key] ?? null) : null);
+    }
+  }
+  // Borrower-safe tool_payload (M8). The raw tool_payload blob is returned so the
+  // portal can pre-fill a submitted answer, but as stored it can carry data a
+  // borrower — especially a CO-borrower — must not see:
+  //   • track_record.perBorrower is EACH borrower's individual REO / financial
+  //     breakdown (staff-only + cross-borrower); the borrower view only renders
+  //     the aggregate `counts`.
+  //   • for a per-borrower personal info field (FICO / citizenship / home state),
+  //     tool_payload.value is whoever last answered it (the PRIMARY) — and the UI
+  //     reads it in preference to the per-viewer field_value, defeating the #82
+  //     scoping. Reflect the VIEWER's own value instead.
+  //   • no tool_payload may ever ship our internal pricing build-up.
+  for (const it of rows) {
+    if (!it.tool_payload || typeof it.tool_payload !== 'object') continue;
+    if (it.tool_key === 'track_record') {
+      const { perBorrower, liquidity, ...safe } = it.tool_payload; // eslint-disable-line no-unused-vars
+      it.tool_payload = safe;
+    } else if (it.tool_key === 'info_field' && BORROWER_SCOPED.has(it.field_key)) {
+      it.tool_payload = (it.field_value === null || it.field_value === undefined) ? null : { value: it.field_value };
+    }
+    if (it.tool_payload && typeof it.tool_payload === 'object') {
+      const { adminPricing, markupStdPct, markupGoldPct, ...rest } = it.tool_payload; // eslint-disable-line no-unused-vars
+      it.tool_payload = rest;
     }
   }
   res.json(rows);
@@ -1612,19 +1724,40 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
       if (k === 'loan_type') v = require('../lib/fields').sanitizeLoanType(v);   // #95: never a program
       appVals.push(v); appSets.push(`${k}=$${appVals.length}`); appKeys.push(k);
     }
+    // Couple units to a live property_type change. The completeness panel doesn't
+    // collect units, so a single-family type must still auto-fill "1 unit" and a
+    // switch to a multi type must not keep a stale single "1" (mirrors the intake
+    // form's unitsForType, server-side). Only on the live-write path — a locked
+    // file's property_type change becomes a change request instead.
+    if (appKeys.includes('property_type')) {
+      const newPt = appVals[appKeys.indexOf('property_type') + 1];
+      const curU = (await db.query(`SELECT units FROM applications WHERE id=$1`, [req.params.id])).rows[0];
+      const prevUnits = curU ? curU.units : null;
+      const nextUnits = require('../lib/units').unitsForPropertyType(newPt, prevUnits);
+      if (nextUnits !== prevUnits) { appVals.push(nextUnits); appSets.push(`units=$${appVals.length}`); appKeys.push('units'); }
+    }
     if (appSets.length) {
       appSets.push('updated_at=now()');
       await db.query(`UPDATE applications SET ${appSets.join(', ')} WHERE id=$1`, appVals);
       try { require('../clickup/enqueue').enqueueClickupPush(req.params.id, appKeys); } catch (_) {}
     }
-    if (requested.length) await notifyTeamOfChangeRequests(req.params.id, requested);
     // Personal fields update the actor's OWN profile only — a co-borrower must
     // not overwrite the primary borrower's DOB / phone / FICO / citizenship
     // (their own values differ). App/deal fields above are file-level and either
-    // party may fill them.
+    // party may fill them. Owner-directed 2026-07-20: once the file is LOCKED
+    // (accepted), a personal edit is ALSO approval-gated — it becomes a change
+    // request against the borrower's OWN row, not a live write.
     const brVals = [me(req)], brSets = [], brKeys = [];
     for (const [k, t] of Object.entries(B_COMPLETE_BORROWER)) {
       if (!(k in b) || b[k] === '' || b[k] == null) continue;
+      if (locked) {
+        try {
+          const cr = await changeRequests.openRequest(req.params.id, k, b[k],
+            { reason: b.reason || null, requesterKind: 'borrower', requesterId: me(req), targetBorrowerId: me(req) });
+          if (!cr.unchanged) requested.push(cr);
+        } catch (_) { /* skip a bad field, keep going with the rest */ }
+        continue;   // never a live write for a personal field on a locked file
+      }
       let v = b[k];
       if (t === 'int') { v = k === 'fico' ? require('../lib/fields').sanitizeFico(v) : parseInt(v, 10); if (v == null || !Number.isFinite(v)) continue; }  // #90: FICO 300–850
       if (t === 'date') {  // 2026-07-15 incident: strict calendar + year bounds;
@@ -1649,6 +1782,9 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
       // never overwrite the parent task's primary-borrower fields).
       if (me(req) === bid) { try { require('../clickup/enqueue').enqueueClickupPush(req.params.id, brKeys); } catch (_) {} }
     }
+    // One team notice for ALL of this borrower's proposed changes (economics +
+    // personal), each with its before → after, so the loan team can review together.
+    if (requested.length) await notifyTeamOfChangeRequests(req.params.id, requested);
     res.json({
       ok: true,
       locked,
@@ -1691,10 +1827,14 @@ router.get('/applications/:id/change-requests', async (req, res) => {
     `SELECT 1 FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")}) AND deleted_at IS NULL`,
     [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  // Economics requests are file-level (either borrower may see them); PERSONAL
+  // (borrowers-entity) requests are per-borrower — a co-borrower must not see the
+  // primary's identity change (its masked SSN / DOB), so scope those to the viewer.
   const r = await db.query(
     `SELECT id, field, field_label, old_value, new_value, reason, status, decision_note, created_at, decided_at
-       FROM change_requests WHERE application_id=$1
-      ORDER BY (status='pending') DESC, created_at DESC LIMIT 50`, [req.params.id]);
+       FROM change_requests
+      WHERE application_id=$1 AND (target_table='applications' OR target_id=$2)
+      ORDER BY (status='pending') DESC, created_at DESC LIMIT 50`, [req.params.id, me(req)]);
   res.json({
     locked: await changeRequests.isBorrowerLocked(req.params.id),
     requests: r.rows.map((row) => ({ ...row, decision_note: scrubText(row.decision_note) })),
@@ -2268,7 +2408,10 @@ router.post('/documents', async (req, res) => {
     // S2-09: only a BORROWER-FACING item may be flipped by a borrower — never a
     // staff-only condition (the id is borrower-supplied, so ownership alone is not
     // enough). Mirrors the audience guard on the tool/info endpoints.
-    await db.query(`UPDATE checklist_items SET status='received', updated_at=now() WHERE id=$1 AND audience IN ('borrower','both') AND (application_id IN (SELECT id FROM applications WHERE ${OWN_FILE_SQL("", "$2")}) OR borrower_id=$2 OR llc_id IN (SELECT id FROM llcs WHERE borrower_id=$2))`, [b.checklistItemId, me(req)]);
+    // A new version is unreviewed evidence — clear any prior sign-off so the
+    // swapped-in file is re-reviewed (it must not ride a stale sign-off to
+    // clear-to-close). The audience + ownership guard is unchanged.
+    await db.query(`UPDATE checklist_items SET status='received', signed_off_at=NULL, signed_off_by=NULL, reviewed_at=NULL, reviewed_by=NULL, updated_at=now() WHERE id=$1 AND audience IN ('borrower','both') AND (application_id IN (SELECT id FROM applications WHERE ${OWN_FILE_SQL("", "$2")}) OR borrower_id=$2 OR llc_id IN (SELECT id FROM llcs WHERE borrower_id=$2))`, [b.checklistItemId, me(req)]);
     enqueueChecklistStatusPush(b.checklistItemId).catch(() => {}); // mapped conditions → ClickUp dropdown
   }
   // An LLC document changed — recompute the LLC condition on every open file
@@ -2944,6 +3087,9 @@ router.post('/drafts/:id/submit', async (req, res) => {
   // hard-null underlying/fee off an assignment and store purchase = underlying +
   // (derived) fee, so the submitted file is internally consistent.
   const asg = require('../lib/fields').assignmentFields(b);
+  // sqft only applies to a square-footage / ground-up rehab — null it otherwise
+  // so a stale value can't force the pricing sqftAddition flag.
+  const sqf = require('../lib/fields').sqftForType(b.rehabType, intField(b.sqftPre) || null, intField(b.sqftPost) || null);
   const ins = await db.query(
     `INSERT INTO applications
        (borrower_id,llc_id,property_address,property_type,units,program,loan_type,
@@ -2959,7 +3105,7 @@ router.post('/drafts/:id/submit', async (req, res) => {
     [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
      b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), asg.purchasePrice, b.asIsValue || null,   // #95: never a program
      b.arv || null, b.rehabBudget || null, officerId, b.loanOfficerName || null,
-     b.rehabType || null, intField(b.sqftPre) || null, intField(b.sqftPost) || null,
+     b.rehabType || null, sqf.sqftPre, sqf.sqftPost,
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
      asg.isAssignment, asg.underlying, asg.assignFee, JSON.stringify(redactPII(b)),
      b.termMonths ? String(b.termMonths) : null, intField(b.irMonths),
@@ -3313,7 +3459,11 @@ router.get('/applications/:id/esign', async (req, res) => {
       };
     });
     res.json({ packages });
-  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+  } catch (e) {
+    // Log the DB detail server-side; the borrower gets a plain, non-leaking message.
+    console.warn(`[esign] borrower esign list failed (app ${req.params.id}): ${db.describeError ? db.describeError(e) : e && e.message}`);
+    res.status(500).json({ error: 'We couldn’t load your documents just now. Please refresh and try again.' });
+  }
 });
 
 // Mint the borrower's own embedded signing URL (single-use, ~5 min).
@@ -3337,8 +3487,11 @@ router.post('/applications/:id/esign/sign-view', async (req, res) => {
     await audit(req, 'esign_sign_view', 'application', req.params.id);
     res.json({ url });
   } catch (e) {
-    const status = e && e.retryable === false ? 400 : 500;
-    res.status(status).json({ error: e.message || 'server error' });
+    // Never leak the internal DocuSign/DB transport error to the borrower — log it
+    // server-side and show a friendly, actionable message. (The signer/turn/sent
+    // checks above already returned their own clear messages before we got here.)
+    console.warn(`[esign] borrower sign-view failed (app ${req.params.id}): ${e && e.message}`);
+    res.status(500).json({ error: 'We couldn’t open your signing session just now. Please try again in a moment — or use the signing link in the email we sent you.' });
   }
 });
 
