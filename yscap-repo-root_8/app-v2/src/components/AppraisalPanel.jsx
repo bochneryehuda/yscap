@@ -345,11 +345,14 @@ function Approaches({ a }) {
 // Humanize a MISMO enum token for display (Over75Percent → "Over 75%").
 function human(v) {
   if (!v) return null;
+  const direct = { REOSale: 'REO sale', ShortSale: 'Short sale', EstateSale: 'Estate sale', CourtOrderedSale: 'Court-ordered sale', ArmsLengthSale: 'Arm’s-length', Listing: 'Active listing',
+    Over75Percent: 'Over 75%', '25To75Percent': '25–75%', Under25Percent: 'Under 25%', UnderTwentyFivePercent: 'Under 25%',
+    OverSupply: 'Over-supply', InBalance: 'In balance', Shortage: 'Shortage',
+    UnderThreeMonths: 'Under 3 months', ThreeToSixMonths: '3–6 months', OverSixMonths: 'Over 6 months' };
+  if (direct[v]) return direct[v];
   return String(v)
     .replace(/([a-z])([A-Z])/g, '$1 $2').replace(/([A-Z]+)(\d)/g, '$1 $2')
-    .replace(/(\d+)Percent/i, '$1%').replace(/Percent/i, '%')
-    .replace(/Under Three Months/i, 'Under 3 months').replace(/Three To Six Months/i, '3–6 months').replace(/Over Six Months/i, 'Over 6 months')
-    .replace(/Under Twenty Five/i, 'Under 25').replace(/25 To 75/i, '25–75')
+    .replace(/(\d+)\s*Percent/i, '$1%').replace(/Percent/i, '%')
     .trim();
 }
 const chip = (label, tone) => (
