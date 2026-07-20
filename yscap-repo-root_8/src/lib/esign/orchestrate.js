@@ -50,7 +50,10 @@ const PACKAGES = {
     // (docgen.js) at send time — no paid DocuSign DocGen add-on, no pre-stored PDF.
     docs: [
       { kind: 'term_sheet',         prefix: 'ts',  signedKind: 'term_sheet_signed',    condition: 'rtl_cond_signedts',  name: 'Term Sheet', freshnessCheck: true },
-      { kind: 'application_export', prefix: 'app', signedKind: 'application_signed',    condition: 'rtl_cond_signed_app', name: 'Loan Application' },
+      // The loan application is BUILT on our server (jsPDF) from the current loan
+      // file at send time (application-pdf.js), uploaded as a real PDF (genExt) —
+      // DocuSign accepts PDF natively, so unlike the docx docs it is NOT converted.
+      { kind: 'application_export', prefix: 'app', signedKind: 'application_signed',    condition: 'rtl_cond_signed_app', name: 'Loan Application', generate: true, genExt: 'pdf' },
       { kind: 'bp_disclosure',      prefix: 'bpd', signedKind: 'bp_disclosure_signed',  condition: 'rtl_cond_signed_app', name: 'Business-Purpose Disclosure', generate: true },
     ],
   },
@@ -96,18 +99,82 @@ async function resolveConditionItem(db, applicationId, code) {
   return r.rows.length ? r.rows[0].id : null;
 }
 
+// ---- application-document formatting helpers --------------------------------
+// The loan application prints EVERY field the borrower/staff entered. These turn
+// raw file values into the display strings the pure renderer (application-pdf.js)
+// draws — money as "$487,500", percentages as "85%", dates human-readable, and
+// the SSN decrypted (or masked to last-4 when only that survives). rowFull omits
+// any row whose value formats to empty, so a missing field never renders blank.
+function fmtUSD(v) {
+  if (v == null || v === '') return '';
+  const n = Number(v);
+  if (!isFinite(n)) return '';
+  return '$' + Math.round(n).toLocaleString('en-US');
+}
+function fmtPct(v) {
+  if (v == null || v === '') return '';
+  const n = Number(v);
+  if (!isFinite(n)) return '';
+  let s = (n * 100).toFixed(2).replace(/\.?0+$/, '');
+  return `${s}%`;
+}
+/** Decrypt the SSN for the internal signed application; never throw, never print
+ *  ciphertext. Full 9 digits → 123-45-6789; only a last-4 survives → ***-**-1234. */
+function fmtSsn(encrypted, last4) {
+  let digits = '';
+  if (encrypted) {
+    try { digits = require('../crypto').decryptSSN(encrypted) || ''; } catch (_) { digits = ''; }
+  }
+  digits = String(digits).replace(/\D/g, '');
+  if (digits.length === 9) return `${digits.slice(0, 3)}-${digits.slice(3, 5)}-${digits.slice(5)}`;
+  if (last4) { const l4 = String(last4).replace(/\D/g, '').slice(-4); if (l4) return `***-**-${l4}`; }
+  return '';
+}
+/** Flatten a residence jsonb ({line1,line2,city,state,zip}) into one mailing line. */
+function addrOneLine(j) {
+  if (!j) return '';
+  if (typeof j === 'string') return j.trim();
+  const line = [j.line1, j.line2].filter(Boolean).join(' ');
+  const cityLine = [j.city, [j.state, j.zip].filter(Boolean).join(' ').trim()].filter(Boolean).join(', ');
+  return [line, cityLine].filter(Boolean).join(', ').trim();
+}
+/** Vesting language for the entity ("Maple Ridge Holdings LLC, a NY LLC"). */
+function vestingString(name, state) {
+  if (!name) return '';
+  const st = String(state || '').trim();
+  return st ? `${name}, a ${st} LLC` : String(name);
+}
+/** The registered program's borrower-facing label. */
+function programLabel(regProgram, regLabel, appProgram) {
+  if (regLabel) return regLabel;
+  const pr = String(regProgram || '').toLowerCase();
+  if (pr === 'gold') return 'Gold Standard Program';
+  if (pr === 'standard') return 'Standard Program';
+  return appProgram || '';
+}
+
 /**
- * Load the field values docgen.js needs to fill the business-purpose disclosure
- * and Heter Iska from the loan file: loan number, application date, loan amount,
- * subject-property parts (flattened out of the property_address jsonb), and the
- * borrower (+ co-borrower) names. Everything comes straight from the file record —
- * no free-typing, so the generated documents always agree with the file.
+ * Load the field values docgen.js needs from the loan file. Two consumers:
+ *  - the business-purpose disclosure + Heter Iska (the FLAT fields: loan number,
+ *    application date, loan amount, subject-property parts flattened out of the
+ *    property_address jsonb, and the borrower/co-borrower names); and
+ *  - the auto-generated LOAN APPLICATION (application-pdf.js) — the nested
+ *    `application` object below, carrying EVERY field the borrower/staff entered
+ *    (borrower + co-borrower incl. decrypted SSN/DOB, the vesting entity/LLC, the
+ *    subject property, the loan request & structure, and the loan officer).
+ * Everything comes straight from the file record — no free-typing — so the
+ * generated documents always agree with the file. The flat fields are unchanged
+ * (the disclosure/iska keep using them verbatim).
  */
 async function loadDocGenData(db, applicationId) {
   const r = await db.query(
     `SELECT a.ys_loan_number,
             COALESCE(a.submitted_at, a.created_at)              AS application_date,
             a.loan_amount, a.purchase_price,
+            a.as_is_value, a.arv, a.rehab_budget, a.term,
+            a.program, a.loan_type, a.occupancy, a.property_type, a.units,
+            a.requested_ir_months, a.requested_ir_amount,
+            a.is_assignment, a.underlying_contract_price, a.assignment_fee,
             a.property_address->>'line1'  AS addr_line1,
             a.property_address->>'street' AS addr_street,
             a.property_address->>'unit'   AS addr_unit,
@@ -118,12 +185,31 @@ async function loadDocGenData(db, applicationId) {
             a.property_address->>'formatted_address' AS addr_formatted,
             CASE WHEN jsonb_typeof(a.property_address) = 'string'
                  THEN a.property_address #>> '{}' END        AS addr_scalar,
-            b.first_name AS b_first, b.last_name AS b_last,
-            cb.first_name AS cb_first, cb.last_name AS cb_last,
-            a.co_borrower_id
+            b.first_name AS b_first, b.last_name AS b_last, b.email AS b_email,
+            b.cell_phone AS b_phone, b.date_of_birth AS b_dob,
+            b.ssn_encrypted AS b_ssn_enc, b.ssn_last4 AS b_ssn_last4,
+            b.current_address AS b_addr,
+            cb.first_name AS cb_first, cb.last_name AS cb_last, cb.email AS cb_email,
+            cb.date_of_birth AS cb_dob, cb.ssn_encrypted AS cb_ssn_enc, cb.ssn_last4 AS cb_ssn_last4,
+            a.co_borrower_id,
+            l.llc_name AS llc_name, l.ein AS llc_ein,
+            l.formation_state AS llc_state, l.formation_date AS llc_formed,
+            COALESCE(lo.full_name, a.loan_officer_name) AS officer_name,
+            lo.title AS officer_title, lo.phone AS officer_phone,
+            lo.email AS officer_email, lo.nmls AS officer_nmls,
+            reg.program AS reg_program, reg.product_label AS reg_label,
+            reg.note_rate AS reg_note_rate, reg.quote AS reg_quote
        FROM applications a
        JOIN borrowers b  ON b.id  = a.borrower_id
        LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id
+       LEFT JOIN llcs l        ON l.id = a.llc_id
+       LEFT JOIN staff_users lo ON lo.id = a.loan_officer_id
+       LEFT JOIN LATERAL (
+         SELECT pr.program, pr.product_label, pr.note_rate, pr.quote
+           FROM product_registrations pr
+          WHERE pr.application_id = a.id AND pr.is_current
+          ORDER BY pr.created_at DESC LIMIT 1
+       ) reg ON true
       WHERE a.id = $1 AND a.deleted_at IS NULL`, [applicationId]);
   if (!r.rows.length) { const e = new Error('Application not found for document generation'); e.retryable = false; throw e; }
   const a = r.rows[0];
@@ -150,10 +236,81 @@ async function loadDocGenData(db, applicationId) {
     if (!state) state = p.state || '';
     if (!zip) zip = p.zip || '';
   }
+  const executionDate = new Date();                     // "as of the date below" — prepared today
+
+  // ---- the LOAN APPLICATION view (application-pdf.js). Every field, formatted. ----
+  const cszParts = [city, [state, zip].filter(Boolean).join(' ').trim()].filter(Boolean);
+  const csz = cszParts.join(', ');
+  const bName = `${a.b_first || ''} ${a.b_last || ''}`.trim();
+  const cbName = `${a.cb_first || ''} ${a.cb_last || ''}`.trim();
+  const q = a.reg_quote && typeof a.reg_quote === 'object' ? a.reg_quote : null;
+  const sizing = q && q.sizing ? q.sizing : null;
+  // Financed interest reserve: the registered quote's computed dollar figure is
+  // authoritative; fall back to the borrower's requested amount, then months.
+  let irDisplay = '';
+  if (sizing && Number(sizing.financedReserve) > 0) irDisplay = fmtUSD(sizing.financedReserve);
+  else if (Number(a.requested_ir_amount) > 0) irDisplay = fmtUSD(a.requested_ir_amount);
+  else if (Number(a.requested_ir_months) > 0) irDisplay = `${Number(a.requested_ir_months)} months`;
+
+  const application = {
+    loanNo: a.ys_loan_number || '',
+    issued: executionDate,
+    hasCo: !!a.co_borrower_id,
+    b: {
+      name: bName,
+      dob: docgen.fmtDate(a.b_dob),
+      ssn: fmtSsn(a.b_ssn_enc, a.b_ssn_last4),
+      phone: a.b_phone || '',
+      email: a.b_email || '',
+      addr: addrOneLine(a.b_addr),
+    },
+    c: a.co_borrower_id ? {
+      name: cbName,
+      dob: docgen.fmtDate(a.cb_dob),
+      ssn: fmtSsn(a.cb_ssn_enc, a.cb_ssn_last4),
+      email: a.cb_email || '',
+    } : null,
+    e: {
+      name: a.llc_name || '',
+      type: a.llc_name ? 'Limited Liability Company' : '',
+      state: a.llc_state || '',
+      ein: a.llc_ein || '',
+      vesting: vestingString(a.llc_name, a.llc_state),
+    },
+    p: {
+      addr: street,
+      csz,
+      type: a.property_type || '',
+      units: a.units != null ? String(a.units) : '',
+      occ: a.occupancy || '',
+    },
+    l: {
+      prog: programLabel(a.reg_program, a.reg_label, a.program),
+      type: a.loan_type || '',
+      amt: fmtUSD(a.loan_amount),
+      term: a.term || '',
+      rate: fmtPct(a.reg_note_rate != null ? a.reg_note_rate : (q ? q.noteRate : null)),
+      price: fmtUSD(a.purchase_price),
+      asis: fmtUSD(a.as_is_value),
+      arv: fmtUSD(a.arv),
+      rehab: fmtUSD(a.rehab_budget),
+      ltc: sizing ? fmtPct(sizing.ltcPct) : '',
+      ltv: sizing ? fmtPct(sizing.arvPct) : '',   // loan-to-ARV
+      ir: irDisplay,
+    },
+    o: {
+      name: a.officer_name || '',
+      title: a.officer_title || '',
+      phone: a.officer_phone || '',
+      email: a.officer_email || '',
+      nmls: a.officer_nmls || '',
+    },
+  };
+
   return {
     loanNumber: a.ys_loan_number || '',
     applicationDate: a.application_date,
-    executionDate: new Date(),                          // "as of the date below" — prepared today
+    executionDate,
     // The LOAN amount only — never fall back to purchase_price (a different figure):
     // the disclosure certifies "applied for a loan in the amount of $X" and the Iska
     // states the principal, so a missing loan amount must BLOCK the send
@@ -166,6 +323,8 @@ async function loadDocGenData(db, applicationId) {
     bFirst: a.b_first || '', bLast: a.b_last || '',
     hasCoBorrower: !!a.co_borrower_id,
     cbFirst: a.cb_first || '', cbLast: a.cb_last || '',
+    // The nested view the auto-generated loan application renders from.
+    application,
   };
 }
 
@@ -179,12 +338,15 @@ function validateGenerated(spec, data) {
   const genKinds = spec.docs.filter((d) => d.generate).map((d) => d.kind);
   if (!genKinds.length) return;
   const missing = [];
-  // Both generated docs (disclosure + Heter Iska) print the loan amount + borrower name.
+  // Every generated doc (disclosure, Heter Iska, loan application) prints the loan
+  // amount + borrower name.
   if (data.loanAmount == null || !isFinite(Number(data.loanAmount)) || Number(data.loanAmount) <= 0) missing.push('loan amount');
   if (!`${data.bFirst || ''} ${data.bLast || ''}`.trim()) missing.push('borrower name');
   if (data.hasCoBorrower && !`${data.cbFirst || ''} ${data.cbLast || ''}`.trim()) missing.push('co-borrower name');
-  // The disclosure additionally prints the loan number + the subject property.
-  if (genKinds.includes('bp_disclosure')) {
+  // The disclosure AND the loan application print the loan number + subject property,
+  // so a blank one must BLOCK the send (never render blank on the legal application),
+  // not silently pass. Required whenever either of those docs is generated.
+  if (genKinds.includes('bp_disclosure') || genKinds.includes('application_export')) {
     if (!data.loanNumber) missing.push('loan number');
     if (!(data.propStreet || data.propCity || data.propState || data.propZip)) missing.push('property address');
   }
@@ -371,8 +533,10 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
   // binding envelope showing two different loan amounts. Same "refresh on the
   // appraised value" contract the gate enforces for P&P, and staff re-save the term
   // sheet from the Term Sheet Studio. ONLY the term sheet is freshness-checked
-  // (`freshnessCheck`): the application_export is a borrower-submitted document with
-  // NO post-appraisal regeneration flow, so checking it would false-block every send.
+  // (`freshnessCheck`): the application_export is now GENERATED fresh at send time
+  // from the current loan file (application-pdf.js), so it can never be stale — it
+  // needs no freshness check, and the guard below only applies to `freshnessCheck`
+  // docs (the term sheet), never to a generated one.
   const needsFreshness = spec.docs.some((d) => d.freshnessCheck);
   const apprBackAt = needsFreshness ? await gate.appraisalBackAt(row.application_id, { db }) : null;
   for (let i = 0; i < spec.docs.length; i++) {
@@ -380,15 +544,17 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
     const documentId = i + 1;
 
     if (d.generate) {
-      // Built on our server from the stored Word template + this file's data.
-      // DocuSign converts the .docx → PDF for free, so we upload it as .docx.
+      // Built on our server from this file's data: the two disclosures fill a stored
+      // Word template (DocuSign converts the .docx → PDF for free, so they upload as
+      // .docx); the loan application is rendered directly to a PDF (genExt:'pdf') and
+      // uploads AS a PDF (DocuSign accepts PDF natively — never send it as .docx).
       let buf;
       // A docgen/template failure is a code/data problem, not a transient outage —
       // fail PERMANENT (dead-letter, visible) instead of retrying for ~6.7h.
       try { buf = docgen.generate(d.kind, docGenData); }
       catch (e) { const err = new Error(`Could not generate ${d.kind}: ${e.message}`); err.retryable = (e.retryable === true); throw err; }
       documentIdByKind[d.kind] = documentId;
-      documents.push({ base64: Buffer.from(buf).toString('base64'), name: d.name, documentId, fileExtension: 'docx' });
+      documents.push({ base64: Buffer.from(buf).toString('base64'), name: d.name, documentId, fileExtension: d.genExt || 'docx' });
       continue;
     }
 
