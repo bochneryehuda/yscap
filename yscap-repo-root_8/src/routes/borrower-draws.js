@@ -35,10 +35,16 @@ const { stripLocationExif } = require('../lib/image-exif');
 // XSS against the staff who open the evidence). Returns a safe image mime, or null to REJECT
 // (svg/html/pdf/zip/unknown all sniff to something we don't allow → dropped, never stored).
 function sniffImageMime(buf) {
-  const MAP = { png: 'image/png', jpg: 'image/jpeg', gif: 'image/gif', heic: 'image/heic' };
   const k = sniffKind(buf);
-  if (MAP[k]) return MAP[k];
+  if (k === 'png') return 'image/png';
+  if (k === 'jpg') return 'image/jpeg';
+  if (k === 'gif') return 'image/gif';
   if (buf && buf.length >= 12 && buf.subarray(0, 4).toString('latin1') === 'RIFF' && buf.subarray(8, 12).toString('latin1') === 'WEBP') return 'image/webp';
+  // HEIC: an ISO-BMFF `ftyp` box whose MAJOR BRAND is actually a HEIF still-image brand. sniffKind's
+  // plain `ftyp` match also catches MP4/MOV video, so verify the brand here rather than mislabel a
+  // video as a HEIC image (audit LOW). A video attached as photo evidence is simply not stored.
+  if (buf && buf.length >= 12 && buf.subarray(4, 8).toString('latin1') === 'ftyp'
+      && /^(heic|heix|heif|hevc|hevx|mif1|msf1)/.test(buf.subarray(8, 12).toString('latin1'))) return 'image/heic';
   return null;
 }
 
