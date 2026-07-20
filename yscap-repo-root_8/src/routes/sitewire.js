@@ -31,6 +31,7 @@ const { buildXlsx } = require('../lib/xlsx');
 const mediaArchive = require('../sitewire/media-archive');
 const drawReport = require('../sitewire/draw-report');
 const storage = require('../lib/storage');
+const { setMediaHeaders } = require('../lib/media-headers');
 const { serveDocument } = require('../lib/serve-document');
 const { computeRelease, waiverGate } = require('../sitewire/money');
 
@@ -169,10 +170,7 @@ router.get('/files/:id/draws/:drawId/media/:mediaId', requirePermission('manage_
   if (!m || !m.storage_ref) return res.status(404).end();
   let buf; try { buf = await storage.read(m.storage_ref); } catch (_) { return res.status(404).end(); }
   if (!buf || !buf.length) return res.status(404).end();
-  res.setHeader('Content-Type', m.content_type || (m.kind === 'video' ? 'video/mp4' : 'image/jpeg'));
-  res.setHeader('Cache-Control', 'private, max-age=3600');
-  res.setHeader('Content-Disposition', 'inline');
-  res.setHeader('X-Content-Type-Options', 'nosniff');
+  setMediaHeaders(res, m.content_type);   // safe-type allowlist + sandbox CSP (never serve a dangerous type inline)
   return res.end(buf);
 });
 
@@ -1542,7 +1540,10 @@ router.get('/findings/:findingId', requirePermission('manage_draws'), async (req
       const { dispute_media, ...rest } = l;
       return { ...rest, dispute_evidence };
     });
-  res.json({ finding: f, lines });
+  // Never hand the borrower's no-login reply_token to a staff client — it is the borrower's own
+  // accept/dispute capability, and a staffer must act as staff, not impersonate the borrower (audit L1).
+  const { reply_token, ...findingSafe } = f;
+  res.json({ finding: findingSafe, lines });
 });
 
 // ---- GET /findings/lines/:lineId/dispute-media/:idx — serve one borrower dispute-evidence file (staff) ----
@@ -1560,10 +1561,7 @@ router.get('/findings/lines/:lineId/dispute-media/:idx', requirePermission('mana
   if (!m || !m.storage_ref) return res.status(404).end();
   let buf; try { buf = await storage.read(m.storage_ref); } catch (_) { return res.status(404).end(); }
   if (!buf || !buf.length) return res.status(404).end();
-  res.setHeader('Content-Type', m.content_type || 'image/jpeg');
-  res.setHeader('Cache-Control', 'private, max-age=3600');
-  res.setHeader('Content-Disposition', 'inline');
-  res.setHeader('X-Content-Type-Options', 'nosniff');
+  setMediaHeaders(res, m.content_type);   // borrower-uploaded evidence: type is server-derived, but clamp on serve too
   return res.end(buf);
 });
 

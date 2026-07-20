@@ -31,6 +31,7 @@ const borrowerSafe = require('../lib/borrower-safe');
 const storage = require('../lib/storage');
 const drawReport = require('../sitewire/draw-report');
 const { serveDocument } = require('../lib/serve-document');
+const { setMediaHeaders } = require('../lib/media-headers');
 const scrub = (s) => (s == null ? null : borrowerSafe.scrubText(String(s)));
 
 const isToken = (t) => typeof t === 'string' && /^[a-f0-9]{48}$/.test(t);
@@ -103,15 +104,12 @@ router.get('/:token/media/:mediaId', async (req, res) => {
   if (isExpired(f.delivered_at) && f.status !== 'accepted') return res.status(410).end();
   if (!/^\d{1,18}$/.test(String(req.params.mediaId))) return res.status(404).end();
   const m = (await db.query(
-    `SELECT storage_ref, content_type, kind FROM draw_media WHERE id=$1 AND sitewire_draw_id=$2 AND kind IN ('image','video')`,
-    [req.params.mediaId, f.sitewire_draw_id])).rows[0];
+    `SELECT storage_ref, content_type, kind FROM draw_media WHERE id=$1 AND sitewire_draw_id=$2 AND application_id=$3 AND kind IN ('image','video')`,
+    [req.params.mediaId, f.sitewire_draw_id, f.application_id])).rows[0];
   if (!m || !m.storage_ref) return res.status(404).end();
   let buf; try { buf = await storage.read(m.storage_ref); } catch (_) { return res.status(404).end(); }
   if (!buf || !buf.length) return res.status(404).end();
-  res.setHeader('Content-Type', m.content_type || (m.kind === 'video' ? 'video/mp4' : 'image/jpeg'));
-  res.setHeader('Cache-Control', 'private, max-age=3600');
-  res.setHeader('Content-Disposition', 'inline');
-  res.setHeader('X-Content-Type-Options', 'nosniff');
+  setMediaHeaders(res, m.content_type);   // safe-type allowlist + sandbox CSP
   return res.end(buf);
 });
 

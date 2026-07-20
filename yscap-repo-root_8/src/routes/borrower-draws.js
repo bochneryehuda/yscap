@@ -27,8 +27,20 @@ const borrowerSafe = require('../lib/borrower-safe');
 const drawReport = require('../sitewire/draw-report');
 const { serveDocument } = require('../lib/serve-document');
 const storage = require('../lib/storage');
-const { decodeUploadBase64 } = require('../lib/upload-bytes');
+const { decodeUploadBase64, sniffKind } = require('../lib/upload-bytes');
 const { stripLocationExif } = require('../lib/image-exif');
+
+// Determine the REAL image type from the bytes' magic number — never trust the client's declared
+// content-type (audit H1: a borrower-supplied 'image/svg+xml'/'text/html' served inline is stored
+// XSS against the staff who open the evidence). Returns a safe image mime, or null to REJECT
+// (svg/html/pdf/zip/unknown all sniff to something we don't allow → dropped, never stored).
+function sniffImageMime(buf) {
+  const MAP = { png: 'image/png', jpg: 'image/jpeg', gif: 'image/gif', heic: 'image/heic' };
+  const k = sniffKind(buf);
+  if (MAP[k]) return MAP[k];
+  if (buf && buf.length >= 12 && buf.subarray(0, 4).toString('latin1') === 'RIFF' && buf.subarray(8, 12).toString('latin1') === 'WEBP') return 'image/webp';
+  return null;
+}
 
 // Normalize borrower-uploaded dispute evidence into DURABLE stored copies. We only ever accept
 // freshly-uploaded bytes ({filename, dataBase64, contentType}) — never a client-supplied storage
@@ -44,12 +56,14 @@ async function normalizeDisputeMedia(items) {
     let buf;
     try { buf = decodeUploadBase64(m.dataBase64, { maxBytes: EVIDENCE_MAX_BYTES }).buf; } catch (_) { continue; }  // {buf, sha256}; caps size (413)
     if (!buf || !buf.length) continue;
-    const ct = String(m.contentType || m.content_type || 'image/jpeg');
-    const isImg = /^image\//i.test(ct);
-    if (isImg) { try { buf = stripLocationExif(buf, ct) || buf; } catch (_) { /* keep original on any failure */ } }
+    // Derive the type from the BYTES, not the client. Anything that isn't a real photo (svg/html/pdf/
+    // unknown) is rejected here so a malicious "image" can never be stored or served inline (audit H1).
+    const ct = sniffImageMime(buf);
+    if (!ct) continue;
+    try { buf = stripLocationExif(buf, ct) || buf; } catch (_) { /* keep original on any failure */ }
     let saved;
     try { saved = await storage.save(buf, { filename: m.filename || 'evidence' }); } catch (_) { continue; }
-    out.push({ storage_ref: saved.ref, storage_provider: saved.provider, filename: String(m.filename || 'evidence').slice(0, 180), content_type: ct, kind: isImg ? 'image' : 'file', bytes: buf.length });
+    out.push({ storage_ref: saved.ref, storage_provider: saved.provider, filename: String(m.filename || 'evidence').slice(0, 180), content_type: ct, kind: 'image', bytes: buf.length });
   }
   return out;
 }

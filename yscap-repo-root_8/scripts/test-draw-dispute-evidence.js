@@ -28,12 +28,15 @@ async function jf(method, path, tok, body) { const r = await fetch(base + path, 
     const st = C.signJwt({ sub: staff.id, kind: 'staff', role: 'super_admin', tv: 0 });
     server = app.listen(0); await new Promise((r) => server.once('listening', r)); base = 'http://127.0.0.1:' + server.address().port;
 
-    let r = await jf('POST', `/api/borrower/findings/${f.id}/dispute`, bt, { lines: [{ line_id: l.id, desired_cents: 90000, note: 'done', media: [{ filename: 'roof.png', contentType: 'image/png', dataBase64: PNG }] }] });
+    // upload a PNG but LIE about the type (claim text/html) — the server must derive the type from the
+    // bytes and store image/png, never the borrower-controlled type (audit H1 stored-XSS defense).
+    let r = await jf('POST', `/api/borrower/findings/${f.id}/dispute`, bt, { lines: [{ line_id: l.id, desired_cents: 90000, note: 'done', media: [{ filename: 'roof.html', contentType: 'text/html', dataBase64: PNG }] }] });
     ok(r.status === 200 && r.body.disputed_lines === 1, 'borrower dispute w/ photo → 200');
     const dm = (await db.query(`SELECT dispute_media,dispute_status FROM draw_finding_lines WHERE id=$1`, [l.id])).rows[0];
     ok(dm.dispute_status === 'open', 'line marked disputed');
     ok(Array.isArray(dm.dispute_media) && dm.dispute_media[0] && dm.dispute_media[0].storage_ref, 'evidence stored with durable storage_ref');
     ok(dm.dispute_media[0].kind === 'image', 'evidence kind=image');
+    ok(dm.dispute_media[0].content_type === 'image/png', 'stored type is server-derived image/png, NOT the claimed text/html');
     r = await jf('GET', `/api/sitewire/findings/${f.id}`, st);
     ok(r.status === 200, 'staff finding-detail 200');
     const line = (r.body.lines || []).find((x) => x.id === l.id);
@@ -49,6 +52,20 @@ async function jf(method, path, tok, body) { const r = await fetch(base + path, 
     ok(r.status === 404, 'evidence idx out of range → 404');
     r = await fetch(base + `/api/sitewire/findings/lines/${l.id}/dispute-media/0`);
     ok(r.status === 401 || r.status === 403, 'evidence unauth blocked');
+    // served type is the safe image/png, inline (never a dangerous type)
+    r = await fetch(base + `/api/sitewire/findings/lines/${l.id}/dispute-media/0`, { headers: { Authorization: 'Bearer ' + st } });
+    ok((r.headers.get('content-type') || '').includes('image/png'), 'served type is image/png (safe)');
+    ok((r.headers.get('content-disposition') || '').includes('inline'), 'safe image served inline');
+
+    // a NON-image body (HTML) is rejected outright — never stored, never servable (audit H1)
+    const f2 = (await db.query(`INSERT INTO draw_findings (application_id,sitewire_draw_id,status,total_requested_cents,total_approved_cents,delivered_at,updated_at) VALUES ($1,$2,'delivered',50000,50000,now(),now()) RETURNING id`, [a.id, DR + 1])).rows[0];
+    const l2 = (await db.query(`INSERT INTO draw_finding_lines (finding_id,sitewire_request_id,name,requested_cents,approved_cents,not_approved_cents) VALUES ($1,9002,'Paint',50000,50000,0) RETURNING id`, [f2.id])).rows[0];
+    const HTML = Buffer.from('<html><body><script>alert(1)</script></body></html>').toString('base64');
+    r = await jf('POST', `/api/borrower/findings/${f2.id}/dispute`, bt, { lines: [{ line_id: l2.id, note: 'see attached', media: [{ filename: 'evil.html', contentType: 'image/png', dataBase64: HTML }] }] });
+    ok(r.status === 200, 'dispute with a bad file body still records the note (200)');
+    const dm2 = (await db.query(`SELECT dispute_media FROM draw_finding_lines WHERE id=$1`, [l2.id])).rows[0];
+    ok(dm2.dispute_media == null, 'non-image (HTML) evidence REJECTED — nothing stored');
+
     console.log(`\n${P} passed, ${F} failed`);
   } catch (e) { console.error('THREW', e && e.message); F++; }
   finally {
