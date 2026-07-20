@@ -346,4 +346,28 @@ module.exports = {
     clientId: process.env.XACTUS_CLIENT_ID,
     endpoint: process.env.XACTUS_ENDPOINT,   // your assigned API base URL
   },
+
+  // --- document underwriting: OCR reader + AI analyzer (add keys to activate) ---
+  // Microsoft Azure AI Document Intelligence — the "reads even scanned/blurry
+  // documents" OCR engine (src/lib/ai/docint.js), running in the owner's existing
+  // Azure account. Just an endpoint + resource key (no JWT/SDK). Everything stays
+  // dormant until both are set. Default model 'prebuilt-read' = pure OCR.
+  docint: {
+    endpoint:   (process.env.AZURE_DOCINT_ENDPOINT || '').trim().replace(/\/+$/, ''),
+    key:        process.env.AZURE_DOCINT_KEY,
+    model:      (process.env.AZURE_DOCINT_MODEL || 'prebuilt-read').trim(),
+    apiVersion: (process.env.AZURE_DOCINT_API_VERSION || '2024-11-30').trim(),
+  },
+  // Microsoft Azure OpenAI (GPT-5) — the AI document analyzer / underwriting brain
+  // (src/lib/ai/azure-openai.js), in the owner's existing Azure account. Endpoint +
+  // key + the deployment name you give the GPT-5 model. Raw HTTPS via fetch (no SDK).
+  azureOpenai: {
+    endpoint:   (process.env.AZURE_OPENAI_ENDPOINT || '').trim().replace(/\/+$/, ''),
+    key:        process.env.AZURE_OPENAI_KEY,
+    deployment: (process.env.AZURE_OPENAI_DEPLOYMENT || '').trim(),
+    apiVersion: (process.env.AZURE_OPENAI_API_VERSION || '2025-04-01-preview').trim(),
+    // GPT-5 reasoning depth for extraction — 'minimal'|'low'|'medium'|'high'. Low keeps
+    // hidden reasoning from consuming the output budget; raise only if accuracy needs it.
+    reasoningEffort: (process.env.AZURE_OPENAI_REASONING_EFFORT || 'low').trim(),
+  },
 };

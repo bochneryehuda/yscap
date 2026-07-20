@@ -147,6 +147,18 @@ app.get('/api/health', async (req, res) => {
     // SharePoint one-way sync status (config + last reconciliation pass; cheap —
     // no live Graph call on the health path).
     sharepointSync: (() => { try { return require('./lib/sharepoint-backup').health(); } catch (e) { return { enabled: false, error: e.message }; } })(),
+    // Document-AI (PILOT underwriting) reachability: whether the reader + analyzer are configured,
+    // plus each endpoint's circuit-breaker state (closed = healthy; open = paused after repeated
+    // failures — a sustained Azure outage or a bad key shows here instead of failing silently).
+    documentAi: (() => {
+      try {
+        return {
+          reader: require('./lib/ai/docint').configured(),
+          analyzer: require('./lib/ai/azure-openai').available(),
+          breakers: require('./lib/ai/resilience').snapshotBreakers(),
+        };
+      } catch (e) { return { error: e.message }; }
+    })(),
     ...(conditionsGuard ? { conditionsGuard } : {}),
     bundle: v2BundleHash(),   // deployed V2 bundle hash — the stale-build watchdog's truth
     ts: Date.now(),
@@ -184,6 +196,10 @@ app.use('/api/sitewire', require('./routes/sitewire'));
 // Appraisal desk: import the appraisal XML, reconcile it against the file, and resolve
 // PILOT findings. The router applies requireAuth + requireStaff + per-file scoping itself.
 app.use('/api/appraisal', require('./routes/appraisal'));
+// Document-underwriting desk: read + understand each uploaded document (Azure Document
+// Intelligence + Azure OpenAI), raise per-document and cross-document findings, and let an
+// underwriter post conditions / request documents / clear them. Same auth + per-file scoping.
+app.use('/api/underwriting', require('./routes/underwriting'));
 // The Condition Center studio is gated by the manage_conditions capability (not
 // admin-only), so an underwriter or software-setup persona granted it can author
 // the library. Mounted before /api/admin so it isn't shadowed by requireRole.

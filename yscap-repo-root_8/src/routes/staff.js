@@ -2982,6 +2982,7 @@ async function signOffGate(itemId, actor) {
   const isFraud = code === 'rtl_cond_fraud';
   const isAppraisalDocs = code === 'rtl_cond_appraisaldocs';   // two slots: XML + PDF
   const isAppraisalReview = code === 'appraisal_review_cleared'; // CTC gate: no open fatal finding
+  const isUnderwritingReview = code === 'underwriting_review_cleared'; // CTC gate: no open fatal document finding
   // Structured-DATA conditions — the borrower/staff enter DATA (not a document):
   // the appraisal payment card, and the title / insurance contact forms.
   const isApprCard = item.tool_key === 'appraisal_card' || code === 'rtl_p1_apprcard';
@@ -3083,6 +3084,18 @@ async function signOffGate(itemId, actor) {
         WHERE application_id=$1 AND status='open' AND severity='fatal' AND blocks_ctc=true`, [item.application_id])).rows[0].n;
     if (n > 0)
       return `Resolve the ${n} open fatal appraisal finding${n === 1 ? '' : 's'} first — the appraisal review cannot be cleared while a fatal PILOT finding is open. Open the appraisal to replace, keep, or grant an exception on each.`;
+    return null;
+  }
+
+  // Document-underwriting review cleared — the CTC gate for the document-underwriting engine. It
+  // cannot be signed off while ANY fatal document finding is open: the stored per-document fatals
+  // (document_findings) OR the derived tie-out fatals (a fact that doesn't agree across the file's
+  // documents). Same computation the desk uses, so the gate and the badge never disagree.
+  if (isUnderwritingReview) {
+    const { fileFatalCount } = require('../lib/underwriting/file-review');
+    const { total } = await fileFatalCount(db, item.application_id);
+    if (total > 0)
+      return `Resolve the ${total} open fatal document finding${total === 1 ? '' : 's'} first — document underwriting cannot be cleared while a fatal PILOT finding is open. Open the Document Review section to post a condition, request a document, fix the file, or grant an exception on each.`;
     return null;
   }
 
@@ -4803,8 +4816,26 @@ async function advancementBlockers(appId, target) {
   // Tag the first-class `conditions`-table rows so navigation sends them to the
   // Underwriting-conditions panel (which renders them) rather than a checklist section.
   const underwriting = conds.rows.map(r => ({ ...r, source: 'underwriting' }));
+  // Underwriting DEALBREAKERS gate clear-to-close AND funding directly — whether or not the
+  // `underwriting_review_cleared` condition was ever materialized. A derived tie-out (cross-
+  // document) fatal has NO stored condition row, so the checklist queries above are blind to it;
+  // relying on the materialized gate item alone let a file with an open cross-document fatal
+  // (e.g. a settlement price that disagrees with the file) advance to clear-to-close (audit
+  // 2026-07-20). fileFatalCount is the authoritative count — stored per-document fatals PLUS the
+  // derived tie-out fatals — computed live, so this covers previous AND future files with no
+  // backfill. Best-effort: a tie-out compute error must never silently OPEN the gate, so a
+  // failure leaves the stored-fatal count in place (fileFatalCount already swallows tie-out
+  // errors and still returns the stored count). Tagged source:'underwriting' so it decorates +
+  // navigates to the underwriting-conditions panel like the other first-class conditions.
+  let underwritingFatals = [];
+  try {
+    const { fileFatalCount } = require('../lib/underwriting/file-review');
+    const { total } = await fileFatalCount(db, appId);
+    if (total > 0) { const t = `Underwriting review — ${total} open dealbreaker finding${total === 1 ? '' : 's'} (resolve on the underwriting desk)`;
+      underwritingFatals = [{ id: 'underwriting_fatal', title: t, label: t, source: 'underwriting' }]; } // title+label so either client render works
+  } catch (_) { /* never break advancement gating on a tie-out compute error */ }
   return {
-    conditions: [...underwriting, ...checklistConds.rows].map(r => decorateBlocker(r, 'condition')),
+    conditions: [...underwriting, ...checklistConds.rows, ...underwritingFatals].map(r => decorateBlocker(r, 'condition')),
     gates: gates.rows.map(r => decorateBlocker(r, 'gate')),
   };
 }

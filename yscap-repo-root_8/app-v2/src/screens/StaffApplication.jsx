@@ -23,6 +23,7 @@ import ToolModal from '../components/ToolModal.jsx';
 import FileSections, { Section, InfoTip, subscribeConditionsTab } from '../components/FileSections.jsx';
 import EsignFileSection from '../components/EsignFileSection.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
+import UnderwritingPanel from '../components/UnderwritingPanel.jsx';
 import StaticToolFrame from '../components/StaticToolFrame.jsx';
 import AddConditionPanel from '../components/AddConditionPanel.jsx';
 import StaffChangeRequests from '../components/StaffChangeRequests.jsx';
@@ -2329,6 +2330,8 @@ export default function StaffApplication() {
   // the section nav can show a findings badge without a second fetch here.
   const [apprSummary, setApprSummary] = useState(null);
   const onApprSummary = useCallback((s) => setApprSummary(s), []);
+  const [uwSummary, setUwSummary] = useState(null);
+  const onUwSummary = useCallback((s) => setUwSummary(s), []);
   // Known internal (ClickUp) statuses for the picker — file-independent, loaded once.
   const [internalStatuses, setInternalStatuses] = useState([]);
   const [condFilter, setCondFilter] = useState('all');
@@ -2700,6 +2703,7 @@ export default function StaffApplication() {
     { id: 'sec-application', label: 'Application details', group: 'Application & pricing' },
     { id: 'sec-pricing', label: 'Structure & pricing', group: 'Application & pricing', badge: app.registered_program ? '✓' : '' },
     { id: 'sec-appraisal', label: 'Appraisal & findings', group: 'Application & pricing', badge: apprSummary && apprSummary.fatal ? `${apprSummary.fatal} ⚠` : '' },
+    { id: 'sec-underwriting', label: 'Document review', group: 'Application & pricing', badge: uwSummary && uwSummary.fatal ? `${uwSummary.fatal} ⚠` : '' },
     { id: 'sec-conditions', label: 'Conditions', group: 'Conditions', badge: nCondOpen || '' },
     { id: 'sec-esign', label: 'E-signatures', group: 'Signing & documents' },
     { id: 'sec-documents', label: 'Documents & exports', group: 'Signing & documents', badge: docs.length || '' },
@@ -2957,6 +2961,12 @@ export default function StaffApplication() {
         <AppraisalPanel appId={id} onSummary={onApprSummary} reloadSignal={apprReload} />
       </Section>
 
+      <Section id="sec-underwriting" title="Document review & PILOT findings" defaultOpen={false}
+        info="PILOT reads every uploaded document (government ID, purchase contract, title, bank statement and more), understands it, and checks it against the loan file — flagging anything that doesn't match on the document itself AND anything that disagrees across documents (the seller, price, and property address must be the same on the contract, title, and appraisal). Choose a document and the type it is, and PILOT reads and checks it. Each finding is yours to resolve: post a condition, request a document, fix the file, clear it, grant an exception, dismiss, or decline. Nothing is ever written onto the loan file automatically."
+        badge={uwSummary ? (uwSummary.fatal ? `${uwSummary.fatal} fatal` : (uwSummary.warning ? `${uwSummary.warning} warning` : 'Reviewed ✓')) : ''}>
+        <UnderwritingPanel appId={id} docs={docs} onSummary={onUwSummary} />
+      </Section>
+
       {/* ONE Conditions hub with tabs (owner-directed cleanup): the borrower's
           conditions, the underwriting conditions, the internal staff conditions +
           checklist, and the LLC used to be four separate sections — they're now one
@@ -2964,6 +2974,7 @@ export default function StaffApplication() {
       <Section id="sec-conditions" title="Conditions" defaultOpen={false}
         info="Everything to clear on this file — the borrower's conditions, your underwriting conditions, internal staff conditions and checklist, and the LLC. Switch with the tabs."
         badge={nCondOpen || ''}>
+
       <input ref={staffFileRef} type="file" multiple style={{ display: 'none' }} onChange={onStaffFile} />
       {(() => {
         const uwOpen = conds.filter(c => c.status === 'open' || c.status === 'borrower_responded').length;

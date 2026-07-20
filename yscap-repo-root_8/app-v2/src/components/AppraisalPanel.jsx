@@ -1235,18 +1235,38 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
             ))}
           </div>
 
-          {/* ===== PILOT findings ===== */}
-          {(sum.fatal > 0 || sum.warning > 0) && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+          {/* ===== PILOT findings =====
+              STAFF resolve appraisal findings in the ONE unified "Document review" section — they're
+              folded in there (owner-directed 2026-07-20), so here we show only a compact pointer to
+              avoid listing (and resolving) the same finding in two places. The BORROWER (readOnly)
+              still sees the findings inline, since borrowers have no Document-review desk. */}
+          {readOnly ? (
+            <>
+              {(sum.fatal > 0 || sum.warning > 0) && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+                  {sum.fatal > 0 && <span style={{ fontWeight: 700, color: SEV.fatal.fg, background: SEV.fatal.bg, borderRadius: 999, padding: '4px 12px', fontSize: 12.5 }}>{sum.fatal} fatal</span>}
+                  {sum.warning > 0 && <span style={{ fontWeight: 700, color: SEV.warning.fg, background: SEV.warning.bg, borderRadius: 999, padding: '4px 12px', fontSize: 12.5 }}>{sum.warning} warning</span>}
+                  {sum.blocksCtc && <span style={{ fontSize: 12.5, color: SEV.fatal.fg }}>Clear-to-close is blocked until every fatal is resolved.</span>}
+                </div>
+              )}
+              {findings.length > 0 ? (
+                <div style={{ marginBottom: 24 }}>
+                  <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 12px' }}>PILOT findings — appraisal vs file</h4>
+                  {findings.map((f) => <Finding key={f.id} appId={appId} f={f} onChange={load} readOnly={readOnly} />)}
+                </div>
+              ) : (
+                <p style={{ color: 'var(--good,#3F7A5B)', fontSize: 13, marginBottom: 20 }}>✓ No open findings — the appraisal matches the file.</p>
+              )}
+            </>
+          ) : (sum.fatal > 0 || sum.warning > 0) ? (
+            <div className="appr-noprint" style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20, flexWrap: 'wrap', background: 'var(--paper,#F6F3EC)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 10, padding: '10px 14px' }}>
               {sum.fatal > 0 && <span style={{ fontWeight: 700, color: SEV.fatal.fg, background: SEV.fatal.bg, borderRadius: 999, padding: '4px 12px', fontSize: 12.5 }}>{sum.fatal} fatal</span>}
               {sum.warning > 0 && <span style={{ fontWeight: 700, color: SEV.warning.fg, background: SEV.warning.bg, borderRadius: 999, padding: '4px 12px', fontSize: 12.5 }}>{sum.warning} warning</span>}
-              {sum.blocksCtc && <span style={{ fontSize: 12.5, color: SEV.fatal.fg }}>Clear-to-close is blocked until every fatal is resolved.</span>}
-            </div>
-          )}
-          {findings.length > 0 ? (
-            <div style={{ marginBottom: 24 }}>
-              <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 12px' }}>PILOT findings — appraisal vs file</h4>
-              {findings.map((f) => <Finding key={f.id} appId={appId} f={f} onChange={load} readOnly={readOnly} />)}
+              <span style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)' }}>
+                Appraisal findings are shown — and resolved — in the{' '}
+                <a href="#sec-underwriting" onClick={(e) => { e.preventDefault(); document.getElementById('sec-underwriting')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }} style={{ color: 'var(--teal-deep,#256168)', fontWeight: 700, textDecoration: 'underline', cursor: 'pointer' }}>Document review</a>{' '}
+                section, alongside every other finding.
+              </span>
             </div>
           ) : (
             <p style={{ color: 'var(--good,#3F7A5B)', fontSize: 13, marginBottom: 20 }}>✓ No open findings — the appraisal matches the file.</p>
@@ -1604,3 +1624,7 @@ const OPEN_BTN = {
   border: '1px solid var(--teal-deep,#256168)', background: 'var(--teal,#2F7F86)', color: '#fff',
   boxShadow: '0 1px 2px rgba(20,27,34,.08)',
 };
+
+// Reused by the Document-review (underwriting) desk so appraisal findings appear in the ONE
+// unified findings section — same component, same resolve path, no drift. (owner-directed 2026-07-20)
+export { Finding as AppraisalFinding };
