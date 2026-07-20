@@ -105,10 +105,11 @@ async function importAppraisalTx(db, {
     fields: JSON.stringify(fieldsJson), warnings: JSON.stringify(A.warnings || []),
     imported_by: importedBy,
   };
-  // Merge the db/158 enrichment fields — extract() keys them EXACTLY to the column names. The four
-  // jsonb columns need stringifying; everything else is a scalar the driver stores directly.
+  // Merge the enrichment fields (db/158 + later rounds) — extract() keys them EXACTLY to the column
+  // names. The jsonb columns in the loop below need stringifying; everything else is a scalar the
+  // driver stores directly.
   Object.assign(cols, A.enrich || {});
-  for (const jk of ['utilities', 'updates', 'amenities', 'rent_included_utilities', 'market_trends', 'present_land_use', 'off_site_improvements']) {
+  for (const jk of ['utilities', 'updates', 'amenities', 'rent_included_utilities', 'market_trends', 'present_land_use', 'off_site_improvements', 'comp_research']) {
     if (cols[jk] != null) cols[jk] = JSON.stringify(cols[jk]);
   }
   const keys = Object.keys(cols);
