@@ -305,6 +305,30 @@ router.get('/files/:id/messages/:notificationId/attachments/:idx', requirePermis
   } catch (err) { res.status(500).json({ error: 'Could not download this attachment.' }); }
 });
 
+// ---- POST /files/:id/messages/reply — the coordinator sends/relies to the borrower from the draw box ----
+// A direct borrower message from the draw desk: emails the borrower (borrower-safe scrub applies), logs the
+// notification, and captures the sent email so it appears right back in this thread. The borrower's reply
+// forwards to the team (file+<appId>@ reply-to) and lands in "Replies received". manage_draws + canSeeFile.
+router.post('/files/:id/messages/reply', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const body = String((req.body && req.body.body) || '').trim();
+  if (!body) return res.status(400).json({ error: 'Type a message to send.' });
+  if (body.length > 8000) return res.status(400).json({ error: 'That message is too long.' });
+  const subject = req.body && req.body.subject ? String(req.body.subject).slice(0, 200) : 'A message about your draw';
+  try {
+    const ids = await notify.notifyAppBorrowers(appId, {
+      type: 'draw_message', major: true,
+      title: subject, body,
+      badge: { text: 'From your loan team', tone: 'teal' },
+      applicationId: appId, link: `/app/${appId}`, ctaLabel: 'View your draws',
+    });
+    const sent = (ids || []).filter(Boolean).length;
+    if (!sent) return res.status(409).json({ error: 'This file has no borrower to message.' });
+    res.json({ ok: true, sent });
+  } catch (e) { console.warn('[sitewire] reply route error:', e && e.message); res.status(500).json({ error: 'Could not send your message — please try again.' }); }
+});
+
 // ---- GET /files/:id/borrower-status — Sitewire's borrower-invite state (live read) ----
 router.get('/files/:id/borrower-status', requirePermission('manage_draws'), async (req, res) => {
   if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
@@ -457,6 +481,13 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
       await db.query(`UPDATE sitewire_property_links SET fee_cents_override=$2, updated_at=now() WHERE application_id=$1`, [appId, feeOverride]);
       await orchestrator.journal({ appId, entity: 'settings', field: 'draw_fee_cents', newValue: feeOverride == null ? '(rule default)' : String(feeOverride), source: 'coordinator_start', changed: true }).catch(() => {});
     }
+    // Record the draw-start as a visible team notification so it shows in the file's Draw messages box
+    // ("when the draw is being pushed / registered"). Fires once per Start; best-effort.
+    notify.notifyAppStaff(appId, {
+      type: 'draw_started', title: 'Draw process started',
+      body: `The draw process was started for this file — property, construction budget, Scope of Work and fees ${cfg.sitewireEnabled ? 'were pushed to Sitewire.' : 'will push to Sitewire once it is turned on.'}`,
+      badge: { text: 'Draw started', tone: 'teal' }, applicationId: appId, link: `/internal/app/${appId}/draws`,
+    }).catch(() => {});
     // push everything now (guarded). When Sitewire is off, the link row above (draw_setup_started_at)
     // is the durable birth record — the worker's stranded-birth backfill enqueues the push the moment
     // the switch is turned on, so nothing is lost while staged off.

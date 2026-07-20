@@ -31,6 +31,7 @@ const KICKER_OF = {
   track_record_unverified: 'Track record',
   draw: 'Construction draw', draw_request: 'Construction draw', draw_findings: 'Draw inspection',
   draw_accepted: 'Construction draw', draw_disputed: 'Construction draw', draw_dispute_resolved: 'Draw inspection',
+  draw_message: 'Message from your loan team', draw_started: 'Construction draw',
   sow_reallocation: 'Budget change', sow_change_request: 'Budget change',
   change_request: 'Change request', assignment: 'File assignment',
   new_application: 'New application', unassigned_application: 'Needs assignment',
@@ -217,6 +218,7 @@ const CATEGORY_OF = {
   draw: 'draws', draw_request: 'draws',
   // Sitewire draw-management events (findings delivery, accept/dispute, SOW reallocations)
   draw_findings: 'draws', draw_accepted: 'draws', draw_disputed: 'draws', draw_dispute_resolved: 'draws',
+  draw_message: 'draws', draw_started: 'draws',
   sow_reallocation: 'draws', sow_change_request: 'draws',
   // New borrower touchpoints (owner-directed 2026-07-20)
   officer_assigned: 'status_updates', all_caught_up: 'status_updates',
@@ -245,6 +247,8 @@ const BORROWER_MAJOR_EMAIL = new Set([
   'doc_rejected', 'doc_requested', 'condition_added',
   'llc_unverified', 'track_record_unverified',
   'message', 'draw', 'draw_request', 'security', 'account',
+  // A coordinator's direct message to the borrower from the draw desk always emails them.
+  'draw_message',
   // The borrower must review inspection findings and accept/dispute within the wire SLA —
   // this is a borrower action item, so it emails them (not just in-app).
   'draw_findings',
