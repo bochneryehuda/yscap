@@ -24,6 +24,8 @@ const { planReallocation } = require('../sitewire/reallocation');
 const M = require('../sitewire/mapper');
 const notify = require('../lib/notify');
 const borrowerSafe = require('../lib/borrower-safe');
+const drawReport = require('../sitewire/draw-report');
+const { serveDocument } = require('../lib/serve-document');
 
 router.use(requireAuth, requireBorrower);
 const me = (req) => req.actor.id;
@@ -151,6 +153,37 @@ router.post('/findings/:findingId/dispute', async (req, res) => {
   await notify.notifyAppStaff(f.application_id, { type: 'draw_disputed', title: 'Borrower disputed a draw', badge: { text: 'Disputed', tone: 'action' },
     body: `The borrower disputed ${count} item(s) on their draw results and provided evidence. A draw coordinator needs to review.`, applicationId: f.application_id, link: `/internal/app/${f.application_id}` }).catch(() => {});
   res.json({ ok: true, disputed_lines: count });
+});
+
+// ---- GET /draws/:appId/report — the borrower's OWN branded inspection report (PDF, always borrower-safe) ----
+// mode is HARD-FORCED to 'borrower' (a borrower can never obtain the staff copy). ?drawId=N → that draw;
+// omitted → the whole-project report. Idempotent + cached by the same version-hashed filename as the staff
+// route; the stored copy is visibility='borrower'. own-file only + per-draw IDOR.
+router.get('/draws/:appId/report', async (req, res) => {
+  const appId = req.params.appId;
+  if (!(await ownsApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const drawId = /^\d+$/.test(String(req.query.drawId || '')) ? req.query.drawId : null;
+  if (drawId) {
+    const own = await db.query(`SELECT 1 FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [drawId, appId]);
+    if (!own.rowCount) return res.status(404).json({ error: 'That draw was not found on your file.' });
+  }
+  try {
+    const meta = await drawReport.loadReportMeta(appId, { sitewireDrawId: drawId, mode: 'borrower' });
+    if (!meta || !meta.hasScope || !meta.sections.length) return res.status(404).json({ error: 'Your inspection report isn’t ready yet — it appears once your draw results are in.' });
+    const scope = drawId ? 'draw' : 'project';
+    const drawNumber = drawId && meta.sections[0] ? meta.sections[0].number : null;
+    const filename = drawReport.reportFilename({ scope, mode: 'borrower', drawNumber, version: meta.version, loanNo: meta.app.loanNo });
+    const borrowerId = (await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [appId])).rows[0] || {};
+    let doc = (await db.query(
+      `SELECT * FROM documents WHERE application_id=$1 AND doc_kind='draw_inspection_report' AND filename=$2 LIMIT 1`, [appId, filename])).rows[0];
+    if (!doc) {
+      await drawReport.attachPhotoBytes(meta.sections);
+      const bytes = drawReport.buildDrawReport({ app: meta.app, rollup: meta.rollup, sections: meta.sections, scope, mode: 'borrower' });
+      const docId = await drawReport.storeDrawReport({ appId, borrowerId: borrowerId.borrower_id, filename, bytes, mode: 'borrower' });
+      doc = (await db.query(`SELECT * FROM documents WHERE id=$1`, [docId])).rows[0];
+    }
+    return serveDocument(res, doc, { inline: true });
+  } catch (e) { res.status(500).json({ error: 'Could not build your report right now — please try again shortly.' }); }
 });
 
 // ---- POST /draws/:appId/change-request — borrower proposes a Scope-of-Work change ----

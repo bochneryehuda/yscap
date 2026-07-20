@@ -30,7 +30,7 @@ const KICKER_OF = {
   llc_verified: 'Your entity', llc_unverified: 'Your entity',
   track_record_unverified: 'Track record',
   draw: 'Construction draw', draw_request: 'Construction draw', draw_findings: 'Draw inspection',
-  draw_accepted: 'Construction draw', draw_disputed: 'Construction draw',
+  draw_accepted: 'Construction draw', draw_disputed: 'Construction draw', draw_dispute_resolved: 'Draw inspection',
   sow_reallocation: 'Budget change', sow_change_request: 'Budget change',
   change_request: 'Change request', assignment: 'File assignment',
   new_application: 'New application', unassigned_application: 'Needs assignment',
@@ -181,7 +181,7 @@ const CATEGORY_OF = {
   reminder: 'reminders',
   draw: 'draws', draw_request: 'draws',
   // Sitewire draw-management events (findings delivery, accept/dispute, SOW reallocations)
-  draw_findings: 'draws', draw_accepted: 'draws', draw_disputed: 'draws',
+  draw_findings: 'draws', draw_accepted: 'draws', draw_disputed: 'draws', draw_dispute_resolved: 'draws',
   sow_reallocation: 'draws', sow_change_request: 'draws',
   // New borrower touchpoints (owner-directed 2026-07-20)
   officer_assigned: 'status_updates', all_caught_up: 'status_updates',
@@ -213,6 +213,9 @@ const BORROWER_MAJOR_EMAIL = new Set([
   // The borrower must review inspection findings and accept/dispute within the wire SLA —
   // this is a borrower action item, so it emails them (not just in-app).
   'draw_findings',
+  // Closing the dispute loop: when staff decide the borrower's disputed line(s), tell the
+  // borrower the outcome — a real, low-frequency moment they're waiting on, so it emails.
+  'draw_dispute_resolved',
   // New borrower touchpoints (owner-directed 2026-07-20): meet-your-officer,
   // caught-up reassurance, key milestones, and the weekly outstanding-items
   // digest. Each is a deliberate, low-frequency moment — not busywork.

@@ -1306,9 +1306,30 @@ router.post('/findings/:findingId/lines/:lineId/decide', requirePermission('mana
   }
   await db.query(`UPDATE draw_finding_lines SET dispute_status=$2, lender_comments=COALESCE($3,lender_comments), dispute_decided_by=$4, dispute_decided_at=now(), approved_cents=CASE WHEN $2='approved' AND dispute_desired_cents IS NOT NULL THEN dispute_desired_cents ELSE approved_cents END, not_approved_cents=CASE WHEN $2='approved' AND dispute_desired_cents IS NOT NULL THEN GREATEST(0, requested_cents - dispute_desired_cents) ELSE not_approved_cents END, updated_at=now() WHERE id=$1`,
     [lineId, decision, req.body.note || null, req.actor.id]);
-  // if no more open disputes, mark the finding resolved
+  // if no more open disputes, mark the finding resolved AND close the loop back to the borrower
   const openLeft = (await db.query(`SELECT count(*)::int c FROM draw_finding_lines WHERE finding_id=$1 AND dispute_status='open'`, [findingId])).rows[0].c;
-  if (openLeft === 0) await db.query(`UPDATE draw_findings SET status='resolved', resolved_at=now(), updated_at=now() WHERE id=$1`, [findingId]);
+  if (openLeft === 0) {
+    await db.query(`UPDATE draw_findings SET status='resolved', resolved_at=now(), updated_at=now() WHERE id=$1`, [findingId]);
+    // Tell the borrower the OUTCOME of the dispute they raised — designed + borrower-safe (only the amounts
+    // they can already see; no fee/net/partner). This closes the dispute loop (previously staff decided
+    // silently and the borrower was never told).
+    try {
+      const decided = (await db.query(
+        `SELECT name, dispute_status, approved_cents FROM draw_finding_lines
+          WHERE finding_id=$1 AND dispute_status IN ('approved','rejected') ORDER BY id`, [findingId])).rows;
+      const usd = (c) => '$' + (Math.round(Number(c) || 0) / 100).toLocaleString('en-US');
+      const approvedN = decided.filter((l) => l.dispute_status === 'approved').length;
+      const meta = decided.map((l) => ({ label: l.name || 'Line item',
+        value: l.dispute_status === 'approved' ? `Approved — now ${usd(l.approved_cents)}` : `Reviewed — kept at ${usd(l.approved_cents)}` }));
+      await notify.notifyAppBorrowers(f.application_id, {
+        type: 'draw_dispute_resolved', title: 'We reviewed your draw dispute',
+        badge: { text: 'Reviewed', tone: approvedN ? 'positive' : 'neutral' },
+        body: approvedN
+          ? `We reviewed the item(s) you flagged on your inspection results — ${approvedN} of ${decided.length} ${approvedN === 1 ? 'was' : 'were'} approved for a higher amount, and the rest were reviewed and kept as-is. Your updated results are in your portal.`
+          : 'We reviewed the item(s) you flagged on your inspection results. After review they were kept as-is. The full details are in your portal.',
+        meta, applicationId: f.application_id, link: `/app/${f.application_id}`, ctaLabel: 'View your draw' }).catch(() => {});
+    } catch (_) { /* notification is best-effort — the decision is already recorded */ }
+  }
   res.json({ ok: true, decision, pushed, note: pushNote, disputes_open: openLeft });
 });
 
