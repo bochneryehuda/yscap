@@ -339,11 +339,62 @@ module.exports = {
     secret:   process.env.PLAID_SECRET,
     env:      (process.env.PLAID_ENV || 'sandbox').toLowerCase(),  // sandbox | development | production
   },
-  // Xactus (credit reports) — B2B credentials:
+  // Xactus (credit reports). The LOGIN is PER-USER, not here: each loan officer
+  // stores their own LoginAccountIdentifier + password (encrypted) in
+  // user_credit_credentials — this block is only the platform-level wiring the
+  // adapter needs (the assigned API endpoint, the party names echoed in the
+  // MISMO envelope, timeouts). The legacy username/password/clientId remain as an
+  // optional platform fallback for a single-login deployment, but the portal
+  // orders under the acting staffer's own credential.
   xactus: {
-    username: process.env.XACTUS_USERNAME,
-    password: process.env.XACTUS_PASSWORD,
-    clientId: process.env.XACTUS_CLIENT_ID,
-    endpoint: process.env.XACTUS_ENDPOINT,   // your assigned API base URL
+    // Assigned Xactus360 API base URL (e.g. https://<host>/...). No default —
+    // the integration stays dormant until this is set in the environment.
+    // endpoint = MISMO 2.3.1 URL; endpoint3 = MISMO 3.4 URL (Xactus test:
+    // .../uaweb/mismo and .../uaweb/mismo3). mismoVersion picks the default.
+    endpoint:            (process.env.XACTUS_ENDPOINT || '').trim().replace(/\/+$/, '') || null,
+    endpoint3:           (process.env.XACTUS_ENDPOINT_MISMO3 || '').trim().replace(/\/+$/, '') || null,
+    // Default MISMO version = 3.4 (owner-directed 2026-07-20, "for now"). Both
+    // 2.3.1 and 3.4 are fully supported; XACTUS_MISMO_VERSION=2.3.1 overrides.
+    mismoVersion:        (process.env.XACTUS_MISMO_VERSION || '3.4').trim(),
+    // Names echoed into the MISMO REQUEST envelope.
+    requestingPartyName: process.env.XACTUS_REQUESTING_PARTY || 'YS Capital Group',
+    submittingPartyName: process.env.XACTUS_SUBMITTING_PARTY || 'YS Capital Group LOS',
+    // Network budget for a single order/reissue POST (billable — never blind-retry).
+    timeoutMs:           parseInt(process.env.XACTUS_TIMEOUT_MS || '45000', 10),
+    // Verify a newly-saved credential by attempting a lightweight auth probe.
+    // Off by default so saving a credential never accidentally bills; flip on
+    // once the endpoint is live.
+    verifyOnSave:        process.env.XACTUS_VERIFY_ON_SAVE === '1',
+    // NO-CHARGE auth-probe path (relative to `endpoint`) for verify-on-save AND
+    // the officer "Test my login" button. Unset → the probe is skipped and the
+    // credential is saved unverified (no charge, no crash). Set this to the
+    // vendor's lightweight auth endpoint once known.
+    verifyPath:          (process.env.XACTUS_VERIFY_PATH || '').trim() || null,
+    verifyMethod:        (process.env.XACTUS_VERIFY_METHOD || 'GET').trim().toUpperCase(),
+    // Spend/volume circuit breaker — cap BILLABLE pulls in a rolling 10-min window
+    // so a runaway loop / double-submit / compromised login can't rack up charges.
+    maxPulls10minUser:   parseInt(process.env.CREDIT_MAX_PULLS_10MIN_USER || '15', 10),
+    maxPulls10minGlobal: parseInt(process.env.CREDIT_MAX_PULLS_10MIN_GLOBAL || '60', 10),
+    // Collapse a double-click into one order: a second order for the same file +
+    // action within this window returns the in-flight one instead of re-billing.
+    dedupWindowSec:      parseInt(process.env.CREDIT_DEDUP_WINDOW_SEC || '30', 10),
+    // An 'ordering' row older than this (crash between journal and completion) is
+    // swept to 'in_doubt' for reconciliation rather than blocking forever.
+    staleOrderMinutes:   parseInt(process.env.CREDIT_STALE_ORDER_MIN || '15', 10),
+    // Optional platform-level fallback login (single-login deployments only).
+    username:            process.env.XACTUS_USERNAME,
+    password:            process.env.XACTUS_PASSWORD,
+    clientId:            process.env.XACTUS_CLIENT_ID,
   },
 };
+
+// Boot sanity: the default MISMO version is 3.4, but Xactus serves 3.4 at a
+// DIFFERENT URL than 2.3.1 (.../uaweb/mismo3 vs .../uaweb/mismo). If the 3.4
+// endpoint isn't set while the 2.3.1 one IS, versionKit falls back to the 2.3.1
+// URL — a 3.4 request would then be POSTed to the 2.3.1 endpoint and fail. Warn
+// loudly so the operator sets XACTUS_ENDPOINT_MISMO3 (the credit integration is
+// dormant when no endpoint is set at all, so only warn when 2.3.1 IS configured).
+if (module.exports.xactus && module.exports.xactus.mismoVersion === '3.4'
+    && !module.exports.xactus.endpoint3 && module.exports.xactus.endpoint) {
+  console.warn('[config] XACTUS: default MISMO version is 3.4 but XACTUS_ENDPOINT_MISMO3 is not set — 3.4 credit pulls will be sent to XACTUS_ENDPOINT (the 2.3.1 URL) and will fail. Set XACTUS_ENDPOINT_MISMO3 to the Xactus 3.4 URL.');
+}

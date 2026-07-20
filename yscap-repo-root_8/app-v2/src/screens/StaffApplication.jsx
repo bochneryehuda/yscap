@@ -19,6 +19,7 @@ import { PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.
 import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
 import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
+import CreditReportPanel from '../components/CreditReportPanel.jsx';
 import EsignFileSection from '../components/EsignFileSection.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
 import StaticToolFrame from '../components/StaticToolFrame.jsx';
@@ -572,6 +573,12 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
         {it.reviewed_at
           ? <button className="btn ghost" title="You marked this done — undo to put it back on your list" onClick={() => onPatch(it.id, { reviewed: false })}>Undo done</button>
           : <button className="btn ghost" title="Mark this condition done (loan-officer step). The processor still signs it off." onClick={() => onPatch(it.id, { reviewed: true })}>Done</button>}
+        {['rtl_p3_credit', 'rtl_p3_credit2', 'rtl_cond_credit'].includes(it.template_code) && (
+          <button className="btn ghost" title="Jump to the Credit report section to pull a brand-new report or reissue the existing one"
+            onClick={() => { const el = document.getElementById('sec-credit'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}>
+            Reissue report
+          </button>
+        )}
         {completer && (signed
           ? <button className="btn ghost" onClick={() => onPatch(it.id, it.waived_at ? { waived: false } : { signedOff: false })}>{it.waived_at ? 'Undo not-required' : 'Undo sign-off'}</button>
           : <>
@@ -2775,6 +2782,11 @@ export default function StaffApplication() {
         badge={app.registered_program ? 'Registered ✓' : 'Not registered'}>
       <ProductStudioPanel ref={studioRef} appId={id} app={app} onRegistered={load} mode="staff" staffRole={role}
         toolItemId={(items.find(it => it.tool_key === 'product_pricing') || {}).id} />
+      </Section>
+
+      <Section id="sec-credit" title="Credit report"
+        info="Pull or reissue the borrower's credit report from the bureau (Xactus) and verify the FICO. The verified score is imported from the report data and locked across the portal, term sheet, and ClickUp. A score that lands in a different pricing bracket reopens Products & Pricing for a human to re-register.">
+      <CreditReportPanel key={id} appId={id} />
       </Section>
 
       <Section id="sec-appraisal" title="Appraisal & PILOT findings"

@@ -316,6 +316,7 @@ export default function StaffLayout({ children }) {
   const canManageConditions = can('manage_conditions');
   const canManagePricing = can('manage_pricing');
   const canManageVendors = can('manage_vendors');
+  const canPullCredit = can('pull_credit');
   const canManageDraws = can('manage_draws');
   const canDeleteFiles = can('delete_files');
   const canPlatformSetup = can('platform_setup');
@@ -352,6 +353,8 @@ export default function StaffLayout({ children }) {
         {canManageDraws && <NavLink className="sb-link" to="/internal/draws" title="Draw Management — the post-funding phase: every draw, approvals, inspector photos, releases, and reports"><NavIcon name="pipeline" />Draw Management</NavLink>}
         {canManageConditions && <NavLink className="sb-link" to="/internal/conditions" title="Condition Center — the global condition library & rules"><NavIcon name="conditions" />Conditions</NavLink>}
         {canManageVendors && <NavLink className="sb-link" to="/internal/vendors" title="Title & insurance vendor directory"><NavIcon name="vendors" />Vendors</NavLink>}
+        {canPullCredit && <NavLink className="sb-link" to="/internal/credit-review" title="Credit reports that need an underwriter — frozen bureaus, no-score files, and files blocked by a fatal finding"><NavIcon name="conditions" />Credit review</NavLink>}
+        {canPullCredit && <NavLink className="sb-link" to="/internal/settings/credit" title="Your credit-provider login (Xactus) for pulling & reissuing reports"><NavIcon name="conditions" />Credit login</NavLink>}
         {canDeleteFiles && <NavLink className="sb-link" to="/internal/archived" title="Archived files — restore or delete permanently"><NavIcon name="archived" />Archived</NavLink>}
 
         {(canManageTeam || canManagePricing || canPlatformSetup || canViewAudit) && <div className="sb-sec">Admin</div>}

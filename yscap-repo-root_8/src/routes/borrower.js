@@ -2795,6 +2795,89 @@ router.get('/chat/inbox', async (req, res) => {
   res.json(r.rows.map((row) => scrubFields(row, ['last_body'])));
 });
 
+// ---------------- credit report (read-only borrower view) ----------------
+// Owner: staff pull/reissue; once imported the borrower sees THEIR OWN credit
+// report — the PDF and every bureau score. Scoped to files the borrower is on;
+// only fully-imported reports (never an in-flight/error/review one); the borrower
+// sees only their own per-bureau scores (never the co-borrower's), no SSN, no raw
+// XML. The PDF is served inline through the ownership check below.
+router.get('/credit', async (req, res) => {
+  const bid = me(req);
+  try {
+    const reports = (await db.query(
+      `SELECT DISTINCT cr.id, cr.first_issued_date, cr.representative_bracket, cr.pdf_document_id, cr.created_at,
+              (a.co_borrower_id IS NOT NULL) AS file_has_co,
+              (cr.request_type='Joint') AS report_is_joint
+         FROM credit_reports cr
+         JOIN applications a ON a.id = cr.application_id
+        WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND cr.status='imported'
+        ORDER BY cr.created_at DESC`, [bid])).rows;
+    const ids = reports.map((r) => r.id);
+    let scoreRows = [];
+    if (ids.length) {
+      scoreRows = (await db.query(
+        `SELECT credit_report_id, bureau, value, usable FROM credit_scores
+          WHERE credit_report_id = ANY($1) AND borrower_id=$2 AND usable ORDER BY bureau`, [ids, bid])).rows;
+    }
+    const scoresByReport = new Map();
+    for (const s of scoreRows) {
+      if (!scoresByReport.has(s.credit_report_id)) scoresByReport.set(s.credit_report_id, []);
+      scoresByReport.get(s.credit_report_id).push({ bureau: s.bureau, score: s.value });
+    }
+    // A JOINT tri-merge PDF is one shared file carrying BOTH borrowers' full consumer
+    // files (SSN, tradelines). Withhold its download from the self-service view — a
+    // co-borrower may be an unrelated business partner. Belt-and-suspenders: offer it
+    // ONLY when (a) the file has NO co-borrower at all AND (b) the report carries no
+    // other borrower's scores. (a) closes the edge where a co-borrower's scores could
+    // land unattributed (NULL borrower_id) and slip the score-only check.
+    let jointIds = new Set();
+    if (ids.length) {
+      const jr = (await db.query(
+        `SELECT DISTINCT credit_report_id FROM credit_scores
+          WHERE credit_report_id = ANY($1) AND borrower_id IS NOT NULL AND borrower_id <> $2`, [ids, bid])).rows;
+      jointIds = new Set(jr.map((x) => x.credit_report_id));
+    }
+    const b = (await db.query(`SELECT verified_fico FROM borrowers WHERE id=$1`, [bid])).rows[0] || {};
+    res.json({
+      verifiedFico: b.verified_fico || null,
+      reports: reports.map((r) => ({
+        id: r.id,
+        pulledOn: r.first_issued_date,
+        scores: scoresByReport.get(r.id) || [],
+        hasPdf: !!r.pdf_document_id && !r.file_has_co && !r.report_is_joint && !jointIds.has(r.id),
+      })),
+    });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+router.get('/credit/:id/pdf', async (req, res) => {
+  const bid = me(req);
+  try {
+    // Serve the report PDF ONLY when it holds NO other borrower's scores — i.e. a
+    // single-borrower report for THIS borrower. A JOINT tri-merge PDF is one shared
+    // file with both borrowers' full consumer files (SSN, tradelines), so it is
+    // never released through the self-service view (staff can still view it, and the
+    // borrower still sees their own per-bureau scores via GET /credit).
+    const r = await db.query(
+      `SELECT d.* FROM credit_reports cr
+         JOIN documents d ON d.id = cr.pdf_document_id
+         JOIN applications a ON a.id = cr.application_id
+        WHERE cr.id=$1 AND (a.borrower_id=$2 OR a.co_borrower_id=$2) AND cr.status='imported'
+          -- Report-level belt: a JOINT pull (request_type='Joint', set at order
+          -- time from >1 requested borrower) is NEVER released through self-service,
+          -- regardless of how its per-score borrower_id attribution landed. This
+          -- closes the residual edge where a co-borrower's scores could be stored
+          -- with a NULL borrower_id AND the co-borrower is later unlinked — both the
+          -- co_borrower_id and per-score guards would then pass.
+          AND cr.request_type IS DISTINCT FROM 'Joint'
+          AND a.co_borrower_id IS NULL
+          AND NOT EXISTS (SELECT 1 FROM credit_scores cs
+                           WHERE cs.credit_report_id=cr.id AND cs.borrower_id IS NOT NULL AND cs.borrower_id <> $2)`,
+      [req.params.id, bid]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    return serveDocument(res, r.rows[0], { inline: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // ---------------- chat v3: conversations, receipts, presence ----------------
 router.use(require('./borrower-chat'));
 

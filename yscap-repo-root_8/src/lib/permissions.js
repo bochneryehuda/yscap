@@ -36,6 +36,7 @@ const CAPABILITIES = [
   { key: 'sign_off_conditions', label: 'Review & sign off conditions', hint: 'Processors / underwriters accept documents and complete (sign off) checklist items.' },
   { key: 'manage_conditions', label: 'Manage the Condition Center', hint: 'Author the global condition library and rule engine.' },
   { key: 'manage_pricing', label: 'Manage company pricing', hint: 'Set company-wide markup, origination and fee defaults for all not-yet-registered files.' },
+  { key: 'pull_credit', label: 'Pull & reissue credit reports', hint: 'Order/reissue a credit report from the bureau (Xactus) and import the verified FICO. Uses the staffer\'s own vendor login.' },
   { key: 'manage_draws', label: 'Manage construction draws', hint: 'Review draw requests, set approved amounts, approve/amend/reopen draws, and record releases (the Sitewire draw desk).' },
   { key: 'waive_conditions', label: 'Waive conditions', hint: 'Waive a condition with a reason instead of clearing it.' },
   { key: 'delete_files', label: 'Delete / restore files', hint: 'Soft-delete a loan file and restore it.' },
@@ -50,22 +51,23 @@ const CAP_KEYS = CAPABILITIES.map((c) => c.key);
 // too by default but is still a distinct, revocable role.
 const ROLE_DEFAULTS = {
   super_admin: CAP_KEYS.slice(),
-  admin: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'manage_conditions', 'manage_pricing', 'manage_draws', 'waive_conditions', 'delete_files', 'manage_vendors', 'manage_team', 'platform_setup', 'view_audit_log'],
+  admin: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'manage_conditions', 'manage_pricing', 'manage_draws', 'waive_conditions', 'delete_files', 'manage_vendors', 'manage_team', 'platform_setup', 'view_audit_log', 'pull_credit'],
   // Underwriters run per-file conditions + sign-off + waive; the GLOBAL studio
   // (manage_conditions) is admin/software-setup by default but an admin can
   // grant it to a specific underwriter from the Team screen.
-  underwriter: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'waive_conditions'],
-  loan_coordinator: ['see_all_files', 'review_conditions', 'sign_off_conditions'],
+  underwriter: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'waive_conditions', 'pull_credit'],
+  loan_coordinator: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'pull_credit'],
   // The Draw Coordinator persona (default holder Lisa Katz): runs the Sitewire draw
   // desk across all files. Admin-overridable per the coordinator rules.
   draw_coordinator: ['see_all_files', 'manage_draws', 'review_conditions'],
-  processor: ['review_conditions', 'sign_off_conditions', 'manage_draws'],
+  processor: ['review_conditions', 'sign_off_conditions', 'manage_draws', 'pull_credit'],
   // Loan officers can REVIEW conditions (the lighter stamp) but NOT sign them off.
-  // They do NOT manage draws by default (owner-directed 2026-07-20): pushing a file to Sitewire, deleting/
-  // re-pushing it, approving draws and recording releases require the manage_draws capability, which is held
-  // by the Draw Coordinator / Processor / Admin / Super Admin — never a loan officer unless an admin
-  // explicitly grants it per-person from the Team screen. (super_admin has every capability implicitly.)
-  loan_officer: ['review_conditions'],
+  // They pull/reissue credit (each with their own Xactus login). They do NOT manage draws by
+  // default (owner-directed 2026-07-20): pushing a file to Sitewire, deleting/re-pushing it,
+  // approving draws and recording releases require the manage_draws capability, which is held
+  // by the Draw Coordinator / Processor / Admin / Super Admin — never a loan officer unless an
+  // admin explicitly grants it per-person from the Team screen. (super_admin has every capability implicitly.)
+  loan_officer: ['review_conditions', 'pull_credit'],
   software_setup: ['manage_conditions', 'platform_setup'],
 };
 
@@ -118,7 +120,17 @@ const assigneeExistsSql = (alias, p) =>
   `EXISTS (SELECT 1 FROM application_assignees aa` +
   ` WHERE aa.application_id=${alias}.id AND aa.staff_id=${p} AND aa.removed_at IS NULL)`;
 
+// The canonical "can this staffer see this application" scope fragment, shared so
+// every access gate resolves visibility from ONE definition (primary LO/processor
+// pointer + visible-officer delegation + active assignees). `${alias}.id`,
+// `${alias}.loan_officer_id`, `${alias}.processor_id` must be selectable; `p` is
+// the acting staff-id param placeholder. Never re-inline this — import it.
+const VISIBLE_OFFICERS_SQL = (alias, p) =>
+  `(${alias}.loan_officer_id=${p} OR ${alias}.processor_id=${p}` +
+  ` OR ${alias}.loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=${p})` +
+  ` OR ${assigneeExistsSql(alias, p)})`;
+
 module.exports = {
   ROLES, ROLE_KEYS, ROLE_LABEL, CAPABILITIES, CAP_KEYS, ROLE_DEFAULTS,
-  defaultsFor, effectivePermissions, can, sanitizeOverrides, assigneeExistsSql,
+  defaultsFor, effectivePermissions, can, sanitizeOverrides, assigneeExistsSql, VISIBLE_OFFICERS_SQL,
 };

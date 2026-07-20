@@ -510,6 +510,26 @@ export const api = {
   // self-serve: pull my own ClickUp pipeline folder into the portal
   staffSyncMyClickup: () => req('POST', '/api/staff/clickup/sync-mine'),
 
+  // ---- Credit reports (Xactus reissue + FICO verification) ----
+  // Per-user vendor login (write-only secret — status only comes back).
+  creditProviders:     () => req('GET', '/api/staff/credit/providers'),
+  creditCredentials:   () => req('GET', '/api/staff/credit/credentials'),
+  creditSetCredential: (b) => req('PUT', '/api/staff/credit/credentials', b),
+  creditTestCredential:(b) => req('POST', '/api/staff/credit/credentials/test', b),
+  creditDelCredential: (providerId) => req('DELETE', `/api/staff/credit/credentials/${providerId}`),
+  // Order/reissue (billable — pull_credit) + report views.
+  creditOrder:         (b) => req('POST', '/api/staff/credit/order', b),
+  creditReports:       (appId) => req('GET', `/api/staff/credit/reports?applicationId=${encodeURIComponent(appId)}`),
+  creditReportDetail:  (reportId) => req('GET', `/api/staff/credit/reports/${encodeURIComponent(reportId)}/detail`),
+  creditReportCompare: (reportId) => req('GET', `/api/staff/credit/reports/${encodeURIComponent(reportId)}/compare`),
+  creditReviewQueue:   () => req('GET', '/api/staff/credit/review-queue'),
+  // Reconcile (or undo) a fatal FICO-mismatch finding — clears the sign-off gate.
+  creditReconcileFinding: (b) => req('POST', '/api/staff/credit/reconcile-finding', b),
+  creditReportPdfUrl:  (reportId) => `/api/staff/credit/reports/${reportId}/pdf`,
+  // Borrower read-only view.
+  borrowerCredit:      () => req('GET', '/api/borrower/credit'),
+  borrowerCreditPdfUrl:(reportId) => `/api/borrower/credit/${reportId}/pdf`,
+
   // ---- ADMIN manual ClickUp link / unlink (admin/super_admin only; server
   // enforces requireRole('admin')) ----
   clickupRelinkPreview: (appId, taskId) => req('GET', `/api/staff/applications/${appId}/clickup/relink-preview?taskId=${encodeURIComponent(taskId)}`),

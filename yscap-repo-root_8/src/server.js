@@ -446,6 +446,10 @@ if (require.main === module) {
     // Reminder/task dispatcher (#93): fires scheduled reminders at their due
     // moment via the notify fan-out. Minute cadence; self-gated + idempotent.
     try { require('./lib/reminders').startDispatcher(); } catch (e) { console.warn('reminder dispatcher not started:', e.message); }
+    // Credit-report 120-day reopen sweep (owner-directed 2026-07-19): reopens the
+    // internal credit condition when a file's latest report ages past 120 days
+    // while still open. Daily cadence; idempotent (only reopens a satisfied one).
+    try { require('./lib/credit/reopen-sweep').startSweep(); } catch (e) { console.warn('credit reopen sweep not started:', e.message); }
     // SharePoint one-way sync (owner-directed 2026-07-13): mirrors every
     // document into Pipeline Drive/<Officer>/<Borrower>/<Address>/YS portal
     // syncing/<Condition>/ — write-only, never deletes, versions on supersede.

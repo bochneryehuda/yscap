@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { scenarioToDraft, scenarioLabelFromState } from '../lib/scenario.js';
+import BorrowerCreditCard from '../components/BorrowerCreditCard.jsx';
 import ActionNeeded from '../components/ActionNeeded.jsx';
 import { programLabel, loanTypeLabel, officerLabel } from '../lib/labels.js';
 
@@ -358,6 +359,9 @@ export default function Dashboard() {
           )}
         </div>
       )}
+
+      <BorrowerCreditCard />
+
 
       {notifs.length > 0 && (
         <div className="panel" style={{ marginTop: 18 }}>

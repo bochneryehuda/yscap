@@ -32,7 +32,7 @@ const conditionRegistry = require('../lib/conditions/field-registry');
 const { CONDITION_TYPES, TOOLS, CATEGORIES, conditionTypeOf } = require('../lib/conditions/types');
 const { raiseEntityIssue } = require('../lib/raise-issue');
 
-const { can } = require('../lib/permissions');
+const { can, VISIBLE_OFFICERS_SQL } = require('../lib/permissions');
 // Every staff persona reaches the console; per-file scoping + capability gates
 // (below) decide what each can see and do.
 router.use(requireAuth, requireRole('admin', 'loan_officer', 'processor', 'underwriter', 'loan_coordinator', 'software_setup'));
@@ -147,11 +147,8 @@ async function audit(req, action, entity_type, entity_id, detail) {
 // assignee EXISTS also covers the primary (backfilled + trigger-synced), so this
 // term is behavior-identical until assistants are actually added. Single-param
 // ($p repeated) — no caller changes. Requires ${alias}.id to be selectable.
-const VISIBLE_OFFICERS_SQL = (alias, p) =>
-  `(${alias}.loan_officer_id=${p} OR ${alias}.processor_id=${p}` +
-  ` OR ${alias}.loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=${p})` +
-  ` OR EXISTS (SELECT 1 FROM application_assignees aa` +
-  ` WHERE aa.application_id=${alias}.id AND aa.staff_id=${p} AND aa.removed_at IS NULL))`;
+// VISIBLE_OFFICERS_SQL is imported from ../lib/permissions (one canonical
+// definition shared with staff-credit.js and the chat modules).
 function scopeClause(req, alias = 'a') {
   if (seesAll(req)) return { where: '', params: [] };
   return { where: `AND ${VISIBLE_OFFICERS_SQL(alias, '$SCOPE')}`, params: [req.actor.id] };
@@ -2968,6 +2965,7 @@ async function signOffGate(itemId, actor) {
   const isTitle = code === 'rtl_cond_title';
   const isFraud = code === 'rtl_cond_fraud';
   const isAppraisalDocs = code === 'rtl_cond_appraisaldocs';   // two slots: XML + PDF
+  const isCredit = code === 'rtl_cond_credit' || code === 'rtl_p3_credit' || code === 'rtl_p3_credit2';
   const isAppraisalReview = code === 'appraisal_review_cleared'; // CTC gate: no open fatal finding
   // Structured-DATA conditions — the borrower/staff enter DATA (not a document):
   // the appraisal payment card, and the title / insurance contact forms.
@@ -3050,6 +3048,47 @@ async function signOffGate(itemId, actor) {
         return 'This is a Gold Standard file — the criminal report is required. Upload it before signing off.';
       return null;
     }
+  }
+
+  // Credit FICO-match gate (owner-directed): a credit condition can never be
+  // completed while the file's MOST RECENT credit report carries an UNRECONCILED
+  // fatal FICO-mismatch finding — the verified representative score lands in a
+  // different pricing bracket than the claimed score the loan was structured on.
+  // A human must correct the file and re-pull (a fresh, matching report clears
+  // the finding, since we read the latest report) or have an underwriter
+  // reconcile the finding, before signing off. Backstopped by the DB trigger in
+  // db/211 so no path can bypass it.
+  if (isCredit) {
+    // Generalized (E2): block on ANY unreconciled FATAL finding — a FICO mismatch
+    // OR a fraud / OFAC / deceased / SSN / address-discrepancy bureau alert. Reads
+    // both the new findings[] wrapper and the pre-E2 single-finding shape via the
+    // shared engine helper, so the app layer and the db/213 trigger always agree.
+    //
+    // A fatal finding (on an IMPORTED or a REVIEW report — E2 surfaces bureau
+    // alerts even on a frozen/review pull) blocks UNLESS it was superseded by a
+    // later CLEAN IMPORTED report (a real re-verification). A review re-pull, or a
+    // failed / in_doubt / ordering one, is NOT a re-verification and can never mask
+    // an earlier fatal. The db/215 trigger applies the SAME rule over the same rows.
+    const underwriting = require('../lib/credit/underwriting');
+    const reportRows = (await db.query(
+      `SELECT id, created_at, status, underwriting_finding, underwriting_finding_reconciled_at
+         FROM credit_reports
+        WHERE application_id=$1 AND status IN ('imported','review')`, [item.application_id])).rows;
+    const fatal = underwriting.gatingFatalFindings(reportRows.map((r) => ({
+      status: r.status, createdAt: r.created_at, id: r.id,
+      finding: r.underwriting_finding, reconciledAt: r.underwriting_finding_reconciled_at,
+    })));
+    // De-dupe: when the two reference reports are the SAME imported row, both
+    // queries return its findings — collapse by type+message for the message.
+    const seen = new Set();
+    const uniq = fatal.filter((f) => { const k = `${f.type}|${f.message}`; if (seen.has(k)) return false; seen.add(k); return true; });
+    if (uniq.length) {
+      const lead = uniq.length === 1
+        ? 'This credit report has a FATAL Underwriting finding'
+        : `This credit report has ${uniq.length} FATAL Underwriting findings`;
+      return `${lead}: ${uniq.map((x) => x.message).join(' • ')} Correct the file and re-pull the report, or have an underwriter reconcile the finding(s), before signing off this credit condition.`;
+    }
+    return null;
   }
 
   // Appraisal review cleared — the clear-to-close gate. It cannot be signed off while ANY fatal
@@ -7547,5 +7586,10 @@ router.post('/esign/drain', async (req, res) => {
 // Mounted last so the /applications/:id scope guard above still covers the
 // application-scoped chat routes (create chat / export).
 router.use(require('./staff-chat'));
+
+// ---------------- credit reports (Xactus reissue + FICO verification) --------
+// Per-user vendor credentials + order/reissue/import. Inherits the staff auth
+// wall above; individual routes add the pull_credit capability gate.
+router.use(require('./staff-credit'));
 
 module.exports = router;
