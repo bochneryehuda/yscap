@@ -25,6 +25,9 @@ let enqueueChecklistStatusPush = () => Promise.resolve();
 try { ({ enqueueChecklistStatusPush } = require('../../clickup/enqueue')); } catch (_) { /* optional */ }
 
 const MAX_INBOX_ATTEMPTS = 20;
+// After this many failed finalization attempts (or immediately on a non-retryable
+// error) a signed-but-unfinalized envelope alerts the file's team (see db/181).
+const COMPLETION_MAX_ATTEMPTS = 6;
 
 // DocuSign envelope status → our esign_envelopes.status enum + its timestamp col.
 const ENV_STATUS = {
@@ -194,6 +197,46 @@ async function handleCompletion(db, docusign, storage, envelopeRow) {
   }
 }
 
+// A PERSISTENT completion-finalization failure (db/181): count the attempts and,
+// once it is clearly not self-healing (a non-retryable error, or too many tries),
+// alert the file's team EXACTLY ONCE — the borrower signed, but PILOT couldn't save
+// the signed copies back to the file. Best-effort; never throws (the caller decides
+// whether to re-throw the underlying error so the inbox/poller keep re-driving, which
+// lets a later transient recovery still self-heal). App-less TEST envelopes (no team)
+// count attempts but never alert.
+async function noteCompletionFailure(db, envelopeRow, err) {
+  try {
+    const n = (await db.query(
+      `UPDATE esign_envelopes SET completion_attempts = completion_attempts + 1, updated_at = now()
+        WHERE id = $1 RETURNING completion_attempts`, [envelopeRow.id])).rows[0].completion_attempts;
+    const permanent = !!(err && err.retryable === false);
+    if (!(permanent || n >= COMPLETION_MAX_ATTEMPTS) || !envelopeRow.application_id) return;
+    // Win the one-shot alert (completion_alerted_at guard) so a repeated failure across
+    // inbox retries + poller ticks notifies the team only once.
+    const won = await db.query(
+      `UPDATE esign_envelopes SET completion_alerted_at = now()
+        WHERE id = $1 AND completion_alerted_at IS NULL RETURNING id`, [envelopeRow.id]);
+    if (!won.rows.length) return;
+    const cfg = require('../../config');
+    const label = PURPOSE_LABEL[envelopeRow.purpose] || 'documents';
+    const reason = String((err && err.message) || 'unknown error').replace(/\s+/g, ' ').trim().slice(0, 200);
+    const notify = require('../notify');
+    const opts = {
+      type: 'status_change',
+      title: `Signed ${label} needs attention — couldn't be saved to the file`,
+      badge: { text: 'Needs attention', tone: 'action' },
+      body: `The borrower finished signing the ${label}, but PILOT couldn't save the signed copies back to this file (${reason}). `
+          + 'PILOT keeps retrying automatically; if it doesn\'t clear shortly, open the file\'s e-signature section and re-issue.',
+      applicationId: envelopeRow.application_id,
+      link: `${cfg.appUrl || ''}${cfg.portalPath}/#/internal/app/${envelopeRow.application_id}`,
+    };
+    const sent = await notify.notifyAppStaff(envelopeRow.application_id, opts);
+    if (!sent || !sent.length) await notify.notifyAdmins(opts);
+  } catch (e) {
+    console.warn(`[esign-webhook] completion-failure alert failed for ${envelopeRow && envelopeRow.id}: ${e.message}`);
+  }
+}
+
 // ---- reconcile ONE tracked envelope to DocuSign truth -----------------------
 async function reconcileEnvelope(db, docusign, storage, envelopeRow) {
   const envelope = await docusign.getEnvelope(envelopeRow.envelope_id, { include: 'recipients' });
@@ -210,7 +253,16 @@ async function reconcileEnvelope(db, docusign, storage, envelopeRow) {
   // green "completed" with missing signed docs + uncleared conditions that nothing
   // ever re-drives (handleCompletion is per-doc idempotent, so re-running is safe).
   if (status === 'completed') {
-    await handleCompletion(db, docusign, storage, envelopeRow);
+    try {
+      await handleCompletion(db, docusign, storage, envelopeRow);
+    } catch (e) {
+      // Signed at DocuSign but we couldn't finalize (download/store). Count it and
+      // alert the team once it's clearly stuck; re-throw so the inbox/poller keep
+      // re-driving (a later transient recovery still self-heals; the envelope
+      // deliberately stays out of 'completed' until the signed copies are on file).
+      await noteCompletionFailure(db, envelopeRow, e);
+      throw e;
+    }
   }
 
   const terminal = map && ['completed', 'declined', 'voided'].includes(map.status);
@@ -373,5 +425,5 @@ async function drainInbox(opts = {}) {
 
 module.exports = {
   drainInbox, processInboxRow, reconcileEnvelope, handleCompletion, applyRecipients,
-  storeSignedDocument, recipientStatus,
+  storeSignedDocument, recipientStatus, noteCompletionFailure,
 };
