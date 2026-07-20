@@ -827,12 +827,12 @@ router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, r
     // Go-forward only (owner-directed 2026-07-20): PILOT surfaces/follows ONLY a property IT pushed
     // (matched_by='created'). A pre-existing hand-entered Sitewire property is never adopted or followed.
     const link = (await db.query(`SELECT l.*, cs.full_name AS coordinator_name FROM sitewire_property_links l LEFT JOIN staff_users cs ON cs.id=l.coordinator_staff_id WHERE l.application_id=$1 AND l.matched_by='created'`, [appId])).rows[0] || null;
-    // Is this file blocked on a loan-number collision with a pre-existing Sitewire property PILOT didn't
-    // create? If so the draw section shows the "already in Sitewire — not followed" banner instead of the
-    // Start card, so staff know PILOT will not manage it unless the pre-existing one is deleted + re-pushed.
-    const preexisting = ((await db.query(
-      `SELECT 1 FROM sync_review_queue WHERE application_id=$1 AND field_key='sitewire' AND status='open'
-         AND split_part(reason,':',1)='sitewire_loan_already_in_sitewire' LIMIT 1`, [appId])).rowCount > 0);
+    // Birth-phase setup status lives ON THE FILE (link.raw.setup_status), never the global error queue
+    // (go-forward only). It tells the draw section what happened on the last push attempt for a not-yet-
+    // managed file: a loan-number collision with a pre-existing Sitewire property (preexisting → the
+    // "already in Sitewire — not managed" banner), or another setup blocker (no SOW, budget mismatch, …).
+    const setupStatus = (link && link.raw && link.raw.setup_status) ? link.raw.setup_status : null;
+    const preexisting = !!(setupStatus && setupStatus.preexisting_property_id);
     const draws = (await db.query(`SELECT sitewire_draw_id, number, name, status, risk_level, risk_flags, submitted_at, approved_at, pdf_src FROM sitewire_draws WHERE application_id=$1 ORDER BY number DESC NULLS LAST`, [appId])).rows;
     const requests = (await db.query(
       `SELECT r.sitewire_request_id, r.sitewire_draw_id, r.sitewire_job_item_id, r.job_item_name, r.requested_cents, r.approved_cents, r.inspection_count, r.lender_comments
@@ -857,8 +857,9 @@ router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, r
     res.json({ rollup, link, draws, requests, ledger, findings, change_requests: changeRequests, retainage, waivers,
       lien_waivers_enabled: lienWaiversEnabled, lien_waivers_file_override: link ? link.require_lien_waivers : null,
       // go-forward-only status for the draw-section banner: preexisting = blocked on a pre-existing
-      // Sitewire property PILOT didn't create; managed_since = when PILOT pushed (born) this property.
-      preexisting, managed_since: link ? link.pushed_at : null, go_live_date: cfg.sitewireGoLiveDate,
+      // Sitewire property PILOT didn't create; setup_status = the last birth-phase outcome (inline, not a
+      // global error row); managed_since = when PILOT pushed (born) this property.
+      preexisting, setup_status: setupStatus, managed_since: link ? link.pushed_at : null, go_live_date: cfg.sitewireGoLiveDate,
       // so the desk can show a proactive read-only banner + disable write buttons when writes are off
       // (an approve/release/finding write 503s unless BOTH the master switch and the write gate are on).
       switches: { enabled: cfg.sitewireEnabled, outbound: cfg.sitewireOutboundEnabled, dryrun: cfg.sitewireDryrun } });

@@ -91,5 +91,30 @@ ok('borrower_assign_failed allows retry', routeAllows('sitewire_borrower_assign_
 }
 
 // ---------------------------------------------------------------------------
+// 6. Birth-phase vs workflow split (go-forward error handling, owner-directed 2026-07-20)
+//    A file only enters the ERROR QUEUE once PILOT has pushed it. BIRTH-phase reasons (before a live
+//    property) on a not-yet-managed file are recorded on the file (setup_status), never queued. Confirm
+//    the birth set is exactly the pre-property reasons, and that genuine post-push workflow reasons are
+//    NOT in it (they must still queue for a managed file).
+{
+  const orch = require('../src/sitewire/orchestrator');
+  const BIRTH = orch.SITEWIRE_BIRTH_REASONS;
+  ok('SITEWIRE_BIRTH_REASONS exported as a Set', BIRTH instanceof Set);
+  const expectedBirth = ['sitewire_missing_loan_number', 'sitewire_no_budget', 'sitewire_no_sow', 'sitewire_units_note',
+    'sitewire_budget_mismatch', 'sitewire_capital_partner_unmatched', 'sitewire_address_incomplete',
+    'sitewire_type_unmapped', 'sitewire_dupe_check_failed', 'sitewire_loan_already_in_sitewire',
+    'sitewire_property_rejected', 'sitewire_bind_missing_property'];
+  eq('birth set size', BIRTH.size, expectedBirth.length);
+  for (const r of expectedBirth) ok(`birth set has ${r}`, BIRTH.has(r));
+  // Post-push WORKFLOW reasons must NOT be birth-gated — they only occur once a property exists, and must
+  // reach the error queue so the bidirectional workflow surfaces them.
+  for (const r of ['sitewire_borrower_assign_failed', 'sitewire_budget_rejected', 'sitewire_total_drift',
+    'sitewire_line_drift', 'sitewire_reconcile_draw_error', 'sitewire_approve_failed', 'sitewire_draw_transition_failed']) {
+    ok(`workflow reason ${r} is NOT birth-gated (still queues)`, !BIRTH.has(r));
+  }
+  ok('isManaged + recordSetupStatus are exported', typeof orch.isManaged === 'function' && typeof orch.recordSetupStatus === 'function');
+}
+
+// ---------------------------------------------------------------------------
 console.log(`\n${fail === 0 ? 'ALL' : fail + ' FAILED,'} ${pass} sitewire review-action assertions ${fail === 0 ? 'passed' : ''}`);
 process.exit(fail === 0 ? 0 : 1);

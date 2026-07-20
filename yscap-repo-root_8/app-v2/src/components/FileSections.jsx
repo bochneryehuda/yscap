@@ -19,12 +19,12 @@ export function InfoTip({ tip }) {
 /* EVERY section is collapsible from its header row. Most start open
    (defaultOpen) — long, low-urgency ones (Document history, Activity) pass
    defaultOpen={false} and start collapsed. */
-export function Section({ id, title, info, badge, children, style, collapsible = true, defaultOpen = true }) {
+export function Section({ id, title, info, badge, children, style, collapsible = true, defaultOpen = true, action = null }) {
   const [open, setOpen] = useState(defaultOpen);
   const toggle = (e) => {
     if (!collapsible) return;
-    // hovering/clicking the little "i" must never collapse the section
-    if (e && e.target && e.target.closest && e.target.closest('.info-tip')) return;
+    // hovering/clicking the little "i" — or a header action button — must never collapse the section
+    if (e && e.target && e.target.closest && (e.target.closest('.info-tip') || e.target.closest('.sec-action'))) return;
     setOpen(o => !o);
   };
   return (
@@ -40,7 +40,8 @@ export function Section({ id, title, info, badge, children, style, collapsible =
         {collapsible && <span className={`sec-chevron${open ? ' open' : ''}`} aria-hidden="true">▶</span>}
         <h2 className="sec-title">{title}{info ? <InfoTip tip={info} /> : null}</h2>
         {badge != null && <span className="sec-badge">{badge}</span>}
-        {collapsible && <span className="muted small" style={{ flex: 'none', marginLeft: badge != null ? 0 : 'auto' }}>{open ? 'Hide' : 'Show'}</span>}
+        {action && <span className="sec-action" style={{ marginLeft: badge != null ? 12 : 'auto' }} onClick={(e) => e.stopPropagation()}>{action}</span>}
+        {collapsible && <span className="muted small" style={{ flex: 'none', marginLeft: (badge != null || action) ? 12 : 'auto' }}>{open ? 'Hide' : 'Show'}</span>}
       </div>
       {(!collapsible || open) && children}
     </section>
