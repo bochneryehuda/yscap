@@ -531,6 +531,7 @@ export const api = {
   // ---- Document-underwriting desk: read + understand each document, resolve findings ----
   underwritingGet:            (appId) => req('GET', `/api/underwriting/${appId}`),
   underwritingAnalyze:        (appId, docId, b) => req('POST', `/api/underwriting/${appId}/documents/${docId}/analyze`, b),
+  underwritingClassify:       (appId, docId) => req('POST', `/api/underwriting/${appId}/documents/${docId}/classify`),
   underwritingResolveFinding: (appId, fid, b) => req('POST', `/api/underwriting/${appId}/findings/${fid}/resolve`, b),
   // Portfolio-wide "training" report: which finding types turned out real vs false alarms.
   underwritingFeedback:       () => req('GET', '/api/underwriting/insights/feedback'),

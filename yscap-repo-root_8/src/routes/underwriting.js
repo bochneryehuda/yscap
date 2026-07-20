@@ -36,6 +36,7 @@ const fileView = require('../lib/underwriting/file-view');
 const { buildTieout } = require('../lib/underwriting/tieout');
 const { underwriterActions } = require('../lib/underwriting/actions');
 const { falseAlarmReport } = require('../lib/underwriting/feedback');
+const { classify } = require('../lib/underwriting/classify');
 
 const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || ''));
 // today as a calendar string — no `new Date()` math in the date paths (CLAUDE.md rule).
@@ -157,6 +158,48 @@ router.get('/:appId', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// The document must belong to THIS file, or be a PROFILE-LEVEL document of this file's borrower
+// (application_id IS NULL). In this codebase government IDs / bank statements are uploaded UNDER an
+// application (they carry that application_id), so they resolve via the first branch when they
+// belong to this file; the NULL branch covers borrower-profile / LLC documents (e.g. an operating
+// agreement). A document tied to a DIFFERENT application of the same borrower must NOT resolve here
+// — otherwise file B's document could be analyzed and mis-filed onto file A (same borrower). Only
+// the borrower is matched, not the file's LLC — the staff document picker is scoped the same way.
+async function fileDoc(app, documentId) {
+  return (await db.query(
+    `SELECT id, application_id, borrower_id, filename, content_type, storage_provider, storage_ref
+       FROM documents
+      WHERE id=$1 AND is_current
+        AND (application_id=$2 OR (application_id IS NULL AND borrower_id IS NOT NULL AND borrower_id=$3))`,
+    [documentId, app.id, app.borrower_id])).rows[0] || null;
+}
+
+// ---- POST /documents/:documentId/classify: auto-detect the document's type -----
+// "Know the purpose of every document" — read the document, guess its type from the text +
+// filename, and return the suggestion + confidence so the desk can pre-select it (a human always
+// confirms before findings are trusted). Never writes; best-effort (falls back to the filename
+// when the OCR reader is off).
+router.post('/:appId/documents/:documentId/classify', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    if (!isUuid(req.params.documentId)) return res.status(404).json({ error: 'document not found' });
+    const doc = await fileDoc(app, req.params.documentId);
+    if (!doc) return res.status(404).json({ error: 'document not found on this file' });
+
+    let text = null;
+    if (doc.storage_ref) {
+      try {
+        const buffer = await storage.read(doc.storage_ref);
+        const ocr = await docint.read({ buffer, base64: buffer.toString('base64'), mimeType: doc.content_type || 'application/octet-stream' });
+        if (ocr && ocr.ok) text = ocr.text;
+      } catch (_) { /* OCR best-effort; fall back to the filename */ }
+    }
+    const guess = classify({ text, filename: doc.filename });
+    res.json({ documentId: doc.id, filename: doc.filename, suggestedType: guess.docType, confidence: guess.confidence, usedText: !!text });
+  } catch (e) { next(e); }
+});
+
 // ---- POST /documents/:documentId/analyze -----------------------------------
 router.post('/:appId/documents/:documentId/analyze', async (req, res, next) => {
   try {
@@ -169,22 +212,7 @@ router.post('/:appId/documents/:documentId/analyze', async (req, res, next) => {
       return res.status(400).json({ error: `unknown document type — choose one of: ${registry.docTypes().join(', ')}` });
     }
 
-    // The document must belong to THIS file, or be a PROFILE-LEVEL document of this file's
-    // borrower (application_id IS NULL). In this codebase government IDs / bank statements are
-    // uploaded UNDER an application (they carry that application_id), so they resolve via the
-    // first branch when they belong to this file; the NULL branch covers borrower-profile /
-    // LLC documents (e.g. an operating agreement) that aren't tied to one application. A
-    // document tied to a DIFFERENT application of the same borrower must NOT resolve here —
-    // otherwise file B's document could be analyzed and mis-filed onto file A (same borrower).
-    // (This intentionally matches only the borrower, not the file's LLC — the staff document
-    // picker is scoped the same way, and keeping the borrower check tight blocks a layered
-    // entity owned by a different borrower.)
-    const doc = (await db.query(
-      `SELECT id, application_id, borrower_id, filename, content_type, storage_provider, storage_ref
-         FROM documents
-        WHERE id=$1 AND is_current
-          AND (application_id=$2 OR (application_id IS NULL AND borrower_id IS NOT NULL AND borrower_id=$3))`,
-      [req.params.documentId, app.id, app.borrower_id])).rows[0];
+    const doc = await fileDoc(app, req.params.documentId);
     if (!doc) return res.status(404).json({ error: 'document not found on this file' });
     if (!doc.storage_ref) return res.status(422).json({ error: 'this document has no stored file to read' });
 

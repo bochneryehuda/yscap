@@ -39,14 +39,33 @@ assert.strictEqual(claimsFor('bank_statement', { accountHolderName: 'John Smith'
   assert.ok(!r.discrepancies.some((d) => d.field === 'entity_name'));
 }
 
-// ===== 2. File-vs-document mismatch (price) → fatal discrepancy =====
+// ===== 2. File-vs-document mismatch on a doc WITHOUT a dedicated per-doc check → tie-out owns it =====
 {
   const r = buildTieout(ctx, [
-    { id: 'c', docType: 'purchase_contract', fields: { propertyAddress: ADDR, purchasePrice: 430000, sellerNames: ['Jane Seller'], buyerName: 'Maple Grove Holdings LLC' } },
+    { id: 's', docType: 'settlement', fields: { propertyAddress: ADDR, contractSalesPrice: 430000, loanAmount: 300000 } },
   ]);
   const d = r.discrepancies.find((x) => x.field === 'purchase_price');
-  assert.ok(d && d.severity === 'fatal' && d.blocksCtc, 'price mismatch vs file is fatal + blocks CTC');
+  assert.ok(d && d.severity === 'fatal' && d.blocksCtc, 'settlement price mismatch vs file is fatal + blocks CTC');
   assert.ok(/412,000/.test(d.fileValue) && /430,000/.test(d.docValue));
+}
+// ===== 2b. A doc WITH a dedicated per-doc check → tie-out does NOT duplicate the file-vs-doc finding =====
+{
+  const r = buildTieout(ctx, [
+    { id: 'c', docType: 'purchase_contract', fields: { propertyAddress: ADDR, purchasePrice: 430000, buyerName: 'Maple Grove Holdings LLC' } },
+  ]);
+  assert.ok(!r.discrepancies.some((x) => x.field === 'purchase_price'), 'contract price mismatch is owned by the per-doc check, not duplicated by the tie-out');
+  // …but the matrix cell still shows the disagreement.
+  const cell = r.matrix.find((m) => m.key === 'purchase_price').cells.find((c) => c.label === 'Purchase contract');
+  assert.strictEqual(cell.status, 'disagree', 'the matrix still shows the contract price disagreeing');
+}
+// ===== 2c. Appraisal VALUE ties out against the file (M1 fix) =====
+{
+  const r = buildTieout(ctx, [
+    { id: 'a', docType: 'appraisal', fields: { propertyAddress: ADDR, contractPrice: 412000, asIsValue: 360000, arvValue: 520000 } },
+  ]);
+  const d = r.discrepancies.find((x) => x.field === 'as_is_value');
+  assert.ok(d && d.severity === 'warning', 'appraisal as-is value below the file value ties out (warning)');
+  assert.ok(!r.discrepancies.some((x) => x.field === 'arv'), 'matching ARV raises nothing');
 }
 
 // ===== 3. Seller (no file value) — documents disagree → fatal doc-vs-doc =====

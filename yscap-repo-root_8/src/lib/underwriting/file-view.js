@@ -21,6 +21,7 @@ const { sellerNames: contractSellers } = require('./purchase-contract-checks');
 async function loadContext(client, appId) {
   const app = (await client.query(
     `SELECT id, borrower_id, llc_id, property_address, purchase_price, loan_amount,
+            as_is_value, arv, rehab_budget,
             is_assignment, assignment_fee, underlying_contract_price
        FROM applications WHERE id = $1`, [appId])).rows[0] || null;
   if (!app) return null;

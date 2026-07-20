@@ -34,6 +34,19 @@ function finding(f) {
   }, f);
 }
 
+// Facts a dedicated per-document check already compares against the FILE and raises its own
+// (stored) finding for — so the tie-out must NOT raise a second, duplicate discrepancy for the
+// same document+fact. The tie-out still shows the disagreement in the MATRIX and still owns every
+// doc-vs-doc conflict + every fact/document a per-doc check doesn't cover (e.g. the settlement's
+// price, the appraisal's value). Keyed by docType → the fact keys that document's check covers.
+const PERDOC_COVERS = {
+  purchase_contract: ['property_address', 'purchase_price', 'entity_name', 'assignment_fee', 'underlying_price'],
+  government_id: ['borrower_name', 'borrower_dob', 'borrower_address'],
+  title: ['property_address'],
+  bank_statement: ['entity_name', 'borrower_name'],
+};
+const perDocCovers = (docType, factKey) => !!PERDOC_COVERS[docType] && PERDOC_COVERS[docType].indexOf(factKey) !== -1;
+
 // The agreed value among a set of present document claims for one fact: if every pair matches,
 // the consensus (first) value; if any pair disagrees, null (a genuine cross-document conflict).
 function consensus(kind, claims) {
@@ -69,6 +82,10 @@ function buildTieout(fileCtx, sources = []) {
     // Truth = the file value if the file stores this fact, else the documents' consensus.
     const cons = consensus(fact.kind, claims);
     const truth = fileHas ? fileVal : cons.value;
+    // A meaningful comparison needs a reference OTHER than the value itself: the file value, or
+    // more than one document. A lone document with no file value can't "agree" with anything.
+    const hasRef = fileHas || withVal.length > 1;
+    const conflictNoTruth = !fileHas && cons.conflict; // documents disagree and there's no file truth
 
     // Build the row cells (file + each document).
     const cells = [{ source: 'file', label: 'Loan file', status: fileHas ? 'source' : 'na', value: fileHas ? display(fact.kind, fileVal) : null }];
@@ -77,7 +94,8 @@ function buildTieout(fileCtx, sources = []) {
       if (!carries(s.docType, fact.key)) { cells.push({ source: s.id, label: s.label, status: 'na', value: null }); continue; }
       if (!present(v)) { cells.push({ source: s.id, label: s.label, status: 'missing', value: null }); continue; }
       let status = 'noref';
-      if (present(truth)) { const m = factMatch(fact.kind, truth, v); status = m === true ? 'agree' : m === false ? 'disagree' : 'unknown'; }
+      if (conflictNoTruth) { status = 'disagree'; }               // docs disagree, no file anchor → flag each
+      else if (hasRef && present(truth)) { const m = factMatch(fact.kind, truth, v); status = m === true ? 'agree' : m === false ? 'disagree' : 'unknown'; }
       cells.push({ source: s.id, label: s.label, status, value: display(fact.kind, v) });
     }
 
@@ -90,7 +108,10 @@ function buildTieout(fileCtx, sources = []) {
 
     // Discrepancy findings.
     if (fileHas) {
-      const bad = withVal.filter((c) => factMatch(fact.kind, fileVal, c.value) === false);
+      // A source whose own per-document check already compares this fact to the file is EXCLUDED
+      // here — that mismatch is raised once by the per-doc check; the tie-out avoids the duplicate
+      // (the matrix cell still shows the disagreement). Sources with no dedicated check stay.
+      const bad = withVal.filter((c) => factMatch(fact.kind, fileVal, c.value) === false && !perDocCovers(c.docType, fact.key));
       if (bad.length) {
         discrepancies.push(finding({
           code: `tieout_${fact.key}`, severity: fact.severity, field: fact.key,

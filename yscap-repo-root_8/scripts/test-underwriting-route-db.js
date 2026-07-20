@@ -15,6 +15,7 @@ const store = require('../src/lib/underwriting/store');
 const fileView = require('../src/lib/underwriting/file-view');
 const { computeCrossDocumentFindings } = require('../src/lib/underwriting/cross-document');
 const { toISODate } = require('../src/lib/underwriting/compare');
+const { buildTieout } = require('../src/lib/underwriting/tieout');
 
 const ADDR = { line1: '76 Thompson St', city: 'Austin', state: 'TX', zip: '78701' };
 
@@ -30,7 +31,7 @@ const ADDR = { line1: '76 Thompson St', city: 'Austin', state: 'TX', zip: '78701
        VALUES ('John','Smith',$1,'1980-05-15',$2) RETURNING id`,
       [uniq, JSON.stringify(ADDR)])).rows[0];
     const llc = (await client.query(
-      `INSERT INTO llcs (borrower_id,llc_name) VALUES ($1,'Maple Grove Holdings LLC') RETURNING id`, [b.id])).rows[0];
+      `INSERT INTO llcs (borrower_id,llc_name,ein) VALUES ($1,'Maple Grove Holdings LLC','12-3456789') RETURNING id`, [b.id])).rows[0];
     const app = (await client.query(
       `INSERT INTO applications (borrower_id, llc_id, property_address, purchase_price, is_assignment, assignment_fee, underlying_contract_price)
        VALUES ($1,$2,$3,412000,true,15000,100000) RETURNING id`,
@@ -122,8 +123,26 @@ const ADDR = { line1: '76 Thompson St', city: 'Austin', state: 'TX', zip: '78701
     assert.strictEqual((await scoped(docProfile.id)).rows.length, 1, 'a profile-level (app-less) borrower document resolves');
     assert.strictEqual((await scoped(docOtherApp.id)).rows.length, 0, 'a document on ANOTHER application of the same borrower is BLOCKED');
 
+    // ---- EIN tie-out works END-TO-END with PII masking (audit C1) ----
+    // The stored EIN is masked to ***last4; the file EIN (llcs.ein) is full. The tie-out must
+    // compare on last-4 (no false discrepancy) and NEVER expose a full EIN in the matrix.
+    const docEin = (await client.query(
+      `INSERT INTO documents (application_id,borrower_id,filename,storage_provider) VALUES ($1,$2,'ein.pdf','local') RETURNING id`, [app.id, b.id])).rows[0];
+    await store.saveAnalysis(client, {
+      documentId: docEin.id, applicationId: app.id, borrowerId: b.id, docType: 'ein_letter',
+      extraction: { fields: { ein: '12-3456789', entityLegalName: 'Maple Grove Holdings LLC', readable: true }, status: 'analyzed' },
+      findings: [],
+    });
+    const storedEin = (await client.query(`SELECT fields FROM document_extractions WHERE document_id=$1 AND is_current`, [docEin.id])).rows[0].fields;
+    assert.ok(String(storedEin.ein).startsWith('***'), 'stored EIN is masked to ***last4');
+    const ctx2 = await fileView.loadContext(client, app.id);
+    const to = buildTieout(ctx2, [{ id: docEin.id, docType: 'ein_letter', fields: storedEin }]);
+    assert.ok(!to.discrepancies.some((d) => d.field === 'ein'), 'masked EIN ties out on last-4 — no false discrepancy');
+    const einRow = to.matrix.find((m) => m.key === 'ein');
+    assert.ok(einRow && String(einRow.fileValue).startsWith('***') && !/12-?3456789/.test(String(einRow.fileValue)), 'the matrix never shows a full EIN');
+
     await client.query('ROLLBACK');
-    console.log('✓ test-underwriting-route-db: file-view subjects, cross-document GET roll-up, resolve gate pass');
+    console.log('✓ test-underwriting-route-db: file-view subjects, cross-document GET roll-up, resolve gate, EIN masking pass');
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     console.error(e);

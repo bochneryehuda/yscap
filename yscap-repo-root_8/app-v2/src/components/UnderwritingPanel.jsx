@@ -207,6 +207,20 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
   const [pick, setPick] = useState('');       // documentId to analyze
   const [pickType, setPickType] = useState(''); // docType to analyze it as
   const [analyzing, setAnalyzing] = useState(false);
+  const [detecting, setDetecting] = useState(false);
+  const [detected, setDetected] = useState(''); // confidence note for the suggested type
+
+  // Auto-detect the document type when a document is chosen (the underwriter confirms it).
+  const onPickDoc = useCallback(async (id) => {
+    setPick(id); setPickType(''); setDetected('');
+    if (!id) return;
+    setDetecting(true);
+    try {
+      const g = await api.underwritingClassify(appId, id);
+      if (g && g.suggestedType) { setPickType(g.suggestedType); setDetected(g.confidence); }
+    } catch (_) { /* detection is best-effort; the underwriter can still pick */ }
+    finally { setDetecting(false); }
+  }, [appId]);
 
   const load = useCallback(async () => {
     setLoading(true); setErr('');
@@ -255,15 +269,16 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
       {/* analyze a document — staff only */}
       {!readOnly && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 18, flexWrap: 'wrap' }}>
-          <select value={pick} onChange={(e) => setPick(e.target.value)} style={sel}>
+          <select value={pick} onChange={(e) => onPickDoc(e.target.value)} style={sel}>
             <option value="">Choose a document…</option>
             {currentDocs.map((d) => <option key={d.id} value={d.id}>{d.filename}</option>)}
           </select>
-          <select value={pickType} onChange={(e) => setPickType(e.target.value)} style={sel}>
-            <option value="">as document type…</option>
+          <select value={pickType} onChange={(e) => { setPickType(e.target.value); setDetected(''); }} style={sel}>
+            <option value="">{detecting ? 'detecting type…' : 'as document type…'}</option>
             {docTypes.map((t) => <option key={t} value={t}>{label(t)}</option>)}
           </select>
           <button disabled={analyzing || !pick || !pickType} onClick={analyze} style={btn(true)}>{analyzing ? 'Reading…' : 'Read & check'}</button>
+          {detected && pickType && <span style={{ fontSize: 11.5, color: 'var(--muted,#4B585C)' }}>auto-detected{detected === 'high' ? '' : ` (${detected} confidence — please confirm)`}</span>}
         </div>
       )}
 
