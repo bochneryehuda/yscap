@@ -768,6 +768,13 @@ async function sendPackage(applicationId, purpose, actor, opts = {}) {
   }
 
   const app = await loadApplication(db, applicationId);
+  // A draw_request needs its "Signed draw request form" condition to EXIST before the
+  // envelope is created, so createOrClaimEnvelope binds the signed doc → that condition.
+  // Ensuring it HERE (not only in the draw route) makes EVERY caller correct — including
+  // the generic staff e-sign send route (audit LOW). Idempotent per file.
+  if (purpose === 'draw_request') {
+    await require('./draw-wire').ensureDrawRequestCondition(db, applicationId, actor && actor.id);
+  }
   const { row, terminal } = await createOrClaimEnvelope(db, app, purpose, spec, actor && actor.id, { reissue: !!opts.reissue });
   // A plain send that found only a TERMINAL prior envelope did NOT mint a new one —
   // report that (never a false "Sent"), so the UI tells staff to use Re-issue rather

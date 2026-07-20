@@ -261,7 +261,9 @@ function textAnchor(anchor, { tabLabel, required = true, width = 200, height = 1
     required: required ? 'true' : 'false',
     width: Number(width) || 200,
     height: Number(height) || 14,
-    font: 'helvetica',
+    // DocuSign's tab font enum is capitalized ("Helvetica"); "Size9" is the correct
+    // fontSize enum. (DocuSign is lenient on font, but match the documented casing.)
+    font: 'Helvetica',
     fontSize: 'Size9',
   };
 }
