@@ -845,8 +845,16 @@ router.post('/applications', async (req, res) => {
       const o = await db.query(`SELECT id,full_name FROM staff_users WHERE id=$1 AND is_active=true`, [b.loanOfficerId]);
       if (o.rows[0]) { officerId = o.rows[0].id; officerName = o.rows[0].full_name; }
     }
-    if (!officerId && req.actor.role === 'loan_officer') {
-      const meRow = await db.query(`SELECT id,full_name FROM staff_users WHERE id=$1`, [req.actor.id]);
+    // Self-assign default (owner-directed 2026-07-20): the staffer OPENING the
+    // file is put on it automatically — they never have to pick, and it never
+    // falls to Lead Capture — as long as they hold an officer-eligible role
+    // (loan_officer / admin / super_admin; those are exactly the roles the
+    // new-file officer dropdown offers). A processor/underwriter creator is not a
+    // valid LO, so they fall through to borrower stickiness / Lead Capture. An
+    // explicit pick above still wins (an admin opening on behalf of an LO just
+    // picks them).
+    if (!officerId && ['loan_officer', 'admin', 'super_admin'].includes(req.actor.role)) {
+      const meRow = await db.query(`SELECT id,full_name FROM staff_users WHERE id=$1 AND is_active=true`, [req.actor.id]);
       if (meRow.rows[0]) { officerId = meRow.rows[0].id; officerName = meRow.rows[0].full_name; }
     }
     // #98 LO stickiness: an admin/processor creating a file for an EXISTING
