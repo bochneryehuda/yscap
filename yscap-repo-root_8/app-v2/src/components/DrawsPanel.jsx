@@ -211,6 +211,9 @@ export default function DrawsPanel({ appId }) {
               finding={findingByDraw[d.sitewire_draw_id]} busy={busy} act={act} reload={load} writesOff={writesOff} readsOff={readsOff} />
           ))}
 
+          {/* ---- draw email / notification center (draw-related only) ---- */}
+          <DrawMailCenter appId={appId} />
+
           {/* ---- money ledger ---- */}
           <LedgerPanel appId={appId} ledger={ledger} draws={draws} retainage={retainage} onSaved={load} act={act} busy={busy} />
 
@@ -578,6 +581,7 @@ function SdIcon({ name }) {
     ext: <><path d="M14 4h6v6" /><path d="M20 4l-8 8" /><path d="M18 14v4a2 2 0 01-2 2H6a2 2 0 01-2-2V8a2 2 0 012-2h4" /></>,
     list: <><path d="M8 6h13M8 12h13M8 18h13" /><path d="M3 6h.01M3 12h.01M3 18h.01" /></>,
     mail: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M3 7l9 6 9-6" /></>,
+    reply: <><path d="M9 17l-5-5 5-5" /><path d="M4 12h11a5 5 0 015 5v1" /></>,
   }[name] || null;
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{p}</svg>;
 }
@@ -1041,6 +1045,99 @@ function WaiversPanel({ appId, waivers, draws, onChanged }) {
         <button className="btn btn-sm primary" disabled={busy} onClick={add}>Add waiver</button>
       </div>
       {err && <div className="small" style={{ color: 'var(--bad,#b04a3f)', marginTop: 6 }}>{err}</div>}
+    </div>
+  );
+}
+
+/* The draw coordinator's per-file email section — a professional, email-style list of every DRAW-related
+   notification PILOT sent about this file (to the borrower or the team), each openable to see exactly who it
+   went to, when, its delivery status and full content, plus the borrower's email replies. Scoped to draw items
+   only. (Sitewire's own borrower emails aren't exposed by their API, so this is PILOT's own outbound + inbound
+   trail.) */
+const MAIL_KIND = {
+  draw: { label: 'Draw released', tone: 'var(--good,#3f7a4a)' },
+  draw_findings: { label: 'Inspection result', tone: 'var(--teal,#2f7f86)' },
+  draw_accepted: { label: 'Borrower accepted', tone: 'var(--good,#3f7a4a)' },
+  draw_disputed: { label: 'Borrower disputed', tone: 'var(--bad,#b04a3f)' },
+  draw_dispute_resolved: { label: 'Dispute resolved', tone: 'var(--good,#3f7a4a)' },
+  sow_change_request: { label: 'Budget change', tone: 'var(--gold,#ae8746)' },
+  sow_reallocation: { label: 'Budget change', tone: 'var(--gold,#ae8746)' },
+};
+const EMAIL_STATE = { sent: { label: 'Emailed', cls: 'sw-approved' }, skipped: { label: 'In-app only', cls: 'sw-draft' }, error: { label: 'Email failed', cls: 'sw-pending' }, pending: { label: 'Sending…', cls: 'sw-draft' } };
+function DrawMailCenter({ appId }) {
+  const [data, setData] = useState(null);
+  const [openId, setOpenId] = useState(null);
+  useEffect(() => { api.get(`/api/sitewire/files/${appId}/notifications`).then(setData).catch(() => setData({ sent: [], replies: [] })); }, [appId]);
+  if (!data) return <div className="dd-card" style={{ marginTop: 18 }}>Loading draw messages…</div>;
+  const sent = data.sent || [];
+  const replies = data.replies || [];
+  const when = (v) => (v ? new Date(v).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '');
+  return (
+    <div className="dd-card" style={{ marginTop: 18 }}>
+      <div className="dd-card-h" style={{ justifyContent: 'space-between' }}>
+        <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+          <span className="dd-card-ic"><SdIcon name="mail" /></span>
+          <div>
+            <h3>Draw messages</h3>
+            <div className="dd-sub" style={{ marginTop: 1 }}>Every draw notification we sent on this file — open any to see who got it, when, and exactly what it said. Borrower replies appear below.</div>
+          </div>
+        </div>
+        <span className="dd-sub">{sent.length} sent{replies.length ? ` · ${replies.length} repl${replies.length === 1 ? 'y' : 'ies'}` : ''}</span>
+      </div>
+
+      {sent.length === 0 && replies.length === 0 && <div className="dd-sub" style={{ marginTop: 8 }}>No draw messages have gone out on this file yet.</div>}
+
+      <div style={{ marginTop: 6 }}>
+        {sent.map((m) => {
+          const k = MAIL_KIND[m.type] || { label: m.type, tone: 'var(--text-muted)' };
+          const es = EMAIL_STATE[m.email_status] || EMAIL_STATE.pending;
+          const isOpen = openId === m.id;
+          const toWhom = m.recipient_kind === 'borrower' ? `Borrower${m.recipient_name ? ` · ${m.recipient_name}` : ''}` : `Team${m.recipient_name ? ` · ${m.recipient_name}` : ''}`;
+          return (
+            <div key={m.id} style={{ borderTop: '1px solid var(--line)' }}>
+              <button onClick={() => setOpenId(isOpen ? null : m.id)} className="row" style={{ width: '100%', textAlign: 'left', gap: 10, alignItems: 'center', padding: '10px 2px', background: 'none', border: 'none', cursor: 'pointer' }}>
+                <span style={{ flex: '0 0 auto', width: 8, height: 8, borderRadius: 999, background: k.tone }} />
+                <span style={{ flex: '1 1 auto', minWidth: 0 }}>
+                  <span className="row" style={{ gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+                    <b style={{ fontSize: 13 }}>{m.title}</b>
+                    <span className="dd-sub" style={{ color: k.tone }}>{k.label}</span>
+                  </span>
+                  <span className="dd-sub" style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>To: {toWhom}{m.recipient_email ? ` · ${m.recipient_email}` : ''}</span>
+                </span>
+                <span className="dd-sub" style={{ flex: '0 0 auto', textAlign: 'right' }}>
+                  <span className={'pill ' + es.cls} style={{ marginRight: 6 }}>{es.label}</span>
+                  {when(m.created_at)}
+                </span>
+              </button>
+              {isOpen && (
+                <div style={{ padding: '0 2px 12px 18px' }}>
+                  <div className="dd-sub" style={{ marginBottom: 6 }}>
+                    Sent {when(m.emailed_at || m.created_at)} · {m.email_status === 'sent' ? 'delivered by email' : m.email_status === 'skipped' ? 'shown in the portal only' : m.email_status === 'error' ? 'email failed to send' : 'sending'}{m.read_at ? ' · read' : ''}
+                  </div>
+                  <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.5, background: 'var(--paper,#f6f3ec)', border: '1px solid var(--line)', borderRadius: 8, padding: '12px 14px' }}>{m.body || '(no message body)'}</div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {replies.length > 0 && (
+        <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--line)' }}>
+          <div className="dd-field-l" style={{ textTransform: 'uppercase', letterSpacing: '.06em', fontSize: 11, marginBottom: 8 }}>Replies received</div>
+          {replies.map((r) => (
+            <div key={r.id} className="row" style={{ gap: 10, alignItems: 'baseline', padding: '6px 0' }}>
+              <span className="dd-card-ic" style={{ width: 24, height: 24, background: 'var(--primary-soft)' }}><SdIcon name="reply" /></span>
+              <span style={{ flex: '1 1 auto', minWidth: 0 }}>
+                <b style={{ fontSize: 13 }}>{r.subject || '(no subject)'}</b>
+                <span className="dd-sub" style={{ display: 'block' }}>From: {r.from_email}{r.forwarded_count ? ` · forwarded to ${r.forwarded_count}` : ''}</span>
+              </span>
+              <span className="dd-sub" style={{ flex: '0 0 auto' }}>{when(r.created_at)}</span>
+            </div>
+          ))}
+          <div className="dd-sub" style={{ marginTop: 6, fontStyle: 'italic' }}>Replies are forwarded to the file’s team by email; open the file’s email thread to read and respond.</div>
+        </div>
+      )}
     </div>
   );
 }

@@ -230,6 +230,36 @@ router.post('/files/:id/reset-draw', requirePermission('manage_draws'), async (r
   } catch (e) { console.warn('[sitewire] reset-draw error:', e && e.message); res.status(500).json({ error: 'Couldn’t reset the draw setup right now — please try again shortly.' }); }
 });
 
+// ---- GET /files/:id/notifications — the DRAW file's email/notification center (staff) ----
+// The draw coordinator's per-file email section: every DRAW-RELATED notification PILOT sent about this file
+// (who it went to, when, delivery status, full content) plus the borrower's email REPLIES we've received.
+// Scoped to draw items ONLY (type draw%/sow_%) so it stays the coordinator's draw inbox, not the whole file's
+// notification history. Sitewire does not expose the emails IT sends, so this is PILOT's own trail.
+// manage_draws + canSeeFile.
+router.get('/files/:id/notifications', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const sent = (await db.query(
+      `SELECT n.id, n.recipient_kind, n.type, n.title, n.body, n.link, n.read_at, n.email_status, n.emailed_at, n.created_at,
+              COALESCE(s.full_name, NULLIF(TRIM(COALESCE(b.first_name,'') || ' ' || COALESCE(b.last_name,'')), '')) AS recipient_name,
+              COALESCE(s.email, b.email) AS recipient_email
+         FROM notifications n
+         LEFT JOIN staff_users s ON s.id = n.staff_id
+         LEFT JOIN borrowers b ON b.id = n.borrower_id
+        WHERE n.application_id = $1 AND (n.type LIKE 'draw%' OR n.type LIKE 'sow_%')
+        ORDER BY n.created_at DESC
+        LIMIT 300`, [appId])).rows;
+    let replies = [];
+    try {
+      replies = (await db.query(
+        `SELECT id, from_email, subject, forwarded_count, status, created_at
+           FROM inbound_file_emails WHERE application_id=$1 ORDER BY created_at DESC LIMIT 100`, [appId])).rows;
+    } catch (_) { /* inbound table optional */ }
+    res.json({ sent, replies });
+  } catch (e) { console.warn('[sitewire] notifications route error:', e && e.message); res.status(500).json({ error: 'Could not load the notifications for this file.' }); }
+});
+
 // ---- GET /files/:id/borrower-status — Sitewire's borrower-invite state (live read) ----
 router.get('/files/:id/borrower-status', requirePermission('manage_draws'), async (req, res) => {
   if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
