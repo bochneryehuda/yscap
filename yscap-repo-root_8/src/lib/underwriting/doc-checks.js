@@ -22,6 +22,30 @@ function mk(source, f) {
     f);
 }
 const money = (n) => (num(n) == null ? null : `$${num(n).toLocaleString('en-US')}`);
+// Canonicalize a US state to its 2-letter code so "Delaware", "DE", and "de." all compare equal —
+// otherwise a domestic entity whose two jurisdiction fields are captured in different forms (full name
+// vs abbreviation) would look like a cross-state foreign registration.
+const US_STATE_ABBR = {
+  alabama: 'AL', alaska: 'AK', arizona: 'AZ', arkansas: 'AR', california: 'CA', colorado: 'CO',
+  connecticut: 'CT', delaware: 'DE', 'district of columbia': 'DC', florida: 'FL', georgia: 'GA',
+  hawaii: 'HI', idaho: 'ID', illinois: 'IL', indiana: 'IN', iowa: 'IA', kansas: 'KS', kentucky: 'KY',
+  louisiana: 'LA', maine: 'ME', maryland: 'MD', massachusetts: 'MA', michigan: 'MI', minnesota: 'MN',
+  mississippi: 'MS', missouri: 'MO', montana: 'MT', nebraska: 'NE', nevada: 'NV', 'new hampshire': 'NH',
+  'new jersey': 'NJ', 'new mexico': 'NM', 'new york': 'NY', 'north carolina': 'NC', 'north dakota': 'ND',
+  ohio: 'OH', oklahoma: 'OK', oregon: 'OR', pennsylvania: 'PA', 'rhode island': 'RI',
+  'south carolina': 'SC', 'south dakota': 'SD', tennessee: 'TN', texas: 'TX', utah: 'UT', vermont: 'VT',
+  virginia: 'VA', washington: 'WA', 'west virginia': 'WV', wisconsin: 'WI', wyoming: 'WY',
+  'puerto rico': 'PR',
+};
+// → a canonical form for comparison: full names map to their 2-letter code; a 2-letter code stays as
+// its uppercase; anything else (a country, an unrecognized string) collapses to a normalized token.
+function canonState(s) {
+  const raw = String(s || '').trim().toLowerCase().replace(/\./g, '').replace(/\s+/g, ' ');
+  if (!raw) return '';
+  if (US_STATE_ABBR[raw]) return US_STATE_ABBR[raw];
+  if (/^[a-z]{2}$/.test(raw)) return raw.toUpperCase();
+  return raw;
+}
 // Unreadable/empty → a single "review by hand" finding (never a false red flag).
 function unreadable(source, fields, keyFields) {
   const anyRead = keyFields.some((k) => fields && fields[k] != null && fields[k] !== '');
@@ -102,7 +126,9 @@ function computeOperatingAgreementFindings(oa, subject, opts = {}) {
   // beneficial owner is not a natural person on the face of the agreement — KYC has to pierce through
   // to the individual(s) behind it (FinCEN CDD). Detect from the member `type`, or a name that looks
   // like an entity/trust when the type wasn't captured.
-  const ENTITY_TRUST_RE = /\b(llc|l\.?l\.?c|inc|corp|company|\bco\b|ltd|lp|llp|trust|holdings|partners|ventures|capital|group)\b/i;
+  // NOTE: no bare "\bco\b" token — "Co" is a real, common surname (and the classify.js work already
+  // documented this exact trap: a bare CO matches Colorado / a co-borrower). Rely on full entity words.
+  const ENTITY_TRUST_RE = /\b(llc|l\.?l\.?c|inc|incorporated|corp|corporation|company|ltd|lp|llp|pllc|trust|holdings|partners|ventures|capital|group)\b/i;
   const layered = members.filter((m) => m && m.name && (
     /entity|trust|llc|corp/i.test(String(m.type || '')) || (!m.type && ENTITY_TRUST_RE.test(String(m.name)))));
   if (layered.length) {
@@ -212,7 +238,7 @@ function computeFormationFindings(f, subject, opts = {}) {
   // good standing from the HOME state (not the filing state) and confirm the entity is authorized to
   // transact in the property's state. Detect it from the explicit flag or a home≠filing jurisdiction.
   const home = f.jurisdictionOfFormation, filed = f.filingState;
-  const st = (s) => String(s || '').trim().toLowerCase().replace(/\./g, '');
+  const st = canonState; // "Delaware" / "DE" / "de." all canonicalize to "DE" — no spurious foreign flag
   const foreign = f.isForeignRegistration === true ||
     (!!st(home) && !!st(filed) && st(home) !== st(filed));
   if (foreign) {

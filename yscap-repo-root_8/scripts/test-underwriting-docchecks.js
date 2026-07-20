@@ -38,6 +38,9 @@ assert.ok(C.computeOperatingAgreementFindings({ ...oaGood, managingMember: 'Robe
   assert.ok(C.computeOperatingAgreementFindings({ ...oaGood, members: [{ name: 'Riverside Capital LLC', ownershipPct: 60 }, { name: 'John Smith', ownershipPct: 40 }] }, { borrower_name: 'John Smith' }).some((f) => f.code === 'oa_entity_member_beneficial_owner'), 'entity-looking member name → pierce-through warning');
   // Two natural persons → no pierce-through finding.
   assert.ok(!C.computeOperatingAgreementFindings({ ...oaGood, members: [{ name: 'John Smith', ownershipPct: 60 }, { name: 'Mary Jones', ownershipPct: 40 }] }, { borrower_name: 'John Smith' }).some((f) => f.code === 'oa_entity_member_beneficial_owner'), 'all-individual members → no pierce-through');
+  // Regression (audit): a natural person surnamed "Co" must NOT be flagged as a layered entity — the
+  // bare "co" token was removed from the entity heuristic (same trap classify.js documented).
+  assert.ok(!C.computeOperatingAgreementFindings({ ...oaGood, members: [{ name: 'Jenny Co', ownershipPct: 100 }] }, { borrower_name: 'Jenny Co' }).some((f) => f.code === 'oa_entity_member_beneficial_owner'), 'surname "Co" is not an entity');
 }
 
 // ---- LLC formation: foreign registration (formed in another state) ----
@@ -51,6 +54,12 @@ assert.ok(C.computeOperatingAgreementFindings({ ...oaGood, managingMember: 'Robe
   // Home ≠ filing state → warning (formatting/period-insensitive).
   const fr = C.computeFormationFindings({ ...base, jurisdictionOfFormation: 'Delaware', filingState: 'N.J.' }, {}).find((f) => f.code === 'formation_foreign_registration');
   assert.ok(fr && fr.severity === 'warning', 'home ≠ filing state → foreign warning');
+  // Regression (audit): a DOMESTIC entity whose two fields are captured as full-name vs abbreviation
+  // for the SAME state must NOT read as foreign ("Delaware" == "DE", "New Jersey" == "NJ", "de." == "DE").
+  assert.deepStrictEqual(codes(C.computeFormationFindings({ ...base, jurisdictionOfFormation: 'Delaware', filingState: 'DE' }, {})), [], 'Delaware == DE, not foreign');
+  assert.deepStrictEqual(codes(C.computeFormationFindings({ ...base, jurisdictionOfFormation: 'New Jersey', filingState: 'nj' }, {})), [], 'New Jersey == NJ, not foreign');
+  // And a genuine cross-state case still fires even when both are full names.
+  assert.ok(C.computeFormationFindings({ ...base, jurisdictionOfFormation: 'Delaware', filingState: 'New Jersey' }, {}).some((f) => f.code === 'formation_foreign_registration'), 'Delaware vs New Jersey → foreign');
 }
 
 // ---- EIN ----
