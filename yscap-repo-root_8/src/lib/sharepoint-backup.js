@@ -135,10 +135,13 @@ const MAX_DRAIN_LOOPS = 200;       // backfill safety valve per drain (200*25 do
 // in-memory _running flag stuck true, freezing EVERY later drain (the 2026-07-20
 // "nothing synced for 6h; docs stuck at not-yet-attempted" incident). This
 // bounds one attempt; a hang becomes a recorded error and the pass continues.
-// Set WELL ABOVE a legitimate slow upload's worst case (sharepoint.js: 180s
-// per-chunk socket timeout + up to two ~120s throttle sleeps ≈ 7 min) so a
-// large/throttled file is never spuriously timed out — only a true hang is.
-const MIRROR_ATTEMPT_TIMEOUT_MS = 600000;   // 10 min: > worst-case real upload, < the stall ceiling
+// Set ABOVE a typical slow upload (sharepoint.js: 180s per-chunk socket timeout
+// plus a few throttle sleeps) yet BELOW the 15-min stall ceiling. A
+// pathologically throttled huge file (up to 8 retries × ~120s) can still hit
+// this cap — that just records a normal failure and retries next pass (the
+// background upload usually lands and self-heals), never a freeze. The cap MUST
+// stay < DRAIN_STALL_CEILING_MS so one doc's heartbeat gap can't age out a pass.
+const MIRROR_ATTEMPT_TIMEOUT_MS = 600000;   // 10 min: > typical real upload, < the stall ceiling
 // If a drain has made NO progress for longer than this, treat it as dead (a
 // hung await that never settled) and let a fresh pass start instead of no-opping
 // forever — the freeze self-heals on the next interval, no restart needed.
