@@ -1,5 +1,5 @@
 -- ============================================================================
--- 165 — Appraisal SUBJECT facts round 5 (owner-directed "squeeze more from the XML", 2026-07-20).
+-- 168 — Appraisal SUBJECT facts round 5 (renumbered from 165 to resolve a duplicate-number collision) (owner-directed "squeeze more from the XML", 2026-07-20).
 -- A fresh coverage sweep of all 37 corpus files found these consistently-present fields still
 -- unextracted. All never-guess (placeholder-rejected, enum-whitelisted, length-capped). Additive.
 --

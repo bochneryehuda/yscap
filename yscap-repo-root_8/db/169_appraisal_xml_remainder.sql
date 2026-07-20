@@ -1,5 +1,5 @@
 -- ============================================================================
--- 167 — Appraisal XML "final remainder" round 7 (owner-directed "squeeze the most possible",
+-- 169 — Appraisal XML "final remainder" round 7 (renumbered from 167 to resolve a duplicate-number collision) (owner-directed "squeeze the most possible",
 -- 2026-07-20). A second full coverage sweep after rounds 3–6 confirmed the high-value structured
 -- data is extracted; these are the last consistently-present fields that clear the never-guess bar
 -- (everything else remaining is a GSE duplicate of an already-extracted field, a cryptic materials
