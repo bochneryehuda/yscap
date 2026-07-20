@@ -301,7 +301,16 @@ function computeScopeOfWorkFindings(sow, subject, opts = {}) {
   }
   const docTotal = num(sow.totalBudget);
   const fileTotal = subject && num(subject.rehab_budget);
-  if (docTotal != null && fileTotal != null && fileTotal > 0 && !withinMoney(docTotal, fileTotal, 1)) {
+  if (docTotal != null && (fileTotal == null || fileTotal <= 0)) {
+    // The scope of work states a rehab budget but the file has none — the loan's cost/ARV math
+    // won't include the rehab unless it's entered. (The tie-out can't catch this: with no file
+    // value there's no truth to compare against.)
+    out.push(mk('scope_of_work', { code: 'rehab_budget_not_on_file', severity: 'warning', field: 'rehab_budget',
+      docValue: money(docTotal), fileValue: '(none set)',
+      title: 'The file has no rehab budget but the scope of work does',
+      howTo: `The scope of work totals ${money(docTotal)}, but no rehab budget is set on the file. Enter it so the loan-to-cost and after-repair value are computed on the real renovation figure.`,
+      actions: ['fix_file', 'post_condition', 'dismiss'] }));
+  } else if (docTotal != null && fileTotal != null && fileTotal > 0 && !withinMoney(docTotal, fileTotal, 1)) {
     out.push(mk('scope_of_work', { code: 'rehab_budget_mismatch', severity: 'warning', field: 'rehab_budget',
       docValue: money(docTotal), fileValue: money(fileTotal),
       title: 'Rehab budget on the scope of work does not match the file',

@@ -40,7 +40,7 @@ const FILENAME_HINTS = [
   [/good\s*stand|existence|status/i, 'good_standing'],
   [/ein|cp.?575|147c|tax.?id/i, 'ein_letter'],
   [/amend|addend/i, 'contract_amendment'],
-  [/scope.?of.?work|\bsow\b|rehab|renovation|budget/i, 'scope_of_work'],
+  [/scope.?of.?work|\bsow\b|rehab|renovation|rehab.?budget/i, 'scope_of_work'],
   [/assign/i, 'assignment'],
   [/title|commitment|prelim/i, 'title'],
   [/apprais|1004|1025|1073/i, 'appraisal'],

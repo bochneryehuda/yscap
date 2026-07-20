@@ -149,4 +149,14 @@ assert.strictEqual(claimsFor('bank_statement', { accountHolderName: 'John Smith'
   assert.strictEqual(cCell.status, 'missing', 'contract carries address but did not state one → missing');
 }
 
+// ===== SCOPE OF WORK: rehab_budget owned by the per-doc check; wrong address caught by tie-out =====
+{
+  // A differing rehab budget must NOT be a tie-out discrepancy (the SOW per-doc check owns it).
+  const r = buildTieout(ctx, [{ id: 'sow', docType: 'scope_of_work', fields: { propertyAddress: ADDR, totalBudget: 120000 } }]);
+  assert.ok(!r.discrepancies.some((d) => d.field === 'rehab_budget'), 'rehab_budget mismatch is owned by the SOW per-doc check, not duplicated by the tie-out');
+  // But a scope of work for the WRONG property IS caught by the tie-out (no per-doc address check).
+  const r2 = buildTieout(ctx, [{ id: 'sow', docType: 'scope_of_work', fields: { propertyAddress: { line1: '9 Oak Ave', city: 'Dallas', state: 'TX', zip: '75201' }, totalBudget: 80000 } }]);
+  assert.ok(r2.discrepancies.some((d) => d.field === 'property_address'), 'a SOW for the wrong property is caught by the tie-out');
+}
+
 console.log('✓ test-underwriting-tieout: fact registry + data-comparison matrix + discrepancies pass');

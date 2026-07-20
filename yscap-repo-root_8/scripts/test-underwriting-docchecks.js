@@ -68,8 +68,11 @@ assert.deepStrictEqual(codes(C.computeBackgroundFindings({ subjectName: 'John Sm
     assert.strictEqual(f[0].severity, 'warning');
     assert.strictEqual(f[0].blocksCtc, false);
   }
-  // No file rehab budget to compare against → no false flag.
-  assert.deepStrictEqual(codes(C.computeScopeOfWorkFindings({ totalBudget: 85000, lineItemCount: 12, contractorName: 'Acme', readable: true }, {})), [], 'no file budget → no flag');
+  // The SOW states a budget but the file has none set (null OR 0) → prompt to enter it.
+  assert.deepStrictEqual(codes(C.computeScopeOfWorkFindings({ totalBudget: 85000, lineItemCount: 12, contractorName: 'Acme', readable: true }, {})), ['rehab_budget_not_on_file'], 'SOW budget but no file budget → prompt to set it');
+  assert.deepStrictEqual(codes(C.computeScopeOfWorkFindings({ totalBudget: 85000, readable: true }, { rehab_budget: 0 })), ['rehab_budget_not_on_file'], 'file rehab_budget 0 (unset) is not treated as a real 0');
+  // A SOW with no total → nothing to compare, no flag (never guesses).
+  assert.deepStrictEqual(codes(C.computeScopeOfWorkFindings({ totalBudget: null, lineItemCount: 5, contractorName: 'Acme', readable: true }, { rehab_budget: 60000 })), [], 'no SOW total → no flag');
   // Unreadable → routes to manual review, never a false mismatch.
   assert.deepStrictEqual(codes(C.computeScopeOfWorkFindings({ readable: false }, { rehab_budget: 60000 })), ['scope_of_work_unreadable']);
 }
