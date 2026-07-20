@@ -93,12 +93,34 @@ const CTX = { borrower: { first_name: 'Michael', last_name: 'Goldberg' },
   assert.strictEqual(r.qualifyingTotal, 30000);
 }
 
-// ---- accountKey: same bank+number collapses; different bank stays distinct ----
+// ---- accountKey: the NUMBER is the identity — bank-name drift must NOT split one account ----
 {
+  // (audit MAJOR) Same account, bank string drifts month-to-month → same key → counted once.
   assert.strictEqual(_internals.accountKey({ bankName: 'Chase', accountNumber: '1234' }),
-    _internals.accountKey({ bankName: 'chase', accountNumber: 'xxx1234' }), 'bank+number is the identity, case/format tolerant');
+    _internals.accountKey({ bankName: 'JPMorgan Chase Bank NA', accountNumber: 'xxx1234' }), 'a drifting bank name never splits the same account number');
+  // Two different account numbers stay distinct regardless of bank.
   assert.notStrictEqual(_internals.accountKey({ bankName: 'Chase', accountNumber: '1234' }),
-    _internals.accountKey({ bankName: 'TD', accountNumber: '1234' }), 'different banks are distinct accounts');
+    _internals.accountKey({ bankName: 'Chase', accountNumber: '5678' }), 'different numbers are different accounts');
+}
+// (audit MAJOR, end-to-end) Two months of the SAME account whose bank name DRIFTS collapse to one
+// (not double-counted) — the exact liquidity inflation the collapse logic must prevent.
+{
+  const r = assessBankLiquidity(CTX, ext([
+    ['bank_statement', { accountHolderName: 'Michael Goldberg', bankName: 'Chase', accountNumber: '1234', closingBalance: 60000, readable: true }],
+    ['bank_statement', { accountHolderName: 'Michael Goldberg', bankName: 'JPMorgan Chase Bank, N.A.', accountNumber: '****1234', closingBalance: 62000, readable: true }],
+  ]), { requiredLiquidity: 100000 });
+  assert.strictEqual(r.accounts.length, 1, 'bank-name drift does not split the account');
+  assert.strictEqual(r.qualifyingTotal, 62000, 'counted once (representative month), not summed to 122000');
+}
+// (audit MINOR) A tied account with NO ending balance + an untied entity account WITH a balance must
+// NOT report a false "$0 on file" shortfall — that's the data gap, not a shortfall.
+{
+  const r = assessBankLiquidity(CTX, ext([
+    ['bank_statement', { accountHolderName: 'Michael Goldberg', bankName: 'Chase', accountNumber: '1111', closingBalance: null, readable: true }],
+    ['bank_statement', { accountHolderName: 'Random Ventures LLC', bankName: 'BOA', accountNumber: '5555', holderIsBusiness: true, closingBalance: 90000, readable: true }],
+  ]), { requiredLiquidity: 100000 });
+  assert.ok(!r.findings.some((x) => x.code === 'bank_liquidity_short'), 'no false shortfall when no TIED balance is countable');
+  assert.ok(r.findings.some((x) => x.code === 'bank_no_ending_balance'), 'the real issue (missing ending balance) is what surfaces');
 }
 
 console.log('test-underwriting-bankliquidity: liquidity aggregation + ending-balance + entity exclusion pass');

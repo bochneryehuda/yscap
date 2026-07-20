@@ -155,8 +155,9 @@ router.get('/:appId', async (req, res, next) => {
     const app = await fileFor(req, req.params.appId);
     if (!app) return res.status(404).json({ error: 'not found' });
 
-    // Current extractions (one row per current document) + open findings + the file's conditions.
-    const [exts, ff, conds] = await Promise.all([
+    // Current extractions (one row per current document) + open findings + the file's conditions +
+    // the required-liquidity dollar (read off the assets condition, for the bank-liquidity view).
+    const [exts, ff, conds, requiredLiquidity] = await Promise.all([
       db.query(
         `SELECT id, document_id, doc_type, fields, ocr_engine, ai_model, page_count, confidence, status, reason, created_at
            FROM document_extractions WHERE application_id=$1 AND is_current ORDER BY created_at`, [app.id]),
@@ -165,6 +166,7 @@ router.get('/:appId', async (req, res, next) => {
         `SELECT t.code, COALESCE(t.label, t.code) AS label, ci.status
            FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
           WHERE ci.application_id=$1`, [app.id]),
+      readRequiredLiquidity(db, app.id),
     ]);
 
     // Load the file context ONCE and reuse it for the tie-out, metrics, entity chain, and
@@ -230,10 +232,9 @@ router.get('/:appId', async (req, res, next) => {
 
     // Bank LIQUIDITY aggregation: sum every current bank statement's ending balance across the
     // borrower's / verified-entity accounts and compare to the file's required liquidity (read off
-    // the registered product's assets condition). Raises the "short of required liquidity" and
+    // the registered product's assets condition, above). Raises the "short of required liquidity" and
     // "no ending balance" advisories nobody else owns — the per-statement ownership FATAL (money in
     // an unverified LLC → require the operating agreement) already lives in the bank-statement check.
-    const requiredLiquidity = await readRequiredLiquidity(db, app.id);
     const bankLiquidity = assessBankLiquidity(mctx || {}, exts.rows, { requiredLiquidity });
 
     // File completeness / stipulations: diff the required-document matrix (adapted to this deal)

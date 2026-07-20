@@ -32,15 +32,19 @@ const { _internals: { holderMatchesFile } } = require('./bank-statement-checks')
 
 const money = (n) => (num(n) == null ? '—' : `$${Math.round(num(n)).toLocaleString('en-US')}`);
 
-// A stable identity for an account so two months of the SAME account collapse to one. Bank + the
-// masked account number is the strongest signal; when the number is absent we fall back to
-// bank+holder (still collapses "two statements of Chase / John Doe" but keeps distinct banks apart).
+// A stable identity for an account so two months of the SAME account collapse to one. The account
+// NUMBER is the identity — and NOTHING ELSE when it's present: the same account's extracted bank
+// name drifts month-to-month ("Chase" vs "JPMorgan Chase Bank NA"), so folding the bank string into
+// the key would SPLIT one real account into two and DOUBLE-COUNT its balance (inflating liquidity —
+// the dangerous direction). Keying on the number alone means a rare last-4 collision between two
+// different accounts collapses them instead — which UNDER-counts (a false shortfall a human clears),
+// the safe direction. Only when no usable number was read do we fall back to bank+holder.
 function accountKey(s) {
-  const bank = String(s.bankName || '').trim().toLowerCase();
   const acct = String(s.accountNumber || '').replace(/\D/g, '');
-  if (acct) return `${bank}|${acct}`;
+  if (acct.length >= 3) return `#${acct}`; // the number IS the account — bank-name drift must not split it
+  const bank = String(s.bankName || '').trim().toLowerCase();
   const holder = String(s.accountHolderName || '').trim().toLowerCase();
-  return `${bank}|~${holder}`; // ~ marks a holder-based (number-less) key so it can't collide with a real number
+  return `~${bank}|${holder}`; // number-less: best effort (leans to under-count, never inflate)
 }
 
 /**
@@ -105,8 +109,11 @@ function assessBankLiquidity(ctx = {}, extractions = [], opts = {}) {
   }
 
   // 2. Liquidity sufficiency — only when a concrete requirement is on file (a product is registered)
-  // AND at least one account's ending balance is countable. A $1 tolerance absorbs rounding.
-  const haveCountable = accounts.some((acct) => acct.ending != null);
+  // AND at least one TIED account's ending balance is countable. Gating on a tied countable balance
+  // (not any balance) means an untied entity account with a readable balance while every borrower
+  // account is missing its ending balance can't masquerade as a real "$0 on file" shortfall — that's
+  // the bank_no_ending_balance data gap, not a shortfall. A $1 tolerance absorbs rounding.
+  const haveCountable = accounts.some((acct) => acct.tied && acct.ending != null);
   let shortfall = null;
   if (requiredLiquidity != null && requiredLiquidity > 0 && haveCountable && qualifyingTotal < requiredLiquidity - 1) {
     shortfall = requiredLiquidity - qualifyingTotal;
