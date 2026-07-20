@@ -639,11 +639,13 @@ router.post('/reviews/:id/:action', requirePermission('manage_draws'), async (re
           WHERE entity_type='application' AND entity_id=$1 AND target='sitewire' AND direction='push' AND status='dead' RETURNING id`, [row.application_id]);
       // if nothing was dead-lettered, enqueue a fresh push so a fixed upstream cause re-attempts
       if (!dead.rows.length) await enqueueSitewirePush(row.application_id, 'push_file').catch(() => {});
-      await db.query(`UPDATE sync_review_queue SET status='resolved', resolved_by=$2, resolved_at=now(), resolution_note=$3, updated_at=now() WHERE id=$1`,
+      // sync_review_queue has NO updated_at column (resolved_at records the time). 'resolved' is the
+      // terminal "actioned" status used across the sync-review code (db/110 widened the CHECK to allow it).
+      await db.query(`UPDATE sync_review_queue SET status='resolved', resolved_by=$2, resolved_at=now(), resolution_note=$3 WHERE id=$1`,
         [id, req.actor.id, dead.rows.length ? `retried ${dead.rows.length} push job(s)` : 're-queued a fresh push']);
       return res.json({ ok: true, retried: dead.rows.length, requeued: !dead.rows.length });
     }
-    await db.query(`UPDATE sync_review_queue SET status='rejected', resolved_by=$2, resolved_at=now(), resolution_note='dismissed', updated_at=now() WHERE id=$1`, [id, req.actor.id]);
+    await db.query(`UPDATE sync_review_queue SET status='rejected', resolved_by=$2, resolved_at=now(), resolution_note='dismissed' WHERE id=$1`, [id, req.actor.id]);
     res.json({ ok: true, dismissed: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
