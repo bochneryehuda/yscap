@@ -4,6 +4,9 @@
  * Requires a throwaway Postgres in DATABASE_URL. No network/Graph.
  * Run: DATABASE_URL=... node scripts/test-sp-strays-slo-db.js
  */
+// Requires DATABASE_URL with a reachable Postgres. Skips cleanly otherwise (CI has no DB).
+if (!process.env.DATABASE_URL) { console.log('SKIP test-sp-strays-slo-db (no DATABASE_URL)'); process.exit(0); }
+
 process.env.SHAREPOINT_BACKUP_ENABLED = process.env.SHAREPOINT_BACKUP_ENABLED || '1';
 process.env.MS_TENANT_ID = process.env.MS_TENANT_ID || 't';
 process.env.MS_CLIENT_ID = process.env.MS_CLIENT_ID || 'c';

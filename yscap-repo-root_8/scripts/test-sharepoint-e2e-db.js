@@ -5,6 +5,9 @@
  * run exactly as production runs them.
  * Run: DATABASE_URL=... node scripts/test-sharepoint-e2e-db.js
  */
+// Requires DATABASE_URL with a reachable Postgres. Skips cleanly otherwise (CI has no DB).
+if (!process.env.DATABASE_URL) { console.log('SKIP test-sharepoint-e2e-db (no DATABASE_URL)'); process.exit(0); }
+
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
