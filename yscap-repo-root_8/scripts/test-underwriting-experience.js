@@ -73,6 +73,25 @@ const codes = (r) => r.findings.map((f) => f.code);
   assert.strictEqual(_internals.exitDateOf({ deal_type: 'flip', sale_date: '2025-01-01' }), '2025-01-01');
 }
 
+// ---- (audit MAJOR-1) a big-dollar rehab that's a SMALL share of a high value is NOT heavy ----
+{
+  // $160k rehab on a $2M multifamily = 8% → light intensity → NOT gated (was wrongly hard-blocked).
+  const big = assessExperience({ purchasePrice: 2000000, asIsValue: 2000000, rehabBudget: 160000, loanType: 'Purchase', propertyType: 'Multi 5+' }, [], { today: TODAY });
+  assert.strictEqual(big.gated, false, 'a low-ratio rehab on a high-value asset is not gated');
+  assert.deepStrictEqual(codes(big), []);
+  // But the SAME $160k on a $250k house (64%) is a genuine gut job → heavy → gated.
+  assert.strictEqual(assessExperience({ purchasePrice: 250000, asIsValue: 250000, rehabBudget: 160000, loanType: 'Purchase' }, [], { today: TODAY }).gated, true);
+  assert.strictEqual(_internals.tierOf(150000, 400000, false), 3, '$150k on $400k (37%) is heavy');
+  assert.strictEqual(_internals.tierOf(160000, 2000000, false), 1, '$160k on $2M (8%) is light');
+}
+// ---- (audit MAJOR-2b) a mislabeled row still counts its real exit date (no false "never exited") ----
+{
+  assert.strictEqual(_internals.exitDateOf({ deal_type: 'rental', sale_date: '2025-01-01' }), '2025-01-01', 'a sold "rental" falls back to its sale date');
+  assert.strictEqual(_internals.exitDateOf({ deal_type: 'flip', refi_date: '2025-02-01' }), '2025-02-01', 'a "flip" recorded with a refi still exits');
+  const anchor2 = { deal_type: 'rental', purchase_price: 280000, rehab_amount: 60000, sale_date: '2025-05-01', is_verified: true };
+  assert.deepStrictEqual(codes(assessExperience(heavyDeal, [anchor2], { today: TODAY })), [], 'a verified comparable mislabeled deal still anchors');
+}
+
 // ---- tier classification + calendar months ----
 {
   assert.strictEqual(_internals.tierOf(200000, 300000, false), 3, 'ratio .67 is heavy');

@@ -44,22 +44,32 @@ function monthsBetween(fromISO, toISO) {
 
 // Classify a deal's rehab intensity into a tier. base = the value the rehab is measured against
 // (purchase price / as-is value). A ground-up flag wins outright.
+//
+// Intensity is measured by RATIO (rehab as a share of the asset value), NOT absolute dollars: a
+// $160k rehab is a gut job on a $250k house (64% → heavy) but a light cosmetic touch-up on a $2M
+// building (8% → not heavy). An earlier absolute "$150k = heavy" arm wrongly hard-blocked high-value
+// / multifamily deals (audit 2026-07-20), so the absolute floor now only applies when the rehab is
+// ALSO a meaningful share of value. Project SIZE (that the borrower has done deals in this range) is
+// handled separately by the anchor size test, not here.
 function tierOf(rehab, base, groundUp) {
   if (groundUp) return TIER.groundup;
   const r = numOf(rehab) || 0;
   const b = numOf(base);
   const ratio = b && b > 0 ? r / b : 0;
-  if (r >= 150000 || ratio >= 0.5) return TIER.heavy;
+  if (ratio >= 0.5 || (r >= 150000 && ratio >= 0.25)) return TIER.heavy;
   if (ratio >= 0.15) return TIER.moderate;
   return TIER.light;
 }
 
-// A past deal's completed-exit date by its type: a flip / ground-up exits on SALE; a hold exits on
-// LEASE (rent) or REFI. Returns the ISO date or null if it hasn't exited.
+// A past deal's completed-exit date. A flip / ground-up primarily exits on SALE; a hold on LEASE
+// (rent) or REFI. But we FALL BACK across all three regardless of deal_type, so a mislabeled row
+// (e.g. a sold rental that only has a sale_date, or a flip recorded with a refi) still counts its
+// real exit instead of being dropped as "never exited" (audit 2026-07-20). Returns null only when
+// the row genuinely carries no exit date of any kind.
 function exitDateOf(tr) {
   const type = String(tr.deal_type || '').toLowerCase();
-  if (/hold|rental|rent/.test(type)) return tr.rent_date || tr.refi_date || null;
-  return tr.sale_date || null; // flip / ground-up / unknown → sale
+  if (/hold|rental|rent/.test(type)) return tr.rent_date || tr.refi_date || tr.sale_date || null;
+  return tr.sale_date || tr.rent_date || tr.refi_date || null; // flip / ground-up / unknown → sale first
 }
 
 /**
