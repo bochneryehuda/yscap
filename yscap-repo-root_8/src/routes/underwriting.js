@@ -43,6 +43,7 @@ const { assessFile: assessStaleness } = require('../lib/underwriting/staleness')
 const { computeMetrics } = require('../lib/underwriting/metrics');
 const { buildChain } = require('../lib/underwriting/entity-chain');
 const { assessCompleteness } = require('../lib/underwriting/completeness');
+const { computeRiskScore } = require('../lib/underwriting/risk-score');
 const exceptions = require('../lib/underwriting/exceptions');
 
 const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || ''));
@@ -193,11 +194,19 @@ router.get('/:appId', async (req, res, next) => {
     // metric warnings into the same fatal/warning gate (all warning-only → never change the
     // CTC-blocking fatal count, but they surface in the roll-up).
     const openAll = [...perDoc, ...cross, ...staleness.findings, ...metrics.findings, ...(entityChain ? entityChain.findings : [])];
+
+    // Fraud / red-flag score: aggregate every open signal above + the economic red flags into one
+    // explainable 0-100 score. Its HIGH-band advisory is a non-blocking warning (folded into the
+    // roll-up); the score itself never re-decides the fatal gate.
+    const risk = computeRiskScore({ findings: openAll,
+      economics: { purchasePrice: a.purchase_price, asIsValue: a.as_is_value, arv: a.arv } });
+    const openWithRisk = risk.finding ? [...openAll, risk.finding] : openAll;
+
     const summary = {
-      fatal: openAll.filter((f) => f.severity === 'fatal').length,
-      warning: openAll.filter((f) => f.severity === 'warning').length,
-      info: openAll.filter((f) => f.severity === 'info').length,
-      blocksCtc: openAll.some((f) => f.severity === 'fatal' && (f.blocks_ctc ?? f.blocksCtc)),
+      fatal: openWithRisk.filter((f) => f.severity === 'fatal').length,
+      warning: openWithRisk.filter((f) => f.severity === 'warning').length,
+      info: openWithRisk.filter((f) => f.severity === 'info').length,
+      blocksCtc: openWithRisk.some((f) => f.severity === 'fatal' && (f.blocks_ctc ?? f.blocksCtc)),
     };
     res.json({
       extractions,
@@ -213,6 +222,8 @@ router.get('/:appId', async (req, res, next) => {
       completeness: { completenessPct: completeness.completenessPct, counts: completeness.counts,
         stipulations: completeness.stipulations, outstanding: completeness.outstanding,
         ctcBlockers: completeness.ctcBlockers, docsComplete: completeness.docsComplete },
+      risk: { score: risk.score, band: risk.band, sarRecommended: risk.sarRecommended,
+        reasons: risk.reasons, finding: risk.finding ? decorate(risk.finding) : null },
       summary,
       docTypes: registry.docTypes(),
       analyzers: { reader: docint.configured(), ai: azureOpenai.available() },
