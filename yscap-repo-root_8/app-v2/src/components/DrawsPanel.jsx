@@ -809,6 +809,19 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
   );
 }
 
+/* An <img> for an authenticated endpoint — an <img src> can't send the Bearer token, so we fetch
+   the bytes as a blob and hand the tag an object URL. Used for borrower dispute-evidence photos. */
+function AuthImg({ path, alt, style, onOpen }) {
+  const [src, setSrc] = useState(null);
+  useEffect(() => {
+    let alive = true, url = null;
+    api.authedBlob(path).then((b) => { if (!alive) { return; } url = URL.createObjectURL(b); setSrc(url); }).catch(() => {});
+    return () => { alive = false; if (url) URL.revokeObjectURL(url); };
+  }, [path]);
+  if (!src) return <span style={{ display: 'inline-block', width: 40, height: 40, borderRadius: 6, background: 'var(--ink-2,#eee)', border: '1px solid var(--line)', ...style }} />;
+  return <img src={src} alt={alt || ''} onClick={onOpen} style={{ width: 40, height: 40, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--line)', cursor: onOpen ? 'pointer' : 'default', ...style }} />;
+}
+
 function FindingStatus({ appId, finding, reload }) {
   const [detail, setDetail] = useState(null);
   const badge = { delivered: 'Awaiting the borrower', accepted: 'Accepted', disputed: 'Disputed — needs review', resolved: 'Resolved' }[finding.status] || finding.status;
@@ -820,12 +833,25 @@ function FindingStatus({ appId, finding, reload }) {
     <div style={{ marginTop: 8, borderTop: '1px dashed var(--line,#e6e0d4)', paddingTop: 8 }}>
       <div className="small"><b>Inspection findings:</b> {badge}{finding.wire_due_at && finding.status === 'accepted' ? ` · release due ${new Date(finding.wire_due_at).toLocaleString('en-US')}` : ''}</div>
       {detail && detail.lines && detail.lines.filter((l) => l.dispute_status === 'open').map((l) => (
-        <div key={l.id} className="row between" style={{ marginTop: 6, gap: 8, flexWrap: 'wrap' }}>
-          <div className="small">{l.name}: borrower wants {l.dispute_desired_cents == null ? '(review)' : usd2(l.dispute_desired_cents)}{l.dispute_note ? ` — "${l.dispute_note}"` : ''}</div>
-          <div className="row" style={{ gap: 6 }}>
-            <button className="btn btn-sm primary" onClick={() => decide(l.id, 'approved')}>Approve</button>
-            <button className="btn btn-sm ghost" onClick={() => decide(l.id, 'rejected')}>Reject</button>
+        <div key={l.id} style={{ marginTop: 8, padding: '8px 10px', border: '1px solid var(--line)', borderRadius: 8 }}>
+          <div className="row between" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+            <div className="small">{l.name}: borrower wants {l.dispute_desired_cents == null ? '(review)' : usd2(l.dispute_desired_cents)}{l.dispute_note ? ` — "${l.dispute_note}"` : ''}</div>
+            <div className="row" style={{ gap: 6 }}>
+              <button className="btn btn-sm primary" onClick={() => decide(l.id, 'approved')}>Approve</button>
+              <button className="btn btn-sm ghost" onClick={() => decide(l.id, 'rejected')}>Reject</button>
+            </div>
           </div>
+          {/* borrower's photo/receipt evidence (durable, GPS-stripped), fetched with auth */}
+          {Array.isArray(l.dispute_evidence) && l.dispute_evidence.length > 0 && (
+            <div className="row" style={{ gap: 6, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              <span className="small muted">Evidence:</span>
+              {l.dispute_evidence.map((ev) => (
+                ev.kind === 'image'
+                  ? <AuthImg key={ev.idx} path={`/api/sitewire/findings/lines/${l.id}/dispute-media/${ev.idx}`} alt={ev.filename} onOpen={() => { const w = window.open('', '_blank'); api.sitewireOpenDisputeMedia(l.id, ev.idx, w).catch(() => {}); }} />
+                  : <button key={ev.idx} className="btn btn-xs ghost" onClick={() => { const w = window.open('', '_blank'); api.sitewireOpenDisputeMedia(l.id, ev.idx, w).catch(() => {}); }}>{ev.filename}</button>
+              ))}
+            </div>
+          )}
         </div>
       ))}
     </div>

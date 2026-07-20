@@ -26,6 +26,33 @@ const notify = require('../lib/notify');
 const borrowerSafe = require('../lib/borrower-safe');
 const drawReport = require('../sitewire/draw-report');
 const { serveDocument } = require('../lib/serve-document');
+const storage = require('../lib/storage');
+const { decodeUploadBase64 } = require('../lib/upload-bytes');
+const { stripLocationExif } = require('../lib/image-exif');
+
+// Normalize borrower-uploaded dispute evidence into DURABLE stored copies. We only ever accept
+// freshly-uploaded bytes ({filename, dataBase64, contentType}) — never a client-supplied storage
+// ref (that would let a borrower point at someone else's file). Each image has its GPS stripped
+// (privacy) and is capped in size + count. Returns [{storage_ref, filename, content_type, kind}].
+const EVIDENCE_MAX_PER_LINE = 8;
+const EVIDENCE_MAX_BYTES = 12 * 1024 * 1024;
+async function normalizeDisputeMedia(items) {
+  if (!Array.isArray(items)) return [];
+  const out = [];
+  for (const m of items.slice(0, EVIDENCE_MAX_PER_LINE)) {
+    if (!m || typeof m !== 'object' || !m.dataBase64) continue;   // only accept real uploads
+    let buf;
+    try { buf = decodeUploadBase64(m.dataBase64, { maxBytes: EVIDENCE_MAX_BYTES }).buf; } catch (_) { continue; }  // {buf, sha256}; caps size (413)
+    if (!buf || !buf.length) continue;
+    const ct = String(m.contentType || m.content_type || 'image/jpeg');
+    const isImg = /^image\//i.test(ct);
+    if (isImg) { try { buf = stripLocationExif(buf, ct) || buf; } catch (_) { /* keep original on any failure */ } }
+    let saved;
+    try { saved = await storage.save(buf, { filename: m.filename || 'evidence' }); } catch (_) { continue; }
+    out.push({ storage_ref: saved.ref, storage_provider: saved.provider, filename: String(m.filename || 'evidence').slice(0, 180), content_type: ct, kind: isImg ? 'image' : 'file', bytes: buf.length });
+  }
+  return out;
+}
 
 router.use(requireAuth, requireBorrower);
 const me = (req) => req.actor.id;
@@ -127,25 +154,35 @@ router.get('/draws/:appId/findings', async (req, res) => {
   if (!(await ownsApp(req, req.params.appId))) return res.status(403).json({ error: 'forbidden' });
   try {
   const findings = (await db.query(
-    `SELECT id, sitewire_draw_id, status, total_requested_cents, total_approved_cents, delivered_at, accepted_at, accepted_via, disputed_at, resolved_at, wire_due_at,
+    `SELECT id, sitewire_draw_id, status, total_requested_cents, total_approved_cents, delivered_at, accepted_at, accepted_via, disputed_at, resolved_at, wire_due_at, reply_token,
             EXISTS (SELECT 1 FROM draw_disbursements dd WHERE dd.sitewire_draw_id=draw_findings.sitewire_draw_id AND dd.kind='draw' AND dd.funded_status='released') AS released
        FROM draw_findings WHERE application_id=$1 ORDER BY delivered_at DESC`, [req.params.appId])).rows;
   const out = [];
   for (const f of findings) {
+    // Durable inspector media (PILOT's own stored copies) grouped by the draw line — served via the
+    // borrower's OWN reply_token so an <img>/<video> tag works without an auth header, and the
+    // thumbnail never breaks when Sitewire's pre-signed link expires. GPS is already stripped at archive.
+    const durable = (await db.query(
+      `SELECT id, sitewire_request_id, kind FROM draw_media WHERE sitewire_draw_id=$1 AND kind IN ('image','video') ORDER BY id`, [f.sitewire_draw_id])).rows;
+    const durByReq = new Map();
+    for (const m of durable) { const k = String(m.sitewire_request_id); if (!durByReq.has(k)) durByReq.set(k, []); durByReq.get(k).push({ url: f.reply_token ? `/api/public/draw-findings/${f.reply_token}/media/${m.id}` : null, kind: m.kind }); }
     const lines = (await db.query(
-      `SELECT id, sow_line_key, unit_index, name, requested_cents, approved_cents, not_approved_cents, inspector_comments, photo_count, video_count, media, dispute_status, dispute_desired_cents, dispute_note
+      `SELECT id, sitewire_request_id, sow_line_key, unit_index, name, requested_cents, approved_cents, not_approved_cents, inspector_comments, photo_count, video_count, media, dispute_status, dispute_desired_cents, dispute_note
          FROM draw_finding_lines WHERE finding_id=$1 ORDER BY id`, [f.id])).rows
       // scrub every free-text field a capital-partner name could hide in — including each inspection
       // media NOTE (was leaking unscrubbed to the borrower). Keep the photo/video src (inspection
       // evidence) but drop the media GPS lat/lng. lender_comments is a staff-leaning field the borrower
-      // never needs — not selected at all above.
+      // never needs — not selected at all above. `photos` = durable copies (preferred by the UI).
       .map((l) => ({
         ...l,
         name: scrub(l.name),
         inspector_comments: scrub(l.inspector_comments),
+        photos: (durByReq.get(String(l.sitewire_request_id)) || []).filter((p) => p.url),
         media: Array.isArray(l.media) ? l.media.map((m) => { if (!m || typeof m !== 'object') return m; const { lat, lng, ...mm } = m; return { ...mm, note: scrub(mm.note) }; }) : l.media,
       }));
-    out.push({ ...f, lines });
+    // don't leak the raw token as a top-level field; the per-line photo URLs already embed it.
+    const { reply_token, ...fSafe } = f;
+    out.push({ ...fSafe, lines });
   }
   res.json({ findings: out });
   } catch (e) { res.status(500).json({ error: 'Something went wrong — please try again.' }); }
@@ -179,20 +216,30 @@ router.post('/findings/:findingId/dispute', async (req, res) => {
   // queries on one pooled connection (authenticated DoS). A real draw never has anywhere near 200 lines.
   const lines = (Array.isArray(req.body.lines) ? req.body.lines : []).slice(0, 200);
   if (!lines.length) return res.status(400).json({ error: 'a dispute must name at least one line' });
-  let count = 0;
+  // Validate + store any photo evidence FIRST (into durable storage), collecting the line changes,
+  // then flip the finding status with a guarded UPDATE and only write the lines if that transition
+  // won (audit MEDIUM): a concurrent accept flips the finding to 'accepted', our guarded UPDATE
+  // affects 0 rows → 409, and no dispute lines are orphaned on a releasing finding. (Evidence bytes
+  // stored before a lost race are just unused blobs — harmless.)
+  const updates = [];
   for (const ln of lines) {
     if (!/^\d+$/.test(String(ln.line_id))) continue;
     const owned = (await db.query(`SELECT id, requested_cents FROM draw_finding_lines WHERE id=$1 AND finding_id=$2`, [ln.line_id, f.id])).rows[0];
     if (!owned) continue;
     let desired = ln.desired_cents == null ? null : Math.round(Number(ln.desired_cents));
     if (desired != null && (!Number.isFinite(desired) || desired < 0 || desired > Number(owned.requested_cents))) desired = null; // never guess an out-of-range amount
+    const evidence = await normalizeDisputeMedia(ln.media);   // durable stored copies, GPS-stripped
+    updates.push({ line_id: ln.line_id, desired, note: ln.note ? String(ln.note).slice(0, 2000) : null, evidence });
+  }
+  if (!updates.length) return res.status(400).json({ error: 'no valid dispute lines' });
+  const flipped = (await db.query(`UPDATE draw_findings SET status='disputed', disputed_at=now(), disputed_via='portal', updated_at=now() WHERE id=$1 AND status='delivered' RETURNING id`, [f.id])).rows[0];
+  if (!flipped) return res.status(409).json({ error: 'these results are no longer awaiting your response' });
+  for (const u of updates) {
     await db.query(
       `UPDATE draw_finding_lines SET dispute_status='open', dispute_desired_cents=$2, dispute_note=$3, dispute_media=$4, updated_at=now() WHERE id=$1`,
-      [ln.line_id, desired, ln.note ? String(ln.note).slice(0, 2000) : null, ln.media ? JSON.stringify(ln.media) : null]);
-    count++;
+      [u.line_id, u.desired, u.note, u.evidence.length ? JSON.stringify(u.evidence) : null]);
   }
-  if (!count) return res.status(400).json({ error: 'no valid dispute lines' });
-  await db.query(`UPDATE draw_findings SET status='disputed', disputed_at=now(), disputed_via='portal', updated_at=now() WHERE id=$1`, [f.id]);
+  const count = updates.length;
   await notify.notifyAppStaff(f.application_id, { type: 'draw_disputed', title: 'Borrower disputed a draw', badge: { text: 'Disputed', tone: 'action' },
     body: `The borrower disputed ${count} item(s) on their draw results and provided evidence. A draw coordinator needs to review.`, applicationId: f.application_id, link: `/internal/app/${f.application_id}` }).catch(() => {});
   res.json({ ok: true, disputed_lines: count });

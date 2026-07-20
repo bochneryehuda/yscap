@@ -80,8 +80,8 @@ router.get('/:token', async (req, res) => {
     dispute_desired_cents: l.dispute_desired_cents,
     dispute_note: scrub(l.dispute_note),
   }));
-  // report is available once media/findings are persisted — the page shows a Download button.
-  const reportReady = (await db.query(`SELECT 1 FROM draw_finding_lines WHERE finding_id=$1 LIMIT 1`, [f.id])).rowCount > 0;
+  // report is available once findings are persisted — the page shows a Download button.
+  const reportReady = rawLines.length > 0;
   res.json({
     finding: {
       status: f.status, number: null,
@@ -168,21 +168,26 @@ router.post('/:token/dispute', async (req, res) => {
   // on one pooled connection (an unauthenticated DoS). A real draw never has near 200 lines.
   const lines = (Array.isArray(req.body.lines) ? req.body.lines : []).slice(0, 200);
   if (!lines.length) return res.status(400).json({ error: 'a dispute must name at least one line' });
-  let count = 0;
+  // Validate + collect the line changes FIRST — no writes yet. Then flip the finding status with a
+  // guarded UPDATE, and only touch the lines if that transition actually won (audit MEDIUM): this
+  // makes accept-vs-dispute atomic — a concurrent accept flips the finding to 'accepted' and our
+  // guarded UPDATE affects 0 rows → 409 with ZERO orphaned line writes on a releasing finding.
+  const updates = [];
   for (const ln of lines) {
     if (!/^\d+$/.test(String(ln.line_id))) continue;
     const owned = (await db.query(`SELECT id, requested_cents FROM draw_finding_lines WHERE id=$1 AND finding_id=$2`, [ln.line_id, f.id])).rows[0];
     if (!owned) continue;
     let desired = ln.desired_cents == null ? null : Math.round(Number(ln.desired_cents));
     if (desired != null && (!Number.isFinite(desired) || desired < 0 || desired > Number(owned.requested_cents))) desired = null; // never guess an out-of-range amount
-    await db.query(
-      `UPDATE draw_finding_lines SET dispute_status='open', dispute_desired_cents=$2, dispute_note=$3, updated_at=now() WHERE id=$1`,
-      [ln.line_id, desired, ln.note ? String(ln.note).slice(0, 2000) : null]);
-    count++;
+    updates.push({ line_id: ln.line_id, desired, note: ln.note ? String(ln.note).slice(0, 2000) : null });
   }
-  if (!count) return res.status(400).json({ error: 'no valid dispute lines' });
+  if (!updates.length) return res.status(400).json({ error: 'no valid dispute lines' });
   const upd = (await db.query(`UPDATE draw_findings SET status='disputed', disputed_at=now(), disputed_via='email', updated_at=now() WHERE id=$1 AND status='delivered' RETURNING id`, [f.id])).rows[0];
-  if (!upd) return res.status(409).json({ error: 'already handled' });
+  if (!upd) return res.status(409).json({ error: 'these results are no longer awaiting your response' });
+  for (const u of updates) {
+    await db.query(`UPDATE draw_finding_lines SET dispute_status='open', dispute_desired_cents=$2, dispute_note=$3, updated_at=now() WHERE id=$1`, [u.line_id, u.desired, u.note]);
+  }
+  const count = updates.length;
   await notify.notifyAppStaff(f.application_id, { type: 'draw_disputed', title: 'Borrower disputed a draw (email)', badge: { text: 'Disputed', tone: 'action' },
     body: `The borrower pushed back on ${count} item(s) on their draw results from the email. A draw coordinator needs to review — the borrower can add photo evidence from their portal.`, applicationId: f.application_id, link: `/internal/app/${f.application_id}` }).catch(() => {});
   res.json({ ok: true, disputed_lines: count });

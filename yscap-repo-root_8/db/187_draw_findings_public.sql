@@ -8,6 +8,13 @@
 -- borrower pushed back from the email link ('email') or from inside the portal ('portal').
 -- Idempotent.
 ALTER TABLE draw_findings ADD COLUMN IF NOT EXISTS disputed_via text;
+-- Parity with accepted_via's CHECK — disputed_via is code-controlled ('portal'|'email'), but the
+-- constraint makes bad data structurally impossible. Added idempotently (skip if already present).
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='draw_findings_disputed_via_chk') THEN
+    ALTER TABLE draw_findings ADD CONSTRAINT draw_findings_disputed_via_chk CHECK (disputed_via IS NULL OR disputed_via IN ('portal','email'));
+  END IF;
+END $$;
 
 -- The public accept page + branded report + per-line photo gallery all join the durable
 -- inspection media to the draw line it belongs to (sitewire_request_id). Index that lookup so

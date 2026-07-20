@@ -1513,8 +1513,39 @@ router.get('/findings/:findingId', requirePermission('manage_draws'), async (req
   if (!/^\d+$/.test(req.params.findingId)) return res.status(404).json({ error: 'not found' });
   const f = (await db.query(`SELECT * FROM draw_findings WHERE id=$1`, [req.params.findingId])).rows[0];
   if (!f || !(await canSeeFile(req, f.application_id))) return res.status(403).json({ error: 'forbidden' });
-  const lines = (await db.query(`SELECT * FROM draw_finding_lines WHERE finding_id=$1 ORDER BY id`, [f.id])).rows;
+  const lines = (await db.query(`SELECT * FROM draw_finding_lines WHERE finding_id=$1 ORDER BY id`, [f.id])).rows
+    // Never leak internal storage refs to the client: replace the raw dispute_media (which holds
+    // storage_ref) with a safe descriptor the UI turns into a serving URL. Borrower dispute evidence
+    // is fetched byte-by-byte through the guarded /dispute-media/:idx route below.
+    .map((l) => {
+      const ev = Array.isArray(l.dispute_media) ? l.dispute_media : [];
+      const dispute_evidence = ev.map((m, idx) => ({ idx, filename: (m && m.filename) || `evidence ${idx + 1}`, kind: (m && m.kind) || 'file', content_type: (m && m.content_type) || null }));
+      const { dispute_media, ...rest } = l;
+      return { ...rest, dispute_evidence };
+    });
   res.json({ finding: f, lines });
+});
+
+// ---- GET /findings/lines/:lineId/dispute-media/:idx — serve one borrower dispute-evidence file (staff) ----
+// The borrower attached these when they pushed back on a line. Streamed from PILOT's durable storage
+// after the manage_draws + file-visibility + line-belongs-to-file checks. GPS was stripped on upload.
+router.get('/findings/lines/:lineId/dispute-media/:idx', requirePermission('manage_draws'), async (req, res) => {
+  if (!/^\d{1,18}$/.test(String(req.params.lineId)) || !/^\d{1,4}$/.test(String(req.params.idx))) return res.status(404).end();
+  const row = (await db.query(
+    `SELECT dfl.dispute_media, df.application_id
+       FROM draw_finding_lines dfl JOIN draw_findings df ON df.id=dfl.finding_id
+      WHERE dfl.id=$1`, [req.params.lineId])).rows[0];
+  if (!row || !(await canSeeFile(req, row.application_id))) return res.status(404).end();
+  const ev = Array.isArray(row.dispute_media) ? row.dispute_media : [];
+  const m = ev[Number(req.params.idx)];
+  if (!m || !m.storage_ref) return res.status(404).end();
+  let buf; try { buf = await storage.read(m.storage_ref); } catch (_) { return res.status(404).end(); }
+  if (!buf || !buf.length) return res.status(404).end();
+  res.setHeader('Content-Type', m.content_type || 'image/jpeg');
+  res.setHeader('Cache-Control', 'private, max-age=3600');
+  res.setHeader('Content-Disposition', 'inline');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  return res.end(buf);
 });
 
 // ---- POST /findings/:findingId/lines/:lineId/decide — admin decides a disputed line ----
