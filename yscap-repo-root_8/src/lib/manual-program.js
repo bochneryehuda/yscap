@@ -175,6 +175,23 @@ async function openEscalation(client, { appId, registrationId, assetMonths, over
   return ins.rows[0].id;
 }
 
+/**
+ * Close (decline-as-superseded) any PENDING escalation for a file — used when a
+ * file is re-registered as a NON-manual product, so the super-admin box never
+ * keeps showing a pending manual approval for a file that is no longer manual.
+ * Runs on the caller's client (inside the register transaction). Returns the
+ * number of rows closed.
+ */
+async function closePendingForApp(client, appId, note) {
+  const r = await client.query(
+    `UPDATE manual_program_escalations
+        SET status='declined', decided_at=now(), updated_at=now(),
+            decision_note=COALESCE(decision_note,$2)
+      WHERE application_id=$1 AND status='pending'`,
+    [appId, note || 'Superseded — the file was re-registered as a non-manual product']);
+  return r.rowCount || 0;
+}
+
 /** The current PENDING escalation for a file (or null). */
 async function pendingForApp(appId, client = db) {
   const r = await client.query(
@@ -227,5 +244,5 @@ async function decideEscalation(id, decision, staffId, note, client = db) {
 module.exports = {
   STRUCTURAL_OVERRIDE_KEYS, engaged, structuralOverridesEngaged, isManualProduct, resolveProgram,
   SETTINGS_DEFAULTS, loadSettings, saveSettings,
-  openEscalation, pendingForApp, listEscalations, pendingCount, decideEscalation,
+  openEscalation, closePendingForApp, pendingForApp, listEscalations, pendingCount, decideEscalation,
 };

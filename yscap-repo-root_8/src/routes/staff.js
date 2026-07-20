@@ -1734,21 +1734,26 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       // approval" until the escalation is decided (db/206). Superseding any prior
       // pending row is handled inside openEscalation.
       if (isManual) {
-        try {
-          await manualProgram.openEscalation(client, {
-            appId, registrationId: regId, assetMonths,
-            overrides,
-            summary: {
-              program: 'manual', productLabel: quote.productLabel || null,
-              totalLoan: total, noteRate: quote.noteRate,
-              acqLtvPct: quote.sizing ? quote.sizing.acqLtvPct : null,
-              arvPct: quote.sizing ? quote.sizing.arvPct : null,
-              ltcPct: quote.sizing ? quote.sizing.ltcPct : null,
-              assetMonths,
-            },
-            requestedBy: req.actor.id,
-          });
-        } catch (e) { throw e; }   // escalation is REQUIRED for a manual product — fail the register if it can't open
+        // Escalation is REQUIRED for a manual product — if it can't open, the
+        // throw rolls back the whole registration (no un-escalated manual file).
+        await manualProgram.openEscalation(client, {
+          appId, registrationId: regId, assetMonths,
+          overrides,
+          summary: {
+            program: 'manual', productLabel: quote.productLabel || null,
+            totalLoan: total, noteRate: quote.noteRate,
+            acqLtvPct: quote.sizing ? quote.sizing.acqLtvPct : null,
+            arvPct: quote.sizing ? quote.sizing.arvPct : null,
+            ltcPct: quote.sizing ? quote.sizing.ltcPct : null,
+            assetMonths,
+          },
+          requestedBy: req.actor.id,
+        });
+      } else {
+        // Re-registered as a NON-manual product: close any stale pending manual
+        // escalation so the super-admin box doesn't keep showing an approval for
+        // a file that is no longer a manual product.
+        await manualProgram.closePendingForApp(client, appId);
       }
       // #101: STICK an explicit per-file markup override to the file so it re-applies
       // to every future quote — the borrower's self-service pricing can then never

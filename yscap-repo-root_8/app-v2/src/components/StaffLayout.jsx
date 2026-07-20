@@ -282,13 +282,16 @@ export default function StaffLayout({ children }) {
     return () => { alive = false; clearInterval(t); };
   }, []);
   useEffect(() => {
+    // Only admins / super-admins see (and can load) the escalation box, so only
+    // they poll its count — a file-scoped LO/processor never hits the endpoint.
+    if (!(can('manage_pricing') || role === 'super_admin')) return undefined;
     let alive = true;
     const poll = () => api.manualEscalationsCount()
       .then(r => { if (alive) setEscCount(r.pendingCount || 0); }).catch(() => {});
     poll();
     const t = setInterval(poll, 120000);
     return () => { alive = false; clearInterval(t); };
-  }, []);
+  }, [role]);
   // STALE-BUILD WATCHDOG — shared hook (see lib/useStaleBuild.js): compares
   // the deployed bundle hash from /api/health with the one this tab runs.
   const staleBuild = useStaleBuild();

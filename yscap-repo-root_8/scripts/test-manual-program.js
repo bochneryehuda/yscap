@@ -146,6 +146,12 @@ async function setProgram(appId, program, assetMonths) {
     assert(decided && decided.status === 'approved', 'decideEscalation approves the pending escalation');
     assert((await mp.pendingForApp(esc)) === null, 'no pending escalation remains after a decision');
 
+    // Re-registering a manual file as NON-manual closes its stale pending row.
+    await mp.openEscalation(db, { appId: esc, registrationId: regId, assetMonths: 6, overrides: { ovrLTCPct: 71 }, summary: {}, requestedBy: null });
+    assert(!!(await mp.pendingForApp(esc)), 'a fresh pending escalation exists before the non-manual re-register');
+    const closed = await mp.closePendingForApp(db, esc);
+    assert(closed >= 1 && (await mp.pendingForApp(esc)) === null, 'closePendingForApp declines the stale pending escalation');
+
     // (6) Settings save/load + required asset-months validation.
     const saved = await mp.saveSettings({ assetMonths: 3, maxAcqLtv: 85, maxLtc: 90 }, null);
     assert(saved.assetMonths === 3 && saved.maxAcqLtv === 85 && saved.maxLtc === 90, 'saveSettings persists config');

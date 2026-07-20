@@ -46,7 +46,11 @@ router.put('/settings', requirePermission('manage_pricing'), async (req, res) =>
 });
 
 // ---- Escalation box ----
-router.get('/escalations', async (req, res) => {
+// Gated to manage_pricing (admins + super-admins, who implicitly hold it) — the
+// list carries borrower/property/loan identity for EVERY manual file, so it must
+// NOT be reachable by a file-scoped loan officer / processor. Deciding is
+// super-admin only (below).
+router.get('/escalations', requirePermission('manage_pricing'), async (req, res) => {
   try {
     const status = ['pending', 'approved', 'declined', 'all'].includes(req.query.status) ? req.query.status : 'pending';
     const [rows, pending] = await Promise.all([
@@ -59,7 +63,7 @@ router.get('/escalations', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
-router.get('/escalations/count', async (req, res) => {
+router.get('/escalations/count', requirePermission('manage_pricing'), async (req, res) => {
   try { res.json({ pendingCount: await manualProgram.pendingCount() }); }
   catch (e) { res.status(500).json({ error: 'server error' }); }
 });
