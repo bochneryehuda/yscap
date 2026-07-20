@@ -32,6 +32,7 @@ const sendEngine = require('./send');
 const gate = require('./gate');
 const docgen = require('./docgen');
 const onDeadLetter = require('./dead-letter');
+const { notifyReadyToSign } = require('./notify-signers');
 const { parseAddress } = require('../address');
 const cfg = require('../../config');
 
@@ -701,6 +702,14 @@ async function sendPackage(applicationId, purpose, actor, opts = {}) {
     buildDefinition: (r) => buildDefinition(r, { db, storage }),
     onDeadLetter,   // a failed send notifies the file's team (in-app + email)
   });
+  // On a genuine fresh send, PILOT emails each borrower signer its OWN branded
+  // "ready to sign" invitation with a direct-to-DocuSign magic link (owner-directed
+  // 2026-07-20). Best-effort + only on `sent` (never `alreadySent` — that would
+  // double-email an idempotent re-entry). DocuSign's own email still goes too ("both").
+  if (result && result.sent) {
+    try { await notifyReadyToSign(row.id, { db }); }
+    catch (e) { console.warn('[esign] ready-to-sign email failed:', e.message); }
+  }
   // ok ONLY for a genuine send or an already-sent envelope — a merely queued /
   // backing-off row is NOT delivered and must not report success (the false "Sent").
   return { ok: !!(result && (result.sent || result.alreadySent)), envelopeRowId: row.id, result };

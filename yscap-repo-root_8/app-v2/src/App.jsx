@@ -13,6 +13,7 @@ import Reset from './screens/Reset.jsx';
 import Accept from './screens/Accept.jsx';
 import GuestChat from './screens/GuestChat.jsx';
 import DrawAccept from './screens/DrawAccept.jsx';
+import EsignDone from './screens/EsignDone.jsx';
 import Dashboard from './screens/Dashboard.jsx';
 import Apply from './screens/Apply.jsx';
 import Application from './screens/Application.jsx';
@@ -99,6 +100,9 @@ export default function App() {
           {/* #75 — magic-link guest chat for external email participants (no login). */}
           <Route path="/guest/:key" element={<GuestChat />} />
           <Route path="/draw-accept/:token" element={<DrawAccept />} />
+          {/* Where a borrower lands after signing from PILOT's branded e-sign email —
+              exchanges the one-time login code so they return INSIDE their file logged in. */}
+          <Route path="/esign/done" element={<EsignDone />} />
           <Route path="/internal/login" element={<StaffLogin />} />
           {/* Staff console has its OWN reset screen so a dual borrower+staff
               account is never sent two different reset emails (owner 2026-07-14). */}
