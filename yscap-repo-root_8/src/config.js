@@ -260,6 +260,10 @@ module.exports = {
   sitewireDefaultCoordinatorId: parseInt(process.env.SITEWIRE_DEFAULT_COORDINATOR_ID || '16146', 10), // Lisa Katz
   sitewireDefaultChecklistTemplateId: parseInt(process.env.SITEWIRE_CHECKLIST_TEMPLATE_ID || '84', 10),
   sitewireMaxWrites10min: parseInt(process.env.SITEWIRE_MAX_WRITES_10MIN || '300', 10), // volume circuit breaker
+  // Go-live for the PILOT draw system (owner-directed 2026-07-20): PILOT follows the draw process ONLY for
+  // properties IT pushed to Sitewire from this date forward. Pre-existing Sitewire properties are never
+  // adopted or followed. Informational (the born-on-push design already makes management go-forward-only).
+  sitewireGoLiveDate:   process.env.SITEWIRE_GO_LIVE_DATE || '2026-07-20',
 
   // --- address autocomplete / verification (server-side proxy) ---
   // The frontend calls OUR /api/address/*; any real key lives only here, never

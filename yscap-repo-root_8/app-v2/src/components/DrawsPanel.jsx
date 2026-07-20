@@ -49,7 +49,8 @@ export default function DrawsPanel({ appId }) {
   if (err) return <div className="panel" style={{ marginTop: 12, color: 'var(--bad,#b04a3f)' }}>{err}</div>;
   if (!data) return null;
 
-  const { rollup, link, requests = [], ledger = [], findings = [], change_requests = [], retainage = null, waivers = [], lien_waivers_enabled = false } = data;
+  const { rollup, link, requests = [], ledger = [], findings = [], change_requests = [], retainage = null, waivers = [], lien_waivers_enabled = false,
+    preexisting = false, managed_since = null, go_live_date = null } = data;
   // Render draw cards from rollup.draws — it carries the money (requested/approved/net_release),
   // the funded flag, and the merged risk flags + pdf_src. The top-level `draws` array has no
   // money fields, so using it would render $0.00 everywhere.
@@ -79,10 +80,35 @@ export default function DrawsPanel({ appId }) {
   return (
     <div>
       {notLinked ? (
-        <StartDrawCard appId={appId} onStarted={load} />
+        <>
+          {/* GO-FORWARD ONLY: a pre-existing Sitewire property (loan already there, not pushed by us) is
+              NOT followed. Say so plainly and explain the only way to bring it under PILOT management. */}
+          {preexisting && (
+            <div className="panel" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)', borderLeft: '3px solid var(--bad,#b04a3f)' }}>
+              <b>Already in Sitewire — PILOT is not managing this file’s draws.</b>
+              <div className="muted small" style={{ marginTop: 3 }}>
+                This loan is already on a property in Sitewire that PILOT did not create. PILOT only runs the draw
+                process for properties it pushes itself, so it will not adopt or follow this one. To have PILOT
+                manage the draws, <b>delete that property in Sitewire</b>, then start the draw process below to push a
+                fresh copy. Otherwise leave it as-is and continue managing that property directly in Sitewire.
+              </div>
+            </div>
+          )}
+          <StartDrawCard appId={appId} onStarted={load} />
+        </>
       ) : (
         <>
           {msg && <div className="panel" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)' }}>{msg}</div>}
+
+          {/* ---- "live in PILOT" banner: this property was pushed from our system; we're the source of record ---- */}
+          <div className="panel" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)', borderLeft: '3px solid var(--good,#3f7a4a)' }}>
+            <b>Live in PILOT{managed_since ? ` since ${fmtDay(managed_since)}` : ''}.</b>
+            <div className="muted small" style={{ marginTop: 3 }}>
+              PILOT pushed this property to Sitewire and is the source of record for its draw process — it follows the
+              draw requests, delivers the inspection findings, and runs our standard approval + release pipeline.
+              {go_live_date ? ` Draw-system go-live: ${fmtDay(go_live_date)}.` : ''}
+            </div>
+          </div>
 
           {/* ---- read-only notice when Sitewire writes are off (the default staged state) ---- */}
           {writesOff && (

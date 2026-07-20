@@ -726,20 +726,21 @@ router.patch('/settings', requirePermission('platform_setup'), async (req, res) 
 
 // ---- Per-reason resolution actions for a Sitewire review (owner-directed 2026-07-20) ----
 // Each parked reason gets the action(s) that ACTUALLY fix its cause, so a resolution isn't a no-op that
-// loops: an advisory note only "acknowledges" (never re-pushes — that was the loop); a real "loan already
-// in Sitewire" collision offers "link" (adopt the existing property) or "dismiss" (keep separate); every
-// other blocker offers "retry" (after the human fixed the upstream cause) or "dismiss".
+// loops: an advisory note only "acknowledges" (never re-pushes — that was the loop); GO-FORWARD ONLY means
+// there is NO adopt/link of a pre-existing property, so the "loan already in Sitewire" collision (and every
+// other blocker) offers "retry" — for the collision, a warned "delete it in Sitewire, then push a fresh
+// copy" — or "dismiss" (keep separate). See src/sitewire/review-actions.js (single source of truth).
 const { SITEWIRE_DUPE, sitewireReasonClass, sitewireAllowedActions } = require('../sitewire/review-actions');
 router.post('/reviews/:id/:action', requirePermission('manage_draws'), async (req, res) => {
   const { id, action } = req.params;
   if (!/^\d+$/.test(id)) return res.status(404).json({ error: 'not found' });
-  if (!['retry', 'dismiss', 'acknowledge', 'link'].includes(action)) return res.status(400).json({ error: 'action must be retry, acknowledge, link, or dismiss' });
+  if (!['retry', 'dismiss', 'acknowledge'].includes(action)) return res.status(400).json({ error: 'action must be retry, acknowledge, or dismiss' });
   const row = (await db.query(`SELECT id, application_id, reason, current_value FROM sync_review_queue WHERE id=$1 AND field_key='sitewire' AND status='open'`, [id])).rows[0];
   if (!row) return res.status(404).json({ error: 'review not found (or already resolved)' });
   if (!row.application_id || !(await canSeeFile(req, row.application_id))) return res.status(403).json({ error: 'forbidden' });
   const reasonClass = sitewireReasonClass(row.reason);
   // dismiss is always allowed; any other action must match the reason's action set (no acknowledging a
-  // blocker away without fixing it, no retrying an advisory into the loop, no linking a non-collision row).
+  // blocker away without fixing it, no retrying an advisory into the loop).
   if (action !== 'dismiss' && !sitewireAllowedActions(reasonClass).includes(action)) {
     return res.status(400).json({ error: `That action isn't available for this review. Options: ${sitewireAllowedActions(reasonClass).join(', ')}.` });
   }
@@ -754,22 +755,15 @@ router.post('/reviews/:id/:action', requirePermission('manage_draws'), async (re
       await db.query(`UPDATE sync_review_queue SET status='resolved', resolved_by=$2, resolved_at=now(), resolution_note='acknowledged' WHERE id=$1`, [id, req.actor.id]);
       return res.json({ ok: true, acknowledged: true });
     }
-    if (action === 'link') {
-      // Adopt the existing Sitewire property this collision named (current_value = its id). The orchestrator
-      // re-verifies loan# + address LIVE before linking; a mismatch comes back 422 (never adopt the wrong one).
-      const propId = Number(row.current_value);
-      if (!Number.isInteger(propId) || propId <= 0) return res.status(400).json({ error: 'This review has no Sitewire property to link to.' });
-      const r = await orchestrator.adoptExistingProperty(row.application_id, propId, { actorId: req.actor.id });
-      if (!r.ok) return res.status(422).json({ error: r.error || 'Could not link this property.' });
-      await db.query(`UPDATE sync_review_queue SET status='resolved', resolved_by=$2, resolved_at=now(), resolution_note=$3 WHERE id=$1`, [id, req.actor.id, `linked to Sitewire property ${propId}`]);
-      return res.json({ ok: true, linked: true, sitewire_property_id: r.sitewire_property_id });
-    }
-    // action === 'retry' — block if an OPEN BLOCKING collision review is still unresolved on this file:
-    // retrying now would just re-hit that wall and re-park (the loop the owner reported). Resolve it first.
+    // action === 'retry'. If this file has a still-open loan-number COLLISION review (a pre-existing Sitewire
+    // property carries this loan), block retrying a DIFFERENT review — the push can't create the property while
+    // the collision stands, so it would just re-park (the loop the owner reported). Retrying the collision review
+    // ITSELF is allowed (id<>$2 excludes it): that is the go-forward "I deleted it in Sitewire — push a fresh
+    // copy" path, which creates a brand-new PILOT-managed property once the pre-existing one is gone.
     const blocker = (await db.query(
       `SELECT id FROM sync_review_queue WHERE application_id=$1 AND field_key='sitewire' AND status='open' AND id<>$2
          AND split_part(reason,':',1) = $3 LIMIT 1`, [row.application_id, id, SITEWIRE_DUPE])).rows[0];
-    if (blocker) return res.status(409).json({ error: 'Resolve the “loan already in Sitewire” review first (Link the property to this file, or keep them separate) — retrying now would just hit that block again.' });
+    if (blocker) return res.status(409).json({ error: 'This loan is already on a property in Sitewire that PILOT didn’t create. Resolve that review first — either delete the property in Sitewire and push a fresh copy, or keep them separate — retrying now would just hit that block again.' });
     const dead = await db.query(
       `UPDATE sync_queue SET status='queued', attempts=0, run_after=now(), updated_at=now()
         WHERE entity_type='application' AND entity_id=$1 AND target='sitewire' AND direction='push' AND status='dead' RETURNING id`, [row.application_id]);
@@ -803,7 +797,15 @@ router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, r
     let sowState = null;
     try { const s = (await db.query(`SELECT tool_payload FROM checklist_items WHERE application_id=$1 AND tool_key='rehab_budget' ORDER BY created_at LIMIT 1`, [appId])).rows[0]; sowState = s && s.tool_payload && s.tool_payload.state ? s.tool_payload.state : null; } catch (_) {}
     const rollup = await rollupMod.loadRollup(db, appId, { sowState });
-    const link = (await db.query(`SELECT l.*, cs.full_name AS coordinator_name FROM sitewire_property_links l LEFT JOIN staff_users cs ON cs.id=l.coordinator_staff_id WHERE l.application_id=$1 AND l.matched_by IN ('created','linked')`, [appId])).rows[0] || null;
+    // Go-forward only (owner-directed 2026-07-20): PILOT surfaces/follows ONLY a property IT pushed
+    // (matched_by='created'). A pre-existing hand-entered Sitewire property is never adopted or followed.
+    const link = (await db.query(`SELECT l.*, cs.full_name AS coordinator_name FROM sitewire_property_links l LEFT JOIN staff_users cs ON cs.id=l.coordinator_staff_id WHERE l.application_id=$1 AND l.matched_by='created'`, [appId])).rows[0] || null;
+    // Is this file blocked on a loan-number collision with a pre-existing Sitewire property PILOT didn't
+    // create? If so the draw section shows the "already in Sitewire — not followed" banner instead of the
+    // Start card, so staff know PILOT will not manage it unless the pre-existing one is deleted + re-pushed.
+    const preexisting = ((await db.query(
+      `SELECT 1 FROM sync_review_queue WHERE application_id=$1 AND field_key='sitewire' AND status='open'
+         AND split_part(reason,':',1)='sitewire_loan_already_in_sitewire' LIMIT 1`, [appId])).rowCount > 0);
     const draws = (await db.query(`SELECT sitewire_draw_id, number, name, status, risk_level, risk_flags, submitted_at, approved_at, pdf_src FROM sitewire_draws WHERE application_id=$1 ORDER BY number DESC NULLS LAST`, [appId])).rows;
     const requests = (await db.query(
       `SELECT r.sitewire_request_id, r.sitewire_draw_id, r.sitewire_job_item_id, r.job_item_name, r.requested_cents, r.approved_cents, r.inspection_count, r.lender_comments
@@ -827,6 +829,9 @@ router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, r
     const lienWaiversEnabled = await lienGateEnabled(appId);
     res.json({ rollup, link, draws, requests, ledger, findings, change_requests: changeRequests, retainage, waivers,
       lien_waivers_enabled: lienWaiversEnabled, lien_waivers_file_override: link ? link.require_lien_waivers : null,
+      // go-forward-only status for the draw-section banner: preexisting = blocked on a pre-existing
+      // Sitewire property PILOT didn't create; managed_since = when PILOT pushed (born) this property.
+      preexisting, managed_since: link ? link.pushed_at : null, go_live_date: cfg.sitewireGoLiveDate,
       // so the desk can show a proactive read-only banner + disable write buttons when writes are off
       // (an approve/release/finding write 503s unless BOTH the master switch and the write gate are on).
       switches: { enabled: cfg.sitewireEnabled, outbound: cfg.sitewireOutboundEnabled, dryrun: cfg.sitewireDryrun } });
@@ -852,7 +857,7 @@ router.get('/portfolio', requirePermission('manage_draws'), async (req, res) => 
               (SELECT count(*) FROM draw_findings df WHERE df.application_id=a.id AND df.status='accepted' AND df.wire_due_at < now()
                  AND NOT EXISTS (SELECT 1 FROM draw_disbursements dd WHERE dd.sitewire_draw_id=df.sitewire_draw_id AND dd.funded_status='released')) AS overdue_wire_count
          FROM sitewire_property_links l JOIN applications a ON a.id=l.application_id
-        WHERE a.deleted_at IS NULL AND l.sitewire_property_id IS NOT NULL AND l.matched_by IN ('created','linked')${sc.where}`, sc.params)).rows;
+        WHERE a.deleted_at IS NULL AND l.sitewire_property_id IS NOT NULL AND l.matched_by='created'${sc.where}`, sc.params)).rows;
     let budget = 0, drawn = 0, pendingReq = 0, pendingCount = 0, highRisk = 0;
     const files = rows.map((r) => {
       const b = Number(r.budget_cents) || 0, dr = Number(r.drawn_cents) || 0;
