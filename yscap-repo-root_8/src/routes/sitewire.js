@@ -243,10 +243,14 @@ router.get('/files/:id/notifications', requirePermission('manage_draws'), async 
     const sent = (await db.query(
       `SELECT n.id, n.recipient_kind, n.type, n.title, n.body, n.link, n.read_at, n.email_status, n.emailed_at, n.created_at,
               COALESCE(s.full_name, NULLIF(TRIM(COALESCE(b.first_name,'') || ' ' || COALESCE(b.last_name,'')), '')) AS recipient_name,
-              COALESCE(s.email, b.email) AS recipient_email
+              COALESCE(s.email, b.email) AS recipient_email,
+              se.id IS NOT NULL AS has_full_email,
+              COALESCE(array_length(se.to_emails,1),0) AS recipient_count,
+              COALESCE(jsonb_array_length(se.attachments),0) AS attachment_count
          FROM notifications n
          LEFT JOIN staff_users s ON s.id = n.staff_id
          LEFT JOIN borrowers b ON b.id = n.borrower_id
+         LEFT JOIN LATERAL (SELECT id, to_emails, attachments FROM sent_emails se2 WHERE se2.notification_id=n.id ORDER BY se2.created_at DESC LIMIT 1) se ON true
         WHERE n.application_id = $1 AND (n.type LIKE 'draw%' OR n.type LIKE 'sow_%')
         ORDER BY n.created_at DESC
         LIMIT 300`, [appId])).rows;
@@ -258,6 +262,46 @@ router.get('/files/:id/notifications', requirePermission('manage_draws'), async 
     } catch (_) { /* inbound table optional */ }
     res.json({ sent, replies });
   } catch (e) { console.warn('[sitewire] notifications route error:', e && e.message); res.status(500).json({ error: 'Could not load the notifications for this file.' }); }
+});
+
+// ---- GET /files/:id/messages/:notificationId — the FULL rendered email (design + recipients + attachments) ----
+// Opens a draw notification in full: the exact branded HTML we sent, every recipient, the reply-to, and the
+// attachment list. Go-forward: only messages sent after the capture shipped have a stored copy (has_full_email).
+// manage_draws + canSeeFile + the notification must belong to THIS file (IDOR).
+router.get('/files/:id/messages/:notificationId', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  if (!/^[0-9a-f-]{36}$/i.test(String(req.params.notificationId))) return res.status(404).json({ error: 'not found' });
+  try {
+    const e = (await db.query(
+      `SELECT id, subject, from_email, to_emails, reply_to, html, body_text, attachments, status, created_at, audience, recipient_kind
+         FROM sent_emails WHERE notification_id=$1 AND application_id=$2 ORDER BY created_at DESC LIMIT 1`,
+      [req.params.notificationId, appId])).rows[0];
+    if (!e) return res.status(404).json({ error: 'no_capture' });
+    // never expose the storage ref to the client — attachments are downloaded by INDEX through the route below.
+    const attachments = (Array.isArray(e.attachments) ? e.attachments : []).map((a, i) => ({ index: i, filename: a.filename, content_type: a.content_type, size: a.size, downloadable: !!a.storage_ref }));
+    res.json({ id: e.id, subject: e.subject, from: e.from_email, to: e.to_emails || [], reply_to: e.reply_to, html: e.html, text: e.body_text, attachments, status: e.status, created_at: e.created_at, audience: e.audience });
+  } catch (err) { console.warn('[sitewire] message route error:', err && err.message); res.status(500).json({ error: 'Could not open this message.' }); }
+});
+
+// ---- GET /files/:id/messages/:notificationId/attachments/:idx — stream a captured attachment ----
+router.get('/files/:id/messages/:notificationId/attachments/:idx', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  if (!/^[0-9a-f-]{36}$/i.test(String(req.params.notificationId)) || !/^\d{1,3}$/.test(String(req.params.idx))) return res.status(404).json({ error: 'not found' });
+  try {
+    const e = (await db.query(
+      `SELECT attachments FROM sent_emails WHERE notification_id=$1 AND application_id=$2 ORDER BY created_at DESC LIMIT 1`,
+      [req.params.notificationId, appId])).rows[0];
+    const a = e && Array.isArray(e.attachments) ? e.attachments[Number(req.params.idx)] : null;
+    if (!a || !a.storage_ref) return res.status(404).json({ error: 'attachment not found' });
+    const storage = require('../lib/storage');
+    const buf = await storage.read(a.storage_ref);
+    if (!buf) return res.status(404).json({ error: 'attachment bytes missing' });
+    res.setHeader('Content-Type', a.content_type || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename="${String(a.filename || 'attachment').replace(/[^\w.\- ]+/g, '_')}"`);
+    res.send(buf);
+  } catch (err) { res.status(500).json({ error: 'Could not download this attachment.' }); }
 });
 
 // ---- GET /files/:id/borrower-status — Sitewire's borrower-invite state (live read) ----

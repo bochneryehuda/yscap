@@ -1067,7 +1067,19 @@ const EMAIL_STATE = { sent: { label: 'Emailed', cls: 'sw-approved' }, skipped: {
 function DrawMailCenter({ appId }) {
   const [data, setData] = useState(null);
   const [openId, setOpenId] = useState(null);
+  const [full, setFull] = useState({}); // notificationId -> { loading?, email?, error? }
   useEffect(() => { api.get(`/api/sitewire/files/${appId}/notifications`).then(setData).catch(() => setData({ sent: [], replies: [] })); }, [appId]);
+  const openMessage = useCallback((m) => {
+    const id = m.id;
+    if (openId === id) { setOpenId(null); return; }
+    setOpenId(id);
+    if (m.has_full_email && !full[id]) {
+      setFull((s) => ({ ...s, [id]: { loading: true } }));
+      api.get(`/api/sitewire/files/${appId}/messages/${id}`)
+        .then((email) => setFull((s) => ({ ...s, [id]: { email } })))
+        .catch(() => setFull((s) => ({ ...s, [id]: { error: true } })));
+    }
+  }, [appId, openId, full]);
   if (!data) return <div className="dd-card" style={{ marginTop: 18 }}>Loading draw messages…</div>;
   const sent = data.sent || [];
   const replies = data.replies || [];
@@ -1093,16 +1105,18 @@ function DrawMailCenter({ appId }) {
           const es = EMAIL_STATE[m.email_status] || EMAIL_STATE.pending;
           const isOpen = openId === m.id;
           const toWhom = m.recipient_kind === 'borrower' ? `Borrower${m.recipient_name ? ` · ${m.recipient_name}` : ''}` : `Team${m.recipient_name ? ` · ${m.recipient_name}` : ''}`;
+          const fe = full[m.id];
           return (
             <div key={m.id} style={{ borderTop: '1px solid var(--line)' }}>
-              <button onClick={() => setOpenId(isOpen ? null : m.id)} className="row" style={{ width: '100%', textAlign: 'left', gap: 10, alignItems: 'center', padding: '10px 2px', background: 'none', border: 'none', cursor: 'pointer' }}>
+              <button onClick={() => openMessage(m)} className="row" style={{ width: '100%', textAlign: 'left', gap: 10, alignItems: 'center', padding: '10px 2px', background: 'none', border: 'none', cursor: 'pointer' }}>
                 <span style={{ flex: '0 0 auto', width: 8, height: 8, borderRadius: 999, background: k.tone }} />
                 <span style={{ flex: '1 1 auto', minWidth: 0 }}>
                   <span className="row" style={{ gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
                     <b style={{ fontSize: 13 }}>{m.title}</b>
                     <span className="dd-sub" style={{ color: k.tone }}>{k.label}</span>
+                    {m.attachment_count > 0 && <span className="dd-sub" title="has attachments">📎 {m.attachment_count}</span>}
                   </span>
-                  <span className="dd-sub" style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>To: {toWhom}{m.recipient_email ? ` · ${m.recipient_email}` : ''}</span>
+                  <span className="dd-sub" style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>To: {toWhom}{m.recipient_count > 1 ? ` +${m.recipient_count - 1}` : ''}{m.recipient_email ? ` · ${m.recipient_email}` : ''}</span>
                 </span>
                 <span className="dd-sub" style={{ flex: '0 0 auto', textAlign: 'right' }}>
                   <span className={'pill ' + es.cls} style={{ marginRight: 6 }}>{es.label}</span>
@@ -1110,11 +1124,44 @@ function DrawMailCenter({ appId }) {
                 </span>
               </button>
               {isOpen && (
-                <div style={{ padding: '0 2px 12px 18px' }}>
-                  <div className="dd-sub" style={{ marginBottom: 6 }}>
-                    Sent {when(m.emailed_at || m.created_at)} · {m.email_status === 'sent' ? 'delivered by email' : m.email_status === 'skipped' ? 'shown in the portal only' : m.email_status === 'error' ? 'email failed to send' : 'sending'}{m.read_at ? ' · read' : ''}
-                  </div>
-                  <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.5, background: 'var(--paper,#f6f3ec)', border: '1px solid var(--line)', borderRadius: 8, padding: '12px 14px' }}>{m.body || '(no message body)'}</div>
+                <div style={{ padding: '0 2px 14px 18px' }}>
+                  {/* full captured email — headers + the exact rendered design + attachments */}
+                  {m.has_full_email && fe && fe.loading && <div className="dd-sub">Opening the full email…</div>}
+                  {m.has_full_email && fe && fe.email && (
+                    <>
+                      <div style={{ background: 'var(--paper,#f6f3ec)', border: '1px solid var(--line)', borderRadius: 8, padding: '10px 12px', marginBottom: 8, fontSize: 12.5 }}>
+                        <div><b>Subject:</b> {fe.email.subject || m.title}</div>
+                        <div><b>To:</b> {(fe.email.to || []).join(', ') || '—'}</div>
+                        {fe.email.from && <div><b>From:</b> {fe.email.from}</div>}
+                        {fe.email.reply_to && <div><b>Reply-to:</b> {fe.email.reply_to}</div>}
+                        <div><b>Sent:</b> {when(fe.email.created_at)} · {fe.email.status === 'sent' ? 'delivered by email' : fe.email.status === 'skipped' ? 'in-app only (not emailed)' : fe.email.status === 'error' ? 'email failed' : fe.email.status}</div>
+                        {Array.isArray(fe.email.attachments) && fe.email.attachments.length > 0 && (
+                          <div style={{ marginTop: 6 }}><b>Attachments:</b>{' '}
+                            {fe.email.attachments.map((a) => (
+                              <span key={a.index} className="row" style={{ display: 'inline-flex', gap: 4, alignItems: 'center', marginRight: 8 }}>
+                                {a.downloadable
+                                  ? <button className="btn btn-sm ghost" onClick={() => api.sitewireMessageAttachment(appId, m.id, a.index).catch(() => {})}>📎 {a.filename}</button>
+                                  : <span className="dd-sub">📎 {a.filename}</span>}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      {fe.email.html
+                        ? <iframe title="email" sandbox="" srcDoc={fe.email.html} style={{ width: '100%', height: 520, border: '1px solid var(--line)', borderRadius: 8, background: '#fff' }} />
+                        : <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.5 }}>{fe.email.text || m.body}</div>}
+                    </>
+                  )}
+                  {m.has_full_email && fe && fe.error && <div className="dd-sub" style={{ color: 'var(--bad,#b04a3f)' }}>Could not open the full email.</div>}
+                  {/* legacy / not captured — show the plain body we always stored */}
+                  {!m.has_full_email && (
+                    <>
+                      <div className="dd-sub" style={{ marginBottom: 6 }}>
+                        Sent {when(m.emailed_at || m.created_at)} · {m.email_status === 'sent' ? 'delivered by email' : m.email_status === 'skipped' ? 'shown in the portal only' : m.email_status === 'error' ? 'email failed to send' : 'sending'}{m.read_at ? ' · read' : ''} · (full design not captured for older messages)
+                      </div>
+                      <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.5, background: 'var(--paper,#f6f3ec)', border: '1px solid var(--line)', borderRadius: 8, padding: '12px 14px' }}>{m.body || '(no message body)'}</div>
+                    </>
+                  )}
                 </div>
               )}
             </div>
