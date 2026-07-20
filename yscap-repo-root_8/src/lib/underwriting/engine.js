@@ -48,10 +48,14 @@ async function analyzeDocument({ docType, buffer, base64, mimeType, subject, tod
   };
 
   // 0. FORENSIC scan of the raw bytes (advisory tampering signals) — independent of OCR/AI, so it
-  // runs even if the read/understand later fails. Never throws, never blocks.
+  // runs even if the read/understand later fails. Never throws, never blocks. In production the
+  // caller passes a real Buffer; only fall back to decoding base64 (through the mandated
+  // decodeUploadBase64 chokepoint, which strips a data: prefix and rejects garbage) for callers
+  // that pass base64 only.
   let forensic = [];
   try {
-    const buf = buffer || (base64 ? Buffer.from(base64, 'base64') : null);
+    let buf = buffer;
+    if (!buf && base64) { const { decodeUploadBase64 } = require('../upload-bytes'); buf = decodeUploadBase64(base64).buf; }
     if (buf) forensic = analyzePdf(buf, { docType }).findings || [];
   } catch (_) { forensic = []; }
 
