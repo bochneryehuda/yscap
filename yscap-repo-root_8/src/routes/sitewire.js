@@ -28,6 +28,7 @@ const { sanitizeDateOnly } = require('../lib/fields'); // strict YYYY-MM-DD vali
 const notify = require('../lib/notify');
 const { enqueueSitewirePush } = require('../sitewire/enqueue');
 const { buildXlsx } = require('../lib/xlsx');
+const mediaArchive = require('../sitewire/media-archive');
 const { computeRelease, waiverGate } = require('../sitewire/money');
 
 // Resolve the retainage % for a file: per-file override on the link, else the global default.
@@ -126,6 +127,29 @@ router.get('/files/:id/findings/:drawId', requirePermission('manage_draws'), asy
     const findings = await reconcile.fetchDrawFindings(req.params.drawId);
     res.json(findings);
   } catch (e) { res.status(502).json({ error: e.message }); }
+});
+
+// ---- Durable inspector media (phase 2a): pull Sitewire's EXPIRING photo/video/PDF URLs into PILOT
+// storage so the gallery + branded reports never break. Best-effort + idempotent. manage_draws + IDOR. ----
+router.post('/files/:id/draws/:drawId/archive-media', requirePermission('manage_draws'), async (req, res) => {
+  if (!/^\d+$/.test(req.params.drawId)) return res.status(404).json({ error: 'draw not found' });
+  if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  const own = await db.query(`SELECT 1 FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [req.params.drawId, req.params.id]);
+  if (!own.rowCount) return res.status(404).json({ error: 'draw not found on this file' });
+  try {
+    const r = await mediaArchive.archiveDrawMedia(req.params.id, req.params.drawId);
+    res.json({ ok: true, ...r });
+  } catch (e) { res.status(500).json({ error: 'Could not archive the inspection media — please try again.' }); }
+});
+
+// how many media are already archived for a draw (for the gallery's "✓ archived" indicator).
+router.get('/files/:id/draws/:drawId/archived-media', requirePermission('manage_draws'), async (req, res) => {
+  if (!/^\d+$/.test(req.params.drawId)) return res.status(404).json({ error: 'draw not found' });
+  if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const rows = await mediaArchive.archivedMediaFor(req.params.id, req.params.drawId);
+    res.json({ count: rows.length, media: rows });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
 // ---- POST /api/sitewire/files/:id/reconcile — pull now ----
