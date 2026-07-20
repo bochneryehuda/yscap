@@ -12,11 +12,15 @@ const exts = (over = {}) => ([
 ]);
 const has = (r, code) => r.findings.some((f) => f.code === code);
 
-// ---- A clean chain reaching the vesting LLC raises nothing ----
+// ---- A clean assignment chain reaching the vesting LLC is INTACT and raises nothing ----
 {
   const r = buildSellerChain(ctx, exts());
   assert.strictEqual(r.reachesVesting, true, 'assignee is the vesting LLC → reached');
   assert.strictEqual(r.findings.length, 0, 'a clean chain raises no chain findings');
+  // The assignor→assignee link is a legitimate transfer, NOT a broken mismatch (audit fix #1) —
+  // owner==seller, seller→buyer transfer, buyer→assignee transfer, assignee==vesting.
+  assert.strictEqual(r.status, 'intact', 'a clean assignment is intact, not "broken"');
+  assert.ok(!r.edges.some((e) => e.status === 'mismatch'), 'no false mismatch on a clean assignment');
   assert.ok(r.nodes.length >= 4 && r.nodes.some((n) => n.role === 'Vesting entity (our borrower)'));
 }
 

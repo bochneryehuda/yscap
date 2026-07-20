@@ -37,6 +37,15 @@ assert.deepStrictEqual(codes(cf({ purchasePrice: 412001 })), []);
 assert.deepStrictEqual(codes(cf({ buyerName: 'Blue Sky Capital LLC' })), ['contract_buyer_mismatch']);
 assert.deepStrictEqual(codes(cf({ buyerName: 'Maple Grove Holdings' })), [], 'suffix-less entity must match');
 assert.deepStrictEqual(codes(cf({ buyerName: 'Maple Grove Holdings, L.L.C.' })), [], 'punctuated LLC must match');
+// Buyer is the BORROWER PERSONALLY → no fatal (the seller-chain raises the assign-to-LLC condition).
+{
+  const withBorrower = { ...file, borrower_name: 'John Q Borrower' };
+  assert.deepStrictEqual(codes(cf({ buyerName: 'John Q Borrower' }, withBorrower)), [], 'personal-name buyer defers to the chain (no fatal)');
+  // …but an ENTITY that merely contains the borrower's name is NOT "the borrower personally" → fatal (audit fix #2).
+  assert.deepStrictEqual(codes(cf({ buyerName: 'John Borrower Properties LLC' }, withBorrower)), ['contract_buyer_mismatch'], 'a stranger entity containing the borrower name still fatals');
+  // A one-token borrower name must not over-match a stranger (audit fix #3).
+  assert.deepStrictEqual(codes(cf({ buyerName: 'John Smith' }, { ...file, borrower_name: 'John' })), ['contract_buyer_mismatch'], 'a one-token borrower name does not defer a stranger');
+}
 
 // 5. Assignment: fee mismatch vs file (contract internally consistent, within 15% cap).
 {

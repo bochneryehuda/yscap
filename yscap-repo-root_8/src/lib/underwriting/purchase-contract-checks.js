@@ -22,6 +22,8 @@
  *     assignment_fee, underlying_contract_price }
  */
 const { norm, addrMatches, addrLine, withinMoney, entityMatch, namesMatchLoose, num } = require('./compare');
+// A buyer name that carries a company suffix is an ENTITY, never "the borrower personally".
+const ENTITY_SUFFIX_RE = /\b(llc|l\.?l\.?c|inc|corp|co|ltd|lp|llp|company|holdings|properties|capital|group|ventures|partners|trust)\b/i;
 
 function finding(f) {
   return Object.assign(
@@ -71,7 +73,12 @@ function computeContractFindings(contract, file, opts = {}) {
   // softer `contract_in_personal_name` condition suggestion instead of a hard fatal here (owner-
   // directed 2026-07-20). Only a buyer who is NEITHER the entity NOR the borrower is a fatal.
   if (contract.buyerName && f.entity_name && entityMatch(contract.buyerName, f.entity_name) === false) {
-    const isBorrowerPersonally = f.borrower_name && namesMatchLoose(contract.buyerName, f.borrower_name) === true;
+    // Defer to the chain's softer condition ONLY when the buyer is the borrower AS A PERSON — not an
+    // entity that merely contains the borrower's name ("John Smith Properties LLC"), and only when
+    // the file has a real (≥2-token) borrower name (a one-token name would over-match a stranger).
+    const looksLikeEntity = ENTITY_SUFFIX_RE.test(String(contract.buyerName || ''));
+    const realName = f.borrower_name && String(f.borrower_name).trim().split(/\s+/).filter(Boolean).length >= 2;
+    const isBorrowerPersonally = realName && !looksLikeEntity && namesMatchLoose(contract.buyerName, f.borrower_name) === true;
     if (!isBorrowerPersonally) {
       out.push(finding({ code: 'contract_buyer_mismatch', severity: 'fatal', field: 'buyer_entity',
         docValue: contract.buyerName, fileValue: f.entity_name,

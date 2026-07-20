@@ -98,9 +98,11 @@ function buildSellerChain(ctx = {}, exts = []) {
     const a = nodes[i], b = nodes[i + 1];
     if (!a.present || !b.present) { edges.push({ from: a.role, to: b.role, status: 'gap' }); continue; }
     // Consecutive links that SHOULD be the same party: owner-of-record == contract-seller;
-    // assignee == vesting entity. A contract-seller → contract-buyer link is a real transfer (two
-    // different parties), so it's a 'transfer', not a match check.
-    const isTransfer = /Seller/.test(a.role) && /Buyer/.test(b.role);
+    // assignee == vesting entity. A seller → buyer link AND the assignor → assignee link are real
+    // TRANSFERS (two different parties change hands), so they are 'transfer', not a match check —
+    // otherwise every clean assignment would read as a "broken" mismatch (the assignor is the buyer,
+    // the assignee is the LLC). Only the assignor node carries "(assignor)".
+    const isTransfer = (/Seller/.test(a.role) && /Buyer/.test(b.role)) || /assignor/i.test(a.role);
     if (isTransfer) { edges.push({ from: a.role, to: b.role, status: 'transfer' }); continue; }
     const r = partyInList(a.name, b.names);
     edges.push({ from: a.role, to: b.role, status: r === true ? 'match' : r === false ? 'mismatch' : 'unknown' });
