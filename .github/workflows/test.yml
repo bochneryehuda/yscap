@@ -1,10 +1,14 @@
 name: tests
 
-# The safety net. Runs the 8 incident-derived test suites + the migration-number
+# The safety net. Runs the incident-derived test suites + the migration-number
 # gate on every pull request and every push to main. These suites need no
 # database, no env, and no network — they load the sync modules and exercise
 # them with pure-function assertions and light stubs, so CI is fast (~1 min,
 # dominated by checkout of the committed bundles).
+#
+# On a push to main, once tests pass, the `deploy` job below auto-publishes the
+# site to Render so "merged to main" and "live" can never drift apart again
+# (the recurring "fixed in code but still broken on the site" gap).
 #
 # NOTE: the whole project lives in the nested yscap-repo-root_8/ folder (not the
 # git root), so every step runs with working-directory set there.
@@ -29,3 +33,39 @@ jobs:
           cache-dependency-path: yscap-repo-root_8/package-lock.json
       - run: npm ci
       - run: npm test
+
+  # ---------------------------------------------------------------------------
+  # Auto-publish to Render. Runs ONLY:
+  #   • after `test` succeeds (needs: test) — broken code never auto-deploys, and
+  #   • on a push to main (never on a pull_request or any other branch).
+  # It POSTs to a Render Deploy Hook whose secret URL lives in the repo secret
+  # RENDER_DEPLOY_HOOK_URL (Settings → Secrets and variables → Actions). The URL
+  # is never committed. If the secret is unset the job SKIPS with a clear notice
+  # instead of failing, so this workflow is safe to merge before the hook exists.
+  # Render's own health check (/api/health) still gates the actual go-live, so a
+  # deploy that boots unhealthy is not switched into production.
+  # ---------------------------------------------------------------------------
+  deploy:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render deploy
+        env:
+          HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$HOOK" ]; then
+            echo "::notice::RENDER_DEPLOY_HOOK_URL is not set — skipping auto-publish."
+            echo "Add it under Settings → Secrets and variables → Actions to turn on automatic publishing."
+            exit 0
+          fi
+          echo "Tests passed on main — asking Render to publish the site…"
+          code=$(curl -sS --retry 4 --retry-all-errors --max-time 30 \
+                 -w '%{http_code}' -o /tmp/render_resp.json -X POST "$HOOK" || echo "000")
+          echo "Render responded HTTP $code"
+          cat /tmp/render_resp.json 2>/dev/null || true
+          echo ""
+          case "$code" in
+            200|201|202) echo "::notice::Render deploy triggered successfully." ;;
+            *) echo "::error::Render deploy hook failed (HTTP $code)."; exit 1 ;;
+          esac
