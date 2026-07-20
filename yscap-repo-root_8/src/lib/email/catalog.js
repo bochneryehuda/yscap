@@ -356,8 +356,11 @@ function staffWelcome({ fullName, role, url, hasLogin } = {}) {
   });
 }
 
-/** A borrower on a FUNDED file requested draw setup. Goes to the draws desk and
- *  the assigned loan team so they can coordinate the construction draw process. */
+/** A borrower on a FUNDED file requested draw setup. This ONE message goes to
+ *  everyone on the file at once — the borrower, the draws desk, and the assigned
+ *  loan team — on a single shared thread (owner-directed 2026-07-20: keep everybody
+ *  in one chain, and word it as the kickoff of the draw process rather than an
+ *  internal "setup needed" task). Borrower-safe: property/borrower/loan# only. */
 function drawRequest({ borrowerName, propertyLabel, loanNumber } = {}) {
   const meta = [];
   if (propertyLabel) meta.push({ label: 'Property', value: propertyLabel });
@@ -365,14 +368,21 @@ function drawRequest({ borrowerName, propertyLabel, loanNumber } = {}) {
   if (loanNumber) meta.push({ label: 'Loan #', value: loanNumber });
   return render({
     audience: 'staff',
-    title: 'Draw setup needed — ' + (propertyLabel || 'funded file'),
+    title: 'Let’s get the draw process started — ' + (propertyLabel || 'your funded file'),
     subjectTag: fileTag(loanNumber, propertyLabel),
-    badge: { text: 'Draw setup', tone: 'gold' },
+    badge: { text: 'Draw process', tone: 'gold' },
     replyable: true,
-    preheader: 'A borrower requested draw setup on a funded file.',
-    intro: (borrowerName || 'The borrower') + ' is requesting to set up draws for this funded file. Please coordinate the draw process.',
+    preheader: 'Kicking off the construction draw process for this file.',
+    intro: 'We’re kicking off the construction draw process for this property. '
+      + 'Everyone who works on this file is on this same email — the draws desk and the loan team'
+      + (borrowerName ? ', along with ' + borrowerName : '')
+      + ' — so every draw can be coordinated together in one place.',
+    lines: [
+      'The draws desk will follow up right here with the next steps to get the first draw set up.',
+      'Please keep everything on this thread — just reply to this email and it reaches the whole team at once.',
+    ],
     meta,
-    note: 'Sent to the draws desk and the assigned loan team.',
+    note: 'Reply to this email to reach the draws desk and the loan team together.',
   });
 }
 
