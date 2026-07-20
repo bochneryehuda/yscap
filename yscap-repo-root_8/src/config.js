@@ -340,4 +340,34 @@ module.exports = {
     clientId: process.env.XACTUS_CLIENT_ID,
     endpoint: process.env.XACTUS_ENDPOINT,   // your assigned API base URL
   },
+
+  // --- Azure Document Intelligence (document extraction / OCR) ---
+  // Reads text + layout + fields out of an uploaded document. Endpoint + key come
+  // from the Azure resource's "Keys and Endpoint" tab. The API version is BAKED to
+  // a stable GA (2024-11-30 — the version this resource actually serves; older
+  // 2023-07-31 paths 404 here). Default model is prebuilt-read (OCR + full text);
+  // pass a different prebuilt/custom model per call. Framework stays inert until
+  // the endpoint + key are set.
+  azureDocInt: {
+    endpoint:   (process.env.AZURE_DOCINT_ENDPOINT || '').replace(/\/+$/, ''),
+    key:        process.env.AZURE_DOCINT_KEY,
+    apiVersion: process.env.AZURE_DOCINT_API_VERSION || '2024-11-30',
+    model:      process.env.AZURE_DOCINT_MODEL || 'prebuilt-read',
+    timeoutMs:  parseInt(process.env.AZURE_DOCINT_TIMEOUT_MS || '30000', 10),  // per HTTP call
+    maxPollMs:  parseInt(process.env.AZURE_DOCINT_MAX_POLL_MS || '120000', 10), // total analyze budget
+  },
+
+  // --- Azure OpenAI (GPT-5 reasoning) ---
+  // Chat / reasoning over extracted document content. Uses the base resource
+  // endpoint (…openai.azure.com/), the data-plane KEY, and the Foundry DEPLOYMENT
+  // name (NOT the base model id). The v1 data-plane API version is BAKED to
+  // 'preview' — the stable /openai/v1/chat/completions path verified against this
+  // resource. Framework stays inert until endpoint + key + deployment are set.
+  azureOpenai: {
+    endpoint:   (process.env.AZURE_OPENAI_ENDPOINT || '').replace(/\/+$/, ''),
+    key:        process.env.AZURE_OPENAI_KEY,
+    deployment: process.env.AZURE_OPENAI_DEPLOYMENT || 'gpt-5',
+    apiVersion: process.env.AZURE_OPENAI_API_VERSION || 'preview',
+    timeoutMs:  parseInt(process.env.AZURE_OPENAI_TIMEOUT_MS || '120000', 10), // reasoning can be slow
+  },
 };
