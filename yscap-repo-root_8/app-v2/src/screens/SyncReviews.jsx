@@ -48,6 +48,8 @@ const SITEWIRE_REASON_COPY = {
   sitewire_property_rejected: 'Sitewire rejected the property (usually the address wouldn’t geocode). Fix the address and it retries — nothing was guessed.',
   sitewire_loan_already_in_sitewire: 'This loan number is already on a property in Sitewire that PILOT did NOT create. PILOT only manages the draw process for properties it pushes itself, so it will not adopt or follow this one. To manage it here, delete that property in Sitewire and then push a fresh copy from this file (you’ll be warned first). Otherwise, keep them separate.',
   sitewire_borrower_assign_failed: 'The borrower couldn’t be added to the Sitewire property by email. Check the borrower’s email on the file.',
+  sitewire_budget_drift: 'The construction budget in Sitewire no longer matches what PILOT set — someone may have edited it directly in Sitewire. Restore PILOT’s budget, or accept Sitewire’s.',
+  sitewire_release_drift: 'A draw you already released now shows a different approved amount in Sitewire. The money already wired — this is an alert to reconcile it by hand.',
   sitewire_budget_rejected: 'Sitewire rejected the budget push. The exact reason is in the details below — fix it and it retries.',
   sitewire_bind_missing: 'A budget line we created didn’t come back from Sitewire, so we couldn’t link it. This needs a quick manual check before draws reconcile.',
   sitewire_bind_missing_property: 'Sitewire accepted the property but didn’t return the id we need to link it. Nothing was linked — a person should check the property in Sitewire before draws are set up.',
@@ -164,7 +166,12 @@ const showVal = (v) => (v && /^\d{4}-\d{2}-\d{2}$/.test(String(v)) ? fmtDay(v) :
 // then push a fresh copy" — PILOT never adopts a pre-existing property) or dismiss.
 const SW_ADVISORY = new Set(['sitewire_units_note', 'sitewire_type_unmapped', 'sitewire_reconcile_draw_error', 'sitewire_unknown_op']);
 const SW_DUPE = 'sitewire_loan_already_in_sitewire';
+// Two-sided DRIFT reviews (bidirectional Phase 2): a PILOT-owned value diverged from Sitewire.
+const SW_DRIFT_RESTORABLE = new Set(['sitewire_budget_drift']);   // restore PILOT's value OR accept Sitewire's
+const SW_DRIFT_ALERT = new Set(['sitewire_release_drift']);       // money already moved → acknowledge only
+const swIsDrift = (rc) => SW_DRIFT_RESTORABLE.has(rc) || SW_DRIFT_ALERT.has(rc);
 const swReasonClass = (reason) => String(reason || '').split(':')[0];
+const usdMaybe = (v) => { const n = Number(v); return Number.isFinite(n) ? '$' + Math.round(n / 100).toLocaleString('en-US') : v; };
 
 // Two-sided values: rows written since the upgrade carry clickup_value /
 // portal_value explicitly; older rows derive them from direction (inbound:
@@ -365,7 +372,35 @@ export default function SyncReviews() {
                   title="Close this without action" onClick={() => sitewireAct(r.id, 'dismiss')}>Dismiss</button>
               </div>
             )}
-            {status === 'open' && isSitewire && swReasonClass(r.reason) !== SW_DUPE && !SW_ADVISORY.has(swReasonClass(r.reason)) && (
+            {/* Two-sided DRIFT: show BOTH systems' values, then the right resolution. */}
+            {isSitewire && swIsDrift(swReasonClass(r.reason)) && (r.portal_value != null || r.clickup_value != null) && (
+              <div className="row" style={{ gap: 14, flexWrap: 'wrap', margin: '2px 0 8px' }}>
+                <span className="small"><span className="muted">In PILOT: </span><b>{usdMaybe(r.portal_value)}</b></span>
+                <span className="small"><span className="muted">In Sitewire: </span><b style={{ color: 'var(--bad,#b04a3f)' }}>{usdMaybe(r.clickup_value)}</b></span>
+              </div>
+            )}
+            {status === 'open' && isSitewire && SW_DRIFT_RESTORABLE.has(swReasonClass(r.reason)) && (
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <button className="btn primary btn-sm" disabled={busyId === r.id}
+                  title="Re-push PILOT's budget to Sitewire, overwriting the change made there."
+                  onClick={() => { if (window.confirm('Restore PILOT’s budget in Sitewire?\n\nThis re-pushes the budget PILOT set, overwriting the change made directly in Sitewire.')) sitewireAct(r.id, 'restore'); }}>{busyId === r.id ? '…' : 'Restore PILOT’s budget'}</button>
+                <button className="btn btn-sm" disabled={busyId === r.id}
+                  title="Keep Sitewire's value — close this without pushing. Handle any downstream (e.g. re-register) yourself."
+                  onClick={() => sitewireAct(r.id, 'accept')}>Accept Sitewire’s value</button>
+                <button className="btn btn-sm" disabled={busyId === r.id}
+                  title="Close this without action" onClick={() => sitewireAct(r.id, 'dismiss')}>Dismiss</button>
+              </div>
+            )}
+            {status === 'open' && isSitewire && SW_DRIFT_ALERT.has(swReasonClass(r.reason)) && (
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <button className="btn primary btn-sm" disabled={busyId === r.id}
+                  title="The money already wired — this is an alert to reconcile it by hand. Acknowledge once you have."
+                  onClick={() => sitewireAct(r.id, 'acknowledge')}>{busyId === r.id ? '…' : 'Acknowledge — I’ll reconcile the wire'}</button>
+                <button className="btn btn-sm" disabled={busyId === r.id}
+                  title="Close this without action" onClick={() => sitewireAct(r.id, 'dismiss')}>Dismiss</button>
+              </div>
+            )}
+            {status === 'open' && isSitewire && swReasonClass(r.reason) !== SW_DUPE && !SW_ADVISORY.has(swReasonClass(r.reason)) && !swIsDrift(swReasonClass(r.reason)) && (
               <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                 <button className="btn primary btn-sm" disabled={busyId === r.id}
                   title="Re-attempt the Sitewire push for this file (after fixing the cause above)"

@@ -198,14 +198,22 @@ function buildInputs(app, experience, overrides) {
   if (isIneligiblePropertyType(app.property_type) && !isIneligiblePropertyType(out.propertyType)) {
     out.propertyType = normPropertyType(app.property_type);
   }
-  if (out.manualPricing) {
-    out.forcePrice = true;
-    if (Object.prototype.hasOwnProperty.call(out, 'ovrAcqLTVPct')) out.ovrAcqLTV = num(out.ovrAcqLTVPct) / 100;
-    if (Object.prototype.hasOwnProperty.call(out, 'ovrARLTVPct')) out.ovrARLTV = num(out.ovrARLTVPct) / 100;
-    if (Object.prototype.hasOwnProperty.call(out, 'ovrLTCPct')) out.ovrLTC = num(out.ovrLTCPct) / 100;
-    if (Object.prototype.hasOwnProperty.call(out, 'ovrRatePct')) out.ovrRate = num(out.ovrRatePct) / 100;
-    if (Object.prototype.hasOwnProperty.call(out, 'ovrIrMonths')) out.irMonths = num(out.ovrIrMonths);
-  }
+  // An admin's explicit percent override is converted to the engine's fraction
+  // form whenever it is PRESENT — NOT only under manualPricing. A manually entered
+  // note rate / leverage must ALWAYS be honored, never silently dropped so the deal
+  // re-prices at the AUTO rate. Root cause of "I typed a 10.25 note rate and the
+  // file shows 10.3 everywhere": 10.3 was the engine's auto-computed rate, and the
+  // typed override was reaching buildInputs without the manualPricing flag (a
+  // re-registered file whose stored inputs carried the override but not the flag),
+  // so this gate discarded it. Only an admin can reach here with these keys
+  // (sanitizeOverrides strips them for everyone else), so honoring a present value
+  // is safe. manualPricing still governs force-pricing an otherwise-INELIGIBLE deal.
+  if (Object.prototype.hasOwnProperty.call(out, 'ovrAcqLTVPct')) out.ovrAcqLTV = num(out.ovrAcqLTVPct) / 100;
+  if (Object.prototype.hasOwnProperty.call(out, 'ovrARLTVPct')) out.ovrARLTV = num(out.ovrARLTVPct) / 100;
+  if (Object.prototype.hasOwnProperty.call(out, 'ovrLTCPct')) out.ovrLTC = num(out.ovrLTCPct) / 100;
+  if (Object.prototype.hasOwnProperty.call(out, 'ovrRatePct')) out.ovrRate = num(out.ovrRatePct) / 100;
+  if (Object.prototype.hasOwnProperty.call(out, 'ovrIrMonths')) out.irMonths = num(out.ovrIrMonths);
+  if (out.manualPricing) out.forcePrice = true;
   return out;
 }
 

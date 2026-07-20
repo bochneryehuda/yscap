@@ -40,14 +40,25 @@ const SITEWIRE_ADVISORY = new Set([
 // open (a budget push can't land while the property can't be created), and the UI shows special copy.
 const SITEWIRE_DUPE = 'sitewire_loan_already_in_sitewire';
 
+// Two-sided DRIFT reviews (bidirectional Phase 2): a PILOT-owned value diverged from Sitewire.
+//   budget_drift  → a human likely edited the managed budget directly in Sitewire. Offer RESTORE
+//                   (re-push PILOT's budget to overwrite the drift) or ACCEPT (Sitewire's value stands).
+//   release_drift → an already-RELEASED draw's approved amount changed in Sitewire. The money already
+//                   wired, so this is an ALERT to reconcile the wire by hand — never auto-restored.
+const SITEWIRE_DRIFT_RESTORABLE = new Set(['sitewire_budget_drift']);
+const SITEWIRE_DRIFT_ALERT = new Set(['sitewire_release_drift']);
+const SITEWIRE_TWO_SIDED = new Set([...SITEWIRE_DRIFT_RESTORABLE, ...SITEWIRE_DRIFT_ALERT]);
+
 // The reason "class" is the token before the first ':' (reasons are stored as
 // "sitewire_units_note: the file lists 2 unit(s)…"). Everything downstream keys off the class.
 const sitewireReasonClass = (reason) => String(reason || '').split(':')[0];
 
 // The actions a review of this class may offer (besides the always-allowed "dismiss").
 function sitewireAllowedActions(reasonClass) {
+  if (SITEWIRE_DRIFT_RESTORABLE.has(reasonClass)) return ['restore', 'accept', 'dismiss'];
+  if (SITEWIRE_DRIFT_ALERT.has(reasonClass)) return ['acknowledge', 'dismiss'];
   if (SITEWIRE_ADVISORY.has(reasonClass)) return ['acknowledge', 'dismiss'];
   return ['retry', 'dismiss'];
 }
 
-module.exports = { SITEWIRE_ADVISORY, SITEWIRE_DUPE, sitewireReasonClass, sitewireAllowedActions };
+module.exports = { SITEWIRE_ADVISORY, SITEWIRE_DUPE, SITEWIRE_DRIFT_RESTORABLE, SITEWIRE_DRIFT_ALERT, SITEWIRE_TWO_SIDED, sitewireReasonClass, sitewireAllowedActions };
