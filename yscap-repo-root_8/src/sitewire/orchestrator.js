@@ -229,15 +229,20 @@ async function pushFile(appId, opts = {}) {
   const budgetCents = Math.round(Number(budgetDollars) * 100);
   if (!a.sow_payload || !a.sow_payload.state) { await park({ appId, reason: 'sitewire_no_sow: no Scope of Work saved to explode into a budget' }); return { parked: 'no_sow' }; }
 
-  // G-UNITS: the property's unit count (from the file) must match the Scope of Work's unit count.
-  // We send total_units from the file but explode the budget from the SOW — if they disagree, Sitewire
-  // would show a unit total that doesn't match its per-unit budget lines. Never guess which is right — park.
-  if (a.units != null && Number(a.units) > 0) {
-    const sowUnits = M.unitCount(a.sow_payload.state);
-    if (Number(a.units) !== sowUnits) {
-      await park({ appId, reason: `sitewire_units_mismatch: the file says ${Number(a.units)} unit(s) but the Scope of Work is built for ${sowUnits} — reconcile them before pushing (Sitewire's unit count must match its budget lines)`, current: String(a.units), proposed: String(sowUnits) });
-      return { parked: 'units_mismatch' };
-    }
+  // G-UNITS (owner-directed 2026-07-20 — "use physical building units"): send the PHYSICAL building unit
+  // count and NEVER hard-block on a file-vs-SOW disagreement. A property can legitimately be a 4-family
+  // where the borrower only works the exterior + one unit — the SOW then models fewer/other unit sections
+  // than the building physically has, and that is NOT an error. The physical count = the LARGER of the
+  // file's unit count and the SOW's unit count: it is always >= every per-unit budget/media line the
+  // explosion references (those use the SOW's unit count), so Sitewire can never carry a "Unit N" line for
+  // a unit the property doesn't physically have; units with no work simply carry no budget lines. A
+  // disagreement only raises a NON-BLOCKING advisory (deduped) so staff can fix a stale file count — the
+  // push PROCEEDS (no return/park). The exploded-budget→frozen-budget tie-out (G-RECON) is the real gate.
+  const sowUnits = M.unitCount(a.sow_payload.state);
+  const fileUnits = (a.units != null && Number(a.units) > 0) ? Number(a.units) : 0;
+  const physicalUnits = Math.max(1, fileUnits, sowUnits);
+  if (fileUnits > 0 && fileUnits !== sowUnits) {
+    await park({ appId, dedupe: 'units', reason: `sitewire_units_note: the file lists ${fileUnits} unit(s) but the Scope of Work is built for ${sowUnits} — pushing the physical building count of ${physicalUnits} unit(s) (units with no work carry no budget lines). Update the file's unit count in the application if ${physicalUnits} is wrong.`, current: String(fileUnits), proposed: String(physicalUnits) });
   }
 
   // explode + G-RECON (must tie to the frozen budget to the cent BEFORE any write)
@@ -289,7 +294,7 @@ async function pushFile(appId, opts = {}) {
   // push) — omit a coordinator/checklist id that isn't a finite number (e.g. a mistyped env var).
   if (!Number.isFinite(propertyFields.default_draw_coordinator_id)) delete propertyFields.default_draw_coordinator_id;
   if (!Number.isFinite(propertyFields.draw_checklist_template_id)) delete propertyFields.draw_checklist_template_id;
-  if (a.units) propertyFields.total_units = Number(a.units);
+  propertyFields.total_units = physicalUnits;
   if (devType) propertyFields.development_type = devType;
   if (consType) propertyFields.construction_type = consType;
   // G-ENUM: a property/construction type we couldn't map is LEFT BLANK (never guessed) — but raise

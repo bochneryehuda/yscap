@@ -191,6 +191,7 @@ function StartDrawCard({ appId, onStarted }) {
   const insp = s.inspection || {};
   const cp = s.capital_partner || {};
   const p = s.prereqs || {};
+  const u = s.units || null;
   // the method actually in effect (the coordinator's live switch, else the resolved default)
   const effMethod = method || insp.method;
   const effKind = effMethod === 'traditional' ? 'physical' : 'virtual';
@@ -260,6 +261,12 @@ function StartDrawCard({ appId, onStarted }) {
           <CheckRow ok={p.budget} label="Construction budget frozen" />
           <CheckRow ok={p.scope_of_work} label="Scope of Work saved" />
           <CheckRow ok={p.address} label="Property address complete" />
+          {u && (
+            <div className="small" style={{ marginTop: 8, color: 'var(--text-muted)' }}>
+              Units in Sitewire: <b style={{ color: 'var(--text)' }}>{u.physical}</b>
+              {u.disagree && <span> — the file lists {u.file}, the Scope of Work is built for {u.sow}; PILOT pushes the physical building count ({u.physical}). Units with no work carry no budget lines — fix the file’s unit count if {u.physical} is wrong.</span>}
+            </div>
+          )}
           {!p.capital_partner && cp.ambiguous && <div className="small" style={{ color: 'var(--danger)', marginTop: 6 }}>The capital-partner name matches more than one — fix the lender label on the file.</div>}
           {!p.capital_partner && cp.candidate_name && <div className="small" style={{ color: 'var(--danger)', marginTop: 6 }}>Closest match is “{cp.candidate_name}”, but it isn't exact — link it in Draw settings before we can push.</div>}
         </div>

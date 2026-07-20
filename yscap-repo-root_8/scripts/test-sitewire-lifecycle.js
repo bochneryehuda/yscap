@@ -107,7 +107,7 @@ const propertyBody = {
   default_draw_coordinator_id: 16146,    // Lisa Katz
   draw_checklist_template_id: 84,
   address: addr,
-  total_units: file.units,
+  total_units: Math.max(1, Number(file.units) || 0, M.unitCount(sowState)), // physical building count (owner-directed 2026-07-20)
   development_type: devType,
   construction_type: consType,
   borrower_entity_name: file.llc_name,
@@ -140,9 +140,33 @@ ok('property: address street comes from line1, city/state/zip 1:1 (no guessed pa
 assert.strictEqual(T.findJsonUnsafe(propertyBody), null, 'no null/NaN in the property body');
 ok('property: no field-clearing null / NaN anywhere in the body (a blank can never wipe Sitewire)');
 
-// G-UNITS: file units must equal the SOW unit count, or we park (never push a mismatch)
-assert.strictEqual(Number(file.units), M.unitCount(sowState), 'file units == SOW unit count');
-ok('G-UNITS: file unit count matches the SOW unit count (a mismatch would park, never push)');
+// G-UNITS (owner-directed 2026-07-20 — "use physical building units"): PILOT sends the PHYSICAL building
+// unit count = the LARGER of the file's unit count and the SOW's. A file-vs-SOW disagreement is NOT an
+// error (advisory only, never parks), and the count sent is always >= every per-unit line the explosion
+// references, so Sitewire can never carry a "Unit N" line for a unit the property doesn't physically have.
+const physicalUnits = Math.max(1, Number(file.units) || 0, M.unitCount(sowState));
+assert.strictEqual(propertyBody.total_units, physicalUnits, 'total_units == physical building count (max of file/SOW)');
+assert.ok(physicalUnits >= M.unitCount(sowState), 'physical count is never below the SOW unit count');
+ok('G-UNITS: PILOT pushes the physical building unit count (larger of file/SOW), never below the budget');
+
+// DECOUPLE case — a 4-family where the FILE lists only 2 units (like 1053 Ella T Grasso: exterior + one
+// unit of work). Old logic hard-parked "units_mismatch"; new logic pushes the physical count (4), advisory only.
+{
+  const file2Units = 2;                              // the file's (stale) unit count
+  const sow2 = { propType: 'multi', units: 4,        // SOW built for the 4-family building
+    items: {
+      'exterior:1': { on: true, applies: 'exterior', exterior: 20300, label: 'Exterior work' },
+      'interior:0': { on: true, applies: 'each', each: 1250, label: 'Update unit interior' },
+    } };
+  const phys2 = Math.max(1, file2Units, M.unitCount(sow2));
+  assert.strictEqual(M.unitCount(sow2), 4, 'SOW unit count = 4');
+  assert.strictEqual(phys2, 4, 'file=2 + SOW=4 → physical building count = 4 (never guessed down to 2)');
+  const ex2 = M.explodeSow(sow2, {});
+  const maxUnit = ex2.items.reduce((m, i) => Math.max(m, i.unit_index || 0), 0);
+  assert.ok(maxUnit <= phys2, 'no exploded budget/media line references a unit beyond the pushed physical count');
+  assert.ok(file2Units !== M.unitCount(sow2), 'file and SOW disagree — old logic would have PARKED here');
+  ok('G-UNITS decouple: a 4-family with a stale 2-unit file count pushes 4 units (advisory, never parks)');
+}
 
 // ============================================================================
 // STEP 3 — Sitewire assigns job_item ids; we BIND the crosswalk (never duplicate)
