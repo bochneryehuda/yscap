@@ -236,6 +236,172 @@ function ConditionCoverage({ coverage }) {
   );
 }
 
+// Fraud / red-flag risk — one explainable 0-100 score with its ranked reasons.
+const RISK_BAND = {
+  low: { fg: 'var(--good,#3F7A5B)', bg: 'rgba(63,122,91,.12)', label: 'Low risk' },
+  elevated: { fg: 'var(--amber,#B7791F)', bg: 'var(--amber-bg,#F6EEDD)', label: 'Elevated risk' },
+  high: { fg: 'var(--crit,#B4483C)', bg: 'var(--crit-bg,#F6E7E4)', label: 'High risk' },
+};
+function RiskScore({ risk }) {
+  if (!risk || !risk.reasons || (!risk.reasons.length && risk.score === 0)) return null;
+  const b = RISK_BAND[risk.band] || RISK_BAND.low;
+  return (
+    <div style={{ marginBottom: 22 }}>
+      <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px' }}>Fraud / red-flag score</h4>
+      <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginBottom: 10 }}>Every open signal, weighted into one score. Higher means more to check before proceeding.</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: risk.reasons.length ? 10 : 0, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 26, fontWeight: 800, color: b.fg }}>{risk.score}<span style={{ fontSize: 13, color: 'var(--muted,#4B585C)' }}>/100</span></span>
+        <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.05em', textTransform: 'uppercase', color: b.fg, background: b.bg, padding: '3px 9px', borderRadius: 6 }}>{b.label}</span>
+        {risk.sarRecommended && <span style={{ fontSize: 12, color: 'var(--crit,#B4483C)' }}>Enhanced review / SAR consideration recommended.</span>}
+      </div>
+      {risk.reasons.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+          {risk.reasons.map((r) => (
+            <div key={r.code} style={{ display: 'flex', gap: 10, alignItems: 'baseline', fontSize: 12.5 }}>
+              <span style={{ fontWeight: 700, color: b.fg, minWidth: 34 }}>+{r.weight}</span>
+              <span style={{ overflowWrap: 'anywhere' }}><b>{r.label}</b>{r.evidence && r.evidence !== r.label ? <span style={{ color: 'var(--muted,#4B585C)' }}> — {r.evidence}</span> : null}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// File completeness — the required-document matrix vs what's on file: what's still outstanding.
+const STIP = {
+  cleared: { fg: 'var(--good,#3F7A5B)', bg: 'rgba(63,122,91,.12)', label: 'In & clear' },
+  received: { fg: 'var(--amber,#B7791F)', bg: 'var(--amber-bg,#F6EEDD)', label: 'In — review' },
+  insufficient: { fg: 'var(--crit,#B4483C)', bg: 'var(--crit-bg,#F6E7E4)', label: 'Not usable' },
+  missing: { fg: 'var(--muted,#4B585C)', bg: 'var(--paper,#F6F3EC)', label: 'Missing' },
+};
+const OWNER_LABEL = { borrower: 'Borrower', title: 'Title co.', appraiser: 'Appraiser', internal: 'Internal' };
+function Completeness({ completeness }) {
+  if (!completeness || !completeness.stipulations || !completeness.stipulations.length) return null;
+  const c = completeness;
+  return (
+    <div style={{ marginBottom: 22 }}>
+      <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px' }}>File completeness — what’s still needed</h4>
+      <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginBottom: 10 }}>
+        {c.completenessPct}% of the required documents are in and clear · {c.counts.missing} missing · {c.counts.insufficient} not usable · {c.counts.received} in review
+        {c.ctcBlockers && c.ctcBlockers.length ? <span style={{ color: 'var(--crit,#B4483C)' }}> · {c.ctcBlockers.length} block clear-to-close</span> : null}
+      </div>
+      <div style={{ height: 7, borderRadius: 999, background: 'var(--paper,#F6F3EC)', overflow: 'hidden', marginBottom: 12 }}>
+        <div style={{ width: `${c.completenessPct}%`, height: '100%', background: 'var(--good,#3F7A5B)' }} />
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(210px,1fr))', gap: 8 }}>
+        {c.stipulations.map((s) => {
+          const st = STIP[s.status] || STIP.missing;
+          return (
+            <div key={s.docType} style={{ border: '1px solid var(--line,#E7E1D3)', borderLeft: `4px solid ${st.fg}`, borderRadius: 10, background: 'var(--card,#fff)', padding: '8px 12px' }}>
+              <div style={{ fontSize: 13, fontWeight: 600, overflowWrap: 'anywhere' }}>{s.label}</div>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 4, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: st.fg, background: st.bg, padding: '2px 7px', borderRadius: 6 }}>{st.label}</span>
+                <span style={{ fontSize: 10.5, color: 'var(--muted,#4B585C)' }}>{OWNER_LABEL[s.owner] || s.owner} · {s.gating}</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Derived metrics — LTP / LTV / LTC / ARV-LTV vs their caps, with the binding constraint.
+function Metrics({ metrics }) {
+  if (!metrics || !metrics.rows || !metrics.rows.length) return null;
+  const money = (n) => n == null ? '—' : `$${Math.round(n).toLocaleString('en-US')}`;
+  const pctOf = (v) => v == null ? '—' : `${Math.round(v * 1000) / 10}%`;
+  return (
+    <div style={{ marginBottom: 22 }}>
+      <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px' }}>Loan metrics</h4>
+      <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginBottom: 10 }}>
+        Recomputed from the file. Max supportable loan {money(metrics.maxLoan)}{metrics.binding ? ` (bound by ${metrics.rows.find((r) => r.key === metrics.binding)?.label || metrics.binding})` : ''}.
+      </div>
+      <div style={{ overflowX: 'auto', border: '1px solid var(--line,#E7E1D3)', borderRadius: 12 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 420, fontSize: 12.5 }}>
+          <thead><tr>{['Metric', 'Value', 'Cap', 'Cap amount', ''].map((h, i) => <th key={i} style={{ padding: '7px 10px', textAlign: i > 0 && i < 4 ? 'right' : 'left', fontSize: 10.5, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)', borderBottom: '1px solid var(--line,#E7E1D3)' }}>{h}</th>)}</tr></thead>
+          <tbody>
+            {metrics.rows.map((r) => (
+              <tr key={r.key} style={{ background: r.pass ? 'transparent' : 'var(--crit-bg,#F6E7E4)' }}>
+                <td style={{ padding: '7px 10px', fontWeight: 600 }}>{r.label}{metrics.binding === r.key && <span style={{ fontSize: 10, color: 'var(--gold,#AE8746)', marginLeft: 6 }}>binds</span>}</td>
+                <td style={{ padding: '7px 10px', textAlign: 'right', color: r.pass ? 'var(--ink,#141B22)' : 'var(--crit,#B4483C)', fontWeight: r.pass ? 400 : 700 }}>{pctOf(r.value)}</td>
+                <td style={{ padding: '7px 10px', textAlign: 'right', color: 'var(--muted,#4B585C)' }}>{pctOf(r.cap)}</td>
+                <td style={{ padding: '7px 10px', textAlign: 'right' }}>{money(r.capAmount)}</td>
+                <td style={{ padding: '7px 10px', color: 'var(--crit,#B4483C)', fontSize: 11 }}>{r.over > 0 ? `${money(r.over)} over` : ''}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// Staleness — every dated document's freshness against the projected closing date.
+const FRESH = {
+  fresh: { fg: 'var(--good,#3F7A5B)', label: 'Fresh' },
+  refresh_before_close: { fg: 'var(--amber,#B7791F)', label: 'Refresh before close' },
+  stale: { fg: 'var(--crit,#B4483C)', label: 'Stale' },
+  expired: { fg: 'var(--crit,#B4483C)', label: 'Expired' },
+  unknown: { fg: 'var(--muted,#4B585C)', label: 'Unknown' },
+};
+function StalenessBoard({ staleness }) {
+  if (!staleness || !staleness.board || !staleness.board.length) return null;
+  return (
+    <div style={{ marginBottom: 22 }}>
+      <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px' }}>Document freshness</h4>
+      <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginBottom: 10 }}>
+        Each dated document’s validity{staleness.closingDate ? ` at the projected close (${staleness.closingDate})` : ' as of today'}.
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(220px,1fr))', gap: 8 }}>
+        {staleness.board.map((d, i) => {
+          const f = FRESH[d.status] || FRESH.unknown;
+          return (
+            <div key={i} style={{ border: '1px solid var(--line,#E7E1D3)', borderLeft: `4px solid ${f.fg}`, borderRadius: 10, background: 'var(--card,#fff)', padding: '8px 12px' }}>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>{d.label}</div>
+              <div style={{ fontSize: 11, color: 'var(--muted,#4B585C)', marginTop: 2 }}>as of {d.asOf}{d.refreshBy && d.kind === 'freshness' ? ` · good until ${d.refreshBy}` : ''}</div>
+              <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: f.fg, marginTop: 4, display: 'inline-block' }}>{f.label}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Entity-resolution chain — the signing-authority / ownership chain as one status.
+const EDGE = { ok: { fg: 'var(--good,#3F7A5B)', mark: '✓' }, broken: { fg: 'var(--crit,#B4483C)', mark: '✕' }, missing: { fg: 'var(--muted,#4B585C)', mark: '–' } };
+const CHAIN = { intact: { fg: 'var(--good,#3F7A5B)', label: 'Chain intact' }, broken: { fg: 'var(--crit,#B4483C)', label: 'Chain broken' }, incomplete: { fg: 'var(--amber,#B7791F)', label: 'Chain incomplete' } };
+function EntityChain({ entityChain }) {
+  if (!entityChain || !entityChain.edges || !entityChain.edges.length) return null;
+  const st = CHAIN[entityChain.status] || CHAIN.incomplete;
+  return (
+    <div style={{ marginBottom: 22 }}>
+      <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px' }}>Entity chain{entityChain.vestingName ? ` — ${entityChain.vestingName}` : ''}</h4>
+      <div style={{ marginBottom: 10 }}>
+        <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.05em', textTransform: 'uppercase', color: st.fg }}>{st.label}</span>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        {entityChain.edges.map((e) => {
+          const g = EDGE[e.status] || EDGE.missing;
+          return (
+            <div key={e.id} style={{ display: 'flex', gap: 10, alignItems: 'baseline', fontSize: 12.5 }}>
+              <span style={{ color: g.fg, fontWeight: 800, minWidth: 14 }}>{g.mark}</span>
+              <span><b>{e.label}</b>{e.detail ? <span style={{ color: 'var(--muted,#4B585C)' }}> — {e.detail}</span> : null}</span>
+            </div>
+          );
+        })}
+      </div>
+      {entityChain.owners && entityChain.owners.length > 0 && (
+        <div style={{ marginTop: 8, fontSize: 11.5, color: 'var(--muted,#4B585C)' }}>
+          Owners: {entityChain.owners.map((o) => `${o.name}${o.ownershipPct != null ? ` ${o.ownershipPct}%` : ''}${o.beneficialOwner && !o.identified ? ' (no ID)' : ''}`).join(' · ')}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function UnderwritingPanel({ appId, docs = [], readOnly = false, onSummary }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -285,6 +451,11 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
   const cross = (data && data.crossDocument) || [];
   const tieout = data && data.tieout;
   const coverage = (data && data.conditionCoverage) || [];
+  const staleness = data && data.staleness;
+  const metrics = data && data.metrics;
+  const entityChain = data && data.entityChain;
+  const completeness = data && data.completeness;
+  const risk = data && data.risk;
   const exts = (data && data.extractions) || [];
   const docTypes = (data && data.docTypes) || [];
   const analyzers = (data && data.analyzers) || {};
@@ -328,8 +499,23 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
         </div>
       )}
 
+      {/* fraud / red-flag score — the top-of-file risk read */}
+      <RiskScore risk={risk} />
+
+      {/* file completeness — what's still needed to close */}
+      <Completeness completeness={completeness} />
+
       {/* conditions coverage — ties every document back to the checklist */}
       <ConditionCoverage coverage={coverage} />
+
+      {/* loan metrics — LTP/LTV/LTC/ARV vs caps */}
+      <Metrics metrics={metrics} />
+
+      {/* entity-resolution chain */}
+      <EntityChain entityChain={entityChain} />
+
+      {/* document freshness / staleness */}
+      <StalenessBoard staleness={staleness} />
 
       {/* the data-comparison matrix — the full stare-and-compare across the file */}
       <TieOutMatrix tieout={tieout} />
