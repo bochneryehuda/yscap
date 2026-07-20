@@ -16,11 +16,15 @@ const STRUCTURE_LOCKED = ['clear_to_close', 'funded', 'declined', 'withdrawn'];
 const LABEL = { clear_to_close: 'Clear to Close', funded: 'Funded', declined: 'Declined', withdrawn: 'Withdrawn' };
 
 // Returns a human-readable reason string when the file's structure is locked, or
-// null when it's still editable. The freeze applies to EVERYONE — but a super_admin
-// who has deliberately UNLOCKED this file (opts.actor is a super_admin and the file
-// carries an active structural_unlocked_at) may edit it to correct a mistake; every
-// other actor, and every path that passes no actor (borrower edits, ClickUp sync),
-// stays frozen. Pass { actor: req.actor } to honor an active unlock.
+// null when it's still editable. The freeze applies to EVERYONE on every write path
+// that CALLS this — but a super_admin who has deliberately UNLOCKED this file
+// (opts.actor is a super_admin and the file carries an active
+// structural_unlocked_at) may edit it to correct a mistake; every other actor, and
+// every caller that passes no actor (e.g. borrower edit paths), stays frozen. Pass
+// { actor: req.actor } to honor an active unlock. NOTE: the ClickUp inbound sync
+// writes economics directly and does NOT yet consult this — a funded file's numbers
+// changed on the ClickUp side are a separate, tracked follow-up (the sync layer,
+// which has its own review/park machinery), not covered by this freeze.
 async function structuralLockReason(appId, client = db, opts = {}) {
   try {
     const r = await client.query('SELECT status, structural_unlocked_at FROM applications WHERE id=$1', [appId]);

@@ -65,6 +65,17 @@ const statusOf = async (id) => (await db.query(`SELECT status FROM applications 
     assert((await patch(superTok, { purchasePrice: 888888 })).status === 409, 'after re-locking, editing is blocked again');
     assert((await priceOf(appId)) === 999999, 'the price stayed at the corrected value');
 
+    // F1 — the staff completeness path is also blocked on a funded file (it writes
+    // the same frozen economics fields).
+    assert((await call(server, 'POST', `/api/staff/applications/${appId}/complete-fields`, superTok, { rehab_budget: '250000' })).status === 409,
+      'staff complete-fields is blocked on a funded file (F1)');
+    assert((await priceOf(appId)) === 999999, 'complete-fields did not change the funded file');
+
+    // F2 — undoing an appraisal import (which reverts economics) is blocked on funded.
+    await db.query(`INSERT INTO appraisals (application_id, superseded, imported_at) VALUES ($1,false,now())`, [appId]);
+    assert((await call(server, 'POST', `/api/appraisal/${appId}/undo-import`, superTok, {})).status === 409,
+      'appraisal undo-import is blocked on a funded file (F2)');
+
     // M6 — approving a change request cannot rewrite a funded file's economics.
     const cid = (await db.query(
       `INSERT INTO change_requests (application_id, field, field_label, new_value, status, requested_by_kind, requested_by_id)

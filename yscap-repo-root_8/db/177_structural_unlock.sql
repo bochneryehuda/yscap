@@ -9,8 +9,10 @@
 --
 -- These columns record an ACTIVE unlock (who opened it, when, and why). While
 -- structural_unlocked_at is set, structuralLockReason() lets a super_admin write to
--- that file; everyone else — and every non-interactive path (borrower edits,
--- ClickUp sync) — stays frozen. Re-locking clears the columns. Every lock/unlock is
+-- that file; everyone else — and every write path that calls the freeze with no
+-- actor (borrower edit paths) — stays frozen. Re-locking clears the columns. (The
+-- ClickUp inbound sync writes economics directly and is a separate follow-up.)
+-- Every lock/unlock is
 -- audited by the route. Idempotent.
 ALTER TABLE applications ADD COLUMN IF NOT EXISTS structural_unlocked_at timestamptz;
 ALTER TABLE applications ADD COLUMN IF NOT EXISTS structural_unlocked_by uuid;

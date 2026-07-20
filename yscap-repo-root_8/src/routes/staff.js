@@ -4600,6 +4600,13 @@ async function completeFields(req, res, borrowerScoped) {
         return res.status(403).json({ error: `Only an underwriter or admin can raise ${raised.join(' and ')} on a priced file.` });
     }
     if (appSets.length) {
+      // #84 — this staff completeness path writes the SAME frozen economics fields
+      // as PATCH /details (program / loan_type / property_type / price / as-is / ARV
+      // / rehab budget), so it must honor the clear-to-close / funded freeze too — a
+      // super_admin can unlock the file to correct it. Only the economics UPDATE is
+      // guarded (a request with personal borrower fields only is unaffected).
+      const lock = await require('../lib/file-lock').structuralLockReason(req.params.id, db, { actor: req.actor });
+      if (lock) return res.status(409).json({ error: lock, locked: true });
       appSets.push('updated_at=now()');
       await db.query(`UPDATE applications SET ${appSets.join(', ')} WHERE id=$1`, appVals);
       enqueueClickupPush(req.params.id, appKeys).catch(() => {});

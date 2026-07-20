@@ -200,6 +200,11 @@ router.post('/:appId/undo-import', requirePermission('sign_off_conditions'), asy
   try {
     const app = await fileFor(req, req.params.appId);
     if (!app) return res.status(404).json({ error: 'not found' });
+    // #84 — undoing an import reverts the loan's economics (arv / as-is / price /
+    // units / type) back to their pre-appraisal values, so it is frozen on a
+    // clear-to-close / funded file (a super_admin can unlock to correct it).
+    const lock = await require('../lib/file-lock').structuralLockReason(app.id, db, { actor: req.actor });
+    if (lock) return res.status(409).json({ error: lock, locked: true });
     const out = await undoAppraisalImport(app.id, { actor: req.actor.id });
     if (!out.ok) return res.status(400).json({ error: out.error });
     await audit(req.actor.id, 'appraisal_import_undone', app.id, { removedAppraisalId: out.removedAppraisalId });
