@@ -32,7 +32,6 @@ const scoring = require('./scoring');
 // ---- small pure helpers ----------------------------------------------------
 const num = (v) => { if (v == null || v === '') return null; const n = Number(String(v).replace(/[^0-9.\-]/g, '')); return Number.isFinite(n) ? n : null; };
 const numOr0 = (v) => num(v) || 0;
-const roundAmt = (v) => Math.round(numOr0(v));
 const digits = (v) => String(v == null ? '' : v).replace(/\D/g, '');
 const last4 = (masked) => digits(masked).slice(-4);
 // Normalize a free-text label for matching: uppercase, strip everything but
@@ -128,6 +127,7 @@ function compareReports(cur, prev, opts = {}) {
   const cBracket = cur.report.representative_bracket || (cScore != null ? scoring.bracketOf(cScore) : null);
   const pBracket = prev.report.representative_bracket || (pScore != null ? scoring.bracketOf(pScore) : null);
   let representativeScore = null;
+  let repHeadline = false; // did the representative FICO already tell the score story?
   if (cScore != null && pScore != null) {
     const delta = cScore - pScore;
     const bracketChanged = !!(cBracket && pBracket && cBracket !== pBracket);
@@ -137,6 +137,7 @@ function compareReports(cur, prev, opts = {}) {
       let t = `Representative FICO went ${delta > 0 ? 'up' : 'down'} ${n} point${n === 1 ? '' : 's'} (${pScore} → ${cScore})`;
       if (bracketChanged) t += ` — pricing bracket changed (${pBracket} → ${cBracket})`;
       push(delta > 0 ? 'good' : 'bad', t, bracketChanged ? 4 : 2);
+      repHeadline = true;
     }
   }
 
@@ -151,13 +152,28 @@ function compareReports(cur, prev, opts = {}) {
       scoreDeltas.push({ bureau: s.bureau || null, reportBorrowerId: s.report_borrower_id != null ? s.report_borrower_id : null, borrowerId: s.borrower_id || null, model: s.model || null, current: cv, previous: pv, delta: cv - pv });
     }
   }
+  // If a bureau's score moved but the REPRESENTATIVE didn't cross (so no headline
+  // above), surface the bureau move so `changed` isn't true-with-nothing-shown.
+  if (scoreDeltas.length && !repHeadline) {
+    const parts = scoreDeltas.slice(0, 3).map((d) => `${d.bureau || 'Bureau'} ${d.previous}→${d.current}`);
+    const more = scoreDeltas.length > 3 ? ` +${scoreDeltas.length - 3} more` : '';
+    const up = scoreDeltas.some((d) => d.delta > 0), down = scoreDeltas.some((d) => d.delta < 0);
+    push(up && !down ? 'good' : (down && !up ? 'bad' : 'neutral'), `Bureau score${scoreDeltas.length > 1 ? 's' : ''} changed: ${parts.join(', ')}${more}`, 2);
+  }
 
   // ---- underwriting findings: new vs cleared -------------------------------
   // Match on type/code + which reported borrower it is about. A finding present
   // (and unreconciled) in the previous pull but gone from this pull is CLEARED —
   // that is the human story behind the gate's "clean re-pull supersedes" rule.
   const fKey = (f) => `${f.type || f.code || ''}|${f.reportBorrowerId != null ? f.reportBorrowerId : ''}`;
-  const activeOf = (rep) => normalizeFindings(rep && rep.underwriting_finding).filter((f) => f && !f.reconciled);
+  // "Active" must match the gate's own definition (underwriting.activeFatalFindings):
+  // a WHOLE-report reconcile (underwriting_finding_reconciled_at set) clears EVERY
+  // finding, not just the per-finding-flagged ones — otherwise a finding a human
+  // already reconciled on the prior pull would be mis-reported as "cleared by this
+  // re-pull", or one reconciled on this pull would show as "no change".
+  const activeOf = (rep) => (rep && rep.underwriting_finding_reconciled_at)
+    ? []
+    : normalizeFindings(rep && rep.underwriting_finding).filter((f) => f && !f.reconciled);
   const curActive = activeOf(cur.report);
   const prevActive = activeOf(prev.report);
   const prevFKeys = new Set(prevActive.map(fKey));
@@ -168,14 +184,21 @@ function compareReports(cur, prev, opts = {}) {
   for (const f of newFindings) push('bad', `New ${f.label.toLowerCase()} on this pull`, f.severity === 'fatal' ? 4 : 2);
 
   // ---- collections: new vs cleared -----------------------------------------
-  const colKey = (c) => `${c.bureau || ''}|${normStr(c.collection_agency_name)}|${normStr(c.original_creditor_name)}|${roundAmt(c.amount)}`;
+  // Key on IDENTITY ONLY (bureau|agency|original-creditor), NOT the amount — a
+  // collection's balance routinely drifts between pulls (interest, partial pay),
+  // and folding the amount into the key would make the SAME collection look both
+  // "cleared" AND "new", falsely reporting a rosy "collection cleared". (Matches
+  // how tradelines key on identity and treat the balance as a per-line attribute.)
+  const colKey = (c) => `${c.bureau || ''}|${normStr(c.collection_agency_name)}|${normStr(c.original_creditor_name)}`;
   const col = diffSets(cur.collections, prev.collections, colKey);
   const slimCol = (c) => ({ bureau: c.bureau || null, agency: c.collection_agency_name || null, originalCreditor: c.original_creditor_name || null, amount: num(c.amount) });
   if (col.added.length) push('bad', `${col.added.length} new collection${col.added.length > 1 ? 's' : ''} (${money(col.added.reduce((s, c) => s + numOr0(c.amount), 0))})`, 3);
   if (col.removed.length) push('good', `${col.removed.length} collection${col.removed.length > 1 ? 's' : ''} cleared`, 3);
 
   // ---- public records: new vs cleared --------------------------------------
-  const prKey = (p) => `${p.bureau || ''}|${normStr(p.record_type)}|${p.filed_date || ''}|${roundAmt(p.amount)}`;
+  // Identity = bureau|record-type|filed-date (a judgment/lien amount can be
+  // amended between pulls; keying on it would false-"clear" the same record).
+  const prKey = (p) => `${p.bureau || ''}|${normStr(p.record_type)}|${p.filed_date || ''}`;
   const pub = diffSets(cur.publicRecords, prev.publicRecords, prKey);
   const slimPub = (p) => ({ bureau: p.bureau || null, recordType: p.record_type || null, filedDate: p.filed_date || null, amount: num(p.amount) });
   if (pub.added.length) push('bad', `${pub.added.length} new public record${pub.added.length > 1 ? 's' : ''}`, 4);
@@ -205,6 +228,7 @@ function compareReports(cur, prev, opts = {}) {
     if (!isClosed(p) && isClosed(c)) nowPaid++;
   }
   if (tl.added.length) push('neutral', `${tl.added.length} new account${tl.added.length > 1 ? 's' : ''} reported`, 1);
+  if (tl.removed.length) push('neutral', `${tl.removed.length} account${tl.removed.length > 1 ? 's' : ''} no longer reported`, 1);
   if (newlyDerogatory) push('bad', `${newlyDerogatory} account${newlyDerogatory > 1 ? 's' : ''} newly reported derogatory`, 4);
   if (newlyLate) push('bad', `${newlyLate} account${newlyLate > 1 ? 's' : ''} picked up a new late payment`, 3);
   if (nowPaid) push('good', `${nowPaid} account${nowPaid > 1 ? 's' : ''} now paid/closed`, 1);
@@ -226,15 +250,22 @@ function compareReports(cur, prev, opts = {}) {
     const d = curRisk.revolvingUtilizationPct - prevRisk.revolvingUtilizationPct;
     push(d < 0 ? 'good' : 'bad', `Revolving utilization ${d < 0 ? 'dropped' : 'rose'} from ${prevRisk.revolvingUtilizationPct}% to ${curRisk.revolvingUtilizationPct}%`, Math.abs(d) >= 15 ? 2 : 1);
   }
+  // A MATERIAL total-balance move (≥ $1,000) that no line-level headline above
+  // already captured — surfaced so `changed` never hides a real dollar swing.
+  const balDelta = numOr0(curRisk.totalBalance) - numOr0(prevRisk.totalBalance);
+  if (Math.abs(balDelta) >= 1000) {
+    push(balDelta < 0 ? 'good' : 'neutral', `Total balances ${balDelta < 0 ? 'fell' : 'rose'} ${money(Math.abs(balDelta))} (${money(prevRisk.totalBalance)} → ${money(curRisk.totalBalance)})`, 1);
+  }
 
   // Most significant first (weight desc), then by original order for stability.
   const sortedHeadlines = headlines.map((h, i) => ({ h, i }))
     .sort((a, b) => (b.h.weight - a.h.weight) || (a.i - b.i)).map((x) => x.h);
 
-  const changed = sortedHeadlines.length > 0 || scoreDeltas.length > 0
-    || col.added.length > 0 || col.removed.length > 0 || pub.added.length > 0 || pub.removed.length > 0
-    || inq.added.length > 0 || tl.added.length > 0 || tl.removed.length > 0
-    || newFindings.length > 0 || clearedFindings.length > 0;
+  // `changed` is defined as "there is a headline to show" — every material delta
+  // above emits one — so the flag exactly matches what the panel renders (no
+  // true-but-blank panel, and no unshown-but-flagged change). Immaterial drift
+  // (a sub-$1k balance nudge, a collection amount tick) intentionally stays quiet.
+  const changed = sortedHeadlines.length > 0;
 
   return {
     hasPrevious: true,

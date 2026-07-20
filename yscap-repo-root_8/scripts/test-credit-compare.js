@@ -198,5 +198,115 @@ const hasText = (r, sub) => r.headlines.some((h) => h.text.includes(sub));
   eq('identical reports → no headlines', r.headlines.length, 0);
 }
 
+// ---- 12. AUDIT FIX: a collection whose BALANCE drifts is NOT a false clear+new
+{
+  const prevCol = { bureau: 'Equifax', collection_agency_name: 'ABC Collections', original_creditor_name: 'Cap One', amount: '500' };
+  const curCol = { bureau: 'Equifax', collection_agency_name: 'ABC Collections', original_creditor_name: 'Cap One', amount: '520' }; // +interest
+  const r = compareReports(
+    { report: {}, scores: [], tradelines: [], inquiries: [], publicRecords: [], collections: [curCol] },
+    { report: {}, scores: [], tradelines: [], inquiries: [], publicRecords: [], collections: [prevCol] },
+    { nowMs: NOW });
+  eq('amount drift → NOT a new collection', r.collections.added.length, 0);
+  eq('amount drift → NOT a cleared collection', r.collections.removed.length, 0);
+  ok('amount drift emits no false "cleared" headline', !hasText(r, 'collection cleared') && !hasText(r, 'new collection'));
+}
+
+// ---- 12b. public-record amount amended → NOT a false clear+new --------------
+{
+  const p = (amt) => ({ bureau: 'TransUnion', record_type: 'Judgment', filed_date: '2025-03-01', amount: amt });
+  const r = compareReports(
+    { report: {}, scores: [], tradelines: [], collections: [], inquiries: [], publicRecords: [p('3000')] },
+    { report: {}, scores: [], tradelines: [], collections: [], inquiries: [], publicRecords: [p('2500')] },
+    { nowMs: NOW });
+  eq('judgment amount amended → not new', r.publicRecords.added.length, 0);
+  eq('judgment amount amended → not cleared', r.publicRecords.removed.length, 0);
+}
+
+// ---- 13. AUDIT FIX: a WHOLE-report reconcile clears findings (not "cleared") -
+{
+  // prev had a fraud finding but the whole report was reconciled by a human
+  // (underwriting_finding_reconciled_at set) → it must NOT show as "cleared by
+  // this re-pull".
+  const prev = { report: { underwriting_finding: { findings: [
+    { type: 'fraud_alert', code: 'fraud_alert', severity: 'fatal', reportBorrowerId: 1, reconciled: false, message: 'x' },
+  ] }, underwriting_finding_reconciled_at: '2026-07-19T00:00:00Z' },
+    scores: [], tradelines: [], collections: [], inquiries: [], publicRecords: [] };
+  const cur = { report: { underwriting_finding: null }, scores: [], tradelines: [], collections: [], inquiries: [], publicRecords: [] };
+  const r = compareReports(cur, prev, { nowMs: NOW });
+  eq('whole-report-reconciled finding is NOT reported cleared', r.findings.cleared.length, 0);
+  ok('no false "cleared" headline for a human-reconciled prior finding', !hasText(r, 'cleared since the last pull'));
+}
+
+// ---- 14. AUDIT FIX: a bureau score moves but representative doesn't → headline
+{
+  const cur = { report: { representative_score: 700, representative_bracket: '700-719' },
+    scores: [{ report_borrower_id: 1, bureau: 'Experian', model: 'FICO', value: 665 }],
+    tradelines: [], collections: [], inquiries: [], publicRecords: [] };
+  const prev = { report: { representative_score: 700, representative_bracket: '700-719' },
+    scores: [{ report_borrower_id: 1, bureau: 'Experian', model: 'FICO', value: 640 }],
+    tradelines: [], collections: [], inquiries: [], publicRecords: [] };
+  const r = compareReports(cur, prev, { nowMs: NOW });
+  eq('representative unchanged → no rep headline', r.representativeScore.delta, 0);
+  ok('bureau move surfaces a headline', hasText(r, 'Bureau score changed: Experian 640→665'));
+  eq('changed is true (headline present)', r.changed, true);
+}
+
+// ---- 14b. when representative DID move, no redundant bureau headline --------
+{
+  const cur = { report: { representative_score: 720, representative_bracket: '720-739' },
+    scores: [{ report_borrower_id: 1, bureau: 'Equifax', model: 'FICO', value: 720 }],
+    tradelines: [], collections: [], inquiries: [], publicRecords: [] };
+  const prev = { report: { representative_score: 700, representative_bracket: '700-719' },
+    scores: [{ report_borrower_id: 1, bureau: 'Equifax', model: 'FICO', value: 700 }],
+    tradelines: [], collections: [], inquiries: [], publicRecords: [] };
+  const r = compareReports(cur, prev, { nowMs: NOW });
+  ok('representative headline present', hasText(r, 'went up 20 points'));
+  ok('no redundant "Bureau scores changed" headline', !hasText(r, 'Bureau score'));
+}
+
+// ---- 15. AUDIT FIX: material total-balance move surfaces (and drives changed)
+{
+  const tl = (bal) => ({ account_type: 'Installment', account_status_type: 'Open', unpaid_balance: bal, is_authorized_user: false });
+  const r = compareReports(
+    { report: {}, scores: [], collections: [], inquiries: [], publicRecords: [], tradelines: [tl('15000')] },
+    { report: {}, scores: [], collections: [], inquiries: [], publicRecords: [], tradelines: [tl('3000')] },
+    { nowMs: NOW });
+  ok('material balance rise → headline', hasText(r, 'Total balances rose $12,000'));
+  eq('changed true', r.changed, true);
+}
+
+// ---- 15b. an IMMATERIAL balance nudge (< $1,000) stays quiet ----------------
+{
+  const tl = (bal) => ({ account_type: 'Installment', account_status_type: 'Open', unpaid_balance: bal, is_authorized_user: false, creditor_name: 'Same', account_identifier_masked: '••1', bureau: 'Equifax' });
+  const r = compareReports(
+    { report: {}, scores: [], collections: [], inquiries: [], publicRecords: [], tradelines: [tl('3200')] },
+    { report: {}, scores: [], collections: [], inquiries: [], publicRecords: [], tradelines: [tl('3000')] },
+    { nowMs: NOW });
+  eq('sub-$1k balance nudge → no headline', r.headlines.length, 0);
+  eq('changed matches (false — nothing shown)', r.changed, false);
+}
+
+// ---- 16. AUDIT FIX: a tradeline dropping off is surfaced -------------------
+{
+  const a = { bureau: 'Equifax', creditor_name: 'Old Store', account_type: 'Revolving', account_identifier_masked: '••7777' };
+  const r = compareReports(
+    { report: {}, scores: [], collections: [], inquiries: [], publicRecords: [], tradelines: [] },
+    { report: {}, scores: [], collections: [], inquiries: [], publicRecords: [], tradelines: [a] },
+    { nowMs: NOW });
+  eq('one account removed', r.tradelines.removed.length, 1);
+  ok('removed account → headline', hasText(r, '1 account no longer reported'));
+  eq('changed true', r.changed, true);
+}
+
+// ---- 17. changed ≡ headlines.length>0 (consistency invariant) --------------
+{
+  // identical reports → no headlines → changed false
+  const one = () => ({ report: { representative_score: 700, underwriting_finding: null },
+    scores: [], tradelines: [], collections: [], inquiries: [], publicRecords: [] });
+  const r = compareReports(one(), one(), { nowMs: NOW });
+  eq('changed equals whether any headline exists', r.changed, r.headlines.length > 0);
+  eq('identical → changed false', r.changed, false);
+}
+
 console.log(`\ncredit-compare: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
