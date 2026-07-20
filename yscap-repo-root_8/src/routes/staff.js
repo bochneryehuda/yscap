@@ -2457,8 +2457,83 @@ router.get('/applications/:id/emails/:msgId', async (req, res) => {
         ? 'This reply predates archiving — its body was not stored. Newer replies show in full.'
         : 'The full body for this message was not stored.';
     }
+    // Mark which attachments have their BYTES stored (the #442 sent_emails capture),
+    // so the reader can offer a real download link. Best-effort.
+    if (Array.isArray(out.attachments) && out.attachments.length && row.notification_id) {
+      try {
+        const se = (await db.query(
+          `SELECT attachments FROM sent_emails WHERE notification_id=$1 AND application_id=$2 ORDER BY created_at DESC LIMIT 1`,
+          [row.notification_id, req.params.id])).rows[0];
+        const bytes = se && Array.isArray(se.attachments) ? se.attachments : [];
+        out.attachments = out.attachments.map((a, i) => ({ ...a, downloadable: !!(bytes[i] && bytes[i].storage_ref) }));
+      } catch (_) { /* best-effort */ }
+    }
     res.json(out);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Download one attachment's bytes (stored by the #442 sent_emails capture), keyed
+// through the email_messages row → its notification → sent_emails. Staff-scoped.
+router.get('/applications/:id/emails/:msgId/attachments/:idx', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  if (!/^[0-9a-f-]{36}$/i.test(String(req.params.msgId)) || !/^\d{1,3}$/.test(String(req.params.idx))) return res.status(404).json({ error: 'not found' });
+  try {
+    const m = (await db.query(`SELECT notification_id FROM email_messages WHERE id=$1 AND application_id=$2`, [req.params.msgId, appId])).rows[0];
+    if (!m || !m.notification_id) return res.status(404).json({ error: 'not found' });
+    const e = (await db.query(
+      `SELECT attachments FROM sent_emails WHERE notification_id=$1 AND application_id=$2 ORDER BY created_at DESC LIMIT 1`,
+      [m.notification_id, appId])).rows[0];
+    const a = e && Array.isArray(e.attachments) ? e.attachments[Number(req.params.idx)] : null;
+    if (!a || !a.storage_ref) return res.status(404).json({ error: 'attachment not available' });
+    let buf; try { buf = await storage.read(a.storage_ref); } catch (_) { buf = null; }
+    if (!buf) return res.status(404).json({ error: 'attachment bytes missing' });
+    // Sanitize the stored content-type before it becomes a response header (defense
+    // in depth — a header with illegal chars would otherwise throw a 500).
+    const ct = String(a.content_type || a.contentType || 'application/octet-stream').replace(/[^\w.+/-]/g, '').slice(0, 100) || 'application/octet-stream';
+    res.setHeader('Content-Type', ct);
+    res.setHeader('Content-Disposition', `attachment; filename="${String(a.filename || 'attachment').replace(/[^\w.\- ]+/g, '_')}"`);
+    res.send(buf);
+  } catch (err) { res.status(500).json({ error: 'Could not download this attachment.' }); }
+});
+
+// Resend a FILE email — troubleshoot a failed/in-app-only send by re-delivering the
+// exact rendered email to its original recipients (re-attaching stored bytes when
+// available). Outbound only; captured into the history as a fresh message.
+router.post('/applications/:id/emails/:msgId/resend', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const row = (await db.query(`SELECT * FROM email_messages WHERE id=$1 AND application_id=$2`, [req.params.msgId, appId])).rows[0];
+    if (!row) return res.status(404).json({ error: 'not found' });
+    if (row.direction !== 'outbound') return res.status(400).json({ error: 'Only an outgoing email can be resent.' });
+    const to = (Array.isArray(row.to_emails) ? row.to_emails : []).map((t) => t && t.email).filter(Boolean);
+    if (!to.length) return res.status(400).json({ error: 'This message has no recipient to resend to.' });
+    let html = row.body_html, text = row.body_text, subject = row.subject;
+    if (!html && row.notification_id) {
+      const built = await emailLog.renderHistoricalBody(row.notification_id).catch(() => null);
+      if (built) { html = built.html; text = built.text; subject = subject || built.subject; }
+    }
+    if (!html && !text) return res.status(400).json({ error: 'The full email could not be rebuilt to resend.' });
+    // Re-attach the original bytes when the #442 capture stored them.
+    let attachments = [];
+    if (row.notification_id) {
+      try {
+        const se = (await db.query(`SELECT attachments FROM sent_emails WHERE notification_id=$1 AND application_id=$2 ORDER BY created_at DESC LIMIT 1`, [row.notification_id, appId])).rows[0];
+        for (const a of (se && Array.isArray(se.attachments) ? se.attachments : [])) {
+          if (!a || !a.storage_ref) continue;
+          try { const buf = await storage.read(a.storage_ref); if (buf) attachments.push({ filename: a.filename, contentType: a.content_type || a.contentType, content: buf.toString('base64') }); } catch (_) { /* skip */ }
+        }
+      } catch (_) { /* best-effort */ }
+    }
+    await email.sendMail({
+      to, subject, html, text, attachments,
+      replyTo: fileReplyTo(appId) || cfg.replyToDefault || null,
+      _ctx: { applicationId: appId, type: 'resend', audience: row.audience || 'staff' },
+    });
+    await audit(req, 'email_resent', 'application', appId, { to: to.length, subject });
+    res.json({ ok: true, sent_to: to });
+  } catch (e) { res.status(500).json({ error: 'Could not resend this email.' }); }
 });
 
 // Reply from the Email Center. Sends a branded email to the file's parties (the
@@ -6278,49 +6353,16 @@ router.post('/documents/:id/review', async (req, res) => {
       } catch (_) { /* best-effort */ }
     }
 
-    // Plain accept → confirm to the borrower that their document was accepted
-    // (owner-directed 2026-07-20 — closure, not busywork). Guarded to at most one
-    // EMAIL per file per ~12h (audit_log) so uploading a batch of documents does
-    // not trigger a flurry; extra accepts within the window still post in-app.
-    if (action === 'accept' && !requestMore && doc.borrower_id) {
-      try {
-        let condLabel = '';
-        if (doc.checklist_item_id) {
-          const it = await db.query(`SELECT COALESCE(borrower_label,label) AS label FROM checklist_items WHERE id=$1`, [doc.checklist_item_id]);
-          if (it.rows[0]) condLabel = it.rows[0].label;
-        }
-        let emailNow = true;
-        // Throttle on the file when there is one, else on the BORROWER — an
-        // application-less document (LLC formation, EIN, operating agreement,
-        // track-record, profile doc) has application_id NULL, so keying the
-        // throttle on application_id alone let a batch of entity documents email
-        // once PER DOCUMENT (round-2 audit N5). Keying on the borrower for those
-        // caps it to one email per borrower per window like the file path.
-        const throttleId = doc.application_id || doc.borrower_id;
-        const throttleType = doc.application_id ? 'application' : 'borrower';
-        // Atomically CLAIM the 12h email slot: write the throttle stamp ONLY if
-        // none exists in the window, in ONE INSERT…WHERE NOT EXISTS…RETURNING.
-        // Two accepts on the same file in the same instant can't both win (the old
-        // SELECT-then-stamp-after let both pass — owner-reported duplicate sweep).
-        if (throttleId) {
-          const claim = await db.query(
-            `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
-             SELECT 'system', NULL, 'doc_accepted_emailed', $2, $1, '{}'::jsonb
-              WHERE NOT EXISTS (SELECT 1 FROM audit_log WHERE action='doc_accepted_emailed' AND entity_id=$1 AND created_at > now() - interval '12 hours')
-             RETURNING id`, [throttleId, throttleType]);
-          emailNow = !!claim.rows[0];
-        }
-        await notify.notifyBorrower(doc.borrower_id, {
-          type: 'doc_accepted',
-          title: condLabel ? `Accepted: "${condLabel}"` : `Document accepted: ${doc.filename}`,
-          badge: { text: 'Accepted', tone: 'positive' },
-          body: `Your loan team reviewed and accepted "${doc.filename}"${condLabel ? ` for "${condLabel}"` : ''}. No further action is needed on this document — we'll let you know if anything else comes up.`,
-          applicationId: doc.application_id,
-          link: doc.application_id ? `/app/${doc.application_id}` : '/profile',
-          ctaLabel: 'View your file',
-          major: emailNow });   // throttle: email once per file/borrower per 12h (claimed above), else in-app only
-      } catch (_) { /* best-effort */ }
-    }
+    // Plain accept → the borrower is NOT notified at all (owner-directed
+    // 2026-07-20 evening: "nobody needs to be aware when somebody is accepting
+    // something internally — the borrower does not need to be aware"). A staff
+    // member accepting a document is an INTERNAL workflow step, not a borrower
+    // milestone: no email AND no in-app ping. The borrower can still see a
+    // document is accepted in their checklist if they look, and the events that
+    // DO reach them are unchanged — a REJECTED / REQUESTED document (they must
+    // redo it, below) and real milestones (a status decision). We previously sent
+    // an "Accepted" confirmation here (throttled email + in-app); that whole
+    // notification is removed.
 
     // An LLC document verdict changes the entity's state everywhere: rejecting
     // a document of a VERIFIED LLC revokes the verification (its clean doc set

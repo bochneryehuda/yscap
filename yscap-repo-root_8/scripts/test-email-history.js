@@ -193,6 +193,44 @@ const uniq = `eh-${process.pid}-${Date.now()}`;
   assert(scrubRow && !/fidelis/i.test(scrubRow.subject), 'reply SUBJECT is borrower-safe scrubbed (no note-buyer name)');
   assert(scrubRow && !/churchill/i.test(scrubRow.body_html || ''), 'reply BODY is borrower-safe scrubbed (no note-buyer name)');
 
+  // ---- attachment download + resend (enhancements) ----
+  const storage = require('../src/lib/storage');
+  const nAtt = (await db.query(
+    `INSERT INTO notifications (recipient_kind,staff_id,type,title,body,application_id,email_status) VALUES ('staff',$1,'doc_uploaded','Doc email','A doc was sent.',$2,'sent') RETURNING id`, [officer, appId])).rows[0].id;
+  const bytes = Buffer.from('%PDF-1.4 fake pdf bytes for test');
+  const saved = await storage.save(bytes, { filename: 'Term-Sheet.pdf' });
+  await db.query(
+    `INSERT INTO sent_emails (notification_id, application_id, audience, recipient_kind, subject, to_emails, html, attachments, status)
+     VALUES ($1,$2,'staff','staff','Doc email',$3,'<p>hi</p>',$4::jsonb,'sent')`,
+    [nAtt, appId, [`${uniq}-lo@example.test`], JSON.stringify([{ filename: 'Term-Sheet.pdf', content_type: 'application/pdf', size: bytes.length, storage_ref: saved.ref }])]);
+  await emailLog.captureOutbound(
+    { to: [`${uniq}-lo@example.test`], subject: 'Doc email', html: '<p>hi</p>', replyTo: `file+${appId}@r.test`, attachments: [{ filename: 'Term-Sheet.pdf', contentType: 'application/pdf', content: bytes.toString('base64') }] },
+    { applicationId: appId, notificationId: nAtt, type: 'doc_uploaded', audience: 'staff', status: 'sent' });
+  const attMsg = (await db.query(`SELECT id FROM email_messages WHERE notification_id=$1`, [nAtt])).rows[0].id;
+  // detail marks the attachment downloadable
+  const attDetail = await (await get(`/api/staff/applications/${appId}/emails/${attMsg}`, loTok)).json();
+  assert(Array.isArray(attDetail.attachments) && attDetail.attachments[0] && attDetail.attachments[0].downloadable === true, 'detail marks a stored attachment downloadable');
+  // download returns the exact bytes
+  const dl = await get(`/api/staff/applications/${appId}/emails/${attMsg}/attachments/0`, loTok);
+  const dlBuf = Buffer.from(await dl.arrayBuffer());
+  assert(dl.status === 200 && dlBuf.equals(bytes), 'attachment download returns the exact bytes');
+  // a bad index 404s
+  const dlBad = await get(`/api/staff/applications/${appId}/emails/${attMsg}/attachments/9`, loTok);
+  assert(dlBad.status === 404, 'a missing attachment index 404s');
+  // unassigned officer cannot download
+  const dlForbid = await get(`/api/staff/applications/${appId}/emails/${attMsg}/attachments/0`, otherTok);
+  assert(dlForbid.status === 403, 'unassigned officer cannot download an attachment');
+  // resend re-delivers to the original recipients (a new captured message)
+  const resendBefore = (await db.query(`SELECT count(*)::int c FROM email_messages WHERE application_id=$1 AND msg_type='resend'`, [appId])).rows[0].c;
+  const rs = await post(`/api/staff/applications/${appId}/emails/${attMsg}/resend`, loTok, {});
+  const rsJson = await rs.json();
+  assert(rs.status === 200 && rsJson.ok && rsJson.sent_to.includes(`${uniq}-lo@example.test`), 'resend re-delivers to the original recipient');
+  const resendAfter = (await db.query(`SELECT count(*)::int c FROM email_messages WHERE application_id=$1 AND msg_type='resend'`, [appId])).rows[0].c;
+  assert(resendAfter === resendBefore + 1, 'resend is captured as a new message in the history');
+  // resend of an inbound message is rejected
+  const inMsg = (await db.query(`SELECT id FROM email_messages WHERE application_id=$1 AND direction='inbound' LIMIT 1`, [appId])).rows[0];
+  if (inMsg) { const rsIn = await post(`/api/staff/applications/${appId}/emails/${inMsg.id}/resend`, loTok, {}); assert(rsIn.status === 400, 'resend of an inbound reply is rejected'); }
+
   // ---- cleanup ----
   await db.query(`DELETE FROM email_messages WHERE application_id=$1`, [appId]);
   await db.query(`DELETE FROM inbound_file_emails WHERE application_id=$1`, [appId]);
