@@ -369,7 +369,7 @@ function NeighborhoodCard({ a }) {
   const hasMc = a.mc_months_supply != null || a.mc_median_dom != null || a.mc_sale_to_list_pct != null || a.mc_price_trend != null;
   const landUse = (Array.isArray(a.present_land_use) ? a.present_land_use : (() => { try { return JSON.parse(a.present_land_use || '[]'); } catch { return []; } })())
     .filter((u) => u && u.type && u.percent != null).slice().sort((x, y) => y.percent - x.percent);
-  const has = [a.nbhd_value_trend, a.nbhd_demand_supply, a.nbhd_marketing_time, a.nbhd_location_type, a.nbhd_price_predominant, a.nbhd_builtup].some((x) => x != null);
+  const has = [a.nbhd_value_trend, a.nbhd_demand_supply, a.nbhd_marketing_time, a.nbhd_location_type, a.nbhd_price_predominant, a.nbhd_builtup, a.nbhd_boundaries].some((x) => x != null);
   if (!has && !hasMc && !landUse.length) return null;
   const band = (a.nbhd_price_low != null || a.nbhd_price_high != null || a.nbhd_price_predominant != null)
     ? `${money(a.nbhd_price_low)}–${money(a.nbhd_price_high)}${a.nbhd_price_predominant != null ? ` · predominant ${money(a.nbhd_price_predominant)}` : ''}` : null;
