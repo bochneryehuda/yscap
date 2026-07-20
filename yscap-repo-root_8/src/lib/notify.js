@@ -141,12 +141,12 @@ async function _emailRow(id, to, opts, audience) {
     // reply ALWAYS reaches a human — no notification is ever a dead-end no-reply.
     const replyTo = opts.replyTo || fileReplyTo(opts.applicationId) || cfg.replyToDefault || null;
     // #150: an optional LO-branded From display name rides through untouched
-    // (resend honors it; other providers ignore it). `_ctx` is stripped by the
-    // provider wrapper and drives the portal-wide Email Center capture (email_messages,
-    // src/lib/email-log.js). Kept ALONGSIDE the #442 sent_emails capture below (they
-    // populate two independent stores — the portal-wide Email Center and the Draw
-    // Management email view — neither breaks a send).
-    const res = await email.sendMail({ to, subject: msg.subject, text: msg.text, html: msg.html, attachments, replyTo, from: opts.from || null,
+    // (resend honors it; other providers ignore it). #447: `bcc` loops the LO into
+    // borrower emails. `_ctx` is stripped by the provider wrapper and drives the
+    // portal-wide Email Center capture (email_messages, src/lib/email-log.js), kept
+    // ALONGSIDE the #442 sent_emails capture below (two independent stores — the
+    // portal-wide Email Center and the Draw Management email view).
+    const res = await email.sendMail({ to, subject: msg.subject, text: msg.text, html: msg.html, attachments, replyTo, from: opts.from || null, bcc: opts.bcc || null,
       _ctx: { applicationId: opts.applicationId, notificationId: id, type: opts.type, audience, subjectTag: opts.subjectTag, kicker: opts.kicker } });
     const status = res && res.ok ? 'sent' : 'skipped';
     await _mark(id, status);
@@ -202,9 +202,17 @@ async function notifyStaff(staffId, opts) {
   // row falls back to enabled.
   let emailOn = true;
   try {
-    const p = await db.query(`SELECT notifications_enabled FROM staff_users WHERE id=$1`, [staffId]);
+    const p = await db.query(`SELECT notifications_enabled, is_active FROM staff_users WHERE id=$1`, [staffId]);
     if (p.rows[0] && p.rows[0].notifications_enabled === false) emailOn = false;
-  } catch (_) { /* column exists after migration 085; default on */ }
+    // NEVER email a DEACTIVATED staffer (owner-reported audit 2026-07-20): a fired
+    // employee stays an application_assignee until reassigned, so without this the
+    // notifyStaff/notifyAppStaff chokepoint kept sending them every file event —
+    // including borrower-uploaded documents WITH the file bytes attached. The
+    // in-app row is still written (harmless; they can't sign in), the EMAIL is
+    // skipped. This single guard also covers the sync-review inactive-LO fallback
+    // and every other caller. (Fixed at the chokepoint, not per call site.)
+    if (p.rows[0] && p.rows[0].is_active === false) emailOn = false;
+  } catch (_) { /* columns exist after migration; default on */ }
   // opts.inAppOnly (owner-directed 2026-07-20): keep the in-app row but SKIP the
   // email — for routine, low-signal staff events (e.g. a file moving to a working
   // status like Processing) so the team's inbox isn't bombarded. Mirrors the #88
@@ -333,6 +341,12 @@ async function notifyBorrower(borrowerId, opts) {
     callout: scrubObj(opts.callout, ['title', 'body']),
     hero: scrubObj(opts.hero, ['label', 'value', 'sub']),
     badge: scrubObj(opts.badge, ['text']),
+    // Owner-directed 2026-07-20: silently BCC the file's assigned loan officer on
+    // the borrower's email so the LO sees in real time exactly what their borrower
+    // received. The officer comes from enrichFileOpts (fileContext) — their own
+    // business contact. An explicit opts.bcc wins; the provider drops any BCC that
+    // is already a To recipient, so no self-duplicate.
+    bcc: opts.bcc || ((cfg.ccLoanOfficerOnBorrowerEmail && !opts._skipOfficerBcc && opts.officer && opts.officer.email) ? [opts.officer.email] : undefined),
   };
   const { rows } = await db.query(
     `INSERT INTO notifications (recipient_kind,borrower_id,type,title,body,application_id,link)
@@ -356,7 +370,10 @@ async function notifyAppBorrowers(appId, opts) {
   const ctx = await fileContext(appId).catch(() => null);
   const shared = { ...opts, applicationId: opts.applicationId || appId, _fileCtx: ctx || undefined };
   const out = [];
-  for (const id of ids) out.push(await notifyBorrower(id, { ...shared }));
+  // The loan-officer BCC (monitoring copy) rides on the PRIMARY borrower's email
+  // only — otherwise a file with a co-borrower would BCC the officer twice with
+  // near-identical copies (owner-reported duplicate sweep 2026-07-20).
+  for (let i = 0; i < ids.length; i++) out.push(await notifyBorrower(ids[i], { ...shared, _skipOfficerBcc: i > 0 }));
   return out;
 }
 

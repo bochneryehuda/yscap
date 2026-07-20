@@ -1421,7 +1421,10 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
     // straight from the email, or sign in there to dispute a line (research doc §14).
     const addr = f.address || 'your property';
     const acceptLink = result.reply_token ? `/draw-accept/${result.reply_token}` : `/app/${appId}`;
-    if (f.borrower_id) await notify.notifyBorrower(f.borrower_id, {
+    // notifyAppBorrowers (not notifyBorrower) so a co-borrower who can see the file
+    // ALSO gets the "results ready" email — the primary-only send made the
+    // co-borrower first hear of it via the later reminder (owner-reported audit).
+    if (f.borrower_id) await notify.notifyAppBorrowers(appId, {
       type: 'draw_findings', title: 'Your draw inspection results are ready',
       badge: { text: 'Action needed', tone: 'action' },
       body: 'Your draw inspection results are in and ready for your review.',

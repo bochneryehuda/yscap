@@ -8,12 +8,16 @@ const cfg = require('../../config');
 
 module.exports = {
   name: 'resend',
-  async sendMail({ to, subject, text, html, attachments, replyTo, from }) {
+  async sendMail({ to, subject, text, html, attachments, replyTo, from, bcc }) {
     if (!cfg.resendApiKey) {
       throw new Error('RESEND_API_KEY is not set — add it in the Render environment to send email.');
     }
     const recipients = (Array.isArray(to) ? to : [to]).filter(Boolean);
     if (!recipients.length) throw new Error('no recipient');
+    // BCC (e.g. the assigned loan officer's monitoring copy). Never BCC someone
+    // who is already a To recipient (no self-duplicate).
+    const bccList = (Array.isArray(bcc) ? bcc : (bcc ? [bcc] : []))
+      .filter((a) => a && !recipients.includes(a));
     // Resend attachments: { filename, content (base64) }. Size-gating is the
     // caller's job (the doc-upload site only attaches ≤3 MB and always lists the
     // filename); here we just map whatever survived that gate.
@@ -43,6 +47,7 @@ module.exports = {
           text,
           html,
         }, atts.length ? { attachments: atts } : {},
+           bccList.length ? { bcc: bccList } : {},
            // #75: a unique reply-to lets an external chat guest reply by email and
            // have it land back in the conversation (routed via the inbound webhook).
            replyTo ? { reply_to: replyTo } : {})),
