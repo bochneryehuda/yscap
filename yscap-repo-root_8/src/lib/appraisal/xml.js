@@ -110,15 +110,18 @@ function find(node, tag) {
   return null;
 }
 
-// All descendants with this tag, in document order.
+// All descendants with this tag, in document order. Iterative (explicit stack, not recursion) so a
+// pathologically deep — but well-formed — document can't blow the call stack and abort the import.
+// Children are pushed in reverse so they pop in document order → identical pre-order to a recursion.
 function findAll(node, tag) {
   const out = [];
-  (function walk(n) {
-    for (const el of n.children) {
-      if (el.tag === tag) out.push(el);
-      if (el.children.length) walk(el);
-    }
-  })(node);
+  const stack = [];
+  for (let k = node.children.length - 1; k >= 0; k--) stack.push(node.children[k]);
+  while (stack.length) {
+    const el = stack.pop();
+    if (el.tag === tag) out.push(el);
+    for (let k = el.children.length - 1; k >= 0; k--) stack.push(el.children[k]);
+  }
   return out;
 }
 

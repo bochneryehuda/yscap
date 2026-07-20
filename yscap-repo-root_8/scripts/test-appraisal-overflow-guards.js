@@ -75,5 +75,46 @@ assert(nc.netAdjustment === -15000, `legitimate negative net adjustment preserve
 assert(nc.netAdjPct === -3.5, `legitimate negative net-adj pct preserved (got ${nc.netAdjPct})`);
 assert(nc.grossAdjPct === 0, `legitimate zero gross-adj pct preserved (got ${nc.grossAdjPct})`);
 
+// ---- per-unit rents: numeric(12,2) columns must reject a value that overflows the column ----
+// (round-2 audit finding #1: these were read with money()'s 1e12 ceiling, > the column's ~1e10 max).
+// Base the test on a real corpus file that actually carries unit rents (synthetic padded rows are
+// dropped by the extractor), pick one, then mutate its unit-rent attributes in place.
+let unitBase = null;
+for (const f of files) {
+  const A = extract(fs.readFileSync(path.join(DIR, f), 'utf8'));
+  if ((A.units || []).some((u) => u.actualRent != null || u.marketRent != null)) { unitBase = f; break; }
+}
+if (!unitBase) { console.log('SKIP unit-rent overflow (no corpus file carries unit rents)'); }
+else {
+  const uraw = fs.readFileSync(path.join(DIR, unitBase), 'utf8');
+  const uOver = extract(uraw
+    .replace(/UnitActualRentAmount="[^"]*"/g, 'UnitActualRentAmount="50000000000"')
+    .replace(/UnitMarketRentAmount="[^"]*"/g, 'UnitMarketRentAmount="50000000000"'));
+  const overUnits = (uOver.units || []);
+  assert(overUnits.length > 0 && overUnits.every((u) => u.actualRent == null && u.marketRent == null),
+    `overflowing unit rents all rejected across ${overUnits.length} unit(s) in ${unitBase}`);
+  const uOk = (extract(uraw).units || []);
+  assert(uOk.some((u) => u.actualRent != null || u.marketRent != null),
+    `legitimate unit rents preserved in the unmutated base (${unitBase})`);
+}
+
+// ---- rounding-window edge (round-2 audit finding #2): a value that ROUNDS UP into overflow ----
+// numeric(8,2) net-adj pct: 999999.999 rounds to 1000000.00 → must be rejected, not stored raw.
+const rw = raw.replace(/SalePriceTotalAdjustmentNetPercent="[^"]*"/, 'SalePriceTotalAdjustmentNetPercent="999999.999"');
+const rwc = (extract(rw).comparables || [])[0] || {};
+assert(rwc.netAdjPct == null, `sub-cent rounding-window net-adj pct rejected (got ${rwc.netAdjPct})`);
+// but a value comfortably inside the column (999999.98) is still kept.
+const rwOk = raw.replace(/SalePriceTotalAdjustmentNetPercent="[^"]*"/, 'SalePriceTotalAdjustmentNetPercent="999999.98"');
+const rwok = (extract(rwOk).comparables || [])[0] || {};
+assert(rwok.netAdjPct === 999999.98, `in-range net-adj pct preserved (got ${rwok.netAdjPct})`);
+
+// ---- deep-nesting (round-2 audit finding #3): iterative walkers must not stack-overflow ----
+// Build a ~20k-deep well-formed doc; the old recursive findAll/narrativeTexts threw RangeError.
+const DEPTH = 20000;
+const deep = `<?xml version="1.0"?><VALUATION_RESPONSE>${'<X>'.repeat(DEPTH)}${'</X>'.repeat(DEPTH)}<_GSE _FormType="FNM1004"/></VALUATION_RESPONSE>`;
+let deepOk = true;
+try { extract(deep); } catch (e) { deepOk = false; console.log(`  (deep-nesting threw: ${e && e.message})`); }
+assert(deepOk, `extract() survives a ${DEPTH}-deep document without a stack overflow`);
+
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nALL overflow-guard assertions passed');
 process.exit(failures ? 1 : 0);
