@@ -250,6 +250,35 @@ function borrowerInvite({ firstName, propertyLabel, loanNumber, inviter, acceptU
   });
 }
 
+/** PILOT's OWN "your documents are ready to sign" invitation (owner-directed
+ *  2026-07-20). The button (`signUrl`) takes the borrower STRAIGHT into their
+ *  secure signing session — no portal stop, no "Sign now" click — and returns them
+ *  to their loan file afterward. Borrower-safe by construction: only the loan #,
+ *  property, and package name (never a capital-partner / note-buyer name). This
+ *  rides ALONGSIDE DocuSign's own email (belt-and-suspenders — "both"). */
+function esignReadyToSign({ firstName, propertyLabel, loanNumber, packageLabel, signUrl, officer } = {}) {
+  const meta = [];
+  if (propertyLabel) meta.push({ label: 'Property', value: propertyLabel });
+  if (loanNumber) meta.push({ label: 'Loan #', value: loanNumber });
+  if (packageLabel) meta.push({ label: 'To sign', value: packageLabel });
+  officerMeta(meta, officer);
+  return render({
+    audience: 'borrower',
+    title: 'Your documents are ready to sign',
+    preheader: 'A secure electronic signature is needed on your loan documents.',
+    greeting: greet(firstName),
+    intro: 'Your ' + (packageLabel ? packageLabel.toLowerCase() : 'loan documents')
+      + ' ' + (packageLabel && !/s$/i.test(packageLabel) ? 'is' : 'are') + ' ready for your electronic signature with YS Capital Group.',
+    lines: [
+      'Tap the button below to review and sign securely — it opens your signing session right away, and brings you back to your loan file when you\'re done.',
+      'Your signature is handled through our e-signature partner (DocuSign). You may also receive a separate email directly from DocuSign for the same documents — either one takes you to the same place.',
+    ],
+    meta,
+    cta: signUrl ? { label: 'Review & sign', url: signUrl } : null,
+    note: 'If you were not expecting this, you can disregard it — nothing is signed until you review and approve it yourself.',
+  });
+}
+
 /* =====================================================================
    STAFF — TEAM ONBOARDING
    ===================================================================== */
@@ -332,6 +361,7 @@ const builders = {
   welcome, verifyEmail, loginCode,
   passwordReset, passwordChanged, mfaEnabled, newSignIn,
   staffInvite, staffWelcome, staffPasswordReset, leadReceived, coBorrowerInvite, borrowerInvite, drawRequest,
+  esignReadyToSign,
 };
 
 /** Deliver an already-rendered { subject, html, text } to one/many recipients.

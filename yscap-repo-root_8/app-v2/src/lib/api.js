@@ -87,6 +87,22 @@ export function saveBlob(blob, filename) {
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1500);
 }
+// Open a fetched blob in a browser tab (for a PDF the user wants to VIEW, not download). Because the fetch
+// happens AFTER the click, a `window.open` here is outside the user gesture and popup-blockers reject it —
+// so the caller SHOULD pass a `win` it opened synchronously in the click handler (`window.open('','_blank')`)
+// and we just navigate it. Falls back to opening/downloading if no live window was handed in, so the report
+// is never lost. SECURITY: only ever hand this a blob whose type is server-controlled + trusted (our
+// application/pdf reports/images) — a blob: URL opened this way runs with the portal's origin, so untrusted
+// HTML/SVG bytes here would be a stored-XSS vector.
+export function openBlob(blob, filename, win) {
+  const url = URL.createObjectURL(blob);
+  if (win && !win.closed) { try { win.location.href = url; } catch { window.open(url, '_blank'); } }
+  else {
+    const w = window.open(url, '_blank');
+    if (!w) { const a = document.createElement('a'); a.href = url; a.download = filename || 'document'; document.body.appendChild(a); a.click(); a.remove(); }
+  }
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
 
 // Normalize any upload payload: the backend stores raw base64 (dataBase64), so
 // if a caller passes a full `data:` URL we strip the prefix here. This keeps a
@@ -184,6 +200,10 @@ export const api = {
   forgotPassword:     (email, scope) => req('POST', '/auth/borrower/forgot', scope ? { email, scope } : { email }),
   resetPassword:      (token, password) => req('POST', '/auth/borrower/reset', { token, password }),
   acceptInvite:       (b) => req('POST', '/auth/accept', b),                   // {token,password,fullName?}
+  // E-sign magic-link session handoff: exchange the one-time login code (from the
+  // /api/esign/return redirect) for a real borrower session, so a borrower who
+  // signed from PILOT's branded email lands back inside their file already logged in.
+  claimEsignSession:  (li) => req('POST', '/api/esign/claim-session', { li }),
 
   profile:      () => req('GET', '/api/borrower/profile'),
   saveProfile:  (b) => req('PUT', '/api/borrower/profile', b),
@@ -191,6 +211,9 @@ export const api = {
   applications: () => req('GET', '/api/borrower/applications'),
   application:  (id) => req('GET', `/api/borrower/applications/${id}`),
   fileOfficer:  (id) => req('GET', `/api/borrower/applications/${id}/officer`),
+  // Cross-file "Action needed" — everything the borrower must do right now (documents
+  // to provide, fixes, signatures) in ONE call, so the home shows it instantly.
+  actionItems: () => req('GET', '/api/borrower/action-items'),
   inviteCoBorrowerToFile: (id, b) => req('POST', `/api/borrower/applications/${id}/co-borrower`, b),
   requestDraw:  (id) => req('POST', `/api/borrower/applications/${id}/request-draw`),
   borrowerPricing:      (appId) => req('GET', `/api/borrower/applications/${appId}/pricing`),
@@ -359,6 +382,17 @@ export const api = {
   sitewireExportGl: async (appId) => { const { blob, filename } = await download(`/api/sitewire/files/${appId}/gl-export`); saveBlob(blob, filename); },
   // Sitewire draw desk: authenticated per-draw packet (schedule of values + findings + waivers).
   sitewireExportPacket: async (appId, drawId) => { const { blob, filename } = await download(`/api/sitewire/files/${appId}/draws/${drawId}/packet`); saveBlob(blob, filename); },
+  // PILOT-branded inspection report (phase 2b) — opens the PDF in a tab (`win` is opened synchronously in the
+  // click handler so the popup blocker doesn't eat it; closed here on error). mode 'staff' (full) | 'borrower'
+  // (borrower-safe: no partner name / fee / net / GPS). Per-draw and whole-project variants.
+  sitewireDrawReport: async (appId, drawId, mode, win) => {
+    try { const { blob, filename } = await download(`/api/sitewire/files/${appId}/draws/${drawId}/report${mode === 'borrower' ? '?mode=borrower' : ''}`); openBlob(blob, filename, win); }
+    catch (e) { try { if (win && !win.closed) win.close(); } catch { /* ignore */ } throw e; }
+  },
+  sitewireProjectReport: async (appId, mode, win) => {
+    try { const { blob, filename } = await download(`/api/sitewire/files/${appId}/report${mode === 'borrower' ? '?mode=borrower' : ''}`); openBlob(blob, filename, win); }
+    catch (e) { try { if (win && !win.closed) win.close(); } catch { /* ignore */ } throw e; }
+  },
   staffTprPreview:  (appId) => req('GET', `/api/staff/applications/${appId}/export/tpr/preview`),
   staffTprExport:   (appId) => download(`/api/staff/applications/${appId}/export/tpr`),
   // MISMO 3.4 — the mortgage industry's shared file format. Export downloads the

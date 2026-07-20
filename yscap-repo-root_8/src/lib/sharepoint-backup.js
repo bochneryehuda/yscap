@@ -54,8 +54,13 @@ const PACING_MS = 300;             // between uploads — keeps Graph bursts pol
 //      root with dated names (no more Version-N forests for autosaves).
 // HUMAN uploads (borrower/staff documents, chat attachments) keep the full
 // owner-approved history + Version-N behavior.
-const REGEN_KIND_SQL = `(d.doc_kind = 'track_record_html' OR d.doc_kind = 'tpr_export' OR d.doc_kind LIKE '%\\_export')`;
-function isRegenKind(k) { return k === 'track_record_html' || k === 'tpr_export' || /_export$/.test(String(k || '')); }
+// draw_inspection_report (Draw Management phase 2b) is a SYSTEM-REGENERABLE, version-hashed artifact —
+// PILOT rebuilds it on demand from the persisted findings + durable photos, and a new version supersedes the
+// prior of the SAME report identity. So it takes the REGEN path (settle superseded copies without a Version-N
+// shuffle, land in the category root) exactly like tpr_export / track_record_html — never the human Version-N
+// path, which would churn the mirror every time a draw changes.
+const REGEN_KIND_SQL = `(d.doc_kind = 'track_record_html' OR d.doc_kind = 'tpr_export' OR d.doc_kind = 'draw_inspection_report' OR d.doc_kind LIKE '%\\_export')`;
+function isRegenKind(k) { return k === 'track_record_html' || k === 'tpr_export' || k === 'draw_inspection_report' || /_export$/.test(String(k || '')); }
 // ONE definition of "deliberately NEVER mirrored to SharePoint" (owner-directed).
 // The drain-exclusion SQL, the settle pass, AND the upload chokepoint ALL derive
 // from this single map so they can never diverge. ROOT of the appraisal_photo
@@ -313,6 +318,9 @@ function categoryPathFor(row) {
   if (row.doc_kind === 'term_sheet') return ['Term Sheet', 'Unsigned'];
   if (row.doc_kind === 'term_sheet_signed') return ['Term Sheet', 'Signed'];
   if (row.doc_kind === 'tpr_export') return ['TPR Exports'];
+  // Draw Management phase 2b — the PILOT-branded inspection reports get their own category so their
+  // frequent version-hashed supersedes never shuffle other (uncategorized) file documents.
+  if (row.doc_kind === 'draw_inspection_report') return ['Draw Reports'];
   // The autosaved track-record HTML gets its own category so its frequent
   // supersede-driven versions never shuffle the per-project verification docs.
   if (row.doc_kind === 'track_record_html') return ['REO', 'Track Record Saved Copy'];
