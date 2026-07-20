@@ -29,17 +29,55 @@ const { WIRE_KEYS } = require('./wire-tabs');
 // containing any of these is never classified 'borrower_personal'.
 const ENTITY_DESIGNATORS = /\b(l\.?\s?l\.?\s?c|llc|pllc|inc|incorporated|corp|corporation|company|co|ltd|limited|lp|llp|lllp|plc|trust|partnership|holdings|holding|group|properties|property|capital|ventures|venture|enterprises|enterprise|construction|realty|management|mgmt|investments|investment|associates|partners|development|homes|builders|building|contracting|services|solutions|acquisitions|equities|estates|rentals|funding|financial)\b/i;
 
-// Legal designators stripped when comparing two ENTITY names (so "Maple Ridge LLC"
-// matches "Maple Ridge, L.L.C." and bare "Maple Ridge"). We strip ONLY legal-suffix
-// words here, never the descriptive part of the name (Holdings/Group/etc stay).
+// Legal designators recognized as an entity's legal FORM. Split off from the
+// descriptive base so two names can be compared on BOTH the base AND the legal form
+// — "Maple Ridge LLC" and "Maple Ridge Trust" share a base but are DIFFERENT legal
+// entities and must NOT be treated as the same (audit C1: stripping the form let a
+// distinct Trust/Inc clear as the subject LLC with no operating agreement).
 const LEGAL_SUFFIX = /\b(l\.?\s?l\.?\s?c|llc|pllc|inc|incorporated|corp|corporation|company|co|ltd|limited|lp|llp|lllp|plc|trust|partnership)\b/gi;
 
-/** Canonical form for comparing two ENTITY names: lowercase, & → and, strip legal
- *  suffixes, then strip everything non-alphanumeric. */
-function normEntity(s) {
-  let t = String(s == null ? '' : s).toLowerCase().replace(/&/g, ' and ').replace(/[.,]/g, ' ');
-  t = t.replace(LEGAL_SUFFIX, ' ');
-  return t.replace(/[^a-z0-9]/g, '');
+/** Canonicalize a legal-form word into its FAMILY ('llc'/'inc'/'corp'/'company'/
+ *  'ltd'/'lp'/'plc'/'trust'/'partnership'), so "L.L.C." and "LLC" are the same form
+ *  but "LLC" and "Trust" are not. */
+function canonSuffix(w) {
+  const x = String(w || '').toLowerCase().replace(/[^a-z]/g, '');
+  if (['llc', 'pllc'].includes(x)) return 'llc';
+  if (['inc', 'incorporated'].includes(x)) return 'inc';
+  if (['corp', 'corporation'].includes(x)) return 'corp';
+  if (['co', 'company'].includes(x)) return 'company';
+  if (['ltd', 'limited'].includes(x)) return 'ltd';
+  if (['lp', 'llp', 'lllp'].includes(x)) return 'lp';
+  if (x === 'plc') return 'plc';
+  if (x === 'trust') return 'trust';
+  if (x === 'partnership') return 'partnership';
+  return x;
+}
+
+/** Split an ENTITY name into its descriptive BASE (lowercased, &→and, legal form +
+ *  all punctuation/space removed) and its legal-form FAMILY (from the LAST legal-form
+ *  word, or '' if none). */
+function splitEntity(s) {
+  const t = String(s == null ? '' : s).toLowerCase().replace(/&/g, ' and ').replace(/[.,]/g, ' ');
+  const forms = t.match(LEGAL_SUFFIX);
+  const suffix = forms && forms.length ? canonSuffix(forms[forms.length - 1]) : '';
+  const base = t.replace(LEGAL_SUFFIX, ' ').replace(/[^a-z0-9]/g, '');
+  return { base, suffix };
+}
+
+/** Legacy base-only canonicalization (kept for callers/tests that only need the base). */
+function normEntity(s) { return splitEntity(s).base; }
+
+/**
+ * Do two ENTITY names refer to the same legal entity? The descriptive base must match
+ * AND the legal form must be compatible: SAME form ("Maple Ridge LLC" == "Maple Ridge,
+ * L.L.C."), OR the account side simply OMITTED the form ("Maple Ridge" == "Maple Ridge
+ * LLC" — a borrower dropping "LLC"). A DIFFERENT form ("Maple Ridge Trust"/"…Inc" vs
+ * "…LLC") is NOT a match → it falls through to new_entity (fatal). Biased to safety.
+ */
+function entityMatch(accountName, llcName) {
+  const a = splitEntity(accountName), b = splitEntity(llcName);
+  if (!a.base || a.base !== b.base) return false;
+  return a.suffix === b.suffix || a.suffix === '';
 }
 
 /** Alphabetic tokens of a name (lowercased), preserving single-letter initials. */
@@ -76,8 +114,9 @@ function personalMatch(accountName, borrowerName) {
 function classifyAccountName(accountName, { borrowerName, llcName } = {}) {
   const raw = String(accountName == null ? '' : accountName).trim();
   if (!raw) return { kind: 'unknown', matches: null };
-  // Subject/vesting LLC — exact (suffix-tolerant) match wins first.
-  if (llcName && String(llcName).trim() && normEntity(raw) && normEntity(raw) === normEntity(llcName)) {
+  // Subject/vesting LLC — same descriptive base AND a compatible legal form (a DIFFERENT
+  // legal form, e.g. a Trust or Inc sharing the base, is NOT the subject LLC → fatal).
+  if (llcName && String(llcName).trim() && entityMatch(raw, llcName)) {
     return { kind: 'subject_llc', matches: true };
   }
   // Personal name — only when it does NOT look like a company.
@@ -124,12 +163,14 @@ async function raiseOperatingAgreementCondition(db, appId, entityName) {
   const existing = (await db.query(
     `SELECT id, status FROM checklist_items WHERE application_id=$1 AND field_key=$2 LIMIT 1`, [appId, marker])).rows[0];
   if (existing) {
-    // Update the note (the entity may have changed) and reopen if a prior clear no longer
-    // applies — but NEVER downgrade a human-satisfied one (the OA was collected).
+    // Refresh the note (the entity name may have changed) but NEVER change a status a
+    // human has already moved — satisfied (OA collected), received/requested/issue (being
+    // worked). Only re-open a still-outstanding one (a no-op) so a webhook re-drive can't
+    // churn a human's working state (audit L1) or undo a collected OA.
     await db.query(
       `UPDATE checklist_items
           SET notes=$2, issue_reason=$2, updated_at=now(),
-              status=CASE WHEN status='satisfied' THEN status ELSE 'outstanding' END
+              status=CASE WHEN status='outstanding' THEN 'outstanding' ELSE status END
         WHERE id=$1`, [existing.id, note]);
     return existing.id;
   }
@@ -276,7 +317,7 @@ async function captureWireFromEnvelope(db, docusign, envelopeRow, opts = {}) {
 
 module.exports = {
   // pure classifiers (tests)
-  normEntity, nameTokens, hasEntityDesignator, personalMatch, classifyAccountName, last4,
+  normEntity, splitEntity, entityMatch, nameTokens, hasEntityDesignator, personalMatch, classifyAccountName, last4,
   // conditions
   ensureDrawRequestCondition, raiseOperatingAgreementCondition, retractOperatingAgreementCondition,
   // capture

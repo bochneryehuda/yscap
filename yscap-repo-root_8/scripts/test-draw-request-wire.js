@@ -41,6 +41,13 @@ function mockDocusign(wireValues) {
     ok(drawWire.classifyAccountName('Jane Borrower Homes LLC', { borrowerName: 'Jane Borrower', llcName: 'Maple Ridge LLC' }).kind === 'new_entity', 'name + company word → new_entity (fatal)');
     ok(drawWire.classifyAccountName('Sunrise Capital LLC', { borrowerName: 'Jane Borrower', llcName: 'Maple Ridge LLC' }).kind === 'new_entity', 'unrelated LLC → new_entity');
     ok(drawWire.classifyAccountName('', { borrowerName: 'Jane Borrower', llcName: 'Maple Ridge LLC' }).kind === 'unknown', 'blank → unknown');
+    // C1 regression: a DIFFERENT legal form sharing the base is NOT the subject LLC (fatal).
+    ok(drawWire.classifyAccountName('Maple Ridge Trust', { borrowerName: 'Jane Borrower', llcName: 'Maple Ridge LLC' }).kind === 'new_entity', 'C1: "Maple Ridge Trust" vs "Maple Ridge LLC" → new_entity (different legal form)');
+    ok(drawWire.classifyAccountName('Maple Ridge Inc', { borrowerName: 'Jane Borrower', llcName: 'Maple Ridge LLC' }).kind === 'new_entity', 'C1: "Maple Ridge Inc" vs "Maple Ridge LLC" → new_entity');
+    ok(drawWire.classifyAccountName('Riverside Company', { borrowerName: 'Jane Borrower', llcName: 'Riverside LLC' }).kind === 'new_entity', 'C1: "Riverside Company" vs "Riverside LLC" → new_entity');
+    // still tolerant: the SAME form, and a dropped form, both clear as the subject LLC.
+    ok(drawWire.classifyAccountName('Maple Ridge', { borrowerName: 'Jane Borrower', llcName: 'Maple Ridge LLC' }).kind === 'subject_llc', 'dropped legal form ("Maple Ridge" vs "Maple Ridge LLC") still clears as subject_llc');
+    ok(drawWire.classifyAccountName('Maple Ridge L.L.C.', { borrowerName: 'Jane Borrower', llcName: 'Maple Ridge LLC' }).kind === 'subject_llc', 'same form, punctuation variant → subject_llc');
 
     // ---- (2) textTab emit + read-back ----
     const def = ds.buildEnvelopeDefinition({
