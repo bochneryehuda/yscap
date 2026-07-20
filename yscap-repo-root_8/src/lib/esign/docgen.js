@@ -341,8 +341,11 @@ function buildIska(data = {}) {
 const { buildApplication } = require('./application-pdf');
 const { buildDisclosure: buildDisclosurePdf } = require('./disclosure-pdf');
 const { buildIskaPdf } = require('./iska-pdf');
+// The Draw Request & Wire Instructions form — a PILOT-branded PDF auto-filled from the
+// file + fillable borrower wire boxes (draw-request-pdf.js). Same generate() contract.
+const { buildDrawRequest } = require('./draw-request-pdf');
 
-const BUILDERS = { bp_disclosure: buildDisclosurePdf, heter_iska: buildIskaPdf, application_export: buildApplication };
+const BUILDERS = { bp_disclosure: buildDisclosurePdf, heter_iska: buildIskaPdf, application_export: buildApplication, draw_request: buildDrawRequest };
 
 /** Build a generated document by doc_kind. Returns a PDF Buffer for every live
  *  doc_kind (bp_disclosure, heter_iska, application_export — all PDFs our server

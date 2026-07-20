@@ -240,6 +240,31 @@ function signHereAnchor(anchor) {
 function dateSignedAnchor(anchor) {
   return { anchorString: anchor, anchorUnits: 'pixels', anchorXOffset: '0', anchorYOffset: '0', anchorIgnoreIfNotPresent: 'true' };
 }
+/**
+ * A signer-FILLABLE text box anchored to an invisible string (e.g. "/dr_wire_acctname/").
+ * Unlike sign/date tabs, a text tab captures what the signer TYPES — the value comes
+ * back on the completed envelope (read via getEnvelope include:'recipients,tabs' →
+ * parseRecipients textValues). `tabLabel` is the stable key we read the value back by,
+ * so it MUST be unique per envelope. `required` (default true) makes DocuSign block
+ * completion until the box is filled. anchorIgnoreIfNotPresent => a missing anchor is
+ * skipped, never an error. Width/height are the box size in points.
+ */
+function textAnchor(anchor, { tabLabel, required = true, width = 200, height = 14, anchorYOffset = '-4' } = {}) {
+  return {
+    anchorString: anchor,
+    anchorUnits: 'pixels',
+    anchorXOffset: '0',
+    anchorYOffset: String(anchorYOffset),
+    anchorIgnoreIfNotPresent: 'true',
+    anchorCaseSensitive: 'false',
+    tabLabel: String(tabLabel || anchor),
+    required: required ? 'true' : 'false',
+    width: Number(width) || 200,
+    height: Number(height) || 14,
+    font: 'helvetica',
+    fontSize: 'Size9',
+  };
+}
 
 /**
  * Build a validated EnvelopeDefinition.
@@ -275,10 +300,17 @@ function buildEnvelopeDefinition({ documents, signers, carbonCopies, subject, st
       signers: signers.map((s) => {
         const signHereTabs = [];
         const dateSignedTabs = [];
+        const textTabs = [];
         const byDoc = s.tabsByDoc || {};
         for (const [documentId, tabs] of Object.entries(byDoc)) {
           for (const a of (tabs.sign || [])) signHereTabs.push({ ...signHereAnchor(a), documentId: String(documentId) });
           for (const a of (tabs.date || [])) dateSignedTabs.push({ ...dateSignedAnchor(a), documentId: String(documentId) });
+          // Fillable text boxes: each entry is { anchor, tabLabel, required?, width?, height? }.
+          // The typed value comes back keyed by tabLabel (parseRecipients.textValues).
+          for (const t of (tabs.text || [])) {
+            if (!t || !t.anchor) continue;
+            textTabs.push({ ...textAnchor(t.anchor, t), documentId: String(documentId) });
+          }
         }
         const signer = {
           email: s.email,
@@ -288,7 +320,9 @@ function buildEnvelopeDefinition({ documents, signers, carbonCopies, subject, st
           // in any order and an embedded view never hits RECIPIENT_NOT_IN_SEQUENCE.
           // Pass an explicit routingOrder to force sequential signing.
           routingOrder: String(s.routingOrder || 1),
-          tabs: { signHereTabs, dateSignedTabs },
+          // textTabs only included when the signer actually has fillable boxes — an
+          // empty array is harmless but we keep the shape minimal for the other packages.
+          tabs: textTabs.length ? { signHereTabs, dateSignedTabs, textTabs } : { signHereTabs, dateSignedTabs },
         };
         if (s.clientUserId) signer.clientUserId = String(s.clientUserId);   // embedded (in-portal) signer
         // Hybrid email+embedded: SIGN_AT_DOCUSIGN makes DocuSign ALSO send the
@@ -495,7 +529,23 @@ function parseRecipients(envelope) {
     signedAt: s.signedDateTime || null,
     declinedAt: s.declinedDateTime || null,
     declineReason: s.declinedReason || s.declineReason || null,
+    // Typed values from FILLABLE text tabs, keyed by tabLabel. Only present when the
+    // envelope was fetched with include:'recipients,tabs' AND the recipient had text
+    // tabs (the draw-request wire form). {} otherwise — safe for every other package.
+    textValues: parseTextValues(s),
   }));
+}
+
+/** Flatten a signer's textTabs into { [tabLabel]: value } (trimmed). Empty when none. */
+function parseTextValues(signer) {
+  const tabs = (signer && signer.tabs && Array.isArray(signer.tabs.textTabs)) ? signer.tabs.textTabs : [];
+  const out = {};
+  for (const t of tabs) {
+    const label = t && (t.tabLabel != null ? String(t.tabLabel) : '');
+    if (!label) continue;
+    out[label] = (t.value != null ? String(t.value) : '').trim();
+  }
+  return out;
 }
 
 /**
@@ -576,6 +626,7 @@ module.exports = {
   notificationSettings,
   signHereAnchor,
   dateSignedAnchor,
+  textAnchor,
   createEnvelope,
   getEnvelope,
   getCombinedDocument,

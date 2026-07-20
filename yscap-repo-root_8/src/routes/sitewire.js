@@ -34,6 +34,11 @@ const storage = require('../lib/storage');
 const { setMediaHeaders } = require('../lib/media-headers');
 const { serveDocument } = require('../lib/serve-document');
 const { computeRelease, waiverGate } = require('../sitewire/money');
+// The Draw Request & Wire Instructions form goes out through the existing DocuSign
+// e-sign integration (owner-directed 2026-07-20). orchestrate.sendPackage drives the
+// send; draw-wire owns the wire condition + capture.
+const esignOrchestrate = require('../lib/esign/orchestrate');
+const drawWire = require('../lib/esign/draw-wire');
 
 // Resolve the retainage % for a file: per-file override on the link, else the global default.
 // Clamped to [0,100] so a nonsensical setting can't distort the client-side net preview either.
@@ -557,6 +562,119 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
       return res.status(202).json({ ok: true, started: true, queued: true, note: 'Draw setup saved. Sitewire is briefly unavailable — the push will retry automatically.' });
     }
   } catch (e) { if (e.status === 422) return res.status(422).json({ error: e.message }); console.warn('[sitewire] start-draw error:', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+// ---- GET /files/:id/draw-request — draw-request form status + captured wire instructions ----
+// Everything the coordinator sees for the DocuSign Draw Request & Wire Instructions form:
+// whether it can be sent, the latest envelope's status, the borrower-typed wire details
+// (account number MASKED — only its last-4), the fatal operating-agreement condition when
+// the wire goes to a new entity, and the signed PDF link once it's filed back. Read-only.
+router.get('/files/:id/draw-request', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const a = (await db.query(
+      `SELECT id, status, ys_loan_number, property_address FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0];
+    if (!a) return res.status(404).json({ error: 'file not found' });
+    const addr = T.addressForSitewire(a.property_address);
+    const prereqs = {
+      funded: a.status === 'funded',
+      loan_number: !!a.ys_loan_number,
+      address: !!(addr && (addr.street || addr.city || addr.state || addr.zip)),
+    };
+    // Latest draw_request envelope + the borrower signer's progress.
+    const env = (await db.query(
+      `SELECT id, status, envelope_id, sent_at, completed_at, created_at
+         FROM esign_envelopes WHERE application_id=$1 AND purpose='draw_request'
+        ORDER BY created_at DESC LIMIT 1`, [appId])).rows[0] || null;
+    let recipients = [];
+    if (env) {
+      recipients = (await db.query(
+        `SELECT role, name, email, status, signed_at, delivered_at
+           FROM esign_recipients WHERE envelope_row_id=$1 ORDER BY routing_order, role`, [env.id])).rows;
+    }
+    // Captured wire — NEVER the raw account number (masked to last-4).
+    const w = (await db.query(
+      `SELECT account_name, bank_name, account_last4, routing_number, bank_address, account_address,
+              name_kind, name_matches, operating_agreement_item_id, captured_at
+         FROM draw_wire_instructions WHERE application_id=$1`, [appId])).rows[0] || null;
+    const wire = w ? {
+      account_name: w.account_name, bank_name: w.bank_name,
+      account_number_masked: w.account_last4 ? `****${w.account_last4}` : null,
+      routing_number: w.routing_number, bank_address: w.bank_address, account_address: w.account_address,
+      name_kind: w.name_kind, name_matches: w.name_matches, captured_at: w.captured_at,
+    } : null;
+    // The fatal operating-agreement condition, when a new entity.
+    let oaCondition = null;
+    if (w && w.operating_agreement_item_id) {
+      const oa = (await db.query(`SELECT id, status, label FROM checklist_items WHERE id=$1`, [w.operating_agreement_item_id])).rows[0];
+      if (oa) oaCondition = { id: oa.id, status: oa.status, label: oa.label, satisfied: oa.status === 'satisfied' };
+    }
+    // The signed PDF, once filed back to the condition.
+    const signed = (await db.query(
+      `SELECT id, filename, created_at FROM documents
+        WHERE application_id=$1 AND doc_kind='draw_request_signed' AND is_current=true
+        ORDER BY created_at DESC LIMIT 1`, [appId])).rows[0] || null;
+    res.json({
+      docusign_enabled: !!cfg.docusign.sendEnabled,
+      docusign_test_mode: !!cfg.docusign.testMode,
+      prereqs,
+      can_send: !!cfg.docusign.sendEnabled && Object.values(prereqs).every(Boolean),
+      envelope: env ? {
+        status: env.status, sent_at: env.sent_at, completed_at: env.completed_at, created_at: env.created_at,
+        terminal: ['completed', 'declined', 'voided'].includes(String(env.status || '')),
+      } : null,
+      recipients: recipients.map((r) => ({ role: r.role, name: r.name, status: r.status, signed_at: r.signed_at, viewed_at: r.delivered_at })),
+      wire,
+      operating_agreement: oaCondition,
+      signed_document: signed ? { id: signed.id, filename: signed.filename, created_at: signed.created_at } : null,
+    });
+  } catch (e) { console.warn('[sitewire] draw-request status error:', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+// ---- POST /files/:id/draw-request/send — send the Draw Request & Wire Instructions form via DocuSign ----
+// Creates (idempotently) the "Signed draw request form" draw condition, then sends the
+// PILOT-branded, auto-filled form through the existing DocuSign integration. The borrower
+// fills the wire boxes + signs on DocuSign; on completion the signed PDF files back to the
+// condition and the typed wire values are captured (webhook → draw-wire).
+router.post('/files/:id/draw-request/send', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const a = (await db.query(
+      `SELECT id, status, ys_loan_number, property_address FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0];
+    if (!a) return res.status(404).json({ error: 'file not found' });
+    if (a.status !== 'funded') return res.status(409).json({ error: 'The draw request form is sent once the loan is funded.' });
+    const addr = T.addressForSitewire(a.property_address);
+    if (!a.ys_loan_number || !(addr && (addr.street || addr.city || addr.state || addr.zip))) {
+      return res.status(422).json({ error: 'The file needs a loan number and a property address before the draw request can go out.' });
+    }
+    if (!cfg.docusign.sendEnabled) {
+      return res.status(422).json({ error: 'DocuSign sending is turned off (DOCUSIGN_SEND_ENABLED). Turn it on to send the draw request form.' });
+    }
+    // Ensure the draw condition exists FIRST so the signed PDF has somewhere to file back to.
+    await drawWire.ensureDrawRequestCondition(db, appId, req.actor && req.actor.id);
+    const reissue = !!(req.body && req.body.reissue);
+    const out = await esignOrchestrate.sendPackage(appId, 'draw_request', req.actor, { reissue });
+    if (out && out.terminal) {
+      return res.status(409).json({ error: 'A draw request was already sent for this file. Use "Re-send" to issue a fresh one.', terminal: true, latestStatus: out.latestStatus });
+    }
+    if (!out || !out.ok) {
+      return res.status(202).json({ ok: false, queued: true, note: 'The draw request is queued to send — it will go out shortly.' });
+    }
+    notify.notifyAppStaff(appId, {
+      type: 'draw_started', title: 'Draw request form sent for signature',
+      body: 'The Draw Request & Wire Instructions form was sent to the borrower via DocuSign. Their wire details will be captured here once they sign.',
+      badge: { text: 'Sent for signature', tone: 'teal' }, applicationId: appId, link: `/internal/app/${appId}/draws`,
+    }).catch(() => {});
+    res.json({ ok: true, envelopeRowId: out.envelopeRowId });
+  } catch (e) {
+    if (e && e.code === 'DOCUSIGN_SEND_DISABLED') return res.status(422).json({ error: 'DocuSign sending is turned off. Turn it on to send the draw request form.' });
+    if (e && e.code === 'DOCUSIGN_GATE_NOT_READY') return res.status(422).json({ error: e.message });
+    if (e && e.retryable === false && e.message) return res.status(422).json({ error: e.message });
+    console.warn('[sitewire] draw-request send error:', e && e.message);
+    res.status(502).json({ error: 'The signing service is temporarily unavailable — nothing was sent; try again shortly.' });
+  }
 });
 
 // ---- POST /api/sitewire/requests/:reqId/approve — set approved_cents on a draw line ----

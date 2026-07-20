@@ -73,6 +73,27 @@ const PACKAGES = {
       { kind: 'heter_iska', prefix: 'iska', signedKind: 'heter_iska_signed', condition: 'rtl_cond_iska', name: 'Heter Iska', generate: true, genExt: 'pdf' },
     ],
   },
+  // The DRAW REQUEST & WIRE INSTRUCTIONS form (owner-directed 2026-07-20). Sent by the
+  // draw coordinator once a file is in the draw process. MOST of it auto-fills from the
+  // file (draw-request-pdf.js); the borrower fills the WIRE INSTRUCTIONS in FILLABLE
+  // DocuSign text boxes (wireForm → tabsFor adds textTabs from wire-tabs.js) and signs.
+  // ONLY the primary borrower/guarantor signs (soloBorrower) — no co-borrower, no admin
+  // counter-signature. On completion the signed PDF files back to the draw condition AND
+  // the typed wire values are captured (draw-wire.js).
+  draw_request: {
+    label: 'Draw request & wire instructions',
+    countersignRequired: false,
+    soloBorrower: true,
+    // The draw request is a POST-FUNDING servicing document — the appraisal/P&P send
+    // gate (term-sheet origination) does not apply. Its own prerequisites (funded +
+    // loan number + property) are enforced by the route + validateGenerated.
+    skipAppraisalGate: true,
+    subject: (loan) => `Your draw request & wire instructions${loan ? ` — Loan #${loan}` : ''}`,
+    blurb: 'Please review your draw request, enter your bank wire instructions, and sign.',
+    docs: [
+      { kind: 'draw_request', prefix: 'dr', signedKind: 'draw_request_signed', condition: 'draw_cond_signed_request', name: 'Draw Request & Wire Instructions', generate: true, genExt: 'pdf', wireForm: true },
+    ],
+  },
 };
 
 function packageSpec(purpose) {
@@ -363,15 +384,19 @@ function validateGenerated(spec, data) {
   const genKinds = spec.docs.filter((d) => d.generate).map((d) => d.kind);
   if (!genKinds.length) return;
   const missing = [];
-  // Every generated doc (disclosure, Heter Iska, loan application) prints the loan
-  // amount + borrower name.
-  if (data.loanAmount == null || !isFinite(Number(data.loanAmount)) || Number(data.loanAmount) <= 0) missing.push('loan amount');
+  // The loan amount is printed by the disclosure / Heter Iska / loan application — NOT
+  // by the draw request (which shows the loan number + property + wire boxes instead).
+  // Require it only when a doc that actually prints it is in the package.
+  const printsLoanAmount = genKinds.some((k) => ['bp_disclosure', 'heter_iska', 'application_export'].includes(k));
+  if (printsLoanAmount && (data.loanAmount == null || !isFinite(Number(data.loanAmount)) || Number(data.loanAmount) <= 0)) missing.push('loan amount');
+  // Every generated doc prints the borrower name.
   if (!`${data.bFirst || ''} ${data.bLast || ''}`.trim()) missing.push('borrower name');
-  if (data.hasCoBorrower && !`${data.cbFirst || ''} ${data.cbLast || ''}`.trim()) missing.push('co-borrower name');
-  // The disclosure AND the loan application print the loan number + subject property,
-  // so a blank one must BLOCK the send (never render blank on the legal application),
-  // not silently pass. Required whenever either of those docs is generated.
-  if (genKinds.includes('bp_disclosure') || genKinds.includes('application_export')) {
+  // Only a package that BOTH signs the co-borrower AND prints its name needs it. The
+  // draw request is soloBorrower (co-borrower never signs it), so a co on file is fine.
+  if (!spec.soloBorrower && data.hasCoBorrower && !`${data.cbFirst || ''} ${data.cbLast || ''}`.trim()) missing.push('co-borrower name');
+  // The disclosure, the loan application, AND the draw request print the loan number +
+  // subject property, so a blank one must BLOCK the send, not render blank.
+  if (genKinds.includes('bp_disclosure') || genKinds.includes('application_export') || genKinds.includes('draw_request')) {
     if (!data.loanNumber) missing.push('loan number');
     if (!(data.propStreet || data.propCity || data.propState || data.propZip)) missing.push('property address');
   }
@@ -412,14 +437,16 @@ function buildRoster(app, spec, envelopeRowId) {
     borrowerId: app.b_id, name: `${app.b_first} ${app.b_last}`.trim(), email: app.b_email,
     clientUserId: clientUserIdFor(envelopeRowId, 'borrower'),
   });
-  if (app.co_borrower_id) {
+  // A soloBorrower package (the draw request) is signed by the PRIMARY borrower ONLY
+  // — never a co-borrower, never the admin counter-signer.
+  if (!spec.soloBorrower && app.co_borrower_id) {
     roster.push({
       role: 'co_borrower', routingOrder: 1, recipientId: '2', isCountersigner: false,
       borrowerId: app.cb_id, name: `${app.cb_first} ${app.cb_last}`.trim(), email: app.cb_email,
       clientUserId: clientUserIdFor(envelopeRowId, 'co_borrower'),
     });
   }
-  if (spec.countersignRequired) {
+  if (!spec.soloBorrower && spec.countersignRequired) {
     roster.push({
       role: 'admin', routingOrder: 2, recipientId: String(roster.length + 1), isCountersigner: true,
       borrowerId: null, name: cfg.docusign.countersignName, email: cfg.docusign.countersignEmail,
@@ -440,10 +467,14 @@ function tabsFor(role, spec, documentIdByKind) {
     const documentId = documentIdByKind[d.kind];
     if (!documentId) continue;   // that document isn't in this envelope
     if (role === 'admin' && d.prefix !== 'ts') continue;   // admin counter-signs the term sheet only
-    tabsByDoc[documentId] = {
+    const entry = {
       sign: [`/${d.prefix}_${suffix}_sig/`],
       date: [`/${d.prefix}_${suffix}_dt/`],
     };
+    // A wireForm doc (the draw request) carries FILLABLE wire-instruction text boxes —
+    // only the primary borrower fills them (they alone see /dr_wire_*/ anchors).
+    if (d.wireForm && role === 'borrower') entry.text = require('./wire-tabs').wireTextTabs();
+    tabsByDoc[documentId] = entry;
   }
   return tabsByDoc;
 }
@@ -653,8 +684,8 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
   // seeding has committed (a persistently-incomplete roster then dead-letters visibly).
   const have = new Set(roster.map((r) => r.role));
   const need = ['borrower',
-    ...(app.co_borrower_id ? ['co_borrower'] : []),
-    ...(spec.countersignRequired ? ['admin'] : [])];
+    ...(!spec.soloBorrower && app.co_borrower_id ? ['co_borrower'] : []),
+    ...(!spec.soloBorrower && spec.countersignRequired ? ['admin'] : [])];
   if (!need.every((role) => have.has(role))) {
     const e = new Error('Recipient roster not fully seeded yet — will retry.'); e.retryable = true; throw e;
   }
@@ -724,11 +755,16 @@ async function sendPackage(applicationId, purpose, actor, opts = {}) {
     e.code = 'DOCUSIGN_SEND_DISABLED'; e.retryable = false; throw e;
   }
 
-  // Gate re-check — server-side, always. The client's "ready" is never trusted.
-  const g = await gate.esignSendGate(applicationId, { db });
-  if (!g.ready) {
-    const e = new Error(`Not ready to send: ${g.outstanding.map((o) => o.label).join('; ')}`);
-    e.code = 'DOCUSIGN_GATE_NOT_READY'; e.retryable = false; e.outstanding = g.outstanding; throw e;
+  // Gate re-check — server-side, always. The client's "ready" is never trusted. The
+  // appraisal/P&P origination gate applies to the term-sheet + Iska packages only; a
+  // post-funding servicing package (the draw request) skips it — its own prerequisites
+  // are enforced by the route + validateGenerated.
+  if (!spec.skipAppraisalGate) {
+    const g = await gate.esignSendGate(applicationId, { db });
+    if (!g.ready) {
+      const e = new Error(`Not ready to send: ${g.outstanding.map((o) => o.label).join('; ')}`);
+      e.code = 'DOCUSIGN_GATE_NOT_READY'; e.retryable = false; e.outstanding = g.outstanding; throw e;
+    }
   }
 
   const app = await loadApplication(db, applicationId);
