@@ -50,7 +50,7 @@ Two helpers make this cheap to add:
 
 ## 2. E1 — Import the full report as "blocks"
 
-### 2.1 New tables (`db/189_credit_report_blocks.sql`, idempotent)
+### 2.1 New tables (`db/212_credit_report_blocks.sql`, idempotent)
 
 Every table mirrors `credit_scores`: `credit_report_id uuid REFERENCES credit_reports(id) ON
 DELETE CASCADE`, `borrower_id uuid REFERENCES borrowers(id)`, `report_borrower_id text`
@@ -132,7 +132,7 @@ structured/masked values for display and querying.
 
 **FILE ALERT** = red banner on the file + notify the loan officer (reuse `src/lib/notify.js`),
 no sign-off block. **UNDERWRITING REVIEW** = a **fatal finding** that forces the credit
-condition to `issue` and hard-blocks sign-off (`signOffGate` + the `db/188` trigger) until
+condition to `issue` and hard-blocks sign-off (`signOffGate` + the `db/211` trigger) until
 reconciled — the same path as today's `fico_mismatch`.
 
 | Signal | MISMO 3.4 category | Routing | Severity | Reconcilable by |
@@ -164,15 +164,15 @@ backstop.
 - **Storage stays back-compatible:** keep `credit_reports.underwriting_finding` but store a
   **wrapper** `{ severity: <max of all>, types:[…], findings:[ {type, severity, code, message,
   reconciled:false, reconcilableBy} ], message: <joined> }`. Because the wrapper still exposes a
-  top-level `severity`, **the existing `db/188` trigger and `signOffGate` keep gating with zero
+  top-level `severity`, **the existing `db/211` trigger and `signOffGate` keep gating with zero
   schema change**.
-- **New migration `db/190_credit_findings_multi.sql`:** change the gate predicate from "top-level
+- **New migration `db/213_credit_findings_multi.sql`:** change the gate predicate from "top-level
   severity fatal & reconciled null" to "**any** element of `findings[]` is `severity='fatal'`
   AND `reconciled=false`", via `jsonb_array_elements`; recompute the mirrored top-level
   `severity` when a finding is reconciled so the app-layer gate agrees. Per-finding reconcile in
   `staff-credit.js` (an underwriter may clear `fico_mismatch`/`id_mismatch`, but **`ofac`/
   `deceased` are non-reconcilable by an officer** — escalate to compliance/BSA-AML). Idempotent
-  backfill mirrors `db/188`.
+  backfill mirrors `db/211`.
 - `import.js` replaces the single `finding` compute with `collectFindings(...)`; sets
   `effectiveDecision='review'` when any fatal finding exists; the `[auto]` note joins all fatal
   messages. `outcomes.js conditionFromText()` gets fed the alert element (already knows
@@ -276,11 +276,11 @@ verify with non-secret facts only.
 
 - **P1 — Parse + store the blocks (E1).** Extend both parsers (`alerts[]`, reported DOB/residence,
   tradelines/inquiries/public-records/collections/identity), add `ARRAY_NODES` entries (2.3.1),
-  `db/189_credit_report_blocks.sql`, persist in `import.js` reusing `dbIdFor`. Tests: parser unit
+  `db/212_credit_report_blocks.sql`, persist in `import.js` reusing `dbIdFor`. Tests: parser unit
   tests over fixture XML (2.3.1 + 3.4, single + joint, AU account, tri-merge echo), a DB import
   test asserting block rows + masking + encryption.
 - **P2 — Findings engine (E2).** Generalize `underwriting.js` to `collectFindings()` + the wrapper
-  shape; `db/190_credit_findings_multi.sql` (gate iterates `findings[]`, per-finding reconcile,
+  shape; `db/213_credit_findings_multi.sql` (gate iterates `findings[]`, per-finding reconcile,
   non-reconcilable OFAC/deceased, idempotent backfill); feed `outcomes.js` the alerts; LO notify
   on new fatal findings. Tests: builder unit tests per signal; SQL trigger test (any-fatal blocks,
   per-finding reconcile clears, OFAC not officer-clearable); e2e HTTP (alert import → banner →

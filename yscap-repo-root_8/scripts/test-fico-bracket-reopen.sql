@@ -1,4 +1,4 @@
--- Integration test for db/178 bracket-aware FICO reopen.
+-- Integration test for db/201 bracket-aware FICO reopen.
 -- Requires the migrations applied. NOT in `npm test` (DB-free). Run:
 --   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/test-fico-bracket-reopen.sql
 -- Proves: a same-bracket FICO drift (700->718) leaves a cleared+signed

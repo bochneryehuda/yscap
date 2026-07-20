@@ -1,5 +1,5 @@
 -- Regression test for the joint-freeze / bracket-reopen interaction
--- (src/lib/credit/import.js freeze step + db/178 reopen trigger).
+-- (src/lib/credit/import.js freeze step + db/201 reopen trigger).
 -- Requires migrations applied. NOT in `npm test` (DB-free). Run:
 --   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/test-credit-joint-reopen.sql
 --

@@ -8,7 +8,7 @@
  * staffer's own credential, parse the response, score it, store the report +
  * per-bureau scores + the PDF, and — when every borrower has a usable score —
  * freeze each borrower's verified FICO. Bracket-reset of a cleared registration
- * happens automatically in the DB trigger (db/178) when the frozen score lands
+ * happens automatically in the DB trigger (db/201) when the frozen score lands
  * in a different bracket than the loan was priced on.
  *
  * Hard rules honored here:
@@ -282,7 +282,7 @@ async function persistImport({ reportRowId, applicationId, actorId, providerId, 
     //      (WARNING → file alert). Surfaced on ANY outcome, since an alert matters
     //      even on a frozen/review report.
     // A FATAL finding forces the credit condition to 'issue' and blocks sign-off
-    // (signOffGate + the db/190 trigger) until reconciled. Identity mismatches are
+    // (signOffGate + the db/213 trigger) until reconciled. Identity mismatches are
     // taken from the bureau's OWN alerts (authoritative); self-computed diffing is a
     // later, tuned refinement (kept out here to avoid false-positive blocks).
     let ficoInput = {};
@@ -478,7 +478,7 @@ async function persistImport({ reportRowId, applicationId, actorId, providerId, 
     if (assessment.decision === 'imported') {
       await client.query(`SET LOCAL app.credit_reverify = 'on'`);
       // Freeze BOTH borrowers in ONE multi-row UPDATE. The representative-aware
-      // reopen trigger (db/178) is AFTER ROW and reads GREATEST(primary.fico,
+      // reopen trigger (db/201) is AFTER ROW and reads GREATEST(primary.fico,
       // co.fico); Postgres queues AFTER-ROW triggers to end-of-statement, so a
       // single statement lets each row's trigger see BOTH borrowers' FINAL scores.
       // A per-borrower loop fired the trigger after each statement — the primary's

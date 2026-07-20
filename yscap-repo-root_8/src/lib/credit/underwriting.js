@@ -10,7 +10,7 @@
  *   - the identity the bureau reports doesn't match the identity on the file
  *
  * Each of these is a "finding". A FATAL finding forces the credit condition to
- * `issue` and hard-blocks sign-off (via `signOffGate` + the db/188→db/190 trigger)
+ * `issue` and hard-blocks sign-off (via `signOffGate` + the db/211→db/213 trigger)
  * until it is reconciled; a WARNING finding is a heads-up (a red file alert +
  * officer notification) but never blocks.
  *

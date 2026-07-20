@@ -2632,18 +2632,18 @@ async function signOffGate(itemId, actor) {
   // A human must correct the file and re-pull (a fresh, matching report clears
   // the finding, since we read the latest report) or have an underwriter
   // reconcile the finding, before signing off. Backstopped by the DB trigger in
-  // db/188 so no path can bypass it.
+  // db/211 so no path can bypass it.
   if (isCredit) {
     // Generalized (E2): block on ANY unreconciled FATAL finding — a FICO mismatch
     // OR a fraud / OFAC / deceased / SSN / address-discrepancy bureau alert. Reads
     // both the new findings[] wrapper and the pre-E2 single-finding shape via the
-    // shared engine helper, so the app layer and the db/190 trigger always agree.
+    // shared engine helper, so the app layer and the db/213 trigger always agree.
     //
     // A fatal finding (on an IMPORTED or a REVIEW report — E2 surfaces bureau
     // alerts even on a frozen/review pull) blocks UNLESS it was superseded by a
     // later CLEAN IMPORTED report (a real re-verification). A review re-pull, or a
     // failed / in_doubt / ordering one, is NOT a re-verification and can never mask
-    // an earlier fatal. The db/192 trigger applies the SAME rule over the same rows.
+    // an earlier fatal. The db/215 trigger applies the SAME rule over the same rows.
     const underwriting = require('../lib/credit/underwriting');
     const reportRows = (await db.query(
       `SELECT id, created_at, status, underwriting_finding, underwriting_finding_reconciled_at

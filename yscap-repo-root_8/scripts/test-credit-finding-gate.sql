@@ -1,4 +1,4 @@
--- Integration test for db/188: the fatal FICO-mismatch finding is a HARD gate on
+-- Integration test for db/211: the fatal FICO-mismatch finding is a HARD gate on
 -- completing a credit condition, backstopped at the database level.
 -- Requires the migrations applied. NOT in `npm test` (DB-free). Run:
 --   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/test-credit-finding-gate.sql
@@ -106,7 +106,7 @@ BEGIN
   IF NOT blocked THEN RAISE EXCEPTION 'FAIL T7: a later in_doubt re-pull MASKED the imported fatal finding'; END IF;
   RAISE NOTICE 'PASS T7: a failed/in_doubt re-pull does not mask an earlier imported fatal finding';
 
-  -- ==== db/190: the GENERALIZED findings[] wrapper (E2) ====================
+  -- ==== db/213: the GENERALIZED findings[] wrapper (E2) ====================
   -- Reset to a clean received condition + a fresh report carrying a multi-finding
   -- wrapper (one fatal fraud alert + one warning high-risk score).
   DELETE FROM checklist_items WHERE application_id=aid;
@@ -147,7 +147,7 @@ BEGIN
   UPDATE checklist_items SET status='satisfied' WHERE application_id=aid AND template_id=tmpl;
   RAISE NOTICE 'PASS T10: a warning-only findings[] wrapper never blocks';
 
-  -- ==== db/191: a FATAL ALERT on a REVIEW report must also block ============
+  -- ==== db/214: a FATAL ALERT on a REVIEW report must also block ============
   -- (E2 fail-open fix: alerts land on review rows too, but the old gate only read
   -- 'imported' rows.)
   DELETE FROM checklist_items WHERE application_id=aid;
@@ -189,7 +189,7 @@ BEGIN
   UPDATE checklist_items SET status='satisfied' WHERE application_id=aid AND template_id=tmpl;
   RAISE NOTICE 'PASS T13: a clean imported re-pull supersedes and clears the gate';
 
-  -- ==== db/192: a REVIEW fatal must not be masked by a newer NULL REVIEW =====
+  -- ==== db/215: a REVIEW fatal must not be masked by a newer NULL REVIEW =====
   DELETE FROM credit_reports WHERE application_id=aid;
   UPDATE checklist_items SET status='received', signed_off_at=NULL WHERE application_id=aid AND template_id=tmpl;
   -- R1 review with a fatal OFAC (compliance-only), then a NEWER empty review.

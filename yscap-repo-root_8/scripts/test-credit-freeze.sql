@@ -1,4 +1,4 @@
--- Freeze-trigger tests for db/177_credit_report_reissue.sql
+-- Freeze-trigger tests for db/200_credit_report_reissue.sql
 -- Requires a Postgres with the migrations applied (NOT in `npm test`, which is
 -- DB-free). Run against a throwaway DB:
 --   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/test-credit-freeze.sql
