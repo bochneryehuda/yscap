@@ -184,6 +184,10 @@ export const api = {
   forgotPassword:     (email, scope) => req('POST', '/auth/borrower/forgot', scope ? { email, scope } : { email }),
   resetPassword:      (token, password) => req('POST', '/auth/borrower/reset', { token, password }),
   acceptInvite:       (b) => req('POST', '/auth/accept', b),                   // {token,password,fullName?}
+  // E-sign magic-link session handoff: exchange the one-time login code (from the
+  // /api/esign/return redirect) for a real borrower session, so a borrower who
+  // signed from PILOT's branded email lands back inside their file already logged in.
+  claimEsignSession:  (li) => req('POST', '/api/esign/claim-session', { li }),
 
   profile:      () => req('GET', '/api/borrower/profile'),
   saveProfile:  (b) => req('PUT', '/api/borrower/profile', b),
