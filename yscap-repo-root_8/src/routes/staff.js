@@ -1723,12 +1723,15 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
 
     const client = await db.getClient();
     let regId;
+    let economicsChanged = true;   // first registration always notifies the borrower
     try {
       await client.query('BEGIN');
-      regId = await persistProductRegistration(client, {
+      const reg = await persistProductRegistration(client, {
         appId, program, inputs, quote, registeredByStaffId: req.actor.id,
         isManual, assetMonths,
       });
+      regId = reg.id;
+      economicsChanged = reg.economicsChanged;
       // Manual product → open a super-admin escalation in the same transaction.
       // The file registers now, but the product stays "pending super-admin
       // approval" until the escalation is decided (db/207). Superseding any prior
@@ -1861,7 +1864,12 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       // Borrower-safe copy only (program label + the borrower's own deal numbers);
       // type 'term_sheet' is in the borrower MAJOR-email allowlist (#88), and the
       // subject line auto-carries the file (loan # · property) via notify.js.
-      try {
+      // Only send the borrower their "terms are ready" email when a headline
+      // number actually changed (owner-directed 2026-07-20): an internal
+      // re-register with the SAME loan amount / rate / cash-to-close / term /
+      // program must not nudge the borrower again. The team's own notice above
+      // still fires so staff always see the (re-)registration.
+      if (economicsChanged) try {
         let officer = null;
         if (row.loan_officer_id) {
           const o = await db.query(`SELECT full_name, title, email, phone, cell, nmls FROM staff_users WHERE id=$1`, [row.loan_officer_id]);
@@ -4350,7 +4358,10 @@ router.get('/borrowers/:id/ssn', async (req, res) => {
     const r = await db.query(`SELECT ssn_encrypted FROM borrowers WHERE id=$1`, [req.params.id]);
     if (!r.rows[0]?.ssn_encrypted) return res.status(404).json({ error: 'no ssn on file' });
     await audit(req, 'view_ssn', 'borrower', req.params.id);
-    res.json({ ssn: C.decryptSSN(r.rows[0].ssn_encrypted) });
+    // Reveal in the REAL SSN format XXX-XX-XXXX (owner-directed 2026-07-20) — stored
+    // as bare digits, presented dashed. The edit input re-formats on change, so a
+    // dashed reveal round-trips cleanly.
+    res.json({ ssn: require('../lib/fields').formatSsn(C.decryptSSN(r.rows[0].ssn_encrypted)) });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 

@@ -129,6 +129,8 @@ export default function DrawsPanel({ appId }) {
             </div>
           )}
           <StartDrawCard appId={appId} onStarted={load} />
+          {/* Send the DocuSign Draw Request & Wire Instructions form right from the start-draw screen. */}
+          <DrawRequestCard appId={appId} />
         </>
       ) : (
         <>
@@ -168,6 +170,9 @@ export default function DrawsPanel({ appId }) {
               <KpiTile label="In the pipeline" value={usd(rollup.project.requested_open)} sub="requested, not yet released" />
             </div>
           </div>
+
+          {/* ---- Draw request & wire instructions (DocuSign) — visible throughout the draw process ---- */}
+          <DrawRequestCard appId={appId} />
 
           {/* ---- Sitewire borrower-invite status + resend ---- */}
           <BorrowerInviteStatus appId={appId} writesOff={writesOff} readsOff={readsOff} />
@@ -236,6 +241,145 @@ export default function DrawsPanel({ appId }) {
           <ResetDrawControl appId={appId} onChanged={load} />
         </>
       )}
+    </div>
+  );
+}
+
+/* Draw Request & Wire Instructions — sent to the borrower through the existing DocuSign
+   integration (owner-directed 2026-07-20). MOST of the form auto-fills from the file; the
+   borrower fills the WIRE INSTRUCTIONS in fillable boxes and signs. On completion the signed
+   PDF files back to the "Signed draw request form" draw condition AND the typed wire details
+   are captured here (masked account number). If the wire account name is a NEW entity (not the
+   borrower and not the subject LLC), a FATAL operating-agreement condition is opened. */
+const WIRE_KIND = {
+  borrower_personal: { label: 'Borrower’s personal account', tone: 'on' },
+  subject_llc: { label: 'Subject LLC account', tone: 'on' },
+  new_entity: { label: 'New entity — operating agreement required', tone: 'off' },
+  unknown: { label: 'Not provided', tone: 'warn' },
+};
+function DrawRequestCard({ appId }) {
+  const [d, setD] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const reload = useCallback(() => {
+    api.get(`/api/sitewire/files/${appId}/draw-request`)
+      .then((r) => setD(r)).catch(() => setD(null)).finally(() => setLoading(false));
+  }, [appId]);
+  useEffect(() => { reload(); }, [reload]);
+  if (loading || !d) return null;
+
+  const env = d.envelope, wire = d.wire, oa = d.operating_agreement, prereqs = d.prereqs || {};
+  const terminal = env && env.terminal;
+  const missing = [];
+  if (!prereqs.funded) missing.push('the loan to be funded');
+  if (!prereqs.loan_number) missing.push('a loan number');
+  if (!prereqs.address) missing.push('a property address');
+
+  async function send(reissue) {
+    setBusy(true); setMsg('');
+    try {
+      const r = await api.post(`/api/sitewire/files/${appId}/draw-request/send`, reissue ? { reissue: true } : {});
+      setMsg(r && r.ok ? 'Sent to the borrower for signature. Their wire details will appear here once they sign.' : (r && r.note) || 'The draw request is queued to send.');
+      reload();
+    } catch (e) { setMsg((e && e.data && e.data.error) || e.message || 'Could not send the draw request.'); }
+    finally { setBusy(false); }
+  }
+  async function openSigned(id) {
+    try { const { blob } = await api.staffDownloadDoc(id); const url = URL.createObjectURL(blob); window.open(url, '_blank'); }
+    catch (_) { setMsg('Could not open the signed form.'); }
+  }
+
+  const envLabel = env ? ({
+    sent: 'Sent — awaiting the borrower', delivered: 'Opened by the borrower',
+    completed: 'Signed', declined: 'Declined by the borrower', voided: 'Voided',
+  }[String(env.status)] || env.status) : null;
+
+  return (
+    <div className="dd-card" style={{ marginTop: 12 }}>
+      <div className="dd-card-h" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+        <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+          <span className="dd-card-ic"><SdIcon name="mail" /></span>
+          <div>
+            <h3>Draw request &amp; wire instructions</h3>
+            <div className="dd-sub" style={{ marginTop: 1 }}>Send the borrower a pre-filled form via DocuSign — they enter their bank wire instructions and sign. Their wire details are saved here automatically.</div>
+          </div>
+        </div>
+        {env && <span className={'dd-chip ' + (env.status === 'completed' ? 'on' : env.status === 'declined' || env.status === 'voided' ? 'off' : 'warn')}><span className="dot" />{envLabel}</span>}
+      </div>
+
+      {!d.docusign_enabled && (
+        <div className="dd-sub" style={{ marginTop: 8, color: 'var(--gold,#ae8746)' }}>DocuSign sending is turned off. Turn on <code>DOCUSIGN_SEND_ENABLED</code> to send this form.</div>
+      )}
+      {d.docusign_enabled && d.docusign_test_mode && (
+        <div className="dd-sub" style={{ marginTop: 8 }}>DocuSign is in <b>test mode</b> — only allow-listed test emails receive the form.</div>
+      )}
+      {missing.length > 0 && <div className="dd-sub" style={{ marginTop: 8 }}>This file still needs {missing.join(', ')} before the draw request can go out.</div>}
+
+      {msg && <div className="dd-sub" style={{ marginTop: 8 }}>{msg}</div>}
+
+      {/* recipient progress */}
+      {env && d.recipients && d.recipients.length > 0 && (
+        <div className="dd-sub" style={{ marginTop: 8 }}>
+          {d.recipients.map((r, i) => (
+            <div key={i}>{r.name}: {r.signed_at ? `signed ${fmtDay(r.signed_at)}` : r.viewed_at ? 'opened, not yet signed' : 'sent, not yet opened'}</div>
+          ))}
+        </div>
+      )}
+
+      {/* captured wire instructions (account number masked) */}
+      {wire && (
+        <div className="dd-card" style={{ marginTop: 10, background: 'var(--paper,#f6f3ec)' }}>
+          <div className="row between" style={{ alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
+            <b>Captured wire instructions</b>
+            <span className={'dd-chip ' + (WIRE_KIND[wire.name_kind] || WIRE_KIND.unknown).tone}><span className="dot" />{(WIRE_KIND[wire.name_kind] || WIRE_KIND.unknown).label}</span>
+          </div>
+          <div style={{ marginTop: 6, display: 'grid', gap: 4, gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
+            <WireRow k="Account name" v={wire.account_name} />
+            <WireRow k="Bank" v={wire.bank_name} />
+            <WireRow k="Account number" v={wire.account_number_masked} />
+            <WireRow k="Routing / ABA" v={wire.routing_number} />
+            <WireRow k="Bank address" v={wire.bank_address} />
+            <WireRow k="Account holder address" v={wire.account_address} />
+          </div>
+          {wire.captured_at && <div className="muted small" style={{ marginTop: 6 }}>Captured {fmtDay(wire.captured_at)} from the signed form.</div>}
+        </div>
+      )}
+
+      {/* FATAL: new-entity operating-agreement condition */}
+      {oa && !oa.satisfied && (
+        <div className="dd-card" style={{ marginTop: 10, borderLeft: '3px solid var(--bad,#b04a3f)' }}>
+          <b>Operating agreement required before releasing this wire.</b>
+          <div className="dd-sub" style={{ marginTop: 3 }}>The wire account name is a company that isn’t the borrower or the subject LLC. A fatal condition is open to collect that entity’s operating agreement (and confirm its authority to receive funds) before any wire is released.</div>
+        </div>
+      )}
+      {oa && oa.satisfied && <div className="dd-sub" style={{ marginTop: 8, color: 'var(--teal,#2f7f86)' }}>Operating agreement for the wire entity has been collected.</div>}
+
+      {/* signed PDF */}
+      {d.signed_document && (
+        <div style={{ marginTop: 10 }}>
+          <button className="btn btn-sm ghost" onClick={() => openSigned(d.signed_document.id)}>View the signed form (PDF)</button>
+        </div>
+      )}
+
+      {/* the action button */}
+      <div className="row" style={{ gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+        {(!env || terminal) && (
+          <button className="btn" disabled={busy || !d.can_send} onClick={() => send(terminal)}
+            title={!d.docusign_enabled ? 'DocuSign sending is turned off' : missing.length ? 'Complete the file first' : ''}>
+            {busy ? 'Sending…' : terminal ? 'Re-send draw request form' : 'Send draw request form (DocuSign)'}
+          </button>
+        )}
+        {env && !terminal && <span className="dd-sub">The form is out for signature. You can re-send once it’s completed, declined, or voided.</span>}
+      </div>
+    </div>
+  );
+}
+function WireRow({ k, v }) {
+  return (
+    <div className="row between" style={{ gap: 8 }}>
+      <span className="muted small">{k}</span>
+      <span className="small" style={{ fontWeight: 600, textAlign: 'right' }}>{v || '—'}</span>
     </div>
   );
 }

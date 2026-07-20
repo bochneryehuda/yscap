@@ -12,6 +12,7 @@
 const F = require('./fields');
 const X = require('./crosswalk');
 const T = require('./transforms');
+const { formatSsn } = require('../lib/fields');
 const ADDR = require('../lib/address');
 const checklist = require('./checklist');   // 5-state document-status ⇄ dropdown map
 
@@ -210,7 +211,11 @@ function buildTaskFields(ctx, options = {}, ysProgramFieldId = null) {
 
   // specials
   put(F.SHARED.borrowerName, T.joinName(borrower.first_name, borrower.last_name));
-  if (borrower.ssn) put(F.SHARED.borrowerSSN, String(borrower.ssn));  // orchestrator supplies decrypted
+  // Push the REAL SSN format XXX-XX-XXXX (owner-directed 2026-07-20). The orchestrator
+  // supplies the decrypted 9 digits; formatSsn dashes them. The no-op suppression
+  // compares SSNs digits-only (fieldValueEquivalent), so this never conflicts with a
+  // ClickUp value that is dash-less — it just makes the value we WRITE well-formatted.
+  if (borrower.ssn) put(F.SHARED.borrowerSSN, formatSsn(borrower.ssn));
   const bAddr = addressField(F.SHARED.borrowerAddress, borrower.current_address);
   if (bAddr) cf.push(bAddr);
   const sAddr = addressField(F.PIPELINE.subjectAddress, app.property_address);
@@ -562,11 +567,11 @@ function fieldValueEquivalent(fieldId, oldVal, newVal, options) {
     if (EMAIL_FIELD_IDS.has(fieldId)) {
       return String(oldVal).trim().toLowerCase() === String(newVal == null ? '' : newVal).trim().toLowerCase();
     }
-    // SSN: PILOT stores 9 bare digits (decrypted on push); ClickUp usually holds a
-    // dashed "123-45-4776". Compare DIGITS-ONLY so a pure formatting difference is
-    // not read as an overwrite (both mask identically as ✱✱✱-✱✱-4776, which is
-    // exactly why such a review looked like "same SSN"). A garbled/short value
-    // falls through to the exact-string compare below.
+    // SSN: PILOT now pushes the dashed "123-45-4776" (formatSsn) and stores 9 bare
+    // digits; ClickUp may hold either. Compare DIGITS-ONLY so a pure formatting
+    // difference is never read as an overwrite (both mask identically as
+    // ✱✱✱-✱✱-4776, which is exactly why such a review looked like "same SSN"). A
+    // garbled/short value falls through to the exact-string compare below.
     if (fieldId === F.SHARED.borrowerSSN) {
       const od = String(oldVal).replace(/\D/g, ''), nd = String(newVal == null ? '' : newVal).replace(/\D/g, '');
       if (od.length === 9 && nd.length === 9) return od === nd;

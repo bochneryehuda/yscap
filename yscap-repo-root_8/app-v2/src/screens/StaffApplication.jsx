@@ -2659,6 +2659,8 @@ export default function StaffApplication() {
   // straight to the right tab via the section bus.
   const [condTab, setCondTab] = useStickyFilter('condTab', 'borrower');
   useEffect(() => subscribeConditionsTab(setCondTab), []);   // eslint-disable-line react-hooks/exhaustive-deps
+  // Conversations + Activity + Email Center are one "Communication" hub (tabs).
+  const [commTab, setCommTab] = useStickyFilter('commTab', 'messages');
   const bucketOf = (s) => s === 'issue' ? 'rejected' : s === 'received' ? 'submitted' : s === 'satisfied' ? 'satisfied' : 'outstanding';
   // ONE "off my plate" rule for every surface — see roleDone() above.
   const condOffPlate = (it) => roleDone(it, role);
@@ -2708,9 +2710,7 @@ export default function StaffApplication() {
     { id: 'sec-esign', label: 'E-signatures', group: 'Signing & documents' },
     { id: 'sec-documents', label: 'Documents & exports', group: 'Signing & documents', badge: docs.length || '' },
     { id: 'sec-track', label: 'Track record', group: 'Signing & documents' },
-    { id: 'sec-messages', label: 'Conversations', group: 'Communication' },
-    { id: 'sec-activity', label: 'Activity', group: 'Communication' },
-    { id: 'sec-emails', label: 'Email Center', group: 'Communication' },
+    { id: 'sec-messages', label: 'Communication & history', group: 'Communication' },
     // Construction draws is the LAST phase (post-funding), so it's the LAST section.
     ...(can('manage_draws') && app.status === 'funded' ? [{ id: 'sec-draws', label: 'Construction draws', group: 'Construction draws' }] : []),
   ];
@@ -3172,23 +3172,20 @@ export default function StaffApplication() {
         : <p className="muted small">No borrower linked yet.</p>}
       </Section>
 
-      <Section id="sec-messages" title="Conversations" defaultOpen={false}
-        info="Every chat on this file — the borrower chat, the internal Loan Team, Officer ↔ Processor, and group chats. Internal chats are never visible to the borrower.">
-      <ChatPanel appId={id} onTaskCreated={load} />
-      </Section>
-
-      {/* #81 — the audit history is long and low-urgency, so the whole Activity
-          section stays COLLAPSED by default (matching the borrower file) and only
-          opens when an officer clicks to see it. "An alone file of old activity
-          within… always collapsed, open it if you want." */}
-      <Section id="sec-activity" title="Activity" collapsible defaultOpen={false}
-        info="The audited history of everything on this file — status changes, uploads, sign-offs, reveals. Collapsed by default; open it when you need the full trail.">
-      <ActivityFeed fetcher={activityFetcher} title="File activity" />
-      </Section>
-
-      <Section id="sec-emails" title="Email Center" defaultOpen={false}
-        info="Every email and notification sent on this file — who received it, whether it sent, and inbound replies you can answer right here.">
-      <EmailCenter mode="file" appId={id} />
+      {/* Conversations, Email Center and Activity are one "Communication & history"
+          section with tabs — they're all the file's talk + trail, so they share a
+          home instead of three separate sections. */}
+      <Section id="sec-messages" title="Communication & history" defaultOpen={false}
+        info="Everything said and logged on this file — chats, the email history, and the full activity trail. Switch with the tabs.">
+      <div className="cond-tabs" role="tablist" aria-label="Communication">
+        {[{ k: 'messages', label: 'Conversations' }, { k: 'emails', label: 'Emails' }, { k: 'activity', label: 'Activity' }].map(t => (
+          <button key={t.k} type="button" role="tab" aria-selected={commTab === t.k}
+            className={`cond-tab${commTab === t.k ? ' active' : ''}`} onClick={() => setCommTab(t.k)}>{t.label}</button>
+        ))}
+      </div>
+      {commTab === 'messages' && <ChatPanel appId={id} onTaskCreated={load} />}
+      {commTab === 'emails' && <EmailCenter mode="file" appId={id} />}
+      {commTab === 'activity' && <ActivityFeed fetcher={activityFetcher} title="File activity" />}
       </Section>
 
       {/* Construction draws — the LAST phase (post-funding), so the LAST section. Opens in its own full
