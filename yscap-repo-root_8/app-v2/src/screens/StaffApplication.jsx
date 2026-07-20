@@ -15,6 +15,7 @@ import ActivityFeed from '../components/ActivityFeed.jsx';
 import EmailCenter from '../components/EmailCenter.jsx';
 import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
 import DealSnapshot from '../components/DealSnapshot.jsx';
+import ClearToClosePanel from '../components/ClearToClosePanel.jsx';
 import { PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
 import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
@@ -218,8 +219,14 @@ function PrimaryAddressPanel({ borrowerId, address, name, onSaved }) {
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   const [err, setErr] = useState('');
+  // Once an address is on file it collapses to a single line (owner-directed:
+  // "once it's filled and saved, that should be collapsed automatically… it's
+  // just wasting everybody's place and time"). It opens into the full editor
+  // only when there's nothing on file yet, or the user clicks Edit.
+  const onFile = !!(address && ['line1', 'city', 'state', 'zip'].some(k => String(address[k] || '').trim()));
+  const [editing, setEditing] = useState(!onFile);
   const key = borrowerId + '|' + JSON.stringify(address || {});
-  useEffect(() => { setA({ ...blank, ...(address || {}) }); setSaved(false); /* eslint-disable-next-line */ }, [key]);
+  useEffect(() => { setA({ ...blank, ...(address || {}) }); setSaved(false); setEditing(!onFile); /* eslint-disable-next-line */ }, [key]);
   const set = (k, v) => { setA(s => ({ ...s, [k]: v })); setSaved(false); };
   const hasAny = ['line1', 'city', 'state', 'zip'].some(k => String(a[k] || '').trim());
   async function save() {
@@ -227,10 +234,25 @@ function PrimaryAddressPanel({ borrowerId, address, name, onSaved }) {
     try {
       const clean = hasAny ? { ...a, oneLine: oneLineAddr(a) } : null;
       await api.staffUpdateBorrower(borrowerId, { currentAddress: clean });
-      setSaved(true); if (onSaved) await onSaved();
+      setSaved(true); setEditing(false); if (onSaved) await onSaved();
     } catch (e) { setErr(e.message || 'Could not save'); }
     finally { setBusy(false); }
   }
+
+  // Collapsed one-liner — the common case for a file that's already set up.
+  if (!editing) {
+    const line = (address && address.oneLine) || oneLineAddr({ ...blank, ...(address || {}) }) || '—';
+    return (
+      <div className="metrow" style={{ marginTop: 12, alignItems: 'center' }}>
+        <span className="k">{name} — primary address</span>
+        <span className="v" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+          <span>{line}</span>
+          <button className="btn link small" onClick={() => setEditing(true)}>Edit</button>
+        </span>
+      </div>
+    );
+  }
+
   return (
     <div className="panel" style={{ marginTop: 18 }}>
       <div className="row" style={{ marginBottom: 4 }}>
@@ -258,6 +280,7 @@ function PrimaryAddressPanel({ borrowerId, address, name, onSaved }) {
       </div>
       <div className="row" style={{ gap: 10, alignItems: 'center' }}>
         <button className="btn primary small" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save address'}</button>
+        {onFile && <button className="btn ghost small" disabled={busy} onClick={() => { setA({ ...blank, ...(address || {}) }); setEditing(false); }}>Cancel</button>}
         {saved && <span className="muted small">Saved ✓</span>}
       </div>
     </div>
@@ -1900,6 +1923,15 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                     {cardBusy ? '…' : card ? 'Hide card' : 'Reveal card'}
                   </button>
                   <StaffCardEntry appId={appId} onSaved={onChanged} />
+                  {/* The credit-card-for-appraisal condition can be waived directly
+                      by the loan officer AND the back office / super admin
+                      (owner-directed) — e.g. the appraisal is paid another way. It's
+                      a required task, so the generic optional-only Waive below never
+                      shows for it; this is its own always-available waive. */}
+                  {(isLO || completer) && !signed && it.status !== 'satisfied' && !it.waived_at && (
+                    <button className="btn ghost small" title="Waive the credit-card-for-appraisal condition (e.g. the appraisal is paid another way) — clears it without a card"
+                      onClick={() => { if (window.confirm('Waive the credit-card-for-appraisal condition? It clears without a card on file.')) onPatch(it.id, { waived: true }); }}>Waive</button>
+                  )}
                 </div>
               )}
               {['title_contact', 'insurance_contact'].includes(it.tool_key) && (
@@ -2589,6 +2621,7 @@ export default function StaffApplication() {
       <Section id="sec-overview" title="File overview"
         info="Status, milestone gating, assignments and the deal at a glance — the control panel for this file.">
       <DealSnapshot app={app} gating={gating} />
+      <ClearToClosePanel gating={gating} />
       <ClickupSyncPanel app={app} canSetup={can('platform_setup')} isAdmin={isAdmin} onResynced={load} />
       {/* Status, ClickUp status & closing — one clean labeled control panel. The
           old version crammed the selects + buttons into loose rows and cut off the
@@ -2600,9 +2633,11 @@ export default function StaffApplication() {
           {gating && (() => {
             const g = gating.clear_to_close || {};
             const n = (g.conditions ? g.conditions.length : 0) + (g.gates ? g.gates.length : 0);
+            const jump = () => { const el = document.getElementById('ctc-outstanding'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
             return g.ready
-              ? <span className="ts-badge ok" title="All prior-to-docs conditions cleared and gates satisfied">Clear-to-close ready</span>
-              : <span className="ts-badge warn" title={[...(g.conditions || []).map(c => c.title), ...(g.gates || []).map(x => x.label)].join(' · ')}>{n} to clear before CTC</span>;
+              ? <button type="button" className="ts-badge ok" style={{ cursor: 'pointer' }} onClick={jump} title="All prior-to-docs conditions cleared and gates satisfied — view the checklist">Clear-to-close ready</button>
+              : <button type="button" className="ts-badge warn" style={{ cursor: 'pointer' }} onClick={jump}
+                  title={[...(g.conditions || []).map(c => c.title), ...(g.gates || []).map(x => x.title || x.label)].join(' · ')}>{n} to clear before CTC — see what’s left →</button>;
           })()}
         </div>
 
@@ -2751,7 +2786,7 @@ export default function StaffApplication() {
       </div>
       </Section>
 
-      <Section id="sec-application" title="Application details"
+      <Section id="sec-application" title="Application details" defaultOpen={false}
         info="What the borrower filled out — completeness at a glance, plus the editable deal numbers. Changing them here flows straight into pricing.">
       <Completeness app={app} borrower={borrower} appId={app.id} onSaved={load} />
       {app.borrower_id && (
@@ -2770,20 +2805,20 @@ export default function StaffApplication() {
       <ClickupFileData app={app} />
       </Section>
 
-      <Section id="sec-pricing" title="Loan structure & pricing"
+      <Section id="sec-pricing" title="Loan structure & pricing" defaultOpen={false}
         info="The registered product with its full economics, and the live Term Sheet Studio to reprice or re-register — every registration attaches the exact term sheet PDF."
         badge={app.registered_program ? 'Registered ✓' : 'Not registered'}>
       <ProductStudioPanel ref={studioRef} appId={id} app={app} onRegistered={load} mode="staff" staffRole={role}
         toolItemId={(items.find(it => it.tool_key === 'product_pricing') || {}).id} />
       </Section>
 
-      <Section id="sec-appraisal" title="Appraisal & PILOT findings"
+      <Section id="sec-appraisal" title="Appraisal & PILOT findings" defaultOpen={false}
         info="Import the appraisal XML (1004 / 1025 / 1073) and PILOT builds the whole property profile from it — As-Is, ARV, comparables, the appraiser and everything the file needs — then compares it to the loan file. Every value that differs becomes a PILOT finding your team reviews; a value change reprices the loan and nothing is ever overwritten silently."
         badge={apprSummary ? (apprSummary.fatal ? `${apprSummary.fatal} fatal` : (apprSummary.warning ? `${apprSummary.warning} warning` : 'Reviewed ✓')) : ''}>
         <AppraisalPanel appId={id} onSummary={onApprSummary} reloadSignal={apprReload} />
       </Section>
 
-      <Section id="sec-conditions" title="Conditions to close"
+      <Section id="sec-conditions" title="Conditions to close" defaultOpen={false}
         info="The SAME list the borrower sees — shared both ways. Upload on their behalf, accept (signs off), accept-but-request-one-more, or reject with a reason (the file moves to the trash and the condition reopens)."
         badge={`${borrowerItems.filter(it => it.signed_off_at).length}/${borrowerItems.length} signed off`}>
       <input ref={staffFileRef} type="file" multiple style={{ display: 'none' }} onChange={onStaffFile} />
@@ -2806,7 +2841,7 @@ export default function StaffApplication() {
       </div>
       </Section>
 
-      <Section id="sec-internal-conds" title="Internal conditions"
+      <Section id="sec-internal-conds" title="Internal conditions" defaultOpen={false}
         info="Staff-only document conditions (e.g. Insurance binder + invoice, Title). They sync with ClickUp and appear in the TPR export like any condition, but are NEVER shared with the borrower — separate from the phase-by-phase internal checklist below.">
       <div className="panel" style={{ marginTop: 0 }}>
         {(() => {
@@ -2838,7 +2873,7 @@ export default function StaffApplication() {
       </div>
       </Section>
 
-      <Section id="sec-checklist" title="Internal checklist"
+      <Section id="sec-checklist" title="Internal checklist" defaultOpen={false}
         info="The phase-by-phase processing checklist — internal-only work items, assignments and gates. Borrower conditions live in “Conditions to close” and are never repeated here. The borrower never sees this section.">
       <div className="panel" style={{ marginTop: 0 }}>
         <div className="row" style={{ marginBottom: 6, gap: 8, flexWrap: 'wrap' }}>
@@ -2872,19 +2907,19 @@ export default function StaffApplication() {
       </div>
       </Section>
 
-      <Section id="sec-entity" title="LLC condition — vesting entity"
+      <Section id="sec-entity" title="LLC condition — vesting entity" defaultOpen={false}
         info="This IS the LLC condition for the file — set up and verify the LLC taking title inline (entity details, ownership, the three documents). It's the same entity the borrower fills in on their side, so completing it here clears their condition and vice-versa; marking it verified satisfies the LLC condition on every open file it vests. No separate LLC condition row is shown — this is it.">
       <LlcReview appId={id} app={app} role={role} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
         dlBusy={dlBusy} onChanged={load} reviewBusy={busyAct === 'review'} onPreview={openPreview} />
       <VestingLlcOwners appId={id} app={app} />
       </Section>
 
-      <Section id="sec-esign" title="E-signatures"
+      <Section id="sec-esign" title="E-signatures" defaultOpen={false}
         info="PILOT's own DocuSign section for this file: what's outstanding before you can send, the two Send buttons (term-sheet package + Heter Iska), and live per-signer tracking (sent / viewed / signed, who we're waiting on, the admin counter-signature) with resend, void, re-issue and downloads. The cross-file cockpit lives at E-signatures in the sidebar.">
       <EsignFileSection appId={id} role={role} />
       </Section>
 
-      <Section id="sec-documents" title="Documents & exports"
+      <Section id="sec-documents" title="Documents & exports" defaultOpen={false}
         info="Every document on the file, titled by condition — with the working set on top, rejected/replaced versions in the trash, and the TPR clean-file export."
         badge={docs.length ? `${docs.length} files` : ''}>
       <div className="panel" style={{ marginTop: 0 }}>
@@ -2958,14 +2993,14 @@ export default function StaffApplication() {
       <MismoExport appId={id} />
       </Section>
 
-      <Section id="sec-track" title="Track record"
+      <Section id="sec-track" title="Track record" defaultOpen={false}
         info="The borrower's live track record — one record shared by every file. Add, edit, verify and attach closing docs; changes save automatically.">
       {app.borrower_id
         ? <StaffTrackRecordPanel app={app} role={role} />
         : <p className="muted small">No borrower linked yet.</p>}
       </Section>
 
-      <Section id="sec-messages" title="Conversations"
+      <Section id="sec-messages" title="Conversations" defaultOpen={false}
         info="Every chat on this file: the borrower-facing chat, the internal Loan Team chat, the Officer ↔ Processor chat, and any group chats you create. Live typing, read receipts, and presence — internal chats are never visible to the borrower.">
       <ChatPanel appId={id} onTaskCreated={load} />
       </Section>
@@ -2979,7 +3014,7 @@ export default function StaffApplication() {
       <ActivityFeed fetcher={activityFetcher} title="File activity" />
       </Section>
 
-      <Section id="sec-emails" title="Email Center"
+      <Section id="sec-emails" title="Email Center" defaultOpen={false}
         info="A full inbox for this file — every email and notification that went out (to the borrower, co-borrower, each assigned staffer, and any external party) with its full designed body, exactly whom it reached and when, and whether it actually sent. Inbound replies show in full, and you can reply right here — it reaches the borrower and the whole file team on the shared thread.">
       <EmailCenter mode="file" appId={id} />
       </Section>
