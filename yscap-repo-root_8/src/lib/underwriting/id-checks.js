@@ -104,7 +104,9 @@ function computeIdFindings(id, borrower, opts = {}) {
 
   // ---- 4. Expired ID ----
   if (id.expirationDate && today) {
-    const days = daysBetween(today, id.expirationDate);
+    // Normalize the expiry to YYYY-MM-DD first (same discipline as the insurance date checks) so a
+    // differently-formatted expiry (e.g. MM/DD/YYYY) is still evaluated rather than silently skipped.
+    const days = daysBetween(today, toISODate(id.expirationDate));
     if (days != null && days < 0) {
       out.push(finding({ code: 'id_expired', severity: 'warning', field: 'expiration',
         docValue: id.expirationDate, fileValue: today,

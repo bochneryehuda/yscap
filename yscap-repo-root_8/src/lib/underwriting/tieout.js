@@ -40,12 +40,21 @@ function finding(f) {
 // doc-vs-doc conflict + every fact/document a per-doc check doesn't cover (e.g. the settlement's
 // price, the appraisal's value). Keyed by docType → the fact keys that document's check covers.
 const PERDOC_COVERS = {
-  purchase_contract: ['property_address', 'purchase_price', 'entity_name', 'assignment_fee', 'underlying_price'],
+  purchase_contract: ['property_address', 'purchase_price', 'entity_name'],
   government_id: ['borrower_name', 'borrower_dob', 'borrower_address'],
   title: ['property_address'],
   bank_statement: ['entity_name', 'borrower_name'],
 };
-const perDocCovers = (docType, factKey) => !!PERDOC_COVERS[docType] && PERDOC_COVERS[docType].indexOf(factKey) !== -1;
+// The contract check compares assignment_fee / underlying_price ONLY when the file is flagged an
+// assignment (purchase-contract-checks guards them behind is_assignment). So the tie-out may only
+// suppress those two when the file IS an assignment — otherwise the tie-out must still catch a
+// stale-value mismatch the contract check skipped.
+const PERDOC_COVERS_ASSIGNMENT = { purchase_contract: ['assignment_fee', 'underlying_price'] };
+function perDocCovers(docType, factKey, isAssignment) {
+  if ((PERDOC_COVERS[docType] || []).indexOf(factKey) !== -1) return true;
+  if (isAssignment && (PERDOC_COVERS_ASSIGNMENT[docType] || []).indexOf(factKey) !== -1) return true;
+  return false;
+}
 
 // The agreed value among a set of present document claims for one fact: if every pair matches,
 // the consensus (first) value; if any pair disagrees, null (a genuine cross-document conflict).
@@ -62,6 +71,7 @@ function consensus(kind, claims) {
 
 function buildTieout(fileCtx, sources = []) {
   const ctx = fileCtx || {};
+  const isAssignment = !!(ctx.app && ctx.app.is_assignment);
   const srcs = (sources || []).filter((s) => s && s.docType).map((s, i) => ({
     id: s.id || `${s.docType}_${i}`, docType: s.docType, label: s.label || lbl(s.docType),
     claims: claimsFor(s.docType, s.fields),
@@ -111,7 +121,7 @@ function buildTieout(fileCtx, sources = []) {
       // A source whose own per-document check already compares this fact to the file is EXCLUDED
       // here — that mismatch is raised once by the per-doc check; the tie-out avoids the duplicate
       // (the matrix cell still shows the disagreement). Sources with no dedicated check stay.
-      const bad = withVal.filter((c) => factMatch(fact.kind, fileVal, c.value) === false && !perDocCovers(c.docType, fact.key));
+      const bad = withVal.filter((c) => factMatch(fact.kind, fileVal, c.value) === false && !perDocCovers(c.docType, fact.key, isAssignment));
       if (bad.length) {
         discrepancies.push(finding({
           code: `tieout_${fact.key}`, severity: fact.severity, field: fact.key,

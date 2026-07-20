@@ -68,6 +68,19 @@ assert.strictEqual(claimsFor('bank_statement', { accountHolderName: 'John Smith'
   assert.ok(!r.discrepancies.some((x) => x.field === 'arv'), 'matching ARV raises nothing');
 }
 
+// ===== 2d. Assignment-fee suppression is CONDITIONAL on the file being an assignment =====
+{
+  // NON-assignment file with a stale assignment_fee + a contract carrying a different one:
+  // the contract check skips it (guarded by is_assignment), so the tie-out MUST still catch it.
+  const nonAsg = { app: { property_address: ADDR, is_assignment: false, assignment_fee: 5000 } };
+  const r1 = buildTieout(nonAsg, [{ id: 'c', docType: 'purchase_contract', fields: { assignmentFee: 20000 } }]);
+  assert.ok(r1.discrepancies.some((d) => d.field === 'assignment_fee'), 'on a non-assignment file the tie-out catches an assignment-fee mismatch the contract check skips');
+  // ASSIGNMENT file: the contract check owns it → the tie-out does NOT duplicate.
+  const asg = { app: { property_address: ADDR, is_assignment: true, assignment_fee: 5000 } };
+  const r2 = buildTieout(asg, [{ id: 'c', docType: 'purchase_contract', fields: { assignmentFee: 20000 } }]);
+  assert.ok(!r2.discrepancies.some((d) => d.field === 'assignment_fee'), 'on an assignment file the contract check owns the assignment-fee mismatch (no duplicate)');
+}
+
 // ===== 3. Seller (no file value) — documents disagree → fatal doc-vs-doc =====
 {
   const r = buildTieout(ctx, [
