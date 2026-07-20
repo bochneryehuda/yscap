@@ -3,6 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
+import LlcPicker from '../components/LlcPicker.jsx';
 import { MoneyInput, PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
 import { unitsMode, unitsForType } from '../lib/enums.js';
 
@@ -236,7 +237,7 @@ export default function StaffNewFile() {
   const _d = readNewFileDraft();   // restore any in-progress draft (lazy, once, pre-persist)
   const [f, setF] = useState({
     firstName: '', lastName: '', email: '', phone: '',
-    program: '', loanType: '', propertyType: '', units: '',
+    program: '', loanType: '', propertyType: '', units: '', entityName: '', llcId: '',
     purchasePrice: '', asIsValue: '', arv: '', rehabBudget: '', rehabType: '', sqftPre: '', sqftPost: '',
     isAssignment: false, underlyingContractPrice: '',
     requestedExpFlips: '', requestedExpHolds: '', requestedExpGround: '', requestedExpReo: '',
@@ -355,6 +356,10 @@ export default function StaffNewFile() {
         // Single-unit types are always 1 even if a stale draft left units blank;
         // otherwise use the entered/selected count (unitsForType returns '1'/'').
         units: (() => { const u = unitsForType(f.propertyType, f.units); return u ? Number(u) : undefined; })(),
+        // Vesting entity: a picked LLC id, or a typed name the backend resolves /
+        // creates on the borrower after the file is made.
+        llcId: f.llcId || undefined,
+        entityName: (!f.llcId && f.entityName.trim()) ? f.entityName.trim() : undefined,
         program: f.program || undefined,
         loanType: f.loanType || undefined,
         purchasePrice: numOrNull(f.purchasePrice),
@@ -528,6 +533,14 @@ export default function StaffNewFile() {
                 <input className="input" type="number" min="1" value={f.units} onChange={e => set('units', e.target.value)} /></div>
             )}
           </div>
+          <div className="field"><label>Vesting entity / LLC (if any)</label>
+            <LlcPicker value={f.entityName} staff borrowerId={borrowerId}
+              placeholder={borrowerId ? 'Which LLC is this property purchased under?' : 'Type the LLC name (created once the borrower is saved)'}
+              onPick={({ id, name }) => setF(s => ({ ...s, entityName: name, llcId: id || '' }))} />
+            <p className="muted small" style={{ marginTop: 4 }}>
+              {borrowerId ? 'Pick one of this borrower’s LLCs or create a new one — we’ll ask for its EIN letter, formation docs, and operating agreement.'
+                : 'If the property vests in an LLC, type its name — it’s created on the borrower once the file is saved.'}
+            </p></div>
           </div>
         </div>
 
