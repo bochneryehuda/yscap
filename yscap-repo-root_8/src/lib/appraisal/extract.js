@@ -341,6 +341,13 @@ function comparables(root) {
       grossAdjPct: toNum(X.attr(c, 'SalesPriceTotalAdjustmentGrossPercent')),
       gla: g.gla, saleDate: g.saleDate, conditionUad: g.conditionUad, qualityUad: g.qualityUad,
       dom: g.dom, pricePerGla: g.pricePerGla, adjustments: g.adjustments.length ? g.adjustments : null,
+      // Per-comp UAD view & location overall ratings (the two remaining UAD grid lines) + basement
+      // area + data source. All read from this comp's own COMPARISON_* nodes (never the subject's).
+      viewRating: enumOf(X.attr(X.find(c, 'COMPARISON_VIEW_OVERALL_RATING'), 'GSEViewOverallRatingType'), ['Beneficial', 'Neutral', 'Adverse']),
+      locationRating: enumOf(X.attr(X.find(c, 'COMPARISON_LOCATION_OVERALL_RATING'), 'GSEOverallLocationRatingType'), ['Beneficial', 'Neutral', 'Adverse']),
+      belowGradeSqft: bounded(X.attr(cd, 'GSEBelowGradeTotalSquareFeetNumber'), 1e6),
+      belowGradeFinishedSqft: bounded(X.attr(cd, 'GSEBelowGradeFinishSquareFeetNumber'), 1e6),
+      compDataSource: clean(X.attr(cd, 'GSEDataSourceDescription')),
     });
   }
   return { comps, subject0 };
@@ -535,7 +542,11 @@ function enrichment(root, prop, st, site, subject0, rep, formType) {
 
   // -- structure / systems --
   o.effective_age = years(A(subjFind(root, 'STRUCTURE_ANALYSIS'), 'EffectiveAgeYearsCount'), 200);
-  o.building_status = enumOf(A(subjFind(root, 'STRUCTURE'), 'BuildingStatusType'), ['Existing', 'Proposed', 'UnderConstruction', 'SubstantiallyComplete']);
+  // A file can carry several subject STRUCTURE nodes; only one holds BuildingStatusType. Pick that
+  // one (not blindly the first) so the status isn't missed — still subject-scoped via subjAll.
+  const structNodes = subjAll(root, 'STRUCTURE');
+  const structStatusNode = structNodes.find((s) => clean(X.attr(s, 'BuildingStatusType'))) || structNodes[0] || null;
+  o.building_status = enumOf(A(structStatusNode, 'BuildingStatusType'), ['Existing', 'Proposed', 'UnderConstruction', 'SubstantiallyComplete']);
   o.updated_last_15yr = yn(A(subjFind(root, 'OVERALL_CONDITION_RATING'), 'GSEUpdateLastFifteenYearIndicator'));
   const heat = st ? X.find(st, 'HEATING') : null;
   o.heating_type = clean(A(heat, '_Type')) === 'Other' ? clean(A(heat, '_TypeOtherDescription')) : clean(A(heat, '_Type'));
