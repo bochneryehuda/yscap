@@ -171,10 +171,14 @@ router.post('/:appId/import', async (req, res, next) => {
     // Gated to once per file per ~day so a re-import doesn't re-notify.
     try {
       if (app.borrower_id) {
-        const recent = await db.query(
-          `SELECT 1 FROM audit_log WHERE action='appraisal_received_emailed' AND entity_id=$1 AND created_at > now() - interval '20 hours' LIMIT 1`,
-          [app.id]);
-        if (!recent.rows[0]) {
+        // Atomically CLAIM the ~day slot (stamp-first) so a double/re-import in the
+        // same instant can't send the milestone twice.
+        const claim = await db.query(
+          `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+           SELECT 'system', NULL, 'appraisal_received_emailed', 'application', $1, '{}'::jsonb
+            WHERE NOT EXISTS (SELECT 1 FROM audit_log WHERE action='appraisal_received_emailed' AND entity_id=$1 AND created_at > now() - interval '20 hours')
+           RETURNING id`, [app.id]);
+        if (claim.rows[0]) {
           await require('../lib/notify').notifyAppBorrowers(app.id, {
             type: 'milestone',
             title: 'Your property appraisal has been received',
@@ -182,9 +186,6 @@ router.post('/:appId/import', async (req, res, next) => {
             body: 'Good news — the appraisal report for your property has come in and is now with your loan team for review.',
             lines: ['There\'s nothing you need to do right now. If anything from the appraisal needs your attention, we\'ll reach out.'],
             applicationId: app.id, link: `/app/${app.id}`, ctaLabel: 'View your file' });
-          await db.query(
-            `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
-             VALUES ('system',NULL,'appraisal_received_emailed','application',$1,'{}'::jsonb)`, [app.id]).catch(() => {});
         }
       }
     } catch (_) { /* milestone email is best-effort */ }

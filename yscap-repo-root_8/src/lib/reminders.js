@@ -129,17 +129,32 @@ async function contactsForApplication(appId, actor, client = db) {
 // Borrower-facing outstanding items for the "prefill outstanding conditions"
 // helper. Deliberately uses the BORROWER label/title only (never the internal
 // wording, which can carry capital-partner detail) - safe to show to anyone.
+// Each outstanding item as "Label — exactly what's needed" (owner-directed
+// 2026-07-20: a notification must never just say "2 items outstanding" — it must
+// list the EXACT items with their details). For a checklist item the detail is
+// its borrower hint, or — if the item was sent back — the reason it needs redoing.
+// For a condition it's the borrower-facing detail. Detail is trimmed/capped; the
+// notifyBorrower chokepoint scrubs any staff-typed text before it reaches the
+// borrower. Returns formatted STRINGS (drop-in for every existing caller).
+function _fmtItem(label, detail) {
+  const d = (detail == null ? '' : String(detail)).replace(/\s+/g, ' ').trim();
+  const l = String(label || '').trim();
+  return d ? `${l} — ${d.length > 160 ? d.slice(0, 157) + '…' : d}` : l;
+}
 async function outstandingItems(appId, client = db) {
   const items = await client.query(
-    `SELECT COALESCE(borrower_label,label) AS label FROM checklist_items
+    `SELECT COALESCE(borrower_label,label) AS label,
+            CASE WHEN status='issue' AND issue_reason IS NOT NULL THEN 'sent back — ' || issue_reason
+                 ELSE COALESCE(borrower_hint, hint) END AS detail
+       FROM checklist_items
       WHERE application_id=$1 AND audience IN ('borrower','both')
         AND status IN ('outstanding','requested','issue')
       ORDER BY sort_order LIMIT 30`, [appId]);
   const conds = await client.query(
-    `SELECT borrower_title AS title FROM conditions
+    `SELECT borrower_title AS label, borrower_detail AS detail FROM conditions
       WHERE application_id=$1 AND audience IN ('borrower','both') AND borrower_title IS NOT NULL
         AND status IN ('open','borrower_responded') LIMIT 30`, [appId]);
-  return [...items.rows.map(r => r.label), ...conds.rows.map(r => r.title)].filter(Boolean);
+  return [...items.rows, ...conds.rows].map((r) => _fmtItem(r.label, r.detail)).filter(Boolean);
 }
 
 async function listForApplication(appId, client = db) {
@@ -285,8 +300,15 @@ async function dispatchDue(client = db) {
         AND ${NOT_MUTED}
       ORDER BY r.remind_at LIMIT 100`);
   for (const row of leads.rows) {
+    // CLAIM the row atomically BEFORE delivering (owner-reported duplicate sweep
+    // 2026-07-20): the mark used to happen AFTER _deliver, so two overlapping
+    // passes — a slow pass still awaiting sends when the next 60s tick fires, or
+    // two instances during a deploy overlap — could both select this un-nudged
+    // row and both send it. `WHERE reminded_at IS NULL RETURNING` lets exactly one
+    // pass win the claim; the loser skips.
+    const claim = await client.query(`UPDATE reminders SET reminded_at=now(), updated_at=now() WHERE id=$1 AND reminded_at IS NULL RETURNING id`, [row.id]);
+    if (!claim.rows[0]) continue;
     await _deliver(row, { lead: true });
-    await client.query(`UPDATE reminders SET reminded_at=now(), updated_at=now() WHERE id=$1`, [row.id]);
   }
   // 2) Due firings.
   const due = await client.query(
@@ -296,14 +318,18 @@ async function dispatchDue(client = db) {
         AND ${NOT_MUTED}
       ORDER BY r.due_at LIMIT 100`);
   for (const row of due.rows) {
-    await _deliver(row, {});
+    // CLAIM atomically BEFORE delivering (same duplicate guard as the nudge loop):
+    // `WHERE fired_at IS NULL RETURNING` means only ONE overlapping pass wins and
+    // delivers; the loser skips instead of sending a second copy.
     // A one-shot reminder is 'sent' once fired; a task stays actionable (still
     // 'scheduled' with fired_at stamped) so it lives on until marked done.
-    if (row.kind === 'task') {
-      await client.query(`UPDATE reminders SET fired_at=now(), updated_at=now() WHERE id=$1`, [row.id]);
-    } else {
-      await client.query(`UPDATE reminders SET fired_at=now(), status='sent', updated_at=now() WHERE id=$1`, [row.id]);
-    }
+    const claim = await client.query(
+      row.kind === 'task'
+        ? `UPDATE reminders SET fired_at=now(), updated_at=now() WHERE id=$1 AND fired_at IS NULL RETURNING id`
+        : `UPDATE reminders SET fired_at=now(), status='sent', updated_at=now() WHERE id=$1 AND fired_at IS NULL RETURNING id`,
+      [row.id]);
+    if (!claim.rows[0]) continue;   // another pass already claimed + delivered it
+    await _deliver(row, {});
     fired++;
   }
   return fired;

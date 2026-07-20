@@ -497,19 +497,15 @@ router.post('/applications/:id/request-draw', async (req, res) => {
       type: 'draw_request', title: 'Draw request received',
       body: `We received your request to set up draws on ${addr}. Our draws team will follow up.`,
       applicationId: a.id, link: `/app/${a.id}` });
-    // Branded email to the draws desk + assigned team + borrower.
-    // `team` = the active assigned staff (primary LO/processor + assistants, #113).
-    // (This was previously an undeclared identifier — the branded draws-desk email
-    // threw ReferenceError and was silently swallowed by the surrounding try; the
-    // in-app notices above still fired, so it wasn't visible. Fixed here.)
-    const teamRows = await db.query(
-      `SELECT DISTINCT staff_id FROM application_assignees
-        WHERE application_id=$1 AND removed_at IS NULL AND staff_id IS NOT NULL`, [a.id]);
-    const team = teamRows.rows.map((r) => r.staff_id);
-    const staff = team.length ? await db.query(`SELECT email FROM staff_users WHERE id = ANY($1::uuid[])`, [team]) : { rows: [] };
-    const recipients = ['draws@yscapgroup.com', a.email, ...staff.rows.map(r => r.email)].filter(Boolean);
-    await mail.deliver(mail.drawRequest({ borrowerName, propertyLabel: addr, loanNumber: a.ys_loan_number }), recipients,
-      { replyTo: fileReplyTo(a.id) });   // #68: a reply to the draw email reaches the whole assigned team
+    // Branded email to the draws DESK ONLY (draws@yscapgroup.com) — a shared inbox
+    // that has no PILOT account, so it can't receive the in-app/notify email above.
+    // The assigned team and the borrower are NOT re-added here: they already got
+    // their branded notification via notifyAppStaff / notifyBorrower, and adding
+    // them to this deliver would DOUBLE-email every one of them (owner-reported
+    // duplicate-notification sweep 2026-07-20). A reply to the desk email still
+    // reaches the whole assigned team via the per-file reply-to.
+    await mail.deliver(mail.drawRequest({ borrowerName, propertyLabel: addr, loanNumber: a.ys_loan_number }),
+      ['draws@yscapgroup.com'], { replyTo: fileReplyTo(a.id) });   // #68 per-file reply-to
   } catch (e) { /* in-app notice already written; email is best-effort */ }
   await audit(req, 'request_draw', 'application', a.id);
   res.json({ ok: true });

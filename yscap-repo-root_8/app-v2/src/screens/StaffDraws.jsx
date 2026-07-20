@@ -50,6 +50,12 @@ export default function StaffDraws() {
     return draws;
   }, [draws, filter]);
 
+  // "Needs my approval" — the coordinator's live work queue: draws sitting at a review stage on an active
+  // project, oldest submission first (those have waited longest on the borrower's money).
+  const approvalQueue = useMemo(() => draws
+    .filter((d) => (d.lifecycle_state || 'active') === 'active' && (d.status === 'pending' || d.status === 'pending_capital_partner'))
+    .sort((a, b) => new Date(a.submitted_at || 0) - new Date(b.submitted_at || 0)), [draws]);
+
   if (!can('manage_draws')) return <div className="wrap"><div className="panel">You don't have access to the draw desk.</div></div>;
 
   const T = portfolio && portfolio.totals ? portfolio.totals : null;
@@ -106,8 +112,17 @@ export default function StaffDraws() {
           </div>
         )}
 
+        {/* Portfolio health — one-glance read of the active portfolio's condition */}
+        {portfolio && portfolio.health && <HealthPanel health={portfolio.health} />}
+
+        {/* Needs my approval — the coordinator's work queue (draws waiting on a decision) */}
+        {approvalQueue.length > 0 && <NeedsApprovalQueue draws={approvalQueue} />}
+
         {/* Portfolio insights — exposure + pacing by project, from real portfolio data */}
         {portfolio && <PortfolioInsights portfolio={portfolio} />}
+
+        {/* Exposure by capital partner — where committed capital sits per note buyer (staff-only) */}
+        {portfolio && Array.isArray(portfolio.by_partner) && portfolio.by_partner.length > 0 && <PartnerExposure byPartner={portfolio.by_partner} />}
 
         {/* Attention needed */}
         {alertFiles.length > 0 && (
@@ -187,8 +202,139 @@ function Icon({ name }) {
     inbox: <><path d="M3 12h4l1.5 2.5h7L17 12h4" /><path d="M5 5h14l2 7v6H3v-6z" /></>,
     folder: <><path d="M3 7a1 1 0 011-1h5l2 2h9a1 1 0 011 1v9a1 1 0 01-1 1H4a1 1 0 01-1-1z" /></>,
     layers: <><path d="M12 3l9 5-9 5-9-5z" /><path d="M3 12.5l9 5 9-5" /></>,
+    pulse: <><path d="M3 12h4l2.5 6 4-13 2.5 7H21" /></>,
+    pie: <><path d="M12 3v9l7 4" /><circle cx="12" cy="12" r="9" /></>,
   }[name] || null;
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{p}</svg>;
+}
+
+/* A one-glance health read of the ACTIVE portfolio: on-track vs flagged, plus the counts that need a
+   coordinator's attention. Built entirely from the /portfolio `health` block (no fabricated numbers). */
+function HealthPanel({ health }) {
+  const active = Number(health.active) || 0;
+  const onTrack = Number(health.on_track) || 0;
+  const flagged = Number(health.flagged) || 0;
+  const pct = active > 0 ? Math.round((onTrack / active) * 100) : 100;
+  return (
+    <div className="dd-card">
+      <div className="dd-card-h" style={{ justifyContent: 'space-between' }}>
+        <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+          <span className="dd-card-ic"><Icon name="pulse" /></span>
+          <div>
+            <h3>Portfolio health</h3>
+            <div className="dd-sub" style={{ marginTop: 1 }}>How your active construction projects are tracking right now.</div>
+          </div>
+        </div>
+        <span className="dd-hero-pct">{pct}%<span className="dd-sub" style={{ fontWeight: 500, marginLeft: 6 }}>on track</span></span>
+      </div>
+      <div className="dd-meter" style={{ height: 10, marginTop: 4 }} role="img" aria-label={`${pct}% of active projects on track`}>
+        <i style={{ width: pct + '%' }} />
+      </div>
+      <div className="dd-kpis" style={{ marginTop: 14 }}>
+        <MiniStat label="On track" value={onTrack} tone={onTrack > 0 ? 'ok' : ''} />
+        <MiniStat label="Flagged" value={flagged} tone={flagged > 0 ? 'danger' : ''} />
+        <MiniStat label="Release overdue" value={health.wire_overdue_files} tone={Number(health.wire_overdue_files) > 0 ? 'danger' : ''} />
+        <MiniStat label="Awaiting approval" value={health.pending_count} tone={Number(health.pending_count) > 0 ? 'gold' : ''} />
+        <MiniStat label="Finished / paid off" value={health.finished} />
+      </div>
+    </div>
+  );
+}
+function MiniStat({ label, value, tone }) {
+  const color = tone === 'danger' ? 'var(--danger)' : tone === 'gold' ? 'var(--gold, #ae8746)' : tone === 'ok' ? 'var(--teal-br)' : 'var(--text)';
+  return (
+    <div className="dd-kpi">
+      <div className="dd-kpi-label">{label}</div>
+      <div className="dd-kpi-value" style={{ color }}>{value ?? '—'}</div>
+    </div>
+  );
+}
+
+/* The coordinator's work queue — draws sitting at a review stage, oldest submission first (longest-waiting
+   money at the top). Each row deep-links straight into that file's draw desk. */
+function NeedsApprovalQueue({ draws }) {
+  const dayAge = (v) => { if (!v) return null; const d = Math.floor((Date.now() - new Date(v).getTime()) / 86400000); return d < 0 ? 0 : d; };
+  return (
+    <div className="dd-card">
+      <div className="dd-card-h">
+        <span className="dd-card-ic gold" style={{ background: 'var(--warning-soft)', color: 'var(--gold, #ae8746)' }}><Icon name="clock" /></span>
+        <div>
+          <h3>Needs your approval</h3>
+          <div className="dd-sub" style={{ marginTop: 1 }}>{draws.length} draw{draws.length === 1 ? '' : 's'} waiting on a decision — oldest first.</div>
+        </div>
+      </div>
+      <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column' }}>
+        {draws.map((d) => {
+          const age = dayAge(d.submitted_at);
+          return (
+            <div key={d.sitewire_draw_id} className="row" style={{ justifyContent: 'space-between', gap: 10, alignItems: 'center', padding: '10px 0', borderTop: '1px solid var(--line)' }}>
+              <div style={{ minWidth: 0 }}>
+                <Link to={`/internal/app/${d.application_id}/draws`} style={{ fontWeight: 600, color: 'var(--teal-br)', textDecoration: 'none' }}>
+                  {d.ys_loan_number || 'Loan # pending'} · Draw #{d.number ?? '—'}
+                </Link>
+                <div className="dd-sub" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={d.address || ''}>{d.address || '—'}</div>
+              </div>
+              <div className="row" style={{ gap: 10, alignItems: 'center', flex: '0 0 auto' }}>
+                {age != null && <span className="dd-sub" style={{ color: age >= 3 ? 'var(--danger)' : 'var(--text-muted)', fontWeight: age >= 3 ? 700 : 500 }}>{age === 0 ? 'today' : `${age}d waiting`}</span>}
+                <span className="pill sw-pending">{d.status === 'pending_capital_partner' ? 'With capital partner' : 'Needs approval'}</span>
+                <Link className="btn btn-sm ghost" to={`/internal/app/${d.application_id}/draws`}>Review</Link>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* Released-vs-remaining exposure grouped by capital partner (note buyer) — a horizontal part-to-whole bar
+   per partner so the desk sees concentration of committed capital. Staff-only labels. */
+function PartnerExposure({ byPartner }) {
+  const rows = byPartner.filter((p) => (Number(p.budget_cents) || 0) > 0);
+  if (!rows.length) return null;
+  const maxRemaining = Math.max(1, ...rows.map((p) => Number(p.remaining_cents) || 0));
+  return (
+    <div className="dd-card">
+      <div className="dd-card-h" style={{ justifyContent: 'space-between' }}>
+        <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+          <span className="dd-card-ic"><Icon name="pie" /></span>
+          <div>
+            <h3>Exposure by capital partner</h3>
+            <div className="dd-sub" style={{ marginTop: 1 }}>Where your committed construction capital sits — released vs. remaining, per partner.</div>
+          </div>
+        </div>
+        <div className="row" style={{ gap: 14, flexWrap: 'wrap' }}>
+          <span className="dd-leg-k" style={{ fontSize: 12 }}><span className="sw" style={{ background: 'var(--teal)' }} />Released</span>
+          <span className="dd-leg-k" style={{ fontSize: 12 }}><span className="sw" style={{ background: 'var(--ink-3)' }} />Remaining</span>
+        </div>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 6 }}>
+        {rows.map((p) => {
+          const pct = Math.max(0, Math.min(100, Number(p.pct_complete) || 0));
+          const barW = Math.round(((Number(p.remaining_cents) || 0) / maxRemaining) * 100);
+          return (
+            <div key={p.partner}>
+              <div className="row" style={{ justifyContent: 'space-between', gap: 10, alignItems: 'baseline', marginBottom: 5 }}>
+                <span style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '52%' }} title={p.partner}>
+                  {p.partner} <span className="dd-sub" style={{ fontWeight: 500 }}>· {p.files} file{p.files === 1 ? '' : 's'}</span>
+                </span>
+                <span className="dd-sub" style={{ fontVariantNumeric: 'tabular-nums', flex: '0 0 auto' }}>
+                  <b style={{ color: 'var(--teal-br)' }}>{usd(p.drawn_cents)}</b> drawn · {usd(p.remaining_cents)} exposure
+                  {p.flagged > 0 ? <span style={{ color: 'var(--danger)', fontWeight: 700 }}> · {p.flagged} flagged</span> : null}
+                </span>
+              </div>
+              {/* outer width encodes RELATIVE exposure across partners; inner fill encodes % released within it */}
+              <div style={{ width: barW + '%', minWidth: 40 }}>
+                <div className="dd-meter" style={{ height: 10 }} role="img" aria-label={`${p.partner}: ${usd(p.remaining_cents)} remaining exposure, ${pct}% released`}>
+                  <i style={{ width: pct + '%' }} />
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 function KPI({ label, value, sub, icon, tone, link }) {

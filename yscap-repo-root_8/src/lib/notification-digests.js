@@ -43,21 +43,39 @@ function nyParts(now = new Date()) {
   } catch (_) { return { hour: 9, weekday: 'Mon' }; }
 }
 
-// "May I send?" — true when nothing with this (action, entity) was stamped inside
-// the window. entityId null = a global (non-file-scoped) digest.
+// "May I send?" — atomically CLAIM the send: write the throttle stamp ONLY if
+// nothing with this (action, entity) was stamped inside the window, in a single
+// INSERT…WHERE NOT EXISTS…RETURNING. Returns true only for the ONE caller that
+// won the claim; a concurrent/overlapping pass or a second instance loses and
+// returns false. (The old shape SELECTed then stamped AFTER sending, so two
+// overlapping passes could both pass the check and both send — owner-reported
+// duplicate sweep 2026-07-20.) entityId null = a global (non-file-scoped) digest.
 async function _gate(action, entityId, interval) {
   try {
     const q = entityId
-      ? await db.query(`SELECT 1 FROM audit_log WHERE action=$1 AND entity_id=$2 AND created_at > now() - $3::interval LIMIT 1`, [action, entityId, interval])
-      : await db.query(`SELECT 1 FROM audit_log WHERE action=$1 AND entity_id IS NULL AND created_at > now() - $2::interval LIMIT 1`, [action, interval]);
-    return !q.rows[0];
+      ? await db.query(
+          `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+           SELECT 'system', NULL, $1, 'application', $2, '{}'::jsonb
+            WHERE NOT EXISTS (SELECT 1 FROM audit_log WHERE action=$1 AND entity_id=$2 AND created_at > now() - $3::interval)
+           RETURNING id`, [action, entityId, interval])
+      : await db.query(
+          `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+           SELECT 'system', NULL, $1, 'application', NULL, '{}'::jsonb
+            WHERE NOT EXISTS (SELECT 1 FROM audit_log WHERE action=$1 AND entity_id IS NULL AND created_at > now() - $2::interval)
+           RETURNING id`, [action, interval]);
+    return !!q.rows[0];   // won the claim (row stamped) → OK to send
   } catch (_) { return false; }   // on any DB error, DON'T send (fail closed)
 }
+// The claim row is already written by _gate; _stamp now just enriches it with the
+// digest's stats for the audit trail (best-effort — never a second throttle row).
 async function _stamp(action, entityId, detail) {
   await db.query(
-    `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
-     VALUES ('system', NULL, $1, 'application', $2, $3::jsonb)`,
-    [action, entityId || null, JSON.stringify(detail || {})]).catch(() => {});
+    entityId
+      ? `UPDATE audit_log SET detail=$3::jsonb
+           WHERE id = (SELECT id FROM audit_log WHERE action=$1 AND entity_id=$2 ORDER BY created_at DESC LIMIT 1)`
+      : `UPDATE audit_log SET detail=$2::jsonb
+           WHERE id = (SELECT id FROM audit_log WHERE action=$1 AND entity_id IS NULL ORDER BY created_at DESC LIMIT 1)`,
+    entityId ? [action, entityId, JSON.stringify(detail || {})] : [action, JSON.stringify(detail || {})]).catch(() => {});
 }
 
 const money = (cents) => '$' + (Number(cents || 0) / 100).toLocaleString('en-US');
@@ -73,9 +91,12 @@ async function weeklyBorrowerOutstandingOnce() {
         AND status <> ALL($1) LIMIT 500`, [TERMINAL]);
   for (const a of apps.rows) {
     try {
-      if (!(await _gate('borrower_outstanding_digest', a.id, '6 days'))) continue;
+      // Compute content FIRST, then claim the gate — otherwise a file with zero
+      // open items today would burn the 6-day throttle and get NO digest for the
+      // rest of the window once it gains an item (owner-reported audit 2026-07-20).
       const items = await outstandingItems(a.id);
       if (!items.length) continue;
+      if (!(await _gate('borrower_outstanding_digest', a.id, '6 days'))) continue;
       const shown = items.slice(0, 12);
       const lines = shown.map((l, i) => `${i + 1}. ${l}`);
       if (items.length > shown.length) lines.push(`…and ${items.length - shown.length} more, all listed in your portal.`);
@@ -117,7 +138,6 @@ async function dailyPipelineDigestOnce() {
         AND a.status <> ALL($1)`, [TERMINAL]);
   for (const st of staff.rows) {
     try {
-      if (!(await _gate('pipeline_digest_daily', st.id, '20 hours'))) continue;
       const files = await db.query(
         `SELECT a.id, a.ys_loan_number, a.property_address, a.status, a.status_changed_at,
                 (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id
@@ -128,6 +148,9 @@ async function dailyPipelineDigestOnce() {
           ORDER BY a.status_changed_at ASC NULLS FIRST
           LIMIT 40`, [st.id, TERMINAL]);
       if (!files.rows.length) continue;
+      // Claim the once-per-day gate only once we know there's content to send
+      // (don't burn the window on an empty pass).
+      if (!(await _gate('pipeline_digest_daily', st.id, '20 hours'))) continue;
       const lines = files.rows.map((f) => {
         const d = daysAt(f.status_changed_at);
         return `${f.ys_loan_number || 'Loan # pending'} · ${addrOf(f.property_address)} — ${STATUS_LABEL[f.status] || f.status}`
@@ -254,11 +277,11 @@ async function drawFindingsAwaitingBorrowerOnce() {
 }
 
 /* 6) Draw release overdue — the borrower ACCEPTED, the wire SLA (wire_due_at) has passed, and no release
-   is recorded. Nudge the assigned team so a borrower's approved money doesn't slip. Per file, ≤ once/2 days.
-   Suppression covers a release recorded WITHOUT a draw id too (with the lien gate off the release route can
-   leave sitewire_draw_id NULL, and recording a release doesn't flip the finding status) — otherwise a
-   released draw would alert forever. (The portfolio monitor flags this passively; this is the active push.)
-   Staff surface — not borrower-safe-gated.
+   is recorded for THAT draw. Nudge the assigned team so a borrower's approved money doesn't slip. Per file,
+   ≤ once/2 days. The suppression is now an EXACT per-draw match (dd.sitewire_draw_id = f.sitewire_draw_id):
+   a kind='draw' release always names its draw (audit F-2 — required on the money route + backfilled by
+   db/184), so a release on one draw of a multi-draw file no longer silences a genuinely-overdue OTHER draw.
+   (The portfolio monitor flags this passively; this is the active push.) Staff surface — not borrower-safe-gated.
    The active-link EXISTS mirrors the passive monitor (rule 10): a finished/paid-off project is excluded, so an
    accepted finding whose wire was handled outside PILOT on a closed loan never alerts the team forever. */
 async function drawReleaseOverdueOnce() {
@@ -270,8 +293,7 @@ async function drawReleaseOverdueOnce() {
       WHERE f.status='accepted' AND f.wire_due_at IS NOT NULL AND f.wire_due_at < now()
         AND NOT EXISTS (SELECT 1 FROM draw_disbursements dd
                           WHERE dd.funded_status='released' AND dd.kind='draw'
-                            AND (dd.sitewire_draw_id = f.sitewire_draw_id
-                                 OR (dd.sitewire_draw_id IS NULL AND dd.application_id = f.application_id)))
+                            AND dd.sitewire_draw_id = f.sitewire_draw_id)
         AND EXISTS (SELECT 1 FROM sitewire_property_links pl WHERE pl.application_id=f.application_id
                       AND pl.matched_by='created' AND COALESCE(pl.lifecycle_state,'active')='active')
       GROUP BY f.application_id
