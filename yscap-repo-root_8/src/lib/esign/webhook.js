@@ -195,6 +195,16 @@ async function handleCompletion(db, docusign, storage, envelopeRow) {
       // Non-fatal: the signed documents are already stored + conditions cleared.
     }
   }
+
+  // Draw request → CAPTURE the borrower-typed wire instructions and enforce the fatal
+  // new-entity operating-agreement rule (draw-wire.js). Idempotent (upsert + idempotent
+  // conditions), so a re-drive re-produces the same state; the signed PDF is already
+  // filed above. A genuine failure here THROWS (retryable) rather than silently drop the
+  // wire capture / fatal condition — the inbox/poller re-drives, and a persistent failure
+  // surfaces via the completion-failure alert. Only a real file's draw_request envelope.
+  if (appId && envelopeRow.purpose === 'draw_request') {
+    await require('./draw-wire').captureWireFromEnvelope(db, docusign, envelopeRow);
+  }
 }
 
 // A PERSISTENT completion-finalization failure (db/181): count the attempts and,
