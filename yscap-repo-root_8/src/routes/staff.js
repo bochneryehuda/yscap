@@ -2947,10 +2947,14 @@ router.patch('/checklist/:itemId', async (req, res) => {
       if (row && row.borrower_id && row.application_id && row.audience !== 'staff') {
         const open = await require('../lib/reminders').outstandingItems(row.application_id);
         if (open.length === 0) {
-          const recent = await db.query(
-            `SELECT 1 FROM audit_log WHERE action='all_caught_up_emailed' AND entity_id=$1 AND created_at > now() - interval '20 hours' LIMIT 1`,
-            [row.application_id]);
-          if (!recent.rows[0]) {
+          // Atomically CLAIM the 20h slot (stamp-first) so two conditions clearing
+          // the last item on the same file in the same instant can't both email.
+          const claim = await db.query(
+            `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+             SELECT 'system', NULL, 'all_caught_up_emailed', 'application', $1, '{}'::jsonb
+              WHERE NOT EXISTS (SELECT 1 FROM audit_log WHERE action='all_caught_up_emailed' AND entity_id=$1 AND created_at > now() - interval '20 hours')
+             RETURNING id`, [row.application_id]);
+          if (claim.rows[0]) {
             await notify.notifyAppBorrowers(row.application_id, {
               type: 'all_caught_up',
               title: 'You’re all caught up',
@@ -2959,9 +2963,6 @@ router.patch('/checklist/:itemId', async (req, res) => {
               body: 'Great news — you’ve completed everything your loan team needs from you at the moment, so there’s nothing left for you to do right now.',
               lines: ['We’ll email you the moment a new item needs your attention. In the meantime, you can always check your file in the portal.'],
               applicationId: row.application_id, link: `/app/${row.application_id}`, ctaLabel: 'View your file' });
-            await db.query(
-              `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
-               VALUES ('system',NULL,'all_caught_up_emailed','application',$1,'{}'::jsonb)`, [row.application_id]).catch(() => {});
           }
         }
       }
@@ -4513,16 +4514,21 @@ router.post('/applications/:id/nudge', async (req, res) => {
     // but repeated/accidental clicks must not email the borrower several times in
     // a row. Block a repeat nudge to the SAME file within a short window; a
     // genuine later reminder still goes through.
-    const recentNudge = await db.query(
-      `SELECT 1 FROM audit_log WHERE action='nudge_borrower' AND entity_id=$1 AND created_at > now() - interval '30 minutes' LIMIT 1`,
-      [req.params.id]);
-    if (recentNudge.rows[0]) return res.status(429).json({ error: 'This borrower was already reminded on this file in the last 30 minutes — please wait before sending another.' });
+    // Atomically CLAIM the 30-min nudge slot (stamp-first): this ONE INSERT both
+    // records the audit event AND enforces the throttle, so two simultaneous
+    // "Remind" clicks can't both pass a SELECT and both email the borrower. The
+    // loser gets the 429. (Old shape SELECTed then stamped after send — a race.)
+    const nudgeClaim = await db.query(
+      `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+       SELECT 'staff', $2, 'nudge_borrower', 'application', $1, $3::jsonb
+        WHERE NOT EXISTS (SELECT 1 FROM audit_log WHERE action='nudge_borrower' AND entity_id=$1 AND created_at > now() - interval '30 minutes')
+       RETURNING id`, [req.params.id, req.actor.id, JSON.stringify({ count: list.length })]);
+    if (!nudgeClaim.rows[0]) return res.status(429).json({ error: 'This borrower was already reminded on this file in the last 30 minutes — please wait before sending another.' });
     await notify.notifyAppBorrowers(req.params.id, {
       type: 'reminder', title: 'A friendly reminder on your loan file',
       body: `Still needed to keep things moving: ${shown}.`,
       applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Complete your items',
       major: true });   // #88: the staff "Remind" nudge is an explicit reach-out — it emails
-    await audit(req, 'nudge_borrower', 'application', req.params.id, { count: list.length });
     res.json({ ok: true, count: list.length });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -5903,11 +5909,17 @@ router.post('/documents/:id/review', async (req, res) => {
         // caps it to one email per borrower per window like the file path.
         const throttleId = doc.application_id || doc.borrower_id;
         const throttleType = doc.application_id ? 'application' : 'borrower';
+        // Atomically CLAIM the 12h email slot: write the throttle stamp ONLY if
+        // none exists in the window, in ONE INSERT…WHERE NOT EXISTS…RETURNING.
+        // Two accepts on the same file in the same instant can't both win (the old
+        // SELECT-then-stamp-after let both pass — owner-reported duplicate sweep).
         if (throttleId) {
-          const recent = await db.query(
-            `SELECT 1 FROM audit_log WHERE action='doc_accepted_emailed' AND entity_id=$1 AND created_at > now() - interval '12 hours' LIMIT 1`,
-            [throttleId]);
-          emailNow = !recent.rows[0];
+          const claim = await db.query(
+            `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+             SELECT 'system', NULL, 'doc_accepted_emailed', $2, $1, '{}'::jsonb
+              WHERE NOT EXISTS (SELECT 1 FROM audit_log WHERE action='doc_accepted_emailed' AND entity_id=$1 AND created_at > now() - interval '12 hours')
+             RETURNING id`, [throttleId, throttleType]);
+          emailNow = !!claim.rows[0];
         }
         await notify.notifyBorrower(doc.borrower_id, {
           type: 'doc_accepted',
@@ -5917,12 +5929,7 @@ router.post('/documents/:id/review', async (req, res) => {
           applicationId: doc.application_id,
           link: doc.application_id ? `/app/${doc.application_id}` : '/profile',
           ctaLabel: 'View your file',
-          major: emailNow });   // throttle: email once per file/borrower per 12h, else in-app only
-        if (emailNow && throttleId) {
-          await db.query(
-            `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
-             VALUES ('system',NULL,'doc_accepted_emailed',$2,$1,'{}'::jsonb)`, [throttleId, throttleType]).catch(() => {});
-        }
+          major: emailNow });   // throttle: email once per file/borrower per 12h (claimed above), else in-app only
       } catch (_) { /* best-effort */ }
     }
 

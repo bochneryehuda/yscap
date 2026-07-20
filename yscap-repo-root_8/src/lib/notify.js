@@ -131,7 +131,7 @@ async function _emailRow(id, to, opts, audience) {
     const replyTo = opts.replyTo || fileReplyTo(opts.applicationId) || cfg.replyToDefault || null;
     // #150: an optional LO-branded From display name rides through untouched
     // (resend honors it; other providers ignore it).
-    const res = await email.sendMail({ to, subject: msg.subject, text: msg.text, html: msg.html, attachments, replyTo, from: opts.from || null });
+    const res = await email.sendMail({ to, subject: msg.subject, text: msg.text, html: msg.html, attachments, replyTo, from: opts.from || null, bcc: opts.bcc || null });
     await _mark(id, res && res.ok ? 'sent' : 'skipped');
   } catch (e) {
     await db.query(`UPDATE notifications SET email_status='error', email_error=$2 WHERE id=$1`, [id, String(e.message).slice(0, 400)]);
@@ -279,6 +279,12 @@ async function notifyBorrower(borrowerId, opts) {
     callout: scrubObj(opts.callout, ['title', 'body']),
     hero: scrubObj(opts.hero, ['label', 'value', 'sub']),
     badge: scrubObj(opts.badge, ['text']),
+    // Owner-directed 2026-07-20: silently BCC the file's assigned loan officer on
+    // the borrower's email so the LO sees in real time exactly what their borrower
+    // received. The officer comes from enrichFileOpts (fileContext) — their own
+    // business contact. An explicit opts.bcc wins; the provider drops any BCC that
+    // is already a To recipient, so no self-duplicate.
+    bcc: opts.bcc || ((cfg.ccLoanOfficerOnBorrowerEmail && opts.officer && opts.officer.email) ? [opts.officer.email] : undefined),
   };
   const { rows } = await db.query(
     `INSERT INTO notifications (recipient_kind,borrower_id,type,title,body,application_id,link)

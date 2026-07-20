@@ -43,21 +43,39 @@ function nyParts(now = new Date()) {
   } catch (_) { return { hour: 9, weekday: 'Mon' }; }
 }
 
-// "May I send?" — true when nothing with this (action, entity) was stamped inside
-// the window. entityId null = a global (non-file-scoped) digest.
+// "May I send?" — atomically CLAIM the send: write the throttle stamp ONLY if
+// nothing with this (action, entity) was stamped inside the window, in a single
+// INSERT…WHERE NOT EXISTS…RETURNING. Returns true only for the ONE caller that
+// won the claim; a concurrent/overlapping pass or a second instance loses and
+// returns false. (The old shape SELECTed then stamped AFTER sending, so two
+// overlapping passes could both pass the check and both send — owner-reported
+// duplicate sweep 2026-07-20.) entityId null = a global (non-file-scoped) digest.
 async function _gate(action, entityId, interval) {
   try {
     const q = entityId
-      ? await db.query(`SELECT 1 FROM audit_log WHERE action=$1 AND entity_id=$2 AND created_at > now() - $3::interval LIMIT 1`, [action, entityId, interval])
-      : await db.query(`SELECT 1 FROM audit_log WHERE action=$1 AND entity_id IS NULL AND created_at > now() - $2::interval LIMIT 1`, [action, interval]);
-    return !q.rows[0];
+      ? await db.query(
+          `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+           SELECT 'system', NULL, $1, 'application', $2, '{}'::jsonb
+            WHERE NOT EXISTS (SELECT 1 FROM audit_log WHERE action=$1 AND entity_id=$2 AND created_at > now() - $3::interval)
+           RETURNING id`, [action, entityId, interval])
+      : await db.query(
+          `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+           SELECT 'system', NULL, $1, 'application', NULL, '{}'::jsonb
+            WHERE NOT EXISTS (SELECT 1 FROM audit_log WHERE action=$1 AND entity_id IS NULL AND created_at > now() - $2::interval)
+           RETURNING id`, [action, interval]);
+    return !!q.rows[0];   // won the claim (row stamped) → OK to send
   } catch (_) { return false; }   // on any DB error, DON'T send (fail closed)
 }
+// The claim row is already written by _gate; _stamp now just enriches it with the
+// digest's stats for the audit trail (best-effort — never a second throttle row).
 async function _stamp(action, entityId, detail) {
   await db.query(
-    `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
-     VALUES ('system', NULL, $1, 'application', $2, $3::jsonb)`,
-    [action, entityId || null, JSON.stringify(detail || {})]).catch(() => {});
+    entityId
+      ? `UPDATE audit_log SET detail=$3::jsonb
+           WHERE id = (SELECT id FROM audit_log WHERE action=$1 AND entity_id=$2 ORDER BY created_at DESC LIMIT 1)`
+      : `UPDATE audit_log SET detail=$2::jsonb
+           WHERE id = (SELECT id FROM audit_log WHERE action=$1 AND entity_id IS NULL ORDER BY created_at DESC LIMIT 1)`,
+    entityId ? [action, entityId, JSON.stringify(detail || {})] : [action, JSON.stringify(detail || {})]).catch(() => {});
 }
 
 const money = (cents) => '$' + (Number(cents || 0) / 100).toLocaleString('en-US');

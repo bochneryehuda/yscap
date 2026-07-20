@@ -49,6 +49,16 @@ const emailsTo = (addr) => sent.filter((m) => (Array.isArray(m.to) ? m.to : [m.t
   assert.ok(emailsTo(staffEmail) >= 1, 'decision status (Funded): staff email IS sent');
   ok('decision status milestone still emails the team');
 
+  // The assigned loan officer is silently BCC-ed on the BORROWER's email so they
+  // see what the borrower received (owner-directed 2026-07-20). Not a visible To;
+  // not present on the staff email.
+  await notify.notifyAppBorrowers(app.id, { type: 'status_change', title: 'Your loan status is now: Funded', body: 'x', applicationId: app.id, major: true });
+  const bmail = sent.find((m) => (Array.isArray(m.to) ? m.to : [m.to]).includes(`gate-b-${suffix}@example.com`));
+  assert.ok(bmail, 'borrower email sent');
+  assert.ok(Array.isArray(bmail.bcc) && bmail.bcc.includes(staffEmail), 'the assigned loan officer is BCC-ed on the borrower email');
+  assert.ok(!(Array.isArray(bmail.to) ? bmail.to : [bmail.to]).includes(staffEmail), 'the officer is NOT a visible To on the borrower email');
+  ok('the loan officer is silently looped in (BCC) on the borrower email');
+
   await db.query(`DELETE FROM notifications WHERE application_id=$1`, [app.id]).catch(() => {});
   await db.query(`DELETE FROM application_assignees WHERE application_id=$1`, [app.id]).catch(() => {});
   await db.query(`DELETE FROM applications WHERE id=$1`, [app.id]).catch(() => {});

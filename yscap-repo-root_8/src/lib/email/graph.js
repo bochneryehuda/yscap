@@ -35,7 +35,7 @@ async function getToken() {
 
 module.exports = {
   name: 'graph',
-  async sendMail({ to, subject, text, html, attachments, replyTo }) {
+  async sendMail({ to, subject, text, html, attachments, replyTo, bcc }) {
     const token = await getToken();
     // NOTIFY_FROM may be a display-name form ("YS Capital <noreply@ys.com>"); the
     // Graph /users/{id} path needs a BARE address/UPN or every send fails with 400.
@@ -53,6 +53,10 @@ module.exports = {
     // reply-by-email thread.
     const replies = (Array.isArray(replyTo) ? replyTo : [replyTo]).filter(Boolean);
     if (replies.length) message.replyTo = replies.map(a => ({ emailAddress: { address: String(a) } }));
+    // BCC (e.g. the assigned loan officer's monitoring copy). Never BCC a To recipient.
+    const toSet = new Set((Array.isArray(to) ? to : [to]).filter(Boolean).map(String));
+    const bccList = (Array.isArray(bcc) ? bcc : (bcc ? [bcc] : [])).filter((a) => a && !toSet.has(String(a)));
+    if (bccList.length) message.bccRecipients = bccList.map(a => ({ emailAddress: { address: String(a) } }));
     // Graph fileAttachment: { name, contentBytes (base64) }. (Under ~3 MB total;
     // larger sends need an upload session — out of scope here, so the email still
     // lists the file and the doc is available in the portal.)
