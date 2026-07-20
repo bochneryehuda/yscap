@@ -33,6 +33,10 @@ const SIGNALS = [
   ['background_report', ['ofac', 'specially designated nationals', 'sdn list', 'sanctions screening', 'watchlist', 'background check'], ['criminal', 'pep', 'politically exposed']],
   ['payoff_statement', ['payoff statement', 'payoff quote', 'payoff demand', 'statement of payoff', 'good through date', 'unpaid principal balance', 'per diem interest'], ['payoff', 'servicer', 'reinstatement', 'loan number']],
   ['voided_check', ['voided check', 'void check', 'wire instructions', 'ach instructions', 'routing number', 'aba routing'], ['void', 'routing', 'account number', 'disbursement']],
+  ['plans_permits', ['building permit', 'construction permit', 'permit number', 'plans and specifications', 'certificate of occupancy', 'zoning permit'], ['permit', 'plans', 'construction', 'municipality']],
+  ['signed_term_sheet', ['term sheet', 'loan term sheet', 'summary of terms', 'conditional loan approval'], ['terms', 'loan amount', 'accepted', 'signature']],
+  ['signed_application', ['loan application', 'business purpose', 'business-purpose', 'non-owner occupied', 'borrower certification', '1003'], ['application', 'certify', 'occupancy']],
+  ['investor_structure', ['investor structure', 'deal structure', 'structure printout', 'pricing structure'], ['structure', 'investor', 'points', 'rate']],
 ];
 
 // Filename keyword → docType hints (a strong nudge when the OCR text is thin).
@@ -51,6 +55,10 @@ const FILENAME_HINTS = [
   [/settle|closing.?disc|hud|alta/i, 'settlement'],
   [/pay.?off|payoff.?demand/i, 'payoff_statement'], // before bank_statement — a "payoff statement" contains "statement"
   [/void|wire.?instruction|ach.?instruction/i, 'voided_check'],
+  [/permit|plans.?(and|&).?spec|cert.*occupan|\bc\.?o\.?\b/i, 'plans_permits'],
+  [/term.?sheet|summary.?of.?terms/i, 'signed_term_sheet'],
+  [/application|business.?purpose|1003/i, 'signed_application'],
+  [/investor.?structure|deal.?structure|structure.?printout/i, 'investor_structure'],
   [/bank|statement/i, 'bank_statement'],
   [/credit/i, 'credit_report'],
   [/ofac|background|sanction/i, 'background_report'],

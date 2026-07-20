@@ -12,7 +12,7 @@ const {
   GOVERNMENT_ID, PURCHASE_CONTRACT, TITLE, BANK_STATEMENT,
   ASSIGNMENT, OPERATING_AGREEMENT, EIN_LETTER, GOOD_STANDING, LLC_FORMATION,
   INSURANCE, FLOOD, SETTLEMENT, CREDIT_REPORT, BACKGROUND_REPORT, CONTRACT_AMENDMENT, SCOPE_OF_WORK,
-  PAYOFF_STATEMENT, VOIDED_CHECK,
+  PAYOFF_STATEMENT, VOIDED_CHECK, PLANS_PERMITS, SIGNED_TERM_SHEET, SIGNED_APPLICATION, INVESTOR_STRUCTURE,
 } = require('./schemas');
 const { computeIdFindings } = require('./id-checks');
 const { computeContractFindings } = require('./purchase-contract-checks');
@@ -23,6 +23,8 @@ const {
   computeGoodStandingFindings, computeFormationFindings, computeInsuranceFindings,
   computeFloodFindings, computeSettlementFindings, computeCreditFindings, computeBackgroundFindings,
   computeAmendmentFindings, computeScopeOfWorkFindings, computePayoffFindings, computeVoidedCheckFindings,
+  computePlansPermitsFindings, computeSignedTermSheetFindings, computeSignedApplicationFindings,
+  computeInvestorStructureFindings,
 } = require('./doc-checks');
 
 const REGISTRY = {
@@ -113,6 +115,22 @@ const REGISTRY = {
   voided_check: {
     docType: 'voided_check', schema: VOIDED_CHECK.schema, instructions: VOIDED_CHECK.instructions,
     subject: 'assets', image: true, check: computeVoidedCheckFindings,
+  },
+  plans_permits: {
+    docType: 'plans_permits', schema: PLANS_PERMITS.schema, instructions: PLANS_PERMITS.instructions,
+    subject: 'application', image: false, check: computePlansPermitsFindings,
+  },
+  signed_term_sheet: {
+    docType: 'signed_term_sheet', schema: SIGNED_TERM_SHEET.schema, instructions: SIGNED_TERM_SHEET.instructions,
+    subject: 'application', image: false, check: computeSignedTermSheetFindings,
+  },
+  signed_application: {
+    docType: 'signed_application', schema: SIGNED_APPLICATION.schema, instructions: SIGNED_APPLICATION.instructions,
+    subject: 'application', image: false, check: computeSignedApplicationFindings,
+  },
+  investor_structure: {
+    docType: 'investor_structure', schema: INVESTOR_STRUCTURE.schema, instructions: INVESTOR_STRUCTURE.instructions,
+    subject: 'application', image: false, check: computeInvestorStructureFindings,
   },
 };
 

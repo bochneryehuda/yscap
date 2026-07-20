@@ -528,9 +528,93 @@ const VOIDED_CHECK = {
   }),
 };
 
+// ---- Plans & permits (ground-up construction) ----
+const PLANS_PERMITS = {
+  docType: 'plans_permits',
+  instructions:
+    "You are reviewing PLANS and/or a building PERMIT for a ground-up construction (or major rehab) " +
+    "loan. Extract the property address, the permit number, the permit type (e.g. building, demolition, " +
+    "electrical), the issuing authority/municipality, the issue date and expiration date (YYYY-MM-DD), " +
+    "whether the permit is APPROVED/ISSUED (vs applied-for/pending), and a short description of the " +
+    "approved scope. Use null for anything absent/unreadable — do NOT guess. readable=false if poor.",
+  schema: obj({
+    propertyAddress: addr(),
+    permitNumber:    { type: ['string', 'null'] },
+    permitType:      { type: ['string', 'null'] },
+    issuingAuthority:{ type: ['string', 'null'] },
+    issueDate:       { type: ['string', 'null'] },
+    expirationDate:  { type: ['string', 'null'] },
+    approved:        { type: ['boolean', 'null'] },   // issued/approved vs applied-for/pending
+    scopeDescription:{ type: ['string', 'null'] },
+    readable:        { type: 'boolean' },
+    notes:           { type: ['string', 'null'] },
+  }),
+};
+
+// ---- Signed term sheet ----
+const SIGNED_TERM_SHEET = {
+  docType: 'signed_term_sheet',
+  instructions:
+    "You are reviewing a LOAN TERM SHEET that the borrower is expected to have SIGNED. Extract the " +
+    "borrower/entity name, the property address, the loan amount, the interest rate (percent), whether " +
+    "a BORROWER SIGNATURE is present, and the signature/acceptance date (YYYY-MM-DD). Amounts as plain " +
+    "numbers. Use null for anything absent/unreadable — do NOT guess. readable=false if poor.",
+  schema: obj({
+    borrowerName:      { type: ['string', 'null'] },
+    propertyAddress:   addr(),
+    loanAmount:        { type: ['number', 'null'] },
+    interestRate:      { type: ['number', 'null'] },
+    signaturePresent:  { type: ['boolean', 'null'] },
+    signedDate:        { type: ['string', 'null'] },
+    readable:          { type: 'boolean' },
+    notes:             { type: ['string', 'null'] },
+  }),
+};
+
+// ---- Signed application + business-purpose disclosure ----
+const SIGNED_APPLICATION = {
+  docType: 'signed_application',
+  instructions:
+    "You are reviewing a signed LOAN APPLICATION and business-purpose disclosure for an investment/ " +
+    "business-purpose mortgage. Extract the borrower name, the entity name if the loan is in an LLC, the " +
+    "property address, whether a BORROWER SIGNATURE is present, the signature date (YYYY-MM-DD), and " +
+    "whether a BUSINESS-PURPOSE / non-owner-occupied certification is present (the statement that the " +
+    "loan is for business/investment purposes, not personal/household). Use null for anything absent or " +
+    "unreadable — do NOT guess. readable=false if poor.",
+  schema: obj({
+    borrowerName:          { type: ['string', 'null'] },
+    entityName:            { type: ['string', 'null'] },
+    propertyAddress:       addr(),
+    signaturePresent:      { type: ['boolean', 'null'] },
+    signedDate:            { type: ['string', 'null'] },
+    businessPurposePresent:{ type: ['boolean', 'null'] },
+    readable:              { type: 'boolean' },
+    notes:                 { type: ['string', 'null'] },
+  }),
+};
+
+// ---- Investor structure printout (internal) ----
+const INVESTOR_STRUCTURE = {
+  docType: 'investor_structure',
+  instructions:
+    "You are reviewing an internal INVESTOR STRUCTURE / deal-structure printout for a loan. Extract the " +
+    "property address, the loan amount, the total purchase price if shown, the interest rate (percent), " +
+    "and the points/origination if shown. Amounts as plain numbers, rate/points as percentages. Use null " +
+    "for anything absent or unreadable — do NOT guess. readable=false if poor.",
+  schema: obj({
+    propertyAddress: addr(),
+    loanAmount:      { type: ['number', 'null'] },
+    purchasePrice:   { type: ['number', 'null'] },
+    interestRate:    { type: ['number', 'null'] },
+    points:          { type: ['number', 'null'] },
+    readable:        { type: 'boolean' },
+    notes:           { type: ['string', 'null'] },
+  }),
+};
+
 module.exports = {
   GOVERNMENT_ID, PURCHASE_CONTRACT, TITLE, BANK_STATEMENT,
   ASSIGNMENT, OPERATING_AGREEMENT, EIN_LETTER, GOOD_STANDING, LLC_FORMATION,
   INSURANCE, FLOOD, SETTLEMENT, CREDIT_REPORT, BACKGROUND_REPORT, CONTRACT_AMENDMENT, SCOPE_OF_WORK,
-  PAYOFF_STATEMENT, VOIDED_CHECK,
+  PAYOFF_STATEMENT, VOIDED_CHECK, PLANS_PERMITS, SIGNED_TERM_SHEET, SIGNED_APPLICATION, INVESTOR_STRUCTURE,
 };

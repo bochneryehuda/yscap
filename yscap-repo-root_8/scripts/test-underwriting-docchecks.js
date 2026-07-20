@@ -190,6 +190,37 @@ assert.deepStrictEqual(codes(C.computeBackgroundFindings({ subjectName: 'John Sm
   assert.deepStrictEqual(codes(C.computeVoidedCheckFindings({ readable: false }, subj, {})), ['voided_check_unreadable']);
 }
 
+// ===== PLANS & PERMITS (ground-up) =====
+{
+  const subj = { property_address: { line1: '128 Elm St', city: 'Lakewood', state: 'NJ', zip: '08701' } };
+  const good = { readable: true, permitNumber: 'B-123', issuingAuthority: 'Lakewood', approved: true, propertyAddress: subj.property_address };
+  assert.deepStrictEqual(codes(C.computePlansPermitsFindings(good, subj, { today: '2026-07-20' })), []);
+  assert.ok(C.computePlansPermitsFindings({ ...good, approved: false }, subj, {}).some((f) => f.code === 'plans_permit_not_approved'));
+  assert.ok(C.computePlansPermitsFindings({ ...good, expirationDate: '2026-06-01' }, subj, { today: '2026-07-20' }).some((f) => f.code === 'plans_permit_expired'));
+  assert.ok(C.computePlansPermitsFindings({ ...good, propertyAddress: { line1: '9 Oak Ave', city: 'Dallas', state: 'TX', zip: '75201' } }, subj, {}).some((f) => f.code === 'plans_address_mismatch'));
+}
+// ===== SIGNED TERM SHEET =====
+{
+  const subj = { loan_amount: 200000, property_address: { line1: '128 Elm St' }, borrower_name: 'Michael Goldberg' };
+  assert.deepStrictEqual(codes(C.computeSignedTermSheetFindings({ readable: true, loanAmount: 200000, signaturePresent: true, borrowerName: 'Michael Goldberg' }, subj, {})), []);
+  assert.ok(C.computeSignedTermSheetFindings({ readable: true, loanAmount: 200000, signaturePresent: false, borrowerName: 'X' }, subj, {}).some((f) => f.code === 'term_sheet_unsigned'));
+  assert.ok(C.computeSignedTermSheetFindings({ readable: true, loanAmount: 174000, signaturePresent: true, borrowerName: 'X' }, subj, {}).some((f) => f.code === 'term_sheet_amount_mismatch'));
+}
+// ===== SIGNED APPLICATION + business-purpose =====
+{
+  const subj = { borrower_name: 'Michael Goldberg', entity_name: 'Maple Grove Holdings LLC', property_address: { line1: '128 Elm St' } };
+  assert.deepStrictEqual(codes(C.computeSignedApplicationFindings({ readable: true, borrowerName: 'Michael Goldberg', signaturePresent: true, businessPurposePresent: true }, subj, {})), []);
+  assert.ok(C.computeSignedApplicationFindings({ readable: true, borrowerName: 'X', signaturePresent: false, businessPurposePresent: true }, subj, {}).some((f) => f.code === 'application_unsigned'));
+  assert.ok(C.computeSignedApplicationFindings({ readable: true, borrowerName: 'X', signaturePresent: true, businessPurposePresent: false }, subj, {}).some((f) => f.code === 'application_no_business_purpose'));
+}
+// ===== INVESTOR STRUCTURE (internal) =====
+{
+  const subj = { loan_amount: 200000, purchase_price: 250000, property_address: { line1: '128 Elm St' } };
+  assert.deepStrictEqual(codes(C.computeInvestorStructureFindings({ readable: true, loanAmount: 200000 }, subj, {})), []);
+  assert.ok(C.computeInvestorStructureFindings({ readable: true, loanAmount: 250000 }, subj, {}).some((f) => f.code === 'investor_structure_amount_mismatch'));
+  assert.deepStrictEqual(codes(C.computeInvestorStructureFindings({ readable: false }, subj, {})), ['investor_structure_unreadable']);
+}
+
 // ===== SCOPE OF WORK / rehab budget =====
 {
   const codes = (fs) => fs.map((f) => f.code).sort();

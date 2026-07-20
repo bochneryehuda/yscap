@@ -16,7 +16,8 @@ const DOC_LABEL = {
   llc_formation: 'LLC formation', insurance: 'Insurance', flood: 'Flood cert',
   settlement: 'Settlement statement', credit_report: 'Credit report', background_report: 'Background / OFAC',
   contract_amendment: 'Contract amendment', scope_of_work: 'Scope of work', payoff_statement: 'Payoff statement',
-  voided_check: 'Voided check',
+  voided_check: 'Voided check', plans_permits: 'Plans & permits', signed_term_sheet: 'Signed term sheet',
+  signed_application: 'Signed application', investor_structure: 'Investor structure',
 };
 const label = (t) => DOC_LABEL[t] || String(t || '').replace(/_/g, ' ');
 

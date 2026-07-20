@@ -103,6 +103,17 @@ function subjectFor(docType, ctx) {
     case 'payoff_statement':
       return { property_address: app && app.property_address, loan_amount: app && app.loan_amount,
         loan_type: app && app.loan_type };
+    case 'plans_permits':
+      return { property_address: app && app.property_address, loan_type: app && app.loan_type };
+    case 'signed_term_sheet':
+      return { property_address: app && app.property_address, loan_amount: app && app.loan_amount,
+        borrower_name: borrowerName(borrower) };
+    case 'signed_application':
+      return { property_address: app && app.property_address, borrower_name: borrowerName(borrower),
+        entity_name: vestingName || null };
+    case 'investor_structure':
+      return { property_address: app && app.property_address, loan_amount: app && app.loan_amount,
+        purchase_price: app && app.purchase_price };
     case 'scope_of_work':
       return { property_address: app && app.property_address, rehab_budget: app && app.rehab_budget };
     default:

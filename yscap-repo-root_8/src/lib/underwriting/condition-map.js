@@ -34,6 +34,10 @@ const DOC_CONDITIONS = {
   settlement: { satisfies: [], purpose: 'The closing settlement statement — the final sources & uses (reviewed at closing).' },
   payoff_statement: { satisfies: [], purpose: 'The payoff statement for the loan being refinanced — the exact amount and good-through date to clear the existing lien.' },
   voided_check: { satisfies: ['voided_check'], purpose: 'The voided check / wire instructions — the borrower\'s disbursement account for loan proceeds and draws.' },
+  plans_permits: { satisfies: ['rtl_p1_plans'], purpose: 'Ground-up plans & the building permit — the approved scope construction is authorized to build.' },
+  signed_term_sheet: { satisfies: ['rtl_cond_signedts'], purpose: 'The borrower-signed term sheet — evidences acceptance of the registered product\'s terms.' },
+  signed_application: { satisfies: ['rtl_cond_signed_app'], purpose: 'The signed application + business-purpose disclosure — the basis for the loan\'s business-purpose exemption.' },
+  investor_structure: { satisfies: ['rtl_cond_investorstruct'], purpose: 'The internal investor structure printout — the deal structure figures behind the registered product.' },
 };
 
 function conditionsForDoc(docType) { return (DOC_CONDITIONS[docType] && DOC_CONDITIONS[docType].satisfies) || []; }

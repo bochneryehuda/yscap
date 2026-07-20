@@ -584,10 +584,121 @@ function computeVoidedCheckFindings(v, subject, opts = {}) {
   return out;
 }
 
+// ---- Plans & permits (ground-up) ----
+// The building permit must be for the SUBJECT property, ISSUED (not merely applied-for), and not
+// expired. `subject` = { property_address }.
+function computePlansPermitsFindings(pp, subject, opts = {}) {
+  const out = []; if (!pp) return out;
+  if (unreadable('plans_permits', pp, ['permitNumber', 'issuingAuthority', 'approved', 'scopeDescription'])) {
+    return [verify('plans_permits', 'plans / permit')];
+  }
+  const s = subject || {};
+  if (addrMatches(pp.propertyAddress, s.property_address) === false) {
+    out.push(mk('plans_permits', { code: 'plans_address_mismatch', severity: 'warning', field: 'property_address',
+      docValue: addrLine(pp.propertyAddress), fileValue: addrLine(s.property_address),
+      title: 'The permit is for a different property than the file',
+      howTo: 'Confirm the plans/permit are for the subject property — a permit for another address doesn\'t authorize this project.',
+      actions: ['request_document', 'post_condition', 'dismiss'] }));
+  }
+  if (pp.approved === false) {
+    out.push(mk('plans_permits', { code: 'plans_permit_not_approved', severity: 'warning', field: 'approved',
+      docValue: 'applied-for / pending', fileValue: 'issued / approved',
+      title: 'The building permit is not yet issued',
+      howTo: 'The permit appears applied-for or pending, not issued. Ground-up construction can\'t begin (or draw) without an issued permit — obtain the approved permit before funding.',
+      actions: ['request_document', 'post_condition', 'dismiss'] }));
+  }
+  const horizon = opts.closingDate || opts.today;
+  if (horizon && pp.expirationDate) {
+    const days = daysBetween(toISODate(horizon), toISODate(pp.expirationDate));
+    if (days != null && days < 0) {
+      out.push(mk('plans_permits', { code: 'plans_permit_expired', severity: 'warning', field: 'expiration',
+        docValue: pp.expirationDate, fileValue: horizon,
+        title: 'The building permit has expired',
+        howTo: `The permit expired on ${pp.expirationDate}. Obtain a current/renewed permit so construction is authorized at funding.`,
+        actions: ['request_document', 'post_condition', 'dismiss'] }));
+    }
+  }
+  return out;
+}
+
+// ---- Signed term sheet ----
+// The term sheet must be SIGNED by the borrower and its terms must match the registered product.
+// `subject` = { loan_amount, property_address, borrower_name }.
+function computeSignedTermSheetFindings(t, subject, opts = {}) {
+  const out = []; if (!t) return out;
+  if (unreadable('signed_term_sheet', t, ['loanAmount', 'signaturePresent', 'borrowerName'])) {
+    return [verify('signed_term_sheet', 'signed term sheet')];
+  }
+  const s = subject || {};
+  if (t.signaturePresent === false) {
+    out.push(mk('signed_term_sheet', { code: 'term_sheet_unsigned', severity: 'warning', field: 'signature',
+      docValue: 'no borrower signature', fileValue: null,
+      title: 'The term sheet is not signed by the borrower',
+      howTo: 'The term sheet must be signed by the borrower to evidence acceptance of the terms. Obtain the borrower-signed copy before clear-to-close.',
+      actions: ['request_document', 'post_condition', 'dismiss'] }));
+  }
+  const docAmt = num(t.loanAmount), fileAmt = s && num(s.loan_amount);
+  if (docAmt != null && fileAmt != null && fileAmt > 0 && !withinMoney(docAmt, fileAmt, 1)) {
+    out.push(mk('signed_term_sheet', { code: 'term_sheet_amount_mismatch', severity: 'warning', field: 'loan_amount',
+      docValue: money(docAmt), fileValue: money(fileAmt),
+      title: 'The signed term sheet loan amount does not match the file',
+      howTo: `The term sheet shows a loan amount of ${money(docAmt)} but the file's registered loan is ${money(fileAmt)}. The borrower signed different terms than are registered — reconcile (re-issue the term sheet or re-register) before closing.`,
+      actions: ['request_document', 'fix_file', 'post_condition', 'dismiss'] }));
+  }
+  return out;
+}
+
+// ---- Signed application + business-purpose disclosure ----
+// The application must be SIGNED and carry the business-purpose (non-owner-occupied) certification —
+// the basis for a business-purpose loan's exemption from consumer-mortgage regulation. `subject` =
+// { borrower_name, entity_name, property_address }.
+function computeSignedApplicationFindings(a, subject, opts = {}) {
+  const out = []; if (!a) return out;
+  if (unreadable('signed_application', a, ['borrowerName', 'signaturePresent', 'businessPurposePresent'])) {
+    return [verify('signed_application', 'signed application')];
+  }
+  if (a.signaturePresent === false) {
+    out.push(mk('signed_application', { code: 'application_unsigned', severity: 'warning', field: 'signature',
+      docValue: 'no borrower signature', fileValue: null,
+      title: 'The application is not signed by the borrower',
+      howTo: 'The application must be signed by the borrower. Obtain the borrower-signed copy before clear-to-close.',
+      actions: ['request_document', 'post_condition', 'dismiss'] }));
+  }
+  if (a.businessPurposePresent === false) {
+    out.push(mk('signed_application', { code: 'application_no_business_purpose', severity: 'warning', field: 'business_purpose',
+      docValue: 'no business-purpose certification', fileValue: null,
+      title: 'The business-purpose disclosure is missing',
+      howTo: 'A business-purpose / non-owner-occupied certification is required — it is the basis for this loan being exempt from consumer-mortgage rules. Obtain the signed business-purpose disclosure before closing.',
+      actions: ['request_document', 'post_condition', 'decline', 'dismiss'] }));
+  }
+  return out;
+}
+
+// ---- Investor structure printout (internal) ----
+// An internal structure printout — its figures must match the registered product on the file.
+// `subject` = { loan_amount, purchase_price, property_address }.
+function computeInvestorStructureFindings(is, subject, opts = {}) {
+  const out = []; if (!is) return out;
+  if (unreadable('investor_structure', is, ['loanAmount'])) {
+    return [verify('investor_structure', 'investor structure printout')];
+  }
+  const s = subject || {};
+  const docAmt = num(is.loanAmount), fileAmt = s && num(s.loan_amount);
+  if (docAmt != null && fileAmt != null && fileAmt > 0 && !withinMoney(docAmt, fileAmt, 1)) {
+    out.push(mk('investor_structure', { code: 'investor_structure_amount_mismatch', severity: 'warning', field: 'loan_amount',
+      docValue: money(docAmt), fileValue: money(fileAmt),
+      title: 'The investor structure loan amount does not match the file',
+      howTo: `The structure printout shows a loan amount of ${money(docAmt)} but the file's registered loan is ${money(fileAmt)}. Reconcile the structure to the registered product before closing.`,
+      actions: ['fix_file', 'request_document', 'post_condition', 'dismiss'] }));
+  }
+  return out;
+}
+
 module.exports = {
   computeAssignmentFindings, computeOperatingAgreementFindings, computeEinFindings,
   computeGoodStandingFindings, computeFormationFindings, computeInsuranceFindings,
   computeFloodFindings, computeSettlementFindings, computeCreditFindings, computeBackgroundFindings,
   computeAmendmentFindings, computeScopeOfWorkFindings, computePayoffFindings, computeVoidedCheckFindings,
-  representativeFico,
+  computePlansPermitsFindings, computeSignedTermSheetFindings, computeSignedApplicationFindings,
+  computeInvestorStructureFindings, representativeFico,
 };
