@@ -83,6 +83,24 @@ function fileScope(req, alias, startIdx) {
   if (can(req.actor, 'see_all_files')) return { where: '', params: [] };
   return { where: ` AND ${assigneeExistsSql(alias, '$' + startIdx)}`, params: [req.actor.id] };
 }
+// A robust one-line property address from the property_address jsonb. Files store the
+// address several ways — a ready `oneLine`, a geocoded `formatted_address`, structured
+// line1/street/city/state/zip, or a bare JSON string — so reading ONLY `oneLine` (the
+// old query) left many files showing no address on the draw desk. Mirrors the same
+// fallback ladder loadDocGenData uses for the generated documents.
+function addrExpr(alias) {
+  const p = `${alias}.property_address`;
+  return `COALESCE(
+    NULLIF(btrim(${p}->>'oneLine'), ''),
+    NULLIF(btrim(${p}->>'formatted_address'), ''),
+    NULLIF(btrim(concat_ws(', ',
+      NULLIF(btrim(concat_ws(' ', ${p}->>'line1', ${p}->>'street', ${p}->>'unit')), ''),
+      NULLIF(btrim(${p}->>'city'), ''),
+      NULLIF(btrim(concat_ws(' ', ${p}->>'state', ${p}->>'zip')), '')
+    )), ''),
+    CASE WHEN jsonb_typeof(${p}) = 'string' THEN ${p} #>> '{}' END
+  )`;
+}
 async function canSeeFile(req, appId) {
   if (!isUuid(appId)) return false; // malformed id can never own a file (audit F1 — avoid 22P02 hang)
   if (can(req.actor, 'see_all_files')) {
@@ -100,7 +118,7 @@ router.get('/draws', requirePermission('manage_draws'), async (req, res) => {
     const rows = (await db.query(
       `SELECT d.sitewire_draw_id, d.application_id, d.number, d.status, d.total_requested_cents, d.total_approved_cents,
               d.submitted_at, d.approved_at, d.updated_at, d.pdf_src,
-              a.ys_loan_number, a.property_address->>'oneLine' AS address,
+              a.ys_loan_number, ${addrExpr('a')} AS address,
               COALESCE(pl.lifecycle_state, 'active') AS lifecycle_state,
               (SELECT count(*) FROM draw_disbursements dd WHERE dd.sitewire_draw_id=d.sitewire_draw_id AND dd.funded_status='released') AS released_count
          FROM sitewire_draws d JOIN applications a ON a.id=d.application_id
@@ -1281,7 +1299,7 @@ router.get('/portfolio', requirePermission('manage_draws'), async (req, res) => 
     const sc = fileScope(req, 'a', 1);
     // per-file budget (frozen) + drawn (approved on approved draws) + pending-approval counts
     const rows = (await db.query(
-      `SELECT a.id AS application_id, a.ys_loan_number, a.property_address->>'oneLine' AS address, a.status,
+      `SELECT a.id AS application_id, a.ys_loan_number, ${addrExpr('a')} AS address, a.status,
               a.actual_closing, a.term, a.lender,
               l.sitewire_property_id, COALESCE(l.lifecycle_state,'active') AS lifecycle_state, l.lifecycle_at,
               COALESCE((SELECT sum(ji.budgeted_cents) FROM sitewire_job_item_links ji WHERE ji.application_id=a.id AND ji.state<>'deleted' AND ji.is_media_item=false),0) AS budget_cents,
