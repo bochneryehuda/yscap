@@ -1218,8 +1218,9 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
                 // Off-site improvements — street/alley + a Public/Private ownership flag (a private
                 // street means shared maintenance/access, a flip cost signal).
                 (() => {
-                  const os = Array.isArray(a.off_site_improvements) ? a.off_site_improvements
-                    : (() => { try { return JSON.parse(a.off_site_improvements || '[]'); } catch { return []; } })();
+                  const os = (Array.isArray(a.off_site_improvements) ? a.off_site_improvements
+                    : (() => { try { return JSON.parse(a.off_site_improvements || '[]'); } catch { return []; } })())
+                    .filter((o) => o && o.type);
                   if (!os.length) return null;
                   const priv = os.some((o) => o.ownership === 'Private');
                   return ['Street / access',
