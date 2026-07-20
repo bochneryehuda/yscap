@@ -1,5 +1,6 @@
 -- =====================================================================
--- 158_esign_merge_app_disclosure_condition.sql
+-- 159_esign_merge_app_disclosure_condition.sql (renumbered from 158 — collided with
+--   db/158_appraisal_enrichment.sql from a parallel session)
 -- Merge the signed business-purpose disclosure INTO the signed-application
 -- condition (owner-directed 2026-07-20): ONE combined condition holds BOTH the
 -- signed loan application AND the signed business-purpose disclosure (each as its
