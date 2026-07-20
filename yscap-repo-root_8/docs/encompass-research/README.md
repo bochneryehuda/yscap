@@ -8,6 +8,7 @@
 
 ## Start here (reading order for whoever continues)
 
+0. **`../ENCOMPASS-OWNER-BRIEF.md`** — the plain-language owner summary: what this is, and the exact setup steps, ICE questions, facts, and yes/no decisions needed from the owner to unblock the build. Read this to the owner; everything below is engineering detail.
 1. **`../ENCOMPASS-INTEGRATION-RESEARCH.md`** — the master plan + the canonical open-question tracker (OQ-01…OQ-31). Read first.
 2. **`../ENCOMPASS-READONLY-GUARDRAILS.md`** — the write-freeze doctrine. **Mandatory** before touching any Encompass code.
 3. **`../ENCOMPASS-DATA-MAPPING.md`** — canonical DB schema (§2.1), match ladder, the three-door clear-to-close gate.
