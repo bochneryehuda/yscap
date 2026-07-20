@@ -462,6 +462,17 @@ function enrichment(root, prop, st, site, subject0, rep, formType) {
     o.mc_price_trend = (grid.MedianSalesPrice && grid.MedianSalesPrice.trend) || null;
   }
 
+  // -- neighborhood land-use mix (NEIGHBORHOOD > _PRESENT_LAND_USE {_Type,_Percent}). Recorded
+  // verbatim, NOT normalized to 100 — the appraiser's percentages as given, never a guess. Only a
+  // row with a whitelisted type AND a real percent is kept. Direct children of NEIGHBORHOOD.
+  const landUse = [];
+  for (const lu of (nb ? nb.children.filter((c) => c.tag === '_PRESENT_LAND_USE') : [])) {
+    const t = enumOf(X.attr(lu, '_Type'), ['SingleFamily', 'TwoToFourFamily', 'Apartment', 'Commercial', 'Vacant', 'Industrial', 'Agricultural', 'Other']);
+    const pct = percent(X.attr(lu, '_Percent'));
+    if (t && pct != null && pct >= 0 && pct <= 100) landUse.push({ type: t, percent: Math.round(pct) });
+  }
+  o.present_land_use = landUse.length ? landUse : null;
+
   // -- site / occupancy --
   o.occupancy_status = enumOf(A(prop, '_CurrentOccupancyType'), ['Vacant', 'TenantOccupied', 'OwnerOccupied']);
   o.property_rights = clean(A(prop, '_RightsType'));
@@ -489,6 +500,24 @@ function enrichment(root, prop, st, site, subject0, rep, formType) {
     utils.push({ type: t, public: pub, note: clean(X.attr(u, '_NonPublicDescription')) });
   }
   o.utilities = utils.length ? utils : null;
+  // Off-site improvements (street/alley/access). The XML carries TWO row styles per _Type — a
+  // description row (_Description) and an ownership row (_OwnershipType/_ExistsIndicator) — so merge
+  // by _Type into one record. Subject-scoped (subjAll walks parents for COMPARABLE_SALE so a comp's
+  // block can't bleed). The Public/Private ownership is the useful flip signal (a private street
+  // means shared maintenance/access).
+  const offSite = {};
+  for (const os of subjAll(root, '_OFF_SITE_IMPROVEMENT')) {
+    const t = clean(X.attr(os, '_Type')); if (!t) continue;
+    const rec = offSite[t] || (offSite[t] = { type: t, description: null, ownership: null, exists: null });
+    const desc = clean(X.attr(os, '_Description'));
+    if (desc && !/^none$/i.test(desc)) rec.description = desc;
+    const own = enumOf(X.attr(os, '_OwnershipType'), ['Public', 'Private']);
+    if (own) rec.ownership = own;
+    const ex = yn(X.attr(os, '_ExistsIndicator'));
+    if (ex != null) rec.exists = ex;
+  }
+  const offSiteArr = Object.values(offSite).filter((r) => r.description || r.ownership || r.exists === true);
+  o.off_site_improvements = offSiteArr.length ? offSiteArr : null;
 
   // -- structure / systems --
   o.effective_age = years(A(subjFind(root, 'STRUCTURE_ANALYSIS'), 'EffectiveAgeYearsCount'), 200);
@@ -842,6 +871,7 @@ function extract(xml) {
   if (enrich.mc_price_trend === 'Declining') warnings.push({ code: 'mc_price_declining', msg: '1004MC median sale price is declining — the appraiser flagged a softening market' });
   if (enrich.mc_months_supply != null && enrich.mc_months_supply > 6) warnings.push({ code: 'mc_oversupply', msg: `1004MC shows ${enrich.mc_months_supply} months of housing supply (>6) — a buyer's market, slower exit` });
   if (enrich.mc_sale_to_list_pct != null && enrich.mc_sale_to_list_pct < 95) warnings.push({ code: 'mc_weak_pricing', msg: `1004MC median sale-to-list is ${enrich.mc_sale_to_list_pct}% (<95%) — sellers are conceding on price` });
+  if (Array.isArray(enrich.off_site_improvements) && enrich.off_site_improvements.some((o) => o.ownership === 'Private')) warnings.push({ code: 'off_site_private', msg: 'Private street/alley — shared maintenance & access; confirm a road-maintenance agreement' });
 
   return {
     ok: true, formType,
