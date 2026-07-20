@@ -68,7 +68,9 @@ const PACKAGES = {
     subject: (loan) => `Heter Iska ready to sign${loan ? ` — Loan #${loan}` : ''}`,
     blurb: 'Please review and sign the Heter Iska.',
     docs: [
-      { kind: 'heter_iska', prefix: 'iska', signedKind: 'heter_iska_signed', condition: 'rtl_cond_iska', name: 'Heter Iska', generate: true },
+      // BUILT on our server as a real PDF (iska-pdf.js) and uploaded AS PDF (genExt) —
+      // DocuSign accepts PDF natively, so unlike a .docx it is NOT converted by DocuSign.
+      { kind: 'heter_iska', prefix: 'iska', signedKind: 'heter_iska_signed', condition: 'rtl_cond_iska', name: 'Heter Iska', generate: true, genExt: 'pdf' },
     ],
   },
 };
@@ -567,13 +569,13 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
     const documentId = i + 1;
 
     if (d.generate) {
-      // Built on our server from this file's data. Two shapes:
-      //   • PDF (genExt:'pdf') — the loan application (application-pdf.js) AND the
-      //     business-purpose disclosure (disclosure-pdf.js) render straight to a
-      //     branded PILOT PDF and upload AS PDF (DocuSign accepts PDF natively).
-      //   • docx — the Heter Iska fills a stored Word template; DocuSign converts the
-      //     .docx → PDF for free (no DocGen add-on), so it uploads as .docx.
-      // fileExtension (d.genExt || 'docx') tells DocuSign which it is.
+      // Built on our server from this file's data — ALL as real PDFs uploaded AS PDF
+      // (DocuSign accepts PDF natively and does NOT convert them): the loan application
+      // (application-pdf.js), the business-purpose disclosure (disclosure-pdf.js), and
+      // the Heter Iska (iska-pdf.js — a verified pre-render of the Hebrew nusach with
+      // the Latin loan amount + names + anchors drawn on top). fileExtension
+      // (d.genExt || 'docx') tells DocuSign the true format; every generated doc today
+      // sets genExt:'pdf' (the 'docx' default remains for the legacy mail-merge path).
       let buf;
       // A docgen/template failure is a code/data problem, not a transient outage —
       // fail PERMANENT (dead-letter, visible) instead of retrying for ~6.7h.
