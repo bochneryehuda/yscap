@@ -42,16 +42,21 @@ function sampleData() {
 // The two test packages, mirroring the real borrower flow (disclosure and Heter
 // Iska are SEPARATE packages). Each carries only the generated doc(s) a test can
 // build — the term sheet + application are file-specific PDFs, absent for a test.
+// genExt MUST mirror orchestrate's package spec so DocuSign is told the true format
+// of the bytes we upload: the disclosure is now a branded PDF (disclosure-pdf.js), the
+// Heter Iska is still a docx (DocuSign converts it). A wrong extension makes DocuSign
+// run a PDF through its docx→PDF converter (corrupt/errored envelope) — the exact bug
+// the genExt indirection prevents on the real send path (orchestrate.buildDefinition).
 const TEST_PACKAGES = [
   {
     label: 'Term-sheet package (TEST)',
     subject: 'PILOT e-signature TEST — Term-sheet package (please review the rendered document)',
-    docs: [{ kind: 'bp_disclosure', signedKind: 'bp_disclosure_signed', name: 'Business-Purpose Disclosure (TEST)', prefix: 'bpd' }],
+    docs: [{ kind: 'bp_disclosure', signedKind: 'bp_disclosure_signed', name: 'Business-Purpose Disclosure (TEST)', prefix: 'bpd', genExt: 'pdf' }],
   },
   {
     label: 'Heter Iska (TEST)',
     subject: 'PILOT e-signature TEST — Heter Iska (please review the rendered document)',
-    docs: [{ kind: 'heter_iska', signedKind: 'heter_iska_signed', name: 'Heter Iska (TEST)', prefix: 'iska' }],
+    docs: [{ kind: 'heter_iska', signedKind: 'heter_iska_signed', name: 'Heter Iska (TEST)', prefix: 'iska', genExt: 'docx' }],
   },
 ];
 
@@ -64,7 +69,7 @@ async function sendOnePackage({ db, docusign, actorId, name, email, pkg }) {
     const documentId = i + 1;
     documents.push({
       base64: docgen.generate(d.kind, data).toString('base64'),
-      name: d.name, documentId, fileExtension: 'docx',
+      name: d.name, documentId, fileExtension: d.genExt || 'docx',
     });
     tabsByDoc[documentId] = { sign: [`/${d.prefix}_b1_sig/`], date: [`/${d.prefix}_b1_dt/`] };
   });

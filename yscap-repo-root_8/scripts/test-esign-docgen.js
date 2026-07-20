@@ -63,9 +63,13 @@ eq(dg.fmtDate(null), '', 'date: null → empty');
   eq(dg.removeTableContaining(x, 'MARK'), '<w:p>after</w:p>', 'removeTableContaining strips the whole table');
 }
 
-// ---- 3. disclosure: filled, anchored, right structure (WITH co-borrower) ------
+// ---- 3. LEGACY docx disclosure: filled, anchored, right structure (WITH co) ---
+// The LIVE term-sheet package now renders the disclosure as a branded PILOT PDF
+// (see test-esign-disclosure-pdf.js); dg.generate('bp_disclosure') returns that PDF.
+// The docx mail-merge builder is retained (shared toolkit with the Heter Iska +
+// rollback), so we exercise it directly here to keep the docx surgery covered.
 {
-  const buf = dg.generate('bp_disclosure', SAMPLE);
+  const buf = dg.buildDisclosure(SAMPLE);
   const xml = docXml(buf), vis = visibleText(buf);
   ok(!/«[^»]+»/.test(xml), 'disclosure: no unfilled «merge fields»');
   ok(!/descr="(Borrower|Coborrower)Signature"/.test(xml), 'disclosure: leftover Sign-Here tag images removed');
@@ -80,9 +84,9 @@ eq(dg.fmtDate(null), '', 'date: null → empty');
   ok(!vis.includes('Date:'), 'disclosure: no drawn "Date:" label (date is inline after the name)');
 }
 
-// ---- 4. disclosure WITHOUT co-borrower ---------------------------------------
+// ---- 4. LEGACY docx disclosure WITHOUT co-borrower ---------------------------
 {
-  const buf = dg.generate('bp_disclosure', { ...SAMPLE, hasCoBorrower: false, cbFirst: '', cbLast: '' });
+  const buf = dg.buildDisclosure({ ...SAMPLE, hasCoBorrower: false, cbFirst: '', cbLast: '' });
   const xml = docXml(buf), vis = visibleText(buf);
   ok(!/«[^»]+»/.test(xml), 'solo disclosure: no leftover tokens');
   ok(!/<w:tc>(?:(?!<w:p[ >])[\s\S])*?<\/w:tc>/.test(xml), 'solo disclosure: no empty cell');
