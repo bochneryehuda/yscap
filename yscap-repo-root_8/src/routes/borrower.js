@@ -1520,6 +1520,18 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
       if (k === 'loan_type') v = require('../lib/fields').sanitizeLoanType(v);   // #95: never a program
       appVals.push(v); appSets.push(`${k}=$${appVals.length}`); appKeys.push(k);
     }
+    // Couple units to a live property_type change. The completeness panel doesn't
+    // collect units, so a single-family type must still auto-fill "1 unit" and a
+    // switch to a multi type must not keep a stale single "1" (mirrors the intake
+    // form's unitsForType, server-side). Only on the live-write path — a locked
+    // file's property_type change becomes a change request instead.
+    if (appKeys.includes('property_type')) {
+      const newPt = appVals[appKeys.indexOf('property_type') + 1];
+      const curU = (await db.query(`SELECT units FROM applications WHERE id=$1`, [req.params.id])).rows[0];
+      const prevUnits = curU ? curU.units : null;
+      const nextUnits = require('../lib/units').unitsForPropertyType(newPt, prevUnits);
+      if (nextUnits !== prevUnits) { appVals.push(nextUnits); appSets.push(`units=$${appVals.length}`); appKeys.push('units'); }
+    }
     if (appSets.length) {
       appSets.push('updated_at=now()');
       await db.query(`UPDATE applications SET ${appSets.join(', ')} WHERE id=$1`, appVals);

@@ -4295,6 +4295,16 @@ router.patch('/applications/:id/details', async (req, res) => {
   }
   if ('isAssignment' in b) { sets.push(`is_assignment=$${i++}`); vals.push(!!b.isAssignment); touchedCols.push('is_assignment'); }
   if (b.propertyAddress !== undefined) { sets.push(`property_address=$${i++}`); vals.push(b.propertyAddress ? JSON.stringify(b.propertyAddress) : null); touchedCols.push('property_address'); }
+  // Couple units to a property_type change when the caller didn't send units
+  // explicitly (a direct API call, or the completeness panel) — mirrors the
+  // intake form's unitsForType so a single-family type auto-fills "1 unit" and a
+  // switch to multi doesn't keep a stale single "1".
+  if ('propertyType' in b && !('units' in b)) {
+    const curU = (await db.query(`SELECT units FROM applications WHERE id=$1`, [req.params.id])).rows[0];
+    const prevUnits = curU ? curU.units : null;
+    const nextUnits = require('../lib/units').unitsForPropertyType(b.propertyType, prevUnits);
+    if (nextUnits !== prevUnits) { sets.push(`units=$${i++}`); vals.push(nextUnits); touchedCols.push('units'); }
+  }
   if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
   sets.push('updated_at=now()'); vals.push(req.params.id);
   try {
