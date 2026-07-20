@@ -22,7 +22,6 @@ const has = (r, code) => r.findings.some((f) => f.code === code);
       { doc_type: 'purchase_contract', document_id: 'd2', fields: { purchasePrice: 400000, earnestMoney: 20000, closingDate: '2026-09-01' } },
       { doc_type: 'insurance', document_id: 'd3', fields: { policyEffective: '2026-07-01', policyExpiration: '2027-07-01' } },
       { doc_type: 'credit_report', document_id: 'd4', fields: { dob: '1980-05-01', reportDate: '2026-07-01', ficoScore: 720 } },
-      { doc_type: 'settlement', document_id: 'd5', fields: { totalSources: 500000, totalUses: 500000 } },
     ],
   });
   assert.strictEqual(r.findings.length, 0, 'a sane file raises nothing');
@@ -38,7 +37,6 @@ const has = (r, code) => r.findings.some((f) => f.code === code);
     extractions: [
       { doc_type: 'government_id', document_id: 'd1', fields: { dateOfBirth: '2015-01-01', issueDate: '2030-01-01', expirationDate: '2020-01-01' } },
       { doc_type: 'credit_report', document_id: 'd2', fields: { ficoScore: 999, reportDate: '2027-01-01' } },
-      { doc_type: 'settlement', document_id: 'd3', fields: { totalSources: 500000, totalUses: 400000 } },
     ],
   });
   assert.ok(r.findings.length > 0, 'the implausible file raises findings');
@@ -157,19 +155,20 @@ const has = (r, code) => r.findings.some((f) => f.code === code);
   assert.ok(has(r, 'fico_out_of_range'), 'a sub-300 FICO flagged');
 }
 
-// ---- Settlement out of balance ----
+// ---- Settlement balance is owned by the per-doc `settlement_unbalanced` check, NOT here ----
 {
   const r = assessReasonability({ today: TODAY, extractions: [
     { doc_type: 'settlement', document_id: 'd1', fields: { totalSources: 500000, totalUses: 480000 } },
   ] });
-  assert.ok(has(r, 'settlement_out_of_balance'), 'sources ≠ uses flagged');
+  assert.ok(!has(r, 'settlement_out_of_balance'), 'reasonability does not duplicate the per-doc settlement balance check');
+  assert.strictEqual(r.findings.length, 0, 'an unbalanced settlement raises nothing HERE (the per-doc check owns it)');
 }
 
 // ---- Never-guess: missing values raise nothing (empty in → empty out) ----
 {
   const r = assessReasonability({ today: TODAY, economics: {}, extractions: [
     { doc_type: 'government_id', document_id: 'd1', fields: {} },
-    { doc_type: 'settlement', document_id: 'd2', fields: { totalSources: 500000 } }, // only one side → can't judge balance
+    { doc_type: 'credit_report', document_id: 'd2', fields: { ficoScore: null } }, // absent value → no judgment
   ] });
   assert.strictEqual(r.findings.length, 0, 'absent values are never judged');
   // The transparency list still records the rules that ran.

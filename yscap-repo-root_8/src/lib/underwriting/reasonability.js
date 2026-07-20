@@ -136,6 +136,9 @@ function assessReasonability({ extractions = [], economics = {}, today = null } 
   // Assignment math: on a wholesale deal the price the borrower pays should equal the seller's
   // original price PLUS the assignment fee. A gap means one of the three numbers is off. Info-only —
   // the assignment-fee CAP (a hard rule) is enforced by the purchase-contract check, not here.
+  // NOTE: this is the FILE-economics view (registered underlying_contract_price + assignment_fee vs
+  // purchase_price). The per-doc `assignment_math_inconsistent` check reconciles the DOCUMENT's own
+  // fields; the two have distinct sources and codes on purpose — do not "dedupe" them together.
   if (fee != null && fee > 0 && underlying != null && underlying > 0 && price != null && price > 0) {
     const expected = underlying + fee;
     if (Math.abs(expected - price) > 1) {
@@ -247,22 +250,13 @@ function assessReasonability({ extractions = [], economics = {}, today = null } 
           howTo: `The FICO score reads ${fico}, outside the real 300–850 scale. The value was misread — confirm the score on the report.` })));
       }
     }
-
-    // (g) Settlement statement: total sources must equal total uses (it must balance).
-    if (e.doc_type === 'settlement') {
-      const src = num(f.totalSources), use = num(f.totalUses);
-      if (src != null && use != null && Math.abs(src - use) > 1) {
-        findings.push(warn(at('', { code: 'settlement_out_of_balance', field: 'totalSources', docValue: money(src), fileValue: money(use),
-          title: "Settlement statement doesn't balance", actions: A_FIX,
-          howTo: `Total sources (${money(src)}) don't equal total uses (${money(use)}) — a settlement statement must balance to the penny. A corrected statement is needed before closing.` })));
-      }
-    }
+    // (settlement balance is owned by the per-document `settlement_unbalanced` check in doc-checks.js
+    // — deliberately NOT repeated here so it doesn't double-appear in the roll-up.)
   }
   ran('document_future_dated', 'No document is dated in the future', futureDated);
   ran('inverted_dates', 'No document has a backwards date pair', invertedDates);
   ran('dob_age_plausible', 'Every date of birth implies a plausible adult age', findings.some((f) => f.code === 'borrower_underage' || f.code === 'dob_implausible'));
   ran('fico_in_range', 'Every credit score is within 300–850', findings.some((f) => f.code === 'fico_out_of_range'));
-  ran('settlement_balances', 'The settlement statement balances', findings.some((f) => f.code === 'settlement_out_of_balance'));
 
   return { findings, checks };
 }
