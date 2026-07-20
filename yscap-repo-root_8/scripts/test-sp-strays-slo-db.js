@@ -101,6 +101,24 @@ const ok = (name, cond) => { if (cond) pass++; else { fail++; console.log(`FAIL 
   ok('the non-local stray was actually attempted (attempts>=1, real error recorded)',
     Number(s3after.a) >= 1 && !!s3after.e);
 
+  // === TEST 1c: stall-guard supersede check ==================================
+  // A drain pass carries a generation token (seq). If a stall guard spawned a
+  // newer pass, the old (superseded) pass must stop immediately instead of
+  // uploading concurrently. _runSeq is 0 in this runOnce-only test, so a pass
+  // with a stale seq (999999) trips the guard and touches NOTHING; seq=0 (a
+  // non-drain caller) is never treated as superseded and proceeds normally.
+  const supDoc = await mkDoc({ filename: 'supersede-probe.pdf' });
+  await backup.runOnce({ limit: 50, seq: 999999 });
+  const supAfter = (await db.query(
+    `SELECT sharepoint_backup_attempts AS a FROM documents WHERE id=$1`, [supDoc])).rows[0];
+  ok('a superseded pass (stale seq) attempts NOTHING — no concurrent double-drain',
+    Number(supAfter.a) === 0);
+  await backup.runOnce({ limit: 50, seq: 0 });
+  const supAfter2 = (await db.query(
+    `SELECT sharepoint_backup_attempts AS a FROM documents WHERE id=$1`, [supDoc])).rows[0];
+  ok('the current pass (seq=0) DOES attempt it (guard only stops superseded passes)',
+    Number(supAfter2.a) >= 1);
+
   // === TEST 2: persistent SLO-alert dedup ===================================
   await backup.clearSloAlert();
   const sig = backup.sloSignature([{ id: strayS3 }, { id: phantom }]);
