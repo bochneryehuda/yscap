@@ -182,16 +182,25 @@ router.get('/:appId', async (req, res, next) => {
     // document is present the moment it's uploaded — never a false "missing" just because the AI
     // hasn't read it yet — and so the auto-reader has a concrete queue of what to read, as what type,
     // for each condition. Current, non-rejected documents only; chat attachments excluded.
+    // LLC-stack documents (Articles / EIN / operating agreement / good standing) are stored
+    // ENTITY-scoped with application_id = NULL (keyed by llc_id) — "done once, reused on every loan"
+    // — so an application_id-only filter would miss them and an entity file would still show them
+    // "not uploaded" (the exact false-missing class). Pull a document when it is EITHER this file's
+    // own (application_id), OR filed under one of THIS file's conditions (ci.application_id — catches
+    // any doc whose denormalized owner differs), OR one of this file's ENTITY's documents (llc_id).
     const docsOnFile = await db.query(
       `SELECT d.id, d.filename, d.doc_kind, d.checklist_item_id, t.code AS condition_code,
               COALESCE(t.label, t.code) AS condition_label
          FROM documents d
          LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
          LEFT JOIN checklist_templates t ON t.id = ci.template_id
-        WHERE d.application_id = $1 AND d.is_current = true
+        WHERE d.is_current = true
           AND COALESCE(d.review_status, '') <> 'rejected'
           AND COALESCE(d.source_type, '') <> 'chat_attachment'
-        ORDER BY d.created_at`, [app.id]);
+          AND ( d.application_id = $1
+                OR ci.application_id = $1
+                OR (d.llc_id IS NOT NULL AND d.llc_id = $2) )
+        ORDER BY d.created_at`, [app.id, a.llc_id || null]);
     const analyzedDocIds = new Set(exts.rows.filter((e) => e.document_id).map((e) => e.document_id));
     // Map each on-file document to its EXPECTED type (from the condition it's filed under, falling
     // back to its doc_kind) and whether it's been read. `attached` = the set of document types that
