@@ -170,19 +170,22 @@ function fakeStorage() {
     ok(adminSigner.tabsByDoc['1'].sign.includes('/ts_admin_sig/'), 'admin counter-signs the term sheet only');
     ok(borrowerSigner.clientUserId && borrowerSigner.embeddedRecipientStartURL === 'SIGN_AT_DOCUSIGN', 'borrower is hybrid embedded+email');
 
-    // ---- the disclosure is GENERATED on our server (docx), filled + anchored --
-    const { unzip } = require(R + '/src/lib/zip');
+    // ---- the disclosure is GENERATED on our server (jsPDF → branded PDF) --------
+    // Owner-directed (2026-07-20): the business-purpose disclosure now renders on the
+    // PILOT letterhead as a real PDF (disclosure-pdf.js), uploaded AS a PDF — the same
+    // path as the loan application. Its legal certification text is preserved verbatim.
     const bpdDoc = def.documents.find((d) => d.name === 'Business-Purpose Disclosure');
-    eq(bpdDoc.fileExtension, 'docx', 'disclosure is uploaded as .docx (DocuSign converts to PDF free)');
-    const bpdXml = unzip(Buffer.from(bpdDoc.base64, 'base64'))
-      .find((e) => e.name === 'word/document.xml').data.toString('utf8');
-    ok(bpdXml.includes('487,500.00'), 'disclosure filled with the loan amount');
-    ok(bpdXml.includes('YS-1001'), 'disclosure filled with the loan number');
-    ok(bpdXml.includes('1 Main St') && bpdXml.includes('10001'), 'disclosure filled with the subject property');
-    ok(bpdXml.includes('Borrower') && bpdXml.includes('/bpd_b1_sig/') && bpdXml.includes('/bpd_b1_dt/'), 'disclosure carries the borrower sign+date anchors');
-    ok(bpdXml.includes('/bpd_b2_sig/'), 'disclosure carries the co-borrower anchor');
-    ok(!/«[^»]+»/.test(bpdXml), 'no unfilled «merge fields» left in the disclosure');
-    ok(!/descr="(Borrower|Coborrower)Signature"/.test(bpdXml), 'leftover yellow "Sign Here" tag images removed');
+    eq(bpdDoc.fileExtension, 'pdf', 'disclosure uploads AS a branded PDF (not .docx)');
+    const bpdPdf = Buffer.from(bpdDoc.base64, 'base64');
+    eq(bpdPdf.slice(0, 5).toString('latin1'), '%PDF-', 'disclosure is a real PDF');
+    const bpdText = bpdPdf.toString('latin1');
+    ok(bpdText.includes('487,500.00'), 'disclosure filled with the loan amount');
+    ok(bpdText.includes('YS-1001'), 'disclosure filled with the loan number');
+    ok(bpdText.includes('1 Main St') && bpdText.includes('10001'), 'disclosure filled with the subject property');
+    ok(bpdText.includes('/bpd_b1_sig/') && bpdText.includes('/bpd_b1_dt/'), 'disclosure carries the borrower sign+date anchors');
+    ok(bpdText.includes('/bpd_b2_sig/'), 'disclosure carries the co-borrower anchor');
+    ok(bpdText.includes('Promissory') && bpdText.includes('Homeowners'), 'disclosure preserves the legal certification text');
+    ok(!/«[^»]+»/.test(bpdText), 'no unfilled «merge fields» left in the disclosure');
 
     // ---- the LOAN APPLICATION is GENERATED on our server (jsPDF → real PDF) -----
     // Nothing stores an application_export anymore; generation covers it. It must be
@@ -199,6 +202,7 @@ function fakeStorage() {
     ok(appText.includes('Pat') && appText.includes('Borrower'), 'Loan Application shows the borrower name');
 
     // ---- the Heter Iska is ALSO generated on our server, nusach byte-preserved --
+    const { unzip } = require(R + '/src/lib/zip');   // the Iska is still a docx (Hebrew nusach)
     const iskaRes = await orchestrate.sendPackage(app, 'heter_iska', { id: null }, { db: pool, docusign, storage });
     ok(iskaRes.ok, 'Heter Iska package sent');
     const iskaDef = docusign._calls.created;
