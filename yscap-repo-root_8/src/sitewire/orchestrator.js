@@ -675,16 +675,26 @@ async function setPropertyLifecycle(appId, state, staffId = null) {
     }
     if (property && property.__dryrun) { sitewire = 'dryrun'; }
     else {
-      // read-after-write: re-GET and confirm `inactive` persisted (a 200 that didn't stick must not pass).
+      // read-after-write: re-GET and confirm `inactive` persisted. FAIL CLOSED,
+      // mirroring the budget push (pushBudgetInner treats an absent verify field
+      // as unverified): only a POSITIVE match (`inactive` came back a boolean and
+      // equals what we set) counts as synced. A mismatch parks; a throwing GET or
+      // an absent/non-boolean `inactive` is NOT proof it stuck — leave the row
+      // lifecycle_synced=false so backfillUnsyncedLifecycleOnce re-drives the
+      // (idempotent) deactivate, so a paid-off property can't silently stay active.
+      let verified = false;
       try {
         const fresh = await client.getProperty(link.sitewire_property_id);
-        if (fresh && typeof fresh.inactive === 'boolean' && fresh.inactive !== inactive) {
-          await park({ appId, reason: `sitewire_lifecycle_verify_failed: Sitewire property ${link.sitewire_property_id} did not persist inactive=${inactive}` });
-          return { parked: 'verify_failed' };
+        if (fresh && typeof fresh.inactive === 'boolean') {
+          if (fresh.inactive !== inactive) {
+            await park({ appId, reason: `sitewire_lifecycle_verify_failed: Sitewire property ${link.sitewire_property_id} did not persist inactive=${inactive}` });
+            return { parked: 'verify_failed' };
+          }
+          verified = true;
         }
-      } catch (_) { /* verify is best-effort — the reconcile poll re-checks the property later */ }
+      } catch (e) { console.warn('[sitewire] lifecycle verify GET failed (will re-drive):', e && e.message); }
       await journal({ appId, propertyId: link.sitewire_property_id, entity: 'property', entityId: link.sitewire_property_id, field: 'inactive', oldValue: !inactive, newValue: inactive, source: 'lifecycle' });
-      sitewire = 'synced';
+      sitewire = verified ? 'synced' : 'unverified';
     }
   }
   // record the PILOT-side lifecycle state (always — PILOT is the source of record for the desk + ledger).

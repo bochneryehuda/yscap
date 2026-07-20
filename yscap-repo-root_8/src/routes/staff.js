@@ -12,6 +12,7 @@ const email = require('../lib/email');                    // Email Center: send 
 const emailLog = require('../lib/email-log');             // Email Center: capture + on-demand body
 const C = require('../lib/crypto');
 const notify = require('../lib/notify');
+const { claimOncePerPeriod } = require('../lib/throttle-claim');
 const changeRequests = require('../lib/change-requests');
 const mail = require('../lib/email/catalog');
 const { fileReplyTo } = require('../lib/file-address');   // #68 per-file shared reply-to
@@ -3043,6 +3044,15 @@ async function signOffGate(itemId, actor) {
     if (isAppraisalDocs) {
       if (!hasSlot('xml') || !hasSlot('pdf'))
         return 'Upload BOTH the appraisal data file (XML) and the appraisal report (PDF) before signing off — this condition cannot be completed without both.';
+      // The XML must have actually IMPORTED. If PILOT could not read the dropped file as a valid
+      // appraisal, no `appraisal_review_cleared` condition is ever materialized — and without it the
+      // whole PILOT findings engine (the fatal-finding clear-to-close gate) is silently skipped for
+      // this file. A successful import always creates a current appraisals row AND that condition,
+      // so require the row to exist before letting this document condition be signed off.
+      const imported = (await db.query(
+        `SELECT 1 FROM appraisals WHERE application_id=$1 AND superseded=false LIMIT 1`, [item.application_id])).rows[0];
+      if (!imported)
+        return 'The appraisal data file (XML) has not been read as a valid appraisal yet, so the PILOT appraisal review has not run. Re-upload a valid MISMO appraisal XML (PILOT imports it automatically) before signing off this condition.';
       return null;
     }
     if (isTitle) {
@@ -3346,14 +3356,11 @@ router.patch('/checklist/:itemId', async (req, res) => {
       if (row && row.borrower_id && row.application_id && row.audience !== 'staff') {
         const open = await require('../lib/reminders').outstandingItems(row.application_id);
         if (open.length === 0) {
-          // Atomically CLAIM the 20h slot (stamp-first) so two conditions clearing
-          // the last item on the same file in the same instant can't both email.
-          const claim = await db.query(
-            `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
-             SELECT 'system', NULL, 'all_caught_up_emailed', 'application', $1, '{}'::jsonb
-              WHERE NOT EXISTS (SELECT 1 FROM audit_log WHERE action='all_caught_up_emailed' AND entity_id=$1 AND created_at > now() - interval '20 hours')
-             RETURNING id`, [row.application_id]);
-          if (claim.rows[0]) {
+          // Atomically CLAIM the 20h slot so two conditions clearing the last item
+          // on the same file in the same instant can't both email (advisory-locked
+          // shared helper — a plain INSERT…WHERE NOT EXISTS is not atomic).
+          const claimId = await claimOncePerPeriod({ action: 'all_caught_up_emailed', entityId: row.application_id, interval: '20 hours' });
+          if (claimId) {
             await notify.notifyAppBorrowers(row.application_id, {
               type: 'all_caught_up',
               title: 'You’re all caught up',
@@ -4657,40 +4664,16 @@ router.post('/llcs/:id/raise-issue', async (req, res) => {
 
 // ---------------- advance application status ----------------
 const APP_STATUS = ['file_intake', 'new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'declined', 'withdrawn'];
-const STATUS_LABEL = { file_intake: 'File intake', new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', declined: 'Declined', withdrawn: 'Withdrawn' };
-// #88: the DECISION milestones a borrower should be emailed about. Every status
-// change still posts in-app; only these also email (the in-between progress moves —
-// in_review / processing / underwriting — are in-app only, to keep the inbox quiet).
-const MAJOR_STATUSES = new Set(['approved', 'clear_to_close', 'funded', 'declined', 'withdrawn']);
-// Plain-language, borrower-facing explanation of what a status MEANS and what
-// happens next — so a status email is reassuring and actionable, not a bare label
-// (owner-directed 2026-07-20). Borrower-safe copy only (no capital-partner names,
-// no internal mechanics). Missing entry → no explanation line (graceful).
-const BORROWER_STATUS_EXPLAIN = {
-  in_review: 'Your loan team is reviewing your file and the documents you provided. We\'ll let you know as soon as we need anything else from you.',
-  processing: 'Your file is being prepared for underwriting. Keep an eye out for any document requests so nothing slows down your loan.',
-  underwriting: 'An underwriter is reviewing your loan for final approval. If they need anything, it will appear in your conditions.',
-  approved: 'Your loan has been approved. Next, we\'ll finish any remaining conditions and prepare to clear you to close.',
-  clear_to_close: 'You are clear to close — every condition is satisfied and your closing can be scheduled. Your loan officer will reach out to coordinate the details.',
-  funded: 'Your loan has funded — congratulations! If your loan includes renovation draws, you can request your first draw from the portal when you\'re ready.',
-  declined: 'After review, we are unable to move forward with this loan at this time. Your loan officer can walk you through why and discuss any options.',
-  withdrawn: 'This loan file has been withdrawn. If this wasn\'t expected, contact your loan officer and we\'ll help sort it out.',
-};
-// The borrower-facing loan journey, as a 6-stage progress path for the email
-// stepper. Each internal status maps to a stage index; stages before it are
-// done, the mapped stage is current, later stages upcoming. Terminal
-// declined/withdrawn statuses show no path (handled by returning null).
-const BORROWER_JOURNEY = ['Submitted', 'In review', 'Underwriting', 'Approved', 'Clear to close', 'Funded'];
-const STATUS_STAGE = { file_intake: 0, new: 0, in_review: 1, processing: 1, underwriting: 2, approved: 3, clear_to_close: 4, funded: 5 };
-function borrowerJourney(status) {
-  const idx = STATUS_STAGE[status];
-  if (idx == null) return null;   // declined / withdrawn → no progress path
-  return BORROWER_JOURNEY.map((label, i) => ({ label, state: i < idx ? 'done' : (i === idx ? 'current' : 'upcoming') }));
-}
+// Borrower-facing status labels, the DECISION-milestone email set, the
+// plain-language explanations, and the journey path all live in ONE shared
+// module (src/lib/status-notify.js) so the borrower sees identical copy whether
+// a status change originates in the portal OR directly in ClickUp (the inbound
+// sync reuses the same builder). Imported here (not redefined) to stay in sync.
+const { STATUS_LABEL, MAJOR_STATUSES, borrowerStatusOpts } = require('../lib/status-notify');
 // Announce a borrower-facing status transition to the borrower + the team.
 // Extracted so BOTH doors into the borrower-facing bucket notify IDENTICALLY:
 // the PATCH /:id status route AND the POST /:id/internal-status door (the
-// 38-status ClickUp workflow the team actually drives). Previously only PATCH
+// 38-status ClickUp workflow the team also drives). Previously only PATCH
 // notified, so funding/approving a file via the internal-status dropdown gave
 // the borrower NO email — a real parity gap (owner-directed 2026-07-20). Only
 // call this when the borrower-facing bucket ACTUALLY changed (from !== to): the
@@ -4698,24 +4681,16 @@ function borrowerJourney(status) {
 // external bucket, and re-announcing an unchanged status would be a wrong-time /
 // duplicate email. A soft-deleted file is skipped (it's out of the pipeline —
 // "your loan is now …" would be a wrong-time send). Best-effort; never throws.
+// (A status change made directly in ClickUp is handled by the inbound sync via
+// statusNotify.notifyInboundStatusChange, sharing borrowerStatusOpts below.)
 async function notifyStatusTransition(appId, fromStatus, toStatus, opts = {}) {
   try {
     const live = await db.query(`SELECT deleted_at FROM applications WHERE id=$1`, [appId]);
     if (!live.rows[0] || live.rows[0].deleted_at) return;
     const label = STATUS_LABEL[toStatus] || toStatus;
     const fromLabel = STATUS_LABEL[fromStatus] || fromStatus;
-    const explain = BORROWER_STATUS_EXPLAIN[toStatus];
-    const steps = borrowerJourney(toStatus);
-    const positive = toStatus === 'funded' || toStatus === 'clear_to_close' || toStatus === 'approved';
-    const badgeTone = positive ? 'positive' : (toStatus === 'declined' || toStatus === 'withdrawn' ? 'neutral' : 'teal');
-    await notify.notifyAppBorrowers(appId, {
-      type: 'status_change', title: `Your loan status is now: ${label}`,
-      body: `Your loan file has moved from "${fromLabel}" to "${label}".`,
-      badge: { text: label, tone: badgeTone },
-      steps: steps || undefined,   // the visual loan-journey path (null on declined/withdrawn)
-      callout: explain ? { title: 'What this means', body: explain, tone: positive ? 'positive' : 'gold' } : undefined,
-      applicationId: appId, link: `/app/${appId}`, ctaLabel: 'View your file',
-      major: MAJOR_STATUSES.has(toStatus) });   // #88: only decision statuses email the borrower
+    // Borrower half — identical copy to the inbound (ClickUp-driven) path.
+    await notify.notifyAppBorrowers(appId, borrowerStatusOpts(appId, fromStatus, toStatus));
     await notify.notifyAppStaff(appId, {   // #113: whole team (primary + assistants), minus the actor
       type: 'status_change', title: `File moved to ${label}`,
       body: `This file moved from "${fromLabel}" to "${label}"${opts.forced ? ' (advanced with an admin override)' : ''}.`,
@@ -4964,12 +4939,8 @@ router.post('/applications/:id/nudge', async (req, res) => {
     // records the audit event AND enforces the throttle, so two simultaneous
     // "Remind" clicks can't both pass a SELECT and both email the borrower. The
     // loser gets the 429. (Old shape SELECTed then stamped after send — a race.)
-    const nudgeClaim = await db.query(
-      `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
-       SELECT 'staff', $2, 'nudge_borrower', 'application', $1, $3::jsonb
-        WHERE NOT EXISTS (SELECT 1 FROM audit_log WHERE action='nudge_borrower' AND entity_id=$1 AND created_at > now() - interval '30 minutes')
-       RETURNING id`, [req.params.id, req.actor.id, JSON.stringify({ count: list.length })]);
-    if (!nudgeClaim.rows[0]) return res.status(429).json({ error: 'This borrower was already reminded on this file in the last 30 minutes — please wait before sending another.' });
+    const nudgeClaimId = await claimOncePerPeriod({ action: 'nudge_borrower', entityId: req.params.id, interval: '30 minutes', actorKind: 'staff', actorId: req.actor.id, detail: { count: list.length } });
+    if (!nudgeClaimId) return res.status(429).json({ error: 'This borrower was already reminded on this file in the last 30 minutes — please wait before sending another.' });
     await notify.notifyAppBorrowers(req.params.id, {
       type: 'reminder', title: 'A friendly reminder on your loan file',
       body: `Still needed to keep things moving: ${shown}.`,
@@ -5188,7 +5159,10 @@ router.patch('/applications/:id', async (req, res) => {
         forced = true;
       }
     }
-    await db.query(`UPDATE applications SET status=$2, status_changed_at=now(), updated_at=now() WHERE id=$1`,
+    // Advance the go-forward notification watermark in lock-step with the status
+    // we're about to announce, so a later ClickUp ECHO of this same change is
+    // recognized as already-notified and does not re-notify (db/187).
+    await db.query(`UPDATE applications SET status=$2, status_notified_external=$2, status_changed_at=now(), updated_at=now() WHERE id=$1`,
       [req.params.id, status]);
     enqueueClickupPush(req.params.id, ['status']).catch(() => {}); // propagate ONLY the status change to ClickUp promptly
     // Record the transition on the file's timeline.
@@ -5239,7 +5213,9 @@ router.post('/applications/:id/internal-status', async (req, res) => {
       }
     }
     await db.query(
-      `UPDATE applications SET internal_status=$2, status=$3, status_changed_at=now(), updated_at=now() WHERE id=$1`,
+      // status_notified_external tracks the announced status (db/187) so a ClickUp
+      // echo of this change never re-notifies the borrower.
+      `UPDATE applications SET internal_status=$2, status=$3, status_notified_external=$3, status_changed_at=now(), updated_at=now() WHERE id=$1`,
       [req.params.id, internalStatus, external]);
     enqueueClickupPush(req.params.id, ['internal_status']).catch(() => {}); // WO-16 (F-M1): a DELIBERATE internal-status change pushes the ClickUp task status + the mirror
     // Record the (borrower-facing) transition on the file's timeline, like PATCH /:id.

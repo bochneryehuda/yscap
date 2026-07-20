@@ -92,7 +92,11 @@ app.get('/api/health', async (req, res) => {
     ]);
   } catch (e) {
     dbStatus = 'down';
-    dbError = db.describeError(e);
+    // Log the full detail (host:port, pg message) server-side only; the health
+    // endpoint is publicly reachable, so the client body carries just a generic
+    // signal — never the DB host/port or pg internals.
+    console.warn('[health] db probe failed:', db.describeError(e));
+    dbError = 'database unreachable';
   }
   let storageInfo;
   try { storageInfo = require('./lib/storage').probe(); } catch (e) { storageInfo = { ok: false, error: e.message }; }
@@ -118,7 +122,7 @@ app.get('/api/health', async (req, res) => {
         new Promise((_, rej) => setTimeout(() => rej(new Error('guard timeout')), 2500)),
       ]);
       conditionsGuard = { filesZeroItems: g.rows[0].zero_items, rtlFilesMissingContract: g.rows[0].no_contract };
-    } catch (e) { conditionsGuard = { error: e.message }; }
+    } catch (e) { console.warn('[health] conditions guard failed:', db.describeError(e)); conditionsGuard = { error: 'unavailable' }; }
   }
   // Liveness: 200 unless the caller explicitly asked for a strict DB gate.
   const code = (strict && dbStatus !== 'up') ? 503 : 200;
