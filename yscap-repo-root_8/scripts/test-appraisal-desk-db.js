@@ -73,6 +73,23 @@ const assert = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) f
       [appId, itemId, bid, bid]);
     assert((await hasSlot('xml')) && (await hasSlot('pdf')), 'gate: BOTH slots present → sign-off allowed');
 
+    // --- process-audit regression: appraisal-docs sign-off requires an import that actually LANDED
+    //     (a current appraisals row) so the PILOT findings engine can't be bypassed with junk slots.
+    const imported = (await pool.query(`SELECT 1 FROM appraisals WHERE application_id=$1 AND superseded=false LIMIT 1`, [appId])).rows[0];
+    assert(!!imported, 'gate: a current appraisal exists (the new "import landed" sign-off requirement is satisfiable)');
+
+    // --- process-audit regression: at most ONE current appraisal per file (uq_appraisals_one_current).
+    let dupBlocked = false;
+    try {
+      await pool.query(`INSERT INTO appraisals (application_id, superseded) VALUES ($1, false)`, [appId]);
+    } catch (e) { dupBlocked = /uq_appraisals_one_current|unique/i.test(e.message); }
+    assert(dupBlocked, 'a second CURRENT appraisal on the same file is rejected by the unique index');
+
+    await pool.query(`DELETE FROM appraisal_comparables WHERE appraisal_id IN (SELECT id FROM appraisals WHERE application_id=$1)`, [appId]);
+    await pool.query(`DELETE FROM appraisal_units WHERE appraisal_id IN (SELECT id FROM appraisals WHERE application_id=$1)`, [appId]);
+    await pool.query(`DELETE FROM appraisal_findings WHERE application_id=$1`, [appId]);
+    await pool.query(`DELETE FROM appraisals WHERE application_id=$1`, [appId]);
+    await pool.query(`DELETE FROM documents WHERE application_id=$1`, [appId]);
     await pool.query(`DELETE FROM applications WHERE borrower_id=$1`, [bid]);
     await pool.query(`DELETE FROM borrowers WHERE id=$1`, [bid]);
   } catch (e) { console.log('FAIL threw:', e.message); failures++; }

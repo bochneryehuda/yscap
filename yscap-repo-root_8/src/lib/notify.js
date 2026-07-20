@@ -274,6 +274,13 @@ const CATEGORY_OF = {
 const ALWAYS_IN_APP = new Set(['doc_rejected', 'condition_added', 'security', 'account', 'llc_unverified', 'track_record_unverified']);
 const NOTIFY_CATEGORIES = ['messages', 'status_updates', 'documents', 'conditions', 'pricing', 'reminders', 'draws', 'other'];
 const categoryOf = (type) => CATEGORY_OF[type] || 'other';
+// Whether a category sends email BY DEFAULT (i.e. at least one of its event types
+// is a "major" email moment). The preferences screen uses this so a borrower with
+// no saved preference sees the category's REAL starting state — showing "email on"
+// for a category that never emails by default (e.g. `other`) was misleading. Note
+// BORROWER_MAJOR_EMAIL is defined just below; this is a function so it reads it lazily.
+const categoryEmailsByDefault = (category) =>
+  Object.keys(CATEGORY_OF).some((type) => CATEGORY_OF[type] === category && BORROWER_MAJOR_EMAIL.has(type));
 
 // #88: keep the borrower's inbox to MAJOR moments. These types EMAIL the borrower
 // by default; every other type is in-app ONLY unless the borrower explicitly turns
@@ -522,4 +529,4 @@ async function fileContext(appId, extraMeta = []) {
   } catch (_) { return null; }
 }
 
-module.exports = { notifyStaff, notifyBorrower, notifyAppBorrowers, notifyAppStaff, notifyAdmins, buildEmail, fileContext, NOTIFY_CATEGORIES, ALWAYS_IN_APP };
+module.exports = { notifyStaff, notifyBorrower, notifyAppBorrowers, notifyAppStaff, notifyAdmins, buildEmail, fileContext, NOTIFY_CATEGORIES, ALWAYS_IN_APP, categoryEmailsByDefault };

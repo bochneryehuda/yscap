@@ -1427,27 +1427,43 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
   // lands before that push reaches ClickUp (a race, a lagging queue, or outbound
   // disabled), the raw ClickUp value would COALESCE-overwrite the just-approved one
   // — the borrower sees the old number, opens a NEW change request, and the request
-  // "re-appears" forever. Fix: for each governed field, if an APPROVED change_request
-  // is NEWER than the ClickUp task's last update, ClickUp is definitionally stale for
-  // that field — keep the portal value (cols[field]=null → COALESCE keeps it) and
-  // re-enqueue the push so ClickUp catches up. A genuinely newer ClickUp edit
-  // (date_updated > the approval) still wins, so this never blocks a real ClickUp
-  // change; and once our push lands, date_updated moves past the approval and the
-  // guard stops firing (no loop). Best-effort — never breaks the pull.
-  if (targetId && task && task.date_updated) {
+  // "re-appears" forever.
+  //
+  // Fix (audit 2026-07-20): decide staleness by VALUE + our own write journal, NOT
+  // by the task's whole-task `date_updated`. The old guard compared decided_at to
+  // task.date_updated, but that timestamp moves on ANY field edit — so an UNRELATED
+  // ClickUp change (a note, a status) would bump it past the approval and silently
+  // drop the protection, letting the stale value clobber the approved one. Instead:
+  // for each approved economics field whose value we have NOT yet confirmed landing
+  // in ClickUp (no successful outbound write journaled since the approval), if the
+  // pulled value still differs from the approved value, keep the portal value
+  // (cols[field]=null → COALESCE keeps it) and re-enqueue the push. Once our push
+  // lands (write journal) OR ClickUp already shows the approved value, protection
+  // stops — so a genuine later ClickUp edit still wins and there is no re-push loop.
+  // Best-effort — never breaks the pull.
+  if (targetId && task) {
     try {
       const CR = require('../lib/change-requests');
       const present = CR.GOVERNED_FIELDS.filter((k) => k in cols && cols[k] != null);
       if (present.length) {
-        const protectedCrs = await db.query(
-          `SELECT DISTINCT ON (field) field FROM change_requests
-            WHERE application_id=$1 AND status='approved' AND field = ANY($2)
-              AND decided_at > to_timestamp($3::bigint / 1000.0)
-            ORDER BY field, decided_at DESC`,
-          [targetId, present, String(task.date_updated)]);
-        if (protectedCrs.rows.length) {
-          const fields = protectedCrs.rows.map((r) => r.field);
-          for (const f of fields) cols[f] = null;   // COALESCE keeps the approved portal value
+        const approved = await db.query(
+          `SELECT DISTINCT ON (cr.field) cr.field, cr.new_value
+             FROM change_requests cr
+            WHERE cr.application_id=$1 AND cr.status='approved' AND cr.field = ANY($2)
+              AND NOT EXISTS (
+                SELECT 1 FROM clickup_write_log w
+                 WHERE w.application_id=cr.application_id AND w.field_key=cr.field
+                   AND w.changed=true AND w.blocked=false AND w.created_at > cr.decided_at)
+            ORDER BY cr.field, cr.decided_at DESC`,
+          [targetId, present]);
+        const fields = [];
+        for (const cr of approved.rows) {
+          // ClickUp already reflects the approved value → nothing to protect (adopt = no-op).
+          if (CR.normalizeValue(cr.field, cols[cr.field]) === CR.normalizeValue(cr.field, cr.new_value)) continue;
+          cols[cr.field] = null;   // COALESCE keeps the approved portal value
+          fields.push(cr.field);
+        }
+        if (fields.length) {
           try { await require('./enqueue').enqueueClickupPush(targetId, fields); } catch (_) { /* re-sync ClickUp; no-op if already equal */ }
           // Audit the protection (part of the cross-system change history).
           try {
@@ -1569,6 +1585,15 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     if (llcId) {
       try { await require('../lib/vesting').setVestingLlc(targetId, llcId, { source: 'clickup', push: false }); } catch (_) { /* best-effort */ }
     }
+    // A status change made DIRECTLY in ClickUp (the team drives statuses there as
+    // well as in the portal) was giving the borrower no "your loan is now …"
+    // notification — the portal doors notified, the inbound sync did not. Notify
+    // the borrower here, GO-FORWARD ONLY: the shared helper silently BASELINES a
+    // file the first time it's seen (so previously-drifted files are never blasted
+    // on the first reconcile), skips an ECHO of a portal change (the portal door
+    // already advanced the watermark to this status), and loops the loan officer
+    // in via the borrower email's BCC. Best-effort; never breaks the pull. (db/187)
+    try { await require('../lib/status-notify').notifyInboundStatusChange(targetId, external); } catch (_) { /* best-effort */ }
     return { applicationId: targetId, matchStatus, detail, copiedLoanNumber };
   }
   if (!allowCreate) return { applicationId: null, matchStatus: 'skipped' };
