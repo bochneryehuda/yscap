@@ -2959,11 +2959,17 @@ router.post('/applications/:id/assign', async (req, res) => {
       const u = await db.query(`UPDATE applications SET loan_officer_id=$2, loan_officer_name=$3, updated_at=now() WHERE id=$1`,
         [req.params.id, loanOfficerId, off.rows[0].full_name]);
       if (u.rowCount === 0) return res.status(404).json({ error: 'application not found' });
-      await notify.notifyStaff(loanOfficerId, {
-        type: 'assignment', title: 'You are the loan officer on a file',
-        body: `${req.actor.name || 'An admin'} assigned this file to you as loan officer. The file details are below — open it to get started.`,
-        applicationId: req.params.id, ctaLabel: 'Open the loan file',
-        link: `/internal/app/${req.params.id}` });
+      const officerChanged = String(cur.rows[0].loan_officer_id || '') !== String(loanOfficerId);
+      // Only email the officer on a REAL change — re-saving the assignment panel
+      // with the same officer is a no-op and must not re-send "You are the loan
+      // officer on a file" every time (round-2 audit N3).
+      if (officerChanged) {
+        await notify.notifyStaff(loanOfficerId, {
+          type: 'assignment', title: 'You are the loan officer on a file',
+          body: `${req.actor.name || 'An admin'} assigned this file to you as loan officer. The file details are below — open it to get started.`,
+          applicationId: req.params.id, ctaLabel: 'Open the loan file',
+          link: `/internal/app/${req.params.id}` });
+      }
       // "Meet your loan officer" (owner-directed 2026-07-20): when the officer
       // CHANGES to a new person, introduce them to the borrower so the
       // relationship is personal and they know exactly who to reach (fileContext
@@ -3004,11 +3010,15 @@ router.post('/applications/:id/assign', async (req, res) => {
       const u = await db.query(`UPDATE applications SET processor_id=$2, updated_at=now() WHERE id=$1`,
         [req.params.id, processorId]);
       if (u.rowCount === 0) return res.status(404).json({ error: 'application not found' });
-      await notify.notifyStaff(processorId, {
-        type: 'assignment', title: 'You are the processor on a file',
-        body: `${req.actor.name || 'An admin'} assigned this file to you for processing. The file details are below — open it to get started.`,
-        applicationId: req.params.id, ctaLabel: 'Open the loan file',
-        link: `/internal/app/${req.params.id}` });
+      // Only email the processor on a REAL change (round-2 audit N3) — a no-op
+      // re-assign must not re-send "You are the processor on a file".
+      if (String(cur.rows[0].processor_id || '') !== String(processorId)) {
+        await notify.notifyStaff(processorId, {
+          type: 'assignment', title: 'You are the processor on a file',
+          body: `${req.actor.name || 'An admin'} assigned this file to you for processing. The file details are below — open it to get started.`,
+          applicationId: req.params.id, ctaLabel: 'Open the loan file',
+          link: `/internal/app/${req.params.id}` });
+      }
       await audit(req, 'assign_processor', 'application', req.params.id, { from: cur.rows[0].processor_id || null, to: processorId });
     }
     enqueueClickupPush(req.params.id, ['officer', 'processor']).catch(() => {}); // propagate officer/processor to ClickUp promptly
@@ -4397,6 +4407,14 @@ router.post('/applications/:id/nudge', async (req, res) => {
     const list = [...items.rows.map(r => r.label), ...conds.rows.map(r => r.title)].filter(Boolean);
     if (!list.length) return res.status(400).json({ error: 'nothing outstanding to remind about' });
     const shown = list.slice(0, 8).join('; ') + (list.length > 8 ? `; +${list.length - 8} more` : '');
+    // Anti-double-send (round-2 audit N2): a "Remind" is a deliberate reach-out,
+    // but repeated/accidental clicks must not email the borrower several times in
+    // a row. Block a repeat nudge to the SAME file within a short window; a
+    // genuine later reminder still goes through.
+    const recentNudge = await db.query(
+      `SELECT 1 FROM audit_log WHERE action='nudge_borrower' AND entity_id=$1 AND created_at > now() - interval '30 minutes' LIMIT 1`,
+      [req.params.id]);
+    if (recentNudge.rows[0]) return res.status(429).json({ error: 'This borrower was already reminded on this file in the last 30 minutes — please wait before sending another.' });
     await notify.notifyAppBorrowers(req.params.id, {
       type: 'reminder', title: 'A friendly reminder on your loan file',
       body: `Still needed to keep things moving: ${shown}.`,
@@ -5710,10 +5728,18 @@ router.post('/documents/:id/review', async (req, res) => {
           if (it.rows[0]) condLabel = it.rows[0].label;
         }
         let emailNow = true;
-        if (doc.application_id) {
+        // Throttle on the file when there is one, else on the BORROWER — an
+        // application-less document (LLC formation, EIN, operating agreement,
+        // track-record, profile doc) has application_id NULL, so keying the
+        // throttle on application_id alone let a batch of entity documents email
+        // once PER DOCUMENT (round-2 audit N5). Keying on the borrower for those
+        // caps it to one email per borrower per window like the file path.
+        const throttleId = doc.application_id || doc.borrower_id;
+        const throttleType = doc.application_id ? 'application' : 'borrower';
+        if (throttleId) {
           const recent = await db.query(
             `SELECT 1 FROM audit_log WHERE action='doc_accepted_emailed' AND entity_id=$1 AND created_at > now() - interval '12 hours' LIMIT 1`,
-            [doc.application_id]);
+            [throttleId]);
           emailNow = !recent.rows[0];
         }
         await notify.notifyBorrower(doc.borrower_id, {
@@ -5724,11 +5750,11 @@ router.post('/documents/:id/review', async (req, res) => {
           applicationId: doc.application_id,
           link: doc.application_id ? `/app/${doc.application_id}` : '/profile',
           ctaLabel: 'View your file',
-          major: emailNow });   // throttle: email once per file per 12h, else in-app only
-        if (emailNow && doc.application_id) {
+          major: emailNow });   // throttle: email once per file/borrower per 12h, else in-app only
+        if (emailNow && throttleId) {
           await db.query(
             `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
-             VALUES ('system',NULL,'doc_accepted_emailed','application',$1,'{}'::jsonb)`, [doc.application_id]).catch(() => {});
+             VALUES ('system',NULL,'doc_accepted_emailed',$2,$1,'{}'::jsonb)`, [throttleId, throttleType]).catch(() => {});
         }
       } catch (_) { /* best-effort */ }
     }
