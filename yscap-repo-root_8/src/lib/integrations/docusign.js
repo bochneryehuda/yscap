@@ -246,15 +246,22 @@ function dateSignedAnchor(anchor) {
  *  documents: [{ base64, name, documentId }]  (documentId is a string number)
  *  signers:   [{ recipientId, name, email, routingOrder, clientUserId?,
  *               tabsByDoc:{ [documentId]: { sign:['/anchor/'], date:['/anchor/'] } } }]
+ *  carbonCopies: [{ recipientId, name, email, routingOrder }]  — VIEWERS (no signing);
+ *               DocuSign emails them the completed envelope + Certificate of Completion
+ *               and lets them view it. Used to copy the file's loan officer + processor.
  *  eventNotification: the per-envelope Connect config (webhook + HMAC) — optional
  */
-function buildEnvelopeDefinition({ documents, signers, subject, status = 'sent', emailBlurb, brandId, customFields, eventNotification: evtNotif, notification }) {
+function buildEnvelopeDefinition({ documents, signers, carbonCopies, subject, status = 'sent', emailBlurb, brandId, customFields, eventNotification: evtNotif, notification }) {
   if (!Array.isArray(documents) || !documents.length) throw dsError('buildEnvelope: at least one document required', { code: 'DOCUSIGN_ARG', retryable: false });
   if (!Array.isArray(signers) || !signers.length) throw dsError('buildEnvelope: at least one signer required', { code: 'DOCUSIGN_ARG', retryable: false });
   for (const s of signers) {
     if (!s.email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(s.email)) throw dsError(`buildEnvelope: invalid signer email "${s.email}"`, { code: 'DOCUSIGN_ARG', retryable: false });
     if (!s.name) throw dsError('buildEnvelope: signer name required', { code: 'DOCUSIGN_ARG', retryable: false });
   }
+  // Carbon-copy VIEWERS are optional + best-effort: a bad CC entry is dropped (never
+  // throws) so a mistyped officer email can never block a real borrower's send.
+  const ccs = (Array.isArray(carbonCopies) ? carbonCopies : []).filter(
+    (c) => c && c.email && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(c.email) && c.name && c.recipientId);
   const def = {
     emailSubject: subject || 'Please sign your documents',
     status,
@@ -292,6 +299,14 @@ function buildEnvelopeDefinition({ documents, signers, subject, status = 'sent',
       }),
     },
   };
+  if (ccs.length) {
+    def.recipients.carbonCopies = ccs.map((c) => ({
+      email: c.email,
+      name: c.name,
+      recipientId: String(c.recipientId),
+      routingOrder: String(c.routingOrder || 1),
+    }));
+  }
   if (emailBlurb) def.emailBlurb = emailBlurb;
   if (notification) def.notification = notification;   // reminders + expiration (per-envelope)
   if (brandId) def.brandId = brandId;
