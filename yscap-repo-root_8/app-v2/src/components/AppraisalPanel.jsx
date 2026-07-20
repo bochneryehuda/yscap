@@ -364,10 +364,13 @@ const chip = (label, tone) => (
 
 // Neighborhood & market — the appraiser's own read of the exit market (can they sell/refi at ARV,
 // and how fast). All never-guessed enums + the neighborhood price band.
+const LAND_USE_LABEL = { SingleFamily: 'single-family', TwoToFourFamily: '2–4 unit', Apartment: 'apartment', Commercial: 'commercial', Vacant: 'vacant', Industrial: 'industrial', Agricultural: 'agricultural', Other: 'other' };
 function NeighborhoodCard({ a }) {
   const hasMc = a.mc_months_supply != null || a.mc_median_dom != null || a.mc_sale_to_list_pct != null || a.mc_price_trend != null;
+  const landUse = (Array.isArray(a.present_land_use) ? a.present_land_use : (() => { try { return JSON.parse(a.present_land_use || '[]'); } catch { return []; } })())
+    .filter((u) => u && u.type && u.percent != null).slice().sort((x, y) => y.percent - x.percent);
   const has = [a.nbhd_value_trend, a.nbhd_demand_supply, a.nbhd_marketing_time, a.nbhd_location_type, a.nbhd_price_predominant, a.nbhd_builtup].some((x) => x != null);
-  if (!has && !hasMc) return null;
+  if (!has && !hasMc && !landUse.length) return null;
   const band = (a.nbhd_price_low != null || a.nbhd_price_high != null || a.nbhd_price_predominant != null)
     ? `${money(a.nbhd_price_low)}–${money(a.nbhd_price_high)}${a.nbhd_price_predominant != null ? ` · predominant ${money(a.nbhd_price_predominant)}` : ''}` : null;
   return (
@@ -383,6 +386,12 @@ function NeighborhoodCard({ a }) {
         {a.nbhd_foreclosure_activity === true && chip('Foreclosure activity', 'warn')}
       </div>
       {band && <KV rows={[['Neighborhood price range', band], a.nbhd_age_predominant != null && ['Predominant age', `${a.nbhd_age_predominant} yrs`]]} />}
+      {landUse.length > 0 && (
+        <div style={{ marginTop: band ? 10 : 0, fontSize: 12.5, color: 'var(--muted,#4B585C)' }}>
+          <b style={{ color: 'var(--text,#141B22)' }}>Land use: </b>
+          {landUse.map((u) => `${u.percent}% ${LAND_USE_LABEL[u.type] || human(u.type).toLowerCase()}`).join(' · ')}
+        </div>
+      )}
       {hasMc && (
         <div style={{ marginTop: band || has ? 12 : 0, paddingTop: band || has ? 12 : 0, borderTop: band || has ? '1px solid var(--line-soft,#EFEADD)' : 'none' }}>
           <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)', marginBottom: 8 }}>Market conditions (1004MC · last 3 months)</div>
@@ -1227,6 +1236,20 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
                     {a.fema_flood_zone ? `Zone ${a.fema_flood_zone}` : 'No zone mapped'}{a.fema_flood_agrees === true ? ' · agrees' : a.fema_flood_agrees === false ? ' · differs' : ''}
                   </span>,
                   a.fema_flood_agrees === false ? a.fema_flood_note : null],
+                // Off-site improvements — street/alley + a Public/Private ownership flag (a private
+                // street means shared maintenance/access, a flip cost signal).
+                (() => {
+                  const os = (Array.isArray(a.off_site_improvements) ? a.off_site_improvements
+                    : (() => { try { return JSON.parse(a.off_site_improvements || '[]'); } catch { return []; } })())
+                    .filter((o) => o && o.type);
+                  if (!os.length) return null;
+                  const priv = os.some((o) => o.ownership === 'Private');
+                  return ['Street / access',
+                    <span style={{ color: priv ? 'var(--crit,#B4483C)' : 'inherit' }}>
+                      {os.map((o) => `${o.type}${o.ownership ? ` (${o.ownership.toLowerCase()})` : ''}`).join(' · ')}
+                    </span>,
+                    priv ? 'private — confirm a road-maintenance agreement' : null];
+                })(),
                 ['Site value (cost)', a.site_value != null ? money(a.site_value) : '—'],
               ]} />
             </DCard>

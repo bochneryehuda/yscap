@@ -2699,6 +2699,21 @@ async function signOffGate(itemId, actor) {
     return null;
   }
 
+  // Vesting-entity (LLC) condition (owner-directed 2026-07-20: "EVERY condition
+  // required unless optional"). rtl_p1_llc is a required condition fulfilled by
+  // VERIFYING the file's linked LLC (the LLC-verify route auto-signs it off on
+  // verification). It's exempt from the plain document gate above (its documents
+  // live on the LLC's own sub-conditions, not on this item), so without this it
+  // could be signed off empty. Block a manual sign-off until the vesting LLC is
+  // actually linked AND verified.
+  if (code === 'rtl_p1_llc') {
+    const v = (await db.query(
+      `SELECT l.is_verified FROM applications a JOIN llcs l ON l.id = a.llc_id WHERE a.id=$1`, [item.application_id])).rows[0];
+    if (!v) return 'Link the vesting entity (LLC) to this file, then verify it, before signing this off.';
+    if (!v.is_verified) return 'Verify the vesting entity (LLC) — its details, ownership, and all its documents — before signing this off.';
+    return null;
+  }
+
   if (!isProduct && !isBudget && !isExp) return null;
 
   const ar = await db.query(
