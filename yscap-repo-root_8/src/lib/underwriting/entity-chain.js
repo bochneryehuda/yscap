@@ -110,13 +110,17 @@ function buildChain(fileCtx = {}, extractions = []) {
   // Beneficial owners (>= 25%) and whether each has an ID on file — the KYC gap nobody else checks.
   const owners = [];
   const findings = [];
+  const borrowerNm = fileCtx.borrowerName || null;   // the file's borrower (the person we underwrote)
+  const otherOwners = [];                             // owners on the entity who are NOT the file's borrower
   if (oa && Array.isArray(oa.members)) {
     for (const m of oa.members) {
       if (!m || !m.name) continue;
       const pct = typeof m.ownershipPct === 'number' ? m.ownershipPct : null;
       const isBeneficial = pct != null && pct >= OWNERSHIP_PRONG_PCT;
       const identified = hasIdFor(m.name, idNames);
-      owners.push({ name: m.name, ownershipPct: pct, isManager: !!m.isManager, beneficialOwner: isBeneficial, identified });
+      const isBorrower = borrowerNm ? namesMatchLoose(m.name, borrowerNm) === true : null;
+      owners.push({ name: m.name, ownershipPct: pct, isManager: !!m.isManager, beneficialOwner: isBeneficial, identified, isBorrower });
+      if (borrowerNm && isBorrower !== true) otherOwners.push({ name: m.name, ownershipPct: pct });
       if (isBeneficial && !identified) {
         findings.push({ source: 'operating_agreement', code: 'beneficial_owner_unidentified', severity: 'warning', status: 'open',
           field: 'ownership', docValue: `${m.name} (${pct}%)`, fileValue: 'no ID on file', blocksCtc: false,
@@ -125,6 +129,17 @@ function buildChain(fileCtx = {}, extractions = []) {
           actions: ['request_document', 'post_condition', 'dismiss'] });
       }
     }
+  }
+  // Surface EVERY owner on the entity who isn't the borrower — the underwriter must confirm each is
+  // approved to be on the vesting entity (a co-owner nobody vetted is how straw / undisclosed-party
+  // deals happen). One acknowledgement finding listing them; the ≥25%-no-ID gap above is separate.
+  if (otherOwners.length) {
+    const list = otherOwners.map((o) => `${o.name}${o.ownershipPct != null ? ` (${o.ownershipPct}%)` : ''}`).join(', ');
+    findings.push({ source: 'operating_agreement', code: 'entity_other_owners', severity: 'warning', status: 'open',
+      field: 'ownership', docValue: list, fileValue: borrowerNm, blocksCtc: false,
+      title: 'The entity has owner(s) besides the borrower',
+      howTo: `${borrowerNm} is the borrower, but the operating agreement also lists ${list}. Confirm each additional owner is approved to be on the vesting entity (identity, and whether they must guarantee/sign) before clear-to-close.`,
+      actions: ['post_condition', 'request_document', 'dismiss'] });
   }
 
   // Overall status: broken if any edge is broken; incomplete if any required edge is unresolved

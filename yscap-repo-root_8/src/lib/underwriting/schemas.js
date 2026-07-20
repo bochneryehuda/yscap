@@ -256,14 +256,16 @@ const GOOD_STANDING = {
   instructions:
     "You are reviewing a state Certificate of Good Standing / Existence for an LLC. Extract the exact " +
     "entity legal name, the state, the state file number, the status (good standing / active / " +
-    "delinquent / revoked), and the issue date. Use null for anything absent or unreadable — do NOT " +
-    "guess. Dates YYYY-MM-DD. readable=false if poor.",
+    "delinquent / revoked), the issue date, AND any expiration / valid-through date if the " +
+    "certificate states one (some states print a 'valid until' date; use null if none). Use null " +
+    "for anything absent or unreadable — do NOT guess. Dates YYYY-MM-DD. readable=false if poor.",
   schema: obj({
     entityLegalName: { type: ['string', 'null'] },
     state: { type: ['string', 'null'] },
     stateFileNumber: { type: ['string', 'null'] },
     status: { type: ['string', 'null'] },                   // good_standing | active | delinquent | revoked
     issueDate: { type: ['string', 'null'] },
+    expirationDate: { type: ['string', 'null'] },           // some states print a 'valid until' date
     readable: { type: 'boolean' },
     notes: { type: ['string', 'null'] },
   }),

@@ -80,6 +80,7 @@ function subjectFor(docType, ctx) {
       return {
         property_address: app && app.property_address, entity_name: vestingName || null,
         loan_amount: app && app.loan_amount, purchase_price: app && app.purchase_price,
+        rehab_budget: app && app.rehab_budget, // so the insurance check knows this is a construction/rehab deal
       };
     case 'operating_agreement':
     case 'ein_letter':

@@ -28,6 +28,15 @@ assert.deepStrictEqual(codes(C.computeEinFindings({ ein: '123', entityLegalName:
 assert.deepStrictEqual(codes(C.computeGoodStandingFindings({ entityLegalName: 'Maple LLC', status: 'Active', issueDate: '2026-07-01', readable: true }, {}, { today: TODAY })), []);
 assert.strictEqual(C.computeGoodStandingFindings({ entityLegalName: 'Maple LLC', status: 'Revoked', readable: true }, {}, { today: TODAY }).find((f) => f.code === 'entity_not_in_good_standing').severity, 'fatal');
 assert.ok(C.computeGoodStandingFindings({ entityLegalName: 'Maple LLC', status: 'active', issueDate: '2026-01-01', readable: true }, {}, { today: TODAY }).some((f) => f.code === 'good_standing_stale'));
+// Freshness (Group B): a valid-through date expiring within 30 days → warning; already past → fatal.
+{
+  const soon = C.computeGoodStandingFindings({ entityLegalName: 'Maple LLC', status: 'Active', issueDate: '2026-07-15', expirationDate: '2026-08-10', readable: true }, {}, { today: TODAY });
+  assert.strictEqual(soon.find((f) => f.code === 'good_standing_expiring_soon').severity, 'warning', 'expiring within 30 days → warning');
+  const past = C.computeGoodStandingFindings({ entityLegalName: 'Maple LLC', status: 'Active', issueDate: '2026-04-01', expirationDate: '2026-07-01', readable: true }, {}, { today: TODAY });
+  assert.strictEqual(past.find((f) => f.code === 'good_standing_expired').severity, 'fatal', 'already expired → fatal');
+  const okFar = C.computeGoodStandingFindings({ entityLegalName: 'Maple LLC', status: 'Active', issueDate: '2026-07-01', expirationDate: '2027-07-01', readable: true }, {}, { today: TODAY });
+  assert.ok(!okFar.some((f) => /good_standing_expir/.test(f.code)), 'a valid-through date far out → no expiry finding');
+}
 // Tri-state status (deep-audit regression): recognized good-standing SYNONYMS are clean (no false
 // fatal), a clearly-negative status is fatal, and an UNRECOGNIZED word is a warning (not a fatal).
 for (const ok of ['Subsisting', 'Current', 'Valid', 'In Existence', 'Registered', 'Good Standing']) {
@@ -54,6 +63,16 @@ assert.strictEqual(C.computeInsuranceFindings({ ...insGood, mortgageeClausePrese
   const uf = C.computeInsuranceFindings({ ...insGood, dwellingCoverage: 250000 }, { loan_amount: 300000 }, { today: TODAY }).find((f) => f.code === 'insurance_underinsured');
   assert.ok(uf, 'under-coverage still surfaces');
   assert.strictEqual(uf.severity, 'warning', 'under-coverage is a warning, not a fatal');
+}
+// Builders-risk (Group B): a rehab deal (file has a rehab budget) whose policy isn't builders-risk → warning.
+{
+  const sub = { loan_amount: 300000, rehab_budget: 85000 };
+  const noBr = C.computeInsuranceFindings({ ...insGood, buildersRisk: false }, sub, { today: TODAY }).find((f) => f.code === 'insurance_no_builders_risk');
+  assert.ok(noBr && noBr.severity === 'warning', 'a rehab deal on a non-builders-risk policy is flagged');
+  const withBr = C.computeInsuranceFindings({ ...insGood, buildersRisk: true }, sub, { today: TODAY });
+  assert.ok(!withBr.some((f) => f.code === 'insurance_no_builders_risk'), 'a builders-risk policy on a rehab deal is clean');
+  const noRehab = C.computeInsuranceFindings({ ...insGood, buildersRisk: false }, { loan_amount: 300000 }, { today: TODAY });
+  assert.ok(!noRehab.some((f) => f.code === 'insurance_no_builders_risk'), 'no rehab budget → builders-risk not required');
 }
 assert.ok(C.computeInsuranceFindings({ ...insGood, policyExpiration: '2026-01-01' }, { loan_amount: 300000 }, { today: TODAY }).some((f) => f.code === 'insurance_expired'));
 

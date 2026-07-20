@@ -148,6 +148,26 @@ function computeGoodStandingFindings(g, subject, opts = {}) {
         actions: ['request_document', 'post_condition', 'dismiss'] }));
     }
   }
+  // Expiring soon: if the certificate carries an explicit valid-through date, it must still be valid
+  // — and NOT expiring within 30 days of closing (owner rule 2026-07-20). Better to refresh now than
+  // have it lapse between clear-to-close and funding.
+  const horizon = opts.closingDate || today;
+  if (horizon && g.expirationDate) {
+    const days = daysBetween(toISODate(horizon), toISODate(g.expirationDate));
+    if (days != null && days < 0) {
+      out.push(mk('good_standing', { code: 'good_standing_expired', severity: 'fatal', field: 'expiration',
+        docValue: g.expirationDate, fileValue: horizon,
+        title: 'The good-standing certificate has expired',
+        howTo: `The certificate's valid-through date (${g.expirationDate}) is before ${opts.closingDate ? 'closing' : 'today'}. Obtain a current certificate — the entity must be in good standing at closing.`,
+        actions: ['request_document', 'post_condition', 'decline', 'dismiss'] }));
+    } else if (days != null && days <= 30) {
+      out.push(mk('good_standing', { code: 'good_standing_expiring_soon', severity: 'warning', field: 'expiration',
+        docValue: g.expirationDate, fileValue: horizon,
+        title: 'The good-standing certificate expires within 30 days of closing',
+        howTo: `The certificate is valid only through ${g.expirationDate} — within 30 days of ${opts.closingDate ? 'closing' : 'today'}. Refresh it so the entity is provably in good standing at funding.`,
+        actions: ['request_document', 'post_condition', 'dismiss'] }));
+    }
+  }
   return out;
 }
 
@@ -181,6 +201,18 @@ function computeInsuranceFindings(ins, subject, opts = {}) {
       docValue: money(cov), fileValue: money(loan),
       title: 'Confirm insurance coverage meets the replacement-cost requirement',
       howTo: `Dwelling coverage (${money(cov)}) is below the loan amount (${money(loan)}). On a rehab loan the requirement is the property's replacement cost (completed value), not the full loan — confirm the coverage meets replacement cost, or request an increase.`,
+      actions: ['request_document', 'post_condition', 'dismiss'] }));
+  }
+  // Builders-risk: a rehab / construction deal (the property is vacant + under renovation) needs a
+  // builders-risk / vacant-property policy, not a standard homeowner's policy (owner rule
+  // 2026-07-20). When the file carries a rehab budget and the policy isn't marked builders-risk,
+  // flag it to confirm the correct coverage form.
+  const rehab = subject && num(subject.rehab_budget);
+  if (rehab != null && rehab > 0 && ins.buildersRisk !== true) {
+    out.push(mk('insurance', { code: 'insurance_no_builders_risk', severity: 'warning', field: 'builders_risk',
+      docValue: ins.buildersRisk === false ? 'not builders-risk' : 'builders-risk not confirmed', fileValue: `${money(rehab)} rehab budget`,
+      title: 'Confirm builders-risk coverage for the renovation',
+      howTo: 'This is a construction/rehab loan — the property is vacant and under renovation, which a standard homeowner\'s policy typically excludes. Confirm the policy is a builders-risk / vacant-under-renovation form (or request a corrected binder) before closing.',
       actions: ['request_document', 'post_condition', 'dismiss'] }));
   }
   const today = opts.today;

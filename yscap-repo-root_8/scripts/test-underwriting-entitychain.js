@@ -73,6 +73,30 @@ const ext = (arr) => arr.map(([doc_type, fields]) => ({ doc_type, fields }));
   assert.strictEqual(chain2.findings.length, 0, 'a 10% owner is below the 25% prong');
 }
 
+// ---- Other owners on the entity (besides the borrower) are surfaced for clearance (Group B) ----
+{
+  const chain = buildChain({ vestingName: 'Duo Capital LLC', borrowerName: 'Alice Managing' }, ext([
+    ['government_id', { fullName: 'Alice Managing' }],
+    ['operating_agreement', { entityLegalName: 'Duo Capital LLC', managingMember: 'Alice Managing',
+      members: [{ name: 'Alice Managing', ownershipPct: 60 }, { name: 'Sam Silent', ownershipPct: 40 }] }],
+  ]));
+  const other = chain.findings.find((f) => f.code === 'entity_other_owners');
+  assert.ok(other, 'a co-owner who is not the borrower is surfaced');
+  assert.strictEqual(other.severity, 'warning');
+  assert.strictEqual(other.blocksCtc, false);
+  assert.ok(/Sam Silent/.test(other.docValue) && !/Alice Managing/.test(other.docValue), 'lists the OTHER owner, not the borrower');
+  // The owners array marks who is the borrower.
+  assert.strictEqual(chain.owners.find((o) => o.name === 'Alice Managing').isBorrower, true);
+  assert.strictEqual(chain.owners.find((o) => o.name === 'Sam Silent').isBorrower, false);
+}
+// A single-member LLC where the only owner IS the borrower surfaces no "other owners".
+{
+  const chain = buildChain({ vestingName: 'Solo LLC', borrowerName: 'Alice Managing' }, ext([
+    ['operating_agreement', { entityLegalName: 'Solo LLC', members: [{ name: 'Alice Managing', ownershipPct: 100 }] }],
+  ]));
+  assert.ok(!chain.findings.some((f) => f.code === 'entity_other_owners'), 'sole borrower-owner → no other-owners flag');
+}
+
 // ---- REGRESSION (audit): TWO owners, TWO government IDs on file → neither falsely flagged ----
 {
   const chain = buildChain({ vestingName: 'Fifty Fifty LLC' }, ext([

@@ -217,7 +217,8 @@ router.get('/:appId', async (req, res, next) => {
     // >=25%-owner KYC gap.
     const isEntity = !!((mctx && mctx.vestingName) || a.llc_id ||
       exts.rows.some((e) => e.doc_type === 'operating_agreement'));
-    const entityChain = isEntity ? buildChain({ vestingName: mctx && mctx.vestingName }, exts.rows) : null;
+    const entityChain = isEntity ? buildChain(
+      { vestingName: mctx && mctx.vestingName, borrowerName: fileView.borrowerName(mctx && mctx.borrower) }, exts.rows) : null;
 
     // Seller → buyer OWNERSHIP CHAIN: compose the visual purchase chain (owner of record → seller →
     // buyer/assignee → the vesting LLC) so the desk can SHOW how the property gets into our
