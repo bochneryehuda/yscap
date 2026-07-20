@@ -86,6 +86,15 @@ const has = (id) => (u) => u.includes(`/items/${id}`);
   ok('uploadNew uses createUploadSession for a >4MB file', calls.some((c) => c.url.includes('createUploadSession')));
   ok('uploadNew large-file happy path returns the committed item', bigUp.item && bigUp.item.id === 'bigitem');
 
+  // 7. the >4MB path ALSO integrity-verifies: a size-mismatched session commit throws
+  reset((u, o) => {
+    if (u.includes('createUploadSession')) return mkResp(200, { uploadUrl: 'https://up.example/session/xyz' });
+    if (u.includes('up.example/session')) return mkResp(201, { id: 'bigbad', size: big.length + 7 }); // wrong size
+    return mkResp(500, 'unexpected');
+  });
+  await throws('uploadNew rejects a size-mismatched LARGE (session) upload too',
+    () => sp.uploadNew('d', 'p', 'appraisal.pdf', big, 'application/pdf'), /integrity check failed/i);
+
   // ══ moveOwnItem: the one legal move — expected-parent + If-Match ══════════
   await throws('moveOwnItem refuses without an expectedParentId',
     () => sp.moveOwnItem('d', 'itemX', 'newP', {}), /expectedParentId is required/i);
@@ -156,10 +165,13 @@ const has = (id) => (u) => u.includes(`/items/${id}`);
   await throws('G7 refuses when there is no eTag to pin the delete',
     () => sp.deleteReplacedCorruptMirror(D, CORRUPT, args), /no eTag to pin/i);
 
-  // corrupt === replacement id → refuse (never delete the good copy)
+  // corrupt === replacement id → refuse (never delete the good copy). Use
+  // localSize=corruptSize so G3 (replacement-size) and G4/G5 all PASS and the
+  // check that genuinely fires is the same-item guard (sharepoint.js:471) —
+  // otherwise this would pass on G3's size-unverified branch (audit M1).
   reset(goodRoute());
-  await throws('refuses when corrupt and replacement are the same item',
-    () => sp.deleteReplacedCorruptMirror(D, CORRUPT, { ...args, replacementItemId: CORRUPT }), /same item|size-unverified/i);
+  await throws('refuses when corrupt and replacement are the same item (reaches the same-item guard)',
+    () => sp.deleteReplacedCorruptMirror(D, CORRUPT, { ...args, replacementItemId: CORRUPT, corruptSize: 999, localSize: 999 }), /same item/i);
 
   // ALL guards pass → the delete fires, pinned with If-Match
   reset(goodRoute());

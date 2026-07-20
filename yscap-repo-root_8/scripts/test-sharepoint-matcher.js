@@ -58,6 +58,13 @@ ok('comma-delimited city tail ignored', m.addressMatches('100 Main St', '100 Mai
 ok('comma-less embedded city does NOT force a match (safe fall-through)', !m.addressMatches('100 Main St', '100 Main Street Springfield IL 62704'));
 ok('an auto-created address folder re-matches (legacy marker after comma)', m.addressMatches('76 Thompson St, YS portal syncing', '76 Thompson Street'));
 
+// ─── addressMatchesTypo(): one street-token edit, but the house-number anchor
+//     and street length still hold (flagged fallback pass) ───────────────────
+ok('address typo: "654 Hamiltion St" ↔ "654 Hamilton Street"', m.addressMatchesTypo('654 Hamiltion St', '654 Hamilton Street'));
+ok('address typo STILL requires an identical house number', !m.addressMatchesTypo('655 Hamilton St', '654 Hamilton St'));
+ok('address typo STILL refuses "Oak Street Extension" vs "Oak St" (length)', !m.addressMatchesTypo('45 Oak Street Extension', '45 Oak St'));
+ok('address typo STILL isolates different units', !m.addressMatchesTypo('12 Main St Apt 4', '12 Main St Apt 5'));
+
 // ─── dlDistance(): Damerau-Levenshtein, capped, with the >64 guard ─────────
 eq('dlDistance identical = 0', m.dlDistance('john', 'john'), 0);
 eq('dlDistance transposition (jonh↔john) = 1', m.dlDistance('jonh', 'john'), 1);
