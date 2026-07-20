@@ -118,13 +118,13 @@ let n = 0; const ok = (m) => { n++; console.log('  ok -', m); };
   const r = notify.buildEmail({ type: 'doc_rejected', title: 'W-9 needs a new document',
     subjectTag: 'YS-1042 · 9 Oak St', body: 'Please re-upload.' }, 'borrower');
   assert.strictEqual(r.subject, 'W-9 needs a new document · YS-1042 · 9 Oak St', 'buildEmail passes subjectTag to subject');
-  assert.ok(r.html.includes('Action needed'), 'doc_rejected maps to the "Action needed" kicker');
+  assert.ok(r.html.includes('Document'), 'doc_rejected maps to the "Document" category kicker');
   assert.ok(/reply directly to this email/i.test(r.html), 'notify emails are repliable by default');
   ok('buildEmail: type→kicker + subjectTag + default repliable');
 
   // An explicit kicker wins over the type map; replyable:false suppresses the line.
   const r2 = notify.buildEmail({ type: 'doc_rejected', title: 't', kicker: 'Custom', replyable: false }, 'staff');
-  assert.ok(r2.html.includes('Custom') && !r2.html.includes('Action needed'), 'explicit kicker overrides the map');
+  assert.ok(r2.html.includes('Custom') && !r2.html.includes('>Document<'), 'explicit kicker overrides the map');
   assert.ok(!/reply directly to this email/i.test(r2.html), 'replyable:false suppresses the reply line');
   ok('buildEmail: explicit kicker overrides, replyable:false opts out');
 }

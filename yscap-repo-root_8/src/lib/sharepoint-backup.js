@@ -61,20 +61,39 @@ const PACING_MS = 300;             // between uploads — keeps Graph bursts pol
 // path, which would churn the mirror every time a draw changes.
 const REGEN_KIND_SQL = `(d.doc_kind = 'track_record_html' OR d.doc_kind = 'tpr_export' OR d.doc_kind = 'draw_inspection_report' OR d.doc_kind LIKE '%\\_export')`;
 function isRegenKind(k) { return k === 'track_record_html' || k === 'tpr_export' || k === 'draw_inspection_report' || /_export$/.test(String(k || '')); }
-// HARD RULE (owner-directed): the signed Heter Iska is NEVER mirrored to
-// SharePoint — kept ONLY in-system + on DocuSign. Applied to EVERY document
-// selector below so it can never leak, present or future. Companion to the TPR
-// export denylist + rtl_cond_iska.tpr_exclude=true. (DOCUSIGN-DOCUMENT-BUILD-SPEC
-// Addendum A.3/A.9.)
-const NEVER_MIRROR_KINDS = new Set(['heter_iska_signed']);
-// appraisal_photo: derived thumbnails auto-extracted from the appraisal PDF (which IS
-// mirrored) — up to ~24 per file, so mirroring them would flood the team site for no gain.
-// Also NEVER mirror a lead-CRM attachment: it hangs off a `lead_id` with no
-// pipeline scope (no application/borrower/llc/track-record/checklist item), so
-// the mirror has nowhere to file it and it would otherwise churn 8 doomed
-// "no borrower or loan file" attempts and sit as permanent stuck noise (A-Z
-// audit F1). These belong to the CRM, not the SharePoint pipeline.
-const NEVER_MIRROR_SQL = `(COALESCE(d.doc_kind,'') NOT IN ('heter_iska_signed','appraisal_photo')
+// ONE definition of "deliberately NEVER mirrored to SharePoint" (owner-directed).
+// The drain-exclusion SQL, the settle pass, AND the upload chokepoint ALL derive
+// from this single map so they can never diverge. ROOT of the appraisal_photo
+// stuck-noise bug (2026-07-20): a kind was added to the exclusion SQL but NOT to
+// the settle set, so those docs were skipped by the drain yet never stamped
+// "skipped" — they sat backed_up_at IS NULL as "(not yet attempted)" forever,
+// driving a permanent stuck/backlog-SLO false alarm. Deriving both from this map
+// makes that whole class impossible.
+//   • heter_iska_signed — owner policy: kept in-system + on DocuSign ONLY (never
+//     leaks; companion to the TPR export denylist + rtl_cond_iska.tpr_exclude).
+//     (DOCUSIGN-DOCUMENT-BUILD-SPEC Addendum A.3/A.9.)
+//   • appraisal_photo — derived thumbnails auto-extracted from the appraisal PDF
+//     (which IS mirrored); up to ~24 per file, so mirroring them floods the team
+//     site for no gain.
+const NEVER_MIRROR_REASON = {
+  heter_iska_signed: 'never mirrored (owner policy: the Heter Iska is kept in-system + on DocuSign only)',
+  appraisal_photo: 'not mirrored — a thumbnail auto-extracted from the appraisal (the appraisal PDF itself IS mirrored)',
+};
+const DEFAULT_NEVER_MIRROR_REASON = 'not mirrored (owner policy: this document kind is kept in-system only)';
+const NEVER_MIRROR_KINDS = new Set(Object.keys(NEVER_MIRROR_REASON));
+function neverMirrorReason(kind) { return NEVER_MIRROR_REASON[kind] || DEFAULT_NEVER_MIRROR_REASON; }
+const _sqlLit = (s) => `'${String(s).replace(/'/g, "''")}'`;
+// Per-kind skipped_reason as a SQL CASE, built from the same map so the settle
+// pass stamps the RIGHT reason for every never-mirror kind (not a hardcoded one).
+const NEVER_MIRROR_REASON_CASE = `CASE d.doc_kind ${Object.entries(NEVER_MIRROR_REASON)
+  .map(([k, v]) => `WHEN ${_sqlLit(k)} THEN ${_sqlLit(v)}`).join(' ')} ELSE ${_sqlLit(DEFAULT_NEVER_MIRROR_REASON)} END`;
+// Drain-selector SQL fragment — a doc is IN-SCOPE for mirroring when it is not a
+// never-mirror kind AND not a lead-CRM attachment (a `lead_id` with no pipeline
+// scope — no application/borrower/llc/track-record/checklist item — has nowhere
+// to file, so it would churn doomed "no borrower or loan file" attempts and sit
+// as permanent stuck noise, A-Z audit F1). Built FROM NEVER_MIRROR_KINDS so the
+// SQL and the settle set can never drift apart again.
+const NEVER_MIRROR_SQL = `(COALESCE(d.doc_kind,'') NOT IN (${[...NEVER_MIRROR_KINDS].map(_sqlLit).join(',')})
   AND NOT (d.lead_id IS NOT NULL AND d.application_id IS NULL AND d.borrower_id IS NULL
            AND d.checklist_item_id IS NULL AND d.llc_id IS NULL AND d.track_record_id IS NULL))`;
 function snapshotSettleSec() {
@@ -541,7 +560,7 @@ async function settleNeverMirror() {
   const r = await db.query(
     `UPDATE documents d SET
         sharepoint_backed_up_at = now(),
-        sharepoint_skipped_reason = 'never mirrored (owner policy: the Heter Iska is kept in-system + on DocuSign only)',
+        sharepoint_skipped_reason = ${NEVER_MIRROR_REASON_CASE},
         sharepoint_backup_error = NULL
       WHERE d.sharepoint_backed_up_at IS NULL
         AND COALESCE(d.doc_kind,'') = ANY($1)
@@ -870,9 +889,9 @@ async function mirrorRow(row, retried = false) {
     // backlog alert and re-force-attempt every sweep (audit HIGH).
     await db.query(
       `UPDATE documents SET sharepoint_backed_up_at = now(),
-          sharepoint_skipped_reason = 'never mirrored (owner policy: the Heter Iska is kept in-system + on DocuSign only)',
+          sharepoint_skipped_reason = $2,
           sharepoint_backup_error = NULL
-        WHERE id = $1 AND sharepoint_backed_up_at IS NULL`, [row.id]);
+        WHERE id = $1 AND sharepoint_backed_up_at IS NULL`, [row.id, neverMirrorReason(row.doc_kind)]);
     return { skipped: true, reason: 'never_mirror_kind' };
   }
   const scopeKey = scopeKeyFor(row);

@@ -118,7 +118,7 @@ router.post('/findings/:findingId/accept', async (req, res) => {
     `UPDATE draw_findings SET status='accepted', accepted_at=now(), accepted_via='portal', wire_due_at=now() + ($2 || ' hours')::interval, updated_at=now()
       WHERE id=$1 AND status='delivered' RETURNING wire_due_at`, [f.id, String(hours)])).rows[0];
   if (!upd) return res.status(409).json({ error: 'already handled' });
-  await notify.notifyAppStaff(f.application_id, { type: 'draw_accepted', title: 'Borrower accepted a draw',
+  await notify.notifyAppStaff(f.application_id, { type: 'draw_accepted', title: 'Borrower accepted a draw', badge: { text: 'Accepted', tone: 'positive' },
     body: `The borrower accepted the inspection results — the release is due by ${new Date(upd.wire_due_at).toLocaleString('en-US')}.`, applicationId: f.application_id, link: `/internal/app/${f.application_id}` }).catch(() => {});
   res.json({ ok: true, wire_due_at: upd.wire_due_at });
 });
@@ -148,7 +148,7 @@ router.post('/findings/:findingId/dispute', async (req, res) => {
   }
   if (!count) return res.status(400).json({ error: 'no valid dispute lines' });
   await db.query(`UPDATE draw_findings SET status='disputed', disputed_at=now(), updated_at=now() WHERE id=$1`, [f.id]);
-  await notify.notifyAppStaff(f.application_id, { type: 'draw_disputed', title: 'Borrower disputed a draw',
+  await notify.notifyAppStaff(f.application_id, { type: 'draw_disputed', title: 'Borrower disputed a draw', badge: { text: 'Disputed', tone: 'action' },
     body: `The borrower disputed ${count} item(s) on their draw results and provided evidence. A draw coordinator needs to review.`, applicationId: f.application_id, link: `/internal/app/${f.application_id}` }).catch(() => {});
   res.json({ ok: true, disputed_lines: count });
 });
@@ -179,7 +179,7 @@ router.post('/draws/:appId/change-request', async (req, res) => {
       `INSERT INTO sow_change_request_details (change_request_id, application_id, proposed_payload, deltas, net_zero, after_ctc, needs_capital_partner, capital_partner_status)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
       [cr.id, appId, JSON.stringify(proposedPayload), JSON.stringify(plan.cells), plan.totals.net_zero, phase === 'after_ctc', plan.needs_capital_partner, plan.needs_capital_partner ? 'pending' : null]);
-    await notify.notifyAppStaff(appId, { type: 'sow_change_request', title: 'Borrower requested a budget change',
+    await notify.notifyAppStaff(appId, { type: 'sow_change_request', title: 'Borrower requested a budget change', badge: { text: 'Review needed', tone: 'gold' },
       body: 'The borrower proposed a Scope-of-Work change. Review it on the file before it flows to draws.', applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
     // borrower-safe: never echo capital-partner review status detail back to the borrower
     res.json({ ok: true, submitted: true, net_zero: plan.totals.net_zero });

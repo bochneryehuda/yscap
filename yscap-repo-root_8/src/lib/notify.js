@@ -20,13 +20,15 @@ const { fileReplyTo } = require('./file-address');   // #68 per-file shared repl
 // borrower-safe (no capital-partner names). A caller may override via opts.kicker.
 const KICKER_OF = {
   status_change: 'Status update', closing_date: 'Closing date',
-  doc_rejected: 'Action needed', doc_requested: 'Action needed', doc_uploaded: 'Document',
-  doc_accepted: 'Document accepted',
-  condition_added: 'Action needed', tool_submitted: 'Ready for review',
+  // Kickers name the CATEGORY; the colored status pill (badge) carries the
+  // action/outcome — so the two read as complementary, not redundant.
+  doc_rejected: 'Document', doc_requested: 'Document', doc_uploaded: 'Document',
+  doc_accepted: 'Document',
+  condition_added: 'Your conditions', tool_submitted: 'Ready for review',
   product_registered: 'Product registered', term_sheet: 'Your loan terms', pricing_update: 'Pricing update',
   message: 'New message', mention: 'You were mentioned', reminder: 'Reminder',
-  llc_verified: 'Entity verified', llc_unverified: 'Action needed',
-  track_record_unverified: 'Action needed',
+  llc_verified: 'Your entity', llc_unverified: 'Your entity',
+  track_record_unverified: 'Track record',
   draw: 'Construction draw', draw_request: 'Construction draw', draw_findings: 'Draw inspection',
   draw_accepted: 'Construction draw', draw_disputed: 'Construction draw',
   sow_reallocation: 'Budget change', sow_change_request: 'Budget change',

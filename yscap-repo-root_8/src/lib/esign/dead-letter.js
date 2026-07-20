@@ -24,6 +24,7 @@ module.exports = async function onDeadLetter(row, err) {
     const opts = {
       type: 'status_change',
       title: `E-signature couldn't be sent — ${label}`,
+      badge: { text: 'Needs attention', tone: 'action' },
       body: `An e-signature ${label} for this file couldn't be sent and needs attention. `
           + `Reason: ${reason}. Open the file's e-signature section to review and re-send.`,
       applicationId: row.application_id,
