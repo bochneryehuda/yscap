@@ -1455,12 +1455,40 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
     // notifyAppBorrowers (not notifyBorrower) so a co-borrower who can see the file
     // ALSO gets the "results ready" email — the primary-only send made the
     // co-borrower first hear of it via the later reminder (owner-reported audit).
-    if (f.borrower_id) await notify.notifyAppBorrowers(appId, {
-      type: 'draw_findings', title: 'Your draw inspection results are ready',
-      badge: { text: 'Action needed', tone: 'action' },
-      body: 'Your draw inspection results are in and ready for your review.',
-      callout: { title: 'Your next step', body: 'Review each line item and either accept the results or dispute a line with a quick note — this releases your draw, so please review promptly.', tone: 'action' },
-      applicationId: appId, link: acceptLink, ctaLabel: 'Review draw results' }).catch(() => {});
+    if (f.borrower_id) {
+      // Build the FULL findings email: the one-key-fact hero (approved of requested), a per-line
+      // grid (what the inspector approved on each line), the photo/video count, and TWO actions —
+      // Accept (releases the draw) + Push back (opens the review page in dispute mode). All
+      // borrower-safe: line names scrubbed here (defense-in-depth) and again in notifyBorrower.
+      const scrub = require('../lib/borrower-safe').scrubText;
+      const usd = (c) => '$' + (Math.round(Number(c) || 0) / 100).toLocaleString('en-US');
+      const flines = (await db.query(
+        `SELECT name, requested_cents, approved_cents, not_approved_cents, photo_count, video_count FROM draw_finding_lines WHERE finding_id=$1 ORDER BY id`, [result.id])).rows;
+      const totReq = flines.reduce((s, l) => s + (Number(l.requested_cents) || 0), 0);
+      const totAppr = flines.reduce((s, l) => s + (Number(l.approved_cents) || 0), 0);
+      const photos = flines.reduce((s, l) => s + (Number(l.photo_count) || 0), 0);
+      const videos = flines.reduce((s, l) => s + (Number(l.video_count) || 0), 0);
+      const CAP = 14; // keep the email readable — a huge draw links out to the full page for the rest
+      const meta = [{ label: 'Property', value: addr }];
+      for (const l of flines.slice(0, CAP)) {
+        meta.push({ label: scrub(l.name) || 'Line item',
+          value: Number(l.not_approved_cents) > 0 ? `${usd(l.approved_cents)} approved of ${usd(l.requested_cents)}` : `${usd(l.approved_cents)} approved` });
+      }
+      if (flines.length > CAP) meta.push({ label: `+ ${flines.length - CAP} more line item(s)`, value: 'open the results to see them all' });
+      const pv = [];
+      if (photos) pv.push(`${photos} photo${photos === 1 ? '' : 's'}`);
+      if (videos) pv.push(`${videos} video${videos === 1 ? '' : 's'}`);
+      const disputeLink = result.reply_token ? `/draw-accept/${result.reply_token}?tab=dispute` : `/app/${appId}`;
+      await notify.notifyAppBorrowers(appId, {
+        type: 'draw_findings', title: 'Your draw inspection results are ready',
+        badge: { text: 'Action needed', tone: 'action' },
+        hero: { label: 'Approved for release', value: usd(totAppr), sub: `of ${usd(totReq)} requested`, tone: 'positive' },
+        body: `Your inspection is complete${pv.length ? ` — ${pv.join(' and ')} on file` : ''}. Here is what the inspector approved on each line. When you’re ready, accept to release your draw — or push back on any line you disagree with.`,
+        meta,
+        callout: { title: 'What happens when you accept', body: 'Accepting releases your draw — your funds are typically wired within a day or two. Want to look first? Open the results to see every photo and download your inspection report (PDF).', tone: 'action' },
+        applicationId: appId, link: acceptLink, ctaLabel: 'Review & accept',
+        cta2Label: 'Push back on a line', cta2Link: disputeLink }).catch(() => {});
+    }
     await notify.notifyAppStaff(appId, { type: 'draw_findings', title: 'Draw findings delivered to borrower',
       body: `Inspection findings for ${addr} were delivered to the borrower to accept or dispute.`, applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
     // Auto-deliver artifacts: durably archive the inspector's (expiring) media NOW and pre-build the PILOT +

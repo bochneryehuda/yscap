@@ -192,7 +192,7 @@ router.post('/findings/:findingId/dispute', async (req, res) => {
     count++;
   }
   if (!count) return res.status(400).json({ error: 'no valid dispute lines' });
-  await db.query(`UPDATE draw_findings SET status='disputed', disputed_at=now(), updated_at=now() WHERE id=$1`, [f.id]);
+  await db.query(`UPDATE draw_findings SET status='disputed', disputed_at=now(), disputed_via='portal', updated_at=now() WHERE id=$1`, [f.id]);
   await notify.notifyAppStaff(f.application_id, { type: 'draw_disputed', title: 'Borrower disputed a draw', badge: { text: 'Disputed', tone: 'action' },
     body: `The borrower disputed ${count} item(s) on their draw results and provided evidence. A draw coordinator needs to review.`, applicationId: f.application_id, link: `/internal/app/${f.application_id}` }).catch(() => {});
   res.json({ ok: true, disputed_lines: count });
