@@ -389,16 +389,21 @@ const SETTLEMENT = {
 const CREDIT_REPORT = {
   docType: 'credit_report',
   instructions:
-    "You are reviewing a mortgage credit report for a loan file. Extract the subject's name and date of " +
-    "birth, the report date, the representative/middle FICO score, the number of open mortgage tradelines, " +
-    "whether there are any 30/60/90-day mortgage lates, and whether there are any bankruptcies, " +
-    "foreclosures, judgments, or tax liens. Do NOT extract the full SSN. Use null for anything absent or " +
-    "unreadable — do NOT guess. readable=false if poor.",
+    "You are reviewing a mortgage TRI-MERGE credit report for a loan file. Extract the subject's name and " +
+    "date of birth, the report date, and the THREE bureau FICO scores SEPARATELY — TransUnion, Experian, " +
+    "and Equifax (a tri-merge shows one FICO per bureau; capture each as printed, null for a bureau not " +
+    "reported). Also give the representative/middle FICO score if the report states one. Extract the number " +
+    "of open mortgage tradelines, whether there are any 30/60/90-day mortgage lates, and whether there are " +
+    "any bankruptcies, foreclosures, judgments, or tax liens. Do NOT extract the full SSN. Use null for " +
+    "anything absent or unreadable — do NOT guess. readable=false if poor.",
   schema: obj({
     subjectName: { type: ['string', 'null'] },
     dob: { type: ['string', 'null'] },
     reportDate: { type: ['string', 'null'] },
-    ficoScore: { type: ['number', 'null'] },
+    ficoScore: { type: ['number', 'null'] },          // the report's stated representative/middle score, if any
+    ficoTransunion: { type: ['number', 'null'] },
+    ficoExperian: { type: ['number', 'null'] },
+    ficoEquifax: { type: ['number', 'null'] },
     openMortgageCount: { type: ['number', 'null'] },
     mortgageLates: { type: ['boolean', 'null'] },
     hasBankruptcy: { type: ['boolean', 'null'] },

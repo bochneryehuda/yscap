@@ -503,12 +503,30 @@ function BankLiquidity({ bankLiquidity, appId, onChange }) {
 
 // Experience — is the borrower's verified track record enough for THIS deal's rehab intensity?
 // A heavy-rehab or ground-up deal needs a verified comparable anchor; a light/moderate deal doesn't.
-function Experience({ experience, appId, onChange }) {
+function Experience({ experience, appId, onChange, readOnly }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
   if (!experience) return null;
   const findings = experience.findings || [];
   // Nothing to show for an un-gated (light/moderate) deal with no findings — keep the desk quiet.
   if (!experience.gated && !findings.length) return null;
   const ok = experience.hasVerifiedAnchor || !experience.gated;
+  const blocking = findings.some((f) => f.severity === 'fatal');
+
+  async function grantException() {
+    const note = window.prompt('Reason for the experience exception (recorded on the file):');
+    if (!note || !note.trim()) return;
+    setBusy(true); setErr('');
+    try { await api.underwritingExperienceException(appId, { grant: true, note }); await onChange(); }
+    catch (e) { setErr(e && e.message ? e.message : 'Could not grant the exception (senior authority required).'); }
+    finally { setBusy(false); }
+  }
+  async function revokeException() {
+    setBusy(true); setErr('');
+    try { await api.underwritingExperienceException(appId, { grant: false }); await onChange(); }
+    catch (e) { setErr(e && e.message ? e.message : 'Could not revoke the exception.'); }
+    finally { setBusy(false); }
+  }
   return (
     <div style={{ marginBottom: 22 }}>
       <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px' }}>Experience — is the track record enough for this deal?</h4>
@@ -530,6 +548,18 @@ function Experience({ experience, appId, onChange }) {
         </div>
       )}
       {findings.map((f, i) => <Finding key={f.id || `xp${i}`} appId={appId} f={f} onChange={onChange} resolvable={false} />)}
+      {!readOnly && blocking && (
+        <div style={{ marginTop: 4 }}>
+          <button disabled={busy} onClick={grantException} style={btn(false)}>{busy ? 'Working…' : 'Grant experience exception'}</button>
+          <span style={{ fontSize: 11.5, color: 'var(--muted,#4B585C)', marginLeft: 8 }}>Senior underwriter / admin only.</span>
+        </div>
+      )}
+      {!readOnly && experience.exceptionGranted && (
+        <div style={{ marginTop: 4 }}>
+          <button disabled={busy} onClick={revokeException} style={btn(false)}>{busy ? 'Working…' : 'Revoke experience exception'}</button>
+        </div>
+      )}
+      {err && <p style={{ color: 'var(--crit,#B4483C)', fontSize: 12, marginTop: 6 }}>{err}</p>}
     </div>
   );
 }
@@ -723,7 +753,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
       <SellerChain sellerChain={sellerChain} />
       <EntityChain entityChain={entityChain} />
       <BankLiquidity bankLiquidity={bankLiquidity} appId={appId} onChange={load} />
-      <Experience experience={experience} appId={appId} onChange={load} />
+      <Experience experience={experience} appId={appId} onChange={load} readOnly={readOnly} />
 
       {/* document freshness / staleness */}
       <StalenessBoard staleness={staleness} />

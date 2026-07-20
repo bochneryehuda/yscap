@@ -317,7 +317,7 @@ router.get('/:appId', async (req, res, next) => {
         findings: bankLiquidity.findings.map(decorate) },
       experience: experience ? { demandTier: experience.demandTier, demandLabel: experience.demandLabel,
         requiredLabel: experience.requiredLabel, gated: experience.gated, hasVerifiedAnchor: experience.hasVerifiedAnchor,
-        anchors: experience.anchors, trackRecordCount: experience.trackRecordCount,
+        exceptionGranted: experience.exceptionGranted, anchors: experience.anchors, trackRecordCount: experience.trackRecordCount,
         findings: experience.findings.map(decorate) } : null,
       completeness: { completenessPct: completeness.completenessPct, counts: completeness.counts,
         stipulations: completeness.stipulations, outstanding: completeness.outstanding,
@@ -556,6 +556,33 @@ router.post('/:appId/findings/:fid/resolve', requirePermission('sign_off_conditi
     const crossFatal = tieout.discrepancies.filter((f) => f.severity === 'fatal' && f.blocksCtc).length;
 
     res.json({ ok: true, finding: decorate(updated), openFatal, crossFatal, blocksCtc: (openFatal + crossFatal) > 0 });
+  } catch (e) { next(e); }
+});
+
+// ---- POST /experience-exception : senior override of the experience gate ----------------------
+// The experience dealbreaker is DERIVED (no finding row), so it can't be waived through the normal
+// finding-exception path. This records a senior-authority exception ON THE FILE — assessExperience
+// then stops emitting the blocking finding and the CTC gate opens. Requires waive_conditions (the
+// same senior authority that grants an exception on any fatal, CTC-blocking finding). Pass
+// { grant:false } to REVOKE. Audited either way.
+router.post('/:appId/experience-exception', requirePermission('waive_conditions'), async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const grant = !(req.body && req.body.grant === false);
+    const note = ((req.body && req.body.note) || '').slice(0, 2000);
+    if (grant && !note.trim()) return res.status(400).json({ error: 'a reason is required to grant an experience exception' });
+    if (grant) {
+      await db.query(
+        `UPDATE applications SET experience_exception_at=now(), experience_exception_by=$2, experience_exception_note=$3 WHERE id=$1`,
+        [app.id, req.actor.id, note]);
+    } else {
+      await db.query(
+        `UPDATE applications SET experience_exception_at=NULL, experience_exception_by=NULL, experience_exception_note=NULL WHERE id=$1`,
+        [app.id]);
+    }
+    await audit(req.actor.id, 'underwriting_experience_exception', app.id, { grant, note: note.slice(0, 300) });
+    res.json({ ok: true, granted: grant });
   } catch (e) { next(e); }
 });
 

@@ -62,6 +62,19 @@ assert.deepStrictEqual(codes(C.computeCreditFindings({ subjectName: 'A B', ficoS
   assert.ok(low && low.severity === 'warning', 'actual middle score below the priced FICO -> re-register warning');
 }
 assert.deepStrictEqual(codes(C.computeCreditFindings({ subjectName: 'A B', ficoScore: 699, readable: true }, { registered_fico: 700 }, {})), [], 'a 1-2 pt drop is ignored');
+// Tri-merge: the REPRESENTATIVE score is the MIDDLE of three / LOWER of two (owner "middle score" rule).
+{
+  assert.strictEqual(C.representativeFico({ ficoTransunion: 680, ficoExperian: 710, ficoEquifax: 700 }), 700, 'middle of three');
+  assert.strictEqual(C.representativeFico({ ficoTransunion: 720, ficoEquifax: 700 }), 700, 'lower of two');
+  assert.strictEqual(C.representativeFico({ ficoExperian: 715 }), 715, 'single bureau');
+  assert.strictEqual(C.representativeFico({ ficoScore: 690 }), 690, 'falls back to a stated representative score');
+  // The MIDDLE (not the high) is compared to the priced FICO: 680/700/710 → 700, priced 705 → flagged.
+  assert.ok(C.computeCreditFindings({ readable: true, subjectName: 'A B', ficoTransunion: 680, ficoExperian: 710, ficoEquifax: 700 }, { registered_fico: 705 }, {}).some((f) => f.code === 'credit_score_below_priced'));
+  // A high bureau score can't mask a low middle: 620/625/790 → middle 625 < 700 → flagged.
+  assert.ok(C.computeCreditFindings({ readable: true, subjectName: 'A B', ficoTransunion: 620, ficoExperian: 790, ficoEquifax: 625 }, { registered_fico: 700 }, {}).some((f) => f.code === 'credit_score_below_priced'));
+  // Middle above the priced score → clean.
+  assert.deepStrictEqual(codes(C.computeCreditFindings({ readable: true, subjectName: 'A B', ficoTransunion: 740, ficoExperian: 760, ficoEquifax: 750 }, { registered_fico: 700 }, {})), []);
+}
 
 // ---- Insurance ----
 const insGood = { namedInsured: 'Maple LLC', dwellingCoverage: 400000, policyEffective: '2026-06-01', policyExpiration: '2027-06-01', mortgageeClausePresent: true, readable: true };

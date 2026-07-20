@@ -105,6 +105,7 @@ function assessExperience(deal = {}, trackRecords = [], opts = {}) {
   const candidates = evaluated.filter((e) => e.comparable);
   const verifiedAnchors = candidates.filter((e) => e.verified);
   const gated = demandTier >= TIER.heavy;   // only heavy / ground-up deals REQUIRE an anchor
+  const exceptionGranted = !!opts.exceptionGranted; // a senior override recorded on the file
 
   const findings = [];
   const mkFatal = (code, title, howTo) => findings.push({
@@ -114,7 +115,15 @@ function assessExperience(deal = {}, trackRecords = [], opts = {}) {
     opensCondition: 'underwriting_review_cleared',
   });
 
-  if (gated && verifiedAnchors.length === 0) {
+  if (gated && verifiedAnchors.length === 0 && exceptionGranted) {
+    // A senior-authority exception clears the gate for a judgment-call file — the dealbreaker is
+    // replaced by a NON-blocking info note (kept transparent on the desk + in the audit trail).
+    findings.push({ source: 'experience', code: 'experience_exception_granted', severity: 'info', status: 'open',
+      field: 'experience', docValue: `${TIER_LABEL[demandTier]} deal`, fileValue: 'experience exception granted', blocksCtc: false,
+      title: 'Experience requirement waived by exception',
+      howTo: `This ${TIER_LABEL[demandTier]} deal does not have a verified comparable project, but a senior underwriter granted an experience exception${opts.exceptionNote ? ` — "${opts.exceptionNote}"` : ''}. Clear-to-close is not blocked on experience.`,
+      actions: ['acknowledge'] });
+  } else if (gated && verifiedAnchors.length === 0) {
     if (candidates.length > 0) {
       const list = candidates.map((c) => c.label).join('; ');
       mkFatal('experience_anchor_unverified',
@@ -129,7 +138,7 @@ function assessExperience(deal = {}, trackRecords = [], opts = {}) {
 
   return {
     demandTier, demandLabel: TIER_LABEL[demandTier], requiredTier, requiredLabel: TIER_LABEL[requiredTier],
-    gated, newSize,
+    gated, newSize, exceptionGranted,
     anchors: candidates.map((c) => ({ label: c.label, tier: c.tier, size: c.size, exit: c.exit, verified: c.verified })),
     hasVerifiedAnchor: verifiedAnchors.length > 0,
     trackRecordCount: (trackRecords || []).length,
@@ -142,7 +151,8 @@ function assessExperience(deal = {}, trackRecords = [], opts = {}) {
 async function assessExperienceForFile(client, appId, opts = {}) {
   try {
     const app = (await client.query(
-      `SELECT borrower_id, purchase_price, as_is_value, arv, rehab_budget, program, loan_type, property_type
+      `SELECT borrower_id, purchase_price, as_is_value, arv, rehab_budget, program, loan_type, property_type,
+              experience_exception_at, experience_exception_note
          FROM applications WHERE id=$1`, [appId])).rows[0];
     if (!app || !app.borrower_id) return null;
     const trs = (await client.query(
@@ -152,7 +162,7 @@ async function assessExperienceForFile(client, appId, opts = {}) {
     return assessExperience({
       purchasePrice: app.purchase_price, asIsValue: app.as_is_value, arv: app.arv,
       rehabBudget: app.rehab_budget, program: app.program, loanType: app.loan_type, propertyType: app.property_type,
-    }, trs, opts);
+    }, trs, { ...opts, exceptionGranted: !!app.experience_exception_at, exceptionNote: app.experience_exception_note });
   } catch (_) { return null; }
 }
 

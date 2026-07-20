@@ -306,9 +306,21 @@ function computeSettlementFindings(s, subject, opts = {}) {
 }
 
 // ---- Credit report ----
+// The mortgage "representative" FICO from a tri-merge: the MIDDLE of three bureau scores, the LOWER
+// of two, or the single one — computed here rather than trusting the AI to pick the middle. Falls
+// back to a stated representative/ficoScore when the per-bureau scores aren't broken out.
+function representativeFico(c) {
+  const scores = [num(c.ficoTransunion), num(c.ficoExperian), num(c.ficoEquifax)].filter((n) => n != null && n > 0);
+  if (scores.length === 3) { scores.sort((a, b) => a - b); return scores[1]; } // middle
+  if (scores.length === 2) { scores.sort((a, b) => a - b); return scores[0]; } // lower of two
+  if (scores.length === 1) return scores[0];
+  return num(c.ficoScore); // no per-bureau breakout → the stated representative score
+}
+
 function computeCreditFindings(c, subject, opts = {}) {
   const out = []; if (!c) return out;
-  if (unreadable('credit_report', c, ['subjectName', 'ficoScore'])) return [verify('credit_report', 'credit report')];
+  // Readable if we can pull a name AND any score (a per-bureau score counts, not just ficoScore).
+  if ((c.readable === false) || (!c.subjectName) || (representativeFico(c) == null)) return [verify('credit_report', 'credit report')];
   if (c.hasBankruptcy === true || c.hasForeclosure === true) {
     out.push(mk('credit_report', { code: 'credit_major_derogatory', severity: 'warning', field: 'derogatory',
       docValue: [c.hasBankruptcy ? 'bankruptcy' : null, c.hasForeclosure ? 'foreclosure' : null].filter(Boolean).join(', '), fileValue: null,
@@ -329,10 +341,10 @@ function computeCreditFindings(c, subject, opts = {}) {
   // score on the pulled report must not come in BELOW that estimate — a lower real score can land in
   // a worse pricing tier, so the file must be re-registered at the true score (owner rule
   // 2026-07-20). A higher actual score is fine (never blocks). Small drops (1-2 pts) are ignored.
-  const actual = num(c.ficoScore), priced = subject && num(subject.registered_fico);
+  const actual = representativeFico(c), priced = subject && num(subject.registered_fico);
   if (actual != null && priced != null && priced > 0 && actual < priced - 2) {
     out.push(mk('credit_report', { code: 'credit_score_below_priced', severity: 'warning', field: 'fico',
-      docValue: `${actual} (report)`, fileValue: `${priced} (priced)`,
+      docValue: `${actual} (report middle)`, fileValue: `${priced} (priced)`,
       title: 'The credit middle score is below the FICO the loan was priced on',
       howTo: `The report's middle/representative score is ${actual}, but the loan was priced on ${priced}. Re-register the product at the true score in Products & Pricing — a lower score may change the tier, rate, or eligibility.`,
       actions: ['post_condition', 'fix_file', 'dismiss'] }));
@@ -471,5 +483,5 @@ module.exports = {
   computeAssignmentFindings, computeOperatingAgreementFindings, computeEinFindings,
   computeGoodStandingFindings, computeFormationFindings, computeInsuranceFindings,
   computeFloodFindings, computeSettlementFindings, computeCreditFindings, computeBackgroundFindings,
-  computeAmendmentFindings, computeScopeOfWorkFindings,
+  computeAmendmentFindings, computeScopeOfWorkFindings, representativeFico,
 };

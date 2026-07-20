@@ -92,6 +92,20 @@ const codes = (r) => r.findings.map((f) => f.code);
   assert.deepStrictEqual(codes(assessExperience(heavyDeal, [anchor2], { today: TODAY })), [], 'a verified comparable mislabeled deal still anchors');
 }
 
+// ---- (audit MAJOR-2a) a senior exception clears the gate without a verified anchor ----
+{
+  const r = assessExperience(heavyDeal, [], { today: TODAY, exceptionGranted: true, exceptionNote: 'strong guarantor + liquidity' });
+  assert.deepStrictEqual(codes(r), ['experience_exception_granted']);
+  assert.strictEqual(r.findings[0].severity, 'info');
+  assert.strictEqual(r.findings[0].blocksCtc, false, 'an exception removes the CTC block');
+  assert.strictEqual(r.exceptionGranted, true);
+  assert.ok(/strong guarantor/.test(r.findings[0].howTo), 'the exception note is surfaced');
+  // An exception on a NON-gated deal changes nothing (no finding at all).
+  assert.deepStrictEqual(codes(assessExperience({ purchasePrice: 300000, asIsValue: 300000, rehabBudget: 10000 }, [], { today: TODAY, exceptionGranted: true })), []);
+  // An exception is irrelevant when a verified anchor already clears it (no info-noise).
+  assert.deepStrictEqual(codes(assessExperience(heavyDeal, [anchor], { today: TODAY, exceptionGranted: true })), []);
+}
+
 // ---- tier classification + calendar months ----
 {
   assert.strictEqual(_internals.tierOf(200000, 300000, false), 3, 'ratio .67 is heavy');
