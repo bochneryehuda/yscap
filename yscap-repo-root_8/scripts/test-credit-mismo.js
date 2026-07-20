@@ -42,6 +42,35 @@ ok('req hard Merge', hardSubmit.includes('CreditReportType="Merge"'));
 ok('req hard no otherdesc', !hardSubmit.includes('CreditReportTypeOtherDescription'));
 ok('req hard Submit', hardSubmit.includes('CreditReportRequestActionType="Submit"'));
 
+// ===== FULL PULL-TYPE × ACTION MATRIX (owner-directed: both capabilities for both) =====
+// The 2×2: {soft Pre-QualificationX, hard Credit ReportX} × {Reissue existing, brand-new}.
+// soft+Reissue (softReissue above) and hard+Submit (hardSubmit above) cover two corners;
+// these two cover the other two so every corner is proven to build the right MISMO.
+
+// hard pull, REISSUE — the owner's "Credit ReportX that can be reissued" (needs a prior id).
+const hardReissue = R.buildCreditRequest({
+  requestingPartyName: 'YS Capital Group', submittingPartyName: 'YS Capital Group LOS',
+  lenderCaseIdentifier: 'LOAN123', requestId: 'req-3', product: 'creditreport', action: 'Reissue',
+  creditReportIdentifier: '1202696', borrowers: [borrower()],
+});
+ok('req hard-reissue Merge', hardReissue.includes('CreditReportType="Merge"'));
+ok('req hard-reissue action Reissue', hardReissue.includes('CreditReportRequestActionType="Reissue"'));
+ok('req hard-reissue carries the prior identifier', hardReissue.includes('CreditReportIdentifier="1202696"'));
+
+// soft pull, BRAND-NEW — the owner's "brand-new which would be a soft pull" (no id).
+const softNew = R.buildCreditRequest({
+  requestingPartyName: 'YS Capital Group', submittingPartyName: 'YS Capital Group LOS',
+  lenderCaseIdentifier: 'LOAN123', requestId: 'req-4', product: 'prequal', action: 'Submit',
+  borrowers: [borrower()],
+});
+ok('req soft-new SoftCheck', softNew.includes('CreditReportTypeOtherDescription="SoftCheck"'));
+ok('req soft-new action Submit', softNew.includes('CreditReportRequestActionType="Submit"'));
+ok('req soft-new needs no identifier', !softNew.includes('CreditReportIdentifier='));
+// a hard reissue still requires a prior report id (can't reissue nothing)
+throws('req hard-reissue without id throws', () => R.buildCreditRequest({
+  requestingPartyName: 'A', submittingPartyName: 'B', lenderCaseIdentifier: 'L', requestId: 'r',
+  product: 'creditreport', action: 'Reissue', borrowers: [borrower()] }));
+
 // joint
 const joint = R.buildCreditRequest({
   requestingPartyName: 'YS', submittingPartyName: 'YS Capital Group LOS',

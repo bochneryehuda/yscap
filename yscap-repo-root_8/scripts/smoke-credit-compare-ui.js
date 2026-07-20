@@ -59,6 +59,9 @@ const C = require('../src/lib/crypto');
     await page.goto(`${base}/portal/#/internal/app/${appId}`, { waitUntil: 'domcontentloaded' });
     // Wait for the credit section to render + the report card's button.
     await page.getByRole('button', { name: 'View full report' }).first().waitFor({ timeout: 25000 });
+    // E7: the order form's plain-language pull summary must render (2×2 capability).
+    const panelText = await page.evaluate(() => document.body.innerText);
+    const hasPullSummary = /Soft pull|Hard pull/.test(panelText);
     await page.getByRole('button', { name: 'View full report' }).first().click();
     // The modal heading + the NEW panel.
     await page.getByText('Full credit report').first().waitFor({ timeout: 15000 });
@@ -69,7 +72,7 @@ const C = require('../src/lib/crypto');
     const hasClearedFraud = /Fraud alert cleared/i.test(bodyText);
     const hasClearedColl = /collection cleared/i.test(bodyText);
     await page.screenshot({ path: '/tmp/claude-0/-home-user-yscap/3bf10f82-a2e8-54fc-a9c0-2c87ec8ba5d3/scratchpad/credit-compare-ui.png', fullPage: false });
-    result = { ok: !crashed && hasScoreUp && hasClearedFraud, crashed, hasScoreUp, hasClearedFraud, hasClearedColl };
+    result = { ok: !crashed && hasScoreUp && hasClearedFraud && hasPullSummary, crashed, hasScoreUp, hasClearedFraud, hasClearedColl, hasPullSummary };
   } catch (e) {
     result = { ok: false, error: String(e && e.message || e) };
   }

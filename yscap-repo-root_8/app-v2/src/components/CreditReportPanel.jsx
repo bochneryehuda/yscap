@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import CreditReportDetail from './CreditReportDetail.jsx';
@@ -257,6 +257,19 @@ function ReportRow({ r, mayReconcile, onChanged }) {
   );
 }
 
+// Plain-language meaning of the chosen pull — so a non-technical user sees, in
+// business terms, exactly what will happen (score impact, new inquiry, cost)
+// before ordering. Covers the full 2×2: {soft, hard} × {reissue, brand-new}.
+// A HARD brand-new pull is the only score-affecting, most-costly corner → 'warn'.
+function pullMeaning(product, action) {
+  const hard = product === 'creditreport';
+  const reissue = action === 'Reissue';
+  if (!hard && reissue) return { tone: 'ok', label: 'Soft pull · Reissue (default)', detail: 'Re-pulls the borrower’s existing report. No new inquiry, no score impact, lowest cost.' };
+  if (!hard && !reissue) return { tone: 'ok', label: 'Soft pull · Brand-new', detail: 'Orders a fresh pre-qualification. A soft inquiry — it does NOT affect the borrower’s score.' };
+  if (hard && reissue) return { tone: 'ok', label: 'Hard pull · Reissue', detail: 'Re-pulls an existing full credit report using a prior report ID. No new inquiry on the borrower.' };
+  return { tone: 'warn', label: 'Hard pull · Brand-new', detail: 'Orders a fresh full tri-merge report. This is a REAL (hard) inquiry — it affects the borrower’s score and costs the most.' };
+}
+
 export default function CreditReportPanel({ appId }) {
   const { can } = useAuth();
   const mayPull = can('pull_credit');
@@ -268,6 +281,8 @@ export default function CreditReportPanel({ appId }) {
   const [product, setProduct] = useState('prequal');
   const [action, setAction] = useState('Reissue');
   const [reissueId, setReissueId] = useState('');
+  // Don't let a re-load stomp on an action the user deliberately chose.
+  const touchedAction = useRef(false);
 
   const load = () => api.creditReports(appId).then(r => {
     const list = r.reports || [];
@@ -275,12 +290,22 @@ export default function CreditReportPanel({ appId }) {
     // prefill the reissue identifier from the most recent report
     const latest = list.find(x => x.credit_report_identifier);
     if (latest && !reissueId) setReissueId(latest.credit_report_identifier);
+    // Smart default: reissue when there IS a prior report to reissue; otherwise
+    // there's nothing to re-pull, so default to a brand-new (soft) pull. Product
+    // stays soft (prequal) by default. Never override a manual pick.
+    if (!touchedAction.current && !latest) setAction('Submit');
   }).catch(e => setErr(e.message));
   useEffect(() => { if (mayPull) load(); }, [appId, mayPull]);
 
   async function order() {
     setErr(''); setMsg('');
     if (action === 'Reissue' && !reissueId.trim()) { setErr('A reissue needs the prior credit report identifier.'); return; }
+    // Guard the only score-affecting, most-costly corner: a brand-new HARD pull is
+    // a real inquiry on the borrower. Reissues and soft pulls proceed without a prompt.
+    if (product === 'creditreport' && action !== 'Reissue') {
+      const okHard = window.confirm('This is a HARD credit pull (a brand-new full report). It is a real inquiry that affects the borrower’s score and costs the most. Continue?');
+      if (!okHard) return;
+    }
     setBusy(true);
     try {
       // A fresh key per click so a deliberate retry is a new order, while a
@@ -325,7 +350,7 @@ export default function CreditReportPanel({ appId }) {
           </div>
           <div className="field">
             <label>Action</label>
-            <select className="input" value={action} onChange={e => setAction(e.target.value)}>
+            <select className="input" value={action} onChange={e => { touchedAction.current = true; setAction(e.target.value); }}>
               <option value="Reissue">Reissue (re-pull existing)</option>
               <option value="Submit">Brand-new order</option>
             </select>
@@ -336,6 +361,18 @@ export default function CreditReportPanel({ appId }) {
               onChange={e => setReissueId(e.target.value)} placeholder="e.g. 1202696" />
           </div>
         </div>
+        {/* Plain-language summary of exactly what this pull does (score / inquiry / cost). */}
+        {(() => {
+          const m = pullMeaning(product, action);
+          return (
+            <div style={{ marginTop: 8, padding: '8px 10px', borderRadius: 8,
+              border: `1px solid var(--${m.tone === 'warn' ? 'danger' : 'line'})`,
+              background: m.tone === 'warn' ? 'var(--danger-soft, #FBEAEA)' : 'var(--ink-1)' }}>
+              <div style={{ fontSize: 13 }}><strong style={{ color: m.tone === 'warn' ? 'var(--danger)' : undefined }}>{m.label}</strong></div>
+              <div className="muted small" style={{ marginTop: 2 }}>{m.detail}</div>
+            </div>
+          );
+        })()}
         {err && <div className="notice err" role="alert" style={{ marginTop: 8 }}>{err}</div>}
         {msg && <div className="notice ok" style={{ marginTop: 8 }}>{msg}</div>}
         <div className="row" style={{ marginTop: 10 }}>

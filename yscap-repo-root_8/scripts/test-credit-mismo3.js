@@ -34,6 +34,16 @@ ok('3.4 address', /<AddressLineText>100 Terrace Ave<\/AddressLineText>/.test(sof
 const hard = R.buildCreditRequest({ requestingPartyName: 'Y', submittingPartyName: 'Y LOS', lenderCaseIdentifier: 'L', requestId: 'r', product: 'creditreport', action: 'Submit', borrowers: [borrower()] });
 ok('3.4 hard Merge', /<CreditReportType>Merge<\/CreditReportType>/.test(hard) && !/SoftCheck/.test(hard));
 
+// FULL 2×2 (owner-directed: both pull types must support both actions).
+// hard pull, REISSUE — "Credit ReportX reissued" (needs a prior id).
+const hardReissue3 = R.buildCreditRequest({ requestingPartyName: 'Y', submittingPartyName: 'Y LOS', lenderCaseIdentifier: 'L', requestId: 'r', product: 'creditreport', action: 'Reissue', creditReportIdentifier: '2598227', borrowers: [borrower()] });
+ok('3.4 hard-reissue Merge', /<CreditReportType>Merge<\/CreditReportType>/.test(hardReissue3));
+ok('3.4 hard-reissue action Reissue', /<CreditReportRequestActionType>Reissue<\/CreditReportRequestActionType>/.test(hardReissue3));
+ok('3.4 hard-reissue carries the prior id', /<CreditReportIdentifier>2598227<\/CreditReportIdentifier>/.test(hardReissue3));
+// soft pull, REISSUE — "reissue a soft" default (needs a prior id).
+const softReissue3 = R.buildCreditRequest({ requestingPartyName: 'Y', submittingPartyName: 'Y LOS', lenderCaseIdentifier: 'L', requestId: 'r', product: 'prequal', action: 'Reissue', creditReportIdentifier: '2598227', borrowers: [borrower()] });
+ok('3.4 soft-reissue SoftCheck + Reissue', /SoftCheck/.test(softReissue3) && /<CreditReportRequestActionType>Reissue<\/CreditReportRequestActionType>/.test(softReissue3));
+
 const joint = R.buildCreditRequest({ requestingPartyName: 'Y', submittingPartyName: 'Y LOS', lenderCaseIdentifier: 'L', requestId: 'r', product: 'prequal', action: 'Submit', borrowers: [borrower(), borrower({ firstName: 'Ann', ssn: '992-70-0027' })] });
 ok('3.4 joint two parties', (joint.match(/<PARTY SequenceNumber=/g) || []).length >= 2);
 ok('3.4 joint request type', /<CreditRequestType>Joint<\/CreditRequestType>/.test(joint));
