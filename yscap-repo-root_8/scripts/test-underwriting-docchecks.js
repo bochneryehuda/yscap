@@ -55,6 +55,14 @@ for (const bad of ['Dissolved', 'Suspended', 'Forfeited', 'Not in Good Standing'
   assert.ok(!unk.some((f) => f.code === 'entity_not_in_good_standing'), 'an unrecognized status is not a fatal');
 }
 
+// ---- Credit: middle score vs the priced FICO (Group C) ----
+assert.deepStrictEqual(codes(C.computeCreditFindings({ subjectName: 'A B', ficoScore: 720, readable: true }, { registered_fico: 700 }, {})), [], 'actual score above the priced FICO is clean');
+{
+  const low = C.computeCreditFindings({ subjectName: 'A B', ficoScore: 675, readable: true }, { registered_fico: 700 }, {}).find((f) => f.code === 'credit_score_below_priced');
+  assert.ok(low && low.severity === 'warning', 'actual middle score below the priced FICO -> re-register warning');
+}
+assert.deepStrictEqual(codes(C.computeCreditFindings({ subjectName: 'A B', ficoScore: 699, readable: true }, { registered_fico: 700 }, {})), [], 'a 1-2 pt drop is ignored');
+
 // ---- Insurance ----
 const insGood = { namedInsured: 'Maple LLC', dwellingCoverage: 400000, policyEffective: '2026-06-01', policyExpiration: '2027-06-01', mortgageeClausePresent: true, readable: true };
 assert.deepStrictEqual(codes(C.computeInsuranceFindings(insGood, { loan_amount: 300000 }, { today: TODAY })), []);

@@ -21,13 +21,13 @@ const { sellerNames: contractSellers } = require('./purchase-contract-checks');
 async function loadContext(client, appId) {
   const app = (await client.query(
     `SELECT id, borrower_id, llc_id, property_address, purchase_price, loan_amount,
-            as_is_value, arv, rehab_budget,
+            as_is_value, arv, rehab_budget, program,
             is_assignment, assignment_fee, underlying_contract_price
        FROM applications WHERE id = $1`, [appId])).rows[0] || null;
   if (!app) return null;
   const borrower = app.borrower_id
     ? (await client.query(
-        `SELECT id, first_name, last_name, date_of_birth, current_address, prior_address
+        `SELECT id, first_name, last_name, date_of_birth, current_address, prior_address, fico
            FROM borrowers WHERE id = $1`, [app.borrower_id])).rows[0] || null
     : null;
   // The vesting entity on the file + every LLC the borrower is on record for (assets).
@@ -89,7 +89,8 @@ function subjectFor(docType, ctx) {
       return { entity_name: vestingName || null, borrower_name: borrowerName(borrower) };
     case 'credit_report':
     case 'background_report':
-      return { borrower_name: borrowerName(borrower), entity_name: vestingName || null, borrower };
+      return { borrower_name: borrowerName(borrower), entity_name: vestingName || null, borrower,
+        registered_fico: borrower && borrower.fico }; // the FICO the loan was PRICED on (borrowers.fico)
     case 'flood':
       return { property_address: app && app.property_address };
     case 'scope_of_work':

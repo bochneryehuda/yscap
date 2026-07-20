@@ -297,6 +297,18 @@ function computeCreditFindings(c, subject, opts = {}) {
       title: 'Credit shows recent mortgage lates',
       howTo: 'Recent mortgage late payments appear on the report. Confirm they meet the program\'s housing-history requirement.' }));
   }
+  // The loan was PRICED on an estimated FICO (Products & Pricing). The actual middle/representative
+  // score on the pulled report must not come in BELOW that estimate — a lower real score can land in
+  // a worse pricing tier, so the file must be re-registered at the true score (owner rule
+  // 2026-07-20). A higher actual score is fine (never blocks). Small drops (1-2 pts) are ignored.
+  const actual = num(c.ficoScore), priced = subject && num(subject.registered_fico);
+  if (actual != null && priced != null && priced > 0 && actual < priced - 2) {
+    out.push(mk('credit_report', { code: 'credit_score_below_priced', severity: 'warning', field: 'fico',
+      docValue: `${actual} (report)`, fileValue: `${priced} (priced)`,
+      title: 'The credit middle score is below the FICO the loan was priced on',
+      howTo: `The report's middle/representative score is ${actual}, but the loan was priced on ${priced}. Re-register the product at the true score in Products & Pricing — a lower score may change the tier, rate, or eligibility.`,
+      actions: ['post_condition', 'fix_file', 'dismiss'] }));
+  }
   return out;
 }
 
