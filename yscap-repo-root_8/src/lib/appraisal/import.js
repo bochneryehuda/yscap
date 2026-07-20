@@ -108,7 +108,7 @@ async function importAppraisalTx(db, {
   // Merge the db/158 enrichment fields — extract() keys them EXACTLY to the column names. The four
   // jsonb columns need stringifying; everything else is a scalar the driver stores directly.
   Object.assign(cols, A.enrich || {});
-  for (const jk of ['utilities', 'updates', 'amenities', 'rent_included_utilities']) {
+  for (const jk of ['utilities', 'updates', 'amenities', 'rent_included_utilities', 'market_trends']) {
     if (cols[jk] != null) cols[jk] = JSON.stringify(cols[jk]);
   }
   const keys = Object.keys(cols);

@@ -77,6 +77,23 @@ function thousands(v) { const n = toNum(v); return n != null && n >= 1 && n <= 1
 function percent(v) { if (v == null) return null; const s = String(v).replace(/%/g, '').trim(); return toNum(s); }
 // A small integer count (rooms, spaces, phases, units) — 0 is a VALID value here (unlike money()).
 function count(v, max) { const n = toNum(v); return n != null && Number.isInteger(n) && n >= 0 && n <= max ? n : null; }
+// A 1004MC market-grid cell. The cells are FULL DOLLARS ("452500" or "$829,500"), day/month
+// counts ("98", "5.26"), or ratios ("103.00", "99%"); many are placeholders ("N/A", "-", "",
+// "Unavailable"). Strip currency/percent formatting, reject the placeholders, keep a real 0.
+function mcNum(v) {
+  if (v == null) return null;
+  const s = String(v).replace(/[$,%\s]/g, '').trim();
+  if (!s || /^(n\/?a|na|-+|—+|unavailable|none|tbd)$/i.test(s)) return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+// 1004MC metric → the attribute that carries its value, and the period tag → a short jsonb key.
+const MC_METRICS = {
+  TotalSales: '_Count', TotalListings: '_Count', MedianSalesDOM: '_Count', MedianListDOM: '_Count',
+  Supply: '_Count', AbsorptionRate: '_Rate', MedianSalesToListRatio: '_Rate',
+  MedianSalesPrice: '_Amount', MedianListPrice: '_Amount',
+};
+const MC_PERIODS = { Prior7To12Months: 'prior712', Prior4To6Months: 'prior46', Last3Months: 'last3' };
 // A whole-years figure (age / economic life). 0 is valid ("effectively new"); reject the 999
 // placeholder and anything out of a sane range.
 function years(v, max) { const n = toNum(v); return n != null && n >= 0 && n <= max ? Math.round(n) : null; }
@@ -404,6 +421,35 @@ function enrichment(root, prop, st, site, subject0, rep, formType) {
   const mk = subjFind(root, 'MARKET');
   o.nbhd_adverse_financing = yn(A(mk, 'MarketTrendsAdverseFinancingIndicator'));
   o.nbhd_foreclosure_activity = yn(A(mk, 'MarketTrendsForeclosureActivityIndicator'));
+
+  // -- 1004MC market-conditions grid (MARKET > MARKET_INVENTORY). Each row is one metric for one
+  // period (Prior7To12Months|Prior4To6Months|Last3Months) OR a trend row (_TrendType, no period).
+  // Amounts are FULL DOLLARS — read with mcNum(), never thousands(). Scoped to the subject MARKET
+  // (subjFind already anchors to the subject, so a comp's block can't bleed in).
+  const mcRows = mk ? X.findAll(mk, 'MARKET_INVENTORY') : [];
+  if (mcRows.length) {
+    const grid = {};
+    for (const row of mcRows) {
+      const type = clean(X.attr(row, '_Type'));
+      const valAttr = MC_METRICS[type];
+      if (!type || !valAttr) continue;
+      const g = grid[type] || (grid[type] = {});
+      const period = MC_PERIODS[clean(X.attr(row, '_MonthRangeType'))];
+      const trend = enumOf(X.attr(row, '_TrendType'), ['Increasing', 'Stable', 'Declining']);
+      if (!period) { if (trend) g.trend = trend; continue; }  // a trend row carries no period
+      const num = mcNum(X.attr(row, valAttr));
+      if (num != null) g[period] = num;
+    }
+    // Keep only metrics that actually carried a value (an all-placeholder metric drops out).
+    for (const k of Object.keys(grid)) { const g = grid[k]; if (g.prior712 == null && g.prior46 == null && g.last3 == null && g.trend == null) delete grid[k]; }
+    o.market_trends = Object.keys(grid).length ? grid : null;
+    // Flatten the CURRENT market (Last-3-Months) point metrics + the price-trend conclusion.
+    // Strict last-3-months only — never substitute an older period into a "current" flag.
+    o.mc_months_supply = grid.Supply && grid.Supply.last3 != null ? grid.Supply.last3 : null;
+    o.mc_median_dom = grid.MedianSalesDOM && grid.MedianSalesDOM.last3 != null ? Math.round(grid.MedianSalesDOM.last3) : null;
+    o.mc_sale_to_list_pct = grid.MedianSalesToListRatio && grid.MedianSalesToListRatio.last3 != null ? grid.MedianSalesToListRatio.last3 : null;
+    o.mc_price_trend = (grid.MedianSalesPrice && grid.MedianSalesPrice.trend) || null;
+  }
 
   // -- site / occupancy --
   o.occupancy_status = enumOf(A(prop, '_CurrentOccupancyType'), ['Vacant', 'TenantOccupied', 'OwnerOccupied']);
@@ -781,6 +827,10 @@ function extract(xml) {
     else if (ooPct < 0.5) warnings.push({ code: 'condo_low_owner_occ', msg: `Condo project is ${Math.round(ooPct * 100)}% owner-occupied (<50%) — warrantability concern` });
   }
   if (enrich.condo_concentrated_ownership === true) warnings.push({ code: 'condo_concentrated_ownership', msg: 'Condo project has concentrated single-entity ownership — eligibility risk' });
+  // 1004MC market-conditions tripwires (the appraiser's own current-market read)
+  if (enrich.mc_price_trend === 'Declining') warnings.push({ code: 'mc_price_declining', msg: '1004MC median sale price is declining — the appraiser flagged a softening market' });
+  if (enrich.mc_months_supply != null && enrich.mc_months_supply > 6) warnings.push({ code: 'mc_oversupply', msg: `1004MC shows ${enrich.mc_months_supply} months of housing supply (>6) — a buyer's market, slower exit` });
+  if (enrich.mc_sale_to_list_pct != null && enrich.mc_sale_to_list_pct < 95) warnings.push({ code: 'mc_weak_pricing', msg: `1004MC median sale-to-list is ${enrich.mc_sale_to_list_pct}% (<95%) — sellers are conceding on price` });
 
   return {
     ok: true, formType,
