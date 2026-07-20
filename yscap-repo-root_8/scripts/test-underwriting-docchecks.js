@@ -211,7 +211,10 @@ assert.deepStrictEqual(codes(C.computeBackgroundFindings({ subjectName: 'John Sm
   const subj = { borrower_name: 'Michael Goldberg', entity_name: 'Maple Grove Holdings LLC', property_address: { line1: '128 Elm St' } };
   assert.deepStrictEqual(codes(C.computeSignedApplicationFindings({ readable: true, borrowerName: 'Michael Goldberg', signaturePresent: true, businessPurposePresent: true }, subj, {})), []);
   assert.ok(C.computeSignedApplicationFindings({ readable: true, borrowerName: 'X', signaturePresent: false, businessPurposePresent: true }, subj, {}).some((f) => f.code === 'application_unsigned'));
-  assert.ok(C.computeSignedApplicationFindings({ readable: true, borrowerName: 'X', signaturePresent: true, businessPurposePresent: false }, subj, {}).some((f) => f.code === 'application_no_business_purpose'));
+  {
+    const bp = C.computeSignedApplicationFindings({ readable: true, borrowerName: 'X', signaturePresent: true, businessPurposePresent: false }, subj, {}).find((f) => f.code === 'application_no_business_purpose');
+    assert.ok(bp && bp.severity === 'fatal' && bp.blocksCtc === true, 'a missing business-purpose disclosure blocks CTC (the loan\'s exemption basis)');
+  }
 }
 // ===== INVESTOR STRUCTURE (internal) =====
 {

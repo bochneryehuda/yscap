@@ -22,6 +22,7 @@ const LABEL = {
   operating_agreement: 'Operating agreement', ein_letter: 'EIN letter', good_standing: 'Good standing',
   llc_formation: 'Formation docs', credit_report: 'Credit report', settlement: 'Settlement statement',
   flood: 'Flood cert', payoff_statement: 'Payoff statement', scope_of_work: 'Scope of work',
+  signed_term_sheet: 'Signed term sheet', signed_application: 'Signed application', investor_structure: 'Investor structure',
 };
 const lbl = (t) => LABEL[t] || String(t || '').replace(/_/g, ' ');
 

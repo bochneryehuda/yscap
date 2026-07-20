@@ -665,11 +665,15 @@ function computeSignedApplicationFindings(a, subject, opts = {}) {
       actions: ['request_document', 'post_condition', 'dismiss'] }));
   }
   if (a.businessPurposePresent === false) {
-    out.push(mk('signed_application', { code: 'application_no_business_purpose', severity: 'warning', field: 'business_purpose',
+    // FATAL: the business-purpose / non-owner-occupied certification is the legal basis for this loan
+    // being exempt from consumer-mortgage regulation (TILA/RESPA/ATR). Closing without it is a real
+    // compliance exposure, so it blocks CTC — but it's a stored per-doc finding, so a senior can
+    // grant an exception if the AI misread a certification that is in fact present.
+    out.push(mk('signed_application', { code: 'application_no_business_purpose', severity: 'fatal', field: 'business_purpose',
       docValue: 'no business-purpose certification', fileValue: null,
       title: 'The business-purpose disclosure is missing',
-      howTo: 'A business-purpose / non-owner-occupied certification is required — it is the basis for this loan being exempt from consumer-mortgage rules. Obtain the signed business-purpose disclosure before closing.',
-      actions: ['request_document', 'post_condition', 'decline', 'dismiss'] }));
+      howTo: 'A business-purpose / non-owner-occupied certification is required — it is the basis for this loan being exempt from consumer-mortgage rules. Obtain the signed business-purpose disclosure before closing (or, if it is present and was misread, grant an exception).',
+      actions: ['request_document', 'post_condition', 'grant_exception', 'decline', 'dismiss'] }));
   }
   return out;
 }

@@ -55,9 +55,9 @@ const FILENAME_HINTS = [
   [/settle|closing.?disc|hud|alta/i, 'settlement'],
   [/pay.?off|payoff.?demand/i, 'payoff_statement'], // before bank_statement — a "payoff statement" contains "statement"
   [/void|wire.?instruction|ach.?instruction/i, 'voided_check'],
-  [/permit|plans.?(and|&).?spec|cert.*occupan|\bc\.?o\.?\b/i, 'plans_permits'],
+  [/permit|plans.?(and|&).?spec|cert.*occupan/i, 'plans_permits'], // NB: no bare "C.O." — it matches "CO" (Colorado) / co-borrower; certificate-of-occupancy is covered by cert.*occupan
   [/term.?sheet|summary.?of.?terms/i, 'signed_term_sheet'],
-  [/application|business.?purpose|1003/i, 'signed_application'],
+  [/loan.?application|signed.?app|business.?purpose|\b1003\b/i, 'signed_application'], // require loan/signed prefix — bare "application" catches credit_application etc.
   [/investor.?structure|deal.?structure|structure.?printout/i, 'investor_structure'],
   [/bank|statement/i, 'bank_statement'],
   [/credit/i, 'credit_report'],
