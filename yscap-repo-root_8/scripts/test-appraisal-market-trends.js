@@ -62,5 +62,22 @@ assert(!anyNegative, 'no market-grid metric came through negative');
 assert(!anyNonLast3Flat, 'flattened mc_* values equal their Last-3-Months / trend cell exactly (no stale-period fallback)');
 assert(Object.keys(warnCodes).length > 0, `at least one 1004MC tripwire fired across the corpus (${JSON.stringify(warnCodes)})`);
 
+// Dual-grid regression guard: a condo file nests a SECOND MARKET_INVENTORY grid under
+// MARKET > SUBJECT_PROJECT. The reader must keep the NEIGHBORHOOD grid (direct children of
+// MARKET) — a recursive findAll would let the later project row clobber the neighborhood value.
+// These three files were proven wrong before the fix (project's 0 / leaked value overwrote the
+// neighborhood's 0.23 / 0.9 / "Unavailable"→null). Skip any that aren't in this corpus.
+const KNOWN = { 'nan_Danziger.xml': 0.23, 'nan_Wieder1.xml': 0.9, 'nan_Wieder2.xml': null };
+let checkedDual = 0;
+for (const [fn, expected] of Object.entries(KNOWN)) {
+  const p = path.join(DIR, fn);
+  if (!fs.existsSync(p)) continue;
+  const e = extract(fs.readFileSync(p, 'utf8')).enrich || {};
+  const got = e.mc_months_supply == null ? null : Number(e.mc_months_supply);
+  assert(got === expected, `${fn}: neighborhood months-supply is ${expected} (not the project grid's value) — got ${got}`);
+  checkedDual++;
+}
+if (!checkedDual) console.log('NOTE dual-grid regression files not in this corpus — guard skipped');
+
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nALL market-trends assertions passed');
 process.exit(failures ? 1 : 0);

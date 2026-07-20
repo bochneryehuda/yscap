@@ -425,8 +425,12 @@ function enrichment(root, prop, st, site, subject0, rep, formType) {
   // -- 1004MC market-conditions grid (MARKET > MARKET_INVENTORY). Each row is one metric for one
   // period (Prior7To12Months|Prior4To6Months|Last3Months) OR a trend row (_TrendType, no period).
   // Amounts are FULL DOLLARS — read with mcNum(), never thousands(). Scoped to the subject MARKET
-  // (subjFind already anchors to the subject, so a comp's block can't bleed in).
-  const mcRows = mk ? X.findAll(mk, 'MARKET_INVENTORY') : [];
+  // (subjFind anchors to the subject, so a comp's block can't bleed in). IMPORTANT: read only the
+  // DIRECT children of MARKET — the neighborhood 1004MC grid. A condo file also nests a SECOND grid
+  // under MARKET > SUBJECT_PROJECT for the project itself; findAll() would pull both and, since the
+  // two share _Type keys, the later project row would overwrite the neighborhood value (proven to
+  // store a wrong mc_months_supply on the condo files). We deliberately keep the neighborhood grid.
+  const mcRows = mk ? mk.children.filter((c) => c.tag === 'MARKET_INVENTORY') : [];
   if (mcRows.length) {
     const grid = {};
     for (const row of mcRows) {
@@ -445,9 +449,16 @@ function enrichment(root, prop, st, site, subject0, rep, formType) {
     o.market_trends = Object.keys(grid).length ? grid : null;
     // Flatten the CURRENT market (Last-3-Months) point metrics + the price-trend conclusion.
     // Strict last-3-months only — never substitute an older period into a "current" flag.
-    o.mc_months_supply = grid.Supply && grid.Supply.last3 != null ? grid.Supply.last3 : null;
-    o.mc_median_dom = grid.MedianSalesDOM && grid.MedianSalesDOM.last3 != null ? Math.round(grid.MedianSalesDOM.last3) : null;
-    o.mc_sale_to_list_pct = grid.MedianSalesToListRatio && grid.MedianSalesToListRatio.last3 != null ? grid.MedianSalesToListRatio.last3 : null;
+    // Each flattened value is magnitude-fitted to its numeric column (keeps a real 0, rejects a
+    // negative/garbage cell, caps below the column precision) so a corrupt cell nulls that one
+    // field instead of overflowing the INSERT and rolling back the whole appraisal import —
+    // matching money()/bounded()/years() elsewhere in this file. (mc_median_dom int, mc_months_supply
+    // numeric(8,2), mc_sale_to_list_pct numeric(6,2); the jsonb grid keeps full range — no overflow.)
+    const mcFit = (v, max) => (v != null && v >= 0 && v < max ? v : null);
+    o.mc_months_supply = grid.Supply ? mcFit(grid.Supply.last3, 1e5) : null;
+    const dom = grid.MedianSalesDOM ? mcFit(grid.MedianSalesDOM.last3, 1e7) : null;
+    o.mc_median_dom = dom != null ? Math.round(dom) : null;
+    o.mc_sale_to_list_pct = grid.MedianSalesToListRatio ? mcFit(grid.MedianSalesToListRatio.last3, 9999) : null;
     o.mc_price_trend = (grid.MedianSalesPrice && grid.MedianSalesPrice.trend) || null;
   }
 
