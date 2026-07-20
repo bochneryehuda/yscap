@@ -1,5 +1,5 @@
 -- ============================================================================
--- 172_sitewire_lifecycle.sql — the draw-project LIFECYCLE state on a managed file
+-- 174_sitewire_lifecycle.sql — the draw-project LIFECYCLE state on a managed file
 --
 -- The Draw Coordinator finishes a project ("finish the draw process") or closes it out
 -- ("mark paid off") from the Draw-Management desk. That records a PILOT-side lifecycle state on
