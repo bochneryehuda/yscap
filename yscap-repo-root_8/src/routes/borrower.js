@@ -2188,7 +2188,10 @@ router.post('/documents', async (req, res) => {
     // S2-09: only a BORROWER-FACING item may be flipped by a borrower — never a
     // staff-only condition (the id is borrower-supplied, so ownership alone is not
     // enough). Mirrors the audience guard on the tool/info endpoints.
-    await db.query(`UPDATE checklist_items SET status='received', updated_at=now() WHERE id=$1 AND audience IN ('borrower','both') AND (application_id IN (SELECT id FROM applications WHERE ${OWN_FILE_SQL("", "$2")}) OR borrower_id=$2 OR llc_id IN (SELECT id FROM llcs WHERE borrower_id=$2))`, [b.checklistItemId, me(req)]);
+    // A new version is unreviewed evidence — clear any prior sign-off so the
+    // swapped-in file is re-reviewed (it must not ride a stale sign-off to
+    // clear-to-close). The audience + ownership guard is unchanged.
+    await db.query(`UPDATE checklist_items SET status='received', signed_off_at=NULL, signed_off_by=NULL, reviewed_at=NULL, reviewed_by=NULL, updated_at=now() WHERE id=$1 AND audience IN ('borrower','both') AND (application_id IN (SELECT id FROM applications WHERE ${OWN_FILE_SQL("", "$2")}) OR borrower_id=$2 OR llc_id IN (SELECT id FROM llcs WHERE borrower_id=$2))`, [b.checklistItemId, me(req)]);
     enqueueChecklistStatusPush(b.checklistItemId).catch(() => {}); // mapped conditions → ClickUp dropdown
   }
   // An LLC document changed — recompute the LLC condition on every open file

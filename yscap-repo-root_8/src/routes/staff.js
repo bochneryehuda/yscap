@@ -2584,9 +2584,13 @@ async function signOffGate(itemId, actor) {
       // gov-ID. Accept the borrower's on-file photo ID as fulfillment (mirrors the
       // reuse rule, which keys off the file's borrower's photo_id_document_id).
       if (code === 'rtl_p1_id' || code === 'gov_id') {
+        // The on-file photo ID must itself be a CURRENT, non-rejected document —
+        // a rejected/superseded ID pointer is not fulfillment (the pointer is only
+        // cleared by FK-on-delete, so reject alone leaves it dangling).
         const pid = await db.query(
           `SELECT 1 FROM borrowers b
-            WHERE b.photo_id_document_id IS NOT NULL
+             JOIN documents d ON d.id = b.photo_id_document_id
+            WHERE d.is_current AND COALESCE(d.review_status,'') <> 'rejected'
               AND (b.id = $1 OR b.id = (SELECT borrower_id FROM applications WHERE id = $2))
             LIMIT 1`, [item.borrower_id || null, item.application_id || null]);
         if (pid.rows.length) return null;
@@ -5559,7 +5563,10 @@ router.post('/applications/:id/documents', async (req, res) => {
           AND ($3::text IS NOT NULL OR $4::uuid IS NULL)
           AND ($3::text IS NULL OR slot_label IS NOT DISTINCT FROM $3)`,
       [b.checklistItemId, r.rows[0].id, slot, b.replaceDocumentId || null]);
-    await db.query(`UPDATE checklist_items SET status='received', updated_at=now() WHERE id=$1`, [b.checklistItemId]);
+    // A superseding upload replaces the reviewed evidence with a new UNREVIEWED
+    // file, so a prior sign-off no longer matches what's on the item — drop it so
+    // the new version is re-reviewed before the file can clear-to-close.
+    await require('../lib/checklist-evidence').reopenConditionEvidence(db, b.checklistItemId, 'received');
     enqueueChecklistStatusPush(b.checklistItemId).catch(() => {}); // mapped conditions → ClickUp dropdown
     // The shared list works both ways — tell the borrower their team added it.
     // Staff-only (internal) conditions are never surfaced or emailed to them.
@@ -5675,10 +5682,11 @@ router.post('/documents/:id/review', async (req, res) => {
         const newHint = moreNote ? (baseHint ? `${baseHint} · Still needed: ${moreNote}` : `Still needed: ${moreNote}`) : null;
         await db.query(
           `UPDATE checklist_items SET status='outstanding',
+                  signed_off_at=NULL, signed_off_by=NULL, reviewed_at=NULL, reviewed_by=NULL,
                   notes=CASE WHEN $2 <> '' THEN $2 ELSE notes END,
                   borrower_hint=COALESCE($3, borrower_hint), updated_at=now() WHERE id=$1`,
           [doc.checklist_item_id, moreNote ? `Still needed: ${moreNote}` : '', newHint]);
-      } else {
+      } else if (action === 'accept') {
         // Accepting a document only marks the condition RECEIVED — NOT satisfied
         // (owner-directed 2026-07-12). The condition stays open on the list until
         // a reviewer explicitly SIGNS IT OFF (which routes through signOffGate and
@@ -5686,9 +5694,16 @@ router.post('/documents/:id/review', async (req, res) => {
         // criminal report, insurance binder AND invoice). This prevents a
         // multi-document condition from "flying away" the moment ONE of its
         // documents is accepted, and keeps accept (doc is good) distinct from
-        // sign-off (the whole condition is complete). Reject -> issue.
-        await db.query(`UPDATE checklist_items SET status=$2, updated_at=now() WHERE id=$1`,
-          [doc.checklist_item_id, action === 'accept' ? 'received' : 'issue']);
+        // sign-off (the whole condition is complete).
+        await db.query(`UPDATE checklist_items SET status='received', updated_at=now() WHERE id=$1`,
+          [doc.checklist_item_id]);
+      } else {
+        // Reject -> issue, AND drop any prior sign-off: the rejected document was
+        // the evidence the sign-off attested to, so the condition must re-open
+        // (otherwise a signed-off condition stays "cleared" for the clear-to-close
+        // gate with rejected/zero evidence). Same class as the LLC/track-record
+        // reject-revokes-verification handling below.
+        await require('../lib/checklist-evidence').reopenConditionEvidence(db, doc.checklist_item_id, 'issue');
       }
       enqueueChecklistStatusPush(doc.checklist_item_id).catch(() => {}); // mapped conditions → ClickUp dropdown
     }
