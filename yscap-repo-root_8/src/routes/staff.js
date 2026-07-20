@@ -2432,10 +2432,13 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
     const safeBody = anyBorrower ? scrubTextExcept(bodyText, protect) : bodyText;
     const rawSubject = String((req.body && req.body.subject) || '').trim();
     const subject = (rawSubject || (ctx ? `Re: ${ctx.loanNo}` : 'Re: your loan file')).slice(0, 200);
+    // Split the typed reply into paragraphs: the first is the intro (body), the
+    // rest render as additional lines — never both, so the text isn't duplicated.
+    const paras = safeBody.split(/\n{2,}/).map((s) => s.trim()).filter(Boolean);
     const built = notify.buildEmail({
       title: subject.replace(/^\s*re:\s*/i, '') || 'A message from your loan team',
-      body: safeBody,
-      lines: safeBody.split(/\n{2,}/).map((s) => s.trim()).filter(Boolean).slice(1) || [],
+      body: paras[0] || safeBody,
+      lines: paras.slice(1),
       applicationId: appId,
       subjectTag: ctx ? ctx.subjectTag : '',
       link: audience === 'borrower' ? `/app/${appId}` : `/internal/app/${appId}`,
