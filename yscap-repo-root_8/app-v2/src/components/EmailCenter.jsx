@@ -103,6 +103,12 @@ function MessageBody({ appId, row, globalMode }) {
         {loading ? <p className="muted small" style={{ padding: 16 }}>Loading the message…</p>
           : err ? <div className="notice err">{err}</div>
           : html
+            // SECURITY: render the (possibly attacker-controlled inbound) email
+            // HTML in a sandbox with NO allow-scripts — so no JS, inline handler,
+            // or javascript: URL can run, and same-origin can't be abused without
+            // scripting. allow-same-origin is ONLY here so onFrameLoad can read
+            // the body height. NEVER add allow-scripts — that would be a full
+            // sandbox escape (cookie/localStorage theft, top navigation).
             ? <iframe ref={frameRef} title="email" className="ec-frame" sandbox="allow-same-origin" srcDoc={html} onLoad={onFrameLoad} />
             : text
               ? <pre className="ec-plain">{text}</pre>
