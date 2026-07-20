@@ -113,6 +113,12 @@ const uniq = `eh-${process.pid}-${Date.now()}`;
   assert(inbRow && inbRow.direction === 'inbound' && inbRow.body_text === 'my reply' && inbRow.status === 'forwarded',
     'captureInbound stored body, then refined status to forwarded WITHOUT losing the body');
 
+  // ---- fan-out consolidation: the SAME email to two staffers is ONE message ----
+  await emailLog.captureOutbound({ to: [`${uniq}-lo@example.test`], subject: 'Team update · YS-1', html: '<p>x</p>', replyTo: `file+${appId}@r.test` },
+    { applicationId: appId, type: 'status_change', audience: 'staff', status: 'sent' });
+  await emailLog.captureOutbound({ to: [`${uniq}-other@example.test`], subject: 'Team update · YS-1', html: '<p>x</p>', replyTo: `file+${appId}@r.test` },
+    { applicationId: appId, type: 'status_change', audience: 'staff', status: 'skipped' });
+
   // ---- renderHistoricalBody ----
   const built = await emailLog.renderHistoricalBody(nStaffSent);
   assert(built && built.html && /Status moved to Processing/i.test(built.html), 'renderHistoricalBody re-renders a branded body from a bare notification');
@@ -129,6 +135,11 @@ const uniq = `eh-${process.pid}-${Date.now()}`;
   const list = await listRes.json();
   assert(listRes.status === 200 && Array.isArray(list) && list.length >= 3, `per-file list returns rows (${list.length})`);
   assert(list.some((r) => r.direction === 'inbound') && list.some((r) => r.direction === 'outbound'), 'per-file list has both inbound + outbound');
+  // the fan-out to two staffers consolidates into ONE message listing both, each
+  // with its own delivery status
+  const fanout = list.find((r) => (r.subject || '').startsWith('Team update'));
+  assert(fanout && Array.isArray(fanout.recipients) && fanout.recipients.length === 2, `fan-out consolidated into one message with all recipients (${fanout ? fanout.recipients.length : 'missing'})`);
+  assert(fanout && fanout.recipients.some((x) => x.status === 'sent') && fanout.recipients.some((x) => x.status === 'skipped'), 'each recipient carries its own delivery status');
 
   // detail with on-demand render of a historical (bodyless) row
   const histMsg = list.find((r) => r.reconstructed && r.direction === 'outbound' && !r.has_body);

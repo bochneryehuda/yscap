@@ -43,12 +43,50 @@ function StatusPill({ row }) {
   return <span className={`ec-pill ec-pill-${tone}`}>{label}</span>;
 }
 
+// Short per-recipient delivery indicator (a colored dot + hover label).
+function recipStatus(s) {
+  if (s === 'sent') return { tone: 'ok', label: 'Emailed' };
+  if (s === 'error') return { tone: 'danger', label: 'Email failed' };
+  if (s === 'skipped') return { tone: 'muted', label: 'In-app only' };
+  return { tone: 'muted', label: 'Pending' };
+}
+
 function partyList(row) {
   if (row.direction === 'inbound') return row.from_name || row.from_email || 'Unknown sender';
+  const recips = Array.isArray(row.recipients) && row.recipients.length ? row.recipients : null;
+  if (recips) {
+    const names = recips.map((r) => r.name || r.email).filter(Boolean);
+    if (!names.length) return `${recips.length} recipient${recips.length === 1 ? '' : 's'}`;
+    if (names.length <= 2) return names.join(', ');
+    return `${names.slice(0, 2).join(', ')} +${names.length - 2}`;
+  }
   const to = Array.isArray(row.to) ? row.to : [];
   if (row.recipient_name) return row.recipient_name + (to[0] && to[0].email ? ` · ${to[0].email}` : '');
   if (to.length) return to.map((t) => t.name || t.email).filter(Boolean).join(', ');
   return row.recipient_kind === 'staff' ? 'Staff' : row.recipient_kind === 'borrower' ? 'Borrower' : '—';
+}
+
+// The full recipient roster for the reader header: every person this exact email
+// reached, each with its own delivery status.
+function RecipientRoster({ row }) {
+  const recips = Array.isArray(row.recipients) && row.recipients.length
+    ? row.recipients
+    : (Array.isArray(row.to) ? row.to.map((t) => ({ email: t.email, name: t.name, kind: row.recipient_kind, status: row.status })) : []);
+  if (!recips.length) return <span className="muted small">—</span>;
+  return (
+    <span className="ec-recips">
+      {recips.map((r, i) => {
+        const st = recipStatus(r.status);
+        const label = r.name && r.email ? `${r.name} <${r.email}>` : (r.name || r.email || 'recipient');
+        return (
+          <span className="ec-recip" key={i} title={`${label} — ${st.label}`}>
+            <span className={`ec-recip-dot ec-pill-${st.tone}`} />
+            {r.name || r.email}
+          </span>
+        );
+      })}
+    </span>
+  );
 }
 
 // The reader pane for a single message: recipients, timestamp, status, and the
@@ -89,14 +127,17 @@ function MessageBody({ appId, row, globalMode }) {
         </div>
         <div className="ec-reader-parties">
           {row.direction === 'inbound'
-            ? <><strong>From</strong> {row.from_name ? `${row.from_name} · ` : ''}{row.from_email || 'unknown'}</>
-            : <><strong>To</strong> {partyList(row)}</>}
+            ? <><strong>From</strong> <span>{row.from_name ? `${row.from_name} · ` : ''}{row.from_email || 'unknown'}</span></>
+            : <><strong>To</strong> <RecipientRoster row={row} /></>}
           {row.file_label && globalMode ? <span className="ec-file-chip">{row.file_label}</span> : null}
         </div>
         {row.error ? <div className="ec-reader-error">Delivery error: {row.error}</div> : null}
         {Array.isArray(row.attachments) && row.attachments.length
-          ? <div className="ec-attachments">{row.attachments.map((a, i) => (
-              <span className="ec-attach" key={i}>📎 {a.filename}</span>))}</div>
+          ? <div className="ec-attachments">
+              <span className="ec-attach-label">{row.attachments.length} attachment{row.attachments.length === 1 ? '' : 's'}:</span>
+              {row.attachments.map((a, i) => (
+                <span className="ec-attach" key={i}>📎 {a.filename}{a.size ? <span className="muted"> · {Math.max(1, Math.round(a.size / 1024))} KB</span> : null}</span>))}
+            </div>
           : null}
       </div>
       <div className="ec-reader-body">

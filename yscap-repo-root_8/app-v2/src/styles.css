@@ -2564,3 +2564,13 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
   .ec-split{ grid-template-columns:1fr; }
   .ec-list{ max-height:none; }
 }
+
+/* Recipient roster in the reader header (every person the email reached + status) */
+.ec-recips{ display:inline-flex; flex-wrap:wrap; gap:6px 10px; align-items:center; }
+.ec-recip{ display:inline-flex; align-items:center; gap:5px; font-size:13px; color:var(--text);
+  background:var(--ink-2); border:1px solid var(--line); border-radius:999px; padding:2px 9px 2px 7px; }
+.ec-recip-dot{ width:7px; height:7px; border-radius:50%; display:inline-block; padding:0; border:none; }
+.ec-recip-dot.ec-pill-ok{ background:var(--ok); }
+.ec-recip-dot.ec-pill-danger{ background:var(--danger); }
+.ec-recip-dot.ec-pill-muted{ background:var(--text-soft); }
+.ec-attach-label{ font-size:12px; color:var(--text-soft); margin-right:2px; align-self:center; }

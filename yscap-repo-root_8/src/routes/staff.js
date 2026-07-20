@@ -2330,7 +2330,61 @@ function emailRowShape(r) {
     application_id: r.application_id || null,
     loan_no: r.ys_loan_number || null,
     file_label: r.file_label || null,
+    // every recipient this exact email reached (filled by consolidateEmailRows)
+    recipients: r.recipients || null,
+    recipient_count: r.recipient_count || null,
   };
+}
+
+// Recipients of a single row → [{email,name,kind,status}]. A notify fan-out
+// writes one row per recipient, so this is usually one entry; consolidation
+// merges the whole fan-out below.
+function recipientsOfRow(r) {
+  const to = Array.isArray(r.to_emails) ? r.to_emails : [];
+  if (!to.length) return r.recipient_name ? [{ email: null, name: r.recipient_name, kind: r.recipient_kind, status: r.status }] : [];
+  return to.map((t, i) => ({
+    email: t.email || null,
+    name: (i === 0 ? r.recipient_name : null) || t.name || null,
+    kind: r.recipient_kind || null,
+    status: r.status,
+  }));
+}
+const _STATUS_RANK = { error: 3, no_recipients: 3, failed_permanent: 3, skipped: 2, received: 1, forwarded: 1, sent: 1 };
+const worseStatus = (a, b) => ((_STATUS_RANK[b] || 0) > (_STATUS_RANK[a] || 0) ? b : a);
+
+// Consolidate a notify FAN-OUT (the same email sent to many people as one row
+// each) into ONE message that lists everyone it reached with each recipient's
+// delivery status — so opening it reads like a real email ("To: A, B, C"), not
+// N near-identical rows. Rows are grouped by file+thread+type+audience+subject
+// within the same minute (a single fan-out). Inbound replies never consolidate.
+function consolidateEmailRows(rows) {
+  const groups = new Map();
+  const out = [];
+  for (const r of rows) {
+    const shaped = emailRowShape(r);
+    if (r.direction !== 'outbound') { shaped.recipients = recipientsOfRow(r); shaped.recipient_count = shaped.recipients.length; out.push(shaped); continue; }
+    const minute = r.occurred_at ? new Date(r.occurred_at).toISOString().slice(0, 16) : '';
+    const key = [r.thread_key || '', r.msg_type || '', r.audience || '', r.subject || '', minute].join('|');
+    let g = groups.get(key);
+    if (!g) { g = shaped; g.recipients = []; groups.set(key, g); out.push(g); }
+    g.recipients.push(...recipientsOfRow(r));
+    // prefer a representative row that actually stored a body, so opening it shows
+    // the full designed email (a fan-out stores an identical body on each row).
+    if (r.has_body && !g.has_body) { g.id = r.id; g.has_body = true; }
+    g.status = worseStatus(g.status, r.status);
+    if (r.error && !g.error) g.error = r.error;
+    if (new Date(r.occurred_at) > new Date(g.occurred_at)) g.occurred_at = r.occurred_at;
+  }
+  for (const g of out) {
+    if (Array.isArray(g.recipients)) {
+      // de-dupe recipients on email, cap for display
+      const seen = new Set();
+      g.recipients = g.recipients.filter((x) => { const k = x.email || x.name; if (!k || seen.has(k)) return false; seen.add(k); return true; }).slice(0, 60);
+      g.recipient_count = g.recipients.length;
+      g.to = g.recipients.map((x) => ({ email: x.email, name: x.name }));
+    }
+  }
+  return out;
 }
 
 // Per-file email history (newest first), grouped into threads client-side by
@@ -2353,7 +2407,7 @@ router.get('/applications/:id/emails', async (req, res) => {
         WHERE em.application_id = $1
         ORDER BY em.occurred_at DESC
         LIMIT 500`, [req.params.id]);
-    res.json(r.rows.map(emailRowShape));
+    res.json(consolidateEmailRows(r.rows));
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
@@ -2543,7 +2597,7 @@ router.get('/emails', async (req, res) => {
          ${whereSql}
         ORDER BY em.occurred_at DESC
         LIMIT $${limIdx} OFFSET $${offIdx}`, params);
-    res.json(r.rows.map((row) => ({ ...emailRowShape(row), file_label: fileLabelOf(row) })));
+    res.json(consolidateEmailRows(r.rows.map((row) => ({ ...row, file_label: fileLabelOf(row) }))));
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
