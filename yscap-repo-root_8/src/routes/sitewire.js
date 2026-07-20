@@ -296,7 +296,8 @@ router.get('/files/:id/messages/:notificationId/attachments/:idx', requirePermis
     const a = e && Array.isArray(e.attachments) ? e.attachments[Number(req.params.idx)] : null;
     if (!a || !a.storage_ref) return res.status(404).json({ error: 'attachment not found' });
     const storage = require('../lib/storage');
-    const buf = await storage.read(a.storage_ref);
+    let buf;
+    try { buf = await storage.read(a.storage_ref); } catch (_) { buf = null; } // a missing blob → 404, not a 500
     if (!buf) return res.status(404).json({ error: 'attachment bytes missing' });
     res.setHeader('Content-Type', a.content_type || 'application/octet-stream');
     res.setHeader('Content-Disposition', `attachment; filename="${String(a.filename || 'attachment').replace(/[^\w.\- ]+/g, '_')}"`);
