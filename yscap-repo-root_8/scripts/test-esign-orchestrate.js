@@ -201,21 +201,22 @@ function fakeStorage() {
     ok(appText.includes('YS-1001'), 'Loan Application shows the loan number');
     ok(appText.includes('Pat') && appText.includes('Borrower'), 'Loan Application shows the borrower name');
 
-    // ---- the Heter Iska is ALSO generated on our server, nusach byte-preserved --
-    const { unzip } = require(R + '/src/lib/zip');   // the Iska is still a docx (Hebrew nusach)
+    // ---- the Heter Iska is ALSO generated on our server, now as a real PDF -------
+    // (owner 2026-07-20: send a PDF we build, not a .docx handed to DocuSign). The
+    // sacred Hebrew nusach is a verified pre-render; the Latin amount + names + anchors
+    // are drawn on top (see iska-pdf.js). So we assert the PDF bytes, not docx XML.
     const iskaRes = await orchestrate.sendPackage(app, 'heter_iska', { id: null }, { db: pool, docusign, storage });
     ok(iskaRes.ok, 'Heter Iska package sent');
     const iskaDef = docusign._calls.created;
     eq(iskaDef.documents.length, 1, 'Iska envelope carries one document');
     const iskaDoc = iskaDef.documents[0];
-    eq(iskaDoc.fileExtension, 'docx', 'Iska uploaded as .docx');
-    const iskaXml = unzip(Buffer.from(iskaDoc.base64, 'base64'))
-      .find((e) => e.name === 'word/document.xml').data.toString('utf8');
-    ok(iskaXml.includes('487,500.00'), 'Iska filled with the loan amount');
-    ok(iskaXml.includes('בעזה') || iskaXml.includes('נאום'), 'Iska Hebrew nusach preserved');
-    ok(iskaXml.includes('/iska_b1_sig/') && iskaXml.includes('/iska_b1_dt/'), 'Iska carries the borrower sign+date anchors');
-    ok(iskaXml.includes('/iska_b2_sig/'), 'Iska carries the co-borrower anchor');
-    ok(!/«[^»]+»/.test(iskaXml), 'no unfilled «merge fields» left in the Iska');
+    eq(iskaDoc.fileExtension, 'pdf', 'Iska uploaded AS a PDF (DocuSign does not convert it)');
+    const iskaPdf = Buffer.from(iskaDoc.base64, 'base64');
+    eq(iskaPdf.slice(0, 5).toString('latin1'), '%PDF-', 'Iska bytes really are a PDF');
+    const iskaRaw = iskaPdf.toString('latin1');
+    ok(iskaRaw.includes('487,500.00'), 'Iska filled with the loan amount');
+    ok(iskaRaw.includes('/iska_b1_sig/') && iskaRaw.includes('/iska_b1_dt/'), 'Iska carries the borrower sign+date anchors');
+    ok(iskaRaw.includes('/iska_b2_sig/'), 'Iska carries the co-borrower anchor');
     const iskaSigner = iskaDef.signers.find((s) => s.recipientId === '1');
     ok(iskaSigner.tabsByDoc['1'].sign.includes('/iska_b1_sig/'), 'Iska borrower anchor wired to the tab');
 

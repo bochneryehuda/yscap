@@ -203,7 +203,7 @@ async function pdfBytesForAppraisal(appr) {
 async function repullAppraisalPhotos(appId) {
   const appr = (await db.query(
     `SELECT id, application_id, pdf_document_id, source_xml_document_id
-       FROM appraisals WHERE application_id=$1 AND superseded=false ORDER BY imported_at DESC LIMIT 1`, [appId])).rows[0];
+       FROM appraisals WHERE application_id=$1 AND superseded=false ORDER BY imported_at DESC NULLS LAST LIMIT 1`, [appId])).rows[0];
   if (!appr) return 0;
   const pdfB64 = await pdfBytesForAppraisal(appr);
   if (!pdfB64) return 0;

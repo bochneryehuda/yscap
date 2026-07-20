@@ -19,6 +19,7 @@
 const db = require('../db');
 const notify = require('./notify');
 const email = require('./email');
+const cfg = require('../config');
 const { fileReplyTo } = require('./file-address');   // #68 per-file shared reply-to
 
 const KINDS = new Set(['reminder', 'task']);
@@ -228,6 +229,11 @@ async function _deliver(row, { lead } = {}) {
   const body = bodyLines.join(' ');
   const link = `/app/${row.application_id}`;   // notifyBorrower/notifyStaff route by audience
   const staffLink = `/internal/app/${row.application_id}`;
+  // The staff/borrower copies get file identity for free (enrichFileOpts inside
+  // notifyStaff/notifyBorrower). The ad-hoc email branch below builds via
+  // buildEmail directly, so fetch the file context ONCE here to give that email
+  // the same file-tagged subject + detail block.
+  const ctx = row.application_id ? await notify.fileContext(row.application_id).catch(() => null) : null;
 
   for (const rcp of recipients) {
     try {
@@ -243,13 +249,15 @@ async function _deliver(row, { lead } = {}) {
         });
       } else if (rcp.kind === 'email' && rcp.email) {
         const msg = notify.buildEmail({
-          title: titleLine, body, link: staffLink, ctaLabel: 'Open the loan file',
+          type: 'reminder', title: titleLine, body, link: staffLink, ctaLabel: 'Open the loan file',
+          subjectTag: ctx ? ctx.subjectTag : undefined, meta: ctx ? ctx.meta : undefined,
         }, 'staff');
         // #68: the ad-hoc recipient (title co, escrow…) is the one most likely
         // to reply with the answer — route it to the file's assigned team like
-        // the staff/borrower copies of this same reminder.
+        // the staff/borrower copies of this same reminder; fall back to the
+        // monitored inbox so the reply is never a dead end.
         await email.sendMail({ to: [rcp.email], subject: msg.subject, text: msg.text, html: msg.html,
-          replyTo: fileReplyTo(row.application_id) }).catch(() => {});
+          replyTo: fileReplyTo(row.application_id) || cfg.replyToDefault || null }).catch(() => {});
       }
     } catch (_) { /* one bad recipient never blocks the rest */ }
   }
