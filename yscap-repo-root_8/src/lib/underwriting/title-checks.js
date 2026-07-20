@@ -77,6 +77,9 @@ function computeTitleFindings(title, file, opts = {}) {
   const taxLiens = liens.filter(isTax);
   const otherInvoluntary = liens.filter((l) => !isTax(l) && isInvoluntary(l));
   const mortgages = liens.filter((l) => !isTax(l) && isMortgage(l));
+  // A monetary lien whose type/holder matched none of the buckets must NOT vanish — surface it so a
+  // real lien of an unrecognized type still gets a clear-at-funding look (never silently dropped).
+  const unclassified = liens.filter((l) => !isTax(l) && !isMortgage(l) && !isInvoluntary(l) && num(l.amount) != null);
 
   if (taxLiens.length) {
     out.push(finding({ code: 'title_tax_lien', severity: 'warning', field: 'liens',
@@ -99,13 +102,25 @@ function computeTitleFindings(title, file, opts = {}) {
       howTo: `Title shows ${mortgages.length} existing mortgage/deed of trust: ${mortgages.map(liensText).join('; ')}. This is normal on a purchase — confirm the settlement statement pays it off from proceeds so it's released and our lien records first.`,
       actions: ['acknowledge', 'post_condition', 'dismiss'], opensCondition: 'underwriting_review_cleared' }));
   }
+  if (unclassified.length) {
+    out.push(finding({ code: 'title_other_lien', severity: 'warning', field: 'liens',
+      docValue: unclassified.map(liensText).join('; '), fileValue: null,
+      title: 'A monetary lien on title needs review',
+      howTo: `Title shows ${unclassified.length} monetary lien(s) of an unrecognized type: ${unclassified.map(liensText).join('; ')}. Confirm with the title company whether each has to be released or paid before funding so our mortgage records in first position.`,
+      actions: ['post_condition', 'request_document', 'grant_exception', 'dismiss'], opensCondition: 'underwriting_review_cleared' }));
+  }
 
   // ---- Abnormal Schedule B exceptions (title defects that threaten marketability) ----
   // Most Schedule B exceptions are boilerplate (taxes not yet due, standard easements, CC&Rs). A few
   // signal a real title problem: a pending lawsuit (lis pendens), a foreclosure in progress (notice
   // of default), an owner in bankruptcy, an encroachment, or an unreleased/pending lien. Surface
   // those for the underwriter — never the boilerplate. Warning-only.
-  const ABNORMAL = /lis pendens|notice of default|foreclosure|bankruptcy|encroach|boundary dispute|unpaid tax|delinquent tax|pending litigation|lawsuit|probate|life estate|adverse|mechanic/i;
+  // NB: bare "encroach" / "mechanic" are DELIBERATELY excluded — the standard pre-printed survey
+  // exception ("shortage in area, encroachments, overlaps…") and the standard mechanic's-lien
+  // exception are boilerplate on nearly every commitment; matching them would cry wolf on clean
+  // title. A real mechanic's lien is caught in the lien buckets above; a real boundary problem shows
+  // as "boundary dispute". Keep this list to genuine defects.
+  const ABNORMAL = /lis pendens|notice of default|foreclosure|bankruptcy|boundary dispute|unpaid tax|delinquent tax|pending litigation|\blawsuit\b|probate|life estate|adverse (possession|claim)/i;
   const exceptions = Array.isArray(title.exceptions) ? title.exceptions.filter((s) => norm(s)) : [];
   const abnormal = exceptions.filter((s) => ABNORMAL.test(String(s)));
   if (abnormal.length) {

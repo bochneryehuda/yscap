@@ -65,16 +65,27 @@ assert.deepStrictEqual(codes(computeTitleFindings({ ...baseTitle, ownerAcquisiti
 }
 // A clean title with no liens raises nothing new.
 assert.deepStrictEqual(codes(computeTitleFindings({ ...baseTitle, liens: [], exceptions: [] }, seasoningFile, { today: '2026-07-20' })), [], 'no liens/exceptions → clean');
-// Only ABNORMAL Schedule B exceptions surface — boilerplate (taxes not yet due, standard easement) is ignored.
+// A monetary lien of an UNRECOGNIZED type is surfaced (never silently dropped) — audit B-2.
+{
+  const f = computeTitleFindings({ ...baseTitle, liens: [{ type: 'UCC-1 fixture filing', holder: 'Equip Co', amount: 5000 }] }, seasoningFile, { today: '2026-07-20' });
+  assert.deepStrictEqual(codes(f), ['title_other_lien']);
+  assert.ok(/Equip Co/.test(f[0].docValue));
+}
+// Only ABNORMAL Schedule B exceptions surface — boilerplate (taxes not yet due, standard easement,
+// the standard survey ENCROACHMENT exception, the standard MECHANIC'S-lien exception) is ignored (audit B-1).
 {
   const f = computeTitleFindings({ ...baseTitle, exceptions: [
     'Taxes for 2026 not yet due and payable', 'Standard utility easement of record',
+    'Any shortage in area, encroachments, overlaps disclosed by an accurate survey',
+    "Liens for labor or material (mechanic's liens) not shown by the public records",
     'Lis pendens recorded in Book 123', 'Notice of default recorded 2025',
   ] }, seasoningFile, { today: '2026-07-20' });
   assert.deepStrictEqual(codes(f), ['title_abnormal_exception']);
   const ex = f.find((x) => x.code === 'title_abnormal_exception');
   assert.ok(/Lis pendens/.test(ex.docValue) && /Notice of default/.test(ex.docValue), 'the real defects are surfaced');
   assert.ok(!/utility easement/i.test(ex.docValue), 'boilerplate easement is NOT surfaced');
+  assert.ok(!/shortage in area/i.test(ex.docValue), 'the standard survey encroachment exception is NOT surfaced');
+  assert.ok(!/labor or material/i.test(ex.docValue), 'the standard mechanic-lien exception is NOT surfaced');
 }
 
 // ===== BANK STATEMENT =====

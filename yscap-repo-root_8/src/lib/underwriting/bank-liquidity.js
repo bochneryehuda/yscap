@@ -41,7 +41,13 @@ const money = (n) => (num(n) == null ? '—' : `$${Math.round(num(n)).toLocaleSt
 // the safe direction. Only when no usable number was read do we fall back to bank+holder.
 function accountKey(s) {
   const acct = String(s.accountNumber || '').replace(/\D/g, '');
-  if (acct.length >= 3) return `#${acct}`; // the number IS the account — bank-name drift must not split it
+  // Key on the LAST 4 digits — that's how account numbers are stored (masked to last-4), so a month
+  // that carries the full number ("...123456789") and a month that carries only "6789" collapse to
+  // the SAME account instead of splitting and double-counting (the dangerous inflate direction). The
+  // cost is that two genuinely different accounts sharing a last-4 collapse — which UNDER-counts
+  // (one rep, one balance; a human clears the resulting false shortfall), the safe direction.
+  if (acct.length >= 4) return `#${acct.slice(-4)}`;
+  if (acct.length >= 1) return `#${acct}`; // 1-3 digits: use as-is (garbage/over-masked; rare)
   const bank = String(s.bankName || '').trim().toLowerCase();
   const holder = String(s.accountHolderName || '').trim().toLowerCase();
   return `~${bank}|${holder}`; // number-less: best effort (leans to under-count, never inflate)

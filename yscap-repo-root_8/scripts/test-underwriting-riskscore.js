@@ -33,6 +33,17 @@ const f = (code, title, severity = 'warning') => ({ code, title: title || code, 
   assert.strictEqual(r.reasons[0].code, 'id_name_mismatch');
 }
 
+// ---- The new fraud/identity signals now contribute to the score (audit C-1) ----
+{
+  const r = computeRiskScore({ findings: [
+    f('background_fraud_alerts'),      // 12 — open high fraud alert
+    f('background_subject_mismatch'),  // 12 — screen ran on the wrong name
+    f('id_underage'),                  // 12 — ID DOB makes borrower a minor
+  ] });
+  assert.strictEqual(r.score, 36, 'the three new signals each score (12+12+12)');
+  assert.ok(r.reasons.some((x) => x.code === 'background_fraud_alerts'), 'fraud alerts feed the roll-up');
+}
+
 // ---- OFAC confirmed alone pushes HIGH + a SAR advisory finding ----
 {
   const r = computeRiskScore({ findings: [f('ofac_confirmed_match', 'OFAC confirmed match', 'fatal')] });

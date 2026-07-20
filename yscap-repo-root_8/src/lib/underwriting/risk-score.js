@@ -25,9 +25,14 @@ const SIGNAL_WEIGHTS = {
   settlement_cash_back: 25,          // undisclosed cash to the buyer at closing
   ofac_potential_match: 15,
   background_criminal: 12,
+  background_fraud_alerts: 12,        // open high fraud alerts (identity theft / straw-buyer signal)
+  background_subject_mismatch: 12,    // the screen was run on a different name than the borrower
+  background_entity_not_screened: 6,  // the borrowing entity was never screened
+  background_pep: 6,                  // politically-exposed person — enhanced due diligence
   // Identity / straw-buyer signals.
   id_name_mismatch: 20,
   id_dob_mismatch: 20,
+  id_underage: 12,                    // ID DOB makes the borrower a minor (misread or real)
   bank_account_not_borrower: 15,     // the funds aren't the borrower's
   bank_account_other_entity: 10,
   bank_large_deposit: 8,             // an unsourced large deposit (gifted / third-party funds)
