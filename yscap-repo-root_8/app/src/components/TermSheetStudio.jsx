@@ -190,6 +190,13 @@ export function adminStateFromEngineInputs(inp) {
   put('tsFeeAppr', inp.appraisalFee); put('tsFeeTitle', inp.titleFee);
   put('tsMLtv', inp.ovrAcqLTVPct); put('tsMArv', inp.ovrARLTVPct);
   put('tsMLtc', inp.ovrLTCPct); put('tsMRate', inp.ovrRatePct); put('tsMIr', inp.ovrIrMonths);
+  // NOTE: the reopen re-arm fix (re-arming tsManualOn whenever a manual override
+  // value is present) lives in the canonical V2 studio only — V2 has the
+  // non-admin prefill guard (delete adm.c.tsManualOn) that keeps a non-admin from
+  // re-arming manual pricing. This frozen V1 (/v1) panel has no such guard, so
+  // widening the re-arm here would surface a 403 for non-admin staff reopening a
+  // manually-priced file. The server (buildInputs) still honors a present rate
+  // override for V1's register path, so a rate that IS sent still sticks.
   return { v, c: inp.manualPricing ? { tsManualOn: true } : {} };
 }
 

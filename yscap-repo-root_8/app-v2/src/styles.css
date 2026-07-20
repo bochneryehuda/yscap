@@ -972,6 +972,16 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
 .file-nav::-webkit-scrollbar{display:none}
 .file-nav ol{list-style:none;margin:0;padding:6px;background:var(--ink-1);
   border:1px solid var(--line);border-radius:var(--radius)}
+/* lightweight disclosure for occasionally-needed, low-priority content */
+.disclosure > summary{cursor:pointer;list-style:none;padding:9px 12px;border-radius:9px;border:1px solid var(--line);
+  background:var(--ink-1,rgba(127,169,176,.05));color:var(--muted);font-size:13px;font-weight:600;user-select:none}
+.disclosure > summary::-webkit-details-marker{display:none}
+.disclosure > summary::before{content:'▸ ';color:var(--muted)}
+.disclosure[open] > summary::before{content:'▾ '}
+.disclosure > summary:hover{color:var(--text,var(--ivory))}
+.disclosure[open] > summary{margin-bottom:10px}
+.file-nav-group{padding:12px 12px 4px;font-size:10.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);opacity:.75}
+.file-nav ol li:first-child.file-nav-group{padding-top:4px}
 .file-nav a{display:flex;align-items:center;gap:8px;padding:9px 12px;border-radius:9px;
   color:var(--muted);font-size:13.5px;font-weight:500;border-left:2px solid transparent}
 .file-nav a:hover{color:var(--ivory);text-decoration:none;background:var(--ink-2)}
@@ -1038,6 +1048,9 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
   .file-nav ol::-webkit-scrollbar{display:none}
   .file-nav a{border-left:none;border-bottom:2px solid transparent;white-space:nowrap;padding:8px 11px}
   .file-nav a.active{border-bottom-color:var(--gold)}
+  /* the group headers only make sense in the vertical rail — hide them in the
+     phone's horizontal chip strip so it stays a clean row of tappable chips */
+  .file-nav-group{display:none}
   .file-section{scroll-margin-top:64px}
 }
 
@@ -2605,7 +2618,7 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .ec-msg-headtop{ display:flex; align-items:baseline; gap:8px; }
 .ec-msg-sender{ font-weight:600; font-size:14px; color:var(--text); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .ec-msg-when{ margin-left:auto; font-size:12px; color:var(--text-soft); flex:none; }
-.ec-msg-headsub{ display:flex; align-items:center; gap:8px; margin-top:3px; }
+.ec-msg-headsub{ display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:3px; }
 .ec-msg-preview{ font-size:12.5px; color:var(--text-soft); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
 .ec-chev{ font-size:16px; color:var(--text-soft); transition:transform .15s; flex:none; margin-top:6px; }
 .ec-chev.up{ transform:rotate(180deg); }
@@ -2705,3 +2718,10 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 @media (max-width:820px){
   .ec-modal-card{ width:100vw; height:100vh; border-radius:0; }
 }
+
+/* ── Email Center: open-tracking indicator ── */
+.ec-opened{ display:inline-flex; align-items:center; gap:3px; font-size:11px; font-weight:600;
+  color:var(--ok); background:rgba(46,122,94,.1); border:1px solid rgba(46,122,94,.28);
+  border-radius:999px; padding:0 7px; line-height:17px; white-space:nowrap; }
+.ec-recip.opened{ border-color:rgba(46,122,94,.4); }
+.ec-recip .ec-opened{ margin-left:3px; padding:0 5px; }

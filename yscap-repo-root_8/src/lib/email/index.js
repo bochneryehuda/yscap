@@ -41,17 +41,23 @@ function fromWithName(name) {
  * affects the send result: a logging failure is swallowed.
  */
 async function sendMail(opts = {}) {
-  const { _ctx, ...send } = opts || {};
+  // `_skipCapture` lets a caller deliver a copy WITHOUT recording it in the Email
+  // Center (e.g. notify's pixel-free loan-officer BCC copy — the borrower send
+  // already captured that notification's history; a second capture on the same
+  // notification_id would clobber the recorded recipient).
+  const { _ctx, _skipCapture, ...send } = opts || {};
   const ctx = _ctx || {};
   let res, err;
   try {
     res = await provider.sendMail(send);
   } catch (e) { err = e; }
-  try {
-    const emailLog = require('../email-log');
-    const status = err ? 'error' : (res && res.ok ? 'sent' : 'skipped');
-    await emailLog.captureOutbound(send, { ...ctx, status, providerId: res && res.id, error: err && err.message });
-  } catch (_) { /* capture is best-effort */ }
+  if (!_skipCapture) {
+    try {
+      const emailLog = require('../email-log');
+      const status = err ? 'error' : (res && res.ok ? 'sent' : 'skipped');
+      await emailLog.captureOutbound(send, { ...ctx, status, providerId: res && res.id, error: err && err.message });
+    } catch (_) { /* capture is best-effort */ }
+  }
   if (err) throw err;
   return res;
 }

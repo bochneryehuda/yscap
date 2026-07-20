@@ -58,8 +58,13 @@ const watermark = async (appId) => (await db.query(`SELECT status_notified_exter
     assert.strictEqual(await watermark(appA), 'funded', 'the watermark advances to the new status');
     assert.ok(mailedTo(bEmail) >= 1, 'a DECISION status (funded) emails the borrower');
     const fundedMail = sent.find((m) => (Array.isArray(m.to) ? m.to : [m.to]).includes(bEmail));
-    assert.ok(Array.isArray(fundedMail.bcc) && fundedMail.bcc.includes(`inb-lo-${sfx}@yscapgroup.com`), 'the loan officer is BCC-ed (looped in) on the inbound status email');
-    ok('a real ClickUp-driven change notifies the borrower and loops the loan officer in (BCC)');
+    // The borrower email carries an open-tracking pixel, so the officer is looped in
+    // via a SEPARATE, pixel-free copy (not a BCC on the same body — that would let the
+    // officer's client trip a false "borrower opened").
+    assert.ok(!(Array.isArray(fundedMail.bcc) && fundedMail.bcc.includes(`inb-lo-${sfx}@yscapgroup.com`)), 'the borrower copy does NOT BCC the officer (split to protect open tracking)');
+    const loMail = sent.find((m) => (Array.isArray(m.to) ? m.to : [m.to]).includes(`inb-lo-${sfx}@yscapgroup.com`));
+    assert.ok(loMail && !/\/e\/o\//.test(String(loMail.html || '')), 'the loan officer still receives a pixel-free copy (looped in)');
+    ok('a real ClickUp-driven change notifies the borrower and loops the loan officer in (separate pixel-free copy)');
 
     // 3) ECHO — the same status pulled again does nothing (no duplicate).
     sent = [];

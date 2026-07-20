@@ -276,7 +276,7 @@ async function forwardToAssignees({ applicationId, fromEmail, subject, text, htm
   const lines = bodyLines(plain);
   const send = async (atts, note) => {
     const built = notify.buildEmail({
-      title: ctx ? `Reply on ${ctx.loanNo}` : 'New reply on a loan file',
+      title: 'New reply on a loan file',   // the file (loan# · borrower · property) rides in the subject tag — not doubled in the title
       body: `${who} replied${ctx ? ` on ${ctx.addr}` : ''}${subject ? ` — “${String(subject).slice(0, 200)}”` : ''}:`,
       lines: (lines.length ? lines : ['(no message text — see the attachment, if any)']).concat(note ? [note] : []),
       meta: ctx ? ctx.meta : [],
