@@ -259,6 +259,36 @@ const uniq = `eh-${process.pid}-${Date.now()}`;
   const bogus = (await db.query(`SELECT count(*)::int c FROM email_opens WHERE notification_id='00000000-0000-0000-0000-000000000000'`)).rows[0].c;
   assert(pxBad.status === 200 && bogus === 0, 'a bogus open id returns a gif but records no row (FK guard)');
 
+  // ---- open tracking: the BCC'd loan officer must NOT trip the borrower's pixel ----
+  // A borrower email silently BCCs the assigned LO. If the LO's copy carried the
+  // SAME pixel (keyed on the borrower's notification), their mail client / scanner
+  // loading it would record a FALSE borrower-open. So the pixel copy goes only to
+  // the borrower; the officer gets a separate, pixel-free copy.
+  const noop = require('../src/lib/email/noop');
+  const realNoopSend = noop.sendMail;
+  const provSends = [];
+  noop.sendMail = async (m) => { provSends.push(m); return realNoopSend(m); };
+  try {
+    const nBo = await notify.notifyBorrower(borrower, { type: 'status_change', title: 'Your file moved', body: 'Onward', applicationId: appId, major: true });
+    await new Promise((r) => setTimeout(r, 500));   // let the fire-and-forget officer copy + capture finish
+    const boSend = provSends.find((m) => [].concat(m.to || []).some((t) => String(t).includes(`${uniq}-bo@`)));
+    const loSend = provSends.find((m) => [].concat(m.to || []).some((t) => String(t).includes(`${uniq}-lo@`)));
+    assert(boSend && new RegExp(`/e/o/${nBo}\\.gif`).test(String(boSend.html || '')), 'the borrower copy carries the open pixel');
+    assert(boSend && !(Array.isArray(boSend.bcc) && boSend.bcc.length), 'the borrower copy is no longer BCC-ing the officer (split off)');
+    assert(loSend && !/\/e\/o\//.test(String(loSend.html || '')), "the officer's separate copy is pixel-free (cannot trip a false borrower-open)");
+    // the officer's split copy is NOT recorded in the Email Center (would clobber the borrower row)
+    const boRows = (await db.query(`SELECT to_emails FROM email_messages WHERE notification_id=$1`, [nBo])).rows;
+    assert(boRows.length === 1 && JSON.stringify(boRows[0].to_emails).includes(`${uniq}-bo@`),
+      'only the borrower send is captured (officer split copy is not double-recorded)');
+  } finally { noop.sendMail = realNoopSend; }
+  // _skipCapture keeps a send out of the Email Center entirely
+  const email = require('../src/lib/email');
+  const beforeSkip = (await db.query(`SELECT count(*)::int c FROM email_messages WHERE application_id=$1`, [appId])).rows[0].c;
+  await email.sendMail({ to: [`${uniq}-bo@example.test`], subject: 'skip me', html: '<p>x</p>',
+    replyTo: `file+${appId}@example.test`, _skipCapture: true });
+  const afterSkip = (await db.query(`SELECT count(*)::int c FROM email_messages WHERE application_id=$1`, [appId])).rows[0].c;
+  assert(afterSkip === beforeSkip, '_skipCapture suppresses the Email Center capture');
+
   // ---- cleanup ----
   await db.query(`DELETE FROM email_messages WHERE application_id=$1`, [appId]);
   await db.query(`DELETE FROM inbound_file_emails WHERE application_id=$1`, [appId]);

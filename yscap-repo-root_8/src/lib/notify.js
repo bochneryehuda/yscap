@@ -158,16 +158,35 @@ async function _emailRow(id, to, opts, audience) {
     // in the SENT copy; the stored Email Center copy uses the clean body (passed
     // via _ctx.bodyHtml) so a staffer opening the history never trips it.
     const sentHtml = injectOpenPixel(msg.html, id);
+    const pixelInjected = sentHtml !== msg.html;
+    // #447: `bcc` loops the assigned loan officer into borrower emails. BUT that
+    // copy carries the SAME pixel, keyed on the BORROWER's notification — so when
+    // the LO's mail client (or their org's image-prefetching security scanner)
+    // loads it, we'd record a FALSE "borrower opened". So when we're tracking AND
+    // BCC'ing, the pixel copy goes only to the real recipients and the officer gets
+    // a separate, pixel-free copy (which can't trip the borrower's open). The
+    // capture layer records `to` only (not bcc), so the officer was never in the
+    // Email Center roster — splitting the send loses nothing from the history.
+    const officerBcc = (Array.isArray(opts.bcc) && opts.bcc.length) ? opts.bcc : null;
+    const splitOfficer = pixelInjected && officerBcc;
     // #150: an optional LO-branded From display name rides through untouched
-    // (resend honors it; other providers ignore it). #447: `bcc` loops the LO into
-    // borrower emails. `_ctx` is stripped by the provider wrapper and drives the
-    // portal-wide Email Center capture (email_messages, src/lib/email-log.js), kept
-    // ALONGSIDE the #442 sent_emails capture below (two independent stores — the
-    // portal-wide Email Center and the Draw Management email view).
-    const res = await email.sendMail({ to, subject: msg.subject, text: msg.text, html: sentHtml, attachments, replyTo, from: opts.from || null, bcc: opts.bcc || null,
+    // (resend honors it; other providers ignore it). `_ctx` is stripped by the
+    // provider wrapper and drives the portal-wide Email Center capture
+    // (email_messages, src/lib/email-log.js), kept ALONGSIDE the #442 sent_emails
+    // capture below (two independent stores — the portal-wide Email Center and the
+    // Draw Management email view).
+    const res = await email.sendMail({ to, subject: msg.subject, text: msg.text, html: sentHtml, attachments, replyTo, from: opts.from || null,
+      bcc: splitOfficer ? null : (opts.bcc || null),
       _ctx: { applicationId: opts.applicationId, notificationId: id, type: opts.type, audience, subjectTag: opts.subjectTag, kicker: opts.kicker, bodyHtml: msg.html } });
     const status = res && res.ok ? 'sent' : 'skipped';
     await _mark(id, status);
+    // Deliver the loan officer their pixel-free copy as a separate send. `_skipCapture`
+    // keeps it out of the Email Center (the borrower send above already recorded this
+    // notification's history; a second capture on the same notification_id would clobber
+    // the recorded recipient). Best-effort — never affects the borrower send's result.
+    if (splitOfficer) {
+      email.sendMail({ to: officerBcc, subject: msg.subject, text: msg.text, html: msg.html, attachments, replyTo, from: opts.from || null, _skipCapture: true }).catch(() => {});
+    }
     // #442 draw email center: also persist the rendered email + attachment BYTES to the
     // sent_emails store that the Draw Management email view reads. Best-effort + caught.
     _captureSentEmail(id, to, opts, audience, msg, replyTo, attachments, status).catch(() => {});

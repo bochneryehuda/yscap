@@ -274,7 +274,8 @@ app.get('/e/o/:token', async (req, res) => {
       `INSERT INTO email_opens (notification_id, first_opened_at, last_opened_at, open_count, first_ua, last_ip)
        VALUES ($1, now(), now(), 1, $2, $3)
        ON CONFLICT (notification_id)
-         DO UPDATE SET last_opened_at = now(), open_count = email_opens.open_count + 1`,
+         DO UPDATE SET last_opened_at = now(), open_count = email_opens.open_count + 1,
+                       last_ip = EXCLUDED.last_ip`,
       [id, String(req.get('user-agent') || '').slice(0, 300), String(req.ip || '').slice(0, 60)]);
   } catch (_) { /* bogus/absent id (FK) or a DB blip — never fail the pixel */ }
   sendPixel();
