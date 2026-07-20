@@ -345,6 +345,7 @@ function comparables(root) {
       // area + data source. All read from this comp's own COMPARISON_* nodes (never the subject's).
       viewRating: enumOf(X.attr(X.find(c, 'COMPARISON_VIEW_OVERALL_RATING'), 'GSEViewOverallRatingType'), ['Beneficial', 'Neutral', 'Adverse']),
       locationRating: enumOf(X.attr(X.find(c, 'COMPARISON_LOCATION_OVERALL_RATING'), 'GSEOverallLocationRatingType'), ['Beneficial', 'Neutral', 'Adverse']),
+      locationType: clean(X.attr(X.find(c, 'COMPARISON_LOCATION_DETAIL'), 'GSELocationType')),
       belowGradeSqft: bounded(X.attr(cd, 'GSEBelowGradeTotalSquareFeetNumber'), 1e6),
       belowGradeFinishedSqft: bounded(X.attr(cd, 'GSEBelowGradeFinishSquareFeetNumber'), 1e6),
       compDataSource: clean(X.attr(cd, 'GSEDataSourceDescription')),
@@ -429,6 +430,11 @@ function enrichment(root, prop, st, site, subject0, rep, formType) {
   o.nbhd_adverse_financing = yn(A(mk, 'MarketTrendsAdverseFinancingIndicator'));
   o.nbhd_foreclosure_activity = yn(A(mk, 'MarketTrendsForeclosureActivityIndicator'));
   o.nbhd_boundaries = capText(A(nb, '_BoundaryAndCharacteristicsDescription'), 500);
+  // Market narratives — store ONLY concrete text; ~27% are "See 1004MC"/"See attached" pointers
+  // that carry no information (never store a pointer as if it were content).
+  const notPointer = (v, max) => { const s = capText(v, max); return s && !/see\s*(the\s*)?1004\s*mc\b|see\s+attached|see\s+addend/i.test(s) ? s : null; };
+  o.market_conditions_comment = notPointer(A(nb, '_MarketConditionsDescription'), 700);
+  o.market_reconciliation_comment = notPointer(A(mk, 'MarketTrendsReconciliationComment'), 700);
 
   // -- 1004MC market-conditions grid (MARKET > MARKET_INVENTORY). Each row is one metric for one
   // period (Prior7To12Months|Prior4To6Months|Last3Months) OR a trend row (_TrendType, no period).

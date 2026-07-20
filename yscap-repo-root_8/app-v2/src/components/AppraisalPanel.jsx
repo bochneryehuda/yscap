@@ -365,11 +365,30 @@ const chip = (label, tone) => (
 // Neighborhood & market — the appraiser's own read of the exit market (can they sell/refi at ARV,
 // and how fast). All never-guessed enums + the neighborhood price band.
 const LAND_USE_LABEL = { SingleFamily: 'single-family', TwoToFourFamily: '2–4 unit', Apartment: 'apartment', Commercial: 'commercial', Vacant: 'vacant', Industrial: 'industrial', Agricultural: 'agricultural', Other: 'other' };
+// The appraiser's market-conditions / 1004MC-reconciliation narratives, collapsible (own hook so
+// NeighborhoodCard's early return stays hook-safe). Only concrete text reaches here (the backend
+// rejects "See 1004MC" pointers).
+function MarketNarrative({ a }) {
+  const [open, setOpen] = useState(false);
+  const items = [
+    a.market_conditions_comment && ['Market conditions', a.market_conditions_comment],
+    a.market_reconciliation_comment && ['1004MC reconciliation', a.market_reconciliation_comment],
+  ].filter(Boolean);
+  if (!items.length) return null;
+  return (
+    <div style={{ marginTop: 10 }} className="appr-noprint">
+      <button onClick={() => setOpen((v) => !v)} style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--muted,#4B585C)', fontSize: 12.5, textDecoration: 'underline' }}>{open ? 'Hide' : 'Show'} appraiser’s market notes</button>
+      {open && items.map(([k, v], i) => (
+        <p key={i} style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', margin: '8px 0 0', lineHeight: 1.45 }}><b style={{ color: 'var(--text,#141B22)' }}>{k}: </b>{v}</p>
+      ))}
+    </div>
+  );
+}
 function NeighborhoodCard({ a }) {
   const hasMc = a.mc_months_supply != null || a.mc_median_dom != null || a.mc_sale_to_list_pct != null || a.mc_price_trend != null;
   const landUse = (Array.isArray(a.present_land_use) ? a.present_land_use : (() => { try { return JSON.parse(a.present_land_use || '[]'); } catch { return []; } })())
     .filter((u) => u && u.type && u.percent != null).slice().sort((x, y) => y.percent - x.percent);
-  const has = [a.nbhd_value_trend, a.nbhd_demand_supply, a.nbhd_marketing_time, a.nbhd_location_type, a.nbhd_price_predominant, a.nbhd_builtup, a.nbhd_boundaries].some((x) => x != null);
+  const has = [a.nbhd_value_trend, a.nbhd_demand_supply, a.nbhd_marketing_time, a.nbhd_location_type, a.nbhd_price_predominant, a.nbhd_builtup, a.nbhd_boundaries, a.market_conditions_comment, a.market_reconciliation_comment].some((x) => x != null);
   if (!has && !hasMc && !landUse.length) return null;
   const band = (a.nbhd_price_low != null || a.nbhd_price_high != null || a.nbhd_price_predominant != null)
     ? `${money(a.nbhd_price_low)}–${money(a.nbhd_price_high)}${a.nbhd_price_predominant != null ? ` · predominant ${money(a.nbhd_price_predominant)}` : ''}` : null;
@@ -413,6 +432,7 @@ function NeighborhoodCard({ a }) {
           <MarketTrendsGrid mt={a.market_trends} />
         </div>
       )}
+      <MarketNarrative a={a} />
     </DCard>
   );
 }
@@ -673,7 +693,7 @@ function CompRow({ c }) {
   // has adjustments OR any of these facts.
   const compFacts = [
     c.view_rating && ['View', c.view_rating],
-    c.location_rating && ['Location', c.location_rating],
+    (c.location_rating || c.location_type) && ['Location', [c.location_rating, c.location_type ? human(c.location_type) : null].filter(Boolean).join(' · ')],
     c.below_grade_sqft != null && ['Basement', `${Number(c.below_grade_sqft).toLocaleString('en-US')} sqft${c.below_grade_finished_sqft != null ? ` · ${Number(c.below_grade_finished_sqft).toLocaleString('en-US')} finished` : ''}`],
     c.data_source && ['Source', c.data_source],
   ].filter(Boolean);
@@ -721,7 +741,7 @@ function CompRow({ c }) {
                   {compFacts.map(([k, v], i) => (
                     <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 12.5 }}>
                       <span style={{ color: 'var(--muted,#4B585C)' }}>{k}</span>
-                      <span style={{ color: v === 'Adverse' ? 'var(--crit,#B4483C)' : 'inherit' }}>{v}</span>
+                      <span style={{ color: String(v).startsWith('Adverse') ? 'var(--crit,#B4483C)' : 'inherit' }}>{v}</span>
                     </div>
                   ))}
                 </div>
