@@ -129,4 +129,31 @@ let n = 0; const ok = (m) => { n++; console.log('  ok -', m); };
   ok('buildEmail: explicit kicker overrides, replyable:false opts out');
 }
 
+/* ---------------- template: premium components ---------------- */
+{
+  const r = tpl.render({
+    audience: 'borrower', title: 'You’re clear to close',
+    badge: { text: 'Clear to close', tone: 'positive' },
+    hero: { label: 'Released to you', value: '$9,601.00', sub: 'arrives in 1–2 days', tone: 'positive' },
+    steps: [{ label: 'Submitted', state: 'done' }, { label: 'Underwriting', state: 'done' }, { label: 'Clear to close', state: 'current' }, { label: 'Funded', state: 'upcoming' }],
+    progress: { done: 8, total: 10 },
+    callout: { title: 'What this means', body: 'Your closing can be scheduled.', tone: 'positive' },
+    officer: { name: 'Chaim Klein', title: 'Senior Loan Officer', nmls: '2609746', phone: '718-831-2168', email: 'chaim@yscapgroup.com' },
+  });
+  assert.ok(r.html.includes('Clear to close'), 'badge text renders');
+  assert.ok(r.html.includes('$9,601.00') && r.html.includes('Released to you'), 'hero band renders');
+  assert.ok(r.html.includes('&#10003;'), 'stepper renders a done checkmark');
+  assert.ok(r.html.includes('80%'), 'completion meter computes 8/10 = 80%');
+  assert.ok(r.html.includes('What this means') && r.html.includes('Your closing can be scheduled'), 'callout renders');
+  assert.ok(r.html.includes('Chaim Klein') && /Just reply to this email and it reaches Chaim directly/.test(r.html), 'officer card renders with reply affordance');
+  assert.ok(r.html.includes('tel:7188312168') && r.html.includes('mailto:chaim@yscapgroup.com'), 'officer card has clickable phone + email');
+  ok('premium components render: badge, hero, stepper, meter, callout, officer card');
+
+  // Back-compat: none of them present → none appear, subject unchanged.
+  const plain = tpl.render({ title: 'Plain', audience: 'staff' });
+  assert.strictEqual(plain.subject, 'Plain', 'plain email subject unchanged');
+  assert.ok(!/&#10003;|Your loan officer|Released to you/.test(plain.html), 'no premium markup leaks into a plain email');
+  ok('premium components are fully optional (back-compat holds)');
+}
+
 console.log(`\nAll ${n} notification-email checks passed.`);

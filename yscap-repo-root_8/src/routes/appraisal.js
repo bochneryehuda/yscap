@@ -170,6 +170,7 @@ router.post('/:appId/import', async (req, res, next) => {
           await require('../lib/notify').notifyAppBorrowers(app.id, {
             type: 'milestone',
             title: 'Your property appraisal has been received',
+            badge: { text: 'Milestone', tone: 'teal' },
             body: 'Good news — the appraisal report for your property has come in and is now with your loan team for review.',
             lines: ['There\'s nothing you need to do right now. If anything from the appraisal needs your attention, we\'ll reach out.'],
             applicationId: app.id, link: `/app/${app.id}`, ctaLabel: 'View your file' });
