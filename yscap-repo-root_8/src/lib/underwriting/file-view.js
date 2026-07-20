@@ -90,6 +90,8 @@ function subjectFor(docType, ctx) {
       return { borrower_name: borrowerName(borrower), entity_name: vestingName || null, borrower };
     case 'flood':
       return { property_address: app && app.property_address };
+    case 'scope_of_work':
+      return { property_address: app && app.property_address, rehab_budget: app && app.rehab_budget };
     default:
       return app || null;
   }

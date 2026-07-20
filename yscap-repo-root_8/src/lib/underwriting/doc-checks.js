@@ -290,9 +290,30 @@ function computeAmendmentFindings(am, subject, opts = {}) {
   return out;
 }
 
+// ---- Scope of work / rehab budget ----
+// Verify the renovation budget the loan is sized on: the document's printed total must match the
+// rehab budget registered on the file (a mismatch means the loan's LTC/ARV math uses a different
+// number than the borrower's actual plan). Warning-only — the underwriter reconciles.
+function computeScopeOfWorkFindings(sow, subject, opts = {}) {
+  const out = []; if (!sow) return out;
+  if (unreadable('scope_of_work', sow, ['totalBudget', 'lineItemCount', 'contractorName'])) {
+    return [verify('scope_of_work', 'scope of work / rehab budget')];
+  }
+  const docTotal = num(sow.totalBudget);
+  const fileTotal = subject && num(subject.rehab_budget);
+  if (docTotal != null && fileTotal != null && fileTotal > 0 && !withinMoney(docTotal, fileTotal, 1)) {
+    out.push(mk('scope_of_work', { code: 'rehab_budget_mismatch', severity: 'warning', field: 'rehab_budget',
+      docValue: money(docTotal), fileValue: money(fileTotal),
+      title: 'Rehab budget on the scope of work does not match the file',
+      howTo: `The scope of work totals ${money(docTotal)} but the file's rehab budget is ${money(fileTotal)}. The loan's cost/ARV math uses the file number — reconcile them (update the file or get a corrected scope of work).`,
+      actions: ['fix_file', 'request_document', 'post_condition', 'dismiss'] }));
+  }
+  return out;
+}
+
 module.exports = {
   computeAssignmentFindings, computeOperatingAgreementFindings, computeEinFindings,
   computeGoodStandingFindings, computeFormationFindings, computeInsuranceFindings,
   computeFloodFindings, computeSettlementFindings, computeCreditFindings, computeBackgroundFindings,
-  computeAmendmentFindings,
+  computeAmendmentFindings, computeScopeOfWorkFindings,
 };

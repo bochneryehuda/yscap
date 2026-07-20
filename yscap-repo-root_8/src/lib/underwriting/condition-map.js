@@ -30,6 +30,7 @@ const DOC_CONDITIONS = {
   credit_report: { satisfies: ['rtl_cond_credit', 'rtl_p3_credit'], purpose: 'The credit report — FICO, derogatories, and undisclosed liabilities.' },
   background_report: { satisfies: ['rtl_cond_fraud'], purpose: 'The background / OFAC / fraud screen — sanctions and integrity check.' },
   appraisal: { satisfies: ['rtl_cond_appraisaldocs'], purpose: 'The appraisal — the property valuation the loan is sized on (handled by the appraisal desk).' },
+  scope_of_work: { satisfies: ['rtl_p1_contract'], purpose: 'The scope of work / rehab budget — the renovation plan the loan-to-cost and after-repair value are sized on.' },
   settlement: { satisfies: [], purpose: 'The closing settlement statement — the final sources & uses (reviewed at closing).' },
 };
 

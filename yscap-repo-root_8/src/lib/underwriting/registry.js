@@ -11,7 +11,7 @@
 const {
   GOVERNMENT_ID, PURCHASE_CONTRACT, TITLE, BANK_STATEMENT,
   ASSIGNMENT, OPERATING_AGREEMENT, EIN_LETTER, GOOD_STANDING, LLC_FORMATION,
-  INSURANCE, FLOOD, SETTLEMENT, CREDIT_REPORT, BACKGROUND_REPORT, CONTRACT_AMENDMENT,
+  INSURANCE, FLOOD, SETTLEMENT, CREDIT_REPORT, BACKGROUND_REPORT, CONTRACT_AMENDMENT, SCOPE_OF_WORK,
 } = require('./schemas');
 const { computeIdFindings } = require('./id-checks');
 const { computeContractFindings } = require('./purchase-contract-checks');
@@ -21,7 +21,7 @@ const {
   computeAssignmentFindings, computeOperatingAgreementFindings, computeEinFindings,
   computeGoodStandingFindings, computeFormationFindings, computeInsuranceFindings,
   computeFloodFindings, computeSettlementFindings, computeCreditFindings, computeBackgroundFindings,
-  computeAmendmentFindings,
+  computeAmendmentFindings, computeScopeOfWorkFindings,
 } = require('./doc-checks');
 
 const REGISTRY = {
@@ -100,6 +100,10 @@ const REGISTRY = {
   contract_amendment: {
     docType: 'contract_amendment', schema: CONTRACT_AMENDMENT.schema, instructions: CONTRACT_AMENDMENT.instructions,
     subject: 'application', image: false, check: computeAmendmentFindings,
+  },
+  scope_of_work: {
+    docType: 'scope_of_work', schema: SCOPE_OF_WORK.schema, instructions: SCOPE_OF_WORK.instructions,
+    subject: 'application', image: false, check: computeScopeOfWorkFindings,
   },
 };
 

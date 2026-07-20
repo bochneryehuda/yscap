@@ -436,8 +436,29 @@ const CONTRACT_AMENDMENT = {
   }),
 };
 
+// ---- Scope of work / rehab budget (fix-&-flip renovation plan) ----
+const SCOPE_OF_WORK = {
+  docType: 'scope_of_work',
+  instructions:
+    "You are reviewing a SCOPE OF WORK / rehab budget for a fix-and-flip renovation. Extract the " +
+    "property address, the TOTAL rehab/renovation budget (the grand total, as a plain number), the " +
+    "number of line items listed, the contractor / preparer name if shown, and the date. If the sheet " +
+    "shows a contingency line, capture its amount. Use null for anything absent or unreadable — do NOT " +
+    "guess or add up numbers yourself unless a printed total is shown. readable=false if too poor to trust.",
+  schema: obj({
+    propertyAddress:  addr(),
+    totalBudget:      { type: ['number', 'null'] },   // the printed grand total
+    lineItemCount:    { type: ['number', 'null'] },
+    contingency:      { type: ['number', 'null'] },
+    contractorName:   { type: ['string', 'null'] },
+    preparedDate:     { type: ['string', 'null'] },
+    readable:         { type: 'boolean' },
+    notes:            { type: ['string', 'null'] },
+  }),
+};
+
 module.exports = {
   GOVERNMENT_ID, PURCHASE_CONTRACT, TITLE, BANK_STATEMENT,
   ASSIGNMENT, OPERATING_AGREEMENT, EIN_LETTER, GOOD_STANDING, LLC_FORMATION,
-  INSURANCE, FLOOD, SETTLEMENT, CREDIT_REPORT, BACKGROUND_REPORT, CONTRACT_AMENDMENT,
+  INSURANCE, FLOOD, SETTLEMENT, CREDIT_REPORT, BACKGROUND_REPORT, CONTRACT_AMENDMENT, SCOPE_OF_WORK,
 };

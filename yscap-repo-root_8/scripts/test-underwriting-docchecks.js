@@ -55,4 +55,23 @@ assert.deepStrictEqual(codes(C.computeBackgroundFindings({ subjectName: 'John Sm
 assert.strictEqual(C.computeBackgroundFindings({ subjectName: 'John Smith', ofacResult: 'confirmed_match', readable: true }, {}).find((f) => f.code === 'ofac_confirmed_match').severity, 'fatal');
 assert.deepStrictEqual(codes(C.computeBackgroundFindings({ subjectName: 'John Smith', ofacResult: 'potential_match', readable: true }, {})), ['ofac_potential_match']);
 
-console.log('✓ test-underwriting-docchecks: assignment, entity chain, insurance, flood, settlement, credit, OFAC pass');
+// ===== SCOPE OF WORK / rehab budget =====
+{
+  const codes = (fs) => fs.map((f) => f.code).sort();
+  // Doc total matches the file rehab budget → clean.
+  assert.deepStrictEqual(codes(C.computeScopeOfWorkFindings(
+    { totalBudget: 60000, lineItemCount: 12, contractorName: 'Acme Rehab', readable: true }, { rehab_budget: 60000 })), [], 'matching rehab budget → clean');
+  // Doc total differs from the file → rehab_budget_mismatch (warning).
+  {
+    const f = C.computeScopeOfWorkFindings({ totalBudget: 85000, lineItemCount: 12, contractorName: 'Acme Rehab', readable: true }, { rehab_budget: 60000 });
+    assert.deepStrictEqual(codes(f), ['rehab_budget_mismatch']);
+    assert.strictEqual(f[0].severity, 'warning');
+    assert.strictEqual(f[0].blocksCtc, false);
+  }
+  // No file rehab budget to compare against → no false flag.
+  assert.deepStrictEqual(codes(C.computeScopeOfWorkFindings({ totalBudget: 85000, lineItemCount: 12, contractorName: 'Acme', readable: true }, {})), [], 'no file budget → no flag');
+  // Unreadable → routes to manual review, never a false mismatch.
+  assert.deepStrictEqual(codes(C.computeScopeOfWorkFindings({ readable: false }, { rehab_budget: 60000 })), ['scope_of_work_unreadable']);
+}
+
+console.log('✓ test-underwriting-docchecks: assignment, entity chain, insurance, flood, settlement, credit, OFAC, scope-of-work pass');

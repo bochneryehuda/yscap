@@ -36,4 +36,7 @@ assert.strictEqual(classify({ text: '', filename: '' }).confidence, 'none');
 // A strong signal beats generic noise from another type.
 assert.strictEqual(classify({ text: 'ARTICLES OF ORGANIZATION for the LLC. seller buyer closing date earnest money', filename: '' }).docType, 'llc_formation');
 
+// A scope of work / rehab budget is recognized (and not confused with the purchase contract).
+assert.strictEqual(classify({ text: 'SCOPE OF WORK — rehab budget. Line item budget by contractor. Total renovation budget $60,000.', filename: 'SOW.pdf' }).docType, 'scope_of_work');
+
 console.log('✓ test-underwriting-classify: document auto-classification cases pass');

@@ -64,6 +64,7 @@ const DOC_CLAIMS = {
   credit_report: (f) => ({ borrower_name: f.subjectName, borrower_dob: f.dob }),
   settlement: (f) => ({ property_address: f.propertyAddress, purchase_price: f.contractSalesPrice, seller_name: f.sellerName ? [f.sellerName] : null, entity_name: f.buyerName, loan_amount: f.loanAmount, assignment_fee: f.assignmentFee }),
   flood: (f) => ({ property_address: f.propertyAddress }),
+  scope_of_work: (f) => ({ property_address: f.propertyAddress, rehab_budget: f.totalBudget }),
   payoff: (f) => ({ property_address: f.propertyAddress }),
 };
 
@@ -84,6 +85,7 @@ const DOC_CARRIES = {
   credit_report: ['borrower_name', 'borrower_dob'],
   settlement: ['property_address', 'purchase_price', 'seller_name', 'entity_name', 'loan_amount', 'assignment_fee'],
   flood: ['property_address'],
+  scope_of_work: ['property_address', 'rehab_budget'],
   payoff: ['property_address'],
 };
 
