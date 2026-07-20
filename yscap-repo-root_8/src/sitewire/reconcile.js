@@ -88,51 +88,104 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText) {
   const newStatus = draw.status || null;
   const newAppr = Number(draw.total_approved_cents) || 0;
 
-  // A draw with no prior mirror row.
+  // A draw with no prior mirror row. ATOMIC claim: set the watermark only if still unset, and notify
+  // only if THIS pass won it — so two overlapping reconcile passes can never double-notify (audit LOW-2).
   if (!prev) {
-    await db.query(`UPDATE sitewire_draws SET status_synced=$2 WHERE sitewire_draw_id=$1`, [drawId, newStatus]);
+    const won = (await db.query(`UPDATE sitewire_draws SET status_synced=$2 WHERE sitewire_draw_id=$1 AND status_synced IS NULL RETURNING sitewire_draw_id`, [drawId, newStatus])).rowCount === 1;
     if (firstReconcile) { await recordInboundChange(appId, drawId, 'draw', drawId, 'baseline', null, newStatus, false); return; }
     // A property PILOT created can only gain a draw AFTER we set it up, so a first-seen draw on an
     // already-reconciled file is genuinely a new borrower submission — tell the coordinator.
-    await recordInboundChange(appId, drawId, 'draw', drawId, 'new_draw', null, newStatus, true);
-    await notify.notifyAppStaff(appId, {
-      type: 'draw_inbound', title: 'A new draw request came in', badge: { text: 'New draw', tone: 'gold' },
-      body: `A new draw request (Draw #${draw.number == null ? '—' : draw.number}) came in for ${addrText} through Sitewire. Review it and start the inspection.`,
-      applicationId: appId, link: `/internal/app/${appId}/draws` }).catch(() => {});
+    if (won) {
+      await recordInboundChange(appId, drawId, 'draw', drawId, 'new_draw', null, newStatus, true);
+      await notify.notifyAppStaff(appId, {
+        type: 'draw_inbound', title: 'A new draw request came in', badge: { text: 'New draw', tone: 'gold' },
+        body: `A new draw request (Draw #${draw.number == null ? '—' : draw.number}) came in for ${addrText} through Sitewire. Review it and start the inspection.`,
+        applicationId: appId, link: `/internal/app/${appId}/draws` }).catch(() => {});
+    }
     return;
   }
 
   // A legacy row seen for the first time after the watermark column was added: baseline it silently
   // (never notify for a transition that happened before we started watching — go-forward cutover).
   if (prev.status_synced == null) {
-    await db.query(`UPDATE sitewire_draws SET status_synced=$2 WHERE sitewire_draw_id=$1`, [drawId, newStatus]);
+    await db.query(`UPDATE sitewire_draws SET status_synced=$2 WHERE sitewire_draw_id=$1 AND status_synced IS NULL`, [drawId, newStatus]);
     await recordInboundChange(appId, drawId, 'draw', drawId, 'baseline', prev.status, newStatus, false);
     return;
   }
 
-  // A real inbound status transition PILOT has not reacted to yet.
+  // A real inbound status transition PILOT has not reacted to yet. Advance the watermark ATOMICALLY and
+  // only react if this pass won the advance (concurrency-safe). `reacted` reflects whether we actually
+  // sent a notification (only the curated REACT_STATUS transitions notify).
   if (newStatus && newStatus !== prev.status_synced) {
-    await recordInboundChange(appId, drawId, 'draw', drawId, 'status', prev.status_synced, newStatus, true);
-    const r = REACT_STATUS[newStatus];
-    if (r) {
-      await notify.notifyAppStaff(appId, {
-        type: 'draw_inbound', title: r.title, badge: { text: 'Sitewire update', tone: r.tone },
-        body: r.body(draw.number == null ? '—' : draw.number, addrText),
-        applicationId: appId, link: `/internal/app/${appId}/draws` }).catch(() => {});
+    const won = (await db.query(`UPDATE sitewire_draws SET status_synced=$2 WHERE sitewire_draw_id=$1 AND status_synced IS DISTINCT FROM $2 RETURNING sitewire_draw_id`, [drawId, newStatus])).rowCount === 1;
+    if (won) {
+      const r = REACT_STATUS[newStatus];
+      await recordInboundChange(appId, drawId, 'draw', drawId, 'status', prev.status_synced, newStatus, !!r);
+      if (r) {
+        await notify.notifyAppStaff(appId, {
+          type: 'draw_inbound', title: r.title, badge: { text: 'Sitewire update', tone: r.tone },
+          body: r.body(draw.number == null ? '—' : draw.number, addrText),
+          applicationId: appId, link: `/internal/app/${appId}/draws` }).catch(() => {});
+      }
     }
-    // advance the watermark whether or not this status is one we notify on, so we never re-fire it.
-    await db.query(`UPDATE sitewire_draws SET status_synced=$2 WHERE sitewire_draw_id=$1`, [drawId, newStatus]);
   }
 
-  // An approved-amount change is audited (foundation for Phase 2 drift detection) but does NOT notify
-  // here — a partner nudging an approved amount is a money-drift concern, handled in Phase 2.
+  // An approved-amount change is always audited. G-FIND-MATCH (Phase 2): if PILOT already RELEASED
+  // money for this draw, the wire went out against the OLD approved amount — a Sitewire-side change to
+  // it is now a financial discrepancy. Park a TWO-SIDED alert + notify; money already moved, so PILOT
+  // NEVER auto-corrects it (the coordinator reconciles the wire by hand).
   if (Number(prev.total_approved_cents || 0) !== newAppr) {
-    await recordInboundChange(appId, drawId, 'draw', drawId, 'total_approved_cents', String(prev.total_approved_cents || 0), String(newAppr), false);
+    let released = null;
+    try { released = (await db.query(
+      `SELECT approved_cents FROM draw_disbursements WHERE application_id=$1 AND sitewire_draw_id=$2 AND kind='draw' AND funded_status='released' ORDER BY created_at LIMIT 1`, [appId, drawId])).rows[0] || null; } catch (_) {}
+    await recordInboundChange(appId, drawId, 'draw', drawId, released ? 'release_drift' : 'total_approved_cents', String(prev.total_approved_cents || 0), String(newAppr), !!released);
+    if (released) {
+      const usd0 = (c) => '$' + Math.round(Number(c || 0) / 100).toLocaleString('en-US');
+      try {
+        await require('./orchestrator').park({
+          appId, dedupe: `reldrift:${drawId}`,
+          reason: `sitewire_release_drift: Draw #${draw.number == null ? '—' : draw.number} was already released at ${usd0(released.approved_cents)}, but Sitewire now shows an approved amount of ${usd0(newAppr)}. The wire already went out — reconcile it by hand (PILOT will not change a released amount automatically).`,
+          pilotValue: String(released.approved_cents), sitewireValue: String(newAppr),
+        });
+      } catch (_) {}
+    }
   }
 }
 
+// ---- Bidirectional Phase 2: periodic budget drift re-verify ----
+// Re-read the managed budget from Sitewire and compare each bound line + the total to what PILOT
+// pushed (sitewire_job_item_links). A disagreement means a human edited the budget directly in
+// Sitewire (the doc's specified-but-unimplemented PILOT-owned-field drift). Park a TWO-SIDED review
+// so the coordinator can RESTORE PILOT's budget or ACCEPT Sitewire's. Throttled to hourly per file.
+async function verifyBudgetDrift(appId, budgetId) {
+  if (!budgetId) return { checked: false };
+  const links = (await db.query(
+    `SELECT sitewire_job_item_id, budgeted_cents FROM sitewire_job_item_links WHERE application_id=$1 AND sitewire_job_item_id IS NOT NULL`, [appId])).rows;
+  if (!links.length) return { checked: false };
+  const expById = new Map(links.map((l) => [Number(l.sitewire_job_item_id), Number(l.budgeted_cents) || 0]));
+  const expectedTotal = links.reduce((s, l) => s + (Number(l.budgeted_cents) || 0), 0);
+  let budget;
+  try { budget = await client.getBudget(budgetId); } catch (_) { return { checked: false }; }
+  const items = Array.isArray(budget.job_items) ? budget.job_items : [];
+  const observedTotal = Number(budget.total_budgeted_cents != null ? budget.total_budgeted_cents
+    : items.reduce((s, i) => s + (Number(i.budgeted_cents) || 0), 0));
+  let driftLines = 0;
+  for (const it of items) { const exp = expById.get(Number(it.id)); if (exp != null && Number(it.budgeted_cents) !== exp) driftLines++; }
+  if (observedTotal === expectedTotal && driftLines === 0) return { checked: true, ok: true };
+  const usd0 = (c) => '$' + Math.round(Number(c || 0) / 100).toLocaleString('en-US');
+  await recordInboundChange(appId, null, 'budget', budgetId, 'budget_drift', String(expectedTotal), String(observedTotal), true);
+  try {
+    await require('./orchestrator').park({
+      appId, dedupe: 'budgetdrift',
+      reason: `sitewire_budget_drift: the construction budget in Sitewire (${usd0(observedTotal)}) no longer matches what PILOT set (${usd0(expectedTotal)})${driftLines ? ` — ${driftLines} line(s) differ` : ''}. Someone may have edited it directly in Sitewire. Review, then restore PILOT's budget or accept Sitewire's.`,
+      pilotValue: String(expectedTotal), sitewireValue: String(observedTotal),
+    });
+  } catch (_) {}
+  return { checked: true, ok: false, driftLines };
+}
+
 async function reconcileOne(appId) {
-  const link = (await db.query(`SELECT sitewire_property_id, budget_version, last_reconciled_at FROM sitewire_property_links WHERE application_id=$1 AND sitewire_property_id IS NOT NULL AND matched_by='created'`, [appId])).rows[0];
+  const link = (await db.query(`SELECT sitewire_property_id, budget_version, last_reconciled_at, last_budget_verified_at FROM sitewire_property_links WHERE application_id=$1 AND sitewire_property_id IS NOT NULL AND matched_by='created'`, [appId])).rows[0];
   if (!link) return { skipped: 'not linked' };
   let prop;
   try { prop = await client.getProperty(link.sitewire_property_id); } catch (e) { return { error: e.message }; }
@@ -198,6 +251,16 @@ async function reconcileOne(appId) {
    }
   }
   await db.query(`UPDATE sitewire_property_links SET last_reconciled_at=now() WHERE application_id=$1`, [appId]);
+  // Bidirectional Phase 2: re-verify the managed budget against what PILOT pushed, at most HOURLY per
+  // file (the extra getBudget read stays cheap), and never on a file's first reconcile (nothing to
+  // drift from yet). Best-effort — a drift check never fails the reconcile.
+  try {
+    const stale = !link.last_budget_verified_at || (Date.now() - new Date(link.last_budget_verified_at).getTime()) > 3600000;
+    if (!firstReconcile && stale && prop.budget && prop.budget.id) {
+      await verifyBudgetDrift(appId, prop.budget.id);
+      await db.query(`UPDATE sitewire_property_links SET last_budget_verified_at=now() WHERE application_id=$1`, [appId]);
+    }
+  } catch (_) {}
   // refresh the advisory draw-risk snapshot (best-effort — never fail the reconcile on it)
   try { await assessAndStoreRisk(appId); } catch (_) {}
   return { draws: n };
@@ -343,4 +406,4 @@ async function persistDrawFindings(appId, sitewireDrawId, deliveredTo = null) {
   return { finding_id: finding.id, reply_token: finding.reply_token, lines: detail.lines.length, totals: detail.totals, status: detail.status };
 }
 
-module.exports = { syncCapitalPartners, syncStaffUsers, reconcileOne, reconcileAll, fetchDrawFindings, deriveTimes, assessAndStoreRisk, persistDrawFindings, settingsMap };
+module.exports = { syncCapitalPartners, syncStaffUsers, reconcileOne, reconcileAll, fetchDrawFindings, deriveTimes, assessAndStoreRisk, persistDrawFindings, settingsMap, verifyBudgetDrift };

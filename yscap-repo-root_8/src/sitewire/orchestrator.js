@@ -94,7 +94,7 @@ async function recordSetupStatus(appId, { reason, cls, current, proposed, preexi
   return null;
 }
 
-async function park({ appId, reason, fieldKey = 'sitewire', current = null, proposed = null, dedupe = null, notify = true }) {
+async function park({ appId, reason, fieldKey = 'sitewire', current = null, proposed = null, dedupe = null, notify = true, pilotValue = null, sitewireValue = null }) {
   const cls = String(reason).split(':')[0];
   // Birth-phase problem on a file PILOT hasn't managed yet → record on the file, never the error queue.
   if (fieldKey === 'sitewire' && SITEWIRE_BIRTH_REASONS.has(cls) && !(await isManaged(appId))) {
@@ -115,9 +115,13 @@ async function park({ appId, reason, fieldKey = 'sitewire', current = null, prop
       `SELECT id FROM sync_review_queue WHERE task_id=$1 AND field_key=$2 AND status='open' LIMIT 1`, [taskKey, fieldKey]);
     if (existing.rowCount > 0) return existing.rows[0].id;
     const r = await db.query(
-      `INSERT INTO sync_review_queue (application_id, task_id, direction, field_key, current_value, proposed_value, reason, status)
-       VALUES ($1,$2,'outbound',$3,$4,$5,$6,'open') RETURNING id`,
-      [appId, taskKey, fieldKey, current == null ? null : String(current), proposed == null ? null : String(proposed), reason]);
+      `INSERT INTO sync_review_queue (application_id, task_id, direction, field_key, current_value, proposed_value, reason, status, portal_value, clickup_value)
+       VALUES ($1,$2,'outbound',$3,$4,$5,$6,'open',$7,$8) RETURNING id`,
+      [appId, taskKey, fieldKey, current == null ? null : String(current), proposed == null ? null : String(proposed), reason,
+       // TWO-SIDED drift rows (Phase 2): store PILOT's value and Sitewire's value so the review can show
+       // both and offer a winner. Reuses the db/110 two-sided columns (portal_value=PILOT, clickup_value=
+       // the other system's value); null for the ordinary one-sided setup/push parks.
+       pilotValue == null ? null : String(pilotValue), sitewireValue == null ? null : String(sitewireValue)]);
     const rid = r.rows[0].id;
     // Advisory notes (units mismatch, unmapped type) set notify:false — they appear in the review list
     // but don't email the LO, so a file with several advisories doesn't send several blank-looking emails.

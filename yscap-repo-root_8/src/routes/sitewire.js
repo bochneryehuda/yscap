@@ -1032,7 +1032,7 @@ const { SITEWIRE_DUPE, sitewireReasonClass, sitewireAllowedActions } = require('
 router.post('/reviews/:id/:action', requirePermission('manage_draws'), async (req, res) => {
   const { id, action } = req.params;
   if (!/^\d+$/.test(id)) return res.status(404).json({ error: 'not found' });
-  if (!['retry', 'dismiss', 'acknowledge'].includes(action)) return res.status(400).json({ error: 'action must be retry, acknowledge, or dismiss' });
+  if (!['retry', 'dismiss', 'acknowledge', 'restore', 'accept'].includes(action)) return res.status(400).json({ error: 'action must be retry, acknowledge, restore, accept, or dismiss' });
   const row = (await db.query(`SELECT id, application_id, reason, current_value FROM sync_review_queue WHERE id=$1 AND field_key='sitewire' AND status='open'`, [id])).rows[0];
   if (!row) return res.status(404).json({ error: 'review not found (or already resolved)' });
   if (!row.application_id || !(await canSeeFile(req, row.application_id))) return res.status(403).json({ error: 'forbidden' });
@@ -1052,6 +1052,23 @@ router.post('/reviews/:id/:action', requirePermission('manage_draws'), async (re
       // informational; the push already proceeded past it.
       await db.query(`UPDATE sync_review_queue SET status='resolved', resolved_by=$2, resolved_at=now(), resolution_note='acknowledged' WHERE id=$1`, [id, req.actor.id]);
       return res.json({ ok: true, acknowledged: true });
+    }
+    if (action === 'accept') {
+      // Two-sided drift: the coordinator accepts SITEWIRE's value — close the review with no push. PILOT
+      // does not silently mutate its own record; accepting just stops flagging the divergence. (The
+      // coordinator handles any downstream, e.g. re-registering a genuinely changed budget.)
+      await db.query(`UPDATE sync_review_queue SET status='resolved', resolved_by=$2, resolved_at=now(), resolution_note='accepted Sitewire value' WHERE id=$1`, [id, req.actor.id]);
+      return res.json({ ok: true, accepted: true });
+    }
+    if (action === 'restore') {
+      // Two-sided budget drift: re-push PILOT's budget to Sitewire, overwriting the drift. Routes through
+      // the SAME guarded push machinery as every other write (never a raw call) by re-queuing push_file.
+      const dead = await db.query(
+        `UPDATE sync_queue SET status='queued', attempts=0, run_after=now(), updated_at=now()
+          WHERE entity_type='application' AND entity_id=$1 AND target='sitewire' AND direction='push' AND status='dead' RETURNING id`, [row.application_id]);
+      if (!dead.rows.length) await enqueueSitewirePush(row.application_id, 'push_file').catch(() => {});
+      await db.query(`UPDATE sync_review_queue SET status='resolved', resolved_by=$2, resolved_at=now(), resolution_note='restoring PILOT budget to Sitewire' WHERE id=$1`, [id, req.actor.id]);
+      return res.json({ ok: true, restored: true });
     }
     // action === 'retry'. If this file has a still-open loan-number COLLISION review (a pre-existing Sitewire
     // property carries this loan), block retrying a DIFFERENT review — the push can't create the property while
