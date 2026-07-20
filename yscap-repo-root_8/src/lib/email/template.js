@@ -453,10 +453,21 @@ function render(p) {
     + (p.audience === 'borrower' ? 'loan team.' : 'YS Capital team.'), '');
   t.push('—', COMPANY.name + ' · NMLS #' + COMPANY.nmls, COMPANY.phone + ' · ' + COMPANY.email + ' · yscapgroup.com');
 
-  // Subject carries the file tag ("<title> · <loan# · property>") so the reader
-  // sees WHICH file this is about straight from their inbox — the in-body H1
-  // stays the clean title.
-  var subject = subjectTag ? (title + ' · ' + subjectTag) : title;
+  // Subject carries the file tag ("<title> · <loan# · borrower · property>") so
+  // the reader sees WHICH file this is about straight from their inbox — the
+  // in-body H1 stays the clean title. DEDUP GUARD (owner-directed 2026-07-20:
+  // "the loan number is listed twice — major issue"): a title that already
+  // hand-embeds a tag segment (e.g. "Product registered on YSCAP258…") must NOT
+  // repeat it. Append only the subjectTag segments not already present in the
+  // title, so no segment (loan number, borrower name, or street) is ever doubled.
+  var subject = title;
+  if (subjectTag) {
+    var titleLc = String(title).toLowerCase();
+    var extra = String(subjectTag).split(' · ')
+      .map(function (s) { return s.trim(); })
+      .filter(function (s) { return s && titleLc.indexOf(s.toLowerCase()) === -1; });
+    if (extra.length) subject = title + ' · ' + extra.join(' · ');
+  }
   return { subject: subject, html: html, text: t.join('\n') };
 }
 
