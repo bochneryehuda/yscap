@@ -105,6 +105,12 @@ async function importAppraisalTx(db, {
     fields: JSON.stringify(fieldsJson), warnings: JSON.stringify(A.warnings || []),
     imported_by: importedBy,
   };
+  // Merge the db/158 enrichment fields — extract() keys them EXACTLY to the column names. The four
+  // jsonb columns need stringifying; everything else is a scalar the driver stores directly.
+  Object.assign(cols, A.enrich || {});
+  for (const jk of ['utilities', 'updates', 'amenities', 'rent_included_utilities']) {
+    if (cols[jk] != null) cols[jk] = JSON.stringify(cols[jk]);
+  }
   const keys = Object.keys(cols);
   const ins = await db.query(
     `INSERT INTO appraisals (${keys.join(',')}) VALUES (${keys.map((_, i) => '$' + (i + 1)).join(',')}) RETURNING id`,
@@ -121,19 +127,26 @@ async function importAppraisalTx(db, {
         `INSERT INTO appraisal_comparables
            (appraisal_id, seq, is_subject, address, city, state, zip, proximity, sale_price, adjusted_price,
             gla, sale_date, condition_uad, quality_uad, days_on_market, price_per_gla,
-            net_adjustment, net_adj_pct, gross_adj_pct, adjustments, comp_set, sale_status)
-         VALUES ($1,$2,false,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
+            net_adjustment, net_adj_pct, gross_adj_pct, adjustments, comp_set, sale_status,
+            beds, baths, baths_full, baths_half, total_rooms, sale_type, concession_amount, financing_type,
+            prior_sale_amount, prior_sale_date, latitude, longitude)
+         VALUES ($1,$2,false,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
+                 $22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)`,
         [appraisalId, c.seq, c.address, c.city, c.state, c.zip, c.proximity, c.salePrice, c.adjustedPrice,
          c.gla, c.saleDate, c.conditionUad, c.qualityUad, c.dom == null ? null : String(c.dom), c.pricePerGla,
-         c.netAdjustment, c.netAdjPct, c.grossAdjPct, JSON.stringify(c.adjustments || []), c.comp_set || 'unknown', c.saleStatus || 'closed']);
+         c.netAdjustment, c.netAdjPct, c.grossAdjPct, JSON.stringify(c.adjustments || []), c.comp_set || 'unknown', c.saleStatus || 'closed',
+         c.beds, c.bathsText, c.bathsFull, c.bathsHalf, c.totalRooms, c.saleType, c.compConcession, c.financingType,
+         c.priorSaleAmount, c.priorSaleDate, c.latitude, c.longitude]);
     }
   }
 
-  // 4. 1025 per-unit rents
+  // 4. 1025 per-unit rents + the per-unit mix (rooms/beds/baths/sqft) + lease status (db/158
+  //    populates the appraisal_units columns that already existed but were never written).
   for (const u of A.units || []) {
     await db.query(
-      `INSERT INTO appraisal_units (appraisal_id, unit_seq, actual_rent, market_rent) VALUES ($1,$2,$3,$4)`,
-      [appraisalId, u.seq, u.actualRent, u.marketRent]);
+      `INSERT INTO appraisal_units (appraisal_id, unit_seq, actual_rent, market_rent, rooms, beds, baths, sqft, lease_status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [appraisalId, u.seq, u.actualRent, u.marketRent, u.rooms, u.beds, u.baths, u.sqft, u.leaseStatus]);
   }
 
   // 5. photo manifest (pixels come later from the PDF)
