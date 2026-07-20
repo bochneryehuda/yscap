@@ -1088,23 +1088,32 @@ const THROTTLE_ERROR = /(^|[^0-9])429([^0-9]|$)|retry-after|throttl/i;
 // Permanent: retrying the SAME upload will never succeed — a human (or a config
 // change) must intervene. Each maps to a concrete, plain-language cause.
 const PERMANENT_PATTERNS = [
-  { re: /no application or borrower to file under/i, cause: 'this document is not linked to any borrower or loan file, so there is nowhere to file it. Link it to a file/borrower in PILOT (or remove it).' },
-  { re: /ENOENT|no such file|invalid storage ref|storage.*not configured/i, cause: 'the document’s own saved copy could not be read from PILOT storage (its file is missing). This usually means it was saved to a non-persistent disk. Re-upload the document.' },
-  { re: /not configured \(MS_|AADSTS|invalid_client|unauthorized_client|certificate|client assertion|token via/i, cause: 'SharePoint authentication is failing (an expired or misconfigured certificate/secret). Rotate/renew the Microsoft credential — nothing will mirror until it is fixed.' },
-  // The numeric codes are digit-boundary-anchored (like TRANSIENT/THROTTLE) so a
-  // byte count / sliced doc-id / latency figure that merely CONTAINS "400"/"403"
-  // is never misclassified permanent and wrongly parked (A-Z audit 2026-07-20).
-  { re: /Access denied|accessDenied|(^|[^0-9])403([^0-9]|$)|Forbidden|Sites\.|permission/i, cause: 'SharePoint denied access (a permissions problem on the target site/folder). An admin must grant the app write access to this location.' },
-  { re: /name conflict persisted after uniquification/i, cause: 'the upload keeps colliding with an existing item and could not be uniquified. A human should check the target folder in SharePoint.' },
-  { re: /invalidRequest|malformed|Invalid path|path.*too long|(^|[^0-9])400([^0-9]|$)/i, cause: 'SharePoint rejected the request as invalid (often a folder path or name problem). Review the folder match for this file.' },
+  // `hard: true` — retrying the SAME input can NEVER help (bad bytes, no scope,
+  // a missing local file, a persistent name conflict, an auth failure). These win
+  // OUTRIGHT, even if a stray number in the message (a byte count like "503
+  // bytes") coincidentally looks like an HTTP code — they must not be downgraded
+  // to "retry forever" by the transient/throttle subordination (pre-merge audit).
+  { re: /no application or borrower to file under/i, hard: true, cause: 'this document is not linked to any borrower or loan file, so there is nowhere to file it. Link it to a file/borrower in PILOT (or remove it).' },
+  { re: /ENOENT|no such file|invalid storage ref|storage.*not configured/i, hard: true, cause: 'the document’s own saved copy could not be read from PILOT storage (its file is missing). This usually means it was saved to a non-persistent disk. Re-upload the document.' },
+  { re: /not configured \(MS_|AADSTS|invalid_client|unauthorized_client|certificate|client assertion|token via/i, hard: true, cause: 'SharePoint authentication is failing (an expired or misconfigured certificate/secret). Rotate/renew the Microsoft credential — nothing will mirror until it is fixed.' },
+  { re: /name conflict persisted after uniquification/i, hard: true, cause: 'the upload keeps colliding with an existing item and could not be uniquified. A human should check the target folder in SharePoint.' },
   // Local bytes on disk don't match what the upload recorded — retrying the
-  // SAME damaged bytes can never succeed (it fails before any Graph call), so
-  // park it for a human instead of churning it daily forever.
-  { re: /local integrity|not mirroring damaged bytes/i, cause: 'PILOT’s own saved copy of this document is damaged (its size no longer matches what was uploaded). Re-upload the document — the stored bytes cannot be trusted.' },
+  // SAME damaged bytes can never succeed (it fails before any Graph call).
+  { re: /local integrity|not mirroring damaged bytes/i, hard: true, cause: 'PILOT’s own saved copy of this document is damaged (its size no longer matches what was uploaded). Re-upload the document — the stored bytes cannot be trusted.' },
+  // SOFT — numeric HTTP codes. Digit-boundary-anchored so a byte count / hex id
+  // / latency figure that merely CONTAINS "400"/"403" is not misclassified
+  // (A-Z audit); and they yield to a transient/throttle signal (safe = retry).
+  { re: /Access denied|accessDenied|(^|[^0-9])403([^0-9]|$)|Forbidden|Sites\.|permission/i, cause: 'SharePoint denied access (a permissions problem on the target site/folder). An admin must grant the app write access to this location.' },
+  { re: /invalidRequest|malformed|Invalid path|path.*too long|(^|[^0-9])400([^0-9]|$)/i, cause: 'SharePoint rejected the request as invalid (often a folder path or name problem). Review the folder match for this file.' },
 ];
 function classifyMirrorError(message) {
   const m = String(message || '');
-  const perm = PERMANENT_PATTERNS.find((p) => p.re.test(m) && !THROTTLE_ERROR.test(m) && !TRANSIENT_ERROR.test(m));
+  // HARD permanents win outright (retrying can never help, regardless of a
+  // number in the message that looks like an HTTP code).
+  const hard = PERMANENT_PATTERNS.find((p) => p.hard && p.re.test(m));
+  if (hard) return { class: 'permanent', cause: hard.cause };
+  // SOFT (numeric) permanents yield to a transient/throttle signal (safe = retry).
+  const perm = PERMANENT_PATTERNS.find((p) => !p.hard && p.re.test(m) && !THROTTLE_ERROR.test(m) && !TRANSIENT_ERROR.test(m));
   if (perm) return { class: 'permanent', cause: perm.cause };
   if (THROTTLE_ERROR.test(m)) return { class: 'throttle', cause: 'SharePoint is rate-limiting the sync (throttling). The mirror backs off and keeps retrying automatically.' };
   if (TRANSIENT_ERROR.test(m)) return { class: 'transient', cause: 'a temporary network or SharePoint error. The mirror retries automatically.' };

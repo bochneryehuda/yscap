@@ -125,6 +125,11 @@ eq('a real " 403 " IS permanent (boundary match)', cls('Graph PUT -> 403 Forbidd
 eq('a real " 400 " IS permanent (boundary match)', cls('Graph PUT -> 400 invalidRequest: bad path'), 'permanent');
 // A-Z audit #6: damaged local bytes park (retrying identical bytes can't help).
 eq('local-integrity mismatch is PERMANENT (parks, not churns)', cls('local integrity: stored file is 39900 bytes but the upload recorded 40000 — not mirroring damaged bytes'), 'permanent');
+// A HARD permanent must win even when a byte count coincidentally equals an HTTP code.
+eq('local-integrity stays PERMANENT even with a 503-byte count (hard wins over transient)', cls('local integrity: stored file is 503 bytes but the upload recorded 40000 — not mirroring damaged bytes'), 'permanent');
+eq('no-scope stays PERMANENT even if the message contains 500', cls('document has no application or borrower to file under (doc 500)'), 'permanent');
+// A SOFT 403 still yields to a transient signal (safe = retry) when both appear.
+eq('a 403 alongside a timeout yields to TRANSIENT (safe = retry)', cls('Graph 403 then the operation timed out'), 'transient');
 
 // ---------------------------------------- metadata ID stamping (roadmap R1)
 eq('PILOT_COLUMNS are the four identity columns', sp.PILOT_COLUMNS,
