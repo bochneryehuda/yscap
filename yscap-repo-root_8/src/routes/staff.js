@@ -2926,11 +2926,13 @@ router.patch('/checklist/:itemId', async (req, res) => {
         await notify.notifyBorrower(row.borrower_id, {
           type: 'doc_rejected',
           title: `"${row.label}" needs your attention`,
-          body: `Your loan team sent "${row.label}" back${ctx ? ` (${ctx.label})` : ''}: ${String(b.issueReason).slice(0, 180)}`,
+          badge: { text: 'Action needed', tone: 'action' },
+          body: `Your loan team reviewed "${row.label}" and sent it back so it can be corrected.`,
+          callout: { title: 'What we need', body: String(b.issueReason).slice(0, 300), tone: 'action' },
           meta: (ctx && ctx.borrowerMeta) || undefined,
           applicationId: row.application_id,
           link: row.application_id ? `/app/${row.application_id}` : '/profile',
-          ctaLabel: 'Review the condition' });
+          ctaLabel: 'Fix this item' });
       }
     } catch (_) { /* best-effort */ }
   }
@@ -2955,7 +2957,9 @@ router.patch('/checklist/:itemId', async (req, res) => {
           if (!recent.rows[0]) {
             await notify.notifyAppBorrowers(row.application_id, {
               type: 'all_caught_up',
-              title: 'You’re all caught up — nothing needed right now',
+              title: 'You’re all caught up',
+              hero: { label: 'Nothing needed right now', value: '✓ All caught up', tone: 'positive' },
+              badge: { text: 'All clear', tone: 'positive' },
               body: 'Great news — you’ve completed everything your loan team needs from you at the moment, so there’s nothing left for you to do right now.',
               lines: ['We’ll email you the moment a new item needs your attention. In the meantime, you can always check your file in the portal.'],
               applicationId: row.application_id, link: `/app/${row.application_id}`, ctaLabel: 'View your file' });
@@ -4215,6 +4219,17 @@ const BORROWER_STATUS_EXPLAIN = {
   declined: 'After review, we are unable to move forward with this loan at this time. Your loan officer can walk you through why and discuss any options.',
   withdrawn: 'This loan file has been withdrawn. If this wasn\'t expected, contact your loan officer and we\'ll help sort it out.',
 };
+// The borrower-facing loan journey, as a 6-stage progress path for the email
+// stepper. Each internal status maps to a stage index; stages before it are
+// done, the mapped stage is current, later stages upcoming. Terminal
+// declined/withdrawn statuses show no path (handled by returning null).
+const BORROWER_JOURNEY = ['Submitted', 'In review', 'Underwriting', 'Approved', 'Clear to close', 'Funded'];
+const STATUS_STAGE = { file_intake: 0, new: 0, in_review: 1, processing: 1, underwriting: 2, approved: 3, clear_to_close: 4, funded: 5 };
+function borrowerJourney(status) {
+  const idx = STATUS_STAGE[status];
+  if (idx == null) return null;   // declined / withdrawn → no progress path
+  return BORROWER_JOURNEY.map((label, i) => ({ label, state: i < idx ? 'done' : (i === idx ? 'current' : 'upcoming') }));
+}
 // Conditions-to-close gating. Reaching "clear to close" requires every open
 // prior-to-docs (and standard) condition cleared/waived and every gate item
 // signed off; "funded" additionally requires prior-to-funding conditions.
@@ -4649,10 +4664,15 @@ router.patch('/applications/:id', async (req, res) => {
     try {
       const fromLabel = STATUS_LABEL[cur.rows[0].status] || cur.rows[0].status;
       const explain = BORROWER_STATUS_EXPLAIN[status];
+      const steps = borrowerJourney(status);
+      const positive = status === 'funded' || status === 'clear_to_close' || status === 'approved';
+      const badgeTone = positive ? 'positive' : (status === 'declined' || status === 'withdrawn' ? 'neutral' : 'teal');
       await notify.notifyAppBorrowers(req.params.id, {
         type: 'status_change', title: `Your loan status is now: ${label}`,
         body: `Your loan file has moved from "${fromLabel}" to "${label}".`,
-        lines: explain ? [explain] : ['The full file — conditions, documents, and messages — is in your portal.'],
+        badge: { text: label, tone: badgeTone },
+        steps: steps || undefined,   // the visual loan-journey path (null on declined/withdrawn)
+        callout: explain ? { title: 'What this means', body: explain, tone: positive ? 'positive' : 'gold' } : undefined,
         applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'View your file',
         major: MAJOR_STATUSES.has(status) });   // #88: only decision statuses email the borrower
       await notify.notifyAppStaff(req.params.id, {   // #113: whole team (primary + assistants), minus the actor
@@ -5707,7 +5727,9 @@ router.post('/documents/:id/review', async (req, res) => {
         await notify.notifyBorrower(doc.borrower_id, {
           type: 'doc_requested',
           title: condLabel ? `"${condLabel}" needs one more document` : 'One more document is needed',
-          body: `"${doc.filename}" was accepted ✓${condLabel ? ` — but condition "${condLabel}" needs one more document` : ''}${moreNote ? `: ${moreNote}` : '.'}${ctx ? ` (${ctx.label})` : ''}`,
+          badge: { text: 'Action needed', tone: 'action' },
+          body: `Good news — "${doc.filename}" was accepted. To finish this item, your loan team needs one more document.`,
+          callout: moreNote ? { title: 'What we still need', body: moreNote, tone: 'action' } : undefined,
           meta: (ctx && ctx.borrowerMeta) || undefined,
           applicationId: doc.application_id,
           link: doc.application_id ? `/app/${doc.application_id}` : '/profile',
@@ -5736,6 +5758,7 @@ router.post('/documents/:id/review', async (req, res) => {
         await notify.notifyBorrower(doc.borrower_id, {
           type: 'doc_accepted',
           title: condLabel ? `Accepted: "${condLabel}"` : `Document accepted: ${doc.filename}`,
+          badge: { text: 'Accepted', tone: 'positive' },
           body: `Your loan team reviewed and accepted "${doc.filename}"${condLabel ? ` for "${condLabel}"` : ''}. No further action is needed on this document — we'll let you know if anything else comes up.`,
           applicationId: doc.application_id,
           link: doc.application_id ? `/app/${doc.application_id}` : '/profile',
@@ -5793,7 +5816,9 @@ router.post('/documents/:id/review', async (req, res) => {
         const ctx = doc.application_id ? await notify.fileContext(doc.application_id) : null;
         await notify.notifyBorrower(doc.borrower_id, {
           type: 'doc_rejected', title: condLabel ? `"${condLabel}" needs a new document` : 'A document needs to be re-uploaded',
-          body: `"${doc.filename}"${condLabel ? ` on condition "${condLabel}"` : ''}${ctx ? ` (${ctx.label})` : ''} couldn't be accepted: ${String(b.reason).slice(0, 180)}`,
+          badge: { text: 'Action needed', tone: 'action' },
+          body: `"${doc.filename}"${condLabel ? ` on "${condLabel}"` : ''} couldn't be accepted this time, so please upload a new version.`,
+          callout: { title: 'Why it was sent back', body: String(b.reason).slice(0, 300), tone: 'action' },
           meta: (ctx && ctx.borrowerMeta) || undefined,
           applicationId: doc.application_id,
           link: doc.application_id ? `/app/${doc.application_id}` : '/profile',

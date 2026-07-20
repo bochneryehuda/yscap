@@ -54,7 +54,11 @@ const PACKAGES = {
       // file at send time (application-pdf.js), uploaded as a real PDF (genExt) —
       // DocuSign accepts PDF natively, so unlike the docx docs it is NOT converted.
       { kind: 'application_export', prefix: 'app', signedKind: 'application_signed',    condition: 'rtl_cond_signed_app', name: 'Loan Application', generate: true, genExt: 'pdf' },
-      { kind: 'bp_disclosure',      prefix: 'bpd', signedKind: 'bp_disclosure_signed',  condition: 'rtl_cond_signed_app', name: 'Business-Purpose Disclosure', generate: true },
+      // The business-purpose disclosure is BUILT on our server (jsPDF) on the PILOT
+      // letterhead at send time (disclosure-pdf.js), uploaded as a real PDF (genExt)
+      // — DocuSign accepts PDF natively, so it is NOT converted. The legal
+      // certification text is preserved verbatim from the prior docx template.
+      { kind: 'bp_disclosure',      prefix: 'bpd', signedKind: 'bp_disclosure_signed',  condition: 'rtl_cond_signed_app', name: 'Business-Purpose Disclosure', generate: true, genExt: 'pdf' },
     ],
   },
   heter_iska: {
@@ -544,10 +548,13 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
     const documentId = i + 1;
 
     if (d.generate) {
-      // Built on our server from this file's data: the two disclosures fill a stored
-      // Word template (DocuSign converts the .docx → PDF for free, so they upload as
-      // .docx); the loan application is rendered directly to a PDF (genExt:'pdf') and
-      // uploads AS a PDF (DocuSign accepts PDF natively — never send it as .docx).
+      // Built on our server from this file's data. Two shapes:
+      //   • PDF (genExt:'pdf') — the loan application (application-pdf.js) AND the
+      //     business-purpose disclosure (disclosure-pdf.js) render straight to a
+      //     branded PILOT PDF and upload AS PDF (DocuSign accepts PDF natively).
+      //   • docx — the Heter Iska fills a stored Word template; DocuSign converts the
+      //     .docx → PDF for free (no DocGen add-on), so it uploads as .docx.
+      // fileExtension (d.genExt || 'docx') tells DocuSign which it is.
       let buf;
       // A docgen/template failure is a code/data problem, not a transient outage —
       // fail PERMANENT (dead-letter, visible) instead of retrying for ~6.7h.

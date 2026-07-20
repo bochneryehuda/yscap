@@ -348,7 +348,7 @@ export default function StaffLayout({ children }) {
         <div className="sb-sec">Files</div>
         <NavLink className="sb-link" to="/internal/borrowers" title="Your borrowers — invite to PILOT, reset or set a password, see last login"><NavIcon name="borrowers" />Borrowers</NavLink>
         <NavLink className="sb-link" to="/internal/esign" title="E-Signatures — PILOT’s own DocuSign cockpit: every package, every signer, live"><NavIcon name="esign" />E-signatures</NavLink>
-        {canManageDraws && <NavLink className="sb-link" to="/internal/draws" title="Construction draws — requested vs approved, per-draw status, and releases"><NavIcon name="pipeline" />Draws</NavLink>}
+        {canManageDraws && <NavLink className="sb-link" to="/internal/draws" title="Draw Management — the post-funding phase: every draw, approvals, inspector photos, releases, and reports"><NavIcon name="pipeline" />Draw Management</NavLink>}
         {canManageConditions && <NavLink className="sb-link" to="/internal/conditions" title="Condition Center — the global condition library & rules"><NavIcon name="conditions" />Conditions</NavLink>}
         {canManageVendors && <NavLink className="sb-link" to="/internal/vendors" title="Title & insurance vendor directory"><NavIcon name="vendors" />Vendors</NavLink>}
         {canPullCredit && <NavLink className="sb-link" to="/internal/credit-review" title="Credit reports that need an underwriter — frozen bureaus, no-score files, and files blocked by a fatal finding"><NavIcon name="conditions" />Credit review</NavLink>}

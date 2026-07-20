@@ -19,9 +19,12 @@ const ts = require(R + '/src/lib/esign/test-send');
 let n = 0;
 const ok = (c, m) => { assert.ok(c, m); n++; };
 
+// Capture every built definition so a test can assert the uploaded documents carry
+// the CORRECT format label + bytes (the disclosure is now a branded PDF, not a docx).
+const builtDefs = [];
 const fakeDs = (demo = false) => ({
   isDemoHost: () => demo,
-  buildEnvelopeDefinition: (x) => ({ __def: x }),
+  buildEnvelopeDefinition: (x) => { builtDefs.push(x); return { __def: x }; },
   createEnvelope: async () => ({ envelopeId: 'ENV-TEST-1' }),
   eventNotification: () => ({ __evt: true }),
   notificationSettings: () => ({ __notif: true }),
@@ -53,10 +56,21 @@ const stubDb = (email) => ({
     (e) => /allow-?list/i.test(e.message), 'blocks a non-allow-listed recipient'); n++;
 
   // 3. sending ON + allow-listed email → succeeds, TWO tracked packages, to that email
+  builtDefs.length = 0;
   const r = await ts.sendTestEnvelope({ actorId: 'x', db: stubDb('yehuda@yscapgroup.com'), docusign: fakeDs() });
   ok(r.to === 'yehuda@yscapgroup.com' && /^ENV-/.test(r.envelopeId), 'sends to the allow-listed address');
   ok(Array.isArray(r.packages) && r.packages.length === 2, 'sends the two packages (disclosure + Heter Iska)');
   ok(r.packages.every((p) => /^ENV-/.test(p.envelopeId) && /^ROW-/.test(p.envelopeRowId) && p.label), 'each package is a tracked envelope row');
+
+  // 3b. the uploaded documents carry the RIGHT format label + bytes. Regression guard:
+  // the disclosure is a branded PDF now (disclosure-pdf.js) — DocuSign must be told
+  // 'pdf' (not 'docx', which would run the PDF through the docx→PDF converter and
+  // corrupt/error it); the Heter Iska stays a docx (DocuSign converts it for free).
+  const bpd = builtDefs.flatMap((d) => d.documents).find((doc) => /Disclosure/.test(doc.name));
+  const iska = builtDefs.flatMap((d) => d.documents).find((doc) => /Iska/.test(doc.name));
+  ok(bpd && bpd.fileExtension === 'pdf', 'test disclosure uploads AS a PDF (not mislabeled docx)');
+  ok(bpd && Buffer.from(bpd.base64, 'base64').slice(0, 5).toString('latin1') === '%PDF-', 'test disclosure bytes really are a PDF');
+  ok(iska && iska.fileExtension === 'docx', 'test Heter Iska still uploads as a docx (Hebrew nusach)');
 
   // 4. staff account has no email → refuse
   await assert.rejects(

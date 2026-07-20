@@ -369,7 +369,7 @@ function NeighborhoodCard({ a }) {
   const hasMc = a.mc_months_supply != null || a.mc_median_dom != null || a.mc_sale_to_list_pct != null || a.mc_price_trend != null;
   const landUse = (Array.isArray(a.present_land_use) ? a.present_land_use : (() => { try { return JSON.parse(a.present_land_use || '[]'); } catch { return []; } })())
     .filter((u) => u && u.type && u.percent != null).slice().sort((x, y) => y.percent - x.percent);
-  const has = [a.nbhd_value_trend, a.nbhd_demand_supply, a.nbhd_marketing_time, a.nbhd_location_type, a.nbhd_price_predominant, a.nbhd_builtup].some((x) => x != null);
+  const has = [a.nbhd_value_trend, a.nbhd_demand_supply, a.nbhd_marketing_time, a.nbhd_location_type, a.nbhd_price_predominant, a.nbhd_builtup, a.nbhd_boundaries].some((x) => x != null);
   if (!has && !hasMc && !landUse.length) return null;
   const band = (a.nbhd_price_low != null || a.nbhd_price_high != null || a.nbhd_price_predominant != null)
     ? `${money(a.nbhd_price_low)}–${money(a.nbhd_price_high)}${a.nbhd_price_predominant != null ? ` · predominant ${money(a.nbhd_price_predominant)}` : ''}` : null;
@@ -390,6 +390,11 @@ function NeighborhoodCard({ a }) {
         <div style={{ marginTop: band ? 10 : 0, fontSize: 12.5, color: 'var(--muted,#4B585C)' }}>
           <b style={{ color: 'var(--text,#141B22)' }}>Land use: </b>
           {landUse.map((u) => `${u.percent}% ${LAND_USE_LABEL[u.type] || human(u.type).toLowerCase()}`).join(' · ')}
+        </div>
+      )}
+      {a.nbhd_boundaries && (
+        <div style={{ marginTop: 8, fontSize: 12.5, color: 'var(--muted,#4B585C)', lineHeight: 1.4 }}>
+          <b style={{ color: 'var(--text,#141B22)' }}>Boundaries: </b>{a.nbhd_boundaries}
         </div>
       )}
       {hasMc && (
@@ -566,7 +571,7 @@ function ContractCard({ a, readOnly }) {
   if (a.seller_is_owner === false) flags.push(chip('Seller ≠ owner of record', 'warn'));
   if (a.contract_reviewed === false) flags.push(chip('Contract not analyzed', 'warn'));
   if (a.concession_indicator === true || (a.concession_amount != null && a.concession_amount > 0)) flags.push(chip(`Concessions ${a.concession_amount ? money(a.concession_amount) : ''}`.trim(), 'warn'));
-  const has = flags.length || a.contract_data_source || a.listing_history || a.concession_description || a.contract_review_comment;
+  const has = flags.length || a.contract_data_source || a.listing_history || a.concession_description || a.contract_review_comment || a.sales_agreement_analysis;
   if (!has) return null;
   return (
     <DCard title="Sale contract & terms">
@@ -579,6 +584,7 @@ function ContractCard({ a, readOnly }) {
         a.listed_within_year != null && ['Listed in last 12 mo', a.listed_within_year ? 'Yes' : 'No'],
       ]} />
       {a.contract_review_comment && <p style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', margin: '8px 0 0', lineHeight: 1.4 }}><b style={{ color: 'var(--text,#141B22)' }}>Appraiser’s contract note: </b>{a.contract_review_comment}</p>}
+      {a.sales_agreement_analysis && <p style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', margin: '8px 0 0', lineHeight: 1.4 }}><b style={{ color: 'var(--text,#141B22)' }}>Transfer history: </b>{a.sales_agreement_analysis}</p>}
       {a.listing_history && <p style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', margin: '8px 0 0', lineHeight: 1.4 }}>{a.listing_history}</p>}
     </DCard>
   );
@@ -663,9 +669,19 @@ function CompRow({ c }) {
   const cq = [c.condition_uad, c.quality_uad].filter(Boolean).join(' / ') || '—';
   const bdba = [c.beds, c.baths].some((x) => x != null && x !== '') ? `${c.beds != null ? c.beds : '—'}/${c.baths != null && c.baths !== '' ? c.baths : '—'}` : '—';
   const distress = c.sale_type && c.sale_type !== 'ArmsLengthSale' ? ({ REOSale: 'REO', EstateSale: 'Estate', ShortSale: 'Short', Listing: 'Listing', CourtOrderedSale: 'Court' }[c.sale_type] || null) : null;
+  // Round-6 comp facts (view/location UAD ratings, basement, data source). The row expands when it
+  // has adjustments OR any of these facts.
+  const compFacts = [
+    c.view_rating && ['View', c.view_rating],
+    c.location_rating && ['Location', c.location_rating],
+    c.below_grade_sqft != null && ['Basement', `${Number(c.below_grade_sqft).toLocaleString('en-US')} sqft${c.below_grade_finished_sqft != null ? ` · ${Number(c.below_grade_finished_sqft).toLocaleString('en-US')} finished` : ''}`],
+    c.data_source && ['Source', c.data_source],
+  ].filter(Boolean);
+  const hasDetail = adj.length > 0 || compFacts.length > 0;
+  const adverse = (c.view_rating === 'Adverse' ? 'view' : null) || (c.location_rating === 'Adverse' ? 'location' : null);
   return (
     <>
-      <tr style={{ borderTop: '1px solid var(--line-soft,#EFEADD)', background: c.is_subject ? 'var(--paper,#F6F3EC)' : undefined, cursor: adj.length ? 'pointer' : 'default' }} onClick={() => adj.length && setOpen((v) => !v)}>
+      <tr style={{ borderTop: '1px solid var(--line-soft,#EFEADD)', background: c.is_subject ? 'var(--paper,#F6F3EC)' : undefined, cursor: hasDetail ? 'pointer' : 'default' }} onClick={() => hasDetail && setOpen((v) => !v)}>
         <td style={td}>{c.is_subject ? 'Subj' : c.seq}</td>
         <td style={td}>{or(c.address)}{c.city ? `, ${c.city} ${c.state || ''}` : ''}
           {c.sale_status && c.sale_status !== 'closed' && (
@@ -676,10 +692,13 @@ function CompRow({ c }) {
           {distress && (
             <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--crit,#B4483C)', border: '1px solid var(--crit,#B4483C)', borderRadius: 4, padding: '0 4px' }}>{distress}</span>
           )}
+          {adverse && (
+            <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--gold,#AE8746)', border: '1px solid var(--gold,#AE8746)', borderRadius: 4, padding: '0 4px' }} title={`Appraiser rated this comp's ${adverse} adverse`}>Adv {adverse}</span>
+          )}
           {c.prior_sale_amount != null && (
             <span style={{ display: 'block', fontSize: 11, color: 'var(--muted,#4B585C)' }}>Prior sale {money(c.prior_sale_amount)}{c.prior_sale_date ? ` · ${c.prior_sale_date}` : ''}</span>
           )}
-          {adj.length ? <span style={{ color: 'var(--muted,#4B585C)', fontSize: 11 }}> {open ? '▲' : '▼'}</span> : null}</td>
+          {hasDetail ? <span style={{ color: 'var(--muted,#4B585C)', fontSize: 11 }}> {open ? '▲' : '▼'}</span> : null}</td>
         <td style={td}>{or(c.proximity)}</td>
         <td style={{ ...td, textAlign: 'right' }}>{c.gla ? Number(c.gla).toLocaleString('en-US') : '—'}</td>
         <td style={{ ...td, textAlign: 'center' }}>{bdba}</td>
@@ -691,19 +710,34 @@ function CompRow({ c }) {
         <td style={{ ...td, textAlign: 'right', fontWeight: 600 }}>{money(c.adjusted_price)}</td>
         <td style={{ ...td, textAlign: 'right' }}>{c.net_adj_pct != null ? pct(c.net_adj_pct) : (c.net_adjustment != null ? money(c.net_adjustment) : '—')}</td>
       </tr>
-      {open && adj.length > 0 && (
+      {open && hasDetail && (
         <tr style={{ background: 'var(--paper,#F6F3EC)' }}>
           <td />
           <td colSpan={11} style={{ padding: '4px 10px 12px' }}>
-            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)', margin: '4px 0 6px' }}>Adjustments applied</div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(190px,1fr))', gap: '4px 18px' }}>
-              {adj.filter((x) => x && x.amount != null && Number(x.amount) !== 0).map((x, i) => (
-                <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 12.5 }}>
-                  <span style={{ color: 'var(--muted,#4B585C)' }}>{x.type || 'Adjustment'}{x.description ? ` (${x.description})` : ''}</span>
-                  <span style={{ fontVariantNumeric: 'tabular-nums', color: Number(x.amount) < 0 ? 'var(--crit,#B4483C)' : 'var(--good,#3F7A5B)' }}>{Number(x.amount) > 0 ? '+' : ''}{money(x.amount)}</span>
+            {compFacts.length > 0 && (
+              <div style={{ marginBottom: adj.length ? 10 : 0 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)', margin: '4px 0 6px' }}>Comparable detail</div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(190px,1fr))', gap: '4px 18px' }}>
+                  {compFacts.map(([k, v], i) => (
+                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 12.5 }}>
+                      <span style={{ color: 'var(--muted,#4B585C)' }}>{k}</span>
+                      <span style={{ color: v === 'Adverse' ? 'var(--crit,#B4483C)' : 'inherit' }}>{v}</span>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
+              </div>
+            )}
+            {adj.length > 0 && (<>
+              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)', margin: '4px 0 6px' }}>Adjustments applied</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(190px,1fr))', gap: '4px 18px' }}>
+                {adj.filter((x) => x && x.amount != null && Number(x.amount) !== 0).map((x, i) => (
+                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 12.5 }}>
+                    <span style={{ color: 'var(--muted,#4B585C)' }}>{x.type || 'Adjustment'}{x.description ? ` (${x.description})` : ''}</span>
+                    <span style={{ fontVariantNumeric: 'tabular-nums', color: Number(x.amount) < 0 ? 'var(--crit,#B4483C)' : 'var(--good,#3F7A5B)' }}>{Number(x.amount) > 0 ? '+' : ''}{money(x.amount)}</span>
+                  </div>
+                ))}
+              </div>
+            </>)}
           </td>
         </tr>
       )}
@@ -1208,6 +1242,8 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
                 ['Stories', or(a.stories)],
                 ['Gross living area', a.gla ? `${Number(a.gla).toLocaleString('en-US')} sf` : '—'],
                 ['Year built', or(a.year_built)],
+                a.building_status && a.building_status !== 'Existing' && ['Building status',
+                  <span style={{ color: 'var(--crit,#B4483C)' }}>{human(a.building_status)}</span>],
               ]} />
               {(a.condition_uad || a.quality_uad) && (
                 <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--line-soft,#EFEADD)', display: 'grid', gap: 12 }}>
@@ -1251,6 +1287,8 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
                     priv ? 'private — confirm a road-maintenance agreement' : null];
                 })(),
                 ['Site value (cost)', a.site_value != null ? money(a.site_value) : '—'],
+                a.property_tax_amount != null && ['Annual property tax',
+                  `${money(a.property_tax_amount)}${a.property_tax_year != null ? ` (${a.property_tax_year})` : ''}`],
               ]} />
             </DCard>
 
@@ -1338,6 +1376,22 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
           {/* ===== WHAT IT'S WORTH ===== */}
           <SecHead eyebrow="Valuation" title="What it's worth" />
           <Approaches a={a} />
+          {/* The appraiser's OWN researched market bracket (from the appraisal's research block) —
+              context alongside our independent comp check below. */}
+          {(() => {
+            const cr = typeof a.comp_research === 'string' ? (() => { try { return JSON.parse(a.comp_research); } catch { return null; } })() : a.comp_research;
+            if (!cr) return null;
+            const parts = [];
+            if (cr.salesLow != null && cr.salesHigh != null) parts.push(`${cr.salesCount != null ? `${cr.salesCount} ` : ''}comparable sales ${money(cr.salesLow)}–${money(cr.salesHigh)}`);
+            if (cr.listingsLow != null && cr.listingsHigh != null) parts.push(`${cr.listingsCount != null ? `${cr.listingsCount} ` : ''}active listings ${money(cr.listingsLow)}–${money(cr.listingsHigh)}`);
+            if (!parts.length) return null;
+            return (
+              <div className="appr-avoid" style={{ marginTop: 12, display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', background: 'var(--card,#fff)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 12, padding: '12px 14px', fontSize: 13 }}>
+                <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--gold,#AE8746)' }}>Appraiser’s research</span>
+                <span style={{ color: 'var(--muted,#4B585C)' }}>The appraiser researched {parts.join(' · ')} in the subject’s market.</span>
+              </div>
+            );
+          })()}
           {/* Independent second opinion — what the comps themselves imply (not the appraiser's
               reconciliation). Shown only when we have enough comps to form one. */}
           {data.score && data.score.impliedValue && (
@@ -1378,7 +1432,7 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
             return (
               <>
                 <SecHead eyebrow="Evidence" title={twoGrid ? 'Comparable sales — As-Is & ARV grids' : 'Comparable sales'}
-                  extra={<span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--muted,#4B585C)' }}>{real.length} comps{twoGrid && splitHow ? ` · ${splitHow}` : twoGrid ? ' · two grids support two values' : ' · tap a row for the adjustment breakdown'}</span>} />
+                  extra={<span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--muted,#4B585C)' }}>{real.length} comps{twoGrid && splitHow ? ` · ${splitHow}` : twoGrid ? ' · two grids support two values' : ' · tap a row for the detail'}</span>} />
                 {a.comp_split_needs_review && (
                   <div className="appr-avoid" style={{ margin: '2px 0 12px', padding: '9px 12px', borderRadius: 10, fontSize: 12.5,
                     background: 'rgba(174,135,70,.10)', border: '1px solid var(--gold,#AE8746)', color: 'var(--text,#141B22)' }}>

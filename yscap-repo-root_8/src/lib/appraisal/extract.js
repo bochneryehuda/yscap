@@ -341,6 +341,13 @@ function comparables(root) {
       grossAdjPct: toNum(X.attr(c, 'SalesPriceTotalAdjustmentGrossPercent')),
       gla: g.gla, saleDate: g.saleDate, conditionUad: g.conditionUad, qualityUad: g.qualityUad,
       dom: g.dom, pricePerGla: g.pricePerGla, adjustments: g.adjustments.length ? g.adjustments : null,
+      // Per-comp UAD view & location overall ratings (the two remaining UAD grid lines) + basement
+      // area + data source. All read from this comp's own COMPARISON_* nodes (never the subject's).
+      viewRating: enumOf(X.attr(X.find(c, 'COMPARISON_VIEW_OVERALL_RATING'), 'GSEViewOverallRatingType'), ['Beneficial', 'Neutral', 'Adverse']),
+      locationRating: enumOf(X.attr(X.find(c, 'COMPARISON_LOCATION_OVERALL_RATING'), 'GSEOverallLocationRatingType'), ['Beneficial', 'Neutral', 'Adverse']),
+      belowGradeSqft: bounded(X.attr(cd, 'GSEBelowGradeTotalSquareFeetNumber'), 1e6),
+      belowGradeFinishedSqft: bounded(X.attr(cd, 'GSEBelowGradeFinishSquareFeetNumber'), 1e6),
+      compDataSource: clean(X.attr(cd, 'GSEDataSourceDescription')),
     });
   }
   return { comps, subject0 };
@@ -421,6 +428,7 @@ function enrichment(root, prop, st, site, subject0, rep, formType) {
   const mk = subjFind(root, 'MARKET');
   o.nbhd_adverse_financing = yn(A(mk, 'MarketTrendsAdverseFinancingIndicator'));
   o.nbhd_foreclosure_activity = yn(A(mk, 'MarketTrendsForeclosureActivityIndicator'));
+  o.nbhd_boundaries = capText(A(nb, '_BoundaryAndCharacteristicsDescription'), 500);
 
   // -- 1004MC market-conditions grid (MARKET > MARKET_INVENTORY). Each row is one metric for one
   // period (Prior7To12Months|Prior4To6Months|Last3Months) OR a trend row (_TrendType, no period).
@@ -477,6 +485,11 @@ function enrichment(root, prop, st, site, subject0, rep, formType) {
   o.occupancy_status = enumOf(A(prop, '_CurrentOccupancyType'), ['Vacant', 'TenantOccupied', 'OwnerOccupied']);
   o.property_rights = clean(A(prop, '_RightsType'));
   o.owner_of_record = clean(A(subjFind(root, '_OWNER'), '_Name'));
+  // Annual property tax + year (subject _TAX). money() strips commas/$ and bounds magnitude; year
+  // validated to a sane range so a typo can't store year 0 / 99999.
+  const taxNode = subjFind(root, '_TAX');
+  o.property_tax_amount = money(A(taxNode, '_TotalTaxAmount'));
+  o.property_tax_year = years(A(taxNode, '_YearIdentifier'), 2100) != null && years(A(taxNode, '_YearIdentifier'), 2100) >= 1990 ? years(A(taxNode, '_YearIdentifier'), 2100) : null;
   for (const pa of subjAll(root, 'PROPERTY_ANALYSIS')) {
     const t = X.attr(pa, '_Type');
     if (t === 'PhysicalDeficiency') { o.physical_deficiency = yn(X.attr(pa, '_ExistsIndicator')); o.physical_deficiency_note = capText(X.attr(pa, '_Comment'), 500); }
@@ -529,6 +542,11 @@ function enrichment(root, prop, st, site, subject0, rep, formType) {
 
   // -- structure / systems --
   o.effective_age = years(A(subjFind(root, 'STRUCTURE_ANALYSIS'), 'EffectiveAgeYearsCount'), 200);
+  // A file can carry several subject STRUCTURE nodes; only one holds BuildingStatusType. Pick that
+  // one (not blindly the first) so the status isn't missed — still subject-scoped via subjAll.
+  const structNodes = subjAll(root, 'STRUCTURE');
+  const structStatusNode = structNodes.find((s) => clean(X.attr(s, 'BuildingStatusType'))) || structNodes[0] || null;
+  o.building_status = enumOf(A(structStatusNode, 'BuildingStatusType'), ['Existing', 'Proposed', 'UnderConstruction', 'SubstantiallyComplete']);
   o.updated_last_15yr = yn(A(subjFind(root, 'OVERALL_CONDITION_RATING'), 'GSEUpdateLastFifteenYearIndicator'));
   const heat = st ? X.find(st, 'HEATING') : null;
   o.heating_type = clean(A(heat, '_Type')) === 'Other' ? clean(A(heat, '_TypeOtherDescription')) : clean(A(heat, '_Type'));
@@ -654,6 +672,23 @@ function enrichment(root, prop, st, site, subject0, rep, formType) {
   const rs = subjFind(root, 'RESEARCH');
   const rsComp = rs ? X.find(rs, 'COMPARABLE') : null;
   o.comps_have_prior_sales = yn(A(rsComp, '_HasPriorSalesIndicator'));
+  // The appraiser's OWN researched market bracket (RESEARCH block): comparable-sales + active-listing
+  // counts and price ranges. Independent context for the concluded value. Kept only when a real
+  // low+high pair is present (never a half-open range).
+  const cr = {};
+  cr.salesCount = count(A(rs, 'ComparableSalesResearchedCount'), 100000);
+  cr.salesLow = money(A(rs, 'ComparableSalesPriceRangeLowAmount'));
+  cr.salesHigh = money(A(rs, 'ComparableSalesPriceRangeHighAmount'));
+  cr.listingsCount = count(A(rs, 'ComparableListingsResearchedCount'), 100000);
+  cr.listingsLow = money(A(rs, 'ComparableListingsPriceRangeLowAmount'));
+  cr.listingsHigh = money(A(rs, 'ComparableListingsPriceRangeHighAmount'));
+  const hasSalesRange = cr.salesLow != null && cr.salesHigh != null;
+  const hasListRange = cr.listingsLow != null && cr.listingsHigh != null;
+  o.comp_research = (hasSalesRange || hasListRange) ? {
+    salesCount: cr.salesCount, salesLow: hasSalesRange ? cr.salesLow : null, salesHigh: hasSalesRange ? cr.salesHigh : null,
+    listingsCount: cr.listingsCount, listingsLow: hasListRange ? cr.listingsLow : null, listingsHigh: hasListRange ? cr.listingsHigh : null,
+  } : null;
+  o.sales_agreement_analysis = capText(A(subjFind(root, 'SALES_COMPARISON'), '_CurrentSalesAgreementAnalysisComment'), 700);
 
   return o;
 }
@@ -880,6 +915,7 @@ function extract(xml) {
   if (enrich.mc_months_supply != null && enrich.mc_months_supply > 6) warnings.push({ code: 'mc_oversupply', msg: `1004MC shows ${enrich.mc_months_supply} months of housing supply (>6) — a buyer's market, slower exit` });
   if (enrich.mc_sale_to_list_pct != null && enrich.mc_sale_to_list_pct < 95) warnings.push({ code: 'mc_weak_pricing', msg: `1004MC median sale-to-list is ${enrich.mc_sale_to_list_pct}% (<95%) — sellers are conceding on price` });
   if (Array.isArray(enrich.off_site_improvements) && enrich.off_site_improvements.some((o) => o.ownership === 'Private')) warnings.push({ code: 'off_site_private', msg: 'Private street/alley — shared maintenance & access; confirm a road-maintenance agreement' });
+  if (enrich.building_status && enrich.building_status !== 'Existing') warnings.push({ code: 'building_not_existing', msg: `Subject building status is ${enrich.building_status} — not an existing structure; confirm the improvements are complete before relying on the value` });
 
   return {
     ok: true, formType,
