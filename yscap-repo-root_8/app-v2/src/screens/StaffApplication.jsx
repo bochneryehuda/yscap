@@ -2415,6 +2415,10 @@ export default function StaffApplication() {
   const [previewDoc, setPreviewDoc] = useState(null);
   const [chatOpen, setChatOpen] = useState(false);   // #94 — Message opens a popup, not a scroll
   const [remindOpen, setRemindOpen] = useState(false);   // #93 — Remind opens the reminder/task manager
+  // The ClickUp/pipeline plumbing (sync panel, the 38-status dropdown, the read-only
+  // pipeline dump) is needed only occasionally, so it hides behind one toggle in the
+  // overview instead of competing for attention with the everyday controls.
+  const [showPipeline, setShowPipeline] = useState(false);
   const openPreview = useCallback((doc) => setPreviewDoc(doc), []);
 
   async function revealSsn() {
@@ -2682,23 +2686,27 @@ export default function StaffApplication() {
 
   const borrowerItems = items.filter(it => it.audience === 'borrower' || it.audience === 'both');
   const nCondOpen = borrowerItems.filter(it => !it.signed_off_at && it.status !== 'satisfied').length;
+  // The rail is grouped into a few labeled sets and — critically — listed in the
+  // SAME order the sections actually render down the page, so clicking a rail item
+  // and then scrolling never feels out of sync (they used to disagree). Each entry
+  // carries a `group`; FileSections prints a quiet header when the group changes.
   const SECTIONS = [
-    { id: 'sec-overview', label: 'File overview' },
-    { id: 'sec-application', label: 'Application details' },
-    { id: 'sec-pricing', label: 'Structure & pricing', badge: app.registered_program ? '✓' : '' },
-    { id: 'sec-appraisal', label: 'Appraisal & findings', badge: apprSummary && apprSummary.fatal ? `${apprSummary.fatal} ⚠` : '' },
-    { id: 'sec-conditions', label: 'Conditions to close', badge: nCondOpen || '' },
-    { id: 'sec-internal-conds', label: 'Internal conditions', badge: internalConds.length ? `${internalConds.filter(i => i.signed_off_at || i.status === 'satisfied').length}/${internalConds.length}` : '' },
-    { id: 'sec-entity', label: 'LLC condition', badge: app.llc_id && app.llc_verified ? '✓' : '' },
-    { id: 'sec-esign', label: 'E-signatures' },
-    { id: 'sec-track', label: 'Track record' },
-    { id: 'sec-checklist', label: 'Internal checklist', badge: internalItems.length ? `${internalItems.filter(i => i.signed_off_at).length}/${internalItems.length}` : '' },
-    { id: 'sec-documents', label: 'Documents & exports', badge: docs.length || '' },
-    { id: 'sec-messages', label: 'Conversations' },
-    { id: 'sec-emails', label: 'Email Center' },
-    { id: 'sec-activity', label: 'Activity' },
-    // Construction draws is the LAST phase (post-funding), so it's the LAST section — after Activity.
-    ...(can('manage_draws') && app.status === 'funded' ? [{ id: 'sec-draws', label: 'Construction draws' }] : []),
+    { id: 'sec-overview', label: 'File overview', group: 'Overview' },
+    { id: 'sec-application', label: 'Application details', group: 'Application & pricing' },
+    { id: 'sec-pricing', label: 'Structure & pricing', group: 'Application & pricing', badge: app.registered_program ? '✓' : '' },
+    { id: 'sec-appraisal', label: 'Appraisal & findings', group: 'Application & pricing', badge: apprSummary && apprSummary.fatal ? `${apprSummary.fatal} ⚠` : '' },
+    { id: 'sec-conditions', label: 'Conditions to close', group: 'Conditions', badge: nCondOpen || '' },
+    { id: 'sec-internal-conds', label: 'Internal conditions', group: 'Conditions', badge: internalConds.length ? `${internalConds.filter(i => i.signed_off_at || i.status === 'satisfied').length}/${internalConds.length}` : '' },
+    { id: 'sec-checklist', label: 'Internal checklist', group: 'Conditions', badge: internalItems.length ? `${internalItems.filter(i => i.signed_off_at).length}/${internalItems.length}` : '' },
+    { id: 'sec-entity', label: 'LLC condition', group: 'Conditions', badge: app.llc_id && app.llc_verified ? '✓' : '' },
+    { id: 'sec-esign', label: 'E-signatures', group: 'Signing & documents' },
+    { id: 'sec-documents', label: 'Documents & exports', group: 'Signing & documents', badge: docs.length || '' },
+    { id: 'sec-track', label: 'Track record', group: 'Signing & documents' },
+    { id: 'sec-messages', label: 'Conversations', group: 'Communication' },
+    { id: 'sec-activity', label: 'Activity', group: 'Communication' },
+    { id: 'sec-emails', label: 'Email Center', group: 'Communication' },
+    // Construction draws is the LAST phase (post-funding), so it's the LAST section.
+    ...(can('manage_draws') && app.status === 'funded' ? [{ id: 'sec-draws', label: 'Construction draws', group: 'Construction draws' }] : []),
   ];
 
   return (
@@ -2741,7 +2749,7 @@ export default function StaffApplication() {
       <LoanProgress status={app.status} />
       <DealSnapshot app={app} gating={gating} />
       <ClearToClosePanel gating={gating} />
-      <ClickupSyncPanel app={app} canSetup={can('platform_setup')} isAdmin={isAdmin} onResynced={load} />
+      {showPipeline && <ClickupSyncPanel app={app} canSetup={can('platform_setup')} isAdmin={isAdmin} onResynced={load} />}
       {/* Status, ClickUp status & closing — one clean labeled control panel. The
           old version crammed the selects + buttons into loose rows and cut off the
           long ClickUp-status field; labels now sit above full-width fields in a
@@ -2758,9 +2766,14 @@ export default function StaffApplication() {
               : <button type="button" className="ts-badge warn" style={{ cursor: 'pointer' }} onClick={jump}
                   title={[...(g.conditions || []).map(c => c.title), ...(g.gates || []).map(x => x.title || x.label)].join(' · ')}>{n} to clear before CTC — see what’s left →</button>;
           })()}
+          <div className="spacer" />
+          <button type="button" className="btn link small" onClick={() => setShowPipeline(v => !v)}
+            title="Show or hide the ClickUp / pipeline controls (internal status, sync, read-only pipeline data)">
+            {showPipeline ? 'Hide pipeline details' : 'Pipeline details'}
+          </button>
         </div>
 
-        <div className="grid cols-2" style={{ gap: 16 }}>
+        <div className={showPipeline ? 'grid cols-2' : ''} style={{ gap: 16 }}>
           <div className="field" style={{ marginBottom: 0 }}>
             <label>Borrower-facing status</label>
             <select className="input" value={app.status} onChange={e => changeStatus(e.target.value)}>
@@ -2768,7 +2781,7 @@ export default function StaffApplication() {
             </select>
             <div className="hint" style={{ marginTop: 6 }}>Advancing notifies the borrower &amp; assigned team.</div>
           </div>
-          <div className="field" style={{ marginBottom: 0 }}>
+          {showPipeline && <div className="field" style={{ marginBottom: 0 }}>
             <label>Internal status (ClickUp)</label>
             <select className="input" value={app.internal_status || ''}
               onChange={e => changeInternalStatus(e.target.value)}
@@ -2789,7 +2802,7 @@ export default function StaffApplication() {
               })()}
             </select>
             <div className="hint" style={{ marginTop: 6 }}>Pushes the exact status to ClickUp; borrower status is re-derived.</div>
-          </div>
+          </div>}
         </div>
 
         <div className="grid cols-2" style={{ gap: 16, marginTop: 14 }}>
@@ -2859,15 +2872,18 @@ export default function StaffApplication() {
           </> : <p className="muted small">Loading borrower…</p>}
         </div>
         <div className="panel">
-          <h3 style={{ marginBottom: 12 }}>Loan & assignment</h3>
-          <div className="metrow"><span className="k">Property</span><span className="v">{app.property_type || '—'}{app.units ? ` · ${app.units} unit${app.units > 1 ? 's' : ''}` : ''}</span></div>
+          <h3 style={{ marginBottom: 4 }}>Entity, team &amp; assignment</h3>
+          {/* The headline numbers (purchase, ARV, rehab, loan amount) live in the
+              snapshot above and the sticky summary on the right — this panel shows
+              only what isn't there and what you act on, so the same fact isn't
+              printed three times. */}
+          <p className="muted small" style={{ marginTop: 0, marginBottom: 10 }}>Headline numbers are in the snapshot above — this is what you act on.</p>
           <div className="metrow"><span className="k">Entity</span><span className="v">
             {app.entity_name || (app.llc_id ? 'LLC on file' : '—')}
             {app.llc_id && (app.entity_verified
               ? <span className="ts-badge ok" style={{ marginLeft: 6 }}>Verified ✓</span>
               : <span className="ts-badge warn" style={{ marginLeft: 6 }}>Unverified</span>)}
           </span></div>
-          <div className="metrow"><span className="k">Purchase</span><span className="v">{money(app.purchase_price)}</span></div>
           {app.is_assignment && <>
             <div className="metrow"><span className="k">Assignment</span><span className="v" style={{ color: 'var(--teal)' }}>Yes</span></div>
             <div className="metrow"><span className="k">Underlying price</span><span className="v">{money(app.underlying_contract_price)}</span></div>
@@ -2880,9 +2896,6 @@ export default function StaffApplication() {
             {app.as_is_value == null && app.purchase_price != null &&
               <span className="muted small" style={{ fontWeight: 400 }} title="No as-is value entered — defaults to the final purchase price everywhere (incl. pricing)"> (= purchase)</span>}
           </span></div>
-          <div className="metrow"><span className="k">ARV</span><span className="v">{money(app.arv)}</span></div>
-          <div className="metrow"><span className="k">Rehab</span><span className="v">{money(app.rehab_budget)}</span></div>
-          <div className="metrow"><span className="k">Loan amount</span><span className="v">{money(app.loan_amount)}</span></div>
           <TeamAssignees appId={id} officers={officers} processors={processors} onChanged={load} />
           {uwName && <div className="metrow"><span className="k">Underwriter</span><span className="v">{uwName}</span></div>}
           <div className="gold-rule" style={{ margin: '10px 0' }} />
@@ -2906,7 +2919,7 @@ export default function StaffApplication() {
       </Section>
 
       <Section id="sec-application" title="Application details" defaultOpen={false}
-        info="What the borrower filled out — completeness at a glance, plus the editable deal numbers. Changing them here flows straight into pricing.">
+        info="What the borrower filled out, plus the editable deal numbers — changes here flow straight into pricing.">
       <Completeness app={app} borrower={borrower} appId={app.id} onSaved={load} />
       {app.borrower_id && (
         <PrimaryAddressPanel borrowerId={app.borrower_id}
@@ -2921,24 +2934,29 @@ export default function StaffApplication() {
       )}
       <StructuralLockBanner app={app} role={role} onChanged={load} />
       <EditFileDetails app={app} onSaved={load} />
-      <ClickupFileData app={app} />
+      {/* Read-only pipeline data pulled from ClickUp — tucked into a disclosure so it
+          isn't extra weight on the page; open it when you actually need those figures. */}
+      <details className="disclosure" style={{ marginTop: 16 }}>
+        <summary>Pipeline data from ClickUp (read-only)</summary>
+        <ClickupFileData app={app} />
+      </details>
       </Section>
 
       <Section id="sec-pricing" title="Loan structure & pricing" defaultOpen={false}
-        info="The registered product with its full economics, and the live Term Sheet Studio to reprice or re-register — every registration attaches the exact term sheet PDF."
+        info="The registered product and the Term Sheet Studio to re-price or re-register — every registration attaches the term sheet PDF."
         badge={app.registered_program ? 'Registered ✓' : 'Not registered'}>
       <ProductStudioPanel ref={studioRef} appId={id} app={app} onRegistered={load} mode="staff" staffRole={role}
         toolItemId={(items.find(it => it.tool_key === 'product_pricing') || {}).id} />
       </Section>
 
       <Section id="sec-appraisal" title="Appraisal & PILOT findings" defaultOpen={false}
-        info="Import the appraisal XML (1004 / 1025 / 1073) and PILOT builds the whole property profile from it — As-Is, ARV, comparables, the appraiser and everything the file needs — then compares it to the loan file. Every value that differs becomes a PILOT finding your team reviews; a value change reprices the loan and nothing is ever overwritten silently."
+        info="Import the appraisal XML and PILOT builds the property profile and flags every value that differs from the file for your team to review."
         badge={apprSummary ? (apprSummary.fatal ? `${apprSummary.fatal} fatal` : (apprSummary.warning ? `${apprSummary.warning} warning` : 'Reviewed ✓')) : ''}>
         <AppraisalPanel appId={id} onSummary={onApprSummary} reloadSignal={apprReload} />
       </Section>
 
       <Section id="sec-conditions" title="Conditions to close" defaultOpen={false}
-        info="The SAME list the borrower sees — shared both ways. Upload on their behalf, accept (signs off), accept-but-request-one-more, or reject with a reason (the file moves to the trash and the condition reopens)."
+        info="The same list the borrower sees — upload on their behalf, accept to sign off, or send back with a reason."
         badge={`${borrowerItems.filter(it => it.signed_off_at).length}/${borrowerItems.length} signed off`}>
       <input ref={staffFileRef} type="file" multiple style={{ display: 'none' }} onChange={onStaffFile} />
       <BorrowerConditions appId={id} app={app} items={items} docs={docs} role={role}
@@ -2961,7 +2979,7 @@ export default function StaffApplication() {
       </Section>
 
       <Section id="sec-internal-conds" title="Internal conditions" defaultOpen={false}
-        info="Staff-only document conditions (e.g. Insurance binder + invoice, Title). They sync with ClickUp and appear in the TPR export like any condition, but are NEVER shared with the borrower — separate from the phase-by-phase internal checklist below.">
+        info="Staff-only document conditions (Insurance, Title) — they behave like any condition but are never shared with the borrower.">
       <div className="panel" style={{ marginTop: 0 }}>
         {(() => {
           const sorted = [...internalConds].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
@@ -2993,7 +3011,7 @@ export default function StaffApplication() {
       </Section>
 
       <Section id="sec-checklist" title="Internal checklist" defaultOpen={false}
-        info="The phase-by-phase processing checklist — internal-only work items, assignments and gates. Borrower conditions live in “Conditions to close” and are never repeated here. The borrower never sees this section.">
+        info="The phase-by-phase internal work items — staff-only, never shown to the borrower.">
       <div className="panel" style={{ marginTop: 0 }}>
         <div className="row" style={{ marginBottom: 6, gap: 8, flexWrap: 'wrap' }}>
           <h3>Internal checklist</h3>
@@ -3027,14 +3045,14 @@ export default function StaffApplication() {
       </Section>
 
       <Section id="sec-entity" title="LLC condition — vesting entity" defaultOpen={false}
-        info="This IS the LLC condition for the file — set up and verify the LLC taking title inline (entity details, ownership, the three documents). It's the same entity the borrower fills in on their side, so completing it here clears their condition and vice-versa; marking it verified satisfies the LLC condition on every open file it vests. No separate LLC condition row is shown — this is it.">
+        info="Set up and verify the LLC taking title — this is the file's LLC condition; verifying it clears the condition everywhere it vests.">
       <LlcReview appId={id} app={app} role={role} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
         dlBusy={dlBusy} onChanged={load} reviewBusy={busyAct === 'review'} onPreview={openPreview} />
       <VestingLlcOwners appId={id} app={app} />
       </Section>
 
       <Section id="sec-esign" title="E-signatures" defaultOpen={false}
-        info="PILOT's own DocuSign section for this file: what's outstanding before you can send, the two Send buttons (term-sheet package + Heter Iska), and live per-signer tracking (sent / viewed / signed, who we're waiting on, the admin counter-signature) with resend, void, re-issue and downloads. The cross-file cockpit lives at E-signatures in the sidebar.">
+        info="Send and track the term-sheet package and Heter Iska, with live per-signer status, resend, void, re-issue and downloads.">
       <EsignFileSection appId={id} role={role} />
       </Section>
 
@@ -3120,7 +3138,7 @@ export default function StaffApplication() {
       </Section>
 
       <Section id="sec-messages" title="Conversations" defaultOpen={false}
-        info="Every chat on this file: the borrower-facing chat, the internal Loan Team chat, the Officer ↔ Processor chat, and any group chats you create. Live typing, read receipts, and presence — internal chats are never visible to the borrower.">
+        info="Every chat on this file — the borrower chat, the internal Loan Team, Officer ↔ Processor, and group chats. Internal chats are never visible to the borrower.">
       <ChatPanel appId={id} onTaskCreated={load} />
       </Section>
 
@@ -3134,7 +3152,7 @@ export default function StaffApplication() {
       </Section>
 
       <Section id="sec-emails" title="Email Center" defaultOpen={false}
-        info="A full inbox for this file — every email and notification that went out (to the borrower, co-borrower, each assigned staffer, and any external party) with its full designed body, exactly whom it reached and when, and whether it actually sent. Inbound replies show in full, and you can reply right here — it reaches the borrower and the whole file team on the shared thread.">
+        info="Every email and notification sent on this file — who received it, whether it sent, and inbound replies you can answer right here.">
       <EmailCenter mode="file" appId={id} />
       </Section>
 

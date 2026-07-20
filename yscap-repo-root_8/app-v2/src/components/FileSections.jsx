@@ -148,14 +148,25 @@ export default function FileSections({ sections, children, top = null }) {
       <nav className="file-nav" aria-label="Loan file sections">
         {top}
         <ol>
-          {sections.map(s => (
-            <li key={s.id}>
-              <a href={`#${s.id}`} className={active === s.id ? 'active' : ''} onClick={(e) => go(e, s.id)}>
-                <span className="file-nav-label">{s.label}</span>
-                {s.badge != null && s.badge !== '' && <span className="file-nav-badge">{s.badge}</span>}
-              </a>
-            </li>
-          ))}
+          {sections.map((s, i) => {
+            // Print a quiet group header the first time a new group appears. The
+            // sections are already in page order, so these headers never reorder
+            // anything — they just label the runs.
+            const header = s.group && (i === 0 || sections[i - 1].group !== s.group)
+              ? <li key={`grp-${s.group}`} className="file-nav-group" aria-hidden="true">{s.group}</li>
+              : null;
+            return (
+              <React.Fragment key={s.id}>
+                {header}
+                <li>
+                  <a href={`#${s.id}`} className={active === s.id ? 'active' : ''} onClick={(e) => go(e, s.id)}>
+                    <span className="file-nav-label">{s.label}</span>
+                    {s.badge != null && s.badge !== '' && <span className="file-nav-badge">{s.badge}</span>}
+                  </a>
+                </li>
+              </React.Fragment>
+            );
+          })}
         </ol>
       </nav>
       <div className="file-main">{children}</div>
