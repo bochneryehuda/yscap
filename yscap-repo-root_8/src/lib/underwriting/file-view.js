@@ -74,6 +74,7 @@ function subjectFor(docType, ctx) {
         property_type: app && app.property_type,
       };
     case 'bank_statement':
+    case 'voided_check':
       return { borrower_name: borrowerName(borrower), entity_names: entityNames || [] };
     case 'assignment':
       return {

@@ -32,6 +32,7 @@ const SIGNALS = [
   ['credit_report', ['credit report', 'tradeline', 'credit score', 'fico', 'trans union', 'transunion', 'equifax', 'experian'], ['inquiries', 'revolving', 'installment', 'derogatory']],
   ['background_report', ['ofac', 'specially designated nationals', 'sdn list', 'sanctions screening', 'watchlist', 'background check'], ['criminal', 'pep', 'politically exposed']],
   ['payoff_statement', ['payoff statement', 'payoff quote', 'payoff demand', 'statement of payoff', 'good through date', 'unpaid principal balance', 'per diem interest'], ['payoff', 'servicer', 'reinstatement', 'loan number']],
+  ['voided_check', ['voided check', 'void check', 'wire instructions', 'ach instructions', 'routing number', 'aba routing'], ['void', 'routing', 'account number', 'disbursement']],
 ];
 
 // Filename keyword → docType hints (a strong nudge when the OCR text is thin).
@@ -49,6 +50,7 @@ const FILENAME_HINTS = [
   [/flood/i, 'flood'],
   [/settle|closing.?disc|hud|alta/i, 'settlement'],
   [/pay.?off|payoff.?demand/i, 'payoff_statement'], // before bank_statement — a "payoff statement" contains "statement"
+  [/void|wire.?instruction|ach.?instruction/i, 'voided_check'],
   [/bank|statement/i, 'bank_statement'],
   [/credit/i, 'credit_report'],
   [/ofac|background|sanction/i, 'background_report'],

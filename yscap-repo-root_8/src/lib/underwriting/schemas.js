@@ -507,9 +507,30 @@ const PAYOFF_STATEMENT = {
   }),
 };
 
+// ---- Voided check / wire instructions (the borrower's disbursement account) ----
+const VOIDED_CHECK = {
+  docType: 'voided_check',
+  instructions:
+    "You are reviewing a VOIDED CHECK or bank WIRE/ACH instruction sheet used to set up the borrower's " +
+    "disbursement account. Extract the ACCOUNT HOLDER name EXACTLY as printed, whether the holder is a " +
+    "person or a business/LLC, the bank name, the ROUTING number (9 digits) and the ACCOUNT number " +
+    "(mask all but the last 4 — never output the full number), and whether the word VOID is present. " +
+    "Use null for anything absent or unreadable — do NOT guess. Set readable=false if too poor to trust.",
+  schema: obj({
+    accountHolderName: { type: ['string', 'null'] },
+    holderIsBusiness:  { type: ['boolean', 'null'] },
+    bankName:          { type: ['string', 'null'] },
+    routingNumber:     { type: ['string', 'null'] },
+    accountNumber:     { type: ['string', 'null'] },   // last-4 only
+    isVoided:          { type: ['boolean', 'null'] },
+    readable:          { type: 'boolean' },
+    notes:             { type: ['string', 'null'] },
+  }),
+};
+
 module.exports = {
   GOVERNMENT_ID, PURCHASE_CONTRACT, TITLE, BANK_STATEMENT,
   ASSIGNMENT, OPERATING_AGREEMENT, EIN_LETTER, GOOD_STANDING, LLC_FORMATION,
   INSURANCE, FLOOD, SETTLEMENT, CREDIT_REPORT, BACKGROUND_REPORT, CONTRACT_AMENDMENT, SCOPE_OF_WORK,
-  PAYOFF_STATEMENT,
+  PAYOFF_STATEMENT, VOIDED_CHECK,
 };

@@ -171,6 +171,23 @@ assert.deepStrictEqual(codes(C.computeBackgroundFindings({ subjectName: 'John Sm
   assert.deepStrictEqual(codes(C.computePayoffFindings({ readable: false }, subj, { today: '2026-07-20' })), ['payoff_statement_unreadable']);
 }
 
+// ===== VOIDED CHECK / wire instructions (borrower disbursement account) =====
+{
+  const subj = { borrower_name: 'Michael Goldberg', entity_names: ['Maple Grove Holdings LLC'] };
+  // Borrower's own account, valid routing + account → clean.
+  assert.deepStrictEqual(codes(C.computeVoidedCheckFindings({ readable: true, accountHolderName: 'Michael Goldberg', routingNumber: '021000021', accountNumber: '6789' }, subj, {})), []);
+  // The vesting entity's account is also fine.
+  assert.deepStrictEqual(codes(C.computeVoidedCheckFindings({ readable: true, accountHolderName: 'Maple Grove Holdings LLC', holderIsBusiness: true, routingNumber: '021000021', accountNumber: '1234' }, subj, {})), []);
+  // A third-party account → holder-mismatch (source-of-funds flag).
+  assert.ok(C.computeVoidedCheckFindings({ readable: true, accountHolderName: 'Some Stranger', routingNumber: '021000021', accountNumber: '1' }, subj, {}).some((f) => f.code === 'voided_check_holder_mismatch'));
+  // A malformed routing number and a missing account each flag.
+  const bad = C.computeVoidedCheckFindings({ readable: true, accountHolderName: 'Michael Goldberg', routingNumber: '12345', accountNumber: null }, subj, {});
+  assert.ok(bad.some((f) => f.code === 'voided_check_bad_routing'));
+  assert.ok(bad.some((f) => f.code === 'voided_check_no_account'));
+  // Unreadable → single verify finding.
+  assert.deepStrictEqual(codes(C.computeVoidedCheckFindings({ readable: false }, subj, {})), ['voided_check_unreadable']);
+}
+
 // ===== SCOPE OF WORK / rehab budget =====
 {
   const codes = (fs) => fs.map((f) => f.code).sort();

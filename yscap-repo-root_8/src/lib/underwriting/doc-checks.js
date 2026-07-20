@@ -532,9 +532,55 @@ function computePayoffFindings(p, subject, opts = {}) {
   return out;
 }
 
+// ---- Voided check / wire instructions (the borrower's disbursement account) ----
+// The voided check establishes WHERE loan proceeds / draws are wired. Two things matter: the account
+// belongs to the borrower (or a verified borrower entity) — never a third party — and the routing +
+// account numbers are actually present so the wire can be set up. `subject` = { borrower_name,
+// entity_names[] } (same as bank statements).
+function computeVoidedCheckFindings(v, subject, opts = {}) {
+  const out = []; if (!v) return out;
+  if (unreadable('voided_check', v, ['accountHolderName', 'routingNumber'])) {
+    return [verify('voided_check', 'voided check / wire instructions')];
+  }
+  const s = subject || {};
+  // Account holder must be the borrower or a known borrower entity (a third-party disbursement
+  // account is a source-of-funds / fraud flag).
+  const holder = v.accountHolderName;
+  let tied = false;
+  if (holder) {
+    if (s.borrower_name && namesMatchLoose(holder, s.borrower_name) === true) tied = true;
+    for (const e of (s.entity_names || [])) { if (entityMatch(holder, e) === true) { tied = true; break; } }
+    if (!tied) {
+      out.push(mk('voided_check', { code: 'voided_check_holder_mismatch', severity: 'warning', field: 'account_holder',
+        docValue: holder, fileValue: s.borrower_name || null,
+        title: 'The disbursement account is not in the borrower\'s name',
+        howTo: `The voided check / wire instructions are for "${holder}", which isn't the borrower or a known borrower entity. Loan proceeds should be wired to the borrower's (or the vesting entity's) own account — confirm whose account this is before wiring.`,
+        actions: ['request_document', 'post_condition', 'dismiss', 'decline'] }));
+    }
+  }
+  // Routing + account must be present to set up the wire.
+  const routing = String(v.routingNumber || '').replace(/\D/g, '');
+  if (v.routingNumber && routing.length !== 9) {
+    out.push(mk('voided_check', { code: 'voided_check_bad_routing', severity: 'warning', field: 'routing',
+      docValue: v.routingNumber, fileValue: '9-digit ABA routing number',
+      title: 'The routing number does not look valid',
+      howTo: 'A US ABA routing number is 9 digits. Confirm the routing number on the check/wire sheet is complete and legible before setting up the disbursement.',
+      actions: ['request_revision', 'post_condition', 'dismiss'] }));
+  }
+  if (!v.accountNumber) {
+    out.push(mk('voided_check', { code: 'voided_check_no_account', severity: 'warning', field: 'account_number',
+      docValue: null, fileValue: null,
+      title: 'No account number could be read from the voided check',
+      howTo: 'The account number is needed to set up the disbursement wire/ACH. Confirm it by hand or request a clearer voided check.',
+      actions: ['request_revision', 'post_condition', 'dismiss'] }));
+  }
+  return out;
+}
+
 module.exports = {
   computeAssignmentFindings, computeOperatingAgreementFindings, computeEinFindings,
   computeGoodStandingFindings, computeFormationFindings, computeInsuranceFindings,
   computeFloodFindings, computeSettlementFindings, computeCreditFindings, computeBackgroundFindings,
-  computeAmendmentFindings, computeScopeOfWorkFindings, computePayoffFindings, representativeFico,
+  computeAmendmentFindings, computeScopeOfWorkFindings, computePayoffFindings, computeVoidedCheckFindings,
+  representativeFico,
 };

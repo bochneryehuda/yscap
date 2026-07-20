@@ -12,7 +12,7 @@ const {
   GOVERNMENT_ID, PURCHASE_CONTRACT, TITLE, BANK_STATEMENT,
   ASSIGNMENT, OPERATING_AGREEMENT, EIN_LETTER, GOOD_STANDING, LLC_FORMATION,
   INSURANCE, FLOOD, SETTLEMENT, CREDIT_REPORT, BACKGROUND_REPORT, CONTRACT_AMENDMENT, SCOPE_OF_WORK,
-  PAYOFF_STATEMENT,
+  PAYOFF_STATEMENT, VOIDED_CHECK,
 } = require('./schemas');
 const { computeIdFindings } = require('./id-checks');
 const { computeContractFindings } = require('./purchase-contract-checks');
@@ -22,7 +22,7 @@ const {
   computeAssignmentFindings, computeOperatingAgreementFindings, computeEinFindings,
   computeGoodStandingFindings, computeFormationFindings, computeInsuranceFindings,
   computeFloodFindings, computeSettlementFindings, computeCreditFindings, computeBackgroundFindings,
-  computeAmendmentFindings, computeScopeOfWorkFindings, computePayoffFindings,
+  computeAmendmentFindings, computeScopeOfWorkFindings, computePayoffFindings, computeVoidedCheckFindings,
 } = require('./doc-checks');
 
 const REGISTRY = {
@@ -109,6 +109,10 @@ const REGISTRY = {
   payoff_statement: {
     docType: 'payoff_statement', schema: PAYOFF_STATEMENT.schema, instructions: PAYOFF_STATEMENT.instructions,
     subject: 'application', image: false, check: computePayoffFindings,
+  },
+  voided_check: {
+    docType: 'voided_check', schema: VOIDED_CHECK.schema, instructions: VOIDED_CHECK.instructions,
+    subject: 'assets', image: true, check: computeVoidedCheckFindings,
   },
 };
 
