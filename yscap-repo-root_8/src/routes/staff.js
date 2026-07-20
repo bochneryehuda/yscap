@@ -4725,6 +4725,9 @@ const SEV_LABEL = { standard: 'Standard', prior_to_docs: 'Prior to docs', prior_
 function sectionForBlocker(row) {
   const tk = row.tool_key || '';
   const code = row.template_code || '';
+  // First-class underwriting conditions (the `conditions` table) are all rendered
+  // in the Underwriting-conditions panel, which lives inside "Conditions to close".
+  if (row.source === 'underwriting') return 'sec-conditions';
   if (tk === 'product_pricing' || code === 'rtl_p1_product') return 'sec-pricing';
   if (code === 'rtl_p1_llc') return 'sec-entity';
   if (code === 'appraisal_review_cleared' || code === 'rtl_p3_apprreview' || code === 'rtl_cond_appraisaldocs' || tk === 'appraisal_review') return 'sec-appraisal';
@@ -4778,8 +4781,11 @@ async function advancementBlockers(appId, target) {
        LEFT JOIN checklist_templates t ON t.id = ci.template_id
       WHERE ci.application_id=$1 AND ci.is_gate=true AND NOT (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')
       ORDER BY ci.sort_order, ci.created_at`, [appId]);
+  // Tag the first-class `conditions`-table rows so navigation sends them to the
+  // Underwriting-conditions panel (which renders them) rather than a checklist section.
+  const underwriting = conds.rows.map(r => ({ ...r, source: 'underwriting' }));
   return {
-    conditions: [...conds.rows, ...checklistConds.rows].map(r => decorateBlocker(r, 'condition')),
+    conditions: [...underwriting, ...checklistConds.rows].map(r => decorateBlocker(r, 'condition')),
     gates: gates.rows.map(r => decorateBlocker(r, 'gate')),
   };
 }

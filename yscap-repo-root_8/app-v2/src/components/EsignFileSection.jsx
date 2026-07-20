@@ -158,10 +158,13 @@ export default function EsignFileSection({ appId, role }) {
     // e-signature of each and every package is very big — that should all be
     // able to be collapsed into small things"). Default collapsed; the summary
     // row still shows the status + who we're waiting on. An envelope that needs
-    // the admin's counter-signature right now starts expanded so it isn't hidden.
-    const autoOpen = e.phase === 'awaiting_countersign';
+    // ACTION right now — the admin's counter-signature, or a failed/declined/
+    // voided attempt whose Retry/Re-issue button lives in the body — starts
+    // expanded so nothing actionable is hidden behind a click.
+    const autoOpen = e.phase === 'awaiting_countersign' || e.phase === 'error'
+      || e.phase === 'declined' || e.phase === 'voided' || !!e.deadLetteredAt;
     const open = openEnvs[e.id] != null ? openEnvs[e.id] : autoOpen;
-    const toggle = () => setOpenEnvs((m) => ({ ...m, [e.id]: !open }));
+    const toggle = () => setOpenEnvs((m) => ({ ...m, [e.id]: !(m[e.id] != null ? m[e.id] : autoOpen) }));
     return (
       <div className="panel esign-card" key={e.id} style={{ marginBottom: 12 }}>
         <div className="row esign-card-head" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', cursor: 'pointer' }}
