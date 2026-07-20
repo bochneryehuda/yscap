@@ -3197,22 +3197,38 @@ export default function StaffApplication() {
           not inside the file. The file just hands off to it. */}
       {can('manage_draws') && (
         <Section id="sec-draws" title="Construction draws" collapsible={false}>
-          <div className="panel" style={{ background: 'var(--paper,#f6f3ec)' }}>
-            {app.status === 'funded'
-              ? <b>This file is funded — its draws are managed in the Draw Center.</b>
-              : <b>Construction draws open once this file is funded — here’s the Draw Center for it.</b>}
-            <div className="muted small" style={{ marginTop: 3, marginBottom: 10 }}>
-              The construction-draw process is its own phase after funding: each draw, approvals, the inspector’s
-              photos and reports, our fee &amp; net release, and the borrower’s accept/dispute — all live in the Draw
-              Center workspace, not on this file screen.{app.status === 'funded' ? '' : ' You can open it now to set things up ahead of funding.'}
+          {app.status === 'funded' ? (
+            <div className="panel" style={{ background: 'var(--paper,#f6f3ec)' }}>
+              <b>This file is funded — its draws are managed in the Draw Center.</b>
+              <div className="muted small" style={{ marginTop: 3, marginBottom: 10 }}>
+                The construction-draw process is its own phase after funding: each draw, approvals, the inspector’s
+                photos and reports, our fee &amp; net release, and the borrower’s accept/dispute — all live in the Draw
+                Center workspace, not on this file screen.
+              </div>
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                <button className="btn primary btn-sm" onClick={() => nav(`/internal/app/${id}/draws`)}>Open this file’s Draw Center →</button>
+                <button className="btn ghost btn-sm" onClick={() => nav('/internal/draws')}>All draws</button>
+                <button className="btn ghost btn-sm" title="Open the full Draw Center in its own window"
+                  onClick={() => window.open(`${window.location.pathname}#/internal/app/${id}/draws`, '_blank', 'noopener')}>Open in a new window ↗</button>
+              </div>
             </div>
-            <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-              <button className="btn primary btn-sm" onClick={() => nav(`/internal/app/${id}/draws`)}>Open this file’s Draw Center →</button>
-              <button className="btn ghost btn-sm" onClick={() => nav('/internal/draws')}>All draws</button>
-              <button className="btn ghost btn-sm" title="Open the full Draw Center in its own window"
-                onClick={() => window.open(`${window.location.pathname}#/internal/app/${id}/draws`, '_blank', 'noopener')}>Open in a new window ↗</button>
+          ) : (
+            // NOT funded — the Draw Center is locked. Construction draws are the last
+            // phase and can't start until the file reaches Funded, so nothing here is
+            // actionable yet: the buttons are disabled and we say what unlocks them.
+            <div className="notice warn" role="status" aria-label="Draw Center locked until the file is funded">
+              <b>🔒 Waiting on funding — the construction-draw process hasn’t started.</b>
+              <div className="small" style={{ marginTop: 4, marginBottom: 10, opacity: .92 }}>
+                Construction draws are the last phase and open only once this file’s status is <b>Funded</b>.
+                Until then nothing can be requested, approved, inspected, or released here — advance the file to
+                Funded to unlock the Draw Center.
+              </div>
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                <button className="btn primary btn-sm" disabled aria-disabled="true"
+                  title="The Draw Center opens once this file is funded">Draw Center — locked until funded</button>
+              </div>
             </div>
-          </div>
+          )}
         </Section>
       )}
 
