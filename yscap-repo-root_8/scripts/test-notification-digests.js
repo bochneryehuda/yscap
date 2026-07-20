@@ -137,17 +137,32 @@ const to = (e) => sent.find((x) => (Array.isArray(x.to) ? x.to : [x.to]).include
   assert.ok(cStaffClosed === 0 && !to(semail), 'release-overdue alert suppressed on a paid-off project');
   ok('finished/paid-off project excluded from both draw reminders (rule 10)');
 
-  /* 6c) F1 — a release recorded WITHOUT a draw id (lien gate off → sitewire_draw_id NULL) must still suppress
-     the overdue alert. Recording a release doesn't change the finding status, so without this the team would be
-     alerted every 2 days forever even though the money went out. Re-activate the link + accepted overdue finding. */
+  /* 6c) F-2 — a release now REQUIRES its draw id (money route) and the overdue monitor matches a release to
+     its finding by an EXACT draw id. So: (a) a release recorded FOR a draw suppresses THAT draw's overdue
+     alert; and (b) on a multi-draw file, releasing one draw must NOT silence a genuinely-overdue OTHER draw
+     (the old NULL-fallback over-suppressed all findings on the file). Re-activate the link + accepted overdue
+     finding, then add a SECOND accepted overdue draw. */
+  const DRAW2 = DRAW + 1;
   await db.query(`UPDATE sitewire_property_links SET lifecycle_state='active' WHERE application_id=$1`, [app.id]);
   await db.query(`DELETE FROM audit_log WHERE action='draw_release_overdue' AND entity_id=$1`, [app.id]).catch(() => {});
   await db.query(`UPDATE draw_findings SET status='accepted', accepted_at=now()-interval '3 days', wire_due_at=now()-interval '1 day' WHERE application_id=$1`, [app.id]);
-  await db.query(`INSERT INTO draw_disbursements (application_id, sitewire_draw_id, funded_status, kind) VALUES ($1, NULL, 'released', 'draw')`, [app.id]);
-  reset(); const cRelNull = await D.drawReleaseOverdueOnce();
-  assert.ok(cRelNull === 0 && !to(semail), 'overdue alert suppressed by a release recorded without a draw id');
+  await db.query(
+    `INSERT INTO draw_findings (application_id, sitewire_draw_id, status, total_requested_cents, total_approved_cents, delivered_at, accepted_at, wire_due_at)
+     VALUES ($1,$2,'accepted',500000,500000, now()-interval '5 days', now()-interval '3 days', now()-interval '1 day')`, [app.id, DRAW2]);
+  // release DRAW (with its draw id) — DRAW2 is still unreleased and overdue.
+  await db.query(`INSERT INTO draw_disbursements (application_id, sitewire_draw_id, funded_status, kind) VALUES ($1,$2,'released','draw')`, [app.id, DRAW]);
+  reset(); const cMulti = await D.drawReleaseOverdueOnce();
+  m = to(semail);
+  assert.ok(cMulti >= 1 && m, 'releasing DRAW does NOT silence the still-overdue DRAW2 (no cross-draw over-suppression)');
+  assert.ok(/1 draw release|Draw release/i.test(m.subject) || /overdue/i.test(m.subject), 'the remaining overdue draw still alerts');
+  // now release DRAW2 too → the file is fully released → silent.
+  await db.query(`DELETE FROM audit_log WHERE action='draw_release_overdue' AND entity_id=$1`, [app.id]).catch(() => {});
+  await db.query(`INSERT INTO draw_disbursements (application_id, sitewire_draw_id, funded_status, kind) VALUES ($1,$2,'released','draw')`, [app.id, DRAW2]);
+  reset(); const cAllReleased = await D.drawReleaseOverdueOnce();
+  assert.ok(cAllReleased === 0 && !to(semail), 'both draws released by draw id → overdue alert precisely suppressed');
   await db.query(`DELETE FROM draw_disbursements WHERE application_id=$1`, [app.id]).catch(() => {});
-  ok('release recorded without a draw id suppresses the overdue alert (F1)');
+  await db.query(`DELETE FROM draw_findings WHERE application_id=$1 AND sitewire_draw_id=$2`, [app.id, DRAW2]).catch(() => {});
+  ok('F-2: release suppression is exact per-draw — releasing one draw never silences another (never over-suppresses)');
 
   /* 6d) F2 — a funded file later moved to withdrawn/declined (not deleted; lifecycle still 'active' since a
      status change doesn't auto-close the link) is excluded from BOTH reminders. Only deleted_at was checked before. */

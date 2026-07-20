@@ -215,6 +215,141 @@ router.post('/files/:id/lifecycle', requirePermission('manage_draws'), async (re
   } catch (e) { res.status(502).json({ error: 'Couldn’t update the project status right now — please try again shortly.' }); }
 });
 
+// ---- POST /api/sitewire/files/:id/reset-draw — delete/unlink the property + start over (re-push) ----
+// Owner-directed 2026-07-20 (a testing control): Sitewire has no delete API, so this deactivates the property
+// there and unlinks it here (tombstoning its id so the re-push skips only this copy), clearing the mirrored
+// draw rows so the "Start the draw process" card — with all push options — reappears. The money ledger is
+// KEPT. manage_draws + canSeeFile + go-forward-only (only a PILOT-created file can be reset).
+router.post('/files/:id/reset-draw', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const r = await orchestrator.resetDrawSetup(appId, req.actor && req.actor.id);
+    if (r.error === 'not_managed') return res.status(409).json({ error: 'This file isn’t managed by PILOT in Sitewire — there’s nothing to reset.' });
+    res.json(r);
+  } catch (e) { console.warn('[sitewire] reset-draw error:', e && e.message); res.status(500).json({ error: 'Couldn’t reset the draw setup right now — please try again shortly.' }); }
+});
+
+// ---- GET /files/:id/notifications — the DRAW file's email/notification center (staff) ----
+// The draw coordinator's per-file email section: every DRAW-RELATED notification PILOT sent about this file
+// (who it went to, when, delivery status, full content) plus the borrower's email REPLIES we've received.
+// Scoped to draw items ONLY (type draw%/sow_%) so it stays the coordinator's draw inbox, not the whole file's
+// notification history. Sitewire does not expose the emails IT sends, so this is PILOT's own trail.
+// manage_draws + canSeeFile.
+router.get('/files/:id/notifications', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const sent = (await db.query(
+      `SELECT n.id, n.recipient_kind, n.type, n.title, n.body, n.link, n.read_at, n.email_status, n.emailed_at, n.created_at,
+              COALESCE(s.full_name, NULLIF(TRIM(COALESCE(b.first_name,'') || ' ' || COALESCE(b.last_name,'')), '')) AS recipient_name,
+              COALESCE(s.email, b.email) AS recipient_email,
+              se.id IS NOT NULL AS has_full_email,
+              COALESCE(array_length(se.to_emails,1),0) AS recipient_count,
+              COALESCE(jsonb_array_length(se.attachments),0) AS attachment_count
+         FROM notifications n
+         LEFT JOIN staff_users s ON s.id = n.staff_id
+         LEFT JOIN borrowers b ON b.id = n.borrower_id
+         LEFT JOIN LATERAL (SELECT id, to_emails, attachments FROM sent_emails se2 WHERE se2.notification_id=n.id ORDER BY se2.created_at DESC LIMIT 1) se ON true
+        WHERE n.application_id = $1 AND (n.type LIKE 'draw%' OR n.type LIKE 'sow_%')
+        ORDER BY n.created_at DESC
+        LIMIT 300`, [appId])).rows;
+    let replies = [];
+    try {
+      replies = (await db.query(
+        `SELECT id, from_email, subject, forwarded_count, status, created_at
+           FROM inbound_file_emails WHERE application_id=$1 ORDER BY created_at DESC LIMIT 100`, [appId])).rows;
+    } catch (_) { /* inbound table optional */ }
+    res.json({ sent, replies });
+  } catch (e) { console.warn('[sitewire] notifications route error:', e && e.message); res.status(500).json({ error: 'Could not load the notifications for this file.' }); }
+});
+
+// ---- GET /files/:id/messages/:notificationId — the FULL rendered email (design + recipients + attachments) ----
+// Opens a draw notification in full: the exact branded HTML we sent, every recipient, the reply-to, and the
+// attachment list. Go-forward: only messages sent after the capture shipped have a stored copy (has_full_email).
+// manage_draws + canSeeFile + the notification must belong to THIS file (IDOR).
+router.get('/files/:id/messages/:notificationId', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  if (!/^[0-9a-f-]{36}$/i.test(String(req.params.notificationId))) return res.status(404).json({ error: 'not found' });
+  try {
+    const e = (await db.query(
+      `SELECT id, subject, from_email, to_emails, reply_to, html, body_text, attachments, status, created_at, audience, recipient_kind
+         FROM sent_emails WHERE notification_id=$1 AND application_id=$2 ORDER BY created_at DESC LIMIT 1`,
+      [req.params.notificationId, appId])).rows[0];
+    if (!e) return res.status(404).json({ error: 'no_capture' });
+    // never expose the storage ref to the client — attachments are downloaded by INDEX through the route below.
+    const attachments = (Array.isArray(e.attachments) ? e.attachments : []).map((a, i) => ({ index: i, filename: a.filename, content_type: a.content_type, size: a.size, downloadable: !!a.storage_ref }));
+    res.json({ id: e.id, subject: e.subject, from: e.from_email, to: e.to_emails || [], reply_to: e.reply_to, html: e.html, text: e.body_text, attachments, status: e.status, created_at: e.created_at, audience: e.audience });
+  } catch (err) { console.warn('[sitewire] message route error:', err && err.message); res.status(500).json({ error: 'Could not open this message.' }); }
+});
+
+// ---- GET /files/:id/messages/:notificationId/attachments/:idx — stream a captured attachment ----
+router.get('/files/:id/messages/:notificationId/attachments/:idx', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  if (!/^[0-9a-f-]{36}$/i.test(String(req.params.notificationId)) || !/^\d{1,3}$/.test(String(req.params.idx))) return res.status(404).json({ error: 'not found' });
+  try {
+    const e = (await db.query(
+      `SELECT attachments FROM sent_emails WHERE notification_id=$1 AND application_id=$2 ORDER BY created_at DESC LIMIT 1`,
+      [req.params.notificationId, appId])).rows[0];
+    const a = e && Array.isArray(e.attachments) ? e.attachments[Number(req.params.idx)] : null;
+    if (!a || !a.storage_ref) return res.status(404).json({ error: 'attachment not found' });
+    const storage = require('../lib/storage');
+    let buf;
+    try { buf = await storage.read(a.storage_ref); } catch (_) { buf = null; } // a missing blob → 404, not a 500
+    if (!buf) return res.status(404).json({ error: 'attachment bytes missing' });
+    res.setHeader('Content-Type', a.content_type || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename="${String(a.filename || 'attachment').replace(/[^\w.\- ]+/g, '_')}"`);
+    res.send(buf);
+  } catch (err) { res.status(500).json({ error: 'Could not download this attachment.' }); }
+});
+
+// ---- POST /files/:id/messages/reply — the coordinator sends/relies to the borrower from the draw box ----
+// A direct borrower message from the draw desk: emails the borrower (borrower-safe scrub applies), logs the
+// notification, and captures the sent email so it appears right back in this thread. The borrower's reply
+// forwards to the team (file+<appId>@ reply-to) and lands in "Replies received". manage_draws + canSeeFile.
+router.post('/files/:id/messages/reply', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const body = String((req.body && req.body.body) || '').trim();
+  if (!body) return res.status(400).json({ error: 'Type a message to send.' });
+  if (body.length > 8000) return res.status(400).json({ error: 'That message is too long.' });
+  const subject = req.body && req.body.subject ? String(req.body.subject).slice(0, 200) : 'A message about your draw';
+  try {
+    const ids = await notify.notifyAppBorrowers(appId, {
+      type: 'draw_message', major: true,
+      title: subject, body,
+      badge: { text: 'From your loan team', tone: 'teal' },
+      applicationId: appId, link: `/app/${appId}`, ctaLabel: 'View your draws',
+    });
+    const sent = (ids || []).filter(Boolean).length;
+    if (!sent) return res.status(409).json({ error: 'This file has no borrower to message.' });
+    res.json({ ok: true, sent });
+  } catch (e) { console.warn('[sitewire] reply route error:', e && e.message); res.status(500).json({ error: 'Could not send your message — please try again.' }); }
+});
+
+// ---- GET /files/:id/borrower-status — Sitewire's borrower-invite state (live read) ----
+router.get('/files/:id/borrower-status', requirePermission('manage_draws'), async (req, res) => {
+  if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try { res.json(await orchestrator.getBorrowerInviteStatus(req.params.id)); }
+  catch (e) { res.status(500).json({ error: 'Could not read the borrower status from Sitewire right now.' }); }
+});
+
+// ---- POST /files/:id/resend-invite — (re)send Sitewire's borrower invite ----
+router.post('/files/:id/resend-invite', requirePermission('manage_draws'), async (req, res) => {
+  if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const r = await orchestrator.resendBorrowerInvite(req.params.id);
+    if (r.error === 'not_managed') return res.status(409).json({ error: 'This file isn’t managed by PILOT in Sitewire yet — start the draw process first.' });
+    if (r.error === 'no_borrower_email') return res.status(409).json({ error: 'This file has no borrower email to invite.' });
+    if (r.error === 'writes_off') return res.status(409).json({ error: 'Sitewire writing is off — turn it on to send the invite.' });
+    if (r.error === 'transient') return res.status(502).json({ error: 'Sitewire is briefly unavailable — please try again shortly.' });
+    if (r.error) return res.status(502).json({ error: 'Couldn’t send the invite through Sitewire — please try again shortly.' });
+    res.json(r);
+  } catch (e) { res.status(500).json({ error: 'Couldn’t send the invite right now — please try again shortly.' }); }
+});
+
 // ---- POST /api/sitewire/files/:id/push — manual birth push (admin/setup, guarded) ----
 router.post('/files/:id/push', requirePermission('platform_setup'), async (req, res) => {
   // scope like every other per-file route — platform_setup alone (e.g. the software_setup persona) must
@@ -346,6 +481,13 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
       await db.query(`UPDATE sitewire_property_links SET fee_cents_override=$2, updated_at=now() WHERE application_id=$1`, [appId, feeOverride]);
       await orchestrator.journal({ appId, entity: 'settings', field: 'draw_fee_cents', newValue: feeOverride == null ? '(rule default)' : String(feeOverride), source: 'coordinator_start', changed: true }).catch(() => {});
     }
+    // Record the draw-start as a visible team notification so it shows in the file's Draw messages box
+    // ("when the draw is being pushed / registered"). Fires once per Start; best-effort.
+    notify.notifyAppStaff(appId, {
+      type: 'draw_started', title: 'Draw process started',
+      body: `The draw process was started for this file — property, construction budget, Scope of Work and fees ${cfg.sitewireEnabled ? 'were pushed to Sitewire.' : 'will push to Sitewire once it is turned on.'}`,
+      badge: { text: 'Draw started', tone: 'teal' }, applicationId: appId, link: `/internal/app/${appId}/draws`,
+    }).catch(() => {});
     // push everything now (guarded). When Sitewire is off, the link row above (draw_setup_started_at)
     // is the durable birth record — the worker's stranded-birth backfill enqueues the push the moment
     // the switch is turned on, so nothing is lost while staged off.
@@ -457,35 +599,36 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
   let releaseDate = req.body.release_date == null || req.body.release_date === '' ? null : sanitizeDateOnly(req.body.release_date);
   if (req.body.release_date && !releaseDate) return res.status(400).json({ error: 'The release date must be a valid calendar date (YYYY-MM-DD).' });
   const fundedStatus = ['pending', 'released', 'held'].includes(req.body.funded_status) ? req.body.funded_status : 'pending';
-  // validate the draw id: if supplied it must be numeric AND belong to THIS file (never store a
-  // draw id from another file — the lien gate reads that draw's waivers). Audit #3.
-  let drawId = null;
-  if (sitewire_draw_id != null && sitewire_draw_id !== '') {
-    if (!/^\d+$/.test(String(sitewire_draw_id))) return res.status(400).json({ error: 'invalid draw id' });
-    const own = (await db.query(`SELECT total_approved_cents FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [sitewire_draw_id, application_id])).rows[0];
-    if (!own) return res.status(400).json({ error: 'that draw is not on this file' });
-    drawId = sitewire_draw_id;
-    // M1: don't record a release larger than what the lender actually approved on this draw (unless overridden) —
-    // the ledger (and retainage) should never exceed the real approved figure.
-    const drawApproved = Number(own.total_approved_cents) || 0;
-    if (drawApproved > 0 && approved > drawApproved && !req.body.override) {
-      return res.status(422).json({ error: `${T.usd(approved)} is more than the ${T.usd(drawApproved)} approved on this draw — pass override:true to record it anyway.` });
-    }
-    // H1: a draw is released once — block a duplicate ledger row up front (the db/148 unique index is the
-    // belt-and-suspenders). A duplicate would double-count into the retainage pool.
-    const dup = await db.query(`SELECT 1 FROM draw_disbursements WHERE sitewire_draw_id=$1 AND kind='draw'`, [drawId]);
-    if (dup.rowCount) return res.status(409).json({ error: 'A release is already recorded for this draw — correct the existing entry instead of adding another.' });
+  // A draw release MUST name its draw (audit F-2 — a deliberate money-route change). A release with no draw
+  // id left sitewire_draw_id NULL, which (a) forced the overdue monitor into an over-broad NULL-match
+  // suppression that silenced genuinely-overdue OTHER draws on a rare multi-draw file, and (b) let the
+  // lien-waiver gate be side-stepped. Every kind='draw' disbursement now binds to exactly ONE draw on this
+  // file, so the monitor can match a release to its finding precisely. (Retainage-release rows are a
+  // separate route/kind with no draw id — unaffected.)
+  if (sitewire_draw_id == null || sitewire_draw_id === '') return res.status(400).json({ error: 'Select which draw this release is for.' });
+  if (!/^\d+$/.test(String(sitewire_draw_id))) return res.status(400).json({ error: 'invalid draw id' });
+  // it must belong to THIS file (never store a draw id from another file — the lien gate reads that draw's waivers).
+  const own = (await db.query(`SELECT total_approved_cents FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [sitewire_draw_id, application_id])).rows[0];
+  if (!own) return res.status(400).json({ error: 'that draw is not on this file' });
+  const drawId = sitewire_draw_id;
+  // M1: don't record a release larger than what the lender actually approved on this draw (unless overridden) —
+  // the ledger (and retainage) should never exceed the real approved figure.
+  const drawApproved = Number(own.total_approved_cents) || 0;
+  if (drawApproved > 0 && approved > drawApproved && !req.body.override) {
+    return res.status(422).json({ error: `${T.usd(approved)} is more than the ${T.usd(drawApproved)} approved on this draw — pass override:true to record it anyway.` });
   }
+  // H1: a draw is released once — block a duplicate ledger row up front (the db/148 unique index is the
+  // belt-and-suspenders). A duplicate would double-count into the retainage pool.
+  const dup = await db.query(`SELECT 1 FROM draw_disbursements WHERE sitewire_draw_id=$1 AND kind='draw'`, [drawId]);
+  if (dup.rowCount) return res.status(409).json({ error: 'A release is already recorded for this draw — correct the existing entry instead of adding another.' });
   try {
     // retainage: hold a % of the approved amount; net = approved − fee − retainage held
     const pct = await retainagePctFor(application_id);
     const split = computeRelease({ approvedCents: approved, feeCents: fee, retainagePct: pct });
     if (!split.ok) return res.status(422).json({ error: split.violation });
-    // lien-waiver gate: a RELEASE must name its draw so we can check its waivers — otherwise the
-    // gate could be skipped by leaving the draw blank (audit #1). Block if any required waiver is
-    // still outstanding (never guessed).
+    // lien-waiver gate: the release already named its draw (required above), so we check exactly that draw's
+    // waivers. Block the release if any required waiver is still outstanding (never guessed).
     if (fundedStatus === 'released' && await lienGateEnabled(application_id)) {
-      if (!drawId) return res.status(400).json({ error: 'Select which draw this release is for — lien waivers are required on this project and are checked per draw.' });
       const waivers = (await db.query(`SELECT status, tier, party_name, kind FROM draw_lien_waivers WHERE sitewire_draw_id=$1`, [drawId])).rows;
       const gate = waiverGate(waivers, { enabled: true });
       if (!gate.ok) return res.status(409).json({ error: `Lien waivers still outstanding: ${gate.missing.join('; ')}. Mark them received or waived before releasing.`, missing: gate.missing });
@@ -953,7 +1096,7 @@ router.get('/portfolio', requirePermission('manage_draws'), async (req, res) => 
     // per-file budget (frozen) + drawn (approved on approved draws) + pending-approval counts
     const rows = (await db.query(
       `SELECT a.id AS application_id, a.ys_loan_number, a.property_address->>'oneLine' AS address, a.status,
-              a.actual_closing, a.term,
+              a.actual_closing, a.term, a.lender,
               l.sitewire_property_id, COALESCE(l.lifecycle_state,'active') AS lifecycle_state, l.lifecycle_at,
               COALESCE((SELECT sum(ji.budgeted_cents) FROM sitewire_job_item_links ji WHERE ji.application_id=a.id AND ji.state<>'deleted' AND ji.is_media_item=false),0) AS budget_cents,
               COALESCE((SELECT sum(r.approved_cents) FROM sitewire_draw_requests r JOIN sitewire_draws d2 ON d2.sitewire_draw_id=r.sitewire_draw_id WHERE d2.application_id=a.id AND d2.status='approved'),0) AS drawn_cents,
@@ -972,6 +1115,9 @@ router.get('/portfolio', requirePermission('manage_draws'), async (req, res) => 
       budget += b; drawn += dr; pendingReq += Number(r.pending_requested_cents) || 0;
       pendingCount += Number(r.pending_count) || 0; highRisk += Number(r.high_risk_count) || 0;
       return { application_id: r.application_id, ys_loan_number: r.ys_loan_number, address: r.address, status: r.status,
+        // partner is the STAFF-ONLY note-buyer / capital-partner label (never sent to a borrower surface;
+        // this route is manage_draws-gated). Used for the by-partner exposure rollup below.
+        partner: (r.lender && String(r.lender).trim()) || null,
         budget_cents: b, drawn_cents: dr, remaining_cents: b - dr, pct_complete: b > 0 ? Math.round((dr / b) * 1000) / 10 : 0,
         pending_requested_cents: Number(r.pending_requested_cents) || 0, pending_count: Number(r.pending_count) || 0, high_risk_count: Number(r.high_risk_count) || 0,
         funded_on: r.actual_closing || null, term: r.term || null, draw_count: Number(r.draw_count) || 0,
@@ -995,9 +1141,43 @@ router.get('/portfolio', requirePermission('manage_draws'), async (req, res) => 
     const alertByFile = {};
     for (const af of alerts.files) alertByFile[af.application_id] = af.alerts;
     for (const f of files) f.alerts = (f.lifecycle_state === 'active') ? (alertByFile[f.application_id] || []) : [];
+
+    // ---- Coordinator analytics (2026-07-20) ----
+    // (1) BY-PARTNER exposure rollup — where the desk's committed capital sits per note-buyer / capital
+    //     partner. Staff-only labels; an unmatched file rolls up under "Unassigned". Active projects only for
+    //     the flagged/overdue counts (a finished project isn't "at risk").
+    const partnerMap = new Map();
+    for (const f of files) {
+      const key = f.partner || 'Unassigned';
+      let p = partnerMap.get(key);
+      if (!p) { p = { partner: key, files: 0, budget_cents: 0, drawn_cents: 0, remaining_cents: 0, pending_requested_cents: 0, pending_count: 0, flagged: 0, wire_overdue: 0 }; partnerMap.set(key, p); }
+      p.files += 1;
+      p.budget_cents += f.budget_cents; p.drawn_cents += f.drawn_cents; p.remaining_cents += f.remaining_cents;
+      p.pending_requested_cents += f.pending_requested_cents; p.pending_count += f.pending_count;
+      if ((f.alerts || []).length) p.flagged += 1;
+      if (f.wire_overdue && f.lifecycle_state === 'active') p.wire_overdue += 1;
+    }
+    const byPartner = [...partnerMap.values()]
+      .map((p) => ({ ...p, pct_complete: p.budget_cents > 0 ? Math.round((p.drawn_cents / p.budget_cents) * 1000) / 10 : 0 }))
+      .sort((a, b) => b.remaining_cents - a.remaining_cents);
+
+    // (2) HEALTH panel — a one-glance read of the active portfolio's condition.
+    const finishedCount = files.filter((f) => f.lifecycle_state !== 'active').length;
+    const overdueFiles = files.filter((f) => f.wire_overdue && f.lifecycle_state === 'active').length;
+    const health = {
+      active: activeFiles.length,
+      finished: finishedCount,
+      flagged: alerts.summary.flagged,
+      on_track: Math.max(0, activeFiles.length - alerts.summary.flagged),
+      wire_overdue_files: overdueFiles,
+      high_risk_files: files.filter((f) => f.high_risk_count > 0 && f.lifecycle_state === 'active').length,
+      pending_count: pendingCount,
+    };
+
     res.json({ totals: { files: files.length, budget_cents: budget, drawn_cents: drawn, remaining_cents: budget - drawn,
       pct_complete: budget > 0 ? Math.round((drawn / budget) * 1000) / 10 : 0, pending_requested_cents: pendingReq, pending_count: pendingCount, high_risk_count: highRisk,
       flagged: alerts.summary.flagged, alert_codes: alerts.summary.by_code },
+      by_partner: byPartner, health,
       files: files.sort((a, b) => (b.alerts.length - a.alerts.length) || b.pending_count - a.pending_count || b.remaining_cents - a.remaining_cents) });
   } catch (e) { console.warn('[sitewire] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
