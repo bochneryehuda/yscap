@@ -14,6 +14,7 @@
 const docint = require('../ai/docint');
 const azureOpenai = require('../ai/azure-openai');
 const registry = require('./registry');
+const { analyzePdf } = require('./pdf-forensics');
 
 function verifyFinding(docType, reason) {
   return {
@@ -46,6 +47,14 @@ async function analyzeDocument({ docType, buffer, base64, mimeType, subject, tod
     pageCount: null, confidence: null, status: 'error', reason: null,
   };
 
+  // 0. FORENSIC scan of the raw bytes (advisory tampering signals) — independent of OCR/AI, so it
+  // runs even if the read/understand later fails. Never throws, never blocks.
+  let forensic = [];
+  try {
+    const buf = buffer || (base64 ? Buffer.from(base64, 'base64') : null);
+    if (buf) forensic = analyzePdf(buf, { docType }).findings || [];
+  } catch (_) { forensic = []; }
+
   // 1. READ (OCR) — best-effort; GPT can still read a clean image/text if OCR is thin.
   const ocr = await reader.read({ buffer, base64, mimeType });
   baseExtraction.ocrEngine = ocr.ok ? 'document_intelligence' : null;
@@ -64,12 +73,12 @@ async function analyzeDocument({ docType, buffer, base64, mimeType, subject, tod
     return {
       ok: false, reason: ext.reason,
       extraction: Object.assign(baseExtraction, { reason: ext.reason }),
-      findings: [verifyFinding(docType, ext.reason)],
+      findings: [verifyFinding(docType, ext.reason), ...forensic],
     };
   }
 
-  // 3. CHECK → findings (pure).
-  const findings = entry.check(ext.data, subject, { today }) || [];
+  // 3. CHECK → findings (pure) + the forensic tampering advisory.
+  const findings = (entry.check(ext.data, subject, { today }) || []).concat(forensic);
   const confidence = ext.data && ext.data.readable === false ? 'unreadable' : 'analyzed';
   return {
     ok: true,
