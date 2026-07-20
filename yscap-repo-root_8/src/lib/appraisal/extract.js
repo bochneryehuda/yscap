@@ -430,9 +430,16 @@ function enrichment(root, prop, st, site, subject0, rep, formType) {
   o.nbhd_adverse_financing = yn(A(mk, 'MarketTrendsAdverseFinancingIndicator'));
   o.nbhd_foreclosure_activity = yn(A(mk, 'MarketTrendsForeclosureActivityIndicator'));
   o.nbhd_boundaries = capText(A(nb, '_BoundaryAndCharacteristicsDescription'), 500);
-  // Market narratives — store ONLY concrete text; ~27% are "See 1004MC"/"See attached" pointers
-  // that carry no information (never store a pointer as if it were content).
-  const notPointer = (v, max) => { const s = capText(v, max); return s && !/see\s*(the\s*)?1004\s*mc\b|see\s+attached|see\s+addend/i.test(s) ? s : null; };
+  // Market narratives — store ONLY concrete text; a chunk of these are bare pointers to another
+  // document/page ("See 1004MC", "See page #3.", "SEE ADDITIONAL COMMENTS", "refer to attached")
+  // that carry no information. A pointer is SHORT and is (almost) nothing but the reference; a long
+  // narrative that merely mentions "see the attached addendum …" still carries substance, so keep
+  // it (length is the discriminator — a bare pointer is rarely more than a sentence).
+  const notPointer = (v, max) => {
+    const s = capText(v, max);
+    if (!s) return null;
+    return (s.length <= 60 && /\b(see|refer\s+to)\b/i.test(s)) ? null : s;
+  };
   o.market_conditions_comment = notPointer(A(nb, '_MarketConditionsDescription'), 700);
   o.market_reconciliation_comment = notPointer(A(mk, 'MarketTrendsReconciliationComment'), 700);
 

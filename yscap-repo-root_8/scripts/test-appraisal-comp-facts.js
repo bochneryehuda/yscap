@@ -24,8 +24,10 @@ for (const f of files) {
   const A = extract(fs.readFileSync(path.join(DIR, f), 'utf8'));
   if (A.enrich && A.enrich.building_status) bstatusFiles++;
   const e = A.enrich || {};
-  if (e.market_conditions_comment) { mcNarr++; if (/see\s*1004\s*mc|see\s+attached/i.test(e.market_conditions_comment)) ptrLeak++; }
-  if (e.market_reconciliation_comment) { mrNarr++; if (/see\s*1004\s*mc|see\s+attached/i.test(e.market_reconciliation_comment)) ptrLeak++; }
+  // A leaked pointer = a stored narrative that is short and (almost) nothing but a "see …" reference.
+  const isPtr = (s) => s.length <= 60 && /\b(see|refer\s+to)\b/i.test(s);
+  if (e.market_conditions_comment) { mcNarr++; if (isPtr(e.market_conditions_comment)) ptrLeak++; }
+  if (e.market_reconciliation_comment) { mrNarr++; if (isPtr(e.market_reconciliation_comment)) ptrLeak++; }
   for (const c of (A.comparables || [])) {
     totalComps++;
     if (c.viewRating) { withView++; if (!RATING.includes(c.viewRating)) badRating = true; }
