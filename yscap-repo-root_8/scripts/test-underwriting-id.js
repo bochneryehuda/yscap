@@ -87,6 +87,10 @@ assert.deepStrictEqual(codes(idFindings({ address: { line1: '9 Oak Ave', city: '
   assert.strictEqual(minor.find((f) => f.code === 'id_underage').blocksCtc, false, 'underage is a warning, not a hard block');
   // A plausible adult DOB → no age flag.
   assert.ok(!idFindings({}).some((f) => /id_underage|id_age_implausible/.test(f.code)), 'a 46-year-old raises no age flag');
+  // BOUNDARY (calendar age, not days/365.25): someone EXACTLY 18 today is NOT underage; a day short IS.
+  const onTODAY = (dob) => computeIdFindings({ ...goodId, dateOfBirth: dob }, { ...borrower, date_of_birth: dob }, { today: '2026-07-20' });
+  assert.ok(!onTODAY('2008-07-20').some((f) => f.code === 'id_underage'), 'exactly 18 today is NOT underage');
+  assert.ok(onTODAY('2008-07-21').some((f) => f.code === 'id_underage'), 'one day short of 18 IS underage');
   // An impossible age (born 1902 → ~124) → implausible-age flag (a misread).
   const oldId = computeIdFindings({ ...goodId, dateOfBirth: '1902-06-01' }, { ...borrower, date_of_birth: '1902-06-01' }, { today: TODAY });
   assert.ok(oldId.some((f) => f.code === 'id_age_implausible'), 'age >120 is flagged as a misread');

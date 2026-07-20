@@ -39,6 +39,20 @@ function finding(f) {
   );
 }
 
+// Exact calendar age in whole years between two YYYY-MM-DD strings (dob → asOf). Compares month/day
+// rather than dividing days by 365.25 (which under-counts across leap years — a person exactly 18
+// today would otherwise compute as 17). Returns null on an unparseable pair.
+function calendarAge(dobISO, asOfISO) {
+  const d = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dobISO || ''));
+  const a = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(asOfISO || ''));
+  if (!d || !a) return null;
+  const [dy, dm, dd] = [+d[1], +d[2], +d[3]];
+  const [ay, am, ad] = [+a[1], +a[2], +a[3]];
+  let age = ay - dy;
+  if (am < dm || (am === dm && ad < dd)) age -= 1; // birthday hasn't occurred yet this year
+  return age;
+}
+
 /**
  * @param {object} id       fields extracted for the GOVERNMENT_ID schema
  * @param {object} borrower borrowers row on file
@@ -92,10 +106,11 @@ function computeIdFindings(id, borrower, opts = {}) {
   // A borrower who is under 18 can't legally contract — almost always a misread DOB, occasionally a
   // real problem, either way it must be caught. An implausibly high age (>120) is a misread too.
   // Computed off the ID's own DOB (not the file's) so it fires even before the file DOB is entered.
+  // CALENDAR age (compare Y/M/D) — NOT days/365.25, which under-counts across leap years and would
+  // falsely flag someone who is EXACTLY 18 today as 17.
   if (idDob && today) {
-    const ageDays = daysBetween(idDob, today);
-    if (ageDays != null) {
-      const years = Math.floor(ageDays / 365.25);
+    const years = calendarAge(idDob, today);
+    if (years != null) {
       if (years < 18) {
         out.push(finding({ code: 'id_underage', severity: 'warning', field: 'date_of_birth',
           docValue: `${idDob} (age ${years})`, fileValue: '18+ to contract',
