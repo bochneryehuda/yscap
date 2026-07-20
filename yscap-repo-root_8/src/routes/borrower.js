@@ -2280,7 +2280,11 @@ router.put('/track-record/snapshot', async (req, res) => {
       html: b.html, filename: b.filename, uploadedByKind: 'borrower', uploadedById: me(req),
     });
     res.json({ ok: true, ...out });
-  } catch (e) { res.status(e.status || 500).json({ error: e.message || 'could not save the snapshot' }); }
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    console.warn('[borrower] snapshot error:', db.describeError(e));
+    res.status(500).json({ error: 'could not save the snapshot' });
+  }
 });
 router.get('/track-record/snapshot', async (req, res) => {
   try { res.json(await require('../lib/track-record-snapshot').latestSnapshot(me(req))); }
