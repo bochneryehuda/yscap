@@ -813,6 +813,11 @@ async function setDrawQuickNotify(appId, drawId, statusId) {
   if (!(cfg.sitewireEnabled && (cfg.sitewireOutboundEnabled || cfg.sitewireDryrun))) return { error: 'writes_off' };
   const sid = (statusId == null || statusId === '') ? null : Number(statusId);
   if (sid != null && !Number.isFinite(sid)) return { error: 'bad_status' };
+  // A pipeline status can only be MOVED between real statuses, never CLEARED to null: the guarded client
+  // (guardNoUnsafeWrite) refuses any null-bearing body outright (a field-clearing null is never sent), so a
+  // "clear to none" write is impossible by design. Reject it cleanly here instead of letting it throw an
+  // opaque unsafe-write 502.
+  if (sid == null) return { error: 'clear_unsupported' };
   await circuitCheck(1);
   try {
     const res = await client.updateDraw(drawId, { quick_notify_status_id: sid });
@@ -840,9 +845,10 @@ async function getSitewireDocuments(appId) {
   try {
     const p = await client.getProperty(link.sitewire_property_id);
     const docs = (p && (p.documents || (p.property && p.property.documents))) || [];
+    const safeUrl = (u) => { try { const x = new URL(String(u)); return (x.protocol === 'http:' || x.protocol === 'https:') ? x.href : null; } catch (_) { return null; } };
     return { managed: true, available: true, documents: (Array.isArray(docs) ? docs : []).map((d) => ({
       name: d.name || d.filename || d.title || 'Document',
-      url: d.url || d.src || d.download_url || d.file_url || null,
+      url: safeUrl(d.url || d.src || d.download_url || d.file_url), // only http(s) — never a javascript:/data: href
       kind: d.kind || d.type || d.document_type || null,
       uploaded_at: d.created_at || d.uploaded_at || d.inserted_at || null,
     })) };

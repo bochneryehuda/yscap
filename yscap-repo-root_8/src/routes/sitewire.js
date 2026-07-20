@@ -353,6 +353,7 @@ router.post('/files/:id/draws/:drawId/quick-notify', requirePermission('manage_d
     if (r.error === 'draw_not_on_file') return res.status(404).json({ error: 'That draw is not on this file.' });
     if (r.error === 'writes_off') return res.status(409).json({ error: 'Sitewire writing is off — turn it on to change the pipeline status.' });
     if (r.error === 'bad_status') return res.status(400).json({ error: 'Pick a valid pipeline status.' });
+    if (r.error === 'clear_unsupported') return res.status(400).json({ error: 'Pick a pipeline status — it can be moved between statuses but not cleared back to none.' });
     if (r.error === 'transient') return res.status(502).json({ error: 'Sitewire is briefly unavailable — please try again shortly.' });
     if (r.error) return res.status(502).json({ error: 'Could not update the pipeline status in Sitewire — please try again.' });
     res.json(r);

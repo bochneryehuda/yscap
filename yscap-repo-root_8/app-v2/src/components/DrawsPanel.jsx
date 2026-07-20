@@ -739,7 +739,9 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
           <select className="input" style={{ maxWidth: 260 }} value={draw.quick_notify_status_id ?? ''} disabled={writesOff || busy === 'qn' + draw.sitewire_draw_id}
             title={writesOff ? 'Sitewire writing is off' : 'Set this draw’s Sitewire pipeline status'}
             onChange={(e) => { const v = e.target.value; act('qn' + draw.sitewire_draw_id, async () => { await api.post(`/api/sitewire/files/${appId}/draws/${draw.sitewire_draw_id}/quick-notify`, { status_id: v === '' ? null : v }); return { msg: 'Pipeline status updated in Sitewire.' }; }); }}>
-            <option value="">— none —</option>
+            {/* "— not set —" is a placeholder only: a status can be MOVED between statuses but not cleared
+                back to none (the Sitewire write-guard refuses a clearing value), so it's not selectable. */}
+            <option value="" disabled>— not set —</option>
             {quickStatuses.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
         </div>
