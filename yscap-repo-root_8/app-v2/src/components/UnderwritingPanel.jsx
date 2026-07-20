@@ -115,6 +115,7 @@ function ExtractionCard({ e }) {
         </span>
         <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--muted,#4B585C)' }}>{open ? 'hide' : `${keys.length} fields`}</span>
       </button>
+      {e.purpose && <div style={{ fontSize: 11.5, color: 'var(--muted,#4B585C)', marginTop: 4 }}>{e.purpose}</div>}
       {open && (
         <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(160px,1fr))', gap: 10 }}>
           {keys.length === 0 && <span style={{ fontSize: 12, color: 'var(--muted,#4B585C)' }}>No fields were read.</span>}
@@ -200,6 +201,36 @@ function TieOutMatrix({ tieout }) {
   );
 }
 
+// Condition coverage — every document-backed condition on the file: is a document analyzed for it,
+// and is it ready to clear (clean) / has issues / is blocked, or not yet analyzed? Ties the
+// underwriting engine to the actual checklist so each condition is "underwritten correctly."
+const READY = {
+  clean: { fg: 'var(--good,#3F7A5B)', bg: 'rgba(63,122,91,.12)', label: 'Ready to clear' },
+  issues: { fg: 'var(--amber,#B7791F)', bg: 'var(--amber-bg,#F6EEDD)', label: 'Review' },
+  blocked: { fg: 'var(--crit,#B4483C)', bg: 'var(--crit-bg,#F6E7E4)', label: 'Blocked' },
+  not_analyzed: { fg: 'var(--muted,#4B585C)', bg: 'var(--paper,#F6F3EC)', label: 'Not read yet' },
+};
+function ConditionCoverage({ coverage }) {
+  if (!coverage || !coverage.length) return null;
+  return (
+    <div style={{ marginBottom: 22 }}>
+      <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px' }}>Conditions — is every document underwritten?</h4>
+      <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginBottom: 10 }}>Each condition on this file that PILOT reads a document for, and whether that document is in and ties out.</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(230px,1fr))', gap: 8 }}>
+        {coverage.map((c) => {
+          const r = READY[c.readiness] || READY.not_analyzed;
+          return (
+            <div key={c.code} style={{ border: '1px solid var(--line,#E7E1D3)', borderLeft: `4px solid ${r.fg}`, borderRadius: 10, background: 'var(--card,#fff)', padding: '9px 12px' }}>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4, overflowWrap: 'anywhere' }}>{c.label}</div>
+              <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: r.fg, background: r.bg, padding: '2px 7px', borderRadius: 6 }}>{r.label}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function UnderwritingPanel({ appId, docs = [], readOnly = false, onSummary }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -248,6 +279,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
   const findings = (data && data.findings) || [];
   const cross = (data && data.crossDocument) || [];
   const tieout = data && data.tieout;
+  const coverage = (data && data.conditionCoverage) || [];
   const exts = (data && data.extractions) || [];
   const docTypes = (data && data.docTypes) || [];
   const analyzers = (data && data.analyzers) || {};
@@ -290,6 +322,9 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
           {sum.blocksCtc && <span style={{ fontSize: 12.5, color: SEV.fatal.fg }}>Clear-to-close is blocked until every fatal is resolved.</span>}
         </div>
       )}
+
+      {/* conditions coverage — ties every document back to the checklist */}
+      <ConditionCoverage coverage={coverage} />
 
       {/* the data-comparison matrix — the full stare-and-compare across the file */}
       <TieOutMatrix tieout={tieout} />

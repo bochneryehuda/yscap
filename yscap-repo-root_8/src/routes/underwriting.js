@@ -37,6 +37,7 @@ const { buildTieout } = require('../lib/underwriting/tieout');
 const { underwriterActions } = require('../lib/underwriting/actions');
 const { falseAlarmReport } = require('../lib/underwriting/feedback');
 const { classify } = require('../lib/underwriting/classify');
+const { conditionsForDoc, purposeForDoc, docReadiness, fileConditionCoverage } = require('../lib/underwriting/condition-map');
 
 const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || ''));
 // today as a calendar string — no `new Date()` math in the date paths (CLAUDE.md rule).
@@ -125,17 +126,32 @@ router.get('/:appId', async (req, res, next) => {
     const app = await fileFor(req, req.params.appId);
     if (!app) return res.status(404).json({ error: 'not found' });
 
-    // Current extractions (one row per current document) + open findings for the file.
-    const [exts, ff] = await Promise.all([
+    // Current extractions (one row per current document) + open findings + the file's conditions.
+    const [exts, ff, conds] = await Promise.all([
       db.query(
         `SELECT id, document_id, doc_type, fields, ocr_engine, ai_model, page_count, confidence, status, reason, created_at
            FROM document_extractions WHERE application_id=$1 AND is_current ORDER BY created_at`, [app.id]),
       store.getFileFindings(db, app.id),
+      db.query(
+        `SELECT t.code, COALESCE(t.label, t.code) AS label, ci.status
+           FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
+          WHERE ci.application_id=$1`, [app.id]),
     ]);
 
     // Data-comparison / tie-out over the file's current extractions + the appraisal.
     const tieout = await tieoutForFile(db, app.id);
     const cross = tieout.discrepancies;
+
+    // Enrich each analyzed document with the condition(s) it supports, its purpose, and its
+    // readiness (clean / issues / blocked) from its own findings — so every document ties back to
+    // the actual checklist. And a file-level coverage rollup: per document-condition, is it
+    // analyzed and ready to clear?
+    const extractions = exts.rows.map((e) => Object.assign({}, e, {
+      conditions: conditionsForDoc(e.doc_type),
+      purpose: purposeForDoc(e.doc_type),
+      readiness: docReadiness(ff.findings.filter((f) => f.source === e.doc_type)),
+    }));
+    const conditionCoverage = fileConditionCoverage({ conditions: conds.rows, extractions: exts.rows, findings: ff.findings });
 
     const perDoc = ff.findings.map(decorate);
     // Roll the tie-out discrepancies into the same fatal/warning gate.
@@ -147,10 +163,11 @@ router.get('/:appId', async (req, res, next) => {
       blocksCtc: openAll.some((f) => f.severity === 'fatal' && (f.blocks_ctc ?? f.blocksCtc)),
     };
     res.json({
-      extractions: exts.rows,
+      extractions,
       findings: perDoc,
       tieout: { columns: tieout.columns, matrix: tieout.matrix, summary: tieout.summary },
       crossDocument: cross,
+      conditionCoverage,
       summary,
       docTypes: registry.docTypes(),
       analyzers: { reader: docint.configured(), ai: azureOpenai.available() },
