@@ -50,8 +50,10 @@ async function storeSignedDocument(db, storage, { applicationId, borrowerId, che
   // prior pass (e.g. one that crashed after the INSERT but before stamping
   // completed_document_id) already stored it, reuse that row rather than writing
   // a duplicate. Also covers a concurrent drain (L2).
+  // application_id IS NOT DISTINCT FROM $1 so an app-less TEST envelope (application_id
+  // NULL) dedupes correctly too — `= NULL` is never true and would re-store on retry.
   const existing = await db.query(
-    `SELECT id FROM documents WHERE application_id=$1 AND doc_kind=$2 AND filename=$3 LIMIT 1`,
+    `SELECT id FROM documents WHERE application_id IS NOT DISTINCT FROM $1 AND doc_kind=$2 AND filename=$3 LIMIT 1`,
     [applicationId, docKind, filename]);
   if (existing.rows.length) return existing.rows[0].id;
   const { ref, provider } = await storage.save(Buffer.from(bytes), { filename });
@@ -71,12 +73,28 @@ async function storeSignedDocument(db, storage, { applicationId, borrowerId, che
     // re-issue signs a NEW envelope → a new deterministic filename → a fresh
     // documents row; without this the old signed copy stays is_current=true and
     // BOTH would ride into the TPR note-buyer package and the SharePoint mirror
-    // (mirrors tpr-export's supersede). Latest signed copy wins.
-    await db.query(
-      `UPDATE documents SET is_current=false,
-          review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
-        WHERE application_id=$1 AND doc_kind=$2 AND id<>$3 AND is_current=true`,
-      [applicationId, docKind, ins.rows[0].id]);
+    // (mirrors tpr-export's supersede). Latest signed copy wins. ONLY for a real
+    // file — an app-less TEST doc (application_id NULL) must not supersede OTHER
+    // tests' docs of the same kind (each self-test stands alone; its filename is
+    // already unique per envelope).
+    if (applicationId) {
+      await db.query(
+        `UPDATE documents SET is_current=false,
+            review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
+          WHERE application_id=$1 AND doc_kind=$2 AND id<>$3 AND is_current=true`,
+        [applicationId, docKind, ins.rows[0].id]);
+    } else {
+      // App-less self-test doc: there is no loan file / borrower to file it under, so
+      // the SharePoint mirror can NEVER place it (scopeKeyFor → null). Settle it OUT of
+      // the mirror's pending population at birth (stamp backed_up_at + a skip reason) —
+      // otherwise it sits sharepoint_backed_up_at IS NULL forever and trips a permanent
+      // backlog / health-SLO alert. Mirrors the Heter-Iska skip precedent in
+      // lib/sharepoint-backup.js. (Test docs are staff-only and never TPR/SharePoint.)
+      await db.query(
+        `UPDATE documents SET sharepoint_backed_up_at = now(),
+            sharepoint_skipped_reason = 'e-sign self-test — no loan file to mirror under'
+          WHERE id = $1`, [ins.rows[0].id]);
+    }
     return ins.rows[0].id;
   } catch (e) {
     // A concurrent drain (poller tick + manual /esign/drain interleaving at an
@@ -84,7 +102,7 @@ async function storeSignedDocument(db, storage, { applicationId, borrowerId, che
     // esign_signed partial index (db/142) rejects the loser; reuse the winner.
     if (e && e.code === '23505') {
       const again = await db.query(
-        `SELECT id FROM documents WHERE application_id=$1 AND doc_kind=$2 AND filename=$3 LIMIT 1`,
+        `SELECT id FROM documents WHERE application_id IS NOT DISTINCT FROM $1 AND doc_kind=$2 AND filename=$3 LIMIT 1`,
         [applicationId, docKind, filename]);
       if (again.rows.length) return again.rows[0].id;
     }
@@ -114,22 +132,18 @@ async function applyRecipients(db, envelopeRowId, envelope) {
 // ---- on completion: download + store signed docs, clear conditions ----------
 async function handleCompletion(db, docusign, storage, envelopeRow) {
   const envelopeId = envelopeRow.envelope_id;
-  // App-less TEST envelope: there is no loan file to store signed documents against
-  // and no condition to clear — just mark its docs settled so the cockpit shows it
-  // complete. Never touches real-file storage / SharePoint / the Certificate table.
-  if (!envelopeRow.application_id) {
-    await db.query(
-      `UPDATE esign_envelope_docs SET cleared_at = COALESCE(cleared_at, now()) WHERE envelope_row_id = $1`,
-      [envelopeRow.id]);
-    return;
-  }
-  // The signed copies are the borrower's own documents — stamp borrower_id so they
-  // appear in the borrower's in-portal document library (a NULL borrower_id would
-  // hide them there even though visibility='borrower'). The certificate stays
-  // staff-only (borrower_id null).
-  const borrowerId = (await db.query(
-    `SELECT borrower_id FROM applications WHERE id=$1`, [envelopeRow.application_id])).rows[0];
-  const bId = (borrowerId && borrowerId.borrower_id) || null;
+  const appId = envelopeRow.application_id;   // NULL for an app-less TEST envelope
+  // We store the signed PDFs + the Certificate of Completion for BOTH a real file
+  // AND an app-less admin self-test. For a real file the signed copies are the
+  // borrower's own documents (stamp borrower_id so they show in the borrower's library
+  // and file into the condition); a TEST envelope has no borrower/condition, so its
+  // copies are stored STAFF-ONLY with no condition — but they DO appear in the cockpit
+  // so the self-test proves the full "signed → PDF + certificate come back" chain.
+  // A TEST envelope never touches SharePoint/TPR (both are scoped by application_id).
+  const bId = appId
+    ? ((await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [appId])).rows[0] || {}).borrower_id || null
+    : null;
+  const docVisibility = appId ? 'borrower' : 'staff_only';
 
   const docs = (await db.query(
     `SELECT id, document_id, doc_kind, checklist_item_id, completed_document_id
@@ -140,18 +154,18 @@ async function handleCompletion(db, docusign, storage, envelopeRow) {
     const bytes = await docusign.getDocument(envelopeId, d.document_id);
     const filename = `${d.doc_kind}_${envelopeId}.pdf`;
     const storedId = await storeSignedDocument(db, storage, {
-      applicationId: envelopeRow.application_id,
+      applicationId: appId,
       borrowerId: bId,
-      checklistItemId: d.checklist_item_id,
+      checklistItemId: appId ? d.checklist_item_id : null,   // no condition on a test
       docKind: d.doc_kind,
-      filename, bytes, visibility: 'borrower',
+      filename, bytes, visibility: docVisibility,
     });
     await db.query(
       `UPDATE esign_envelope_docs SET completed_document_id = $2, cleared_at = now() WHERE id = $1`,
       [d.id, storedId]);
     // Conservative clear: signed + provided → 'received' (a processor signs off).
-    // Never downgrade a condition already satisfied/waived by a human.
-    if (d.checklist_item_id) {
+    // Never downgrade a condition already satisfied/waived by a human. Real files only.
+    if (appId && d.checklist_item_id) {
       await db.query(
         `UPDATE checklist_items SET status='received', updated_at=now()
           WHERE id=$1 AND status NOT IN ('satisfied','waived')`, [d.checklist_item_id]);
@@ -159,16 +173,18 @@ async function handleCompletion(db, docusign, storage, envelopeRow) {
     }
   }
 
-  // Certificate of Completion (once per envelope; staff-only, never TPR/SharePoint).
+  // Certificate of Completion (once per envelope; staff-only, never TPR/SharePoint) —
+  // for a real file AND a self-test. IS NOT DISTINCT FROM so the app-less (NULL) case
+  // dedupes too.
   const certName = `esign_certificate_${envelopeId}.pdf`;
   const exists = await db.query(
-    `SELECT 1 FROM documents WHERE application_id=$1 AND doc_kind='esign_certificate' AND filename=$2 LIMIT 1`,
-    [envelopeRow.application_id, certName]);
+    `SELECT 1 FROM documents WHERE application_id IS NOT DISTINCT FROM $1 AND doc_kind='esign_certificate' AND filename=$2 LIMIT 1`,
+    [appId, certName]);
   if (!exists.rows.length) {
     try {
       const cert = await docusign.getCertificate(envelopeId);
       await storeSignedDocument(db, storage, {
-        applicationId: envelopeRow.application_id, checklistItemId: null,
+        applicationId: appId, checklistItemId: null,
         docKind: 'esign_certificate', filename: certName, bytes: cert, visibility: 'staff_only',
       });
     } catch (e) {

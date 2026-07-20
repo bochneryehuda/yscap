@@ -318,7 +318,11 @@ function buildIska(data = {}) {
   return rezip(entries, xml);
 }
 
-const BUILDERS = { bp_disclosure: buildDisclosure, heter_iska: buildIska };
+// The application export is a jsPDF-rendered PDF (its own module), not a docx
+// mail-merge like the two above — but it plugs into the same generate() contract.
+const { buildApplication } = require('./application-pdf');
+
+const BUILDERS = { bp_disclosure: buildDisclosure, heter_iska: buildIska, application_export: buildApplication };
 
 /** Build a generated document by doc_kind. Returns a .docx Buffer. */
 function generate(docKind, data) {
@@ -328,7 +332,7 @@ function generate(docKind, data) {
 }
 
 module.exports = {
-  generate, buildDisclosure, buildIska,
+  generate, buildDisclosure, buildIska, buildApplication,
   // exported for tests
   fillField, replaceNthTokenRun, replaceRunContaining, removeTableContaining,
   insertParaBefore, insertParaAfter, removeParaContaining, removeParaAndPrecedingLabel,
