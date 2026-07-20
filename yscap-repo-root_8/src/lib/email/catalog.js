@@ -425,7 +425,10 @@ async function deliver(built, to, opts = {}) {
     // Owner-directed 2026-07-20: default a monitored Reply-To so even auth /
     // invite emails are repliable (never a dead-end no-reply).
     const r = await provider.sendMail({ to, subject: built.subject, html: built.html, text: built.text,
-      replyTo: opts.replyTo || cfg.replyToDefault || null, from: opts.from || null });
+      replyTo: opts.replyTo || cfg.replyToDefault || null, from: opts.from || null,
+      // Email Center capture context (stripped by the provider wrapper). The file
+      // is derived from a file+<id>@ Reply-To when opts.applicationId is absent.
+      _ctx: { applicationId: opts.applicationId || null, type: opts.type || 'transactional', audience: opts.audience || 'borrower' } });
     if (r && r.skipped) console.log('[email] provider=none, skipped:', built.subject, '->', to);
     return { ok: !!(r && r.ok), id: r && r.id, skipped: r && r.skipped };
   } catch (e) {
