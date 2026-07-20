@@ -54,5 +54,38 @@ assert(withLocType >= 100, `per-comp location TYPE extracted where present (${wi
 assert(mcNarr >= 15 && mrNarr >= 15, `market narratives extracted (conditions ${mcNarr}, reconciliation ${mrNarr})`);
 assert(ptrLeak === 0, `no "See 1004MC"/"See attached" pointer stored as a market narrative (${ptrLeak} leaked)`);
 
+// ---- Round-3 audit: netAdjustment SIGN must match ground truth (adjusted − sale) ----
+// The aggregate net was stored as an unsigned magnitude; the sign lives in a separate indicator.
+// Reading the raw magnitude inverted ~1 in 10 comps. Verify the stored sign now agrees with the
+// independent ground truth (adjustedPrice − salePrice) on every comp where all three are present.
+let signChecked = 0, signInverted = 0;
+for (const f of files) {
+  const A = extract(fs.readFileSync(path.join(DIR, f), 'utf8'));
+  for (const c of (A.comparables || [])) {
+    if (c.netAdjustment == null || c.salePrice == null || c.adjustedPrice == null) continue;
+    const truth = Math.round(c.adjustedPrice - c.salePrice);
+    if (truth === 0) continue;
+    signChecked++;
+    // magnitudes should match to a couple dollars (source rounding); the SIGN must agree.
+    if (Math.abs(Math.abs(truth) - Math.abs(c.netAdjustment)) <= 2 && Math.sign(truth) !== Math.sign(c.netAdjustment)) signInverted++;
+  }
+}
+assert(signChecked > 100, `net-adjustment sign checked across the corpus (${signChecked} comps)`);
+assert(signInverted === 0, `every net adjustment sign matches (adjustedPrice − salePrice) — 0 inverted (${signInverted})`);
+
+// ---- Round-3 audit: tokenizer must not misalign on a mismatched/stray close tag ----
+const { parse, find, findAll } = require('../src/lib/appraisal/xml');
+{
+  const t = parse('<R><A><B/></WRONG><C/></R>');
+  const R = t.children[0], A = R.children[0];
+  // C must be a child of A (where it textually sits), NOT re-parented up to R by the stray </WRONG>.
+  const cUnderA = A.children.some((n) => n.tag === 'C');
+  const cUnderR = R.children.some((n) => n.tag === 'C');
+  assert(cUnderA && !cUnderR, `a stray </WRONG> close tag does not misalign the tree (C stays under A)`);
+  // well-formed input is unaffected: normal nesting + document order preserved.
+  const t2 = parse('<R><X id="1"/><Y><X id="2"/></Y></R>');
+  assert(findAll(t2, 'X').length === 2 && find(t2, 'Y').tag === 'Y', 'well-formed nesting still parses correctly');
+}
+
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nALL comp-facts assertions passed');
 process.exit(failures ? 1 : 0);

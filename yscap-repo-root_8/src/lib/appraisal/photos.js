@@ -120,7 +120,11 @@ async function extractPhotos(pdfBase64, opts = {}) {
       if (photos.length >= maxPhotos) break;
       const w = img.width | 0, h = img.height | 0;
       if (w < MIN_W || h < MIN_H) continue;
-      if (w * h > MAX_SRC_AREA) continue;                 // skip an absurdly large raster (OOM guard)
+      // Skip an absurdly large raster before OUR downscale/PNG allocation. NOTE: extractImages has
+      // already decoded the image to img.data by here, so this does not prevent a decode-time OOM
+      // inside the PDF library — it only bounds our own re-allocation. The real decode is loosely
+      // bounded by MAX_PDF_BYTES + the library's internals (unpdf exposes no pre-decode dimensions).
+      if (w * h > MAX_SRC_AREA) continue;
       let px, ch;
       try { ({ buf: px, ch } = toPixelBuffer(img)); } catch (_) { continue; }
       if (!px || px.length < w * h * ch) continue;        // malformed / too-short buffer (all channels)

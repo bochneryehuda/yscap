@@ -63,14 +63,15 @@ const stubDb = (email) => ({
   ok(r.packages.every((p) => /^ENV-/.test(p.envelopeId) && /^ROW-/.test(p.envelopeRowId) && p.label), 'each package is a tracked envelope row');
 
   // 3b. the uploaded documents carry the RIGHT format label + bytes. Regression guard:
-  // the disclosure is a branded PDF now (disclosure-pdf.js) — DocuSign must be told
-  // 'pdf' (not 'docx', which would run the PDF through the docx→PDF converter and
-  // corrupt/error it); the Heter Iska stays a docx (DocuSign converts it for free).
+  // the disclosure AND the Heter Iska are branded PDFs our server builds now
+  // (disclosure-pdf.js / iska-pdf.js) — DocuSign must be told 'pdf' (not 'docx', which
+  // would run the PDF through the docx→PDF converter and corrupt/error it).
   const bpd = builtDefs.flatMap((d) => d.documents).find((doc) => /Disclosure/.test(doc.name));
   const iska = builtDefs.flatMap((d) => d.documents).find((doc) => /Iska/.test(doc.name));
   ok(bpd && bpd.fileExtension === 'pdf', 'test disclosure uploads AS a PDF (not mislabeled docx)');
   ok(bpd && Buffer.from(bpd.base64, 'base64').slice(0, 5).toString('latin1') === '%PDF-', 'test disclosure bytes really are a PDF');
-  ok(iska && iska.fileExtension === 'docx', 'test Heter Iska still uploads as a docx (Hebrew nusach)');
+  ok(iska && iska.fileExtension === 'pdf', 'test Heter Iska now uploads AS a PDF (not a docx handed to DocuSign)');
+  ok(iska && Buffer.from(iska.base64, 'base64').slice(0, 5).toString('latin1') === '%PDF-', 'test Heter Iska bytes really are a PDF');
 
   // 4. staff account has no email → refuse
   await assert.rejects(
