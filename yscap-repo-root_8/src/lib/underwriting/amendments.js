@@ -25,6 +25,10 @@ const { num, namesMatchLoose, toISODate } = require('./compare');
 // The effective-term fields we resolve, each mapping base + amendment field names + how to compare.
 const TERMS = [
   { key: 'purchasePrice', base: 'purchasePrice', amend: 'newPurchasePrice', kind: 'money',  label: 'purchase price', fileKey: 'purchase_price' },
+  // fileKey 'closing_date' is inert today (applications has no closing_date column, so the route
+  // can't pass one) — the supersede-vs-file check simply never fires for the closing date, which is
+  // safe (no false flag). The governing closing date is still consumed by staleness. Kept for when
+  // a registered closing date exists.
   { key: 'closingDate',   base: 'closingDate',   amend: 'newClosingDate',   kind: 'date',   label: 'closing date',   fileKey: 'closing_date' },
   { key: 'buyerName',     base: 'buyerName',     amend: 'newBuyerName',     kind: 'name',   label: 'buyer',          fileKey: null },
   { key: 'sellerName',    base: 'sellerNames',  amend: 'newSellerName',    kind: 'name',   label: 'seller',         fileKey: null },

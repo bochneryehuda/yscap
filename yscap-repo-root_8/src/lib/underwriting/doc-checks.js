@@ -274,7 +274,7 @@ function computeBackgroundFindings(b, subject, opts = {}) {
 // (which value actually governs) is a file-level job — see amendments.js — not a per-doc check.
 function computeAmendmentFindings(am, subject, opts = {}) {
   const out = []; if (!am) return out;
-  if (unreadable('contract_amendment', am, ['amendmentDate', 'changeSummary', 'newPurchasePrice', 'newClosingDate'])) {
+  if (unreadable('contract_amendment', am, ['amendmentDate', 'changeSummary', 'newPurchasePrice', 'newClosingDate', 'newBuyerName', 'newSellerName'])) {
     return [verify('contract_amendment', 'contract amendment')];
   }
   // An amendment that changes a term but isn't fully signed does NOT govern — flag it so the

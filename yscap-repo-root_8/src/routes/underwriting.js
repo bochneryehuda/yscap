@@ -45,6 +45,7 @@ const { buildChain } = require('../lib/underwriting/entity-chain');
 const { assessCompleteness } = require('../lib/underwriting/completeness');
 const { computeRiskScore } = require('../lib/underwriting/risk-score');
 const { resolveEffectiveTerms } = require('../lib/underwriting/amendments');
+const { toISODate } = require('../lib/underwriting/compare');
 const exceptions = require('../lib/underwriting/exceptions');
 
 const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || ''));
@@ -173,8 +174,10 @@ router.get('/:appId', async (req, res, next) => {
     const amendmentExts = exts.rows.filter((e) => e.doc_type === 'contract_amendment').map((e) => e.fields || {});
     const amendments = resolveEffectiveTerms(pc && pc.fields ? pc.fields : null, amendmentExts,
       { purchase_price: a.purchase_price });
-    const closingDate = amendments.effective.closingDate ||
-      (pc && pc.fields && pc.fields.closingDate ? pc.fields.closingDate : null);
+    // Normalize to strict YYYY-MM-DD before it drives staleness (daysBetween needs ISO) — a valid
+    // but non-ISO amended date would otherwise silently disable the closing horizon.
+    const closingDate = toISODate(amendments.effective.closingDate) ||
+      toISODate(pc && pc.fields ? pc.fields.closingDate : null) || null;
     const staleness = assessStaleness(exts.rows, { today: todayISO(), closingDate });
 
     // Derived metrics: recompute LTP/LTV/LTC/ARV-LTV from the file's registered economics, report
