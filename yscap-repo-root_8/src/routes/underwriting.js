@@ -42,6 +42,7 @@ const { ANALYZER_VERSION, subjectHash } = require('../lib/underwriting/fingerpri
 const { assessFile: assessStaleness } = require('../lib/underwriting/staleness');
 const { computeMetrics } = require('../lib/underwriting/metrics');
 const { buildChain } = require('../lib/underwriting/entity-chain');
+const { buildSellerChain } = require('../lib/underwriting/seller-chain');
 const { assessCompleteness } = require('../lib/underwriting/completeness');
 const { computeRiskScore } = require('../lib/underwriting/risk-score');
 const { resolveEffectiveTerms } = require('../lib/underwriting/amendments');
@@ -218,6 +219,13 @@ router.get('/:appId', async (req, res, next) => {
       exts.rows.some((e) => e.doc_type === 'operating_agreement'));
     const entityChain = isEntity ? buildChain({ vestingName: mctx && mctx.vestingName }, exts.rows) : null;
 
+    // Seller → buyer OWNERSHIP CHAIN: compose the visual purchase chain (owner of record → seller →
+    // buyer/assignee → the vesting LLC) so the desk can SHOW how the property gets into our
+    // borrower, and raise the one action the tie-out doesn't own: when the contract/assignment is in
+    // the borrower's PERSONAL name, suggest the final-assignment-to-LLC condition. Non-duplicative:
+    // the seller/buyer FATAL mismatch stays the tie-out's; this adds the view + that condition.
+    const sellerChain = buildSellerChain(mctx || {}, exts.rows);
+
     // File completeness / stipulations: diff the required-document matrix (adapted to this deal)
     // against what's analyzed on file → outstanding-items list + a completeness %. A VIEW only.
     const completeness = assessCompleteness(
@@ -237,9 +245,21 @@ router.get('/:appId', async (req, res, next) => {
 
     const perDoc = ff.findings.map(decorate);
     // Roll the tie-out discrepancies + the forward-looking staleness advisories + over-leverage
-    // metric warnings + reasonability data-integrity flags into the same fatal/warning gate (all
-    // warning-only → never change the CTC-blocking fatal count, but they surface in the roll-up).
-    const openAll = [...perDoc, ...cross, ...staleness.findings, ...metrics.findings, ...amendments.findings, ...(entityChain ? entityChain.findings : []), ...reasonability.findings];
+    // metric warnings + reasonability data-integrity flags + seller-chain advisories into the same
+    // fatal/warning gate (all warning-only → never change the CTC-blocking fatal count, but they
+    // surface in the roll-up).
+    const openRaw = [...perDoc, ...cross, ...staleness.findings, ...metrics.findings, ...amendments.findings,
+      ...(entityChain ? entityChain.findings : []), ...reasonability.findings, ...sellerChain.findings];
+    // De-duplicate the few FILE-economic findings that legitimately appear on more than one document
+    // — the assignment fee over the cap shows on BOTH the purchase contract and the assignment, but
+    // the desk should count/show it ONCE.
+    const DEDUP_ONCE = new Set(['assignment_fee_over_cap']);
+    const seenDup = new Set();
+    const openAll = openRaw.filter((f) => {
+      if (!f || !DEDUP_ONCE.has(f.code)) return true;
+      if (seenDup.has(f.code)) return false;
+      seenDup.add(f.code); return true;
+    });
 
     // Fraud / red-flag score: aggregate every open signal above + the economic red flags into one
     // explainable 0-100 score. Its HIGH-band advisory is a non-blocking warning (folded into the
@@ -269,6 +289,9 @@ router.get('/:appId', async (req, res, next) => {
         rows: metrics.metrics, findings: metrics.findings.map(decorate) },
       entityChain: entityChain ? { status: entityChain.status, edges: entityChain.edges, owners: entityChain.owners,
         vestingName: entityChain.vestingName, findings: entityChain.findings.map(decorate) } : null,
+      sellerChain: { status: sellerChain.status, nodes: sellerChain.nodes, edges: sellerChain.edges,
+        finalHolder: sellerChain.finalHolder, reachesVesting: sellerChain.reachesVesting,
+        findings: sellerChain.findings.map(decorate) },
       completeness: { completenessPct: completeness.completenessPct, counts: completeness.counts,
         stipulations: completeness.stipulations, outstanding: completeness.outstanding,
         ctcBlockers: completeness.ctcBlockers, docsComplete: completeness.docsComplete },

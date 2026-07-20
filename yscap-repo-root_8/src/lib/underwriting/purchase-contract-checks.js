@@ -21,7 +21,7 @@
  *   { property_address, purchase_price, entity_name, is_assignment,
  *     assignment_fee, underlying_contract_price }
  */
-const { norm, addrMatches, addrLine, withinMoney, entityMatch, num } = require('./compare');
+const { norm, addrMatches, addrLine, withinMoney, entityMatch, namesMatchLoose, num } = require('./compare');
 
 function finding(f) {
   return Object.assign(
@@ -65,13 +65,20 @@ function computeContractFindings(contract, file, opts = {}) {
 
   // ---- 3. Buyer entity (must be the borrowing entity on the file) ----
   // Entity-aware match so "L.L.C." vs "LLC" (or Inc./Corp. punctuation) is not a false
-  // fatal (audit fix), while a genuinely different buyer still fires.
+  // fatal (audit fix), while a genuinely different buyer still fires. EXCEPTION: when the buyer is
+  // the BORROWER PERSONALLY (not the LLC), this is the common "contract in personal name" case —
+  // it's fixable with a final assignment / vesting amendment, so the seller-chain module raises the
+  // softer `contract_in_personal_name` condition suggestion instead of a hard fatal here (owner-
+  // directed 2026-07-20). Only a buyer who is NEITHER the entity NOR the borrower is a fatal.
   if (contract.buyerName && f.entity_name && entityMatch(contract.buyerName, f.entity_name) === false) {
-    out.push(finding({ code: 'contract_buyer_mismatch', severity: 'fatal', field: 'buyer_entity',
-      docValue: contract.buyerName, fileValue: f.entity_name,
-      title: 'Buyer on the contract is not the borrowing entity on the file',
-      howTo: 'The contract must name the borrowing entity as the buyer. Confirm the vesting entity — a different buyer needs an assignment to the borrower or a corrected contract.',
-      actions: ['fix_file', 'custom', 'dismiss', 'decline'] }));
+    const isBorrowerPersonally = f.borrower_name && namesMatchLoose(contract.buyerName, f.borrower_name) === true;
+    if (!isBorrowerPersonally) {
+      out.push(finding({ code: 'contract_buyer_mismatch', severity: 'fatal', field: 'buyer_entity',
+        docValue: contract.buyerName, fileValue: f.entity_name,
+        title: 'Buyer on the contract is not the borrowing entity on the file',
+        howTo: 'The contract must name the borrowing entity as the buyer. Confirm the vesting entity — a different buyer needs an assignment to the borrower or a corrected contract.',
+        actions: ['fix_file', 'custom', 'dismiss', 'decline'] }));
+    }
   }
 
   // ---- 4. Assignment / wholesale economics ----

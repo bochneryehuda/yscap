@@ -403,6 +403,48 @@ function EntityChain({ entityChain }) {
   );
 }
 
+// The seller → buyer OWNERSHIP CHAIN: how the property gets from its owner of record into our
+// vesting entity. Each node is a party; the connector between two nodes is colored by whether that
+// link is confirmed (match / a legitimate transfer / a broken mismatch / a gap).
+const CHAIN_EDGE = {
+  match: { fg: 'var(--good,#3F7A5B)', arrow: '→' },
+  transfer: { fg: 'var(--muted,#4B585C)', arrow: '⇒' },
+  mismatch: { fg: 'var(--crit,#B4483C)', arrow: '⤫' },
+  gap: { fg: 'var(--amber,#B7791F)', arrow: '⋯' },
+  unknown: { fg: 'var(--muted,#4B585C)', arrow: '→' },
+};
+function SellerChain({ sellerChain }) {
+  if (!sellerChain || !sellerChain.nodes || !sellerChain.nodes.length) return null;
+  const st = CHAIN[sellerChain.status] || CHAIN.incomplete;
+  const nodes = sellerChain.nodes;
+  const edges = sellerChain.edges || [];
+  return (
+    <div style={{ marginBottom: 22 }}>
+      <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px' }}>Purchase chain — how the property reaches the borrower</h4>
+      <div style={{ marginBottom: 10 }}>
+        <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.05em', textTransform: 'uppercase', color: st.fg }}>{st.label}</span>
+        {sellerChain.reachesVesting === true ? <span style={{ marginLeft: 10, fontSize: 11.5, color: 'var(--good,#3F7A5B)' }}>reaches the vesting entity</span> : null}
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 4, overflowX: 'auto' }}>
+        {nodes.map((n, i) => {
+          const edge = i > 0 ? (edges[i - 1] || {}) : null;
+          const g = edge ? (CHAIN_EDGE[edge.status] || CHAIN_EDGE.unknown) : null;
+          return (
+            <div key={n.role} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              {i > 0 ? <span title={edge.status} style={{ color: g.fg, fontWeight: 800, fontSize: 17, minWidth: 18, textAlign: 'center' }}>{g.arrow}</span> : null}
+              <div style={{ border: '1px solid var(--line,#E4DECF)', borderRadius: 8, padding: '7px 10px', minWidth: 118, background: n.present ? 'var(--card,#fff)' : 'transparent', opacity: n.present ? 1 : 0.5 }}>
+                <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)' }}>{n.role}</div>
+                <div style={{ fontSize: 13, fontWeight: 700 }}>{n.name || '—'}</div>
+                {n.source ? <div style={{ fontSize: 10.5, color: 'var(--muted,#4B585C)' }}>{n.source}</div> : null}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // Amendments — the GOVERNING contract terms (base overlaid by executed amendments) + their source.
 function Amendments({ amendments, appId, onChange }) {
   if (!amendments || !amendments.hasAmendments) return null;
@@ -503,6 +545,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
   const staleness = data && data.staleness;
   const metrics = data && data.metrics;
   const entityChain = data && data.entityChain;
+  const sellerChain = data && data.sellerChain;
   const completeness = data && data.completeness;
   const risk = data && data.risk;
   const amendments = data && data.amendments;
@@ -586,6 +629,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
       <Metrics metrics={metrics} />
 
       {/* entity-resolution chain */}
+      <SellerChain sellerChain={sellerChain} />
       <EntityChain entityChain={entityChain} />
 
       {/* document freshness / staleness */}

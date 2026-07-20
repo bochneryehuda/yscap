@@ -63,6 +63,7 @@ function subjectFor(docType, ctx) {
         property_address: app && app.property_address,
         purchase_price: app && app.purchase_price,
         entity_name: vestingName || null,
+        borrower_name: borrowerName(borrower), // so the buyer check can tell "borrower personally" from a stranger
         is_assignment: !!(app && app.is_assignment),
         assignment_fee: app && app.assignment_fee,
         underlying_contract_price: app && app.underlying_contract_price,
