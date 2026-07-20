@@ -2880,6 +2880,39 @@ router.patch('/checklist/:itemId', async (req, res) => {
       }
     } catch (_) { /* best-effort */ }
   }
+  // "You're all caught up" (owner-directed 2026-07-20): when a borrower-visible
+  // condition is signed off / waived and it was the LAST open item on the file,
+  // reassure the borrower there's nothing left for them to do right now. Gated to
+  // once per file per ~day (audit_log) so a batch of sign-offs sends ONE note, not
+  // one per item. Only when the file truly has zero outstanding borrower items.
+  if (b.signedOff === true || b.waived === true) {
+    try {
+      const it = await db.query(
+        `SELECT ci.application_id, ci.audience, a.borrower_id
+           FROM checklist_items ci LEFT JOIN applications a ON a.id=ci.application_id WHERE ci.id=$1`,
+        [req.params.itemId]);
+      const row = it.rows[0];
+      if (row && row.borrower_id && row.application_id && row.audience !== 'staff') {
+        const open = await require('../lib/reminders').outstandingItems(row.application_id);
+        if (open.length === 0) {
+          const recent = await db.query(
+            `SELECT 1 FROM audit_log WHERE action='all_caught_up_emailed' AND entity_id=$1 AND created_at > now() - interval '20 hours' LIMIT 1`,
+            [row.application_id]);
+          if (!recent.rows[0]) {
+            await notify.notifyAppBorrowers(row.application_id, {
+              type: 'all_caught_up',
+              title: 'You’re all caught up — nothing needed right now',
+              body: 'Great news — you’ve completed everything your loan team needs from you at the moment, so there’s nothing left for you to do right now.',
+              lines: ['We’ll email you the moment a new item needs your attention. In the meantime, you can always check your file in the portal.'],
+              applicationId: row.application_id, link: `/app/${row.application_id}`, ctaLabel: 'View your file' });
+            await db.query(
+              `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+               VALUES ('system',NULL,'all_caught_up_emailed','application',$1,'{}'::jsonb)`, [row.application_id]).catch(() => {});
+          }
+        }
+      }
+    } catch (_) { /* best-effort */ }
+  }
   res.json({ ok: true });
 });
 
@@ -5625,6 +5658,40 @@ router.post('/documents/:id/review', async (req, res) => {
           applicationId: doc.application_id,
           link: doc.application_id ? `/app/${doc.application_id}` : '/profile',
           ctaLabel: 'Upload the document' });
+      } catch (_) { /* best-effort */ }
+    }
+
+    // Plain accept → confirm to the borrower that their document was accepted
+    // (owner-directed 2026-07-20 — closure, not busywork). Guarded to at most one
+    // EMAIL per file per ~12h (audit_log) so uploading a batch of documents does
+    // not trigger a flurry; extra accepts within the window still post in-app.
+    if (action === 'accept' && !requestMore && doc.borrower_id) {
+      try {
+        let condLabel = '';
+        if (doc.checklist_item_id) {
+          const it = await db.query(`SELECT COALESCE(borrower_label,label) AS label FROM checklist_items WHERE id=$1`, [doc.checklist_item_id]);
+          if (it.rows[0]) condLabel = it.rows[0].label;
+        }
+        let emailNow = true;
+        if (doc.application_id) {
+          const recent = await db.query(
+            `SELECT 1 FROM audit_log WHERE action='doc_accepted_emailed' AND entity_id=$1 AND created_at > now() - interval '12 hours' LIMIT 1`,
+            [doc.application_id]);
+          emailNow = !recent.rows[0];
+        }
+        await notify.notifyBorrower(doc.borrower_id, {
+          type: 'doc_accepted',
+          title: condLabel ? `Accepted: "${condLabel}"` : `Document accepted: ${doc.filename}`,
+          body: `Your loan team reviewed and accepted "${doc.filename}"${condLabel ? ` for "${condLabel}"` : ''}. No further action is needed on this document — we'll let you know if anything else comes up.`,
+          applicationId: doc.application_id,
+          link: doc.application_id ? `/app/${doc.application_id}` : '/profile',
+          ctaLabel: 'View your file',
+          major: emailNow });   // throttle: email once per file per 12h, else in-app only
+        if (emailNow && doc.application_id) {
+          await db.query(
+            `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+             VALUES ('system',NULL,'doc_accepted_emailed','application',$1,'{}'::jsonb)`, [doc.application_id]).catch(() => {});
+        }
       } catch (_) { /* best-effort */ }
     }
 

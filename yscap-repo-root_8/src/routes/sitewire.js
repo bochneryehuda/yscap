@@ -414,6 +414,20 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
       `INSERT INTO draw_disbursements (application_id, sitewire_draw_id, approved_cents, fee_cents, fee_kind, retainage_held_cents, net_release_cents, release_date, funded_status, kind, note, created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'draw',$10,$11) RETURNING *`,
       [application_id, drawId, approved, fee, feeKind, split.retainage_held_cents, split.net_release_cents, releaseDate, fundedStatus, req.body.note ? String(req.body.note).slice(0, 2000) : null, req.actor.id])).rows[0];
+    // Milestone → borrower (owner-directed 2026-07-20): a construction draw was
+    // released. Tell them the NET amount actually on its way (approved − fee −
+    // retainage), only on an actual release. type 'draw' emails the borrower.
+    if (fundedStatus === 'released' && split.net_release_cents > 0) {
+      try {
+        const amt = '$' + (split.net_release_cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        await notify.notifyAppBorrowers(application_id, {
+          type: 'draw',
+          title: `A construction draw of ${amt} has been released`,
+          body: `Your loan team has released a construction draw of ${amt} on your file. Depending on your bank, funds typically take 1–2 business days to arrive.`,
+          lines: ['Questions about this draw? Just reply to this email or reach your loan officer.'],
+          applicationId: application_id, link: `/app/${application_id}`, ctaLabel: 'View your draws' });
+      } catch (_) { /* milestone email is best-effort */ }
+    }
     res.json({ ok: true, disbursement: row });
   } catch (e) {
     // db/148 unique index — a second draw release raced past the pre-check
@@ -445,6 +459,15 @@ router.post('/files/:id/retainage-release', requirePermission('manage_draws'), a
        VALUES ($1,$2,0,0,$2,$3,'released','retainage_release',$4,$5) RETURNING *`,
       [appId, toRelease, relDate, relNote, req.actor.id])).rows[0];
     await client.query('COMMIT');
+    // Milestone → borrower: the completion retainage has been released.
+    try {
+      const amt = '$' + (toRelease / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      await notify.notifyAppBorrowers(appId, {
+        type: 'draw',
+        title: `Your held-back retainage of ${amt} has been released`,
+        body: `With your construction complete, the retainage held back across your draws — ${amt} — has now been released.`,
+        applicationId: appId, link: `/app/${appId}`, ctaLabel: 'View your draws' });
+    } catch (_) { /* best-effort */ }
     res.json({ ok: true, disbursement: row, released_cents: toRelease });
   } catch (e) { try { await client.query('ROLLBACK'); } catch (_) {} res.status(500).json({ error: 'Could not release the retainage — please try again.' }); }
   finally { client.release(); }
