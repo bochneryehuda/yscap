@@ -857,8 +857,10 @@ router.get('/applications/:id/appraisal', async (req, res) => {
     // Also drop the `fields` jsonb catch-all: it carries appraiser.lender/appraiser.amc
     // UN-scrubbed (buildFieldsJson), which would defeat the column drop below. The borrower
     // UI never reads it, so dropping it entirely is the safe, clean fix.
+    // owner_of_record + lender_address are STAFF-ONLY (db/158) — drop them like lender_name/amc_name
+    // so they never reach the borrower JSON, even though the UI doesn't render them.
     const { imported_by, source_xml_document_id, pdf_document_id, fields,
-      lender_name, amc_name, ...rest } = appr; // eslint-disable-line no-unused-vars
+      lender_name, amc_name, owner_of_record, lender_address, ...rest } = appr; // eslint-disable-line no-unused-vars
     return rest;
   })();
   const bSummary = {

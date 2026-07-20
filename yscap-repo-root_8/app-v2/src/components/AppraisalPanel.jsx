@@ -342,6 +342,162 @@ function Approaches({ a }) {
   );
 }
 
+// Humanize a MISMO enum token for display (Over75Percent → "Over 75%").
+function human(v) {
+  if (!v) return null;
+  const direct = { REOSale: 'REO sale', ShortSale: 'Short sale', EstateSale: 'Estate sale', CourtOrderedSale: 'Court-ordered sale', ArmsLengthSale: 'Arm’s-length', Listing: 'Active listing',
+    Over75Percent: 'Over 75%', '25To75Percent': '25–75%', Under25Percent: 'Under 25%', UnderTwentyFivePercent: 'Under 25%',
+    OverSupply: 'Over-supply', InBalance: 'In balance', Shortage: 'Shortage',
+    UnderThreeMonths: 'Under 3 months', ThreeToSixMonths: '3–6 months', OverSixMonths: 'Over 6 months' };
+  if (direct[v]) return direct[v];
+  return String(v)
+    .replace(/([a-z])([A-Z])/g, '$1 $2').replace(/([A-Z]+)(\d)/g, '$1 $2')
+    .replace(/(\d+)\s*Percent/i, '$1%').replace(/Percent/i, '%')
+    .trim();
+}
+const chip = (label, tone) => (
+  <span key={label} style={{ display: 'inline-block', fontSize: 11.5, fontWeight: 600, padding: '2px 9px', borderRadius: 999, marginRight: 6, marginBottom: 6,
+    background: tone === 'bad' ? 'rgba(180,72,60,.10)' : tone === 'warn' ? 'rgba(174,135,70,.12)' : tone === 'good' ? 'rgba(63,122,91,.10)' : 'var(--paper,#F6F3EC)',
+    border: `1px solid ${tone === 'bad' ? 'var(--crit,#B4483C)' : tone === 'warn' ? 'var(--gold,#AE8746)' : tone === 'good' ? 'var(--good,#3F7A5B)' : 'var(--line,#E7E1D3)'}`,
+    color: tone === 'bad' ? 'var(--crit,#B4483C)' : 'var(--text,#141B22)' }}>{label}</span>
+);
+
+// Neighborhood & market — the appraiser's own read of the exit market (can they sell/refi at ARV,
+// and how fast). All never-guessed enums + the neighborhood price band.
+function NeighborhoodCard({ a }) {
+  const has = [a.nbhd_value_trend, a.nbhd_demand_supply, a.nbhd_marketing_time, a.nbhd_location_type, a.nbhd_price_predominant, a.nbhd_builtup].some((x) => x != null);
+  if (!has) return null;
+  const band = (a.nbhd_price_low != null || a.nbhd_price_high != null || a.nbhd_price_predominant != null)
+    ? `${money(a.nbhd_price_low)}–${money(a.nbhd_price_high)}${a.nbhd_price_predominant != null ? ` · predominant ${money(a.nbhd_price_predominant)}` : ''}` : null;
+  return (
+    <DCard title="Neighborhood & market" tag="Exit read">
+      <div style={{ marginBottom: band ? 10 : 0 }}>
+        {a.nbhd_value_trend && chip(`Values ${human(a.nbhd_value_trend)}`, a.nbhd_value_trend === 'Declining' ? 'bad' : a.nbhd_value_trend === 'Increasing' ? 'good' : null)}
+        {a.nbhd_demand_supply && chip(human(a.nbhd_demand_supply), a.nbhd_demand_supply === 'OverSupply' ? 'bad' : a.nbhd_demand_supply === 'Shortage' ? 'good' : null)}
+        {a.nbhd_marketing_time && chip(`Sells in ${human(a.nbhd_marketing_time)}`, a.nbhd_marketing_time === 'OverSixMonths' ? 'warn' : null)}
+        {a.nbhd_location_type && chip(human(a.nbhd_location_type))}
+        {a.nbhd_builtup && chip(`${human(a.nbhd_builtup)} built-up`)}
+        {a.nbhd_adverse_financing === true && chip('Adverse financing', 'warn')}
+      </div>
+      {band && <KV rows={[['Neighborhood price range', band], a.nbhd_age_predominant != null && ['Predominant age', `${a.nbhd_age_predominant} yrs`]]} />}
+    </DCard>
+  );
+}
+
+// Systems, condition & renovation signals — the flip-lender view of what the property is and what
+// the rehab has to (or already did) address.
+function SystemsCard({ a }) {
+  const updates = Array.isArray(a.updates) ? a.updates : (() => { try { return JSON.parse(a.updates || '[]'); } catch { return []; } })();
+  const amenities = Array.isArray(a.amenities) ? a.amenities : (() => { try { return JSON.parse(a.amenities || '[]'); } catch { return []; } })();
+  const actualAge = a.year_built ? 2026 - Number(a.year_built) : null;
+  const has = [a.effective_age, a.remaining_economic_life, a.heating_type, a.cooling, a.roof_description, a.foundation_type, a.occupancy_status, updates.length].some((x) => x != null && x !== 0 || (Array.isArray(x) && x.length));
+  if (!has && !updates.length) return null;
+  return (
+    <DCard title="Systems, condition & renovation signals" tag="Collateral">
+      <div style={{ marginBottom: 10 }}>
+        {a.occupancy_status && chip(human(a.occupancy_status) === 'Tenant Occupied' ? 'Tenant-occupied' : human(a.occupancy_status), a.occupancy_status === 'TenantOccupied' ? 'warn' : a.occupancy_status === 'Vacant' ? 'good' : null)}
+        {a.physical_deficiency === true && chip('Physical deficiency', 'bad')}
+        {a.adverse_site_conditions === true && chip('Adverse site condition', 'bad')}
+        {a.updated_last_15yr === true && chip('Updated in last 15 yrs', 'good')}
+        {a.has_adu === true && chip('Accessory unit')}
+      </div>
+      <KV rows={[
+        a.effective_age != null && ['Effective age', `${a.effective_age} yrs`, actualAge != null ? `actual ~${actualAge} yrs` : null],
+        a.remaining_economic_life != null && ['Remaining economic life', `${a.remaining_economic_life} yrs`],
+        a.heating_type && ['Heating', [a.heating_type, a.heating_fuel].filter(Boolean).join(' · ')],
+        a.cooling && ['Cooling', a.cooling],
+        a.roof_description && ['Roof', a.roof_description],
+        a.foundation_type && ['Foundation', a.foundation_type],
+        a.basement_sqft != null && ['Basement', `${Number(a.basement_sqft).toLocaleString('en-US')} sqft${a.basement_finished_pct != null ? ` · ${a.basement_finished_pct}% finished` : ''}`],
+        (a.garage_type || a.garage_spaces != null) && ['Garage', [a.garage_type, a.garage_spaces != null ? `${a.garage_spaces} space${a.garage_spaces === 1 ? '' : 's'}` : null].filter(Boolean).join(' · ')],
+        a.below_grade_sqft != null && ['Below-grade area', `${Number(a.below_grade_sqft).toLocaleString('en-US')} sqft`],
+      ]} />
+      {updates.length > 0 && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)', marginBottom: 6 }}>Recent updates</div>
+          {updates.map((u, i) => chip(`${u.area}: ${human(u.level)}${u.timeframe ? ` (${human(u.timeframe)})` : ''}`, /Remodel|Updat/i.test(u.level) ? 'good' : null))}
+        </div>
+      )}
+      {amenities.length > 0 && (
+        <div style={{ marginTop: 10, fontSize: 12.5, color: 'var(--muted,#4B585C)' }}>
+          <b style={{ color: 'var(--text,#141B22)' }}>Amenities: </b>{amenities.map((x) => x.type + (x.description ? ` (${x.description})` : '')).join(', ')}
+        </div>
+      )}
+    </DCard>
+  );
+}
+
+// How the value was concluded — purpose, the reconciliation, what the value is subject to, and the
+// appraiser's addendum (collapsible; it can be long).
+function ValueConcludedCard({ a }) {
+  const [open, setOpen] = useState(false);
+  if (!a.reconciliation_comment && !a.conditions_comment && !a.addendum_text) return null;
+  return (
+    <DCard title="How the value was concluded" tag="Reconciliation">
+      <KV rows={[
+        a.appraisal_purpose && ['Purpose', a.appraisal_purpose === 'Other' && a.appraisal_purpose_other ? a.appraisal_purpose_other : human(a.appraisal_purpose)],
+        a.uspap_report_type && ['Report type', a.uspap_report_type],
+      ]} />
+      {a.reconciliation_comment && <p style={{ fontSize: 13, lineHeight: 1.5, margin: '10px 0 0' }}>{a.reconciliation_comment}</p>}
+      {a.conditions_comment && (
+        <div style={{ marginTop: 10, padding: '9px 12px', borderRadius: 10, background: 'var(--paper,#F6F3EC)', border: '1px solid var(--line,#E7E1D3)', fontSize: 12.5 }}>
+          <b>Subject to: </b>{a.conditions_comment}
+        </div>
+      )}
+      {a.addendum_text && (
+        <div style={{ marginTop: 10 }} className="appr-noprint">
+          <button onClick={() => setOpen((v) => !v)} style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--muted,#4B585C)', fontSize: 12.5, textDecoration: 'underline' }}>{open ? 'Hide' : 'Show'} appraiser addendum</button>
+          {open && <p style={{ fontSize: 12.5, lineHeight: 1.5, color: 'var(--muted,#4B585C)', whiteSpace: 'pre-wrap', marginTop: 8 }}>{a.addendum_text}</p>}
+        </div>
+      )}
+    </DCard>
+  );
+}
+
+// Cost approach detail — the depreciation economics behind the cost-approach value (useful on a
+// rehab: how much life the effective age vs remaining life implies).
+function CostApproachCard({ a }) {
+  if (a.value_cost_approach == null && a.cost_new_total == null) return null;
+  return (
+    <DCard title="Cost approach" tag="Replacement basis">
+      <KV rows={[
+        a.value_cost_approach != null && ['Indicated value', money(a.value_cost_approach)],
+        a.dwelling_cost_new != null && ['Dwelling cost-new', `${money(a.dwelling_cost_new)}${a.dwelling_price_per_sqft != null ? ` · ${money(a.dwelling_price_per_sqft)}/sqft` : ''}`],
+        a.cost_new_total != null && ['Total cost-new', money(a.cost_new_total)],
+        a.depreciation_total != null && ['Depreciation', money(a.depreciation_total)],
+        a.depreciated_cost_improvements != null && ['Depreciated improvements', money(a.depreciated_cost_improvements)],
+        a.site_value != null && ['Site value', money(a.site_value)],
+        a.remaining_economic_life != null && ['Remaining economic life', `${a.remaining_economic_life} yrs`],
+        a.cost_data_source && ['Cost source', a.cost_data_source],
+      ]} />
+    </DCard>
+  );
+}
+
+// Sale contract & terms — sale type, concessions, and the flip/wholesale flags.
+function ContractCard({ a, readOnly }) {
+  const flags = [];
+  if (a.sale_type && a.sale_type !== 'ArmsLengthSale') flags.push(chip(human(a.sale_type), 'warn'));
+  if (a.seller_is_owner === false) flags.push(chip('Seller ≠ owner of record', 'warn'));
+  if (a.contract_reviewed === false) flags.push(chip('Contract not analyzed', 'warn'));
+  if (a.concession_indicator === true || (a.concession_amount != null && a.concession_amount > 0)) flags.push(chip(`Concessions ${a.concession_amount ? money(a.concession_amount) : ''}`.trim(), 'warn'));
+  const has = flags.length || a.contract_data_source || a.listing_history || a.concession_description;
+  if (!has) return null;
+  return (
+    <DCard title="Sale contract & terms">
+      {flags.length > 0 && <div style={{ marginBottom: 10 }}>{flags}</div>}
+      <KV rows={[
+        a.sale_type && ['Sale type', human(a.sale_type)],
+        a.concession_amount != null && ['Seller concessions', money(a.concession_amount)],
+        a.concession_description && ['Concession detail', a.concession_description],
+        a.contract_data_source && ['Contract source', a.contract_data_source],
+        a.listed_within_year != null && ['Listed in last 12 mo', a.listed_within_year ? 'Yes' : 'No'],
+      ]} />
+      {a.listing_history && <p style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', margin: '8px 0 0', lineHeight: 1.4 }}>{a.listing_history}</p>}
+    </DCard>
+  );
+}
+
 // "Prepared by" — the appraiser + firm + license, and (staff only) the client/lender and
 // AMC/vendor. The borrower payload has these scrubbed, but we also gate on readOnly so a
 // capital-partner name can never render on the borrower side even if one slipped through.
@@ -350,7 +506,7 @@ function PreparedBy({ a, readOnly }) {
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(250px,1fr))', gap: 16 }}>
       <div className="appr-avoid" style={{ background: 'var(--card,#fff)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 14, padding: 18 }}>
         <div style={{ fontFamily: 'var(--serif,Georgia,serif)', fontSize: 18, fontWeight: 600 }}>{or(a.appraiser_name)}</div>
-        <div style={{ color: 'var(--muted,#4B585C)', fontSize: 13, marginBottom: 12 }}>{or(a.appraiser_company)}</div>
+        <div style={{ color: 'var(--muted,#4B585C)', fontSize: 13, marginBottom: 12 }}>{or(a.appraiser_company)}{a.appraiser_company_address ? ` · ${a.appraiser_company_address}` : ''}</div>
         <KV rows={[
           ['License #', a.license_id],
           ['State', a.license_state],
@@ -358,8 +514,8 @@ function PreparedBy({ a, readOnly }) {
           ['Expires', a.license_exp],
           a.appraiser_phone && ['Phone', a.appraiser_phone],
           a.appraiser_email && ['Email', a.appraiser_email],
-          a.supervisor_name && ['Supervisor', a.supervisor_name],
-          !readOnly && a.lender_name && ['Client / lender', a.lender_name],
+          a.supervisor_name && ['Supervisor', a.supervisor_name, [a.supervisor_license_id && `Lic ${a.supervisor_license_id}`, a.supervisor_license_state, a.supervisor_license_exp && `exp ${a.supervisor_license_exp}`].filter(Boolean).join(' · ') || null],
+          !readOnly && a.lender_name && ['Client / lender', a.lender_name, !readOnly ? a.lender_address : null],
           !readOnly && a.amc_name && ['AMC / vendor', a.amc_name],
         ]} />
       </div>
@@ -369,7 +525,9 @@ function PreparedBy({ a, readOnly }) {
           ['Effective date', a.effective_date],
           ['Report signed', a.report_signed_date],
           ['Inspection date', a.inspection_date],
+          a.inspection_type && ['Inspection', a.inspection_type === 'None' ? 'Desktop — no inspection' : a.inspection_type],
           a.condition_of_appraisal && ['Made as', a.condition_of_appraisal],
+          a.appraisal_purpose && ['Purpose', a.appraisal_purpose === 'Other' && a.appraisal_purpose_other ? a.appraisal_purpose_other : a.appraisal_purpose],
           ['Form', a.form_type],
         ]} />
       </div>
@@ -417,6 +575,8 @@ function CompRow({ c }) {
   const [open, setOpen] = useState(false);
   const adj = Array.isArray(c.adjustments) ? c.adjustments : (() => { try { return JSON.parse(c.adjustments || '[]'); } catch { return []; } })();
   const cq = [c.condition_uad, c.quality_uad].filter(Boolean).join(' / ') || '—';
+  const bdba = [c.beds, c.baths].some((x) => x != null && x !== '') ? `${c.beds != null ? c.beds : '—'}/${c.baths != null && c.baths !== '' ? c.baths : '—'}` : '—';
+  const distress = c.sale_type && c.sale_type !== 'ArmsLengthSale' ? ({ REOSale: 'REO', EstateSale: 'Estate', ShortSale: 'Short', Listing: 'Listing', CourtOrderedSale: 'Court' }[c.sale_type] || null) : null;
   return (
     <>
       <tr style={{ borderTop: '1px solid var(--line-soft,#EFEADD)', background: c.is_subject ? 'var(--paper,#F6F3EC)' : undefined, cursor: adj.length ? 'pointer' : 'default' }} onClick={() => adj.length && setOpen((v) => !v)}>
@@ -427,9 +587,16 @@ function CompRow({ c }) {
               {c.sale_status === 'pending' ? 'Pending' : 'Active'}
             </span>
           )}
+          {distress && (
+            <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--crit,#B4483C)', border: '1px solid var(--crit,#B4483C)', borderRadius: 4, padding: '0 4px' }}>{distress}</span>
+          )}
+          {c.prior_sale_amount != null && (
+            <span style={{ display: 'block', fontSize: 11, color: 'var(--muted,#4B585C)' }}>Prior sale {money(c.prior_sale_amount)}{c.prior_sale_date ? ` · ${c.prior_sale_date}` : ''}</span>
+          )}
           {adj.length ? <span style={{ color: 'var(--muted,#4B585C)', fontSize: 11 }}> {open ? '▲' : '▼'}</span> : null}</td>
         <td style={td}>{or(c.proximity)}</td>
         <td style={{ ...td, textAlign: 'right' }}>{c.gla ? Number(c.gla).toLocaleString('en-US') : '—'}</td>
+        <td style={{ ...td, textAlign: 'center' }}>{bdba}</td>
         <td style={{ ...td, textAlign: 'center' }}>{cq}</td>
         <td style={{ ...td, textAlign: 'right' }}>{or(c.sale_date)}</td>
         <td style={{ ...td, textAlign: 'right' }}>{c.days_on_market != null && c.days_on_market !== '' ? c.days_on_market : '—'}</td>
@@ -441,7 +608,7 @@ function CompRow({ c }) {
       {open && adj.length > 0 && (
         <tr style={{ background: 'var(--paper,#F6F3EC)' }}>
           <td />
-          <td colSpan={10} style={{ padding: '4px 10px 12px' }}>
+          <td colSpan={11} style={{ padding: '4px 10px 12px' }}>
             <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)', margin: '4px 0 6px' }}>Adjustments applied</div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(190px,1fr))', gap: '4px 18px' }}>
               {adj.filter((x) => x && x.amount != null && Number(x.amount) !== 0).map((x, i) => (
@@ -464,7 +631,7 @@ function CompHead() {
     <thead>
       <tr style={{ textAlign: 'left', color: 'var(--muted,#4B585C)', background: 'var(--paper,#F6F3EC)' }}>
         <th style={th}>#</th><th style={th}>Address</th><th style={th}>Proximity</th>
-        <th style={{ ...th, textAlign: 'right' }}>GLA</th><th style={{ ...th, textAlign: 'center' }}>C / Q</th>
+        <th style={{ ...th, textAlign: 'right' }}>GLA</th><th style={{ ...th, textAlign: 'center' }}>Bd/Ba</th><th style={{ ...th, textAlign: 'center' }}>C / Q</th>
         <th style={{ ...th, textAlign: 'right' }}>Sale date</th><th style={{ ...th, textAlign: 'right' }}>DOM</th>
         <th style={{ ...th, textAlign: 'right' }}>Sale price</th><th style={{ ...th, textAlign: 'right' }}>$/GLA</th>
         <th style={{ ...th, textAlign: 'right' }}>Adjusted</th><th style={{ ...th, textAlign: 'right' }}>Net adj</th>
@@ -980,12 +1147,16 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
                   <div style={{ marginTop: 12, overflowX: 'auto' }}>
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
                       <thead><tr style={{ textAlign: 'left', color: 'var(--muted,#4B585C)' }}>
-                        <th style={th}>Unit</th><th style={{ ...th, textAlign: 'right' }}>Actual</th><th style={{ ...th, textAlign: 'right' }}>Market</th>
+                        <th style={th}>Unit</th><th style={{ ...th, textAlign: 'center' }}>Bd/Ba</th><th style={{ ...th, textAlign: 'right' }}>SqFt</th>
+                        <th style={th}>Lease</th><th style={{ ...th, textAlign: 'right' }}>Actual</th><th style={{ ...th, textAlign: 'right' }}>Market</th>
                       </tr></thead>
                       <tbody>
                         {(data.units || []).map((u) => (
                           <tr key={u.id} style={{ borderTop: '1px solid var(--line-soft,#EFEADD)' }}>
                             <td style={td}>{u.unit_seq != null ? `Unit ${u.unit_seq}` : '—'}</td>
+                            <td style={{ ...td, textAlign: 'center' }}>{(u.beds != null || u.baths != null) ? `${u.beds != null ? u.beds : '—'}/${u.baths != null && u.baths !== '' ? u.baths : '—'}` : '—'}</td>
+                            <td style={{ ...td, textAlign: 'right' }}>{u.sqft != null ? Number(u.sqft).toLocaleString('en-US') : '—'}</td>
+                            <td style={td}>{u.lease_status ? human(u.lease_status).replace('Month To Month', 'MTM') : '—'}</td>
                             <td style={{ ...td, textAlign: 'right' }}>{money(u.actual_rent)}</td>
                             <td style={{ ...td, textAlign: 'right' }}>{money(u.market_rent)}</td>
                           </tr>
@@ -999,14 +1170,35 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
 
             {a.condo_project_name && (
               <DCard title="Condo / association" tag="1073">
-                <KV rows={[
-                  ['Project', or(a.condo_project_name)],
-                  ['Type', or(a.condo_project_type)],
-                  ['Unit / floor', `${or(a.condo_unit_identifier)} · ${or(a.condo_floor)}`],
-                  ['HOA fee', a.hoa_fee_amount != null ? `${money(a.hoa_fee_amount)} / ${(a.hoa_fee_period || '').toLowerCase() || 'mo'}` : '—'],
-                ]} />
+                {(() => {
+                  const oo = (a.condo_units_sold > 0 && a.condo_owner_occupied != null) ? Math.round(a.condo_owner_occupied / a.condo_units_sold * 100) : null;
+                  return (<>
+                    {(oo != null || a.condo_developer_control === true || a.condo_concentrated_ownership === true || a.condo_commercial_space === true) && (
+                      <div style={{ marginBottom: 10 }}>
+                        {oo != null && chip(`${oo}% owner-occupied`, oo < 50 ? 'bad' : 'good')}
+                        {a.condo_developer_control === true && chip('Developer-controlled', 'warn')}
+                        {a.condo_concentrated_ownership === true && chip('Concentrated ownership', 'warn')}
+                        {a.condo_commercial_space === true && chip('Commercial space', 'warn')}
+                      </div>
+                    )}
+                    <KV rows={[
+                      ['Project', or(a.condo_project_name)],
+                      ['Type', or(a.condo_project_type)],
+                      ['Unit / floor', `${or(a.condo_unit_identifier)} · ${or(a.condo_floor)}`],
+                      ['HOA fee', a.hoa_fee_amount != null ? `${money(a.hoa_fee_amount)} / ${(a.hoa_fee_period || '').toLowerCase() || 'mo'}` : '—'],
+                      a.condo_units_sold != null && ['Units sold', `${a.condo_units_sold}${a.condo_units_planned != null ? ` of ${a.condo_units_planned} planned` : ''}`],
+                      a.condo_units_rented != null && a.condo_units_rented > 0 && ['Units rented', a.condo_units_rented],
+                      a.condo_management_type && ['Management', human(a.condo_management_type)],
+                      a.condo_common_elements && ['Common elements', a.condo_common_elements],
+                    ]} />
+                  </>);
+                })()}
               </DCard>
             )}
+
+            <NeighborhoodCard a={a} />
+            <SystemsCard a={a} />
+            <ContractCard a={a} readOnly={readOnly} />
           </div>
 
           {/* ===== WHAT IT'S WORTH ===== */}
@@ -1029,6 +1221,14 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
               : <>This is the <b>current As-Is market value</b> of the property, as reconciled by the appraiser from the sales-comparison approach.</>}
             {a.as_is_confidence && a.as_is_confidence !== 'definite' && <> The As-Is figure was read from the report’s narrative — PILOT opens a task for an officer to confirm it rather than guess.</>}
           </div>
+
+          {/* How the value was concluded + the cost-approach depreciation detail. */}
+          {(a.reconciliation_comment || a.conditions_comment || a.addendum_text || a.cost_new_total != null) && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(300px,1fr))', gap: 16, marginTop: 16 }}>
+              <ValueConcludedCard a={a} />
+              <CostApproachCard a={a} />
+            </div>
+          )}
 
           {/* Three-cap loan sizing — staff only (uses the pricing quote, no persistence). */}
           {!readOnly && <ThreeCapPanel appId={appId} />}
