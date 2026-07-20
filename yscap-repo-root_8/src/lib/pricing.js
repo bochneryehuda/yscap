@@ -24,7 +24,7 @@ try {
 
 function enginesReady() { return !!(YSP && GSP && YSTitle); }
 
-const PROGRAM_LABEL = { standard: 'Standard Program', gold: 'Gold Standard Program' };
+const PROGRAM_LABEL = { standard: 'Standard Program', gold: 'Gold Standard Program', manual: 'Manual Program' };
 // Hardcoded fee fallback (used only if the company-settings cache is stone
 // cold). Company defaults (Pricing Admin Center) override these for every
 // not-yet-registered file; a per-file adminPricing override still wins over
@@ -385,7 +385,12 @@ function normalize(program, input, ev, ladder) {
   return quote;
 }
 
-/* ---- quote one program (no persistence) ---- */
+/* ---- quote one program (no persistence) ----
+   The MANUAL program prices on the SAME frozen STANDARD (Fidelis) engine — the
+   manual leverage (ovrAcqLTV/ovrARLTV/ovrLTC) rides in on `input`, and the
+   reserve / markup / origination defaults follow the Standard program (the
+   normalize()/markup helpers all treat any non-'gold' program as Standard). Only
+   the program TAG and label differ, so the guidelines stay Standard's. */
 function quoteProgram(program, input) {
   if (!enginesReady()) throw new Error('pricing engines unavailable' + (loadErr ? ': ' + loadErr : ''));
   // Markup: per-file override → COMPANY default → engine's built-in markup.
@@ -417,7 +422,9 @@ function quoteProgram(program, input) {
         ladder = { maxLtc: pl.maxLtc, maxBucket: pl.maxBucket, binding: pl.binding, rows: pl.rows };
       }
     } catch (_) { /* ladder is best-effort */ }
-    return normalize('standard', input, ev, ladder);
+    // Tag with the real program ('standard' or 'manual') — a manual product
+    // prices on this Standard engine but is labeled/recorded as Manual.
+    return normalize(program === 'manual' ? 'manual' : 'standard', input, ev, ladder);
   } finally {
     if (m != null) setEngineMarkup(program, null);
   }

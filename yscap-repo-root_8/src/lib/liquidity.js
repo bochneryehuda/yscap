@@ -26,12 +26,21 @@ const money2 = (n) => (n == null || isNaN(Number(n))) ? '—' : '$' + Number(n).
 // program (owner-directed 2026-07-12). Before a product is registered the file
 // carries a generic "assets & bank statements" ask (no month count); once
 // registered, the Gold Standard Program requires TWO months and the Standard
-// Program requires ONE. Borrower-facing — never names a capital partner.
-function bankStatementMonths(program) {
+// Program requires ONE. The MANUAL Program has no fixed table — the registrant
+// states the months at registration (owner-directed 2026-07-20), passed in as
+// `assetMonths`. Borrower-facing — never names a capital partner.
+function bankStatementMonths(program, assetMonths) {
+  if (/manual/i.test(String(program || ''))) {
+    const m = Math.round(Number(assetMonths));
+    return Number.isFinite(m) && m > 0 ? m : 2;   // fall back to the manual default
+  }
   return /gold/i.test(String(program || '')) ? 2 : 1;
 }
-function bankStatementLine(program) {
-  const m = bankStatementMonths(program);
+function bankStatementLine(program, assetMonths) {
+  const m = bankStatementMonths(program, assetMonths);
+  if (/manual/i.test(String(program || ''))) {
+    return `Provide ${m} month${m === 1 ? '' : 's'} of recent bank statements — this loan's program requires ${m} month${m === 1 ? '' : 's'} of liquidity.`;
+  }
   return m === 2
     ? 'Provide 2 months of recent bank statements — the Gold Standard Program requires two months.'
     : 'Provide 1 month of a recent bank statement — the Standard Program requires one month.';
@@ -54,6 +63,17 @@ async function syncLiquidityCondition(appId, quote, client = db, opts = {}) {
     if (!Number.isFinite(required) || required <= 0) return;
     // Bank-statement count is program-driven: read the just-registered program.
     const program = opts.program != null ? opts.program : await currentProgram(appId, client);
+    // MANUAL program: the required liquidity months come from the registration
+    // (the registrant stated them). Use the passed value, else read the current
+    // registration's asset_months.
+    let assetMonths = opts.assetMonths;
+    if (/manual/i.test(String(program || '')) && (assetMonths == null || assetMonths === '')) {
+      try {
+        const am = await client.query(
+          `SELECT asset_months FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`, [appId]);
+        if (am.rows[0] && am.rows[0].asset_months != null) assetMonths = am.rows[0].asset_months;
+      } catch (_) { /* best-effort */ }
+    }
     const sizing = (quote && quote.sizing) || {};
     const cc = (quote && quote.closingCosts) || {};
     const breakdown = {
@@ -67,7 +87,7 @@ async function syncLiquidityCondition(appId, quote, client = db, opts = {}) {
       computedAt: new Date().toISOString(),
     };
     const hint =
-      `${bankStatementLine(program)} ` +
+      `${bankStatementLine(program, assetMonths)} ` +
       `Required liquidity: ${money2(required)} — the borrower's bank statements must show at least this in liquid assets. ` +
       `Down payment ${money2(breakdown.downPayment)} + ` +
       `${breakdown.assignmentExcess > 0 ? `assignment excess ${money2(breakdown.assignmentExcess)} + ` : ''}` +
@@ -86,7 +106,7 @@ async function syncLiquidityCondition(appId, quote, client = db, opts = {}) {
     const prevRequired = (item.tool_payload && item.tool_payload.liquidity && item.tool_payload.liquidity.required != null)
       ? Number(item.tool_payload.liquidity.required) : null;
     const payload = { ...(item.tool_payload || {}), liquidity: breakdown,
-      bankStatements: { months: bankStatementMonths(program), program: program || null } };
+      bankStatements: { months: bankStatementMonths(program, assetMonths), program: program || null } };
 
     // The generic "bank statements" condition is REPLACED by this detailed
     // liquidity requirement the moment a product is registered, and must be

@@ -271,10 +271,20 @@ export default function StaffLayout({ children }) {
   const [menuOpen, setMenuOpen] = useState(false);
   // Open sync-review count (scoped server-side: an LO sees THEIR rows' count).
   const [reviewCount, setReviewCount] = useState(0);
+  // Pending manual-product escalations (super-admin approval queue).
+  const [escCount, setEscCount] = useState(0);
   useEffect(() => {
     let alive = true;
     const poll = () => api.get('/api/staff/sync-reviews/count')
       .then(r => { if (alive) setReviewCount(r.open || 0); }).catch(() => {});
+    poll();
+    const t = setInterval(poll, 120000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+  useEffect(() => {
+    let alive = true;
+    const poll = () => api.manualEscalationsCount()
+      .then(r => { if (alive) setEscCount(r.pendingCount || 0); }).catch(() => {});
     poll();
     const t = setInterval(poll, 120000);
     return () => { alive = false; clearInterval(t); };
@@ -357,6 +367,8 @@ export default function StaffLayout({ children }) {
         {(canManageTeam || canManagePricing || canPlatformSetup || canViewAudit) && <div className="sb-sec">Admin</div>}
         {canManageTeam && <NavLink className="sb-link" to="/internal/team"><NavIcon name="team" />Team</NavLink>}
         {canManagePricing && <NavLink className="sb-link" to="/internal/pricing" title="Pricing Admin Center — company-wide markup, origination & fee defaults"><NavIcon name="pricing" />Pricing</NavLink>}
+        {(canManagePricing || role === 'super_admin') && <NavLink className="sb-link" to="/internal/escalations" title="Manual programs & escalations — approve manual products (custom LTV/LTC/ARV) and set the manual-program defaults"><NavIcon name="pricing" />Manual / Escalations
+          {escCount > 0 && <span className="sb-badge">{escCount > 99 ? '99+' : escCount}</span>}</NavLink>}
         {canPlatformSetup && <NavLink className="sb-link" to="/internal/clickup" title="ClickUp Control Center — sync health, dry-run, backfill"><NavIcon name="clickup" />ClickUp</NavLink>}
         {canPlatformSetup && <NavLink className="sb-link" to="/internal/draw-rules" title="Inspection & fee rules — virtual vs on-site and the per-partner fee schedule for draws"><NavIcon name="pipeline" />Draw rules</NavLink>}
         {canViewAudit && <NavLink className="sb-link" to="/internal/audit" title="System audit log — every action across every file & borrower"><NavIcon name="audit" />Audit log</NavLink>}

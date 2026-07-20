@@ -126,8 +126,8 @@ const stateOptions = US_STATES.map((v) => ({ v, label: v }));
 const FIELDS = [
   // ---- Loan & program ----
   { key: 'registered_program', label: 'Program (registered product)', group: 'Loan & program', type: 'enum',
-    options: [{ v: 'standard', label: 'Standard Program' }, { v: 'gold', label: 'Gold Standard Program' }, { v: 'none', label: 'Not registered yet' }],
-    description: 'The product program registered in the Term Sheet Studio.' },
+    options: [{ v: 'standard', label: 'Standard Program' }, { v: 'gold', label: 'Gold Standard Program' }, { v: 'manual', label: 'Manual Program' }, { v: 'none', label: 'Not registered yet' }],
+    description: 'The product program registered in the Term Sheet Studio. "Manual Program" = a manual override of the deal structure (LTV/LTC/ARV).' },
   { key: 'program_strategy', label: 'Loan strategy (program)', group: 'Loan & program', type: 'enum',
     options: [
       { v: 'fix_flip', label: 'Fix & Flip' }, { v: 'fix_hold', label: 'Fix & Hold (BRRRR)' },
@@ -188,6 +188,12 @@ const FIELDS = [
     options: [
       { v: 'investment', label: 'Investment' }, { v: 'primary', label: 'Primary' },
       { v: 'secondary', label: 'Secondary' }, { v: 'other', label: 'Other' }] },
+  // Known Special Flood Hazard Area — derived from the current appraisal (the
+  // FEMA SFHA flag, the FEMA-mapped zone, or the appraiser's stated zone; an A*
+  // or V* zone is an SFHA). Drives the flood-certificate condition: the cert is
+  // ALWAYS required when a flood zone is known, on top of the Gold/Manual rule.
+  { key: 'in_flood_zone', label: 'In a flood zone (SFHA)?', group: 'Property', type: 'boolean',
+    description: 'True when the current appraisal places the property in a FEMA Special Flood Hazard Area (zone A*/V*).' },
 
   // ---- Deal economics ----
   { key: 'purchase_price', label: 'Purchase price', group: 'Deal economics', type: 'money', writable: true,

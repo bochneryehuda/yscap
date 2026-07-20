@@ -23,6 +23,7 @@ const storage = require('../lib/storage');
 const { requireAuth, requireRole, issueEmailToken } = require('../auth');
 const pricing = require('../lib/pricing');
 const { persistProductRegistration } = require('../lib/product-registration');
+const manualProgram = require('../lib/manual-program');
 const { syncExperienceChecklistForApplication, RECENT_EXIT_SQL, EXIT_DATE_SQL } = require('../lib/experience');
 const { enqueueClickupPush, enqueueChecklistStatusPush } = require('../clickup/enqueue');
 const statusMap = require('../clickup/status');
@@ -1587,16 +1588,31 @@ router.get('/applications/:id/pricing', async (req, res) => {
     if (!f) return res.status(404).json({ error: 'not found' });
     const hist = await db.query(
       `SELECT r.id, r.program, r.product_label, r.status, r.note_rate, r.total_loan, r.target_ltc,
-              r.is_current, r.created_at, r.inputs, r.quote, s.full_name AS registered_by_name
+              r.is_current, r.created_at, r.inputs, r.quote, r.is_manual, r.asset_months, s.full_name AS registered_by_name
          FROM product_registrations r LEFT JOIN staff_users s ON s.id=r.registered_by
         WHERE r.application_id=$1 ORDER BY r.created_at DESC`, [req.params.id]);
     const current = hist.rows.find((x) => x.is_current) || null;
     let quote = null;
     if (pricing.enginesReady()) { try { quote = pricing.quoteAll(f.app, f.exp); quote.experience = f.exp; } catch (_) {} }
+    // Manual-product state: the current escalation (pending / decided) + the
+    // company default liquidity months so the studio can prefill the asset-months
+    // field it must collect before registering a manual product.
+    let manualEscalation = null, manualDefaults = null;
+    try { manualEscalation = await manualProgram.pendingForApp(req.params.id); } catch (_) {}
+    if (!manualEscalation) {
+      try {
+        const d = await db.query(
+          `SELECT status, asset_months, decided_at, decision_note FROM manual_program_escalations
+            WHERE application_id=$1 ORDER BY created_at DESC LIMIT 1`, [req.params.id]);
+        manualEscalation = d.rows[0] || null;
+      } catch (_) {}
+    }
+    try { const ms = await manualProgram.loadSettings(); manualDefaults = { assetMonths: ms.assetMonths, isActive: ms.isActive, maxAcqLtv: ms.maxAcqLtv, maxArvLtv: ms.maxArvLtv, maxLtc: ms.maxLtc }; } catch (_) {}
     // The studio echoes econVersion back on register; a mismatch means the
     // file's economics moved underneath the open sheet (409, never a silent
     // stale re-register).
-    res.json({ current, history: hist.rows, quote, enginesReady: pricing.enginesReady(), econVersion: pricing.econVersionFor(f.app) });
+    res.json({ current, history: hist.rows, quote, enginesReady: pricing.enginesReady(),
+      econVersion: pricing.econVersionFor(f.app), manualEscalation, manualDefaults });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -1616,7 +1632,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const locked = await require('../lib/file-lock').structuralLockReason(appId, db, { actor: req.actor });   // #84
     if (locked) return refuse(409, { error: locked }, 'structural_lock');
     const b = req.body || {};
-    const program = b.program === 'gold' ? 'gold' : 'standard';
+    const requestedProgram = b.program === 'gold' ? 'gold' : 'standard';
     const f = await loadFileForPricing(appId);
     if (!f) return res.status(404).json({ error: 'not found' });
 
@@ -1640,7 +1656,34 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const { overrides, strippedAdminKeys } = sanitizeOverrides(req, b.overrides || {});
     if (strippedAdminKeys)
       return refuse(403, { error: 'Manual rate/leverage and experience overrides need an admin — ask an admin to register these terms, or clear the admin pricing fields and re-register.' }, 'admin_override_stripped');
+    // MANUAL PRODUCT: a structural override of the deal leverage (acquisition LTV /
+    // after-repair LTV / loan-to-cost) is NOT a Standard/Gold registration — it
+    // becomes its own "Manual Program" (priced on the Standard/Fidelis engine),
+    // needs the registrant to state how many months of liquidity the file must
+    // show, and goes to the super-admin escalation box. A markup/points/fee/rate
+    // override alone is manual PRICING, not a manual product, and keeps the
+    // requested program. (Structural override keys are already admin-only via
+    // sanitizeOverrides, so only an admin/super-admin ever reaches manual here.)
+    const program = manualProgram.resolveProgram(requestedProgram, overrides);
+    const isManual = program === 'manual';
+    let assetMonths = null;
+    if (isManual) {
+      const settings = await manualProgram.loadSettings();
+      const raw = b.assetMonths != null && b.assetMonths !== '' ? Number(b.assetMonths) : NaN;
+      assetMonths = Number.isFinite(raw) ? Math.round(raw) : NaN;
+      if (!Number.isFinite(assetMonths) || assetMonths < 1 || assetMonths > 24) {
+        return refuse(422, {
+          error: 'This is a manual product (you changed the LTV, LTC or ARV structure). Enter how many months of assets/liquidity this file must show before registering it.',
+          code: 'manual_asset_months_required',
+          suggestedAssetMonths: settings.assetMonths,
+        }, 'manual_asset_months_required', { program });
+      }
+    }
     const inputs = pricing.buildInputs(f.app, f.exp, overrides);
+    // A manual product overrides the guidelines by design — always force-price it
+    // so a leverage override that lands "ineligible" against the Standard caps is
+    // sized/registered as MANUAL (with the escalation), never bounced.
+    if (isManual) inputs.forcePrice = true;
     // S3-06: this endpoint writes arv back onto the file and sizes the loan off
     // both the arv and the as-is value, so a raised arv/as-is OVERRIDE here is the
     // same higher-leverage raise the /details + /complete-fields gates forbid. On a
@@ -1684,7 +1727,29 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       await client.query('BEGIN');
       regId = await persistProductRegistration(client, {
         appId, program, inputs, quote, registeredByStaffId: req.actor.id,
+        isManual, assetMonths,
       });
+      // Manual product → open a super-admin escalation in the same transaction.
+      // The file registers now, but the product stays "pending super-admin
+      // approval" until the escalation is decided (db/206). Superseding any prior
+      // pending row is handled inside openEscalation.
+      if (isManual) {
+        try {
+          await manualProgram.openEscalation(client, {
+            appId, registrationId: regId, assetMonths,
+            overrides,
+            summary: {
+              program: 'manual', productLabel: quote.productLabel || null,
+              totalLoan: total, noteRate: quote.noteRate,
+              acqLtvPct: quote.sizing ? quote.sizing.acqLtvPct : null,
+              arvPct: quote.sizing ? quote.sizing.arvPct : null,
+              ltcPct: quote.sizing ? quote.sizing.ltcPct : null,
+              assetMonths,
+            },
+            requestedBy: req.actor.id,
+          });
+        } catch (e) { throw e; }   // escalation is REQUIRED for a manual product — fail the register if it can't open
+      }
       // #101: STICK an explicit per-file markup override to the file so it re-applies
       // to every future quote — the borrower's self-service pricing can then never
       // reprice below it. Only touch a column the caller explicitly set: a blank/
@@ -1708,7 +1773,30 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         origPct: quote.origPct != null ? quote.origPct : undefined,
         cashToClose: quote.cashToClose != null ? quote.cashToClose : undefined,
         liquidity: (quote.liquidity ?? quote.liquidityRequired) != null ? (quote.liquidity ?? quote.liquidityRequired) : undefined,
-        previous: prev ? { program: prev.program, totalLoan: Number(prev.total_loan), noteRate: Number(prev.note_rate), productLabel: prev.product_label } : undefined });
+        previous: prev ? { program: prev.program, totalLoan: Number(prev.total_loan), noteRate: Number(prev.note_rate), productLabel: prev.product_label } : undefined,
+        isManual, assetMonths: assetMonths != null ? assetMonths : undefined });
+
+    // Manual product → tell the admins/super-admins it's waiting in the escalation
+    // box (they alone approve it). Audited separately so the escalation is
+    // diagnosable, and the team notification above already fired for the register.
+    if (isManual) {
+      try { await audit(req, 'manual_program_escalated', 'application', appId, { assetMonths, totalLoan: total, noteRate: quote.noteRate }); } catch (_) {}
+      try {
+        const dollars = '$' + Math.round(total).toLocaleString('en-US');
+        const ectx = await notify.fileContext(appId, [
+          { label: 'Requested product', value: 'Manual Program (custom LTV/LTC/ARV)' },
+          { label: 'Loan amount', value: dollars },
+          { label: 'Liquidity months stated', value: `${assetMonths} month${assetMonths === 1 ? '' : 's'}` },
+        ]);
+        await notify.notifyAdmins({
+          type: 'manual_escalation',
+          title: 'Manual product needs approval',
+          body: `A Manual Program (custom LTV/LTC/ARV) was registered on ${ectx ? ectx.label : 'a file'} and is waiting for super-admin approval in the Escalations box. Loan amount ${dollars} · ${assetMonths} month${assetMonths === 1 ? '' : 's'} of liquidity required.`,
+          meta: (ectx && ectx.meta) || undefined, applicationId: appId,
+          link: '/internal/escalations', ctaLabel: 'Open the Escalations box',
+        });
+      } catch (_) { /* notification is best-effort */ }
+    }
 
     // Registering (or RE-registering) the product REOPENS the "Products & pricing"
     // condition for re-verification: a new registration changes the structure, so
@@ -1728,7 +1816,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // (#59 — writing the priced experience back onto the application and
     // repopulating the track-record condition is handled inside
     // persistProductRegistration above.)
-    try { await require('../lib/liquidity').syncLiquidityCondition(appId, quote); } catch (_) {}
+    try { await require('../lib/liquidity').syncLiquidityCondition(appId, quote, db, isManual ? { program, assetMonths } : {}); } catch (_) {}
     // Gold Standard Program requires a 5% SOW contingency: if the file just
     // registered Gold and the saved Scope of Work doesn't carry it, REOPEN the
     // rehab-budget condition (even if it was already signed off) with a FATAL note.
