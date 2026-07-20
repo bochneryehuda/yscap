@@ -244,6 +244,33 @@ app.get('/link/:kind', (req, res, next) => {
   res.set('Location', `${portal}/#${route}${qs ? '?' + qs : ''}`).status(302).end();
 });
 
+// --- Email OPEN tracking pixel -----------------------------------------------
+// A per-recipient notification email embeds <img src="/e/o/<notificationId>.gif">.
+// When the recipient's email client loads it, we stamp the open (email_opens,
+// db/187) so the Email Center can show whether/when the borrower opened it.
+// PUBLIC + best-effort: it reveals nothing, always returns a 1x1 transparent GIF,
+// and the FK to notifications means a guessed/bogus id can't create a junk row.
+const OPEN_GIF = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
+app.get('/e/o/:token', async (req, res) => {
+  const sendPixel = () => {
+    res.set('Content-Type', 'image/gif');
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.set('Pragma', 'no-cache');
+    res.end(OPEN_GIF);
+  };
+  const id = String(req.params.token || '').replace(/\.(gif|png|jpg|jpeg)$/i, '');
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return sendPixel();
+  try {
+    await require('./db').query(
+      `INSERT INTO email_opens (notification_id, first_opened_at, last_opened_at, open_count, first_ua, last_ip)
+       VALUES ($1, now(), now(), 1, $2, $3)
+       ON CONFLICT (notification_id)
+         DO UPDATE SET last_opened_at = now(), open_count = email_opens.open_count + 1`,
+      [id, String(req.get('user-agent') || '').slice(0, 300), String(req.ip || '').slice(0, 60)]);
+  } catch (_) { /* bogus/absent id (FK) or a DB blip — never fail the pixel */ }
+  sendPixel();
+});
+
 // --- Static site ---
 // V2 / PILOT IS THE DEFAULT (owner-directed 2026-07-14): the V2 tree (web/v2 —
 // reskinned marketing, tools, and the PILOT portal bundle) serves at the ROOT,

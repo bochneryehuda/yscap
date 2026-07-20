@@ -117,6 +117,18 @@ function buildEmail(opts, audience) {
   });
 }
 
+// Build the invisible open-tracking pixel for a recipient's notification and
+// splice it into the email body just before </body> (or append). Returns the html
+// unchanged when there's no APP_URL or no id. Belt: never throws.
+function injectOpenPixel(html, notifId) {
+  try {
+    if (!cfg.appUrl || !notifId || !html) return html;
+    const base = String(cfg.appUrl).replace(/\/+$/, '');
+    const px = `<img src="${base}/e/o/${notifId}.gif" alt="" width="1" height="1" border="0" style="display:none;width:1px;height:1px;max-width:0;max-height:0;opacity:0;overflow:hidden" />`;
+    return /<\/body>/i.test(html) ? html.replace(/<\/body>/i, px + '</body>') : html + px;
+  } catch (_) { return html; }
+}
+
 async function _emailRow(id, to, opts, audience) {
   if (!to || !to.length) {
     await _mark(id, 'skipped');
@@ -140,14 +152,19 @@ async function _emailRow(id, to, opts, audience) {
     // available, fall back to the monitored company inbox (cfg.replyToDefault) so a
     // reply ALWAYS reaches a human — no notification is ever a dead-end no-reply.
     const replyTo = opts.replyTo || fileReplyTo(opts.applicationId) || cfg.replyToDefault || null;
+    // Open tracking: embed an invisible 1x1 pixel keyed on THIS recipient's
+    // notification id so we can tell if/when they opened it. The pixel rides ONLY
+    // in the SENT copy; the stored Email Center copy uses the clean body (passed
+    // via _ctx.bodyHtml) so a staffer opening the history never trips it.
+    const sentHtml = injectOpenPixel(msg.html, id);
     // #150: an optional LO-branded From display name rides through untouched
     // (resend honors it; other providers ignore it). #447: `bcc` loops the LO into
     // borrower emails. `_ctx` is stripped by the provider wrapper and drives the
     // portal-wide Email Center capture (email_messages, src/lib/email-log.js), kept
     // ALONGSIDE the #442 sent_emails capture below (two independent stores — the
     // portal-wide Email Center and the Draw Management email view).
-    const res = await email.sendMail({ to, subject: msg.subject, text: msg.text, html: msg.html, attachments, replyTo, from: opts.from || null, bcc: opts.bcc || null,
-      _ctx: { applicationId: opts.applicationId, notificationId: id, type: opts.type, audience, subjectTag: opts.subjectTag, kicker: opts.kicker } });
+    const res = await email.sendMail({ to, subject: msg.subject, text: msg.text, html: sentHtml, attachments, replyTo, from: opts.from || null, bcc: opts.bcc || null,
+      _ctx: { applicationId: opts.applicationId, notificationId: id, type: opts.type, audience, subjectTag: opts.subjectTag, kicker: opts.kicker, bodyHtml: msg.html } });
     const status = res && res.ok ? 'sent' : 'skipped';
     await _mark(id, status);
     // #442 draw email center: also persist the rendered email + attachment BYTES to the
@@ -519,4 +536,4 @@ async function fileContext(appId, extraMeta = []) {
   } catch (_) { return null; }
 }
 
-module.exports = { notifyStaff, notifyBorrower, notifyAppBorrowers, notifyAppStaff, notifyAdmins, buildEmail, fileContext, NOTIFY_CATEGORIES, ALWAYS_IN_APP };
+module.exports = { notifyStaff, notifyBorrower, notifyAppBorrowers, notifyAppStaff, notifyAdmins, buildEmail, fileContext, injectOpenPixel, NOTIFY_CATEGORIES, ALWAYS_IN_APP };
