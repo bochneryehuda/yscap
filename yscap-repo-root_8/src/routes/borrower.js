@@ -575,16 +575,30 @@ const BORROWER_HIDDEN_APP_FIELDS = [
   'raw_intake',
   'lender', 'investor_loan_number', 'channel', 'clickup_extra',
   'clickup_pipeline_task_id', 'clickup_folder_id', 'clickup_list_id',
-  'internal_status', 'sync_state', 'clickup_last_synced_at', 'clickup_status_updated_at', 'hot_poll_until',
+  'internal_status', 'sync_state', 'sync_status', 'clickup_last_synced_at', 'clickup_status_updated_at', 'hot_poll_until',
+  'clickup_created_at', 'clickup_shadow', 'clickup_shadow_hash', 'co_borrower_task_id', 'draw_setup_requested_at',
   // staff-only pipeline detail pulled from ClickUp (Round 3)
   'title_company', 'title_company_contact', 'insurance_company', 'insurance_company_contact',
   'appraiser_name', 'cda_value', 'first_lien', 'second_lien', 'actual_rate', 'desired_rate',
   'encompass_status', 'application_submitted', 'prepayment_penalty', 'property_taxes',
   'property_insurance', 'property_hoa', 'rental_income', 'appraised_rental_value', 'approx_appraised_rental_value',
+  // INTERNAL pricing margin + internal valuations — a borrower may see their loan
+  // structure but never OUR markup or the internal appraised figures.
+  'file_markup_std_pct', 'file_markup_gold_pct', 'actual_appraised_value', 'approx_appraised_value',
+  // staff identities + the structural-unlock bookkeeping (owner-directed funded lock).
+  'underwriter_id', 'processor_id', 'structural_unlocked_at', 'structural_unlocked_by', 'structural_unlock_reason',
+  // stored card fields (currently populated elsewhere, but never leak them from here).
+  'card_number_encrypted', 'card_cvv_encrypted', 'card_last4', 'card_exp',
 ];
+// A denylist over SELECT a.* "fails open": a NEW internal column leaks by default
+// until someone remembers to add it. This pattern catch-all removes anything whose
+// name matches a clearly-internal convention, so a future column can't silently
+// reach a borrower. None of these patterns can hit a borrower-facing field.
+const INTERNAL_FIELD_PATTERN = /(_encrypted$|^card_|^clickup_|_task_id$|^sync_|_synced_at$|markup|underwriter|structural_unlock|encompass|^cda_|_lien$)/i;
 function stripInternalAppFields(row) {
   if (!row || typeof row !== 'object') return row;
   for (const k of BORROWER_HIDDEN_APP_FIELDS) delete row[k];
+  for (const k of Object.keys(row)) if (INTERNAL_FIELD_PATTERN.test(k)) delete row[k];
   // Strip OUR internal margin from the registered product's quote. A borrower
   // may see their loan structure (rate, loan amount, appraised value) but never
   // the markup / fee build-up (S1-03). adminPricing is the internal block.
@@ -976,8 +990,16 @@ router.get('/applications/:id/appraisal', async (req, res) => {
     // sale_type_risk, mc_*, etc.) — the SAME class the SCRUTINY_CODES filter hides from the borrower
     // `findings` list. Drop it too so the scrutiny scrub can't be defeated via the appraisal payload;
     // the borrower gets the filtered `findings`, never the raw warnings.
+    // The appraiser's DIRECT CONTACT + supervisor personnel + tooling vendor are internal — the
+    // borrower reaches their loan team, never the appraiser directly, so the personal phone/email,
+    // firm street address, supervisor identity/license and software vendor are dropped (M9). The
+    // "Prepared by" card still shows WHO appraised the property (name/firm/license) — standard
+    // appraisal disclosure — but not how to contact them or the internal desk detail.
     const { imported_by, source_xml_document_id, pdf_document_id, fields, warnings,
-      lender_name, amc_name, owner_of_record, lender_address, ...rest } = appr; // eslint-disable-line no-unused-vars
+      lender_name, amc_name, owner_of_record, lender_address,
+      appraiser_email, appraiser_phone, appraiser_company_address,
+      supervisor_name, supervisor_license_id, supervisor_license_state, supervisor_license_exp,
+      software_vendor, ...rest } = appr; // eslint-disable-line no-unused-vars
     return rest;
   })();
   const bSummary = {
@@ -1035,15 +1057,15 @@ router.get('/applications/:id/checklist', async (req, res) => {
   // before anything else uses `rows` — covers data where borrower_label was
   // defaulted from the internal label.
   for (const it of rows) { it.label = scrubText(it.label); it.hint = scrubText(it.hint); it.rejection_reason = scrubText(it.rejection_reason); }
+  // Co-borrower privacy (#82): personal fields (FICO / citizenship / home state)
+  // are per-borrower. loadRuleContext builds them from the PRIMARY borrower, so
+  // pre-fill those from the VIEWER's OWN record instead — a co-borrower must
+  // never see the primary's FICO, and vice-versa. App/deal fields stay from ctx.
+  const BORROWER_SCOPED = new Set(['fico', 'citizenship', 'borrower_state']);
   if (rows.some((it) => it.tool_key === 'info_field' && it.field_key)) {
     let ctx = null;
     try { const loaded = await conditionEngine.loadRuleContext(req.params.id); ctx = loaded && loaded.ctx; } catch (_) {}
     const fieldsByKey = await conditionRegistry.fieldMap(db);
-    // Co-borrower privacy (#82): personal fields (FICO / citizenship / home state)
-    // are per-borrower. loadRuleContext builds them from the PRIMARY borrower, so
-    // pre-fill those from the VIEWER's OWN record instead — a co-borrower must
-    // never see the primary's FICO, and vice-versa. App/deal fields stay from ctx.
-    const BORROWER_SCOPED = new Set(['fico', 'citizenship', 'borrower_state']);
     let selfVals = null;
     if (rows.some((it) => it.tool_key === 'info_field' && BORROWER_SCOPED.has(it.field_key))) {
       try {
@@ -1063,6 +1085,30 @@ router.get('/applications/:id/checklist', async (req, res) => {
       it.field_value = BORROWER_SCOPED.has(it.field_key)
         ? (selfVals ? (selfVals[it.field_key] ?? null) : null)
         : (ctx ? (ctx[it.field_key] ?? null) : null);
+    }
+  }
+  // Borrower-safe tool_payload (M8). The raw tool_payload blob is returned so the
+  // portal can pre-fill a submitted answer, but as stored it can carry data a
+  // borrower — especially a CO-borrower — must not see:
+  //   • track_record.perBorrower is EACH borrower's individual REO / financial
+  //     breakdown (staff-only + cross-borrower); the borrower view only renders
+  //     the aggregate `counts`.
+  //   • for a per-borrower personal info field (FICO / citizenship / home state),
+  //     tool_payload.value is whoever last answered it (the PRIMARY) — and the UI
+  //     reads it in preference to the per-viewer field_value, defeating the #82
+  //     scoping. Reflect the VIEWER's own value instead.
+  //   • no tool_payload may ever ship our internal pricing build-up.
+  for (const it of rows) {
+    if (!it.tool_payload || typeof it.tool_payload !== 'object') continue;
+    if (it.tool_key === 'track_record') {
+      const { perBorrower, liquidity, ...safe } = it.tool_payload; // eslint-disable-line no-unused-vars
+      it.tool_payload = safe;
+    } else if (it.tool_key === 'info_field' && BORROWER_SCOPED.has(it.field_key)) {
+      it.tool_payload = (it.field_value === null || it.field_value === undefined) ? null : { value: it.field_value };
+    }
+    if (it.tool_payload && typeof it.tool_payload === 'object') {
+      const { adminPricing, markupStdPct, markupGoldPct, ...rest } = it.tool_payload; // eslint-disable-line no-unused-vars
+      it.tool_payload = rest;
     }
   }
   res.json(rows);
