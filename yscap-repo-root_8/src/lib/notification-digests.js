@@ -228,7 +228,7 @@ async function drawFindingsAwaitingBorrowerOnce() {
   const rows = (await db.query(
     `SELECT f.application_id, count(*)::int AS n, min(f.delivered_at) AS oldest
        FROM draw_findings f
-       JOIN applications a ON a.id=f.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined')
+       JOIN applications a ON a.id=f.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
       WHERE f.status='delivered' AND f.delivered_at IS NOT NULL
         AND f.delivered_at < now() - ($1 || ' days')::interval
         AND EXISTS (SELECT 1 FROM sitewire_property_links pl WHERE pl.application_id=f.application_id
@@ -266,7 +266,7 @@ async function drawReleaseOverdueOnce() {
   const rows = (await db.query(
     `SELECT f.application_id, count(*)::int AS n, min(f.wire_due_at) AS due
        FROM draw_findings f
-       JOIN applications a ON a.id=f.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined')
+       JOIN applications a ON a.id=f.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
       WHERE f.status='accepted' AND f.wire_due_at IS NOT NULL AND f.wire_due_at < now()
         AND NOT EXISTS (SELECT 1 FROM draw_disbursements dd
                           WHERE dd.funded_status='released' AND dd.kind='draw'
