@@ -225,8 +225,13 @@ function MismoImport() {
 
 export default function StaffNewFile() {
   const nav = useNavigate();
-  const { role } = useAuth();
+  const { role, actor } = useAuth();
   const seesAll = ['admin', 'super_admin', 'underwriter'].includes(role);
+  // The staffer opening the file is put on it by default (owner-directed
+  // 2026-07-20) — no need to pick, never Lead Capture — when they hold an
+  // officer-eligible role (the roles the officer dropdown offers). A
+  // processor/underwriter opener isn't a valid LO, so their default stays blank.
+  const selfOfficerId = (['loan_officer', 'admin', 'super_admin'].includes(role) && actor && actor.id) ? actor.id : '';
   const [team, setTeam] = useState([]);
   const _d = readNewFileDraft();   // restore any in-progress draft (lazy, once, pre-persist)
   const [f, setF] = useState({
@@ -235,7 +240,7 @@ export default function StaffNewFile() {
     purchasePrice: '', asIsValue: '', arv: '', rehabBudget: '', rehabType: '', sqftPre: '', sqftPost: '',
     isAssignment: false, underlyingContractPrice: '',
     requestedExpFlips: '', requestedExpHolds: '', requestedExpGround: '', requestedExpReo: '',
-    loanOfficerId: '', processorId: '', inviteBorrower: true,
+    loanOfficerId: selfOfficerId, processorId: '', inviteBorrower: true,
     ...(_d && _d.f ? _d.f : {}),
   });
   const [addr, setAddr] = useState({ street: '', unit: '', city: '', state: '', zip: '', ...(_d && _d.addr ? _d.addr : {}) });
