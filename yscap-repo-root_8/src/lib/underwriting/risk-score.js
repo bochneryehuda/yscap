@@ -33,6 +33,7 @@ const SIGNAL_WEIGHTS = {
   values_unconfirmed_in_document: 10, // extracted value not found in the document (possible fabrication)
   beneficial_owner_unidentified: 10,
   // Value inflation / non-arm's-length (price + party inconsistencies).
+  title_short_seasoning: 15,         // rapid resale / property-flip signal
   cross_price_mismatch: 15,
   contract_price_mismatch: 12,
   contract_buyer_mismatch: 12,

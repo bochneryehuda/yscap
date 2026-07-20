@@ -21,6 +21,29 @@ assert.deepStrictEqual(codes(computeTitleFindings({
   propertyAddress: titleFile.property_address, vestedOwners: [], buyerNames: [], legalDescription: null, liens: [], effectiveDate: null, readable: true, notes: null,
 }, titleFile)), ['title_seller_unreadable']);
 
+// ===== TITLE seasoning / flip detection =====
+const seasoningFile = { ...titleFile, purchase_price: 400000 };
+const baseTitle = { propertyAddress: titleFile.property_address, vestedOwners: ['Jane Seller'], buyerNames: [], legalDescription: 'Lot 4', liens: [], effectiveDate: '2026-07-01', readable: true, notes: null };
+// Owner acquired 30 days ago → short seasoning flagged.
+{
+  const f = computeTitleFindings({ ...baseTitle, ownerAcquisitionDate: '2026-06-20' }, seasoningFile, { today: '2026-07-20' });
+  assert.deepStrictEqual(codes(f), ['title_short_seasoning'], 'a 30-day hold is short seasoning');
+  assert.strictEqual(f[0].severity, 'warning');
+}
+// Short seasoning AND a >=100% markup → the message calls out the flip/markup.
+{
+  const f = computeTitleFindings({ ...baseTitle, ownerAcquisitionDate: '2026-06-20', ownerAcquisitionPrice: 180000 }, seasoningFile, { today: '2026-07-20' });
+  assert.strictEqual(f[0].code, 'title_short_seasoning');
+  assert.match(f[0].title, /flip|inflation/i, 'a 100%+ markup is called out as a flip signal');
+}
+// Long-held property (2 years) → no seasoning flag.
+{
+  const f = computeTitleFindings({ ...baseTitle, ownerAcquisitionDate: '2024-07-01' }, seasoningFile, { today: '2026-07-20' });
+  assert.deepStrictEqual(codes(f), [], 'a well-seasoned property is clean');
+}
+// No acquisition date / no today → no seasoning flag (never guesses).
+assert.deepStrictEqual(codes(computeTitleFindings({ ...baseTitle }, seasoningFile, { today: '2026-07-20' })), [], 'no acquisition date → no flag');
+
 // ===== BANK STATEMENT =====
 const assets = { borrower_name: 'John Smith', entity_names: ['Maple Grove Holdings LLC'] };
 const goodStmt = { accountHolderName: 'John Smith', holderIsBusiness: false, bankName: 'Chase', accountNumber: '1234567890', statementPeriod: 'Jun 2026', openingBalance: 10000, closingBalance: 15000, totalDeposits: 8000, totalWithdrawals: 3000, readable: true, notes: null };

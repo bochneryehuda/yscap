@@ -102,9 +102,11 @@ const TITLE = {
   instructions:
     "You are reviewing a title report / preliminary title commitment for a loan file. " +
     "Extract the vested owner(s) of record (the current SELLER for a purchase), the buyer/grantee " +
-    "if shown, the property address, the legal description, and every lien/encumbrance listed. Use " +
-    "null for anything absent or unreadable — do NOT guess. Prices/amounts as plain numbers. " +
-    "Set readable=false if the document is too poor to trust.",
+    "if shown, the property address, the legal description, and every lien/encumbrance listed. If the " +
+    "report shows how/when the current owner acquired the property (a vesting deed in Schedule B or a " +
+    "chain-of-title / prior-transfer entry), capture the current owner's ACQUISITION date (YYYY-MM-DD) " +
+    "and the prior sale price if stated. Use null for anything absent or unreadable — do NOT guess. " +
+    "Prices/amounts as plain numbers. Set readable=false if the document is too poor to trust.",
   schema: {
     type: 'object',
     additionalProperties: false,
@@ -126,10 +128,12 @@ const TITLE = {
         },
       },
       effectiveDate: { type: ['string', 'null'] },
+      ownerAcquisitionDate:  { type: ['string', 'null'] },   // when the current owner/seller acquired it (YYYY-MM-DD)
+      ownerAcquisitionPrice: { type: ['number', 'null'] },   // the prior sale price, if the report states it
       readable:      { type: 'boolean' },
       notes:         { type: ['string', 'null'] },
     },
-    required: ['propertyAddress', 'vestedOwners', 'buyerNames', 'legalDescription', 'liens', 'effectiveDate', 'readable', 'notes'],
+    required: ['propertyAddress', 'vestedOwners', 'buyerNames', 'legalDescription', 'liens', 'effectiveDate', 'ownerAcquisitionDate', 'ownerAcquisitionPrice', 'readable', 'notes'],
   },
 };
 
