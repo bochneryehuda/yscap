@@ -220,7 +220,11 @@ function borrowerTermsEmail({ ctx, quote, total, termMonths, officer } = {}) {
   return {
     type: 'term_sheet',
     title: 'Your loan terms are ready',
-    body: `Your ${programLabel} is registered${rate ? ` — ${money(total != null ? total : s.totalLoan)} at ${rate}` : ` — ${money(total != null ? total : s.totalLoan)}`}${quote.cashToClose != null ? `, with an estimated ${money(quote.cashToClose)} cash to close` : ''}.`,
+    // Hero: the loan amount is the one number the borrower is looking for — lead
+    // with it, big, with the rate as the sub-line.
+    hero: { label: 'Your loan amount', value: money(total != null ? total : s.totalLoan), sub: rate ? `at ${rate}${termMonths ? ` · ${termMonths}-month term` : ''}` : (termMonths ? `${termMonths}-month term` : ''), tone: 'gold' },
+    badge: { text: 'Terms ready', tone: 'gold' },
+    body: `Your ${programLabel} is registered. Here are your current terms — the full term sheet, with every estimated closing cost, is in your portal.`,
     lines,
     meta,
     ctaLabel: 'Review your full term sheet',

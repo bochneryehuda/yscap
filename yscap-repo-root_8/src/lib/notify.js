@@ -59,6 +59,11 @@ async function enrichFileOpts(opts, audience) {
   if (!Array.isArray(out.meta) || !out.meta.length) {
     out.meta = audience === 'borrower' ? ctx.borrowerMeta : ctx.meta;
   }
+  // Borrower emails always carry the premium loan-officer contact CARD (from the
+  // file's assigned officer) so the borrower sees a real person + how to reach
+  // them on every message. Officer's own business contact only — never a note
+  // buyer. Staff already know the officer, so no card on staff emails.
+  if (audience === 'borrower' && !out.officer && ctx.officer) out.officer = ctx.officer;
   if (!out.link) out.link = audience === 'borrower' ? `/app/${opts.applicationId}` : `/internal/app/${opts.applicationId}`;
   if (!out.ctaLabel) out.ctaLabel = audience === 'borrower' ? 'Open your file' : 'Open the loan file';
   return out;
@@ -93,6 +98,17 @@ function buildEmail(opts, audience) {
     // posts only the freshly typed text back into the thread. Absent on every
     // other email (unchanged there).
     replyMarker: opts.replyMarker || '',
+    // Premium components (owner-directed 2026-07-20) — all optional and
+    // bulletproof: a status pill, a hero band for the one key fact, the loan
+    // journey stepper, a completion meter, a "next step" callout, and the
+    // loan-officer contact card. Passed straight through from the call site /
+    // enrichment; absent → the email renders exactly as before.
+    badge:     opts.badge || null,
+    hero:      opts.hero || null,
+    steps:     opts.steps || null,
+    progress:  opts.progress || null,
+    callout:   opts.callout || null,
+    officer:   opts.officer || null,
     audience,
   });
 }
@@ -377,13 +393,15 @@ async function fileContext(appId, extraMeta = []) {
       : null;
     // NOTE: extraMeta is intentionally NOT merged here — callers pass staff-
     // oriented extra rows, so borrowerMeta stays a clean file-identity block.
+    // The officer is surfaced as the premium contact CARD (via enrichFileOpts +
+    // template.officerCard), not a meta row — so borrowerMeta stays a clean file
+    // identity block and the officer isn't shown twice.
     const borrowerMeta = [
       { label: 'File', value: loanNo },
       { label: 'Property', value: addr },
       progBorrower ? { label: 'Program', value: progBorrower } : null,
       a.loan_type ? { label: 'Loan type', value: a.loan_type } : null,
       a.loan_amount != null ? { label: 'Loan amount', value: money(a.loan_amount) } : null,
-      officerRow,
     ].filter(Boolean);
     // Short tag for the SUBJECT line: loan number (when assigned) + street, kept
     // concise so it reads cleanly in an inbox.

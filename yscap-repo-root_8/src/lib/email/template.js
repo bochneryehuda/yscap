@@ -48,6 +48,19 @@ var COMPANY = {
   site: 'https://yscapgroup.com'
 };
 
+// Semantic state tones for pills / hero bands / callouts. Each is a soft tinted
+// ground + an AA-legible foreground, derived from the PILOT hues (gold/teal) and
+// two quiet status hues (a deep pine for positive, a clay for action) that sit in
+// the same warm family — NOT new brand colors. `bar` is the saturated accent.
+var TONE = {
+  gold:    { bg: '#F4EAD5', fg: '#6E521C', bar: '#AE8746' },
+  teal:    { bg: '#DFEDEE', fg: '#1E565B', bar: '#2F7F86' },
+  positive:{ bg: '#E1EEE5', fg: '#2A6244', bar: '#3B7D57' },   // pine — funded / cleared / accepted
+  action:  { bg: '#F5E4DB', fg: '#8A3A22', bar: '#B24A2B' },   // clay — needs the reader to act
+  neutral: { bg: '#F1EDE4', fg: '#4B585C', bar: '#7A8285' }
+};
+function tone(name) { return TONE[name] || TONE.teal; }
+
 function esc(s) {
   return String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -111,6 +124,115 @@ function render(p) {
   var note     = p.note || '';
   var replyable = !!p.replyable;
   var code     = (p.code != null && p.code !== '') ? String(p.code) : '';
+  // Premium components (all optional, all bulletproof/table-based):
+  var badge    = (p.badge && p.badge.text) ? p.badge : null;                  // status pill {text,tone}
+  var hero     = (p.hero && (p.hero.value || p.hero.label)) ? p.hero : null;  // {value,label,sub,tone}
+  var steps    = Array.isArray(p.steps) ? p.steps.filter(function (s) { return s && s.label; }) : [];  // journey [{label,state}]
+  var progress = (p.progress && p.progress.total > 0) ? p.progress : null;    // {done,total,label}
+  var callout  = (p.callout && (p.callout.body || p.callout.title)) ? p.callout : null;  // {title,body,tone}
+  var officer  = (p.officer && p.officer.name) ? p.officer : null;            // contact card
+
+  /* ---------------- STATUS PILL ---------------- */
+  function pill(b) {
+    var t = tone(b.tone);
+    return '<span style="display:inline-block;padding:5px 12px;border-radius:100px;background:' + t.bg + ';color:' + t.fg +
+      ';font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;mso-line-height-rule:exactly;line-height:1;">' +
+      esc(b.text) + '</span>';
+  }
+
+  /* ---------------- HERO BAND (one key fact, big) ---------------- */
+  function heroBand(h) {
+    var t = tone(h.tone);
+    var out = '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:4px 0 22px;">' +
+      '<tr><td align="center" style="padding:26px 22px;background:' + t.bg + ';border-radius:14px;">';
+    if (h.label) out += '<div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:' + t.fg + ';opacity:.85;margin:0 0 8px;">' + esc(h.label) + '</div>';
+    if (h.value) out += '<div style="font-family:Georgia,\'Times New Roman\',serif;font-size:34px;line-height:1.1;font-weight:700;color:' + BRAND.ink + ';">' + esc(h.value) + '</div>';
+    if (h.sub)   out += '<div style="font-family:Arial,Helvetica,sans-serif;font-size:13px;color:' + t.fg + ';margin:9px 0 0;">' + esc(h.sub) + '</div>';
+    out += '</td></tr></table>';
+    return out;
+  }
+
+  /* ---------------- LOAN-JOURNEY STEPPER ----------------
+     A row of dots the reader can scan to see exactly where their loan is: a
+     completed stage is a filled teal dot with a check, the current stage is a
+     filled gold dot, upcoming stages are quiet hollow rings. Bulletproof: one
+     table row, one cell per stage, no overlapping/absolute positioning. */
+  function stepper(list) {
+    var n = list.length, w = Math.floor(100 / n);
+    var cells = list.map(function (s) {
+      var st = s.state || 'upcoming';
+      var dot, inner = '&nbsp;';
+      if (st === 'done')        { dot = 'background:' + BRAND.teal + ';color:#FFFFFF;'; inner = '&#10003;'; }
+      else if (st === 'current'){ dot = 'background:' + BRAND.gold + ';color:#FFFFFF;'; inner = '&bull;'; }
+      else                      { dot = 'background:' + BRAND.card + ';border:2px solid ' + BRAND.line + ';color:' + BRAND.soft2 + ';'; }
+      var lblColor = st === 'upcoming' ? BRAND.soft2 : BRAND.ink;
+      var lblWeight = st === 'current' ? '700' : '400';
+      return '<td width="' + w + '%" align="center" valign="top" style="padding:0 3px;">' +
+        '<div style="width:24px;height:24px;line-height:22px;border-radius:24px;margin:0 auto 8px;text-align:center;' +
+          'font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:700;' + dot + '">' + inner + '</div>' +
+        '<div style="font-family:Arial,Helvetica,sans-serif;font-size:10px;line-height:1.3;color:' + lblColor + ';font-weight:' + lblWeight + ';">' + esc(s.label) + '</div>' +
+      '</td>';
+    }).join('');
+    return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:6px 0 20px;">' +
+      '<tr>' + cells + '</tr></table>';
+  }
+
+  /* ---------------- COMPLETION METER ---------------- */
+  function meter(pr) {
+    var pct = Math.max(0, Math.min(100, Math.round((pr.done / pr.total) * 100)));
+    var label = pr.label || (pr.done + ' of ' + pr.total + ' complete');
+    return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:4px 0 18px;">' +
+      '<tr><td style="font-family:Arial,Helvetica,sans-serif;font-size:12px;color:' + BRAND.muted + ';padding:0 0 7px;">' + esc(label) +
+        '<span style="float:right;color:' + BRAND.ink + ';font-weight:700;">' + pct + '%</span></td></tr>' +
+      '<tr><td>' +
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:' + BRAND.soft + ';border-radius:100px;">' +
+          '<tr><td style="padding:0;font-size:0;line-height:0;">' +
+            '<table role="presentation" width="' + pct + '%" cellpadding="0" cellspacing="0"><tr>' +
+              '<td style="height:8px;line-height:8px;font-size:0;background:' + BRAND.teal + ';border-radius:100px;">&nbsp;</td>' +
+            '</tr></table>' +
+          '</td></tr>' +
+        '</table>' +
+      '</td></tr></table>';
+  }
+
+  /* ---------------- "YOUR NEXT STEP" CALLOUT ---------------- */
+  function calloutBox(c) {
+    var t = tone(c.tone || 'gold');
+    return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:6px 0 18px;background:' + t.bg + ';border-radius:12px;">' +
+      '<tr>' +
+        '<td width="5" style="background:' + t.bar + ';border-radius:12px 0 0 12px;font-size:0;line-height:0;">&nbsp;</td>' +
+        '<td style="padding:14px 18px;">' +
+          (c.title ? '<div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:' + t.fg + ';margin:0 0 5px;">' + esc(c.title) + '</div>' : '') +
+          (c.body ? '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.55;color:' + BRAND.ink + ';">' + esc(c.body) + '</div>' : '') +
+        '</td>' +
+      '</tr></table>';
+  }
+
+  /* ---------------- LOAN-OFFICER CARD ----------------
+     An initial-avatar contact card so the borrower always sees a real person and
+     how to reach them. Only ever the officer's own business contact. */
+  function officerCard(o) {
+    var initial = esc((String(o.name).trim()[0] || 'Y').toUpperCase());
+    var first = esc(String(o.name).trim().split(/\s+/)[0] || 'your loan officer');
+    var reach = [];
+    if (o.phone) reach.push('<a href="tel:' + esc(String(o.phone).replace(/[^0-9+]/g, '')) + '" style="color:' + BRAND.tealDk + ';text-decoration:none;font-weight:600;">' + esc(o.phone) + '</a>');
+    if (o.email) reach.push('<a href="mailto:' + esc(o.email) + '" style="color:' + BRAND.tealDk + ';text-decoration:none;font-weight:600;">' + esc(o.email) + '</a>');
+    return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:18px 0 4px;background:' + BRAND.soft + ';border:1px solid ' + BRAND.line + ';border-radius:12px;">' +
+      '<tr><td style="padding:16px 18px;">' +
+        '<table role="presentation" cellpadding="0" cellspacing="0"><tr>' +
+          '<td width="46" valign="top">' +
+            '<div style="width:44px;height:44px;line-height:44px;border-radius:44px;background:' + BRAND.teal + ';color:#FFFFFF;text-align:center;font-family:Georgia,\'Times New Roman\',serif;font-size:20px;font-weight:700;">' + initial + '</div>' +
+          '</td>' +
+          '<td valign="top" style="padding-left:14px;">' +
+            '<div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:' + BRAND.muted + ';margin:0 0 3px;">Your loan officer</div>' +
+            '<div style="font-family:Georgia,\'Times New Roman\',serif;font-size:17px;font-weight:700;color:' + BRAND.ink + ';line-height:1.2;">' + esc(o.name) + '</div>' +
+            '<div style="font-family:Arial,Helvetica,sans-serif;font-size:12px;color:' + BRAND.muted + ';margin:2px 0 0;">' + esc(o.title || 'Loan Officer') + (o.nmls ? ' &middot; NMLS #' + esc(o.nmls) : '') + '</div>' +
+            (reach.length ? '<div style="font-family:Arial,Helvetica,sans-serif;font-size:13px;color:' + BRAND.ink + ';margin:8px 0 0;">' + reach.join('&nbsp;&middot;&nbsp;') + '</div>' : '') +
+          '</td>' +
+        '</tr></table>' +
+        '<div style="font-family:Arial,Helvetica,sans-serif;font-size:12px;color:' + BRAND.muted + ';margin:12px 0 0;padding:10px 0 0;border-top:1px solid ' + BRAND.line + ';">Have a question? Just reply to this email and it reaches ' + first + ' directly.</div>' +
+      '</td></tr></table>';
+  }
 
   /* ---------------- META ROWS (label / value grid) ---------------- */
   var metaHtml = '';
@@ -220,6 +342,20 @@ function render(p) {
       '</table>'
     : '';
 
+  /* ---------------- BUILT PREMIUM COMPONENTS ---------------- */
+  // Eyebrow row: kicker on the left, status pill on the right (either may be absent).
+  var eyebrowHtml = (kicker || badge)
+    ? '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 12px;"><tr>' +
+        '<td valign="middle" style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:' + BRAND.gold + ';">' + (kicker ? esc(kicker) : '') + '</td>' +
+        '<td valign="middle" align="right">' + (badge ? pill(badge) : '') + '</td>' +
+      '</tr></table>'
+    : '';
+  var heroHtml     = hero ? heroBand(hero) : '';
+  var stepsHtml    = steps.length ? stepper(steps) : '';
+  var progressHtml = progress ? meter(progress) : '';
+  var calloutHtml  = callout ? calloutBox(callout) : '';
+  var officerHtml  = officer ? officerCard(officer) : '';
+
   /* ---------------- SHELL ---------------- */
   var html =
 '<!DOCTYPE html><html><head><meta charset="utf-8">' +
@@ -240,12 +376,13 @@ function render(p) {
         /* gold hairline */
         '<tr><td style="height:3px;line-height:3px;font-size:0;background:' + BRAND.gold + ';">&nbsp;</td></tr>' +
         /* title + body */
-        '<tr><td style="padding:30px 34px 8px;">' +
+        '<tr><td style="padding:30px 34px 10px;">' +
           markerHtml +
-          kickerHtml +
-          '<h1 style="margin:0 0 18px;font-family:Georgia,\'Times New Roman\',serif;font-size:21px;' +
-            'line-height:1.3;font-weight:700;color:' + BRAND.ink + ';">' + esc(title) + '</h1>' +
-          greetHtml + body + codeHtml + metaHtml + filesHtml + ctaHtml + noteHtml +
+          eyebrowHtml +
+          heroHtml +
+          '<h1 style="margin:0 0 16px;font-family:Georgia,\'Times New Roman\',serif;font-size:23px;' +
+            'line-height:1.28;font-weight:700;color:' + BRAND.ink + ';">' + esc(title) + '</h1>' +
+          greetHtml + body + stepsHtml + progressHtml + calloutHtml + codeHtml + metaHtml + officerHtml + filesHtml + ctaHtml + noteHtml +
         '</td></tr>' +
         /* footer */
         '<tr><td style="padding:22px 34px 26px;background:' + BRAND.soft + ';border-top:1px solid ' + BRAND.line + ';">' +
