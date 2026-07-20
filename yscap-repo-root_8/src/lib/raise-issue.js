@@ -79,7 +79,7 @@ async function raiseEntityIssue({ appId, entityKind, entityId, entityName, reaso
         type: 'doc_requested',
         title: asksDoc ? `${name} — a document was requested` : `${name} — a new item needs your attention`,
         body: `Your loan team ${asksDoc ? 'requested a document' : 'added a condition'} on ${kind === 'llc' ? `entity "${name}"` : `property "${name}"`}: ${cleanReason}${ctx ? ` (${ctx.label})` : ''}`,
-        meta: (ctx && ctx.meta) || undefined,
+        meta: (ctx && ctx.borrowerMeta) || undefined,
         applicationId: appId,
         link: `/app/${appId}`,
         ctaLabel: asksDoc ? 'Upload the document' : 'View the condition' });

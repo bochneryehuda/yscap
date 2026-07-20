@@ -344,8 +344,10 @@ async function deliver(built, to, opts = {}) {
   try {
     // #150: opts.from carries an LO-branded From display name when the email
     // is sent on a specific officer's behalf (invites, registrations).
+    // Owner-directed 2026-07-20: default a monitored Reply-To so even auth /
+    // invite emails are repliable (never a dead-end no-reply).
     const r = await provider.sendMail({ to, subject: built.subject, html: built.html, text: built.text,
-      replyTo: opts.replyTo || null, from: opts.from || null });
+      replyTo: opts.replyTo || cfg.replyToDefault || null, from: opts.from || null });
     if (r && r.skipped) console.log('[email] provider=none, skipped:', built.subject, '->', to);
     return { ok: !!(r && r.ok), id: r && r.id, skipped: r && r.skipped };
   } catch (e) {
