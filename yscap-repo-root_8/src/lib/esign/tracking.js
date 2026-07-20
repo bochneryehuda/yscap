@@ -139,22 +139,24 @@ async function attachSignedArtifacts(db, envelopes) {
   for (const e of envelopes) e.documents = byEnv[e.id] || [];
 
   // Certificate is a standalone staff-only doc keyed by the DocuSign envelope UUID in
-  // its filename. Scope the lookup by BOTH the file (application_id) AND the filename
-  // so it can never bind to a doc outside the envelope's own file — belt-and-suspenders
-  // even though the envelope UUID is already globally unique.
-  const withEnv = envelopes.filter((e) => e.envelopeId && e.applicationId);
+  // its filename. The filename carries the globally-unique envelope UUID, so it's the
+  // safe match key for BOTH a real file (application_id set) AND an app-less admin
+  // self-test (application_id NULL) — we still re-verify the cert's application_id
+  // equals the envelope's (both NULL for a test) as belt-and-suspenders so a cert can
+  // never bind to a doc outside its own envelope.
+  const withEnv = envelopes.filter((e) => e.envelopeId);
   if (withEnv.length) {
-    const appIds = [...new Set(withEnv.map((e) => e.applicationId))];
     const names = withEnv.map((e) => `esign_certificate_${e.envelopeId}.pdf`);
     const certs = (await db.query(
       `SELECT id AS "documentId", filename, application_id AS "applicationId" FROM documents
-        WHERE doc_kind = 'esign_certificate' AND application_id = ANY($1) AND filename = ANY($2)`,
-      [appIds, names])).rows;
-    const byKey = {};
-    for (const c of certs) byKey[`${c.applicationId}::${c.filename}`] = c;
+        WHERE doc_kind = 'esign_certificate' AND filename = ANY($1)`, [names])).rows;
+    const byName = {};
+    for (const c of certs) byName[c.filename] = c;   // filename is unique per envelope
     for (const e of withEnv) {
-      const c = byKey[`${e.applicationId}::esign_certificate_${e.envelopeId}.pdf`];
-      if (c) e.certificate = { documentId: c.documentId, filename: c.filename };
+      const c = byName[`esign_certificate_${e.envelopeId}.pdf`];
+      if (c && String(c.applicationId || '') === String(e.applicationId || '')) {
+        e.certificate = { documentId: c.documentId, filename: c.filename };
+      }
     }
   }
 }

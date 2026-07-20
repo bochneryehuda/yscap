@@ -174,6 +174,22 @@ ok('clearSloAlert is exported', typeof backup.clearSloAlert === 'function');
     sig([]) === sig([]));
 }
 
+// ------------------ drain freeze-prevention: withTimeout bounds a stalled op
+// Root fix for the 2026-07-20 "nothing synced for 6h, docs stuck at not-yet-
+// attempted" incident: one hung mirror attempt must never freeze the pass.
+// (async behavior asserted inside the final IIFE below.)
+ok('withTimeout is exported', typeof backup.withTimeout === 'function');
+
+// ---------------------- worker-liveness / dead-man's-switch (2026-07-20 harden)
+ok('checkDrainLiveness is exported (watchdog)', typeof backup.checkDrainLiveness === 'function');
+ok('recordHeartbeat is exported', typeof backup.recordHeartbeat === 'function');
+ok('heartbeatStaleSec is exported', typeof backup.heartbeatStaleSec === 'function');
+ok('claimAlert/clearAlert generic dedup exported', typeof backup.claimAlert === 'function' && typeof backup.clearAlert === 'function');
+{
+  const g = backup.heartbeatGraceSec();
+  ok('heartbeat grace is a sane floor (>= 15 min)', Number.isFinite(g) && g >= 900);
+}
+
 // -------------------------------------- the ONE sanctioned delete: guardrails
 // (Graph-free checks: refusals must fire BEFORE any network call.)
 (async () => {
@@ -192,6 +208,21 @@ ok('clearSloAlert is exported', typeof backup.clearSloAlert === 'function');
   await rejects('sanctioned delete: refuses without item id',
     spClient.deleteReplacedCorruptMirror('d', null, { expectedParentId: 'p', replacementItemId: 'r', localSize: 1 }));
   ok('general remove() still throws', await spClient.remove().then(() => false, () => true));
+
+  // withTimeout: a never-settling op is bounded; fast paths pass through intact.
+  // (withTimeout unref()s its timer so it never holds the server open at
+  // shutdown; a ref'd keep-alive lets that timer fire in this standalone script.)
+  const _ka = setInterval(() => {}, 50);
+  const t0 = Date.now();
+  await backup.withTimeout(new Promise(() => {}), 40, 'stalled').then(
+    () => { fail++; console.log('FAIL withTimeout REJECTS a never-settling promise'); },
+    (e) => { ok('withTimeout REJECTS a never-settling promise', e.message === 'stalled');
+             ok('withTimeout rejects promptly (< 500ms)', Date.now() - t0 < 500); });
+  ok('withTimeout passes a fast RESOLVE through', (await backup.withTimeout(Promise.resolve(7), 1000, 'x')) === 7);
+  await backup.withTimeout(Promise.reject(new Error('real')), 1000, 'timeout').then(
+    () => { fail++; console.log('FAIL withTimeout passes a fast REJECT through'); },
+    (e) => ok('withTimeout passes a fast REJECT through (own error, not timeout)', e.message === 'real'));
+  clearInterval(_ka);
 
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

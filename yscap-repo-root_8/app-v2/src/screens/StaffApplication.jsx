@@ -1662,12 +1662,64 @@ function StaffCardEntry({ appId, onSaved }) {
   );
 }
 
+// Staff can enter/EDIT the title or insurance contact directly ON the condition
+// (owner-directed 2026-07-20) — the same structured contact form the borrower
+// fills, so the LO/processor can complete it on the borrower's behalf. Saving
+// writes the file's title_company / insurance_agent service contact (which the
+// backend also flips the condition to 'received'); the condition still can't be
+// signed off until the contact exists (the signOffGate structured-data check).
+function StaffContactEntry({ appId, toolKey, current, onSaved }) {
+  const contactType = toolKey === 'title_contact' ? 'title_company' : 'insurance_agent';
+  const [open, setOpen] = useState(false);
+  const [f, setF] = useState({ companyName: '', contactName: '', email: '', phone: '' });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const set = (k) => (e) => setF((p) => ({ ...p, [k]: e.target.value }));
+  function startEdit() {
+    setF({ companyName: current?.company_name || '', contactName: current?.contact_name || '', email: current?.email || '', phone: current?.phone || '' });
+    setErr(''); setOpen(true);
+  }
+  async function save() {
+    if (!f.companyName && !f.contactName && !f.email && !f.phone) { setErr('Enter at least one detail (company, name, email or phone).'); return; }
+    setBusy(true); setErr('');
+    try {
+      if (current && current.link_id) await api.staffEditFileContact(current.link_id, { ...f, contactType });
+      else await api.staffAddFileContact(appId, { ...f, contactType });
+      setOpen(false);
+      if (onSaved) await onSaved();
+    } catch (e) { setErr((e && e.message) || 'Could not save the contact.'); }
+    finally { setBusy(false); }
+  }
+  if (!open) return <button className="btn ghost small" onClick={startEdit}>{current ? 'Edit contact' : 'Enter contact'}</button>;
+  return (
+    <div className="small" style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', justifyContent: 'flex-end' }}>
+      <input className="input" style={{ maxWidth: 180 }} placeholder="Company" value={f.companyName} onChange={set('companyName')} />
+      <input className="input" style={{ maxWidth: 150 }} placeholder="Contact name" value={f.contactName} onChange={set('contactName')} />
+      <EmailInput style={{ maxWidth: 190 }} placeholder="Email" value={f.email} onChange={v => setF(p => ({ ...p, email: v }))} />
+      <PhoneInput style={{ maxWidth: 150 }} placeholder="Phone" value={f.phone} onChange={v => setF(p => ({ ...p, phone: v }))} />
+      <button className="btn small" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save contact'}</button>
+      <button className="btn ghost small" disabled={busy} onClick={() => { setOpen(false); setErr(''); }}>Cancel</button>
+      {err && <span style={{ color: 'var(--bad, #c0392b)', flexBasis: '100%', textAlign: 'right' }}>{err}</span>}
+    </div>
+  );
+}
+
 function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview, onOpenStudio }) {
   const completer = canComplete(role);
   const [sowOpen, setSowOpen] = useState(null);   // itemId of the SOW being edited
   const [trOpen, setTrOpen] = useState(null);    // track record open full-screen (staff): holds the borrower id, or null
   const [card, setCard] = useState(null);         // decrypted appraisal card (revealed on demand)
   const [cardBusy, setCardBusy] = useState(false);
+  // File service contacts (title / insurance) so staff can see + edit them right
+  // on the condition. contactFor() maps a contact-form condition's tool_key to
+  // the matching linked contact row.
+  const [fileContacts, setFileContacts] = useState([]);
+  const loadContacts = useCallback(() => api.staffFileContacts(appId).then(setFileContacts).catch(() => setFileContacts([])), [appId]);
+  useEffect(() => { loadContacts(); }, [loadContacts]);
+  const contactFor = (toolKey) => {
+    const want = toolKey === 'title_contact' ? ['title_company'] : ['insurance_agent', 'flood_insurance'];
+    return (fileContacts || []).find(c => want.includes(c.contact_type)) || null;
+  };
   // #66 — role-aware visibility: default hides what's already off THIS viewer's
   // plate (LO clears on review/"complete"; processor·underwriter on sign-off;
   // anyone on satisfied). The picker re-shows cleared items or everything —
@@ -1821,7 +1873,14 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                       })()
                     : it.tool_key === 'product_pricing' ? (app.registered_program ? `Registered · ${app.registered_program === 'gold' ? 'Gold Standard' : 'Standard'} · ${money(app.registered_total_loan)}` : 'No product registered yet')
                     : it.tool_key === 'appraisal_card' ? 'Card for ordering the appraisal (reveal is audited)'
-                    : ['title_contact', 'insurance_contact'].includes(it.tool_key) ? 'Contact information form'
+                    : ['title_contact', 'insurance_contact'].includes(it.tool_key) ? (() => {
+                        const c = contactFor(it.tool_key);
+                        const who = c ? [c.company_name, c.contact_name].filter(Boolean).join(' · ') : '';
+                        const reach = c ? [c.email, c.phone].filter(Boolean).join(' · ') : '';
+                        return c
+                          ? `${it.tool_key === 'title_contact' ? 'Title' : 'Insurance'} contact: ${who || reach || 'on file'}${who && reach ? ` — ${reach}` : ''}`
+                          : `${it.tool_key === 'title_contact' ? 'Title' : 'Insurance'} contact — none entered yet`;
+                      })()
                     : it.template_code === 'rtl_p3_assets' ? (() => {
                         // Assets & liquidity: show the registered requirement summary
                         // on the internal login too (#85), not just a bare "document".
@@ -1905,6 +1964,10 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                   </button>
                   <StaffCardEntry appId={appId} onSaved={onChanged} />
                 </div>
+              )}
+              {['title_contact', 'insurance_contact'].includes(it.tool_key) && (
+                <StaffContactEntry appId={appId} toolKey={it.tool_key} current={contactFor(it.tool_key)}
+                  onSaved={async () => { await loadContacts(); if (onChanged) await onChanged(); }} />
               )}
               {!it.tool_key && onUploadTo && (
                 <button className="btn ghost small"
@@ -2145,6 +2208,7 @@ export default function StaffApplication() {
   // One in-flight action at a time: double-clicking Assign/Remind/Accept/Request
   // used to double-assign, double-email the borrower, or create duplicate items.
   const [busyAct, setBusyAct] = useState('');
+  const [apprReload, setApprReload] = useState(0);   // bumped when an XML upload auto-builds the appraisal
 
   const flash = (t) => { setMsg(t); setTimeout(() => setMsg(''), 4000); };
   const activityFetcher = useCallback(() => api.staffActivity(id), [id]);
@@ -2312,8 +2376,9 @@ export default function StaffApplication() {
     setBusyAct('upload'); setErr('');
     try {
       const slotBase = Number.isFinite(tgt.slotBase) ? tgt.slotBase : null;
+      let appraisal = null;
       for (let i = 0; i < files.length; i++) {
-        await api.staffUploadAppDoc(id, {
+        const resp = await api.staffUploadAppDoc(id, {
           checklistItemId: tgt.itemId || undefined,
           llcId: tgt.llcId || undefined,
           // LLC document slots are single-doc per slot (formation/EIN/…), so an
@@ -2323,8 +2388,14 @@ export default function StaffApplication() {
           replaceDocumentId: tgt.replaceDocumentId || undefined,
           filename: files[i].name, contentType: files[i].type, dataBase64: await fileToBase64(files[i]),
         });
+        if (resp && resp.appraisal) appraisal = resp.appraisal;   // XML dropped on the appraisal condition auto-built the findings
       }
-      flash(files.length > 1
+      // An appraisal XML on the appraisal-documents condition builds the findings
+      // right there — surface that and refresh the appraisal panel so the findings
+      // show immediately (no separate re-import into the findings screen).
+      if (appraisal && appraisal.ok) { setApprReload((n) => n + 1); flash('Appraisal imported ✓ — findings built from the XML.'); }
+      else if (appraisal && !appraisal.ok) { flash(`Uploaded, but the appraisal XML did not import: ${appraisal.error || 'check it is the DATA file (XML)'}.`); }
+      else flash(files.length > 1
         ? `${files.length} files uploaded ✓ — the borrower sees them too.`
         : 'Uploaded ✓ — the borrower sees it too.');
       setUploadTarget(null); await load();
@@ -2721,7 +2792,7 @@ export default function StaffApplication() {
       <Section id="sec-appraisal" title="Appraisal & PILOT findings"
         info="Import the appraisal XML (1004 / 1025 / 1073) and PILOT builds the whole property profile from it — As-Is, ARV, comparables, the appraiser and everything the file needs — then compares it to the loan file. Every value that differs becomes a PILOT finding your team reviews; a value change reprices the loan and nothing is ever overwritten silently."
         badge={apprSummary ? (apprSummary.fatal ? `${apprSummary.fatal} fatal` : (apprSummary.warning ? `${apprSummary.warning} warning` : 'Reviewed ✓')) : ''}>
-        <AppraisalPanel appId={id} onSummary={onApprSummary} />
+        <AppraisalPanel appId={id} onSummary={onApprSummary} reloadSignal={apprReload} />
       </Section>
 
       {can('manage_draws') && app.status === 'funded' && (

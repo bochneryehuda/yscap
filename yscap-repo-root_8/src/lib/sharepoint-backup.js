@@ -98,17 +98,58 @@ async function acquireLease(key) {
 }
 async function renewLease(key) {
   try {
-    await db.query(
+    // Bounded: a lock-hung renew in the drain loop must not stall the pass (it's
+    // awaited after each doc). withTimeout defined below (hoisted).
+    await withTimeout(db.query(
       `UPDATE sync_locks SET expires_at = now() + make_interval(mins => ${LEASE_MINUTES})
-        WHERE lock_key = $1 AND holder = $2`, [key, _holderId]);
+        WHERE lock_key = $1 AND holder = $2`, [key, _holderId]), DB_OP_TIMEOUT_MS, 'lease renew timed out');
   } catch (_) { /* best-effort */ }
 }
 async function releaseLease(key) {
   try {
-    await db.query(
+    await withTimeout(db.query(
       `UPDATE sync_locks SET expires_at = now() WHERE lock_key = $1 AND holder = $2`,
-      [key, _holderId]);
+      [key, _holderId]), DB_OP_TIMEOUT_MS, 'lease release timed out');
   } catch (_) { /* best-effort */ }
+}
+
+// ------------------------------------------------ worker-liveness heartbeat
+// A persistent dead-man's switch (industry standard for background workers,
+// learned from the 2026-07-20 six-hour freeze: the only alarm watched the
+// BACKLOG — a downstream symptom — while the worker itself was dead, so nothing
+// fired on the actual failure). Every COMPLETED reconciler pass stamps a
+// heartbeat row in sync_locks ('sp-drain-heartbeat') whose expires_at is now +
+// a generous grace. If wall-clock passes expires_at, the worker has NOT
+// completed a pass within the grace window — it is stalled or dead — and the
+// liveness watchdog self-heals + (only if that fails) alerts. Persisting it (vs
+// the in-memory _lastPass) means /health and any instance can read the true
+// "last made progress" time even across a process restart or crash.
+const HEARTBEAT_KEY = 'sp-drain-heartbeat';
+function heartbeatGraceSec() {
+  // 3× the poll interval, floor 15 min: an idle worker still completes an empty
+  // pass every interval, so only a genuine stall/death lets this lapse.
+  const poll = Number.isFinite(cfg.sharepointBackupPollSec) ? Math.max(60, cfg.sharepointBackupPollSec) : 300;
+  return Math.max(poll * 3, 900);
+}
+async function recordHeartbeat(stats) {
+  try {
+    await db.query(
+      `INSERT INTO sync_locks (lock_key, holder, expires_at)
+       VALUES ($1, $2, now() + make_interval(secs => $3))
+       ON CONFLICT (lock_key) DO UPDATE
+         SET holder = EXCLUDED.holder, expires_at = EXCLUDED.expires_at`,
+      [HEARTBEAT_KEY, JSON.stringify({ at: new Date().toISOString(), pid: _holderId, ...(stats || {}) }).slice(0, 500), heartbeatGraceSec()]);
+  } catch (_) { /* liveness is best-effort — never break the pass */ }
+}
+// Seconds since the last completed pass (null if never / unknown). Reads the
+// persistent heartbeat so it is correct even if THIS process just booted.
+async function heartbeatStaleSec() {
+  try {
+    const { rows } = await db.query(
+      `SELECT EXTRACT(EPOCH FROM (now() - (expires_at - make_interval(secs => $2))))::bigint AS age
+         FROM sync_locks WHERE lock_key = $1`, [HEARTBEAT_KEY, heartbeatGraceSec()]);
+    return rows[0] ? Number(rows[0].age) : null;
+  } catch (_) { return null; }
 }
 
 // Trust state for the local QuickXorHash implementation: null = not yet
@@ -129,16 +170,86 @@ const KICK_DEBOUNCE_MS = 4000;     // collapse a burst of uploads into one pass;
                                    // or a kicked pass would skip the very doc
                                    // that kicked it and wait for the sweep
 const MAX_DRAIN_LOOPS = 200;       // backfill safety valve per drain (200*25 docs)
+// A single mirror attempt must never hang the whole pass. Every Graph HTTP call
+// already has its own 60s/180s socket timeout, but a DB query blocked on a lock
+// has NO timeout in pg — and one stalled attempt with the old code left the
+// in-memory _running flag stuck true, freezing EVERY later drain (the 2026-07-20
+// "nothing synced for 6h; docs stuck at not-yet-attempted" incident). This
+// bounds one attempt; a hang becomes a recorded error and the pass continues.
+// Set ABOVE a typical slow upload (sharepoint.js: 180s per-chunk socket timeout
+// plus a few throttle sleeps) yet BELOW the 15-min stall ceiling. A
+// pathologically throttled huge file (up to 8 retries × ~120s) can still hit
+// this cap — that just records a normal failure and retries next pass (the
+// background upload usually lands and self-heals), never a freeze. The cap MUST
+// stay < DRAIN_STALL_CEILING_MS so one doc's heartbeat gap can't age out a pass.
+const MIRROR_ATTEMPT_TIMEOUT_MS = 600000;   // 10 min: > typical real upload, < the stall ceiling
+// If a drain has made NO progress for longer than this, treat it as dead (a
+// hung await that never settled) and let a fresh pass start instead of no-opping
+// forever — the freeze self-heals on the next interval, no restart needed.
+// "Progress" is heartbeated (see _runningSince below), so a healthy long
+// backfill never trips this — only a genuinely stalled pass ages out.
+const DRAIN_STALL_CEILING_MS = 15 * 60 * 1000;
+// Bound the reconciler's OWN DB queries too (settle passes, pendingBatch, boot
+// reset). node-postgres has no default statement_timeout, so a query blocked on
+// a row/table lock waits forever — exactly the hang class that froze the drain
+// (the pre-loop queries run OUTSIDE the per-document timeout). This caps the
+// caller so a lock-blocked query becomes a logged, recoverable error, not a
+// freeze. A normal query here is milliseconds; 60s only ever trips on a lock.
+const DB_OP_TIMEOUT_MS = 60000;
+// Cap how long ONE drain may monopolize the single-flight slot. Without this a
+// cluster of slow/throttled documents (each up to the 10-min per-doc cap) could
+// run a single drain for hours, deferring every freshly-uploaded document's kick
+// until it finished (the gap-audit's poison-pill-throughput starvation). When a
+// drain exceeds this it yields cleanly (releases the lease, fires any pending
+// re-kick); the interval/kick then starts a fresh pass so new uploads are not
+// starved. Kept BELOW the stall ceiling so a yielded drain is never a stalled one.
+const DRAIN_BUDGET_MS = 10 * 60 * 1000;
 
 let _running = false;              // single-flight: kick + interval never overlap
+let _runningSince = 0;             // heartbeat: wall-clock ms of the in-flight drain's LAST progress
+let _runSeq = 0;                   // generation token — a stalled pass can't reset newer state
+// Mark forward progress so the stall guard measures time-since-progress, not
+// time-since-start — a healthy long backfill keeps itself fresh; only a pass
+// wedged with no progress ages out. Guarded by the generation token so a zombie
+// pass can't keep a superseding pass's clock alive.
+function heartbeat(mySeq) { if (mySeq === _runSeq) _runningSince = Date.now(); }
+// A drain is "actively progressing in THIS process" — used to suppress a false
+// stall verdict while a legitimately slow batch (large/throttled uploads) runs.
+// The persistent heartbeat only stamps periodically, so a single long runOnce
+// could otherwise read stale cross-process; this in-process check is the truth
+// for the running instance.
+function drainProgressing() { return _running && Date.now() - _runningSince < DRAIN_STALL_CEILING_MS; }
+// Throttle the PERSISTENT heartbeat so a healthy long backfill keeps the
+// cross-process liveness fresh (not just once-per-batch) without a DB write per
+// document. Fire-and-forget — recordHeartbeat is self-guarding.
+let _lastPersistMs = 0;
+const HEARTBEAT_PERSIST_MIN_MS = 30000;
+function maybePersistHeartbeat(mySeq, stats) {
+  if (mySeq && mySeq !== _runSeq) return;
+  if (Date.now() - _lastPersistMs < HEARTBEAT_PERSIST_MIN_MS) return;
+  _lastPersistMs = Date.now();
+  recordHeartbeat(stats);
+}
 let _rekick = false;               // an upload arrived mid-drain — drain again after
 let _kickTimer = null;
 let _interval = null;
 let _verifyInterval = null;
 let _sloInterval = null;
+let _livenessInterval = null;      // dead-man's-switch watchdog interval
+let _startedAtMs = 0;              // when start() ran — so a worker that never produced a first heartbeat is still judged
 let _lastPass = null;              // stats for /api/health
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Bound any promise so a stalled operation can't hang its caller forever. The
+// underlying work is not cancelled (it settles on its own socket/query timeout),
+// but the caller stops waiting — the difference between "one slow document" and
+// "the whole reconciler frozen until a restart".
+function withTimeout(promise, ms, message) {
+  let t;
+  const timeout = new Promise((_, rej) => { t = setTimeout(() => rej(new Error(message)), ms); if (t.unref) t.unref(); });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(t));
+}
 
 function enabled() {
   return !!cfg.sharepointBackupEnabled && sp.configured();
@@ -1044,7 +1155,10 @@ const VERIFY_BATCH = 40;
 const VERIFY_PACING_MS = 250;
 const VERIFY_RECHECK_DAYS = 30;
 let _verifyRunning = false;
+let _verifyRunningSince = 0;       // heartbeat for the verify pass (same freeze-proofing as drain)
+let _verifySeq = 0;                // generation token for the verify pass
 let _lastVerify = null;
+const VERIFY_ATTEMPT_TIMEOUT_MS = 120000;   // bound one document's verify (metadata reads); < stall ceiling
 
 function verifyPollSec() {
   const v = parseInt(process.env.SHAREPOINT_VERIFY_POLL_SEC || '21600', 10);
@@ -1266,13 +1380,18 @@ async function verifyRow(row) {
 }
 
 /** One integrity-audit pass over a batch of mirrored documents. */
-async function verifyOnce({ limit = VERIFY_BATCH } = {}) {
+async function verifyOnce({ limit = VERIFY_BATCH, seq = 0 } = {}) {
   if (!enabled()) return { skipped: true };
-  const rows = await verifyBatch(limit);
+  let rows;
+  try { rows = await withTimeout(verifyBatch(limit), DB_OP_TIMEOUT_MS, 'verify selection timed out (DB lock?)'); }
+  catch (e) { console.warn('[sp-verify] verifyBatch error:', e.message); rows = []; }
   const stats = { scanned: rows.length, ok: 0, mismatch: 0, sourceSuspect: 0, itemMissing: 0, localMissing: 0, errors: 0 };
   for (const row of rows) {
+    if (seq && seq !== _verifySeq) break;   // superseded by a fresher verify pass — stop
     try {
-      const v = await verifyRow(row);
+      // Bound each doc's verify (a metadata read + a stamp write) the same way
+      // the drain bounds a mirror attempt — no single hung read freezes verify.
+      const v = await withTimeout(verifyRow(row), VERIFY_ATTEMPT_TIMEOUT_MS, 'verify attempt timed out (Graph/DB stalled)');
       if (v === 'ok') stats.ok++;
       else if (v === 'mismatch') stats.mismatch++;
       else if (v === 'source-suspect') stats.sourceSuspect++;
@@ -1285,6 +1404,7 @@ async function verifyOnce({ limit = VERIFY_BATCH } = {}) {
       console.warn(`[sp-verify] doc ${row.id} verify failed: ${e.message}`);
       try { await stampVerdict(row.id, `verify-error: ${String(e.message).slice(0, 150)}`); } catch (_) {}
     }
+    if (seq === _verifySeq) _verifyRunningSince = Date.now();   // heartbeat this verify pass
     await sleep(VERIFY_PACING_MS);
   }
   _lastVerify = { at: new Date().toISOString(), ...stats };
@@ -1294,17 +1414,31 @@ async function verifyOnce({ limit = VERIFY_BATCH } = {}) {
 
 /** Drain the whole verify backlog (boot audit + admin-triggered re-sync). */
 async function drainVerify() {
-  if (_verifyRunning) return { alreadyRunning: true };
-  if (!(await acquireLease('sp-verify'))) {
+  // Same freeze-proofing as drain() (the gap-audit found verify had the ORIGINAL
+  // _running-stuck-true bug unfixed — a hung verify await would leave
+  // _verifyRunning true forever and the integrity audit dead until restart).
+  if (_verifyRunning) {
+    if (Date.now() - _verifyRunningSince < DRAIN_STALL_CEILING_MS) return { alreadyRunning: true };
+    console.warn(`[sp-verify] previous verify has been running ${Math.round((Date.now() - _verifyRunningSince) / 1000)}s — presumed stalled; starting fresh`);
+  }
+  // Bound the lease acquisition too — a lock-blocked acquire must not hang.
+  let gotLease;
+  try { gotLease = await withTimeout(acquireLease('sp-verify'), DB_OP_TIMEOUT_MS, 'verify lease acquire timed out'); }
+  catch (e) { console.warn('[sp-verify]', e.message); return { leaseTimeout: true }; }
+  if (!gotLease) {
     console.log('[sp-verify] another instance holds the verify lease — skipping this pass');
     return { leaseHeldElsewhere: true };
   }
   _verifyRunning = true;
+  _verifyRunningSince = Date.now();
+  const mySeq = ++_verifySeq;
   const totals = { scanned: 0, ok: 0, mismatch: 0, sourceSuspect: 0, itemMissing: 0, localMissing: 0, errors: 0 };
   try {
     for (let i = 0; i < MAX_DRAIN_LOOPS; i++) {
-      const res = await verifyOnce({});
+      if (mySeq !== _verifySeq) break;   // superseded by a fresher verify pass — stop (no 200× empty spin)
+      const res = await verifyOnce({ seq: mySeq });
       await renewLease('sp-verify');
+      _verifyRunningSince = Date.now();
       if (res.skipped || !res.scanned) break;
       for (const k of Object.keys(totals)) totals[k] += res[k] || 0;
       // Everything in a full batch erroring means Graph (or the DB) is having a
@@ -1317,25 +1451,53 @@ async function drainVerify() {
   } catch (e) {
     console.warn('[sp-verify] drain error:', e.message);
   } finally {
-    await releaseLease('sp-verify');
-    _verifyRunning = false;
+    // Only the latest verify pass clears state (a resumed zombie must not unlock
+    // the pass that superseded it).
+    if (mySeq === _verifySeq) {
+      await releaseLease('sp-verify');
+      _verifyRunning = false;
+      _verifyRunningSince = 0;
+    }
   }
   return totals;
 }
 
 // ---------------------------------------------------------------------- passes
 /** One reconciliation pass. Never throws for a single document. */
-async function runOnce({ limit = DEFAULT_BATCH } = {}) {
+async function runOnce({ limit = DEFAULT_BATCH, seq = 0 } = {}) {
   if (!enabled()) return { skipped: true, scanned: 0, mirrored: 0, failed: 0 };
   // Version-churn fix: settle superseded autosave snapshots WITHOUT uploading
-  // before selecting work — an editing burst mirrors one file, not N.
-  try { await settleSupersededSnapshots(); } catch (e) { console.warn('[sp-sync] snapshot settle error:', e.message); }
-  try { await settleNeverMirror(); } catch (e) { console.warn('[sp-sync] never-mirror settle error:', e.message); }
-  const rows = await pendingBatch(limit);
+  // before selecting work — an editing burst mirrors one file, not N. These
+  // pre-loop DB queries run OUTSIDE the per-document timeout, so they are bounded
+  // here too — a lock-blocked settle/select can't hang the pass (and freeze the
+  // whole worker) as it did on 2026-07-20.
+  try { await withTimeout(settleSupersededSnapshots(), DB_OP_TIMEOUT_MS, 'snapshot settle timed out (DB lock?)'); } catch (e) { console.warn('[sp-sync] snapshot settle error:', e.message); }
+  try { await withTimeout(settleNeverMirror(), DB_OP_TIMEOUT_MS, 'never-mirror settle timed out (DB lock?)'); } catch (e) { console.warn('[sp-sync] never-mirror settle error:', e.message); }
+  let rows;
+  try {
+    rows = await withTimeout(pendingBatch(limit), DB_OP_TIMEOUT_MS, 'pendingBatch selection timed out (DB lock?)');
+  } catch (e) {
+    // A timed-out selection means the DB is wedged; treat this pass as empty so
+    // it completes + heartbeats (the watchdog then self-heals if it persists)
+    // rather than throwing and skipping the heartbeat.
+    console.warn('[sp-sync] pendingBatch error:', e.message);
+    rows = [];
+  }
   let mirrored = 0, failed = 0;
   for (const row of rows) {
-    try { await mirrorRow(row); mirrored++; }
-    catch (e) {
+    // If a stall-guard spawned a newer pass while this one was wedged, this pass
+    // has been superseded — stop the moment we notice, so a resumed zombie never
+    // uploads concurrently with its replacement (seq=0 = a non-drain caller,
+    // never superseded).
+    if (seq && seq !== _runSeq) break;
+    try {
+      // Bound every attempt: a stalled Graph move or a lock-blocked DB query can
+      // no longer hang the whole pass (and, with it, all future drains). A hang
+      // becomes a normal recorded failure and the loop moves on.
+      await withTimeout(mirrorRow(row), MIRROR_ATTEMPT_TIMEOUT_MS,
+        'mirror attempt timed out (a Graph or database call stalled)');
+      mirrored++;
+    } catch (e) {
       failed++;
       console.warn(`[sp-sync] doc ${row.id} failed: ${e.message}`);
       try { await recordFailure(row, e); } catch (_) { /* best-effort */ }
@@ -1344,6 +1506,8 @@ async function runOnce({ limit = DEFAULT_BATCH } = {}) {
     // take longer than the whole lease, and an expired lease mid-batch is
     // exactly the double-drain the lease exists to prevent.
     await renewLease('sp-drain');
+    heartbeat(seq);   // in-process: keep the stall guard from aging out a healthy pass
+    maybePersistHeartbeat(seq, { mirrored, failed });   // cross-process: keep the watchdog from false-paging a slow batch
     await sleep(PACING_MS);
   }
   // Safety net: after the normal batch, force ONE real attempt on any document
@@ -1357,6 +1521,7 @@ async function runOnce({ limit = DEFAULT_BATCH } = {}) {
   try {
     const strays = await neverAttemptedStrays(STRAY_BATCH);
     for (const s of strays) {
+      if (seq && seq !== _runSeq) break;   // superseded by a fresher pass — stop
       console.warn(`[sp-sync] never-attempted stray doc ${s.id} (${s.filename || '?'}) age ${s.age_hours}h — ${explainExclusion(s)}; forcing one attempt`);
       const res = await forceAttemptDoc(s.id).catch((e) => ({ failed: true, error: e.message }));
       strayForced++;
@@ -1376,47 +1541,88 @@ async function runOnce({ limit = DEFAULT_BATCH } = {}) {
         }
       }
       await renewLease('sp-drain');
+      heartbeat(seq);
+      maybePersistHeartbeat(seq, { mirrored, failed });
       await sleep(PACING_MS);
     }
   } catch (e) { console.warn('[sp-sync] stray sweep error:', e.message); }
   _lastPass = { at: new Date().toISOString(), scanned: rows.length + strayForced, mirrored, failed, strays: strayForced };
+  // Liveness dead-man's switch: a COMPLETED pass (even an idle one) stamps the
+  // persistent heartbeat, so "the worker last made progress at T" is always
+  // knowable. A frozen worker never reaches here, so the heartbeat lapses and
+  // the watchdog fires. Only the latest generation stamps it (a resumed zombie
+  // must not refresh a healthy pass's liveness).
+  if (!seq || seq === _runSeq) recordHeartbeat({ scanned: rows.length + strayForced, mirrored, failed });
   if (rows.length || strayForced) console.log(`[sp-sync] pass: scanned ${rows.length}, mirrored ${mirrored}, failed ${failed}` + (strayForced ? `, strays force-attempted ${strayForced} (${strayMirrored} mirrored)` : ''));
   return { scanned: rows.length + strayForced, mirrored, failed, strays: strayForced };
 }
 
 /** Drain everything pending (the first-run backfill + burst catch-up). */
 async function drain() {
-  if (_running) return;
-  if (!(await acquireLease('sp-drain'))) {
-    console.log('[sp-sync] another instance holds the drain lease — skipping this pass');
-    return;
+  // Single-flight — BUT never permanently: if the in-flight pass has been
+  // "running" past the stall ceiling, its await hung (a lock-blocked DB query,
+  // a black-holed socket) and will never clear _running. Abandon it and start a
+  // fresh pass so the mirror self-heals on the next interval instead of staying
+  // frozen until a restart (root of the 2026-07-20 "nothing synced for hours").
+  if (_running) {
+    if (Date.now() - _runningSince < DRAIN_STALL_CEILING_MS) return;
+    console.warn(`[sp-sync] previous drain has been running ${Math.round((Date.now() - _runningSince) / 1000)}s — presumed stalled; abandoning it and starting a fresh pass`);
   }
+  // Flag as running + start the heartbeat clock BEFORE acquiring the lease, so a
+  // lock-blocked acquireLease is itself covered by the stall guard (else a hung
+  // acquire — before _running was set — would stack a new hung acquire every
+  // interval and starve the connection pool). Bound the acquire too.
   _running = true;
+  _runningSince = Date.now();
+  const mySeq = ++_runSeq;   // generation token — see the finally
   try {
+    let gotLease;
+    try { gotLease = await withTimeout(acquireLease('sp-drain'), DB_OP_TIMEOUT_MS, 'drain lease acquire timed out (DB lock?)'); }
+    catch (e) { console.warn('[sp-sync]', e.message); return; }
+    if (!gotLease) {
+      console.log('[sp-sync] another instance holds the drain lease — skipping this pass');
+      return;
+    }
     // Documents that exhausted their attempts get one fresh chance per day —
     // a persistent outage (or a bug fixed by a deploy) must not orphan them.
     // EXCEPT a PARKED PERMANENT failure: retrying it can't help, so re-arming
     // it would just churn a doomed upload forever (the root of "stuck"). Its
     // review card's Retry (which clears the error) is the only re-arm path.
-    await db.query(
+    await withTimeout(db.query(
       `UPDATE documents SET sharepoint_backup_attempts = 0
         WHERE sharepoint_backed_up_at IS NULL AND sharepoint_backup_attempts >= $1
           AND sharepoint_backup_attempted_at < now() - interval '1 day'
           AND COALESCE(sharepoint_backup_error, '') NOT LIKE '[permanent]%'`,
-      [MAX_ATTEMPTS]).catch(() => {});
+      [MAX_ATTEMPTS]), DB_OP_TIMEOUT_MS, 'daily-reset UPDATE timed out').catch((e) => console.warn('[sp-sync] daily reset:', e.message));
+    const drainStart = Date.now();
     for (let i = 0; i < MAX_DRAIN_LOOPS; i++) {
-      const res = await runOnce({});
+      const res = await runOnce({ seq: mySeq });
       await renewLease('sp-drain');
+      heartbeat(mySeq);
       if (res.skipped || res.scanned === 0) break;
       // If everything in a full batch failed, stop — retrying immediately would
       // hammer the same failure; the interval sweep retries later.
       if (res.scanned > 0 && res.mirrored === 0) break;
+      // Yield the single-flight slot if we've held it too long, so a fresh pass
+      // (and freshly-uploaded documents) are not starved behind a slow backlog.
+      if (Date.now() - drainStart > DRAIN_BUDGET_MS) {
+        console.log('[sp-sync] drain budget reached — yielding; the next sweep continues the backlog');
+        _rekick = true;   // ensure the remaining backlog is picked up promptly
+        break;
+      }
     }
   } catch (e) {
     console.warn('[sp-sync] drain error:', e.message);
   } finally {
-    await releaseLease('sp-drain');
-    _running = false;
+    // Only the LATEST pass touches shared state. If this pass was abandoned as
+    // stalled and a fresher pass took over (mySeq !== _runSeq), do NOT release
+    // the lease or clear the flag — a late-arriving finally from the zombie must
+    // not unlock or un-lease a pass that is still legitimately running.
+    if (mySeq === _runSeq) {
+      await releaseLease('sp-drain');
+      _running = false;
+      _runningSince = 0;
+    }
     // Lost-wakeup guard: an upload that arrived while this drain was running
     // re-queues one more pass instead of waiting for the interval sweep.
     if (_rekick) { _rekick = false; kick(); }
@@ -1430,7 +1636,10 @@ async function drain() {
  */
 function kick() {
   if (!enabled()) return;
-  if (_running) { _rekick = true; return; }   // drain in flight — run again after
+  // A genuinely in-flight drain: defer, run again after. A STALLED one (past the
+  // ceiling): fall through so this upload can start a fresh pass that abandons
+  // the zombie — a new document never has to wait out a hung drain.
+  if (_running && Date.now() - _runningSince < DRAIN_STALL_CEILING_MS) { _rekick = true; return; }
   if (_kickTimer) return;
   _kickTimer = setTimeout(() => {
     _kickTimer = null;
@@ -1445,6 +1654,7 @@ function start() {
     console.log('[sp-sync] disabled (set SHAREPOINT_BACKUP_ENABLED=1 + MS_* creds to enable)');
     return;
   }
+  _startedAtMs = Date.now();
   // Boot reset: rows that exhausted their retry budget get a fresh chance on
   // every deploy — deploys are exactly when fixes arrive (learned in prod:
   // the first backfill burned all 8 attempts on a bug that the next deploy
@@ -1480,18 +1690,35 @@ function start() {
   if (_sloInterval.unref) _sloInterval.unref();
   const sboot = setTimeout(() => checkBacklogSlo(), 90000);
   if (sboot.unref) sboot.unref();
+  // Worker-liveness watchdog (dead-man's switch): on its OWN interval so it fires
+  // even if the drain itself never runs. Self-heals a stalled worker and alerts
+  // only if that fails. First check one grace window after boot.
+  _livenessInterval = setInterval(() => checkDrainLiveness(), ms);
+  if (_livenessInterval.unref) _livenessInterval.unref();
+  const lboot = setTimeout(() => checkDrainLiveness(), Math.min(heartbeatGraceSec() * 1000, 20 * 60 * 1000));
+  if (lboot.unref) lboot.unref();
 }
 
 function stop() {
   if (_interval) { clearInterval(_interval); _interval = null; }
   if (_verifyInterval) { clearInterval(_verifyInterval); _verifyInterval = null; }
   if (_sloInterval) { clearInterval(_sloInterval); _sloInterval = null; }
+  if (_livenessInterval) { clearInterval(_livenessInterval); _livenessInterval = null; }
   if (_kickTimer) { clearTimeout(_kickTimer); _kickTimer = null; }
 }
 
 function health() {
+  // In-process view (instant, no DB). lastPassAgeSec surfaces the liveness
+  // signal directly so a stalled worker is visible on the health probe, not just
+  // inferred from backlog. The persistent heartbeat (heartbeatStaleSec) is the
+  // cross-process source of truth — reconciliation() exposes that.
+  const lastAgeSec = _lastPass && _lastPass.at
+    ? Math.round((Date.now() - Date.parse(_lastPass.at)) / 1000) : null;
   return {
     enabled: enabled(), configured: sp.configured(), running: _running, lastPass: _lastPass,
+    lastPassAgeSec: lastAgeSec,
+    stalled: lastAgeSec != null && lastAgeSec > heartbeatGraceSec(),
+    heartbeatGraceSec: heartbeatGraceSec(),
     verify: { running: _verifyRunning, lastPass: _lastVerify, quickXorTrusted: _qxTrusted },
   };
 }
@@ -1520,6 +1747,12 @@ async function reconciliation() {
         count(*) FILTER (WHERE sharepoint_integrity = 'item-missing')::int                              AS item_missing,
         count(*) FILTER (WHERE sharepoint_integrity = 'local-missing')::int                             AS local_missing,
         count(*) FILTER (WHERE sharepoint_backup_ref IS NOT NULL AND sharepoint_stamped_at IS NOT NULL)::int AS id_stamped,
+        -- Un-mirrored docs on a NON-'local' provider: invisible to the normal
+        -- selectors (which filter to 'local'). Counted here so they can never be
+        -- fully silent (the gap-audit's counted-but-never-selected class). Latent
+        -- today — every doc is 'local' — but visible the moment a provider ships.
+        count(*) FILTER (WHERE sharepoint_backed_up_at IS NULL AND storage_ref IS NOT NULL
+                          AND COALESCE(storage_provider,'local') <> 'local')::int                        AS nonlocal_pending,
         EXTRACT(EPOCH FROM (now() - min(created_at) FILTER (
            WHERE sharepoint_backed_up_at IS NULL AND storage_ref IS NOT NULL
              AND COALESCE(storage_provider,'local')='local')))::bigint                                  AS oldest_pending_secs
@@ -1549,14 +1782,36 @@ async function reconciliation() {
     credential,
     credentialWarning: credential && credential.warning ? credential.warning : null,
   };
+  // WORKER LIVENESS (cross-process, from the persistent heartbeat) — the signal
+  // that was missing on 2026-07-20: a frozen worker with an empty backlog used to
+  // report healthy. Now staleness past the grace window makes the worker (and the
+  // mirror) UN-healthy even if the backlog looks fine.
+  let workerStaleSec = null;
+  try { workerStaleSec = await heartbeatStaleSec(); } catch (_) { /* best-effort */ }
+  const graceSec = heartbeatGraceSec();
+  // Stalled = the persistent heartbeat lapsed AND this process isn't actively
+  // progressing a (slow) pass — so a long legitimate backfill never reads as
+  // stalled/unhealthy.
+  const workerStalled = workerStaleSec != null && workerStaleSec > graceSec && !drainProgressing();
+  const worker = {
+    enabled: enabled(),
+    lastPassAgeSec: workerStaleSec,          // seconds since the last completed pass (persistent)
+    graceSec,
+    stalled: workerStalled,
+    running: _running,
+    inFlightAgeSec: _running && _runningSince ? Math.round((Date.now() - _runningSince) / 1000) : null,
+    verifyRunning: _verifyRunning,
+  };
   return {
     ...r,
     oldest_pending_hours: oldestHrs,
     slo: { thresholdHours: thresholdHrs, oldestPendingHours: oldestHrs, breached: backlogBreached, exhausted: r.exhausted },
     controls,
+    worker,
     // A mirror is "healthy" when nothing is exhausted, the backlog is inside
-    // SLO, and the auth credential is not about to expire.
-    healthy: r.exhausted === 0 && !backlogBreached && !(credential && credential.warning),
+    // SLO, the auth credential is not about to expire, AND the worker itself is
+    // alive (not stalled). The last clause is the freeze lesson.
+    healthy: r.exhausted === 0 && !backlogBreached && !(credential && credential.warning) && !workerStalled,
   };
 }
 
@@ -1622,10 +1877,8 @@ async function forceAttemptDoc(id) {
   if (!row) return { gone: true };
   if (row.sharepoint_backed_up_at) return { alreadyDone: true };
   try {
-    await Promise.race([
-      mirrorRow(row),
-      new Promise((_, rej) => setTimeout(() => rej(new Error('force-attempt timed out after 90s (possible poison-pill file)')), FORCE_ATTEMPT_TIMEOUT_MS)),
-    ]);
+    await withTimeout(mirrorRow(row), FORCE_ATTEMPT_TIMEOUT_MS,
+      'force-attempt timed out after 90s (possible poison-pill file)');
     return { mirrored: true };
   } catch (e) {
     // Give the real error a home: recordFailure classifies it (permanent →
@@ -1732,29 +1985,34 @@ function sloSignature(stuck) {
   const ids = stuck.map((d) => String(d.id)).sort();
   return sha256hex(Buffer.from(ids.join(','))).slice(0, 48);
 }
-// True iff THIS process wins the right to alert for `signature` right now.
-async function claimSloAlert(signature) {
+// Generic persistent, restart-proof alert dedup (reused by the backlog SLO AND
+// the worker-liveness watchdog). Returns true iff THIS process wins the right to
+// alert for `signature` under `lockKey` right now — i.e. no active cooldown, or
+// the signature changed (a genuinely new/different problem). Survives restarts +
+// scale-out because the cooldown lives in the DB, not process memory.
+async function claimAlert(lockKey, signature, cooldownMin) {
   try {
     const r = await db.query(
       `INSERT INTO sync_locks (lock_key, holder, expires_at)
-       VALUES ('sp-slo-alert', $1, now() + make_interval(mins => ${sloAlertCooldownMin()}))
+       VALUES ($1, $2, now() + make_interval(mins => $3))
        ON CONFLICT (lock_key) DO UPDATE
          SET holder = EXCLUDED.holder, expires_at = EXCLUDED.expires_at
-         WHERE sync_locks.expires_at < now() OR sync_locks.holder <> $1
+         WHERE sync_locks.expires_at < now() OR sync_locks.holder <> $2
        RETURNING holder`,
-      [signature]);
+      [lockKey, signature, cooldownMin]);
     return r.rows.length > 0;
   } catch (e) {
-    // Fail CLOSED (suppress): a missed reminder beats a duplicate storm, and the
-    // review cards still carry every stuck document with its actionable reason.
-    console.warn(`[sp-sync] SLO alert dedup check failed (${e.message}) — suppressing this alert`);
+    // Fail CLOSED (suppress): a missed reminder beats a duplicate storm.
+    console.warn(`[sp-sync] alert dedup check "${lockKey}" failed (${e.message}) — suppressing`);
     return false;
   }
 }
-// Backlog recovered — drop the cooldown so the NEXT episode alerts immediately.
-async function clearSloAlert() {
-  try { await db.query(`DELETE FROM sync_locks WHERE lock_key = 'sp-slo-alert'`); } catch (_) { /* best-effort */ }
+async function clearAlert(lockKey) {
+  try { await db.query(`DELETE FROM sync_locks WHERE lock_key = $1`, [lockKey]); } catch (_) { /* best-effort */ }
 }
+// SLO wrappers (kept as named helpers — the tests + exports target these).
+async function claimSloAlert(signature) { return claimAlert('sp-slo-alert', signature, sloAlertCooldownMin()); }
+async function clearSloAlert() { return clearAlert('sp-slo-alert'); }
 
 // R4 — the SLO watchdog: on each interval sweep, if the oldest un-mirrored doc
 // is past the threshold (or anything is exhausted), ESCALATE the stuck docs
@@ -1805,6 +2063,82 @@ async function checkBacklogSlo() {
   }
 }
 
+// ------------------------------------------------ worker-liveness watchdog
+// The dead-man's switch (the #1 lesson of the 2026-07-20 freeze): watch whether
+// the WORKER is alive and progressing, not just the backlog. The stall guard in
+// drain() self-heals a wedged pass, and this watchdog is the belt to that
+// suspenders — it runs on its own interval, so even if drain() itself never
+// runs (start() skipped, interval cleared, enabled() flipped, every pass
+// throwing) the staleness is detected. Two tiers, so it stays SILENT in the good
+// case: (1) stale past the grace window → self-heal by kicking a fresh drain;
+// (2) stale past 2× grace → self-heal clearly failed → alert admins ONCE
+// (persistent dedup), distinct from the backlog email. Recovery auto-clears.
+function livenessAlertCooldownMin() {
+  const v = Number(process.env.SHAREPOINT_LIVENESS_COOLDOWN_MIN || 120);
+  return Number.isFinite(v) && v >= 5 ? v : 120;
+}
+async function checkDrainLiveness() {
+  if (!enabled()) return;
+  try {
+    // If THIS process's drain is actively progressing (a legitimately slow
+    // large/throttled backfill — one runOnce can outlive the persistent
+    // heartbeat's grace), it is NOT stalled: never self-heal or alert. This is
+    // the truth for the running instance and prevents a false "worker stalled"
+    // page during a normal heavy backfill (the "silent" goal).
+    if (drainProgressing()) { await clearAlert('sp-liveness-alert'); return; }
+    const staleSec = await heartbeatStaleSec();
+    const graceSec = heartbeatGraceSec();
+    // No heartbeat row at all. Fresh boot → give the boot drain one grace window
+    // to stamp the first heartbeat. But a worker that STARTED and still hasn't
+    // produced a single heartbeat past that window never completed even one pass
+    // (start() half-failed, or every pass throws before the heartbeat) — treat
+    // that as stalled too, so a silent never-started worker isn't invisible.
+    if (staleSec == null) {
+      if (_startedAtMs && Date.now() - _startedAtMs > graceSec * 1000) {
+        console.warn('[sp-sync] liveness: worker started but has never completed a pass — kicking');
+        kick();
+        if (await claimAlert('sp-liveness-alert', 'never-started', livenessAlertCooldownMin())) {
+          await require('./notify').notifyAdmins({
+            type: 'sharepoint_worker_stalled',
+            title: 'SharePoint sync — the sync worker has not started syncing',
+            body: 'PILOT\'s automatic SharePoint sync started but has not completed a single cycle. It may need a restart (a re-deploy). Nothing is lost — every document is safe in PILOT and will sync once it recovers.',
+            meta: [{ label: 'Status', value: 'no completed cycle since start' }],
+            link: '/internal/sync-reviews', ctaLabel: 'Open Sync review',
+          }).catch(() => {});
+        }
+      }
+      return;
+    }
+    if (staleSec <= graceSec) { await clearAlert('sp-liveness-alert'); return; }
+    // Tier 1 — self-heal. A wedged pass is abandoned by the stall guard; a
+    // never-started worker gets kicked. Cheap and silent.
+    console.warn(`[sp-sync] liveness: no completed pass in ${Math.round(staleSec / 60)} min (grace ${Math.round(graceSec / 60)} min) — kicking a recovery drain`);
+    kick();
+    // Tier 2 — only alert once self-heal has clearly failed (stale past 2×
+    // grace). STABLE signature so this is truly once-per-episode: the cooldown
+    // (default 2h) governs any reminder cadence during a sustained outage — a
+    // 6-hour freeze pages roughly every 2h, not every 30 min. Recovery clears it.
+    if (staleSec <= graceSec * 2) return;
+    if (!(await claimAlert('sp-liveness-alert', 'stalled', livenessAlertCooldownMin()))) return;
+    const mins = Math.round(staleSec / 60);
+    const notify = require('./notify');
+    await notify.notifyAdmins({
+      type: 'sharepoint_worker_stalled',
+      title: 'SharePoint sync — the sync worker looks stalled',
+      body: `PILOT's automatic SharePoint sync has not completed a cycle in about ${mins >= 120 ? Math.round(mins / 60) + ' hours' : mins + ' minutes'}. ` +
+            'It normally runs every few minutes. PILOT is trying to restart it automatically; if this message repeats, the sync may need a restart (a re-deploy) to recover. ' +
+            'Nothing is lost — every document is safe in PILOT and will sync once the worker recovers.',
+      meta: [
+        { label: 'Last completed sync', value: `${mins} min ago` },
+        { label: 'Expected', value: 'every few minutes' },
+      ],
+      link: '/internal/sync-reviews', ctaLabel: 'Open Sync review',
+    }).catch(() => {});
+  } catch (e) {
+    console.warn('[sp-sync] liveness check error:', e.message);
+  }
+}
+
 module.exports = {
   start, stop, kick, runOnce, drain, enabled, health, categoryFor, mirrorRow,
   verifyOnce, drainVerify, settleSupersededSnapshots, isRegenKind,
@@ -1812,5 +2146,8 @@ module.exports = {
   classifyMirrorError, forceAttemptDoc,
   neverAttemptedStrays, explainExclusion,
   sloSignature, claimSloAlert, clearSloAlert,
+  claimAlert, clearAlert,
+  withTimeout,
+  checkDrainLiveness, recordHeartbeat, heartbeatStaleSec, heartbeatGraceSec,
   MAX_ATTEMPTS, VERIFY_RECHECK_DAYS,
 };

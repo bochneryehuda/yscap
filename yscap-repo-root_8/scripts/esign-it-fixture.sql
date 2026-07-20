@@ -6,7 +6,22 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE TABLE borrowers (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  first_name text NOT NULL, last_name text NOT NULL, email text NOT NULL
+  first_name text NOT NULL, last_name text NOT NULL, email text NOT NULL,
+  -- PII the loan application prints (loadDocGenData reads these for the app doc).
+  cell_phone text,
+  date_of_birth date,
+  ssn_encrypted bytea,
+  ssn_last4 char(4),
+  current_address jsonb
+);
+
+-- The vesting entity (subject LLC) the loan application prints (applications.llc_id).
+CREATE TABLE llcs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  llc_name text NOT NULL,
+  ein text,
+  formation_state text,
+  formation_date date
 );
 
 CREATE TABLE applications (
@@ -14,11 +29,41 @@ CREATE TABLE applications (
   ys_loan_number text,
   borrower_id uuid REFERENCES borrowers(id),
   co_borrower_id uuid REFERENCES borrowers(id),
+  llc_id uuid REFERENCES llcs(id),
+  loan_officer_id uuid,
+  loan_officer_name text,
+  program text,
+  loan_type text,
+  occupancy text,
+  property_type text,
+  units integer,
   property_address jsonb,
   loan_amount numeric(14,2),
   purchase_price numeric(14,2),
+  as_is_value numeric(14,2),
+  arv numeric(14,2),
+  rehab_budget numeric(14,2),
+  term text,
+  requested_ir_months integer,
+  requested_ir_amount numeric(14,2),
+  is_assignment boolean NOT NULL DEFAULT false,
+  underlying_contract_price numeric(14,2),
+  assignment_fee numeric(14,2),
   submitted_at timestamptz,
   deleted_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- The registered priced product (loan structure the application reads note rate /
+-- LTC / LTV / financed reserve from). Minimal: only the columns loadDocGenData reads.
+CREATE TABLE product_registrations (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  application_id uuid REFERENCES applications(id),
+  program text,
+  product_label text,
+  note_rate numeric(7,5),
+  quote jsonb,
+  is_current boolean NOT NULL DEFAULT true,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
@@ -61,7 +106,11 @@ CREATE TABLE documents (
 
 CREATE UNIQUE INDEX uq_documents_esign_signed ON documents(application_id, doc_kind, filename) WHERE doc_kind IN ('term_sheet_signed','application_signed','bp_disclosure_signed','heter_iska_signed','esign_certificate');
 
-CREATE TABLE staff_users (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), full_name text);
+CREATE TABLE staff_users (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  full_name text,
+  title text, phone text, email text, nmls text
+);
 
 -- esign_envelopes: the db/037 stub grown by db/138/139/140 (only touched cols).
 CREATE TABLE esign_envelopes (

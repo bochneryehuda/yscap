@@ -84,13 +84,24 @@ function brandHeader() {
 }
 
 /**
- * render({ title, preheader, greeting, intro, lines[], meta[{label,value}],
- *          cta{label,url}, note, audience })
+ * render({ title, subjectTag, kicker, preheader, greeting, intro, lines[],
+ *          meta[{label,value}], cta{label,url}, note, replyable, audience })
  *   -> { subject, html, text }
+ *
+ * subjectTag  — a short file identifier (e.g. "YS-1042 · 123 Main St") appended
+ *               to the SUBJECT line (never to the in-body H1) so the recipient
+ *               sees WHICH file the email is about straight from their inbox.
+ * kicker      — a small upper-case category label rendered above the H1
+ *               (e.g. "DOCUMENT REJECTED", "STATUS UPDATE") for a scannable layout.
+ * replyable   — when true, the footer states the email can be replied to directly
+ *               (owner-directed 2026-07-20: every notification is genuinely
+ *               repliable — the "no-reply" framing was untrue).
  */
 function render(p) {
   p = p || {};
   var title    = p.title || 'Notification';
+  var subjectTag = (p.subjectTag != null && String(p.subjectTag).trim()) ? String(p.subjectTag).trim() : '';
+  var kicker   = (p.kicker != null && String(p.kicker).trim()) ? String(p.kicker).trim() : '';
   var pre      = p.preheader || p.intro || title;
   var greeting = p.greeting || '';
   var intro    = p.intro || '';
@@ -98,6 +109,7 @@ function render(p) {
   var meta     = Array.isArray(p.meta) ? p.meta : [];
   var cta      = p.cta && p.cta.url ? p.cta : null;
   var note     = p.note || '';
+  var replyable = !!p.replyable;
   var code     = (p.code != null && p.code !== '') ? String(p.code) : '';
 
   /* ---------------- META ROWS (label / value grid) ---------------- */
@@ -188,6 +200,16 @@ function render(p) {
       'color:' + BRAND.ink + ';">' + esc(greeting) + '</p>'
     : '';
 
+  /* ---------------- KICKER (small category label above the title) ----------------
+     A quiet upper-case tag (e.g. "DOCUMENT REJECTED", "STATUS UPDATE") that lets
+     the reader classify the email at a glance before reading the headline. Gold,
+     letter-spaced, tiny — matches the site's section eyebrows. */
+  var kickerHtml = kicker
+    ? '<div style="margin:0 0 10px;font-family:Arial,Helvetica,sans-serif;font-size:11px;' +
+      'font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:' + BRAND.gold + ';">' +
+      esc(kicker) + '</div>'
+    : '';
+
   /* ---------------- ONE-TIME CODE BOX ---------------- */
   var codeHtml = code
     ? '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:20px 0 6px;">' +
@@ -220,6 +242,7 @@ function render(p) {
         /* title + body */
         '<tr><td style="padding:30px 34px 8px;">' +
           markerHtml +
+          kickerHtml +
           '<h1 style="margin:0 0 18px;font-family:Georgia,\'Times New Roman\',serif;font-size:21px;' +
             'line-height:1.3;font-weight:700;color:' + BRAND.ink + ';">' + esc(title) + '</h1>' +
           greetHtml + body + codeHtml + metaHtml + filesHtml + ctaHtml + noteHtml +
@@ -235,6 +258,15 @@ function render(p) {
             ' &nbsp;&middot;&nbsp; ' +
             '<a href="' + esc(COMPANY.site) + '" style="color:' + BRAND.tealDk + ';text-decoration:none;">yscapgroup.com</a>' +
           '</p>' +
+          /* Reply affordance (owner-directed 2026-07-20): these emails are NOT
+             no-reply — a reply reaches the loan team. State it plainly so the
+             recipient knows they can just hit reply. */
+          (replyable
+            ? '<p style="margin:0 0 10px;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.5;color:' + BRAND.ink + ';">' +
+              '<strong>You can reply directly to this email</strong> to reach your ' +
+              (p.audience === 'borrower' ? 'loan team' : 'YS Capital team') + ' — a real person receives it.' +
+            '</p>'
+            : '') +
           /* legal fine print stays AA-legible on the soft footer: muted (6.5:1),
              not soft2 (~3.5:1 at 11px) — disclosure copy must be readable. */
           '<p style="margin:12px 0 0;font-family:Arial,Helvetica,sans-serif;font-size:11px;line-height:1.5;color:' + BRAND.muted + ';">' +
@@ -263,9 +295,15 @@ function render(p) {
   if (meta.length) { meta.forEach(function (m) { t.push(m.label + ': ' + m.value); }); t.push(''); }
   if (cta) t.push(cta.label + ': ' + cta.url, '');
   if (note) t.push(note, '');
+  if (replyable) t.push('You can reply directly to this email to reach your '
+    + (p.audience === 'borrower' ? 'loan team.' : 'YS Capital team.'), '');
   t.push('—', COMPANY.name + ' · NMLS #' + COMPANY.nmls, COMPANY.phone + ' · ' + COMPANY.email + ' · yscapgroup.com');
 
-  return { subject: title, html: html, text: t.join('\n') };
+  // Subject carries the file tag ("<title> · <loan# · property>") so the reader
+  // sees WHICH file this is about straight from their inbox — the in-body H1
+  // stays the clean title.
+  var subject = subjectTag ? (title + ' · ' + subjectTag) : title;
+  return { subject: subject, html: html, text: t.join('\n') };
 }
 
 module.exports = { render: render, BRAND: BRAND, COMPANY: COMPANY };

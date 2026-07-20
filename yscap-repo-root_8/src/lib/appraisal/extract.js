@@ -77,6 +77,23 @@ function thousands(v) { const n = toNum(v); return n != null && n >= 1 && n <= 1
 function percent(v) { if (v == null) return null; const s = String(v).replace(/%/g, '').trim(); return toNum(s); }
 // A small integer count (rooms, spaces, phases, units) — 0 is a VALID value here (unlike money()).
 function count(v, max) { const n = toNum(v); return n != null && Number.isInteger(n) && n >= 0 && n <= max ? n : null; }
+// A 1004MC market-grid cell. The cells are FULL DOLLARS ("452500" or "$829,500"), day/month
+// counts ("98", "5.26"), or ratios ("103.00", "99%"); many are placeholders ("N/A", "-", "",
+// "Unavailable"). Strip currency/percent formatting, reject the placeholders, keep a real 0.
+function mcNum(v) {
+  if (v == null) return null;
+  const s = String(v).replace(/[$,%\s]/g, '').trim();
+  if (!s || /^(n\/?a|na|-+|—+|unavailable|none|tbd)$/i.test(s)) return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+// 1004MC metric → the attribute that carries its value, and the period tag → a short jsonb key.
+const MC_METRICS = {
+  TotalSales: '_Count', TotalListings: '_Count', MedianSalesDOM: '_Count', MedianListDOM: '_Count',
+  Supply: '_Count', AbsorptionRate: '_Rate', MedianSalesToListRatio: '_Rate',
+  MedianSalesPrice: '_Amount', MedianListPrice: '_Amount',
+};
+const MC_PERIODS = { Prior7To12Months: 'prior712', Prior4To6Months: 'prior46', Last3Months: 'last3' };
 // A whole-years figure (age / economic life). 0 is valid ("effectively new"); reject the 999
 // placeholder and anything out of a sane range.
 function years(v, max) { const n = toNum(v); return n != null && n >= 0 && n <= max ? Math.round(n) : null; }
@@ -405,6 +422,57 @@ function enrichment(root, prop, st, site, subject0, rep, formType) {
   o.nbhd_adverse_financing = yn(A(mk, 'MarketTrendsAdverseFinancingIndicator'));
   o.nbhd_foreclosure_activity = yn(A(mk, 'MarketTrendsForeclosureActivityIndicator'));
 
+  // -- 1004MC market-conditions grid (MARKET > MARKET_INVENTORY). Each row is one metric for one
+  // period (Prior7To12Months|Prior4To6Months|Last3Months) OR a trend row (_TrendType, no period).
+  // Amounts are FULL DOLLARS — read with mcNum(), never thousands(). Scoped to the subject MARKET
+  // (subjFind anchors to the subject, so a comp's block can't bleed in). IMPORTANT: read only the
+  // DIRECT children of MARKET — the neighborhood 1004MC grid. A condo file also nests a SECOND grid
+  // under MARKET > SUBJECT_PROJECT for the project itself; findAll() would pull both and, since the
+  // two share _Type keys, the later project row would overwrite the neighborhood value (proven to
+  // store a wrong mc_months_supply on the condo files). We deliberately keep the neighborhood grid.
+  const mcRows = mk ? mk.children.filter((c) => c.tag === 'MARKET_INVENTORY') : [];
+  if (mcRows.length) {
+    const grid = {};
+    for (const row of mcRows) {
+      const type = clean(X.attr(row, '_Type'));
+      const valAttr = MC_METRICS[type];
+      if (!type || !valAttr) continue;
+      const g = grid[type] || (grid[type] = {});
+      const period = MC_PERIODS[clean(X.attr(row, '_MonthRangeType'))];
+      const trend = enumOf(X.attr(row, '_TrendType'), ['Increasing', 'Stable', 'Declining']);
+      if (!period) { if (trend) g.trend = trend; continue; }  // a trend row carries no period
+      const num = mcNum(X.attr(row, valAttr));
+      if (num != null) g[period] = num;
+    }
+    // Keep only metrics that actually carried a value (an all-placeholder metric drops out).
+    for (const k of Object.keys(grid)) { const g = grid[k]; if (g.prior712 == null && g.prior46 == null && g.last3 == null && g.trend == null) delete grid[k]; }
+    o.market_trends = Object.keys(grid).length ? grid : null;
+    // Flatten the CURRENT market (Last-3-Months) point metrics + the price-trend conclusion.
+    // Strict last-3-months only — never substitute an older period into a "current" flag.
+    // Each flattened value is magnitude-fitted to its numeric column (keeps a real 0, rejects a
+    // negative/garbage cell, caps below the column precision) so a corrupt cell nulls that one
+    // field instead of overflowing the INSERT and rolling back the whole appraisal import —
+    // matching money()/bounded()/years() elsewhere in this file. (mc_median_dom int, mc_months_supply
+    // numeric(8,2), mc_sale_to_list_pct numeric(6,2); the jsonb grid keeps full range — no overflow.)
+    const mcFit = (v, max) => (v != null && v >= 0 && v < max ? v : null);
+    o.mc_months_supply = grid.Supply ? mcFit(grid.Supply.last3, 1e5) : null;
+    const dom = grid.MedianSalesDOM ? mcFit(grid.MedianSalesDOM.last3, 1e7) : null;
+    o.mc_median_dom = dom != null ? Math.round(dom) : null;
+    o.mc_sale_to_list_pct = grid.MedianSalesToListRatio ? mcFit(grid.MedianSalesToListRatio.last3, 9999) : null;
+    o.mc_price_trend = (grid.MedianSalesPrice && grid.MedianSalesPrice.trend) || null;
+  }
+
+  // -- neighborhood land-use mix (NEIGHBORHOOD > _PRESENT_LAND_USE {_Type,_Percent}). Recorded
+  // verbatim, NOT normalized to 100 — the appraiser's percentages as given, never a guess. Only a
+  // row with a whitelisted type AND a real percent is kept. Direct children of NEIGHBORHOOD.
+  const landUse = [];
+  for (const lu of (nb ? nb.children.filter((c) => c.tag === '_PRESENT_LAND_USE') : [])) {
+    const t = enumOf(X.attr(lu, '_Type'), ['SingleFamily', 'TwoToFourFamily', 'Apartment', 'Commercial', 'Vacant', 'Industrial', 'Agricultural', 'Other']);
+    const pct = percent(X.attr(lu, '_Percent'));
+    if (t && pct != null && pct >= 0 && pct <= 100) landUse.push({ type: t, percent: pct });
+  }
+  o.present_land_use = landUse.length ? landUse : null;
+
   // -- site / occupancy --
   o.occupancy_status = enumOf(A(prop, '_CurrentOccupancyType'), ['Vacant', 'TenantOccupied', 'OwnerOccupied']);
   o.property_rights = clean(A(prop, '_RightsType'));
@@ -432,6 +500,32 @@ function enrichment(root, prop, st, site, subject0, rep, formType) {
     utils.push({ type: t, public: pub, note: clean(X.attr(u, '_NonPublicDescription')) });
   }
   o.utilities = utils.length ? utils : null;
+  // Off-site improvements (street/alley/access). The XML carries TWO row styles per _Type — a
+  // description row (_Description) and an ownership row (_OwnershipType/_ExistsIndicator) — so merge
+  // by _Type into one record. Subject-scoped (subjAll walks parents for COMPARABLE_SALE so a comp's
+  // block can't bleed). The Public/Private ownership is the useful flip signal (a private street
+  // means shared maintenance/access).
+  // Public/Private is a CHECKBOX PAIR, not a single value: MISMO emits TWO rows per _Type — a Public
+  // row and a Private row — and _ExistsIndicator (Y/N) marks the ticked box. Ownership must be read
+  // from the row whose indicator is Y; a _Type whose rows are ALL N is an improvement that isn't
+  // present (e.g. no alley) and is dropped — never a phantom "Private". A blind last-row-wins would
+  // invert the signal (record Private when the ticked box is Public) — so we honor the indicator.
+  const offSite = {};
+  for (const os of subjAll(root, '_OFF_SITE_IMPROVEMENT')) {
+    const t = clean(X.attr(os, '_Type')); if (!t) continue;
+    const rec = offSite[t] || (offSite[t] = { type: t, description: null, ownership: null, exists: null });
+    const desc = clean(X.attr(os, '_Description'));
+    if (desc && !/^none$/i.test(desc)) rec.description = desc;
+    const own = enumOf(X.attr(os, '_OwnershipType'), ['Public', 'Private']);
+    const ex = yn(X.attr(os, '_ExistsIndicator'));
+    if (ex === true) { rec.exists = true; if (own) rec.ownership = own; }         // the ticked box
+    else if (ex === false) { if (rec.exists == null) rec.exists = false; }        // an un-ticked option
+    else if (own && rec.ownership == null) rec.ownership = own;                   // legacy single-row (no indicator)
+  }
+  // Keep only improvements that actually EXIST (a Y row), plus the legacy single-row shape that
+  // carried a description/ownership with no indicator at all. Drop N-only phantoms.
+  const offSiteArr = Object.values(offSite).filter((r) => r.exists === true || (r.exists == null && (r.description || r.ownership)));
+  o.off_site_improvements = offSiteArr.length ? offSiteArr : null;
 
   // -- structure / systems --
   o.effective_age = years(A(subjFind(root, 'STRUCTURE_ANALYSIS'), 'EffectiveAgeYearsCount'), 200);
@@ -781,6 +875,11 @@ function extract(xml) {
     else if (ooPct < 0.5) warnings.push({ code: 'condo_low_owner_occ', msg: `Condo project is ${Math.round(ooPct * 100)}% owner-occupied (<50%) — warrantability concern` });
   }
   if (enrich.condo_concentrated_ownership === true) warnings.push({ code: 'condo_concentrated_ownership', msg: 'Condo project has concentrated single-entity ownership — eligibility risk' });
+  // 1004MC market-conditions tripwires (the appraiser's own current-market read)
+  if (enrich.mc_price_trend === 'Declining') warnings.push({ code: 'mc_price_declining', msg: '1004MC median sale price is declining — the appraiser flagged a softening market' });
+  if (enrich.mc_months_supply != null && enrich.mc_months_supply > 6) warnings.push({ code: 'mc_oversupply', msg: `1004MC shows ${enrich.mc_months_supply} months of housing supply (>6) — a buyer's market, slower exit` });
+  if (enrich.mc_sale_to_list_pct != null && enrich.mc_sale_to_list_pct < 95) warnings.push({ code: 'mc_weak_pricing', msg: `1004MC median sale-to-list is ${enrich.mc_sale_to_list_pct}% (<95%) — sellers are conceding on price` });
+  if (Array.isArray(enrich.off_site_improvements) && enrich.off_site_improvements.some((o) => o.ownership === 'Private')) warnings.push({ code: 'off_site_private', msg: 'Private street/alley — shared maintenance & access; confirm a road-maintenance agreement' });
 
   return {
     ok: true, formType,

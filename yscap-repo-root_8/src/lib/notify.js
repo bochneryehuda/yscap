@@ -15,17 +15,71 @@ const cfg = require('../config');
 const { scrubText, scrubTextExcept } = require('./borrower-safe');
 const { fileReplyTo } = require('./file-address');   // #68 per-file shared reply-to
 
+// A small upper-case eyebrow rendered above each email's headline so the reader
+// can classify it before reading the title. Keyed by notification `type`;
+// borrower-safe (no capital-partner names). A caller may override via opts.kicker.
+const KICKER_OF = {
+  status_change: 'Status update', closing_date: 'Closing date',
+  doc_rejected: 'Action needed', doc_requested: 'Action needed', doc_uploaded: 'Document',
+  doc_accepted: 'Document accepted',
+  condition_added: 'Action needed', tool_submitted: 'Ready for review',
+  product_registered: 'Product registered', term_sheet: 'Your loan terms', pricing_update: 'Pricing update',
+  message: 'New message', mention: 'You were mentioned', reminder: 'Reminder',
+  llc_verified: 'Entity verified', llc_unverified: 'Action needed',
+  track_record_unverified: 'Action needed',
+  draw: 'Construction draw', draw_request: 'Construction draw', draw_findings: 'Draw inspection',
+  draw_accepted: 'Construction draw', draw_disputed: 'Construction draw',
+  sow_reallocation: 'Budget change', sow_change_request: 'Budget change',
+  change_request: 'Change request', assignment: 'File assignment',
+  new_application: 'New application', unassigned_application: 'Needs assignment',
+  new_lead: 'New lead', sync_review: 'Sync review', security: 'Security', account: 'Account',
+  sharepoint_backlog_slo: 'Document sync', inbound_reply: 'File reply',
+};
+
+/**
+ * Enrich a file-scoped notification's opts with the file's identity so EVERY
+ * email about a file says WHICH file — in the subject line (subjectTag) and in a
+ * structured detail block (meta) — without each of the ~90 call sites having to
+ * hand-assemble it. Additive and safe: a value a caller already supplied is
+ * never overwritten. No-ops when there is no applicationId or the lookup fails.
+ *
+ * audience 'borrower' uses the borrower-safe meta subset (no internal contact
+ * row, no note-buyer/capital-partner data — none is ever in fileContext anyway).
+ * Pass opts._fileCtx to reuse a fileContext already fetched by a fan-out helper
+ * (avoids one DB round-trip per recipient).
+ */
+async function enrichFileOpts(opts, audience) {
+  if (!opts || opts._enriched || !opts.applicationId) return opts;
+  const ctx = opts._fileCtx || await fileContext(opts.applicationId);
+  if (!ctx) { opts._enriched = true; return opts; }
+  const out = { ...opts, _enriched: true };
+  if (out.subjectTag == null) out.subjectTag = ctx.subjectTag || null;
+  if (!Array.isArray(out.meta) || !out.meta.length) {
+    out.meta = audience === 'borrower' ? ctx.borrowerMeta : ctx.meta;
+  }
+  if (!out.link) out.link = audience === 'borrower' ? `/app/${opts.applicationId}` : `/internal/app/${opts.applicationId}`;
+  if (!out.ctaLabel) out.ctaLabel = audience === 'borrower' ? 'Open your file' : 'Open the loan file';
+  return out;
+}
+
 /* Turn a notification's opts into a branded {subject,html,text}. */
 function buildEmail(opts, audience) {
   // Deep links must resolve into the portal SPA (/portal/#/…), not the site root.
   const link = opts.link ? portalLink(opts.link) : portalLink('/');
   return tpl.render({
     title:     opts.title,
+    // The file tag rides in the SUBJECT only (the in-body H1 stays clean).
+    subjectTag: opts.subjectTag || '',
+    // A small category eyebrow above the headline for scannability.
+    kicker:    opts.kicker || KICKER_OF[opts.type] || '',
     preheader: opts.body || opts.title,
     greeting:  opts.greeting || (audience === 'borrower' ? 'Hello,' : ''),
     intro:     opts.body || '',
     lines:     opts.lines || [],
     meta:      opts.meta || [],
+    // Every notification email is genuinely repliable (owner-directed
+    // 2026-07-20) — the footer says so, unless a caller opts out.
+    replyable: opts.replyable !== false,
     // The email lists the file(s) even when the bytes are too big to attach; the
     // explicit `files` list wins, else derive from whatever bytes were attached.
     files:     (Array.isArray(opts.files) && opts.files.length ? opts.files : (opts.attachments || []).map((a) => a && a.filename)).filter(Boolean),
@@ -51,9 +105,10 @@ async function _emailRow(id, to, opts, audience) {
     const attachments = Array.isArray(opts.attachments) ? opts.attachments.filter((a) => a && a.filename && a.content) : [];
     // #68: file-scoped emails carry a per-file Reply-To (file+<appId>@<domain>) so
     // any reply forwards to every assignee. An explicit opts.replyTo wins; otherwise
-    // derive it from the applicationId. Null when no inbound domain is configured or
-    // this isn't a file email (unchanged behavior then).
-    const replyTo = opts.replyTo || fileReplyTo(opts.applicationId);
+    // derive it from the applicationId. Owner-directed 2026-07-20: when neither is
+    // available, fall back to the monitored company inbox (cfg.replyToDefault) so a
+    // reply ALWAYS reaches a human — no notification is ever a dead-end no-reply.
+    const replyTo = opts.replyTo || fileReplyTo(opts.applicationId) || cfg.replyToDefault || null;
     // #150: an optional LO-branded From display name rides through untouched
     // (resend honors it; other providers ignore it).
     const res = await email.sendMail({ to, subject: msg.subject, text: msg.text, html: msg.html, attachments, replyTo, from: opts.from || null });
@@ -79,6 +134,10 @@ async function notifyStaff(staffId, opts) {
     const p = await db.query(`SELECT notifications_enabled FROM staff_users WHERE id=$1`, [staffId]);
     if (p.rows[0] && p.rows[0].notifications_enabled === false) emailOn = false;
   } catch (_) { /* column exists after migration 085; default on */ }
+  // Auto-attach the file's identity (subject tag + detail block + default
+  // link/CTA) so every staff file email says WHICH file, without every call
+  // site building it. No-op when there's no applicationId. (#88/#150 unchanged.)
+  opts = await enrichFileOpts(opts, 'staff');
   const { rows } = await db.query(
     `INSERT INTO notifications (recipient_kind,staff_id,type,title,body,application_id,link)
      VALUES ('staff',$1,$2,$3,$4,$5,$6) RETURNING id`,
@@ -148,6 +207,10 @@ async function notifyBorrower(borrowerId, opts) {
   // Muted in-app and not a must-see? Drop it entirely — this is the borrower
   // choosing to quiet a nervous-making category.
   if (!pref.in_app && !ALWAYS_IN_APP.has(opts.type)) return null;
+  // Auto-attach the file's identity (subject tag + borrower-safe detail block +
+  // default link/CTA) BEFORE scrubbing, so the borrower email always says WHICH
+  // property/loan and the trusted meta values are protected from the scrub below.
+  opts = await enrichFileOpts(opts, 'borrower');
   // SECURITY (frozen rule): a capital-partner / note-buyer name must never reach
   // a borrower. Scrub every borrower-facing text field once here at the single
   // chokepoint, so BOTH the stored in-app row and the branded email are clean no
@@ -185,8 +248,12 @@ async function notifyAppBorrowers(appId, opts) {
   const { rows } = await db.query(`SELECT borrower_id, co_borrower_id FROM applications WHERE id=$1`, [appId]);
   const a = rows[0]; if (!a) return [];
   const ids = [...new Set([a.borrower_id, a.co_borrower_id].filter(Boolean))];
+  // Fetch the file's identity ONCE and hand it to each recipient's notify so we
+  // don't re-query per borrower; also default applicationId so enrichment fires.
+  const ctx = await fileContext(appId).catch(() => null);
+  const shared = { ...opts, applicationId: opts.applicationId || appId, _fileCtx: ctx || undefined };
   const out = [];
-  for (const id of ids) out.push(await notifyBorrower(id, opts));
+  for (const id of ids) out.push(await notifyBorrower(id, { ...shared }));
   return out;
 }
 
@@ -203,16 +270,23 @@ async function notifyAppStaff(appId, opts = {}) {
     `SELECT DISTINCT staff_id FROM application_assignees
       WHERE application_id=$1 AND removed_at IS NULL AND staff_id IS NOT NULL`, [appId]);
   const except = opts.exceptStaffId ? String(opts.exceptStaffId) : null;
+  // Fetch the file's identity ONCE and share it across the whole team so each
+  // staffer's email says WHICH file without re-querying per recipient.
+  const ctx = await fileContext(appId).catch(() => null);
+  const shared = { ...opts, applicationId: opts.applicationId || appId, _fileCtx: ctx || undefined };
   const out = [];
   for (const r of rows) {
     if (except && String(r.staff_id) === except) continue;
-    out.push(await notifyStaff(r.staff_id, opts));
+    out.push(await notifyStaff(r.staff_id, { ...shared }));
   }
   return out;
 }
 
 /** Notify every active admin (used when an application has no loan officer). */
 async function notifyAdmins(opts) {
+  // Enrich once with the file's identity so BOTH the per-admin emails and the
+  // shared-inbox copy carry the file tag + detail block (no-op without appId).
+  opts = await enrichFileOpts(opts, 'staff');
   const { rows } = await db.query(
     `SELECT id, email FROM staff_users WHERE role IN ('admin','super_admin') AND is_active = true`);
   const ids = [];
@@ -221,7 +295,7 @@ async function notifyAdmins(opts) {
   if (cfg.notifyAdmins.length) {
     const msg = buildEmail(opts, 'staff');
     email.sendMail({ to: cfg.notifyAdmins, subject: msg.subject, text: msg.text, html: msg.html,
-      replyTo: opts.replyTo || fileReplyTo(opts.applicationId) }).catch(() => {});
+      replyTo: opts.replyTo || fileReplyTo(opts.applicationId) || cfg.replyToDefault || null }).catch(() => {});
   }
   return ids;
 }
@@ -246,10 +320,16 @@ async function fileContext(appId, extraMeta = []) {
     const a = r.rows[0];
     if (!a) return null;
     const pa = a.property_address || {};
+    const street = pa.street || pa.line1 || (typeof pa.oneLine === 'string' ? pa.oneLine.split(',')[0] : '') || '';
     const addr = pa.oneLine || [pa.street || pa.line1, pa.city, pa.state].filter(Boolean).join(', ') || '(no address yet)';
     const borrowerName = [a.first_name, a.last_name].filter(Boolean).join(' ') || a.email || 'Borrower';
     const loanNo = a.ys_loan_number || 'Loan # pending';
+    const hasLoanNo = !!a.ys_loan_number;
     const money = (n) => (n == null ? null : '$' + Math.round(Number(n)).toLocaleString('en-US'));
+    // Program shown to the BORROWER never carries a note-buyer/capital-partner
+    // name (frozen rule); the notify chokepoint scrubs it too, but keep the
+    // borrower meta clean at the source.
+    const progBorrower = scrubText(a.program || '') || null;
     const meta = [
       { label: 'File', value: loanNo },
       { label: 'Property', value: addr },
@@ -262,7 +342,23 @@ async function fileContext(appId, extraMeta = []) {
       a.loan_amount != null ? { label: 'Loan amount', value: money(a.loan_amount) } : null,
       ...extraMeta,
     ].filter(Boolean);
-    return { label: `${loanNo} · ${addr}`, addr, loanNo, borrowerName, meta };
+    // Borrower-safe identity block: a clean "which file" summary (no internal
+    // contact row) plus the borrower's own headline numbers. Never any
+    // note-buyer / capital-provider data — fileContext reads only app+borrower
+    // DB fields, and the program label is scrubbed above.
+    // NOTE: extraMeta is intentionally NOT merged here — callers pass staff-
+    // oriented extra rows, so borrowerMeta stays a clean file-identity block.
+    const borrowerMeta = [
+      { label: 'File', value: loanNo },
+      { label: 'Property', value: addr },
+      progBorrower ? { label: 'Program', value: progBorrower } : null,
+      a.loan_type ? { label: 'Loan type', value: a.loan_type } : null,
+      a.loan_amount != null ? { label: 'Loan amount', value: money(a.loan_amount) } : null,
+    ].filter(Boolean);
+    // Short tag for the SUBJECT line: loan number (when assigned) + street, kept
+    // concise so it reads cleanly in an inbox.
+    const subjectTag = [hasLoanNo ? loanNo : null, street].filter(Boolean).join(' · ') || (hasLoanNo ? loanNo : addr);
+    return { label: `${loanNo} · ${addr}`, addr, street, loanNo, hasLoanNo, borrowerName, meta, borrowerMeta, subjectTag };
   } catch (_) { return null; }
 }
 
