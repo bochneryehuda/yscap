@@ -2600,7 +2600,9 @@ router.get('/notification-prefs', async (req, res) => {
   const cats = notify.NOTIFY_CATEGORIES.map(category => ({
     category,
     in_app: byCat[category] ? byCat[category].in_app : true,
-    email: byCat[category] ? byCat[category].email : true,
+    // With no saved preference, show the category's REAL email default (major
+    // moments email; routine/other categories don't) instead of always "on".
+    email: byCat[category] ? byCat[category].email : notify.categoryEmailsByDefault(category),
     inAppLocked: CRITICAL_INAPP.has(category),   // can't turn off in-app for these
   }));
   res.json(cats);
