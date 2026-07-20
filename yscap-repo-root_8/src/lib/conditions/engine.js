@@ -94,6 +94,9 @@ async function loadRuleContext(appId) {
     requested_ir_months: num(a.requested_ir_months),
     requested_ir_amount: num(a.requested_ir_amount),
     is_assignment: !!a.is_assignment,
+    // Note buyer / capital partner (applications.lender), normalized to a stable
+    // key so a rule matches "CorrFirst" / "Corr First" / "corrfirst" the same.
+    note_buyer: registry.normNoteBuyer(a.lender),
     status: a.status,
 
     property_state: registry.normState(addr.state),
