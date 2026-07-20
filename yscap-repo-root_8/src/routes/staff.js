@@ -1973,7 +1973,7 @@ router.post('/applications/:id/checklist', async (req, res) => {
     await notify.notifyBorrower(app.rows[0].borrower_id, {
       type: 'condition_added', title: 'New document requested on your file',
       body: `"${borrowerLabel || b.label}" was added to your conditions on ${ctx ? ctx.label : 'your file'}.`,
-      meta: (ctx && ctx.meta) || undefined,
+      meta: (ctx && ctx.borrowerMeta) || undefined,
       applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Open your conditions' });
   }
   await audit(req, 'add_checklist_item', 'application', req.params.id, { label: b.label });
@@ -2071,7 +2071,7 @@ router.post('/applications/:id/conditions/custom', async (req, res) => {
         body: b.borrowerLabel
           ? `"${b.borrowerLabel}" was added to your conditions on ${ctx ? ctx.label : 'your file'}.`
           : `A new item was added to your conditions on ${ctx ? ctx.label : 'your file'}.`,
-        meta: (ctx && ctx.meta) || undefined,
+        meta: (ctx && ctx.borrowerMeta) || undefined,
         applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Open your conditions' });
     } catch (_) { /* best-effort */ }
   }
@@ -2104,7 +2104,7 @@ router.post('/applications/:id/conditions/attach', async (req, res) => {
         body: tpl.borrower_label
           ? `"${tpl.borrower_label}" was added to your conditions on ${ctx ? ctx.label : 'your file'}.`
           : `A new item was added to your conditions on ${ctx ? ctx.label : 'your file'}.`,
-        meta: (ctx && ctx.meta) || undefined,
+        meta: (ctx && ctx.borrowerMeta) || undefined,
         applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Open your conditions' });
     } catch (_) { /* best-effort */ }
   }
@@ -2853,7 +2853,7 @@ router.patch('/checklist/:itemId', async (req, res) => {
           type: 'doc_rejected',
           title: `"${row.label}" needs your attention`,
           body: `Your loan team sent "${row.label}" back${ctx ? ` (${ctx.label})` : ''}: ${String(b.issueReason).slice(0, 180)}`,
-          meta: (ctx && ctx.meta) || undefined,
+          meta: (ctx && ctx.borrowerMeta) || undefined,
           applicationId: row.application_id,
           link: row.application_id ? `/app/${row.application_id}` : '/profile',
           ctaLabel: 'Review the condition' });
@@ -5419,7 +5419,7 @@ router.post('/applications/:id/documents', async (req, res) => {
         await notify.notifyBorrower(borrowerId, {
           type: 'doc_uploaded', title: `Your loan team added a document to "${itemLabel}"`,
           body: `"${b.filename}" was uploaded to ${llcId ? 'your entity documents' : `condition "${itemLabel}"`}${slot ? ` (${slot})` : ''}${ctx ? ` on ${ctx.label}` : ''} on your behalf.`,
-          meta: (ctx && ctx.meta) || undefined,
+          meta: (ctx && ctx.borrowerMeta) || undefined,
           applicationId: llcId ? null : req.params.id, link: llcId ? '/entities' : `/app/${req.params.id}` });
       } catch (_) { /* best-effort */ }
     }
@@ -5554,7 +5554,7 @@ router.post('/documents/:id/review', async (req, res) => {
           type: 'doc_requested',
           title: condLabel ? `"${condLabel}" needs one more document` : 'One more document is needed',
           body: `"${doc.filename}" was accepted ✓${condLabel ? ` — but condition "${condLabel}" needs one more document` : ''}${moreNote ? `: ${moreNote}` : '.'}${ctx ? ` (${ctx.label})` : ''}`,
-          meta: (ctx && ctx.meta) || undefined,
+          meta: (ctx && ctx.borrowerMeta) || undefined,
           applicationId: doc.application_id,
           link: doc.application_id ? `/app/${doc.application_id}` : '/profile',
           ctaLabel: 'Upload the document' });
@@ -5606,7 +5606,7 @@ router.post('/documents/:id/review', async (req, res) => {
         await notify.notifyBorrower(doc.borrower_id, {
           type: 'doc_rejected', title: condLabel ? `"${condLabel}" needs a new document` : 'A document needs to be re-uploaded',
           body: `"${doc.filename}"${condLabel ? ` on condition "${condLabel}"` : ''}${ctx ? ` (${ctx.label})` : ''} couldn't be accepted: ${String(b.reason).slice(0, 180)}`,
-          meta: (ctx && ctx.meta) || undefined,
+          meta: (ctx && ctx.borrowerMeta) || undefined,
           applicationId: doc.application_id,
           link: doc.application_id ? `/app/${doc.application_id}` : '/profile',
           ctaLabel: 'Upload a new version' });
