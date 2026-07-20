@@ -12,6 +12,7 @@ const email = require('../lib/email');                    // Email Center: send 
 const emailLog = require('../lib/email-log');             // Email Center: capture + on-demand body
 const C = require('../lib/crypto');
 const notify = require('../lib/notify');
+const { claimOncePerPeriod } = require('../lib/throttle-claim');
 const changeRequests = require('../lib/change-requests');
 const mail = require('../lib/email/catalog');
 const { fileReplyTo } = require('../lib/file-address');   // #68 per-file shared reply-to
@@ -3263,14 +3264,11 @@ router.patch('/checklist/:itemId', async (req, res) => {
       if (row && row.borrower_id && row.application_id && row.audience !== 'staff') {
         const open = await require('../lib/reminders').outstandingItems(row.application_id);
         if (open.length === 0) {
-          // Atomically CLAIM the 20h slot (stamp-first) so two conditions clearing
-          // the last item on the same file in the same instant can't both email.
-          const claim = await db.query(
-            `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
-             SELECT 'system', NULL, 'all_caught_up_emailed', 'application', $1, '{}'::jsonb
-              WHERE NOT EXISTS (SELECT 1 FROM audit_log WHERE action='all_caught_up_emailed' AND entity_id=$1 AND created_at > now() - interval '20 hours')
-             RETURNING id`, [row.application_id]);
-          if (claim.rows[0]) {
+          // Atomically CLAIM the 20h slot so two conditions clearing the last item
+          // on the same file in the same instant can't both email (advisory-locked
+          // shared helper — a plain INSERT…WHERE NOT EXISTS is not atomic).
+          const claimId = await claimOncePerPeriod({ action: 'all_caught_up_emailed', entityId: row.application_id, interval: '20 hours' });
+          if (claimId) {
             await notify.notifyAppBorrowers(row.application_id, {
               type: 'all_caught_up',
               title: 'You’re all caught up',
@@ -4881,12 +4879,8 @@ router.post('/applications/:id/nudge', async (req, res) => {
     // records the audit event AND enforces the throttle, so two simultaneous
     // "Remind" clicks can't both pass a SELECT and both email the borrower. The
     // loser gets the 429. (Old shape SELECTed then stamped after send — a race.)
-    const nudgeClaim = await db.query(
-      `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
-       SELECT 'staff', $2, 'nudge_borrower', 'application', $1, $3::jsonb
-        WHERE NOT EXISTS (SELECT 1 FROM audit_log WHERE action='nudge_borrower' AND entity_id=$1 AND created_at > now() - interval '30 minutes')
-       RETURNING id`, [req.params.id, req.actor.id, JSON.stringify({ count: list.length })]);
-    if (!nudgeClaim.rows[0]) return res.status(429).json({ error: 'This borrower was already reminded on this file in the last 30 minutes — please wait before sending another.' });
+    const nudgeClaimId = await claimOncePerPeriod({ action: 'nudge_borrower', entityId: req.params.id, interval: '30 minutes', actorKind: 'staff', actorId: req.actor.id, detail: { count: list.length } });
+    if (!nudgeClaimId) return res.status(429).json({ error: 'This borrower was already reminded on this file in the last 30 minutes — please wait before sending another.' });
     await notify.notifyAppBorrowers(req.params.id, {
       type: 'reminder', title: 'A friendly reminder on your loan file',
       body: `Still needed to keep things moving: ${shown}.`,
@@ -6264,12 +6258,8 @@ router.post('/documents/:id/review', async (req, res) => {
         // Two accepts on the same file in the same instant can't both win (the old
         // SELECT-then-stamp-after let both pass — owner-reported duplicate sweep).
         if (throttleId) {
-          const claim = await db.query(
-            `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
-             SELECT 'system', NULL, 'doc_accepted_emailed', $2, $1, '{}'::jsonb
-              WHERE NOT EXISTS (SELECT 1 FROM audit_log WHERE action='doc_accepted_emailed' AND entity_id=$1 AND created_at > now() - interval '12 hours')
-             RETURNING id`, [throttleId, throttleType]);
-          emailNow = !!claim.rows[0];
+          const claimId = await claimOncePerPeriod({ action: 'doc_accepted_emailed', entityId: throttleId, interval: '12 hours', entityType: throttleType });
+          emailNow = !!claimId;
         }
         await notify.notifyBorrower(doc.borrower_id, {
           type: 'doc_accepted',

@@ -22,6 +22,7 @@
 const db = require('../db');
 const notify = require('./notify');
 const { outstandingItems } = require('./reminders');
+const { claimOncePerPeriod } = require('./throttle-claim');
 
 const STATUS_LABEL = {
   file_intake: 'File intake', new: 'Submitted', in_review: 'In review', processing: 'Processing',
@@ -44,27 +45,16 @@ function nyParts(now = new Date()) {
 }
 
 // "May I send?" — atomically CLAIM the send: write the throttle stamp ONLY if
-// nothing with this (action, entity) was stamped inside the window, in a single
-// INSERT…WHERE NOT EXISTS…RETURNING. Returns true only for the ONE caller that
-// won the claim; a concurrent/overlapping pass or a second instance loses and
-// returns false. (The old shape SELECTed then stamped AFTER sending, so two
-// overlapping passes could both pass the check and both send — owner-reported
-// duplicate sweep 2026-07-20.) entityId null = a global (non-file-scoped) digest.
+// nothing with this (action, entity) was stamped inside the window. Returns true
+// only for the ONE caller that won the claim; a concurrent/overlapping pass or a
+// second instance loses and returns false. Delegates to the shared
+// claimOncePerPeriod, which serializes claimants with a transaction-scoped
+// advisory lock so INSERT…WHERE NOT EXISTS is truly atomic across instances (a
+// plain INSERT…WHERE NOT EXISTS is NOT — two READ COMMITTED txns both pass the
+// check and both send, the owner-reported duplicate sweep 2026-07-20). Fails
+// closed. entityId null = a global (non-file-scoped) digest.
 async function _gate(action, entityId, interval) {
-  try {
-    const q = entityId
-      ? await db.query(
-          `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
-           SELECT 'system', NULL, $1, 'application', $2, '{}'::jsonb
-            WHERE NOT EXISTS (SELECT 1 FROM audit_log WHERE action=$1 AND entity_id=$2 AND created_at > now() - $3::interval)
-           RETURNING id`, [action, entityId, interval])
-      : await db.query(
-          `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
-           SELECT 'system', NULL, $1, 'application', NULL, '{}'::jsonb
-            WHERE NOT EXISTS (SELECT 1 FROM audit_log WHERE action=$1 AND entity_id IS NULL AND created_at > now() - $2::interval)
-           RETURNING id`, [action, interval]);
-    return !!q.rows[0];   // won the claim (row stamped) → OK to send
-  } catch (_) { return false; }   // on any DB error, DON'T send (fail closed)
+  return (await claimOncePerPeriod({ action, entityId: entityId || null, interval })) != null;
 }
 // The claim row is already written by _gate; _stamp now just enriches it with the
 // digest's stats for the audit trail (best-effort — never a second throttle row).

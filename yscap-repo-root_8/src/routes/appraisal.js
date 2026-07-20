@@ -173,12 +173,8 @@ router.post('/:appId/import', async (req, res, next) => {
       if (app.borrower_id) {
         // Atomically CLAIM the ~day slot (stamp-first) so a double/re-import in the
         // same instant can't send the milestone twice.
-        const claim = await db.query(
-          `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
-           SELECT 'system', NULL, 'appraisal_received_emailed', 'application', $1, '{}'::jsonb
-            WHERE NOT EXISTS (SELECT 1 FROM audit_log WHERE action='appraisal_received_emailed' AND entity_id=$1 AND created_at > now() - interval '20 hours')
-           RETURNING id`, [app.id]);
-        if (claim.rows[0]) {
+        const claimId = await require('../lib/throttle-claim').claimOncePerPeriod({ action: 'appraisal_received_emailed', entityId: app.id, interval: '20 hours' });
+        if (claimId) {
           await require('../lib/notify').notifyAppBorrowers(app.id, {
             type: 'milestone',
             title: 'Your property appraisal has been received',
