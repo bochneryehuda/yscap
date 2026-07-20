@@ -178,6 +178,14 @@ export default function EsignFileSection({ appId, role }) {
               {recips.map((r) => <Recipient key={r.id || `${r.role}-${r.routingOrder}`} r={r} />)}
             </div>
 
+            {/* Legally-binding summary once the package is fully signed */}
+            {e.phase === 'completed' ? (
+              <div className="notice ok" style={{ margin: '10px 0 0' }}>
+                <strong>Legally binding.</strong> All parties signed{e.completedAt ? ` — completed ${timeAgo(e.completedAt)}` : ''}.
+                {' '}The DocuSign <strong>Certificate of Completion</strong> — the legal record of who signed, when, and from where (signer identities, timestamps, IP addresses) — {e.certificate ? 'is available to download below.' : 'is being retrieved and will appear here shortly.'}
+              </div>
+            ) : null}
+
             {/* Actions */}
             <div className="row" style={{ gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
               {e.phase === 'awaiting_countersign' && isAdmin && (
@@ -197,8 +205,12 @@ export default function EsignFileSection({ appId, role }) {
               )}
               {(e.documents || []).map((d) => (
                 <button key={d.documentId} className="btn ghost btn-sm" disabled={busy === `dl:${d.documentId}`} onClick={() => download(d)}
-                  title={`Download ${d.filename}`}>{busy === `dl:${d.documentId}` ? '…' : `↓ ${(d.docKind || '').replace(/_/g, ' ')}`}</button>
+                  title={`Download ${d.filename}`}>{busy === `dl:${d.documentId}` ? '…' : `↓ ${(d.docKind || '').replace(/_signed$/, '').replace(/_/g, ' ')}`}</button>
               ))}
+              {e.certificate ? (
+                <button className="btn ghost btn-sm" disabled={busy === `dl:${e.certificate.documentId}`} onClick={() => download(e.certificate)}
+                  title="DocuSign Certificate of Completion — the legal audit trail (signers, timestamps, IP addresses)">{busy === `dl:${e.certificate.documentId}` ? '…' : '↓ certificate'}</button>
+              ) : null}
             </div>
           </div>
         );

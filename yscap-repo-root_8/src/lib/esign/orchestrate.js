@@ -51,7 +51,7 @@ const PACKAGES = {
     docs: [
       { kind: 'term_sheet',         prefix: 'ts',  signedKind: 'term_sheet_signed',    condition: 'rtl_cond_signedts',  name: 'Term Sheet', freshnessCheck: true },
       { kind: 'application_export', prefix: 'app', signedKind: 'application_signed',    condition: 'rtl_cond_signed_app', name: 'Loan Application' },
-      { kind: 'bp_disclosure',      prefix: 'bpd', signedKind: 'bp_disclosure_signed',  condition: 'rtl_cond_disclosures', name: 'Business-Purpose Disclosure', generate: true },
+      { kind: 'bp_disclosure',      prefix: 'bpd', signedKind: 'bp_disclosure_signed',  condition: 'rtl_cond_signed_app', name: 'Business-Purpose Disclosure', generate: true },
     ],
   },
   heter_iska: {

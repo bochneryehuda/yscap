@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api } from '../lib/api.js';
+import { api, saveBlob } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import {
   PHASE, PURPOSE, ROLE, TERMINAL, timeAgo, absTime as abs, recipientSteps,
@@ -22,6 +22,7 @@ import {
 // Filter tabs: which phases each shows. "attention" is the human-action bucket.
 const TABS = [
   { key: 'all',       label: 'All' },
+  { key: 'outstanding', label: 'Outstanding' },   // everything still in flight (not completed/declined/voided/error)
   { key: 'borrower',  label: 'Awaiting borrower', phases: ['awaiting_borrower'] },
   { key: 'admin',     label: 'Awaiting my signature', phases: ['awaiting_countersign'] },
   { key: 'completed', label: 'Completed', phases: ['completed'] },
@@ -85,6 +86,12 @@ function EnvelopeCard({ e, onReload, isAdmin }) {
     catch (err) { setActErr(err.message || 'Could not cancel the package.'); }
     finally { setBusy(false); }
   }
+  async function dl(documentId, fallbackName) {
+    setActErr('');
+    try { const { blob, filename } = await api.staffDownloadDoc(documentId); saveBlob(blob, filename || fallbackName); }
+    catch (err) { setActErr(err.message || 'Could not download the document.'); }
+  }
+  const docLabel = (kind) => String(kind || 'signed document').replace(/_signed$/, '').replace(/_/g, ' ');
   const ph = PHASE[e.phase] || { label: e.phase, cls: 'muted', dot: '#4B585C' };
   const who = [e.firstName, e.lastName].filter(Boolean).join(' ');
   const recips = (e.recipients || []).slice().sort(
@@ -134,6 +141,20 @@ function EnvelopeCard({ e, onReload, isAdmin }) {
           ? <p className="muted small" style={{ margin: '10px 0 0' }}>No recipients recorded yet.</p>
           : recips.map((r) => <Recipient key={r.id || `${r.role}-${r.routingOrder}`} r={r} />)}
       </div>
+
+      {(e.documents && e.documents.length) || e.certificate ? (
+        <div className="row" style={{ gap: 6, margin: '10px 0 0', flexWrap: 'wrap', alignItems: 'baseline' }}>
+          <span className="muted small">Signed:</span>
+          {(e.documents || []).map((d) => (
+            <button key={d.documentId} className="btn ghost btn-sm" onClick={() => dl(d.documentId, d.filename)}
+              title={`Download the signed ${docLabel(d.docKind)}`}>↓ {docLabel(d.docKind)}</button>
+          ))}
+          {e.certificate ? (
+            <button className="btn ghost btn-sm" onClick={() => dl(e.certificate.documentId, e.certificate.filename)}
+              title="DocuSign Certificate of Completion — the legal audit trail (signers, times, IP)">↓ certificate</button>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="esign-foot muted small">
         <span>{sentSummary}</span>
@@ -205,10 +226,13 @@ export default function EsignDashboard() {
   const counts = (data && data.counts) || {};
   const envelopes = (data && data.envelopes) || [];
   const sendHealth = (data && data.sendHealth) || null;
-  const attention = (e) => ['declined', 'voided', 'error'].includes(e.phase) || e.deadLetteredAt;
+  const attention = (e) => ['declined', 'error'].includes(e.phase) || e.deadLetteredAt;   // a deliberate void is resolved, not "needs attention"
+  const isOutstanding = (e) => !TERMINAL.includes(e.phase);   // still in flight: awaiting borrower / counter-sign
+  const outstandingCount = envelopes.filter(isOutstanding).length;
   const shown = envelopes.filter((e) => {
     const t = TABS.find((x) => x.key === tab);
     if (!t || t.key === 'all') return true;
+    if (t.key === 'outstanding') return isOutstanding(e);
     if (t.key === 'attention') return attention(e);
     return (t.phases || []).includes(e.phase);
   });
@@ -259,6 +283,7 @@ export default function EsignDashboard() {
 
       <div className="esign-stats">
         <StatCard label="All packages" value={counts.total || 0} active={tab === 'all'} onClick={() => setTab('all')} />
+        <StatCard label="Outstanding" value={outstandingCount} tone="teal" active={tab === 'outstanding'} onClick={() => setTab('outstanding')} />
         <StatCard label="Awaiting borrower" value={counts.awaiting_borrower || 0} tone="teal" active={tab === 'borrower'} onClick={() => setTab('borrower')} />
         <StatCard label="Awaiting my signature" value={counts.awaitingCountersign || 0} tone="gold" active={tab === 'admin'} onClick={() => setTab('admin')} />
         <StatCard label="Completed" value={counts.completed || 0} tone="ok" active={tab === 'completed'} onClick={() => setTab('completed')} />

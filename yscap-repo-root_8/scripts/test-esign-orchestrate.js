@@ -229,6 +229,30 @@ function fakeStorage() {
     const cert = (await pool.query(`SELECT count(*)::int n FROM documents WHERE application_id=$1 AND doc_kind='esign_certificate'`, [app])).rows[0].n;
     eq(cert, 1, 'certificate of completion stored');
 
+    // The read model surfaces the signed PDFs + the certificate for download links
+    // on BOTH the cockpit and the per-file view (attachSignedArtifacts).
+    const tracking = require(R + '/src/lib/esign/tracking');
+    const fe = await tracking.fileEsign(pool, app);
+    const feEnv = fe.envelopes.find((x) => String(x.id) === String(env.id));
+    ok(feEnv && feEnv.documents && feEnv.documents.length === 3, 'read model attaches the 3 signed PDFs to the envelope');
+    ok(feEnv && feEnv.certificate && feEnv.certificate.documentId, 'read model attaches the certificate for download');
+
+    // Borrower access: the 3 signed copies carry borrower_id (so they appear in the
+    // borrower's in-portal document library); the certificate stays staff-only (null).
+    const bwSigned = (await pool.query(
+      `SELECT count(*)::int n FROM documents WHERE application_id=$1 AND doc_kind LIKE '%_signed' AND borrower_id IS NOT NULL`, [app])).rows[0].n;
+    eq(bwSigned, 3, 'signed copies carry borrower_id (visible in the borrower library)');
+    const certBw = (await pool.query(
+      `SELECT borrower_id FROM documents WHERE application_id=$1 AND doc_kind='esign_certificate'`, [app])).rows[0];
+    ok(certBw && certBw.borrower_id === null, 'certificate stays staff-only (no borrower_id)');
+    // Condition merge: the signed disclosure files into the combined application condition.
+    const discCond = (await pool.query(
+      `SELECT t.code FROM esign_envelope_docs ed
+         JOIN checklist_items ci ON ci.id = ed.checklist_item_id
+         JOIN checklist_templates t ON t.id = ci.template_id
+        WHERE ed.envelope_row_id=$1 AND ed.doc_kind='bp_disclosure_signed'`, [env.id])).rows[0];
+    eq(discCond && discCond.code, 'rtl_cond_signed_app', 'signed disclosure files into the combined application condition (merge)');
+
     // ---- idempotent re-drain: a duplicate completion event is a no-op --------
     await pool.query(`INSERT INTO docusign_event_inbox (body_sha256,envelope_id,event_type) VALUES ('sha-2',$1,'envelope-completed')`, [env.envelope_id]);
     await webhook.drainInbox({ db: pool, docusign, storage });
