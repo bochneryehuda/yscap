@@ -1759,6 +1759,45 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
    instead of falling through to the neutral base pill. */
 .app .pill.bad{background:var(--danger-soft);color:var(--danger)}
 
+/* ---- collapsible appraisal report sections (AppraisalPanel.jsx ApprSection) ---- */
+.appr-sec{border-top:1px solid var(--line);margin-top:14px}
+.appr-sec-sum{list-style:none;cursor:pointer;display:flex;align-items:flex-end;gap:10px;outline:none}
+.appr-sec-sum::-webkit-details-marker{display:none}
+.appr-sec-sum>div:first-child{flex:1;min-width:0}
+.appr-sec-chev{font-size:20px;line-height:1;color:var(--gold);transition:transform .18s ease;align-self:center;flex:none;margin-bottom:6px}
+details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
+.appr-sec-sum:hover .appr-sec-chev{color:var(--teal)}
+.appr-sec-body{padding-top:2px}
+/* Printing (Ctrl+P from anywhere) always shows the full report. Modern Chromium
+   hides a closed <details> via content-visibility on ::details-content, so we
+   reveal it there (plus display:block on the body for older engines). The
+   full-report OVERLAY additionally forces `open` on every section in JS (React
+   context), which is the primary guarantee. */
+@media print{
+  .appr-sec>.appr-sec-body{display:block !important}
+  .appr-sec::details-content{content-visibility:visible !important}
+  .appr-sec-chev{display:none !important}
+}
+.appr-print-root .appr-sec::details-content{content-visibility:visible !important}
+
+/* ---- in-file loan progress stepper (LoanProgress.jsx) ---- */
+.loan-prog{border:1px solid var(--line);border-radius:12px;padding:12px 14px 14px;margin-bottom:14px;background:var(--ink-1)}
+.loan-prog-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:12px}
+.loan-prog-head .lp-term-lbl{color:var(--danger);font-weight:600}
+.loan-prog-head .lp-held-lbl{color:var(--gold);font-weight:600}
+.lp-track{list-style:none;display:flex;margin:0;padding:0}
+.lp-step{flex:1 1 0;position:relative;display:flex;flex-direction:column;align-items:center;text-align:center;min-width:0}
+.lp-step::before{content:"";position:absolute;top:6px;left:-50%;width:100%;height:2px;background:var(--line);z-index:0}
+.lp-step:first-child::before{display:none}
+.lp-dot{width:14px;height:14px;border-radius:50%;background:var(--ink-3);border:2px solid var(--line);position:relative;z-index:1}
+.lp-label{font-size:11px;line-height:1.2;color:var(--muted);margin-top:7px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+.lp-step.done .lp-dot{background:var(--teal);border-color:var(--teal)}
+.lp-step.done::before{background:var(--teal)}
+.lp-step.current::before{background:linear-gradient(90deg,var(--teal),var(--gold))}
+.lp-step.current .lp-dot{background:var(--gold);border-color:var(--gold);box-shadow:0 0 0 4px var(--gold-soft)}
+.lp-step.current .lp-label{color:var(--gold);font-weight:700}
+@media (max-width:720px){.lp-label{font-size:9.5px}.lp-dot{width:12px;height:12px}}
+
 /* ---- progress bar (ds.css) ---- */
 .prog-bar{height:6px;border-radius:100px;background:var(--surface-soft);overflow:hidden}
 .prog-bar i{display:block;height:100%;background:linear-gradient(90deg,var(--primary),var(--gold))}

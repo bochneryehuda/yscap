@@ -3153,11 +3153,14 @@ async function signOffGate(itemId, actor) {
     if (!eq(sowTotal, appBudget) || (regBudget != null && !eq(appBudget, regBudget)) || (fpSet && !eq(fpTarget, appBudget))) {
       return `Budgets do not match — first-page construction budget ${fpSet ? money(fpTarget) : '—'}, Scope of Work line-item total ${money(sowTotal)}, file budget ${money(appBudget)}${regBudget != null ? `, registered product budget ${money(regBudget)}` : ''}. They must ALL agree to the cent before sign-off: adjust the Scope of Work (start total + line items) or re-register the product so the numbers match.`;
     }
-    // Gold Standard Program: the Scope of Work must carry a >= 5% construction
-    // contingency (owner-directed 2026-07-12). The budget still matches exactly
-    // above — this is a composition requirement on top of it.
-    if (/gold/i.test(String(reg.program || '')) && !require('../lib/rehab-budget').goldContingencyOk(item.tool_payload)) {
-      return require('../lib/rehab-budget').GOLD_CONTINGENCY_MSG;
+    // 5% construction contingency requirement (owner-directed 2026-07-12; extended
+    // 2026-07-20): the Scope of Work must carry a >= 5% contingency when the file
+    // is registered Gold OR its note buyer is Blue Lake. The budget still matches
+    // exactly above — this is a composition requirement on top of it.
+    const RB = require('../lib/rehab-budget');
+    const contReq = await RB.sowContingencyRequired(item.application_id);
+    if (contReq.required && !RB.goldContingencyOk(item.tool_payload)) {
+      return RB.SOW_CONTINGENCY_MSG;
     }
     return null;
   }
@@ -5112,7 +5115,12 @@ router.post('/applications/:id/closing-date', async (req, res) => {
 // SSN has its own secure reveal/enter flow and is NEVER set here. App-field
 // changes enqueue a scoped ClickUp push. Behind the /applications/:id guard.
 const COMPLETE_APP_FIELDS = { program: 'text', loan_type: 'text', property_type: 'text',
-  purchase_price: 'money', as_is_value: 'money', arv: 'money', rehab_budget: 'money' };
+  purchase_price: 'money', as_is_value: 'money', arv: 'money', rehab_budget: 'money',
+  // Note buyer / capital partner (applications.lender). Normally fed from ClickUp,
+  // but staff can fill/correct it here when ClickUp doesn't feed it or is empty —
+  // it's part of application completeness (owner-directed 2026-07-20). STAFF-ONLY;
+  // never offered on the borrower completeness panel.
+  lender: 'text' };
 const COMPLETE_BORROWER_FIELDS = { cell_phone: 'text', date_of_birth: 'date', fico: 'int', citizenship: 'text' };
 async function completeFields(req, res, borrowerScoped) {
   const b = req.body || {};
@@ -5144,13 +5152,23 @@ async function completeFields(req, res, borrowerScoped) {
       // #84 — this staff completeness path writes the SAME frozen economics fields
       // as PATCH /details (program / loan_type / property_type / price / as-is / ARV
       // / rehab budget), so it must honor the clear-to-close / funded freeze too — a
-      // super_admin can unlock the file to correct it. Only the economics UPDATE is
-      // guarded (a request with personal borrower fields only is unaffected).
-      const lock = await require('../lib/file-lock').structuralLockReason(req.params.id, db, { actor: req.actor });
-      if (lock) return res.status(409).json({ error: lock, locked: true });
+      // super_admin can unlock the file to correct it. The NOTE BUYER (lender) is
+      // pure staff metadata (not a frozen economics field), so a lender-only edit
+      // is allowed even on a locked file; the freeze only guards economics.
+      if (appKeys.some((k) => k !== 'lender')) {
+        const lock = await require('../lib/file-lock').structuralLockReason(req.params.id, db, { actor: req.actor });
+        if (lock) return res.status(409).json({ error: lock, locked: true });
+      }
       appSets.push('updated_at=now()');
       await db.query(`UPDATE applications SET ${appSets.join(', ')} WHERE id=$1`, appVals);
       enqueueClickupPush(req.params.id, appKeys).catch(() => {});
+      // Filling a rule-driven field here (most importantly the NOTE BUYER) may
+      // attach/retract a condition — e.g. the CorrFirst EMD verification — and can
+      // flip the 5% SOW-contingency requirement (a Blue Lake note buyer). Re-run
+      // the Condition Center engine and enforce the contingency, exactly like the
+      // details edit path does. Best-effort — never blocks the save.
+      try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'completeness_edited' }); } catch (_) {}
+      try { await require('../lib/rehab-budget').enforceSowContingency(req.params.id); } catch (_) {}
     }
     const brVals = [bid]; const brSets = []; const brKeys = [];
     for (const [k, t] of Object.entries(COMPLETE_BORROWER_FIELDS)) {
@@ -5185,6 +5203,17 @@ async function completeFields(req, res, borrowerScoped) {
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 }
 router.post('/applications/:id/complete-fields', (req, res) => completeFields(req, res, false));
+
+// All note buyers available to pick in the completeness panel — every value from
+// the ClickUp note-buyer dropdown, PLUS the confirmed registry set and anything
+// already on a file (owner-directed 2026-07-20). Staff-only (this whole router is
+// staff-gated) — a note buyer name is never exposed to a borrower.
+router.get('/note-buyers', async (req, res) => {
+  try {
+    const noteBuyers = await require('../lib/note-buyers').listNoteBuyers();
+    res.json({ noteBuyers });
+  } catch (e) { console.warn('[staff] note-buyers error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
 
 // S3-05: DECISION-grade statuses are an underwriting call — only roles with
 // see_all_files authority (admin / underwriter / loan_coordinator) may move a file
