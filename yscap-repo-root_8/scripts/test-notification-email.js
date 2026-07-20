@@ -118,13 +118,13 @@ let n = 0; const ok = (m) => { n++; console.log('  ok -', m); };
   const r = notify.buildEmail({ type: 'doc_rejected', title: 'W-9 needs a new document',
     subjectTag: 'YS-1042 · 9 Oak St', body: 'Please re-upload.' }, 'borrower');
   assert.strictEqual(r.subject, 'W-9 needs a new document · YS-1042 · 9 Oak St', 'buildEmail passes subjectTag to subject');
-  assert.ok(r.html.includes('Action needed'), 'doc_rejected maps to the "Action needed" kicker');
+  assert.ok(r.html.includes('Document'), 'doc_rejected maps to the "Document" category kicker');
   assert.ok(/reply directly to this email/i.test(r.html), 'notify emails are repliable by default');
   ok('buildEmail: type→kicker + subjectTag + default repliable');
 
   // An explicit kicker wins over the type map; replyable:false suppresses the line.
   const r2 = notify.buildEmail({ type: 'doc_rejected', title: 't', kicker: 'Custom', replyable: false }, 'staff');
-  assert.ok(r2.html.includes('Custom') && !r2.html.includes('Action needed'), 'explicit kicker overrides the map');
+  assert.ok(r2.html.includes('Custom') && !r2.html.includes('>Document<'), 'explicit kicker overrides the map');
   assert.ok(!/reply directly to this email/i.test(r2.html), 'replyable:false suppresses the reply line');
   ok('buildEmail: explicit kicker overrides, replyable:false opts out');
 }
@@ -154,6 +154,32 @@ let n = 0; const ok = (m) => { n++; console.log('  ok -', m); };
   assert.strictEqual(plain.subject, 'Plain', 'plain email subject unchanged');
   assert.ok(!/&#10003;|Your loan officer|Released to you/.test(plain.html), 'no premium markup leaks into a plain email');
   ok('premium components are fully optional (back-compat holds)');
+}
+
+/* ---------------- catalog (auth/onboarding) emails: premium + repliable + safe ---------------- */
+{
+  const mail = require('../src/lib/email/catalog');
+  const w = mail.welcome({ firstName: 'Yuda', verifyUrl: 'https://x/y' });
+  assert.ok(w.html.includes('Portal ready'), 'welcome carries a badge');
+  assert.ok(/reply directly to this email/i.test(w.html), 'welcome advertises it is repliable');
+
+  // File-scoped invite: subject carries the file tag.
+  const bi = mail.borrowerInvite({ firstName: 'Yuda', propertyLabel: '392 Columbia Ave, Brooklyn, NY', loanNumber: 'YS-1042', inviter: 'Sarah Green' });
+  assert.strictEqual(bi.subject, 'Your loan file is ready in the portal · YS-1042 · 392 Columbia Ave', 'borrowerInvite subject is file-tagged');
+
+  // A property address that COLLIDES with a partner word must NOT be mangled —
+  // catalog builders take trusted structured data (address/name/loan#) and never
+  // blanket-scrub it (that would rewrite a legit "Churchill Lane").
+  const bc = mail.borrowerInvite({ firstName: 'Yuda', propertyLabel: '12 Churchill Lane, Austin, TX', loanNumber: 'YS-1', inviter: 'Churchill Weiss' });
+  assert.ok(bc.html.includes('12 Churchill Lane') && bc.subject.includes('12 Churchill Lane'), 'collision address is preserved, not mangled');
+  assert.ok(bc.html.includes('Churchill Weiss'), 'a staff name colliding with a partner word is preserved');
+
+  const es = mail.esignReadyToSign({ firstName: 'Y', propertyLabel: '392 Columbia Ave', loanNumber: 'YS-1042', packageLabel: 'Term Sheet', signUrl: 'https://x' });
+  assert.ok(/· YS-1042 · 392 Columbia Ave/.test(es.subject) && es.html.includes('Signature needed'), 'esign email is file-tagged + badged');
+
+  const lr = mail.leadReceived({ firstName: 'Y', toolLabel: 'Loan Application' });
+  assert.ok(lr.html.includes('Received') && /reply directly to this email/i.test(lr.html), 'leadReceived badged + repliable');
+  ok('catalog emails: premium badges, file-tagged subjects, repliable footer, collision address/name preserved');
 }
 
 console.log(`\nAll ${n} notification-email checks passed.`);

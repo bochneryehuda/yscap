@@ -24,6 +24,8 @@ const { planReallocation } = require('../sitewire/reallocation');
 const M = require('../sitewire/mapper');
 const notify = require('../lib/notify');
 const borrowerSafe = require('../lib/borrower-safe');
+const drawReport = require('../sitewire/draw-report');
+const { serveDocument } = require('../lib/serve-document');
 
 router.use(requireAuth, requireBorrower);
 const me = (req) => req.actor.id;
@@ -118,7 +120,7 @@ router.post('/findings/:findingId/accept', async (req, res) => {
     `UPDATE draw_findings SET status='accepted', accepted_at=now(), accepted_via='portal', wire_due_at=now() + ($2 || ' hours')::interval, updated_at=now()
       WHERE id=$1 AND status='delivered' RETURNING wire_due_at`, [f.id, String(hours)])).rows[0];
   if (!upd) return res.status(409).json({ error: 'already handled' });
-  await notify.notifyAppStaff(f.application_id, { type: 'draw_accepted', title: 'Borrower accepted a draw',
+  await notify.notifyAppStaff(f.application_id, { type: 'draw_accepted', title: 'Borrower accepted a draw', badge: { text: 'Accepted', tone: 'positive' },
     body: `The borrower accepted the inspection results — the release is due by ${new Date(upd.wire_due_at).toLocaleString('en-US')}.`, applicationId: f.application_id, link: `/internal/app/${f.application_id}` }).catch(() => {});
   res.json({ ok: true, wire_due_at: upd.wire_due_at });
 });
@@ -148,9 +150,40 @@ router.post('/findings/:findingId/dispute', async (req, res) => {
   }
   if (!count) return res.status(400).json({ error: 'no valid dispute lines' });
   await db.query(`UPDATE draw_findings SET status='disputed', disputed_at=now(), updated_at=now() WHERE id=$1`, [f.id]);
-  await notify.notifyAppStaff(f.application_id, { type: 'draw_disputed', title: 'Borrower disputed a draw',
+  await notify.notifyAppStaff(f.application_id, { type: 'draw_disputed', title: 'Borrower disputed a draw', badge: { text: 'Disputed', tone: 'action' },
     body: `The borrower disputed ${count} item(s) on their draw results and provided evidence. A draw coordinator needs to review.`, applicationId: f.application_id, link: `/internal/app/${f.application_id}` }).catch(() => {});
   res.json({ ok: true, disputed_lines: count });
+});
+
+// ---- GET /draws/:appId/report — the borrower's OWN branded inspection report (PDF, always borrower-safe) ----
+// mode is HARD-FORCED to 'borrower' (a borrower can never obtain the staff copy). ?drawId=N → that draw;
+// omitted → the whole-project report. Idempotent + cached by the same version-hashed filename as the staff
+// route; the stored copy is visibility='borrower'. own-file only + per-draw IDOR.
+router.get('/draws/:appId/report', async (req, res) => {
+  const appId = req.params.appId;
+  if (!(await ownsApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const drawId = /^\d{1,18}$/.test(String(req.query.drawId || '')) ? req.query.drawId : null; // 1..18 digits stays in bigint range (a 19+-digit id would 22003 the ownership query as a 500, not a clean 404)
+  if (drawId) {
+    const own = await db.query(`SELECT 1 FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [drawId, appId]);
+    if (!own.rowCount) return res.status(404).json({ error: 'That draw was not found on your file.' });
+  }
+  try {
+    const meta = await drawReport.loadReportMeta(appId, { sitewireDrawId: drawId, mode: 'borrower' });
+    if (!meta || !meta.hasScope || !meta.sections.length) return res.status(404).json({ error: 'Your inspection report isn’t ready yet — it appears once your draw results are in.' });
+    const scope = drawId ? 'draw' : 'project';
+    const drawNumber = drawId && meta.sections[0] ? meta.sections[0].number : null;
+    const filename = drawReport.reportFilename({ scope, mode: 'borrower', drawNumber, version: meta.version, loanNo: meta.app.loanNo });
+    const borrowerId = (await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [appId])).rows[0] || {};
+    let doc = (await db.query(
+      `SELECT * FROM documents WHERE application_id=$1 AND doc_kind='draw_inspection_report' AND filename=$2 LIMIT 1`, [appId, filename])).rows[0];
+    if (!doc) {
+      await drawReport.attachPhotoBytes(meta.sections);
+      const bytes = drawReport.buildDrawReport({ app: meta.app, rollup: meta.rollup, sections: meta.sections, scope, mode: 'borrower' });
+      const docId = await drawReport.storeDrawReport({ appId, borrowerId: borrowerId.borrower_id, filename, bytes, mode: 'borrower' });
+      doc = (await db.query(`SELECT * FROM documents WHERE id=$1`, [docId])).rows[0];
+    }
+    return serveDocument(res, doc, { inline: true });
+  } catch (e) { res.status(500).json({ error: 'Could not build your report right now — please try again shortly.' }); }
 });
 
 // ---- POST /draws/:appId/change-request — borrower proposes a Scope-of-Work change ----
@@ -179,7 +212,7 @@ router.post('/draws/:appId/change-request', async (req, res) => {
       `INSERT INTO sow_change_request_details (change_request_id, application_id, proposed_payload, deltas, net_zero, after_ctc, needs_capital_partner, capital_partner_status)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
       [cr.id, appId, JSON.stringify(proposedPayload), JSON.stringify(plan.cells), plan.totals.net_zero, phase === 'after_ctc', plan.needs_capital_partner, plan.needs_capital_partner ? 'pending' : null]);
-    await notify.notifyAppStaff(appId, { type: 'sow_change_request', title: 'Borrower requested a budget change',
+    await notify.notifyAppStaff(appId, { type: 'sow_change_request', title: 'Borrower requested a budget change', badge: { text: 'Review needed', tone: 'gold' },
       body: 'The borrower proposed a Scope-of-Work change. Review it on the file before it flows to draws.', applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
     // borrower-safe: never echo capital-partner review status detail back to the borrower
     res.json({ ok: true, submitted: true, net_zero: plan.totals.net_zero });

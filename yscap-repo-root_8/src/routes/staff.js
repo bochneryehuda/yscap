@@ -1994,7 +1994,7 @@ router.post('/applications/:id/checklist', async (req, res) => {
   if (app.rows[0] && audience !== 'staff') {
     const ctx = await notify.fileContext(req.params.id);
     await notify.notifyBorrower(app.rows[0].borrower_id, {
-      type: 'condition_added', title: 'New document requested on your file',
+      type: 'condition_added', title: 'New document requested on your file', badge: { text: 'Action needed', tone: 'action' },
       body: `"${borrowerLabel || b.label}" was added to your conditions on ${ctx ? ctx.label : 'your file'}.`,
       meta: (ctx && ctx.borrowerMeta) || undefined,
       applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Open your conditions' });
@@ -2088,7 +2088,7 @@ router.post('/applications/:id/conditions/custom', async (req, res) => {
     try {
       const ctx = await notify.fileContext(req.params.id);
       await notify.notifyAppBorrowers(req.params.id, {
-        type: 'condition_added', title: 'A new item was added to your file',
+        type: 'condition_added', title: 'A new item was added to your file', badge: { text: 'Action needed', tone: 'action' },
         // Never interpolate the internal label — it can carry underwriting /
         // capital-partner (note-buyer) context. Borrower wording or a generic line.
         body: b.borrowerLabel
@@ -2122,7 +2122,7 @@ router.post('/applications/:id/conditions/attach', async (req, res) => {
     try {
       const ctx = await notify.fileContext(req.params.id);
       await notify.notifyAppBorrowers(req.params.id, {
-        type: 'condition_added', title: 'A new item was added to your file',
+        type: 'condition_added', title: 'A new item was added to your file', badge: { text: 'Action needed', tone: 'action' },
         // Borrower wording only — never fall back to the internal tpl.label.
         body: tpl.borrower_label
           ? `"${tpl.borrower_label}" was added to your conditions on ${ctx ? ctx.label : 'your file'}.`
@@ -2370,7 +2370,7 @@ router.post('/applications/:id/loan-conditions', async (req, res) => {
       if (a.rows[0]?.borrower_id) {
         try {
           await notify.notifyAppBorrowers(req.params.id, {
-            type: 'condition_added', title: 'A new item needs your attention',
+            type: 'condition_added', title: 'A new item needs your attention', badge: { text: 'Action needed', tone: 'action' },
             // Never surface the internal title to the borrower — use the
             // borrower-facing wording, or a generic prompt if none was given.
             body: b.borrowerTitle || 'Your loan team added an item to your file — sign in to see what we need.',
@@ -2493,7 +2493,7 @@ router.post('/change-requests/:cid/approve', async (req, res) => {
     try {
       const change = changeRequests.describeChange(cr);
       await notify.notifyAppBorrowers(cr.application_id, {
-        type: 'change_request', title: 'Your requested change was approved',
+        type: 'change_request', title: 'Your requested change was approved', badge: { text: 'Approved', tone: 'positive' },
         body: `Your loan team approved your update to ${cr.field_label}. ${change} is now on file.`,
         applicationId: cr.application_id, link: `/app/${cr.application_id}`, ctaLabel: 'Open your file' });
     } catch (_) {}
@@ -2524,7 +2524,7 @@ router.post('/change-requests/:cid/reject', async (req, res) => {
     try {
       const change = changeRequests.describeChange(cr);
       await notify.notifyAppBorrowers(cr.application_id, {
-        type: 'change_request', title: 'Update on your requested change',
+        type: 'change_request', title: 'Update on your requested change', badge: { text: 'Reviewed', tone: 'neutral' },
         body: `Your loan team reviewed your requested change (${change}) and it was not applied${note ? `: ${note}` : '. Reach out if you have questions.'}`,
         applicationId: cr.application_id, link: `/app/${cr.application_id}`, ctaLabel: 'Open your file' });
     } catch (_) {}
@@ -2972,11 +2972,17 @@ router.post('/applications/:id/assign', async (req, res) => {
       const u = await db.query(`UPDATE applications SET loan_officer_id=$2, loan_officer_name=$3, updated_at=now() WHERE id=$1`,
         [req.params.id, loanOfficerId, off.rows[0].full_name]);
       if (u.rowCount === 0) return res.status(404).json({ error: 'application not found' });
-      await notify.notifyStaff(loanOfficerId, {
-        type: 'assignment', title: 'You are the loan officer on a file',
-        body: `${req.actor.name || 'An admin'} assigned this file to you as loan officer. The file details are below — open it to get started.`,
-        applicationId: req.params.id, ctaLabel: 'Open the loan file',
-        link: `/internal/app/${req.params.id}` });
+      const officerChanged = String(cur.rows[0].loan_officer_id || '') !== String(loanOfficerId);
+      // Only email the officer on a REAL change — re-saving the assignment panel
+      // with the same officer is a no-op and must not re-send "You are the loan
+      // officer on a file" every time (round-2 audit N3).
+      if (officerChanged) {
+        await notify.notifyStaff(loanOfficerId, {
+          type: 'assignment', title: 'You are the loan officer on a file',
+          body: `${req.actor.name || 'An admin'} assigned this file to you as loan officer. The file details are below — open it to get started.`,
+          applicationId: req.params.id, ctaLabel: 'Open the loan file',
+          link: `/internal/app/${req.params.id}` });
+      }
       // "Meet your loan officer" (owner-directed 2026-07-20): when the officer
       // CHANGES to a new person, introduce them to the borrower so the
       // relationship is personal and they know exactly who to reach (fileContext
@@ -3017,11 +3023,15 @@ router.post('/applications/:id/assign', async (req, res) => {
       const u = await db.query(`UPDATE applications SET processor_id=$2, updated_at=now() WHERE id=$1`,
         [req.params.id, processorId]);
       if (u.rowCount === 0) return res.status(404).json({ error: 'application not found' });
-      await notify.notifyStaff(processorId, {
-        type: 'assignment', title: 'You are the processor on a file',
-        body: `${req.actor.name || 'An admin'} assigned this file to you for processing. The file details are below — open it to get started.`,
-        applicationId: req.params.id, ctaLabel: 'Open the loan file',
-        link: `/internal/app/${req.params.id}` });
+      // Only email the processor on a REAL change (round-2 audit N3) — a no-op
+      // re-assign must not re-send "You are the processor on a file".
+      if (String(cur.rows[0].processor_id || '') !== String(processorId)) {
+        await notify.notifyStaff(processorId, {
+          type: 'assignment', title: 'You are the processor on a file',
+          body: `${req.actor.name || 'An admin'} assigned this file to you for processing. The file details are below — open it to get started.`,
+          applicationId: req.params.id, ctaLabel: 'Open the loan file',
+          link: `/internal/app/${req.params.id}` });
+      }
       await audit(req, 'assign_processor', 'application', req.params.id, { from: cur.rows[0].processor_id || null, to: processorId });
     }
     enqueueClickupPush(req.params.id, ['officer', 'processor']).catch(() => {}); // propagate officer/processor to ClickUp promptly
@@ -4007,7 +4017,7 @@ router.post('/llcs/:id/verify', async (req, res) => {
   } catch (e) { console.warn('[llc-revoke] chain revoke failed:', e.message); }
   try {
     await notify.notifyBorrower(own.rows[0].borrower_id, {
-      type: 'llc_unverified', title: 'Your LLC needs attention',
+      type: 'llc_unverified', title: 'Your LLC needs attention', badge: { text: 'Action needed', tone: 'action' },
       body: `Verification of "${own.rows[0].llc_name}" was revoked${reason ? `: ${reason}` : ''}.`
         + (revokedChildren.length ? ` Because it owns ${revokedChildren.map(n => `"${n}"`).join(', ')}, verification there was reopened too.` : '')
         + ' Please review the details and documents on your profile.',
@@ -4087,7 +4097,7 @@ router.post('/track-records/:id/verify', async (req, res) => {
     const addr = (tr.rows[0].property_address && (tr.rows[0].property_address.oneLine || tr.rows[0].property_address.line1)) || 'a property';
     try {
       await notify.notifyBorrower(tr.rows[0].borrower_id, {
-        type: 'track_record_unverified', title: 'A track-record project needs attention',
+        type: 'track_record_unverified', title: 'A track-record project needs attention', badge: { text: 'Action needed', tone: 'action' },
         body: `Verification of your project at ${addr} was revoked: ${reason}. Please review it and its documents on your track record.`,
         link: '/track-record', ctaLabel: 'Review your track record' });
     } catch (_) { /* best-effort */ }
@@ -4433,6 +4443,14 @@ router.post('/applications/:id/nudge', async (req, res) => {
     const list = [...items.rows.map(r => r.label), ...conds.rows.map(r => r.title)].filter(Boolean);
     if (!list.length) return res.status(400).json({ error: 'nothing outstanding to remind about' });
     const shown = list.slice(0, 8).join('; ') + (list.length > 8 ? `; +${list.length - 8} more` : '');
+    // Anti-double-send (round-2 audit N2): a "Remind" is a deliberate reach-out,
+    // but repeated/accidental clicks must not email the borrower several times in
+    // a row. Block a repeat nudge to the SAME file within a short window; a
+    // genuine later reminder still goes through.
+    const recentNudge = await db.query(
+      `SELECT 1 FROM audit_log WHERE action='nudge_borrower' AND entity_id=$1 AND created_at > now() - interval '30 minutes' LIMIT 1`,
+      [req.params.id]);
+    if (recentNudge.rows[0]) return res.status(429).json({ error: 'This borrower was already reminded on this file in the last 30 minutes — please wait before sending another.' });
     await notify.notifyAppBorrowers(req.params.id, {
       type: 'reminder', title: 'A friendly reminder on your loan file',
       body: `Still needed to keep things moving: ${shown}.`,
@@ -5799,10 +5817,18 @@ router.post('/documents/:id/review', async (req, res) => {
           if (it.rows[0]) condLabel = it.rows[0].label;
         }
         let emailNow = true;
-        if (doc.application_id) {
+        // Throttle on the file when there is one, else on the BORROWER — an
+        // application-less document (LLC formation, EIN, operating agreement,
+        // track-record, profile doc) has application_id NULL, so keying the
+        // throttle on application_id alone let a batch of entity documents email
+        // once PER DOCUMENT (round-2 audit N5). Keying on the borrower for those
+        // caps it to one email per borrower per window like the file path.
+        const throttleId = doc.application_id || doc.borrower_id;
+        const throttleType = doc.application_id ? 'application' : 'borrower';
+        if (throttleId) {
           const recent = await db.query(
             `SELECT 1 FROM audit_log WHERE action='doc_accepted_emailed' AND entity_id=$1 AND created_at > now() - interval '12 hours' LIMIT 1`,
-            [doc.application_id]);
+            [throttleId]);
           emailNow = !recent.rows[0];
         }
         await notify.notifyBorrower(doc.borrower_id, {
@@ -5813,11 +5839,11 @@ router.post('/documents/:id/review', async (req, res) => {
           applicationId: doc.application_id,
           link: doc.application_id ? `/app/${doc.application_id}` : '/profile',
           ctaLabel: 'View your file',
-          major: emailNow });   // throttle: email once per file per 12h, else in-app only
-        if (emailNow && doc.application_id) {
+          major: emailNow });   // throttle: email once per file/borrower per 12h, else in-app only
+        if (emailNow && throttleId) {
           await db.query(
             `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
-             VALUES ('system',NULL,'doc_accepted_emailed','application',$1,'{}'::jsonb)`, [doc.application_id]).catch(() => {});
+             VALUES ('system',NULL,'doc_accepted_emailed',$2,$1,'{}'::jsonb)`, [throttleId, throttleType]).catch(() => {});
         }
       } catch (_) { /* best-effort */ }
     }

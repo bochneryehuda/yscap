@@ -141,6 +141,9 @@ export default function DrawsPanel({ appId }) {
             </div>
           </div>
 
+          {/* ---- lifecycle: finish the draw process / mark paid off / re-open ---- */}
+          <LifecycleControl appId={appId} link={link} writesOff={writesOff} onChanged={load} />
+
           {/* ---- read-only notice when Sitewire writes are off (the default staged state) ---- */}
           {writesOff && (
             <div className="panel" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)', borderLeft: '3px solid var(--gold,#ae8746)' }}>
@@ -207,6 +210,53 @@ export default function DrawsPanel({ appId }) {
    ONE button that pushes the property + construction budget + Scope of Work + fees over and
    reads them back. Nothing is guessed — a missing prerequisite disables the button, and any
    error while pushing lands in the review queue instead of being silently applied. */
+/* Close a project out from the desk: "Finish the draw process" (construction done, no more draws) or
+   "Mark paid off" (loan closed) — both deactivate the property in Sitewire so no further draws can be
+   submitted; a finished/paid-off project can be re-opened. Confirmed before firing (it changes Sitewire). */
+const LIFECYCLE_LABEL = { active: 'Active', finished: 'Draw process finished', paid_off: 'Paid off' };
+function LifecycleControl({ appId, link, writesOff, onChanged }) {
+  const [busy, setBusy] = useState('');
+  const [msg, setMsg] = useState('');
+  const state = (link && link.lifecycle_state) || 'active';
+  const at = link && link.lifecycle_at;
+  async function set(next, confirmText) {
+    if (!window.confirm(confirmText)) return;
+    setBusy(next); setMsg('');
+    try {
+      const r = await api.post(`/api/sitewire/files/${appId}/lifecycle`, { state: next });
+      const swNote = r.sitewire === 'synced' ? ' Synced to Sitewire.' : r.sitewire === 'skipped' ? ' (Sitewire sync will apply once writing is turned on.)' : r.sitewire === 'dryrun' ? ' (dry-run — nothing sent to Sitewire.)' : '';
+      setMsg((next === 'active' ? 'Project re-opened.' : next === 'paid_off' ? 'Marked paid off.' : 'Draw process finished.') + swNote);
+      onChanged();
+    } catch (e) { setMsg(e?.data?.error || e.message || 'That didn’t work.'); }
+    finally { setBusy(''); }
+  }
+  const done = state !== 'active';
+  return (
+    <div className="panel" style={{ marginTop: 12, background: done ? 'var(--paper,#f6f3ec)' : 'transparent', borderLeft: done ? '3px solid var(--gold,#ae8746)' : undefined }}>
+      <div className="row between" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'baseline' }}>
+        <div className="small">
+          <b>Project status:</b> {LIFECYCLE_LABEL[state] || 'Active'}{done && at ? ` · ${fmtDay(at)}` : ''}
+        </div>
+        <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+          {state === 'active' ? (
+            <>
+              <button className="btn btn-sm ghost" disabled={busy === 'finished'} title="Construction is complete — no more draws expected. Deactivates the property in Sitewire."
+                onClick={() => set('finished', 'Finish the draw process for this project? No further draws can be submitted (the property is deactivated in Sitewire). You can re-open it later.')}>Finish the draw process</button>
+              <button className="btn btn-sm ghost" disabled={busy === 'paid_off'} title="The loan is paid off / closed. Deactivates the property in Sitewire."
+                onClick={() => set('paid_off', 'Mark this loan as paid off? No further draws can be submitted (the property is deactivated in Sitewire). You can re-open it later.')}>Mark paid off</button>
+            </>
+          ) : (
+            <button className="btn btn-sm ghost" disabled={busy === 'active'} title="Re-open this project — re-activates the property in Sitewire so draws can be submitted again."
+              onClick={() => set('active', 'Re-open this project? It becomes active again and the property is re-activated in Sitewire.')}>Re-open project</button>
+          )}
+        </div>
+      </div>
+      {writesOff && state === 'active' && <div className="muted small" style={{ marginTop: 4 }}>Sitewire writing is off — closing a project is recorded in PILOT now and synced to Sitewire once writing is turned on.</div>}
+      {msg && <div className="muted small" style={{ marginTop: 4 }}>{msg}</div>}
+    </div>
+  );
+}
+
 function CheckRow({ ok, label }) {
   return (
     <div className="row" style={{ gap: 9, alignItems: 'center', padding: '4px 0' }}>

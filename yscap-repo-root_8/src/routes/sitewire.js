@@ -95,8 +95,10 @@ router.get('/draws', requirePermission('manage_draws'), async (req, res) => {
       `SELECT d.sitewire_draw_id, d.application_id, d.number, d.status, d.total_requested_cents, d.total_approved_cents,
               d.submitted_at, d.approved_at, d.updated_at, d.pdf_src,
               a.ys_loan_number, a.property_address->>'oneLine' AS address,
+              COALESCE(pl.lifecycle_state, 'active') AS lifecycle_state,
               (SELECT count(*) FROM draw_disbursements dd WHERE dd.sitewire_draw_id=d.sitewire_draw_id AND dd.funded_status='released') AS released_count
          FROM sitewire_draws d JOIN applications a ON a.id=d.application_id
+         LEFT JOIN sitewire_property_links pl ON pl.application_id=d.application_id AND pl.matched_by='created'
         WHERE a.deleted_at IS NULL${sc.where}
         ORDER BY d.updated_at DESC NULLS LAST LIMIT 300`, sc.params)).rows;
     res.json({ draws: rows });
@@ -205,6 +207,24 @@ router.post('/files/:id/reconcile', requirePermission('manage_draws'), async (re
   if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   if (!cfg.sitewireEnabled) return res.status(503).json({ error: 'Sitewire is turned off' });
   try { res.json(await reconcile.reconcileOne(req.params.id)); } catch (e) { res.status(502).json({ error: e.message }); }
+});
+
+// ---- POST /api/sitewire/files/:id/lifecycle — finish the draw process / mark paid off / re-open ----
+// The Draw Coordinator closes a project out from the desk. Records the PILOT-side lifecycle state and (when
+// writes are on) deactivates the property in Sitewire so no further draws can be submitted. manage_draws +
+// canSeeFile + go-forward-only (only a PILOT-managed file can be closed out — enforced in the orchestrator).
+router.post('/files/:id/lifecycle', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const state = String((req.body && req.body.state) || '').trim();
+  if (!orchestrator.LIFECYCLE_STATES.has(state)) return res.status(400).json({ error: 'Pick a valid state: finished, paid_off, or active.' });
+  try {
+    const r = await orchestrator.setPropertyLifecycle(appId, state, req.actor && req.actor.id);
+    if (r.error === 'not_managed') return res.status(409).json({ error: 'This file isn’t managed by PILOT in Sitewire yet — start the draw process first.' });
+    if (r.error === 'invalid_state') return res.status(400).json({ error: 'Pick a valid state: finished, paid_off, or active.' });
+    if (r.parked) return res.status(502).json({ error: 'Couldn’t sync to Sitewire — a review was opened. Please try again shortly.', parked: r.parked });
+    res.json(r);
+  } catch (e) { res.status(502).json({ error: 'Couldn’t update the project status right now — please try again shortly.' }); }
 });
 
 // ---- POST /api/sitewire/files/:id/push — manual birth push (admin/setup, guarded) ----
@@ -946,7 +966,7 @@ router.get('/portfolio', requirePermission('manage_draws'), async (req, res) => 
     const rows = (await db.query(
       `SELECT a.id AS application_id, a.ys_loan_number, a.property_address->>'oneLine' AS address, a.status,
               a.actual_closing, a.term,
-              l.sitewire_property_id,
+              l.sitewire_property_id, COALESCE(l.lifecycle_state,'active') AS lifecycle_state, l.lifecycle_at,
               COALESCE((SELECT sum(ji.budgeted_cents) FROM sitewire_job_item_links ji WHERE ji.application_id=a.id AND ji.state<>'deleted' AND ji.is_media_item=false),0) AS budget_cents,
               COALESCE((SELECT sum(r.approved_cents) FROM sitewire_draw_requests r JOIN sitewire_draws d2 ON d2.sitewire_draw_id=r.sitewire_draw_id WHERE d2.application_id=a.id AND d2.status='approved'),0) AS drawn_cents,
               COALESCE((SELECT sum(d3.total_requested_cents) FROM sitewire_draws d3 WHERE d3.application_id=a.id AND d3.status NOT IN ('approved','drafting')),0) AS pending_requested_cents,
@@ -968,21 +988,25 @@ router.get('/portfolio', requirePermission('manage_draws'), async (req, res) => 
         pending_requested_cents: Number(r.pending_requested_cents) || 0, pending_count: Number(r.pending_count) || 0, high_risk_count: Number(r.high_risk_count) || 0,
         funded_on: r.actual_closing || null, term: r.term || null, draw_count: Number(r.draw_count) || 0,
         last_activity_at: r.last_activity_at ? new Date(r.last_activity_at).toISOString() : null,
+        lifecycle_state: r.lifecycle_state || 'active',
+        lifecycle_at: r.lifecycle_at ? new Date(r.lifecycle_at).toISOString() : null,
         wire_overdue: Number(r.overdue_wire_count) > 0 };
     });
-    // early-warning monitoring (advisory, computed from real data only)
-    let alerts = { files: [], summary: { by_code: {}, flagged: 0, total: files.length } };
+    // early-warning monitoring (advisory, computed from real data only). A finished / paid-off project is
+    // intentionally done, so it must NOT raise stale / behind-pace / overdue alerts — assess ACTIVE files only.
+    const activeFiles = files.filter((f) => f.lifecycle_state === 'active');
+    let alerts = { files: [], summary: { by_code: {}, flagged: 0, total: activeFiles.length } };
     try {
       const s = await reconcile.settingsMap();
       const monitor = require('../sitewire/monitor');
-      alerts = monitor.assessPortfolioAlerts(files, {
+      alerts = monitor.assessPortfolioAlerts(activeFiles, {
         nowMs: Date.now(),
         staleDays: Number(s.stale_days) || 30, noDrawDays: Number(s.no_draw_days) || 45, pacingGapPct: Number(s.pacing_gap_pct) || 25,
       });
     } catch (_) {}
     const alertByFile = {};
     for (const af of alerts.files) alertByFile[af.application_id] = af.alerts;
-    for (const f of files) f.alerts = alertByFile[f.application_id] || [];
+    for (const f of files) f.alerts = (f.lifecycle_state === 'active') ? (alertByFile[f.application_id] || []) : [];
     res.json({ totals: { files: files.length, budget_cents: budget, drawn_cents: drawn, remaining_cents: budget - drawn,
       pct_complete: budget > 0 ? Math.round((drawn / budget) * 1000) / 10 : 0, pending_requested_cents: pendingReq, pending_count: pendingCount, high_risk_count: highRisk,
       flagged: alerts.summary.flagged, alert_codes: alerts.summary.by_code },
@@ -1231,7 +1255,9 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
     const acceptLink = result.reply_token ? `/draw-accept/${result.reply_token}` : `/app/${appId}`;
     if (f.borrower_id) await notify.notifyBorrower(f.borrower_id, {
       type: 'draw_findings', title: 'Your draw inspection results are ready',
-      body: `The inspection results for a draw on ${addr} are ready to review. Please review each item and accept or dispute.`,
+      badge: { text: 'Action needed', tone: 'action' },
+      body: 'Your draw inspection results are in and ready for your review.',
+      callout: { title: 'Your next step', body: 'Review each line item and either accept the results or dispute a line with a quick note — this releases your draw, so please review promptly.', tone: 'action' },
       applicationId: appId, link: acceptLink, ctaLabel: 'Review draw results' }).catch(() => {});
     await notify.notifyAppStaff(appId, { type: 'draw_findings', title: 'Draw findings delivered to borrower',
       body: `Inspection findings for ${addr} were delivered to the borrower to accept or dispute.`, applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
@@ -1280,9 +1306,35 @@ router.post('/findings/:findingId/lines/:lineId/decide', requirePermission('mana
   }
   await db.query(`UPDATE draw_finding_lines SET dispute_status=$2, lender_comments=COALESCE($3,lender_comments), dispute_decided_by=$4, dispute_decided_at=now(), approved_cents=CASE WHEN $2='approved' AND dispute_desired_cents IS NOT NULL THEN dispute_desired_cents ELSE approved_cents END, not_approved_cents=CASE WHEN $2='approved' AND dispute_desired_cents IS NOT NULL THEN GREATEST(0, requested_cents - dispute_desired_cents) ELSE not_approved_cents END, updated_at=now() WHERE id=$1`,
     [lineId, decision, req.body.note || null, req.actor.id]);
-  // if no more open disputes, mark the finding resolved
+  // if no more open disputes, mark the finding resolved AND close the loop back to the borrower
   const openLeft = (await db.query(`SELECT count(*)::int c FROM draw_finding_lines WHERE finding_id=$1 AND dispute_status='open'`, [findingId])).rows[0].c;
-  if (openLeft === 0) await db.query(`UPDATE draw_findings SET status='resolved', resolved_at=now(), updated_at=now() WHERE id=$1`, [findingId]);
+  if (openLeft === 0) {
+    await db.query(`UPDATE draw_findings SET status='resolved', resolved_at=now(), updated_at=now() WHERE id=$1`, [findingId]);
+    // Tell the borrower the OUTCOME of the dispute they raised — designed + borrower-safe (only the amounts
+    // they can already see; no fee/net/partner). This closes the dispute loop (previously staff decided
+    // silently and the borrower was never told).
+    try {
+      const scrub = require('../lib/borrower-safe').scrubText;
+      const decided = (await db.query(
+        `SELECT name, dispute_status, approved_cents, dispute_desired_cents FROM draw_finding_lines
+          WHERE finding_id=$1 AND dispute_status IN ('approved','rejected') ORDER BY id`, [findingId])).rows;
+      const usd = (c) => '$' + (Math.round(Number(c) || 0) / 100).toLocaleString('en-US');
+      const approvedN = decided.filter((l) => l.dispute_status === 'approved').length;
+      // scrub the line NAME (defense-in-depth for the frozen never-expose-a-partner rule — the meta label
+      // isn't scrubbed by the notify chokepoint) and only say "now $X" when the amount actually changed.
+      const meta = decided.map((l) => ({ label: scrub(l.name) || 'Line item',
+        value: l.dispute_status === 'approved'
+          ? (l.dispute_desired_cents != null ? `Approved — now ${usd(l.approved_cents)}` : 'Approved on review')
+          : `Reviewed — kept at ${usd(l.approved_cents)}` }));
+      await notify.notifyAppBorrowers(f.application_id, {
+        type: 'draw_dispute_resolved', title: 'We reviewed your draw dispute',
+        badge: { text: 'Reviewed', tone: approvedN ? 'positive' : 'neutral' },
+        body: approvedN
+          ? `We reviewed the item(s) you flagged on your inspection results — ${approvedN} of ${decided.length} ${approvedN === 1 ? 'was' : 'were'} approved for a higher amount, and the rest were reviewed and kept as-is. Your updated results are in your portal.`
+          : 'We reviewed the item(s) you flagged on your inspection results. After review they were kept as-is. The full details are in your portal.',
+        meta, applicationId: f.application_id, link: `/app/${f.application_id}`, ctaLabel: 'View your draw' }).catch(() => {});
+    } catch (_) { /* notification is best-effort — the decision is already recorded */ }
+  }
   res.json({ ok: true, decision, pushed, note: pushNote, disputes_open: openLeft });
 });
 
@@ -1394,7 +1446,7 @@ router.post('/change-requests/:crId/apply', requirePermission('manage_draws'), a
       // Only claim a Sitewire push when the integration is actually on — otherwise the enqueue
       // no-ops and the DB SOW would silently diverge from Sitewire (audit E-REALLOC-FALSEPUSH).
       const willPush = !!cfg.sitewireEnabled;
-      await notify.notifyAppStaff(appId, { type: 'sow_reallocation', title: 'Budget reallocation applied',
+      await notify.notifyAppStaff(appId, { type: 'sow_reallocation', title: 'Budget reallocation applied', badge: { text: 'Applied', tone: 'positive' },
         body: willPush ? 'A net-zero Scope-of-Work reallocation was applied and is being pushed to Sitewire.' : 'A net-zero Scope-of-Work reallocation was applied to the Scope of Work (Sitewire is currently off — it will sync when turned on).',
         applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
       return res.json({ ok: true, applied: true, pushed_to_sitewire: willPush });
@@ -1404,7 +1456,7 @@ router.post('/change-requests/:crId/apply', requirePermission('manage_draws'), a
     // re-sizes the loan. We never silently change the frozen budget — mark the request
     // approved and flag it for product re-registration (Products & Pricing re-opens).
     await db.query(`UPDATE change_requests SET status='approved', decided_by=$2, decided_at=now(), decision_note=COALESCE($3,decision_note), updated_at=now() WHERE id=$1`, [crId, req.actor.id, 'Total changed — requires product re-registration on the new budget']);
-    await notify.notifyAppStaff(appId, { type: 'sow_reallocation', title: 'Scope-of-Work change needs re-registration',
+    await notify.notifyAppStaff(appId, { type: 'sow_reallocation', title: 'Scope-of-Work change needs re-registration', badge: { text: 'Action needed', tone: 'action' },
       body: 'A Scope-of-Work change alters the construction total. Re-register the product on the new budget in Products & Pricing before it flows to draws.', applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
     res.json({ ok: true, applied: false, requires_reregister: true, plan });
   } catch (e) { res.status(500).json({ error: e.message }); }

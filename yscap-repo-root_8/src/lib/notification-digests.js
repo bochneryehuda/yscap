@@ -80,10 +80,22 @@ async function weeklyBorrowerOutstandingOnce() {
       const lines = shown.map((l, i) => `${i + 1}. ${l}`);
       if (items.length > shown.length) lines.push(`…and ${items.length - shown.length} more, all listed in your portal.`);
       lines.push('Completing these keeps your loan moving. Questions on any of them? Just reply to this email.');
+      // A completion meter — the borrower's own checklist items done vs total —
+      // turns the list into visible progress ("you're most of the way there").
+      let progress = null;
+      try {
+        const c = (await db.query(
+          `SELECT count(*) FILTER (WHERE status='satisfied')::int AS done, count(*)::int AS total
+             FROM checklist_items
+            WHERE application_id=$1 AND audience IN ('borrower','both') AND waived_at IS NULL`, [a.id])).rows[0];
+        if (c && c.total > 0) progress = { done: c.done, total: c.total, label: `${c.done} of ${c.total} items complete` };
+      } catch (_) { /* meter is best-effort */ }
       await notify.notifyAppBorrowers(a.id, {
         type: 'digest',
         title: items.length === 1 ? 'One item is still needed on your loan' : `${items.length} items are still needed on your loan`,
+        badge: { text: 'Action needed', tone: 'action' },
         body: 'Here’s a quick summary of what your loan team is still waiting on:',
+        progress: progress || undefined,
         lines,
         applicationId: a.id, link: `/app/${a.id}`, ctaLabel: 'Complete your items' });
       await _stamp('borrower_outstanding_digest', a.id, { open: items.length });
@@ -126,6 +138,7 @@ async function dailyPipelineDigestOnce() {
       await notify.notifyStaff(st.id, {
         type: 'digest',
         title: `Your pipeline today: ${files.rows.length} active file${files.rows.length === 1 ? '' : 's'}`,
+        badge: { text: `${files.rows.length} active`, tone: 'teal' },
         body: `Good morning${first ? `, ${first}` : ''} — here’s your pipeline snapshot, oldest-at-stage first.`,
         lines,
         link: '/internal/pipeline', ctaLabel: 'Open your pipeline', emailTo: st.email });
@@ -155,6 +168,7 @@ async function staleFileAlertsOnce() {
       await notify.notifyAppStaff(f.id, {
         type: 'digest',
         title: `File stalled: ${d} days at "${STATUS_LABEL[f.status] || f.status}"`,
+        badge: { text: 'Needs attention', tone: 'action' },
         body: `This file hasn’t changed stages in ${d} days. A quick check-in may be needed to keep it on track — the file details are below.`,
         applicationId: f.id, link: `/internal/app/${f.id}`, ctaLabel: 'Open the loan file' });
       await _stamp('stale_file_alert', f.id, { days: d, status: f.status });
@@ -182,6 +196,8 @@ async function weeklyAdminSummaryOnce() {
       await notify.notifyStaff(ad.id, {
         type: 'digest',
         title: 'Weekly pipeline summary',
+        badge: { text: 'Weekly', tone: 'teal' },
+        hero: { label: 'Active pipeline', value: String(s.active), sub: `${s.funded} funded · ${s.new_files} new this week`, tone: 'teal' },
         body: 'Here’s this week’s snapshot of the whole pipeline.',
         meta: [
           { label: 'New files (last 7 days)', value: String(s.new_files) },
@@ -197,6 +213,77 @@ async function weeklyAdminSummaryOnce() {
   return admins.rows.length;
 }
 
+/* 5) Draw result awaiting the borrower — a delivered inspection result the borrower hasn't accepted or
+   disputed is HOLDING THEIR MONEY (the release clock only starts on accept), so nudge them if it's sat a
+   few days. Borrower-safe (notifyAppBorrowers scrubs); per file, ≤ once / 2 days. draw_findings exist only
+   for PILOT-managed files (delivered via the created-only reconcile), so this is go-forward-only by data.
+   The EXISTS on an ACTIVE created link both re-asserts go-forward-only at the query level and honors CLAUDE.md
+   Sitewire rule 10 — a finished/paid-off project is excluded, so a leftover finding on a closed loan never nudges. */
+async function drawFindingsAwaitingBorrowerOnce() {
+  let sent = 0;
+  const waitDays = Math.max(1, Number(process.env.DRAW_FINDINGS_REMINDER_DAYS || 3));
+  const rows = (await db.query(
+    `SELECT f.application_id, count(*)::int AS n, min(f.delivered_at) AS oldest
+       FROM draw_findings f
+       JOIN applications a ON a.id=f.application_id AND a.deleted_at IS NULL
+      WHERE f.status='delivered' AND f.delivered_at IS NOT NULL
+        AND f.delivered_at < now() - ($1 || ' days')::interval
+        AND EXISTS (SELECT 1 FROM sitewire_property_links pl WHERE pl.application_id=f.application_id
+                      AND pl.matched_by='created' AND COALESCE(pl.lifecycle_state,'active')='active')
+      GROUP BY f.application_id
+      LIMIT 300`, [String(waitDays)])).rows;
+  for (const r of rows) {
+    try {
+      if (!(await _gate('draw_findings_reminder', r.application_id, '2 days'))) continue;
+      const d = daysAt(r.oldest);
+      await notify.notifyAppBorrowers(r.application_id, {
+        type: 'draw_findings',
+        title: r.n === 1 ? 'Your draw inspection result is waiting for you' : `${r.n} draw inspection results are waiting for you`,
+        badge: { text: 'Action needed', tone: 'action' },
+        body: `Your inspection result${r.n === 1 ? ' has' : 's have'} been ready for ${d} day${d === 1 ? '' : 's'}. Your draw is released once you review and accept ${r.n === 1 ? 'it' : 'them'} — please take a moment to review ${r.n === 1 ? 'it' : 'them'} (or dispute a line) in your portal.`,
+        callout: { title: 'Why this matters', body: 'The release clock for your draw only starts once you accept — reviewing promptly gets your money to you sooner.', tone: 'action' },
+        applicationId: r.application_id, link: `/app/${r.application_id}`, ctaLabel: 'Review your draw' });
+      await _stamp('draw_findings_reminder', r.application_id, { awaiting: r.n, days: d });
+      sent++;
+    } catch (e) { console.error('[digest] draw-findings-await', r.application_id, e && e.message); }
+  }
+  return sent;
+}
+
+/* 6) Draw release overdue — the borrower ACCEPTED, the wire SLA (wire_due_at) has passed, and no release
+   is recorded. Nudge the assigned team so a borrower's approved money doesn't slip. Per file, ≤ once/2 days.
+   (The portfolio monitor flags this passively; this is the active push.) Staff surface — not borrower-safe-gated.
+   The active-link EXISTS mirrors the passive monitor (rule 10): a finished/paid-off project is excluded, so an
+   accepted finding whose wire was handled outside PILOT on a closed loan never alerts the team forever. */
+async function drawReleaseOverdueOnce() {
+  let sent = 0;
+  const rows = (await db.query(
+    `SELECT f.application_id, count(*)::int AS n, min(f.wire_due_at) AS due
+       FROM draw_findings f
+       JOIN applications a ON a.id=f.application_id AND a.deleted_at IS NULL
+      WHERE f.status='accepted' AND f.wire_due_at IS NOT NULL AND f.wire_due_at < now()
+        AND NOT EXISTS (SELECT 1 FROM draw_disbursements dd WHERE dd.sitewire_draw_id=f.sitewire_draw_id AND dd.funded_status='released')
+        AND EXISTS (SELECT 1 FROM sitewire_property_links pl WHERE pl.application_id=f.application_id
+                      AND pl.matched_by='created' AND COALESCE(pl.lifecycle_state,'active')='active')
+      GROUP BY f.application_id
+      LIMIT 300`)).rows;
+  for (const r of rows) {
+    try {
+      if (!(await _gate('draw_release_overdue', r.application_id, '2 days'))) continue;
+      const d = daysAt(r.due);
+      await notify.notifyAppStaff(r.application_id, {
+        type: 'draw',
+        title: r.n === 1 ? 'Draw release overdue' : `${r.n} draw releases overdue`,
+        badge: { text: 'Overdue', tone: 'action' },
+        body: `The borrower accepted ${r.n === 1 ? 'a draw' : `${r.n} draws`} and the release ${d != null && d > 0 ? `is ${d} day${d === 1 ? '' : 's'} past the target` : 'is now due'}, but no release has been recorded in PILOT yet. Please confirm the wire and record the release.`,
+        applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk' });
+      await _stamp('draw_release_overdue', r.application_id, { overdue: r.n, days: d });
+      sent++;
+    } catch (e) { console.error('[digest] draw-release-overdue', r.application_id, e && e.message); }
+  }
+  return sent;
+}
+
 /* Time-gated dispatcher — morning window for staff/admin, business hours for the
    borrower digest; each function's own audit-gate enforces the true frequency. */
 async function runDue() {
@@ -204,10 +291,12 @@ async function runDue() {
   if (hour >= 7 && hour < 11) {
     await dailyPipelineDigestOnce().catch((e) => console.error('[digests] pipeline', e && e.message));
     await staleFileAlertsOnce().catch((e) => console.error('[digests] stale', e && e.message));
+    await drawReleaseOverdueOnce().catch((e) => console.error('[digests] draw-release', e && e.message));
     if (weekday === 'Mon') await weeklyAdminSummaryOnce().catch((e) => console.error('[digests] admin', e && e.message));
   }
   if (hour >= 8 && hour < 18) {
     await weeklyBorrowerOutstandingOnce().catch((e) => console.error('[digests] borrower', e && e.message));
+    await drawFindingsAwaitingBorrowerOnce().catch((e) => console.error('[digests] draw-findings', e && e.message));
   }
 }
 
@@ -226,4 +315,5 @@ function start() {
 module.exports = {
   start, runDue, nyParts,
   weeklyBorrowerOutstandingOnce, dailyPipelineDigestOnce, staleFileAlertsOnce, weeklyAdminSummaryOnce,
+  drawFindingsAwaitingBorrowerOnce, drawReleaseOverdueOnce,
 };
