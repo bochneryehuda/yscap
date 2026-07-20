@@ -1432,7 +1432,7 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
             return (
               <>
                 <SecHead eyebrow="Evidence" title={twoGrid ? 'Comparable sales — As-Is & ARV grids' : 'Comparable sales'}
-                  extra={<span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--muted,#4B585C)' }}>{real.length} comps{twoGrid && splitHow ? ` · ${splitHow}` : twoGrid ? ' · two grids support two values' : ' · tap a row for the adjustment breakdown'}</span>} />
+                  extra={<span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--muted,#4B585C)' }}>{real.length} comps{twoGrid && splitHow ? ` · ${splitHow}` : twoGrid ? ' · two grids support two values' : ' · tap a row for the detail'}</span>} />
                 {a.comp_split_needs_review && (
                   <div className="appr-avoid" style={{ margin: '2px 0 12px', padding: '9px 12px', borderRadius: 10, fontSize: 12.5,
                     background: 'rgba(174,135,70,.10)', border: '1px solid var(--gold,#AE8746)', color: 'var(--text,#141B22)' }}>
