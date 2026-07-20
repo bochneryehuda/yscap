@@ -3,6 +3,7 @@ import { api } from '../lib/api.js';
 import { MoneyInput } from './FormattedInputs.jsx';
 import { US_STATES } from './LlcManager.jsx';
 import { PROGRAMS, PROPERTY_TYPES, withCurrent, unitsMode, unitsForType } from '../lib/enums.js';
+import LlcPicker from './LlcPicker.jsx';
 
 /* Staff edit of the loan-file data after creation — EVERY field the
    application collects is correctable here (typo'd price, wrong property
@@ -24,6 +25,7 @@ export default function EditFileDetails({ app, onSaved }) {
     program: app.program || '', loanType: app.loan_type || '', propertyType: app.property_type || '',
     units: num(app.units), purchasePrice: num(app.purchase_price), asIsValue: num(app.as_is_value),
     arv: num(app.arv), rehabBudget: num(app.rehab_budget), occupancy: app.occupancy || '',
+    llcId: app.llc_id || '', entityName: app.entity_name || '',
     rehabType: app.rehab_type || '', sqftPre: num(app.sqft_pre), sqftPost: num(app.sqft_post),
     requestedExpFlips: num(app.requested_exp_flips), requestedExpHolds: num(app.requested_exp_holds),
     requestedExpGround: num(app.requested_exp_ground), requestedExpReo: num(app.requested_exp_reo),
@@ -69,6 +71,18 @@ export default function EditFileDetails({ app, onSaved }) {
         } : null;
       }
       const r = await api.staffEditApplication(app.id, body);
+      // Vesting entity (owner-directed 2026-07-20): an LLC change goes through the
+      // dedicated vesting endpoint (its own guarded chokepoint that wires the LLC
+      // condition + docs). A picked LLC carries an id; a typed-but-new name is
+      // created on the borrower first. Best-effort — the field edits already saved.
+      try {
+        let llcId = f.llcId;
+        if (!llcId && f.entityName.trim()) {
+          const c = await api.staffCreateLlc(app.borrower_id, { llcName: f.entityName.trim() });
+          llcId = c.llcId || c.id;
+        }
+        if (llcId && String(llcId) !== String(app.llc_id || '')) await api.staffSetVestingLlc(app.id, llcId);
+      } catch (_) { /* vesting is best-effort */ }
       setMsg(r && r.changed && r.changed.length
         ? `Saved ✓ — ${r.changed.length} field${r.changed.length === 1 ? '' : 's'} changed (logged in Activity).`
         : 'Saved ✓ — no values actually changed.');
@@ -114,6 +128,11 @@ export default function EditFileDetails({ app, onSaved }) {
             ) : (
               <label><span>Units</span><input className="input" type="number" min="0" value={f.units} onChange={(e) => set('units', e.target.value)} /></label>
             )}
+            <label className="col-4"><span>Vesting entity / LLC</span>
+              <LlcPicker value={f.entityName} staff borrowerId={app.borrower_id}
+                placeholder="Which LLC is this property purchased under?"
+                onPick={({ id, name }) => setF((s) => ({ ...s, entityName: name, llcId: id || '' }))} />
+            </label>
             {/* Occupancy is intentionally NOT shown (owner-directed) — kept in the
                 data model and round-tripped unchanged, never surfaced in the UI. */}
           </div>

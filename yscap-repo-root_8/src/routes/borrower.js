@@ -772,6 +772,24 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
           body, applicationId: appId, meta: (ctx && ctx.meta) || undefined,
           link: `/internal/app/${appId}`, ctaLabel: 'Open the loan file',
         });
+      // The borrower gets the SAME rich, borrower-safe loan-terms email as on the
+      // staff register path — a confirmation of exactly what they registered, with
+      // the full structure breakdown (owner-directed 2026-07-20). From/branded to
+      // the assigned officer when there is one.
+      try {
+        let officer = null;
+        if (row.loan_officer_id) {
+          const o = await db.query(`SELECT full_name, title, email, phone, cell, nmls FROM staff_users WHERE id=$1`, [row.loan_officer_id]);
+          if (o.rows[0]) officer = { name: o.rows[0].full_name, title: o.rows[0].title, email: o.rows[0].email, phone: o.rows[0].cell || o.rows[0].phone, nmls: o.rows[0].nmls };
+        }
+        await notify.notifyAppBorrowers(appId, {
+          ...require('../lib/product-registration').borrowerTermsEmail({ ctx, quote, total, termMonths: inputs && inputs.term, officer }),
+          applicationId: appId,
+          link: `/app/${appId}`,
+          from: officer ? require('../lib/email').fromWithName(officer.name) : null,
+          replyTo: officer ? officer.email : null,
+        });
+      } catch (_) { /* borrower terms email is best-effort */ }
     } catch (_) {}
 
     res.status(201).json({ ok: true, registrationId: regId, quote: stripQuoteInternal(quote) });
@@ -2225,15 +2243,17 @@ router.post('/documents', async (req, res) => {
         const who = `${row.first_name || ''} ${row.last_name || ''}`.trim() || 'A borrower';
         // Say WHERE the document landed, not just its filename: the condition
         // it was uploaded to and, when the condition has several slots, which.
-        let where = '';
+        let where = '', condLabel = '';
         if (b.checklistItemId) {
           const it = await db.query(`SELECT label FROM checklist_items WHERE id=$1`, [b.checklistItemId]);
-          if (it.rows[0]) where = ` to condition "${it.rows[0].label}"${slot ? ` — ${slot}` : ''}`;
+          if (it.rows[0]) { condLabel = it.rows[0].label; where = ` to condition "${condLabel}"${slot ? ` — ${slot}` : ''}`; }
         } else if (slot) where = ` — ${slot}`;
         const ctx = await notify.fileContext(b.applicationId);
         const opts = {
           type: 'doc_uploaded',
-          title: 'New document uploaded' + (where ? '' : ' (general)'),
+          // Specific subject: the condition it answers (or the filename), so the
+          // reader knows exactly WHAT arrived before opening the email.
+          title: condLabel ? `Document uploaded for "${condLabel}"` : `Document uploaded: ${b.filename}`,
           body: `${who} uploaded "${b.filename}"${where} on ${ctx ? ctx.label : 'the file'}.`,
           meta: (ctx && ctx.meta) || undefined,
           applicationId: b.applicationId,
