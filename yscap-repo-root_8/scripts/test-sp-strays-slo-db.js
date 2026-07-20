@@ -135,6 +135,39 @@ const ok = (name, cond) => { if (cond) pass++; else { fail++; console.log(`FAIL 
   await db.query(`UPDATE sync_locks SET expires_at = now() - interval '1 minute' WHERE lock_key='sp-slo-alert'`);
   ok('an EXPIRED cooldown lets the same episode alert again', (await backup.claimSloAlert(sig)) === true);
 
+  // === TEST 3: worker-liveness heartbeat + dead-man's-switch watchdog ========
+  // The #1 fix from the 2026-07-20 freeze: watch the WORKER, not just backlog.
+  await backup.clearAlert('sp-liveness-alert');
+  await db.query(`DELETE FROM sync_locks WHERE lock_key='sp-drain-heartbeat'`);
+  ok('heartbeatStaleSec is null before any pass has completed', (await backup.heartbeatStaleSec()) === null);
+  await backup.recordHeartbeat({ scanned: 0 });
+  const freshAge = await backup.heartbeatStaleSec();
+  ok('a completed pass stamps a FRESH heartbeat (age ~0)', freshAge != null && freshAge < 30);
+  const reconFresh = await backup.reconciliation();
+  ok('reconciliation exposes worker liveness and is NOT stalled when fresh',
+    reconFresh.worker && reconFresh.worker.stalled === false && reconFresh.worker.lastPassAgeSec != null);
+  // Simulate a freeze: age the heartbeat far past the grace window.
+  const grace = backup.heartbeatGraceSec();
+  await db.query(`UPDATE sync_locks SET expires_at = now() - make_interval(secs => $1) WHERE lock_key='sp-drain-heartbeat'`, [grace * 3]);
+  const staleAge = await backup.heartbeatStaleSec();
+  ok('a frozen worker shows a STALE heartbeat (age > grace)', staleAge != null && staleAge > grace);
+  const reconStalled = await backup.reconciliation();
+  ok('reconciliation marks the worker STALLED when the heartbeat is old', reconStalled.worker.stalled === true);
+  ok('reconciliation.healthy is FALSE when the worker is stalled (the freeze lesson)', reconStalled.healthy === false);
+  // Watchdog past 2× grace self-heals AND alerts once (persistent dedup).
+  await backup.clearAlert('sp-liveness-alert');
+  await backup.checkDrainLiveness();
+  const livAlert = (await db.query(`SELECT count(*)::int n FROM sync_locks WHERE lock_key='sp-liveness-alert'`)).rows[0].n;
+  ok('the liveness watchdog raised the stall alert (deduped, distinct from backlog)', livAlert >= 1);
+  await backup.checkDrainLiveness();   // second run within cooldown must NOT re-raise
+  const livAlert2 = (await db.query(`SELECT holder FROM sync_locks WHERE lock_key='sp-liveness-alert'`)).rows;
+  ok('the stall alert is deduped (still a single active cooldown row)', livAlert2.length === 1);
+  // Recovery: a fresh heartbeat + a watchdog pass auto-clears the alert.
+  await db.query(`UPDATE sync_locks SET expires_at = now() + make_interval(secs => $1) WHERE lock_key='sp-drain-heartbeat'`, [grace]);
+  await backup.checkDrainLiveness();
+  const livAlert3 = (await db.query(`SELECT count(*)::int n FROM sync_locks WHERE lock_key='sp-liveness-alert'`)).rows[0].n;
+  ok('recovery auto-clears the liveness alert (silent again)', livAlert3 === 0);
+
   console.log(`\n${pass} passed, ${fail} failed`);
   await db.pool.end().catch(() => {});
   process.exit(fail ? 1 : 0);
