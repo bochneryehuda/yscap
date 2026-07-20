@@ -43,6 +43,18 @@ Closing Date: 2026-08-15
   assert.ok(/purchasePrice|buyerName/.test(f.docValue));
 }
 
+// ---- DATE FORMAT tolerance: an ISO date grounds against a US-formatted date in the OCR ----
+{
+  const usOcr = 'DRIVER LICENSE  DOB 05/15/1980  EXP 08-01-2028  Class C';
+  const g = groundFields({ dateOfBirth: '1980-05-15', expirationDate: '2028-08-01', readable: true }, usOcr);
+  assert.strictEqual(g.criticalAbsent.length, 0, 'an ISO date grounds against the OCR\'s 05/15/1980 form — no false flag');
+}
+// A date is NEVER escalated even if truly absent (formats too variable) — belt against false flags.
+{
+  const g = groundFields({ dateOfBirth: '1999-12-31', buyerName: 'Maple Grove Holdings LLC', readable: true }, OCR);
+  assert.ok(!g.criticalAbsent.some((a) => /dateOfBirth/.test(a.field)), 'a date is never escalated as fabricated');
+}
+
 // ---- OCR NOISE tolerance: a value present but with a mis-read word is NOT flagged absent ----
 {
   // "Jane Seller" partially present ("Jane" is there) → partial coverage, NOT flagged as fabricated.

@@ -98,23 +98,59 @@ function toISODate(s) {
   return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
 }
 
-// Address compared on house-number + 5-digit zip (hardest to fake, easiest to match),
-// tolerant of formatting; falls back to whole-line containment when a zip is missing.
+// Street-suffix + directional normalization so "St"=="Street", "Ave"=="Avenue", etc. and a
+// leading/trailing directional (N/S/E/W) doesn't break a match.
+const STREET_SUFFIX = {
+  st: 'st', street: 'st', ave: 'ave', avenue: 'ave', av: 'ave', rd: 'rd', road: 'rd',
+  blvd: 'blvd', boulevard: 'blvd', dr: 'dr', drive: 'dr', ln: 'ln', lane: 'ln', ct: 'ct',
+  court: 'ct', pl: 'pl', place: 'pl', ter: 'ter', terrace: 'ter', way: 'way', cir: 'cir',
+  circle: 'cir', hwy: 'hwy', highway: 'hwy', pkwy: 'pkwy', parkway: 'pkwy', sq: 'sq', square: 'sq',
+  trl: 'trl', trail: 'trl', pt: 'pt', point: 'pt', xing: 'xing', crossing: 'xing',
+};
+const DIRECTIONALS = new Set(['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw', 'north', 'south', 'east', 'west']);
+// The street's core tokens (house number dropped, suffix/directionals normalized, unit stripped).
+function streetCore(line1) {
+  let t = norm(line1 || '');
+  t = t.replace(/\b(apt|apartment|unit|ste|suite|fl|floor|rm|room|bldg|building|no)\b.*$/, '').trim();
+  const toks = t.split(/\s+/).filter(Boolean);
+  if (toks.length && /^\d/.test(toks[0])) toks.shift(); // drop the leading house number
+  return toks.map((x) => STREET_SUFFIX[x] || x).filter((x) => x && !DIRECTIONALS.has(x));
+}
+
+// Address compared on house-number + STREET NAME + 5-digit zip. Requiring the street (not just the
+// house number + zip) stops a false match between two different streets that share a house number
+// in the same zip (e.g. "45 Elm St 07030" vs "45 Oak Ave 07030"). Tolerant of suffix/format
+// differences; falls back to whole-line containment when nothing structured parses.
 function addrKey(a) {
   if (!a) return null;
   const line1 = norm(a.line1 || a.line || '');
   const zip = digitsOnly(a.zip).slice(0, 5);
   if (!line1 && !zip) return null;
-  return { houseNo: (line1.match(/^\d+/) || [''])[0], zip, line1 };
+  return { houseNo: (line1.match(/^\d+/) || [''])[0], zip, line1, core: streetCore(line1) };
+}
+function coresMatch(a, b) {
+  if (!a.length || !b.length) return null; // one side has no parseable street → can't decide on street
+  const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+  const set = new Set(long);
+  return short.every((t) => set.has(t));
 }
 function addrMatches(a1, a2) {
   const a = addrKey(a1), b = addrKey(a2);
   if (!a || !b) return null;
-  const zipOk = a.zip && b.zip ? a.zip === b.zip : null;
-  const houseOk = a.houseNo && b.houseNo ? a.houseNo === b.houseNo : null;
-  if (zipOk === true && houseOk !== false) return true;
-  if (zipOk === false) return false;
-  if (a.line1 && b.line1) return a.line1.includes(b.line1) || b.line1.includes(a.line1);
+  // Any DEFINITE difference → not the same place.
+  if (a.zip && b.zip && a.zip !== b.zip) return false;
+  if (a.houseNo && b.houseNo && a.houseNo !== b.houseNo) return false;
+  const street = coresMatch(a.core, b.core);
+  if (street === false) return false;
+  // Positive match needs the street to agree PLUS a corroborating house number or zip.
+  const houseSame = a.houseNo && b.houseNo && a.houseNo === b.houseNo;
+  const zipSame = a.zip && b.zip && a.zip === b.zip;
+  if (street === true && (houseSame || zipSame)) return true;
+  // No parseable street on one side: fall back to the old house+zip signal, then containment.
+  if (street === null) {
+    if (houseSame && zipSame) return true;
+    if (a.line1 && b.line1 && (a.line1.includes(b.line1) || b.line1.includes(a.line1))) return true;
+  }
   return null;
 }
 function addrLine(a) {

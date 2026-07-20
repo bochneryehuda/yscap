@@ -15,13 +15,30 @@
  *
  * Pure + dependency-light (compare.js only).
  */
-const { norm, digitsOnly, num } = require('./compare');
+const { norm, digitsOnly, num, toISODate } = require('./compare');
+const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+
+// A date is "grounded" if any common written form of it appears in the (normalized, punctuation-
+// stripped) OCR text — so an extracted ISO date "1980-05-15" still matches an OCR that printed
+// "05/15/1980" or "May 15, 1980". Order-tolerant across US / ISO / international / month-name forms.
+function dateGrounded(iso, hay) {
+  // Strip ALL separators from the OCR text so a date matches regardless of how it was punctuated
+  // ("2026-08-15", "08/15/2026", "May 15, 2026" all compare equal after compaction).
+  const compact = String(hay || '').replace(/[^a-z0-9]+/g, '');
+  const [y, m, d] = iso.split('-');
+  const m1 = String(+m), d1 = String(+d), mon = MONTHS[+m - 1];
+  const forms = [
+    `${y}${m}${d}`, `${m}${d}${y}`, `${m1}${d1}${y}`, `${d}${m}${y}`,
+    `${mon}${d1}${y}`, `${mon}${d}${y}`, `${d1}${mon}${y}`,
+  ];
+  return forms.some((f) => compact.indexOf(f) !== -1);
+}
 
 // Keys we never grade (structural / model-authored, not copied off the page).
-const SKIP_KEYS = new Set(['readable', 'notes', 'holderisbusiness', 'isassignment', 'inSfha', 'insfha', 'policypresent', 'buildersrisk', 'mortgageeclausepresent', 'assignorsigned', 'assigneesigned', 'signed', 'authorizesborrowing', 'ismanager', 'mortgagelates', 'hasbankruptcy', 'hasforeclosure', 'hasjudgmentorlien', 'pephit', 'hascriminalrecord']);
+const SKIP_KEYS = new Set(['readable', 'notes', 'holderisbusiness', 'isassignment', 'insfha', 'policypresent', 'buildersrisk', 'mortgageeclausepresent', 'assignorsigned', 'assigneesigned', 'signed', 'authorizesborrowing', 'ismanager', 'mortgagelates', 'hasbankruptcy', 'hasforeclosure', 'hasjudgmentorlien', 'pephit', 'hascriminalrecord']);
 // Critical field name fragments — an UNCONFIRMED value here is worth a finding (identity / money /
-// entity / property). Cosmetic fields (bankName, carrier, …) are checked but not escalated.
-const CRITICAL = /(name|holder|owner|seller|buyer|address|price|amount|fee|balance|ein|dob|dateofbirth|score|value|arv|loan)/i;
+// entity / property / authority). member|manager catches a fabricated managing member.
+const CRITICAL = /(name|holder|owner|seller|buyer|member|manager|address|price|amount|fee|balance|ein|dob|dateofbirth|score|value|arv|loan)/i;
 
 // Coverage of an extracted value in the OCR text: the match cascade the research recommends —
 // (1) numbers → the digit run must appear in the OCR's digits (robust to $ / commas / spacing);
@@ -29,6 +46,11 @@ const CRITICAL = /(name|holder|owner|seller|buyer|address|price|amount|fee|balan
 // value's significant words present (fuzzy-ish tier). Returns { checkable, coverage:0..1 }.
 function coverageOf(value, hay, hayDigits) {
   if (value == null || value === '') return { checkable: false, coverage: 0 };
+  // Dates first: an ISO date must be matched by ANY written form (US / month-name / intl), never by
+  // literal ISO substring — real documents rarely print ISO. Marked isDate so it's never escalated
+  // as "fabricated" (date formats are too variable to be sure), only scored.
+  const iso = typeof value === 'string' ? toISODate(value) : null;
+  if (iso) return { checkable: true, coverage: dateGrounded(iso, hay) ? 1 : 0, isDate: true };
   const n = num(value);
   if (typeof value === 'number' || (n != null && /^[\s$,.\d-]+$/.test(String(value)))) {
     const d = digitsOnly(value);
@@ -56,7 +78,8 @@ function walk(obj, prefix, hay, hayDigits, out) {
   if (typeof obj === 'boolean') return;
   const c = coverageOf(obj, hay, hayDigits);
   if (!c.checkable) return;
-  out.push({ field: prefix, value: obj, coverage: c.coverage, critical: CRITICAL.test(prefix) });
+  // A date is scored but never ESCALATED as fabricated (formats vary too much to be certain).
+  out.push({ field: prefix, value: obj, coverage: c.coverage, critical: CRITICAL.test(prefix) && !c.isDate });
 }
 
 /**

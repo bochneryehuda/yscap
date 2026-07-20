@@ -17,6 +17,7 @@
 const SENSITIVE_KEYS = new Set([
   'documentnumber', 'idnumber', 'licensenumber', 'passportnumber',
   'accountnumber', 'routingnumber', 'ssn', 'taxid', 'ein', 'cardnumber',
+  'policynumber',
 ]);
 
 function maskValue(v) {

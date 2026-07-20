@@ -33,7 +33,7 @@ const engine = require('../lib/underwriting/engine');
 const store = require('../lib/underwriting/store');
 const registry = require('../lib/underwriting/registry');
 const fileView = require('../lib/underwriting/file-view');
-const { buildTieout } = require('../lib/underwriting/tieout');
+const { tieoutForFile } = require('../lib/underwriting/file-review');
 const { underwriterActions } = require('../lib/underwriting/actions');
 const { falseAlarmReport } = require('../lib/underwriting/feedback');
 const { classify } = require('../lib/underwriting/classify');
@@ -56,6 +56,25 @@ async function fileFor(req, appId) {
     [appId, req.actor.id])).rows[0] || null;
 }
 
+// Materialize the underwriting_review_cleared gate condition on a file (idempotent) — mirrors the
+// appraisal desk's ensureAppraisalCondition. Only creates it if the file doesn't already have it.
+async function ensureUnderwritingCondition(appId) {
+  await db.query(
+    `INSERT INTO checklist_items
+       (template_id, scope, label, borrower_label, audience, item_kind, role_scope,
+        phase, hint, borrower_hint, is_gate, is_milestone, sort_order, tool_key,
+        clickup_field_id, tpr_exclude, created_by_kind, is_required, application_id)
+     SELECT t.id, t.scope, t.label, t.borrower_label, t.audience, t.item_kind,
+            COALESCE(t.role_scope,'any'), t.phase, t.hint, t.borrower_hint,
+            COALESCE(t.is_gate,false), COALESCE(t.is_milestone,false),
+            COALESCE(t.sort_order,455), t.tool_key, t.clickup_field_id,
+            COALESCE(t.tpr_exclude,false), 'system', COALESCE(t.is_required,true), $1
+       FROM checklist_templates t
+      WHERE t.code='underwriting_review_cleared' AND t.is_active=true
+        AND NOT EXISTS (SELECT 1 FROM checklist_items ci WHERE ci.application_id=$1 AND ci.template_id=t.id)`,
+    [appId]);
+}
+
 async function audit(actorId, action, entityId, detail) {
   try {
     await db.query(
@@ -75,32 +94,8 @@ function decorate(f) {
   return Object.assign({}, f, { availableActions: underwriterActions(actions ? { ...f, actions } : f) });
 }
 
-// The file's DATA-COMPARISON (tie-out), derived (not stored) from its current extractions PLUS
-// the appraisal: every canonical fact (borrower, entity, property, price, seller, loan, …) is
-// compared against the loan file AND across every document that carries it. Returns the matrix
-// (for the UI) and the discrepancy findings (for the clear-to-close gate). Computed the same way
-// for GET and for the resolve gate so the two never disagree.
-async function tieoutForFile(client, appId) {
-  const ctx = await fileView.loadContext(client, appId);
-  const { rows } = await client.query(
-    `SELECT id, document_id, doc_type, fields FROM document_extractions WHERE application_id=$1 AND is_current`, [appId]);
-  const sources = rows.map((e) => ({ id: e.id, docType: e.doc_type, fields: e.fields }));
-
-  // Fold in the appraisal (its own table) so the property/price/value tie into the matrix too.
-  const appr = (await client.query(
-    `SELECT subject_address, subject_city, subject_state, subject_zip, contract_price, as_is_value, arv_value
-       FROM appraisals WHERE application_id=$1 AND superseded=false ORDER BY imported_at DESC LIMIT 1`, [appId])).rows[0];
-  if (appr) {
-    sources.push({
-      id: 'appraisal', docType: 'appraisal',
-      fields: {
-        propertyAddress: appr.subject_address ? { line1: appr.subject_address, city: appr.subject_city, state: appr.subject_state, zip: appr.subject_zip } : null,
-        contractPrice: appr.contract_price, asIsValue: appr.as_is_value, arvValue: appr.arv_value,
-      },
-    });
-  }
-  return buildTieout(ctx || {}, sources);
-}
+// The file's data-comparison (tie-out) is computed by the shared lib (src/lib/underwriting/
+// file-review.js) so the desk and the checklist sign-off gate never disagree.
 
 // ---- GET /insights/feedback: the "training" report ------------------------
 // Per finding type, how often the team ACTED on it (real) vs threw it away (false alarm),
@@ -269,6 +264,13 @@ router.post('/:appId/documents/:documentId/analyze', async (req, res, next) => {
       documentId: doc.id, docType, ok: result.ok,
       findings: (result.findings || []).map((f) => f.code), reason: result.reason || null,
     });
+
+    // Materialize the clear-to-close gate condition when analysis produced a blocking fatal, so
+    // there IS a condition for signOffGate (+ the db/160 trigger) to hold until it's resolved —
+    // mirrors how the appraisal desk ensures appraisal_review_cleared on import. Best-effort.
+    if ((result.findings || []).some((f) => f.severity === 'fatal' && f.blocksCtc)) {
+      await ensureUnderwritingCondition(app.id).catch(() => {});
+    }
 
     res.json({
       ok: result.ok,

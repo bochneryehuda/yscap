@@ -27,8 +27,11 @@ const LABEL = {
 };
 const lbl = (t) => LABEL[t] || t;
 
+// NOTE: superseded by the tie-out engine (tieout.js / buildTieout), which the route uses. This
+// module is retained for its focused unit tests; keep the severity→blocksCtc invariant consistent
+// with every live producer (derive blocksCtc from severity, don't hardcode).
 function finding(f) {
-  return Object.assign({ source: 'cross_document', severity: 'fatal', status: 'open', blocksCtc: true }, f);
+  return Object.assign({ source: 'cross_document', severity: 'fatal', status: 'open', blocksCtc: (f.severity || 'fatal') === 'fatal' }, f);
 }
 
 // Do any names in list A match any in list B (person- or entity-tolerant)?

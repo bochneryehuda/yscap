@@ -2528,6 +2528,7 @@ async function signOffGate(itemId, actor) {
   const isFraud = code === 'rtl_cond_fraud';
   const isAppraisalDocs = code === 'rtl_cond_appraisaldocs';   // two slots: XML + PDF
   const isAppraisalReview = code === 'appraisal_review_cleared'; // CTC gate: no open fatal finding
+  const isUnderwritingReview = code === 'underwriting_review_cleared'; // CTC gate: no open fatal document finding
 
   // EMERGENCY doc-gate (owner-directed): a DOCUMENT-upload condition can never be
   // signed off with ZERO documents on it — the sign-off would attest to a file
@@ -2596,6 +2597,18 @@ async function signOffGate(itemId, actor) {
         WHERE application_id=$1 AND status='open' AND severity='fatal' AND blocks_ctc=true`, [item.application_id])).rows[0].n;
     if (n > 0)
       return `Resolve the ${n} open fatal appraisal finding${n === 1 ? '' : 's'} first — the appraisal review cannot be cleared while a fatal PILOT finding is open. Open the appraisal to replace, keep, or grant an exception on each.`;
+    return null;
+  }
+
+  // Document-underwriting review cleared — the CTC gate for the document-underwriting engine. It
+  // cannot be signed off while ANY fatal document finding is open: the stored per-document fatals
+  // (document_findings) OR the derived tie-out fatals (a fact that doesn't agree across the file's
+  // documents). Same computation the desk uses, so the gate and the badge never disagree.
+  if (isUnderwritingReview) {
+    const { fileFatalCount } = require('../lib/underwriting/file-review');
+    const { total } = await fileFatalCount(db, item.application_id);
+    if (total > 0)
+      return `Resolve the ${total} open fatal document finding${total === 1 ? '' : 's'} first — document underwriting cannot be cleared while a fatal PILOT finding is open. Open the Document Review section to post a condition, request a document, fix the file, or grant an exception on each.`;
     return null;
   }
 

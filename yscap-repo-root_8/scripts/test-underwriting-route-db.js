@@ -141,8 +141,41 @@ const ADDR = { line1: '76 Thompson St', city: 'Austin', state: 'TX', zip: '78701
     const einRow = to.matrix.find((m) => m.key === 'ein');
     assert.ok(einRow && String(einRow.fileValue).startsWith('***') && !/12-?3456789/.test(String(einRow.fileValue)), 'the matrix never shows a full EIN');
 
+    // ---- The underwriting_review_cleared gate is ENFORCED by the db/160 trigger ----
+    // Materialize the condition, open a fatal document finding, and confirm the condition CANNOT
+    // be flipped to 'satisfied' until the finding is resolved.
+    const ENSURE = `INSERT INTO checklist_items
+         (template_id, scope, label, audience, item_kind, role_scope, phase, is_gate, is_milestone,
+          sort_order, tpr_exclude, created_by_kind, is_required, application_id)
+       SELECT t.id, t.scope, t.label, t.audience, t.item_kind, COALESCE(t.role_scope,'any'), t.phase,
+              COALESCE(t.is_gate,false), COALESCE(t.is_milestone,false), COALESCE(t.sort_order,455),
+              COALESCE(t.tpr_exclude,false), 'system', COALESCE(t.is_required,true), $1
+         FROM checklist_templates t
+        WHERE t.code='underwriting_review_cleared' AND t.is_active=true
+          AND NOT EXISTS (SELECT 1 FROM checklist_items ci WHERE ci.application_id=$1 AND ci.template_id=t.id)`;
+    await client.query(ENSURE, [app.id]);
+    const ciId = (await client.query(
+      `SELECT ci.id FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
+        WHERE ci.application_id=$1 AND t.code='underwriting_review_cleared'`, [app.id])).rows[0].id;
+    // Open a fatal, blocks-ctc finding.
+    const rf = await store.saveAnalysis(client, {
+      documentId: docC.id, applicationId: app.id, borrowerId: b.id, docType: 'purchase_contract',
+      extraction: { fields: { readable: true }, status: 'analyzed' },
+      findings: [{ code: 'contract_address_mismatch', severity: 'fatal', field: 'property_address', title: 'x', howTo: 'y', blocksCtc: true }],
+    });
+    let blocked = false;
+    await client.query('SAVEPOINT sp_gate');
+    try { await client.query(`UPDATE checklist_items SET status='satisfied' WHERE id=$1`, [ciId]); }
+    catch (e) { blocked = /underwriting_review_cleared cannot be satisfied/.test(e.message); }
+    await client.query('ROLLBACK TO SAVEPOINT sp_gate'); // clear the aborted state
+    assert.ok(blocked, 'the db/160 trigger blocks satisfying the gate while a fatal finding is open');
+    // Resolve the fatal, then the condition CAN be satisfied.
+    await store.resolveFinding(client, { findingId: rf.findingIds[0], action: 'grant_exception', note: 'reviewed', by: b.id });
+    await client.query(`UPDATE checklist_items SET status='satisfied' WHERE id=$1`, [ciId]);
+    assert.strictEqual((await client.query(`SELECT status FROM checklist_items WHERE id=$1`, [ciId])).rows[0].status, 'satisfied', 'gate clears once the fatal is resolved');
+
     await client.query('ROLLBACK');
-    console.log('✓ test-underwriting-route-db: file-view subjects, cross-document GET roll-up, resolve gate, EIN masking pass');
+    console.log('✓ test-underwriting-route-db: file-view subjects, tie-out, resolve gate, EIN masking, CTC-gate enforcement pass');
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     console.error(e);
