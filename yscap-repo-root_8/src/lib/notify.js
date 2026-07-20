@@ -247,6 +247,17 @@ async function notifyBorrower(borrowerId, opts) {
   // scrubbing a partner name a staffer typed into the title/body. `meta` itself
   // is trusted DB data and is left as-is.
   const protect = Array.isArray(opts.meta) ? opts.meta.map((m) => m && m.value).filter((v) => typeof v === 'string') : [];
+  // Scrub the named string keys of a nested component object (callout/hero/badge)
+  // too — a callout body can be a STAFF-TYPED rejection reason, so a partner name
+  // typed there must never reach the borrower (the plain title/body scrub alone
+  // would miss it). officer/steps carry no free text (officer = business contact,
+  // steps = fixed stage labels), so they need no scrub.
+  const scrubObj = (o, keys) => {
+    if (!o || typeof o !== 'object') return o;
+    const out = { ...o };
+    for (const k of keys) if (typeof out[k] === 'string') out[k] = scrubTextExcept(out[k], protect);
+    return out;
+  };
   const sopts = {
     ...opts,
     title: scrubTextExcept(opts.title, protect),
@@ -255,6 +266,9 @@ async function notifyBorrower(borrowerId, opts) {
     greeting: scrubTextExcept(opts.greeting, protect),
     ctaLabel: scrubText(opts.ctaLabel),
     lines: Array.isArray(opts.lines) ? opts.lines.map((l) => scrubTextExcept(l, protect)) : opts.lines,
+    callout: scrubObj(opts.callout, ['title', 'body']),
+    hero: scrubObj(opts.hero, ['label', 'value', 'sub']),
+    badge: scrubObj(opts.badge, ['text']),
   };
   const { rows } = await db.query(
     `INSERT INTO notifications (recipient_kind,borrower_id,type,title,body,application_id,link)
