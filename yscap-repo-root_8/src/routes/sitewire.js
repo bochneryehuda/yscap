@@ -1231,7 +1231,9 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
     const acceptLink = result.reply_token ? `/draw-accept/${result.reply_token}` : `/app/${appId}`;
     if (f.borrower_id) await notify.notifyBorrower(f.borrower_id, {
       type: 'draw_findings', title: 'Your draw inspection results are ready',
-      body: `The inspection results for a draw on ${addr} are ready to review. Please review each item and accept or dispute.`,
+      badge: { text: 'Action needed', tone: 'action' },
+      body: 'Your draw inspection results are in and ready for your review.',
+      callout: { title: 'Your next step', body: 'Review each line item and either accept the results or dispute a line with a quick note — this releases your draw, so please review promptly.', tone: 'action' },
       applicationId: appId, link: acceptLink, ctaLabel: 'Review draw results' }).catch(() => {});
     await notify.notifyAppStaff(appId, { type: 'draw_findings', title: 'Draw findings delivered to borrower',
       body: `Inspection findings for ${addr} were delivered to the borrower to accept or dispute.`, applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
@@ -1394,7 +1396,7 @@ router.post('/change-requests/:crId/apply', requirePermission('manage_draws'), a
       // Only claim a Sitewire push when the integration is actually on — otherwise the enqueue
       // no-ops and the DB SOW would silently diverge from Sitewire (audit E-REALLOC-FALSEPUSH).
       const willPush = !!cfg.sitewireEnabled;
-      await notify.notifyAppStaff(appId, { type: 'sow_reallocation', title: 'Budget reallocation applied',
+      await notify.notifyAppStaff(appId, { type: 'sow_reallocation', title: 'Budget reallocation applied', badge: { text: 'Applied', tone: 'positive' },
         body: willPush ? 'A net-zero Scope-of-Work reallocation was applied and is being pushed to Sitewire.' : 'A net-zero Scope-of-Work reallocation was applied to the Scope of Work (Sitewire is currently off — it will sync when turned on).',
         applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
       return res.json({ ok: true, applied: true, pushed_to_sitewire: willPush });
@@ -1404,7 +1406,7 @@ router.post('/change-requests/:crId/apply', requirePermission('manage_draws'), a
     // re-sizes the loan. We never silently change the frozen budget — mark the request
     // approved and flag it for product re-registration (Products & Pricing re-opens).
     await db.query(`UPDATE change_requests SET status='approved', decided_by=$2, decided_at=now(), decision_note=COALESCE($3,decision_note), updated_at=now() WHERE id=$1`, [crId, req.actor.id, 'Total changed — requires product re-registration on the new budget']);
-    await notify.notifyAppStaff(appId, { type: 'sow_reallocation', title: 'Scope-of-Work change needs re-registration',
+    await notify.notifyAppStaff(appId, { type: 'sow_reallocation', title: 'Scope-of-Work change needs re-registration', badge: { text: 'Action needed', tone: 'action' },
       body: 'A Scope-of-Work change alters the construction total. Re-register the product on the new budget in Products & Pricing before it flows to draws.', applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
     res.json({ ok: true, applied: false, requires_reregister: true, plan });
   } catch (e) { res.status(500).json({ error: e.message }); }

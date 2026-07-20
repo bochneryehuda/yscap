@@ -80,10 +80,22 @@ async function weeklyBorrowerOutstandingOnce() {
       const lines = shown.map((l, i) => `${i + 1}. ${l}`);
       if (items.length > shown.length) lines.push(`…and ${items.length - shown.length} more, all listed in your portal.`);
       lines.push('Completing these keeps your loan moving. Questions on any of them? Just reply to this email.');
+      // A completion meter — the borrower's own checklist items done vs total —
+      // turns the list into visible progress ("you're most of the way there").
+      let progress = null;
+      try {
+        const c = (await db.query(
+          `SELECT count(*) FILTER (WHERE status='satisfied')::int AS done, count(*)::int AS total
+             FROM checklist_items
+            WHERE application_id=$1 AND audience IN ('borrower','both') AND waived_at IS NULL`, [a.id])).rows[0];
+        if (c && c.total > 0) progress = { done: c.done, total: c.total, label: `${c.done} of ${c.total} items complete` };
+      } catch (_) { /* meter is best-effort */ }
       await notify.notifyAppBorrowers(a.id, {
         type: 'digest',
         title: items.length === 1 ? 'One item is still needed on your loan' : `${items.length} items are still needed on your loan`,
+        badge: { text: 'Action needed', tone: 'action' },
         body: 'Here’s a quick summary of what your loan team is still waiting on:',
+        progress: progress || undefined,
         lines,
         applicationId: a.id, link: `/app/${a.id}`, ctaLabel: 'Complete your items' });
       await _stamp('borrower_outstanding_digest', a.id, { open: items.length });
@@ -126,6 +138,7 @@ async function dailyPipelineDigestOnce() {
       await notify.notifyStaff(st.id, {
         type: 'digest',
         title: `Your pipeline today: ${files.rows.length} active file${files.rows.length === 1 ? '' : 's'}`,
+        badge: { text: `${files.rows.length} active`, tone: 'teal' },
         body: `Good morning${first ? `, ${first}` : ''} — here’s your pipeline snapshot, oldest-at-stage first.`,
         lines,
         link: '/internal/pipeline', ctaLabel: 'Open your pipeline', emailTo: st.email });
@@ -155,6 +168,7 @@ async function staleFileAlertsOnce() {
       await notify.notifyAppStaff(f.id, {
         type: 'digest',
         title: `File stalled: ${d} days at "${STATUS_LABEL[f.status] || f.status}"`,
+        badge: { text: 'Needs attention', tone: 'action' },
         body: `This file hasn’t changed stages in ${d} days. A quick check-in may be needed to keep it on track — the file details are below.`,
         applicationId: f.id, link: `/internal/app/${f.id}`, ctaLabel: 'Open the loan file' });
       await _stamp('stale_file_alert', f.id, { days: d, status: f.status });
@@ -182,6 +196,8 @@ async function weeklyAdminSummaryOnce() {
       await notify.notifyStaff(ad.id, {
         type: 'digest',
         title: 'Weekly pipeline summary',
+        badge: { text: 'Weekly', tone: 'teal' },
+        hero: { label: 'Active pipeline', value: String(s.active), sub: `${s.funded} funded · ${s.new_files} new this week`, tone: 'teal' },
         body: 'Here’s this week’s snapshot of the whole pipeline.',
         meta: [
           { label: 'New files (last 7 days)', value: String(s.new_files) },

@@ -50,7 +50,7 @@ router.post('/:token/accept', async (req, res) => {
     `UPDATE draw_findings SET status='accepted', accepted_at=now(), accepted_via='email', wire_due_at=now() + ($2 || ' hours')::interval, updated_at=now()
       WHERE id=$1 AND status='delivered' RETURNING wire_due_at`, [f.id, String(hours)])).rows[0];
   if (!upd) return res.status(409).json({ error: 'already handled' });
-  await notify.notifyAppStaff(f.application_id, { type: 'draw_accepted', title: 'Borrower accepted a draw (email)',
+  await notify.notifyAppStaff(f.application_id, { type: 'draw_accepted', title: 'Borrower accepted a draw (email)', badge: { text: 'Accepted', tone: 'positive' },
     body: `The borrower accepted the inspection results from the email — the release is due by ${new Date(upd.wire_due_at).toLocaleString('en-US')}.`, applicationId: f.application_id, link: `/internal/app/${f.application_id}` }).catch(() => {});
   res.json({ ok: true, wire_due_at: upd.wire_due_at });
 });
