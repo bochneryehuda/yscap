@@ -1172,6 +1172,14 @@ async function ingestTask(task, options = {}, opts = {}) {
   if (isRtl && applicationId) {
     await ensureRtlChecklist(applicationId);
     await applyChecklistStatuses(applicationId, task, options);
+    // Rule-driven conditions key off ClickUp-sourced fields too — most notably the
+    // note buyer (applications.lender), which is pull-only from ClickUp. Re-run the
+    // Condition Center engine so a note-buyer-gated condition (e.g. the CorrFirst
+    // EMD verification) attaches/retracts as the note buyer arrives or changes, and
+    // enforce the 5% SOW contingency for a Blue Lake note buyer. Best-effort — a
+    // failure here can NEVER break the ClickUp sync.
+    try { await require('../lib/conditions/engine').evaluateApplication(applicationId, { reason: 'clickup_ingest' }); } catch (_) {}
+    try { await require('../lib/rehab-budget').enforceSowContingency(applicationId); } catch (_) {}
   }
 
   // Preserve a MASKED snapshot of every task's mapped data — RTL and non-RTL

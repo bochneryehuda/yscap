@@ -1144,13 +1144,13 @@ router.get('/applications/:id', async (req, res) => {
             pr.program AS registered_program, pr.product_label AS registered_product_label,
             pr.status AS registered_product_status, pr.note_rate AS registered_note_rate,
             pr.total_loan AS registered_total_loan, pr.quote AS registered_quote,
-            pr.stale AS registered_stale,
+            pr.stale AS registered_stale, pr.stale_reason AS registered_stale_reason,
             pr.created_at AS registered_at
      FROM applications a JOIN borrowers b ON b.id=a.borrower_id
      LEFT JOIN llcs l ON l.id=a.llc_id
      LEFT JOIN borrowers cb ON cb.id=a.co_borrower_id
      LEFT JOIN LATERAL (
-       SELECT program, product_label, status, note_rate, total_loan, quote, stale, created_at
+       SELECT program, product_label, status, note_rate, total_loan, quote, stale, stale_reason, created_at
          FROM product_registrations
         WHERE application_id=a.id AND is_current
         ORDER BY created_at DESC LIMIT 1
@@ -1169,7 +1169,11 @@ router.get('/applications/:id', async (req, res) => {
   // (The raw applications.file_markup_* columns still ride a.* here as before; keeping
   // those off non-admin staff clients is a separate pre-existing follow-up.)
   fileRow.pricing_stale = !!(fileRow.registered_quote && fileRow.registered_stale);
+  // The plain-language "why you must re-register" (which number changed, old → new).
+  // Only meaningful when the registration is actually stale.
+  fileRow.pricing_stale_reason = fileRow.pricing_stale ? (fileRow.registered_stale_reason || null) : null;
   delete fileRow.registered_stale;
+  delete fileRow.registered_stale_reason;
   res.json(fileRow);
 });
 
@@ -3157,11 +3161,14 @@ async function signOffGate(itemId, actor) {
     if (!eq(sowTotal, appBudget) || (regBudget != null && !eq(appBudget, regBudget)) || (fpSet && !eq(fpTarget, appBudget))) {
       return `Budgets do not match — first-page construction budget ${fpSet ? money(fpTarget) : '—'}, Scope of Work line-item total ${money(sowTotal)}, file budget ${money(appBudget)}${regBudget != null ? `, registered product budget ${money(regBudget)}` : ''}. They must ALL agree to the cent before sign-off: adjust the Scope of Work (start total + line items) or re-register the product so the numbers match.`;
     }
-    // Gold Standard Program: the Scope of Work must carry a >= 5% construction
-    // contingency (owner-directed 2026-07-12). The budget still matches exactly
-    // above — this is a composition requirement on top of it.
-    if (/gold/i.test(String(reg.program || '')) && !require('../lib/rehab-budget').goldContingencyOk(item.tool_payload)) {
-      return require('../lib/rehab-budget').GOLD_CONTINGENCY_MSG;
+    // 5% construction contingency requirement (owner-directed 2026-07-12; extended
+    // 2026-07-20): the Scope of Work must carry a >= 5% contingency when the file
+    // is registered Gold OR its note buyer is Blue Lake. The budget still matches
+    // exactly above — this is a composition requirement on top of it.
+    const RB = require('../lib/rehab-budget');
+    const contReq = await RB.sowContingencyRequired(item.application_id);
+    if (contReq.required && !RB.goldContingencyOk(item.tool_payload)) {
+      return RB.SOW_CONTINGENCY_MSG;
     }
     return null;
   }
@@ -3228,10 +3235,23 @@ router.patch('/checklist/:itemId', async (req, res) => {
   // so it needs the same capability as a sign-off, and only an OPTIONAL condition
   // may be waived — a required condition must actually be satisfied.
   if (b.waived === true) {
-    if (!canComplete) return res.status(403).json({ error: 'Only a processor or underwriter can waive a condition.' });
-    const cur = await db.query(`SELECT is_required FROM checklist_items WHERE id=$1`, [req.params.itemId]);
+    const cur = await db.query(
+      `SELECT ci.is_required, ci.tool_key, t.code AS template_code
+         FROM checklist_items ci LEFT JOIN checklist_templates t ON t.id = ci.template_id
+        WHERE ci.id=$1`, [req.params.itemId]);
     if (!cur.rows[0]) return res.status(404).json({ error: 'not found' });
-    if (cur.rows[0].is_required !== false) return res.status(422).json({ error: 'Only an optional condition can be waived — make it optional first, then waive.' });
+    // The appraisal credit-card condition may ALSO be waived by the loan officer
+    // (owner-directed): "The credit-card-for-appraisal condition should have a
+    // waive button… the super admin should be able to waive the condition, the
+    // loan officer should also be able to waive the condition." Every other
+    // condition still needs sign-off authority to waive.
+    const isApprCard = cur.rows[0].tool_key === 'appraisal_card' || cur.rows[0].template_code === 'rtl_p1_apprcard';
+    const mayWaive = canComplete || (isApprCard && can(req.actor, 'review_conditions'));
+    if (!mayWaive) return res.status(403).json({ error: 'Only a processor or underwriter can waive a condition.' });
+    // Normally only an OPTIONAL condition may be waived. The appraisal credit-card
+    // condition is an explicit exception (owner-directed): it is waivable directly
+    // even though it's a required task — the appraisal may simply be paid another way.
+    if (!isApprCard && cur.rows[0].is_required !== false) return res.status(422).json({ error: 'Only an optional condition can be waived — make it optional first, then waive.' });
   }
   // Push-back / reject / reopen: send a condition back to the borrower with a
   // BORROWER-VISIBLE reason (owner-directed 2026-07-12, LOS-grade management). One
@@ -4708,10 +4728,43 @@ async function notifyStatusTransition(appId, fromStatus, toStatus, opts = {}) {
 // post_closing conditions never block. An admin may force past blockers.
 const CTC_SEVERITIES = ['standard', 'prior_to_docs'];
 const FUND_SEVERITIES = ['standard', 'prior_to_docs', 'prior_to_funding'];
+const SEV_LABEL = { standard: 'Standard', prior_to_docs: 'Prior to docs', prior_to_funding: 'Prior to funding', post_closing: 'Post-closing' };
+// Which file SECTION resolves a given blocker — so the "clear to close"
+// outstanding list can link each item straight to where you fix it (the section
+// expands + scrolls). Keyed on tool_key / template_code / audience. Anything we
+// don't recognize points at the shared "Conditions to close" section.
+function sectionForBlocker(row) {
+  const tk = row.tool_key || '';
+  const code = row.template_code || '';
+  // First-class underwriting conditions (the `conditions` table) are all rendered
+  // in the Underwriting-conditions panel, which lives inside "Conditions to close".
+  if (row.source === 'underwriting') return 'sec-conditions';
+  if (tk === 'product_pricing' || code === 'rtl_p1_product') return 'sec-pricing';
+  if (code === 'rtl_p1_llc') return 'sec-entity';
+  if (code === 'appraisal_review_cleared' || code === 'rtl_p3_apprreview' || code === 'rtl_cond_appraisaldocs' || tk === 'appraisal_review') return 'sec-appraisal';
+  if (tk === 'esign') return 'sec-esign';
+  if (row.audience === 'staff') return 'sec-internal-conds';
+  return 'sec-conditions';
+}
+// A short, plain-language "why this is still outstanding" for the list.
+function blockerReason(row) {
+  if (row.kind === 'gate') return 'A gate — it must be signed off before this file can clear to close.';
+  if (row.severity) return `${SEV_LABEL[row.severity] || row.severity} condition — clear or waive it.`;
+  if (row.status === 'received') return 'A document is in — it just needs a final sign-off.';
+  if (row.status === 'issue') return 'Sent back to the borrower — waiting on a corrected item.';
+  if (String(row.hint || '').trim()) return String(row.hint).trim();
+  return 'Not completed and signed off yet.';
+}
+function decorateBlocker(row, kind) {
+  const r = { ...row, kind, title: row.title || row.label };
+  r.section = sectionForBlocker(r);
+  r.reason = blockerReason(r);
+  return r;
+}
 async function advancementBlockers(appId, target) {
   const sevs = target === 'funded' ? FUND_SEVERITIES : CTC_SEVERITIES;
   const conds = await db.query(
-    `SELECT id, COALESCE(borrower_title, title) AS title, severity
+    `SELECT id, COALESCE(borrower_title, title) AS title, severity, audience
        FROM conditions
       WHERE application_id=$1 AND status IN ('open','borrower_responded') AND severity = ANY($2::text[])
       ORDER BY severity, created_at`, [appId, sevs]);
@@ -4723,8 +4776,10 @@ async function advancementBlockers(appId, target) {
   // double count. Internal checklist TASKS are workflow, not conditions, so they
   // don't gate here (their milestone subset is captured by is_gate).
   const checklistConds = await db.query(
-    `SELECT ci.id, COALESCE(ci.label, ci.borrower_label, 'Condition') AS title
+    `SELECT ci.id, COALESCE(ci.label, ci.borrower_label, 'Condition') AS title,
+            ci.tool_key, t.code AS template_code, ci.audience, ci.status, ci.hint
        FROM checklist_items ci
+       LEFT JOIN checklist_templates t ON t.id = ci.template_id
       WHERE ci.application_id=$1
         AND ci.item_kind IN ('document','condition')
         AND COALESCE(ci.is_required, true) = true
@@ -4732,10 +4787,18 @@ async function advancementBlockers(appId, target) {
         AND NOT (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')
       ORDER BY ci.sort_order, ci.created_at`, [appId]);
   const gates = await db.query(
-    `SELECT id, label FROM checklist_items
-      WHERE application_id=$1 AND is_gate=true AND NOT (signed_off_at IS NOT NULL OR status='satisfied')
-      ORDER BY sort_order, created_at`, [appId]);
-  return { conditions: [...conds.rows, ...checklistConds.rows], gates: gates.rows };
+    `SELECT ci.id, ci.label, ci.tool_key, t.code AS template_code, ci.audience, ci.status
+       FROM checklist_items ci
+       LEFT JOIN checklist_templates t ON t.id = ci.template_id
+      WHERE ci.application_id=$1 AND ci.is_gate=true AND NOT (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')
+      ORDER BY ci.sort_order, ci.created_at`, [appId]);
+  // Tag the first-class `conditions`-table rows so navigation sends them to the
+  // Underwriting-conditions panel (which renders them) rather than a checklist section.
+  const underwriting = conds.rows.map(r => ({ ...r, source: 'underwriting' }));
+  return {
+    conditions: [...underwriting, ...checklistConds.rows].map(r => decorateBlocker(r, 'condition')),
+    gates: gates.rows.map(r => decorateBlocker(r, 'gate')),
+  };
 }
 
 // Readiness for the gated transitions — powers the "conditions to close" widget.
@@ -5060,7 +5123,12 @@ router.post('/applications/:id/closing-date', async (req, res) => {
 // SSN has its own secure reveal/enter flow and is NEVER set here. App-field
 // changes enqueue a scoped ClickUp push. Behind the /applications/:id guard.
 const COMPLETE_APP_FIELDS = { program: 'text', loan_type: 'text', property_type: 'text',
-  purchase_price: 'money', as_is_value: 'money', arv: 'money', rehab_budget: 'money' };
+  purchase_price: 'money', as_is_value: 'money', arv: 'money', rehab_budget: 'money',
+  // Note buyer / capital partner (applications.lender). Normally fed from ClickUp,
+  // but staff can fill/correct it here when ClickUp doesn't feed it or is empty —
+  // it's part of application completeness (owner-directed 2026-07-20). STAFF-ONLY;
+  // never offered on the borrower completeness panel.
+  lender: 'text' };
 const COMPLETE_BORROWER_FIELDS = { cell_phone: 'text', date_of_birth: 'date', fico: 'int', citizenship: 'text' };
 async function completeFields(req, res, borrowerScoped) {
   const b = req.body || {};
@@ -5092,13 +5160,23 @@ async function completeFields(req, res, borrowerScoped) {
       // #84 — this staff completeness path writes the SAME frozen economics fields
       // as PATCH /details (program / loan_type / property_type / price / as-is / ARV
       // / rehab budget), so it must honor the clear-to-close / funded freeze too — a
-      // super_admin can unlock the file to correct it. Only the economics UPDATE is
-      // guarded (a request with personal borrower fields only is unaffected).
-      const lock = await require('../lib/file-lock').structuralLockReason(req.params.id, db, { actor: req.actor });
-      if (lock) return res.status(409).json({ error: lock, locked: true });
+      // super_admin can unlock the file to correct it. The NOTE BUYER (lender) is
+      // pure staff metadata (not a frozen economics field), so a lender-only edit
+      // is allowed even on a locked file; the freeze only guards economics.
+      if (appKeys.some((k) => k !== 'lender')) {
+        const lock = await require('../lib/file-lock').structuralLockReason(req.params.id, db, { actor: req.actor });
+        if (lock) return res.status(409).json({ error: lock, locked: true });
+      }
       appSets.push('updated_at=now()');
       await db.query(`UPDATE applications SET ${appSets.join(', ')} WHERE id=$1`, appVals);
       enqueueClickupPush(req.params.id, appKeys).catch(() => {});
+      // Filling a rule-driven field here (most importantly the NOTE BUYER) may
+      // attach/retract a condition — e.g. the CorrFirst EMD verification — and can
+      // flip the 5% SOW-contingency requirement (a Blue Lake note buyer). Re-run
+      // the Condition Center engine and enforce the contingency, exactly like the
+      // details edit path does. Best-effort — never blocks the save.
+      try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'completeness_edited' }); } catch (_) {}
+      try { await require('../lib/rehab-budget').enforceSowContingency(req.params.id); } catch (_) {}
     }
     const brVals = [bid]; const brSets = []; const brKeys = [];
     for (const [k, t] of Object.entries(COMPLETE_BORROWER_FIELDS)) {
@@ -5133,6 +5211,17 @@ async function completeFields(req, res, borrowerScoped) {
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 }
 router.post('/applications/:id/complete-fields', (req, res) => completeFields(req, res, false));
+
+// All note buyers available to pick in the completeness panel — every value from
+// the ClickUp note-buyer dropdown, PLUS the confirmed registry set and anything
+// already on a file (owner-directed 2026-07-20). Staff-only (this whole router is
+// staff-gated) — a note buyer name is never exposed to a borrower.
+router.get('/note-buyers', async (req, res) => {
+  try {
+    const noteBuyers = await require('../lib/note-buyers').listNoteBuyers();
+    res.json({ noteBuyers });
+  } catch (e) { console.warn('[staff] note-buyers error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
 
 // S3-05: DECISION-grade statuses are an underwriting call — only roles with
 // see_all_files authority (admin / underwriter / loan_coordinator) may move a file

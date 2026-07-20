@@ -59,6 +59,7 @@ export default function EsignFileSection({ appId, role }) {
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState('');      // action key currently running
   const [lnInput, setLnInput] = useState('');   // inline YS loan-number backfill
+  const [openEnvs, setOpenEnvs] = useState({});  // per-envelope expand override (id -> bool)
   const seq = useRef(0);
 
   const load = useCallback(async (quiet) => {
@@ -153,18 +154,36 @@ export default function EsignFileSection({ appId, role }) {
     const lvl = agingLevel(h);
     const terminal = TERMINAL.includes(e.phase);   // shared vocabulary (esign.js) — no drift
     const recips = (e.recipients || []).slice().sort((a, b) => Number(a.routingOrder) - Number(b.routingOrder) || String(a.role).localeCompare(String(b.role)));
+    // Each envelope collapses to a one-line summary (owner-directed: "the
+    // e-signature of each and every package is very big — that should all be
+    // able to be collapsed into small things"). Default collapsed; the summary
+    // row still shows the status + who we're waiting on. An envelope that needs
+    // ACTION right now — the admin's counter-signature, or a failed/declined/
+    // voided attempt whose Retry/Re-issue button lives in the body — starts
+    // expanded so nothing actionable is hidden behind a click.
+    const autoOpen = e.phase === 'awaiting_countersign' || e.phase === 'error'
+      || e.phase === 'declined' || e.phase === 'voided' || !!e.deadLetteredAt;
+    const open = openEnvs[e.id] != null ? openEnvs[e.id] : autoOpen;
+    const toggle = () => setOpenEnvs((m) => ({ ...m, [e.id]: !(m[e.id] != null ? m[e.id] : autoOpen) }));
     return (
       <div className="panel esign-card" key={e.id} style={{ marginBottom: 12 }}>
-        <div className="row" style={{ gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+        <div className="row esign-card-head" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', cursor: 'pointer' }}
+          onClick={toggle} role="button" tabIndex={0}
+          onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); toggle(); } }}
+          aria-expanded={open}>
+          <span className={`sec-chevron${open ? ' open' : ''}`} aria-hidden="true">▶</span>
           <span className="pill muted">{PURPOSE[e.purpose] || e.purpose}</span>
           <span className={`pill ${ph.cls}`}><span className="esign-dot" style={{ background: ph.dot }} aria-hidden="true" />{ph.label}</span>
           {e.waitingOn && lvl ? (
             <span className={`pill esign-aging ${lvl}`} title={`No progress for ${agingLabel(h)}`}>⏱ {agingLabel(h)}</span>
           ) : null}
+          {!open && e.waitingOn ? <span className="muted small" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>· {e.phase === 'awaiting_countersign' ? 'ready for your counter-signature' : `waiting on ${e.waitingOn.name}`}</span> : null}
           <div className="spacer" />
           {e.envelopeId ? <span className="muted small esign-env" title="DocuSign envelope ID">{e.envelopeId}</span> : null}
+          <span className="muted small" style={{ flex: 'none' }}>{open ? 'Hide' : 'Show'}</span>
         </div>
 
+        {!open ? null : <>
         {e.waitingOn ? (
           <div className={`esign-waiting ${e.phase === 'awaiting_countersign' ? 'is-admin' : ''}`}>
             {e.phase === 'awaiting_countersign'
@@ -215,6 +234,7 @@ export default function EsignFileSection({ appId, role }) {
               title="DocuSign Certificate of Completion — the legal audit trail (signers, timestamps, IP addresses)">{busy === `dl:${e.certificate.documentId}` ? '…' : '↓ certificate'}</button>
           ) : null}
         </div>
+        </>}
       </div>
     );
   };
