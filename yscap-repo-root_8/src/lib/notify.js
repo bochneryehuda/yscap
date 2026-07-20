@@ -315,8 +315,13 @@ async function fileContext(appId, extraMeta = []) {
     const r = await db.query(
       `SELECT a.ys_loan_number, a.property_address, a.program, a.loan_type, a.status,
               a.purchase_price, a.arv, a.rehab_budget, a.loan_amount,
-              b.first_name, b.last_name, b.email, b.cell_phone
-         FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [appId]);
+              b.first_name, b.last_name, b.email, b.cell_phone,
+              lo.full_name AS lo_name, lo.title AS lo_title, lo.email AS lo_email,
+              lo.phone AS lo_phone, lo.cell AS lo_cell, lo.nmls AS lo_nmls
+         FROM applications a
+         JOIN borrowers b ON b.id=a.borrower_id
+         LEFT JOIN staff_users lo ON lo.id=a.loan_officer_id AND lo.is_active=true
+        WHERE a.id=$1`, [appId]);
     const a = r.rows[0];
     if (!a) return null;
     const pa = a.property_address || {};
@@ -346,6 +351,21 @@ async function fileContext(appId, extraMeta = []) {
     // contact row) plus the borrower's own headline numbers. Never any
     // note-buyer / capital-provider data — fileContext reads only app+borrower
     // DB fields, and the program label is scrubbed above.
+    // The assigned loan officer — so a borrower ALWAYS knows who is handling
+    // their loan and how to reach them (owner-directed 2026-07-20). Safe on
+    // every surface (it's the officer's own business contact, never a note
+    // buyer). `reach` prefers cell, then desk phone, then email.
+    const officer = a.lo_name
+      ? { name: a.lo_name, title: a.lo_title || 'Loan Officer', email: a.lo_email || null,
+          phone: a.lo_cell || a.lo_phone || null, nmls: a.lo_nmls || null }
+      : null;
+    const officerRow = officer
+      ? { label: 'Your loan officer',
+          value: [officer.name, officer.title].filter(Boolean).join(' · ')
+                 + (officer.nmls ? ` · NMLS #${officer.nmls}` : '')
+                 + ([officer.phone, officer.email].filter(Boolean).length
+                     ? ` · ${[officer.phone, officer.email].filter(Boolean).join(' · ')}` : '') }
+      : null;
     // NOTE: extraMeta is intentionally NOT merged here — callers pass staff-
     // oriented extra rows, so borrowerMeta stays a clean file-identity block.
     const borrowerMeta = [
@@ -354,11 +374,12 @@ async function fileContext(appId, extraMeta = []) {
       progBorrower ? { label: 'Program', value: progBorrower } : null,
       a.loan_type ? { label: 'Loan type', value: a.loan_type } : null,
       a.loan_amount != null ? { label: 'Loan amount', value: money(a.loan_amount) } : null,
+      officerRow,
     ].filter(Boolean);
     // Short tag for the SUBJECT line: loan number (when assigned) + street, kept
     // concise so it reads cleanly in an inbox.
     const subjectTag = [hasLoanNo ? loanNo : null, street].filter(Boolean).join(' · ') || (hasLoanNo ? loanNo : addr);
-    return { label: `${loanNo} · ${addr}`, addr, street, loanNo, hasLoanNo, borrowerName, meta, borrowerMeta, subjectTag };
+    return { label: `${loanNo} · ${addr}`, addr, street, loanNo, hasLoanNo, borrowerName, officer, officerRow, meta, borrowerMeta, subjectTag };
   } catch (_) { return null; }
 }
 

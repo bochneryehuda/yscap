@@ -4088,6 +4088,20 @@ const STATUS_LABEL = { file_intake: 'File intake', new: 'Submitted', in_review: 
 // change still posts in-app; only these also email (the in-between progress moves —
 // in_review / processing / underwriting — are in-app only, to keep the inbox quiet).
 const MAJOR_STATUSES = new Set(['approved', 'clear_to_close', 'funded', 'declined', 'withdrawn']);
+// Plain-language, borrower-facing explanation of what a status MEANS and what
+// happens next — so a status email is reassuring and actionable, not a bare label
+// (owner-directed 2026-07-20). Borrower-safe copy only (no capital-partner names,
+// no internal mechanics). Missing entry → no explanation line (graceful).
+const BORROWER_STATUS_EXPLAIN = {
+  in_review: 'Your loan team is reviewing your file and the documents you provided. We\'ll let you know as soon as we need anything else from you.',
+  processing: 'Your file is being prepared for underwriting. Keep an eye out for any document requests so nothing slows down your loan.',
+  underwriting: 'An underwriter is reviewing your loan for final approval. If they need anything, it will appear in your conditions.',
+  approved: 'Your loan has been approved. Next, we\'ll finish any remaining conditions and prepare to clear you to close.',
+  clear_to_close: 'You are clear to close — every condition is satisfied and your closing can be scheduled. Your loan officer will reach out to coordinate the details.',
+  funded: 'Your loan has funded — congratulations! If your loan includes renovation draws, you can request your first draw from the portal when you\'re ready.',
+  declined: 'After review, we are unable to move forward with this loan at this time. Your loan officer can walk you through why and discuss any options.',
+  withdrawn: 'This loan file has been withdrawn. If this wasn\'t expected, contact your loan officer and we\'ll help sort it out.',
+};
 // Conditions-to-close gating. Reaching "clear to close" requires every open
 // prior-to-docs (and standard) condition cleared/waived and every gate item
 // signed off; "funded" additionally requires prior-to-funding conditions.
@@ -4521,9 +4535,11 @@ router.patch('/applications/:id', async (req, res) => {
     const label = STATUS_LABEL[status] || status;
     try {
       const fromLabel = STATUS_LABEL[cur.rows[0].status] || cur.rows[0].status;
+      const explain = BORROWER_STATUS_EXPLAIN[status];
       await notify.notifyAppBorrowers(req.params.id, {
         type: 'status_change', title: `Your loan status is now: ${label}`,
-        body: `Your loan file has moved from "${fromLabel}" to "${label}". The full file — conditions, documents, and messages — is in your portal.`,
+        body: `Your loan file has moved from "${fromLabel}" to "${label}".`,
+        lines: explain ? [explain] : ['The full file — conditions, documents, and messages — is in your portal.'],
         applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'View your file',
         major: MAJOR_STATUSES.has(status) });   // #88: only decision statuses email the borrower
       await notify.notifyAppStaff(req.params.id, {   // #113: whole team (primary + assistants), minus the actor
