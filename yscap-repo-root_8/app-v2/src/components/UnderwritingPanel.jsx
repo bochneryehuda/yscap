@@ -12,6 +12,9 @@ import { api } from '../lib/api.js';
 const DOC_LABEL = {
   government_id: 'Government ID', purchase_contract: 'Purchase contract', title: 'Title report',
   bank_statement: 'Bank statement', appraisal: 'Appraisal', operating_agreement: 'Operating agreement',
+  assignment: 'Assignment of contract', ein_letter: 'EIN letter', good_standing: 'Good standing',
+  llc_formation: 'LLC formation', insurance: 'Insurance', flood: 'Flood cert',
+  settlement: 'Settlement statement', credit_report: 'Credit report', background_report: 'Background / OFAC',
 };
 const label = (t) => DOC_LABEL[t] || String(t || '').replace(/_/g, ' ');
 

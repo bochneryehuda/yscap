@@ -105,7 +105,9 @@ function matchScalar(kind, a, b) {
     case 'money': return withinMoney(a, b, 1);
     case 'date': { const x = toISODate(dateStr(a)), y = toISODate(dateStr(b)); return x && y ? x === y : null; }
     case 'address': return addrMatches(a, b);
-    case 'digits': { const x = digitsOnly(a), y = digitsOnly(b); return x && y ? x === y : null; }
+    // Compare identifiers (EIN) on the last 4 digits — the stored document value is PII-masked
+    // to ***last4, so only the last 4 are ever available to compare (and to display).
+    case 'digits': { const x = digitsOnly(a).slice(-4), y = digitsOnly(b).slice(-4); return x.length === 4 && y.length === 4 ? x === y : null; }
     case 'name': return namesMatchLoose(a, b);
     case 'entity': return entityMatch(a, b);
     case 'nameOrEntity': {
@@ -135,6 +137,7 @@ function display(kind, v) {
   if (v == null) return null;
   if (Array.isArray(v)) return v.filter((x) => x != null && x !== '').map((x) => display(kind === 'nameOrEntity' ? 'name' : kind, x)).join(' / ') || null;
   if (kind === 'money') { const n = num(v); return n == null ? String(v) : `$${n.toLocaleString('en-US')}`; }
+  if (kind === 'digits') { const d = digitsOnly(v); return d ? `***${d.slice(-4)}` : String(v); } // never show a full identifier
   if (kind === 'address') return addrLine(v) || (typeof v === 'string' ? v : null);
   if (kind === 'date') { const d = toISODate(dateStr(v)); return d || String(v); }
   return String(v);

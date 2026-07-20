@@ -8,11 +8,20 @@
  *   'application' — the loan-file view the caller builds from the application (+ entity)
  * `image: true` means the original image is also sent to the analyzer (photo IDs).
  */
-const { GOVERNMENT_ID, PURCHASE_CONTRACT, TITLE, BANK_STATEMENT } = require('./schemas');
+const {
+  GOVERNMENT_ID, PURCHASE_CONTRACT, TITLE, BANK_STATEMENT,
+  ASSIGNMENT, OPERATING_AGREEMENT, EIN_LETTER, GOOD_STANDING, LLC_FORMATION,
+  INSURANCE, FLOOD, SETTLEMENT, CREDIT_REPORT, BACKGROUND_REPORT,
+} = require('./schemas');
 const { computeIdFindings } = require('./id-checks');
 const { computeContractFindings } = require('./purchase-contract-checks');
 const { computeTitleFindings } = require('./title-checks');
 const { computeBankFindings } = require('./bank-statement-checks');
+const {
+  computeAssignmentFindings, computeOperatingAgreementFindings, computeEinFindings,
+  computeGoodStandingFindings, computeFormationFindings, computeInsuranceFindings,
+  computeFloodFindings, computeSettlementFindings, computeCreditFindings, computeBackgroundFindings,
+} = require('./doc-checks');
 
 const REGISTRY = {
   government_id: {
@@ -46,6 +55,46 @@ const REGISTRY = {
     subject: 'assets',         // { borrower_name, entity_names[] } — ownership + math rules
     image: false,
     check: computeBankFindings,
+  },
+  assignment: {
+    docType: 'assignment', schema: ASSIGNMENT.schema, instructions: ASSIGNMENT.instructions,
+    subject: 'application', image: false, check: computeAssignmentFindings,
+  },
+  operating_agreement: {
+    docType: 'operating_agreement', schema: OPERATING_AGREEMENT.schema, instructions: OPERATING_AGREEMENT.instructions,
+    subject: 'entity', image: false, check: computeOperatingAgreementFindings,
+  },
+  ein_letter: {
+    docType: 'ein_letter', schema: EIN_LETTER.schema, instructions: EIN_LETTER.instructions,
+    subject: 'entity', image: false, check: computeEinFindings,
+  },
+  good_standing: {
+    docType: 'good_standing', schema: GOOD_STANDING.schema, instructions: GOOD_STANDING.instructions,
+    subject: 'entity', image: false, check: computeGoodStandingFindings,
+  },
+  llc_formation: {
+    docType: 'llc_formation', schema: LLC_FORMATION.schema, instructions: LLC_FORMATION.instructions,
+    subject: 'entity', image: false, check: computeFormationFindings,
+  },
+  insurance: {
+    docType: 'insurance', schema: INSURANCE.schema, instructions: INSURANCE.instructions,
+    subject: 'application', image: false, check: computeInsuranceFindings,
+  },
+  flood: {
+    docType: 'flood', schema: FLOOD.schema, instructions: FLOOD.instructions,
+    subject: 'application', image: false, check: computeFloodFindings,
+  },
+  settlement: {
+    docType: 'settlement', schema: SETTLEMENT.schema, instructions: SETTLEMENT.instructions,
+    subject: 'application', image: false, check: computeSettlementFindings,
+  },
+  credit_report: {
+    docType: 'credit_report', schema: CREDIT_REPORT.schema, instructions: CREDIT_REPORT.instructions,
+    subject: 'borrower', image: false, check: computeCreditFindings,
+  },
+  background_report: {
+    docType: 'background_report', schema: BACKGROUND_REPORT.schema, instructions: BACKGROUND_REPORT.instructions,
+    subject: 'borrower', image: false, check: computeBackgroundFindings,
   },
 };
 

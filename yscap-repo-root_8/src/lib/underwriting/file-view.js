@@ -20,7 +20,7 @@ const { sellerNames: contractSellers } = require('./purchase-contract-checks');
 // The columns each subject needs — fetched once by the route, sliced here.
 async function loadContext(client, appId) {
   const app = (await client.query(
-    `SELECT id, borrower_id, llc_id, property_address, purchase_price,
+    `SELECT id, borrower_id, llc_id, property_address, purchase_price, loan_amount,
             is_assignment, assignment_fee, underlying_contract_price
        FROM applications WHERE id = $1`, [appId])).rows[0] || null;
   if (!app) return null;
@@ -68,6 +68,27 @@ function subjectFor(docType, ctx) {
       };
     case 'bank_statement':
       return { borrower_name: borrowerName(borrower), entity_names: entityNames || [] };
+    case 'assignment':
+      return {
+        entity_name: vestingName || null, is_assignment: !!(app && app.is_assignment),
+        assignment_fee: app && app.assignment_fee, underlying_contract_price: app && app.underlying_contract_price,
+      };
+    case 'insurance':
+    case 'settlement':
+      return {
+        property_address: app && app.property_address, entity_name: vestingName || null,
+        loan_amount: app && app.loan_amount, purchase_price: app && app.purchase_price,
+      };
+    case 'operating_agreement':
+    case 'ein_letter':
+    case 'good_standing':
+    case 'llc_formation':
+      return { entity_name: vestingName || null, borrower_name: borrowerName(borrower) };
+    case 'credit_report':
+    case 'background_report':
+      return { borrower_name: borrowerName(borrower), entity_name: vestingName || null, borrower };
+    case 'flood':
+      return { property_address: app && app.property_address };
     default:
       return app || null;
   }
