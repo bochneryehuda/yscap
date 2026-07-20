@@ -53,10 +53,13 @@ const warn = { severity: 'warning', blocks_ctc: false };
   assert.strictEqual(canApply({}, 'grant_exception', warn, processor).ok, true);
 }
 
-// ---- the aliased verb (open_condition→post_condition etc.) is canonicalized before deciding ----
+// ---- aliases are canonicalized before deciding — a gate-clearing alias is ALSO elevated ----
 {
   const processor = canWith(['sign_off_conditions']);
-  assert.strictEqual(canApply({}, 'open_condition', fatalBlocking, processor).ok, true, 'alias resolves to a base action');
+  assert.strictEqual(canApply({}, 'open_condition', fatalBlocking, processor).ok, true, 'a base-action alias resolves to base');
+  // A gate-clearing alias (keep→clear) must NOT slip past the elevated bar.
+  assert.strictEqual(elevatedPermissionFor('keep', fatalBlocking), 'waive_conditions', 'the clear alias is elevated too');
+  assert.strictEqual(canApply({}, 'keep', fatalBlocking, processor).ok, false, 'a processor cannot clear a fatal via an alias');
 }
 
 console.log('test-underwriting-exceptions: tiered exception authority pass');

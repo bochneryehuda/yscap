@@ -34,7 +34,7 @@ for (const ok of ['Subsisting', 'Current', 'Valid', 'In Existence', 'Registered'
   assert.deepStrictEqual(codes(C.computeGoodStandingFindings({ entityLegalName: 'Maple LLC', status: ok, issueDate: '2026-07-01', readable: true }, {}, { today: TODAY })), [],
     `"${ok}" must be treated as good standing (no finding)`);
 }
-for (const bad of ['Dissolved', 'Suspended', 'Forfeited', 'Not in Good Standing', 'Void']) {
+for (const bad of ['Dissolved', 'Suspended', 'Forfeited', 'Not in Good Standing', 'Void', 'Not in Existence']) {
   assert.strictEqual(C.computeGoodStandingFindings({ entityLegalName: 'Maple LLC', status: bad, readable: true }, {}, { today: TODAY }).find((f) => f.code === 'entity_not_in_good_standing').severity, 'fatal',
     `"${bad}" must be a fatal not-in-good-standing`);
 }
