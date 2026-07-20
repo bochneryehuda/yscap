@@ -426,6 +426,7 @@ export const api = {
   staffStatusHistory: (appId) => req('GET', `/api/staff/applications/${appId}/status-history`),
   staffSetClosingDate: (appId, b) => req('POST', `/api/staff/applications/${appId}/closing-date`, b),
   staffEditApplication: (appId, b) => req('PATCH', `/api/staff/applications/${appId}/details`, b),
+  staffSetStructuralLock: (appId, unlocked, reason) => req('POST', `/api/staff/applications/${appId}/structural-lock`, { unlocked, reason }),
   staffNudge:          (appId) => req('POST', `/api/staff/applications/${appId}/nudge`),
   // Reminders + task management (#93). staffReminders returns { reminders,
   // contacts, outstanding } so the composer is populated in one round-trip.
