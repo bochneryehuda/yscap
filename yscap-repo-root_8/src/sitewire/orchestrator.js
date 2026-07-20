@@ -40,7 +40,7 @@ async function journal(e) {
 // ---- park a stuck/ambiguous state for a human (never guess, never silently drop) ----
 // `dedupe` differentiates DISTINCT failures that share a reason class (e.g. a bind failure on
 // line A vs line B) so they don't collapse into one row and lose the second failure's detail.
-async function park({ appId, reason, fieldKey = 'sitewire', current = null, proposed = null, dedupe = null }) {
+async function park({ appId, reason, fieldKey = 'sitewire', current = null, proposed = null, dedupe = null, notify = true }) {
   const cls = String(reason).split(':')[0];
   // The shared open-review unique index is (COALESCE(task_id,''), field_key, direction,
   // COALESCE(proposed_value,'')) and does NOT include application_id. Stamp a per-(file,
@@ -56,7 +56,9 @@ async function park({ appId, reason, fieldKey = 'sitewire', current = null, prop
        VALUES ($1,$2,'outbound',$3,$4,$5,$6,'open') RETURNING id`,
       [appId, taskKey, fieldKey, current == null ? null : String(current), proposed == null ? null : String(proposed), reason]);
     const rid = r.rows[0].id;
-    try { await require('../lib/sync-review').notifyLoanOfficer(rid); } catch (_) {}
+    // Advisory notes (units mismatch, unmapped type) set notify:false — they appear in the review list
+    // but don't email the LO, so a file with several advisories doesn't send several blank-looking emails.
+    if (notify) { try { await require('../lib/sync-review').notifyLoanOfficer(rid); } catch (_) {} }
     return rid;
   } catch (err) {
     // A concurrent insert may have raced us to the same task_id — return THAT row rather than
@@ -257,7 +259,7 @@ async function pushFile(appId, opts = {}) {
   const fileUnits = (a.units != null && Number(a.units) > 0) ? Number(a.units) : 0;
   const physicalUnits = Math.max(1, fileUnits, sowUnits);
   if (fileUnits > 0 && fileUnits !== sowUnits) {
-    await park({ appId, dedupe: 'units', reason: `sitewire_units_note: the file lists ${fileUnits} unit(s) but the Scope of Work is built for ${sowUnits} — pushing the physical building count of ${physicalUnits} unit(s) (units with no work carry no budget lines). Update the file's unit count in the application if ${physicalUnits} is wrong.`, current: String(fileUnits), proposed: String(physicalUnits) });
+    await park({ appId, dedupe: 'units', notify: false, reason: `sitewire_units_note: the file lists ${fileUnits} unit(s) but the Scope of Work is built for ${sowUnits} — pushing the physical building count of ${physicalUnits} unit(s) (units with no work carry no budget lines). Update the file's unit count in the application if ${physicalUnits} is wrong.`, current: String(fileUnits), proposed: String(physicalUnits) });
   }
 
   // explode + G-RECON (must tie to the frozen budget to the cent BEFORE any write)
@@ -315,8 +317,8 @@ async function pushFile(appId, opts = {}) {
   // G-ENUM: a property/construction type we couldn't map is LEFT BLANK (never guessed) — but raise
   // an advisory review so someone sets it in Sitewire, rather than it silently going unset. Non-blocking
   // (the push still proceeds — these are optional Sitewire fields); deduped so it can't spam the queue.
-  if (a.property_type && !devType) await park({ appId, reason: `sitewire_type_unmapped: property type "${a.property_type}" didn't map to a Sitewire development_type — left blank, set it in Sitewire if needed`, dedupe: 'devtype' });
-  if ((a.loan_type || a.rehab_type) && !consType) await park({ appId, reason: `sitewire_type_unmapped: loan/rehab type "${a.loan_type || ''}/${a.rehab_type || ''}" didn't map to a Sitewire construction_type — left blank, set it in Sitewire if needed`, dedupe: 'construction' });
+  if (a.property_type && !devType) await park({ appId, reason: `sitewire_type_unmapped: property type "${a.property_type}" didn't map to a Sitewire development_type — left blank, set it in Sitewire if needed`, dedupe: 'devtype', notify: false });
+  if ((a.loan_type || a.rehab_type) && !consType) await park({ appId, reason: `sitewire_type_unmapped: loan/rehab type "${a.loan_type || ''}/${a.rehab_type || ''}" didn't map to a Sitewire construction_type — left blank, set it in Sitewire if needed`, dedupe: 'construction', notify: false });
   if (a.llc_name) propertyFields.borrower_entity_name = a.llc_name;
 
   let link = existingLink;
@@ -350,7 +352,11 @@ async function pushFile(appId, opts = {}) {
         return { parked: 'dupe_check_failed' };
       }
       if (existing) {
-        await park({ appId, reason: `sitewire_loan_already_in_sitewire: loan ${a.ys_loan_number} already exists in Sitewire (property ${existing.id}) — PILOT will not duplicate or adopt it`, current: String(existing.id) });
+        // GO-FORWARD ONLY (owner-directed 2026-07-20): this loan number is already on a property in Sitewire
+        // that PILOT did NOT create. PILOT never adopts or follows a pre-existing property — it manages only
+        // what it pushes. So don't duplicate and don't adopt: park for a human decision. To bring it under
+        // PILOT management, delete that property in Sitewire and push a fresh copy from this file.
+        await park({ appId, reason: `sitewire_loan_already_in_sitewire: loan ${a.ys_loan_number} is already on a Sitewire property (${existing.id}) that PILOT didn't create — PILOT won't duplicate or follow it. To manage the draw process here, delete it in Sitewire and push a fresh copy from this file, or keep them separate.`, current: String(existing.id) });
         return { parked: 'dupe_property' };
       }
     }
@@ -368,8 +374,10 @@ async function pushFile(appId, opts = {}) {
       throw e; // transient -> queue retries
     }
     if (property && property.__dryrun) return { dryrun: true, stage: 'property' };
-    propertyId = property && property.id;
-    budgetId = property && property.budget && property.budget.id;
+    propertyId = (property && property.id) || (link && link.sitewire_property_id) || null;
+    // A re-push (UPDATE) of an already-created property may return a response that omits budget.id — fall
+    // back to the id we stored on the first push, so a re-push doesn't false-park on "no budget id".
+    budgetId = (property && property.budget && property.budget.id) || (link && link.sitewire_budget_id) || null;
     // A 200 that came back without the ids we need to bind the crosswalk is NOT a success — never
     // proceed with undefined ids or write a link row we can't reconcile (G-RAW / E-RAW-NOID).
     if (!propertyId || !budgetId) {
@@ -410,7 +418,8 @@ async function pushFile(appId, opts = {}) {
     }
   }
 
-  // push the budget/job-items via the crosswalk
+  // push the budget/job-items via the crosswalk. PILOT only ever manages properties it created, so the
+  // crosswalk is always PILOT's own (born on this push) — a clean explode → create → bind → verify.
   const budgetResult = await pushBudget(appId, budgetId, ex, budgetCents);
   return { ok: true, propertyId, budgetId, budget: budgetResult };
 }
