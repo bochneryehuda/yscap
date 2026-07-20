@@ -88,7 +88,7 @@ can surface in the roll-up but can never flip the fatal clear-to-close gate.
 
 `db/200` (extractions + findings + the gate condition), `db/201` (suggested actions + opens
 condition), `db/202` (CTC guard trigger), `db/203` (idempotency columns), `db/204` (one-current-
-extraction-per-file unique index). All idempotent.
+extraction-per-file unique index), `db/205` (experience-exception columns on applications). All idempotent.
 
 ## Route (`src/routes/underwriting.js`, `/api/underwriting`, staff-only, per-file scoped)
 
