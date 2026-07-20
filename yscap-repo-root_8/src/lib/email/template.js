@@ -121,6 +121,7 @@ function render(p) {
   var lines    = Array.isArray(p.lines) ? p.lines : [];
   var meta     = Array.isArray(p.meta) ? p.meta : [];
   var cta      = p.cta && p.cta.url ? p.cta : null;
+  var cta2     = p.cta2 && p.cta2.url ? p.cta2 : null;   // optional SECONDARY button (outline), e.g. "Review / dispute" beside "Accept"
   var note     = p.note || '';
   var replyable = !!p.replyable;
   var code     = (p.code != null && p.code !== '') ? String(p.code) : '';
@@ -279,17 +280,32 @@ function render(p) {
       'line-height:1.6;color:' + BRAND.ink + ';">' + esc(t) + '</p>';
   }
 
-  /* ---------------- CTA BUTTON (bulletproof) ---------------- */
+  /* ---------------- CTA BUTTON(S) (bulletproof) ---------------- */
+  // Primary (solid teal). An optional SECONDARY button (outline) sits beside it so an email can
+  // offer two side-by-side actions — e.g. "Accept these results" + "Review / dispute a line" —
+  // without a second template. Rendered as cells of one table so they stay on one row in Outlook.
   var ctaHtml = '';
   if (cta) {
-    ctaHtml =
-      '<table role="presentation" cellpadding="0" cellspacing="0" style="margin:22px 0 6px;"><tr><td ' +
-        'style="border-radius:8px;background:' + BRAND.teal + ';">' +
+    var primaryCell =
+      '<td style="border-radius:8px;background:' + BRAND.teal + ';">' +
         '<a href="' + esc(cta.url) + '" target="_blank" ' +
           'style="display:inline-block;padding:13px 26px;font-family:Arial,Helvetica,sans-serif;' +
           'font-size:14px;font-weight:700;letter-spacing:.3px;color:' + BRAND.onAcc + ';' +
           'text-decoration:none;border-radius:8px;">' + esc(cta.label || 'Open portal') + ' &rarr;</a>' +
-      '</td></tr></table>';
+      '</td>';
+    var secondaryCell = cta2
+      ? '<td style="width:12px;">&nbsp;</td>' +
+        '<td style="border-radius:8px;border:1px solid ' + BRAND.teal + ';background:' + BRAND.card + ';">' +
+        '<a href="' + esc(cta2.url) + '" target="_blank" ' +
+          'style="display:inline-block;padding:12px 24px;font-family:Arial,Helvetica,sans-serif;' +
+          'font-size:14px;font-weight:700;letter-spacing:.3px;color:' + BRAND.teal + ';' +
+          'text-decoration:none;border-radius:8px;">' + esc(cta2.label || 'Review') + '</a>' +
+      '</td>'
+      : '';
+    ctaHtml =
+      '<table role="presentation" cellpadding="0" cellspacing="0" style="margin:22px 0 6px;"><tr>' +
+        primaryCell + secondaryCell +
+      '</tr></table>';
   }
 
   var noteHtml = note
@@ -431,15 +447,27 @@ function render(p) {
   if (files.length) { t.push((files.length === 1 ? 'Attached: ' : 'Attachments: ') + files.join(', '), ''); }
   if (meta.length) { meta.forEach(function (m) { t.push(m.label + ': ' + m.value); }); t.push(''); }
   if (cta) t.push(cta.label + ': ' + cta.url, '');
+  if (cta2) t.push(cta2.label + ': ' + cta2.url, '');
   if (note) t.push(note, '');
   if (replyable) t.push('You can reply directly to this email to reach your '
     + (p.audience === 'borrower' ? 'loan team.' : 'YS Capital team.'), '');
   t.push('—', COMPANY.name + ' · NMLS #' + COMPANY.nmls, COMPANY.phone + ' · ' + COMPANY.email + ' · yscapgroup.com');
 
-  // Subject carries the file tag ("<title> · <loan# · property>") so the reader
-  // sees WHICH file this is about straight from their inbox — the in-body H1
-  // stays the clean title.
-  var subject = subjectTag ? (title + ' · ' + subjectTag) : title;
+  // Subject carries the file tag ("<title> · <loan# · borrower · property>") so
+  // the reader sees WHICH file this is about straight from their inbox — the
+  // in-body H1 stays the clean title. DEDUP GUARD (owner-directed 2026-07-20:
+  // "the loan number is listed twice — major issue"): a title that already
+  // hand-embeds a tag segment (e.g. "Product registered on YSCAP258…") must NOT
+  // repeat it. Append only the subjectTag segments not already present in the
+  // title, so no segment (loan number, borrower name, or street) is ever doubled.
+  var subject = title;
+  if (subjectTag) {
+    var titleLc = String(title).toLowerCase();
+    var extra = String(subjectTag).split(' · ')
+      .map(function (s) { return s.trim(); })
+      .filter(function (s) { return s && titleLc.indexOf(s.toLowerCase()) === -1; });
+    if (extra.length) subject = title + ' · ' + extra.join(' · ');
+  }
   return { subject: subject, html: html, text: t.join('\n') };
 }
 

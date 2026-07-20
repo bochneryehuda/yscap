@@ -103,10 +103,12 @@ function RecipientRoster({ row }) {
       {recips.map((r, i) => {
         const st = recipStatus(r.status);
         const label = r.name && r.email ? `${r.name} <${r.email}>` : (r.name || r.email || 'recipient');
+        const openedTip = r.opened_at ? `Opened ${new Date(r.opened_at).toLocaleString()}` : 'Not opened yet';
         return (
-          <span className="ec-recip" key={i} title={`${label} — ${st.label}`}>
+          <span className={`ec-recip${r.opened_at ? ' opened' : ''}`} key={i} title={`${label} — ${st.label} · ${openedTip}`}>
             <span className={`ec-recip-dot ec-pill-${st.tone}`} />
             {r.name || r.email}
+            {r.opened_at ? <span className="ec-opened" title={openedTip}>👁 opened</span> : null}
           </span>
         );
       })}
@@ -195,6 +197,8 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) 
           <div className="ec-msg-headsub">
             <span className={`ec-dir ec-dir-${row.direction}`}>{inbound ? 'Received' : 'Sent'}</span>
             <StatusPill row={row} />
+            {!inbound && recipientsOf(row).some((r) => r.opened_at)
+              ? <span className="ec-opened" title="At least one recipient opened this email">👁 opened</span> : null}
             {!expanded ? <span className="ec-msg-preview">{row.preview}</span> : null}
           </div>
         </div>

@@ -6,6 +6,26 @@ import React, { useEffect, useRef, useState } from 'react';
    gets a named home and one-click navigation, the way a traditional lender's
    application walks you through Borrower → Property → Loan → Conditions. */
 
+/* A tiny module-level bus so that ANYTHING on the page — the left rail, the
+   "clear to close" outstanding list, a re-register prompt — can OPEN a specific
+   collapsed section and scroll to it in one call. The file starts with most
+   sections collapsed (fast top-to-bottom scan); a click anywhere that points at
+   a section expands JUST that one and brings it into view. Sections listen for
+   their own id and expand themselves (see Section's effect below). */
+const sectionBus = typeof window !== 'undefined' ? new EventTarget() : null;
+export function requestOpenSection(id) {
+  if (sectionBus && id) sectionBus.dispatchEvent(new CustomEvent('pilot-open-section', { detail: id }));
+}
+/* One-call "take me to that section": expand it, then smooth-scroll to it.
+   The expand is dispatched first so the header is already rendered open when the
+   scroll lands. Reused by the rail, the outstanding-to-close list, etc. */
+export function goToSection(id) {
+  if (!id) return;
+  requestOpenSection(id);
+  const el = typeof document !== 'undefined' ? document.getElementById(id) : null;
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 export function InfoTip({ tip }) {
   if (!tip) return null;
   return (
@@ -21,6 +41,17 @@ export function InfoTip({ tip }) {
    defaultOpen={false} and start collapsed. */
 export function Section({ id, title, info, badge, children, style, collapsible = true, defaultOpen = true, action = null }) {
   const [open, setOpen] = useState(defaultOpen);
+  // Listen for an "open this section" request from anywhere on the page — the
+  // left rail, the clear-to-close outstanding list, a re-register prompt — so a
+  // click that points at this section EXPANDS it (never collapses it) and the
+  // caller's scroll lands on an already-open header. A non-collapsible section
+  // is always open, so it just ignores the signal.
+  useEffect(() => {
+    if (!collapsible || !sectionBus) return;
+    const h = (e) => { if (e.detail === id) setOpen(true); };
+    sectionBus.addEventListener('pilot-open-section', h);
+    return () => sectionBus.removeEventListener('pilot-open-section', h);
+  }, [id, collapsible]);
   const toggle = (e) => {
     if (!collapsible) return;
     // hovering/clicking the little "i" — or a header action button — must never collapse the section
@@ -105,6 +136,10 @@ export default function FileSections({ sections, children, top = null }) {
     if (!el) return;
     clickLock.current = Date.now() + 900;
     setActive(id);
+    // Clicking a section in the rail EXPANDS it (owner-directed: "when you click
+    // a section it should open up that section for you") — the whole file starts
+    // collapsed for a fast scan, and navigation is what opens a section.
+    requestOpenSection(id);
     el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
@@ -113,14 +148,25 @@ export default function FileSections({ sections, children, top = null }) {
       <nav className="file-nav" aria-label="Loan file sections">
         {top}
         <ol>
-          {sections.map(s => (
-            <li key={s.id}>
-              <a href={`#${s.id}`} className={active === s.id ? 'active' : ''} onClick={(e) => go(e, s.id)}>
-                <span className="file-nav-label">{s.label}</span>
-                {s.badge != null && s.badge !== '' && <span className="file-nav-badge">{s.badge}</span>}
-              </a>
-            </li>
-          ))}
+          {sections.map((s, i) => {
+            // Print a quiet group header the first time a new group appears. The
+            // sections are already in page order, so these headers never reorder
+            // anything — they just label the runs.
+            const header = s.group && (i === 0 || sections[i - 1].group !== s.group)
+              ? <li key={`grp-${s.group}`} className="file-nav-group" aria-hidden="true">{s.group}</li>
+              : null;
+            return (
+              <React.Fragment key={s.id}>
+                {header}
+                <li>
+                  <a href={`#${s.id}`} className={active === s.id ? 'active' : ''} onClick={(e) => go(e, s.id)}>
+                    <span className="file-nav-label">{s.label}</span>
+                    {s.badge != null && s.badge !== '' && <span className="file-nav-badge">{s.badge}</span>}
+                  </a>
+                </li>
+              </React.Fragment>
+            );
+          })}
         </ol>
       </nav>
       <div className="file-main">{children}</div>

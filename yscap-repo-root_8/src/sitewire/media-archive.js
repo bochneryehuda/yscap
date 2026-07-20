@@ -241,7 +241,7 @@ async function archivedMediaFor(appId, sitewireDrawId) {
   const drawId = Number(sitewireDrawId);
   if (!Number.isInteger(drawId) || drawId <= 0) return [];
   return (await db.query(
-    `SELECT id, source_url, kind FROM draw_media WHERE application_id = $1 AND sitewire_draw_id = $2`,
+    `SELECT id, source_url, kind, sitewire_request_id FROM draw_media WHERE application_id = $1 AND sitewire_draw_id = $2 ORDER BY id`,
     [appId, drawId])).rows;
 }
 

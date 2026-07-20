@@ -80,13 +80,16 @@ async function extractAndStorePhotos(appraisalId, appId, pdfB64, importedBy) {
   if (!res.attempted || !res.photos.length) return 0;
   const app = (await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [appId])).rows[0];
   const borrowerId = app ? app.borrower_id : null;
-  // Retire images from any earlier appraisal on this file (keep only the current one's set).
+  // Retire EVERY existing appraisal_photo on this file before inserting the fresh set — including
+  // this appraisal's OWN prior photos. The old query excluded the current appraisal (a.id<>$2), so a
+  // same-appraisal "Pull photos" refresh left the old set live and the gallery doubled (shown twice
+  // to staff AND the borrower). Runs BEFORE the insert loop below, so the fresh rows are unaffected.
   try {
     await db.query(
       `UPDATE documents SET is_current=false
         WHERE doc_kind='appraisal_photo' AND application_id=$1
           AND id IN (SELECT document_id FROM appraisal_photos ap JOIN appraisals a ON a.id=ap.appraisal_id
-                      WHERE a.application_id=$1 AND a.id<>$2)`, [appId, appraisalId]);
+                      WHERE a.application_id=$1)`, [appId]);
   } catch (_) { /* best-effort */ }
   let stored = 0;
   for (const ph of res.photos) {
@@ -105,7 +108,7 @@ async function extractAndStorePhotos(appraisalId, appId, pdfB64, importedBy) {
         `INSERT INTO appraisal_photos (appraisal_id, document_id, sequence, width, height) VALUES ($1,$2,$3,$4,$5)`,
         [appraisalId, doc.rows[0].id, ph.seq, ph.width, ph.height]);
       stored++;
-    } catch (_) { /* per-photo best-effort */ }
+    } catch (e) { console.error('[appraisal] photo store failed (non-fatal, continuing):', e && e.message); }
   }
   return stored;
 }

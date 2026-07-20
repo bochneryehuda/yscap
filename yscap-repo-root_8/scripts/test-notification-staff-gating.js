@@ -49,15 +49,24 @@ const emailsTo = (addr) => sent.filter((m) => (Array.isArray(m.to) ? m.to : [m.t
   assert.ok(emailsTo(staffEmail) >= 1, 'decision status (Funded): staff email IS sent');
   ok('decision status milestone still emails the team');
 
-  // The assigned loan officer is silently BCC-ed on the BORROWER's email so they
-  // see what the borrower received (owner-directed 2026-07-20). Not a visible To;
-  // not present on the staff email.
+  // The assigned loan officer is silently looped in on the BORROWER's email so they
+  // see what the borrower received (owner-directed 2026-07-20). Because the borrower
+  // email carries an open-tracking pixel keyed on the borrower's notification, the
+  // officer gets a SEPARATE, pixel-free copy rather than a BCC on the same body — a
+  // BCC would let the officer's mail client / scanner load the pixel and record a
+  // FALSE "borrower opened". Not a visible To on the borrower's copy either.
+  const beforeBo = sent.length;
   await notify.notifyAppBorrowers(app.id, { type: 'status_change', title: 'Your loan status is now: Funded', body: 'x', applicationId: app.id, major: true });
-  const bmail = sent.find((m) => (Array.isArray(m.to) ? m.to : [m.to]).includes(`gate-b-${suffix}@example.com`));
+  await new Promise((r) => setTimeout(r, 300));   // the officer's split copy is fired after an awaited DB write — let it flush
+  const boBatch = sent.slice(beforeBo);
+  const bmail = boBatch.find((m) => (Array.isArray(m.to) ? m.to : [m.to]).includes(`gate-b-${suffix}@example.com`));
   assert.ok(bmail, 'borrower email sent');
-  assert.ok(Array.isArray(bmail.bcc) && bmail.bcc.includes(staffEmail), 'the assigned loan officer is BCC-ed on the borrower email');
   assert.ok(!(Array.isArray(bmail.to) ? bmail.to : [bmail.to]).includes(staffEmail), 'the officer is NOT a visible To on the borrower email');
-  ok('the loan officer is silently looped in (BCC) on the borrower email');
+  assert.ok(!(Array.isArray(bmail.bcc) && bmail.bcc.includes(staffEmail)), 'the borrower copy does NOT BCC the officer (split to protect open tracking)');
+  const lomail = boBatch.find((m) => (Array.isArray(m.to) ? m.to : [m.to]).includes(staffEmail));
+  assert.ok(lomail, 'the assigned loan officer still receives a copy (looped in)');
+  assert.ok(!/\/e\/o\//.test(String(lomail.html || '')), "the officer's copy is pixel-free (cannot trip a false borrower-open)");
+  ok('the loan officer is silently looped in (separate pixel-free copy) on the borrower email');
 
   // A DEACTIVATED staffer must NEVER get an email (owner audit 2026-07-20 — a
   // fired employee kept receiving borrower documents), but the in-app row is kept.

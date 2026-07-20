@@ -17,6 +17,15 @@ const orchestrator = require('../clickup/orchestrator');
 
 router.use(requireAuth, requirePermission('platform_setup'));
 
+// Clean error responses: log the full detail (DB host:port, pg message, ClickUp
+// API text) to the SERVER only; the admin UI gets a tidy message, never raw
+// error text. 5xx = 'server error'; 502 (ClickUp upstream) = a clear "temporarily
+// unavailable". The detail is always in the logs for troubleshooting.
+const fail = (res, code, e, msg) => {
+  console.warn('[admin-clickup] handler error:', db.describeError ? db.describeError(e) : (e && e.message));
+  return res.status(code).json({ error: msg });
+};
+
 // Best-effort audit row for admin actions taken from the Control Center.
 async function audit(req, action, appId, detail) {
   try {
@@ -66,7 +75,7 @@ router.get('/diag', async (req, res) => {
       }
     }
     res.json(out);
-  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+  } catch (e) { fail(res, 500, e, 'server error'); }
 });
 
 router.get('/health', async (req, res) => {
@@ -86,7 +95,7 @@ router.get('/health', async (req, res) => {
     out.backfilledBorrowers = bc.rows[0] ? bc.rows[0].n : 0;
     const ti = await db.query(`SELECT count(*)::int n FROM clickup_task_index`).catch(() => ({ rows: [{ n: 0 }] }));
     out.tasksIndexed = ti.rows[0] ? ti.rows[0].n : 0;
-  } catch (e) { out.error = String(e.message); }
+  } catch (e) { console.warn('[admin-clickup] health error:', db.describeError ? db.describeError(e) : (e && e.message)); out.error = 'could not read sync health'; }
   res.json(out);
 });
 
@@ -95,7 +104,7 @@ router.post('/backfill', async (req, res) => {
   if (!cfg.clickupToken) return res.status(400).json({ error: 'CLICKUP_API_TOKEN not set' });
   if (mode === 'dryrun') {
     try { return res.json({ mode, stats: await sync.dryRunBackfill({ samplePerFolder: Number(req.body?.sample) || 8 }) }); }
-    catch (e) { return res.status(502).json({ error: String(e.message) }); }
+    catch (e) { return fail(res, 502, e, 'the ClickUp service is temporarily unavailable'); }
   }
   // data = build the identity graph (no loan files); full = also materialize RTL files
   const createFiles = mode === 'full';
@@ -118,12 +127,12 @@ router.post('/sync-folder', async (req, res) => {
 // Data-coverage / assignment / completeness audit (portal vs ClickUp).
 router.get('/audit', async (req, res) => {
   try { res.json(await sync.auditData()); }
-  catch (e) { res.status(500).json({ error: String(e.message) }); }
+  catch (e) { fail(res, 500, e, 'server error'); }
 });
 // Deeper field-by-field diff (re-reads ClickUp; heavier).
 router.get('/audit-diff', async (req, res) => {
   try { res.json(await sync.auditFieldDiff({ limit: Number(req.query.limit) || 120 })); }
-  catch (e) { res.status(500).json({ error: String(e.message) }); }
+  catch (e) { fail(res, 500, e, 'server error'); }
 });
 
 router.get('/activity', async (req, res) => {
@@ -135,7 +144,7 @@ router.get('/activity', async (req, res) => {
 
 router.post('/file/:appId/repush', async (req, res) => {
   try { res.json(await orchestrator.pushApplication(req.params.appId, { force: true })); }
-  catch (e) { res.status(502).json({ error: String(e.message) }); }
+  catch (e) { fail(res, 502, e, 'the ClickUp service is temporarily unavailable'); }
 });
 
 router.post('/file/:appId/repull', async (req, res) => {
@@ -143,7 +152,7 @@ router.post('/file/:appId/repull', async (req, res) => {
   const taskId = r.rows[0] && r.rows[0].t;
   if (!taskId) return res.status(404).json({ error: 'no linked ClickUp task' });
   try { res.json(await sync.ingestOne(taskId)); }
-  catch (e) { res.status(502).json({ error: String(e.message) }); }
+  catch (e) { fail(res, 502, e, 'the ClickUp service is temporarily unavailable'); }
 });
 
 // Re-check every linked file's ClickUp program and descope any that were flipped
@@ -186,7 +195,7 @@ router.get('/manual-review', async (req, res) => {
         WHERE match_status IN ('ambiguous','duplicate_pending')
         ORDER BY last_seen DESC NULLS LAST LIMIT 100`);
     res.json({ rows: r.rows, ambiguousTasks: amb.rows });
-  } catch (e) { res.status(500).json({ error: String(e.message) }); }
+  } catch (e) { fail(res, 500, e, 'server error'); }
 });
 
 // Force-create the portal file for a task the duplicate-in-progress defer is
@@ -200,7 +209,7 @@ router.post('/manual-review/task/:taskId/force-create', async (req, res) => {
     const out = await sync.ingestOne(String(req.params.taskId), { forceCreate: true });
     await audit(req, 'clickup_force_create', out && out.applicationId, JSON.stringify({ taskId: req.params.taskId, matchStatus: out && out.matchStatus }));
     res.json({ ok: true, applicationId: out && out.applicationId, matchStatus: out && out.matchStatus });
-  } catch (e) { res.status(502).json({ error: String(e.message) }); }
+  } catch (e) { fail(res, 502, e, 'the ClickUp service is temporarily unavailable'); }
 });
 
 // Resolve one file out of the queue. link => 'linked', descope => 'descoped'.
@@ -218,7 +227,7 @@ router.post('/manual-review/:appId/resolve', async (req, res) => {
     if (r.rowCount === 0) return res.status(404).json({ error: 'file not found in Manual Review' });
     await audit(req, 'clickup_manual_review_resolve', req.params.appId, { action, sync_state: next });
     res.json({ ok: true, id: r.rows[0].id, sync_state: r.rows[0].sync_state });
-  } catch (e) { res.status(500).json({ error: String(e.message) }); }
+  } catch (e) { fail(res, 500, e, 'server error'); }
 });
 
 // ---- Possible-duplicate borrower review (audit item #5) -------------------
@@ -241,7 +250,7 @@ router.get('/duplicate-candidates', async (req, res) => {
         WHERE d.status='open'
         ORDER BY d.created_at DESC LIMIT 200`);
     res.json({ rows: r.rows });
-  } catch (e) { res.status(500).json({ error: String(e.message) }); }
+  } catch (e) { fail(res, 500, e, 'server error'); }
 });
 
 // Record the human verdict: 'distinct' (different people — keep separate),
@@ -259,7 +268,7 @@ router.post('/duplicate-candidates/:id/resolve', async (req, res) => {
     if (r.rowCount === 0) return res.status(404).json({ error: 'candidate not found or already resolved' });
     await audit(req, 'clickup_dedup_resolve', null, JSON.stringify({ candidate: req.params.id, action: next }));
     res.json({ ok: true, id: r.rows[0].id, status: r.rows[0].status });
-  } catch (e) { res.status(500).json({ error: String(e.message) }); }
+  } catch (e) { fail(res, 500, e, 'server error'); }
 });
 
 module.exports = router;

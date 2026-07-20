@@ -82,6 +82,20 @@ const notAbsorbed = M.reconcileToBudget(ex2raw, budget2 + 5000); // $50 off
 assert.strictEqual(notAbsorbed.total_cents, ex2raw.total_cents, 'CASE2 a $50 mismatch is left unchanged (blocks + parks)');
 ok('a real (> $1) mismatch is NEVER fudged — the push blocks and parks (never a silently wrong budget)');
 
+// audit G2/H — a negative in-tolerance residual LARGER than the absorber line must
+// NOT be forced (that would build a negative-cents budget line Sitewire 422s); it
+// is left unchanged for G-RECON to block/park. A residual the absorber can cover
+// is still absorbed normally.
+const smallAbsorber = { items: [{ sow_line_key: M.SENTINEL.CONTINGENCY, name: 'Contingency', budgeted_cents: 30 }], total_cents: 100080, contingency_cents: 30 };
+const notForced = M.reconcileToBudget(smallAbsorber, 100000, 100); // drift -80c, absorber only 30c
+assert.strictEqual(notForced, smallAbsorber, 'negative residual bigger than the absorber is left unchanged (no negative line)');
+assert.strictEqual(notForced.items[0].budgeted_cents, 30, 'the Contingency line is never driven negative');
+const bigAbsorber = { items: [{ sow_line_key: M.SENTINEL.CONTINGENCY, name: 'Contingency', budgeted_cents: 500 }], total_cents: 100080, contingency_cents: 500 };
+const absorbed = M.reconcileToBudget(bigAbsorber, 100000, 100); // drift -80c, absorber 500c → 420c
+assert.strictEqual(absorbed.total_cents, 100000, 'a coverable negative residual still reconciles to the budget');
+assert.strictEqual(absorbed.items[0].budgeted_cents, 420, 'the absorber line stays non-negative after absorbing');
+ok('G-RECON: a negative rounding residual never builds a negative budget line (absorb only when it stays ≥ 0)');
+
 // ============================================================================
 // CASE 3 — split columns are used VERBATIM (never an even guess)
 // ============================================================================

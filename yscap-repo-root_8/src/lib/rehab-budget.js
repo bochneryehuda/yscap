@@ -95,21 +95,67 @@ async function checkSowBudget(appId, totalOrPayload, client = db) {
 }
 
 // ---------------------------------------------------------------------------
-// Gold Standard Program — 5% Scope-of-Work contingency (owner-directed 2026-07-12)
+// 5% Scope-of-Work contingency (owner-directed 2026-07-12; extended 2026-07-20)
 //
-// A file registered under the Gold Standard Program must carry a contingency of
-// at least 5% of the construction (line-item) subtotal on its Scope of Work. The
-// contingency lives WITHIN the frozen rehab budget (grand = subtotal +
+// A file must carry a contingency of at least 5% of the construction (line-item)
+// subtotal on its Scope of Work whenever EITHER:
+//   · it is registered under the Gold Standard Program, OR
+//   · its note buyer / capital partner is Blue Lake (applications.lender)
+//     — owner-directed 2026-07-20: "if the note buyer is Blue Lake, the Scope of
+//       Work construction budget condition should not clear till there's a 5%
+//       contingency on the budget."
+// The contingency lives WITHIN the frozen rehab budget (grand = subtotal +
 // contingency + GC fee), so it never changes the budget — it's a composition
 // requirement, enforced as a CONDITION gate exactly like the exact-match rule:
 // the SOW always saves as a draft, but the rehab-budget condition can't be
-// signed off (and is reopened on Gold registration) until the 5% is present.
+// signed off (and is reopened when the requirement turns on) until the 5% is
+// present.
 
-const GOLD_CONTINGENCY_PCT = 5;
-const GOLD_CONTINGENCY_MSG =
-  'The Gold Standard Program requires at least a 5% contingency on the construction Scope of Work budget. '
+const SOW_CONTINGENCY_PCT = 5;
+const GOLD_CONTINGENCY_PCT = SOW_CONTINGENCY_PCT; // back-compat alias
+
+// Borrower-SAFE, program/partner-AGNOSTIC wording. A note buyer name must NEVER
+// reach a borrower (this notice can surface on the borrower SOW save), so it
+// never says "Gold" or "Blue Lake" — just that the loan requires the 5%.
+const SOW_CONTINGENCY_MSG =
+  'This loan requires at least a 5% contingency on the construction Scope of Work budget. '
+  + 'Add a contingency of 5% or more (the builder auto-fills 5%) before this condition can be signed off. '
+  + 'Your work is saved — reopen the Scope of Work any time to add it.';
+// Back-compat: every existing caller of GOLD_CONTINGENCY_MSG now emits the
+// generic, borrower-safe text (same constant used to STAMP and to CLEAR the
+// [auto] note, so the note round-trips).
+const GOLD_CONTINGENCY_MSG = SOW_CONTINGENCY_MSG;
+
+// The exact legacy Gold [auto] note text (stamped by the old code / db/070),
+// kept ONLY so enforceSowContingency can still recognize and CLEAR a pre-existing
+// reopen on downgrade even though the live message text changed.
+const LEGACY_GOLD_NOTE =
+  '[auto] The Gold Standard Program requires at least a 5% contingency on the construction Scope of Work budget. '
   + 'Add a contingency of 5% or more (the builder auto-fills 5% for Gold files) before this condition can be signed off. '
   + 'Your work is saved — reopen the Scope of Work any time to add it.';
+
+// Does this file require the 5% SOW contingency? True when it is registered Gold
+// OR its note buyer is Blue Lake. Returns { required, reason, reasons, program,
+// lender } — `reason` is the first matching trigger for callers that want one.
+async function sowContingencyRequired(appId, client = db) {
+  const { normNoteBuyer } = require('./conditions/field-registry');
+  let program = null, lender = null;
+  try {
+    const pr = (await client.query(
+      `SELECT program FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`, [appId])).rows[0];
+    program = pr ? pr.program : null;
+  } catch (_) { /* no registration */ }
+  try {
+    const a = (await client.query(`SELECT lender FROM applications WHERE id=$1`, [appId])).rows[0];
+    lender = a ? a.lender : null;
+  } catch (_) { /* file gone */ }
+  const isGold = /gold/i.test(String(program || ''));
+  const isBlueLake = normNoteBuyer(lender) === 'bluelake';
+  const reasons = [];
+  if (isGold) reasons.push('gold');
+  if (isBlueLake) reasons.push('bluelake');
+  return { required: isGold || isBlueLake, reason: reasons[0] || null, reasons, program, lender };
+}
 
 // Extract the construction subtotal and contingency amount from a saved SOW
 // payload. The tool submits both amounts directly; older payloads are derived
@@ -145,52 +191,49 @@ function goldContingencyOk(payload) {
   return false;
 }
 
-// Program-aware SOW check: on a Gold file the SOW must carry the 5% contingency.
-// Returns { ok, program, message }. Non-Gold files always pass here.
-async function checkGoldSow(appId, payload, client = db) {
-  let program = null;
-  try {
-    const r = await client.query(
-      `SELECT program FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`, [appId]);
-    program = r.rows[0] ? r.rows[0].program : null;
-  } catch (_) {}
-  if (!/gold/i.test(String(program || ''))) return { ok: true, program };
-  if (goldContingencyOk(payload)) return { ok: true, program };
-  return { ok: false, program, message: GOLD_CONTINGENCY_MSG };
+// Requirement-aware SOW check: when the file requires the 5% contingency (Gold
+// OR Blue Lake note buyer) the SOW must carry it. Returns { ok, required,
+// reason, program, message }. A file with no requirement always passes here.
+async function checkSowContingency(appId, payload, client = db) {
+  const req = await sowContingencyRequired(appId, client);
+  if (!req.required) return { ok: true, required: false, reason: null, program: req.program };
+  if (goldContingencyOk(payload)) return { ok: true, required: true, reason: req.reason, program: req.program };
+  return { ok: false, required: true, reason: req.reason, program: req.program, message: SOW_CONTINGENCY_MSG };
 }
+// Back-compat name (used by the SOW save endpoints + register paths).
+const checkGoldSow = checkSowContingency;
 
-// Called after a product is (re)registered. When the file is Gold and its saved
-// SOW lacks the 5% contingency, REOPEN the rehab-budget condition — clearing any
-// prior sign-off — and stamp a FATAL [auto] note. This is what makes "even if the
-// condition was already signed off, registering Gold reopens it" work. Non-Gold
-// registration never disturbs the condition here. Idempotent.
-async function enforceGoldSowContingency(appId, client = db) {
+// Called after the file's requirement inputs change (a product (re)register, a
+// note-buyer change, a ClickUp pull). When the file REQUIRES the 5% contingency
+// (Gold OR Blue Lake note buyer) and its saved SOW lacks it, REOPEN the
+// rehab-budget condition — clearing any prior sign-off — and stamp a FATAL
+// [auto] note. When the file NO LONGER requires it (downgrade / note buyer
+// changed away), clear the stale [auto] reopen this function stamped so the
+// condition isn't stuck showing a requirement that no longer applies. A human's
+// own note is never touched. Idempotent.
+async function enforceSowContingency(appId, client = db) {
   try {
-    const pr = (await client.query(
-      `SELECT program FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`, [appId])).rows[0];
-    if (!pr || !/gold/i.test(String(pr.program || ''))) {
-      // Non-Gold (including a Gold→Standard downgrade): the 5% contingency rule no
-      // longer applies, so clear any stale Gold reopen this function stamped —
-      // otherwise the rehab-budget condition stays stuck at 'issue' showing a
-      // Gold-only requirement on a Standard file. Only rows whose note is EXACTLY
-      // the Gold [auto] note are touched (a human's note is never overwritten by
-      // the reopen, so it's never cleared here); the reopen's status is rolled
-      // back to 'received' so an underwriter can sign off normally.
-      const goldNote = '[auto] ' + GOLD_CONTINGENCY_MSG;
+    const req = await sowContingencyRequired(appId, client);
+    if (!req.required) {
+      // No requirement anymore: roll our [auto] reopen back (issue→received) and
+      // clear the note. Match BOTH the current generic note AND the legacy Gold
+      // note text so a pre-existing Gold reopen is cleared too. Only OUR [auto]
+      // notes are matched — a human's note is never cleared here.
       const cleared = await client.query(
         `UPDATE checklist_items
             SET status = CASE WHEN status='issue' THEN 'received' ELSE status END,
                 notes = NULL, updated_at = now()
-          WHERE application_id=$1 AND tool_key='rehab_budget' AND notes = $2
-          RETURNING id`, [appId, goldNote]);
-      return { changed: cleared.rowCount > 0, cleared: cleared.rowCount > 0, program: pr && pr.program };
+          WHERE application_id=$1 AND tool_key='rehab_budget'
+            AND notes = ANY($2::text[])
+          RETURNING id`, [appId, ['[auto] ' + SOW_CONTINGENCY_MSG, LEGACY_GOLD_NOTE]]);
+      return { changed: cleared.rowCount > 0, cleared: cleared.rowCount > 0, required: false, program: req.program };
     }
     const it = (await client.query(
       `SELECT id, status, tool_payload, signed_off_at FROM checklist_items
         WHERE application_id=$1 AND tool_key='rehab_budget' ORDER BY created_at LIMIT 1`, [appId])).rows[0];
-    if (!it) return { changed: false, program: pr.program };
-    if (goldContingencyOk(it.tool_payload)) return { changed: false, program: pr.program, ok: true };
-    const note = '[auto] ' + GOLD_CONTINGENCY_MSG;
+    if (!it) return { changed: false, required: true, reason: req.reason, program: req.program };
+    if (goldContingencyOk(it.tool_payload)) return { changed: false, required: true, reason: req.reason, program: req.program, ok: true };
+    const note = '[auto] ' + SOW_CONTINGENCY_MSG;
     await client.query(
       `UPDATE checklist_items
           SET status='issue', signed_off_at=NULL, signed_off_by=NULL,
@@ -198,15 +241,20 @@ async function enforceGoldSowContingency(appId, client = db) {
               notes=CASE WHEN notes IS NULL OR notes LIKE '[auto]%' THEN $2 ELSE notes END,
               updated_at=now()
         WHERE id=$1`, [it.id, note]);
-    return { changed: true, reopened: true, program: pr.program };
+    return { changed: true, reopened: true, required: true, reason: req.reason, program: req.program };
   } catch (e) {
-    console.error('[rehab-budget] enforceGoldSowContingency failed', appId, e && e.message);
+    console.error('[rehab-budget] enforceSowContingency failed', appId, e && e.message);
     return { changed: false, error: e && e.message };
   }
 }
+// Back-compat name (used by the register paths + the gold-contingency test).
+const enforceGoldSowContingency = enforceSowContingency;
 
 module.exports = {
   requiredRehabBudget, checkSowBudget, firstPageBudget, money, eqCents, toNum,
-  sowContingency, goldContingencyOk, checkGoldSow, enforceGoldSowContingency,
+  sowContingency, goldContingencyOk,
+  sowContingencyRequired, checkSowContingency, enforceSowContingency,
+  checkGoldSow, enforceGoldSowContingency,
+  SOW_CONTINGENCY_PCT, SOW_CONTINGENCY_MSG,
   GOLD_CONTINGENCY_PCT, GOLD_CONTINGENCY_MSG,
 };

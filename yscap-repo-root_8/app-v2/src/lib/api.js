@@ -390,6 +390,10 @@ export const api = {
   // Sitewire draw desk: authenticated GL/accounting Excel export of the release ledger.
   sitewireExportGl: async (appId) => { const { blob, filename } = await download(`/api/sitewire/files/${appId}/gl-export`); saveBlob(blob, filename); },
   sitewireMessageAttachment: async (appId, nid, idx) => { const { blob, filename } = await download(`/api/sitewire/files/${appId}/messages/${nid}/attachments/${idx}`); saveBlob(blob, filename); },
+  // Authed blob fetch for an <img>/tab (an <img src> can't carry the Bearer token). Used to show
+  // borrower dispute-evidence photos on the staff draw desk. Returns the Blob.
+  authedBlob: async (path) => (await download(path)).blob,
+  sitewireOpenDisputeMedia: async (lineId, idx, win) => { const { blob, filename } = await download(`/api/sitewire/findings/lines/${lineId}/dispute-media/${idx}`); openBlob(blob, filename, win); },
   // Sitewire draw desk: authenticated per-draw packet (schedule of values + findings + waivers).
   sitewireExportPacket: async (appId, drawId) => { const { blob, filename } = await download(`/api/sitewire/files/${appId}/draws/${drawId}/packet`); saveBlob(blob, filename); },
   // PILOT-branded inspection report (phase 2b) — opens the PDF in a tab (`win` is opened synchronously in the

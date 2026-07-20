@@ -106,6 +106,18 @@ function normOccupancy(raw) {
   return 'other';
 }
 
+// The note buyer / capital partner (applications.lender) arrives from ClickUp as
+// a FREE-TEXT dropdown label ("Blue Lake", "CorrFirst", "Corr First", "Fidelis").
+// Normalize it to a stable key — lowercased with every non-alphanumeric stripped
+// — so a rule ("note buyer is CorrFirst") matches regardless of spacing/casing.
+// This is the SAME normalization the Sitewire partner-link map uses
+// (sitewire_partner_links.label_norm), so the keys agree across systems
+// (bluelake, corrfirst, fidelis, …). Returns null for a blank/absent value.
+function normNoteBuyer(raw) {
+  const s = String(raw || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  return s || null;
+}
+
 const stateOptions = US_STATES.map((v) => ({ v, label: v }));
 
 // ---------------------------------------------------------------------------
@@ -141,6 +153,18 @@ const FIELDS = [
   { key: 'requested_ir_amount', label: 'Interest reserve amount ($)', group: 'Loan & program', type: 'money', writable: true,
     borrowerLabel: 'Requested interest reserve (exact $ amount)', borrowerHint: 'Request an exact dollar interest reserve instead of months. Capped at the full loan term; leave blank to size from months.' },
   { key: 'is_assignment', label: 'Assignment purchase?', group: 'Loan & program', type: 'boolean' },
+  // Note buyer / capital partner (applications.lender, pulled from ClickUp).
+  // STAFF-ONLY — this is never writable from a borrower info-condition and its
+  // real name is never shown to a borrower. The stored values are normalized
+  // keys (normNoteBuyer); the labels are the human-facing note-buyer names. The
+  // option list is the known/confirmed note buyers — an admin can still author a
+  // rule against any of them, and a value not in the list still EVALUATES fine
+  // (the engine matches on the normalized ctx value, not on option membership).
+  { key: 'note_buyer', label: 'Note buyer (capital partner)', group: 'Loan & program', type: 'enum',
+    options: [
+      { v: 'bluelake', label: 'Blue Lake' }, { v: 'corrfirst', label: 'CorrFirst' },
+      { v: 'fidelis', label: 'Fidelis' }],
+    description: 'The note buyer / capital partner the file is sold to (from ClickUp; staff-only, never shown to the borrower).' },
   { key: 'status', label: 'File status', group: 'Loan & program', type: 'enum',
     options: [
       { v: 'file_intake', label: 'File intake' },
@@ -324,5 +348,5 @@ module.exports = {
   FIELDS, BY_KEY, WRITE_TARGETS, US_STATES, publicFields, publicFieldsAll,
   allFields, fieldMap, loadCustomFields, bustCustomFields, isCustomKey, customFieldDef,
   normState, normStrategy, normLoanPurpose, normPropertyType, normRehabType,
-  normCitizenship, normOccupancy,
+  normCitizenship, normOccupancy, normNoteBuyer,
 };

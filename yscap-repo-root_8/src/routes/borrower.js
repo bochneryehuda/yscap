@@ -357,7 +357,7 @@ router.post('/profile/photo-id', async (req, res) => {
     await audit(req, 'upload_photo_id', 'borrower', me(req));
     try { require('../lib/sharepoint-backup').kick(); } catch (_) {}
     res.status(201).json({ ok: true, documentId: d.rows[0].id });
-  } catch (e) { res.status(500).json({ error: db.describeError(e) }); }
+  } catch (e) { console.warn('[borrower] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // ---------------- APPLICATIONS (one borrower : many; each a distinct address) ----------------
@@ -456,7 +456,8 @@ router.get('/action-items', async (req, res) => {
     };
     res.json({ items, counts });
   } catch (e) {
-    res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' });
+    console.warn('[borrower] handler error:', db.describeError(e));
+    res.status(500).json({ error: 'server error' });
   }
 });
 
@@ -933,7 +934,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       const body = `${pricing.PROGRAM_LABEL[program]} registered by the borrower on ${ctx ? ctx.label : (row.ys_loan_number || 'a file')}: ${money(total)} @ ${rate} · cash to close ${money(quote.cashToClose)} · liquidity to verify ${money(quote.liquidity ?? quote.liquidityRequired)}.`;
       await notify.notifyAppStaff(appId, {   // #113: whole team (primary + assistants)
           type: 'product_registered',
-          title: 'Borrower registered a product on ' + (row.ys_loan_number || 'a file'),
+          title: 'Borrower registered a product',   // identity rides in the subject tag (loan# · borrower · property) — not the title
           body, applicationId: appId, meta: (ctx && ctx.meta) || undefined,
           link: `/internal/app/${appId}`, ctaLabel: 'Open the loan file',
         });
@@ -1625,7 +1626,7 @@ router.post('/applications/:id/appraisal-card', async (req, res) => {
     await audit(req, 'save_appraisal_card', 'application', req.params.id, { last4, savedForReuse });
     await notifyAppraisalCardAdded(req.params.id, brand, last4);
     res.status(201).json({ ok: true, last4, brand, savedForReuse });
-  } catch (e) { res.status(500).json({ error: db.describeError(e) }); }
+  } catch (e) { console.warn('[borrower] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 // Masked view for the borrower's own condition row.
 router.get('/applications/:id/appraisal-card', async (req, res) => {
@@ -1662,7 +1663,7 @@ router.post('/applications/:id/scan-card', async (req, res) => {
 router.get('/saved-appraisal-card', async (req, res) => {
   try {
     res.json(await apprCard.getSavedCard(me(req)));
-  } catch (e) { res.status(500).json({ error: db.describeError(e) }); }
+  } catch (e) { console.warn('[borrower] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 // Copy the borrower's saved card onto THIS application (a new file) and satisfy
 // its appraisal_card condition — mirrors the direct-entry POST above. Only the
@@ -1681,7 +1682,7 @@ router.post('/applications/:id/appraisal-card/from-saved', async (req, res) => {
     await audit(req, 'save_appraisal_card', 'application', req.params.id, { last4: out.last4, reused: true });
     await notifyAppraisalCardAdded(req.params.id, out.brand, out.last4);
     res.status(201).json({ ok: true, last4: out.last4, brand: out.brand, reused: true });
-  } catch (e) { res.status(500).json({ error: db.describeError(e) }); }
+  } catch (e) { console.warn('[borrower] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Borrower-side application completeness: fill a missing field inline from the
@@ -1788,7 +1789,7 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
       // into pending change requests (so it can show "sent to your loan team").
       changeRequests: requested.map((r) => ({ field: r.field, label: r.field_label, newValue: r.new_value })),
     });
-  } catch (e) { res.status(500).json({ error: db.describeError(e) }); }
+  } catch (e) { console.warn('[borrower] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Tell the loan officer + processor a borrower has proposed an economics change
@@ -2279,7 +2280,11 @@ router.put('/track-record/snapshot', async (req, res) => {
       html: b.html, filename: b.filename, uploadedByKind: 'borrower', uploadedById: me(req),
     });
     res.json({ ok: true, ...out });
-  } catch (e) { res.status(e.status || 500).json({ error: e.message || 'could not save the snapshot' }); }
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    console.warn('[borrower] snapshot error:', db.describeError(e));
+    res.status(500).json({ error: 'could not save the snapshot' });
+  }
 });
 router.get('/track-record/snapshot', async (req, res) => {
   try { res.json(await require('../lib/track-record-snapshot').latestSnapshot(me(req))); }
@@ -2568,7 +2573,7 @@ router.post('/plaid/exchange', async (req, res) => {
     await plaid.exchangePublicToken(publicToken);   // access token handling wired when keys arrive
     await audit(req, 'link_bank', 'borrower', me(req));
     res.json({ ok: true, linked: true });
-  } catch (e) { res.status(502).json({ error: e.message }); }
+  } catch (e) { console.error('[plaid]', e && e.message); res.status(502).json({ error: 'bank verification is temporarily unavailable — please try again.' }); }
 });
 
 // ---------------- NOTIFICATIONS ----------------
@@ -2595,7 +2600,9 @@ router.get('/notification-prefs', async (req, res) => {
   const cats = notify.NOTIFY_CATEGORIES.map(category => ({
     category,
     in_app: byCat[category] ? byCat[category].in_app : true,
-    email: byCat[category] ? byCat[category].email : true,
+    // With no saved preference, show the category's REAL email default (major
+    // moments email; routine/other categories don't) instead of always "on".
+    email: byCat[category] ? byCat[category].email : notify.categoryEmailsByDefault(category),
     inAppLocked: CRITICAL_INAPP.has(category),   // can't turn off in-app for these
   }));
   res.json(cats);
@@ -3155,14 +3162,14 @@ router.post('/drafts/:id/submit', async (req, res) => {
   try {
     if (officerRow) {
       await notify.notifyStaff(officerId, {
-        type: 'new_application', title: 'New application submitted' + (ctx ? ` — ${ctx.loanNo}` : ''),
+        type: 'new_application', title: 'New application submitted',   // loan# rides in the subject tag — not doubled in the title
         body: bodyLine,
         applicationId: appId, link: `/internal/app/${appId}`, meta,
         emailTo: officerRow.email, ctaLabel: 'Open the loan file',
       });
     } else {
       await notify.notifyAdmins({
-        type: 'unassigned_application', title: 'New application — Lead Capture' + (ctx ? ` — ${ctx.loanNo}` : ''),
+        type: 'unassigned_application', title: 'New application — Lead Capture',   // loan# rides in the subject tag — not doubled in the title
         body: bodyLine + ' No loan officer was selected — it is in Lead Capture.',
         applicationId: appId, link: `/internal`, meta, ctaLabel: 'Open Lead Capture',
       });
