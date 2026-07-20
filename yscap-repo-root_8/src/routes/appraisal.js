@@ -132,15 +132,27 @@ router.post('/:appId/import', async (req, res, next) => {
     let pdfB64 = null;
     try { pdfB64 = b.pdfBase64 || X.embeddedPdfBase64(xml); } catch (_) { pdfB64 = null; }
     try {
+      // Re-import supersedes the appraisal ROW; retire the PRIOR source docs too so a second import
+      // doesn't leave two 'current' appraisal_xml / appraisal_pdf side by side (duplicates on the
+      // Documents list, in TPR, and mirrored twice to SharePoint). Mirrors the slot-supersede pattern.
+      await db.query(
+        `UPDATE documents SET is_current=false,
+           review_status = CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
+          WHERE application_id=$1 AND is_current=true AND doc_kind IN ('appraisal_xml','appraisal_pdf')`,
+        [app.id]);
       const xbuf = Buffer.from(xml, 'utf8');
       const s = await storage.save(xbuf, { filename: b.filename || 'appraisal.xml' });
       // STAFF-ONLY: the source appraisal XML carries lender_name/amc_name/owner_of_record/
       // lender_address + the raw value & findings basis — the exact data safeAppr/SCRUTINY_CODES
       // scrub from the borrower. Without an explicit visibility it defaults to 'borrower' (db/014)
       // and the borrower could download the whole appraisal, bypassing the scrub. Force staff_only.
+      // review_status='accepted': these are SYSTEM/staff source docs, not human submissions to vet —
+      // without it they default to 'pending' (db/013) and show a stray "Accept" button on the staff
+      // Documents list (same class as the appraisal-photo fix, db/186). source_type stays
+      // 'staff_upload' so the staff "Replace" action remains available on the source files.
       xmlDocId = (await db.query(
-        `INSERT INTO documents (application_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,visibility,source_type)
-         VALUES ($1,$2,$3,'application/xml',$4,$5,$6,'staff',$7,'appraisal_xml','staff_only','staff_upload') RETURNING id`,
+        `INSERT INTO documents (application_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,visibility,source_type,review_status,reviewed_at)
+         VALUES ($1,$2,$3,'application/xml',$4,$5,$6,'staff',$7,'appraisal_xml','staff_only','staff_upload','accepted',now()) RETURNING id`,
         [app.id, app.borrower_id, b.filename || 'appraisal.xml', xbuf.length, s.provider, s.ref, req.actor.id])).rows[0].id;
 
       // PDF: use the uploaded slot if given, else the PDF embedded in the XML.
@@ -148,8 +160,8 @@ router.post('/:appId/import', async (req, res, next) => {
         const { buf: pbuf } = decodeUploadBase64(pdfB64, { maxBytes: MAX_UPLOAD_BYTES });
         const ps = await storage.save(pbuf, { filename: (b.filename || 'appraisal').replace(/\.xml$/i, '') + '.pdf' });
         pdfDocId = (await db.query(
-          `INSERT INTO documents (application_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,visibility,source_type)
-           VALUES ($1,$2,$3,'application/pdf',$4,$5,$6,'staff',$7,'appraisal_pdf','staff_only','staff_upload') RETURNING id`,
+          `INSERT INTO documents (application_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,visibility,source_type,review_status,reviewed_at)
+           VALUES ($1,$2,$3,'application/pdf',$4,$5,$6,'staff',$7,'appraisal_pdf','staff_only','staff_upload','accepted',now()) RETURNING id`,
           [app.id, app.borrower_id, 'appraisal.pdf', pbuf.length, ps.provider, ps.ref, req.actor.id])).rows[0].id;
       }
     } catch (e) { console.error('[appraisal] document storage failed (import continues):', e && e.message); }

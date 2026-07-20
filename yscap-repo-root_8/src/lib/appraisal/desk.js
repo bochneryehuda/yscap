@@ -108,7 +108,7 @@ async function extractAndStorePhotos(appraisalId, appId, pdfB64, importedBy) {
         `INSERT INTO appraisal_photos (appraisal_id, document_id, sequence, width, height) VALUES ($1,$2,$3,$4,$5)`,
         [appraisalId, doc.rows[0].id, ph.seq, ph.width, ph.height]);
       stored++;
-    } catch (_) { /* per-photo best-effort */ }
+    } catch (e) { console.error('[appraisal] photo store failed (non-fatal, continuing):', e && e.message); }
   }
   return stored;
 }
