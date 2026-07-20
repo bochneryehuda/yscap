@@ -9,6 +9,7 @@
  */
 const db = require('../db');
 const email = require('./email');
+const emailLog = require('./email-log');   // Email Center capture (in-app-only rows)
 const tpl = require('./email/template');
 const { link: portalLink } = require('./email/catalog');
 const cfg = require('../config');
@@ -116,7 +117,16 @@ function buildEmail(opts, audience) {
 }
 
 async function _emailRow(id, to, opts, audience) {
-  if (!to || !to.length) { await _mark(id, 'skipped'); return; }
+  if (!to || !to.length) {
+    await _mark(id, 'skipped');
+    // In-app-only (no email sent): still record a lightweight Email Center row so
+    // the file's history shows the notification with an "in-app only" status. Its
+    // body is rendered on demand from the notification when opened. Best-effort.
+    emailLog.captureOutbound({ to: [], replyTo: fileReplyTo(opts.applicationId) },
+      { applicationId: opts.applicationId, notificationId: id, type: opts.type, audience, status: 'skipped',
+        subjectTag: opts.subjectTag, kicker: opts.kicker }).catch(() => {});
+    return;
+  }
   try {
     const msg = buildEmail(opts, audience);
     // Attachments (owner-directed): doc-upload + chat emails carry the actual
@@ -130,8 +140,10 @@ async function _emailRow(id, to, opts, audience) {
     // reply ALWAYS reaches a human — no notification is ever a dead-end no-reply.
     const replyTo = opts.replyTo || fileReplyTo(opts.applicationId) || cfg.replyToDefault || null;
     // #150: an optional LO-branded From display name rides through untouched
-    // (resend honors it; other providers ignore it).
-    const res = await email.sendMail({ to, subject: msg.subject, text: msg.text, html: msg.html, attachments, replyTo, from: opts.from || null });
+    // (resend honors it; other providers ignore it). `_ctx` is stripped by the
+    // provider wrapper and drives the Email Center capture (file + notification).
+    const res = await email.sendMail({ to, subject: msg.subject, text: msg.text, html: msg.html, attachments, replyTo, from: opts.from || null,
+      _ctx: { applicationId: opts.applicationId, notificationId: id, type: opts.type, audience, subjectTag: opts.subjectTag, kicker: opts.kicker } });
     await _mark(id, res && res.ok ? 'sent' : 'skipped');
   } catch (e) {
     await db.query(`UPDATE notifications SET email_status='error', email_error=$2 WHERE id=$1`, [id, String(e.message).slice(0, 400)]);

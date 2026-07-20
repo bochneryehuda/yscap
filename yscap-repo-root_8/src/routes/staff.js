@@ -7,7 +7,9 @@
 const express = require('express');
 const router = require('../lib/safe-router')();
 const db = require('../db');
-const { scrubText } = require('../lib/borrower-safe');
+const { scrubText, scrubTextExcept } = require('../lib/borrower-safe');
+const email = require('../lib/email');                    // Email Center: send staff replies
+const emailLog = require('../lib/email-log');             // Email Center: capture + on-demand body
 const C = require('../lib/crypto');
 const notify = require('../lib/notify');
 const changeRequests = require('../lib/change-requests');
@@ -2290,55 +2292,286 @@ router.get('/applications/:id/activity', async (req, res) => {
   catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
-// #80 — per-file EMAIL NOTIFICATION MONITOR. Every notification we wrote for this
-// file (to any party — the borrower, co-borrower, and each assigned staffer) with
-// its EMAIL delivery status, so the team can see at a glance exactly what has been
-// sent, to whom, and whether the email actually went out (sent / in-app only /
-// error). Reads the notifications table we already fan out through; scoped to
-// anyone who can touch the file. Inbound REPLIES (#68) are interleaved as
-// direction:'inbound' rows so the monitor shows both sides of the thread.
+// ════════════════════════════════════════════════════════════════════════════
+// EMAIL CENTER (owner-directed 2026-07-20) — a Gmail/Outlook-style history on
+// every file: every email that went out (to the borrower, co-borrower, each
+// assigned staffer, external partners) with its FULL designed body, exactly whom
+// it reached and when, the delivery status (so a failed send can be troubleshot),
+// the inbound replies WITH their body, and a reply box. Reads the email_messages
+// store (db/182) which src/lib/email-log.js captures every send + reply into; the
+// prior history is backdated in by the boot backfill. Staff-only, file-scoped.
+// ════════════════════════════════════════════════════════════════════════════
+
+// Shape one email_messages row for the client (used by the file view + mailbox).
+function emailRowShape(r) {
+  return {
+    id: r.id,
+    direction: r.direction,
+    type: r.msg_type,
+    category: r.category,
+    subject: r.subject || '(no subject)',
+    preview: r.preview || '',
+    from_email: r.from_email,
+    from_name: r.from_name,
+    to: Array.isArray(r.to_emails) ? r.to_emails : [],
+    reply_to: r.reply_to,
+    recipient_kind: r.recipient_kind,
+    recipient_name: r.recipient_name || null,
+    audience: r.audience,
+    status: r.status,
+    error: r.error,
+    attachments: Array.isArray(r.attachments) ? r.attachments : [],
+    meta: r.meta || null,
+    reconstructed: r.reconstructed,
+    has_body: r.has_body,
+    thread_key: r.thread_key,
+    occurred_at: r.occurred_at,
+    // file identity (present on the global mailbox rows)
+    application_id: r.application_id || null,
+    loan_no: r.ys_loan_number || null,
+    file_label: r.file_label || null,
+  };
+}
+
+// Per-file email history (newest first), grouped into threads client-side by
+// thread_key. Backfills THIS file's prior history on read so it's always complete.
 router.get('/applications/:id/emails', async (req, res) => {
   if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   try {
+    await emailLog.ensureFileBackfilled(req.params.id).catch(() => {});
     const r = await db.query(
-      `SELECT n.id, n.type, n.title, n.body, n.recipient_kind, n.email_status, n.emailed_at, n.created_at,
-              CASE WHEN n.recipient_kind='staff'
-                   THEN su.full_name
-                   ELSE NULLIF(TRIM(COALESCE(bo.first_name,'') || ' ' || COALESCE(bo.last_name,'')), '') END AS recipient_name,
-              CASE WHEN n.recipient_kind='staff' THEN su.email ELSE bo.email END AS recipient_email
-         FROM notifications n
+      `SELECT em.id, em.direction, em.msg_type, em.category, em.subject, em.preview,
+              em.from_email, em.from_name, em.to_emails, em.reply_to, em.recipient_kind,
+              em.audience, em.status, em.error, em.attachments, em.meta, em.reconstructed,
+              (em.body_html IS NOT NULL) AS has_body, em.thread_key, em.occurred_at, em.application_id,
+              COALESCE(su.full_name,
+                       NULLIF(TRIM(COALESCE(bo.first_name,'') || ' ' || COALESCE(bo.last_name,'')), '')) AS recipient_name
+         FROM email_messages em
+         LEFT JOIN notifications n ON n.id = em.notification_id
          LEFT JOIN staff_users su ON su.id = n.staff_id
          LEFT JOIN borrowers   bo ON bo.id = n.borrower_id
-        WHERE n.application_id = $1
-        ORDER BY n.created_at DESC
-        LIMIT 300`, [req.params.id]);
-    let inbound = [];
-    try {
-      const inb = await db.query(
-        `SELECT id, from_email, subject, status, forwarded_count, received_at, processed_at
-           FROM inbound_file_emails
-          WHERE application_id = $1 OR app_results ? $2
-          ORDER BY received_at DESC
-          LIMIT 100`, [req.params.id, String(req.params.id)]);
-      inbound = inb.rows.map((row) => ({
-        id: `in-${row.id}`,
-        direction: 'inbound',
-        type: 'inbound_reply',
-        title: row.subject ? `Reply: ${row.subject}` : 'Reply on this file',
-        body: null,
-        recipient_kind: 'inbound',
-        recipient_name: null,
-        recipient_email: row.from_email || null,   // shown as the SENDER on inbound rows
-        email_status: row.status,
-        emailed_at: row.processed_at,
-        created_at: row.received_at,
-        forwarded_count: row.forwarded_count,
-      }));
-    } catch (_) { /* inbound history is additive — never break the monitor over it */ }
-    const merged = r.rows.concat(inbound)
-      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-      .slice(0, 300);
-    res.json(merged);
+        WHERE em.application_id = $1
+        ORDER BY em.occurred_at DESC
+        LIMIT 500`, [req.params.id]);
+    res.json(r.rows.map(emailRowShape));
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Full body of one message. Stored body wins; a lightweight/historical row's body
+// is rendered on demand from its linked notification. Scoped to the file.
+router.get('/applications/:id/emails/:msgId', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const r = await db.query(
+      `SELECT em.*, (em.body_html IS NOT NULL) AS has_body,
+              COALESCE(su.full_name,
+                       NULLIF(TRIM(COALESCE(bo.first_name,'') || ' ' || COALESCE(bo.last_name,'')), '')) AS recipient_name
+         FROM email_messages em
+         LEFT JOIN notifications n ON n.id = em.notification_id
+         LEFT JOIN staff_users su ON su.id = n.staff_id
+         LEFT JOIN borrowers   bo ON bo.id = n.borrower_id
+        WHERE em.id = $1 AND em.application_id = $2`, [req.params.msgId, req.params.id]);
+    const row = r.rows[0];
+    if (!row) return res.status(404).json({ error: 'not found' });
+    const out = emailRowShape({ ...row, has_body: true });
+    out.body_html = row.body_html || null;
+    out.body_text = row.body_text || null;
+    // Historical/lightweight outbound row → re-render the branded body on demand.
+    if (!out.body_html && row.direction === 'outbound' && row.notification_id) {
+      const built = await emailLog.renderHistoricalBody(row.notification_id).catch(() => null);
+      if (built) { out.body_html = built.html; out.body_text = built.text; out.rendered = true; }
+    }
+    if (!out.body_html && !out.body_text) {
+      out.body_unavailable = row.direction === 'inbound'
+        ? 'This reply predates archiving — its body was not stored. Newer replies show in full.'
+        : 'The full body for this message was not stored.';
+    }
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Reply from the Email Center. Sends a branded email to the file's parties (the
+// borrower(s) + the other active assignees, minus the sender) — or an explicit
+// recipient list — on the shared file thread, and captures it into the history.
+router.post('/applications/:id/emails/reply', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const bodyText = String((req.body && req.body.body) || '').trim();
+  if (!bodyText) return res.status(400).json({ error: 'Type a message to send.' });
+  try {
+    const ctx = await notify.fileContext(appId).catch(() => null);
+    // The acting staffer's own email/name (req.actor carries only id/role/perms).
+    const meRow = (await db.query(`SELECT lower(email) AS email, full_name FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
+    // Recipient set: an explicit list (validated as file parties) or the default
+    // fan-out = borrower(s) + active assignees, minus the acting staffer.
+    const partyRows = await db.query(
+      `SELECT lower(bo.email) AS email, 'borrower' AS kind
+         FROM applications a
+         JOIN borrowers bo ON bo.id IN (a.borrower_id, a.co_borrower_id)
+        WHERE a.id=$1 AND bo.email IS NOT NULL AND btrim(bo.email)<>''
+       UNION
+       SELECT lower(su.email) AS email, 'staff' AS kind
+         FROM application_assignees aa
+         JOIN staff_users su ON su.id=aa.staff_id
+        WHERE aa.application_id=$1 AND aa.removed_at IS NULL AND su.is_active=true
+          AND su.email IS NOT NULL AND btrim(su.email)<>''`, [appId]);
+    const meEmail = String(meRow.email || '').trim().toLowerCase();
+    const parties = partyRows.rows.filter((p) => p.email && p.email !== meEmail);
+    let recipients = parties;
+    if (Array.isArray(req.body.to) && req.body.to.length) {
+      const want = new Set(req.body.to.map((e) => String(e).trim().toLowerCase()));
+      recipients = parties.filter((p) => want.has(p.email));   // only ever real file parties
+    }
+    if (!recipients.length) return res.status(400).json({ error: 'No one on this file to send to. Add the borrower or an assignee first.' });
+    const toEmails = recipients.map((r) => r.email);
+    const anyBorrower = recipients.some((r) => r.kind === 'borrower');
+    const audience = anyBorrower ? 'borrower' : 'staff';
+    // Borrower-safe: scrub a note-buyer/capital-partner name a staffer might type,
+    // protecting the file's own clean data (address/name/money) from the scrub.
+    const protect = ctx && Array.isArray(ctx.meta) ? ctx.meta.map((m) => m && m.value).filter((v) => typeof v === 'string') : [];
+    const safeBody = anyBorrower ? scrubTextExcept(bodyText, protect) : bodyText;
+    const rawSubject = String((req.body && req.body.subject) || '').trim();
+    const subject = (rawSubject || (ctx ? `Re: ${ctx.loanNo}` : 'Re: your loan file')).slice(0, 200);
+    const built = notify.buildEmail({
+      title: subject.replace(/^\s*re:\s*/i, '') || 'A message from your loan team',
+      body: safeBody,
+      lines: safeBody.split(/\n{2,}/).map((s) => s.trim()).filter(Boolean).slice(1) || [],
+      applicationId: appId,
+      subjectTag: ctx ? ctx.subjectTag : '',
+      link: audience === 'borrower' ? `/app/${appId}` : `/internal/app/${appId}`,
+      ctaLabel: audience === 'borrower' ? 'Open your file' : 'Open the loan file',
+      replyable: true,
+    }, audience);
+    // From the officer by name so the reply reads as a person, not a robot.
+    const fromName = email.fromWithName ? email.fromWithName(meRow.full_name || meRow.email) : null;
+    await email.sendMail({
+      to: toEmails, subject: built.subject, html: built.html, text: built.text,
+      replyTo: fileReplyTo(appId) || cfg.replyToDefault || null,
+      from: fromName || undefined,
+      _ctx: { applicationId: appId, type: 'staff_reply', audience },
+    });
+    await audit(req, 'email_reply_sent', 'application', appId, { to: toEmails.length, subject });
+    res.json({ ok: true, sent_to: toEmails });
+  } catch (e) { res.status(500).json({ error: 'Could not send the reply.' }); }
+});
+
+// A short "which file" label for a mailbox row (loan# · street · borrower).
+function fileLabelOf(r) {
+  const pa = r.property_address || {};
+  const street = pa.street || pa.line1 || (typeof pa.oneLine === 'string' ? pa.oneLine.split(',')[0] : '') || '';
+  const borrower = [r.b_first, r.b_last].filter(Boolean).join(' ');
+  return [r.ys_loan_number, street, borrower].filter(Boolean).join(' · ') || null;
+}
+
+// GLOBAL MAILBOX — every email across the files the viewer can see (admins /
+// underwriters: all; loan officers / processors: only their assigned files).
+// This is the portal-wide audit view the owner asked for: filter by delivery
+// status (troubleshoot failures), direction, category, or a text search over
+// subject / sender / recipients. Newest first, paginated.
+router.get('/emails/stats', async (req, res) => {
+  try {
+    const params = [];
+    let scope = '';
+    if (!seesAll(req)) {
+      params.push(req.actor.id);
+      scope = `WHERE em.application_id IS NOT NULL AND EXISTS (SELECT 1 FROM applications a
+                 WHERE a.id=em.application_id AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$1')})`;
+    }
+    const r = await db.query(
+      `SELECT
+         count(*)::int AS total,
+         count(*) FILTER (WHERE em.direction='outbound' AND em.status='sent')::int AS sent,
+         count(*) FILTER (WHERE em.direction='outbound' AND em.status='skipped')::int AS in_app_only,
+         count(*) FILTER (WHERE em.direction='outbound' AND em.status='error')::int AS failed,
+         count(*) FILTER (WHERE em.direction='inbound')::int AS inbound,
+         count(*) FILTER (WHERE em.occurred_at > now() - interval '7 days')::int AS last_7d
+       FROM email_messages em ${scope}`, params);
+    res.json(r.rows[0] || {});
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+router.get('/emails', async (req, res) => {
+  try {
+    const params = [];
+    const where = [];
+    if (!seesAll(req)) {
+      params.push(req.actor.id);
+      where.push(`em.application_id IS NOT NULL AND EXISTS (SELECT 1 FROM applications a
+                    WHERE a.id=em.application_id AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$' + params.length)})`);
+    }
+    const dir = String(req.query.direction || '');
+    if (dir === 'inbound' || dir === 'outbound') { params.push(dir); where.push(`em.direction=$${params.length}`); }
+    const status = String(req.query.status || '');
+    if (status === 'sent' || status === 'skipped' || status === 'error') { params.push(status); where.push(`em.status=$${params.length}`); }
+    else if (status === 'issues') { where.push(`em.status IN ('error','no_recipients','failed_permanent','retrieval_failed','forward_failed','lookup_failed')`); }
+    const category = String(req.query.category || '');
+    if (category) { params.push(category); where.push(`em.category=$${params.length}`); }
+    const q = String(req.query.q || '').trim();
+    if (q) {
+      params.push('%' + q.replace(/[%_]/g, (m) => '\\' + m) + '%');
+      const i = params.length;
+      where.push(`(em.subject ILIKE $${i} OR em.preview ILIKE $${i} OR em.from_email ILIKE $${i} OR em.to_emails::text ILIKE $${i})`);
+    }
+    const limit = Math.min(200, intField(req.query.limit) || 60);
+    const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+    params.push(limit); const limIdx = params.length;
+    params.push(offset); const offIdx = params.length;
+    const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
+    const r = await db.query(
+      `SELECT em.id, em.direction, em.msg_type, em.category, em.subject, em.preview,
+              em.from_email, em.from_name, em.to_emails, em.reply_to, em.recipient_kind,
+              em.audience, em.status, em.error, em.attachments, em.meta, em.reconstructed,
+              (em.body_html IS NOT NULL) AS has_body, em.thread_key, em.occurred_at, em.application_id,
+              a.ys_loan_number, a.property_address, b.first_name AS b_first, b.last_name AS b_last,
+              COALESCE(su.full_name,
+                       NULLIF(TRIM(COALESCE(bo.first_name,'') || ' ' || COALESCE(bo.last_name,'')), '')) AS recipient_name
+         FROM email_messages em
+         LEFT JOIN applications a ON a.id = em.application_id
+         LEFT JOIN borrowers   b ON b.id = a.borrower_id
+         LEFT JOIN notifications n ON n.id = em.notification_id
+         LEFT JOIN staff_users su ON su.id = n.staff_id
+         LEFT JOIN borrowers   bo ON bo.id = n.borrower_id
+         ${whereSql}
+        ORDER BY em.occurred_at DESC
+        LIMIT $${limIdx} OFFSET $${offIdx}`, params);
+    res.json(r.rows.map((row) => ({ ...emailRowShape(row), file_label: fileLabelOf(row) })));
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Full body of one message from the GLOBAL mailbox (scoped to a file the viewer
+// can see). Renders a historical row's body on demand, same as the per-file view.
+router.get('/emails/:msgId', async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT em.*, a.ys_loan_number, a.property_address, b.first_name AS b_first, b.last_name AS b_last,
+              COALESCE(su.full_name,
+                       NULLIF(TRIM(COALESCE(bo.first_name,'') || ' ' || COALESCE(bo.last_name,'')), '')) AS recipient_name
+         FROM email_messages em
+         LEFT JOIN applications a ON a.id = em.application_id
+         LEFT JOIN borrowers   b ON b.id = a.borrower_id
+         LEFT JOIN notifications n ON n.id = em.notification_id
+         LEFT JOIN staff_users su ON su.id = n.staff_id
+         LEFT JOIN borrowers   bo ON bo.id = n.borrower_id
+        WHERE em.id = $1`, [req.params.msgId]);
+    const row = r.rows[0];
+    if (!row) return res.status(404).json({ error: 'not found' });
+    // Authorize: a file-scoped message requires touch access; a non-file (system)
+    // message is admins-only.
+    if (row.application_id) { if (!(await canTouchApp(req, row.application_id))) return res.status(403).json({ error: 'forbidden' }); }
+    else if (!seesAll(req)) return res.status(403).json({ error: 'forbidden' });
+    const out = { ...emailRowShape(row), file_label: fileLabelOf(row) };
+    out.body_html = row.body_html || null;
+    out.body_text = row.body_text || null;
+    if (!out.body_html && row.direction === 'outbound' && row.notification_id) {
+      const built = await emailLog.renderHistoricalBody(row.notification_id).catch(() => null);
+      if (built) { out.body_html = built.html; out.body_text = built.text; out.rendered = true; }
+    }
+    if (!out.body_html && !out.body_text) {
+      out.body_unavailable = row.direction === 'inbound'
+        ? 'This reply predates archiving — its body was not stored. Newer replies show in full.'
+        : 'The full body for this message was not stored.';
+    }
+    res.json(out);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
