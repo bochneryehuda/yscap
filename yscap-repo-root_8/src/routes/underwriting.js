@@ -42,6 +42,7 @@ const { ANALYZER_VERSION, subjectHash } = require('../lib/underwriting/fingerpri
 const { assessFile: assessStaleness } = require('../lib/underwriting/staleness');
 const { computeMetrics } = require('../lib/underwriting/metrics');
 const { buildChain } = require('../lib/underwriting/entity-chain');
+const { assessCompleteness } = require('../lib/underwriting/completeness');
 
 const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || ''));
 // today as a calendar string — no `new Date()` math in the date paths (CLAUDE.md rule).
@@ -173,6 +174,13 @@ router.get('/:appId', async (req, res, next) => {
     // (the name-consistency edges are tie-out's findings; the chain adds the >=25%-owner KYC gap).
     const entityChain = buildChain({ vestingName: mctx && mctx.vestingName }, exts.rows);
 
+    // File completeness / stipulations: diff the required-document matrix (adapted to this deal)
+    // against what's analyzed on file → outstanding-items list + a completeness %. A VIEW only.
+    const isEntity = !!((mctx && mctx.vestingName) || a.llc_id);
+    const completeness = assessCompleteness(
+      { isEntity, isAssignment: !!a.is_assignment },
+      exts.rows, ff.findings);
+
     const perDoc = ff.findings.map(decorate);
     // Roll the tie-out discrepancies + the forward-looking staleness advisories + over-leverage
     // metric warnings into the same fatal/warning gate (all warning-only → never change the
@@ -195,6 +203,9 @@ router.get('/:appId', async (req, res, next) => {
         rows: metrics.metrics, findings: metrics.findings.map(decorate) },
       entityChain: { status: entityChain.status, edges: entityChain.edges, owners: entityChain.owners,
         vestingName: entityChain.vestingName, findings: entityChain.findings.map(decorate) },
+      completeness: { completenessPct: completeness.completenessPct, counts: completeness.counts,
+        stipulations: completeness.stipulations, outstanding: completeness.outstanding,
+        ctcBlockers: completeness.ctcBlockers, docsComplete: completeness.docsComplete },
       summary,
       docTypes: registry.docTypes(),
       analyzers: { reader: docint.configured(), ai: azureOpenai.available() },
