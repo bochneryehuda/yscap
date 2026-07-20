@@ -1,5 +1,5 @@
 -- ============================================================================
--- 187 — 5% SOW contingency also required for a BLUE LAKE note buyer
+-- 190 — 5% SOW contingency also required for a BLUE LAKE note buyer
 --       (owner-directed 2026-07-20).
 --
 -- "Make sure the Scope of Work construction budget condition is not clearing —

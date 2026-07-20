@@ -1,5 +1,5 @@
 -- ============================================================================
--- 188 — Earnest money deposit (EMD) verification — CorrFirst-gated borrower
+-- 191 — Earnest money deposit (EMD) verification — CorrFirst-gated borrower
 --       external condition (owner-directed 2026-07-20).
 --
 -- "Open up a borrower external condition to verify the EMD deposit — but only if
