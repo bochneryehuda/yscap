@@ -603,6 +603,24 @@ function InspectionGallery({ appId, draw, finding, readsOff }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
+  const [archivedCount, setArchivedCount] = useState(null); // durable copies already in PILOT storage
+  const [archiving, setArchiving] = useState(false);
+  const [archiveMsg, setArchiveMsg] = useState('');
+  const loadArchived = useCallback(() => {
+    api.get(`/api/sitewire/files/${appId}/draws/${draw.sitewire_draw_id}/archived-media`)
+      .then((r) => setArchivedCount(r.count || 0)).catch(() => {});
+  }, [appId, draw.sitewire_draw_id]);
+  useEffect(() => { loadArchived(); }, [loadArchived]);
+  async function archive() {
+    setArchiving(true); setArchiveMsg('');
+    try {
+      const r = await api.post(`/api/sitewire/files/${appId}/draws/${draw.sitewire_draw_id}/archive-media`, {});
+      setArchiveMsg(r.archived ? `Saved ${r.archived} file${r.archived === 1 ? '' : 's'} to PILOT — they’re durable now and will be in the report.`
+        : (r.skipped ? 'Already saved to PILOT — nothing new to archive.' : 'Nothing to archive yet (deliver findings first).'));
+      loadArchived();
+    } catch (e) { setArchiveMsg(e?.data?.error || 'Could not archive — please try again.'); }
+    finally { setArchiving(false); }
+  }
   useEffect(() => {
     let live = true;
     setLoading(true); setErr('');
@@ -624,7 +642,13 @@ function InspectionGallery({ appId, draw, finding, readsOff }) {
   const totalPhotos = lines.reduce((n, l) => n + (Array.isArray(l.media) ? l.media.filter((m) => m.type !== 'video').length : 0), 0);
   return (
     <div className="panel" style={{ marginTop: 8, background: 'var(--paper,#f6f3ec)' }}>
-      <div className="small" style={{ marginBottom: 6 }}><b>Inspection review</b>{!loading && lines.length ? ` · ${totalPhotos} photo${totalPhotos === 1 ? '' : 's'} across ${lines.length} line${lines.length === 1 ? '' : 's'}` : ''}</div>
+      <div className="row between" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'baseline', marginBottom: 6 }}>
+        <div className="small"><b>Inspection review</b>{!loading && lines.length ? ` · ${totalPhotos} photo${totalPhotos === 1 ? '' : 's'} across ${lines.length} line${lines.length === 1 ? '' : 's'}` : ''}
+          {archivedCount ? <span className="muted" style={{ marginLeft: 8, color: 'var(--good,#3f7a4a)' }}>✓ {archivedCount} saved to PILOT</span> : null}</div>
+        <button className="btn btn-sm ghost" disabled={archiving} title="Download the inspector’s photos/videos into PILOT’s own storage so they never expire (and so they can go into the branded report)."
+          onClick={archive}>{archiving ? 'Saving…' : 'Archive photos to PILOT'}</button>
+      </div>
+      {archiveMsg && <div className="muted small" style={{ marginBottom: 6 }}>{archiveMsg}</div>}
       {loading && <div className="muted small">Loading inspection photos…</div>}
       {err && !loading && <div className="muted small" style={{ color: 'var(--bad,#b04a3f)' }}>{err}</div>}
       {!loading && !err && lines.length === 0 && <div className="muted small">No inspection photos on this draw yet.</div>}
