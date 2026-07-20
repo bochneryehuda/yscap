@@ -502,7 +502,7 @@ belt (only the sanctioned reverify GUC may change a locked score) + audit. Freez
 adapter (Basic auth, hard timeout, **never auto-retries a billable POST**, auth/http/network/
 timeout/empty classification, circuit breaker). Staff settings screen + nav. 47 tests.
 
-**1e — order/import + wiring** (`credit/import.js`, `db/174–161`,
+**1e — order/import + wiring** (`credit/import.js`, `db/174–177`,
 `credit/reopen-sweep.js`, `credit/adverse-action.js`, staff panel + borrower card):
 - Order journaled before the POST with an idempotency key (one intent bills at most once);
   import parses → scores → stores report/scores/PDF → freezes each borrower's verified FICO
