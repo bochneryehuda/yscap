@@ -48,7 +48,13 @@ for (const bad of ['Dissolved', 'Suspended', 'Forfeited', 'Not in Good Standing'
 const insGood = { namedInsured: 'Maple LLC', dwellingCoverage: 400000, policyEffective: '2026-06-01', policyExpiration: '2027-06-01', mortgageeClausePresent: true, readable: true };
 assert.deepStrictEqual(codes(C.computeInsuranceFindings(insGood, { loan_amount: 300000 }, { today: TODAY })), []);
 assert.strictEqual(C.computeInsuranceFindings({ ...insGood, mortgageeClausePresent: false }, { loan_amount: 300000 }, { today: TODAY }).find((f) => f.code === 'insurance_no_mortgagee').severity, 'fatal');
-assert.ok(C.computeInsuranceFindings({ ...insGood, dwellingCoverage: 250000 }, { loan_amount: 300000 }, { today: TODAY }).some((f) => f.code === 'insurance_underinsured'));
+{
+  // Under-coverage is a WARNING (not a hard block): on a rehab loan the requirement is replacement
+  // cost, not the full loan — surface for review, don't false-block (deep-audit 2026-07-20).
+  const uf = C.computeInsuranceFindings({ ...insGood, dwellingCoverage: 250000 }, { loan_amount: 300000 }, { today: TODAY }).find((f) => f.code === 'insurance_underinsured');
+  assert.ok(uf, 'under-coverage still surfaces');
+  assert.strictEqual(uf.severity, 'warning', 'under-coverage is a warning, not a fatal');
+}
 assert.ok(C.computeInsuranceFindings({ ...insGood, policyExpiration: '2026-01-01' }, { loan_amount: 300000 }, { today: TODAY }).some((f) => f.code === 'insurance_expired'));
 
 // ---- Flood ----

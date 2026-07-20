@@ -19,9 +19,15 @@
  */
 const { canon } = require('./actions');
 
-// The resolution verbs that mean "approve DESPITE the finding" (an override), as opposed to
-// asserting it was wrong (clear/dismiss) or scheduling follow-up (condition/request).
-const OVERRIDE_ACTIONS = new Set(['grant_exception']);
+// Verbs that CLOSE a fatal finding and thereby CLEAR the clear-to-close gate. The effect is the
+// same no matter the label — a hard dealbreaker goes away and the loan can proceed — so the tiered
+// authority is on the EFFECT, not the verb: grant_exception (override — finding is right),
+// clear/fix_file (assert remediated / the file is actually fine), dismiss (assert it's noise) all
+// unblock CTC. A prior version gated ONLY grant_exception, so a processor could dismiss or clear a
+// fraud/mismatch dealbreaker and unblock the loan under the base permission (deep-audit 2026-07-20).
+// `decline` closes the finding too but DECLINES the loan (no leniency risk), and post_condition/
+// request_document keep it OPEN — those stay at the base authority.
+const GATE_CLEARING_ACTIONS = new Set(['grant_exception', 'clear', 'fix_file', 'dismiss']);
 
 /**
  * The permission required to apply `action` to `finding`, ABOVE the base sign_off_conditions
@@ -32,7 +38,10 @@ function elevatedPermissionFor(action, finding) {
   const a = canon(action);
   const f = finding || {};
   const isFatalBlocking = f.severity === 'fatal' && (f.blocks_ctc ?? f.blocksCtc ?? false);
-  if (OVERRIDE_ACTIONS.has(a) && isFatalBlocking) return 'waive_conditions';
+  // Clearing a hard, clear-to-close-blocking dealbreaker needs senior authority (waive_conditions).
+  // Underwriters + admins hold waive_conditions, so their workflow is unchanged; only coordinators/
+  // processors are restricted from unilaterally waving off a dealbreaker.
+  if (GATE_CLEARING_ACTIONS.has(a) && isFatalBlocking) return 'waive_conditions';
   return null;
 }
 
@@ -45,7 +54,7 @@ function canApply(actor, action, finding, can) {
   if (!need) return { ok: true };
   if (can(actor, need)) return { ok: true, elevated: need };
   return { ok: false, requiredPermission: need,
-    reason: 'granting an exception on a clear-to-close-blocking finding needs senior authority (waive conditions) — route it to an underwriter or admin' };
+    reason: 'clearing a clear-to-close-blocking dealbreaker needs senior authority (waive conditions) — route it to an underwriter or admin' };
 }
 
-module.exports = { elevatedPermissionFor, canApply, OVERRIDE_ACTIONS };
+module.exports = { elevatedPermissionFor, canApply, GATE_CLEARING_ACTIONS };

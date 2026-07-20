@@ -4251,8 +4251,8 @@ async function advancementBlockers(appId, target) {
   try {
     const { fileFatalCount } = require('../lib/underwriting/file-review');
     const { total } = await fileFatalCount(db, appId);
-    if (total > 0) underwritingFatals = [{ id: 'underwriting_fatal',
-      title: `Underwriting review — ${total} open dealbreaker finding${total === 1 ? '' : 's'} (resolve on the underwriting desk)` }];
+    if (total > 0) { const t = `Underwriting review — ${total} open dealbreaker finding${total === 1 ? '' : 's'} (resolve on the underwriting desk)`;
+      underwritingFatals = [{ id: 'underwriting_fatal', title: t, label: t }]; } // title+label so either client render works
   } catch (_) { /* never break advancement gating on a tie-out compute error */ }
   return { conditions: [...conds.rows, ...checklistConds.rows, ...underwritingFatals], gates: gates.rows };
 }

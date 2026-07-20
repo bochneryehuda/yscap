@@ -14,34 +14,42 @@ const fatalBlocking = { severity: 'fatal', blocks_ctc: true };
 const fatalNonBlocking = { severity: 'fatal', blocks_ctc: false };
 const warn = { severity: 'warning', blocks_ctc: false };
 
-// ---- elevatedPermissionFor: only grant_exception on a fatal-blocking finding is elevated ----
+// ---- elevatedPermissionFor: ANY verb that CLOSES a fatal-blocking dealbreaker is elevated ----
+// (deep-audit 2026-07-20: the gate-clear effect, not the verb label, is what needs senior authority)
 {
-  assert.strictEqual(elevatedPermissionFor('grant_exception', fatalBlocking), 'waive_conditions');
+  for (const act of ['grant_exception', 'clear', 'fix_file', 'dismiss']) {
+    assert.strictEqual(elevatedPermissionFor(act, fatalBlocking), 'waive_conditions', `${act} closes a fatal dealbreaker → elevated`);
+  }
+  // Verbs that DON'T unblock CTC stay at the base gate: keeping it open, or declining the loan.
+  assert.strictEqual(elevatedPermissionFor('post_condition', fatalBlocking), null, 'posting a condition keeps it open → base');
+  assert.strictEqual(elevatedPermissionFor('request_document', fatalBlocking), null, 'requesting a doc keeps it open → base');
+  assert.strictEqual(elevatedPermissionFor('decline', fatalBlocking), null, 'declining the loan is not leniency → base');
+  // On a warning / non-blocking fatal, nothing is elevated.
   assert.strictEqual(elevatedPermissionFor('grant_exception', warn), null, 'exception on a warning is routine');
-  assert.strictEqual(elevatedPermissionFor('grant_exception', fatalNonBlocking), null, 'non-blocking fatal exception is routine');
-  assert.strictEqual(elevatedPermissionFor('clear', fatalBlocking), null, 'clearing (asserting OK) is not an override');
-  assert.strictEqual(elevatedPermissionFor('dismiss', fatalBlocking), null, 'dismiss is not an override');
-  assert.strictEqual(elevatedPermissionFor('post_condition', fatalBlocking), null, 'posting a condition is not an override');
+  assert.strictEqual(elevatedPermissionFor('clear', warn), null, 'clearing a warning is routine');
+  assert.strictEqual(elevatedPermissionFor('dismiss', fatalNonBlocking), null, 'a non-blocking fatal is routine');
 }
 
-// ---- canApply: a processor (no waive) is blocked from a fatal exception; an underwriter passes -
+// ---- canApply: a processor (no waive) can't wave off a dealbreaker; an underwriter can ----
 {
   const processor = canWith(['sign_off_conditions']);
   const underwriter = canWith(['sign_off_conditions', 'waive_conditions']);
 
-  const blocked = canApply({}, 'grant_exception', fatalBlocking, processor);
-  assert.strictEqual(blocked.ok, false, 'processor cannot override a fatal blocking finding');
-  assert.strictEqual(blocked.requiredPermission, 'waive_conditions');
-
-  const allowed = canApply({}, 'grant_exception', fatalBlocking, underwriter);
-  assert.strictEqual(allowed.ok, true, 'an underwriter (waive_conditions) can');
-  assert.strictEqual(allowed.elevated, 'waive_conditions', 'the elevated authority is recorded');
-
-  // The processor CAN still do everything else on the same fatal finding.
-  for (const act of ['post_condition', 'request_document', 'fix_file', 'clear', 'dismiss']) {
+  // Every gate-clearing verb is blocked for a processor on a fatal blocking finding.
+  for (const act of ['grant_exception', 'clear', 'fix_file', 'dismiss']) {
+    const blocked = canApply({}, act, fatalBlocking, processor);
+    assert.strictEqual(blocked.ok, false, `processor cannot ${act} a fatal blocking dealbreaker`);
+    assert.strictEqual(blocked.requiredPermission, 'waive_conditions');
+    const allowed = canApply({}, act, fatalBlocking, underwriter);
+    assert.strictEqual(allowed.ok, true, `an underwriter (waive_conditions) can ${act}`);
+    assert.strictEqual(allowed.elevated, 'waive_conditions', 'the elevated authority is recorded');
+  }
+  // The processor CAN still remediate (keep it open) or decline on the same fatal finding.
+  for (const act of ['post_condition', 'request_document', 'decline']) {
     assert.strictEqual(canApply({}, act, fatalBlocking, processor).ok, true, `${act} needs only the base gate`);
   }
-  // And an exception on a mere warning needs only the base gate.
+  // And clearing a mere warning needs only the base gate.
+  assert.strictEqual(canApply({}, 'clear', warn, processor).ok, true);
   assert.strictEqual(canApply({}, 'grant_exception', warn, processor).ok, true);
 }
 

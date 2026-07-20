@@ -121,7 +121,7 @@ function computeGoodStandingFindings(g, subject, opts = {}) {
   // a clean entity whose state just phrases it unusually (audit 2026-07-20). Order matters: check
   // NEGATIVE first, because "not in good standing" contains the word "good".
   const st = String(g.status || '').toLowerCase();
-  const NEGATIVE = /revoked|dissolv|forfeit|suspend|\bvoid\b|inactive|delinqu|terminat|expired|not in good|not good|cancel|withdrawn|defunct|bad standing|no longer|non[- ]?compl/;
+  const NEGATIVE = /revoked|dissolv|forfeit|suspend|\bvoid\b|inactive|delinqu|terminat|expired|not in good|not good|not in exist|not exist|cancel|withdrawn|defunct|bad standing|no longer|non[- ]?compl/;
   const POSITIVE = /good stand|in good|\bactive\b|\bexist|subsist|\bcurrent\b|\bvalid\b|\bcompl|register|authoriz|in effect|effective|\bstanding\b/;
   if (st && NEGATIVE.test(st)) {
     out.push(mk('good_standing', { code: 'entity_not_in_good_standing', severity: 'fatal', field: 'status',
@@ -170,10 +170,17 @@ function computeInsuranceFindings(ins, subject, opts = {}) {
   }
   const cov = num(ins.dwellingCoverage), loan = subject && num(subject.loan_amount);
   if (cov != null && loan != null && loan > 0 && cov < loan - 1) {
-    out.push(mk('insurance', { code: 'insurance_underinsured', severity: 'fatal', field: 'coverage',
+    // WARNING, not a hard block: the coverage requirement on a rehab / fix-and-flip loan is the
+    // property's REPLACEMENT COST (the completed dwelling value), not the full loan — the loan
+    // finances acquisition + rehab + LAND, so dwelling coverage below the loan can be perfectly
+    // adequate. PILOT can't read replacement cost off the policy, so it surfaces the gap for the
+    // underwriter to confirm against the replacement-cost basis rather than falsely blocking a
+    // legitimate file (deep-audit 2026-07-20). A genuinely uninsured/underinsured property still
+    // shows up prominently. (Owner can make this a hard block again if desired.)
+    out.push(mk('insurance', { code: 'insurance_underinsured', severity: 'warning', field: 'coverage',
       docValue: money(cov), fileValue: money(loan),
-      title: 'Insurance coverage is below the loan amount',
-      howTo: `Dwelling coverage (${money(cov)}) is less than the loan amount (${money(loan)}). Increase coverage to at least the loan amount (or replacement cost).`,
+      title: 'Confirm insurance coverage meets the replacement-cost requirement',
+      howTo: `Dwelling coverage (${money(cov)}) is below the loan amount (${money(loan)}). On a rehab loan the requirement is the property's replacement cost (completed value), not the full loan — confirm the coverage meets replacement cost, or request an increase.`,
       actions: ['request_document', 'post_condition', 'dismiss'] }));
   }
   const today = opts.today;
