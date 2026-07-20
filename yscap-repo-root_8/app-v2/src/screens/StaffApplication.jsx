@@ -1830,6 +1830,17 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                           ? `Required liquidity ${money2(liq.required)}${liq.cashToClose ? ` · cash to close ${money2(liq.cashToClose)}` : ''}${liq.reserveRequirement ? ` · reserves ${money2(liq.reserveRequirement)}` : ''}`
                           : 'Assets & bank statements — the required liquidity is set the moment a product is registered';
                       })()
+                    : it.template_code === 'rtl_p5_assign' ? (() => {
+                        // Assignment-of-contract: show the assignment amount (purchase −
+                        // original contract) so the officer knows what the uploaded
+                        // assignment letter must reflect (owner-directed 2026-07-20).
+                        const fee = app.assignment_fee != null ? Number(app.assignment_fee)
+                          : (app.purchase_price != null && app.underlying_contract_price != null
+                              ? Math.max(0, Number(app.purchase_price) - Number(app.underlying_contract_price)) : null);
+                        if (fee == null) return 'Assignment of contract — upload the assignment letter';
+                        return `Assignment ${money(fee)}${app.purchase_price != null && app.underlying_contract_price != null
+                          ? ` (purchase ${money(app.purchase_price)} − original contract ${money(app.underlying_contract_price)})` : ''} — upload the assignment letter`;
+                      })()
                     : it.item_kind}
                   {` · ${it.status}`}
                   {signed && ` · signed off by ${it.signed_off_name || 'the internal team'}`}
