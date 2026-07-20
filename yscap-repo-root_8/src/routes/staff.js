@@ -3035,6 +3035,15 @@ async function signOffGate(itemId, actor) {
     if (isAppraisalDocs) {
       if (!hasSlot('xml') || !hasSlot('pdf'))
         return 'Upload BOTH the appraisal data file (XML) and the appraisal report (PDF) before signing off — this condition cannot be completed without both.';
+      // The XML must have actually IMPORTED. If PILOT could not read the dropped file as a valid
+      // appraisal, no `appraisal_review_cleared` condition is ever materialized — and without it the
+      // whole PILOT findings engine (the fatal-finding clear-to-close gate) is silently skipped for
+      // this file. A successful import always creates a current appraisals row AND that condition,
+      // so require the row to exist before letting this document condition be signed off.
+      const imported = (await db.query(
+        `SELECT 1 FROM appraisals WHERE application_id=$1 AND superseded=false LIMIT 1`, [item.application_id])).rows[0];
+      if (!imported)
+        return 'The appraisal data file (XML) has not been read as a valid appraisal yet, so the PILOT appraisal review has not run. Re-upload a valid MISMO appraisal XML (PILOT imports it automatically) before signing off this condition.';
       return null;
     }
     if (isTitle) {

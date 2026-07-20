@@ -63,6 +63,12 @@ async function importAppraisalTx(db, {
 
   // 1. supersede prior appraisals AND their still-open findings on this file, so a
   //    re-import doesn't leave stale findings inflating the open-count / blocksCtc summary.
+  // Serialize concurrent imports on the SAME file FIRST (a double-click, two officers, or the
+  // /import route racing the condition-slot auto-import). Without this row lock each transaction runs
+  // supersede-then-insert on its own MVCC snapshot, neither sees the other's uncommitted insert, and
+  // BOTH survive as superseded=false → multiple "current" appraisals + doubled open findings. The
+  // lock makes the second import WAIT here, then supersede the first's now-committed row correctly.
+  await db.query(`SELECT id FROM applications WHERE id = $1 FOR UPDATE`, [applicationId]);
   await db.query(`UPDATE appraisals SET superseded = true WHERE application_id = $1 AND superseded = false`, [applicationId]);
   await db.query(`UPDATE appraisal_findings SET status = 'superseded' WHERE application_id = $1 AND status = 'open'`, [applicationId]);
 
