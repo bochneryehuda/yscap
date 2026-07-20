@@ -2298,7 +2298,7 @@ router.get('/applications/:id/activity', async (req, res) => {
 // assigned staffer, external partners) with its FULL designed body, exactly whom
 // it reached and when, the delivery status (so a failed send can be troubleshot),
 // the inbound replies WITH their body, and a reply box. Reads the email_messages
-// store (db/183) which src/lib/email-log.js captures every send + reply into; the
+// store (db/185) which src/lib/email-log.js captures every send + reply into; the
 // prior history is backdated in by the boot backfill. Staff-only, file-scoped.
 // ════════════════════════════════════════════════════════════════════════════
 

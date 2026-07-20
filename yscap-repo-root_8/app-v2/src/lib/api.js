@@ -387,6 +387,7 @@ export const api = {
   sitewireExportActivity: async (appId) => { const { blob, filename } = await download(`/api/sitewire/files/${appId}/activity/export`); saveBlob(blob, filename); },
   // Sitewire draw desk: authenticated GL/accounting Excel export of the release ledger.
   sitewireExportGl: async (appId) => { const { blob, filename } = await download(`/api/sitewire/files/${appId}/gl-export`); saveBlob(blob, filename); },
+  sitewireMessageAttachment: async (appId, nid, idx) => { const { blob, filename } = await download(`/api/sitewire/files/${appId}/messages/${nid}/attachments/${idx}`); saveBlob(blob, filename); },
   // Sitewire draw desk: authenticated per-draw packet (schedule of values + findings + waivers).
   sitewireExportPacket: async (appId, drawId) => { const { blob, filename } = await download(`/api/sitewire/files/${appId}/draws/${drawId}/packet`); saveBlob(blob, filename); },
   // PILOT-branded inspection report (phase 2b) — opens the PDF in a tab (`win` is opened synchronously in the

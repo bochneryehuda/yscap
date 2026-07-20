@@ -26,6 +26,7 @@ const { scrubText } = require('../lib/borrower-safe');
 // DB / storage / rollup are required lazily inside the DB-side functions only, so the PURE builder path
 // (and its unit test) never touches the database or trips the "DATABASE_URL not set" boot log.
 const lazy = { get db() { return require('../db'); }, get storage() { return require('../lib/storage'); }, get rollup() { return require('./rollup'); }, get media() { return require('./media-archive'); } };
+const { stripLocationExif } = require('../lib/image-exif');
 
 // ---- jsPDF lazy loader (own cache; deliberately NOT sharing esign's, so a report can render even if the
 // esign module never loaded). Same UMD bundle. ----
@@ -421,8 +422,12 @@ async function attachPhotoBytes(sections) {
         if (count >= MAX_PHOTOS_TOTAL || bytes >= EMBED_BYTE_BUDGET) break;
         if (!ph.storage_ref) continue;
         try {
-          const buf = await lazy.storage.read(ph.storage_ref);
-          if (!buf || !buf.length || buf.length > EMBED_BYTE_BUDGET) continue;
+          const raw = await lazy.storage.read(ph.storage_ref);
+          if (!raw || !raw.length || raw.length > EMBED_BYTE_BUDGET) continue;
+          // Belt-and-suspenders GPS scrub on the embed path too: go-forward the archived bytes are already
+          // clean (media-archive strips before storing), but a photo archived BEFORE the F-3 fix still carries
+          // its EXIF GPS — strip it here so no report (staff or borrower) ever embeds the capture location.
+          const buf = stripLocationExif(raw);
           const fmt = imageFormat(buf);
           if (!fmt) continue; // not JPEG/PNG → can't embed
           bytes += buf.length; count++;

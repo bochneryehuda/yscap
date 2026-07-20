@@ -91,6 +91,7 @@ export default function DrawsPanel({ appId }) {
   // Delivering findings needs Sitewire READS (it re-reads the draw), so it's gated by the MASTER
   // switch, not the write gate — it still works in the reads-on/writes-off state, but not when off.
   const readsOff = !!data.switches && !sw.enabled;
+  const pct = Math.max(0, Math.min(100, Number(rollup.project && rollup.project.pct_complete) || 0));
 
   async function act(key, fn) {
     setBusy(key); setMsg('');
@@ -129,41 +130,64 @@ export default function DrawsPanel({ appId }) {
         </>
       ) : (
         <>
-          {msg && <div className="panel" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)' }}>{msg}</div>}
+          {msg && <div className="dd-card" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)' }}>{msg}</div>}
 
-          {/* ---- "live in PILOT" banner: this property was pushed from our system; we're the source of record ---- */}
-          <div className="panel" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)', borderLeft: '3px solid var(--good,#3f7a4a)' }}>
-            <b>Live in PILOT{managed_since ? ` since ${fmtDay(managed_since)}` : ''}.</b>
-            <div className="muted small" style={{ marginTop: 3 }}>
-              PILOT pushed this property to Sitewire and is the source of record for its draw process — it follows the
-              draw requests, delivers the inspection findings, and runs our standard approval + release pipeline.
-              {go_live_date ? ` Draw-system go-live: ${fmtDay(go_live_date)}.` : ''}
+          {/* ---- header: status + released-vs-remaining meter + uniform KPI row (one cohesive card) ---- */}
+          <div className="dd-card" style={{ marginTop: 12 }}>
+            <div className="dd-card-h" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 10, marginBottom: 6 }}>
+              <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+                <span className="dd-card-ic"><SdIcon name="rocket" /></span>
+                <div>
+                  <h3>Construction draws</h3>
+                  <div className="dd-sub" style={{ marginTop: 1 }}>
+                    Live in PILOT{managed_since ? ` since ${fmtDay(managed_since)}` : ''} — PILOT is the source of record: it follows the draw requests, delivers the inspection findings, and runs the approval + release pipeline.{go_live_date ? ` Go-live: ${fmtDay(go_live_date)}.` : ''}
+                  </div>
+                </div>
+              </div>
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <span className={'dd-chip ' + (sw.enabled ? 'on' : 'off')}><span className="dot" />{sw.enabled ? 'Connected' : 'Sitewire off'}</span>
+                {sw.enabled && <span className={'dd-chip ' + (sw.outbound ? 'on' : 'warn')}><span className="dot" />{sw.outbound ? 'Writing on' : 'Read-only'}</span>}
+                {sw.dryrun && <span className="dd-chip warn"><span className="dot" />Dry-run</span>}
+              </div>
+            </div>
+
+            {/* released-vs-remaining meter */}
+            <div className="dd-hero-meter-top" style={{ marginTop: 10 }}>
+              <span className="dd-hero-label">Released vs. remaining</span>
+              <span className="dd-hero-pct">{pct}%</span>
+            </div>
+            <div className="dd-meter" style={{ height: 12 }} role="img" aria-label={`${pct}% of the construction budget released`}><i style={{ width: pct + '%' }} /></div>
+
+            {/* uniform KPI row — fixed value size so every tile matches (no per-box scaling) */}
+            <div style={{ marginTop: 16, display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gridAutoRows: '1fr' }}>
+              <KpiTile label="Construction budget" value={usd(rollup.project.budget)} />
+              <KpiTile label="Drawn (released)" value={usd(rollup.project.drawn)} sub={`${pct}% complete`} tone="teal" />
+              <KpiTile label="Remaining" value={usd(rollup.project.remaining)} tone="gold" />
+              <KpiTile label="In the pipeline" value={usd(rollup.project.requested_open)} sub="requested, not yet released" />
             </div>
           </div>
 
-          {/* ---- lifecycle: finish the draw process / mark paid off / re-open ---- */}
-          <LifecycleControl appId={appId} link={link} writesOff={writesOff} onChanged={load} />
+          {/* ---- Sitewire borrower-invite status + resend ---- */}
+          <BorrowerInviteStatus appId={appId} writesOff={writesOff} readsOff={readsOff} />
 
           {/* ---- read-only notice when Sitewire writes are off (the default staged state) ---- */}
           {writesOff && (
-            <div className="panel" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)', borderLeft: '3px solid var(--gold,#ae8746)' }}>
+            <div className="dd-card" style={{ marginTop: 12, borderLeft: '3px solid var(--gold,#ae8746)' }}>
               <b>Sitewire is turned off.</b>
-              <div className="muted small" style={{ marginTop: 3 }}>
+              <div className="dd-sub" style={{ marginTop: 3 }}>
                 Approving a draw syncs to Sitewire, so <b>Approve / Amend / Reopen</b>, setting approved amounts{readsOff ? ' and delivering findings' : ''} are paused until it's switched on{sw.enabled && !sw.outbound ? ' (reads are on; writing is still off)' : ''}. The money ledger, releases and records are kept in PILOT and still work.
               </div>
             </div>
           )}
 
-          {/* ---- rollup summary tiles (responsive: wrap instead of squishing in the narrow file column) ---- */}
-          <div style={{ marginTop: 12, gap: 12, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gridAutoRows: '1fr' }}>
-            <Tile label="Construction budget" value={usd(rollup.project.budget)} />
-            <Tile label="Drawn (released)" value={usd(rollup.project.drawn)} sub={`${rollup.project.pct_complete}% complete`} />
-            <Tile label="Remaining" value={usd(rollup.project.remaining)} accent />
-            <Tile label="In the pipeline" value={usd(rollup.project.requested_open)} sub="requested, not yet released" />
-          </div>
+          {/* ---- lifecycle: finish the draw process / mark paid off / re-open ---- */}
+          <LifecycleControl appId={appId} link={link} writesOff={writesOff} onChanged={load} />
 
           {/* ---- the unified per-line / per-unit rollup ---- */}
-          <RollupTable rollup={rollup} />
+          <div className="dd-card" style={{ marginTop: 12, padding: 0, overflow: 'hidden' }}>
+            <div className="dd-card-h" style={{ padding: '16px 18px 0' }}><span className="dd-card-ic"><SdIcon name="list" /></span><h3>Scope of Work — budget vs. drawn</h3></div>
+            <RollupTable rollup={rollup} />
+          </div>
 
           {/* ---- draws ---- */}
           <div className="row between" style={{ marginTop: 22, marginBottom: 6, alignItems: 'baseline', flexWrap: 'wrap', gap: 8 }}>
@@ -187,6 +211,9 @@ export default function DrawsPanel({ appId }) {
               finding={findingByDraw[d.sitewire_draw_id]} busy={busy} act={act} reload={load} writesOff={writesOff} readsOff={readsOff} />
           ))}
 
+          {/* ---- draw email / notification center (draw-related only) ---- */}
+          <DrawMailCenter appId={appId} />
+
           {/* ---- money ledger ---- */}
           <LedgerPanel appId={appId} ledger={ledger} draws={draws} retainage={retainage} onSaved={load} act={act} busy={busy} />
 
@@ -199,6 +226,9 @@ export default function DrawsPanel({ appId }) {
 
           {/* ---- audit trail ---- */}
           <ActivityTrail appId={appId} />
+
+          {/* ---- reset / re-push (testing): unlink + start the draw process over ---- */}
+          <ResetDrawControl appId={appId} onChanged={load} />
         </>
       )}
     </div>
@@ -253,6 +283,89 @@ function LifecycleControl({ appId, link, writesOff, onChanged }) {
       </div>
       {writesOff && state === 'active' && <div className="muted small" style={{ marginTop: 4 }}>Sitewire writing is off — closing a project is recorded in PILOT now and synced to Sitewire once writing is turned on.</div>}
       {msg && <div className="muted small" style={{ marginTop: 4 }}>{msg}</div>}
+    </div>
+  );
+}
+
+/* Reset / re-push (owner-directed testing control): unlink the property and start the draw process over.
+   Sitewire has no delete, so the backend deactivates the property there and clears our mirror; the money
+   ledger is kept. Strong confirm — it's destructive to the draw tracking. Lives in a red "danger" card. */
+function ResetDrawControl({ appId, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  async function reset() {
+    if (!window.confirm('Reset this file’s draw setup and start over?\n\nThis deactivates the property in Sitewire (Sitewire has no delete — the old copy stays in their list, just inactive) and unlinks it here, clearing the mirrored draws, findings and photos so you can push a fresh copy. Your money ledger — releases, retainage and waivers — is kept.')) return;
+    setBusy(true); setMsg('');
+    try {
+      const r = await api.post(`/api/sitewire/files/${appId}/reset-draw`, {});
+      const sw = !r.was_managed ? '' : r.sitewire === 'synced' ? ' The old property was deactivated in Sitewire.'
+        : r.sitewire === 'failed' ? ' (Couldn’t deactivate it in Sitewire — deactivate or delete it there if you need to.)'
+        : r.sitewire === 'dryrun' ? ' (Dry-run — nothing was sent to Sitewire.)'
+        : ' (Sitewire writing is off — deactivate it there if you need to.)';
+      setMsg('Draw setup reset — start the draw process again above.' + sw);
+      onChanged();
+    } catch (e) { setMsg(e?.data?.error || e.message || 'That didn’t work.'); }
+    finally { setBusy(false); }
+  }
+  return (
+    <div className="dd-card" style={{ marginTop: 18, borderLeft: '3px solid var(--bad,#b04a3f)' }}>
+      <div className="row between" style={{ gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div style={{ minWidth: 220, flex: '1 1 320px' }}>
+          <b>Reset draw setup</b>
+          <div className="dd-sub" style={{ marginTop: 2 }}>Unlink this property and start the push over. Deactivates it in Sitewire, clears the mirrored draws/findings/photos, and brings back the “Start the draw process” options with all the push settings. Your money ledger is kept.</div>
+        </div>
+        <button className="btn btn-sm" style={{ background: 'var(--bad,#b04a3f)', color: '#fff', flex: '0 0 auto' }} disabled={busy} onClick={reset}>{busy ? 'Resetting…' : 'Reset & re-push'}</button>
+      </div>
+      {msg && <div className="dd-sub" style={{ marginTop: 8 }}>{msg}</div>}
+    </div>
+  );
+}
+
+/* Shows Sitewire's borrower-invite state (unassigned → invited → accepted) and a resend button. Sitewire
+   owns the invite email itself; we surface the status it exposes and can re-trigger the invite. Staff-only. */
+const INVITE = {
+  assigned: { label: 'Borrower accepted the Sitewire invite', cls: 'sw-approved', tone: 'var(--good,#3f7a4a)' },
+  invited: { label: 'Sitewire invite sent — waiting on the borrower', cls: 'sw-pending', tone: 'var(--gold,#ae8746)' },
+  unassigned: { label: 'Borrower not yet invited in Sitewire', cls: 'sw-draft', tone: 'var(--text-muted)' },
+};
+function BorrowerInviteStatus({ appId, writesOff, readsOff }) {
+  const [st, setSt] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const loadStatus = useCallback(() => { api.get(`/api/sitewire/files/${appId}/borrower-status`).then(setSt).catch(() => setSt(null)); }, [appId]);
+  useEffect(() => { loadStatus(); }, [loadStatus]);
+  if (!st || !st.managed) return null;
+  const info = (st.available && INVITE[st.status]) || null;
+  async function resend() {
+    setBusy(true); setMsg('');
+    try {
+      const r = await api.post(`/api/sitewire/files/${appId}/resend-invite`, {});
+      setMsg(r.sitewire === 'dryrun' ? 'Dry-run — the invite wasn’t actually sent.' : `Invite sent to ${r.email}.`);
+      setTimeout(loadStatus, 800);
+    } catch (e) { setMsg(e?.data?.error || e.message || 'That didn’t work.'); }
+    finally { setBusy(false); }
+  }
+  const accepted = st.status === 'assigned';
+  return (
+    <div className="dd-card" style={{ marginTop: 12 }}>
+      <div className="row between" style={{ gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div className="row" style={{ gap: 10, alignItems: 'center', minWidth: 0 }}>
+          <span className="dd-card-ic"><SdIcon name="mail" /></span>
+          <div>
+            <b>Borrower in Sitewire</b>
+            {info
+              ? <div className="dd-sub" style={{ marginTop: 1, color: info.tone }}>{info.label}{st.contact_email ? ` · ${st.contact_email}` : ''}</div>
+              : <div className="dd-sub" style={{ marginTop: 1 }}>{readsOff ? 'Turn Sitewire on to see the borrower’s invite status.' : 'Status unavailable right now.'}</div>}
+          </div>
+        </div>
+        {!accepted && !readsOff && (
+          <button className="btn btn-sm ghost" style={{ flex: '0 0 auto' }} disabled={busy || writesOff}
+            title={writesOff ? 'Sitewire writing is off' : 'Re-send the Sitewire borrower invite'} onClick={resend}>
+            {busy ? 'Sending…' : (st.status === 'invited' ? 'Resend invite' : 'Send invite')}
+          </button>
+        )}
+      </div>
+      {msg && <div className="dd-sub" style={{ marginTop: 6 }}>{msg}</div>}
     </div>
   );
 }
@@ -466,18 +579,23 @@ function SdIcon({ name }) {
   const p = {
     rocket: <><path d="M12 3c3 1 5 4 5 8l-2 5H9l-2-5c0-4 2-7 5-8z" /><circle cx="12" cy="9" r="1.6" /><path d="M9 16l-2 3M15 16l2 3" /></>,
     ext: <><path d="M14 4h6v6" /><path d="M20 4l-8 8" /><path d="M18 14v4a2 2 0 01-2 2H6a2 2 0 01-2-2V8a2 2 0 012-2h4" /></>,
+    list: <><path d="M8 6h13M8 12h13M8 18h13" /><path d="M3 6h.01M3 12h.01M3 18h.01" /></>,
+    mail: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M3 7l9 6 9-6" /></>,
+    reply: <><path d="M9 17l-5-5 5-5" /><path d="M4 12h11a5 5 0 015 5v1" /></>,
   }[name] || null;
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{p}</svg>;
 }
 
-function Tile({ label, value, sub, accent }) {
-  // Same container-query value tile as the portfolio, compact variant — the number scales to the box
-  // width so a large amount never spills outside it.
+/* A draw-desk KPI tile on the shared dd-kpi surface, with a FIXED value size so every tile in the row
+   matches exactly (the old stat-tile scaled each number to its own box width, which read as "different-size
+   boxes"). tone tints the value; sub is an optional caption. */
+function KpiTile({ label, value, sub, tone }) {
+  const color = tone === 'teal' ? 'var(--teal-br)' : tone === 'gold' ? 'var(--gold,#ae8746)' : 'var(--text)';
   return (
-    <div className="panel stat-tile compact">
-      <div className="stat-tile-label">{label}</div>
-      <div className={'stat-tile-value' + (accent ? ' gold' : '')}>{value}</div>
-      {sub && <div className="muted small stat-tile-sub">{sub}</div>}
+    <div className="dd-kpi">
+      <div className="dd-kpi-label">{label}</div>
+      <div className="dd-kpi-value" style={{ fontSize: 21, color }}>{value}</div>
+      {sub && <div className="dd-kpi-sub">{sub}</div>}
     </div>
   );
 }
@@ -496,7 +614,7 @@ function RollupTable({ rollup }) {
   const lines = rollup.lines.filter((l) => l.kind === 'line');
   const extras = rollup.lines.filter((l) => l.kind === 'contingency' || l.kind === 'gc');
   return (
-    <div className="panel" style={{ marginTop: 14, overflowX: 'auto', padding: 0 }}>
+    <div style={{ marginTop: 12, overflowX: 'auto' }}>
       <table className="table" style={{ width: '100%', minWidth: 640 }}>
         <thead><tr>
           <th>Scope-of-Work line</th><th style={{ textAlign: 'right' }}>Budget</th><th style={{ textAlign: 'right' }}>Drawn</th>
@@ -777,11 +895,14 @@ function LedgerPanel({ appId, ledger, draws, retainage, onSaved, act, busy: pare
   const retC = Math.round((approvedC || 0) * pct / 100);
   const net = (approvedC || 0) - feeC - retC;
   async function save() {
+    // A release must name its draw (audit F-2) — so the ledger, retainage pool and overdue monitor all bind
+    // the release to exactly one draw. The server enforces this too; guarding here gives a clean message.
+    if (!f.sitewire_draw_id) { setErr('Pick which draw this release is for.'); return; }
     if (approvedC == null || approvedC <= 0) { setErr('Enter the approved amount.'); return; }
     setBusy(true); setErr('');
     try {
       await api.post('/api/sitewire/disbursements', {
-        application_id: appId, sitewire_draw_id: f.sitewire_draw_id || null,
+        application_id: appId, sitewire_draw_id: f.sitewire_draw_id,
         approved_cents: approvedC, fee_cents: feeC, fee_kind: f.fee_kind, release_date: f.release_date || null, funded_status: f.funded_status,
       });
       setF({ sitewire_draw_id: '', approved: '', fee: '', fee_kind: 'virtual', release_date: '', funded_status: 'released' });
@@ -825,9 +946,9 @@ function LedgerPanel({ appId, ledger, draws, retainage, onSaved, act, busy: pare
         </div>
       )}
       <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-        <label className="small">Draw
+        <label className="small">Draw <span style={{ color: 'var(--bad,#b04a3f)' }}>*</span>
           <select className="input" value={f.sitewire_draw_id} onChange={(e) => setF({ ...f, sitewire_draw_id: e.target.value })}>
-            <option value="">—</option>
+            <option value="">Select a draw…</option>
             {draws.map((d) => <option key={d.sitewire_draw_id} value={d.sitewire_draw_id}>#{d.number}</option>)}
           </select>
         </label>
@@ -838,7 +959,7 @@ function LedgerPanel({ appId, ledger, draws, retainage, onSaved, act, busy: pare
         </label>
         <label className="small">Release date<input type="date" className="input" value={f.release_date} onChange={(e) => setF({ ...f, release_date: e.target.value })} /></label>
         <div className="small" style={{ alignSelf: 'center' }}>{pct > 0 ? <>Retainage: <b>{usd2(retC)}</b> · </> : null}Net: <b>{usd2(net)}</b></div>
-        <button className="btn btn-sm primary" disabled={busy || approvedC == null || approvedC <= 0 || net < 0} onClick={save}>Record release</button>
+        <button className="btn btn-sm primary" disabled={busy || !f.sitewire_draw_id || approvedC == null || approvedC <= 0 || net < 0} onClick={save}>Record release</button>
       </div>
       {err && <div className="small" style={{ color: 'var(--bad,#b04a3f)', marginTop: 6 }}>{err}</div>}
     </div>
@@ -924,6 +1045,210 @@ function WaiversPanel({ appId, waivers, draws, onChanged }) {
         <button className="btn btn-sm primary" disabled={busy} onClick={add}>Add waiver</button>
       </div>
       {err && <div className="small" style={{ color: 'var(--bad,#b04a3f)', marginTop: 6 }}>{err}</div>}
+    </div>
+  );
+}
+
+/* The draw coordinator's per-file email section — a professional, email-style list of every DRAW-related
+   notification PILOT sent about this file (to the borrower or the team), each openable to see exactly who it
+   went to, when, its delivery status and full content, plus the borrower's email replies. Scoped to draw items
+   only. (Sitewire's own borrower emails aren't exposed by their API, so this is PILOT's own outbound + inbound
+   trail.) */
+const MAIL_KIND = {
+  draw: { label: 'Draw released', tone: 'var(--good,#3f7a4a)' },
+  draw_findings: { label: 'Inspection result', tone: 'var(--teal,#2f7f86)' },
+  draw_accepted: { label: 'Borrower accepted', tone: 'var(--good,#3f7a4a)' },
+  draw_disputed: { label: 'Borrower disputed', tone: 'var(--bad,#b04a3f)' },
+  draw_dispute_resolved: { label: 'Dispute resolved', tone: 'var(--good,#3f7a4a)' },
+  sow_change_request: { label: 'Budget change', tone: 'var(--gold,#ae8746)' },
+  sow_reallocation: { label: 'Budget change', tone: 'var(--gold,#ae8746)' },
+};
+const EMAIL_STATE = { sent: { label: 'Emailed', cls: 'sw-approved' }, skipped: { label: 'In-app only', cls: 'sw-draft' }, error: { label: 'Email failed', cls: 'sw-pending' }, pending: { label: 'Sending…', cls: 'sw-draft' } };
+function DrawMailCenter({ appId }) {
+  const [data, setData] = useState(null);
+  const [openId, setOpenId] = useState(null);
+  const [full, setFull] = useState({}); // notificationId -> { loading?, email?, error? }
+  const [fullscreen, setFullscreen] = useState(false);
+  const load = useCallback(() => api.get(`/api/sitewire/files/${appId}/notifications`).then(setData).catch(() => setData({ sent: [], replies: [] })), [appId]);
+  useEffect(() => { load(); }, [load]);
+  const openMessage = useCallback((m) => {
+    const id = m.id;
+    if (openId === id) { setOpenId(null); return; }
+    setOpenId(id);
+    if (m.has_full_email && !full[id]) {
+      setFull((s) => ({ ...s, [id]: { loading: true } }));
+      api.get(`/api/sitewire/files/${appId}/messages/${id}`)
+        .then((email) => setFull((s) => ({ ...s, [id]: { email } })))
+        .catch(() => setFull((s) => ({ ...s, [id]: { error: true } })));
+    }
+  }, [appId, openId, full]);
+  if (!data) return <div className="dd-card" style={{ marginTop: 18 }}>Loading draw messages…</div>;
+  const sent = data.sent || [];
+  const replies = data.replies || [];
+  const when = (v) => (v ? new Date(v).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '');
+
+  // The message list + replies + composer — rendered both inline and (bigger) in the full-screen inbox.
+  const inbox = (frameH) => (
+    <>
+      {sent.length === 0 && replies.length === 0 && <div className="dd-sub" style={{ marginTop: 8 }}>No draw messages have gone out on this file yet — send the first one below.</div>}
+      <div style={{ marginTop: 6 }}>
+        {sent.map((m) => {
+          const k = MAIL_KIND[m.type] || { label: m.type, tone: 'var(--text-muted)' };
+          const es = EMAIL_STATE[m.email_status] || EMAIL_STATE.pending;
+          const isOpen = openId === m.id;
+          const toWhom = m.recipient_kind === 'borrower' ? `Borrower${m.recipient_name ? ` · ${m.recipient_name}` : ''}` : `Team${m.recipient_name ? ` · ${m.recipient_name}` : ''}`;
+          const fe = full[m.id];
+          return (
+            <div key={m.id} style={{ borderTop: '1px solid var(--line)' }}>
+              <button onClick={() => openMessage(m)} className="row" style={{ width: '100%', textAlign: 'left', gap: 10, alignItems: 'center', padding: '10px 2px', background: isOpen ? 'var(--paper,#f6f3ec)' : 'none', border: 'none', cursor: 'pointer' }}>
+                <span style={{ flex: '0 0 auto', width: 8, height: 8, borderRadius: 999, background: k.tone }} />
+                <span style={{ flex: '1 1 auto', minWidth: 0 }}>
+                  <span className="row" style={{ gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+                    <b style={{ fontSize: 13 }}>{m.title}</b>
+                    <span className="dd-sub" style={{ color: k.tone }}>{k.label}</span>
+                    {m.attachment_count > 0 && <span className="dd-sub" title="has attachments">📎 {m.attachment_count}</span>}
+                  </span>
+                  <span className="dd-sub" style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>To: {toWhom}{m.recipient_count > 1 ? ` +${m.recipient_count - 1}` : ''}{m.recipient_email ? ` · ${m.recipient_email}` : ''}</span>
+                </span>
+                <span className="dd-sub" style={{ flex: '0 0 auto', textAlign: 'right' }}>
+                  <span className={'pill ' + es.cls} style={{ marginRight: 6 }}>{es.label}</span>
+                  {when(m.created_at)}
+                </span>
+              </button>
+              {isOpen && (
+                <div style={{ padding: '0 2px 14px 18px' }}>
+                  {m.has_full_email && fe && fe.loading && <div className="dd-sub">Opening the full email…</div>}
+                  {m.has_full_email && fe && fe.email && (
+                    <>
+                      <div style={{ background: 'var(--paper,#f6f3ec)', border: '1px solid var(--line)', borderRadius: 8, padding: '10px 12px', marginBottom: 8, fontSize: 12.5 }}>
+                        <div><b>Subject:</b> {fe.email.subject || m.title}</div>
+                        <div><b>To:</b> {(fe.email.to || []).join(', ') || '—'}</div>
+                        {fe.email.from && <div><b>From:</b> {fe.email.from}</div>}
+                        {fe.email.reply_to && <div><b>Reply-to:</b> {fe.email.reply_to}</div>}
+                        <div><b>Sent:</b> {when(fe.email.created_at)} · {fe.email.status === 'sent' ? 'delivered by email' : fe.email.status === 'skipped' ? 'in-app only (not emailed)' : fe.email.status === 'error' ? 'email failed' : fe.email.status}</div>
+                        {Array.isArray(fe.email.attachments) && fe.email.attachments.length > 0 && (
+                          <div style={{ marginTop: 6 }}><b>Attachments:</b>{' '}
+                            {fe.email.attachments.map((a) => (
+                              <span key={a.index} className="row" style={{ display: 'inline-flex', gap: 4, alignItems: 'center', marginRight: 8 }}>
+                                {a.downloadable
+                                  ? <button className="btn btn-sm ghost" onClick={() => api.sitewireMessageAttachment(appId, m.id, a.index).catch(() => {})}>📎 {a.filename}</button>
+                                  : <span className="dd-sub">📎 {a.filename}</span>}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      {fe.email.html
+                        ? <iframe title="email" sandbox="" srcDoc={fe.email.html} style={{ width: '100%', height: frameH, border: '1px solid var(--line)', borderRadius: 8, background: '#fff' }} />
+                        : <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.5 }}>{fe.email.text || m.body}</div>}
+                    </>
+                  )}
+                  {m.has_full_email && fe && fe.error && <div className="dd-sub" style={{ color: 'var(--bad,#b04a3f)' }}>Could not open the full email.</div>}
+                  {!m.has_full_email && (
+                    <>
+                      <div className="dd-sub" style={{ marginBottom: 6 }}>
+                        Sent {when(m.emailed_at || m.created_at)} · {m.email_status === 'sent' ? 'delivered by email' : m.email_status === 'skipped' ? 'shown in the portal only' : m.email_status === 'error' ? 'email failed to send' : 'sending'}{m.read_at ? ' · read' : ''} · (full design not captured for older messages)
+                      </div>
+                      <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.5, background: 'var(--paper,#f6f3ec)', border: '1px solid var(--line)', borderRadius: 8, padding: '12px 14px' }}>{m.body || '(no message body)'}</div>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {replies.length > 0 && (
+        <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--line)' }}>
+          <div className="dd-field-l" style={{ textTransform: 'uppercase', letterSpacing: '.06em', fontSize: 11, marginBottom: 8 }}>Replies received from the borrower</div>
+          {replies.map((r) => (
+            <div key={r.id} className="row" style={{ gap: 10, alignItems: 'baseline', padding: '6px 0' }}>
+              <span className="dd-card-ic" style={{ width: 24, height: 24, background: 'var(--primary-soft)' }}><SdIcon name="reply" /></span>
+              <span style={{ flex: '1 1 auto', minWidth: 0 }}>
+                <b style={{ fontSize: 13 }}>{r.subject || '(no subject)'}</b>
+                <span className="dd-sub" style={{ display: 'block' }}>From: {r.from_email}{r.forwarded_count ? ` · forwarded to ${r.forwarded_count}` : ''}</span>
+              </span>
+              <span className="dd-sub" style={{ flex: '0 0 auto' }}>{when(r.created_at)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* reply / compose — a direct message to the borrower, sent + captured here */}
+      <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--line)' }}>
+        <ReplyComposer appId={appId} onSent={load} />
+      </div>
+    </>
+  );
+
+  const header = (inFull) => (
+    <div className="dd-card-h" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+      <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+        <span className="dd-card-ic"><SdIcon name="mail" /></span>
+        <div>
+          <h3>Draw messages</h3>
+          {!inFull && <div className="dd-sub" style={{ marginTop: 1 }}>Everything on this file’s draw — the draw start, results, releases, messages you send, and the borrower’s replies. Open any to see the whole email; reply right from here.</div>}
+        </div>
+      </div>
+      <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+        <span className="dd-sub">{sent.length} sent{replies.length ? ` · ${replies.length} repl${replies.length === 1 ? 'y' : 'ies'}` : ''}</span>
+        {inFull
+          ? <button className="btn btn-sm ghost" onClick={() => setFullscreen(false)}>✕ Close</button>
+          : <button className="btn btn-sm ghost" onClick={() => setFullscreen(true)} title="Open the full-screen inbox">⛶ Full screen</button>}
+      </div>
+    </div>
+  );
+
+  return (
+    <>
+      <div className="dd-card" style={{ marginTop: 18 }}>
+        {header(false)}
+        {inbox(420)}
+      </div>
+      {fullscreen && (
+        <div onClick={(e) => { if (e.target === e.currentTarget) setFullscreen(false); }}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(20,27,34,.5)', zIndex: 1000, display: 'flex', padding: '2.5vh 2.5vw' }}>
+          <div style={{ background: '#fff', borderRadius: 14, width: '100%', maxWidth: 1040, margin: '0 auto', display: 'flex', flexDirection: 'column', maxHeight: '95vh', overflow: 'hidden', boxShadow: '0 20px 60px rgba(20,27,34,.3)' }}>
+            <div style={{ padding: '4px 18px', borderBottom: '1px solid var(--line)', flex: '0 0 auto' }}>{header(true)}</div>
+            <div style={{ overflowY: 'auto', padding: '8px 18px 20px' }}>{inbox(620)}</div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+/* Compose + send a direct message to the borrower from the draw box — it emails the borrower (borrower-safe),
+   logs + captures the email so it appears in the thread, and the borrower's reply comes back into "Replies". */
+function ReplyComposer({ appId, onSent }) {
+  const [open, setOpen] = useState(false);
+  const [subject, setSubject] = useState('');
+  const [body, setBody] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  async function send() {
+    if (!body.trim()) { setMsg('Type a message first.'); return; }
+    setBusy(true); setMsg('');
+    try {
+      await api.post(`/api/sitewire/files/${appId}/messages/reply`, { body: body.trim(), subject: subject.trim() || undefined });
+      setBody(''); setSubject(''); setOpen(false);
+      if (onSent) onSent();
+    } catch (e) { setMsg(e?.data?.error || e.message || 'Could not send your message.'); }
+    finally { setBusy(false); }
+  }
+  if (!open) return <button className="btn btn-sm primary" onClick={() => setOpen(true)}>✉️ Message the borrower</button>;
+  return (
+    <div style={{ border: '1px solid var(--line)', borderRadius: 8, padding: 12, background: '#fff' }}>
+      <div className="dd-field-l" style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>New message to the borrower</div>
+      <input className="input" style={{ width: '100%', marginBottom: 6 }} placeholder="Subject (optional)" value={subject} onChange={(e) => setSubject(e.target.value)} />
+      <textarea className="input" style={{ width: '100%', resize: 'vertical', minHeight: 90 }} rows={4} placeholder="Write a message about the draw…" value={body} onChange={(e) => setBody(e.target.value)} />
+      <div className="row" style={{ gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <button className="btn btn-sm primary" disabled={busy} onClick={send}>{busy ? 'Sending…' : 'Send to borrower'}</button>
+        <button className="btn btn-sm ghost" onClick={() => { setOpen(false); setMsg(''); }}>Cancel</button>
+        {msg && <span className="dd-sub" style={{ color: 'var(--bad,#b04a3f)' }}>{msg}</span>}
+      </div>
+      <div className="dd-sub" style={{ marginTop: 6 }}>Emails the borrower and appears in this thread. Their reply comes back to your team inbox and shows under “Replies received”. (No capital-partner names ever reach the borrower.)</div>
     </div>
   );
 }

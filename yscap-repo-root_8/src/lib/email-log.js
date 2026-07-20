@@ -5,7 +5,7 @@
  * only a plain title/body survived on the `notifications` row, and an inbound
  * reply's body was never persisted. This module captures the FULL email (subject,
  * rendered HTML body, exact recipients, delivery status, timestamp) into the
- * `email_messages` store (db/183) so each file — and a global admin/officer
+ * `email_messages` store (db/185) so each file — and a global admin/officer
  * mailbox — can show a Gmail/Outlook-style history: what went out, to whom, when,
  * whether it actually sent, the inbound replies, and a reply box.
  *

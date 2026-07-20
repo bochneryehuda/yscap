@@ -61,7 +61,11 @@ const ROLE_DEFAULTS = {
   draw_coordinator: ['see_all_files', 'manage_draws', 'review_conditions'],
   processor: ['review_conditions', 'sign_off_conditions', 'manage_draws'],
   // Loan officers can REVIEW conditions (the lighter stamp) but NOT sign them off.
-  loan_officer: ['review_conditions', 'manage_draws'],
+  // They do NOT manage draws by default (owner-directed 2026-07-20): pushing a file to Sitewire, deleting/
+  // re-pushing it, approving draws and recording releases require the manage_draws capability, which is held
+  // by the Draw Coordinator / Processor / Admin / Super Admin — never a loan officer unless an admin
+  // explicitly grants it per-person from the Team screen. (super_admin has every capability implicitly.)
+  loan_officer: ['review_conditions'],
   software_setup: ['manage_conditions', 'platform_setup'],
 };
 

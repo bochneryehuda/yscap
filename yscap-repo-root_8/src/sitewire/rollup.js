@@ -134,6 +134,17 @@ function computeRollup({ links = [], draws = [], requests = [], nameByKey = {} }
   const rank = { line: 0, contingency: 1, gc: 2, media: 3 };
   lineList.sort((a, b) => (rank[a.kind] - rank[b.kind]) || (b.budgeted - a.budgeted) || String(a.label).localeCompare(String(b.label)));
 
+  // Owner-directed 2026-07-20: a Scope-of-Work line carrying NO money — never budgeted and with nothing
+  // drawn, approved-pending, or requested — is NOT a real draw line item, so it must not clutter the draw
+  // desk, the borrower view, or the branded reports even if it exists in the SOW. Only real `line` items are
+  // filtered (contingency / general-conditions / media are structural and always kept). This is DISPLAY-ONLY
+  // and math-neutral: the project TOTALS above already summed every line (an empty one contributes 0), and a
+  // later reallocation that funds such a line re-introduces it from the PROPOSED side (buildReallocationCells),
+  // so nothing that touches money is affected. `empty_line_count` is reported for transparency.
+  const isEmptyLine = (l) => l.kind === 'line' && N(l.budgeted) <= 0 && N(l.drawn) <= 0 && N(l.approved_pending) <= 0 && N(l.requested_open) <= 0;
+  const emptyLineCount = lineList.filter(isEmptyLine).length;
+  const visibleLines = lineList.filter((l) => !isEmptyLine(l));
+
   // ---- per-draw summary ----
   const reqByDraw = new Map();
   for (const r of requests) {
@@ -155,7 +166,7 @@ function computeRollup({ links = [], draws = [], requests = [], nameByKey = {} }
     };
   }).sort((a, b) => (b.number || 0) - (a.number || 0));
 
-  return { lines: lineList, project, draws: drawList, unknown };
+  return { lines: visibleLines, project, draws: drawList, unknown, empty_line_count: emptyLineCount };
 }
 
 // ---- DB loader: pull the crosswalk + draws + requests + ledger for a file and roll up ----
