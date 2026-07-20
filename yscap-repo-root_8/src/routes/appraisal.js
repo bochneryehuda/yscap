@@ -130,9 +130,13 @@ router.post('/:appId/import', async (req, res, next) => {
     try {
       const xbuf = Buffer.from(xml, 'utf8');
       const s = await storage.save(xbuf, { filename: b.filename || 'appraisal.xml' });
+      // STAFF-ONLY: the source appraisal XML carries lender_name/amc_name/owner_of_record/
+      // lender_address + the raw value & findings basis — the exact data safeAppr/SCRUTINY_CODES
+      // scrub from the borrower. Without an explicit visibility it defaults to 'borrower' (db/014)
+      // and the borrower could download the whole appraisal, bypassing the scrub. Force staff_only.
       xmlDocId = (await db.query(
-        `INSERT INTO documents (application_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind)
-         VALUES ($1,$2,$3,'application/xml',$4,$5,$6,'staff',$7,'appraisal_xml') RETURNING id`,
+        `INSERT INTO documents (application_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,visibility,source_type)
+         VALUES ($1,$2,$3,'application/xml',$4,$5,$6,'staff',$7,'appraisal_xml','staff_only','staff_upload') RETURNING id`,
         [app.id, app.borrower_id, b.filename || 'appraisal.xml', xbuf.length, s.provider, s.ref, req.actor.id])).rows[0].id;
 
       // PDF: use the uploaded slot if given, else the PDF embedded in the XML.
@@ -140,8 +144,8 @@ router.post('/:appId/import', async (req, res, next) => {
         const { buf: pbuf } = decodeUploadBase64(pdfB64, { maxBytes: MAX_UPLOAD_BYTES });
         const ps = await storage.save(pbuf, { filename: (b.filename || 'appraisal').replace(/\.xml$/i, '') + '.pdf' });
         pdfDocId = (await db.query(
-          `INSERT INTO documents (application_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind)
-           VALUES ($1,$2,$3,'application/pdf',$4,$5,$6,'staff',$7,'appraisal_pdf') RETURNING id`,
+          `INSERT INTO documents (application_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,visibility,source_type)
+           VALUES ($1,$2,$3,'application/pdf',$4,$5,$6,'staff',$7,'appraisal_pdf','staff_only','staff_upload') RETURNING id`,
           [app.id, app.borrower_id, 'appraisal.pdf', pbuf.length, ps.provider, ps.ref, req.actor.id])).rows[0].id;
       }
     } catch (e) { console.error('[appraisal] document storage failed (import continues):', e && e.message); }
