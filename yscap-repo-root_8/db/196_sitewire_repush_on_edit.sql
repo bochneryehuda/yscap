@@ -11,6 +11,10 @@
 -- / re-registration flow, which already enqueues its own push at the right moment. Idempotent.
 
 -- Coalescing enqueue (mirrors src/sitewire/enqueue.js): merge into an existing queued push, else insert.
+-- NOTE (audit L1): this INSERT runs INSIDE the user's edit transaction, so the sync_queue write must
+-- never be able to fail on a valid managed-file edit. That holds today (no UNIQUE index on sync_queue;
+-- target='sitewire'/direction='push'/status='queued' are all permitted by db/131). If a future migration
+-- ever tightens sync_queue's CHECK constraints, wrap this in an exception handler first.
 CREATE OR REPLACE FUNCTION sitewire_enqueue_repush(p_app uuid) RETURNS void AS $$
 BEGIN
   UPDATE sync_queue SET updated_at = now()
