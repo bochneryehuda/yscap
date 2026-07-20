@@ -5,6 +5,9 @@
  * run exactly as production runs them.
  * Run: DATABASE_URL=... node scripts/test-sharepoint-e2e-db.js
  */
+// Requires DATABASE_URL with a reachable Postgres. Skips cleanly otherwise (CI has no DB).
+if (!process.env.DATABASE_URL) { console.log('SKIP test-sharepoint-e2e-db (no DATABASE_URL)'); process.exit(0); }
+
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
@@ -38,6 +41,18 @@ sp.uploadNew = async (driveId, parentId, name, bytes) => {
 
 (async () => {
   await ensureSchema();
+  // Idempotent setup: this suite runs in `npm test`, which may re-run against a
+  // persistent DB — clear any prior e2e fixtures (anchored on the fixed email) so
+  // the fixed-email borrower insert never collides on a second run.
+  const prior = (await db.query(`SELECT id FROM borrowers WHERE email='e2e@example.com'`)).rows.map((r) => r.id);
+  if (prior.length) {
+    await db.query(`DELETE FROM sync_review_queue WHERE task_id IN (
+        SELECT 'spdoc:'||d.id FROM documents d WHERE d.borrower_id = ANY($1)
+        UNION SELECT 'app:'||a.id FROM applications a WHERE a.borrower_id = ANY($1))`, [prior]);
+    await db.query(`DELETE FROM documents WHERE borrower_id = ANY($1)`, [prior]);
+    await db.query(`DELETE FROM applications WHERE borrower_id = ANY($1)`, [prior]);
+    await db.query(`DELETE FROM borrowers WHERE id = ANY($1)`, [prior]);
+  }
   const b = (await db.query(`INSERT INTO borrowers (first_name,last_name,email) VALUES ('E2E','Borrower','e2e@example.com') RETURNING id`)).rows[0].id;
   const app = (await db.query(`INSERT INTO applications (borrower_id) VALUES ($1) RETURNING id`, [b])).rows[0].id;
 
