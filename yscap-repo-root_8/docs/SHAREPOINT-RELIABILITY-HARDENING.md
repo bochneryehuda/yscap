@@ -86,3 +86,61 @@ The ClickUp, SiteWire, e-sign, and reminder loops are the same class of
 background worker. This SharePoint worker is now the reference implementation for
 liveness+timeouts+dead-letter+observability; apply the same pattern there in a
 follow-up rather than waiting for each to have its own incident.
+
+## 6. A-to-Z audit round (2026-07-20, second sweep)
+
+Four parallel read-only audit agents (upload ingress · Graph client · reconciler
+worker · matcher/cards/routes/config) + a real end-to-end functional test
+(`scripts/test-sharepoint-e2e-db.js` — drives the real mirror pipeline against
+Postgres + local storage, stubbing only the Graph/folder boundary, and asserts
+the happy path AND every error path: missing bytes → permanent card; transient
+503 → retry, no premature card; permanent 403 → park + card; recovery → mirror +
+card auto-closes).
+
+### Fixed this round
+- **Borrower-typo misfile (SAFETY, matcher A1):** the name-typo fallback used to
+  file a document INTO a possibly-different person's existing folder (no
+  house-number-equivalent anchor — John↔Joan, Cohen↔Kohen). Now it CREATES A NEW
+  folder and flags the near-match for a human to merge only if truly the same
+  person. A borrower's document can no longer land in the wrong person's folder.
+- **Boot reset re-armed parked permanents (reconciler #1):** every deploy re-burnt
+  Graph attempts on doomed docs. Boot reset now skips `[permanent]` like the daily
+  reset does.
+- **Error mis-classification (reconciler #2):** bare `400`/`403` matched anywhere
+  in a message (a byte count / hex id) → a retryable error could be wrongly parked
+  permanent. Numeric codes are now digit-boundary-anchored. Local-integrity
+  mismatches now park (retrying identical damaged bytes can't help).
+- **Lead/CRM attachments (ingress F1):** a `lead_id`-only doc (no pipeline scope)
+  used to churn 8 doomed "no borrower/file" attempts and sit as permanent stuck
+  noise. It's now excluded from the mirror and settled-skipped at the pass.
+- **Health told the truth (reconciler #3):** malware / source-suspect /
+  item-missing / local-missing / non-local docs (which keep `backed_up_at` set)
+  are now counted in `needs_attention` and make `healthy` false — a mirror
+  carrying human-action items no longer reports healthy.
+- **Graph body-read timeout (client F1):** the abort timer now covers the response
+  body read, not just headers.
+- **Path-length (client F2):** the filename trim now reserves room for the
+  uniquifier suffix so a trimmed+uniquified name can't exceed the ~400-char limit.
+- **Sanctioned-delete fail-closed (client F4/F6):** `corruptSize` and an `If-Match`
+  eTag are now REQUIRED (were conditional) — the one delete path refuses rather
+  than proceed unpinned/unverified.
+- **Admin routes (C1/C2):** `/escalate-stuck` is fire-and-forget (no minutes-long
+  blocking request racing the drain); `/doc/:id/remirror` validates the id (clean
+  400, no raw pg error leak).
+- **Config guards (D1/D2):** a loud warning when the mirror is enabled but STORAGE
+  is non-local; the poll interval is clamped to [60s, 1h] so an absurd value can't
+  disable the watchdogs.
+- **Orphaned cards (review B1):** a periodic sweep closes any mirror-failure card
+  whose document has since mirrored/settled (belt to the per-success close).
+- **Matcher defensive (A3):** `dlDistance` bails on pathologically long tokens.
+
+### Deliberately deferred (reviewed, low-risk, documented)
+- Deduped-doc verification (reconciler #5) and cross-condition dedup (reconciler
+  #4) — narrow/latent; touch the delicate dedup-identity path.
+- Verify pass not dead-man-switched (reconciler #7) — verify is non-critical and
+  has its own stall guard; acceptable.
+- Force-attempt not single-flighted with the drain (reconciler #8) — safe in
+  practice (adopt-on-conflict + expected-parent guards).
+- Graph token-field validation (F5), Office size==0 band (F3), marker-strip anchor
+  (matcher A2), appraisal-import kick / chat-attach filename (ingress F3/F4) —
+  cosmetic/defensive; no correctness or data-safety impact.

@@ -64,7 +64,14 @@ function isRegenKind(k) { return k === 'track_record_html' || k === 'tpr_export'
 const NEVER_MIRROR_KINDS = new Set(['heter_iska_signed']);
 // appraisal_photo: derived thumbnails auto-extracted from the appraisal PDF (which IS
 // mirrored) — up to ~24 per file, so mirroring them would flood the team site for no gain.
-const NEVER_MIRROR_SQL = `(COALESCE(d.doc_kind,'') NOT IN ('heter_iska_signed','appraisal_photo'))`;
+// Also NEVER mirror a lead-CRM attachment: it hangs off a `lead_id` with no
+// pipeline scope (no application/borrower/llc/track-record/checklist item), so
+// the mirror has nowhere to file it and it would otherwise churn 8 doomed
+// "no borrower or loan file" attempts and sit as permanent stuck noise (A-Z
+// audit F1). These belong to the CRM, not the SharePoint pipeline.
+const NEVER_MIRROR_SQL = `(COALESCE(d.doc_kind,'') NOT IN ('heter_iska_signed','appraisal_photo')
+  AND NOT (d.lead_id IS NOT NULL AND d.application_id IS NULL AND d.borrower_id IS NULL
+           AND d.checklist_item_id IS NULL AND d.llc_id IS NULL AND d.track_record_id IS NULL))`;
 function snapshotSettleSec() {
   const v = parseInt(process.env.SHAREPOINT_SNAPSHOT_SETTLE_SEC || '600', 10);
   return Number.isFinite(v) && v >= 10 ? v : 600;
@@ -128,7 +135,9 @@ const HEARTBEAT_KEY = 'sp-drain-heartbeat';
 function heartbeatGraceSec() {
   // 3× the poll interval, floor 15 min: an idle worker still completes an empty
   // pass every interval, so only a genuine stall/death lets this lapse.
-  const poll = Number.isFinite(cfg.sharepointBackupPollSec) ? Math.max(60, cfg.sharepointBackupPollSec) : 300;
+  // Match start()'s clamp [60, 3600] so an absurd poll can't push the grace so
+  // far out that the dead-man's switch never fires (A-Z audit D2).
+  const poll = Number.isFinite(cfg.sharepointBackupPollSec) ? Math.max(60, Math.min(cfg.sharepointBackupPollSec, 3600)) : 300;
   return Math.max(poll * 3, 900);
 }
 async function recordHeartbeat(stats) {
@@ -531,7 +540,21 @@ async function settleNeverMirror() {
         AND d.storage_ref IS NOT NULL
       RETURNING d.id`, [Array.from(NEVER_MIRROR_KINDS)]);
   if (r.rowCount) console.log(`[sp-sync] settled ${r.rowCount} never-mirror doc(s) (kept in-system only)`);
-  return r.rowCount || 0;
+  // Lead-CRM attachments (lead_id only, no pipeline scope): settle them skipped
+  // too so they never count as pending/stuck or drive a false SLO breach (A-Z
+  // audit F1). They belong to the CRM, not the SharePoint pipeline.
+  const lead = await db.query(
+    `UPDATE documents d SET
+        sharepoint_backed_up_at = now(),
+        sharepoint_skipped_reason = 'not mirrored — a lead/CRM attachment, not a pipeline document',
+        sharepoint_backup_error = NULL
+      WHERE d.sharepoint_backed_up_at IS NULL
+        AND d.storage_ref IS NOT NULL
+        AND d.lead_id IS NOT NULL AND d.application_id IS NULL AND d.borrower_id IS NULL
+        AND d.checklist_item_id IS NULL AND d.llc_id IS NULL AND d.track_record_id IS NULL
+      RETURNING d.id`);
+  if (lead.rowCount) console.log(`[sp-sync] settled ${lead.rowCount} lead/CRM attachment(s) (not pipeline docs)`);
+  return (r.rowCount || 0) + (lead.rowCount || 0);
 }
 
 // ------------------------------------------------------------------ versioning
@@ -709,9 +732,14 @@ async function uploadAndRecord({ row, driveId, parentId, version, bytes, content
   // exceed it and fail every upload for that document forever. When the caller
   // knows the folder path length, the FILENAME is trimmed to fit (extension
   // preserved, floor of 24 chars) — a shortened name beats a dead mirror.
-  if (pathBudget && cleanName.length > pathBudget) {
+  // Reserve room for the uniquifier suffix that may be appended AFTER this trim
+  // (" (fixed copy)" / " (12345678)") so a name that needs BOTH trimming AND
+  // uniquification still fits the ~400-char path limit (A-Z audit F2 — else the
+  // uniquified candidate exceeds it and every upload 400s forever).
+  const SUFFIX_RESERVE = 16;
+  if (pathBudget && cleanName.length > Math.max(24, pathBudget) - SUFFIX_RESERVE) {
     const ext = (cleanName.match(/\.[A-Za-z0-9]{1,12}$/) || [''])[0];
-    const keep = Math.max(24, pathBudget) - ext.length;
+    const keep = Math.max(24, pathBudget) - SUFFIX_RESERVE - ext.length;
     cleanName = cleanName.slice(0, Math.max(8, keep)).trim() + ext;
   }
 
@@ -1063,9 +1091,16 @@ const PERMANENT_PATTERNS = [
   { re: /no application or borrower to file under/i, cause: 'this document is not linked to any borrower or loan file, so there is nowhere to file it. Link it to a file/borrower in PILOT (or remove it).' },
   { re: /ENOENT|no such file|invalid storage ref|storage.*not configured/i, cause: 'the document’s own saved copy could not be read from PILOT storage (its file is missing). This usually means it was saved to a non-persistent disk. Re-upload the document.' },
   { re: /not configured \(MS_|AADSTS|invalid_client|unauthorized_client|certificate|client assertion|token via/i, cause: 'SharePoint authentication is failing (an expired or misconfigured certificate/secret). Rotate/renew the Microsoft credential — nothing will mirror until it is fixed.' },
-  { re: /Access denied|accessDenied|403|Forbidden|Sites\.|permission/i, cause: 'SharePoint denied access (a permissions problem on the target site/folder). An admin must grant the app write access to this location.' },
+  // The numeric codes are digit-boundary-anchored (like TRANSIENT/THROTTLE) so a
+  // byte count / sliced doc-id / latency figure that merely CONTAINS "400"/"403"
+  // is never misclassified permanent and wrongly parked (A-Z audit 2026-07-20).
+  { re: /Access denied|accessDenied|(^|[^0-9])403([^0-9]|$)|Forbidden|Sites\.|permission/i, cause: 'SharePoint denied access (a permissions problem on the target site/folder). An admin must grant the app write access to this location.' },
   { re: /name conflict persisted after uniquification/i, cause: 'the upload keeps colliding with an existing item and could not be uniquified. A human should check the target folder in SharePoint.' },
-  { re: /invalidRequest|malformed|Invalid path|path.*too long|400/i, cause: 'SharePoint rejected the request as invalid (often a folder path or name problem). Review the folder match for this file.' },
+  { re: /invalidRequest|malformed|Invalid path|path.*too long|(^|[^0-9])400([^0-9]|$)/i, cause: 'SharePoint rejected the request as invalid (often a folder path or name problem). Review the folder match for this file.' },
+  // Local bytes on disk don't match what the upload recorded — retrying the
+  // SAME damaged bytes can never succeed (it fails before any Graph call), so
+  // park it for a human instead of churning it daily forever.
+  { re: /local integrity|not mirroring damaged bytes/i, cause: 'PILOT’s own saved copy of this document is damaged (its size no longer matches what was uploaded). Re-upload the document — the stored bytes cannot be trusted.' },
 ];
 function classifyMirrorError(message) {
   const m = String(message || '');
@@ -1665,10 +1700,22 @@ function start() {
     `UPDATE documents SET sharepoint_backup_attempts = 0
       WHERE sharepoint_backed_up_at IS NULL AND sharepoint_backup_attempts >= $1
         AND (sharepoint_backup_attempted_at IS NULL
-             OR sharepoint_backup_attempted_at < now() - interval '30 minutes')`,
+             OR sharepoint_backup_attempted_at < now() - interval '30 minutes')
+        -- Skip PARKED permanents (match the daily reset): re-driving a doomed
+        -- upload every deploy just re-burns Graph attempts. A deploy that fixes
+        -- a permanent cause is re-driven via the card's Retry / retry-exhausted.
+        AND COALESCE(sharepoint_backup_error, '') NOT LIKE '[permanent]%'`,
     [MAX_ATTEMPTS]).catch(() => {});
+  // Fail-safe visibility: mirror enabled but bytes live on a non-'local' provider
+  // means the fast drain selects nothing (it filters to 'local'); say so loudly
+  // rather than degrade near-silently (A-Z audit D1).
+  if ((cfg.storageProvider || 'local') !== 'local') {
+    console.warn(`[sp-sync] WARNING: SharePoint sync is enabled but STORAGE_PROVIDER='${cfg.storageProvider}' (not 'local') — the mirror reads local bytes and will not pick up documents on this provider.`);
+  }
   const sec = Number.isFinite(cfg.sharepointBackupPollSec) ? cfg.sharepointBackupPollSec : 300;
-  const ms = Math.max(60, sec) * 1000;
+  // Floor 60s, CEILING 1h — an absurd poll must not push the watchdog grace
+  // (3× poll) so far out that the dead-man's switch never fires (A-Z audit D2).
+  const ms = Math.max(60, Math.min(sec, 3600)) * 1000;
   console.log(`[sp-sync] enabled — mirroring into "${cfg.sharepointPipelineRoot}/**/${cfg.sharepointSyncFolderName}" (sweep every ${ms / 1000}s)`);
   _interval = setInterval(() => drain(), ms);
   if (_interval.unref) _interval.unref();
@@ -1802,16 +1849,25 @@ async function reconciliation() {
     inFlightAgeSec: _running && _runningSince ? Math.round((Date.now() - _runningSince) / 1000) : null,
     verifyRunning: _verifyRunning,
   };
+  // "Needs a human" verdicts that keep backed_up_at SET (so they never re-enter
+  // the pending/backlog population) and therefore used to be INVISIBLE to the
+  // health verdict — a mirror carrying malware-blocked or source-corrupt or
+  // human-deleted copies reported healthy:true (A-Z audit #3). Fold them in.
+  const needsAttention = (r.malware_flagged || 0) + (r.source_suspect || 0)
+    + (r.item_missing || 0) + (r.local_missing || 0) + (r.nonlocal_pending || 0);
   return {
     ...r,
     oldest_pending_hours: oldestHrs,
+    needs_attention: needsAttention,
     slo: { thresholdHours: thresholdHrs, oldestPendingHours: oldestHrs, breached: backlogBreached, exhausted: r.exhausted },
     controls,
     worker,
     // A mirror is "healthy" when nothing is exhausted, the backlog is inside
-    // SLO, the auth credential is not about to expire, AND the worker itself is
-    // alive (not stalled). The last clause is the freeze lesson.
-    healthy: r.exhausted === 0 && !backlogBreached && !(credential && credential.warning) && !workerStalled,
+    // SLO, the auth credential is not about to expire, the worker itself is
+    // alive (not stalled), AND nothing is sitting in a human-action verdict
+    // (malware / source-corrupt / item-missing / local-missing / non-local).
+    healthy: r.exhausted === 0 && !backlogBreached && !(credential && credential.warning)
+             && !workerStalled && needsAttention === 0,
   };
 }
 
@@ -1908,6 +1964,27 @@ async function cardStuckDoc({ docId, appId, borrowerId, filename, ageHours, atte
     portalValue: `${filename || 'document'} — ${agePart}${shown}`.slice(0, 300),
     rawValue: JSON.stringify({ docId, attempts, stuckHours: ageHours,
       errorClass: verdict.class, error: String(rawErr).slice(0, 280), escalated: true }).slice(0, 500) });
+}
+
+// Belt to the per-success closeStaleReviews suspenders: if that best-effort
+// close ever failed (a DB blip), a now-mirrored document would keep an open
+// "mirror failed" card forever (nothing re-sweeps a doc once backed_up_at is
+// set — A-Z audit B1). This bulk-closes any open sharepoint_doc card whose
+// document is now resolved (mirrored or deliberately settled). Idempotent.
+async function closeResolvedDocCards() {
+  try {
+    const r = await db.query(
+      `UPDATE sync_review_queue q
+          SET status='resolved', auto_resolved=true, resolved_at=now(),
+              resolution_note='auto-closed — the document is now mirrored/settled'
+        WHERE q.status='open' AND q.field_key='sharepoint_doc' AND q.task_id LIKE 'spdoc:%'
+          AND EXISTS (SELECT 1 FROM documents d
+                       WHERE d.id::text = substring(q.task_id from 7)
+                         AND d.sharepoint_backed_up_at IS NOT NULL)
+        RETURNING q.id`);
+    if (r.rowCount) console.log(`[sp-sync] auto-closed ${r.rowCount} stale mirror-failure card(s) for now-mirrored docs`);
+    return r.rowCount || 0;
+  } catch (_) { return 0; }   // best-effort — never breaks a pass
 }
 
 async function escalateStuckDocs() {
@@ -2022,6 +2099,9 @@ async function clearSloAlert() { return clearAlert('sp-slo-alert'); }
 async function checkBacklogSlo() {
   if (!enabled()) return;
   try {
+    // Belt-and-suspenders: close any orphaned mirror-failure card whose doc has
+    // since resolved (a best-effort per-success close that once failed).
+    await closeResolvedDocCards();
     const recon = await reconciliation();
     const breaching = recon.slo.breached || recon.slo.exhausted > 0;
     if (!breaching) { await clearSloAlert(); return; }

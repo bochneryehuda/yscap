@@ -68,11 +68,16 @@ router.get('/reconciliation', async (req, res) => {
 router.post('/escalate-stuck', async (req, res) => {
   try {
     if (!backup.enabled()) return res.status(409).json({ error: 'SharePoint sync is not enabled on this server' });
-    const result = await backup.escalateStuckDocs();
-    await audit(req, 'sharepoint_escalate_stuck', result);
-    res.json({ ok: true, ...result });
+    // Fire-and-forget (like /verify and /mirror): escalation can force-attempt up
+    // to 50 docs (~90s each) — never hold the HTTP request open for minutes, and
+    // never race a concurrent drain synchronously from a blocking handler
+    // (A-Z audit C1). Progress shows on GET /reconciliation.
+    backup.escalateStuckDocs()
+      .then((result) => audit(req, 'sharepoint_escalate_stuck', result))
+      .catch((e) => console.warn('[sp-sync] escalate-stuck (admin) error:', e.message));
+    res.json({ ok: true, started: true });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ error: db.describeError(e) });
   }
 });
 
@@ -128,9 +133,13 @@ router.post('/retry-exhausted', async (req, res) => {
 });
 
 // Force ONE document to re-mirror (fresh copy uploaded, ref re-pointed).
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 router.post('/doc/:id/remirror', async (req, res) => {
   try {
     if (!backup.enabled()) return res.status(409).json({ error: 'SharePoint sync is not enabled on this server' });
+    // Validate the id shape so a malformed :id returns a clean 400 instead of a
+    // 500 leaking the raw Postgres "invalid input syntax for uuid" (A-Z audit C2).
+    if (!UUID_RE.test(String(req.params.id || ''))) return res.status(400).json({ error: 'invalid document id' });
     const r = await db.query(
       `UPDATE documents SET
           sharepoint_backed_up_at = NULL,
@@ -144,7 +153,7 @@ router.post('/doc/:id/remirror', async (req, res) => {
     await audit(req, 'sharepoint_doc_remirror', { documentId: req.params.id, filename: r.rows[0].filename });
     res.json({ ok: true, documentId: r.rows[0].id });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ error: db.describeError(e) });
   }
 });
 

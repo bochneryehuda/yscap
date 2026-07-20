@@ -46,8 +46,21 @@ function configured() {
 async function fetchWithTimeout(url, opts = {}, ms = 60000) {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), ms);
-  try { return await fetch(url, { ...opts, signal: ac.signal }); }
-  finally { clearTimeout(t); }
+  if (t.unref) t.unref();
+  let cleared = false;
+  const clear = () => { if (!cleared) { cleared = true; clearTimeout(t); } };
+  try {
+    const res = await fetch(url, { ...opts, signal: ac.signal });
+    // Keep the abort timer running ACROSS the body read too: `fetch` resolves as
+    // soon as headers arrive, so clearing here would leave a stalled body stream
+    // bounded only by undici's ~5-min default, not by `ms` (A-Z audit F1). Every
+    // caller reads the body via .text()/.json() (no raw stream reads / content
+    // downloads in this one-way client), so wrapping those clears the timer when
+    // the body completes; if the body stalls, the timer aborts it at `ms`.
+    const wrap = (name) => { const orig = res[name].bind(res); res[name] = async (...a) => { try { return await orig(...a); } finally { clear(); } }; };
+    wrap('text'); wrap('json');
+    return res;
+  } catch (e) { clear(); throw e; }
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -437,8 +450,10 @@ async function deleteReplacedCorruptMirror(driveId, corruptItemId, {
   expectedParentId, corruptSize, replacementItemId, localSize,
 }) {
   if (!deleteEnabled()) throw new Error('sanctioned delete disabled by SHAREPOINT_DELETE_REPLACED_CORRUPT=0');
-  if (!corruptItemId || !expectedParentId || !replacementItemId) {
-    throw new Error('sanctioned delete refused: missing itemId/expectedParentId/replacementItemId');
+  if (!corruptItemId || !expectedParentId || !replacementItemId || corruptSize == null) {
+    // corruptSize is now REQUIRED (A-Z audit F4): the G4 "same bytes we
+    // diagnosed" guard silently no-oped when it was omitted. Fail closed.
+    throw new Error('sanctioned delete refused: missing itemId/expectedParentId/replacementItemId/corruptSize');
   }
   // G3 — the verified replacement must exist and hold the local bytes.
   const replacement = await itemMeta(driveId, replacementItemId);
@@ -450,7 +465,7 @@ async function deleteReplacedCorruptMirror(driveId, corruptItemId, {
   if (!corrupt || !corrupt.parentReference || corrupt.parentReference.id !== expectedParentId) {
     throw new Error('sanctioned delete refused: item is not in the recorded portal-managed folder');
   }
-  if (corruptSize != null && Number(corrupt.size) !== Number(corruptSize)) {
+  if (Number(corrupt.size) !== Number(corruptSize)) {
     throw new Error('sanctioned delete refused: item size changed since diagnosis (possible human fix)');
   }
   if (String(corrupt.id) === String(replacementItemId)) {
@@ -469,10 +484,14 @@ async function deleteReplacedCorruptMirror(driveId, corruptItemId, {
     cursor = folder.parentReference;
   }
   if (!insidePilotTree) throw new Error('sanctioned delete refused: item is not inside a Pilot-created sync folder');
-  // G7 — pinned delete.
+  // G7 — pinned delete. If-Match is now REQUIRED (A-Z audit F6): without the
+  // eTag pin a concurrent human edit can't 412-refuse the delete. Graph always
+  // returns an eTag for a driveItem; its absence means something is wrong — fail
+  // closed rather than delete unpinned.
+  if (!corrupt.eTag) throw new Error('sanctioned delete refused: no eTag to pin the delete (cannot guarantee concurrency safety)');
   const r = await graph(`/drives/${driveId}/items/${corruptItemId}`, {
     method: 'DELETE',
-    headers: corrupt.eTag ? { 'If-Match': corrupt.eTag } : {},
+    headers: { 'If-Match': corrupt.eTag },
     raw: true,
   });
   if (r.status !== 204 && r.status !== 200) {
