@@ -173,6 +173,19 @@ function sanitizeLoanNumber(v) {
   return s;
 }
 
+// Loose STORAGE normalizer: uppercase + trim ANY loan-number value so it is
+// stored in the professional all-caps form ("YSCAP258134769", never "yscap…"),
+// no matter how it was typed or where it came from (a value pulled off a ClickUp
+// field, an import, a legacy row). Unlike sanitizeLoanNumber it does NOT reject on
+// format — it never turns a value the system already holds into null; it only
+// capitalizes it. Use this at write chokepoints that aren't the strict staff-entry
+// path (which uses sanitizeLoanNumber). Returns null only for a null/blank value.
+function normalizeLoanNumber(v) {
+  if (v == null) return null;
+  const s = String(v).trim().toUpperCase();
+  return s === '' ? null : s;
+}
+
 // Plain-language reason a typed loan number is rejected (for inline UI copy).
 // Returns null when it's a well-formed YSCAP number, else a short sentence.
 function loanNumberProblem(v) {
@@ -185,4 +198,4 @@ function loanNumberProblem(v) {
   return null;
 }
 
-module.exports = { sanitizeFico, sanitizeSsnDigits, sanitizeLoanType, assignmentFields, sqftRelevantType, sqftForType, sanitizeDateOnly, normalizeTypedDate, sanitizeDob, dobProblem, sanitizeLoanNumber, loanNumberProblem };
+module.exports = { sanitizeFico, sanitizeSsnDigits, sanitizeLoanType, assignmentFields, sqftRelevantType, sqftForType, sanitizeDateOnly, normalizeTypedDate, sanitizeDob, dobProblem, sanitizeLoanNumber, normalizeLoanNumber, loanNumberProblem };
