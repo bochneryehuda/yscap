@@ -47,6 +47,36 @@ assert.deepStrictEqual(codes(computeTitleFindings({ ...baseTitle }, seasoningFil
 assert.deepStrictEqual(codes(computeTitleFindings({ ...baseTitle, ownerAcquisitionDate: '2026-01-02' }, seasoningFile, { today: '2026-04-01' })), ['title_short_seasoning'], '89 days is short seasoning');
 assert.deepStrictEqual(codes(computeTitleFindings({ ...baseTitle, ownerAcquisitionDate: '2026-01-01' }, seasoningFile, { today: '2026-04-01' })), [], '90 days is at the seasoning line, not under it');
 
+// ===== TITLE liens + Schedule B exceptions (clear-at-funding conditions) =====
+// A tax lien and an involuntary lien each flag as clear-at-funding; a seller mortgage is info-only.
+{
+  const f = computeTitleFindings({ ...baseTitle, liens: [
+    { type: 'property tax', holder: 'County', amount: 4200 },
+    { type: 'federal tax lien', holder: 'IRS', amount: 15000 },
+    { type: 'judgment', holder: 'ABC', amount: 3000 },
+    { type: 'mortgage', holder: 'Wells Fargo', amount: 180000 },
+  ] }, seasoningFile, { today: '2026-07-20' });
+  assert.deepStrictEqual(codes(f), ['title_existing_mortgage', 'title_involuntary_lien', 'title_tax_lien']);
+  const tax = f.find((x) => x.code === 'title_tax_lien');
+  assert.strictEqual(tax.severity, 'warning');
+  assert.strictEqual(tax.blocksCtc, false, 'a title lien is a clear-at-funding condition, not a hard CTC block');
+  assert.ok(/IRS/.test(tax.docValue) && /County/.test(tax.docValue), 'both the property and federal tax liens are listed');
+  assert.strictEqual(f.find((x) => x.code === 'title_existing_mortgage').severity, 'info', 'a seller mortgage is a payoff reminder, not a red flag');
+}
+// A clean title with no liens raises nothing new.
+assert.deepStrictEqual(codes(computeTitleFindings({ ...baseTitle, liens: [], exceptions: [] }, seasoningFile, { today: '2026-07-20' })), [], 'no liens/exceptions → clean');
+// Only ABNORMAL Schedule B exceptions surface — boilerplate (taxes not yet due, standard easement) is ignored.
+{
+  const f = computeTitleFindings({ ...baseTitle, exceptions: [
+    'Taxes for 2026 not yet due and payable', 'Standard utility easement of record',
+    'Lis pendens recorded in Book 123', 'Notice of default recorded 2025',
+  ] }, seasoningFile, { today: '2026-07-20' });
+  assert.deepStrictEqual(codes(f), ['title_abnormal_exception']);
+  const ex = f.find((x) => x.code === 'title_abnormal_exception');
+  assert.ok(/Lis pendens/.test(ex.docValue) && /Notice of default/.test(ex.docValue), 'the real defects are surfaced');
+  assert.ok(!/utility easement/i.test(ex.docValue), 'boilerplate easement is NOT surfaced');
+}
+
 // ===== BANK STATEMENT =====
 const assets = { borrower_name: 'John Smith', entity_names: ['Maple Grove Holdings LLC'] };
 const goodStmt = { accountHolderName: 'John Smith', holderIsBusiness: false, bankName: 'Chase', accountNumber: '1234567890', statementPeriod: 'Jun 2026', openingBalance: 10000, closingBalance: 15000, totalDeposits: 8000, totalWithdrawals: 3000, readable: true, notes: null };
