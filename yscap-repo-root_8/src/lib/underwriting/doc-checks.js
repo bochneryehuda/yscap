@@ -61,6 +61,17 @@ function computeAssignmentFindings(a, subject, opts = {}) {
       howTo: 'An assignment must be signed by BOTH the assignor and the assignee to be binding. Obtain the fully executed assignment.',
       actions: ['request_document', 'post_condition', 'dismiss'] }));
   }
+  // Assignee named as "X or an LLC to be formed": the final vesting entity does not exist yet, so
+  // before closing the LLC must actually be formed AND the contract re-assigned/vested into it — the
+  // policy must insure, and the loan must vest, in the real entity. (Complements the seller-chain's
+  // personal-name → assignment-to-LLC suggestion.)
+  if (a.assigneeIsEntityToBeFormed === true) {
+    out.push(mk('assignment', { code: 'assignment_entity_to_be_formed', severity: 'warning', field: 'assignee',
+      docValue: a.assigneeName || 'assignee or an LLC to be formed', fileValue: subject && subject.entity_name,
+      title: 'The assignee is an LLC that is not yet formed',
+      howTo: `The assignment names the assignee as "${a.assigneeName || 'the buyer'} or an LLC to be formed" — the vesting entity doesn't exist yet. Before clear-to-close, confirm the vesting LLC is actually formed and the contract is assigned/vested into it (title, insurance, and the loan must all be in the real entity).`,
+      actions: ['request_document', 'post_condition', 'dismiss'], opensCondition: 'underwriting_review_cleared' }));
+  }
   return out;
 }
 
@@ -86,6 +97,21 @@ function computeOperatingAgreementFindings(oa, subject, opts = {}) {
     out.push(mk('operating_agreement', { code: 'oa_no_borrowing_authority', severity: 'warning', field: 'authority',
       title: 'The operating agreement does not authorize borrowing',
       howTo: 'The agreement must authorize the entity to borrow and encumber real property (or a separate member resolution must). Obtain a borrowing-authorization resolution.' }));
+  }
+  // Layered ownership: a member that is itself an ENTITY (LLC/corp) or a TRUST means the true
+  // beneficial owner is not a natural person on the face of the agreement — KYC has to pierce through
+  // to the individual(s) behind it (FinCEN CDD). Detect from the member `type`, or a name that looks
+  // like an entity/trust when the type wasn't captured.
+  const ENTITY_TRUST_RE = /\b(llc|l\.?l\.?c|inc|corp|company|\bco\b|ltd|lp|llp|trust|holdings|partners|ventures|capital|group)\b/i;
+  const layered = members.filter((m) => m && m.name && (
+    /entity|trust|llc|corp/i.test(String(m.type || '')) || (!m.type && ENTITY_TRUST_RE.test(String(m.name)))));
+  if (layered.length) {
+    const list = layered.map((m) => m.name).join(', ');
+    out.push(mk('operating_agreement', { code: 'oa_entity_member_beneficial_owner', severity: 'warning', field: 'ownership',
+      docValue: list, fileValue: null,
+      title: 'A member is another entity or a trust — identify the real owner behind it',
+      howTo: `The operating agreement lists ${list} as a member, which is itself an entity or trust, not a person. The true beneficial owner(s) must be identified — pierce through to the natural person(s) and collect their ID for KYC (and their operating agreement / trust documents to establish the chain).`,
+      actions: ['request_document', 'post_condition', 'dismiss'] }));
   }
   // Control prong: the managing member/authorized signer should be the borrower on file.
   const bname = subject && subject.borrower_name;
@@ -179,9 +205,25 @@ function computeGoodStandingFindings(g, subject, opts = {}) {
 
 // ---- LLC formation ----
 function computeFormationFindings(f, subject, opts = {}) {
-  if (!f) return [];
+  const out = []; if (!f) return out;
   if (unreadable('llc_formation', f, ['entityLegalName', 'stateOfFormation'])) return [verify('llc_formation', 'formation document')];
-  return [];
+  // A FOREIGN REGISTRATION (an out-of-state LLC registering to do business elsewhere) is not the
+  // entity's formation — the entity was actually formed in its HOME state. Underwriting must then get
+  // good standing from the HOME state (not the filing state) and confirm the entity is authorized to
+  // transact in the property's state. Detect it from the explicit flag or a home≠filing jurisdiction.
+  const home = f.jurisdictionOfFormation, filed = f.filingState;
+  const st = (s) => String(s || '').trim().toLowerCase().replace(/\./g, '');
+  const foreign = f.isForeignRegistration === true ||
+    (!!st(home) && !!st(filed) && st(home) !== st(filed));
+  if (foreign) {
+    out.push(mk('llc_formation', { code: 'formation_foreign_registration', severity: 'warning', field: 'jurisdiction',
+      docValue: home ? `formed in ${home}${filed ? `, registered in ${filed}` : ''}` : (f.formationType || 'foreign registration'),
+      fileValue: null,
+      title: 'This is a foreign registration — the entity was formed in another state',
+      howTo: `This document registers the entity to do business in ${filed || 'this state'}, but the LLC was formed in ${home || 'another state'}. Obtain the good-standing certificate from the HOME state (${home || 'the state of formation'}), and confirm the entity is authorized to transact in the property's state.`,
+      actions: ['request_document', 'post_condition', 'dismiss'] }));
+  }
+  return out;
 }
 
 // ---- Hazard / property insurance ----

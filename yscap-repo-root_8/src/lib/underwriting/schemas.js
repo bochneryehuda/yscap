@@ -203,11 +203,14 @@ const ASSIGNMENT = {
     "assigns the purchase contract to a new buyer for a fee). Extract the assignor (original " +
     "buyer/wholesaler), the assignee (the NEW buyer — usually the borrowing LLC), the seller's " +
     "ORIGINAL purchase price, the assignment fee, and the total price to the assignee if stated. " +
-    "Capture the property address and whether both parties signed. Use null for anything absent " +
-    "or unreadable — do NOT guess. Prices as plain numbers, dates YYYY-MM-DD. readable=false if poor.",
+    "Capture the property address and whether both parties signed. Also note if the assignee is named " +
+    "as a person 'OR an LLC to be formed' / 'or assignee's nominee' (assigneeIsEntityToBeFormed=true) " +
+    "— i.e. the final vesting entity does not exist yet. Use null for anything absent or unreadable — " +
+    "do NOT guess. Prices as plain numbers, dates YYYY-MM-DD. readable=false if poor.",
   schema: obj({
     assignorName: { type: ['string', 'null'] },
     assigneeName: { type: ['string', 'null'] },            // the borrowing entity
+    assigneeIsEntityToBeFormed: { type: ['boolean', 'null'] }, // "X or an LLC to be formed"
     originalPurchasePrice: { type: ['number', 'null'] },   // seller -> assignor
     assignmentFee: { type: ['number', 'null'] },
     totalPriceToAssignee: { type: ['number', 'null'] },
@@ -227,16 +230,19 @@ const OPERATING_AGREEMENT = {
   instructions:
     "You are reviewing an LLC OPERATING AGREEMENT for a loan file. Extract the exact entity legal " +
     "name, whether it is member-managed or manager-managed, the managing member / authorized signer, " +
-    "every member with their ownership percentage, whether the agreement authorizes the entity to " +
-    "borrow money and encumber real property, and whether it is signed. Use null for anything absent " +
-    "or unreadable — do NOT guess. Percentages as plain numbers (e.g. 50 for 50%). readable=false if poor.",
+    "every member with their ownership percentage AND whether that member is a natural PERSON, another " +
+    "ENTITY (an LLC/corp), or a TRUST (member type: individual | entity | trust), whether the agreement " +
+    "authorizes the entity to borrow money and encumber real property, and whether it is signed. Use " +
+    "null for anything absent or unreadable — do NOT guess. Percentages as plain numbers (e.g. 50 for " +
+    "50%). readable=false if poor.",
   schema: obj({
     entityLegalName: { type: ['string', 'null'] },
     managementType: { type: ['string', 'null'] },          // member_managed | manager_managed
     managingMember: { type: ['string', 'null'] },
     members: {
       type: 'array',
-      items: obj({ name: { type: ['string', 'null'] }, ownershipPct: { type: ['number', 'null'] }, isManager: { type: ['boolean', 'null'] } }),
+      items: obj({ name: { type: ['string', 'null'] }, ownershipPct: { type: ['number', 'null'] },
+        isManager: { type: ['boolean', 'null'] }, type: { type: ['string', 'null'] } }), // individual | entity | trust
     },
     authorizesBorrowing: { type: ['boolean', 'null'] },     // clause authorizing debt/encumbrance
     signed: { type: ['boolean', 'null'] },
@@ -289,15 +295,26 @@ const GOOD_STANDING = {
 const LLC_FORMATION = {
   docType: 'llc_formation',
   instructions:
-    "You are reviewing an LLC's Articles of Organization / Certificate of Formation. Extract the exact " +
-    "entity legal name, the entity type, the state of formation, the formation/filing date, and the " +
-    "state file number. Use null for anything absent or unreadable — do NOT guess. readable=false if poor.",
+    "You are reviewing an LLC formation document — the TITLE varies by state (Articles of " +
+    "Organization, Certificate of Formation, Certificate of Organization) and it may instead be a " +
+    "FOREIGN REGISTRATION STATEMENT (an out-of-state LLC registering to do business in another state). " +
+    "Extract the exact entity legal name, the document title as printed (formationType), the entity " +
+    "type, the state where this was FILED (filingState), the JURISDICTION OF FORMATION — the home " +
+    "state where the entity was actually formed (for a foreign registration this is DIFFERENT from the " +
+    "filing state; for a normal formation it's the same), whether this is a foreign registration " +
+    "(isForeignRegistration), the formation/filing date, the state file number, and the registered " +
+    "agent name. Use null for anything absent or unreadable — do NOT guess. readable=false if poor.",
   schema: obj({
     entityLegalName: { type: ['string', 'null'] },
+    formationType: { type: ['string', 'null'] },            // the doc title as printed
     entityType: { type: ['string', 'null'] },
-    stateOfFormation: { type: ['string', 'null'] },
+    stateOfFormation: { type: ['string', 'null'] },         // kept for back-compat = home jurisdiction
+    jurisdictionOfFormation: { type: ['string', 'null'] },  // home state the entity was FORMED in
+    filingState: { type: ['string', 'null'] },              // the state this document was filed in
+    isForeignRegistration: { type: ['boolean', 'null'] },
     formationDate: { type: ['string', 'null'] },
     stateFileNumber: { type: ['string', 'null'] },
+    registeredAgent: { type: ['string', 'null'] },
     readable: { type: 'boolean' },
     notes: { type: ['string', 'null'] },
   }),

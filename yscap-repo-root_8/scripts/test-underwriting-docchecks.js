@@ -12,6 +12,15 @@ assert.deepStrictEqual(codes(C.computeAssignmentFindings({ assigneeName: 'Maple 
 assert.deepStrictEqual(codes(C.computeAssignmentFindings({ assigneeName: 'Maple LLC', originalPurchasePrice: 100000, assignmentFee: 25000, totalPriceToAssignee: 130000, assignorSigned: true, assigneeSigned: true, readable: true })), ['assignment_fee_over_cap', 'assignment_math_inconsistent']);
 assert.strictEqual(C.computeAssignmentFindings({ assigneeName: 'Maple LLC', originalPurchasePrice: 100000, assignmentFee: 10000, totalPriceToAssignee: 110000, assignorSigned: true, assigneeSigned: false, readable: true }).find((f) => f.code === 'assignment_unsigned').severity, 'fatal');
 assert.deepStrictEqual(codes(C.computeAssignmentFindings({ readable: false })), ['assignment_unreadable']);
+// Assignee named as "the buyer or an LLC to be formed" → the vesting entity doesn't exist yet (warning,
+// opens the underwriting-review condition so it's confirmed formed + vested before CTC).
+{
+  const tbf = C.computeAssignmentFindings({ assigneeName: 'John Smith or an LLC to be formed', assigneeIsEntityToBeFormed: true, originalPurchasePrice: 100000, assignmentFee: 10000, totalPriceToAssignee: 110000, assignorSigned: true, assigneeSigned: true, readable: true }, { entity_name: 'Maple Grove Holdings LLC' });
+  const f = tbf.find((x) => x.code === 'assignment_entity_to_be_formed');
+  assert.ok(f && f.severity === 'warning' && f.opensCondition === 'underwriting_review_cleared', 'to-be-formed assignee → warning that opens underwriting review');
+  // A normal named assignee → no such finding.
+  assert.ok(!C.computeAssignmentFindings({ assigneeName: 'Maple LLC', originalPurchasePrice: 100000, assignmentFee: 10000, totalPriceToAssignee: 110000, assignorSigned: true, assigneeSigned: true, readable: true }).some((x) => x.code === 'assignment_entity_to_be_formed'));
+}
 
 // ---- Operating agreement (control prong) ----
 const oaGood = { entityLegalName: 'Maple Grove Holdings LLC', managingMember: 'John Smith', members: [{ name: 'John Smith', ownershipPct: 100, isManager: true }], authorizesBorrowing: true, signed: true, readable: true };
@@ -19,6 +28,30 @@ assert.deepStrictEqual(codes(C.computeOperatingAgreementFindings(oaGood, { borro
 assert.deepStrictEqual(codes(C.computeOperatingAgreementFindings({ ...oaGood, members: [{ name: 'A', ownershipPct: 40 }, { name: 'B', ownershipPct: 40 }] }, { borrower_name: 'John Smith' })), ['oa_ownership_not_100']);
 assert.strictEqual(C.computeOperatingAgreementFindings({ ...oaGood, signed: false }, {}).find((f) => f.code === 'oa_unsigned').severity, 'fatal');
 assert.ok(C.computeOperatingAgreementFindings({ ...oaGood, managingMember: 'Robert Jones' }, { borrower_name: 'John Smith' }).some((f) => f.code === 'oa_signer_not_borrower'));
+// Layered ownership: a member that is itself an entity/trust (by explicit type OR by an entity-looking
+// name) → the real beneficial owner must be pierced through (warning). All-individual members → clean.
+{
+  // By explicit type.
+  const byType = C.computeOperatingAgreementFindings({ ...oaGood, members: [{ name: 'Riverside Holdings', ownershipPct: 60, type: 'entity' }, { name: 'John Smith', ownershipPct: 40, type: 'individual' }] }, { borrower_name: 'John Smith' });
+  assert.ok(byType.some((f) => f.code === 'oa_entity_member_beneficial_owner' && f.severity === 'warning'), 'entity member by type → pierce-through warning');
+  // By entity-looking name (type not captured).
+  assert.ok(C.computeOperatingAgreementFindings({ ...oaGood, members: [{ name: 'Riverside Capital LLC', ownershipPct: 60 }, { name: 'John Smith', ownershipPct: 40 }] }, { borrower_name: 'John Smith' }).some((f) => f.code === 'oa_entity_member_beneficial_owner'), 'entity-looking member name → pierce-through warning');
+  // Two natural persons → no pierce-through finding.
+  assert.ok(!C.computeOperatingAgreementFindings({ ...oaGood, members: [{ name: 'John Smith', ownershipPct: 60 }, { name: 'Mary Jones', ownershipPct: 40 }] }, { borrower_name: 'John Smith' }).some((f) => f.code === 'oa_entity_member_beneficial_owner'), 'all-individual members → no pierce-through');
+}
+
+// ---- LLC formation: foreign registration (formed in another state) ----
+{
+  const base = { entityLegalName: 'Maple Grove Holdings LLC', stateOfFormation: 'NJ', readable: true };
+  // Domestic (home == filing, or no filing capture) → clean.
+  assert.deepStrictEqual(codes(C.computeFormationFindings({ ...base, jurisdictionOfFormation: 'NJ', filingState: 'NJ' }, {})), [], 'same home/filing state → not foreign');
+  assert.deepStrictEqual(codes(C.computeFormationFindings(base, {})), [], 'no jurisdiction capture → no false foreign flag');
+  // Explicit foreign-registration flag → warning.
+  assert.ok(C.computeFormationFindings({ ...base, isForeignRegistration: true }, {}).some((f) => f.code === 'formation_foreign_registration' && f.severity === 'warning'), 'explicit foreign flag → warning');
+  // Home ≠ filing state → warning (formatting/period-insensitive).
+  const fr = C.computeFormationFindings({ ...base, jurisdictionOfFormation: 'Delaware', filingState: 'N.J.' }, {}).find((f) => f.code === 'formation_foreign_registration');
+  assert.ok(fr && fr.severity === 'warning', 'home ≠ filing state → foreign warning');
+}
 
 // ---- EIN ----
 assert.deepStrictEqual(codes(C.computeEinFindings({ ein: '12-3456789', entityLegalName: 'Maple LLC', readable: true })), []);
