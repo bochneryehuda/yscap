@@ -306,6 +306,95 @@ router.get('/applications', async (req, res) => {
   res.json(r.rows);
 });
 
+// The borrower's cross-file "Action needed" list — everything they must DO right
+// now, aggregated in TWO queries (NOT a checklist-call-per-file), so the home screen
+// shows it INSTANTLY on login without opening any file (owner-directed 2026-07-20:
+// "he needs to see outstanding stuff for him right away … a few documents … without
+// going into the file"). Quiet files (funded/closed/on-hold/terminal/intake) never
+// nag here — their items wait inside the file. Borrower-SAFE: only borrower_* wording,
+// scrubbed of any capital-partner name.
+const ACTION_QUIET_STATUSES = ['funded', 'closed', 'on_hold', 'declined', 'withdrawn', 'cancelled', 'file_intake'];
+const ACTION_PKG_LABEL = { term_sheet_package: 'term sheet, application & disclosure', heter_iska: 'Heter Iska' };
+function propLabelOf(j) {
+  if (!j) return '';
+  if (typeof j === 'string') return j.trim();
+  return j.oneLine || [j.line1 || j.street, j.city, j.state].filter(Boolean).join(', ') || '';
+}
+router.get('/action-items', async (req, res) => {
+  try {
+    const uid = me(req);
+    // 1) Documents / conditions still waiting on the BORROWER. checklist_items.status
+    //    is ('outstanding','requested','received','satisfied','issue') — the borrower
+    //    must act on outstanding/requested (to provide) + issue (needs a fix); received
+    //    (uploaded, in review) and satisfied (done) are NOT their action, so excluded.
+    const docs = (await db.query(
+      `SELECT ci.id, ci.application_id AS "applicationId", ci.status,
+              COALESCE(ci.borrower_label,'An item your loan team needs') AS label,
+              ci.borrower_hint AS hint, ci.is_required AS "required", ci.due_date AS "dueDate",
+              COALESCE(ci.issue_reason,
+                (SELECT d.rejection_reason FROM documents d
+                  WHERE d.checklist_item_id=ci.id AND d.review_status='rejected'
+                  ORDER BY d.reviewed_at DESC NULLS LAST LIMIT 1)) AS "rejectionReason",
+              a.ys_loan_number AS "loanNumber", a.property_address AS "propertyAddress"
+         FROM checklist_items ci
+         JOIN applications a ON a.id = ci.application_id
+        WHERE a.deleted_at IS NULL AND (${OWN_FILE_SQL("a", "$1")})
+          AND a.status <> ALL($2::text[])
+          AND ci.audience IN ('borrower','both')
+          AND ci.status IN ('outstanding','requested','issue')
+        ORDER BY (ci.status='issue') DESC, ci.due_date ASC NULLS LAST, ci.sort_order, ci.created_at`,
+      [uid, ACTION_QUIET_STATUSES])).rows;
+
+    // 2) Packages waiting for THIS borrower's signature (open envelope, they haven't
+    //    signed/declined yet). One row per envelope.
+    const signs = (await db.query(
+      `SELECT DISTINCT ON (e.id) e.id AS "envelopeRowId", e.application_id AS "applicationId", e.purpose,
+              a.ys_loan_number AS "loanNumber", a.property_address AS "propertyAddress"
+         FROM esign_envelopes e
+         JOIN applications a ON a.id = e.application_id
+         JOIN esign_recipients r ON r.envelope_row_id = e.id
+        WHERE a.deleted_at IS NULL AND (${OWN_FILE_SQL("a", "$1")})
+          AND a.status <> ALL($2::text[])
+          AND e.status IN ('sent','delivered') AND e.purpose IS NOT NULL
+          AND r.borrower_id = $1 AND r.signed_at IS NULL AND r.declined_at IS NULL
+        ORDER BY e.id, e.created_at DESC`,
+      [uid, ACTION_QUIET_STATUSES])).rows;
+
+    const items = [];
+    // Signatures first (most time-sensitive), then fixes, then documents to provide.
+    for (const s of signs) {
+      items.push({
+        kind: 'sign', id: `sign:${s.envelopeRowId}`, applicationId: s.applicationId,
+        loanNumber: s.loanNumber || null, property: propLabelOf(s.propertyAddress),
+        label: `Sign your ${ACTION_PKG_LABEL[s.purpose] || 'documents'}`,
+        hint: 'A quick, secure signature is needed to move your loan forward.',
+        priority: 0, route: `/app/${s.applicationId}?esign=1`,
+      });
+    }
+    for (const d of docs) {
+      const isIssue = d.status === 'issue';
+      items.push({
+        kind: isIssue ? 'fix' : 'document', id: `doc:${d.id}`, applicationId: d.applicationId,
+        loanNumber: d.loanNumber || null, property: propLabelOf(d.propertyAddress),
+        label: scrubText(d.label),
+        hint: isIssue && d.rejectionReason ? `Needs a fix: ${scrubText(d.rejectionReason)}` : scrubText(d.hint || ''),
+        priority: isIssue ? 1 : 2, route: `/app/${d.applicationId}`,
+        dueDate: d.dueDate || null, required: d.required !== false,
+      });
+    }
+    items.sort((a, b) => a.priority - b.priority);
+    const counts = {
+      total: items.length,
+      toSign: items.filter((i) => i.kind === 'sign').length,
+      toFix: items.filter((i) => i.kind === 'fix').length,
+      toProvide: items.filter((i) => i.kind === 'document').length,
+    };
+    res.json({ items, counts });
+  } catch (e) {
+    res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' });
+  }
+});
+
 // Borrower requests draw setup on a FUNDED file. Notifies the assigned loan team
 // (in-app + email), emails the draws desk + borrower, and confirms in-app.
 router.post('/applications/:id/request-draw', async (req, res) => {
