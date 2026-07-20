@@ -2528,29 +2528,32 @@ async function signOffGate(itemId, actor) {
   const isFraud = code === 'rtl_cond_fraud';
   const isAppraisalDocs = code === 'rtl_cond_appraisaldocs';   // two slots: XML + PDF
   const isAppraisalReview = code === 'appraisal_review_cleared'; // CTC gate: no open fatal finding
+  // Structured-DATA conditions — the borrower/staff enter DATA (not a document):
+  // the appraisal payment card, and the title / insurance contact forms.
+  const isApprCard = item.tool_key === 'appraisal_card' || code === 'rtl_p1_apprcard';
+  const isTitleContact = item.tool_key === 'title_contact' || code === 'rtl_p1_titlec';
+  const isInsContact = item.tool_key === 'insurance_contact' || code === 'rtl_p1_insc';
 
-  // EMERGENCY doc-gate (owner-directed): a DOCUMENT-upload condition can never be
-  // signed off with ZERO documents on it — the sign-off would attest to a file
-  // that isn't there. Applies to everyone (LO, processor, underwriter, admin,
-  // semi-admin); ONLY a super_admin may override. Tool-backed conditions
-  // (product / budget / experience / appraisal card) are verified by their own
-  // rules below, and the entity-fulfilled LLC condition is verified from the
-  // linked LLC — those are exempt. Insurance/title/fraud have stricter slot
-  // rules handled just below (and return before reaching here).
+  // Doc-gate: a REQUIRED document-upload condition can never be signed off with
+  // ZERO documents on it — the sign-off would attest to a file that isn't there.
+  // Applies to EVERYONE with no exception (owner-directed 2026-07-20: an admin
+  // signing off the government-ID condition with nothing uploaded is a "major
+  // fatal" — the previous super_admin override is REMOVED; no role may bypass a
+  // required condition's fulfillment). Tool-backed conditions (product / budget /
+  // experience / appraisal card / title+insurance contact) are verified by their
+  // own rules below, and the entity-fulfilled LLC condition is verified from the
+  // linked LLC — those are exempt. Insurance/title/fraud have stricter slot rules
+  // handled just below (and return before reaching here).
   // An OPTIONAL document condition (is_required=false — e.g. the Investor
-  // Structure Printout) may be signed off with nothing uploaded: "optional"
-  // means the file can complete without the document, so demanding one before
-  // sign-off contradicted the flag (owner-reported 2026-07-16). Required
-  // document conditions keep the gate exactly as before.
+  // Structure Printout) may still be signed off with nothing uploaded: "optional"
+  // means the file can complete without it (matches the Waive affordance).
   if (item.item_kind === 'document' && !item.tool_key && item.is_required !== false
       && code !== 'rtl_p1_llc' && !isInsurance && !isTitle && !isFraud && !isAppraisalDocs) {
-    if (!actor || actor.role !== 'super_admin') {
-      const has = await db.query(
-        `SELECT 1 FROM documents WHERE checklist_item_id=$1 AND is_current
-           AND COALESCE(review_status,'') <> 'rejected' LIMIT 1`, [itemId]);
-      if (!has.rows.length)
-        return 'Upload a document to this condition before signing it off — a document-based condition cannot be completed with nothing uploaded. (Only a super-admin can override this.)';
-    }
+    const has = await db.query(
+      `SELECT 1 FROM documents WHERE checklist_item_id=$1 AND is_current
+         AND COALESCE(review_status,'') <> 'rejected' LIMIT 1`, [itemId]);
+    if (!has.rows.length)
+      return 'Upload a document to this condition before signing it off — a document-based condition cannot be completed with nothing uploaded.';
   }
 
   // Document-gated conditions: cannot be signed off until the required upload(s)
@@ -2596,6 +2599,28 @@ async function signOffGate(itemId, actor) {
         WHERE application_id=$1 AND status='open' AND severity='fatal' AND blocks_ctc=true`, [item.application_id])).rows[0].n;
     if (n > 0)
       return `Resolve the ${n} open fatal appraisal finding${n === 1 ? '' : 's'} first — the appraisal review cannot be cleared while a fatal PILOT finding is open. Open the appraisal to replace, keep, or grant an exception on each.`;
+    return null;
+  }
+
+  // Structured-DATA conditions (owner-directed 2026-07-20): these collect DATA,
+  // not a document, so the doc-gate above never saw them and they could be signed
+  // off empty — the reported "signed off the credit-card / title / insurance
+  // condition with nothing entered" hole. A REQUIRED one now needs its data
+  // present; an OPTIONAL one (is_required=false) may still be completed empty.
+  if (isApprCard || isTitleContact || isInsContact) {
+    if (item.is_required === false) return null;
+    if (isApprCard) {
+      const has = await db.query(`SELECT 1 FROM application_payment_cards WHERE application_id=$1 LIMIT 1`, [item.application_id]);
+      if (!has.rows.length)
+        return 'Enter the credit card for the appraisal before signing this off — this condition cannot be completed until the card is on file.';
+      return null;
+    }
+    const types = isTitleContact ? ['title_company'] : ['insurance_agent', 'flood_insurance'];
+    const has = await db.query(
+      `SELECT 1 FROM application_service_contacts WHERE application_id=$1 AND contact_type = ANY($2::text[]) LIMIT 1`,
+      [item.application_id, types]);
+    if (!has.rows.length)
+      return `Enter the ${isTitleContact ? 'title company' : 'insurance'} contact before signing this off — this condition cannot be completed without it.`;
     return null;
   }
 
