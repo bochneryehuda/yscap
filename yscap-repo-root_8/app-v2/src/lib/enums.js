@@ -35,25 +35,38 @@ export function withCurrent(options, value) {
 // borrower application AND the staff new-file / edit-details forms — so the two
 // sides never diverge (owner-reported: single-family on the staff side didn't
 // auto-fill units and 2–4 wasn't a dropdown). One definition:
-//   'single'   → single-unit type: units is always 1 and the field is locked.
+//   'single'   → single-unit type (SFR / Condo / Townhouse): units is always 1
+//                and the field is locked.
 //   'select24' → "Multi 2–4": units is a 2 / 3 / 4 dropdown.
 //   'multi'    → "Multi 5+" / "Mixed use": units is a free number (5 or more).
+//   'open'     → any OTHER type we don't recognize (e.g. "New Construction",
+//                "Commercial", "Land" that can arrive from ClickUp sync and be
+//                shown via withCurrent): a free, editable number — never locked
+//                and never forced to 1. A ground-up multi-unit build must keep
+//                its real unit count instead of being silently reset to "1 unit".
 // The regex tolerates both label spellings in use: "Multi 2-4" (enums hyphen)
-// and the en-dash "Multi 2–4" (application), "Mixed Use" and "Mixed use".
+// and the en-dash "Multi 2–4" (application), "Mixed Use" and "Mixed use", and
+// "SFR (1 unit)" (the application/new-file label) vs bare "SFR" (Edit details).
 export function unitsMode(propType) {
-  if (/2.?4/.test(propType || '')) return 'select24';
-  if (/5\+|mixed/i.test(propType || '')) return 'multi';
-  return 'single'; // SFR / Condo / Townhouse (and the blank default)
+  const p = propType || '';
+  if (/2.?4/.test(p)) return 'select24';                 // Multi 2–4
+  if (/5\s*\+|mixed/i.test(p)) return 'multi';           // Multi 5+ / Mixed use
+  if (/sfr|single|condo|town/i.test(p)) return 'single'; // SFR / Condo / Townhouse
+  return 'open'; // unknown/blank: free entry, not locked and not forced to 1
 }
 
 // Resolve the units value when the property type changes. Single-unit types are
-// always exactly 1 (locked); switching AWAY from single clears a carried-over
-// "1" so it can't masquerade as a real multi-unit count. Any other existing
-// value is left untouched. Returns the next units string given the previous one.
+// always exactly 1 (locked). Switching to a KNOWN multi type (2–4 / 5+) clears a
+// carried-over "1" so a single-family default can't masquerade as a real count.
+// Unknown ('open') types — New Construction and the like — are left completely
+// untouched: neither forced to 1 nor cleared, so a legit unit count survives a
+// save. Returns the next units string given the previous one.
 export function unitsForType(propType, prevUnits) {
   const keep = prevUnits == null ? '' : String(prevUnits);
   if (!propType) return keep;                    // no type chosen yet — don't force a count
-  if (unitsMode(propType) === 'single') return '1';
-  if (keep === '1') return '';                   // drop a carried-over single-family "1"
+  const mode = unitsMode(propType);
+  if (mode === 'single') return '1';
+  if (mode === 'open') return keep;              // unknown type — never force or clear
+  if (keep === '1') return '';                   // 2–4 / 5+: drop a carried-over single-family "1"
   return keep;
 }

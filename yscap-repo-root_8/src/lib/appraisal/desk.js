@@ -296,6 +296,18 @@ async function undoAppraisalImport(appId, { actor = null } = {}) {
       `UPDATE documents SET is_current=false
         WHERE application_id=$1 AND is_current AND doc_kind IN ('appraisal_xml','appraisal_pdf','appraisal_photo')`, [appId]);
 
+    // 6. Reopen the appraisal-documents condition — its evidence was just removed,
+    //    so a prior sign-off no longer corresponds to any current document and the
+    //    file must not clear-to-close on it. (Same class as the reject/supersede
+    //    reopen in the document routes.)
+    await client.query(
+      `UPDATE checklist_items ci
+          SET status='outstanding', signed_off_at=NULL, signed_off_by=NULL,
+              reviewed_at=NULL, reviewed_by=NULL, updated_at=now()
+         FROM checklist_templates t
+        WHERE ci.template_id=t.id AND ci.application_id=$1
+          AND t.code='rtl_cond_appraisaldocs'`, [appId]);
+
     await client.query('COMMIT');
     return { ok: true, removedAppraisalId: cur.id };
   } catch (e) {
