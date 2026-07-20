@@ -334,6 +334,56 @@ function computeBackgroundFindings(b, subject, opts = {}) {
       title: 'The background report shows a criminal record',
       howTo: 'Review the criminal record against the program\'s eligibility policy (especially financial crimes / fraud).' }));
   }
+
+  // ---- The screen was actually run on OUR borrower / entity (owner-directed) ----
+  // A clean OFAC/fraud result only means something if the report screened the RIGHT party. If the
+  // subject name on the report doesn't match the borrower, the screen may have been run on the wrong
+  // person — the clear result can't be trusted for this file.
+  const bn = subject && subject.borrower_name;
+  if (b.subjectName && bn && namesMatchLoose(b.subjectName, bn) === false) {
+    out.push(mk('background_report', { code: 'background_subject_mismatch', severity: 'warning', field: 'subject',
+      docValue: b.subjectName, fileValue: bn,
+      title: 'The background screen was run on a different name than the borrower',
+      howTo: `The report screened "${b.subjectName}", but the borrower is "${bn}". A screen run on the wrong name doesn't clear this borrower — re-run the OFAC / fraud screen on the borrower's exact legal name (and confirm which one is correct).`,
+      actions: ['request_document', 'post_condition', 'dismiss'] }));
+  }
+  // On an ENTITY deal, the borrowing entity must ALSO be screened (an LLC can itself be sanctioned).
+  const en = subject && subject.entity_name;
+  if (en) {
+    if (!b.entityName) {
+      out.push(mk('background_report', { code: 'background_entity_not_screened', severity: 'warning', field: 'entity',
+        docValue: '(no entity screened)', fileValue: en,
+        title: 'The borrowing entity was not screened',
+        howTo: `This is an entity deal (vesting entity "${en}"), but the background/OFAC report screened no entity. The borrowing LLC must be screened too — an entity can itself be on a sanctions list. Run the screen on "${en}" and add it to the file.`,
+        actions: ['request_document', 'post_condition', 'dismiss'] }));
+    } else if (entityMatch(b.entityName, en) === false) {
+      out.push(mk('background_report', { code: 'background_entity_mismatch', severity: 'warning', field: 'entity',
+        docValue: b.entityName, fileValue: en,
+        title: 'The entity screened does not match the vesting entity',
+        howTo: `The report screened entity "${b.entityName}", but the file vests in "${en}". Confirm the correct borrowing entity was screened — re-run the screen on the vesting entity if not.`,
+        actions: ['request_document', 'post_condition', 'dismiss'] }));
+    }
+  }
+
+  // ---- High fraud alerts must be cleared (owner-directed) ----
+  // A fraud report can come back "clear" on OFAC yet carry HIGH alerts (SSN issued before DOB, ID
+  // flagged, address is a known mail-drop, identity-theft alert). Any fraud flag has to be
+  // adjudicated to zero before closing — surface them so none is silently accepted.
+  const flags = Array.isArray(b.fraudFlags) ? b.fraudFlags.filter((s) => String(s || '').trim()) : [];
+  if (flags.length) {
+    out.push(mk('background_report', { code: 'background_fraud_alerts', severity: 'warning', field: 'fraud',
+      docValue: flags.slice(0, 6).join(' | '), fileValue: null,
+      title: 'The fraud report has alerts that must be cleared',
+      howTo: `The report returned ${flags.length} fraud alert(s): ${flags.slice(0, 6).join(' | ')}. Every high alert must be adjudicated and cleared (documented) before clear-to-close — an open fraud alert can indicate identity theft or a straw borrower.`,
+      actions: ['post_condition', 'request_document', 'grant_exception', 'dismiss'] }));
+  }
+  if (b.pepHit === true) {
+    out.push(mk('background_report', { code: 'background_pep', severity: 'warning', field: 'pep',
+      docValue: 'PEP hit', fileValue: null,
+      title: 'The borrower is a politically-exposed person (PEP)',
+      howTo: 'The screen flagged a politically-exposed person. Apply enhanced due diligence (source of funds/wealth) and document the file per your BSA/AML policy before closing.',
+      actions: ['post_condition', 'request_document', 'grant_exception', 'dismiss'] }));
+  }
   return out;
 }
 

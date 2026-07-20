@@ -104,6 +104,24 @@ assert.ok(C.computeCreditFindings({ subjectName: 'John Smith', ficoScore: 640, h
 assert.deepStrictEqual(codes(C.computeBackgroundFindings({ subjectName: 'John Smith', ofacResult: 'clear', readable: true }, {})), []);
 assert.strictEqual(C.computeBackgroundFindings({ subjectName: 'John Smith', ofacResult: 'confirmed_match', readable: true }, {}).find((f) => f.code === 'ofac_confirmed_match').severity, 'fatal');
 assert.deepStrictEqual(codes(C.computeBackgroundFindings({ subjectName: 'John Smith', ofacResult: 'potential_match', readable: true }, {})), ['ofac_potential_match']);
+// Screen must be run on OUR borrower + entity, and high fraud alerts must be cleared (owner-directed).
+{
+  const subj = { borrower_name: 'Michael Goldberg', entity_name: 'Maple Grove Holdings LLC' };
+  // Right party, entity screened, no alerts → clean (only OFAC clear).
+  assert.deepStrictEqual(codes(C.computeBackgroundFindings({ readable: true, subjectName: 'Michael Goldberg', ofacResult: 'clear', entityName: 'Maple Grove Holdings LLC', fraudFlags: [], pepHit: false }, subj)), []);
+  // Wrong subject name → the clear result can't be trusted for this borrower.
+  assert.ok(C.computeBackgroundFindings({ readable: true, subjectName: 'Michael Goldman', ofacResult: 'clear' }, subj).some((f) => f.code === 'background_subject_mismatch'));
+  // Entity deal but no entity screened → flagged.
+  assert.ok(C.computeBackgroundFindings({ readable: true, subjectName: 'Michael Goldberg', ofacResult: 'clear', entityName: null }, subj).some((f) => f.code === 'background_entity_not_screened'));
+  // Entity screened but a DIFFERENT entity → flagged.
+  assert.ok(C.computeBackgroundFindings({ readable: true, subjectName: 'Michael Goldberg', ofacResult: 'clear', entityName: 'Other Holdings LLC' }, subj).some((f) => f.code === 'background_entity_mismatch'));
+  // High fraud alerts + PEP → both surface, both warning (never a silent accept).
+  const f = C.computeBackgroundFindings({ readable: true, subjectName: 'Michael Goldberg', ofacResult: 'clear', entityName: 'Maple Grove Holdings LLC', fraudFlags: ['SSN issued after DOB', 'Known mail-drop address'], pepHit: true }, subj);
+  assert.ok(f.some((x) => x.code === 'background_fraud_alerts' && x.severity === 'warning'));
+  assert.ok(f.some((x) => x.code === 'background_pep'));
+  // An individual (no entity on file) is never asked for an entity screen.
+  assert.ok(!C.computeBackgroundFindings({ readable: true, subjectName: 'Michael Goldberg', ofacResult: 'clear' }, { borrower_name: 'Michael Goldberg' }).some((x) => /entity/.test(x.code)));
+}
 
 // ===== SCOPE OF WORK / rehab budget =====
 {
