@@ -345,6 +345,7 @@ function comparables(root) {
       // area + data source. All read from this comp's own COMPARISON_* nodes (never the subject's).
       viewRating: enumOf(X.attr(X.find(c, 'COMPARISON_VIEW_OVERALL_RATING'), 'GSEViewOverallRatingType'), ['Beneficial', 'Neutral', 'Adverse']),
       locationRating: enumOf(X.attr(X.find(c, 'COMPARISON_LOCATION_OVERALL_RATING'), 'GSEOverallLocationRatingType'), ['Beneficial', 'Neutral', 'Adverse']),
+      locationType: clean(X.attr(X.find(c, 'COMPARISON_LOCATION_DETAIL'), 'GSELocationType')),
       belowGradeSqft: bounded(X.attr(cd, 'GSEBelowGradeTotalSquareFeetNumber'), 1e6),
       belowGradeFinishedSqft: bounded(X.attr(cd, 'GSEBelowGradeFinishSquareFeetNumber'), 1e6),
       compDataSource: clean(X.attr(cd, 'GSEDataSourceDescription')),
@@ -429,6 +430,18 @@ function enrichment(root, prop, st, site, subject0, rep, formType) {
   o.nbhd_adverse_financing = yn(A(mk, 'MarketTrendsAdverseFinancingIndicator'));
   o.nbhd_foreclosure_activity = yn(A(mk, 'MarketTrendsForeclosureActivityIndicator'));
   o.nbhd_boundaries = capText(A(nb, '_BoundaryAndCharacteristicsDescription'), 500);
+  // Market narratives — store ONLY concrete text; a chunk of these are bare pointers to another
+  // document/page ("See 1004MC", "See page #3.", "SEE ADDITIONAL COMMENTS", "refer to attached")
+  // that carry no information. A pointer is SHORT and is (almost) nothing but the reference; a long
+  // narrative that merely mentions "see the attached addendum …" still carries substance, so keep
+  // it (length is the discriminator — a bare pointer is rarely more than a sentence).
+  const notPointer = (v, max) => {
+    const s = capText(v, max);
+    if (!s) return null;
+    return (s.length <= 60 && /\b(see|refer\s+to)\b/i.test(s)) ? null : s;
+  };
+  o.market_conditions_comment = notPointer(A(nb, '_MarketConditionsDescription'), 700);
+  o.market_reconciliation_comment = notPointer(A(mk, 'MarketTrendsReconciliationComment'), 700);
 
   // -- 1004MC market-conditions grid (MARKET > MARKET_INVENTORY). Each row is one metric for one
   // period (Prior7To12Months|Prior4To6Months|Last3Months) OR a trend row (_TrendType, no period).
