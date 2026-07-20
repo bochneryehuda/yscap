@@ -168,6 +168,12 @@ router.get('/files/:id/draw-setup', requirePermission('manage_draws'), async (re
       capital_partner: !!cp.id,
     };
     const cpName = cp.id ? (await db.query(`SELECT name FROM sitewire_capital_partners WHERE sitewire_id=$1`, [cp.id])).rows[0] : null;
+    // Unit count preview (owner-directed 2026-07-20 — "use physical building units"). The count PUSHED to
+    // Sitewire = the physical building count = the LARGER of the file's unit count and the Scope of Work's.
+    // A disagreement is surfaced (not an error): units with no work simply carry no budget lines.
+    const sowUnits = M.unitCount(a.sow_payload && a.sow_payload.state);
+    const fileUnits = (a.units != null && Number(a.units) > 0) ? Number(a.units) : 0;
+    const physicalUnits = Math.max(1, fileUnits, sowUnits);
     res.json({
       started: !!(link && link.sitewire_property_id),
       state: link ? link.state : null,
@@ -185,6 +191,7 @@ router.get('/files/:id/draw-setup', requirePermission('manage_draws'), async (re
         fee_physical_cents: rule && rule.fee_cents_physical != null ? Number(rule.fee_cents_physical) : null,
       },
       requires: { sitewire_inspector: !!(rule && rule.require_sitewire_inspector), capital_partner_approval: !!(rule && rule.require_capital_partner_approval) },
+      units: { file: fileUnits || null, sow: sowUnits, physical: physicalUnits, disagree: fileUnits > 0 && fileUnits !== sowUnits },
       // handled externally = this capital partner runs draws in its own system; PILOT never pushes it.
       handled_externally: !!(rule && rule.handled_externally),
       prereqs,

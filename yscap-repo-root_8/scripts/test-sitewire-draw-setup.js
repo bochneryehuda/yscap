@@ -117,6 +117,22 @@ async function main() {
     'every prerequisite is met');
   ok(d.can_start === true, 'can_start is true when all prereqs pass');
   ok(d.switches && d.switches.enabled === false, 'reports Sitewire is off');
+  ok(d.units && d.units.physical >= 1 && d.units.disagree === false, 'draw-setup exposes the units block (base case: no disagreement)');
+
+  // ---- 3b) UNIT COUNT decouple (owner-directed 2026-07-20 — "use physical building units") ----
+  // A file that lists 2 units with a Scope of Work built for 4 must NOT block: PILOT surfaces the
+  // physical building count (4) and flags the disagreement, but can_start stays true (advisory only).
+  await db.query(`UPDATE applications SET units=2 WHERE id=$1`, [appId]);
+  await db.query(`UPDATE checklist_items SET tool_payload=$2 WHERE application_id=$1 AND tool_key='rehab_budget'`,
+    [appId, JSON.stringify({ state: { target: 100000, propType: 'multi', units: 4 }, total: 100000 })]);
+  r = await api('GET', `/api/sitewire/files/${appId}/draw-setup`, null, token);
+  ok(r.body.units && r.body.units.file === 2 && r.body.units.sow === 4 && r.body.units.physical === 4 && r.body.units.disagree === true,
+    'units decouple: file=2 + SOW=4 → physical=4, disagree=true (never guessed down)');
+  ok(r.body.can_start === true, 'a file/SOW unit disagreement never blocks the start (advisory only)');
+  // restore the seeded state so downstream assertions are byte-identical
+  await db.query(`UPDATE applications SET units=NULL WHERE id=$1`, [appId]);
+  await db.query(`UPDATE checklist_items SET tool_payload=$2 WHERE application_id=$1 AND tool_key='rehab_budget'`,
+    [appId, JSON.stringify({ state: { target: 100000 }, total: 100000 })]);
 
   // ---- 4) POST /start-draw — coordinator picks ON-SITE (allowed) ----
   r = await api('POST', `/api/sitewire/files/${appId}/start-draw`, { inspection_method: 'traditional' }, token);
