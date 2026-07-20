@@ -9,6 +9,7 @@
  */
 const db = require('../db');
 const email = require('./email');
+const emailLog = require('./email-log');   // Email Center capture (in-app-only rows)
 const tpl = require('./email/template');
 const { link: portalLink } = require('./email/catalog');
 const cfg = require('../config');
@@ -117,7 +118,16 @@ function buildEmail(opts, audience) {
 }
 
 async function _emailRow(id, to, opts, audience) {
-  if (!to || !to.length) { await _mark(id, 'skipped'); return; }
+  if (!to || !to.length) {
+    await _mark(id, 'skipped');
+    // In-app-only (no email sent): still record a lightweight Email Center row so
+    // the file's history shows the notification with an "in-app only" status. Its
+    // body is rendered on demand from the notification when opened. Best-effort.
+    emailLog.captureOutbound({ to: [], replyTo: fileReplyTo(opts.applicationId) },
+      { applicationId: opts.applicationId, notificationId: id, type: opts.type, audience, status: 'skipped',
+        subjectTag: opts.subjectTag, kicker: opts.kicker }).catch(() => {});
+    return;
+  }
   try {
     const msg = buildEmail(opts, audience);
     // Attachments (owner-directed): doc-upload + chat emails carry the actual
@@ -131,12 +141,17 @@ async function _emailRow(id, to, opts, audience) {
     // reply ALWAYS reaches a human — no notification is ever a dead-end no-reply.
     const replyTo = opts.replyTo || fileReplyTo(opts.applicationId) || cfg.replyToDefault || null;
     // #150: an optional LO-branded From display name rides through untouched
-    // (resend honors it; other providers ignore it).
-    const res = await email.sendMail({ to, subject: msg.subject, text: msg.text, html: msg.html, attachments, replyTo, from: opts.from || null, bcc: opts.bcc || null });
+    // (resend honors it; other providers ignore it). #447: `bcc` loops the LO into
+    // borrower emails. `_ctx` is stripped by the provider wrapper and drives the
+    // portal-wide Email Center capture (email_messages, src/lib/email-log.js), kept
+    // ALONGSIDE the #442 sent_emails capture below (two independent stores — the
+    // portal-wide Email Center and the Draw Management email view).
+    const res = await email.sendMail({ to, subject: msg.subject, text: msg.text, html: msg.html, attachments, replyTo, from: opts.from || null, bcc: opts.bcc || null,
+      _ctx: { applicationId: opts.applicationId, notificationId: id, type: opts.type, audience, subjectTag: opts.subjectTag, kicker: opts.kicker } });
     const status = res && res.ok ? 'sent' : 'skipped';
     await _mark(id, status);
-    // Capture the FULL rendered email (design + recipients + attachments) so staff can open it later — the
-    // "see the whole email" center. Best-effort + independently caught: it can never break or delay the send.
+    // #442 draw email center: also persist the rendered email + attachment BYTES to the
+    // sent_emails store that the Draw Management email view reads. Best-effort + caught.
     _captureSentEmail(id, to, opts, audience, msg, replyTo, attachments, status).catch(() => {});
   } catch (e) {
     await db.query(`UPDATE notifications SET email_status='error', email_error=$2 WHERE id=$1`, [id, String(e.message).slice(0, 400)]);
@@ -166,12 +181,26 @@ async function _captureSentEmail(notificationId, to, opts, audience, msg, replyT
       attMeta.push(meta);
     }
   } catch (_) { attMeta = []; }
-  await db.query(
-    `INSERT INTO sent_emails (notification_id, application_id, audience, recipient_kind, subject, from_email, to_emails, reply_to, html, body_text, attachments, status)
-     VALUES ($1,$2,$3,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11)`,
-    [notificationId, opts.applicationId, audience, msg.subject || null, opts.from || cfg.notifyFrom || null,
-     (Array.isArray(to) ? to : [to]).filter(Boolean), replyTo || null, msg.html || null, msg.text || null,
-     JSON.stringify(attMeta), status]).catch((e) => { console.warn('[notify] sent-email capture failed:', e && e.message); });
+  const params = [notificationId, opts.applicationId, audience, msg.subject || null, opts.from || cfg.notifyFrom || null,
+    (Array.isArray(to) ? to : [to]).filter(Boolean), replyTo || null, msg.html || null, msg.text || null,
+    JSON.stringify(attMeta), status];
+  // Best-effort, but retry on a transient deadlock/serialization failure. Concurrent file
+  // fan-out (notifyAppStaff/Borrowers) contends on the shared applications/notifications FK
+  // parents; without a retry a lost row is permanently missing from the draw email view
+  // (sent_emails has no backfill, unlike email_messages). Deadlocks=40P01, serialization=40001.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await db.query(
+        `INSERT INTO sent_emails (notification_id, application_id, audience, recipient_kind, subject, from_email, to_emails, reply_to, html, body_text, attachments, status)
+         VALUES ($1,$2,$3,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11)`, params);
+      return;
+    } catch (e) {
+      const transient = e && (e.code === '40P01' || e.code === '40001');
+      if (transient && attempt < 3) { await new Promise((r) => setTimeout(r, 40 * (attempt + 1))); continue; }
+      console.warn('[notify] sent-email capture failed:', e && e.message);
+      return;
+    }
+  }
 }
 async function _mark(id, status) {
   await db.query(

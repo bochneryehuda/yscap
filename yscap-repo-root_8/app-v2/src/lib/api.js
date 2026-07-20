@@ -370,7 +370,14 @@ export const api = {
   staffAddCondition:(appId, b) => req('POST', `/api/staff/applications/${appId}/conditions`, b),
   staffConditions:  (appId) => req('GET', `/api/staff/applications/${appId}/conditions`),
   staffActivity:    (appId) => req('GET', `/api/staff/applications/${appId}/activity`),
-  staffAppEmails:   (appId) => req('GET', `/api/staff/applications/${appId}/emails`),   // #80 per-file email monitor
+  // ---- Email Center (per-file history + global mailbox + reply) ----
+  staffAppEmails:   (appId) => req('GET', `/api/staff/applications/${appId}/emails`),   // per-file email history
+  staffAppEmailMsg: (appId, msgId) => req('GET', `/api/staff/applications/${appId}/emails/${msgId}`),   // full body of one message
+  staffAppEmailReply: (appId, body) => req('POST', `/api/staff/applications/${appId}/emails/reply`, body),
+  staffAppReplyRecipients: (appId) => req('GET', `/api/staff/applications/${appId}/emails/reply-recipients`),
+  staffEmails:      (params) => req('GET', '/api/staff/emails' + qs(params)),            // global mailbox (all visible files)
+  staffEmailMsg:    (msgId) => req('GET', `/api/staff/emails/${msgId}`),                 // full body from the global mailbox
+  staffEmailStats:  () => req('GET', '/api/staff/emails/stats'),
   staffPostClosing: (appId) => req('GET', `/api/staff/applications/${appId}/post-closing`),
   staffSeedPostClosing: (appId) => req('POST', `/api/staff/applications/${appId}/post-closing/seed`),
   staffPatchPostClosing: (pid, b) => req('PATCH', `/api/staff/post-closing/${pid}`, b),

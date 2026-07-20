@@ -26,4 +26,34 @@ function fromWithName(name) {
   return `"${n} — YS Capital" <${addr}>`;
 }
 
-module.exports = Object.assign({}, provider, { fromWithName });
+/**
+ * The SINGLE outbound chokepoint. Every send site in the app flows through this
+ * (notify._emailRow, catalog.deliver's `provider` alias, chat, reminders, the
+ * inbound-reply forward, the admin test email…). We delegate to the active
+ * provider and then best-effort CAPTURE the full email into the Email Center
+ * store (src/lib/email-log.js) so every file has a Gmail/Outlook-style history.
+ *
+ * A caller that knows the file/notification context attaches it as `_ctx`
+ * ({applicationId, notificationId, type, audience}); the field is stripped before
+ * the real provider is called (providers ignore unknown fields anyway, but we
+ * keep the wire payload clean). Callers without a `_ctx` still get captured — the
+ * file is derived from a `file+<appId>@` Reply-To when present. Capture NEVER
+ * affects the send result: a logging failure is swallowed.
+ */
+async function sendMail(opts = {}) {
+  const { _ctx, ...send } = opts || {};
+  const ctx = _ctx || {};
+  let res, err;
+  try {
+    res = await provider.sendMail(send);
+  } catch (e) { err = e; }
+  try {
+    const emailLog = require('../email-log');
+    const status = err ? 'error' : (res && res.ok ? 'sent' : 'skipped');
+    await emailLog.captureOutbound(send, { ...ctx, status, providerId: res && res.id, error: err && err.message });
+  } catch (_) { /* capture is best-effort */ }
+  if (err) throw err;
+  return res;
+}
+
+module.exports = Object.assign({}, provider, { fromWithName, sendMail });

@@ -7,7 +7,9 @@
 const express = require('express');
 const router = require('../lib/safe-router')();
 const db = require('../db');
-const { scrubText } = require('../lib/borrower-safe');
+const { scrubText, scrubTextExcept } = require('../lib/borrower-safe');
+const email = require('../lib/email');                    // Email Center: send staff replies
+const emailLog = require('../lib/email-log');             // Email Center: capture + on-demand body
 const C = require('../lib/crypto');
 const notify = require('../lib/notify');
 const changeRequests = require('../lib/change-requests');
@@ -2287,55 +2289,369 @@ router.get('/applications/:id/activity', async (req, res) => {
   catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
-// #80 — per-file EMAIL NOTIFICATION MONITOR. Every notification we wrote for this
-// file (to any party — the borrower, co-borrower, and each assigned staffer) with
-// its EMAIL delivery status, so the team can see at a glance exactly what has been
-// sent, to whom, and whether the email actually went out (sent / in-app only /
-// error). Reads the notifications table we already fan out through; scoped to
-// anyone who can touch the file. Inbound REPLIES (#68) are interleaved as
-// direction:'inbound' rows so the monitor shows both sides of the thread.
+// ════════════════════════════════════════════════════════════════════════════
+// EMAIL CENTER (owner-directed 2026-07-20) — a Gmail/Outlook-style history on
+// every file: every email that went out (to the borrower, co-borrower, each
+// assigned staffer, external partners) with its FULL designed body, exactly whom
+// it reached and when, the delivery status (so a failed send can be troubleshot),
+// the inbound replies WITH their body, and a reply box. Reads the email_messages
+// store (db/185) which src/lib/email-log.js captures every send + reply into; the
+// prior history is backdated in by the boot backfill. Staff-only, file-scoped.
+// ════════════════════════════════════════════════════════════════════════════
+
+// Shape one email_messages row for the client (used by the file view + mailbox).
+function emailRowShape(r) {
+  return {
+    id: r.id,
+    direction: r.direction,
+    type: r.msg_type,
+    category: r.category,
+    subject: r.subject || '(no subject)',
+    preview: r.preview || '',
+    from_email: r.from_email,
+    from_name: r.from_name,
+    to: Array.isArray(r.to_emails) ? r.to_emails : [],
+    reply_to: r.reply_to,
+    recipient_kind: r.recipient_kind,
+    recipient_name: r.recipient_name || null,
+    audience: r.audience,
+    status: r.status,
+    error: r.error,
+    attachments: Array.isArray(r.attachments) ? r.attachments : [],
+    meta: r.meta || null,
+    reconstructed: r.reconstructed,
+    has_body: r.has_body,
+    thread_key: r.thread_key,
+    occurred_at: r.occurred_at,
+    // file identity (present on the global mailbox rows)
+    application_id: r.application_id || null,
+    loan_no: r.ys_loan_number || null,
+    file_label: r.file_label || null,
+    // every recipient this exact email reached (filled by consolidateEmailRows)
+    recipients: r.recipients || null,
+    recipient_count: r.recipient_count || null,
+  };
+}
+
+// Recipients of a single row → [{email,name,kind,status}]. A notify fan-out
+// writes one row per recipient, so this is usually one entry; consolidation
+// merges the whole fan-out below.
+function recipientsOfRow(r) {
+  const to = Array.isArray(r.to_emails) ? r.to_emails : [];
+  if (!to.length) return r.recipient_name ? [{ email: null, name: r.recipient_name, kind: r.recipient_kind, status: r.status }] : [];
+  return to.map((t, i) => ({
+    email: t.email || null,
+    name: (i === 0 ? r.recipient_name : null) || t.name || null,
+    kind: r.recipient_kind || null,
+    status: r.status,
+  }));
+}
+const _STATUS_RANK = { error: 3, no_recipients: 3, failed_permanent: 3, skipped: 2, received: 1, forwarded: 1, sent: 1 };
+const worseStatus = (a, b) => ((_STATUS_RANK[b] || 0) > (_STATUS_RANK[a] || 0) ? b : a);
+
+// Consolidate a notify FAN-OUT (the same email sent to many people as one row
+// each) into ONE message that lists everyone it reached with each recipient's
+// delivery status — so opening it reads like a real email ("To: A, B, C"), not
+// N near-identical rows. Rows are grouped by file+thread+type+audience+subject
+// within the same minute (a single fan-out). Inbound replies never consolidate.
+function consolidateEmailRows(rows) {
+  const groups = new Map();
+  const out = [];
+  for (const r of rows) {
+    const shaped = emailRowShape(r);
+    if (r.direction !== 'outbound') { shaped.recipients = recipientsOfRow(r); shaped.recipient_count = shaped.recipients.length; out.push(shaped); continue; }
+    const minute = r.occurred_at ? new Date(r.occurred_at).toISOString().slice(0, 16) : '';
+    const key = [r.thread_key || '', r.msg_type || '', r.audience || '', r.subject || '', minute].join('|');
+    let g = groups.get(key);
+    if (!g) { g = shaped; g.recipients = []; groups.set(key, g); out.push(g); }
+    g.recipients.push(...recipientsOfRow(r));
+    // prefer a representative row that actually stored a body, so opening it shows
+    // the full designed email (a fan-out stores an identical body on each row).
+    if (r.has_body && !g.has_body) { g.id = r.id; g.has_body = true; }
+    g.status = worseStatus(g.status, r.status);
+    if (r.error && !g.error) g.error = r.error;
+    if (new Date(r.occurred_at) > new Date(g.occurred_at)) g.occurred_at = r.occurred_at;
+  }
+  for (const g of out) {
+    if (Array.isArray(g.recipients)) {
+      // de-dupe recipients on email, cap for display
+      const seen = new Set();
+      g.recipients = g.recipients.filter((x) => { const k = x.email || x.name; if (!k || seen.has(k)) return false; seen.add(k); return true; }).slice(0, 60);
+      g.recipient_count = g.recipients.length;
+      g.to = g.recipients.map((x) => ({ email: x.email, name: x.name }));
+    }
+  }
+  return out;
+}
+
+// Per-file email history (newest first), grouped into threads client-side by
+// thread_key. Backfills THIS file's prior history on read so it's always complete.
 router.get('/applications/:id/emails', async (req, res) => {
   if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   try {
+    await emailLog.ensureFileBackfilled(req.params.id).catch(() => {});
     const r = await db.query(
-      `SELECT n.id, n.type, n.title, n.body, n.recipient_kind, n.email_status, n.emailed_at, n.created_at,
-              CASE WHEN n.recipient_kind='staff'
-                   THEN su.full_name
-                   ELSE NULLIF(TRIM(COALESCE(bo.first_name,'') || ' ' || COALESCE(bo.last_name,'')), '') END AS recipient_name,
-              CASE WHEN n.recipient_kind='staff' THEN su.email ELSE bo.email END AS recipient_email
-         FROM notifications n
+      `SELECT em.id, em.direction, em.msg_type, em.category, em.subject, em.preview,
+              em.from_email, em.from_name, em.to_emails, em.reply_to, em.recipient_kind,
+              em.audience, em.status, em.error, em.attachments, em.meta, em.reconstructed,
+              (em.body_html IS NOT NULL) AS has_body, em.thread_key, em.occurred_at, em.application_id,
+              COALESCE(su.full_name,
+                       NULLIF(TRIM(COALESCE(bo.first_name,'') || ' ' || COALESCE(bo.last_name,'')), '')) AS recipient_name
+         FROM email_messages em
+         LEFT JOIN notifications n ON n.id = em.notification_id
          LEFT JOIN staff_users su ON su.id = n.staff_id
          LEFT JOIN borrowers   bo ON bo.id = n.borrower_id
-        WHERE n.application_id = $1
-        ORDER BY n.created_at DESC
-        LIMIT 300`, [req.params.id]);
-    let inbound = [];
-    try {
-      const inb = await db.query(
-        `SELECT id, from_email, subject, status, forwarded_count, received_at, processed_at
-           FROM inbound_file_emails
-          WHERE application_id = $1 OR app_results ? $2
-          ORDER BY received_at DESC
-          LIMIT 100`, [req.params.id, String(req.params.id)]);
-      inbound = inb.rows.map((row) => ({
-        id: `in-${row.id}`,
-        direction: 'inbound',
-        type: 'inbound_reply',
-        title: row.subject ? `Reply: ${row.subject}` : 'Reply on this file',
-        body: null,
-        recipient_kind: 'inbound',
-        recipient_name: null,
-        recipient_email: row.from_email || null,   // shown as the SENDER on inbound rows
-        email_status: row.status,
-        emailed_at: row.processed_at,
-        created_at: row.received_at,
-        forwarded_count: row.forwarded_count,
-      }));
-    } catch (_) { /* inbound history is additive — never break the monitor over it */ }
-    const merged = r.rows.concat(inbound)
-      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-      .slice(0, 300);
-    res.json(merged);
+        WHERE em.application_id = $1
+        ORDER BY em.occurred_at DESC
+        LIMIT 500`, [req.params.id]);
+    res.json(consolidateEmailRows(r.rows));
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Who a reply on this file will reach — the borrower(s) + active assignees, minus
+// the viewer. Lets the composer show recipient chips before sending. Declared
+// BEFORE /emails/:msgId so 'reply-recipients' isn't read as a message id.
+router.get('/applications/:id/emails/reply-recipients', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const meEmail = String(((await db.query(`SELECT lower(email) AS email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {}).email || '').toLowerCase();
+    const r = await db.query(
+      `SELECT lower(bo.email) AS email, NULLIF(TRIM(COALESCE(bo.first_name,'')||' '||COALESCE(bo.last_name,'')),'') AS name, 'borrower' AS kind
+         FROM applications a JOIN borrowers bo ON bo.id IN (a.borrower_id, a.co_borrower_id)
+        WHERE a.id=$1 AND bo.email IS NOT NULL AND btrim(bo.email)<>''
+       UNION
+       SELECT lower(su.email) AS email, su.full_name AS name, 'staff' AS kind
+         FROM application_assignees aa JOIN staff_users su ON su.id=aa.staff_id
+        WHERE aa.application_id=$1 AND aa.removed_at IS NULL AND su.is_active=true
+          AND su.email IS NOT NULL AND btrim(su.email)<>''`, [req.params.id]);
+    res.json(r.rows.filter((p) => p.email && p.email !== meEmail));
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Full body of one message. Stored body wins; a lightweight/historical row's body
+// is rendered on demand from its linked notification. Scoped to the file.
+router.get('/applications/:id/emails/:msgId', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const r = await db.query(
+      `SELECT em.*, (em.body_html IS NOT NULL) AS has_body,
+              COALESCE(su.full_name,
+                       NULLIF(TRIM(COALESCE(bo.first_name,'') || ' ' || COALESCE(bo.last_name,'')), '')) AS recipient_name
+         FROM email_messages em
+         LEFT JOIN notifications n ON n.id = em.notification_id
+         LEFT JOIN staff_users su ON su.id = n.staff_id
+         LEFT JOIN borrowers   bo ON bo.id = n.borrower_id
+        WHERE em.id = $1 AND em.application_id = $2`, [req.params.msgId, req.params.id]);
+    const row = r.rows[0];
+    if (!row) return res.status(404).json({ error: 'not found' });
+    const out = emailRowShape({ ...row, has_body: true });
+    out.body_html = row.body_html || null;
+    out.body_text = row.body_text || null;
+    // Historical/lightweight outbound row → re-render the branded body on demand.
+    if (!out.body_html && row.direction === 'outbound' && row.notification_id) {
+      const built = await emailLog.renderHistoricalBody(row.notification_id).catch(() => null);
+      if (built) { out.body_html = built.html; out.body_text = built.text; out.rendered = true; }
+    }
+    if (!out.body_html && !out.body_text) {
+      out.body_unavailable = row.direction === 'inbound'
+        ? 'This reply predates archiving — its body was not stored. Newer replies show in full.'
+        : 'The full body for this message was not stored.';
+    }
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Reply from the Email Center. Sends a branded email to the file's parties (the
+// borrower(s) + the other active assignees, minus the sender) — or an explicit
+// recipient list — on the shared file thread, and captures it into the history.
+router.post('/applications/:id/emails/reply', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const bodyText = String((req.body && req.body.body) || '').trim();
+  if (!bodyText) return res.status(400).json({ error: 'Type a message to send.' });
+  try {
+    const ctx = await notify.fileContext(appId).catch(() => null);
+    // The acting staffer's own email/name (req.actor carries only id/role/perms).
+    const meRow = (await db.query(`SELECT lower(email) AS email, full_name FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
+    // Recipient set: an explicit list (validated as file parties) or the default
+    // fan-out = borrower(s) + active assignees, minus the acting staffer.
+    const partyRows = await db.query(
+      `SELECT lower(bo.email) AS email, 'borrower' AS kind
+         FROM applications a
+         JOIN borrowers bo ON bo.id IN (a.borrower_id, a.co_borrower_id)
+        WHERE a.id=$1 AND bo.email IS NOT NULL AND btrim(bo.email)<>''
+       UNION
+       SELECT lower(su.email) AS email, 'staff' AS kind
+         FROM application_assignees aa
+         JOIN staff_users su ON su.id=aa.staff_id
+        WHERE aa.application_id=$1 AND aa.removed_at IS NULL AND su.is_active=true
+          AND su.email IS NOT NULL AND btrim(su.email)<>''`, [appId]);
+    const meEmail = String(meRow.email || '').trim().toLowerCase();
+    const parties = partyRows.rows.filter((p) => p.email && p.email !== meEmail);
+    let recipients = parties;
+    if (Array.isArray(req.body.to) && req.body.to.length) {
+      const want = new Set(req.body.to.map((e) => String(e).trim().toLowerCase()));
+      recipients = parties.filter((p) => want.has(p.email));   // only ever real file parties
+    }
+    if (!recipients.length) return res.status(400).json({ error: 'No one on this file to send to. Add the borrower or an assignee first.' });
+    const toEmails = recipients.map((r) => r.email);
+    const anyBorrower = recipients.some((r) => r.kind === 'borrower');
+    const audience = anyBorrower ? 'borrower' : 'staff';
+    // Borrower-safe (frozen rule): the reply builds the borrower email directly
+    // (not via notifyBorrower), so we scrub a note-buyer/capital-partner name a
+    // staffer might type in the SUBJECT *and* the body before it can reach a
+    // borrower. Protect the file's own clean data from the scrub using the
+    // BORROWER-safe meta (borrowerMeta already scrubs the program label) — never
+    // the staff `meta`, whose raw program value could shield a partner name.
+    const protectSrc = anyBorrower ? (ctx && ctx.borrowerMeta) : (ctx && ctx.meta);
+    const protect = Array.isArray(protectSrc) ? protectSrc.map((m) => m && m.value).filter((v) => typeof v === 'string') : [];
+    const safeBody = anyBorrower ? scrubTextExcept(bodyText, protect) : bodyText;
+    const rawSubject = String((req.body && req.body.subject) || '').trim();
+    const safeSubject = anyBorrower ? scrubTextExcept(rawSubject, protect) : rawSubject;
+    const subject = (safeSubject || (ctx ? `Re: ${ctx.loanNo}` : 'Re: your loan file')).slice(0, 200);
+    // Split the typed reply into paragraphs: the first is the intro (body), the
+    // rest render as additional lines — never both, so the text isn't duplicated.
+    const paras = safeBody.split(/\n{2,}/).map((s) => s.trim()).filter(Boolean);
+    const built = notify.buildEmail({
+      title: subject.replace(/^\s*re:\s*/i, '') || 'A message from your loan team',
+      body: paras[0] || safeBody,
+      lines: paras.slice(1),
+      applicationId: appId,
+      subjectTag: ctx ? ctx.subjectTag : '',
+      link: audience === 'borrower' ? `/app/${appId}` : `/internal/app/${appId}`,
+      ctaLabel: audience === 'borrower' ? 'Open your file' : 'Open the loan file',
+      replyable: true,
+    }, audience);
+    // From the officer by name so the reply reads as a person, not a robot.
+    const fromName = email.fromWithName ? email.fromWithName(meRow.full_name || meRow.email) : null;
+    await email.sendMail({
+      to: toEmails, subject: built.subject, html: built.html, text: built.text,
+      replyTo: fileReplyTo(appId) || cfg.replyToDefault || null,
+      from: fromName || undefined,
+      _ctx: { applicationId: appId, type: 'staff_reply', audience },
+    });
+    await audit(req, 'email_reply_sent', 'application', appId, { to: toEmails.length, subject });
+    res.json({ ok: true, sent_to: toEmails });
+  } catch (e) { res.status(500).json({ error: 'Could not send the reply.' }); }
+});
+
+// A short "which file" label for a mailbox row (loan# · street · borrower).
+function fileLabelOf(r) {
+  const pa = r.property_address || {};
+  const street = pa.street || pa.line1 || (typeof pa.oneLine === 'string' ? pa.oneLine.split(',')[0] : '') || '';
+  const borrower = [r.b_first, r.b_last].filter(Boolean).join(' ');
+  return [r.ys_loan_number, street, borrower].filter(Boolean).join(' · ') || null;
+}
+
+// GLOBAL MAILBOX — every email across the files the viewer can see (admins /
+// underwriters: all; loan officers / processors: only their assigned files).
+// This is the portal-wide audit view the owner asked for: filter by delivery
+// status (troubleshoot failures), direction, category, or a text search over
+// subject / sender / recipients. Newest first, paginated.
+router.get('/emails/stats', async (req, res) => {
+  try {
+    const params = [];
+    let scope = '';
+    if (!seesAll(req)) {
+      params.push(req.actor.id);
+      scope = `WHERE em.application_id IS NOT NULL AND EXISTS (SELECT 1 FROM applications a
+                 WHERE a.id=em.application_id AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$1')})`;
+    }
+    const r = await db.query(
+      `SELECT
+         count(*)::int AS total,
+         count(*) FILTER (WHERE em.direction='outbound' AND em.status='sent')::int AS sent,
+         count(*) FILTER (WHERE em.direction='outbound' AND em.status='skipped')::int AS in_app_only,
+         count(*) FILTER (WHERE em.direction='outbound' AND em.status='error')::int AS failed,
+         count(*) FILTER (WHERE em.direction='inbound')::int AS inbound,
+         count(*) FILTER (WHERE em.occurred_at > now() - interval '7 days')::int AS last_7d
+       FROM email_messages em ${scope}`, params);
+    res.json(r.rows[0] || {});
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+router.get('/emails', async (req, res) => {
+  try {
+    const params = [];
+    const where = [];
+    if (!seesAll(req)) {
+      params.push(req.actor.id);
+      where.push(`em.application_id IS NOT NULL AND EXISTS (SELECT 1 FROM applications a
+                    WHERE a.id=em.application_id AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$' + params.length)})`);
+    }
+    const dir = String(req.query.direction || '');
+    if (dir === 'inbound' || dir === 'outbound') { params.push(dir); where.push(`em.direction=$${params.length}`); }
+    const status = String(req.query.status || '');
+    if (status === 'sent' || status === 'skipped' || status === 'error') { params.push(status); where.push(`em.status=$${params.length}`); }
+    else if (status === 'issues') { where.push(`em.status IN ('error','no_recipients','failed_permanent','retrieval_failed','forward_failed','lookup_failed')`); }
+    const category = String(req.query.category || '');
+    if (category) { params.push(category); where.push(`em.category=$${params.length}`); }
+    const q = String(req.query.q || '').trim();
+    if (q) {
+      params.push('%' + q.replace(/[%_]/g, (m) => '\\' + m) + '%');
+      const i = params.length;
+      where.push(`(em.subject ILIKE $${i} OR em.preview ILIKE $${i} OR em.from_email ILIKE $${i} OR em.to_emails::text ILIKE $${i})`);
+    }
+    const limit = Math.min(200, intField(req.query.limit) || 60);
+    const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+    params.push(limit); const limIdx = params.length;
+    params.push(offset); const offIdx = params.length;
+    const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
+    const r = await db.query(
+      `SELECT em.id, em.direction, em.msg_type, em.category, em.subject, em.preview,
+              em.from_email, em.from_name, em.to_emails, em.reply_to, em.recipient_kind,
+              em.audience, em.status, em.error, em.attachments, em.meta, em.reconstructed,
+              (em.body_html IS NOT NULL) AS has_body, em.thread_key, em.occurred_at, em.application_id,
+              a.ys_loan_number, a.property_address, b.first_name AS b_first, b.last_name AS b_last,
+              COALESCE(su.full_name,
+                       NULLIF(TRIM(COALESCE(bo.first_name,'') || ' ' || COALESCE(bo.last_name,'')), '')) AS recipient_name
+         FROM email_messages em
+         LEFT JOIN applications a ON a.id = em.application_id
+         LEFT JOIN borrowers   b ON b.id = a.borrower_id
+         LEFT JOIN notifications n ON n.id = em.notification_id
+         LEFT JOIN staff_users su ON su.id = n.staff_id
+         LEFT JOIN borrowers   bo ON bo.id = n.borrower_id
+         ${whereSql}
+        ORDER BY em.occurred_at DESC
+        LIMIT $${limIdx} OFFSET $${offIdx}`, params);
+    res.json(consolidateEmailRows(r.rows.map((row) => ({ ...row, file_label: fileLabelOf(row) }))));
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Full body of one message from the GLOBAL mailbox (scoped to a file the viewer
+// can see). Renders a historical row's body on demand, same as the per-file view.
+router.get('/emails/:msgId', async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT em.*, a.ys_loan_number, a.property_address, b.first_name AS b_first, b.last_name AS b_last,
+              COALESCE(su.full_name,
+                       NULLIF(TRIM(COALESCE(bo.first_name,'') || ' ' || COALESCE(bo.last_name,'')), '')) AS recipient_name
+         FROM email_messages em
+         LEFT JOIN applications a ON a.id = em.application_id
+         LEFT JOIN borrowers   b ON b.id = a.borrower_id
+         LEFT JOIN notifications n ON n.id = em.notification_id
+         LEFT JOIN staff_users su ON su.id = n.staff_id
+         LEFT JOIN borrowers   bo ON bo.id = n.borrower_id
+        WHERE em.id = $1`, [req.params.msgId]);
+    const row = r.rows[0];
+    if (!row) return res.status(404).json({ error: 'not found' });
+    // Authorize: a file-scoped message requires touch access; a non-file (system)
+    // message is admins-only.
+    if (row.application_id) { if (!(await canTouchApp(req, row.application_id))) return res.status(403).json({ error: 'forbidden' }); }
+    else if (!seesAll(req)) return res.status(403).json({ error: 'forbidden' });
+    const out = { ...emailRowShape(row), file_label: fileLabelOf(row) };
+    out.body_html = row.body_html || null;
+    out.body_text = row.body_text || null;
+    if (!out.body_html && row.direction === 'outbound' && row.notification_id) {
+      const built = await emailLog.renderHistoricalBody(row.notification_id).catch(() => null);
+      if (built) { out.body_html = built.html; out.body_text = built.text; out.rendered = true; }
+    }
+    if (!out.body_html && !out.body_text) {
+      out.body_unavailable = row.direction === 'inbound'
+        ? 'This reply predates archiving — its body was not stored. Newer replies show in full.'
+        : 'The full body for this message was not stored.';
+    }
+    res.json(out);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
@@ -4327,6 +4643,46 @@ function borrowerJourney(status) {
   if (idx == null) return null;   // declined / withdrawn → no progress path
   return BORROWER_JOURNEY.map((label, i) => ({ label, state: i < idx ? 'done' : (i === idx ? 'current' : 'upcoming') }));
 }
+// Announce a borrower-facing status transition to the borrower + the team.
+// Extracted so BOTH doors into the borrower-facing bucket notify IDENTICALLY:
+// the PATCH /:id status route AND the POST /:id/internal-status door (the
+// 38-status ClickUp workflow the team actually drives). Previously only PATCH
+// notified, so funding/approving a file via the internal-status dropdown gave
+// the borrower NO email — a real parity gap (owner-directed 2026-07-20). Only
+// call this when the borrower-facing bucket ACTUALLY changed (from !== to): the
+// internal door often moves between two internal statuses that map to the SAME
+// external bucket, and re-announcing an unchanged status would be a wrong-time /
+// duplicate email. A soft-deleted file is skipped (it's out of the pipeline —
+// "your loan is now …" would be a wrong-time send). Best-effort; never throws.
+async function notifyStatusTransition(appId, fromStatus, toStatus, opts = {}) {
+  try {
+    const live = await db.query(`SELECT deleted_at FROM applications WHERE id=$1`, [appId]);
+    if (!live.rows[0] || live.rows[0].deleted_at) return;
+    const label = STATUS_LABEL[toStatus] || toStatus;
+    const fromLabel = STATUS_LABEL[fromStatus] || fromStatus;
+    const explain = BORROWER_STATUS_EXPLAIN[toStatus];
+    const steps = borrowerJourney(toStatus);
+    const positive = toStatus === 'funded' || toStatus === 'clear_to_close' || toStatus === 'approved';
+    const badgeTone = positive ? 'positive' : (toStatus === 'declined' || toStatus === 'withdrawn' ? 'neutral' : 'teal');
+    await notify.notifyAppBorrowers(appId, {
+      type: 'status_change', title: `Your loan status is now: ${label}`,
+      body: `Your loan file has moved from "${fromLabel}" to "${label}".`,
+      badge: { text: label, tone: badgeTone },
+      steps: steps || undefined,   // the visual loan-journey path (null on declined/withdrawn)
+      callout: explain ? { title: 'What this means', body: explain, tone: positive ? 'positive' : 'gold' } : undefined,
+      applicationId: appId, link: `/app/${appId}`, ctaLabel: 'View your file',
+      major: MAJOR_STATUSES.has(toStatus) });   // #88: only decision statuses email the borrower
+    await notify.notifyAppStaff(appId, {   // #113: whole team (primary + assistants), minus the actor
+      type: 'status_change', title: `File moved to ${label}`,
+      body: `This file moved from "${fromLabel}" to "${label}"${opts.forced ? ' (advanced with an admin override)' : ''}.`,
+      applicationId: appId, link: `/internal/app/${appId}`, exceptStaffId: opts.actorId,
+      // Owner-directed 2026-07-20: the team gets an EMAIL only on DECISION
+      // milestones (approved / clear-to-close / funded / declined / withdrawn).
+      // Routine working moves (in review, processing, underwriting) post in-app
+      // only — no inbox bombardment when a file advances a step.
+      inAppOnly: !MAJOR_STATUSES.has(toStatus) });
+  } catch (_) { /* notify best-effort */ }
+}
 // Conditions-to-close gating. Reaching "clear to close" requires every open
 // prior-to-docs (and standard) condition cleared/waived and every gate item
 // signed off; "funded" additionally requires prior-to-funding conditions.
@@ -4800,31 +5156,10 @@ router.patch('/applications/:id', async (req, res) => {
     await audit(req, 'status_change', 'application', req.params.id, { from: cur.rows[0].status, to: status, forced: forced || undefined });
     // Status is a rule-engine field (e.g. "when the file reaches underwriting").
     try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'status_change' }); } catch (_) {}
-    const label = STATUS_LABEL[status] || status;
-    try {
-      const fromLabel = STATUS_LABEL[cur.rows[0].status] || cur.rows[0].status;
-      const explain = BORROWER_STATUS_EXPLAIN[status];
-      const steps = borrowerJourney(status);
-      const positive = status === 'funded' || status === 'clear_to_close' || status === 'approved';
-      const badgeTone = positive ? 'positive' : (status === 'declined' || status === 'withdrawn' ? 'neutral' : 'teal');
-      await notify.notifyAppBorrowers(req.params.id, {
-        type: 'status_change', title: `Your loan status is now: ${label}`,
-        body: `Your loan file has moved from "${fromLabel}" to "${label}".`,
-        badge: { text: label, tone: badgeTone },
-        steps: steps || undefined,   // the visual loan-journey path (null on declined/withdrawn)
-        callout: explain ? { title: 'What this means', body: explain, tone: positive ? 'positive' : 'gold' } : undefined,
-        applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'View your file',
-        major: MAJOR_STATUSES.has(status) });   // #88: only decision statuses email the borrower
-      await notify.notifyAppStaff(req.params.id, {   // #113: whole team (primary + assistants), minus the actor
-          type: 'status_change', title: `File moved to ${label}`,
-          body: `This file moved from "${fromLabel}" to "${label}"${forced ? ' (advanced with an admin override)' : ''}.`,
-          applicationId: req.params.id, link: `/internal/app/${req.params.id}`, exceptStaffId: req.actor.id,
-          // Owner-directed 2026-07-20: the team gets an EMAIL only on DECISION
-          // milestones (approved / clear-to-close / funded / declined / withdrawn).
-          // Routine working moves (in review, processing, underwriting) post
-          // in-app only — no inbox bombardment when a file advances a step.
-          inAppOnly: !MAJOR_STATUSES.has(status) });
-    } catch (_) { /* notify best-effort */ }
+    // Announce the transition to the borrower + team (shared with the
+    // internal-status door so both notify identically). The bucket always
+    // changed here (guarded by the unchanged-status early return above).
+    await notifyStatusTransition(req.params.id, cur.rows[0].status, status, { forced, actorId: req.actor.id });
     res.json({ ok: true, status });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -4873,6 +5208,14 @@ router.post('/applications/:id/internal-status', async (req, res) => {
       { from: cur.rows[0].internal_status, to: internalStatus, external, forced: forced || undefined });
     // Status is a rule-engine field — re-run conditions on the new external bucket.
     try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'status_change' }); } catch (_) {}
+    // Parity with PATCH /:id: if this internal-status move changed the
+    // BORROWER-FACING bucket, announce it exactly like the other door — so
+    // funding/approving via the 38-status dropdown emails the borrower too. Guard
+    // on a real external change: many internal statuses map to the same external
+    // bucket, and re-announcing an unchanged bucket would be a wrong-time email.
+    if (external !== cur.rows[0].status) {
+      await notifyStatusTransition(req.params.id, cur.rows[0].status, external, { forced, actorId: req.actor.id });
+    }
     res.json({ ok: true, internal_status: internalStatus, status: external });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });

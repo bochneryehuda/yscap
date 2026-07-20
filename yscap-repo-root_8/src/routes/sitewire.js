@@ -336,6 +336,37 @@ router.get('/files/:id/borrower-status', requirePermission('manage_draws'), asyn
   catch (e) { res.status(500).json({ error: 'Could not read the borrower status from Sitewire right now.' }); }
 });
 
+// ---- GET /files/:id/quick-notify-statuses — Sitewire's pipeline status labels ----
+router.get('/files/:id/quick-notify-statuses', requirePermission('manage_draws'), async (req, res) => {
+  if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try { res.json({ statuses: await orchestrator.listQuickNotifyStatuses() }); }
+  catch (e) { res.status(500).json({ error: 'Could not load the pipeline statuses.' }); }
+});
+
+// ---- POST /files/:id/draws/:drawId/quick-notify — set a draw's Sitewire pipeline status ----
+router.post('/files/:id/draws/:drawId/quick-notify', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id, drawId = req.params.drawId;
+  if (!/^\d+$/.test(String(drawId))) return res.status(404).json({ error: 'draw not found' });
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const r = await orchestrator.setDrawQuickNotify(appId, drawId, req.body ? req.body.status_id : null);
+    if (r.error === 'draw_not_on_file') return res.status(404).json({ error: 'That draw is not on this file.' });
+    if (r.error === 'writes_off') return res.status(409).json({ error: 'Sitewire writing is off — turn it on to change the pipeline status.' });
+    if (r.error === 'bad_status') return res.status(400).json({ error: 'Pick a valid pipeline status.' });
+    if (r.error === 'clear_unsupported') return res.status(400).json({ error: 'Pick a pipeline status — it can be moved between statuses but not cleared back to none.' });
+    if (r.error === 'transient') return res.status(502).json({ error: 'Sitewire is briefly unavailable — please try again shortly.' });
+    if (r.error) return res.status(502).json({ error: 'Could not update the pipeline status in Sitewire — please try again.' });
+    res.json(r);
+  } catch (e) { res.status(500).json({ error: 'Could not update the pipeline status right now.' }); }
+});
+
+// ---- GET /files/:id/sitewire-documents — the Sitewire property's own documents (live read) ----
+router.get('/files/:id/sitewire-documents', requirePermission('manage_draws'), async (req, res) => {
+  if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try { res.json(await orchestrator.getSitewireDocuments(req.params.id)); }
+  catch (e) { res.status(500).json({ error: 'Could not load the Sitewire documents.' }); }
+});
+
 // ---- POST /files/:id/resend-invite — (re)send Sitewire's borrower invite ----
 router.post('/files/:id/resend-invite', requirePermission('manage_draws'), async (req, res) => {
   if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
@@ -1056,7 +1087,7 @@ router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, r
     // "already in Sitewire — not managed" banner), or another setup blocker (no SOW, budget mismatch, …).
     const setupStatus = (link && link.raw && link.raw.setup_status) ? link.raw.setup_status : null;
     const preexisting = !!(setupStatus && setupStatus.preexisting_property_id);
-    const draws = (await db.query(`SELECT sitewire_draw_id, number, name, status, risk_level, risk_flags, submitted_at, approved_at, pdf_src FROM sitewire_draws WHERE application_id=$1 ORDER BY number DESC NULLS LAST`, [appId])).rows;
+    const draws = (await db.query(`SELECT sitewire_draw_id, number, name, status, risk_level, risk_flags, submitted_at, approved_at, pdf_src, quick_notify_status_id, coordinator_id FROM sitewire_draws WHERE application_id=$1 ORDER BY number DESC NULLS LAST`, [appId])).rows;
     const requests = (await db.query(
       `SELECT r.sitewire_request_id, r.sitewire_draw_id, r.sitewire_job_item_id, r.job_item_name, r.requested_cents, r.approved_cents, r.inspection_count, r.lender_comments
          FROM sitewire_draw_requests r JOIN sitewire_draws d ON d.sitewire_draw_id=r.sitewire_draw_id WHERE d.application_id=$1 ORDER BY r.sitewire_request_id`, [appId])).rows;
@@ -1067,8 +1098,8 @@ router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, r
          FROM change_requests cr JOIN sow_change_request_details d ON d.change_request_id=cr.id
         WHERE cr.application_id=$1 AND cr.field='sow_reallocation' ORDER BY cr.created_at DESC`, [appId])).rows;
     // merge risk flags onto the rollup draw summaries
-    const riskByDraw = new Map(draws.map((d) => [Number(d.sitewire_draw_id), { level: d.risk_level, flags: d.risk_flags, pdf_src: d.pdf_src }]));
-    for (const d of rollup.draws) { const r = riskByDraw.get(d.sitewire_draw_id); if (r) { d.risk_level = r.level; d.risk_flags = r.flags; d.pdf_src = r.pdf_src; } }
+    const riskByDraw = new Map(draws.map((d) => [Number(d.sitewire_draw_id), { level: d.risk_level, flags: d.risk_flags, pdf_src: d.pdf_src, quick_notify_status_id: d.quick_notify_status_id, coordinator_id: d.coordinator_id }]));
+    for (const d of rollup.draws) { const r = riskByDraw.get(d.sitewire_draw_id); if (r) { d.risk_level = r.level; d.risk_flags = r.flags; d.pdf_src = r.pdf_src; d.quick_notify_status_id = r.quick_notify_status_id; d.coordinator_id = r.coordinator_id; } }
     // retainage held vs released + the lien-waiver register (roadmap money model)
     const held = Number((await db.query(`SELECT COALESCE(sum(retainage_held_cents),0) h FROM draw_disbursements WHERE application_id=$1 AND kind='draw'`, [appId])).rows[0].h) || 0;
     const rlsd = Number((await db.query(`SELECT COALESCE(sum(net_release_cents),0) r FROM draw_disbursements WHERE application_id=$1 AND kind='retainage_release'`, [appId])).rows[0].r) || 0;
