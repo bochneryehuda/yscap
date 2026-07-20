@@ -130,20 +130,30 @@ const KICK_DEBOUNCE_MS = 4000;     // collapse a burst of uploads into one pass;
                                    // that kicked it and wait for the sweep
 const MAX_DRAIN_LOOPS = 200;       // backfill safety valve per drain (200*25 docs)
 // A single mirror attempt must never hang the whole pass. Every Graph HTTP call
-// already has its own 60s/120s socket timeout, but a DB query blocked on a lock
+// already has its own 60s/180s socket timeout, but a DB query blocked on a lock
 // has NO timeout in pg — and one stalled attempt with the old code left the
 // in-memory _running flag stuck true, freezing EVERY later drain (the 2026-07-20
 // "nothing synced for 6h; docs stuck at not-yet-attempted" incident). This
 // bounds one attempt; a hang becomes a recorded error and the pass continues.
-const MIRROR_ATTEMPT_TIMEOUT_MS = 150000;   // > the 120s chunk-upload timeout + margin
-// If a drain has been "running" longer than this, treat it as dead (a hung
-// await that never settled) and let a fresh pass start instead of no-opping
+// Set WELL ABOVE a legitimate slow upload's worst case (sharepoint.js: 180s
+// per-chunk socket timeout + up to two ~120s throttle sleeps ≈ 7 min) so a
+// large/throttled file is never spuriously timed out — only a true hang is.
+const MIRROR_ATTEMPT_TIMEOUT_MS = 600000;   // 10 min: > worst-case real upload, < the stall ceiling
+// If a drain has made NO progress for longer than this, treat it as dead (a
+// hung await that never settled) and let a fresh pass start instead of no-opping
 // forever — the freeze self-heals on the next interval, no restart needed.
+// "Progress" is heartbeated (see _runningSince below), so a healthy long
+// backfill never trips this — only a genuinely stalled pass ages out.
 const DRAIN_STALL_CEILING_MS = 15 * 60 * 1000;
 
 let _running = false;              // single-flight: kick + interval never overlap
-let _runningSince = 0;             // wall-clock ms when the in-flight drain started
+let _runningSince = 0;             // heartbeat: wall-clock ms of the in-flight drain's LAST progress
 let _runSeq = 0;                   // generation token — a stalled pass can't reset newer state
+// Mark forward progress so the stall guard measures time-since-progress, not
+// time-since-start — a healthy long backfill keeps itself fresh; only a pass
+// wedged with no progress ages out. Guarded by the generation token so a zombie
+// pass can't keep a superseding pass's clock alive.
+function heartbeat(mySeq) { if (mySeq === _runSeq) _runningSince = Date.now(); }
 let _rekick = false;               // an upload arrived mid-drain — drain again after
 let _kickTimer = null;
 let _interval = null;
@@ -1348,7 +1358,7 @@ async function drainVerify() {
 
 // ---------------------------------------------------------------------- passes
 /** One reconciliation pass. Never throws for a single document. */
-async function runOnce({ limit = DEFAULT_BATCH } = {}) {
+async function runOnce({ limit = DEFAULT_BATCH, seq = 0 } = {}) {
   if (!enabled()) return { skipped: true, scanned: 0, mirrored: 0, failed: 0 };
   // Version-churn fix: settle superseded autosave snapshots WITHOUT uploading
   // before selecting work — an editing burst mirrors one file, not N.
@@ -1357,6 +1367,11 @@ async function runOnce({ limit = DEFAULT_BATCH } = {}) {
   const rows = await pendingBatch(limit);
   let mirrored = 0, failed = 0;
   for (const row of rows) {
+    // If a stall-guard spawned a newer pass while this one was wedged, this pass
+    // has been superseded — stop the moment we notice, so a resumed zombie never
+    // uploads concurrently with its replacement (seq=0 = a non-drain caller,
+    // never superseded).
+    if (seq && seq !== _runSeq) break;
     try {
       // Bound every attempt: a stalled Graph move or a lock-blocked DB query can
       // no longer hang the whole pass (and, with it, all future drains). A hang
@@ -1373,6 +1388,7 @@ async function runOnce({ limit = DEFAULT_BATCH } = {}) {
     // take longer than the whole lease, and an expired lease mid-batch is
     // exactly the double-drain the lease exists to prevent.
     await renewLease('sp-drain');
+    heartbeat(seq);   // progress made — keep the stall guard from aging out a healthy pass
     await sleep(PACING_MS);
   }
   // Safety net: after the normal batch, force ONE real attempt on any document
@@ -1386,6 +1402,7 @@ async function runOnce({ limit = DEFAULT_BATCH } = {}) {
   try {
     const strays = await neverAttemptedStrays(STRAY_BATCH);
     for (const s of strays) {
+      if (seq && seq !== _runSeq) break;   // superseded by a fresher pass — stop
       console.warn(`[sp-sync] never-attempted stray doc ${s.id} (${s.filename || '?'}) age ${s.age_hours}h — ${explainExclusion(s)}; forcing one attempt`);
       const res = await forceAttemptDoc(s.id).catch((e) => ({ failed: true, error: e.message }));
       strayForced++;
@@ -1405,6 +1422,7 @@ async function runOnce({ limit = DEFAULT_BATCH } = {}) {
         }
       }
       await renewLease('sp-drain');
+      heartbeat(seq);
       await sleep(PACING_MS);
     }
   } catch (e) { console.warn('[sp-sync] stray sweep error:', e.message); }
@@ -1444,8 +1462,9 @@ async function drain() {
           AND COALESCE(sharepoint_backup_error, '') NOT LIKE '[permanent]%'`,
       [MAX_ATTEMPTS]).catch(() => {});
     for (let i = 0; i < MAX_DRAIN_LOOPS; i++) {
-      const res = await runOnce({});
+      const res = await runOnce({ seq: mySeq });
       await renewLease('sp-drain');
+      heartbeat(mySeq);
       if (res.skipped || res.scanned === 0) break;
       // If everything in a full batch failed, stop — retrying immediately would
       // hammer the same failure; the interval sweep retries later.
@@ -1454,12 +1473,15 @@ async function drain() {
   } catch (e) {
     console.warn('[sp-sync] drain error:', e.message);
   } finally {
-    await releaseLease('sp-drain');
-    // Only the LATEST pass clears the busy flag. If this pass was abandoned as
-    // stalled and a fresher pass took over (mySeq !== _runSeq), leave _running
-    // as-is so a late-arriving finally from the zombie can't unlock a pass that
-    // is still legitimately running.
-    if (mySeq === _runSeq) { _running = false; _runningSince = 0; }
+    // Only the LATEST pass touches shared state. If this pass was abandoned as
+    // stalled and a fresher pass took over (mySeq !== _runSeq), do NOT release
+    // the lease or clear the flag — a late-arriving finally from the zombie must
+    // not unlock or un-lease a pass that is still legitimately running.
+    if (mySeq === _runSeq) {
+      await releaseLease('sp-drain');
+      _running = false;
+      _runningSince = 0;
+    }
     // Lost-wakeup guard: an upload that arrived while this drain was running
     // re-queues one more pass instead of waiting for the interval sweep.
     if (_rekick) { _rekick = false; kick(); }
