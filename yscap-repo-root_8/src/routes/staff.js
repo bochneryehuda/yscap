@@ -2467,8 +2467,14 @@ router.post('/change-requests/:cid/approve', async (req, res) => {
     // an APPROVED change may not be written onto it (a super_admin can unlock the
     // file to make the correction). Without this the CR-approve path is another door
     // around the funded freeze.
-    const crLock = await require('../lib/file-lock').structuralLockReason(cr.application_id, client, { actor: req.actor });
-    if (crLock) { await client.query('ROLLBACK'); return res.status(409).json({ error: crLock, locked: true }); }
+    // The funded / clear-to-close structural freeze is ECONOMICS-only. A personal
+    // identity correction (name / DOB / SSN / phone / …) is not loan structure, so it
+    // must NOT be blocked by it — only an applications-entity (economics) change
+    // re-checks the freeze here.
+    if (cr.target_table !== 'borrowers') {
+      const crLock = await require('../lib/file-lock').structuralLockReason(cr.application_id, client, { actor: req.actor });
+      if (crLock) { await client.query('ROLLBACK'); return res.status(409).json({ error: crLock, locked: true }); }
+    }
     const applied = await changeRequests.applyRequest(client, cr, req.actor.id, note);
     await client.query('COMMIT');
     // Propagate the approved value to ClickUp (#86). The governed economics fields
@@ -2479,7 +2485,22 @@ router.post('/change-requests/:cid/approve', async (req, res) => {
     // multiple times"). Every other governed-field write path already enqueues
     // its touched columns; the CR-approve path was the one that forgot. Must run
     // AFTER COMMIT so the sync worker reads the committed value, not the stale one.
-    enqueueClickupPush(cr.application_id, [applied.field]).catch(() => {});
+    if (applied.entity === 'borrowers') {
+      // A personal change updates the SHARED borrower row — propagate to EVERY file
+      // where this borrower is the PRIMARY (their personal fields map to that task's
+      // primary-borrower fields), and a DOB rides as a HUMAN edit so the outbound DOB
+      // gate honors this explicit staff approval rather than treating it as an
+      // automated overwrite it would park for review.
+      try {
+        const bfiles = await db.query(
+          `SELECT id FROM applications WHERE borrower_id=$1 AND deleted_at IS NULL AND clickup_pipeline_task_id IS NOT NULL`,
+          [applied.borrowerId]);
+        const pushOpts = applied.field === 'date_of_birth' ? { humanEditKeys: ['date_of_birth'] } : {};
+        for (const row of bfiles.rows) enqueueClickupPush(row.id, [applied.field], pushOpts).catch(() => {});
+      } catch (_) { /* best-effort propagation */ }
+    } else {
+      enqueueClickupPush(cr.application_id, [applied.field]).catch(() => {});
+    }
     // The change is already committed — never let the audit/notify below turn a
     // successful apply into a 500.
     try {

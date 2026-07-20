@@ -143,7 +143,18 @@ router.get('/profile', async (req, res) => {
   // Live residence duration from the anchored move-in date (owner-directed
   // 2026-07-14) — the stored years/months are recomputed to "now" so a profile
   // opened months after the count was entered shows the real elapsed time.
-  res.json(require('../lib/residence').withLiveResidence(r.rows[0]) || {});
+  const out = require('../lib/residence').withLiveResidence(r.rows[0]) || {};
+  // `locked` = this borrower has at least one ACCEPTED (registered) file, so their
+  // identity edits (name/DOB/SSN/phone/credit/citizenship) now go through loan-team
+  // approval rather than saving directly (owner-directed 2026-07-20). The profile
+  // screen uses this to switch off silent autosave for those fields and explain why.
+  try {
+    const lk = await db.query(
+      `SELECT 1 FROM applications a JOIN product_registrations pr ON pr.application_id=a.id AND pr.is_current
+        WHERE (${OWN_FILE_SQL("a", "$1")}) AND a.deleted_at IS NULL LIMIT 1`, [me(req)]);
+    out.locked = !!lk.rows[0];
+  } catch (_) { out.locked = false; }
+  res.json(out);
 });
 
 // Update the borrower's canonical profile. The client sends camelCase keys and
@@ -194,9 +205,42 @@ router.put('/profile', async (req, res) => {
     }
     fields.date_of_birth = dob;
   }
+  // Owner-directed 2026-07-20: once ANY of this borrower's files is ACCEPTED (a
+  // product is registered), the borrower can no longer change their identity on
+  // their side directly — name / DOB / SSN / phone / credit / citizenship each
+  // become a pending change request the loan team approves, showing before → after.
+  // Non-identity profile details (address, housing, residence, marital) stay
+  // directly editable. The request is anchored to the borrower's most-recently
+  // accepted file, whose team approves; approval writes the shared borrower row.
+  const changeRequested = [];
+  let ssnGated = false;
+  const anchor = (await db.query(
+    `SELECT a.id FROM applications a
+       JOIN product_registrations pr ON pr.application_id=a.id AND pr.is_current
+      WHERE (${OWN_FILE_SQL("a", "$1")}) AND a.deleted_at IS NULL
+      ORDER BY pr.created_at DESC LIMIT 1`, [me(req)])).rows[0];
+  if (anchor) {
+    for (const col of Object.keys(fields)) {
+      if (!changeRequests.isBorrowerField(col)) continue;   // identity fields only; keep address/housing/etc. live
+      try {
+        const cr = await changeRequests.openRequest(anchor.id, col, fields[col],
+          { reason: b.reason || null, requesterKind: 'borrower', requesterId: me(req), targetBorrowerId: me(req) });
+        if (!cr.unchanged) changeRequested.push(cr);
+      } catch (_) { /* skip an invalid field, keep the rest */ }
+      delete fields[col];   // never a live write on a locked borrower
+    }
+    if (b.ssn) {
+      try {
+        const cr = await changeRequests.openRequest(anchor.id, 'ssn', b.ssn,
+          { reason: b.reason || null, requesterKind: 'borrower', requesterId: me(req), targetBorrowerId: me(req) });
+        if (!cr.unchanged) changeRequested.push(cr);
+      } catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
+      ssnGated = true;
+    }
+  }
   const sets = [], vals = []; let i = 1;
   for (const [k, v] of Object.entries(fields)) { sets.push(`${k}=$${i++}`); vals.push(v); }
-  if (b.ssn) {
+  if (b.ssn && !ssnGated) {
     // #91/#92: validate server-side (the "Add SSN" button gates to 9 digits, but a
     // direct/old-client caller must not persist a partial or non-numeric SSN).
     const s = C.ssnForStorage(b.ssn);
@@ -204,21 +248,30 @@ router.put('/profile', async (req, res) => {
     sets.push(`ssn_encrypted=$${i++}`); vals.push(s.encrypted);
     sets.push(`ssn_last4=$${i++}`); vals.push(s.last4);
   }
-  if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
-  // Before-image of the identity-critical fields for the audit trail (incident
-  // gap: update_profile logged no values, so changes couldn't be reconstructed).
-  const CRITICAL = ['cell_phone', 'date_of_birth', 'fico', 'citizenship'];
-  const changedCritical = CRITICAL.filter((k) => k in fields);
-  let beforeImg;
-  if (changedCritical.length) {
-    try { beforeImg = (await db.query(`SELECT ${changedCritical.join(', ')} FROM borrowers WHERE id=$1`, [me(req)])).rows[0]; } catch (_) {}
+  // Nothing to do only when there is neither a live edit nor a proposed change.
+  if (!sets.length && !changeRequested.length) return res.status(400).json({ error: 'nothing to update' });
+  // The live write covers only the fields that stayed direct (a locked borrower's
+  // identity fields were split out into change requests above).
+  if (sets.length) {
+    // Before-image of the identity-critical fields for the audit trail (incident
+    // gap: update_profile logged no values, so changes couldn't be reconstructed).
+    const CRITICAL = ['cell_phone', 'date_of_birth', 'fico', 'citizenship'];
+    const changedCritical = CRITICAL.filter((k) => k in fields);
+    let beforeImg;
+    if (changedCritical.length) {
+      try { beforeImg = (await db.query(`SELECT ${changedCritical.join(', ')} FROM borrowers WHERE id=$1`, [me(req)])).rows[0]; } catch (_) {}
+    }
+    sets.push('updated_at=now()'); vals.push(me(req));
+    await db.query(`UPDATE borrowers SET ${sets.join(',')} WHERE id=$${i}`, vals);
+    await audit(req, 'update_profile', 'borrower', me(req), {
+      changed: Object.keys(fields), ssn: !!(b.ssn && !ssnGated),
+      before: beforeImg || undefined,
+      after: changedCritical.length ? Object.fromEntries(changedCritical.map((k) => [k, fields[k]])) : undefined });
   }
-  sets.push('updated_at=now()'); vals.push(me(req));
-  await db.query(`UPDATE borrowers SET ${sets.join(',')} WHERE id=$${i}`, vals);
-  await audit(req, 'update_profile', 'borrower', me(req), {
-    changed: Object.keys(fields), ssn: !!b.ssn,
-    before: beforeImg || undefined,
-    after: changedCritical.length ? Object.fromEntries(changedCritical.map((k) => [k, fields[k]])) : undefined });
+  // Team notice for the proposed identity changes (before → after), on the anchor file.
+  if (changeRequested.length && anchor) {
+    try { await notifyTeamOfChangeRequests(anchor.id, changeRequested); } catch (_) {}
+  }
   // Mapped borrower fields propagate to ClickUp immediately on every file this
   // borrower has that is ALREADY linked to a task (a profile edit must never
   // materialize a brand-new ClickUp task as a side effect — hence the filter).
@@ -239,11 +292,18 @@ router.put('/profile', async (req, res) => {
     }
   }
   // Profile fields (credit score, citizenship, home state…) feed the condition
-  // rule engine — re-check every open file this borrower is on.
-  if (b.fico !== undefined || b.citizenship !== undefined || b.currentAddress !== undefined) {
+  // rule engine — re-check every open file this borrower is on. Only for fields
+  // that were actually WRITTEN live; a gated (change-requested) field hasn't moved.
+  if (('fico' in fields) || ('citizenship' in fields) || ('current_address' in fields)) {
     try { await conditionEngine.evaluateBorrowerApplications(me(req), { reason: 'profile_updated' }); } catch (_) {}
   }
-  res.json({ ok: true });
+  res.json({
+    ok: true,
+    // When the borrower is locked (has an accepted file), tell the UI which identity
+    // edits became pending change requests so it can show "sent to your loan team".
+    locked: !!anchor,
+    changeRequested: changeRequested.map((r) => ({ field: r.field, label: r.field_label, newValue: r.new_value })),
+  });
 });
 
 // Government photo ID lives on the PROFILE, collected once and reused on every
@@ -1681,14 +1741,23 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
       await db.query(`UPDATE applications SET ${appSets.join(', ')} WHERE id=$1`, appVals);
       try { require('../clickup/enqueue').enqueueClickupPush(req.params.id, appKeys); } catch (_) {}
     }
-    if (requested.length) await notifyTeamOfChangeRequests(req.params.id, requested);
     // Personal fields update the actor's OWN profile only — a co-borrower must
     // not overwrite the primary borrower's DOB / phone / FICO / citizenship
     // (their own values differ). App/deal fields above are file-level and either
-    // party may fill them.
+    // party may fill them. Owner-directed 2026-07-20: once the file is LOCKED
+    // (accepted), a personal edit is ALSO approval-gated — it becomes a change
+    // request against the borrower's OWN row, not a live write.
     const brVals = [me(req)], brSets = [], brKeys = [];
     for (const [k, t] of Object.entries(B_COMPLETE_BORROWER)) {
       if (!(k in b) || b[k] === '' || b[k] == null) continue;
+      if (locked) {
+        try {
+          const cr = await changeRequests.openRequest(req.params.id, k, b[k],
+            { reason: b.reason || null, requesterKind: 'borrower', requesterId: me(req), targetBorrowerId: me(req) });
+          if (!cr.unchanged) requested.push(cr);
+        } catch (_) { /* skip a bad field, keep going with the rest */ }
+        continue;   // never a live write for a personal field on a locked file
+      }
       let v = b[k];
       if (t === 'int') { v = k === 'fico' ? require('../lib/fields').sanitizeFico(v) : parseInt(v, 10); if (v == null || !Number.isFinite(v)) continue; }  // #90: FICO 300–850
       if (t === 'date') {  // 2026-07-15 incident: strict calendar + year bounds;
@@ -1713,6 +1782,9 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
       // never overwrite the parent task's primary-borrower fields).
       if (me(req) === bid) { try { require('../clickup/enqueue').enqueueClickupPush(req.params.id, brKeys); } catch (_) {} }
     }
+    // One team notice for ALL of this borrower's proposed changes (economics +
+    // personal), each with its before → after, so the loan team can review together.
+    if (requested.length) await notifyTeamOfChangeRequests(req.params.id, requested);
     res.json({
       ok: true,
       locked,
@@ -1755,10 +1827,14 @@ router.get('/applications/:id/change-requests', async (req, res) => {
     `SELECT 1 FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")}) AND deleted_at IS NULL`,
     [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  // Economics requests are file-level (either borrower may see them); PERSONAL
+  // (borrowers-entity) requests are per-borrower — a co-borrower must not see the
+  // primary's identity change (its masked SSN / DOB), so scope those to the viewer.
   const r = await db.query(
     `SELECT id, field, field_label, old_value, new_value, reason, status, decision_note, created_at, decided_at
-       FROM change_requests WHERE application_id=$1
-      ORDER BY (status='pending') DESC, created_at DESC LIMIT 50`, [req.params.id]);
+       FROM change_requests
+      WHERE application_id=$1 AND (target_table='applications' OR target_id=$2)
+      ORDER BY (status='pending') DESC, created_at DESC LIMIT 50`, [req.params.id, me(req)]);
   res.json({
     locked: await changeRequests.isBorrowerLocked(req.params.id),
     requests: r.rows.map((row) => ({ ...row, decision_note: scrubText(row.decision_note) })),
