@@ -64,6 +64,15 @@ const assert = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) f
     'with "after renovation $X, presently $Y" the presently (As-Is) value wins, never the reno value');
 }
 
+// 4d-2) A longer ARV-synonym phrasing (filler words push the synonym past the old 26-char window)
+// must STILL be skipped — the guard window was widened to 44 (round-3 audit).
+{
+  assert(findAsIs('Opinion of value as is; stabilized market value of $575,000.').length === 0,
+    '"stabilized market value of $X" (ARV, longer phrasing) is not read as As-Is');
+  assert(findAsIs('as-improved market value is $575,000, as is condition noted').length === 0,
+    '"as-improved market value is $X" (ARV, longer phrasing) is not read as As-Is');
+}
+
 // 4e) A legitimate As-Is line mentioning "improvements" is NOT wrongly skipped (precise synonyms).
 {
   const hits = findAsIs('The as is value of the improvements is $430,000.');

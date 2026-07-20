@@ -114,7 +114,11 @@ router.post('/:appId/import', async (req, res, next) => {
     let xml;
     try {
       if (b.xmlBase64) { const { buf } = decodeUploadBase64(b.xmlBase64, { maxBytes: MAX_UPLOAD_BYTES }); xml = buf.toString('utf8'); }
-      else if (b.xml) { xml = String(b.xml); }
+      else if (b.xml) {
+        xml = String(b.xml);
+        // Same ceiling as the base64 path — the raw-string branch must not be a larger door.
+        if (Buffer.byteLength(xml, 'utf8') > MAX_UPLOAD_BYTES) { const err = new Error('the appraisal XML is too large'); err.status = 413; throw err; }
+      }
       else { xml = null; }
     } catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
     if (!xml) return res.status(400).json({ error: 'the appraisal XML is required' });
@@ -245,9 +249,9 @@ router.post('/:appId/findings/:fid/resolve', requirePermission('sign_off_conditi
       [req.params.fid, app.id])).rows[0];
     if (!fnd) return res.status(404).json({ error: 'finding not found or already resolved' });
 
-    let repriced = false, newValue = null;
+    let repriced = false, newValue = null, col = null;
     if (action === 'replace' || action === 'custom') {
-      const col = fnd.field;
+      col = fnd.field;
       if (!Object.prototype.hasOwnProperty.call(REPRICE_COLS, col)) {
         return res.status(400).json({ error: `this finding's field (${col}) cannot be written back automatically — use keep/dismiss or edit the file` });
       }
@@ -256,20 +260,43 @@ router.post('/:appId/findings/:fid/resolve', requirePermission('sign_off_conditi
       if (kind === 'numeric') { newValue = Number(String(raw).replace(/[,$]/g, '')); if (!Number.isFinite(newValue) || newValue <= 0) return res.status(400).json({ error: 'a positive number is required' }); }
       else if (kind === 'int') { newValue = parseInt(String(raw).replace(/\D/g, ''), 10); if (!Number.isInteger(newValue)) return res.status(400).json({ error: 'a whole number is required' }); }
       else { newValue = String(raw || '').trim(); if (!newValue) return res.status(400).json({ error: 'a value is required' }); }
-      const before = (await db.query(`SELECT ${col} AS v FROM applications WHERE id=$1`, [app.id])).rows[0];
-      // Parameterized value; column is from the whitelist above (never user input).
-      await db.query(`UPDATE applications SET ${col}=$2, updated_at=now() WHERE id=$1`, [app.id, newValue]);
       repriced = true;
-      await audit(req.actor.id, 'appraisal_finding_apply', app.id,
-        { finding: fnd.code, field: col, from: before && before.v, to: newValue, source: action });
     }
 
-    await db.query(
-      `UPDATE appraisal_findings SET status=$3, resolution=$4, resolution_value=$5, resolution_note=$6, resolved_by=$7, resolved_at=now()
-       WHERE id=$1 AND application_id=$2`,
-      [fnd.id, app.id, action === 'dismiss' ? 'dismissed' : 'resolved', action,
-       newValue != null ? String(newValue) : null, (b.note || '').slice(0, 2000), req.actor.id]);
-    if (!repriced) await audit(req.actor.id, 'appraisal_finding_resolve', app.id, { finding: fnd.code, action, note: (b.note || '').slice(0, 300) });
+    // Apply the file reprice (if any) AND the finding resolution ATOMICALLY. Previously these were
+    // two independent writes: a failure between them left the loan file's value permanently changed
+    // (reprice trigger already fired) while the finding stayed open and re-appliable — a divergent,
+    // double-appliable state. One transaction (mirrors undoAppraisalImport) makes it all-or-nothing.
+    let beforeVal = null;
+    const client = await db.getClient();
+    try {
+      await client.query('BEGIN');
+      if (repriced) {
+        const before = (await client.query(`SELECT ${col} AS v FROM applications WHERE id=$1`, [app.id])).rows[0];
+        beforeVal = before && before.v;
+        // Parameterized value; column is from the REPRICE_COLS whitelist above (never user input).
+        await client.query(`UPDATE applications SET ${col}=$2, updated_at=now() WHERE id=$1`, [app.id, newValue]);
+      }
+      await client.query(
+        `UPDATE appraisal_findings SET status=$3, resolution=$4, resolution_value=$5, resolution_note=$6, resolved_by=$7, resolved_at=now()
+         WHERE id=$1 AND application_id=$2`,
+        [fnd.id, app.id, action === 'dismiss' ? 'dismissed' : 'resolved', action,
+         newValue != null ? String(newValue) : null, (b.note || '').slice(0, 2000), req.actor.id]);
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      client.release();
+      return next(e);
+    }
+    client.release();
+
+    // Audit only after the commit actually succeeded (never record a reprice that rolled back).
+    if (repriced) {
+      await audit(req.actor.id, 'appraisal_finding_apply', app.id,
+        { finding: fnd.code, field: col, from: beforeVal, to: newValue, source: action });
+    } else {
+      await audit(req.actor.id, 'appraisal_finding_resolve', app.id, { finding: fnd.code, action, note: (b.note || '').slice(0, 300) });
+    }
 
     // Remaining open fatal findings gate the review-cleared condition.
     const openFatal = (await db.query(

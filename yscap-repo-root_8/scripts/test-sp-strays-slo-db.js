@@ -189,6 +189,43 @@ const ok = (name, cond) => { if (cond) pass++; else { fail++; console.log(`FAIL 
   const livAlert3 = (await db.query(`SELECT count(*)::int n FROM sync_locks WHERE lock_key='sp-liveness-alert'`)).rows[0].n;
   ok('recovery auto-clears the liveness alert (silent again)', livAlert3 === 0);
 
+  // === TEST 3: SLO alert BOMBARDMENT fix — per-document dedup (round-2 audit F1) =
+  // A stuck doc alerts ONCE; repeat polls of the same set stay quiet; a genuinely
+  // NEW stuck doc alerts; a doc resolving/reshuffling never re-alerts.
+  const notify = require('../src/lib/notify');
+  const realNotifyAdmins = notify.notifyAdmins;
+  let alertEmails = 0;
+  notify.notifyAdmins = async () => { alertEmails += 1; };   // stub the email fan-out
+  process.env.SHAREPOINT_SLO_ALERT_COOLDOWN_MIN = '60';
+  await backup.clearSloAlert();
+  await db.query(`UPDATE documents SET sharepoint_slo_alerted_at = NULL`);
+  const stuck1 = await mkDoc({ filename: 'Review DOV.pdf', storage_ref: 'zz/nope1.pdf',
+    sharepoint_backup_attempts: 9, sharepoint_backup_error: '[permanent] test', created_at: "now() - interval '8 hours'" });
+  await backup.checkBacklogSlo();
+  ok('a stuck doc triggers ONE alert email', alertEmails === 1);
+  await backup.checkBacklogSlo();
+  ok('repeat poll of the SAME stuck set sends NO new email (bombardment fixed)', alertEmails === 1);
+  const stuck2 = await mkDoc({ filename: '825 BISHOP EOI.pdf', storage_ref: 'zz/nope2.pdf',
+    sharepoint_backup_attempts: 9, sharepoint_backup_error: '[permanent] test', created_at: "now() - interval '8 hours'" });
+  await backup.checkBacklogSlo();
+  ok('a genuinely NEW stuck doc triggers a fresh alert', alertEmails === 2);
+  await backup.checkBacklogSlo();
+  ok('another repeat poll stays quiet', alertEmails === 2);
+  await db.query(`UPDATE documents SET sharepoint_backed_up_at = now() WHERE id = $1`, [stuck1]);
+  await backup.checkBacklogSlo();
+  ok('a doc resolving/reshuffling does NOT re-alert (the churn that caused the flood)', alertEmails === 2);
+
+  // === TEST 4: never-mirror docs are NOT counted as backlog (round-2 audit F2) ===
+  const heter = await mkDoc({ filename: 'HeterIska.pdf', doc_kind: 'heter_iska_signed', storage_ref: 'zz/heter.pdf',
+    sharepoint_backup_attempts: 9, created_at: "now() - interval '30 hours'" });
+  const stuckList = await backup.stuckDocuments(200);
+  ok('a never-mirror (heter iska) doc is NOT listed as stuck', !stuckList.some((d) => d.id === heter));
+  const apPhoto = await mkDoc({ filename: 'appraisal-photo-1.png', doc_kind: 'appraisal_photo', storage_ref: 'zz/ph.png',
+    created_at: "now() - interval '30 hours'" });
+  const stuckList2 = await backup.stuckDocuments(200);
+  ok('an appraisal-photo doc is NOT listed as stuck (never-mirror kind)', !stuckList2.some((d) => d.id === apPhoto));
+  notify.notifyAdmins = realNotifyAdmins;   // restore
+
   console.log(`\n${pass} passed, ${fail} failed`);
   await db.pool.end().catch(() => {});
   process.exit(fail ? 1 : 0);
