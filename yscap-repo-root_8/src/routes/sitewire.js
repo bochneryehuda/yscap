@@ -168,25 +168,13 @@ async function generateAndServeReport(req, res, { sitewireDrawId, scope }) {
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
   const mode = req.query.mode === 'borrower' ? 'borrower' : 'staff';
   try {
-    const meta = await drawReport.loadReportMeta(appId, { sitewireDrawId, mode });
-    if (!meta) return res.status(404).json({ error: 'file not found' });
-    if (!meta.hasScope || !meta.sections.length) {
+    // Shared load -> build -> store+supersede -> cache-by-version (draw-report.js); the deliver path pre-builds
+    // via the same helper, so an already-delivered draw's report streams straight from the cached row here.
+    const r = await drawReport.buildOrGetReportDoc(appId, { sitewireDrawId, scope, mode });
+    if (!r || !r.doc) {
       return res.status(404).json({ error: 'No draw data to report on yet — start a draw and deliver findings first.' });
     }
-    const drawNumber = scope === 'draw' && meta.sections[0] ? meta.sections[0].number : null;
-    const filename = drawReport.reportFilename({ scope, mode, drawNumber, version: meta.version, loanNo: meta.app.loanNo });
-    const borrowerId = (await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [appId])).rows[0] || {};
-    // cache hit: this exact version already stored → stream it back (no rebuild, no photo re-read)
-    let doc = (await db.query(
-      `SELECT * FROM documents WHERE application_id=$1 AND doc_kind='draw_inspection_report' AND filename=$2 LIMIT 1`,
-      [appId, filename])).rows[0];
-    if (!doc) {
-      await drawReport.attachPhotoBytes(meta.sections);         // read the durable photo bytes (bounded)
-      const bytes = drawReport.buildDrawReport({ app: meta.app, rollup: meta.rollup, sections: meta.sections, scope, mode });
-      const docId = await drawReport.storeDrawReport({ appId, borrowerId: borrowerId.borrower_id, filename, bytes, mode });
-      doc = (await db.query(`SELECT * FROM documents WHERE id=$1`, [docId])).rows[0];
-    }
-    return serveDocument(res, doc, { inline: true });
+    return serveDocument(res, r.doc, { inline: true });
   } catch (e) { res.status(500).json({ error: 'Could not build the report — please try again.' }); }
 }
 // per-draw report
@@ -1261,7 +1249,18 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
       applicationId: appId, link: acceptLink, ctaLabel: 'Review draw results' }).catch(() => {});
     await notify.notifyAppStaff(appId, { type: 'draw_findings', title: 'Draw findings delivered to borrower',
       body: `Inspection findings for ${addr} were delivered to the borrower to accept or dispute.`, applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
-    res.json({ ok: true, ...result });
+    // Auto-deliver artifacts: durably archive the inspector's (expiring) media NOW and pre-build the PILOT +
+    // borrower-safe reports, so the durable photos + both branded PDFs are ready the instant findings land —
+    // never dependent on a later manual "archive" click (a report built pre-archive had zero photos). Fully
+    // best-effort: it never throws or reverses the delivery just completed. (drawReport.autoDeliverArtifacts.)
+    // Bounded on the response path: we await up to a short budget so the common (fast) case confirms
+    // "reports ready", but a slow/unreachable media CDN can NEVER hang this delivery request (the archive is
+    // a sequential per-item fetch with only a per-item timeout). Past the budget the work keeps running in the
+    // background to completion (every step is idempotent + independently caught) — we just answer promptly.
+    const work = drawReport.autoDeliverArtifacts(appId, drawId).catch(() => ({ archived: 0, reports: [] }));
+    const budgetMs = Number(process.env.DRAW_AUTODELIVER_BUDGET_MS) || 20000;
+    const artifacts = await Promise.race([work, new Promise((r) => { setTimeout(() => r({ archived: 0, reports: [], pending: true }), budgetMs); })]);
+    res.json({ ok: true, ...result, media_archived: artifacts.archived, reports_ready: artifacts.reports, reports_pending: !!artifacts.pending });
   } catch (e) { console.warn('[sitewire] upstream error:', e && e.message); res.status(502).json({ error: 'the draw service is temporarily unavailable — nothing was changed; try again shortly' }); }
 });
 
