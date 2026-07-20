@@ -30,14 +30,26 @@ const { pdfSafe } = require('./application-pdf');
 
 const ASSET_DIR = path.join(__dirname, 'templates', 'iska');
 
+// A missing/partial engine bundle or page asset is an infrastructure/DEPLOY fault,
+// not a data error — classify it RETRYABLE so the send re-drives (and self-heals on
+// the next deploy) instead of permanently dead-lettering with an opaque, path-leaking
+// message. If it truly never resolves, the send engine dead-letters it after its own
+// retry/backoff window carrying this clear operator message.
+function assetError(what) {
+  const e = new Error(`The Heter Iska ${what} isn't available on the server — the send will retry. If this persists, redeploy so the templates/iska assets ship with the build.`);
+  e.retryable = true;
+  return e;
+}
+
 // jsPDF UMD bundle, loaded lazily (same pattern as application-pdf.js).
 let _jsPDF = null;
 function getJsPDF() {
   if (_jsPDF) return _jsPDF;
   const abs = path.join(__dirname, '..', '..', '..', 'web', 'tools', 'vendor', 'jspdf.umd.min.js');
-  const mod = require(abs);
+  let mod;
+  try { mod = require(abs); } catch (_) { throw assetError('PDF engine (jspdf) failed to load'); }
   _jsPDF = (mod && typeof mod.jsPDF === 'function') ? mod.jsPDF : (global.jspdf && global.jspdf.jsPDF);
-  if (typeof _jsPDF !== 'function') { const e = new Error('PDF engine not loaded'); e.retryable = false; throw e; }
+  if (typeof _jsPDF !== 'function') throw assetError('PDF engine (jspdf) failed to load');
   return _jsPDF;
 }
 
@@ -45,12 +57,16 @@ function getJsPDF() {
 let _layout = null;
 const _imgCache = {};
 function layout() {
-  if (!_layout) _layout = JSON.parse(fs.readFileSync(path.join(ASSET_DIR, 'iska-layout.json'), 'utf8'));
+  if (!_layout) {
+    try { _layout = JSON.parse(fs.readFileSync(path.join(ASSET_DIR, 'iska-layout.json'), 'utf8')); }
+    catch (_) { throw assetError('page layout (iska-layout.json)'); }
+  }
   return _layout;
 }
 function imgDataUri(file) {
   if (!_imgCache[file]) {
-    _imgCache[file] = 'data:image/jpeg;base64,' + fs.readFileSync(path.join(ASSET_DIR, file)).toString('base64');
+    try { _imgCache[file] = 'data:image/jpeg;base64,' + fs.readFileSync(path.join(ASSET_DIR, file)).toString('base64'); }
+    catch (_) { throw assetError(`page image (${file})`); }
   }
   return _imgCache[file];
 }

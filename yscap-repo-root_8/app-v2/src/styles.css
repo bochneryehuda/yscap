@@ -102,7 +102,9 @@ h1{font-size:26px} h2{font-size:20px} h3{font-size:16px}
   align-items:center;justify-content:center;border:1px solid var(--line);border-radius:10px;
   background:var(--ink-1);color:var(--ivory);font-size:18px;line-height:1;cursor:pointer}
 .nav-scrim{display:none}
-.content{flex:1;padding:30px 0 60px}
+/* Bottom padding clears the fixed "Messages" chat launcher (.chat-fab, bottom-right)
+   so the last cards are never hidden under it when scrolled to the end of a page. */
+.content{flex:1;padding:30px 0 104px}
 
 /* cards / panels */
 .panel{background:var(--ink-1);border:1px solid var(--line);border-radius:var(--radius);padding:22px}
@@ -832,7 +834,7 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
 @media(max-width:720px){
   /* tighter, consistent gutters and boxes on phones */
   .wrap{padding:0 16px}
-  .content{padding:20px 0 44px}
+  .content{padding:20px 0 92px}
   .panel{padding:16px;border-radius:12px}
   .panel + .panel{margin-top:14px}
   h1{font-size:22px} h2{font-size:18px}
