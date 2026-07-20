@@ -114,7 +114,16 @@ module.exports = {
   //   nothing / EMAIL_PROVIDER=none -> none (logs only; in-app still works)
   // An explicit EMAIL_PROVIDER always wins.
   emailProvider: resolveEmailProvider(),
-  notifyFrom:    process.env.NOTIFY_FROM || 'YS Capital Group <no-reply@yscapgroup.com>',
+  // Owner-directed 2026-07-20: our notification emails ARE repliable, so the
+  // sender must not pretend otherwise. Default the From to a real, monitored
+  // address (no "no-reply"). For Resend only the DOMAIN must be verified; for
+  // Graph this must be a real mailbox UPN in the tenant.
+  notifyFrom:    process.env.NOTIFY_FROM || 'PILOT by YS Capital <notifications@yscapgroup.com>',
+  // A guaranteed Reply-To for every notification when no more-specific one is
+  // set (a per-file file+<id>@ address, or an officer's own inbox). This makes
+  // "just hit reply" always reach a human, so no email is ever a dead end.
+  // Defaults to the company sales inbox; override with REPLY_TO.
+  replyToDefault: (process.env.REPLY_TO || 'sales@yscapgroup.com').trim() || null,
   // #75 external chat guests: the domain a unique per-participant reply-to is
   // built on (e.g. "reply.yscapgroup.com" → chat+<key>@reply.yscapgroup.com).
   // When UNSET, external guests still receive chat emails but with no reply-to,

@@ -1730,32 +1730,23 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
           body, meta: (ctx && ctx.meta) || undefined, applicationId: appId,
           link: `/internal/app/${appId}`, ctaLabel: 'Open the loan file', exceptStaffId: req.actor.id });
 
-      // #150 — the CLIENT gets their loan-terms email too, branded to (and
-      // From) their assigned loan officer — recurring business stays with the
-      // officer's name, not a faceless company sender. Borrower-safe copy only
-      // (program label + the same terms the borrower portal already shows);
-      // type 'term_sheet' is in the borrower MAJOR-email allowlist (#88).
+      // #150 / owner-directed 2026-07-20 — the CLIENT gets the SAME rich,
+      // borrower-safe loan-terms email the team's own notice is built from (full
+      // structure breakdown, not a thin one-liner), branded to (and From) their
+      // assigned loan officer so recurring business stays with the officer's name.
+      // Borrower-safe copy only (program label + the borrower's own deal numbers);
+      // type 'term_sheet' is in the borrower MAJOR-email allowlist (#88), and the
+      // subject line auto-carries the file (loan # · property) via notify.js.
       try {
         let officer = null;
         if (row.loan_officer_id) {
           const o = await db.query(`SELECT full_name, title, email, phone, cell, nmls FROM staff_users WHERE id=$1`, [row.loan_officer_id]);
           if (o.rows[0]) officer = { name: o.rows[0].full_name, title: o.rows[0].title, email: o.rows[0].email, phone: o.rows[0].cell || o.rows[0].phone, nmls: o.rows[0].nmls };
         }
-        const officerLine = officer
-          ? `${officer.name}${officer.title ? ' · ' + officer.title : ''}${officer.nmls ? ' · NMLS #' + officer.nmls : ''}${officer.phone || officer.email ? ' · ' + [officer.phone, officer.email].filter(Boolean).join(' · ') : ''}`
-          : null;
         await notify.notifyAppBorrowers(appId, {
-          type: 'term_sheet',
-          title: 'Your updated loan terms are ready',
-          body: `${pricing.PROGRAM_LABEL[program]} · ${dollars} @ ${pctRate} · estimated cash to close ${money2(quote.cashToClose)}. Open your portal to review the full term sheet${officer ? ` — or reach out to ${officer.name} with any questions` : ''}.`,
-          meta: [
-            { label: 'Program', value: pricing.PROGRAM_LABEL[program] },
-            { label: 'Loan amount', value: `${dollars} @ ${pctRate}` },
-            quote.cashToClose != null ? { label: 'Estimated cash to close', value: money2(quote.cashToClose) } : null,
-            officerLine ? { label: 'Your loan officer', value: officerLine } : null,
-          ].filter(Boolean),
+          ...require('../lib/product-registration').borrowerTermsEmail({ ctx, quote, total, termMonths: inputs && inputs.term, officer }),
           applicationId: appId,
-          link: `/app/${appId}`, ctaLabel: 'Review your terms',
+          link: `/app/${appId}`,
           from: officer ? require('../lib/email').fromWithName(officer.name) : null,
           replyTo: officer ? officer.email : null,
         });
@@ -2897,7 +2888,9 @@ router.post('/applications/:id/assign', async (req, res) => {
         [req.params.id, loanOfficerId, off.rows[0].full_name]);
       if (u.rowCount === 0) return res.status(404).json({ error: 'application not found' });
       await notify.notifyStaff(loanOfficerId, {
-        type: 'assignment', title: 'Application assigned to you', applicationId: req.params.id,
+        type: 'assignment', title: 'You are the loan officer on a file',
+        body: `${req.actor.name || 'An admin'} assigned this file to you as loan officer. The file details are below — open it to get started.`,
+        applicationId: req.params.id, ctaLabel: 'Open the loan file',
         link: `/internal/app/${req.params.id}` });
       await audit(req, 'assign_application', 'application', req.params.id, { from: cur.rows[0].loan_officer_id || null, to: loanOfficerId });
     }
@@ -2914,7 +2907,9 @@ router.post('/applications/:id/assign', async (req, res) => {
         [req.params.id, processorId]);
       if (u.rowCount === 0) return res.status(404).json({ error: 'application not found' });
       await notify.notifyStaff(processorId, {
-        type: 'assignment', title: 'File assigned to you for processing', applicationId: req.params.id,
+        type: 'assignment', title: 'You are the processor on a file',
+        body: `${req.actor.name || 'An admin'} assigned this file to you for processing. The file details are below — open it to get started.`,
+        applicationId: req.params.id, ctaLabel: 'Open the loan file',
         link: `/internal/app/${req.params.id}` });
       await audit(req, 'assign_processor', 'application', req.params.id, { from: cur.rows[0].processor_id || null, to: processorId });
     }
@@ -2963,8 +2958,9 @@ router.post('/applications/:id/assignees', async (req, res) => {
       `INSERT INTO application_assignees (application_id, staff_id, role, is_primary, added_by) VALUES ($1,$2,$3,false,$4)`,
       [req.params.id, staffId, role, req.actor.id]);
     await notify.notifyStaff(staffId, {
-      type: 'assignment', title: 'You were added to a file',
-      applicationId: req.params.id, link: `/internal/app/${req.params.id}` });
+      type: 'assignment', title: `You were added to a file as ${role === 'processor' ? 'a processor' : 'a loan officer'}`,
+      body: `${req.actor.name || 'A teammate'} added you to this file with full access. The file details are below.`,
+      applicationId: req.params.id, ctaLabel: 'Open the loan file', link: `/internal/app/${req.params.id}` });
     await audit(req, 'add_assignee', 'application', req.params.id, { staffId, role });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -4384,8 +4380,8 @@ router.post('/applications/:id/closing-date', async (req, res) => {
       if (a.rows[0] && a.rows[0].borrower_id) {
         const nice = new Date(normExpected + 'T00:00:00').toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
         await notify.notifyAppBorrowers(req.params.id, {
-          type: 'closing_date', title: 'Estimated closing date set',
-          body: `Your loan is now targeting ${nice}. We'll keep you posted as it approaches.`,
+          type: 'closing_date', title: `Estimated closing date: ${nice}`,
+          body: `Your loan is now targeting a closing date of ${nice}. We'll keep you posted as it approaches — reach out any time with questions.`,
           applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'View your file' });
       }
     }
@@ -4504,13 +4500,15 @@ router.patch('/applications/:id', async (req, res) => {
     try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'status_change' }); } catch (_) {}
     const label = STATUS_LABEL[status] || status;
     try {
+      const fromLabel = STATUS_LABEL[cur.rows[0].status] || cur.rows[0].status;
       await notify.notifyAppBorrowers(req.params.id, {
-        type: 'status_change', title: `Your loan status: ${label}`,
-        body: `Your application has moved to "${label}". Sign in to see the latest.`,
+        type: 'status_change', title: `Your loan status is now: ${label}`,
+        body: `Your loan file has moved from "${fromLabel}" to "${label}". The full file — conditions, documents, and messages — is in your portal.`,
         applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'View your file',
         major: MAJOR_STATUSES.has(status) });   // #88: only decision statuses email the borrower
       await notify.notifyAppStaff(req.params.id, {   // #113: whole team (primary + assistants), minus the actor
           type: 'status_change', title: `File moved to ${label}`,
+          body: `This file moved from "${fromLabel}" to "${label}"${forced ? ' (advanced with an admin override)' : ''}.`,
           applicationId: req.params.id, link: `/internal/app/${req.params.id}`, exceptStaffId: req.actor.id });
     } catch (_) { /* notify best-effort */ }
     res.json({ ok: true, status });
