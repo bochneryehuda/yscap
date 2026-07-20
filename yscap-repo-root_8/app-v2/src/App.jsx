@@ -40,6 +40,7 @@ import CreditReviewQueue from './screens/CreditReviewQueue.jsx';
 import StaffChat from './screens/StaffChat.jsx';
 import StaffClickup from './screens/StaffClickup.jsx';
 import StaffDraws from './screens/StaffDraws.jsx';
+import StaffFileDraws from './screens/StaffFileDraws.jsx';
 import StaffDrawRules from './screens/StaffDrawRules.jsx';
 import StaffAuditLog from './screens/StaffAuditLog.jsx';
 import SyncReviews from './screens/SyncReviews.jsx';
@@ -121,6 +122,7 @@ export default function App() {
           <Route path="/internal/new" element={<StaffPrivate><StaffNewFile /></StaffPrivate>} />
           <Route path="/internal/tasks" element={<StaffPrivate><StaffTasks /></StaffPrivate>} />
           <Route path="/internal/app/:id" element={<StaffPrivate><StaffApplication /></StaffPrivate>} />
+          <Route path="/internal/app/:id/draws" element={<StaffPrivate><StaffFileDraws /></StaffPrivate>} />
           <Route path="/internal/team" element={<StaffPrivate><StaffTeam /></StaffPrivate>} />
           <Route path="/internal/conditions" element={<StaffPrivate><StaffConditionStudio /></StaffPrivate>} />
           <Route path="/internal/pricing" element={<StaffPrivate><StaffCompanyPricing /></StaffPrivate>} />

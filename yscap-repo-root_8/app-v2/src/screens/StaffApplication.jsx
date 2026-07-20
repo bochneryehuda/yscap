@@ -2561,7 +2561,6 @@ export default function StaffApplication() {
     { id: 'sec-application', label: 'Application details' },
     { id: 'sec-pricing', label: 'Structure & pricing', badge: app.registered_program ? '✓' : '' },
     { id: 'sec-appraisal', label: 'Appraisal & findings', badge: apprSummary && apprSummary.fatal ? `${apprSummary.fatal} ⚠` : '' },
-    ...(can('manage_draws') && app.status === 'funded' ? [{ id: 'sec-draws', label: 'Construction draws' }] : []),
     { id: 'sec-conditions', label: 'Conditions to close', badge: nCondOpen || '' },
     { id: 'sec-internal-conds', label: 'Internal conditions', badge: internalConds.length ? `${internalConds.filter(i => i.signed_off_at || i.status === 'satisfied').length}/${internalConds.length}` : '' },
     { id: 'sec-entity', label: 'LLC condition', badge: app.llc_id && app.llc_verified ? '✓' : '' },
@@ -2571,6 +2570,8 @@ export default function StaffApplication() {
     { id: 'sec-documents', label: 'Documents & exports', badge: docs.length || '' },
     { id: 'sec-messages', label: 'Conversations' },
     { id: 'sec-activity', label: 'Activity' },
+    // Construction draws is the LAST phase (post-funding), so it's the LAST section — after Activity.
+    ...(can('manage_draws') && app.status === 'funded' ? [{ id: 'sec-draws', label: 'Construction draws' }] : []),
   ];
 
   return (
@@ -2807,13 +2808,6 @@ export default function StaffApplication() {
         <AppraisalPanel appId={id} onSummary={onApprSummary} reloadSignal={apprReload} />
       </Section>
 
-      {can('manage_draws') && app.status === 'funded' && (
-        <Section id="sec-draws" title="Construction draws"
-          info="The draw desk for this file: the Scope-of-Work budget vs. what's been drawn per line and per unit, each draw's approvals, our fee and net release, the inspection findings the borrower accepts or disputes, and Scope-of-Work reallocations. Powered by the Sitewire integration.">
-          <DrawsPanel appId={id} />
-        </Section>
-      )}
-
       <Section id="sec-conditions" title="Conditions to close"
         info="The SAME list the borrower sees — shared both ways. Upload on their behalf, accept (signs off), accept-but-request-one-more, or reject with a reason (the file moves to the trash and the condition reopens)."
         badge={`${borrowerItems.filter(it => it.signed_off_at).length}/${borrowerItems.length} signed off`}>
@@ -3014,6 +3008,17 @@ export default function StaffApplication() {
         info="Every notification sent for this file — to the borrower, co-borrower, and each assigned staffer — with its email delivery status (sent, in-app only, or error). A running monitor of exactly what has gone out and to whom.">
       <EmailMonitor appId={id} />
       </Section>
+
+      {/* Construction draws — the LAST phase (post-funding), so the LAST section. Opens in its own full
+          window too (everything about the draw process lives there). */}
+      {can('manage_draws') && app.status === 'funded' && (
+        <Section id="sec-draws" title="Construction draws"
+          info="The draw desk for this file: the Scope-of-Work budget vs. what's been drawn per line and per unit, each draw's approvals, our fee and net release, the inspection findings the borrower accepts or disputes, and Scope-of-Work reallocations. Powered by the Sitewire integration."
+          action={<button className="btn ghost btn-sm" title="Open the full draw desk in its own window"
+            onClick={() => window.open(`${window.location.pathname}#/internal/app/${id}/draws`, '_blank', 'noopener')}>Open in a new window ↗</button>}>
+          <DrawsPanel appId={id} />
+        </Section>
+      )}
 
       </FileSections>
 
