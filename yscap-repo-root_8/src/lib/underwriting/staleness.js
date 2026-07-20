@@ -34,6 +34,7 @@ const FRESHNESS_RULES = {
 const EXPIRY_RULES = {
   government_id: { field: 'expirationDate',  label: 'Government ID' },
   insurance:     { field: 'policyExpiration', label: 'Insurance policy' },
+  payoff_statement: { field: 'goodThroughDate', label: 'Payoff statement' }, // good-through must cover closing
 };
 
 // Add `n` days to a 'YYYY-MM-DD' string, deterministically (UTC arithmetic — no wall clock).

@@ -490,13 +490,15 @@ function computePayoffFindings(p, subject, opts = {}) {
     return [verify('payoff_statement', 'payoff statement')];
   }
   const s = subject || {};
-  // 1. Right property.
+  // 1. Right property. A payoff for a DIFFERENT property would wire funds to clear the WRONG lien —
+  // a dealbreaker (fatal), the same way a title on the wrong property is. The per-doc check owns this
+  // vs the file; the tie-out suppresses the duplicate (PERDOC_COVERS) but still shows the matrix cell.
   if (addrMatches(p.propertyAddress, s.property_address) === false) {
-    out.push(mk('payoff_statement', { code: 'payoff_address_mismatch', severity: 'warning', field: 'property_address',
+    out.push(mk('payoff_statement', { code: 'payoff_address_mismatch', severity: 'fatal', field: 'property_address',
       docValue: addrLine(p.propertyAddress), fileValue: addrLine(s.property_address),
       title: 'Payoff statement is for a different property than the file',
-      howTo: 'Confirm this payoff is for the subject property — the wrong payoff would clear the wrong lien. Request the correct servicer payoff if this isn\'t the subject.',
-      actions: ['request_document', 'post_condition', 'dismiss'] }));
+      howTo: 'This payoff is for a different property than the subject — funding it would clear the wrong lien. Confirm the correct servicer payoff for the subject property before clear-to-close.',
+      actions: ['request_document', 'fix_file', 'grant_exception', 'decline', 'dismiss'] }));
   }
   // 2. Still valid at closing / today (a lapsed "good through" date under-states the real balance).
   const horizon = opts.closingDate || opts.today;

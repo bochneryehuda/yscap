@@ -157,8 +157,11 @@ assert.deepStrictEqual(codes(C.computeBackgroundFindings({ subjectName: 'John Sm
   const good = { readable: true, servicerName: 'Fay', totalPayoffAmount: 180000, goodThroughDate: '2026-08-15', propertyAddress: subj.property_address };
   // Clean, valid, under the loan → nothing.
   assert.deepStrictEqual(codes(C.computePayoffFindings(good, subj, { today: '2026-07-20' })), []);
-  // Wrong property → warning.
-  assert.ok(C.computePayoffFindings({ ...good, propertyAddress: { line1: '9 Oak Ave', city: 'Dallas', state: 'TX', zip: '75201' } }, subj, { today: '2026-07-20' }).some((f) => f.code === 'payoff_address_mismatch'));
+  // Wrong property → FATAL (funding would clear the wrong lien), blocks CTC.
+  {
+    const wp = C.computePayoffFindings({ ...good, propertyAddress: { line1: '9 Oak Ave', city: 'Dallas', state: 'TX', zip: '75201' } }, subj, { today: '2026-07-20' }).find((f) => f.code === 'payoff_address_mismatch');
+    assert.ok(wp && wp.severity === 'fatal' && wp.blocksCtc === true, 'a wrong-property payoff is a fatal dealbreaker');
+  }
   // Expired good-through date → warning; near-expiry (within 5 days) → info.
   assert.ok(C.computePayoffFindings({ ...good, goodThroughDate: '2026-07-10' }, subj, { today: '2026-07-20' }).some((f) => f.code === 'payoff_expired' && f.severity === 'warning'));
   assert.ok(C.computePayoffFindings({ ...good, goodThroughDate: '2026-07-22' }, subj, { today: '2026-07-20' }).some((f) => f.code === 'payoff_expiring_soon' && f.severity === 'info'));

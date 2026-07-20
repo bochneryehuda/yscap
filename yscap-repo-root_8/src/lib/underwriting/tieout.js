@@ -21,7 +21,7 @@ const LABEL = {
   bank_statement: 'Bank statement', assignment: 'Assignment of contract', insurance: 'Insurance',
   operating_agreement: 'Operating agreement', ein_letter: 'EIN letter', good_standing: 'Good standing',
   llc_formation: 'Formation docs', credit_report: 'Credit report', settlement: 'Settlement statement',
-  flood: 'Flood cert', payoff: 'Payoff statement', scope_of_work: 'Scope of work',
+  flood: 'Flood cert', payoff_statement: 'Payoff statement', scope_of_work: 'Scope of work',
 };
 const lbl = (t) => LABEL[t] || String(t || '').replace(/_/g, ' ');
 
@@ -45,6 +45,7 @@ const PERDOC_COVERS = {
   title: ['property_address'],
   bank_statement: ['entity_name', 'borrower_name'],
   scope_of_work: ['rehab_budget'],   // the SOW per-doc check owns rehab_budget_mismatch
+  payoff_statement: ['property_address'],   // the payoff per-doc check owns payoff_address_mismatch (vs file)
 };
 // The contract check compares assignment_fee / underlying_price ONLY when the file is flagged an
 // assignment (purchase-contract-checks guards them behind is_assignment). So the tie-out may only

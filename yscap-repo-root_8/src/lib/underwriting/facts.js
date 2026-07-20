@@ -65,7 +65,7 @@ const DOC_CLAIMS = {
   settlement: (f) => ({ property_address: f.propertyAddress, purchase_price: f.contractSalesPrice, seller_name: f.sellerName ? [f.sellerName] : null, entity_name: f.buyerName, loan_amount: f.loanAmount, assignment_fee: f.assignmentFee }),
   flood: (f) => ({ property_address: f.propertyAddress }),
   scope_of_work: (f) => ({ property_address: f.propertyAddress, rehab_budget: f.totalBudget }),
-  payoff: (f) => ({ property_address: f.propertyAddress }),
+  payoff_statement: (f) => ({ property_address: f.propertyAddress }),
 };
 
 // The facts each document type CAN carry (so the matrix can distinguish "this doc is silent
@@ -86,7 +86,7 @@ const DOC_CARRIES = {
   settlement: ['property_address', 'purchase_price', 'seller_name', 'entity_name', 'loan_amount', 'assignment_fee'],
   flood: ['property_address'],
   scope_of_work: ['property_address', 'rehab_budget'],
-  payoff: ['property_address'],
+  payoff_statement: ['property_address'],
 };
 
 function nm(a, b) { const n = `${a || ''} ${b || ''}`.trim(); return n || null; }
