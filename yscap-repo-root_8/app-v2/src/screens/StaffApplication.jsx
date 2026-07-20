@@ -90,6 +90,55 @@ function DobRow({ appId, value, onSaved }) {
   );
 }
 
+/* Inline-editable note buyer (applications.lender) for the staff ClickUp panel.
+ * STAFF-ONLY — the note buyer name is never shown to a borrower. Renders a
+ * datalist of every note buyer available in ClickUp (+ known + on-file) and also
+ * accepts a typed value, so staff can fill it when ClickUp doesn't feed it or is
+ * empty, or correct it any time. Saves via the completeness endpoint (which
+ * re-runs the condition engine — e.g. the CorrFirst EMD condition — and the 5%
+ * SOW-contingency enforcement for a Blue Lake note buyer), then reloads. */
+function NoteBuyerInline({ appId, value, onSaved }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value || '');
+  const [opts, setOpts] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const listId = useMemo(() => 'nb-sync-' + Math.random().toString(36).slice(2), []);
+  useEffect(() => {
+    if (!editing) return;
+    let live = true;
+    api.get('/api/staff/note-buyers').then((r) => { if (live) setOpts((r && r.noteBuyers) || []); }).catch(() => {});
+    return () => { live = false; };
+  }, [editing]);
+  const start = () => { setDraft(value || ''); setEditing(true); };
+  async function save() {
+    const v = draft.trim();
+    if (!v || v === (value || '')) { setEditing(false); return; }
+    setBusy(true);
+    try { await api.post(`/api/staff/applications/${appId}/complete-fields`, { lender: v }); setEditing(false); if (onSaved) await onSaved(); }
+    catch (_) { /* keep editing so the value isn't silently lost */ }
+    finally { setBusy(false); }
+  }
+  if (editing) {
+    return (
+      <span className="row" style={{ gap: 4, alignItems: 'center' }}>
+        <input className="input small" style={{ maxWidth: 190 }} autoFocus list={listId}
+          placeholder="Pick or type a note buyer…" value={draft} disabled={busy}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') save(); if (e.key === 'Escape') setEditing(false); }} />
+        <datalist id={listId}>{opts.map((o) => <option key={o.value || o.label} value={o.label} />)}</datalist>
+        <button className="btn ghost small" onClick={save} disabled={busy}>{busy ? '…' : 'Save'}</button>
+        <button className="btn ghost small" onClick={() => setEditing(false)} disabled={busy}>✕</button>
+      </span>
+    );
+  }
+  return (
+    <span className="muted small" title="Note buyer / capital partner — internal only, never shown to the borrower">
+      Note buyer: <b>{value || '—'}</b>
+      <button className="eye-btn" style={{ marginLeft: 4 }} onClick={start} title="Edit the note buyer (internal only)" aria-label="Edit note buyer">✎</button>
+    </span>
+  );
+}
+
 // Small inline eye toggle for the SSN reveal (revealing is server-audited).
 const Eye = (
   <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -118,6 +167,12 @@ const COMPLETENESS_FIELDS = (app, borrower) => [
   { key: 'ssn', label: 'SSN on file', ok: !!(borrower && borrower.ssn_last4), edit: false, hint: 'Enter via the secure SSN field on the borrower profile.' },
   { key: 'fico', label: 'FICO', ok: !!(borrower && borrower.fico), type: 'fico' },
   { key: 'citizenship', label: 'Citizenship', ok: !!(borrower && borrower.citizenship), type: 'select', options: ['US Citizen', 'Permanent Resident', 'Foreign National'] },
+  // Note buyer / capital partner (applications.lender). Normally fed from ClickUp;
+  // staff can fill it here when ClickUp doesn't feed it or is empty (owner-directed
+  // 2026-07-20). Type 'notebuyer' renders a datalist of every note buyer available
+  // in ClickUp. STAFF-ONLY — this whole panel is staff; it's never on the borrower
+  // completeness panel and the note-buyer name never reaches a borrower.
+  { key: 'lender', label: 'Note buyer', ok: !!app.lender, type: 'notebuyer' },
 ];
 
 // #30 / #60 — the co-borrower's own required identity fields, shown in a SEPARATE
@@ -148,6 +203,18 @@ function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Applic
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const fields = fieldsProp || COMPLETENESS_FIELDS(app, borrower);
+  // Note-buyer picker: load every note buyer available in ClickUp (+ known + on
+  // file) so a 'notebuyer' field renders a datalist. Only fetched when the panel
+  // actually carries such a field. Its own datalist id avoids id collisions.
+  const [nbOpts, setNbOpts] = useState([]);
+  const nbListId = useMemo(() => 'nb-dl-' + Math.random().toString(36).slice(2), []);
+  const hasNoteBuyer = fields.some((f) => f.type === 'notebuyer');
+  useEffect(() => {
+    if (!hasNoteBuyer) return;
+    let live = true;
+    api.get('/api/staff/note-buyers').then((r) => { if (live) setNbOpts((r && r.noteBuyers) || []); }).catch(() => {});
+    return () => { live = false; };
+  }, [hasNoteBuyer]);
   const done = fields.filter((x) => x.ok).length;
   const missing = fields.filter((x) => !x.ok);
   const start = (f) => { setEditing(f.key); setVal(''); setErr(''); };
@@ -179,6 +246,11 @@ function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Applic
                       <option value="" disabled>{f.label}…</option>
                       {f.options.map((o) => <option key={o} value={o}>{o}</option>)}
                     </select>
+                  : f.type === 'notebuyer'
+                  ? <input className="input" style={{ maxWidth: 200 }} autoFocus list={nbListId}
+                      type="text" placeholder="Pick or type a note buyer…" value={val}
+                      onChange={(e) => setVal(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && save(f)} />
                   : <input className="input" style={{ maxWidth: 170 }} autoFocus
                       type={f.type === 'date' ? 'date' : f.type === 'number' || f.type === 'money' ? 'number' : f.type === 'tel' ? 'tel' : 'text'}
                       inputMode={f.type === 'money' || f.type === 'number' || f.type === 'fico' ? 'numeric' : undefined}
@@ -197,6 +269,11 @@ function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Applic
             ))}
           </div>
         )}
+      {hasNoteBuyer && (
+        <datalist id={nbListId}>
+          {nbOpts.map((o) => <option key={o.value || o.label} value={o.label} />)}
+        </datalist>
+      )}
     </div>
   );
 }
@@ -2098,7 +2175,7 @@ function ClickupSyncPanel({ app, canSetup, isAdmin, onResynced }) {
         <span className="muted small">Internal status (ClickUp mirror): <b>{app.internal_status || '—'}</b></span>
         <span className="muted small">Borrower sees: <b>{app.status || '—'}</b></span>
         {app.ys_loan_number && <span className="muted small">YS loan #: <b>{app.ys_loan_number}</b></span>}
-        {app.lender && <span className="muted small" title="Note buyer / capital partner — internal only, never shown to the borrower">Note buyer: <b>{app.lender}</b></span>}
+        <NoteBuyerInline appId={app.id} value={app.lender} onSaved={onResynced} />
         {app.clickup_last_synced_at && <span className="muted small">Last synced: {new Date(app.clickup_last_synced_at).toLocaleString()}</span>}
       </div>
       {/* ADMIN relink: only when this file has NO card. Paste the correct card's
