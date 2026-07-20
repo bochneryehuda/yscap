@@ -180,6 +180,16 @@ ok('clearSloAlert is exported', typeof backup.clearSloAlert === 'function');
 // (async behavior asserted inside the final IIFE below.)
 ok('withTimeout is exported', typeof backup.withTimeout === 'function');
 
+// ---------------------- worker-liveness / dead-man's-switch (2026-07-20 harden)
+ok('checkDrainLiveness is exported (watchdog)', typeof backup.checkDrainLiveness === 'function');
+ok('recordHeartbeat is exported', typeof backup.recordHeartbeat === 'function');
+ok('heartbeatStaleSec is exported', typeof backup.heartbeatStaleSec === 'function');
+ok('claimAlert/clearAlert generic dedup exported', typeof backup.claimAlert === 'function' && typeof backup.clearAlert === 'function');
+{
+  const g = backup.heartbeatGraceSec();
+  ok('heartbeat grace is a sane floor (>= 15 min)', Number.isFinite(g) && g >= 900);
+}
+
 // -------------------------------------- the ONE sanctioned delete: guardrails
 // (Graph-free checks: refusals must fire BEFORE any network call.)
 (async () => {
