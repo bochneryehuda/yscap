@@ -363,7 +363,15 @@ async function pushFile(appId, opts = {}) {
     return { parked: 'address' };
   }
   const devType = T.developmentType(a.property_type);
-  const consType = T.constructionType(a.loan_type, a.rehab_type);
+  // construction_type: derive from the REHAB type / registered program (loan_type is only Purchase vs
+  // Refinance and is not a construction signal). A Sitewire push always carries a frozen rehab budget +
+  // Scope of Work, so this file is BY DEFINITION either ground-up or a rehabilitation/remodel — it is
+  // never a meaningful "unknown". If nothing explicitly says ground-up, it IS a remodel. Defaulting here
+  // is a sound inference for a construction-draw file (NOT a blind guess of an unrelated field like the
+  // property type below), and it removes the spurious "loan/rehab type 'Purchase/' didn't map" advisory
+  // the owner hit (2026-07-20). Ground-up files carry a "Ground-up" rehab_type or program, so they still
+  // map to ground_up; only a genuinely non-ground-up file falls through to the remodel default.
+  const consType = T.constructionType(a.loan_type, a.rehab_type, a.registered_program) || 'rehabilitation_or_remodel';
 
   const propertyFields = {
     loan_number: a.ys_loan_number,
@@ -383,12 +391,13 @@ async function pushFile(appId, opts = {}) {
   if (!Number.isFinite(propertyFields.draw_checklist_template_id)) delete propertyFields.draw_checklist_template_id;
   propertyFields.total_units = physicalUnits;
   if (devType) propertyFields.development_type = devType;
-  if (consType) propertyFields.construction_type = consType;
-  // G-ENUM: a property/construction type we couldn't map is LEFT BLANK (never guessed) — but raise
-  // an advisory review so someone sets it in Sitewire, rather than it silently going unset. Non-blocking
-  // (the push still proceeds — these are optional Sitewire fields); deduped so it can't spam the queue.
+  propertyFields.construction_type = consType; // always resolves (ground_up or the remodel default)
+  // G-ENUM: the PROPERTY type (SFR vs Multi vs Commercial) is a real never-guess — defaulting it would
+  // misclassify the asset — so an unmapped development_type is LEFT BLANK and raises a NON-BLOCKING
+  // advisory (the push proceeds; it's an optional Sitewire field) so someone sets it in Sitewire.
+  // construction_type is NOT in this class: it is always resolved above (see the note there), so it never
+  // parks. Deduped so the devtype advisory can't spam the queue.
   if (a.property_type && !devType) await park({ appId, reason: `sitewire_type_unmapped: property type "${a.property_type}" didn't map to a Sitewire development_type — left blank, set it in Sitewire if needed`, dedupe: 'devtype', notify: false });
-  if ((a.loan_type || a.rehab_type) && !consType) await park({ appId, reason: `sitewire_type_unmapped: loan/rehab type "${a.loan_type || ''}/${a.rehab_type || ''}" didn't map to a Sitewire construction_type — left blank, set it in Sitewire if needed`, dedupe: 'construction', notify: false });
   if (a.llc_name) propertyFields.borrower_entity_name = a.llc_name;
 
   let link = existingLink;
@@ -533,14 +542,40 @@ async function pushBudgetInner(appId, budgetId, ex, budgetCents) {
        JOIN sitewire_draws d ON d.sitewire_draw_id = r.sitewire_draw_id
       WHERE d.application_id=$1 AND r.sitewire_job_item_id IS NOT NULL`, [appId])).rows.map((x) => Number(x.sitewire_job_item_id)));
 
+  // ---- Read-before-write ADOPT (G-ADOPT): never CREATE a line the Sitewire budget already has ----
+  // diffBudget decides "create" purely from OUR crosswalk, so a line already on the live budget with no
+  // crosswalk row — a Sitewire-seeded default (e.g. the standard "Exterior of House Photos" media anchor),
+  // or one stranded by a partially-persisted / in-call-retried earlier push — would be CREATED a second
+  // time, duplicating the name and making bind-by-name ambiguous (the owner-reported "appears twice —
+  // cannot bind id"). Fetch the live budget and ADOPT an existing unique-named line instead of duplicating
+  // it; a name already DOUBLED live is ambiguous (park, never make it a third). On a NON-retryable read
+  // failure, degrade to the old create-from-crosswalk behavior (a real duplicate then still parks at the
+  // bind step below); a retryable read rethrows to the durable queue.
+  let liveItems = [];
+  try { const live = await client.getBudget(budgetId); liveItems = (live && live.job_items) || []; }
+  catch (e) { if (e.retryable) throw e; console.warn('[sitewire] adopt read-before-write skipped (non-retryable getBudget failure):', e && e.message); }
+  const resolved = M.resolveCreatesAgainstLive(diff.creates, liveItems);
+  for (const name of resolved.ambiguous) {
+    await park({ appId, reason: `sitewire_bind_ambiguous: line name "${name}" already appears more than once in the Sitewire budget — cannot bind id`, dedupe: name });
+  }
+  // adopted cells bind to the existing live id in the crosswalk loop below; those whose live cents differ
+  // from desired are ALSO sent as an id+cents UPDATE so the schedule of values ties out (G-RECON).
+  const adoptByKey = new Map();
+  for (const a of resolved.adopt) adoptByKey.set(`${a.sow_line_key} ${a.section_token}`, a);
+
   // build the PATCH job_items array (creates: no id; updates: id+fields; deletes: id+_destroy)
   const job_items = [];
-  for (const c of diff.creates) {
+  for (const c of resolved.create) {
     const ji = { name: c.name, budgeted_cents: c.budgeted_cents };
     if (c.required_image_count != null) ji.required_image_count = c.required_image_count;
     if (c.required_video_count != null) ji.required_video_count = c.required_video_count;
     if (c.mandatory) ji.mandatory = true;
     job_items.push(ji);
+  }
+  for (const a of resolved.adopt) {
+    // A $0 media anchor already matches live → nothing to send (just bind it below). Only push an
+    // id+cents UPDATE when the adopted line's live budget differs from what we want.
+    if (Number(a.live_budgeted_cents || 0) !== Number(a.budgeted_cents || 0)) job_items.push({ id: a.sitewire_job_item_id, budgeted_cents: a.budgeted_cents });
   }
   for (const u of diff.updates) {
     const ji = { id: u.sitewire_job_item_id, budgeted_cents: u.budgeted_cents };
@@ -550,18 +585,26 @@ async function pushBudgetInner(appId, budgetId, ex, budgetCents) {
   }
   for (const d of diff.deletes) job_items.push({ id: d.sitewire_job_item_id, _destroy: true });
 
-  if (!job_items.length) return { unchanged: true };
-  await circuitCheck(job_items.length);
+  // Nothing to write AND nothing new to adopt into the crosswalk → truly unchanged.
+  if (!job_items.length && !adoptByKey.size) return { unchanged: true };
 
-  let updated;
-  try {
-    updated = await client.updateBudget(budgetId, { job_items, draw_eligible: true, funding_ratio: 100, funding_threshold_cents: 0 });
-  } catch (e) {
-    // A deterministic 422/400 parks (never retry-loop a body Sitewire will keep rejecting).
-    if (e.status === 422 || e.status === 400) { await park({ appId, reason: `sitewire_budget_rejected (${e.status}): ${JSON.stringify(e.body || {}).slice(0, 220)}` }); return { parked: 'budget_' + e.status }; }
-    throw e;
+  // Default `updated` to the live budget so the response-by-name bind still works when we send NO PATCH
+  // (a pure adopt: every desired line already exists live). Only call updateBudget when there's a change.
+  let updated = { job_items: liveItems };
+  if (job_items.length) {
+    await circuitCheck(job_items.length);
+    try {
+      updated = await client.updateBudget(budgetId, { job_items, draw_eligible: true, funding_ratio: 100, funding_threshold_cents: 0 });
+    } catch (e) {
+      // A deterministic 422/400 parks (never retry-loop a body Sitewire will keep rejecting).
+      if (e.status === 422 || e.status === 400) { await park({ appId, reason: `sitewire_budget_rejected (${e.status}): ${JSON.stringify(e.body || {}).slice(0, 220)}` }); return { parked: 'budget_' + e.status }; }
+      throw e;
+    }
+    if (updated && updated.__dryrun) return { dryrun: true, wouldSend: job_items.length };
+  } else if (cfg.sitewireDryrun) {
+    // Pure adopt with writes gated to dry-run: don't touch the crosswalk either (dry-run changes nothing).
+    return { dryrun: true, wouldAdopt: adoptByKey.size };
   }
-  if (updated && updated.__dryrun) return { dryrun: true, wouldSend: job_items.length };
 
   // capture ids (G-BIND). A NEW line binds to the response item with its unique name. A line that
   // was ALREADY bound (update/unchanged) keeps its KNOWN id — we must NOT re-find it by name, because
@@ -578,10 +621,16 @@ async function pushBudgetInner(appId, budgetId, ex, budgetCents) {
   for (const c of ex.items) {
     const existing = linkByKey.get(`${c.sow_line_key} ${c.section_token}`);
     let jiId, storedName;
+    const adopted = adoptByKey.get(`${c.sow_line_key} ${c.section_token}`);
     if (existing && existing.sitewire_job_item_id != null) {
       jiId = existing.sitewire_job_item_id;
       const renameSuppressed = drawn.has(Number(jiId)) && (existing.name || '') !== (c.name || '');
       storedName = renameSuppressed ? existing.name : c.name; // match what Sitewire actually holds
+    } else if (adopted) {
+      // Adopted a line that already existed on the live budget (G-ADOPT) — bind to its existing id
+      // instead of the response-by-name lookup (which would be ambiguous for exactly the doubled name
+      // we are avoiding). storedName is the desired name (the live line already carries it).
+      jiId = adopted.sitewire_job_item_id; storedName = c.name;
     } else {
       const ji = respByName.get(c.name);
       if (ji === undefined) { await park({ appId, reason: `sitewire_bind_missing: created line "${c.name}" not found in response — cannot bind id`, dedupe: c.name }); continue; }

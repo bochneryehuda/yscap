@@ -64,12 +64,21 @@ function developmentType(propertyType) {
   return null; // unrecognized -> the push OMITS this optional field (left blank), never guesses a type
 }
 
-// loan_type/rehab_type -> Sitewire construction_type. Unknown -> null (never guessed).
-function constructionType(loanType, rehabType) {
-  const s = `${loanType || ''} ${rehabType || ''}`.toLowerCase();
+// rehab_type / registered program -> Sitewire construction_type. Sitewire's construction_type is a
+// binary CONSTRUCTION dimension (ground_up vs rehabilitation_or_remodel). The reliable signal for it is
+// the REHAB TYPE (Cosmetic / Moderate / Heavy / Adding SF / Ground-up) and the registered PROGRAM —
+// NOT loan_type. loan_type is only the ACQUISITION method (Purchase vs Refinance) and says nothing about
+// construction, so feeding it in as the primary signal made a plain "Purchase" (with a blank rehab_type)
+// read as "unmapped" (owner-reported 2026-07-20: `construction_type "Purchase/" didn't map`). We still
+// accept loan_type as a last, best-effort keyword source (a legacy "Ground up" loan_type would map), but
+// it is no longer the driver. Returns null ONLY when there is no construction signal at all — the caller
+// (a Sitewire draw push, which by definition carries a construction budget + Scope of Work) supplies the
+// sane default rather than parking a spurious advisory.
+function constructionType(loanType, rehabType, program) {
+  const s = `${rehabType || ''} ${program || ''} ${loanType || ''}`.toLowerCase();
   if (!s.trim()) return null;
   if (/ground[\s-]*up|new\s*construction|\bshell\b/.test(s)) return 'ground_up';
-  if (/rehab|remodel|reno|fix|cosmetic|moderate|heavy|repair/.test(s)) return 'rehabilitation_or_remodel';
+  if (/rehab|remodel|reno|fix|cosmetic|moderate|heavy|repair|\bgut\b|add(?:ing)?\s*(?:sf|square)/.test(s)) return 'rehabilitation_or_remodel';
   return null;
 }
 

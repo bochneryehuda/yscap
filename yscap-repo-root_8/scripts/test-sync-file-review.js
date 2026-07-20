@@ -29,13 +29,13 @@ async function expectHttp(status, fn) {
 
 (async () => {
   // ---- contract shape ------------------------------------------------------
-  t('REASON_ACTIONS lists the ten stuck states', () => {
+  t('REASON_ACTIONS lists every stuck state', () => {
     const keys = Object.keys(SFR.REASON_ACTIONS).sort();
     assert.deepStrictEqual(keys, [
       'file_not_materialized_ambiguous', 'file_not_materialized_duplicate_pending',
       'file_unlinked_no_task', 'file_dead_unlinked', 'push_dead_lettered', 'task_deleted_needs_decision',
       'sharepoint_match_uncertain', 'sharepoint_mirror_failed', 'borrower_identity_conflict',
-      'shared_email_needs_reassignment'].sort());
+      'shared_email_needs_reassignment', 'copied_loan_number_needs_assignment'].sort());
     for (const k of keys) assert.ok(SFR.REASON_ACTIONS[k].length >= 1, `${k} has at least one action`);
   });
   await ta('allow_shared_email without the pair reference → 409', () =>
@@ -188,6 +188,22 @@ async function expectHttp(status, fn) {
   await ta('create_task without a file → 409', () =>
     expectHttp(409, () => SFR.applyFileReviewAction({
       row: { reason: 'file_unlinked_no_task', application_id: null }, action: 'create_task' })));
+  // copied loan number: the two ownership decisions validate BEFORE any write.
+  t('copied_loan_number offers assign-here / keep-other only', () => {
+    assert.strictEqual(SFR.isActionAllowed('copied_loan_number_needs_assignment', 'loan_number_assign_here'), true);
+    assert.strictEqual(SFR.isActionAllowed('copied_loan_number_needs_assignment', 'loan_number_keep_other'), true);
+    assert.strictEqual(SFR.isActionAllowed('copied_loan_number_needs_assignment', 'create_file'), false);
+    assert.strictEqual(SFR.isActionAllowed('push_dead_lettered', 'loan_number_assign_here'), false, 'loan-number actions never leak onto other reasons');
+  });
+  await ta('loan_number_assign_here without a file → 409', () =>
+    expectHttp(409, () => SFR.applyFileReviewAction({
+      row: { reason: 'copied_loan_number_needs_assignment', application_id: null }, action: 'loan_number_assign_here' })));
+  await ta('loan_number_assign_here with no contested number → 409', () =>
+    expectHttp(409, () => SFR.applyFileReviewAction({
+      row: { reason: 'copied_loan_number_needs_assignment', application_id: 'a1', raw_value: 'not-json', clickup_value: null }, action: 'loan_number_assign_here' })));
+  await ta('loan_number_keep_other without a file → 409', () =>
+    expectHttp(409, () => SFR.applyFileReviewAction({
+      row: { reason: 'copied_loan_number_needs_assignment', application_id: null }, action: 'loan_number_keep_other' })));
   // relink_task is ADMIN-ONLY — the authorization check fires FIRST, before any
   // field validation (pre-merge audit B1: the review-queue route is LO-reachable,
   // so the action layer must refuse a non-admin even with valid inputs).

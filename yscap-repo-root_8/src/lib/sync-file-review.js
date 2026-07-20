@@ -68,7 +68,26 @@ const REASON_ACTIONS = {
   // of them their own email) stays: edit the email on the borrower screen and
   // the card closes itself.
   shared_email_needs_reassignment: ['allow_shared_email'],
+  // TWO of the borrower's ClickUp tasks carry the SAME YS loan number (the duplicate-a-task workflow
+  // copies it) — a number belongs to exactly one loan. The reviewer decides WHICH of the two bumping
+  // files owns it: assign it to THIS file (and take it off the other in PILOT), or confirm THIS file is
+  // the copy and keep it on the other deal. PILOT does its own side; the human then deletes the leftover
+  // copy on the LOSING file's ClickUp card (PILOT never erases a ClickUp box — the hard no-clear rule).
+  copied_loan_number_needs_assignment: ['loan_number_assign_here', 'loan_number_keep_other'],
 };
+
+// The OTHER bumping file, read out of the review's forensic raw_value (queued by the ingest layer as
+// { number, ofApplication, boundToTask } — the file/task that legitimately carries the loan number).
+function otherFileFromRow(row) {
+  let raw = null;
+  try { raw = row && row.raw_value ? JSON.parse(row.raw_value) : null; } catch (_) { raw = null; }
+  const d = raw && (raw.ofApplication ? raw : (raw.detail || null));
+  return {
+    otherId: (d && d.ofApplication) || null,
+    otherTask: (d && d.boundToTask) || null,
+    number: (raw && raw.number) || (row && row.clickup_value) || null,
+  };
+}
 
 // Rows with no ClickUp task (an unlinked FILE) still need a dedup identity in
 // the queue's per-task unique index — coalesce(task_id,'') would otherwise
@@ -433,6 +452,53 @@ async function applyFileReviewAction({ row, action, targetApplicationId, targetT
     if (!out || !out.taskId) throw httpError(409, 'ClickUp task creation did not complete — check outbound sync settings and retry');
     await audit('sync_review_create_task', row.application_id, actorId, { taskId: out.taskId, reviewId: row.id });
     return { note: `ClickUp task ${out.taskId} created for the file`, applicationId: row.application_id };
+  }
+
+  if (action === 'loan_number_assign_here') {
+    // "This deal owns the number — the OTHER file has it by mistake." Give the number to THIS file and
+    // take it off every other active file in PILOT, then record a DURABLE human ownership decision so the
+    // automated older-task-wins adjudicator never silently flips it back. PILOT does NOT (and cannot)
+    // clear the losing card in ClickUp — the reviewer does that by hand; we push the number to THIS
+    // file's card (a fill — allowed) and tell them which card to clean up.
+    if (!row.application_id) throw httpError(409, 'this row has no portal file');
+    const info = otherFileFromRow(row);
+    const number = info.number;
+    if (!number) throw httpError(409, 'this row does not carry the contested loan number');
+    // free the number from every OTHER active file FIRST (avoids the partial-unique-index collision),
+    // then assign it here. Case/space-insensitive match mirrors the ingest adjudicator.
+    await db.query(
+      `UPDATE applications SET ys_loan_number=NULL, updated_at=now()
+        WHERE id<>$1 AND deleted_at IS NULL AND lower(btrim(ys_loan_number))=lower(btrim($2))`,
+      [row.application_id, number]);
+    await db.query(
+      `UPDATE applications SET ys_loan_number=$2, updated_at=now() WHERE id=$1 AND deleted_at IS NULL`,
+      [row.application_id, number]);
+    await audit('loan_number_owner_decided', row.application_id, actorId, { number, reviewId: row.id, tookFrom: info.otherId || null });
+    // keep this file's card in step (fill — the card almost always already shows the copied number), and
+    // close any stale copy-flag rows on THIS file (it now legitimately holds the number).
+    try { await require('../clickup/enqueue').enqueueClickupPush(row.application_id, ['ys_loan_number']); } catch (_) { /* best-effort */ }
+    try { await require('./sync-review').closeStaleReviews({ applicationId: row.application_id, fieldKey: 'ys_loan_number', note: 'auto-closed — a reviewer assigned this loan number to this file' }); } catch (_) { /* best-effort */ }
+    const other = info.otherId ? `the other deal (file ${info.otherId})` : 'the other deal';
+    return { note: `loan number ${number} now belongs to this file; it was removed from ${other} in PILOT. Delete the leftover loan number on ${other}'s ClickUp card so the two stop clashing (PILOT never erases a ClickUp box).`, applicationId: row.application_id };
+  }
+
+  if (action === 'loan_number_keep_other') {
+    // "This file is the copy — the OTHER deal keeps the number." Ensure this file does NOT hold the
+    // contested number in PILOT (it usually already doesn't — the ingest strips a copied number), and
+    // record a durable decision that the OTHER file owns it. The reviewer then deletes the leftover copy
+    // on THIS file's ClickUp card by hand.
+    if (!row.application_id) throw httpError(409, 'this row has no portal file');
+    const info = otherFileFromRow(row);
+    const number = info.number;
+    if (number) {
+      await db.query(
+        `UPDATE applications SET ys_loan_number=NULL, updated_at=now()
+          WHERE id=$1 AND lower(btrim(ys_loan_number))=lower(btrim($2))`,
+        [row.application_id, number]);
+      if (info.otherId) await audit('loan_number_owner_decided', info.otherId, actorId, { number, reviewId: row.id, copyIs: row.application_id });
+    }
+    const other = info.otherId ? `the other deal (file ${info.otherId})` : 'the other deal';
+    return { note: `confirmed — this file is the copy; ${other} keeps loan number ${number || ''}. Delete the leftover loan number on THIS file's ClickUp card so the two stop clashing (PILOT never erases a ClickUp box).`, applicationId: row.application_id };
   }
 
   throw httpError(400, `unknown action '${action}'`);

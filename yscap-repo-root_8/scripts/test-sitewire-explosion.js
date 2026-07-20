@@ -196,4 +196,38 @@ assert.strictEqual(dupDiff.creates.length, 0, 're-push of a disambiguated SOW cr
 assert.strictEqual(dupDiff.updates.length, 0, 're-push of a disambiguated SOW updates nothing (stable names)');
 ok('G-NAME: disambiguated names are stable across re-push — no churn, no duplicate lines');
 
+// ---- G-ADOPT: read-before-write never duplicates a line the LIVE Sitewire budget already has ----
+// The reported failure class: a $0 media anchor ("Exterior of House Photos") already on the live budget
+// with NO crosswalk row (a Sitewire-seeded default, or a line stranded by a partial/retried earlier push)
+// was CREATED again → two same-named lines → bind-by-name ambiguous. resolveCreatesAgainstLive adopts the
+// existing line instead of duplicating it.
+const adoptState = { propType: 'single', units: 1,
+  items: { 'exterior:0': { on: true, applies: 'each', each: '10000', label: 'Roof' } },
+  cont: { mode: 'usd', value: '0' }, gcFee: { mode: 'usd', value: '0' } };
+const adoptEx = M.explodeSow(adoptState);
+const freshCreates = M.diffBudget(adoptEx.items, []).creates;      // birth push: everything is a create
+// Live budget already holds the exterior photo anchor (id 900, $0) — the seeded/stranded default.
+const live = [{ id: 900, name: 'Exterior of House Photos', budgeted_cents: 0 }];
+const res = M.resolveCreatesAgainstLive(freshCreates, live);
+assert.ok(res.adopt.some((a) => a.name === 'Exterior of House Photos' && a.sitewire_job_item_id === 900),
+  'the existing live media anchor is ADOPTED by name (bound to id 900), never re-created');
+assert.ok(!res.create.some((c) => c.name === 'Exterior of House Photos'),
+  'the media anchor is NOT in the create set → no duplicate line is sent');
+assert.ok(res.create.some((c) => c.name === 'Roof') && res.create.some((c) => /Interior Video Tour/.test(c.name)),
+  'genuinely-absent lines still create normally');
+assert.strictEqual(res.ambiguous.length, 0, 'a single live match is not ambiguous');
+// A $0 adopt matches live cents → nothing to re-send for it (only genuine creates go in the PATCH).
+assert.strictEqual(Number(res.adopt.find((a) => a.name === 'Exterior of House Photos').live_budgeted_cents), 0, 'adopted media anchor already at $0 live');
+// Empty/omitted live budget → back-compat: every line stays a create (a fresh, empty budget).
+const resFresh = M.resolveCreatesAgainstLive(freshCreates, []);
+assert.strictEqual(resFresh.create.length, freshCreates.length, 'empty live budget → all creates (back-compat)');
+assert.strictEqual(resFresh.adopt.length, 0);
+// A name already DOUBLED on the live budget is ambiguous — park, NEVER create a third.
+const dupedLive = [{ id: 900, name: 'Exterior of House Photos', budgeted_cents: 0 }, { id: 901, name: 'Exterior of House Photos', budgeted_cents: 0 }];
+const resDup = M.resolveCreatesAgainstLive(freshCreates, dupedLive);
+assert.ok(resDup.ambiguous.includes('Exterior of House Photos'), 'a doubled live line is flagged ambiguous, not created');
+assert.ok(!resDup.create.some((c) => c.name === 'Exterior of House Photos') && !resDup.adopt.some((a) => a.name === 'Exterior of House Photos'),
+  'an ambiguous line is neither created nor adopted (never makes a third)');
+ok('G-ADOPT: an existing live line is adopted (not duplicated); a doubled live line parks; empty live = create');
+
 console.log(`\nAll ${n} explosion + total-reconciliation checks passed — the SOW→units→budget total holds in every mode.`);

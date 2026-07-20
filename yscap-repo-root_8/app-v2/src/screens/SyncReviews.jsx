@@ -99,7 +99,22 @@ const REASON_FILE_ACTIONS = {
   shared_email_needs_reassignment: [
     { action: 'allow_shared_email', label: 'Allow — same email for both', title: 'Link the two profiles: whoever logs in with this email sees BOTH people’s files. Nothing is merged; each keeps their own profile and officer, and this pair never flags again' },
   ],
+  // Two of the borrower’s files carry the SAME loan number. Decide which one owns it; PILOT does its
+  // side and tells you which ClickUp card still has a leftover copy to delete (PILOT never erases a
+  // ClickUp box — that stays a human action in ClickUp).
+  copied_loan_number_needs_assignment: [
+    { action: 'loan_number_assign_here', label: 'This file owns the number', title: 'Give the loan number to THIS file and take it off the other file in PILOT. Then delete the leftover copy on the OTHER deal’s ClickUp card.' },
+    { action: 'loan_number_keep_other', label: 'The other file owns it — this is the copy', title: 'Keep the number on the other deal; this file stays blank. Then delete the leftover copy on THIS file’s ClickUp card.' },
+  ],
 };
+// The OTHER file that shares the contested loan number (from the row's forensic raw_value).
+function otherLoanFile(r) {
+  try {
+    const raw = r.raw_value ? JSON.parse(r.raw_value) : null;
+    const d = raw && (raw.ofApplication ? raw : (raw.detail || null));
+    return { otherId: (d && d.ofApplication) || null, number: (raw && raw.number) || r.clickup_value || null };
+  } catch { return { otherId: null, number: r.clickup_value || null }; }
+}
 // The ACTUAL recorded failure for a SharePoint document row (owner-reported
 // 2026-07-16: the card said "the last error is recorded on the row" without
 // SHOWING it, so every failure read as "a permissions problem"). The error
@@ -335,6 +350,15 @@ export default function SyncReviews() {
             {(r.field_key === 'sharepoint_doc' || r.field_key === 'sharepoint_folder') && spError(r) ? (
               <div className="metrow"><span className="k">Last error</span><span className="v"><em className="muted">{spError(r)}</em></span></div>
             ) : null}
+            {r.reason === 'copied_loan_number_needs_assignment' && (() => {
+              const o = otherLoanFile(r);
+              return (o.otherId || o.number) ? (
+                <div className="metrow"><span className="k">The clash</span><span className="v">
+                  {o.number ? <>loan number <strong>{o.number}</strong> is on both this file and </> : <>the same loan number is on both this file and </>}
+                  {o.otherId ? <Link className="btn ghost btn-sm" to={`/internal/app/${o.otherId}`}>the other file</Link> : <em className="muted">the other deal</em>}
+                </span></div>
+              ) : null;
+            })()}
             <p className="muted small" style={{ margin: '8px 0' }}>
               {isSitewire
                 ? (SITEWIRE_REASON_COPY[String(r.reason || '').split(':')[0]] || r.reason)
