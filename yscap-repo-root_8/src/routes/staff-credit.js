@@ -21,6 +21,7 @@ const { can, VISIBLE_OFFICERS_SQL } = require('../lib/permissions');
 const providers = require('../lib/credit/providers');
 const credentials = require('../lib/credit/credentials');
 const { summarizeRisk } = require('../lib/credit/risk-summary');
+const { compareReports } = require('../lib/credit/compare');
 const creditImport = require('../lib/credit/import');
 const adverseAction = require('../lib/credit/adverse-action');
 const { serveDocument } = require('../lib/serve-document');
@@ -50,6 +51,51 @@ async function canSeeApp(req, appId) {
     `SELECT 1 FROM applications a WHERE a.id=$1 AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$2')}`,
     [appId, req.actor.id]).catch(() => ({ rows: [] }));
   return !!r.rows[0];
+}
+
+// Load every stored "block" for ONE report, MASKED-ONLY. This is the single
+// source of the block SELECTs — the detail endpoint AND the compare endpoint
+// both call it, so neither can accidentally reach the encrypted account column
+// or a raw reported-SSN/PAN. Account numbers come back as last-4 masks only; the
+// encrypted `account_identifier_encrypted` and the raw audit jsonb are NEVER
+// selected here.
+async function loadReportBlocks(reportId) {
+  const [scores, tradelines, inquiries, publicRecords, collections, identities, alerts] = await Promise.all([
+    db.query(
+      `SELECT credit_report_id, report_borrower_id, borrower_id, bureau, model, value, usable, reason, exclusion_reason, factors, score_date
+         FROM credit_scores WHERE credit_report_id=$1 ORDER BY report_borrower_id, bureau`, [reportId]),
+    db.query(
+      `SELECT id, borrower_id, report_borrower_id, bureau, creditor_name, creditor_address, account_type,
+              account_ownership_type, account_status_type, account_identifier_masked,
+              unpaid_balance, credit_limit, high_credit, monthly_payment, past_due_amount, charge_off_amount,
+              date_opened, date_reported, date_closed, last_activity_date, months_reviewed_count,
+              current_rating_code, current_rating_type, late_30_count, late_60_count, late_90_count,
+              payment_pattern, derogatory_indicator, is_collection, is_authorized_user
+         FROM credit_tradelines WHERE credit_report_id=$1
+        ORDER BY is_collection DESC, derogatory_indicator DESC NULLS LAST, creditor_name`, [reportId]),
+    db.query(
+      `SELECT id, borrower_id, report_borrower_id, bureau, inquiry_date, inquiring_party_name, business_type, loan_type
+         FROM credit_inquiries WHERE credit_report_id=$1 ORDER BY inquiry_date DESC NULLS LAST`, [reportId]),
+    db.query(
+      `SELECT id, borrower_id, report_borrower_id, bureau, record_type, filed_date, reported_date,
+              disposition_type, disposition_date, amount, court_name, docket_identifier, plaintiff_name, derogatory_indicator
+         FROM credit_public_records WHERE credit_report_id=$1 ORDER BY filed_date DESC NULLS LAST`, [reportId]),
+    db.query(
+      `SELECT id, borrower_id, report_borrower_id, bureau, collection_agency_name, original_creditor_name, amount, status, date_reported
+         FROM credit_collections WHERE credit_report_id=$1 ORDER BY date_reported DESC NULLS LAST`, [reportId]),
+    db.query(
+      `SELECT id, borrower_id, report_borrower_id, bureau, reported_name, aliases, dob, ssn_masked,
+              current_address, former_addresses, employers, infile_date, alert_messages
+         FROM credit_report_identities WHERE credit_report_id=$1`, [reportId]),
+    db.query(
+      `SELECT id, borrower_id, report_borrower_id, bureau, category, raw_type, message_text
+         FROM credit_alerts WHERE credit_report_id=$1 ORDER BY category`, [reportId]),
+  ]);
+  return {
+    scores: scores.rows, tradelines: tradelines.rows, inquiries: inquiries.rows,
+    publicRecords: publicRecords.rows, collections: collections.rows,
+    identities: identities.rows, alerts: alerts.rows,
+  };
 }
 
 // ---- providers -------------------------------------------------------------
@@ -185,35 +231,7 @@ router.get('/credit/reports/:id/detail', requirePull, async (req, res) => {
     if (!report) return res.status(404).json({ error: 'report not found' });
     if (!(await canSeeApp(req, report.application_id))) return res.status(403).json({ error: 'forbidden' });
 
-    const scores = (await db.query(
-      `SELECT credit_report_id, report_borrower_id, borrower_id, bureau, model, value, usable, reason, exclusion_reason, factors, score_date
-         FROM credit_scores WHERE credit_report_id=$1 ORDER BY report_borrower_id, bureau`, [reportId])).rows;
-    const tradelines = (await db.query(
-      `SELECT id, borrower_id, report_borrower_id, bureau, creditor_name, creditor_address, account_type,
-              account_ownership_type, account_status_type, account_identifier_masked,
-              unpaid_balance, credit_limit, high_credit, monthly_payment, past_due_amount, charge_off_amount,
-              date_opened, date_reported, date_closed, last_activity_date, months_reviewed_count,
-              current_rating_code, current_rating_type, late_30_count, late_60_count, late_90_count,
-              payment_pattern, derogatory_indicator, is_collection, is_authorized_user
-         FROM credit_tradelines WHERE credit_report_id=$1
-        ORDER BY is_collection DESC, derogatory_indicator DESC NULLS LAST, creditor_name`, [reportId])).rows;
-    const inquiries = (await db.query(
-      `SELECT id, borrower_id, report_borrower_id, bureau, inquiry_date, inquiring_party_name, business_type, loan_type
-         FROM credit_inquiries WHERE credit_report_id=$1 ORDER BY inquiry_date DESC NULLS LAST`, [reportId])).rows;
-    const publicRecords = (await db.query(
-      `SELECT id, borrower_id, report_borrower_id, bureau, record_type, filed_date, reported_date,
-              disposition_type, disposition_date, amount, court_name, docket_identifier, plaintiff_name, derogatory_indicator
-         FROM credit_public_records WHERE credit_report_id=$1 ORDER BY filed_date DESC NULLS LAST`, [reportId])).rows;
-    const collections = (await db.query(
-      `SELECT id, borrower_id, report_borrower_id, bureau, collection_agency_name, original_creditor_name, amount, status, date_reported
-         FROM credit_collections WHERE credit_report_id=$1 ORDER BY date_reported DESC NULLS LAST`, [reportId])).rows;
-    const identities = (await db.query(
-      `SELECT id, borrower_id, report_borrower_id, bureau, reported_name, aliases, dob, ssn_masked,
-              current_address, former_addresses, employers, infile_date, alert_messages
-         FROM credit_report_identities WHERE credit_report_id=$1`, [reportId])).rows;
-    const alerts = (await db.query(
-      `SELECT id, borrower_id, report_borrower_id, bureau, category, raw_type, message_text
-         FROM credit_alerts WHERE credit_report_id=$1 ORDER BY category`, [reportId])).rows;
+    const { scores, tradelines, inquiries, publicRecords, collections, identities, alerts } = await loadReportBlocks(reportId);
 
     // Names for the per-borrower tabs (from the file's borrowers, not the report).
     const bIds = [...new Set([...scores, ...tradelines, ...identities, ...alerts].map((x) => x.borrower_id).filter(Boolean))];
@@ -239,6 +257,50 @@ router.get('/credit/reports/:id/detail', requirePull, async (req, res) => {
     }
 
     res.json({ report, scores, tradelines, inquiries, publicRecords, collections, identities, alerts, borrowerNames, riskSummary, riskByBorrower });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ---- RE-PULL COMPARISON (E6): "what changed since the last pull" ------------
+// This is a REISSUE feature — when a report is re-pulled, the underwriter's first
+// question is "what moved since we last looked?" This diffs THIS report against
+// the most recent EARLIER IMPORTED report for the same file: score moves (+
+// pricing-bracket crossings), collections / public records cleared or newly
+// appeared, new derogatory accounts + inquiries, utilization shift, and — the
+// most useful bit — which fraud/OFAC/FICO findings CLEARED (the human story
+// behind the gate's "a clean re-pull supersedes an earlier fatal" rule).
+// ADVISORY (never gates). Gated (pull_credit + canSeeApp), masked-only (reuses
+// loadReportBlocks), and AUDITED on open. Returns {hasPrevious:false} when this
+// report isn't an imported one or there's no earlier imported report to diff.
+router.get('/credit/reports/:id/compare', requirePull, async (req, res) => {
+  const reportId = req.params.id;
+  try {
+    const cur = (await db.query(
+      `SELECT id, application_id, credit_report_identifier, mismo_version, representative_score,
+              representative_bracket, status, underwriting_finding, underwriting_finding_reconciled_at, created_at
+         FROM credit_reports WHERE id=$1`, [reportId])).rows[0];
+    if (!cur) return res.status(404).json({ error: 'report not found' });
+    if (!(await canSeeApp(req, cur.application_id))) return res.status(403).json({ error: 'forbidden' });
+
+    // The previous IMPORTED report for this file, created strictly before this one
+    // (a review/error re-pull has no blocks to diff, so it's skipped as a base).
+    const prev = (await db.query(
+      `SELECT id, application_id, credit_report_identifier, mismo_version, representative_score,
+              representative_bracket, status, underwriting_finding, underwriting_finding_reconciled_at, created_at
+         FROM credit_reports
+        WHERE application_id=$1 AND status='imported' AND (created_at, id) < ($3, $2)
+        ORDER BY created_at DESC, id DESC LIMIT 1`, [cur.application_id, cur.id, cur.created_at])).rows[0];
+
+    // A comparison only makes sense when THIS report imported (has blocks) AND
+    // there's an earlier imported report to compare against.
+    if (cur.status !== 'imported' || !prev) {
+      await audit(req, 'credit_report_compare_view', { creditReportId: reportId, applicationId: cur.application_id, hasPrevious: false });
+      return res.json({ hasPrevious: false });
+    }
+
+    const [curBlocks, prevBlocks] = await Promise.all([loadReportBlocks(cur.id), loadReportBlocks(prev.id)]);
+    const result = compareReports({ report: cur, ...curBlocks }, { report: prev, ...prevBlocks });
+    await audit(req, 'credit_report_compare_view', { creditReportId: reportId, applicationId: cur.application_id, previousReportId: prev.id, hasPrevious: true, changed: !!result.changed });
+    res.json(result);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

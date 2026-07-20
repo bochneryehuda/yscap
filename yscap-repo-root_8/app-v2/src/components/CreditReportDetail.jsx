@@ -166,15 +166,47 @@ function IdentityBlock({ identities }) {
   );
 }
 
+/* WHAT CHANGED since the last pull (E6) — the re-pull comparison. This is a
+   REISSUE feature, so the underwriter's first question on a fresh pull is "what
+   moved?" A plain-language digest of the diff vs. the previous pull: score +
+   pricing bracket, findings that CLEARED vs. appeared, collections / public
+   records, new inquiries, utilization. ADVISORY — it never gates. It renders
+   only when there IS a previous pull and something actually changed. Chips reuse
+   the risk-flag pattern (explicit colored border + text) for a consistent look. */
+const toneVar = (tag) => (tag === 'good' ? 'success' : tag === 'bad' ? 'danger' : 'muted');
+function WhatChanged({ c }) {
+  if (!c || !c.hasPrevious || !c.changed || !Array.isArray(c.headlines) || c.headlines.length === 0) return null;
+  const prev = c.previous || {};
+  return (
+    <div className="panel" style={{ marginTop: 12, padding: '10px 12px', borderLeft: '3px solid var(--teal)' }}>
+      <div className="row" style={{ justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: 6 }}>
+        <strong style={{ fontSize: 14 }}>What changed since the last pull</strong>
+        <span className="muted small">
+          {prev.createdAt ? `vs. the pull on ${day(prev.createdAt)}` : 'vs. the previous pull'}
+          {prev.representativeScore != null ? ` · was FICO ${prev.representativeScore}${prev.representativeBracket ? ` (${prev.representativeBracket})` : ''}` : ''}
+        </span>
+      </div>
+      <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+        {c.headlines.map((h, i) => (
+          <span key={i} style={{ display: 'inline-block', border: `1px solid var(--${toneVar(h.tag)})`, color: `var(--${toneVar(h.tag)})`, borderRadius: 6, padding: '3px 9px', fontSize: 12.5, lineHeight: 1.35 }}>{h.text}</span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function CreditReportDetail({ reportId, onClose }) {
   const [data, setData] = useState(null);
   const [err, setErr] = useState('');
   const [tab, setTab] = useState(null);
+  const [compare, setCompare] = useState(null);
 
   useEffect(() => {
     let live = true;
-    setData(null); setErr('');
+    setData(null); setErr(''); setCompare(null);
     api.creditReportDetail(reportId).then((d) => { if (live) setData(d); }).catch((e) => { if (live) setErr(e.message); });
+    // Compare is advisory + best-effort — a failure never blocks the detail view.
+    api.creditReportCompare(reportId).then((c) => { if (live) setCompare(c); }).catch(() => {});
     return () => { live = false; };
   }, [reportId]);
 
@@ -198,6 +230,9 @@ export default function CreditReportDetail({ reportId, onClose }) {
           {report.mismo_version ? ` · MISMO ${report.mismo_version}` : ''}
           {report.representative_score != null ? ` · Representative FICO ${report.representative_score} (${report.representative_bracket || '—'})` : ''}
         </div>
+
+        {/* What changed since the last pull (E6) — the re-pull comparison. */}
+        <WhatChanged c={compare} />
 
         {/* Alerts / risk — always at the top, report-level. */}
         <AlertsPanel alerts={alerts} />

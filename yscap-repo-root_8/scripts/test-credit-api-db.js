@@ -114,6 +114,56 @@ const importTransport = async () => ({ status: 200, headers: { get: () => 'text/
   ok('detail 403 (off-file LO — no IDOR)', (await call('GET', `/credit/reports/${rep}/detail`, OFF)).status === 403);
   ok('detail 404 (unknown report)', (await call('GET', '/credit/reports/00000000-0000-0000-0000-000000000000/detail', A)).status === 404);
   ok('detail 403 (no pull_credit)', (await call('GET', `/credit/reports/${rep}/detail`, NP)).status === 403);
+
+  // ---- E6: RE-PULL COMPARISON ("what changed since the last pull") ----
+  // A dedicated file with TWO imported reports: an OLDER one (690, a $500
+  // collection, a fatal fraud finding, 20% utilization) and a NEWER re-pull (720
+  // → bracket up, collection gone, fraud cleared, 10% util, a new inquiry).
+  const cmpBor = (await db.query(`INSERT INTO borrowers (first_name,last_name,email,fico) VALUES ('Cmp','Are',$1,690) RETURNING id`, [`apidb.cmp.${sfx}@t.test`])).rows[0].id;
+  const cmpApp = (await db.query(`INSERT INTO applications (borrower_id, loan_officer_id) VALUES ($1,$2) RETURNING id`, [cmpBor, admin])).rows[0].id;
+  const fraudWrap = JSON.stringify({ severity: 'fatal', types: ['fraud_alert'], message: 'Fraud alert', findings: [{ type: 'fraud_alert', code: 'fraud_alert', severity: 'fatal', reportBorrowerId: 1, reconciled: false, message: 'Fraud alert on file' }] });
+  const cmpOld = (await db.query(
+    `INSERT INTO credit_reports (application_id,provider_id,ordered_by,status,request_type,representative_score,representative_bracket,underwriting_finding,created_at,completed_at)
+     VALUES ($1,$2,$3,'imported','Individual',690,'680-699',$4::jsonb, now() - interval '5 minutes', now() - interval '5 minutes') RETURNING id`, [cmpApp, prov, admin, fraudWrap])).rows[0].id;
+  const cmpNew = (await db.query(
+    `INSERT INTO credit_reports (application_id,provider_id,ordered_by,status,request_type,representative_score,representative_bracket,created_at,completed_at)
+     VALUES ($1,$2,$3,'imported','Individual',720,'720-739', now(), now()) RETURNING id`, [cmpApp, prov, admin])).rows[0].id;
+  // scores (per-bureau delta), tradeline (utilization drop), collection (old only), inquiries (one shared, one new)
+  await db.query(`INSERT INTO credit_scores (credit_report_id, report_borrower_id, borrower_id, bureau, model, value, usable) VALUES ($1,'1',$2,'Equifax','FICO',690,true)`, [cmpOld, cmpBor]);
+  await db.query(`INSERT INTO credit_scores (credit_report_id, report_borrower_id, borrower_id, bureau, model, value, usable) VALUES ($1,'1',$2,'Equifax','FICO',720,true)`, [cmpNew, cmpBor]);
+  await db.query(`INSERT INTO credit_tradelines (credit_report_id, borrower_id, report_borrower_id, bureau, creditor_name, account_type, account_status_type, account_identifier_masked, account_identifier_encrypted, unpaid_balance, credit_limit, is_collection, is_authorized_user, raw) VALUES ($1,$2,'1','Equifax','CHASE CARD','Revolving','Open','••••1234',$3,2000,10000,false,false,'{}'::jsonb)`, [cmpOld, cmpBor, C.encryptSecret('4111111111111234')]);
+  await db.query(`INSERT INTO credit_tradelines (credit_report_id, borrower_id, report_borrower_id, bureau, creditor_name, account_type, account_status_type, account_identifier_masked, account_identifier_encrypted, unpaid_balance, credit_limit, is_collection, is_authorized_user, raw) VALUES ($1,$2,'1','Equifax','CHASE CARD','Revolving','Open','••••1234',$3,1000,10000,false,false,'{}'::jsonb)`, [cmpNew, cmpBor, C.encryptSecret('4111111111111234')]);
+  await db.query(`INSERT INTO credit_collections (credit_report_id, borrower_id, report_borrower_id, bureau, collection_agency_name, original_creditor_name, amount, raw) VALUES ($1,$2,'1','Equifax','OLD COLLECTOR','Verizon',500,'{}'::jsonb)`, [cmpOld, cmpBor]);
+  await db.query(`INSERT INTO credit_inquiries (credit_report_id, borrower_id, report_borrower_id, bureau, inquiry_date, inquiring_party_name, raw) VALUES ($1,$2,'1','Equifax','2026-05-01','SharedInq','{}'::jsonb)`, [cmpOld, cmpBor]);
+  await db.query(`INSERT INTO credit_inquiries (credit_report_id, borrower_id, report_borrower_id, bureau, inquiry_date, inquiring_party_name, raw) VALUES ($1,$2,'1','Equifax','2026-05-01','SharedInq','{}'::jsonb)`, [cmpNew, cmpBor]);
+  await db.query(`INSERT INTO credit_inquiries (credit_report_id, borrower_id, report_borrower_id, bureau, inquiry_date, inquiring_party_name, raw) VALUES ($1,$2,'1','Equifax','2026-07-01','RocketInq','{}'::jsonb)`, [cmpNew, cmpBor]);
+
+  const cmp = await call('GET', `/credit/reports/${cmpNew}/compare`, A);
+  ok('GET reports/:id/compare 200 (own file)', cmp.status === 200);
+  ok('compare hasPrevious true', cmp.j.hasPrevious === true);
+  ok('compare changed true', cmp.j.changed === true);
+  ok('compare score delta +30 with bracket change', cmp.j.representativeScore && cmp.j.representativeScore.delta === 30 && cmp.j.representativeScore.bracketChanged === true);
+  ok('compare per-bureau score delta present', Array.isArray(cmp.j.scoreDeltas) && cmp.j.scoreDeltas.some((d) => d.bureau === 'Equifax' && d.delta === 30));
+  ok('compare fraud finding CLEARED', cmp.j.findings && cmp.j.findings.cleared.some((f) => f.type === 'fraud_alert'));
+  ok('compare collection cleared', cmp.j.collections && cmp.j.collections.removed.length === 1);
+  ok('compare one new inquiry', cmp.j.inquiries && cmp.j.inquiries.added.length === 1 && cmp.j.inquiries.added[0].party === 'RocketInq');
+  ok('compare utilization dropped 20%→10%', cmp.j.risk && cmp.j.risk.deltas.revolvingUtilizationPct.delta === -10);
+  ok('compare emits a score-up headline', Array.isArray(cmp.j.headlines) && cmp.j.headlines.some((h) => /went up 30 points/.test(h.text) && h.tag === 'good'));
+  ok('compare NEVER leaks the encrypted account column', !JSON.stringify(cmp.j).includes('account_identifier_encrypted') && !JSON.stringify(cmp.j).includes('4111111111111234'));
+  // the OLDER report has no earlier imported report → nothing to compare
+  ok('compare on earliest report → hasPrevious false', (await call('GET', `/credit/reports/${cmpOld}/compare`, A)).j.hasPrevious === false);
+  ok('compare 403 (off-file LO — no IDOR)', (await call('GET', `/credit/reports/${cmpNew}/compare`, OFF)).status === 403);
+  ok('compare 403 (no pull_credit)', (await call('GET', `/credit/reports/${cmpNew}/compare`, NP)).status === 403);
+  ok('compare 404 (unknown report)', (await call('GET', '/credit/reports/00000000-0000-0000-0000-000000000000/compare', A)).status === 404);
+  // cleanup the compare fixture before the review-queue scans below
+  await db.query(`DELETE FROM credit_scores WHERE credit_report_id IN ($1,$2)`, [cmpOld, cmpNew]);
+  await db.query(`DELETE FROM credit_tradelines WHERE credit_report_id IN ($1,$2)`, [cmpOld, cmpNew]);
+  await db.query(`DELETE FROM credit_collections WHERE credit_report_id IN ($1,$2)`, [cmpOld, cmpNew]);
+  await db.query(`DELETE FROM credit_inquiries WHERE credit_report_id IN ($1,$2)`, [cmpOld, cmpNew]);
+  await db.query(`DELETE FROM credit_reports WHERE application_id=$1`, [cmpApp]);
+  await db.query(`DELETE FROM applications WHERE id=$1`, [cmpApp]);
+  await db.query(`DELETE FROM borrowers WHERE id=$1`, [cmpBor]);
+
   const rq = await call('GET', '/credit/review-queue', A);
   ok('GET /credit/review-queue 200', rq.status === 200);
   // repF is an imported report carrying a fatal fico_mismatch finding — it must
