@@ -16,6 +16,7 @@ import EmailCenter from '../components/EmailCenter.jsx';
 import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
 import DealSnapshot from '../components/DealSnapshot.jsx';
 import ClearToClosePanel from '../components/ClearToClosePanel.jsx';
+import LoanProgress from '../components/LoanProgress.jsx';
 import { PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
 import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
@@ -1762,6 +1763,12 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
   // anyone on satisfied). The picker re-shows cleared items or everything —
   // and the choice is persisted per user (owner-directed 2026-07-16).
   const [condFilter, setCondFilter] = useStickyFilter('conds', 'mine');
+  // Collapse satisfied + signed-off conditions (and the verified entity condition)
+  // to just their header wording (owner-directed 2026-07-20): a done condition is a
+  // one-line row; click Expand to open the full slot. Auto by default, per-row
+  // manual override tracked here (the entity row uses the synthetic id '__llc').
+  const [expandedConds, setExpandedConds] = useState(() => new Set());
+  const toggleCond = (id) => setExpandedConds((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   // The LLC condition stays its OWN dedicated section (LlcReview) AND is also
   // surfaced here as a condition to close, rendered with the full entity template
   // (owner-directed). It's excluded from the generic list below (so it isn't a bare
@@ -1840,21 +1847,37 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
           the three documents, verification state), rendered here as a condition in
           addition to its dedicated Vesting entity section above. Gate. */}
       {llcShown && (
-        <div className="checkitem" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8, borderColor: 'var(--gold)' }}>
-          <div className="row" style={{ gap: 8, alignItems: 'center' }}>
-            <span className={`dot ${app.entity_verified ? 'done' : 'outstanding'}`} />
-            <strong>{llcCondItem.label || 'LLC (vesting entity)'}</strong>
-            <Badge tone="gold">gate</Badge>
-            <Badge>{llcCondItem.audience}</Badge>
-            {app.entity_verified
-              ? <span className="pill ok">Verified ✓</span>
-              : <span className="pill">{app.llc_id ? 'In progress' : 'No entity linked'}</span>}
-          </div>
-          <div className="muted small">Condition to close — the borrower fills this too. Verifying the entity (below or here) satisfies and signs it off.</div>
-          {app.llc_id
-            ? <LlcManager llcId={app.llc_id} staff compactHeader />
-            : <p className="muted small" style={{ margin: 0 }}>No vesting entity linked yet — link or create one in the “Vesting entity (LLC)” section above.</p>}
-        </div>
+        // Once the entity is VERIFIED the full-width entity template is huge and
+        // just noise, so it auto-collapses to a one-line header (owner-directed
+        // 2026-07-20). Expand to reopen it. Unverified, it stays open (there's work
+        // to do). '__llc' in expandedConds forces it open.
+        (app.entity_verified && !expandedConds.has('__llc'))
+          ? (
+            <div className="checkitem" style={{ alignItems: 'center', gap: 8, cursor: 'pointer', opacity: .8, borderColor: 'var(--gold)' }}
+              onClick={() => toggleCond('__llc')} title="Show the full entity condition">
+              <span className="dot done" />
+              <div style={{ flex: 1, minWidth: 0, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{llcCondItem.label || 'LLC (vesting entity)'}</div>
+              <span className="pill ok">Verified ✓</span>
+              <button className="btn link small" onClick={(e) => { e.stopPropagation(); toggleCond('__llc'); }}>Expand</button>
+            </div>
+          ) : (
+            <div className="checkitem" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8, borderColor: 'var(--gold)' }}>
+              <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+                <span className={`dot ${app.entity_verified ? 'done' : 'outstanding'}`} />
+                <strong>{llcCondItem.label || 'LLC (vesting entity)'}</strong>
+                <Badge tone="gold">gate</Badge>
+                <Badge>{llcCondItem.audience}</Badge>
+                {app.entity_verified
+                  ? <span className="pill ok">Verified ✓</span>
+                  : <span className="pill">{app.llc_id ? 'In progress' : 'No entity linked'}</span>}
+                {app.entity_verified && <><div className="spacer" /><button className="btn link small" onClick={() => toggleCond('__llc')}>Collapse</button></>}
+              </div>
+              <div className="muted small">Condition to close — the borrower fills this too. Verifying the entity (below or here) satisfies and signs it off.</div>
+              {app.llc_id
+                ? <LlcManager llcId={app.llc_id} staff compactHeader />
+                : <p className="muted small" style={{ margin: 0 }}>No vesting entity linked yet — link or create one in the “Vesting entity (LLC)” section above.</p>}
+            </div>
+          )
       )}
       {visible.length === 0 && !llcShown && (
         <p className="muted small">Nothing matches this filter — switch to “All conditions” to see everything on the file.</p>
@@ -1863,6 +1886,21 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
         const itemDocs = docsFor(it.id);
         const signed = !!it.signed_off_at;
         const done = signed || it.status === 'satisfied' || it.status === 'received';
+        // Collapse to a one-line header once the condition is SATISFIED and/or
+        // SIGNED OFF (owner-directed 2026-07-20) — in the "All conditions" list you
+        // scan headers, not full slots. Click Expand to open the full condition.
+        const rowDone = it.status === 'satisfied' || signed;
+        if (rowDone && !expandedConds.has(it.id)) {
+          return (
+            <div className="checkitem" key={it.id} style={{ alignItems: 'center', gap: 8, cursor: 'pointer', opacity: .8 }}
+              onClick={() => toggleCond(it.id)} title="Show the full condition">
+              <span className="dot done" />
+              <div style={{ flex: 1, minWidth: 0, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.label}</div>
+              {signed ? <Badge tone="gold">signed off</Badge> : <Badge tone="gold">satisfied</Badge>}
+              <button className="btn link small" onClick={(e) => { e.stopPropagation(); toggleCond(it.id); }}>Expand</button>
+            </div>
+          );
+        }
         // Drop a file onto a document condition to upload it (same as the button).
         const canDrop = !it.tool_key && !!onDropTo;
         const dropProps = canDrop ? {
@@ -1881,6 +1919,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                     <span className="pill" style={{ marginLeft: 8, borderColor: 'var(--gold)', color: 'var(--gold)' }}
                       title={(it.origin_detail && it.origin_detail.rule) ? `Added automatically — applies when: ${it.origin_detail.rule}` : 'Added automatically by a condition rule'}>Auto</span>
                   )}
+                  {rowDone && <button className="btn link small" style={{ marginLeft: 8 }} onClick={() => toggleCond(it.id)}>Collapse</button>}
                 </div>
                 <div className="muted small">
                   {it.tool_key === 'info_field' ? (() => {
@@ -2697,6 +2736,9 @@ export default function StaffApplication() {
 
       <Section id="sec-overview" title="File overview"
         info="Status, milestone gating, assignments and the deal at a glance — the control panel for this file.">
+      {/* Where the loan is up to — visible INSIDE the loan, not just on the
+          pipeline (owner-directed 2026-07-20). */}
+      <LoanProgress status={app.status} />
       <DealSnapshot app={app} gating={gating} />
       <ClearToClosePanel gating={gating} />
       <ClickupSyncPanel app={app} canSetup={can('platform_setup')} isAdmin={isAdmin} onResynced={load} />

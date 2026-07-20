@@ -290,6 +290,23 @@ function SecHead({ eyebrow, title, extra }) {
   );
 }
 
+// Collapsible report section (owner-directed 2026-07-20): the appraisal report is
+// long, so each big section collapses to just its header — scan the headers, open
+// the one you want. Native <details> = auto-collapsed by default (unless
+// defaultOpen), toggles on click, works identically for staff and the borrower.
+// The header reuses SecHead so the look is unchanged; a chevron rotates on open.
+function ApprSection({ eyebrow, title, extra, children, defaultOpen = false }) {
+  return (
+    <details className="appr-sec appr-avoid" {...(defaultOpen ? { open: true } : {})}>
+      <summary className="appr-sec-sum">
+        <SecHead eyebrow={eyebrow} title={title} extra={extra} />
+        <span className="appr-sec-chev" aria-hidden="true">⌄</span>
+      </summary>
+      <div className="appr-sec-body">{children}</div>
+    </details>
+  );
+}
+
 // A titled dossier card (mockup .card + h3).
 function DCard({ title, tag, children, dashed }) {
   return (
@@ -838,6 +855,10 @@ function CompGrid({ title, subtitle, rows, value, tone }) {
 // "our own print", not a raw browser dump — the design lives here. Only rendered while the
 // full-screen report is open, so printing from anywhere else is unaffected.
 const PRINT_CSS = `
+/* The full-report overlay shows the WHOLE report — force every collapsible
+   section open inside it (and hide the toggle chevrons), on screen and on paper. */
+.appr-print-root .appr-sec > .appr-sec-body { display: block !important; }
+.appr-print-root .appr-sec-chev { display: none !important; }
 @media print {
   @page { margin: 14mm; }
   html, body { background: #fff !important; }
@@ -1237,7 +1258,7 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
           )}
 
           {/* ===== PROPERTY DETAILS — the dossier cards ===== */}
-          <SecHead eyebrow="The subject" title="Property details" />
+          <ApprSection eyebrow="The subject" title="Property details">
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(260px,1fr))', gap: 16 }}>
             <DCard title="Identity & location">
               <KV rows={[
@@ -1392,9 +1413,10 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
             <SystemsCard a={a} />
             <ContractCard a={a} readOnly={readOnly} />
           </div>
+          </ApprSection>
 
           {/* ===== WHAT IT'S WORTH ===== */}
-          <SecHead eyebrow="Valuation" title="What it's worth" />
+          <ApprSection eyebrow="Valuation" title="What it's worth">
           <Approaches a={a} />
           {/* The appraiser's OWN researched market bracket (from the appraisal's research block) —
               context alongside our independent comp check below. */}
@@ -1440,6 +1462,7 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
 
           {/* Three-cap loan sizing — staff only (uses the pricing quote, no persistence). */}
           {!readOnly && <ThreeCapPanel appId={appId} />}
+          </ApprSection>
 
           {/* ===== COMPARABLE SALES — split into the As-Is grid and the ARV grid ===== */}
           {comps.length > 0 && (() => {
@@ -1450,9 +1473,8 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
             const twoGrid = arvC.length > 0 && asisC.length > 0;
             const splitHow = { narrative: 'grids read from the appraiser’s narrative', proximity: 'grids inferred from comp pricing', single_grid: null, undetermined: null }[a.comp_split_confidence];
             return (
-              <>
-                <SecHead eyebrow="Evidence" title={twoGrid ? 'Comparable sales — As-Is & ARV grids' : 'Comparable sales'}
-                  extra={<span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--muted,#4B585C)' }}>{real.length} comps{twoGrid && splitHow ? ` · ${splitHow}` : twoGrid ? ' · two grids support two values' : ' · tap a row for the detail'}</span>} />
+              <ApprSection eyebrow="Evidence" title={twoGrid ? 'Comparable sales — As-Is & ARV grids' : 'Comparable sales'}
+                extra={<span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--muted,#4B585C)' }}>{real.length} comps{twoGrid && splitHow ? ` · ${splitHow}` : twoGrid ? ' · two grids support two values' : ' · tap a row for the detail'}</span>}>
                 {a.comp_split_needs_review && (
                   <div className="appr-avoid" style={{ margin: '2px 0 12px', padding: '9px 12px', borderRadius: 10, fontSize: 12.5,
                     background: 'rgba(174,135,70,.10)', border: '1px solid var(--gold,#AE8746)', color: 'var(--text,#141B22)' }}>
@@ -1474,20 +1496,20 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
                     value={arvC.length ? a.arv_value : a.as_is_value}
                     tone={arvC.length ? 'arv' : 'as_is'} />
                 )}
-              </>
+              </ApprSection>
             );
           })()}
 
           {/* ===== PREPARED BY ===== */}
-          <SecHead eyebrow="Provenance" title="Prepared by" />
+          <ApprSection eyebrow="Provenance" title="Prepared by">
           <PreparedBy a={a} readOnly={readOnly} />
+          </ApprSection>
 
           {/* ===== ORIGINAL APPRAISAL (staff only — needs the source document ids) ===== */}
           {!readOnly && (a.pdf_document_id || a.source_xml_document_id) && (
-            <>
-              <SecHead eyebrow="Source document" title="Original appraisal" />
+            <ApprSection eyebrow="Source document" title="Original appraisal">
               <SourceDocs a={a} />
-            </>
+            </ApprSection>
           )}
         </>
       )}
