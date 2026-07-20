@@ -33,7 +33,7 @@ const engine = require('../lib/underwriting/engine');
 const store = require('../lib/underwriting/store');
 const registry = require('../lib/underwriting/registry');
 const fileView = require('../lib/underwriting/file-view');
-const { computeCrossDocumentFindings } = require('../lib/underwriting/cross-document');
+const { buildTieout } = require('../lib/underwriting/tieout');
 const { underwriterActions } = require('../lib/underwriting/actions');
 const { falseAlarmReport } = require('../lib/underwriting/feedback');
 
@@ -73,18 +73,31 @@ function decorate(f) {
   return Object.assign({}, f, { availableActions: underwriterActions(actions ? { ...f, actions } : f) });
 }
 
-// The file's cross-document reconciliation, derived (not stored) from its current extractions:
-// the SAME facts (seller / price / property address) must agree across the contract, title, and
-// appraisal. Computed the same way for GET and for the resolve gate so the two never disagree.
-async function crossForFile(client, appId) {
+// The file's DATA-COMPARISON (tie-out), derived (not stored) from its current extractions PLUS
+// the appraisal: every canonical fact (borrower, entity, property, price, seller, loan, …) is
+// compared against the loan file AND across every document that carries it. Returns the matrix
+// (for the UI) and the discrepancy findings (for the clear-to-close gate). Computed the same way
+// for GET and for the resolve gate so the two never disagree.
+async function tieoutForFile(client, appId) {
+  const ctx = await fileView.loadContext(client, appId);
   const { rows } = await client.query(
-    `SELECT doc_type, fields FROM document_extractions WHERE application_id=$1 AND is_current`, [appId]);
-  const input = {};
-  for (const e of rows) {
-    const norm = fileView.normalizeForCrossDoc(e.doc_type, e.fields);
-    if (norm) input[e.doc_type] = norm;
+    `SELECT id, document_id, doc_type, fields FROM document_extractions WHERE application_id=$1 AND is_current`, [appId]);
+  const sources = rows.map((e) => ({ id: e.id, docType: e.doc_type, fields: e.fields }));
+
+  // Fold in the appraisal (its own table) so the property/price/value tie into the matrix too.
+  const appr = (await client.query(
+    `SELECT subject_address, subject_city, subject_state, subject_zip, contract_price, as_is_value, arv_value
+       FROM appraisals WHERE application_id=$1 AND superseded=false ORDER BY imported_at DESC LIMIT 1`, [appId])).rows[0];
+  if (appr) {
+    sources.push({
+      id: 'appraisal', docType: 'appraisal',
+      fields: {
+        propertyAddress: appr.subject_address ? { line1: appr.subject_address, city: appr.subject_city, state: appr.subject_state, zip: appr.subject_zip } : null,
+        contractPrice: appr.contract_price, asIsValue: appr.as_is_value, arvValue: appr.arv_value,
+      },
+    });
   }
-  return computeCrossDocumentFindings(input);
+  return buildTieout(ctx || {}, sources);
 }
 
 // ---- GET /insights/feedback: the "training" report ------------------------
@@ -119,11 +132,12 @@ router.get('/:appId', async (req, res, next) => {
       store.getFileFindings(db, app.id),
     ]);
 
-    // Cross-document reconciliation over the file's current extractions.
-    const cross = await crossForFile(db, app.id);
+    // Data-comparison / tie-out over the file's current extractions + the appraisal.
+    const tieout = await tieoutForFile(db, app.id);
+    const cross = tieout.discrepancies;
 
     const perDoc = ff.findings.map(decorate);
-    // Roll cross-document findings into the same fatal/warning gate.
+    // Roll the tie-out discrepancies into the same fatal/warning gate.
     const openAll = [...perDoc, ...cross];
     const summary = {
       fatal: openAll.filter((f) => f.severity === 'fatal').length,
@@ -134,6 +148,7 @@ router.get('/:appId', async (req, res, next) => {
     res.json({
       extractions: exts.rows,
       findings: perDoc,
+      tieout: { columns: tieout.columns, matrix: tieout.matrix, summary: tieout.summary },
       crossDocument: cross,
       summary,
       docTypes: registry.docTypes(),
@@ -265,13 +280,13 @@ router.post('/:appId/findings/:fid/resolve', requirePermission('sign_off_conditi
       { finding: fnd.code, action, status: updated.status, note: note.slice(0, 300) });
 
     // Remaining open fatal findings gate clear-to-close — the stored per-document fatals AND
-    // the derived cross-document fatals (which have no stored row but still block). Both are
-    // folded in so this gate matches exactly what GET reports.
+    // the derived tie-out fatals (which have no stored row but still block). Both are folded in
+    // so this gate matches exactly what GET reports.
     const openFatal = (await db.query(
       `SELECT count(*)::int n FROM document_findings
         WHERE application_id=$1 AND status='open' AND severity='fatal' AND blocks_ctc=true`, [app.id])).rows[0].n;
-    const cross = await crossForFile(db, app.id);
-    const crossFatal = cross.filter((f) => f.severity === 'fatal' && f.blocksCtc).length;
+    const tieout = await tieoutForFile(db, app.id);
+    const crossFatal = tieout.discrepancies.filter((f) => f.severity === 'fatal' && f.blocksCtc).length;
 
     res.json({ ok: true, finding: decorate(updated), openFatal, crossFatal, blocksCtc: (openFatal + crossFatal) > 0 });
   } catch (e) { next(e); }

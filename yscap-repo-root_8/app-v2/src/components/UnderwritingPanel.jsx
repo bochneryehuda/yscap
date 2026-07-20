@@ -127,6 +127,76 @@ function ExtractionCard({ e }) {
   );
 }
 
+// The DATA-COMPARISON matrix — the "stare and compare". Facts down the side, the loan file +
+// every document across the top; each cell shows whether that source agrees, disagrees, is
+// missing the fact, or doesn't carry it. This is the heart of the underwriting section.
+const CELL = {
+  agree: { bg: 'rgba(63,122,91,.12)', fg: 'var(--good,#3F7A5B)', mark: '✓' },
+  disagree: { bg: 'var(--crit-bg,#F6E7E4)', fg: 'var(--crit,#B4483C)', mark: '✕' },
+  missing: { bg: 'var(--amber-bg,#F6EEDD)', fg: 'var(--amber,#B7791F)', mark: '–' },
+  source: { bg: 'var(--paper,#F6F3EC)', fg: 'var(--ink,#141B22)', mark: '' },
+  na: { bg: 'transparent', fg: 'var(--line,#C9CDCE)', mark: '·' },
+  noref: { bg: 'transparent', fg: 'var(--muted,#4B585C)', mark: '' },
+  unknown: { bg: 'transparent', fg: 'var(--muted,#4B585C)', mark: '?' },
+};
+const ROWCAT = { identity: 'Identity', entity: 'Entity', collateral: 'Property', economics: 'Economics', valuation: 'Value', rehab: 'Rehab' };
+
+function TieOutMatrix({ tieout }) {
+  if (!tieout || !tieout.matrix || !tieout.matrix.length) return null;
+  const { columns, matrix, summary } = tieout;
+  const shown = matrix.filter((r) => r.status !== 'none'); // hide facts nothing in the file speaks to
+  if (!shown.length) return null;
+  const th = { padding: '7px 10px', fontSize: 10.5, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)', textAlign: 'left', whiteSpace: 'nowrap', borderBottom: '1px solid var(--line,#E7E1D3)' };
+  const cellStyle = (s) => ({ padding: '7px 10px', fontSize: 12.5, borderBottom: '1px solid var(--line-soft,#EFEADD)', background: (CELL[s] || CELL.noref).bg, color: (CELL[s] || CELL.noref).fg, verticalAlign: 'top' });
+  let lastCat = null;
+  return (
+    <div style={{ marginBottom: 22 }}>
+      <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px' }}>Data comparison — every fact, every document</h4>
+      <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginBottom: 10 }}>
+        {summary ? `${summary.matched} of ${summary.facts} facts tie out · ` : ''}
+        <span style={{ color: 'var(--good,#3F7A5B)' }}>✓ agrees</span> · <span style={{ color: 'var(--crit,#B4483C)' }}>✕ differs</span> · <span style={{ color: 'var(--amber,#B7791F)' }}>– missing</span> · <span style={{ color: 'var(--line,#9aa0a1)' }}>· not on this document</span>
+      </div>
+      <div style={{ overflowX: 'auto', border: '1px solid var(--line,#E7E1D3)', borderRadius: 12 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 520 }}>
+          <thead>
+            <tr>
+              <th style={{ ...th, position: 'sticky', left: 0, background: 'var(--card,#fff)' }}>Fact</th>
+              {columns.map((c) => <th key={c.id} style={th}>{c.label}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {shown.map((row) => {
+              const catHeader = ROWCAT[row.category] && row.category !== lastCat ? (lastCat = row.category, ROWCAT[row.category]) : null;
+              return (
+                <React.Fragment key={row.key}>
+                  {catHeader && (
+                    <tr><td colSpan={columns.length + 1} style={{ padding: '8px 10px 3px', fontSize: 10, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--gold,#AE8746)' }}>{catHeader}</td></tr>
+                  )}
+                  <tr>
+                    <td style={{ ...cellStyle('noref'), position: 'sticky', left: 0, background: 'var(--card,#fff)', fontWeight: 600, whiteSpace: 'nowrap' }}>
+                      {row.label}{row.status === 'mismatch' && <span style={{ color: 'var(--crit,#B4483C)', marginLeft: 6 }}>●</span>}
+                    </td>
+                    {row.cells.map((cell, i) => {
+                      const cfg = CELL[cell.status] || CELL.noref;
+                      return (
+                        <td key={i} style={cellStyle(cell.status)} title={cell.status}>
+                          {cell.value != null
+                            ? <span>{cfg.mark && <b style={{ marginRight: 4 }}>{cfg.mark}</b>}{cell.value}</span>
+                            : <span style={{ color: cfg.fg }}>{cfg.mark || ''}</span>}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                </React.Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 export default function UnderwritingPanel({ appId, docs = [], readOnly = false, onSummary }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -160,6 +230,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
   const sum = (data && data.summary) || { fatal: 0, warning: 0, info: 0, blocksCtc: false };
   const findings = (data && data.findings) || [];
   const cross = (data && data.crossDocument) || [];
+  const tieout = data && data.tieout;
   const exts = (data && data.extractions) || [];
   const docTypes = (data && data.docTypes) || [];
   const analyzers = (data && data.analyzers) || {};
@@ -202,10 +273,13 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
         </div>
       )}
 
-      {/* cross-document findings first — they're the marquee reconciliation across the file */}
+      {/* the data-comparison matrix — the full stare-and-compare across the file */}
+      <TieOutMatrix tieout={tieout} />
+
+      {/* tie-out discrepancies — the facts that don't agree, called out for resolution */}
       {cross.length > 0 && (
         <div style={{ marginBottom: 20 }}>
-          <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 12px' }}>Across the file — documents that don’t agree</h4>
+          <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 12px' }}>Discrepancies — facts that don’t tie out</h4>
           {cross.map((f, i) => <Finding key={f.id || `x${i}`} appId={appId} f={f} onChange={load} resolvable={false} />)}
         </div>
       )}

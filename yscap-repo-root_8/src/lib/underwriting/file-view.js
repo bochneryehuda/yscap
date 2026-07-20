@@ -31,12 +31,17 @@ async function loadContext(client, appId) {
     : null;
   // The vesting entity on the file + every LLC the borrower is on record for (assets).
   const vesting = app.llc_id
-    ? (await client.query(`SELECT llc_name FROM llcs WHERE id = $1`, [app.llc_id])).rows[0] || null
+    ? (await client.query(`SELECT llc_name, ein FROM llcs WHERE id = $1`, [app.llc_id])).rows[0] || null
     : null;
   const entities = app.borrower_id
     ? (await client.query(`SELECT llc_name FROM llcs WHERE borrower_id = $1`, [app.borrower_id])).rows
     : [];
-  return { app, borrower, vestingName: vesting && vesting.llc_name, entityNames: entities.map((r) => r.llc_name).filter(Boolean) };
+  return {
+    app, borrower,
+    vestingName: vesting && vesting.llc_name,
+    ein: vesting && vesting.ein,
+    entityNames: entities.map((r) => r.llc_name).filter(Boolean),
+  };
 }
 
 function borrowerName(b) {
