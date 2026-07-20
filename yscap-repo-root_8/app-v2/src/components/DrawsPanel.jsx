@@ -777,11 +777,14 @@ function LedgerPanel({ appId, ledger, draws, retainage, onSaved, act, busy: pare
   const retC = Math.round((approvedC || 0) * pct / 100);
   const net = (approvedC || 0) - feeC - retC;
   async function save() {
+    // A release must name its draw (audit F-2) — so the ledger, retainage pool and overdue monitor all bind
+    // the release to exactly one draw. The server enforces this too; guarding here gives a clean message.
+    if (!f.sitewire_draw_id) { setErr('Pick which draw this release is for.'); return; }
     if (approvedC == null || approvedC <= 0) { setErr('Enter the approved amount.'); return; }
     setBusy(true); setErr('');
     try {
       await api.post('/api/sitewire/disbursements', {
-        application_id: appId, sitewire_draw_id: f.sitewire_draw_id || null,
+        application_id: appId, sitewire_draw_id: f.sitewire_draw_id,
         approved_cents: approvedC, fee_cents: feeC, fee_kind: f.fee_kind, release_date: f.release_date || null, funded_status: f.funded_status,
       });
       setF({ sitewire_draw_id: '', approved: '', fee: '', fee_kind: 'virtual', release_date: '', funded_status: 'released' });
@@ -825,9 +828,9 @@ function LedgerPanel({ appId, ledger, draws, retainage, onSaved, act, busy: pare
         </div>
       )}
       <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-        <label className="small">Draw
+        <label className="small">Draw <span style={{ color: 'var(--bad,#b04a3f)' }}>*</span>
           <select className="input" value={f.sitewire_draw_id} onChange={(e) => setF({ ...f, sitewire_draw_id: e.target.value })}>
-            <option value="">—</option>
+            <option value="">Select a draw…</option>
             {draws.map((d) => <option key={d.sitewire_draw_id} value={d.sitewire_draw_id}>#{d.number}</option>)}
           </select>
         </label>
@@ -838,7 +841,7 @@ function LedgerPanel({ appId, ledger, draws, retainage, onSaved, act, busy: pare
         </label>
         <label className="small">Release date<input type="date" className="input" value={f.release_date} onChange={(e) => setF({ ...f, release_date: e.target.value })} /></label>
         <div className="small" style={{ alignSelf: 'center' }}>{pct > 0 ? <>Retainage: <b>{usd2(retC)}</b> · </> : null}Net: <b>{usd2(net)}</b></div>
-        <button className="btn btn-sm primary" disabled={busy || approvedC == null || approvedC <= 0 || net < 0} onClick={save}>Record release</button>
+        <button className="btn btn-sm primary" disabled={busy || !f.sitewire_draw_id || approvedC == null || approvedC <= 0 || net < 0} onClick={save}>Record release</button>
       </div>
       {err && <div className="small" style={{ color: 'var(--bad,#b04a3f)', marginTop: 6 }}>{err}</div>}
     </div>

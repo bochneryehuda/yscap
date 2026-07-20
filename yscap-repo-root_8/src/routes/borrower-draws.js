@@ -80,12 +80,55 @@ router.get('/draws/:appId/rollup', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'Something went wrong — please try again.' }); }
 });
 
+// ---- GET /draws/:appId/eligibility — can the borrower request another draw right now? (borrower-safe) ----
+// A guided, honest read used by the borrower draw screen: how much budget remains, whether the project is
+// still open, and what (if anything) is holding up a new draw — plus where to go to submit one (Sitewire).
+router.get('/draws/:appId/eligibility', async (req, res) => {
+  const appId = req.params.appId;
+  if (!(await ownsApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    let sowState = null;
+    try { const s = (await db.query(`SELECT tool_payload FROM checklist_items WHERE application_id=$1 AND tool_key='rehab_budget' ORDER BY created_at LIMIT 1`, [appId])).rows[0]; sowState = s && s.tool_payload && s.tool_payload.state ? s.tool_payload.state : null; } catch (_) {}
+    const rollup = await rollupMod.loadRollup(db, appId, { sowState });
+    const proj = (rollup && rollup.project) || {};
+    const budget = Number(proj.budget) || 0;
+    const remaining = Number.isFinite(Number(proj.remaining)) ? Number(proj.remaining) : Math.max(0, budget - (Number(proj.drawn) || 0));
+    // project lifecycle: a finished / paid-off project accepts no new draws (Sitewire is deactivated on close).
+    const link = (await db.query(
+      `SELECT COALESCE(lifecycle_state,'active') AS lifecycle_state FROM sitewire_property_links WHERE application_id=$1 AND matched_by='created' LIMIT 1`, [appId])).rows[0];
+    const lifecycle = (link && link.lifecycle_state) || 'active';
+    // an inspection result the borrower still has to act on holds the release clock — surface it as the next step.
+    const awaiting = Number((await db.query(
+      `SELECT count(*)::int c FROM draw_findings WHERE application_id=$1 AND status='delivered'`, [appId])).rows[0].c) || 0;
+    // a draw already moving through Sitewire (submitted, not yet approved) — informational, not a hard block.
+    const inFlight = Number((await db.query(
+      `SELECT count(*)::int c FROM sitewire_draws WHERE application_id=$1 AND status IN ('pending_borrower','inspecting','pending','pending_capital_partner')`, [appId])).rows[0].c) || 0;
+
+    const blocking = [];
+    if (lifecycle !== 'active') blocking.push('Your construction project is complete — no further draws can be requested.');
+    if (budget > 0 && remaining <= 0) blocking.push('Your full construction budget has been drawn — there is nothing left to request.');
+    const nextSteps = [];
+    if (awaiting > 0) nextSteps.push(awaiting === 1 ? 'Review and accept your latest inspection result below — that starts your release.' : `Review your ${awaiting} inspection results below — accepting them starts each release.`);
+    if (inFlight > 0) nextSteps.push('You already have a draw moving through inspection — you can track it below.');
+
+    res.json({
+      eligible: blocking.length === 0,
+      budget_cents: budget, drawn_cents: Number(proj.drawn) || 0, remaining_cents: Math.max(0, remaining),
+      pct_complete: Number(proj.pct_complete) || 0,
+      lifecycle_state: lifecycle, awaiting_review: awaiting, in_flight: inFlight,
+      blocking, next_steps: nextSteps,
+      sitewire_portal_url: require('../config').sitewireBaseUrl || 'https://app.sitewire.co',
+    });
+  } catch (e) { res.status(500).json({ error: 'Something went wrong — please try again.' }); }
+});
+
 // ---- GET /draws/:appId/findings — inspection findings delivered for this file ----
 router.get('/draws/:appId/findings', async (req, res) => {
   if (!(await ownsApp(req, req.params.appId))) return res.status(403).json({ error: 'forbidden' });
   try {
   const findings = (await db.query(
-    `SELECT id, sitewire_draw_id, status, total_requested_cents, total_approved_cents, delivered_at, accepted_at, accepted_via, disputed_at, resolved_at, wire_due_at
+    `SELECT id, sitewire_draw_id, status, total_requested_cents, total_approved_cents, delivered_at, accepted_at, accepted_via, disputed_at, resolved_at, wire_due_at,
+            EXISTS (SELECT 1 FROM draw_disbursements dd WHERE dd.sitewire_draw_id=draw_findings.sitewire_draw_id AND dd.kind='draw' AND dd.funded_status='released') AS released
        FROM draw_findings WHERE application_id=$1 ORDER BY delivered_at DESC`, [req.params.appId])).rows;
   const out = [];
   for (const f of findings) {

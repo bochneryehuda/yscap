@@ -457,35 +457,36 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
   let releaseDate = req.body.release_date == null || req.body.release_date === '' ? null : sanitizeDateOnly(req.body.release_date);
   if (req.body.release_date && !releaseDate) return res.status(400).json({ error: 'The release date must be a valid calendar date (YYYY-MM-DD).' });
   const fundedStatus = ['pending', 'released', 'held'].includes(req.body.funded_status) ? req.body.funded_status : 'pending';
-  // validate the draw id: if supplied it must be numeric AND belong to THIS file (never store a
-  // draw id from another file — the lien gate reads that draw's waivers). Audit #3.
-  let drawId = null;
-  if (sitewire_draw_id != null && sitewire_draw_id !== '') {
-    if (!/^\d+$/.test(String(sitewire_draw_id))) return res.status(400).json({ error: 'invalid draw id' });
-    const own = (await db.query(`SELECT total_approved_cents FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [sitewire_draw_id, application_id])).rows[0];
-    if (!own) return res.status(400).json({ error: 'that draw is not on this file' });
-    drawId = sitewire_draw_id;
-    // M1: don't record a release larger than what the lender actually approved on this draw (unless overridden) —
-    // the ledger (and retainage) should never exceed the real approved figure.
-    const drawApproved = Number(own.total_approved_cents) || 0;
-    if (drawApproved > 0 && approved > drawApproved && !req.body.override) {
-      return res.status(422).json({ error: `${T.usd(approved)} is more than the ${T.usd(drawApproved)} approved on this draw — pass override:true to record it anyway.` });
-    }
-    // H1: a draw is released once — block a duplicate ledger row up front (the db/148 unique index is the
-    // belt-and-suspenders). A duplicate would double-count into the retainage pool.
-    const dup = await db.query(`SELECT 1 FROM draw_disbursements WHERE sitewire_draw_id=$1 AND kind='draw'`, [drawId]);
-    if (dup.rowCount) return res.status(409).json({ error: 'A release is already recorded for this draw — correct the existing entry instead of adding another.' });
+  // A draw release MUST name its draw (audit F-2 — a deliberate money-route change). A release with no draw
+  // id left sitewire_draw_id NULL, which (a) forced the overdue monitor into an over-broad NULL-match
+  // suppression that silenced genuinely-overdue OTHER draws on a rare multi-draw file, and (b) let the
+  // lien-waiver gate be side-stepped. Every kind='draw' disbursement now binds to exactly ONE draw on this
+  // file, so the monitor can match a release to its finding precisely. (Retainage-release rows are a
+  // separate route/kind with no draw id — unaffected.)
+  if (sitewire_draw_id == null || sitewire_draw_id === '') return res.status(400).json({ error: 'Select which draw this release is for.' });
+  if (!/^\d+$/.test(String(sitewire_draw_id))) return res.status(400).json({ error: 'invalid draw id' });
+  // it must belong to THIS file (never store a draw id from another file — the lien gate reads that draw's waivers).
+  const own = (await db.query(`SELECT total_approved_cents FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [sitewire_draw_id, application_id])).rows[0];
+  if (!own) return res.status(400).json({ error: 'that draw is not on this file' });
+  const drawId = sitewire_draw_id;
+  // M1: don't record a release larger than what the lender actually approved on this draw (unless overridden) —
+  // the ledger (and retainage) should never exceed the real approved figure.
+  const drawApproved = Number(own.total_approved_cents) || 0;
+  if (drawApproved > 0 && approved > drawApproved && !req.body.override) {
+    return res.status(422).json({ error: `${T.usd(approved)} is more than the ${T.usd(drawApproved)} approved on this draw — pass override:true to record it anyway.` });
   }
+  // H1: a draw is released once — block a duplicate ledger row up front (the db/148 unique index is the
+  // belt-and-suspenders). A duplicate would double-count into the retainage pool.
+  const dup = await db.query(`SELECT 1 FROM draw_disbursements WHERE sitewire_draw_id=$1 AND kind='draw'`, [drawId]);
+  if (dup.rowCount) return res.status(409).json({ error: 'A release is already recorded for this draw — correct the existing entry instead of adding another.' });
   try {
     // retainage: hold a % of the approved amount; net = approved − fee − retainage held
     const pct = await retainagePctFor(application_id);
     const split = computeRelease({ approvedCents: approved, feeCents: fee, retainagePct: pct });
     if (!split.ok) return res.status(422).json({ error: split.violation });
-    // lien-waiver gate: a RELEASE must name its draw so we can check its waivers — otherwise the
-    // gate could be skipped by leaving the draw blank (audit #1). Block if any required waiver is
-    // still outstanding (never guessed).
+    // lien-waiver gate: the release already named its draw (required above), so we check exactly that draw's
+    // waivers. Block the release if any required waiver is still outstanding (never guessed).
     if (fundedStatus === 'released' && await lienGateEnabled(application_id)) {
-      if (!drawId) return res.status(400).json({ error: 'Select which draw this release is for — lien waivers are required on this project and are checked per draw.' });
       const waivers = (await db.query(`SELECT status, tier, party_name, kind FROM draw_lien_waivers WHERE sitewire_draw_id=$1`, [drawId])).rows;
       const gate = waiverGate(waivers, { enabled: true });
       if (!gate.ok) return res.status(409).json({ error: `Lien waivers still outstanding: ${gate.missing.join('; ')}. Mark them received or waived before releasing.`, missing: gate.missing });
@@ -953,7 +954,7 @@ router.get('/portfolio', requirePermission('manage_draws'), async (req, res) => 
     // per-file budget (frozen) + drawn (approved on approved draws) + pending-approval counts
     const rows = (await db.query(
       `SELECT a.id AS application_id, a.ys_loan_number, a.property_address->>'oneLine' AS address, a.status,
-              a.actual_closing, a.term,
+              a.actual_closing, a.term, a.lender,
               l.sitewire_property_id, COALESCE(l.lifecycle_state,'active') AS lifecycle_state, l.lifecycle_at,
               COALESCE((SELECT sum(ji.budgeted_cents) FROM sitewire_job_item_links ji WHERE ji.application_id=a.id AND ji.state<>'deleted' AND ji.is_media_item=false),0) AS budget_cents,
               COALESCE((SELECT sum(r.approved_cents) FROM sitewire_draw_requests r JOIN sitewire_draws d2 ON d2.sitewire_draw_id=r.sitewire_draw_id WHERE d2.application_id=a.id AND d2.status='approved'),0) AS drawn_cents,
@@ -972,6 +973,9 @@ router.get('/portfolio', requirePermission('manage_draws'), async (req, res) => 
       budget += b; drawn += dr; pendingReq += Number(r.pending_requested_cents) || 0;
       pendingCount += Number(r.pending_count) || 0; highRisk += Number(r.high_risk_count) || 0;
       return { application_id: r.application_id, ys_loan_number: r.ys_loan_number, address: r.address, status: r.status,
+        // partner is the STAFF-ONLY note-buyer / capital-partner label (never sent to a borrower surface;
+        // this route is manage_draws-gated). Used for the by-partner exposure rollup below.
+        partner: (r.lender && String(r.lender).trim()) || null,
         budget_cents: b, drawn_cents: dr, remaining_cents: b - dr, pct_complete: b > 0 ? Math.round((dr / b) * 1000) / 10 : 0,
         pending_requested_cents: Number(r.pending_requested_cents) || 0, pending_count: Number(r.pending_count) || 0, high_risk_count: Number(r.high_risk_count) || 0,
         funded_on: r.actual_closing || null, term: r.term || null, draw_count: Number(r.draw_count) || 0,
@@ -995,9 +999,43 @@ router.get('/portfolio', requirePermission('manage_draws'), async (req, res) => 
     const alertByFile = {};
     for (const af of alerts.files) alertByFile[af.application_id] = af.alerts;
     for (const f of files) f.alerts = (f.lifecycle_state === 'active') ? (alertByFile[f.application_id] || []) : [];
+
+    // ---- Coordinator analytics (2026-07-20) ----
+    // (1) BY-PARTNER exposure rollup — where the desk's committed capital sits per note-buyer / capital
+    //     partner. Staff-only labels; an unmatched file rolls up under "Unassigned". Active projects only for
+    //     the flagged/overdue counts (a finished project isn't "at risk").
+    const partnerMap = new Map();
+    for (const f of files) {
+      const key = f.partner || 'Unassigned';
+      let p = partnerMap.get(key);
+      if (!p) { p = { partner: key, files: 0, budget_cents: 0, drawn_cents: 0, remaining_cents: 0, pending_requested_cents: 0, pending_count: 0, flagged: 0, wire_overdue: 0 }; partnerMap.set(key, p); }
+      p.files += 1;
+      p.budget_cents += f.budget_cents; p.drawn_cents += f.drawn_cents; p.remaining_cents += f.remaining_cents;
+      p.pending_requested_cents += f.pending_requested_cents; p.pending_count += f.pending_count;
+      if ((f.alerts || []).length) p.flagged += 1;
+      if (f.wire_overdue && f.lifecycle_state === 'active') p.wire_overdue += 1;
+    }
+    const byPartner = [...partnerMap.values()]
+      .map((p) => ({ ...p, pct_complete: p.budget_cents > 0 ? Math.round((p.drawn_cents / p.budget_cents) * 1000) / 10 : 0 }))
+      .sort((a, b) => b.remaining_cents - a.remaining_cents);
+
+    // (2) HEALTH panel — a one-glance read of the active portfolio's condition.
+    const finishedCount = files.filter((f) => f.lifecycle_state !== 'active').length;
+    const overdueFiles = files.filter((f) => f.wire_overdue && f.lifecycle_state === 'active').length;
+    const health = {
+      active: activeFiles.length,
+      finished: finishedCount,
+      flagged: alerts.summary.flagged,
+      on_track: Math.max(0, activeFiles.length - alerts.summary.flagged),
+      wire_overdue_files: overdueFiles,
+      high_risk_files: files.filter((f) => f.high_risk_count > 0 && f.lifecycle_state === 'active').length,
+      pending_count: pendingCount,
+    };
+
     res.json({ totals: { files: files.length, budget_cents: budget, drawn_cents: drawn, remaining_cents: budget - drawn,
       pct_complete: budget > 0 ? Math.round((drawn / budget) * 1000) / 10 : 0, pending_requested_cents: pendingReq, pending_count: pendingCount, high_risk_count: highRisk,
       flagged: alerts.summary.flagged, alert_codes: alerts.summary.by_code },
+      by_partner: byPartner, health,
       files: files.sort((a, b) => (b.alerts.length - a.alerts.length) || b.pending_count - a.pending_count || b.remaining_cents - a.remaining_cents) });
   } catch (e) { console.warn('[sitewire] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });

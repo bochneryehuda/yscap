@@ -254,11 +254,11 @@ async function drawFindingsAwaitingBorrowerOnce() {
 }
 
 /* 6) Draw release overdue — the borrower ACCEPTED, the wire SLA (wire_due_at) has passed, and no release
-   is recorded. Nudge the assigned team so a borrower's approved money doesn't slip. Per file, ≤ once/2 days.
-   Suppression covers a release recorded WITHOUT a draw id too (with the lien gate off the release route can
-   leave sitewire_draw_id NULL, and recording a release doesn't flip the finding status) — otherwise a
-   released draw would alert forever. (The portfolio monitor flags this passively; this is the active push.)
-   Staff surface — not borrower-safe-gated.
+   is recorded for THAT draw. Nudge the assigned team so a borrower's approved money doesn't slip. Per file,
+   ≤ once/2 days. The suppression is now an EXACT per-draw match (dd.sitewire_draw_id = f.sitewire_draw_id):
+   a kind='draw' release always names its draw (audit F-2 — required on the money route + backfilled by
+   db/182), so a release on one draw of a multi-draw file no longer silences a genuinely-overdue OTHER draw.
+   (The portfolio monitor flags this passively; this is the active push.) Staff surface — not borrower-safe-gated.
    The active-link EXISTS mirrors the passive monitor (rule 10): a finished/paid-off project is excluded, so an
    accepted finding whose wire was handled outside PILOT on a closed loan never alerts the team forever. */
 async function drawReleaseOverdueOnce() {
@@ -270,8 +270,7 @@ async function drawReleaseOverdueOnce() {
       WHERE f.status='accepted' AND f.wire_due_at IS NOT NULL AND f.wire_due_at < now()
         AND NOT EXISTS (SELECT 1 FROM draw_disbursements dd
                           WHERE dd.funded_status='released' AND dd.kind='draw'
-                            AND (dd.sitewire_draw_id = f.sitewire_draw_id
-                                 OR (dd.sitewire_draw_id IS NULL AND dd.application_id = f.application_id)))
+                            AND dd.sitewire_draw_id = f.sitewire_draw_id)
         AND EXISTS (SELECT 1 FROM sitewire_property_links pl WHERE pl.application_id=f.application_id
                       AND pl.matched_by='created' AND COALESCE(pl.lifecycle_state,'active')='active')
       GROUP BY f.application_id
