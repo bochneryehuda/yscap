@@ -113,12 +113,18 @@ const has = (r, code) => r.findings.some((f) => f.code === code);
   assert.ok(has(pol, 'policy_dates_inverted'), 'policy expiring before effective flagged');
 }
 
-// ---- DOB age plausibility ----
+// ---- DOB age plausibility (CREDIT REPORT only — the government-ID DOB age is owned by id-checks.js
+// to avoid double-listing the same issue in the roll-up) ----
 {
   const young = assessReasonability({ today: TODAY, extractions: [
+    { doc_type: 'credit_report', document_id: 'd1', fields: { dob: '2015-06-01' } },
+  ] });
+  assert.ok(has(young, 'borrower_underage'), 'under-18 credit-report DOB flagged');
+  // A government_id DOB is NOT age-checked here anymore (id-checks owns it) — no duplicate finding.
+  const idYoung = assessReasonability({ today: TODAY, extractions: [
     { doc_type: 'government_id', document_id: 'd1', fields: { dateOfBirth: '2015-06-01' } },
   ] });
-  assert.ok(has(young, 'borrower_underage'), 'under-18 DOB flagged');
+  assert.ok(!has(idYoung, 'borrower_underage'), 'government-ID DOB age is left to id-checks (no reasonability duplicate)');
 
   // 1900 parses (toISODate floors at year 1900) and yields age 126 → implausible.
   const old = assessReasonability({ today: TODAY, extractions: [

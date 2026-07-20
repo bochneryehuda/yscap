@@ -203,9 +203,12 @@ function assessReasonability({ extractions = [], economics = {}, today = null } 
       }
     }
 
-    // (c) Date of birth implies an impossible age (ID + credit report carry a DOB).
-    const dob = isoOf(e.doc_type === 'credit_report' ? f.dob : f.dateOfBirth);
-    if (dob && today && (e.doc_type === 'government_id' || e.doc_type === 'credit_report')) {
+    // (c) Date of birth implies an impossible age. The GOVERNMENT-ID DOB age is owned by the ID
+    // check (id-checks.js: id_underage / id_age_implausible) — re-checking it here would double-list
+    // the same issue in the roll-up — so this layer covers only the CREDIT-REPORT DOB (which the ID
+    // check never sees).
+    const dob = isoOf(f.dob);
+    if (dob && today && e.doc_type === 'credit_report') {
       const age = ageOn(dob, today);
       if (age != null && age < 18) {
         findings.push(warn(at('', { code: 'borrower_underage', field: 'dateOfBirth', docValue: dob, fileValue: `${age} yrs`,
