@@ -230,6 +230,27 @@ router.post('/files/:id/reset-draw', requirePermission('manage_draws'), async (r
   } catch (e) { console.warn('[sitewire] reset-draw error:', e && e.message); res.status(500).json({ error: 'Couldn’t reset the draw setup right now — please try again shortly.' }); }
 });
 
+// ---- GET /files/:id/borrower-status — Sitewire's borrower-invite state (live read) ----
+router.get('/files/:id/borrower-status', requirePermission('manage_draws'), async (req, res) => {
+  if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try { res.json(await orchestrator.getBorrowerInviteStatus(req.params.id)); }
+  catch (e) { res.status(500).json({ error: 'Could not read the borrower status from Sitewire right now.' }); }
+});
+
+// ---- POST /files/:id/resend-invite — (re)send Sitewire's borrower invite ----
+router.post('/files/:id/resend-invite', requirePermission('manage_draws'), async (req, res) => {
+  if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const r = await orchestrator.resendBorrowerInvite(req.params.id);
+    if (r.error === 'not_managed') return res.status(409).json({ error: 'This file isn’t managed by PILOT in Sitewire yet — start the draw process first.' });
+    if (r.error === 'no_borrower_email') return res.status(409).json({ error: 'This file has no borrower email to invite.' });
+    if (r.error === 'writes_off') return res.status(409).json({ error: 'Sitewire writing is off — turn it on to send the invite.' });
+    if (r.error === 'transient') return res.status(502).json({ error: 'Sitewire is briefly unavailable — please try again shortly.' });
+    if (r.error) return res.status(502).json({ error: 'Couldn’t send the invite through Sitewire — please try again shortly.' });
+    res.json(r);
+  } catch (e) { res.status(500).json({ error: 'Couldn’t send the invite right now — please try again shortly.' }); }
+});
+
 // ---- POST /api/sitewire/files/:id/push — manual birth push (admin/setup, guarded) ----
 router.post('/files/:id/push', requirePermission('platform_setup'), async (req, res) => {
   // scope like every other per-file route — platform_setup alone (e.g. the software_setup persona) must

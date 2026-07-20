@@ -756,4 +756,40 @@ async function resetDrawSetup(appId, staffId = null) {
   return { ok: true, was_managed: true, old_property_id: oldPropId, sitewire, deactivated };
 }
 
-module.exports = { pushFile, pushBudget, setPropertyLifecycle, resetDrawSetup, collisionProperty, park, journal, circuitCheck, resolveCapitalPartnerId, resolveRule, resolveInspection, resolveCoordinatorId, getLink, loadFile, isManaged, recordSetupStatus, SITEWIRE_BIRTH_REASONS, LIFECYCLE_STATES };
+/* Live read of Sitewire's borrower-invite state for a managed file (owner-directed 2026-07-20 — "see whether
+   Sitewire invited the borrower"). Sitewire owns the invite email + its status; we surface the state it exposes
+   on the property (`borrower.status`: unassigned → invited → assigned). Best-effort: null/unavailable when
+   Sitewire reads are off or the call fails. Staff-only (the route is manage_draws). */
+async function getBorrowerInviteStatus(appId) {
+  const link = await getLink(appId);
+  if (!link || !link.sitewire_property_id || link.matched_by !== 'created') return { managed: false };
+  if (!cfg.sitewireEnabled) return { managed: true, available: false, reason: 'sitewire_off' };
+  try {
+    const p = await client.getProperty(link.sitewire_property_id);
+    const b = (p && p.borrower) || {};
+    return { managed: true, available: true, status: b.status || 'unassigned', contact_email: b.contact_email || null };
+  } catch (e) { return { managed: true, available: false, reason: (e && e.message) || 'error' }; }
+}
+
+/* (Re)send the Sitewire borrower invite by re-asserting the borrower's contact email on the property — the
+   same guarded write the push uses (Sitewire sends its own invite on assign). Mirrors a real Sitewire action
+   we couldn't previously trigger on demand. GO-FORWARD ONLY (managed file) + guarded/journaled. */
+async function resendBorrowerInvite(appId) {
+  const link = await getLink(appId);
+  if (!link || !link.sitewire_property_id || link.matched_by !== 'created') return { error: 'not_managed' };
+  const a = await loadFile(appId);
+  if (!a || !a.borrower_email) return { error: 'no_borrower_email' };
+  if (!(cfg.sitewireEnabled && (cfg.sitewireOutboundEnabled || cfg.sitewireDryrun))) return { error: 'writes_off' };
+  await circuitCheck(1);
+  try {
+    const res = await client.assignBorrower(link.sitewire_property_id, a.borrower_email);
+    if (res && res.__dryrun) return { ok: true, sitewire: 'dryrun', email: a.borrower_email };
+    await journal({ appId, propertyId: link.sitewire_property_id, entity: 'borrower', field: 'contact_email', newValue: a.borrower_email, source: 'resend_invite' });
+    return { ok: true, sitewire: 'synced', email: a.borrower_email };
+  } catch (e) {
+    if (e.retryable) return { error: 'transient' };
+    return { error: 'sitewire_' + ((e && e.status) || 'error') };
+  }
+}
+
+module.exports = { pushFile, pushBudget, setPropertyLifecycle, resetDrawSetup, collisionProperty, getBorrowerInviteStatus, resendBorrowerInvite, park, journal, circuitCheck, resolveCapitalPartnerId, resolveRule, resolveInspection, resolveCoordinatorId, getLink, loadFile, isManaged, recordSetupStatus, SITEWIRE_BIRTH_REASONS, LIFECYCLE_STATES };

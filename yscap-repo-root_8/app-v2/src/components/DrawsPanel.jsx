@@ -167,6 +167,9 @@ export default function DrawsPanel({ appId }) {
             </div>
           </div>
 
+          {/* ---- Sitewire borrower-invite status + resend ---- */}
+          <BorrowerInviteStatus appId={appId} writesOff={writesOff} readsOff={readsOff} />
+
           {/* ---- read-only notice when Sitewire writes are off (the default staged state) ---- */}
           {writesOff && (
             <div className="dd-card" style={{ marginTop: 12, borderLeft: '3px solid var(--gold,#ae8746)' }}>
@@ -311,6 +314,55 @@ function ResetDrawControl({ appId, onChanged }) {
         <button className="btn btn-sm" style={{ background: 'var(--bad,#b04a3f)', color: '#fff', flex: '0 0 auto' }} disabled={busy} onClick={reset}>{busy ? 'Resetting…' : 'Reset & re-push'}</button>
       </div>
       {msg && <div className="dd-sub" style={{ marginTop: 8 }}>{msg}</div>}
+    </div>
+  );
+}
+
+/* Shows Sitewire's borrower-invite state (unassigned → invited → accepted) and a resend button. Sitewire
+   owns the invite email itself; we surface the status it exposes and can re-trigger the invite. Staff-only. */
+const INVITE = {
+  assigned: { label: 'Borrower accepted the Sitewire invite', cls: 'sw-approved', tone: 'var(--good,#3f7a4a)' },
+  invited: { label: 'Sitewire invite sent — waiting on the borrower', cls: 'sw-pending', tone: 'var(--gold,#ae8746)' },
+  unassigned: { label: 'Borrower not yet invited in Sitewire', cls: 'sw-draft', tone: 'var(--text-muted)' },
+};
+function BorrowerInviteStatus({ appId, writesOff, readsOff }) {
+  const [st, setSt] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const loadStatus = useCallback(() => { api.get(`/api/sitewire/files/${appId}/borrower-status`).then(setSt).catch(() => setSt(null)); }, [appId]);
+  useEffect(() => { loadStatus(); }, [loadStatus]);
+  if (!st || !st.managed) return null;
+  const info = (st.available && INVITE[st.status]) || null;
+  async function resend() {
+    setBusy(true); setMsg('');
+    try {
+      const r = await api.post(`/api/sitewire/files/${appId}/resend-invite`, {});
+      setMsg(r.sitewire === 'dryrun' ? 'Dry-run — the invite wasn’t actually sent.' : `Invite sent to ${r.email}.`);
+      setTimeout(loadStatus, 800);
+    } catch (e) { setMsg(e?.data?.error || e.message || 'That didn’t work.'); }
+    finally { setBusy(false); }
+  }
+  const accepted = st.status === 'assigned';
+  return (
+    <div className="dd-card" style={{ marginTop: 12 }}>
+      <div className="row between" style={{ gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div className="row" style={{ gap: 10, alignItems: 'center', minWidth: 0 }}>
+          <span className="dd-card-ic"><SdIcon name="mail" /></span>
+          <div>
+            <b>Borrower in Sitewire</b>
+            {info
+              ? <div className="dd-sub" style={{ marginTop: 1, color: info.tone }}>{info.label}{st.contact_email ? ` · ${st.contact_email}` : ''}</div>
+              : <div className="dd-sub" style={{ marginTop: 1 }}>{readsOff ? 'Turn Sitewire on to see the borrower’s invite status.' : 'Status unavailable right now.'}</div>}
+          </div>
+        </div>
+        {!accepted && !readsOff && (
+          <button className="btn btn-sm ghost" style={{ flex: '0 0 auto' }} disabled={busy || writesOff}
+            title={writesOff ? 'Sitewire writing is off' : 'Re-send the Sitewire borrower invite'} onClick={resend}>
+            {busy ? 'Sending…' : (st.status === 'invited' ? 'Resend invite' : 'Send invite')}
+          </button>
+        )}
+      </div>
+      {msg && <div className="dd-sub" style={{ marginTop: 6 }}>{msg}</div>}
     </div>
   );
 }
@@ -525,6 +577,7 @@ function SdIcon({ name }) {
     rocket: <><path d="M12 3c3 1 5 4 5 8l-2 5H9l-2-5c0-4 2-7 5-8z" /><circle cx="12" cy="9" r="1.6" /><path d="M9 16l-2 3M15 16l2 3" /></>,
     ext: <><path d="M14 4h6v6" /><path d="M20 4l-8 8" /><path d="M18 14v4a2 2 0 01-2 2H6a2 2 0 01-2-2V8a2 2 0 012-2h4" /></>,
     list: <><path d="M8 6h13M8 12h13M8 18h13" /><path d="M3 6h.01M3 12h.01M3 18h.01" /></>,
+    mail: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M3 7l9 6 9-6" /></>,
   }[name] || null;
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{p}</svg>;
 }
