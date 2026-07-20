@@ -6290,6 +6290,26 @@ router.post('/applications/:id/documents', async (req, res) => {
 // Acceptance marks the item RECEIVED (not satisfied) — the condition stays open
 // until a reviewer signs it off (#135). Only accepted+current docs count for the
 // file (see getApprovedDocuments / TPR export).
+// A tool submission (Scope of Work, track record, term sheet…) saves the SAME
+// logical document in SEVERAL formats — HTML + XML + PDF — as separate `documents`
+// rows on ONE checklist item. A verdict (reject / request-more) on that item was
+// firing the borrower email once PER FORMAT (owner-reported 2026-07-20: three
+// identical "needs a new document" emails for one Scope of Work). Send ONE
+// borrower notification per checklist item per verdict: atomically CLAIM a short
+// window (the export formats are decided within seconds of each other, whether by
+// one cascading action or three quick clicks) — the first format's verdict
+// notifies, the sibling formats update silently. Returns true if THIS call should
+// notify. No checklist item to key on (LLC/profile doc) → always notify.
+async function claimItemVerdictEmail(checklistItemId, action) {
+  if (!checklistItemId) return true;   // no logical item to key on → always notify
+  // Use the shared ATOMIC claim (pg_advisory_xact_lock in its own statement) —
+  // a plain INSERT…WHERE NOT EXISTS is NOT race-safe under READ COMMITTED, so two
+  // of the export formats' parallel reject calls could both win and re-send. The
+  // helper also FAILS CLOSED on a DB error (returns null → no email) instead of
+  // throwing a 500 out of the handler after the review already committed.
+  const { claimOncePerPeriod } = require('../lib/throttle-claim');
+  return (await claimOncePerPeriod({ action, entityId: checklistItemId, interval: '5 minutes', entityType: 'checklist_item' })) != null;
+}
 router.post('/documents/:id/review', async (req, res) => {
   const b = req.body || {};
   const action = b.action;
@@ -6366,7 +6386,7 @@ router.post('/documents/:id/review', async (req, res) => {
 
     // Tell the borrower another document is needed on this condition — the
     // accepted file is kept; this is an "and also", not a rejection.
-    if (requestMore && doc.borrower_id) {
+    if (requestMore && doc.borrower_id && await claimItemVerdictEmail(doc.checklist_item_id, 'doc_requested_emailed')) {
       try {
         let condLabel = '';
         if (doc.checklist_item_id) {
@@ -6432,7 +6452,7 @@ router.post('/documents/:id/review', async (req, res) => {
 
     // On rejection, tell the borrower what to fix. LLC documents live on the
     // borrower profile, not on a file — send the borrower there instead.
-    if (action === 'reject' && doc.borrower_id) {
+    if (action === 'reject' && doc.borrower_id && await claimItemVerdictEmail(doc.checklist_item_id, 'doc_rejected_emailed')) {
       try {
         let condLabel = '';
         if (doc.checklist_item_id) {
