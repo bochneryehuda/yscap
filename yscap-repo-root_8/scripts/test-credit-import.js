@@ -12,6 +12,10 @@ if (!process.env.DATABASE_URL) { console.log('SKIP test-credit-import (no DATABA
 // test-credit-api-db). orderAndImport requires a configured endpoint even though a
 // no-network transport is injected; keys stay deterministic for the crypto paths.
 process.env.XACTUS_ENDPOINT = process.env.XACTUS_ENDPOINT || 'http://x';
+// This suite's response fixtures are MISMO 2.3.1 — pin the version so it keeps
+// exercising the 2.3.1 request builder + parser even though the config default is
+// now 3.4. (The 3.4 end-to-end path is covered by test-credit-pull-matrix.js.)
+process.env.XACTUS_MISMO_VERSION = process.env.XACTUS_MISMO_VERSION || '2.3.1';
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'import-secret-00000000000000000000000000';
 process.env.SSN_ENCRYPTION_KEY = process.env.SSN_ENCRYPTION_KEY || '0123456789abcdef0123456789abcdef';
 process.env.STORAGE_DIR = process.env.STORAGE_DIR || '/tmp/credit-import-storage';
