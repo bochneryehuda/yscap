@@ -116,6 +116,11 @@ function ExtractionCard({ e }) {
         <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--muted,#4B585C)' }}>{open ? 'hide' : `${keys.length} fields`}</span>
       </button>
       {e.purpose && <div style={{ fontSize: 11.5, color: 'var(--muted,#4B585C)', marginTop: 4 }}>{e.purpose}</div>}
+      {e.grounding && e.grounding.checked > 0 && (
+        <div style={{ fontSize: 11, marginTop: 4, color: e.grounding.unconfirmed > 0 ? 'var(--amber,#B7791F)' : 'var(--good,#3F7A5B)' }}>
+          {e.grounding.confirmed}/{e.grounding.checked} read values confirmed in the document’s text{e.grounding.unconfirmed > 0 ? ` · ${e.grounding.unconfirmed} to double-check` : ''}
+        </div>
+      )}
       {open && (
         <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(160px,1fr))', gap: 10 }}>
           {keys.length === 0 && <span style={{ fontSize: 12, color: 'var(--muted,#4B585C)' }}>No fields were read.</span>}

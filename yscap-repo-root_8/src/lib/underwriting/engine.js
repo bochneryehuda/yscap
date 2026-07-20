@@ -15,6 +15,7 @@ const docint = require('../ai/docint');
 const azureOpenai = require('../ai/azure-openai');
 const registry = require('./registry');
 const { analyzePdf } = require('./pdf-forensics');
+const { groundFields, groundingFinding } = require('./grounding');
 
 function verifyFinding(docType, reason) {
   return {
@@ -81,13 +82,21 @@ async function analyzeDocument({ docType, buffer, base64, mimeType, subject, tod
     };
   }
 
-  // 3. CHECK → findings (pure) + the forensic tampering advisory.
-  const findings = (entry.check(ext.data, subject, { today }) || []).concat(forensic);
+  // 3. GROUND — verify the AI's extracted values against what the OCR physically read. A value
+  // whose text isn't in the document is likely a hallucination; we NEVER underwrite against a
+  // value the document doesn't contain, so a critical value that's ABSENT from the OCR raises an
+  // advisory to verify by hand. Only possible when we have OCR text to check against.
+  const grounding = ocr.ok ? groundFields(ext.data, ocr.text) : null;
+  const gFinding = grounding ? groundingFinding(docType, grounding) : null;
+
+  // 4. CHECK → findings (pure) + the forensic tampering advisory + the grounding advisory.
+  const findings = (entry.check(ext.data, subject, { today }) || []).concat(forensic, gFinding ? [gFinding] : []);
   const confidence = ext.data && ext.data.readable === false ? 'unreadable' : 'analyzed';
   return {
     ok: true,
     extraction: Object.assign(baseExtraction, {
       fields: ext.data, status: 'analyzed', confidence,
+      grounding: grounding ? { score: grounding.score, checked: grounding.checked, confirmed: grounding.confirmed, unconfirmed: grounding.unconfirmed.length } : null,
     }),
     findings,
     usage: ext.usage || null,
