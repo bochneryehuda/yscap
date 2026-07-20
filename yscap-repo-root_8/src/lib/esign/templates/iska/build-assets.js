@@ -75,9 +75,24 @@ function buildHtml(P, withCo) {
   const nusach = NUSACH_INDICES.map((i) => {
     let t = P[i];
     if (t.includes(AMOUNT_TOKEN)) {
-      // Keep the surrounding Hebrew byte-exact; swap only the token for the slot.
+      // This one line mixes Hebrew (RTL) with two Latin islands — our company name and
+      // the $ amount. Left to the browser's bidi algorithm the company name renders
+      // REVERSED ("Group Capital YS") and the parentheses land in the wrong place
+      // (owner-reported 2026-07-20). We keep every Hebrew WORD byte-exact from the
+      // template and only fix the non-nusach bits: (a) show the company name in its
+      // correct reading order inside an LTR bidi-isolate, (b) isolate the $amount slot,
+      // and (c) render the two Hebrew parentheticals with upright parens (the template
+      // stored them as the RTL-artifact ")…(" which mis-renders here). Parens, the "$",
+      // and OUR OWN company name are punctuation/branding — not sacred nusach.
       const [before, after] = t.split(AMOUNT_TOKEN);
-      return `<p class="body">${esc(before)}<span class="slot amt" id="slot-amt">&nbsp;${baseref}</span>${esc(after)}</p>`;
+      // before = 'Group Capital YS )לפנינו החברה( סך$'  ·  after = '  )לפנינו הקרן( בתורת עיסקא,'
+      const hebLead = before.replace('Group Capital YS', '').replace(/\$\s*$/, '');   // Hebrew only: ' )לפנינו החברה( סך'
+      const uprightParens = (s) => s.replace(/\)([^()]*)\(/g, '($1)');                // ')…(' → '(…)'  (display only)
+      const amtSlot = `<bdi class="ltr">$<span class="slot amt" id="slot-amt">&nbsp;${baseref}</span></bdi>`;
+      return `<p class="body">`
+        + `<bdi class="ltr">YS Capital Group</bdi>`
+        + `${esc(uprightParens(hebLead))}${amtSlot}`
+        + `${esc(uprightParens(after))}</p>`;
     }
     return `<p class="body">${esc(t)}</p>`;
   }).join('\n');
@@ -115,6 +130,7 @@ function buildHtml(P, withCo) {
   p.body.naom { text-align:right; margin:10px 0 2px; font-size:15.5px; }
   .slot { display:inline-block; border-bottom:1px solid #111; text-align:center; vertical-align:baseline; }
   .slot.amt { width:96px; direction:ltr; }
+  bdi.ltr { direction:ltr; unicode-bidi:isolate; }
   .slot.name { width:300px; direction:ltr; text-align:left; }
   .sig { margin-top:18px; break-inside:avoid; }
   .sigline { display:flex; align-items:flex-end; direction:ltr; gap:12px; }
