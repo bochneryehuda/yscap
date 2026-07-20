@@ -220,6 +220,9 @@ export default function DrawsPanel({ appId }) {
 
           {/* ---- audit trail ---- */}
           <ActivityTrail appId={appId} />
+
+          {/* ---- reset / re-push (testing): unlink + start the draw process over ---- */}
+          <ResetDrawControl appId={appId} onChanged={load} />
         </>
       )}
     </div>
@@ -274,6 +277,40 @@ function LifecycleControl({ appId, link, writesOff, onChanged }) {
       </div>
       {writesOff && state === 'active' && <div className="muted small" style={{ marginTop: 4 }}>Sitewire writing is off — closing a project is recorded in PILOT now and synced to Sitewire once writing is turned on.</div>}
       {msg && <div className="muted small" style={{ marginTop: 4 }}>{msg}</div>}
+    </div>
+  );
+}
+
+/* Reset / re-push (owner-directed testing control): unlink the property and start the draw process over.
+   Sitewire has no delete, so the backend deactivates the property there and clears our mirror; the money
+   ledger is kept. Strong confirm — it's destructive to the draw tracking. Lives in a red "danger" card. */
+function ResetDrawControl({ appId, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  async function reset() {
+    if (!window.confirm('Reset this file’s draw setup and start over?\n\nThis deactivates the property in Sitewire (Sitewire has no delete — the old copy stays in their list, just inactive) and unlinks it here, clearing the mirrored draws, findings and photos so you can push a fresh copy. Your money ledger — releases, retainage and waivers — is kept.')) return;
+    setBusy(true); setMsg('');
+    try {
+      const r = await api.post(`/api/sitewire/files/${appId}/reset-draw`, {});
+      const sw = !r.was_managed ? '' : r.sitewire === 'synced' ? ' The old property was deactivated in Sitewire.'
+        : r.sitewire === 'failed' ? ' (Couldn’t deactivate it in Sitewire — deactivate or delete it there if you need to.)'
+        : r.sitewire === 'dryrun' ? ' (Dry-run — nothing was sent to Sitewire.)'
+        : ' (Sitewire writing is off — deactivate it there if you need to.)';
+      setMsg('Draw setup reset — start the draw process again above.' + sw);
+      onChanged();
+    } catch (e) { setMsg(e?.data?.error || e.message || 'That didn’t work.'); }
+    finally { setBusy(false); }
+  }
+  return (
+    <div className="dd-card" style={{ marginTop: 18, borderLeft: '3px solid var(--bad,#b04a3f)' }}>
+      <div className="row between" style={{ gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div style={{ minWidth: 220, flex: '1 1 320px' }}>
+          <b>Reset draw setup</b>
+          <div className="dd-sub" style={{ marginTop: 2 }}>Unlink this property and start the push over. Deactivates it in Sitewire, clears the mirrored draws/findings/photos, and brings back the “Start the draw process” options with all the push settings. Your money ledger is kept.</div>
+        </div>
+        <button className="btn btn-sm" style={{ background: 'var(--bad,#b04a3f)', color: '#fff', flex: '0 0 auto' }} disabled={busy} onClick={reset}>{busy ? 'Resetting…' : 'Reset & re-push'}</button>
+      </div>
+      {msg && <div className="dd-sub" style={{ marginTop: 8 }}>{msg}</div>}
     </div>
   );
 }

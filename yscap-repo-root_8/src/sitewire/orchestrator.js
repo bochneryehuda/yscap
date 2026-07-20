@@ -56,6 +56,18 @@ const SITEWIRE_BIRTH_REASONS = new Set([
 ]);
 
 // Is this file under PILOT draw management yet? True only once a push bound a live Sitewire property.
+/* PURE (no DB / no network): the loan-number collision decision. Returns the pre-existing Sitewire property
+ * that carries `loanNumber`, or null if none — EXCLUDING any id in `resetIds` (properties PILOT itself created
+ * for this file and then reset/deactivated, so a delete-and-re-push isn't blocked by its own old copy). Only
+ * ever skips ids WE recorded as our own reset; a genuine hand-entered property PILOT never created is always
+ * returned (→ park, never adopt). Unit-tested. */
+function collisionProperty(all, loanNumber, resetIds) {
+  if (loanNumber == null || loanNumber === '') return null;
+  const skip = new Set((Array.isArray(resetIds) ? resetIds : []).map(String));
+  return (Array.isArray(all) ? all : []).find(
+    (p) => p && String(p.loan_number || '') === String(loanNumber) && !skip.has(String(p.id))) || null;
+}
+
 async function isManaged(appId) {
   try { const lk = await getLink(appId); return !!(lk && lk.sitewire_property_id); } catch (_) { return false; }
 }
@@ -397,7 +409,10 @@ async function pushFile(appId, opts = {}) {
       let existing = null;
       try {
         const all = await client.listProperties();
-        existing = (all || []).find((p) => String(p.loan_number || '') === String(a.ys_loan_number));
+        // Pick a colliding property by loan number, EXCLUDING any this file previously created and reset
+        // (tombstoned in raw.reset_property_ids) — so delete-and-re-push works while a genuine pre-existing
+        // property PILOT never created still parks. Pure + tested (collisionProperty).
+        existing = collisionProperty(all, a.ys_loan_number, ((link && link.raw) || {}).reset_property_ids);
       } catch (e) {
         if (e.retryable) throw e; // transient → the queue retries the whole push
         // A NON-retryable failure of the dupe check must NEVER fall through to create — that
@@ -681,4 +696,64 @@ async function setPropertyLifecycle(appId, state, staffId = null) {
   return { ok: true, state, inactive, sitewire };
 }
 
-module.exports = { pushFile, pushBudget, setPropertyLifecycle, park, journal, circuitCheck, resolveCapitalPartnerId, resolveRule, resolveInspection, resolveCoordinatorId, getLink, loadFile, isManaged, recordSetupStatus, SITEWIRE_BIRTH_REASONS, LIFECYCLE_STATES };
+/**
+ * Reset a file's draw setup so the coordinator can start over / re-push (owner-directed 2026-07-20 — a
+ * delete-and-re-push control for testing). Sitewire has NO delete endpoint, so this does the closest safe
+ * thing: (1) DEACTIVATES the Sitewire property (`inactive=true`, guarded) so it accepts no more draws, then
+ * (2) UNLINKS it in PILOT — the property id is TOMBSTONED into raw.reset_property_ids so the next push skips
+ * only THIS previously-created copy in the loan-number collision check (a genuine pre-existing property PILOT
+ * never created still parks — the go-forward/only-ours rule is never weakened), the link's property/budget
+ * ids are cleared, and every mirrored Sitewire draw/finding/media/crosswalk row for the file is removed so
+ * `notLinked` becomes true and the Start-draw card (with all push options) reappears. The money LEDGER
+ * (`draw_disbursements`) and lien waivers are KEPT — financial records are never destroyed by a reset. Only
+ * a file PILOT actually created can be reset (`not_managed` otherwise). Requires manage_draws at the route.
+ */
+async function resetDrawSetup(appId, staffId = null) {
+  const link = await getLink(appId);
+  if (!link || link.matched_by !== 'created') return { error: 'not_managed' };
+  const oldPropId = link.sitewire_property_id;
+  if (!oldPropId) {
+    // Nothing was ever pushed (setup_status-only row) — just clear any birth-phase status so it's a clean slate.
+    await db.query(`UPDATE sitewire_property_links SET raw = COALESCE(raw,'{}'::jsonb) - 'setup_status', state='pending', updated_at=now() WHERE application_id=$1`, [appId]);
+    return { ok: true, was_managed: false, sitewire: 'skipped' };
+  }
+  // (1) deactivate in Sitewire — best-effort so a testing reset is never blocked by a transient Sitewire issue;
+  // the property id is tombstoned regardless, so the re-push is clean either way.
+  const canSync = cfg.sitewireEnabled && (cfg.sitewireOutboundEnabled || cfg.sitewireDryrun);
+  let sitewire = 'skipped', deactivated = false;
+  if (canSync) {
+    try {
+      await circuitCheck(1);
+      const property = await client.updateProperty(oldPropId, { inactive: true });
+      if (property && property.__dryrun) { sitewire = 'dryrun'; }
+      else {
+        await journal({ appId, propertyId: oldPropId, entity: 'property', entityId: oldPropId, field: 'inactive', oldValue: false, newValue: true, source: 'reset' });
+        sitewire = 'synced'; deactivated = true;
+      }
+    } catch (e) { sitewire = 'failed'; console.warn(`[sitewire] reset: could not deactivate property ${oldPropId} (app=${appId}): ${e && e.message}`); }
+  }
+  // (2) unlink + tombstone + clear the mirror, atomically. Children before parents; money ledger untouched.
+  const c = await db.getClient();
+  try {
+    await c.query('BEGIN');
+    await c.query(`DELETE FROM draw_finding_lines WHERE finding_id IN (SELECT id FROM draw_findings WHERE application_id=$1)`, [appId]);
+    await c.query(`DELETE FROM draw_findings WHERE application_id=$1`, [appId]);
+    await c.query(`DELETE FROM draw_media WHERE application_id=$1`, [appId]);
+    await c.query(`DELETE FROM sitewire_draw_requests WHERE sitewire_draw_id IN (SELECT sitewire_draw_id FROM sitewire_draws WHERE application_id=$1)`, [appId]);
+    await c.query(`DELETE FROM sitewire_draws WHERE application_id=$1`, [appId]);
+    await c.query(`DELETE FROM sitewire_job_item_links WHERE application_id=$1`, [appId]);
+    await c.query(
+      `UPDATE sitewire_property_links
+          SET sitewire_property_id=NULL, sitewire_budget_id=NULL, state='pending', pushed_at=NULL,
+              lifecycle_state='active',
+              raw = jsonb_set(COALESCE(raw,'{}'::jsonb) - 'setup_status', '{reset_property_ids}',
+                              COALESCE(raw->'reset_property_ids','[]'::jsonb) || to_jsonb($2::text)),
+              updated_at=now()
+        WHERE application_id=$1`, [appId, String(oldPropId)]);
+    await c.query('COMMIT');
+  } catch (e) { try { await c.query('ROLLBACK'); } catch (_) {} throw e; }
+  finally { c.release(); }
+  return { ok: true, was_managed: true, old_property_id: oldPropId, sitewire, deactivated };
+}
+
+module.exports = { pushFile, pushBudget, setPropertyLifecycle, resetDrawSetup, collisionProperty, park, journal, circuitCheck, resolveCapitalPartnerId, resolveRule, resolveInspection, resolveCoordinatorId, getLink, loadFile, isManaged, recordSetupStatus, SITEWIRE_BIRTH_REASONS, LIFECYCLE_STATES };

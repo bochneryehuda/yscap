@@ -215,6 +215,21 @@ router.post('/files/:id/lifecycle', requirePermission('manage_draws'), async (re
   } catch (e) { res.status(502).json({ error: 'Couldn’t update the project status right now — please try again shortly.' }); }
 });
 
+// ---- POST /api/sitewire/files/:id/reset-draw — delete/unlink the property + start over (re-push) ----
+// Owner-directed 2026-07-20 (a testing control): Sitewire has no delete API, so this deactivates the property
+// there and unlinks it here (tombstoning its id so the re-push skips only this copy), clearing the mirrored
+// draw rows so the "Start the draw process" card — with all push options — reappears. The money ledger is
+// KEPT. manage_draws + canSeeFile + go-forward-only (only a PILOT-created file can be reset).
+router.post('/files/:id/reset-draw', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const r = await orchestrator.resetDrawSetup(appId, req.actor && req.actor.id);
+    if (r.error === 'not_managed') return res.status(409).json({ error: 'This file isn’t managed by PILOT in Sitewire — there’s nothing to reset.' });
+    res.json(r);
+  } catch (e) { console.warn('[sitewire] reset-draw error:', e && e.message); res.status(500).json({ error: 'Couldn’t reset the draw setup right now — please try again shortly.' }); }
+});
+
 // ---- POST /api/sitewire/files/:id/push — manual birth push (admin/setup, guarded) ----
 router.post('/files/:id/push', requirePermission('platform_setup'), async (req, res) => {
   // scope like every other per-file route — platform_setup alone (e.g. the software_setup persona) must
