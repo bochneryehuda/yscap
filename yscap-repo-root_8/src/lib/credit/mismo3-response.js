@@ -392,7 +392,12 @@ function parseCreditResponse(xml) {
     };
   }
 
-  // Report-level ALERTS (3.4 CREDIT_RESPONSE_ALERT_MESSAGE + CREDIT_FILE alerts).
+  // Report-level ALERTS. We read the report-wide CREDIT_RESPONSE_ALERT_MESSAGE
+  // nodes. NOTE: unlike the 2.3.1 parser, this does NOT yet read a per-bureau
+  // CREDIT_FILE-nested alert — the exact 3.4 element for that is unverified and we
+  // do not guess. If a live hard 3.4 tri-merge carries bureau-level alerts under
+  // CREDIT_FILE, add that loop here once a real sample confirms the element name
+  // (a fatal fraud/OFAC alert there would otherwise not reach the gate).
   const alerts3 = [];
   for (const al of findAll(message, 'CREDIT_RESPONSE_ALERT_MESSAGE')) {
     const rawType = findFirstText(al, 'CreditResponseAlertMessageCategoryType');

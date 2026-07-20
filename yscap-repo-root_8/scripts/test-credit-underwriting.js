@@ -128,5 +128,12 @@ ok('warning-only review never blocks', U.gatingFatalFindings([R('review', 1, 'a'
 // same-timestamp tiebreak by id: a later id clean imported supersedes an earlier id fatal
 ok('same-timestamp id tiebreak supersedes', U.gatingFatalFindings([R('imported', 5, 'a', fatalW), R('imported', 5, 'b', fine)]).length === 0);
 
+// ---- joint-blocks-unsplit is a WARNING finding (never blocks) --------------
+const jb = U.collectFindings({ jointBlocksUnsplit: true });
+ok('jointBlocksUnsplit emits one finding', jb.length === 1 && jb[0].type === 'joint_blocks_unsplit');
+ok('jointBlocksUnsplit is a WARNING (not fatal)', jb[0].severity === 'warning');
+ok('jointBlocksUnsplit does NOT block sign-off', U.activeFatalFindings(U.wrapFindings(jb), null).length === 0);
+ok('no jointBlocksUnsplit finding when flag is false/absent', U.collectFindings({}).length === 0);
+
 console.log(`\ncredit-underwriting: ${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

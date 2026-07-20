@@ -172,6 +172,16 @@ function collectFindings(o = {}) {
   if (fico) findings.push(fico);
   for (const f of alertFindings(o.alerts)) findings.push(f);
   for (const f of idMismatchFindings(o.reported, o.file)) findings.push(f);
+  // A joint report whose per-borrower ACCOUNT blocks could not be split (currently
+  // the MISMO 3.4 parser attaches tradelines/inquiries/records/collections to the
+  // primary borrower) is a WARNING, never fatal — the SCORES are split correctly so
+  // pricing/underwriting are unaffected, but the detail view shows every account
+  // under the primary. Surfacing it (instead of silently misfiling) tells the team
+  // to confirm each borrower's accounts.
+  if (o.jointBlocksUnsplit) findings.push({
+    type: 'joint_blocks_unsplit', code: 'joint_blocks_unsplit', severity: 'warning', reconcilableBy: 'staff',
+    message: 'This is a JOINT report and its individual accounts (tradelines, collections, inquiries, public records) are all shown under the PRIMARY borrower — the report did not split them per borrower. The bureau scores ARE split correctly, so pricing and underwriting are unaffected; confirm each borrower’s accounts in the full report before relying on the per-borrower view.',
+  });
   // stable order: fatal before warning; fico_mismatch leads its severity band.
   const rank = (f) => (f.severity === 'fatal' ? 0 : 1) * 10 + (f.type === 'fico_mismatch' ? 0 : 1);
   return findings.map((f, i) => ({ f, i })).sort((a, b) => (rank(a.f) - rank(b.f)) || (a.i - b.i)).map((x) => x.f);

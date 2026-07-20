@@ -1,13 +1,14 @@
 'use strict';
 
 /**
- * Xactus (Xactus360) credit-report HTTP adapter — MISMO 2.3.1 over HTTPS.
+ * Xactus (Xactus360) credit-report HTTP adapter — MISMO 2.3.1 OR 3.4 over HTTPS.
  *
  * Xactus is a B2B provider: access is per-client with an assigned API endpoint
- * (XACTUS_ENDPOINT) and a PER-USER login (LoginAccountIdentifier + password)
- * carried as HTTP Basic on each request. This module is ONLY the transport +
- * auth: it POSTs a request body built by ../credit/mismo2-request and hands the
- * raw response back to ../credit/mismo2-response to parse. It never builds or
+ * (XACTUS_ENDPOINT for 2.3.1, XACTUS_ENDPOINT_MISMO3 for 3.4) and a PER-USER login
+ * (LoginAccountIdentifier + password) carried as HTTP Basic on each request. This
+ * module is VERSION-AGNOSTIC transport + auth only: it POSTs whatever request body
+ * it is handed (built by ../credit/mismo2-request or mismo3-request) and returns
+ * the raw response for ../credit/mismo{2,3}-response to parse. It never builds or
  * parses XML itself, and it never touches the database.
  *
  * Billing/idempotency contract (critical): an order/reissue POST is BILLABLE and

@@ -15,10 +15,11 @@ if (!process.env.DATABASE_URL) { console.log('SKIP test-credit-api-db (no DATABA
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'apidb-secret-00000000000000000000000000';
 process.env.SSN_ENCRYPTION_KEY = process.env.SSN_ENCRYPTION_KEY || '0123456789abcdef0123456789abcdef';
 process.env.XACTUS_ENDPOINT = process.env.XACTUS_ENDPOINT || 'http://x';
-// IMPORT_XML below is MISMO 2.3.1 — pin the version so the order test uses the
-// 2.3.1 parser even though the config default is now 3.4 (3.4 e2e lives in
+// IMPORT_XML below is MISMO 2.3.1 — HARD-pin the version (not ||) so this suite
+// always uses the 2.3.1 parser regardless of an ambient XACTUS_MISMO_VERSION,
+// even though the config default is now 3.4 (3.4 e2e lives in
 // test-credit-pull-matrix.js).
-process.env.XACTUS_MISMO_VERSION = process.env.XACTUS_MISMO_VERSION || '2.3.1';
+process.env.XACTUS_MISMO_VERSION = '2.3.1';
 process.env.STORAGE_DIR = process.env.STORAGE_DIR || '/tmp/credit-api-db-storage';
 process.env.RUN_SYNC = '0';
 

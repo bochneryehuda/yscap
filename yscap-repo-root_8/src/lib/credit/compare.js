@@ -55,6 +55,7 @@ const FINDING_LABEL = {
   id_ssn_mismatch: 'Reported-SSN mismatch',
   id_dob_mismatch: 'Reported-DOB mismatch',
   id_name_mismatch: 'Reported-name mismatch',
+  joint_blocks_unsplit: 'Joint accounts under primary',
   other: 'Credit-file alert',
 };
 const findingLabel = (f) => FINDING_LABEL[f && (f.type || f.code)] || 'Credit-file alert';

@@ -302,7 +302,7 @@ async function persistImport({ reportRowId, applicationId, actorId, providerId, 
       });
       ficoInput = { verified: scored.rep.score, claimed: claimedRep, perBorrower: perBorrowerDetail };
     }
-    const findingList = underwriting.collectFindings({ ...ficoInput, alerts: parsed.alerts });
+    const findingList = underwriting.collectFindings({ ...ficoInput, alerts: parsed.alerts, jointBlocksUnsplit: parsed.multiBorrowerBlocksUnsplit });
     const finding = underwriting.wrapFindings(findingList);          // wrapper or null
     const fatalFindings = underwriting.activeFatalFindings(finding, null);
     const hasFatalFinding = fatalFindings.length > 0;

@@ -368,3 +368,14 @@ module.exports = {
     clientId:            process.env.XACTUS_CLIENT_ID,
   },
 };
+
+// Boot sanity: the default MISMO version is 3.4, but Xactus serves 3.4 at a
+// DIFFERENT URL than 2.3.1 (.../uaweb/mismo3 vs .../uaweb/mismo). If the 3.4
+// endpoint isn't set while the 2.3.1 one IS, versionKit falls back to the 2.3.1
+// URL — a 3.4 request would then be POSTed to the 2.3.1 endpoint and fail. Warn
+// loudly so the operator sets XACTUS_ENDPOINT_MISMO3 (the credit integration is
+// dormant when no endpoint is set at all, so only warn when 2.3.1 IS configured).
+if (module.exports.xactus && module.exports.xactus.mismoVersion === '3.4'
+    && !module.exports.xactus.endpoint3 && module.exports.xactus.endpoint) {
+  console.warn('[config] XACTUS: default MISMO version is 3.4 but XACTUS_ENDPOINT_MISMO3 is not set — 3.4 credit pulls will be sent to XACTUS_ENDPOINT (the 2.3.1 URL) and will fail. Set XACTUS_ENDPOINT_MISMO3 to the Xactus 3.4 URL.');
+}

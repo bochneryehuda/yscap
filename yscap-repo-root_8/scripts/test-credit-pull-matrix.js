@@ -13,7 +13,10 @@ process.env.XACTUS_ENDPOINT_MISMO3 = process.env.XACTUS_ENDPOINT_MISMO3 || 'http
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'matrix-secret-0000000000000000000000000';
 process.env.SSN_ENCRYPTION_KEY = process.env.SSN_ENCRYPTION_KEY || '0123456789abcdef0123456789abcdef';
 process.env.STORAGE_DIR = process.env.STORAGE_DIR || '/tmp/credit-matrix-storage';
-// IMPORTANT: do NOT set XACTUS_MISMO_VERSION — this suite tests the DEFAULT (3.4).
+// This suite tests the CODE DEFAULT — delete any ambient XACTUS_MISMO_VERSION so
+// config falls through to its built-in default (which must be 3.4), regardless of
+// what a CI/dev shell set. (Must happen BEFORE requiring config, below.)
+delete process.env.XACTUS_MISMO_VERSION;
 
 const cfg = require('../src/config');
 const db = require('../src/db');
