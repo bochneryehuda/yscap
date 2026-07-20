@@ -318,7 +318,7 @@ router.post('/:appId/documents/:documentId/analyze', async (req, res, next) => {
     // computed on the SAME day, so an expired-since-analysis fatal can never be served stale.
     const subjHash = subjectHash({ subject, today: todayISO() });
 
-    // IDEMPOTENCY (db/174): if this exact document (same content hash) was already analyzed as
+    // IDEMPOTENCY (db/175): if this exact document (same content hash) was already analyzed as
     // THIS type, by THIS analyzer version, against THIS same file state, re-reading it would
     // spend a paid Azure call for a result we already have. Return the stored extraction + its
     // open findings instead. Never triggers for a legacy doc with no content hash (re-runs), and
@@ -377,7 +377,7 @@ router.post('/:appId/documents/:documentId/analyze', async (req, res, next) => {
     });
 
     // Materialize the clear-to-close gate condition when analysis produced a blocking fatal, so
-    // there IS a condition for signOffGate (+ the db/173 trigger) to hold until it's resolved —
+    // there IS a condition for signOffGate (+ the db/174 trigger) to hold until it's resolved —
     // mirrors how the appraisal desk ensures appraisal_review_cleared on import. Best-effort.
     if ((result.findings || []).some((f) => f.severity === 'fatal' && f.blocksCtc)) {
       await ensureUnderwritingCondition(app.id).catch(() => {});
