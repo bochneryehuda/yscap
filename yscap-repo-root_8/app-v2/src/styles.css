@@ -393,6 +393,7 @@ textarea{min-height:90px;resize:vertical}
 .notice.err{background:rgba(224,115,107,.12);border:1px solid rgba(224,115,107,.4);color:#F3C4BF}
 .notice.ok{background:rgba(143,199,160,.12);border:1px solid rgba(143,199,160,.4);color:#CDE9D5}
 .notice.info{background:rgba(140,170,224,.12);border:1px solid rgba(140,170,224,.4);color:#C9D8F3}
+.notice.warn{background:rgba(201,138,26,.14);border:1px solid rgba(201,138,26,.45);color:#F0D49B}
 .savechip{font-size:12px;color:var(--muted);display:inline-flex;align-items:center;gap:6px}
 .savechip .dot{width:7px;height:7px}
 .stepper{display:flex;gap:8px;margin-bottom:20px;flex-wrap:wrap}
@@ -775,6 +776,20 @@ a.checkitem:hover{transform:translateY(-1px)}
 .snap-stat-v{font-family:var(--serif,'Fraunces',serif);font-size:32px;font-weight:700;line-height:1.02;letter-spacing:-.01em}
 .snap-stat-v.gold{color:var(--gold)}
 .snap-stat-sub{color:var(--muted);font-size:12px;font-weight:600;margin-top:-2px}
+/* the clear-to-close stat is a button that jumps to the outstanding list */
+.snap-stat-btn{background:none;border:none;text-align:left;cursor:pointer;font:inherit;border-radius:8px;transition:background .12s ease}
+.snap-stat-btn:hover{background:var(--surface-soft,rgba(47,127,134,.06))}
+.snap-stat-btn:hover .snap-stat-sub{color:var(--teal-br,var(--teal))}
+
+/* "What's left to clear to close" — the single clear outstanding view */
+.ctc-panel{border-left:4px solid var(--warning,#c98a1a)}
+.ctc-panel.ctc-ready{border-left-color:var(--ok,#2f7f4f)}
+.ctc-tick{flex:none;width:30px;height:30px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;
+  background:var(--ok,#2f7f4f);color:#fff;font-weight:800}
+.ctc-list{display:flex;flex-direction:column;gap:2px}
+.ctc-item{display:flex;align-items:flex-start;gap:10px;padding:9px 4px;border-top:1px solid var(--line)}
+.ctc-item:first-child{border-top:none}
+.ctc-item-title{font-weight:600;overflow-wrap:anywhere}
 /* clusters: each a titled column of clear rows */
 .snap-clusters{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:22px 36px}
 .snap-cluster{min-width:0}
@@ -1382,6 +1397,7 @@ select option{background:var(--surface);color:var(--text)}
 .notice.err{background:var(--danger-soft);border:1px solid #F1C4BF;color:#8A1C13}
 .notice.ok{background:var(--success-soft);border:1px solid #BDE6D2;color:#0F6A4C}
 .notice.info{background:var(--primary-soft);border:1px solid var(--primary-border);color:var(--primary-hover)}
+.notice.warn{background:rgba(201,138,26,.1);border:1px solid rgba(201,138,26,.4);color:#8a5a05}
 
 /* — Auth: light paper page, centred flat white card (no dark full-screen) — */
 .authbg{background:var(--bg)}

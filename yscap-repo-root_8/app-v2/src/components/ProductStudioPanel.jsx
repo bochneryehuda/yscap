@@ -630,6 +630,17 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         </div>
       </div>
 
+      {/* Why a re-register is being asked for (owner-directed): never a blank
+          "re-register" — always say which number changed and to what. Comes from
+          the reopen trigger's stale_reason (db/187). */}
+      {cur && app && app.pricing_stale && (
+        <div className="notice warn" style={{ marginTop: 10 }}>
+          <strong>Re-register needed.</strong>{' '}
+          {app.pricing_stale_reason
+            ? app.pricing_stale_reason.replace(/^\[auto\]\s*/, '')
+            : 'A pricing input changed since this product was registered — re-register so the structure and loan amount match the new numbers.'}
+        </div>
+      )}
       {err && !openStudio && <div role="alert" className="notice err" style={{ marginTop: 10 }}>{err}</div>}
       {msg && !openStudio && <div className="notice ok" style={{ marginTop: 10 }}>{msg}</div>}
       {/* #148: the current terms carry an admin manual-pricing basis this role
