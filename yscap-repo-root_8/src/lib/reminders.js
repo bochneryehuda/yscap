@@ -285,8 +285,15 @@ async function dispatchDue(client = db) {
         AND ${NOT_MUTED}
       ORDER BY r.remind_at LIMIT 100`);
   for (const row of leads.rows) {
+    // CLAIM the row atomically BEFORE delivering (owner-reported duplicate sweep
+    // 2026-07-20): the mark used to happen AFTER _deliver, so two overlapping
+    // passes — a slow pass still awaiting sends when the next 60s tick fires, or
+    // two instances during a deploy overlap — could both select this un-nudged
+    // row and both send it. `WHERE reminded_at IS NULL RETURNING` lets exactly one
+    // pass win the claim; the loser skips.
+    const claim = await client.query(`UPDATE reminders SET reminded_at=now(), updated_at=now() WHERE id=$1 AND reminded_at IS NULL RETURNING id`, [row.id]);
+    if (!claim.rows[0]) continue;
     await _deliver(row, { lead: true });
-    await client.query(`UPDATE reminders SET reminded_at=now(), updated_at=now() WHERE id=$1`, [row.id]);
   }
   // 2) Due firings.
   const due = await client.query(
@@ -296,14 +303,18 @@ async function dispatchDue(client = db) {
         AND ${NOT_MUTED}
       ORDER BY r.due_at LIMIT 100`);
   for (const row of due.rows) {
-    await _deliver(row, {});
+    // CLAIM atomically BEFORE delivering (same duplicate guard as the nudge loop):
+    // `WHERE fired_at IS NULL RETURNING` means only ONE overlapping pass wins and
+    // delivers; the loser skips instead of sending a second copy.
     // A one-shot reminder is 'sent' once fired; a task stays actionable (still
     // 'scheduled' with fired_at stamped) so it lives on until marked done.
-    if (row.kind === 'task') {
-      await client.query(`UPDATE reminders SET fired_at=now(), updated_at=now() WHERE id=$1`, [row.id]);
-    } else {
-      await client.query(`UPDATE reminders SET fired_at=now(), status='sent', updated_at=now() WHERE id=$1`, [row.id]);
-    }
+    const claim = await client.query(
+      row.kind === 'task'
+        ? `UPDATE reminders SET fired_at=now(), updated_at=now() WHERE id=$1 AND fired_at IS NULL RETURNING id`
+        : `UPDATE reminders SET fired_at=now(), status='sent', updated_at=now() WHERE id=$1 AND fired_at IS NULL RETURNING id`,
+      [row.id]);
+    if (!claim.rows[0]) continue;   // another pass already claimed + delivered it
+    await _deliver(row, {});
     fired++;
   }
   return fired;
