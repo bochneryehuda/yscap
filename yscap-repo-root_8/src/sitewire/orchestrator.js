@@ -86,6 +86,10 @@ async function park({ appId, reason, fieldKey = 'sitewire', current = null, prop
   const cls = String(reason).split(':')[0];
   // Birth-phase problem on a file PILOT hasn't managed yet → record on the file, never the error queue.
   if (fieldKey === 'sitewire' && SITEWIRE_BIRTH_REASONS.has(cls) && !(await isManaged(appId))) {
+    // Non-blocking advisories (unit-count note, unmapped type) don't stop the push — it proceeds past
+    // them — so they must NOT set a "setup hasn't completed" status. Drop them silently on an unmanaged
+    // file (a real blocker later in the same push, or a successful push, is what the file reflects).
+    if (cls === 'sitewire_units_note' || cls === 'sitewire_type_unmapped') return null;
     const preexisting = cls === 'sitewire_loan_already_in_sitewire' ? current : null;
     return recordSetupStatus(appId, { reason, cls, current, proposed, preexisting });
   }
