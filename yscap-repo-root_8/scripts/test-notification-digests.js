@@ -90,6 +90,36 @@ const to = (e) => sent.find((x) => (Array.isArray(x.to) ? x.to : [x.to]).include
   assert.ok(!to(semail), 'admin summary gated on 2nd run (once per 6 days)');
   ok('weekly admin summary: aggregate stats, once-per-6-days');
 
+  /* 5) Draw result awaiting the borrower — nudge, borrower-safe, idempotent. */
+  const DRAW = 900000 + (suffix % 90000);
+  await db.query(
+    `INSERT INTO draw_findings (application_id, sitewire_draw_id, status, total_requested_cents, total_approved_cents, delivered_at)
+     VALUES ($1,$2,'delivered',2000000,1800000, now()-interval '5 days')`, [app.id, DRAW]);
+  reset(); const c5 = await D.drawFindingsAwaitingBorrowerOnce();
+  m = to(bemail);
+  assert.ok(c5 >= 1 && m, 'draw-awaiting reminder sent to the borrower');
+  assert.ok(/waiting for you/i.test(m.subject), 'awaiting-draw subject');
+  assert.ok(/release clock|accept/i.test(m.html), 'explains the release-on-accept reason');
+  ['BlueLake', 'Fidelis', 'Churchill', 'RCN', 'Temple View', 'CorrFirst'].forEach((nm) =>
+    assert.ok(!m.html.includes(nm), 'no capital-partner name on the borrower nudge'));
+  reset(); await D.drawFindingsAwaitingBorrowerOnce();
+  assert.ok(!to(bemail), 'draw-awaiting reminder gated on the 2nd run (once / 2 days)');
+  ok('draw result awaiting borrower: nudged, borrower-safe, once-per-period');
+
+  /* 6) Draw release overdue — the accepted-but-unreleased draw nudges the assigned team, idempotent. */
+  await db.query(
+    `UPDATE draw_findings SET status='accepted', accepted_at=now()-interval '3 days', wire_due_at=now()-interval '1 day'
+      WHERE application_id=$1 AND sitewire_draw_id=$2`, [app.id, DRAW]);
+  reset(); const c6 = await D.drawReleaseOverdueOnce();
+  m = to(semail);
+  assert.ok(c6 >= 1 && m, 'release-overdue alert sent to the team');
+  assert.ok(/overdue/i.test(m.subject), 'overdue subject');
+  assert.ok(m.subject.includes(loan), 'overdue alert is file-tagged');
+  reset(); await D.drawReleaseOverdueOnce();
+  assert.ok(!to(semail), 'release-overdue alert gated on the 2nd run (once / 2 days)');
+  ok('draw release overdue: team alerted, once-per-period');
+  await db.query(`DELETE FROM draw_findings WHERE application_id=$1`, [app.id]).catch(() => {});
+
   /* nyParts sanity */
   const p = D.nyParts();
   assert.ok(p.hour >= 0 && p.hour <= 23 && /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)$/.test(p.weekday), 'nyParts returns a valid NY hour + weekday');
