@@ -6314,49 +6314,16 @@ router.post('/documents/:id/review', async (req, res) => {
       } catch (_) { /* best-effort */ }
     }
 
-    // Plain accept → confirm to the borrower that their document was accepted
-    // (owner-directed 2026-07-20 — closure, not busywork). Guarded to at most one
-    // EMAIL per file per ~12h (audit_log) so uploading a batch of documents does
-    // not trigger a flurry; extra accepts within the window still post in-app.
-    if (action === 'accept' && !requestMore && doc.borrower_id) {
-      try {
-        let condLabel = '';
-        if (doc.checklist_item_id) {
-          const it = await db.query(`SELECT COALESCE(borrower_label,label) AS label FROM checklist_items WHERE id=$1`, [doc.checklist_item_id]);
-          if (it.rows[0]) condLabel = it.rows[0].label;
-        }
-        let emailNow = true;
-        // Throttle on the file when there is one, else on the BORROWER — an
-        // application-less document (LLC formation, EIN, operating agreement,
-        // track-record, profile doc) has application_id NULL, so keying the
-        // throttle on application_id alone let a batch of entity documents email
-        // once PER DOCUMENT (round-2 audit N5). Keying on the borrower for those
-        // caps it to one email per borrower per window like the file path.
-        const throttleId = doc.application_id || doc.borrower_id;
-        const throttleType = doc.application_id ? 'application' : 'borrower';
-        // Atomically CLAIM the 12h email slot: write the throttle stamp ONLY if
-        // none exists in the window, in ONE INSERT…WHERE NOT EXISTS…RETURNING.
-        // Two accepts on the same file in the same instant can't both win (the old
-        // SELECT-then-stamp-after let both pass — owner-reported duplicate sweep).
-        if (throttleId) {
-          const claim = await db.query(
-            `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
-             SELECT 'system', NULL, 'doc_accepted_emailed', $2, $1, '{}'::jsonb
-              WHERE NOT EXISTS (SELECT 1 FROM audit_log WHERE action='doc_accepted_emailed' AND entity_id=$1 AND created_at > now() - interval '12 hours')
-             RETURNING id`, [throttleId, throttleType]);
-          emailNow = !!claim.rows[0];
-        }
-        await notify.notifyBorrower(doc.borrower_id, {
-          type: 'doc_accepted',
-          title: condLabel ? `Accepted: "${condLabel}"` : `Document accepted: ${doc.filename}`,
-          badge: { text: 'Accepted', tone: 'positive' },
-          body: `Your loan team reviewed and accepted "${doc.filename}"${condLabel ? ` for "${condLabel}"` : ''}. No further action is needed on this document — we'll let you know if anything else comes up.`,
-          applicationId: doc.application_id,
-          link: doc.application_id ? `/app/${doc.application_id}` : '/profile',
-          ctaLabel: 'View your file',
-          major: emailNow });   // throttle: email once per file/borrower per 12h (claimed above), else in-app only
-      } catch (_) { /* best-effort */ }
-    }
+    // Plain accept → the borrower is NOT notified at all (owner-directed
+    // 2026-07-20 evening: "nobody needs to be aware when somebody is accepting
+    // something internally — the borrower does not need to be aware"). A staff
+    // member accepting a document is an INTERNAL workflow step, not a borrower
+    // milestone: no email AND no in-app ping. The borrower can still see a
+    // document is accepted in their checklist if they look, and the events that
+    // DO reach them are unchanged — a REJECTED / REQUESTED document (they must
+    // redo it, below) and real milestones (a status decision). We previously sent
+    // an "Accepted" confirmation here (throttled email + in-app); that whole
+    // notification is removed.
 
     // An LLC document verdict changes the entity's state everywhere: rejecting
     // a document of a VERIFIED LLC revokes the verification (its clean doc set

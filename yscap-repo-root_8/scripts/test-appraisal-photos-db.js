@@ -51,13 +51,17 @@ const assert = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) f
     assert(stored > 0, `photos extracted + stored (${stored})`);
 
     const rows = (await pool.query(
-      `SELECT ap.document_id, ap.width, ap.height, d.doc_kind, d.content_type, d.visibility, d.size_bytes
+      `SELECT ap.document_id, ap.width, ap.height, d.doc_kind, d.content_type, d.visibility, d.size_bytes, d.review_status, d.source_type
          FROM appraisal_photos ap JOIN documents d ON d.id=ap.document_id
         WHERE ap.appraisal_id=$1 ORDER BY ap.sequence`, [out.appraisalId])).rows;
     assert(rows.length === stored, 'appraisal_photos rows match stored count');
     assert(rows.every((r) => r.doc_kind === 'appraisal_photo'), 'every photo doc has doc_kind=appraisal_photo');
     assert(rows.every((r) => r.content_type === 'image/png'), 'every photo doc is image/png');
     assert(rows.every((r) => r.visibility === 'borrower'), 'every photo doc is borrower-visible');
+    // Regression (owner-reported 2026-07-20): system-extracted photos must be pre-ACCEPTED, not
+    // sit in the review queue needing individual acceptance, and be marked source_type='system'.
+    assert(rows.every((r) => r.review_status === 'accepted'), 'every extracted photo is auto-accepted (no manual accept needed)');
+    assert(rows.every((r) => r.source_type === 'system'), 'every extracted photo is marked source_type=system');
     assert(rows.every((r) => r.width > 0 && r.height > 0 && r.size_bytes > 0), 'every photo has real dimensions + bytes');
 
     // The GET join (what the report reads) surfaces them.

@@ -55,6 +55,7 @@ export default function DrawsPanel({ appId }) {
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState('');
   const [msg, setMsg] = useState('');
+  const [quickStatuses, setQuickStatuses] = useState([]); // Sitewire pipeline status labels
 
   const load = useCallback(() => {
     setLoading(true);
@@ -64,6 +65,7 @@ export default function DrawsPanel({ appId }) {
       .finally(() => setLoading(false));
   }, [appId]);
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { api.get(`/api/sitewire/files/${appId}/quick-notify-statuses`).then((r) => setQuickStatuses((r && r.statuses) || [])).catch(() => setQuickStatuses([])); }, [appId]);
 
   const canManage = can('manage_draws');
   if (!canManage) return null;
@@ -170,6 +172,9 @@ export default function DrawsPanel({ appId }) {
           {/* ---- Sitewire borrower-invite status + resend ---- */}
           <BorrowerInviteStatus appId={appId} writesOff={writesOff} readsOff={readsOff} />
 
+          {/* ---- Sitewire property documents (whatever's uploaded on Sitewire's side) ---- */}
+          <SitewireDocuments appId={appId} readsOff={readsOff} />
+
           {/* ---- read-only notice when Sitewire writes are off (the default staged state) ---- */}
           {writesOff && (
             <div className="dd-card" style={{ marginTop: 12, borderLeft: '3px solid var(--gold,#ae8746)' }}>
@@ -208,7 +213,7 @@ export default function DrawsPanel({ appId }) {
           {draws.length === 0 && <div className="muted">No draws yet on this file.</div>}
           {draws.map((d) => (
             <DrawCard key={d.sitewire_draw_id} appId={appId} draw={d} requests={reqsByDraw[d.sitewire_draw_id] || []}
-              finding={findingByDraw[d.sitewire_draw_id]} busy={busy} act={act} reload={load} writesOff={writesOff} readsOff={readsOff} />
+              finding={findingByDraw[d.sitewire_draw_id]} busy={busy} act={act} reload={load} writesOff={writesOff} readsOff={readsOff} quickStatuses={quickStatuses} />
           ))}
 
           {/* ---- draw email / notification center (draw-related only) ---- */}
@@ -582,6 +587,7 @@ function SdIcon({ name }) {
     list: <><path d="M8 6h13M8 12h13M8 18h13" /><path d="M3 6h.01M3 12h.01M3 18h.01" /></>,
     mail: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M3 7l9 6 9-6" /></>,
     reply: <><path d="M9 17l-5-5 5-5" /><path d="M4 12h11a5 5 0 015 5v1" /></>,
+    folder: <><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v7a2 2 0 01-2 2H5a2 2 0 01-2-2z" /></>,
   }[name] || null;
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{p}</svg>;
 }
@@ -664,7 +670,37 @@ function RollupTable({ rollup }) {
   );
 }
 
-function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff, readsOff }) {
+/* The Sitewire property's own documents — a live read of whatever's been uploaded on Sitewire's side, so the
+   coordinator sees everything Sitewire holds without leaving PILOT. Links open Sitewire's copy (may expire). */
+function SitewireDocuments({ appId, readsOff }) {
+  const [d, setD] = useState(null);
+  useEffect(() => { api.get(`/api/sitewire/files/${appId}/sitewire-documents`).then(setD).catch(() => setD(null)); }, [appId]);
+  if (!d || !d.managed) return null;
+  const docs = d.documents || [];
+  if (!docs.length && (readsOff || !d.available)) return null; // nothing to show + can't read → hide
+  return (
+    <div className="dd-card" style={{ marginTop: 12 }}>
+      <div className="dd-card-h" style={{ justifyContent: 'space-between' }}>
+        <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+          <span className="dd-card-ic"><SdIcon name="folder" /></span>
+          <div><h3>Documents in Sitewire</h3><div className="dd-sub" style={{ marginTop: 1 }}>Files uploaded on Sitewire’s side for this property.</div></div>
+        </div>
+        <span className="dd-sub">{docs.length}</span>
+      </div>
+      {docs.length === 0
+        ? <div className="dd-sub" style={{ marginTop: 6 }}>No documents on the Sitewire property yet.</div>
+        : <div style={{ marginTop: 6 }}>{docs.map((doc, i) => (
+            <div key={i} className="row" style={{ gap: 10, alignItems: 'center', padding: '8px 0', borderTop: '1px solid var(--line)' }}>
+              <span className="dd-card-ic" style={{ width: 24, height: 24, background: 'var(--primary-soft)' }}><SdIcon name="folder" /></span>
+              <span style={{ flex: '1 1 auto', minWidth: 0 }}><b style={{ fontSize: 13 }}>{doc.name}</b>{doc.kind ? <span className="dd-sub"> · {doc.kind}</span> : null}</span>
+              {doc.url ? <a className="btn btn-sm ghost" href={doc.url} target="_blank" rel="noreferrer" style={{ flex: '0 0 auto' }}>Open ↗</a> : <span className="dd-sub">no link</span>}
+            </div>
+          ))}</div>}
+    </div>
+  );
+}
+
+function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff, readsOff, quickStatuses }) {
   const offTip = writesOff ? 'Sitewire is turned off — available once it\'s switched on' : undefined;
   const readTip = readsOff ? 'Sitewire is turned off — available once it\'s switched on' : undefined;
   const isOpen = draw.status !== 'approved';
@@ -695,6 +731,21 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
         </div>
         <div className="muted small">Requested {usd2(draw.requested_cents)} · Approved {usd2(draw.approved_cents)} · Net {usd2(draw.net_release_cents)}</div>
       </div>
+
+      {/* Sitewire pipeline status — the same status control Sitewire's own desk has, per draw */}
+      {Array.isArray(quickStatuses) && quickStatuses.length > 0 && (
+        <div className="row" style={{ gap: 8, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
+          <span className="muted small">Pipeline status</span>
+          <select className="input" style={{ maxWidth: 260 }} value={draw.quick_notify_status_id ?? ''} disabled={writesOff || busy === 'qn' + draw.sitewire_draw_id}
+            title={writesOff ? 'Sitewire writing is off' : 'Set this draw’s Sitewire pipeline status'}
+            onChange={(e) => { const v = e.target.value; act('qn' + draw.sitewire_draw_id, async () => { await api.post(`/api/sitewire/files/${appId}/draws/${draw.sitewire_draw_id}/quick-notify`, { status_id: v === '' ? null : v }); return { msg: 'Pipeline status updated in Sitewire.' }; }); }}>
+            {/* "— not set —" is a placeholder only: a status can be MOVED between statuses but not cleared
+                back to none (the Sitewire write-guard refuses a clearing value), so it's not selectable. */}
+            <option value="" disabled>— not set —</option>
+            {quickStatuses.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+        </div>
+      )}
 
       {flags.length > 0 && (
         <ul style={{ margin: '8px 0 0', paddingLeft: 18 }}>
