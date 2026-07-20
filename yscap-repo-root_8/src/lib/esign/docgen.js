@@ -344,7 +344,10 @@ const { buildIskaPdf } = require('./iska-pdf');
 
 const BUILDERS = { bp_disclosure: buildDisclosurePdf, heter_iska: buildIskaPdf, application_export: buildApplication };
 
-/** Build a generated document by doc_kind. Returns a .docx Buffer. */
+/** Build a generated document by doc_kind. Returns a PDF Buffer for every live
+ *  doc_kind (bp_disclosure, heter_iska, application_export — all PDFs our server
+ *  builds and DocuSign accepts natively). The legacy docx path (buildIska /
+ *  buildDisclosure) is retained + exported but not reachable through generate(). */
 function generate(docKind, data) {
   const fn = BUILDERS[docKind];
   if (!fn) { const e = new Error(`No generator for doc_kind "${docKind}"`); e.retryable = false; throw e; }
