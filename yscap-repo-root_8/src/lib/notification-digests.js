@@ -91,9 +91,12 @@ async function weeklyBorrowerOutstandingOnce() {
         AND status <> ALL($1) LIMIT 500`, [TERMINAL]);
   for (const a of apps.rows) {
     try {
-      if (!(await _gate('borrower_outstanding_digest', a.id, '6 days'))) continue;
+      // Compute content FIRST, then claim the gate — otherwise a file with zero
+      // open items today would burn the 6-day throttle and get NO digest for the
+      // rest of the window once it gains an item (owner-reported audit 2026-07-20).
       const items = await outstandingItems(a.id);
       if (!items.length) continue;
+      if (!(await _gate('borrower_outstanding_digest', a.id, '6 days'))) continue;
       const shown = items.slice(0, 12);
       const lines = shown.map((l, i) => `${i + 1}. ${l}`);
       if (items.length > shown.length) lines.push(`…and ${items.length - shown.length} more, all listed in your portal.`);
@@ -135,7 +138,6 @@ async function dailyPipelineDigestOnce() {
         AND a.status <> ALL($1)`, [TERMINAL]);
   for (const st of staff.rows) {
     try {
-      if (!(await _gate('pipeline_digest_daily', st.id, '20 hours'))) continue;
       const files = await db.query(
         `SELECT a.id, a.ys_loan_number, a.property_address, a.status, a.status_changed_at,
                 (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id
@@ -146,6 +148,9 @@ async function dailyPipelineDigestOnce() {
           ORDER BY a.status_changed_at ASC NULLS FIRST
           LIMIT 40`, [st.id, TERMINAL]);
       if (!files.rows.length) continue;
+      // Claim the once-per-day gate only once we know there's content to send
+      // (don't burn the window on an empty pass).
+      if (!(await _gate('pipeline_digest_daily', st.id, '20 hours'))) continue;
       const lines = files.rows.map((f) => {
         const d = daysAt(f.status_changed_at);
         return `${f.ys_loan_number || 'Loan # pending'} · ${addrOf(f.property_address)} — ${STATUS_LABEL[f.status] || f.status}`

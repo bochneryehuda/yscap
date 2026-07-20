@@ -301,7 +301,7 @@ router.post('/definitions', async (req, res) => {
     // studio asked to hold off with runNow:false).
     let run = null;
     if (['always', 'rules'].includes(norm.auto_apply) && b.runNow !== false) {
-      run = await engine.evaluateAllOpen({ actor: req.actor, reason: 'definition_created' });
+      run = await engine.evaluateAllOpen({ actor: req.actor, reason: 'definition_created', notify: false });
     }
     res.status(201).json({ ok: true, definition: defOut(def, fields), run });
   } catch (e) {
@@ -352,7 +352,7 @@ router.patch('/definitions/:id', async (req, res) => {
       { label: norm.label, autoApply: norm.auto_apply, versionBumped: contentChanged });
     let run = null;
     if (['always', 'rules'].includes(norm.auto_apply) && b.runNow !== false && r.rows[0].is_active) {
-      run = await engine.evaluateAllOpen({ actor: req.actor, reason: 'definition_updated' });
+      run = await engine.evaluateAllOpen({ actor: req.actor, reason: 'definition_updated', notify: false });
     }
     res.json({ ok: true, definition: defOut(r.rows[0], fields), run });
   } catch (e) {
@@ -435,7 +435,7 @@ router.post('/preview-rule', async (req, res) => {
 
 // ---- run the engine across the whole open pipeline ----
 router.post('/run-all', async (req, res) => {
-  const totals = await engine.evaluateAllOpen({ actor: req.actor, reason: 'manual_run_all' });
+  const totals = await engine.evaluateAllOpen({ actor: req.actor, reason: 'manual_run_all', notify: false });
   await audit(req, 'conditions_run_all', 'checklist_template', null, totals);
   res.json({ ok: true, ...totals });
 });

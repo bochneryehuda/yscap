@@ -129,17 +129,32 @@ async function contactsForApplication(appId, actor, client = db) {
 // Borrower-facing outstanding items for the "prefill outstanding conditions"
 // helper. Deliberately uses the BORROWER label/title only (never the internal
 // wording, which can carry capital-partner detail) - safe to show to anyone.
+// Each outstanding item as "Label — exactly what's needed" (owner-directed
+// 2026-07-20: a notification must never just say "2 items outstanding" — it must
+// list the EXACT items with their details). For a checklist item the detail is
+// its borrower hint, or — if the item was sent back — the reason it needs redoing.
+// For a condition it's the borrower-facing detail. Detail is trimmed/capped; the
+// notifyBorrower chokepoint scrubs any staff-typed text before it reaches the
+// borrower. Returns formatted STRINGS (drop-in for every existing caller).
+function _fmtItem(label, detail) {
+  const d = (detail == null ? '' : String(detail)).replace(/\s+/g, ' ').trim();
+  const l = String(label || '').trim();
+  return d ? `${l} — ${d.length > 160 ? d.slice(0, 157) + '…' : d}` : l;
+}
 async function outstandingItems(appId, client = db) {
   const items = await client.query(
-    `SELECT COALESCE(borrower_label,label) AS label FROM checklist_items
+    `SELECT COALESCE(borrower_label,label) AS label,
+            CASE WHEN status='issue' AND issue_reason IS NOT NULL THEN 'sent back — ' || issue_reason
+                 ELSE COALESCE(borrower_hint, hint) END AS detail
+       FROM checklist_items
       WHERE application_id=$1 AND audience IN ('borrower','both')
         AND status IN ('outstanding','requested','issue')
       ORDER BY sort_order LIMIT 30`, [appId]);
   const conds = await client.query(
-    `SELECT borrower_title AS title FROM conditions
+    `SELECT borrower_title AS label, borrower_detail AS detail FROM conditions
       WHERE application_id=$1 AND audience IN ('borrower','both') AND borrower_title IS NOT NULL
         AND status IN ('open','borrower_responded') LIMIT 30`, [appId]);
-  return [...items.rows.map(r => r.label), ...conds.rows.map(r => r.title)].filter(Boolean);
+  return [...items.rows, ...conds.rows].map((r) => _fmtItem(r.label, r.detail)).filter(Boolean);
 }
 
 async function listForApplication(appId, client = db) {

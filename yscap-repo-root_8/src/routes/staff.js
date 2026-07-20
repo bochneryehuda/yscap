@@ -2980,9 +2980,15 @@ router.post('/applications/:id/assign', async (req, res) => {
     // ONLY claim a currently-EMPTY slot for THEMSELVES — never take over a file
     // already assigned to another officer/processor. Admins may (re)assign
     // freely. The audit records both the previous and new owner.
-    const cur = await db.query(`SELECT loan_officer_id, processor_id FROM applications WHERE id=$1`, [req.params.id]);
+    const cur = await db.query(`SELECT loan_officer_id, processor_id, status, deleted_at FROM applications WHERE id=$1`, [req.params.id]);
     if (!cur.rows[0]) return res.status(404).json({ error: 'application not found' });
     const admin = isAdmin(req);
+    // A borrower "meet your loan officer, guiding your loan to closing" email only
+    // makes sense on a LIVE, borrower-visible file — never on a lead-capture file
+    // the borrower hasn't accepted, a terminal (declined/withdrawn/funded) file, or
+    // an archived one (owner-reported audit 2026-07-20).
+    const fileLiveForBorrower = !cur.rows[0].deleted_at &&
+      !['file_intake', 'declined', 'withdrawn', 'funded'].includes(cur.rows[0].status);
     if (loanOfficerId) {
       const selfClaimEmpty = !cur.rows[0].loan_officer_id && String(loanOfficerId) === String(req.actor.id);
       if (!admin && !selfClaimEmpty) {
@@ -3010,8 +3016,9 @@ router.post('/applications/:id/assign', async (req, res) => {
       // CHANGES to a new person, introduce them to the borrower so the
       // relationship is personal and they know exactly who to reach (fileContext
       // now auto-adds the officer's contact card to every borrower email, so the
-      // copy just needs to be the warm intro). Fires once per real change.
-      if (String(cur.rows[0].loan_officer_id || '') !== String(loanOfficerId)) {
+      // copy just needs to be the warm intro). Fires once per real change — and
+      // only on a live, borrower-visible file (not a lead/terminal/archived one).
+      if (fileLiveForBorrower && String(cur.rows[0].loan_officer_id || '') !== String(loanOfficerId)) {
         try {
           const o = await db.query(`SELECT full_name, title, email, phone, cell FROM staff_users WHERE id=$1`, [loanOfficerId]);
           const oa = o.rows[0] || {};

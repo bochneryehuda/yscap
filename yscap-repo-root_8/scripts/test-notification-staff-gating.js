@@ -59,6 +59,16 @@ const emailsTo = (addr) => sent.filter((m) => (Array.isArray(m.to) ? m.to : [m.t
   assert.ok(!(Array.isArray(bmail.to) ? bmail.to : [bmail.to]).includes(staffEmail), 'the officer is NOT a visible To on the borrower email');
   ok('the loan officer is silently looped in (BCC) on the borrower email');
 
+  // A DEACTIVATED staffer must NEVER get an email (owner audit 2026-07-20 — a
+  // fired employee kept receiving borrower documents), but the in-app row is kept.
+  await db.query(`UPDATE staff_users SET is_active=false WHERE id=$1`, [st.id]);
+  const beforeInactive = emailsTo(staffEmail);
+  await notify.notifyStaff(st.id, { type: 'assignment', title: 'You were added to a file', applicationId: app.id });
+  assert.strictEqual(emailsTo(staffEmail), beforeInactive, 'a deactivated staffer receives NO further email');
+  assert.ok(Number((await db.query(`SELECT count(*) c FROM notifications WHERE staff_id=$1`, [st.id])).rows[0].c) > 0, 'the in-app row is still written for the deactivated staffer');
+  ok('a deactivated staffer gets no email (but keeps the in-app row)');
+  await db.query(`UPDATE staff_users SET is_active=true WHERE id=$1`, [st.id]);
+
   await db.query(`DELETE FROM notifications WHERE application_id=$1`, [app.id]).catch(() => {});
   await db.query(`DELETE FROM application_assignees WHERE application_id=$1`, [app.id]).catch(() => {});
   await db.query(`DELETE FROM applications WHERE id=$1`, [app.id]).catch(() => {});
