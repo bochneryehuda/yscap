@@ -632,19 +632,29 @@ async function setPropertyLifecycle(appId, state, staffId = null) {
   const link = await getLink(appId);
   // only-ours: a pre-existing / unmanaged file has no created+live property to close out.
   if (!link || !link.sitewire_property_id || link.matched_by !== 'created') return { error: 'not_managed' };
-  if (link.lifecycle_state === state) return { ok: true, state, unchanged: true }; // idempotent no-op
+  const canSync = cfg.sitewireEnabled && (cfg.sitewireOutboundEnabled || cfg.sitewireDryrun);
+  // Idempotent no-op — but ONLY when there is nothing left to do. If the state already matches AND it's
+  // already synced to Sitewire (or we still can't sync), skip. If it matches but was recorded while writes
+  // were OFF (synced=false) and we CAN sync now, fall THROUGH and actually push the deactivate — otherwise a
+  // change made while staged-off would never reach Sitewire (audit SF-1). '<> false' treats a legacy NULL as
+  // synced so pre-existing rows don't re-drive.
+  if (link.lifecycle_state === state && (link.lifecycle_synced !== false || !canSync)) return { ok: true, state, unchanged: true };
 
   const inactive = state !== 'active';   // finished/paid_off deactivate; active re-activates
   let sitewire = 'skipped';
   // The Sitewire deactivate needs BOTH the master switch and the write gate (or dry-run). With writes off we
-  // still record the PILOT-side state — the desk reflects it — and note the Sitewire sync is pending.
-  if (cfg.sitewireEnabled && (cfg.sitewireOutboundEnabled || cfg.sitewireDryrun)) {
+  // still record the PILOT-side state — the desk reflects it — and mark synced=false so the worker backfill
+  // (backfillUnsyncedLifecycleOnce) / a manual re-click pushes it once writing is on.
+  if (canSync) {
     await circuitCheck(1);
     let property;
     try {
       property = await client.updateProperty(link.sitewire_property_id, { inactive });
     } catch (e) {
       if (e.retryable) throw e;   // transient → let the caller/queue retry, PILOT state not yet changed
+      // NOTE (intentional divergence from pushFile, which parks only on 422/400): park on ANY non-retryable
+      // error here (e.g. a deterministic 404) rather than dead-lettering — a lifecycle write is a single
+      // idempotent field flip a human can re-drive, so parking for review is the safer failure mode.
       await park({ appId, reason: `sitewire_lifecycle_failed: could not set property ${link.sitewire_property_id} inactive=${inactive} in Sitewire (${e.status || 'error'})` });
       return { parked: 'lifecycle_' + (e.status || 'error') };
     }
@@ -662,10 +672,12 @@ async function setPropertyLifecycle(appId, state, staffId = null) {
       sitewire = 'synced';
     }
   }
-  // record the PILOT-side lifecycle state (always — PILOT is the source of record for the desk + ledger)
+  // record the PILOT-side lifecycle state (always — PILOT is the source of record for the desk + ledger).
+  // synced=true ONLY when the deactivate really reached Sitewire; a 'skipped' (writes off) or 'dryrun'
+  // (validated, nothing sent) leaves it false so the backfill re-drives it.
   await db.query(
-    `UPDATE sitewire_property_links SET lifecycle_state=$2, lifecycle_at=now(), lifecycle_by=$3, updated_at=now()
-      WHERE application_id=$1`, [appId, state, staffId]);
+    `UPDATE sitewire_property_links SET lifecycle_state=$2, lifecycle_at=now(), lifecycle_by=$3, lifecycle_synced=$4, updated_at=now()
+      WHERE application_id=$1`, [appId, state, staffId, sitewire === 'synced']);
   return { ok: true, state, inactive, sitewire };
 }
 

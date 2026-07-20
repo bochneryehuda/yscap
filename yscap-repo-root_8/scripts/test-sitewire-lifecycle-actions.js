@@ -36,6 +36,7 @@ async function seedManaged({ propertyId = 990000 + Math.floor((crypto.randomByte
   return { app, bor, propertyId };
 }
 const lifecycleOf = async (app) => (await db.query(`SELECT lifecycle_state FROM sitewire_property_links WHERE application_id=$1`, [app])).rows[0].lifecycle_state;
+const syncedOf = async (app) => (await db.query(`SELECT lifecycle_synced FROM sitewire_property_links WHERE application_id=$1`, [app])).rows[0].lifecycle_synced;
 const cleanup = async (app, bor) => { await db.query(`DELETE FROM applications WHERE id=$1`, [app]); await db.query(`DELETE FROM borrowers WHERE id=$1`, [bor]); };
 
 (async () => {
@@ -138,6 +139,42 @@ const cleanup = async (app, bor) => { await db.query(`DELETE FROM applications W
     await db.query(`UPDATE sitewire_property_links SET lifecycle_state='finished' WHERE application_id=$1`, [app]);
     const r = await orch.setPropertyLifecycle(app, 'finished', null);
     ok('idempotent: unchanged, no client call', r.ok && r.unchanged === true && updateCalls.length === 0);
+    await cleanup(app, bor);
+  }
+
+  // ============ 8. SF-1: writes-OFF records synced=false; enabling writes + re-firing actually syncs ============
+  {
+    // 8a. writes OFF → skipped, synced=false
+    cfg.sitewireEnabled = false; cfg.sitewireOutboundEnabled = false; cfg.sitewireDryrun = false;
+    updateCalls = []; updateImpl = async (id, body) => { updateCalls.push({ id, body }); return { id, ...body }; }; getImpl = async (id) => ({ id, inactive: true });
+    const { app, bor } = await seedManaged();
+    const r1 = await orch.setPropertyLifecycle(app, 'finished', null);
+    ok('SF1: writes-off skipped', r1.sitewire === 'skipped');
+    ok('SF1: writes-off synced=false', (await syncedOf(app)) === false);
+    ok('SF1: writes-off no client call', updateCalls.length === 0);
+    // 8b. turn writes ON and re-fire the SAME state → must NOT be a no-op; it re-drives the deactivate
+    cfg.sitewireEnabled = true; cfg.sitewireOutboundEnabled = true;
+    const r2 = await orch.setPropertyLifecycle(app, 'finished', null);
+    ok('SF1: re-fire after enabling is NOT unchanged', !r2.unchanged && r2.sitewire === 'synced');
+    ok('SF1: re-fire actually called the client (inactive=true)', updateCalls.length === 1 && updateCalls[0].body.inactive === true);
+    ok('SF1: now synced=true', (await syncedOf(app)) === true);
+    // 8c. now a genuine no-op (state matches AND synced) → no client call
+    updateCalls = [];
+    const r3 = await orch.setPropertyLifecycle(app, 'finished', null);
+    ok('SF1: synced same-state is a true no-op', r3.unchanged === true && updateCalls.length === 0);
+    await cleanup(app, bor);
+  }
+
+  // ============ 9. worker backfill re-syncs an unsynced lifecycle once writes are on ============
+  {
+    cfg.sitewireEnabled = true; cfg.sitewireOutboundEnabled = true; cfg.sitewireDryrun = false;
+    updateCalls = []; updateImpl = async (id, body) => { updateCalls.push({ id, body }); return { id, ...body }; }; getImpl = async (id) => ({ id, inactive: true });
+    const worker = require('../src/sync/sitewire-sync');
+    const { app, bor } = await seedManaged();
+    await db.query(`UPDATE sitewire_property_links SET lifecycle_state='paid_off', lifecycle_synced=false WHERE application_id=$1`, [app]);
+    await worker.backfillUnsyncedLifecycleOnce();
+    ok('backfill: called the client for the unsynced link', updateCalls.some((c) => c.body.inactive === true));
+    ok('backfill: link now synced=true', (await syncedOf(app)) === true);
     await cleanup(app, bor);
   }
 

@@ -13,7 +13,12 @@ ALTER TABLE sitewire_property_links
   ADD COLUMN IF NOT EXISTS lifecycle_state text NOT NULL DEFAULT 'active'
     CHECK (lifecycle_state IN ('active', 'finished', 'paid_off')),
   ADD COLUMN IF NOT EXISTS lifecycle_at   timestamptz,
-  ADD COLUMN IF NOT EXISTS lifecycle_by   uuid;
+  ADD COLUMN IF NOT EXISTS lifecycle_by   uuid,
+  -- Was the current lifecycle_state actually pushed to Sitewire (property deactivated/reactivated)? A change
+  -- recorded while writes were OFF is 'skipped' → synced=false; a worker backfill (and a manual re-click)
+  -- re-drives it once writing is on, so the "no further draws" guarantee actually holds. Default true:
+  -- existing links are 'active' and need no Sitewire action.
+  ADD COLUMN IF NOT EXISTS lifecycle_synced boolean NOT NULL DEFAULT true;
 
 -- Dashboard filter: "show me the active projects" scans this a lot.
 CREATE INDEX IF NOT EXISTS idx_sitewire_links_lifecycle

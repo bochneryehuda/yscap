@@ -224,7 +224,7 @@ router.post('/files/:id/lifecycle', requirePermission('manage_draws'), async (re
     if (r.error === 'invalid_state') return res.status(400).json({ error: 'Pick a valid state: finished, paid_off, or active.' });
     if (r.parked) return res.status(502).json({ error: 'Couldn’t sync to Sitewire — a review was opened. Please try again shortly.', parked: r.parked });
     res.json(r);
-  } catch (e) { res.status(502).json({ error: e.message }); }
+  } catch (e) { res.status(502).json({ error: 'Couldn’t update the project status right now — please try again shortly.' }); }
 });
 
 // ---- POST /api/sitewire/files/:id/push — manual birth push (admin/setup, guarded) ----
