@@ -211,6 +211,9 @@ export const api = {
   applications: () => req('GET', '/api/borrower/applications'),
   application:  (id) => req('GET', `/api/borrower/applications/${id}`),
   fileOfficer:  (id) => req('GET', `/api/borrower/applications/${id}/officer`),
+  // Cross-file "Action needed" — everything the borrower must do right now (documents
+  // to provide, fixes, signatures) in ONE call, so the home shows it instantly.
+  actionItems: () => req('GET', '/api/borrower/action-items'),
   inviteCoBorrowerToFile: (id, b) => req('POST', `/api/borrower/applications/${id}/co-borrower`, b),
   requestDraw:  (id) => req('POST', `/api/borrower/applications/${id}/request-draw`),
   borrowerPricing:      (appId) => req('GET', `/api/borrower/applications/${appId}/pricing`),
