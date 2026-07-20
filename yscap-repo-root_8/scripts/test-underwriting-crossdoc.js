@@ -43,6 +43,9 @@ const baseTitle = { propertyAddress: titleFile.property_address, vestedOwners: [
 }
 // No acquisition date / no today → no seasoning flag (never guesses).
 assert.deepStrictEqual(codes(computeTitleFindings({ ...baseTitle }, seasoningFile, { today: '2026-07-20' })), [], 'no acquisition date → no flag');
+// Boundary: exactly 89 days owned → flagged; exactly 90 days → NOT flagged (< 90 is the line).
+assert.deepStrictEqual(codes(computeTitleFindings({ ...baseTitle, ownerAcquisitionDate: '2026-01-02' }, seasoningFile, { today: '2026-04-01' })), ['title_short_seasoning'], '89 days is short seasoning');
+assert.deepStrictEqual(codes(computeTitleFindings({ ...baseTitle, ownerAcquisitionDate: '2026-01-01' }, seasoningFile, { today: '2026-04-01' })), [], '90 days is at the seasoning line, not under it');
 
 // ===== BANK STATEMENT =====
 const assets = { borrower_name: 'John Smith', entity_names: ['Maple Grove Holdings LLC'] };
@@ -62,6 +65,8 @@ const depStmt = { ...goodStmt, openingBalance: 5000, totalDeposits: 20000, total
 assert.deepStrictEqual(codes(computeBankFindings({ ...depStmt, largestDeposit: 4000 }, assets)), [], 'a small-share deposit is fine');
 assert.deepStrictEqual(codes(computeBankFindings({ ...goodStmt, largestDeposit: 4500 }, assets)), [], 'a sub-$5k deposit is immaterial even if >50% of a small total');
 assert.deepStrictEqual(codes(computeBankFindings({ ...depStmt, largestDeposit: null }, assets)), [], 'no largest-deposit detail → no flag (never guesses)');
+// A material deposit (>$5k) that is only a MINORITY share (<=50%) is NOT flagged — isolates the share gate from the floor.
+assert.deepStrictEqual(codes(computeBankFindings({ ...depStmt, largestDeposit: 9000 }, assets)), [], 'a >$5k deposit that is <=50% of deposits is fine');
 
 // Account under a DIFFERENT LLC → FATAL, requires operating agreement.
 {

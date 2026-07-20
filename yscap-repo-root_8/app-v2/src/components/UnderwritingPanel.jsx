@@ -489,6 +489,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
   const completeness = data && data.completeness;
   const risk = data && data.risk;
   const amendments = data && data.amendments;
+  const verdict = data && data.verdict;
   const exts = (data && data.extractions) || [];
   const docTypes = (data && data.docTypes) || [];
   const analyzers = (data && data.analyzers) || {};
@@ -531,6 +532,22 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
           {sum.blocksCtc && <span style={{ fontSize: 12.5, color: SEV.fatal.fg }}>Clear-to-close is blocked until every fatal is resolved.</span>}
         </div>
       )}
+
+      {/* the one-line verdict — the owner's at-a-glance read */}
+      {verdict && verdict.headline && (() => {
+        const V = {
+          clear: { fg: 'var(--good,#3F7A5B)', bg: 'rgba(63,122,91,.10)' },
+          review: { fg: 'var(--amber,#B7791F)', bg: 'var(--amber-bg,#F6EEDD)' },
+          blocked: { fg: 'var(--crit,#B4483C)', bg: 'var(--crit-bg,#F6E7E4)' },
+          pending: { fg: 'var(--muted,#4B585C)', bg: 'var(--paper,#F6F3EC)' },
+        }[verdict.status] || { fg: 'var(--muted,#4B585C)', bg: 'var(--paper,#F6F3EC)' };
+        return (
+          <div style={{ border: `1px solid ${V.fg}33`, borderLeft: `5px solid ${V.fg}`, background: V.bg, borderRadius: 12, padding: '12px 16px', marginBottom: 18 }}>
+            <div style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', color: V.fg, marginBottom: 3 }}>PILOT verdict</div>
+            <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--ink,#141B22)' }}>{verdict.headline}</div>
+          </div>
+        );
+      })()}
 
       {/* fraud / red-flag score — the top-of-file risk read */}
       <RiskScore risk={risk} />

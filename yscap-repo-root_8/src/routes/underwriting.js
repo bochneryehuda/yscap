@@ -45,6 +45,7 @@ const { buildChain } = require('../lib/underwriting/entity-chain');
 const { assessCompleteness } = require('../lib/underwriting/completeness');
 const { computeRiskScore } = require('../lib/underwriting/risk-score');
 const { resolveEffectiveTerms } = require('../lib/underwriting/amendments');
+const { computeVerdict } = require('../lib/underwriting/verdict');
 const { toISODate } = require('../lib/underwriting/compare');
 const exceptions = require('../lib/underwriting/exceptions');
 
@@ -220,7 +221,11 @@ router.get('/:appId', async (req, res, next) => {
       info: openWithRisk.filter((f) => f.severity === 'info').length,
       blocksCtc: openWithRisk.some((f) => f.severity === 'fatal' && (f.blocks_ctc ?? f.blocksCtc)),
     };
+    // One plain-English headline tying every roll-up together — the owner's at-a-glance read.
+    const verdict = computeVerdict({ summary, risk, completeness, entityChain, extractionsCount: exts.rows.length });
+
     res.json({
+      verdict,
       extractions,
       findings: perDoc,
       tieout: { columns: tieout.columns, matrix: tieout.matrix, summary: tieout.summary },
