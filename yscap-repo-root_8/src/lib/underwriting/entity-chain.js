@@ -22,12 +22,16 @@ const { entityMatch, namesMatchLoose } = require('./compare');
 
 const OWNERSHIP_PRONG_PCT = 25;   // FinCEN CDD: identify every individual owning >= 25%.
 
-// Map current extractions (array of {doc_type, fields}) to a docType -> fields lookup (current only).
+// Map current extractions to a docType -> ARRAY of fields. Several docs of the same type can be
+// current at once (a 50/50 LLC uploads BOTH owners' government IDs), so we must not collapse to
+// the first — the ID roster below is built from EVERY id/credit row, or a co-owner whose ID is
+// on file gets falsely flagged unidentified.
 function indexByType(extractions) {
   const byType = {};
   for (const e of (extractions || [])) {
     const t = e.doc_type || e.docType;
-    if (t && !(t in byType)) byType[t] = e.fields || {};
+    if (!t) continue;
+    (byType[t] = byType[t] || []).push(e.fields || {});
   }
   return byType;
 }
@@ -45,24 +49,28 @@ function hasIdFor(name, idNames) {
  */
 function buildChain(fileCtx = {}, extractions = []) {
   const byType = indexByType(extractions);
-  const oa = byType.operating_agreement || null;
-  const ein = byType.ein_letter || null;
-  const gs = byType.good_standing || null;
-  const form = byType.llc_formation || null;
-  const contract = byType.purchase_contract || null;
-  const title = byType.title || null;
-  const ins = byType.insurance || null;
-  const gid = byType.government_id || null;
+  const first = (t) => (byType[t] && byType[t][0]) || null;
+  const oa = first('operating_agreement');
+  const ein = first('ein_letter');
+  const gs = first('good_standing');
+  const form = first('llc_formation');
+  const contract = first('purchase_contract');
+  const title = first('title');
+  const ins = first('insurance');
 
   // The entity's authoritative name: the file's vesting entity, else the OA / formation name.
   const vestingName = fileCtx.vestingName || (oa && oa.entityLegalName) || (form && form.entityLegalName) || (ein && ein.entityLegalName) || null;
 
-  // Names on file we can treat as identified individuals (an ID or a credit report was pulled).
+  // EVERY identified individual on file — one per government ID + credit report (a multi-member
+  // LLC has one ID per owner). Missing any of these would falsely flag a co-owner unidentified.
   const idNames = [];
-  if (gid && gid.fullName) idNames.push(gid.fullName);
-  if (gid && (gid.firstName || gid.lastName)) idNames.push(`${gid.firstName || ''} ${gid.lastName || ''}`.trim());
-  const credit = byType.credit_report;
-  if (credit && credit.subjectName) idNames.push(credit.subjectName);
+  for (const g of (byType.government_id || [])) {
+    if (g.fullName) idNames.push(g.fullName);
+    if (g.firstName || g.lastName) idNames.push(`${g.firstName || ''} ${g.lastName || ''}`.trim());
+  }
+  for (const c of (byType.credit_report || [])) {
+    if (c.subjectName) idNames.push(c.subjectName);
+  }
 
   const edges = [];
   const edge = (id, label, status, detail) => edges.push({ id, label, status, detail: detail || null });

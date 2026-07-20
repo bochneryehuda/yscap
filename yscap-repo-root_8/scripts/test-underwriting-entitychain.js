@@ -73,6 +73,18 @@ const ext = (arr) => arr.map(([doc_type, fields]) => ({ doc_type, fields }));
   assert.strictEqual(chain2.findings.length, 0, 'a 10% owner is below the 25% prong');
 }
 
+// ---- REGRESSION (audit): TWO owners, TWO government IDs on file → neither falsely flagged ----
+{
+  const chain = buildChain({ vestingName: 'Fifty Fifty LLC' }, ext([
+    ['government_id', { fullName: 'Alice Partner' }],   // first ID doc
+    ['government_id', { fullName: 'Bob Partner' }],      // second ID doc (must not be collapsed away)
+    ['operating_agreement', { entityLegalName: 'Fifty Fifty LLC',
+      members: [{ name: 'Alice Partner', ownershipPct: 50 }, { name: 'Bob Partner', ownershipPct: 50 }] }],
+  ]));
+  assert.strictEqual(chain.findings.length, 0, 'both 50% owners have IDs on file → no KYC finding');
+  assert.ok(chain.owners.every((o) => o.identified), 'every owner identified');
+}
+
 // ---- Missing documents → status incomplete (not broken), edges marked missing ----
 {
   const chain = buildChain({ vestingName: 'Solo LLC' }, ext([

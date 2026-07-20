@@ -43,6 +43,7 @@ const { assessFile: assessStaleness } = require('../lib/underwriting/staleness')
 const { computeMetrics } = require('../lib/underwriting/metrics');
 const { buildChain } = require('../lib/underwriting/entity-chain');
 const { assessCompleteness } = require('../lib/underwriting/completeness');
+const exceptions = require('../lib/underwriting/exceptions');
 
 const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || ''));
 // today as a calendar string — no `new Date()` math in the date paths (CLAUDE.md rule).
@@ -138,8 +139,13 @@ router.get('/:appId', async (req, res, next) => {
           WHERE ci.application_id=$1`, [app.id]),
     ]);
 
+    // Load the file context ONCE and reuse it for the tie-out, metrics, entity chain, and
+    // completeness (avoids re-running the same multi-query context load several times per GET).
+    const mctx = await fileView.loadContext(db, app.id);
+    const a = (mctx && mctx.app) || {};
+
     // Data-comparison / tie-out over the file's current extractions + the appraisal.
-    const tieout = await tieoutForFile(db, app.id);
+    const tieout = await tieoutForFile(db, app.id, mctx);
     const cross = tieout.discrepancies;
 
     // Enrich each analyzed document with the condition(s) it supports, its purpose, and its
@@ -163,20 +169,21 @@ router.get('/:appId', async (req, res, next) => {
 
     // Derived metrics: recompute LTP/LTV/LTC/ARV-LTV from the file's registered economics, report
     // the binding cap, and warn on over-leverage. Pure math over the loan file (no document read).
-    const mctx = await fileView.loadContext(db, app.id);
-    const a = (mctx && mctx.app) || {};
     const metrics = computeMetrics({
       loanAmount: a.loan_amount, purchasePrice: a.purchase_price,
       asIsValue: a.as_is_value, arv: a.arv, rehabBudget: a.rehab_budget,
     });
 
-    // Entity-resolution chain: compose the signing-authority / ownership chain into one status
-    // (the name-consistency edges are tie-out's findings; the chain adds the >=25%-owner KYC gap).
-    const entityChain = buildChain({ vestingName: mctx && mctx.vestingName }, exts.rows);
+    // Entity-resolution chain: only meaningful for an entity (LLC) borrower — an individual file
+    // would show every entity edge as "missing" (noise). Compose the signing-authority / ownership
+    // chain into one status; the name-consistency edges are tie-out's findings, the chain adds the
+    // >=25%-owner KYC gap.
+    const isEntity = !!((mctx && mctx.vestingName) || a.llc_id ||
+      exts.rows.some((e) => e.doc_type === 'operating_agreement'));
+    const entityChain = isEntity ? buildChain({ vestingName: mctx && mctx.vestingName }, exts.rows) : null;
 
     // File completeness / stipulations: diff the required-document matrix (adapted to this deal)
     // against what's analyzed on file → outstanding-items list + a completeness %. A VIEW only.
-    const isEntity = !!((mctx && mctx.vestingName) || a.llc_id);
     const completeness = assessCompleteness(
       { isEntity, isAssignment: !!a.is_assignment },
       exts.rows, ff.findings);
@@ -185,7 +192,7 @@ router.get('/:appId', async (req, res, next) => {
     // Roll the tie-out discrepancies + the forward-looking staleness advisories + over-leverage
     // metric warnings into the same fatal/warning gate (all warning-only → never change the
     // CTC-blocking fatal count, but they surface in the roll-up).
-    const openAll = [...perDoc, ...cross, ...staleness.findings, ...metrics.findings, ...entityChain.findings];
+    const openAll = [...perDoc, ...cross, ...staleness.findings, ...metrics.findings, ...(entityChain ? entityChain.findings : [])];
     const summary = {
       fatal: openAll.filter((f) => f.severity === 'fatal').length,
       warning: openAll.filter((f) => f.severity === 'warning').length,
@@ -201,8 +208,8 @@ router.get('/:appId', async (req, res, next) => {
       staleness: { closingDate, board: staleness.board, findings: staleness.findings.map(decorate) },
       metrics: { loanAmount: metrics.loanAmount, maxLoan: metrics.maxLoan, binding: metrics.binding,
         rows: metrics.metrics, findings: metrics.findings.map(decorate) },
-      entityChain: { status: entityChain.status, edges: entityChain.edges, owners: entityChain.owners,
-        vestingName: entityChain.vestingName, findings: entityChain.findings.map(decorate) },
+      entityChain: entityChain ? { status: entityChain.status, edges: entityChain.edges, owners: entityChain.owners,
+        vestingName: entityChain.vestingName, findings: entityChain.findings.map(decorate) } : null,
       completeness: { completenessPct: completeness.completenessPct, counts: completeness.counts,
         stipulations: completeness.stipulations, outstanding: completeness.outstanding,
         ctcBlockers: completeness.ctcBlockers, docsComplete: completeness.docsComplete },
@@ -373,9 +380,16 @@ router.post('/:appId/findings/:fid/resolve', requirePermission('sign_off_conditi
 
     // The finding must be open and belong to this file.
     const fnd = (await db.query(
-      `SELECT id, code FROM document_findings WHERE id=$1 AND application_id=$2 AND status='open'`,
+      `SELECT id, code, severity, blocks_ctc FROM document_findings WHERE id=$1 AND application_id=$2 AND status='open'`,
       [req.params.fid, app.id])).rows[0];
     if (!fnd) return res.status(404).json({ error: 'finding not found or already resolved' });
+
+    // Tiered exception authority: granting an exception on a fatal, clear-to-close-blocking
+    // finding — approving the loan despite an unmet hard requirement — needs senior authority
+    // (waive_conditions) above the base sign_off_conditions gate. The reason is still recorded on
+    // the finding for the audit trail. Everything else clears under the base permission.
+    const auth = exceptions.canApply(req.actor, action, fnd, can);
+    if (!auth.ok) return res.status(403).json({ error: auth.reason, requiredPermission: auth.requiredPermission });
 
     let updated;
     const client = await db.pool.connect();
@@ -397,7 +411,8 @@ router.post('/:appId/findings/:fid/resolve', requirePermission('sign_off_conditi
     if (!updated) return res.status(409).json({ error: 'finding was already resolved' });
 
     await audit(req.actor.id, 'underwriting_finding_resolve', app.id,
-      { finding: fnd.code, action, status: updated.status, note: note.slice(0, 300) });
+      { finding: fnd.code, action, status: updated.status, note: note.slice(0, 300),
+        elevated: auth.elevated || null });
 
     // Remaining open fatal findings gate clear-to-close — the stored per-document fatals AND
     // the derived tie-out fatals (which have no stored row but still block). Both are folded in

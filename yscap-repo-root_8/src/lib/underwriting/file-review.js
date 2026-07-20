@@ -13,8 +13,10 @@
 const fileView = require('./file-view');
 const { buildTieout } = require('./tieout');
 
-async function tieoutForFile(client, appId) {
-  const ctx = await fileView.loadContext(client, appId);
+async function tieoutForFile(client, appId, preloadedCtx) {
+  // Callers that already loaded the file context (the desk GET) pass it to avoid a second load;
+  // the sign-off gate calls without it and loads its own. Same result either way.
+  const ctx = preloadedCtx || await fileView.loadContext(client, appId);
   const { rows } = await client.query(
     `SELECT id, document_id, doc_type, fields FROM document_extractions WHERE application_id=$1 AND is_current`, [appId]);
   const sources = rows.map((e) => ({ id: e.id, docType: e.doc_type, fields: e.fields }));
