@@ -669,9 +669,19 @@ function CompRow({ c }) {
   const cq = [c.condition_uad, c.quality_uad].filter(Boolean).join(' / ') || '—';
   const bdba = [c.beds, c.baths].some((x) => x != null && x !== '') ? `${c.beds != null ? c.beds : '—'}/${c.baths != null && c.baths !== '' ? c.baths : '—'}` : '—';
   const distress = c.sale_type && c.sale_type !== 'ArmsLengthSale' ? ({ REOSale: 'REO', EstateSale: 'Estate', ShortSale: 'Short', Listing: 'Listing', CourtOrderedSale: 'Court' }[c.sale_type] || null) : null;
+  // Round-6 comp facts (view/location UAD ratings, basement, data source). The row expands when it
+  // has adjustments OR any of these facts.
+  const compFacts = [
+    c.view_rating && ['View', c.view_rating],
+    c.location_rating && ['Location', c.location_rating],
+    c.below_grade_sqft != null && ['Basement', `${Number(c.below_grade_sqft).toLocaleString('en-US')} sqft${c.below_grade_finished_sqft != null ? ` · ${Number(c.below_grade_finished_sqft).toLocaleString('en-US')} finished` : ''}`],
+    c.data_source && ['Source', c.data_source],
+  ].filter(Boolean);
+  const hasDetail = adj.length > 0 || compFacts.length > 0;
+  const adverse = (c.view_rating === 'Adverse' ? 'view' : null) || (c.location_rating === 'Adverse' ? 'location' : null);
   return (
     <>
-      <tr style={{ borderTop: '1px solid var(--line-soft,#EFEADD)', background: c.is_subject ? 'var(--paper,#F6F3EC)' : undefined, cursor: adj.length ? 'pointer' : 'default' }} onClick={() => adj.length && setOpen((v) => !v)}>
+      <tr style={{ borderTop: '1px solid var(--line-soft,#EFEADD)', background: c.is_subject ? 'var(--paper,#F6F3EC)' : undefined, cursor: hasDetail ? 'pointer' : 'default' }} onClick={() => hasDetail && setOpen((v) => !v)}>
         <td style={td}>{c.is_subject ? 'Subj' : c.seq}</td>
         <td style={td}>{or(c.address)}{c.city ? `, ${c.city} ${c.state || ''}` : ''}
           {c.sale_status && c.sale_status !== 'closed' && (
@@ -682,10 +692,13 @@ function CompRow({ c }) {
           {distress && (
             <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--crit,#B4483C)', border: '1px solid var(--crit,#B4483C)', borderRadius: 4, padding: '0 4px' }}>{distress}</span>
           )}
+          {adverse && (
+            <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--gold,#AE8746)', border: '1px solid var(--gold,#AE8746)', borderRadius: 4, padding: '0 4px' }} title={`Appraiser rated this comp's ${adverse} adverse`}>Adv {adverse}</span>
+          )}
           {c.prior_sale_amount != null && (
             <span style={{ display: 'block', fontSize: 11, color: 'var(--muted,#4B585C)' }}>Prior sale {money(c.prior_sale_amount)}{c.prior_sale_date ? ` · ${c.prior_sale_date}` : ''}</span>
           )}
-          {adj.length ? <span style={{ color: 'var(--muted,#4B585C)', fontSize: 11 }}> {open ? '▲' : '▼'}</span> : null}</td>
+          {hasDetail ? <span style={{ color: 'var(--muted,#4B585C)', fontSize: 11 }}> {open ? '▲' : '▼'}</span> : null}</td>
         <td style={td}>{or(c.proximity)}</td>
         <td style={{ ...td, textAlign: 'right' }}>{c.gla ? Number(c.gla).toLocaleString('en-US') : '—'}</td>
         <td style={{ ...td, textAlign: 'center' }}>{bdba}</td>
@@ -697,19 +710,34 @@ function CompRow({ c }) {
         <td style={{ ...td, textAlign: 'right', fontWeight: 600 }}>{money(c.adjusted_price)}</td>
         <td style={{ ...td, textAlign: 'right' }}>{c.net_adj_pct != null ? pct(c.net_adj_pct) : (c.net_adjustment != null ? money(c.net_adjustment) : '—')}</td>
       </tr>
-      {open && adj.length > 0 && (
+      {open && hasDetail && (
         <tr style={{ background: 'var(--paper,#F6F3EC)' }}>
           <td />
           <td colSpan={11} style={{ padding: '4px 10px 12px' }}>
-            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)', margin: '4px 0 6px' }}>Adjustments applied</div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(190px,1fr))', gap: '4px 18px' }}>
-              {adj.filter((x) => x && x.amount != null && Number(x.amount) !== 0).map((x, i) => (
-                <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 12.5 }}>
-                  <span style={{ color: 'var(--muted,#4B585C)' }}>{x.type || 'Adjustment'}{x.description ? ` (${x.description})` : ''}</span>
-                  <span style={{ fontVariantNumeric: 'tabular-nums', color: Number(x.amount) < 0 ? 'var(--crit,#B4483C)' : 'var(--good,#3F7A5B)' }}>{Number(x.amount) > 0 ? '+' : ''}{money(x.amount)}</span>
+            {compFacts.length > 0 && (
+              <div style={{ marginBottom: adj.length ? 10 : 0 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)', margin: '4px 0 6px' }}>Comparable detail</div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(190px,1fr))', gap: '4px 18px' }}>
+                  {compFacts.map(([k, v], i) => (
+                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 12.5 }}>
+                      <span style={{ color: 'var(--muted,#4B585C)' }}>{k}</span>
+                      <span style={{ color: v === 'Adverse' ? 'var(--crit,#B4483C)' : 'inherit' }}>{v}</span>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
+              </div>
+            )}
+            {adj.length > 0 && (<>
+              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)', margin: '4px 0 6px' }}>Adjustments applied</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(190px,1fr))', gap: '4px 18px' }}>
+                {adj.filter((x) => x && x.amount != null && Number(x.amount) !== 0).map((x, i) => (
+                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 12.5 }}>
+                    <span style={{ color: 'var(--muted,#4B585C)' }}>{x.type || 'Adjustment'}{x.description ? ` (${x.description})` : ''}</span>
+                    <span style={{ fontVariantNumeric: 'tabular-nums', color: Number(x.amount) < 0 ? 'var(--crit,#B4483C)' : 'var(--good,#3F7A5B)' }}>{Number(x.amount) > 0 ? '+' : ''}{money(x.amount)}</span>
+                  </div>
+                ))}
+              </div>
+            </>)}
           </td>
         </tr>
       )}
