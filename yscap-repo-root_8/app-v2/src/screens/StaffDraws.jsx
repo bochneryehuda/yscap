@@ -59,8 +59,8 @@ export default function StaffDraws() {
       <div className="dd-wrap">
         <div className="dd-head">
           <div>
-            <h1 className="dd-title">Construction draws</h1>
-            <div className="dd-sub">Every draw PILOT is tracking in Sitewire — what was requested, approved, and released.</div>
+            <h1 className="dd-title">Draw Management</h1>
+            <div className="dd-sub">The post-funding phase — every construction draw PILOT is managing in Sitewire: requested, approved, released, and inspected.</div>
           </div>
           {status && (
             <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>

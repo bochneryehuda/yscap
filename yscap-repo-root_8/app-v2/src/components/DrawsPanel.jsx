@@ -560,7 +560,7 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
           {finding ? 'Re-send findings' : 'Deliver findings to borrower'}
         </button>
         <button className={'btn btn-sm ' + (showPhotos ? 'primary' : 'ghost')} onClick={() => setShowPhotos((s) => !s)}>
-          {showPhotos ? 'Hide inspection photos' : 'Inspection photos & report'}
+          {showPhotos ? 'Hide inspection photos' : 'Inspection photos'}
         </button>
         <button className="btn btn-sm ghost" onClick={() => api.sitewireExportPacket(appId, draw.sitewire_draw_id).catch(() => {})}>Draw packet</button>
         {draw.pdf_src && <a className="btn btn-sm ghost" href={draw.pdf_src} target="_blank" rel="noreferrer">Sitewire PDF</a>}
@@ -608,7 +608,9 @@ function InspectionGallery({ appId, draw, finding, readsOff }) {
     setLoading(true); setErr('');
     const persisted = () => (finding
       ? api.get(`/api/sitewire/findings/${finding.id}`).then((d) => ({ lines: d.lines || [] }))
-      : Promise.reject(new Error('Turn on Sitewire to load inspection photos (or deliver findings first).')));
+      : Promise.reject(new Error(readsOff
+        ? 'Turn on Sitewire to load inspection photos (or deliver findings first).'
+        : 'No inspection photos available for this draw yet.')));
     const p = readsOff
       ? persisted()
       : api.get(`/api/sitewire/files/${appId}/findings/${draw.sitewire_draw_id}`).catch(() => persisted());
@@ -628,20 +630,25 @@ function InspectionGallery({ appId, draw, finding, readsOff }) {
       {!loading && !err && lines.length === 0 && <div className="muted small">No inspection photos on this draw yet.</div>}
       {!loading && !err && lines.map((l, i) => {
         const media = Array.isArray(l.media) ? l.media : [];
+        // Only show approved/not-approved once the DRAW is actually approved (decided). Before that every
+        // line is under review — an undecided line must NOT read as a red "Not approved" rejection.
+        const decided = draw.status === 'approved';
         const notAppr = l.not_approved_cents != null ? l.not_approved_cents : Math.max(0, (l.requested_cents || 0) - (l.approved_cents || 0));
         return (
           <div key={l.id || l.request_id || i} style={{ borderTop: '1px dashed var(--line,#e6e0d4)', paddingTop: 8, marginTop: 8 }}>
             <div className="row between" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'baseline' }}>
               <div className="small"><b>{l.name || `Line ${l.job_item_id || l.sitewire_job_item_id || ''}`}</b></div>
               <div className="small muted" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                Requested {usd2(l.requested_cents)} · Approved {usd2(l.approved_cents)}{notAppr > 0 ? <span style={{ color: 'var(--bad,#b04a3f)' }}> · Not approved {usd2(notAppr)}</span> : null}
+                Requested {usd2(l.requested_cents)}{decided
+                  ? <> · Approved {usd2(l.approved_cents)}{notAppr > 0 ? <span style={{ color: 'var(--bad,#b04a3f)' }}> · Not approved {usd2(notAppr)}</span> : null}</>
+                  : <> · {l.approved_cents ? `Approved ${usd2(l.approved_cents)}` : 'Awaiting your decision'}</>}
               </div>
             </div>
             {l.inspector_comments && <div className="small" style={{ marginTop: 3, fontStyle: 'italic' }}>Inspector: “{l.inspector_comments}”</div>}
             {media.length > 0 ? (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 8, marginTop: 6 }}>
                 {media.map((m, j) => (
-                  <a key={j} href={m.src} target="_blank" rel="noreferrer" title={[m.type === 'video' ? 'Video' : 'Photo', m.captured_at ? new Date(m.captured_at).toLocaleString('en-US') : '', (m.lat && m.lng) ? `${m.lat}, ${m.lng}` : ''].filter(Boolean).join(' · ')}
+                  <a key={j} href={m.src} target="_blank" rel="noreferrer" title={[m.type === 'video' ? 'Video' : 'Photo', m.note || '', m.captured_at ? new Date(m.captured_at).toLocaleString('en-US') : '', (m.lat && m.lng) ? `${m.lat}, ${m.lng}` : ''].filter(Boolean).join(' · ')}
                     style={{ display: 'block', position: 'relative', aspectRatio: '4 / 3', borderRadius: 6, overflow: 'hidden', border: '1px solid var(--line,#e6e0d4)', background: '#000' }}>
                     {m.type === 'video'
                       ? <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 12 }}>▶ Video</div>
