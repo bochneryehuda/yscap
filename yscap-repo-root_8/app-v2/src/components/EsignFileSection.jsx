@@ -185,7 +185,7 @@ export default function EsignFileSection({ appId, role }) {
           })}
         </div>
         <p className="muted small" style={{ margin: '8px 0 0' }}>
-          Sending is gated while the integration is in test mode — a real borrower is never emailed until go-live.
+          Each signer is emailed a secure link to review and sign — you can watch every step below.
         </p>
       </div>
 
