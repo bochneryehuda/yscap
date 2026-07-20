@@ -456,7 +456,8 @@ router.get('/action-items', async (req, res) => {
     };
     res.json({ items, counts });
   } catch (e) {
-    res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' });
+    console.warn('[borrower] handler error:', db.describeError(e));
+    res.status(500).json({ error: 'server error' });
   }
 });
 

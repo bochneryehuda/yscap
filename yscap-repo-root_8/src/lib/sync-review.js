@@ -282,16 +282,13 @@ async function remindStaleReviewsOnce() {
  */
 async function sendReviewDigestOnce() {
   try {
-    // Atomically CLAIM the 6-day window (stamp-first) so two overlapping passes /
-    // instances can't both pass a SELECT and both email every admin (owner-reported
-    // duplicate sweep 2026-07-20 — same fix as notification-digests._gate). Detail
-    // is enriched after we compute the stats.
-    const claim = await db.query(
-      `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
-       SELECT 'system', NULL, 'sync_review_digest_sent', 'application', NULL, '{}'::jsonb
-        WHERE NOT EXISTS (SELECT 1 FROM audit_log WHERE action='sync_review_digest_sent' AND created_at > now() - interval '6 days')
-       RETURNING id`);
-    if (!claim.rows[0]) return false;   // another pass already sent this week
+    // Atomically CLAIM the 6-day window so two overlapping passes / instances can't
+    // both pass the check and both email every admin (owner-reported duplicate sweep
+    // 2026-07-20). Uses the shared advisory-locked claim — a plain INSERT…WHERE NOT
+    // EXISTS is not atomic under READ COMMITTED (audit G4). Detail is enriched after
+    // we compute the stats.
+    const claimId = await require('./throttle-claim').claimOncePerPeriod({ action: 'sync_review_digest_sent', interval: '6 days' });
+    if (!claimId) return false;   // another pass already sent this week
     const stats = (await db.query(
       `SELECT
          count(*) FILTER (WHERE created_at > now() - interval '7 days') AS opened,
@@ -324,7 +321,7 @@ async function sendReviewDigestOnce() {
     // was already written by the atomic claim above — never a second row).
     await db.query(
       `UPDATE audit_log SET detail=$1::jsonb WHERE id=$2`,
-      [JSON.stringify(stats), claim.rows[0].id]).catch(() => {});
+      [JSON.stringify(stats), claimId]).catch(() => {});
     return true;
   } catch (e) { console.warn('[sync-review] digest skipped:', e.message); return false; }
 }
