@@ -290,14 +290,25 @@ function SecHead({ eyebrow, title, extra }) {
   );
 }
 
+// When true (provided by the full-report overlay), every ApprSection is forced
+// OPEN so the "whole report" view and the printed/saved PDF contain every
+// section — collapsing is only for the on-screen scan. This must FORCE the
+// <details open> attribute, not just CSS: modern Chromium hides a closed
+// <details> via content-visibility on ::details-content, which a `display:block`
+// override on the body cannot defeat (verified). Forcing `open` is the reliable
+// fix; the print CSS on ::details-content is belt-and-suspenders for a plain
+// Ctrl+P from the inline view.
+const ApprOpenCtx = React.createContext(false);
+
 // Collapsible report section (owner-directed 2026-07-20): the appraisal report is
 // long, so each big section collapses to just its header — scan the headers, open
 // the one you want. Native <details> = auto-collapsed by default (unless
-// defaultOpen), toggles on click, works identically for staff and the borrower.
-// The header reuses SecHead so the look is unchanged; a chevron rotates on open.
+// defaultOpen or the overlay forces it), toggles on click, works identically for
+// staff and the borrower. The header reuses SecHead so the look is unchanged.
 function ApprSection({ eyebrow, title, extra, children, defaultOpen = false }) {
+  const forceOpen = React.useContext(ApprOpenCtx);
   return (
-    <details className="appr-sec appr-avoid" {...(defaultOpen ? { open: true } : {})}>
+    <details className="appr-sec appr-avoid" {...((forceOpen || defaultOpen) ? { open: true } : {})}>
       <summary className="appr-sec-sum">
         <SecHead eyebrow={eyebrow} title={title} extra={extra} />
         <span className="appr-sec-chev" aria-hidden="true">⌄</span>
@@ -1550,7 +1561,7 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
                 </div>
               </div>
             </div>
-            {body}
+            <ApprOpenCtx.Provider value={true}>{body}</ApprOpenCtx.Provider>
           </div>
         </div>
       </div>

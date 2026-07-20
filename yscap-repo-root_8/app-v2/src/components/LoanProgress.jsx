@@ -21,17 +21,21 @@ const TERMINAL = { declined: 'Declined', withdrawn: 'Withdrawn' };
 
 export default function LoanProgress({ status }) {
   const terminal = TERMINAL[status];
-  const curIdx = terminal ? -1 : (IDX[status] != null ? IDX[status] : 0);
-  const here = terminal ? terminal : (PATH[curIdx] && PATH[curIdx].label) || '—';
+  // on_hold is a real status but a PAUSE overlaid on the stage, not a stage — the
+  // underlying stage isn't in `status`, so don't guess it (that showed "Intake").
+  const held = status === 'on_hold';
+  const off = !!terminal || held;                     // off the linear path
+  const curIdx = off ? -1 : (IDX[status] != null ? IDX[status] : 0);
+  const here = terminal || (held ? 'On hold' : (PATH[curIdx] && PATH[curIdx].label) || '—');
   return (
     <div className="loan-prog" role="group" aria-label="Loan progress">
       <div className="loan-prog-head">
         <b className="small">Loan progress</b>
-        <span className={`muted small${terminal ? ' lp-term-lbl' : ''}`}>{terminal ? terminal : `Now: ${here}`}</span>
+        <span className={`muted small${terminal ? ' lp-term-lbl' : held ? ' lp-held-lbl' : ''}`}>{off ? here : `Now: ${here}`}</span>
       </div>
       <ol className="lp-track">
         {PATH.map((p, i) => {
-          const state = terminal ? 'upcoming' : i < curIdx ? 'done' : i === curIdx ? 'current' : 'upcoming';
+          const state = off ? 'upcoming' : i < curIdx ? 'done' : i === curIdx ? 'current' : 'upcoming';
           return (
             <li key={p.s} className={`lp-step ${state}`} title={p.label}>
               <span className="lp-dot" />
