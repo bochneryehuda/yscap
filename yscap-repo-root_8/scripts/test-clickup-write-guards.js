@@ -209,6 +209,14 @@ eq('garbage still rejected', normalizeTypedDate('26'), null);
   eq('ssn: dashed-vs-dashed same number equivalent', feq(SSN, '123-45-4776', '123-45-4776'), true);
   eq('ssn: different SSN NOT equivalent', feq(SSN, '123-45-4776', '999999999'), false);
   eq('ssn: short/garbled falls through (not equivalent to a full ssn)', feq(SSN, '4776', '123454776'), false);
+  // We now PUSH the real dashed format; a ClickUp value that is dash-less is still
+  // the same number, so the push is suppressed (no false conflict). formatSsn is
+  // the exact format we push.
+  const { formatSsn } = require('../src/lib/fields');
+  eq('ssn: formatSsn dashes 9 digits', formatSsn('066889965'), '066-88-9965');
+  eq('ssn: formatSsn is idempotent on an already-dashed value', formatSsn('066-88-9965'), '066-88-9965');
+  eq('ssn: our pushed dashed value is equivalent to ClickUp dash-less (no conflict)',
+     feq(SSN, formatSsn('066889965'), '066889965'), true);
 }
 
 // ---- 10. a DOB is a human decision and belongs to an adult -------------------
