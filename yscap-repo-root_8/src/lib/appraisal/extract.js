@@ -54,10 +54,12 @@ const UAD_C = /^C[1-6]$/, UAD_Q = /^Q[1-6]$/;
 function parseBaths(raw) {
   const s = clean(raw);
   if (!s) return { text: null, full: null, half: null };
+  // baths_full is integer — bound it so a corrupt digit-run can't overflow the column on insert.
+  const bf = (x) => { const n = +x; return Number.isInteger(n) && n >= 0 && n <= 99 ? n : null; };
   const m = /^(\d+)\.(\d)/.exec(s);
-  if (m) return { text: s, full: +m[1], half: +m[2] };   // UAD full.half or decimal .0
+  if (m) return { text: s, full: bf(m[1]), half: +m[2] };   // UAD full.half or decimal .0
   const n = /^(\d+)$/.exec(s);
-  if (n) return { text: s, full: +n[1], half: 0 };
+  if (n) return { text: s, full: bf(n[1]), half: 0 };
   return { text: s, full: null, half: null };
 }
 
@@ -77,6 +79,11 @@ function thousands(v) { const n = toNum(v); return n != null && n >= 1 && n <= 1
 function percent(v) { if (v == null) return null; const s = String(v).replace(/%/g, '').trim(); return toNum(s); }
 // A small integer count (rooms, spaces, phases, units) — 0 is a VALID value here (unlike money()).
 function count(v, max) { const n = toNum(v); return n != null && Number.isInteger(n) && n >= 0 && n <= max ? n : null; }
+// A SIGNED, magnitude-bounded number for columns that legitimately go negative — a comp's net
+// dollar adjustment (numeric(14,2)) and net-adjustment percent (numeric(8,2)) can be < 0, and 0 is
+// a valid "no adjustment". money()/bounded() reject negatives and 0, so they can't guard these;
+// this keeps a corrupt/hostile attribute from overflowing the column and rolling back the import.
+function signed(v, max) { const n = toNum(v); return n != null && Math.abs(n) < max ? n : null; }
 // A 1004MC market-grid cell. The cells are FULL DOLLARS ("452500" or "$829,500"), day/month
 // counts ("98", "5.26"), or ratios ("103.00", "99%"); many are placeholders ("N/A", "-", "",
 // "Unavailable"). Strip currency/percent formatting, reject the placeholders, keep a real 0.
@@ -336,9 +343,9 @@ function comparables(root) {
       saleStatus: structStatus || saleStatus(c),
       salePrice: money(X.attr(c, 'PropertySalesAmount')),
       adjustedPrice: money(X.attr(c, 'AdjustedSalesPriceAmount')),
-      netAdjustment: toNum(X.attr(c, 'SalePriceTotalAdjustmentAmount')),
-      netAdjPct: toNum(X.attr(c, 'SalePriceTotalAdjustmentNetPercent')),
-      grossAdjPct: toNum(X.attr(c, 'SalesPriceTotalAdjustmentGrossPercent')),
+      netAdjustment: signed(X.attr(c, 'SalePriceTotalAdjustmentAmount'), 1e12),   // numeric(14,2), can be < 0
+      netAdjPct: signed(X.attr(c, 'SalePriceTotalAdjustmentNetPercent'), 1e6),    // numeric(8,2), can be < 0
+      grossAdjPct: signed(X.attr(c, 'SalesPriceTotalAdjustmentGrossPercent'), 1e6), // numeric(8,2)
       gla: g.gla, saleDate: g.saleDate, conditionUad: g.conditionUad, qualityUad: g.qualityUad,
       dom: g.dom, pricePerGla: g.pricePerGla, adjustments: g.adjustments.length ? g.adjustments : null,
       // Per-comp UAD view & location overall ratings (the two remaining UAD grid lines) + basement
@@ -795,12 +802,12 @@ function extract(xml) {
     censusTract: clean(X.attr(ident, 'CensusTractIdentifier')),
     neighborhood: clean(X.attr(X.find(root, 'NEIGHBORHOOD'), '_Name')),
     propertyType: clean(X.attr(st, 'AttachmentType')),
-    units: toNum(X.attr(st, 'LivingUnitCount')),
+    units: count(X.attr(st, 'LivingUnitCount'), 999),
     yearBuilt: year(X.attr(st, 'PropertyStructureBuiltYear')),
     gla: bounded(X.attr(st, 'GrossLivingAreaSquareFeetCount'), 1e8),
-    beds: toNum(X.attr(st, 'TotalBedroomCount')),
+    beds: count(X.attr(st, 'TotalBedroomCount'), 99),
     baths: bathsParsed.text, bathsFull: bathsParsed.full, bathsHalf: bathsParsed.half,
-    rooms: toNum(X.attr(st, 'TotalRoomCount')),
+    rooms: count(X.attr(st, 'TotalRoomCount'), 99),
     stories: clean(X.attr(st, 'StoriesCount')),
     design: clean(X.attr(st, '_DesignDescription')),
     lotArea: clean(X.attr(site, '_AreaDescription')),
@@ -868,7 +875,10 @@ function extract(xml) {
     const pr = X.find(root, 'PROJECT'); const unit = X.find(root, '_UNIT');
     // HOA: use toNum (0 is a valid "no fee" — never drop it as money() would), but prefer a
     // populated fee row if the first _PER_UNIT_FEE is a 0 placeholder (spec fix).
-    const fees = X.findAll(root, '_PER_UNIT_FEE').map((f) => ({ amt: toNum(X.attr(f, '_Amount')), per: clean(X.attr(f, '_PeriodType')) }));
+    // hoa_fee_amount is numeric(12,2) and 0 is a valid "no fee" (keep it, unlike money()); bound the
+    // magnitude so a corrupt/hostile _Amount can't overflow the column and roll back the import.
+    const feeAmt = (v) => { const n = toNum(v); return n != null && n >= 0 && n < 1e10 ? n : null; };
+    const fees = X.findAll(root, '_PER_UNIT_FEE').map((f) => ({ amt: feeAmt(X.attr(f, '_Amount')), per: clean(X.attr(f, '_PeriodType')) }));
     const feePick = fees.find((f) => f.amt != null && f.amt > 0) || fees.find((f) => f.amt != null) || {};
     condo = {
       projectName: clean(X.attr(pr, '_Name')), projectType: clean(X.attr(pr, '_DesignType')),

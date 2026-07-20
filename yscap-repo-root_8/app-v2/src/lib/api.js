@@ -211,6 +211,9 @@ export const api = {
   applications: () => req('GET', '/api/borrower/applications'),
   application:  (id) => req('GET', `/api/borrower/applications/${id}`),
   fileOfficer:  (id) => req('GET', `/api/borrower/applications/${id}/officer`),
+  // Cross-file "Action needed" — everything the borrower must do right now (documents
+  // to provide, fixes, signatures) in ONE call, so the home shows it instantly.
+  actionItems: () => req('GET', '/api/borrower/action-items'),
   inviteCoBorrowerToFile: (id, b) => req('POST', `/api/borrower/applications/${id}/co-borrower`, b),
   requestDraw:  (id) => req('POST', `/api/borrower/applications/${id}/request-draw`),
   borrowerPricing:      (appId) => req('GET', `/api/borrower/applications/${appId}/pricing`),
@@ -388,6 +391,12 @@ export const api = {
   },
   sitewireProjectReport: async (appId, mode, win) => {
     try { const { blob, filename } = await download(`/api/sitewire/files/${appId}/report${mode === 'borrower' ? '?mode=borrower' : ''}`); openBlob(blob, filename, win); }
+    catch (e) { try { if (win && !win.closed) win.close(); } catch { /* ignore */ } throw e; }
+  },
+  // Borrower's OWN branded inspection report (always borrower-safe; server enforces own-file). drawId
+  // optional → that draw; omitted → whole-project. Opens in a tab (win pre-opened in the click handler).
+  borrowerDrawReport: async (appId, drawId, win) => {
+    try { const { blob, filename } = await download(`/api/borrower/draws/${appId}/report${drawId ? `?drawId=${drawId}` : ''}`); openBlob(blob, filename, win); }
     catch (e) { try { if (win && !win.closed) win.close(); } catch { /* ignore */ } throw e; }
   },
   staffTprPreview:  (appId) => req('GET', `/api/staff/applications/${appId}/export/tpr/preview`),

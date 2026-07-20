@@ -4,8 +4,8 @@
 --        credit report you should alert; high mismatching alerts should go to
 --        underwriting to review").
 --
--- db/183 added credit_reports.underwriting_finding as a SINGLE finding object
--- {type,severity,...}; db/184 made a fatal one block completion of the credit
+-- db/186 added credit_reports.underwriting_finding as a SINGLE finding object
+-- {type,severity,...}; db/187 made a fatal one block completion of the credit
 -- condition. E2 turns that into a LIST: import.js now stores a BACK-COMPATIBLE
 -- WRAPPER
 --   { severity:<max active>, types:[...], message:<joined>,
@@ -24,7 +24,7 @@
 --     severity so signOffGate agrees).
 --
 -- Two layers as before (app-layer signOffGate 422 + this DB trigger backstop).
--- Same "latest IMPORTED report, id DESC tiebreak" selection as db/184 so the two
+-- Same "latest IMPORTED report, id DESC tiebreak" selection as db/187 so the two
 -- layers always resolve the SAME report. Idempotent; safe to re-run every boot.
 -- ============================================================================
 
@@ -103,7 +103,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Trigger definition is unchanged from db/184, but re-assert it idempotently so a
+-- Trigger definition is unchanged from db/187, but re-assert it idempotently so a
 -- fresh DB that somehow applied 170 without 168 still gets the trigger wired.
 DROP TRIGGER IF EXISTS trg_credit_finding_gate ON checklist_items;
 CREATE TRIGGER trg_credit_finding_gate
@@ -117,7 +117,7 @@ CREATE TRIGGER trg_credit_finding_gate
 -- (signed_off_at IS NULL) AND whose file's latest imported credit report carries
 -- an active fatal finding under the GENERALIZED predicate (findings[] OR the
 -- legacy single-finding shape). A genuinely signed-off credit condition on a
--- funded/closed file is left alone. Mirrors db/184's backfill.
+-- funded/closed file is left alone. Mirrors db/187's backfill.
 UPDATE checklist_items ci
    SET status = 'issue', updated_at = now()
   FROM applications a

@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { scenarioToDraft, scenarioLabelFromState } from '../lib/scenario.js';
 import BorrowerCreditCard from '../components/BorrowerCreditCard.jsx';
+import ActionNeeded from '../components/ActionNeeded.jsx';
 
 // Files that are muted OUTSIDE the file (owner-directed): funded/terminal AND
 // ON-HOLD loans never nag in the cross-file "to complete" rollup or the per-loan
@@ -24,7 +25,6 @@ export default function Dashboard() {
   const [msg, setMsg] = useState('');
   const [unread, setUnread] = useState({});
   const [drawBusy, setDrawBusy] = useState(null);
-  const [outByLoan, setOutByLoan] = useState({});
   const [archived, setArchived] = useState([]);      // archived (hidden) drafts
   const [showArchived, setShowArchived] = useState(false);
   const [draftBusy, setDraftBusy] = useState(null);
@@ -85,20 +85,9 @@ export default function Dashboard() {
     }).catch(() => {});
   }, []);
 
-  // Pull each active loan's outstanding checklist items so the dashboard can
-  // show WHAT is still needed, grouped by loan — the loans list endpoint only
-  // returns per-file counts, not the item names.
-  useEffect(() => {
-    if (!apps) return;
-    let live = true;
-    const DONE = ['received', 'satisfied', 'waived', 'cleared', 'accepted'];
-    apps
-      .filter(a => !QUIET_STATUSES.includes(a.status) && (a.borrower_total || 0) > (a.borrower_done || 0))
-      .forEach(a => api.checklist(a.id)
-        .then(items => { if (live) setOutByLoan(m => ({ ...m, [a.id]: (items || []).filter(i => !DONE.includes(i.status)) })); })
-        .catch(() => {}));
-    return () => { live = false; };
-  }, [apps]);
+  // "What you still need to do" now loads in ONE call via the <ActionNeeded> card
+  // (GET /api/borrower/action-items) instead of a checklist fetch per file, so it
+  // paints instantly at the top — see the component below.
 
   const [creating, setCreating] = useState(false);
   async function newApplication() {
@@ -218,6 +207,10 @@ export default function Dashboard() {
       {err && <div role="alert" className="notice err">{err}
         <button className="btn link small" onClick={() => { setErr(''); load(); }}>Retry</button></div>}
       {msg && <div className="notice ok">{msg}</div>}
+
+      {/* Lead with what the borrower must DO right now — signatures, fixes, documents
+          — pulled cross-file in one call so it paints immediately on login (#39). */}
+      <ActionNeeded />
 
       {drawConfirm && (
         <div className="cv-modal-back" onClick={() => setDrawConfirm(null)}>
@@ -366,39 +359,8 @@ export default function Dashboard() {
         </div>
       )}
 
-      {apps && (() => {
-        const groups = (apps || []).filter(a => (outByLoan[a.id] || []).length > 0);
-        if (!groups.length) return null;
-        const itemLabel = (it) => it.label || it.borrower_label || it.field_label || 'Item';
-        const st = (s) => s === 'issue' ? 'Needs attention' : s === 'received' ? 'In review' : 'To do';
-        return (
-          <div className="panel" style={{ marginBottom: 18 }}>
-            <h3 style={{ marginBottom: 4 }}>Outstanding documents &amp; items</h3>
-            <p className="muted small" style={{ marginBottom: 6 }}>Everything your loans still need, grouped by property. Click any item to open the file.</p>
-            {groups.map(a => (
-              <div key={a.id} style={{ marginTop: 12 }}>
-                <div className="row" style={{ marginBottom: 2 }}>
-                  <Link to={`/app/${a.id}`} style={{ fontWeight: 600 }}>{addrLine(a.property_address)}</Link>
-                  <div className="spacer" />
-                  <span className="muted small">{(outByLoan[a.id] || []).length} outstanding</span>
-                </div>
-                {(outByLoan[a.id] || []).map(it => (
-                  <Link to={`/app/${a.id}`} key={it.id} className="checkitem" style={{ textDecoration: 'none', color: 'inherit' }}>
-                    <span className="dot outstanding" style={it.status === 'issue' ? { background: 'var(--danger)' } : undefined} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontWeight: 500 }}>{itemLabel(it)}</div>
-                      {it.status === 'issue' && it.rejection_reason && <div className="small" style={{ color: 'var(--danger)' }}>Needs a fix: {it.rejection_reason}</div>}
-                    </div>
-                    <span className="muted small" style={{ whiteSpace: 'nowrap' }}>{st(it.status)}</span>
-                  </Link>
-                ))}
-              </div>
-            ))}
-          </div>
-        );
-      })()}
-
       <BorrowerCreditCard />
+
 
       {notifs.length > 0 && (
         <div className="panel" style={{ marginTop: 18 }}>
