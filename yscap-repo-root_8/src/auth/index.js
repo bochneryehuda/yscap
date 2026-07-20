@@ -829,6 +829,21 @@ router.post('/accept', async (req, res, next) => {
              email_verified=true, email_verified_at=COALESCE(borrower_auth.email_verified_at, now())
        RETURNING token_version`,
       [b.rows[0].id, await C.hashPassword(password)]);
+    // LO branding (owner-directed 2026-07-20): a borrower who signs up through an
+    // officer's invite link is bound to THAT officer as their loan officer of
+    // record — belt-and-suspenders on top of the file-officer path, so even an
+    // invite off a Lead-Capture file still keeps the inviter's branding. Only when
+    // the inviter is officer-eligible, and only FILLS a blank owner (COALESCE via
+    // the IS NULL guard) — it never steals an existing owning officer. Best-effort.
+    if (row.created_by) {
+      await db.query(
+        `UPDATE borrowers b SET primary_officer_id=s.id, updated_at=now()
+           FROM staff_users s
+          WHERE b.id=$1 AND b.primary_officer_id IS NULL
+            AND s.id=$2 AND s.is_active=true
+            AND s.role IN ('loan_officer','admin','super_admin')`,
+        [b.rows[0].id, row.created_by]).catch(() => {});
+    }
     await db.query(`UPDATE invite_tokens SET accepted_at=now() WHERE id=$1`, [row.id]);
     res.json({ token: borrowerToken(b.rows[0].id, ba.rows[0].token_version) });
   } catch (e) { next(e); }

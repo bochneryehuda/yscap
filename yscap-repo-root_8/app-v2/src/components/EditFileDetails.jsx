@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import { api } from '../lib/api.js';
 import { MoneyInput } from './FormattedInputs.jsx';
 import { US_STATES } from './LlcManager.jsx';
-import { PROGRAMS, PROPERTY_TYPES, withCurrent } from '../lib/enums.js';
+import { PROGRAMS, PROPERTY_TYPES, withCurrent, unitsMode, unitsForType } from '../lib/enums.js';
+import LlcPicker from './LlcPicker.jsx';
 
 /* Staff edit of the loan-file data after creation — EVERY field the
    application collects is correctable here (typo'd price, wrong property
@@ -24,6 +25,7 @@ export default function EditFileDetails({ app, onSaved }) {
     program: app.program || '', loanType: app.loan_type || '', propertyType: app.property_type || '',
     units: num(app.units), purchasePrice: num(app.purchase_price), asIsValue: num(app.as_is_value),
     arv: num(app.arv), rehabBudget: num(app.rehab_budget), occupancy: app.occupancy || '',
+    llcId: app.llc_id || '', entityName: app.entity_name || '',
     rehabType: app.rehab_type || '', sqftPre: num(app.sqft_pre), sqftPost: num(app.sqft_post),
     requestedExpFlips: num(app.requested_exp_flips), requestedExpHolds: num(app.requested_exp_holds),
     requestedExpGround: num(app.requested_exp_ground), requestedExpReo: num(app.requested_exp_reo),
@@ -35,6 +37,10 @@ export default function EditFileDetails({ app, onSaved }) {
     addrState: (a.state || '').toUpperCase(), addrZip: a.zip || '',
   });
   const set = (k, v) => setF((s) => ({ ...s, [k]: v }));
+  // Property type drives the units control (single → 1 locked; "Multi 2–4" →
+  // 2/3/4 dropdown; "Multi 5+" / "Mixed Use" → free number ≥ 5) — same rule as
+  // the borrower application and the new-file form.
+  const setPropertyType = (v) => setF((s) => ({ ...s, propertyType: v, units: unitsForType(v, s.units) }));
   const isRefi = /refi/i.test(f.loanType || '');
 
   async function save() {
@@ -44,7 +50,7 @@ export default function EditFileDetails({ app, onSaved }) {
         || f.addrCity !== (a.city || '') || f.addrState !== ((a.state || '').toUpperCase()) || f.addrZip !== (a.zip || '');
       const body = {
         program: f.program, loanType: f.loanType, propertyType: f.propertyType, occupancy: f.occupancy,
-        units: f.units, purchasePrice: f.purchasePrice, asIsValue: f.asIsValue, arv: f.arv, rehabBudget: f.rehabBudget,
+        units: unitsForType(f.propertyType, f.units), purchasePrice: f.purchasePrice, asIsValue: f.asIsValue, arv: f.arv, rehabBudget: f.rehabBudget,
         rehabType: f.rehabType, sqftPre: f.sqftPre, sqftPost: f.sqftPost,
         requestedExpFlips: f.requestedExpFlips, requestedExpHolds: f.requestedExpHolds,
         requestedExpGround: f.requestedExpGround, requestedExpReo: f.requestedExpReo,
@@ -65,6 +71,18 @@ export default function EditFileDetails({ app, onSaved }) {
         } : null;
       }
       const r = await api.staffEditApplication(app.id, body);
+      // Vesting entity (owner-directed 2026-07-20): an LLC change goes through the
+      // dedicated vesting endpoint (its own guarded chokepoint that wires the LLC
+      // condition + docs). A picked LLC carries an id; a typed-but-new name is
+      // created on the borrower first. Best-effort — the field edits already saved.
+      try {
+        let llcId = f.llcId;
+        if (!llcId && f.entityName.trim()) {
+          const c = await api.staffCreateLlc(app.borrower_id, { llcName: f.entityName.trim() });
+          llcId = c.llcId || c.id;
+        }
+        if (llcId && String(llcId) !== String(app.llc_id || '')) await api.staffSetVestingLlc(app.id, llcId);
+      } catch (_) { /* vesting is best-effort */ }
       setMsg(r && r.changed && r.changed.length
         ? `Saved ✓ — ${r.changed.length} field${r.changed.length === 1 ? '' : 's'} changed (logged in Activity).`
         : 'Saved ✓ — no values actually changed.');
@@ -95,10 +113,26 @@ export default function EditFileDetails({ app, onSaved }) {
             <label><span>ZIP</span><input className="input" value={f.addrZip} onChange={(e) => set('addrZip', e.target.value)} /></label>
             <label><span>Apt / Unit</span><input className="input" value={f.addrUnit} onChange={(e) => set('addrUnit', e.target.value)} /></label>
             <label><span>Property type</span>
-              <select className="input" value={f.propertyType} onChange={(e) => set('propertyType', e.target.value)}>
+              <select className="input" value={f.propertyType} onChange={(e) => setPropertyType(e.target.value)}>
                 <option value="">—</option>{withCurrent(PROPERTY_TYPES, f.propertyType).map(x => <option key={x} value={x}>{x}</option>)}
               </select></label>
-            <label><span>Units</span><input className="input" type="number" min="0" value={f.units} onChange={(e) => set('units', e.target.value)} /></label>
+            {unitsMode(f.propertyType) === 'select24' ? (
+              <label><span>Units</span>
+                <select className="input" value={f.units || ''} onChange={(e) => set('units', e.target.value)}>
+                  <option value="">—</option><option>2</option><option>3</option><option>4</option>
+                </select></label>
+            ) : unitsMode(f.propertyType) === 'multi' ? (
+              <label><span>Units</span><input className="input" type="number" min="5" value={f.units || ''} onChange={(e) => set('units', e.target.value)} placeholder="5 or more" /></label>
+            ) : f.propertyType ? (
+              <label><span>Units</span><input className="input" value="1 unit" disabled readOnly /></label>
+            ) : (
+              <label><span>Units</span><input className="input" type="number" min="0" value={f.units} onChange={(e) => set('units', e.target.value)} /></label>
+            )}
+            <label className="col-4"><span>Vesting entity / LLC</span>
+              <LlcPicker value={f.entityName} staff borrowerId={app.borrower_id}
+                placeholder="Which LLC is this property purchased under?"
+                onPick={({ id, name }) => setF((s) => ({ ...s, entityName: name, llcId: id || '' }))} />
+            </label>
             {/* Occupancy is intentionally NOT shown (owner-directed) — kept in the
                 data model and round-tripped unchanged, never surfaced in the UI. */}
           </div>

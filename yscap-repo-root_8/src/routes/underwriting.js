@@ -266,7 +266,7 @@ router.post('/:appId/documents/:documentId/analyze', async (req, res, next) => {
     });
 
     // Materialize the clear-to-close gate condition when analysis produced a blocking fatal, so
-    // there IS a condition for signOffGate (+ the db/160 trigger) to hold until it's resolved —
+    // there IS a condition for signOffGate (+ the db/164 trigger) to hold until it's resolved —
     // mirrors how the appraisal desk ensures appraisal_review_cleared on import. Best-effort.
     if ((result.findings || []).some((f) => f.severity === 'fatal' && f.blocksCtc)) {
       await ensureUnderwritingCondition(app.id).catch(() => {});

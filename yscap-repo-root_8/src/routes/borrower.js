@@ -857,8 +857,10 @@ router.get('/applications/:id/appraisal', async (req, res) => {
     // Also drop the `fields` jsonb catch-all: it carries appraiser.lender/appraiser.amc
     // UN-scrubbed (buildFieldsJson), which would defeat the column drop below. The borrower
     // UI never reads it, so dropping it entirely is the safe, clean fix.
+    // owner_of_record + lender_address are STAFF-ONLY (db/158) — drop them like lender_name/amc_name
+    // so they never reach the borrower JSON, even though the UI doesn't render them.
     const { imported_by, source_xml_document_id, pdf_document_id, fields,
-      lender_name, amc_name, ...rest } = appr; // eslint-disable-line no-unused-vars
+      lender_name, amc_name, owner_of_record, lender_address, ...rest } = appr; // eslint-disable-line no-unused-vars
     return rest;
   })();
   const bSummary = {
@@ -2796,32 +2798,34 @@ router.post('/drafts/:id/submit', async (req, res) => {
   // A typed-but-never-picked entity name still links a real profile LLC.
   if (!b.llcId && b.entityName) { try { b.llcId = await resolveEntityByName(me(req), b.entityName); } catch (_) { /* best-effort */ } }
 
-  // resolve officer (by email, else by name) -> null means Lead Capture
+  // resolve officer -> null means Lead Capture
   let officerId = null, officerRow = null;
-  if (b.loanOfficerEmail) {
+  // LO branding LOCK (owner-directed 2026-07-20): if the borrower already has an
+  // OWNING officer (loan officer of record — a prior file's officer, or the
+  // officer whose invite link they signed up through, established + backfilled in
+  // db/105), the file is LOCKED to that officer. A client-supplied officer — even
+  // a crafted or stale-draft value — can NEVER override it. This is the
+  // authoritative half of the borrower-side "can't change loan officer" rule (the
+  // Apply UI also renders the picker read-only). Populating officerRow here also
+  // routes the new-application email to the owning officer (the notify branch
+  // keys off officerRow) and keeps the denormalized name consistent.
+  const own = await db.query(`SELECT primary_officer_id FROM borrowers WHERE id=$1`, [me(req)]);
+  const ownedOid = own.rows[0] && own.rows[0].primary_officer_id;
+  if (ownedOid) {
+    const o = await db.query(`SELECT id,email,full_name FROM staff_users WHERE id=$1 AND is_active=true`, [ownedOid]);
+    if (o.rows[0]) { officerRow = o.rows[0]; officerId = o.rows[0].id; b.loanOfficerName = o.rows[0].full_name; }
+  }
+  // No owning officer yet → honor the borrower's requested officer (by email,
+  // else by name); still null → Lead Capture.
+  if (!officerId && b.loanOfficerEmail) {
     const o = await db.query(`SELECT id,email,full_name FROM staff_users WHERE lower(email)=lower($1) AND is_active=true`, [b.loanOfficerEmail]);
     officerRow = o.rows[0] || null;
   }
-  if (!officerRow && b.loanOfficerName) {
+  if (!officerId && !officerRow && b.loanOfficerName) {
     const o = await db.query(`SELECT id,email,full_name FROM staff_users WHERE lower(full_name)=lower($1) AND is_active=true`, [b.loanOfficerName]);
     officerRow = o.rows[0] || null;
   }
-  if (officerRow) officerId = officerRow.id;
-  // #98 LO stickiness: when the application didn't name a matching officer,
-  // inherit the borrower's OWNING officer (loan officer of record) so a returning
-  // borrower's new file stays tied to their LO instead of silently falling to
-  // Lead Capture. The owning officer is established + backfilled in db/105.
-  // Populate officerRow too so the new-application email reaches the inherited
-  // officer (the notify branch below keys off officerRow), and set the
-  // denormalized name so the stored file is consistent.
-  if (!officerId) {
-    const own = await db.query(`SELECT primary_officer_id FROM borrowers WHERE id=$1`, [me(req)]);
-    const oid = own.rows[0] && own.rows[0].primary_officer_id;
-    if (oid) {
-      const o = await db.query(`SELECT id,email,full_name FROM staff_users WHERE id=$1 AND is_active=true`, [oid]);
-      if (o.rows[0]) { officerRow = o.rows[0]; officerId = o.rows[0].id; b.loanOfficerName = o.rows[0].full_name; }
-    }
-  }
+  if (!officerId && officerRow) officerId = officerRow.id;
 
   // Assignment invariant (mirrors the staff create via the shared helper, #96):
   // hard-null underlying/fee off an assignment and store purchase = underlying +

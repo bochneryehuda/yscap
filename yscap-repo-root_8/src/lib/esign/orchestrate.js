@@ -51,7 +51,7 @@ const PACKAGES = {
     docs: [
       { kind: 'term_sheet',         prefix: 'ts',  signedKind: 'term_sheet_signed',    condition: 'rtl_cond_signedts',  name: 'Term Sheet', freshnessCheck: true },
       { kind: 'application_export', prefix: 'app', signedKind: 'application_signed',    condition: 'rtl_cond_signed_app', name: 'Loan Application' },
-      { kind: 'bp_disclosure',      prefix: 'bpd', signedKind: 'bp_disclosure_signed',  condition: 'rtl_cond_disclosures', name: 'Business-Purpose Disclosure', generate: true },
+      { kind: 'bp_disclosure',      prefix: 'bpd', signedKind: 'bp_disclosure_signed',  condition: 'rtl_cond_signed_app', name: 'Business-Purpose Disclosure', generate: true },
     ],
   },
   heter_iska: {
@@ -268,13 +268,27 @@ function tabsFor(role, spec, documentIdByKind) {
  * call while a row is in flight returns the SAME row (the partial unique index is
  * the backstop). Returns { row, created }.
  */
-async function createOrClaimEnvelope(db, app, purpose, spec, actorId) {
+async function createOrClaimEnvelope(db, app, purpose, spec, actorId, opts = {}) {
   const inflightSql =
     `SELECT * FROM esign_envelopes
       WHERE application_id = $1 AND purpose = $2 AND status IN ('not_sent','sent','delivered')
       ORDER BY created_at DESC LIMIT 1`;
   const existing = await db.query(inflightSql, [app.id, purpose]);
   if (existing.rows.length) return { row: existing.rows[0], created: false };
+
+  // No in-flight envelope. If a PRIOR envelope for this (file, purpose) exists in a
+  // TERMINAL state (completed / declined / voided / error), a PLAIN send must NOT
+  // silently mint a duplicate — that was the "click Send again and again → a pile of
+  // envelopes" bug (a dead-lettered send isn't in-flight, so every re-click minted a
+  // fresh row). Return the terminal row so the caller can steer the user to the
+  // explicit Re-issue action. A deliberate re-issue (opts.reissue) DOES mint a fresh
+  // envelope (new product_version → new idempotency key).
+  if (!opts.reissue) {
+    const prior = await db.query(
+      `SELECT * FROM esign_envelopes WHERE application_id = $1 AND purpose = $2
+        ORDER BY created_at DESC LIMIT 1`, [app.id, purpose]);
+    if (prior.rows.length) return { row: prior.rows[0], created: false, terminal: true };
+  }
 
   // product_version = a per-issue sequence (count of prior envelopes for this
   // app+purpose). It feeds the deterministic idempotency key so a legitimate
@@ -503,7 +517,11 @@ async function sendPackage(applicationId, purpose, actor, opts = {}) {
   }
 
   const app = await loadApplication(db, applicationId);
-  const { row } = await createOrClaimEnvelope(db, app, purpose, spec, actor && actor.id);
+  const { row, terminal } = await createOrClaimEnvelope(db, app, purpose, spec, actor && actor.id, { reissue: !!opts.reissue });
+  // A plain send that found only a TERMINAL prior envelope did NOT mint a new one —
+  // report that (never a false "Sent"), so the UI tells staff to use Re-issue rather
+  // than piling up duplicate envelopes.
+  if (terminal) return { ok: false, terminal: true, envelopeRowId: row.id, latestStatus: row.status };
 
   const result = await send.sendClaimedEnvelope(row.id, {
     db, docusign,

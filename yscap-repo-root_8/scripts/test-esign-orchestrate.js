@@ -229,6 +229,30 @@ function fakeStorage() {
     const cert = (await pool.query(`SELECT count(*)::int n FROM documents WHERE application_id=$1 AND doc_kind='esign_certificate'`, [app])).rows[0].n;
     eq(cert, 1, 'certificate of completion stored');
 
+    // The read model surfaces the signed PDFs + the certificate for download links
+    // on BOTH the cockpit and the per-file view (attachSignedArtifacts).
+    const tracking = require(R + '/src/lib/esign/tracking');
+    const fe = await tracking.fileEsign(pool, app);
+    const feEnv = fe.envelopes.find((x) => String(x.id) === String(env.id));
+    ok(feEnv && feEnv.documents && feEnv.documents.length === 3, 'read model attaches the 3 signed PDFs to the envelope');
+    ok(feEnv && feEnv.certificate && feEnv.certificate.documentId, 'read model attaches the certificate for download');
+
+    // Borrower access: the 3 signed copies carry borrower_id (so they appear in the
+    // borrower's in-portal document library); the certificate stays staff-only (null).
+    const bwSigned = (await pool.query(
+      `SELECT count(*)::int n FROM documents WHERE application_id=$1 AND doc_kind LIKE '%_signed' AND borrower_id IS NOT NULL`, [app])).rows[0].n;
+    eq(bwSigned, 3, 'signed copies carry borrower_id (visible in the borrower library)');
+    const certBw = (await pool.query(
+      `SELECT borrower_id FROM documents WHERE application_id=$1 AND doc_kind='esign_certificate'`, [app])).rows[0];
+    ok(certBw && certBw.borrower_id === null, 'certificate stays staff-only (no borrower_id)');
+    // Condition merge: the signed disclosure files into the combined application condition.
+    const discCond = (await pool.query(
+      `SELECT t.code FROM esign_envelope_docs ed
+         JOIN checklist_items ci ON ci.id = ed.checklist_item_id
+         JOIN checklist_templates t ON t.id = ci.template_id
+        WHERE ed.envelope_row_id=$1 AND ed.doc_kind='bp_disclosure_signed'`, [env.id])).rows[0];
+    eq(discCond && discCond.code, 'rtl_cond_signed_app', 'signed disclosure files into the combined application condition (merge)');
+
     // ---- idempotent re-drain: a duplicate completion event is a no-op --------
     await pool.query(`INSERT INTO docusign_event_inbox (body_sha256,envelope_id,event_type) VALUES ('sha-2',$1,'envelope-completed')`, [env.envelope_id]);
     await webhook.drainInbox({ db: pool, docusign, storage });
@@ -237,9 +261,19 @@ function fakeStorage() {
     const certAfter = (await pool.query(`SELECT count(*)::int n FROM documents WHERE application_id=$1 AND doc_kind='esign_certificate'`, [app])).rows[0].n;
     eq(certAfter, 1, 'no duplicate certificate on re-drain');
 
-    // ---- re-issue after completion gets a NEW row + DISTINCT version (M2) -----
-    const reissue = await orchestrate.sendPackage(app, 'term_sheet_package', { id: null }, { db: pool, docusign, storage });
-    ok(reissue.envelopeRowId !== env.id, 're-issue after completion creates a NEW envelope row');
+    // ---- a PLAIN re-send after completion is a NO-OP (no duplicate envelope) --
+    // Fixes the "click Send again and again → a pile of envelopes" bug: a plain send
+    // never mints a duplicate for a terminal (completed/declined/voided/error) package;
+    // it reports terminal so the UI steers to an explicit Re-issue instead of stacking.
+    const plainAfterDone = await orchestrate.sendPackage(app, 'term_sheet_package', { id: null }, { db: pool, docusign, storage });
+    ok(plainAfterDone.terminal === true && plainAfterDone.ok === false, 'plain re-send after completion is a no-op (terminal, not sent)');
+    eq(plainAfterDone.envelopeRowId, env.id, 'plain re-send returns the completed envelope, mints nothing');
+    const afterPlain = (await pool.query(`SELECT count(*)::int n FROM esign_envelopes WHERE application_id=$1 AND purpose='term_sheet_package'`, [app])).rows[0].n;
+    eq(afterPlain, 1, 'plain re-send did NOT create a duplicate envelope row');
+
+    // ---- an EXPLICIT re-issue after completion gets a NEW row + DISTINCT version (M2) -----
+    const reissue = await orchestrate.sendPackage(app, 'term_sheet_package', { id: null }, { db: pool, docusign, storage, reissue: true });
+    ok(reissue.envelopeRowId !== env.id, 'explicit re-issue after completion creates a NEW envelope row');
     const versions = (await pool.query(
       `SELECT product_version FROM esign_envelopes WHERE application_id=$1 AND purpose='term_sheet_package' ORDER BY created_at`, [app])).rows;
     eq(versions.length, 2, 'two envelope rows over the file life');

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api } from '../lib/api.js';
+import { api, saveBlob } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import {
   PHASE, PURPOSE, ROLE, TERMINAL, timeAgo, absTime as abs, recipientSteps,
@@ -22,6 +22,7 @@ import {
 // Filter tabs: which phases each shows. "attention" is the human-action bucket.
 const TABS = [
   { key: 'all',       label: 'All' },
+  { key: 'outstanding', label: 'Outstanding' },   // everything still in flight (not completed/declined/voided/error)
   { key: 'borrower',  label: 'Awaiting borrower', phases: ['awaiting_borrower'] },
   { key: 'admin',     label: 'Awaiting my signature', phases: ['awaiting_countersign'] },
   { key: 'completed', label: 'Completed', phases: ['completed'] },
@@ -85,6 +86,12 @@ function EnvelopeCard({ e, onReload, isAdmin }) {
     catch (err) { setActErr(err.message || 'Could not cancel the package.'); }
     finally { setBusy(false); }
   }
+  async function dl(documentId, fallbackName) {
+    setActErr('');
+    try { const { blob, filename } = await api.staffDownloadDoc(documentId); saveBlob(blob, filename || fallbackName); }
+    catch (err) { setActErr(err.message || 'Could not download the document.'); }
+  }
+  const docLabel = (kind) => String(kind || 'signed document').replace(/_signed$/, '').replace(/_/g, ' ');
   const ph = PHASE[e.phase] || { label: e.phase, cls: 'muted', dot: '#4B585C' };
   const who = [e.firstName, e.lastName].filter(Boolean).join(' ');
   const recips = (e.recipients || []).slice().sort(
@@ -135,6 +142,20 @@ function EnvelopeCard({ e, onReload, isAdmin }) {
           : recips.map((r) => <Recipient key={r.id || `${r.role}-${r.routingOrder}`} r={r} />)}
       </div>
 
+      {(e.documents && e.documents.length) || e.certificate ? (
+        <div className="row" style={{ gap: 6, margin: '10px 0 0', flexWrap: 'wrap', alignItems: 'baseline' }}>
+          <span className="muted small">Signed:</span>
+          {(e.documents || []).map((d) => (
+            <button key={d.documentId} className="btn ghost btn-sm" onClick={() => dl(d.documentId, d.filename)}
+              title={`Download the signed ${docLabel(d.docKind)}`}>↓ {docLabel(d.docKind)}</button>
+          ))}
+          {e.certificate ? (
+            <button className="btn ghost btn-sm" onClick={() => dl(e.certificate.documentId, e.certificate.filename)}
+              title="DocuSign Certificate of Completion — the legal audit trail (signers, times, IP)">↓ certificate</button>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="esign-foot muted small">
         <span>{sentSummary}</span>
         {e.completedAt ? <span> · Completed {timeAgo(e.completedAt)}</span> : null}
@@ -163,7 +184,16 @@ export default function EsignDashboard() {
   const [refreshedAt, setRefreshedAt] = useState(null);
   const [testBusy, setTestBusy] = useState(false);
   const [testMsg, setTestMsg] = useState('');
+  const [conn, setConn] = useState(null);   // DocuSign connection + mode (admin)
   const seq = useRef(0);
+
+  // Admin-only "are we live?" readout — fetched on mount + manual refresh (NOT on the
+  // 30s auto-tick, so it never hammers DocuSign). Best-effort: a failure just hides it.
+  const loadConn = useCallback(async () => {
+    if (!isAdmin) return;
+    try { setConn(await api.get('/api/staff/esign/connection')); } catch (_) { /* best-effort */ }
+  }, [isAdmin]);
+  useEffect(() => { loadConn(); }, [loadConn]);
 
   // Admin self-test: send a sample envelope to my own email to confirm DocuSign
   // renders our documents + the signing flow works, without a real loan file.
@@ -205,10 +235,13 @@ export default function EsignDashboard() {
   const counts = (data && data.counts) || {};
   const envelopes = (data && data.envelopes) || [];
   const sendHealth = (data && data.sendHealth) || null;
-  const attention = (e) => ['declined', 'voided', 'error'].includes(e.phase) || e.deadLetteredAt;
+  const attention = (e) => ['declined', 'error'].includes(e.phase) || e.deadLetteredAt;   // a deliberate void is resolved, not "needs attention"
+  const isOutstanding = (e) => !TERMINAL.includes(e.phase);   // still in flight: awaiting borrower / counter-sign
+  const outstandingCount = envelopes.filter(isOutstanding).length;
   const shown = envelopes.filter((e) => {
     const t = TABS.find((x) => x.key === tab);
     if (!t || t.key === 'all') return true;
+    if (t.key === 'outstanding') return isOutstanding(e);
     if (t.key === 'attention') return attention(e);
     return (t.phases || []).includes(e.phase);
   });
@@ -229,9 +262,35 @@ export default function EsignDashboard() {
             {testBusy ? 'Sending…' : 'Send myself a test'}
           </button>
         )}
-        <button className="btn ghost btn-sm" onClick={() => load()} title="Refresh now">Refresh</button>
+        <button className="btn ghost btn-sm" onClick={() => { load(); loadConn(); }} title="Refresh now">Refresh</button>
       </div>
       {testMsg && <div className="notice ok" style={{ marginBottom: 12 }}>{testMsg}</div>}
+
+      {/* Are we live? — the plain-English DocuSign mode readout (admins only). Tells the
+          owner exactly what still keeps real borrowers from being emailed. */}
+      {isAdmin && conn && (
+        <div className="notice" style={{ marginBottom: 12, borderLeft: `4px solid ${conn.liveToBorrowers ? 'var(--success, #2F7F86)' : 'var(--gold, #AE8746)'}` }}>
+          <strong>{conn.liveToBorrowers
+            ? '🟢 Live — real borrowers receive documents'
+            : '🟡 Test mode — real borrowers are NOT emailed yet'}</strong>
+          <ul className="muted small" style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+            <li>DocuSign account: <strong>{conn.reachable ? (conn.demo ? 'Practice (sandbox)' : 'Live') : (conn.configured ? 'not reachable — check the credentials' : 'not set up yet')}</strong>{conn.accountName ? ` — ${conn.accountName}` : ''}{conn.reachError ? ` (${conn.reachError})` : ''}</li>
+            <li>Sending switch: <strong>{conn.sendEnabled ? 'On' : 'Off'}</strong></li>
+            <li>Test mode: <strong>{conn.testMode ? 'On' : 'Off'}</strong>{conn.testMode && (conn.allowlist || []).length ? ` — only these emails receive documents: ${conn.allowlist.join(', ')}` : ''}</li>
+          </ul>
+          {!conn.liveToBorrowers && (
+            <div className="small" style={{ marginTop: 6 }}>
+              <strong>Still needed to go live:</strong> {[
+                !conn.configured && 'add the DocuSign credentials',
+                conn.configured && conn.reachable === false && 'fix the credentials so DocuSign connects',
+                conn.reachable && conn.demo && 'switch to the live DocuSign account (the DocuSign “Go-Live” promotion)',
+                !conn.sendEnabled && 'turn the sending switch on',
+                conn.testMode && 'turn test mode off',
+              ].filter(Boolean).join('; ') || 'checking…'}.
+            </div>
+          )}
+        </div>
+      )}
       {refreshedAt && (
         <p className="muted small" style={{ margin: '0 0 14px' }} aria-live="polite">
           <span className="esign-live" aria-hidden="true" /> Live — updated {timeAgo(refreshedAt.toISOString())}
@@ -259,6 +318,7 @@ export default function EsignDashboard() {
 
       <div className="esign-stats">
         <StatCard label="All packages" value={counts.total || 0} active={tab === 'all'} onClick={() => setTab('all')} />
+        <StatCard label="Outstanding" value={outstandingCount} tone="teal" active={tab === 'outstanding'} onClick={() => setTab('outstanding')} />
         <StatCard label="Awaiting borrower" value={counts.awaiting_borrower || 0} tone="teal" active={tab === 'borrower'} onClick={() => setTab('borrower')} />
         <StatCard label="Awaiting my signature" value={counts.awaitingCountersign || 0} tone="gold" active={tab === 'admin'} onClick={() => setTab('admin')} />
         <StatCard label="Completed" value={counts.completed || 0} tone="ok" active={tab === 'completed'} onClick={() => setTab('completed')} />

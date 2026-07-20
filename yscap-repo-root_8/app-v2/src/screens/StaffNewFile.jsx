@@ -3,7 +3,9 @@ import { useNavigate, Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
+import LlcPicker from '../components/LlcPicker.jsx';
 import { MoneyInput, PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
+import { unitsMode, unitsForType } from '../lib/enums.js';
 
 /* Staff-side file origination. An admin, loan officer, or operations user opens
    a mortgage file from their end — the borrower does NOT need to be signed up.
@@ -224,17 +226,22 @@ function MismoImport() {
 
 export default function StaffNewFile() {
   const nav = useNavigate();
-  const { role } = useAuth();
+  const { role, actor } = useAuth();
   const seesAll = ['admin', 'super_admin', 'underwriter'].includes(role);
+  // The staffer opening the file is put on it by default (owner-directed
+  // 2026-07-20) — no need to pick, never Lead Capture — when they hold an
+  // officer-eligible role (the roles the officer dropdown offers). A
+  // processor/underwriter opener isn't a valid LO, so their default stays blank.
+  const selfOfficerId = (['loan_officer', 'admin', 'super_admin'].includes(role) && actor && actor.id) ? actor.id : '';
   const [team, setTeam] = useState([]);
   const _d = readNewFileDraft();   // restore any in-progress draft (lazy, once, pre-persist)
   const [f, setF] = useState({
     firstName: '', lastName: '', email: '', phone: '',
-    program: '', loanType: '', propertyType: '', units: '',
+    program: '', loanType: '', propertyType: '', units: '', entityName: '', llcId: '',
     purchasePrice: '', asIsValue: '', arv: '', rehabBudget: '', rehabType: '', sqftPre: '', sqftPost: '',
     isAssignment: false, underlyingContractPrice: '',
     requestedExpFlips: '', requestedExpHolds: '', requestedExpGround: '', requestedExpReo: '',
-    loanOfficerId: '', processorId: '', inviteBorrower: true,
+    loanOfficerId: selfOfficerId, processorId: '', inviteBorrower: true,
     ...(_d && _d.f ? _d.f : {}),
   });
   const [addr, setAddr] = useState({ street: '', unit: '', city: '', state: '', zip: '', ...(_d && _d.addr ? _d.addr : {}) });
@@ -290,6 +297,11 @@ export default function StaffNewFile() {
   }, []);
 
   const set = (k, v) => setF(s => ({ ...s, [k]: v }));
+  // Property type drives the units control: single-unit types auto-fill 1 (and
+  // lock the field), "Multi 2–4" becomes a 2/3/4 dropdown, "Multi 5+" / "Mixed
+  // use" take a free number. Mirrors the borrower application so both sides
+  // behave identically (owner-reported: this wasn't happening on the staff side).
+  const setPropertyType = (v) => setF(s => ({ ...s, propertyType: v, units: unitsForType(v, s.units) }));
   // Borrower identity fields: a manual edit unlinks any picked borrower so the
   // name search re-enables and the file won't force-link the wrong record.
   const setBorrowerField = (k, v) => { if (borrowerId) setBorrowerId(null); setF(s => ({ ...s, [k]: v })); };
@@ -341,7 +353,13 @@ export default function StaffNewFile() {
         borrowerId: borrowerId || undefined,
         propertyAddress: buildAddress(),
         propertyType: f.propertyType || undefined,
-        units: f.units ? Number(f.units) : undefined,
+        // Single-unit types are always 1 even if a stale draft left units blank;
+        // otherwise use the entered/selected count (unitsForType returns '1'/'').
+        units: (() => { const u = unitsForType(f.propertyType, f.units); return u ? Number(u) : undefined; })(),
+        // Vesting entity: a picked LLC id, or a typed name the backend resolves /
+        // creates on the borrower after the file is made.
+        llcId: f.llcId || undefined,
+        entityName: (!f.llcId && f.entityName.trim()) ? f.entityName.trim() : undefined,
         program: f.program || undefined,
         loanType: f.loanType || undefined,
         purchasePrice: numOrNull(f.purchasePrice),
@@ -494,12 +512,35 @@ export default function StaffNewFile() {
           </div>
           <div className="grid cols-2">
             <div className="field"><label>Property type</label>
-              <select className="input" value={f.propertyType} onChange={e => set('propertyType', e.target.value)}>
+              <select className="input" value={f.propertyType} onChange={e => setPropertyType(e.target.value)}>
                 <option value="">Select…</option>{PROP_TYPES.map(p => <option key={p}>{p}</option>)}
               </select></div>
-            <div className="field"><label>Units</label>
-              <input className="input" type="number" min="1" value={f.units} onChange={e => set('units', e.target.value)} /></div>
+            {unitsMode(f.propertyType) === 'select24' ? (
+              <div className="field"><label>Units</label>
+                <select className="input" value={f.units || ''} onChange={e => set('units', e.target.value)}>
+                  <option value="">Select…</option><option>2</option><option>3</option><option>4</option>
+                </select></div>
+            ) : unitsMode(f.propertyType) === 'multi' ? (
+              <div className="field"><label>Units</label>
+                <input className="input" type="number" min="5" value={f.units || ''} onChange={e => set('units', e.target.value)} placeholder="5 or more" /></div>
+            ) : f.propertyType ? (
+              // Single-unit type (SFR / Condo / Townhouse): 1 unit, locked.
+              <div className="field"><label>Units</label>
+                <input className="input" value="1 unit" disabled readOnly /></div>
+            ) : (
+              // No type picked yet — plain entry as a fallback.
+              <div className="field"><label>Units</label>
+                <input className="input" type="number" min="1" value={f.units} onChange={e => set('units', e.target.value)} /></div>
+            )}
           </div>
+          <div className="field"><label>Vesting entity / LLC (if any)</label>
+            <LlcPicker value={f.entityName} staff borrowerId={borrowerId}
+              placeholder={borrowerId ? 'Which LLC is this property purchased under?' : 'Type the LLC name (created once the borrower is saved)'}
+              onPick={({ id, name }) => setF(s => ({ ...s, entityName: name, llcId: id || '' }))} />
+            <p className="muted small" style={{ marginTop: 4 }}>
+              {borrowerId ? 'Pick one of this borrower’s LLCs or create a new one — we’ll ask for its EIN letter, formation docs, and operating agreement.'
+                : 'If the property vests in an LLC, type its name — it’s created on the borrower once the file is saved.'}
+            </p></div>
           </div>
         </div>
 
