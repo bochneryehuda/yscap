@@ -162,7 +162,7 @@ router.post('/findings/:findingId/dispute', async (req, res) => {
 router.get('/draws/:appId/report', async (req, res) => {
   const appId = req.params.appId;
   if (!(await ownsApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
-  const drawId = /^\d+$/.test(String(req.query.drawId || '')) ? req.query.drawId : null;
+  const drawId = /^\d{1,18}$/.test(String(req.query.drawId || '')) ? req.query.drawId : null; // 1..18 digits stays in bigint range (a 19+-digit id would 22003 the ownership query as a 500, not a clean 404)
   if (drawId) {
     const own = await db.query(`SELECT 1 FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [drawId, appId]);
     if (!own.rowCount) return res.status(404).json({ error: 'That draw was not found on your file.' });

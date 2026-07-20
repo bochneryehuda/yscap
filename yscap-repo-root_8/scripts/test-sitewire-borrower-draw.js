@@ -78,11 +78,13 @@ function png() { const W = 6, H = 6; const ih = Buffer.alloc(13); ih.writeUInt32
   // ---- 3. closed-loop notification: the decide-route meta query + notifyAppBorrowers ----
   // (mirror the route: resolve the finding, build the borrower-safe per-line meta, notify)
   await db.query(`UPDATE draw_findings SET status='resolved', resolved_at=now() WHERE id=$1`, [fid]);
-  const decided = (await db.query(`SELECT name, dispute_status, approved_cents FROM draw_finding_lines WHERE finding_id=$1 AND dispute_status IN ('approved','rejected') ORDER BY id`, [fid])).rows;
+  const scrub = require('../src/lib/borrower-safe').scrubText;
+  const decided = (await db.query(`SELECT name, dispute_status, approved_cents, dispute_desired_cents FROM draw_finding_lines WHERE finding_id=$1 AND dispute_status IN ('approved','rejected') ORDER BY id`, [fid])).rows;
   ok('closed-loop query finds the decided line', decided.length === 1 && decided[0].dispute_status === 'approved');
   const usd = (c) => '$' + (Math.round(Number(c) || 0) / 100).toLocaleString('en-US');
-  const meta2 = decided.map((l) => ({ label: l.name, value: `Approved — now ${usd(l.approved_cents)}` }));
-  ok('borrower-safe outcome meta built', meta2[0].value === 'Approved — now $19,000' && !/Fidelis/.test(JSON.stringify(meta2)));
+  const meta2 = decided.map((l) => ({ label: scrub(l.name) || 'Line item',
+    value: l.dispute_status === 'approved' ? (l.dispute_desired_cents != null ? `Approved — now ${usd(l.approved_cents)}` : 'Approved on review') : `Reviewed — kept at ${usd(l.approved_cents)}` }));
+  ok('borrower-safe outcome meta built (desired set → "now $X")', meta2[0].value === 'Approved — now $19,000' && !/Fidelis/.test(JSON.stringify(meta2)));
   const before = Number((await db.query(`SELECT count(*)::int c FROM notifications WHERE borrower_id=$1 AND type='draw_dispute_resolved'`, [bor])).rows[0].c);
   await notify.notifyAppBorrowers(app, { type: 'draw_dispute_resolved', title: 'We reviewed your draw dispute', badge: { text: 'Reviewed', tone: 'positive' }, body: 'We reviewed the item(s) you flagged.', meta: meta2, applicationId: app, link: `/app/${app}` });
   const after = Number((await db.query(`SELECT count(*)::int c FROM notifications WHERE borrower_id=$1 AND type='draw_dispute_resolved'`, [bor])).rows[0].c);

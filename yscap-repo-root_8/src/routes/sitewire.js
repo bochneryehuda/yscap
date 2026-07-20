@@ -1314,13 +1314,18 @@ router.post('/findings/:findingId/lines/:lineId/decide', requirePermission('mana
     // they can already see; no fee/net/partner). This closes the dispute loop (previously staff decided
     // silently and the borrower was never told).
     try {
+      const scrub = require('../lib/borrower-safe').scrubText;
       const decided = (await db.query(
-        `SELECT name, dispute_status, approved_cents FROM draw_finding_lines
+        `SELECT name, dispute_status, approved_cents, dispute_desired_cents FROM draw_finding_lines
           WHERE finding_id=$1 AND dispute_status IN ('approved','rejected') ORDER BY id`, [findingId])).rows;
       const usd = (c) => '$' + (Math.round(Number(c) || 0) / 100).toLocaleString('en-US');
       const approvedN = decided.filter((l) => l.dispute_status === 'approved').length;
-      const meta = decided.map((l) => ({ label: l.name || 'Line item',
-        value: l.dispute_status === 'approved' ? `Approved — now ${usd(l.approved_cents)}` : `Reviewed — kept at ${usd(l.approved_cents)}` }));
+      // scrub the line NAME (defense-in-depth for the frozen never-expose-a-partner rule — the meta label
+      // isn't scrubbed by the notify chokepoint) and only say "now $X" when the amount actually changed.
+      const meta = decided.map((l) => ({ label: scrub(l.name) || 'Line item',
+        value: l.dispute_status === 'approved'
+          ? (l.dispute_desired_cents != null ? `Approved — now ${usd(l.approved_cents)}` : 'Approved on review')
+          : `Reviewed — kept at ${usd(l.approved_cents)}` }));
       await notify.notifyAppBorrowers(f.application_id, {
         type: 'draw_dispute_resolved', title: 'We reviewed your draw dispute',
         badge: { text: 'Reviewed', tone: approvedN ? 'positive' : 'neutral' },
