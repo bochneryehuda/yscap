@@ -393,6 +393,12 @@ export const api = {
     try { const { blob, filename } = await download(`/api/sitewire/files/${appId}/report${mode === 'borrower' ? '?mode=borrower' : ''}`); openBlob(blob, filename, win); }
     catch (e) { try { if (win && !win.closed) win.close(); } catch { /* ignore */ } throw e; }
   },
+  // Borrower's OWN branded inspection report (always borrower-safe; server enforces own-file). drawId
+  // optional → that draw; omitted → whole-project. Opens in a tab (win pre-opened in the click handler).
+  borrowerDrawReport: async (appId, drawId, win) => {
+    try { const { blob, filename } = await download(`/api/borrower/draws/${appId}/report${drawId ? `?drawId=${drawId}` : ''}`); openBlob(blob, filename, win); }
+    catch (e) { try { if (win && !win.closed) win.close(); } catch { /* ignore */ } throw e; }
+  },
   staffTprPreview:  (appId) => req('GET', `/api/staff/applications/${appId}/export/tpr/preview`),
   staffTprExport:   (appId) => download(`/api/staff/applications/${appId}/export/tpr`),
   // MISMO 3.4 — the mortgage industry's shared file format. Export downloads the

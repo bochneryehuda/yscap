@@ -99,12 +99,12 @@ export default function BorrowerDraws({ appId }) {
         </div>
       )}
 
-      {findings.map((f) => <FindingCard key={f.id} finding={f} onChanged={load} />)}
+      {findings.map((f) => <FindingCard key={f.id} finding={f} appId={appId} onChanged={load} />)}
     </div>
   );
 }
 
-function FindingCard({ finding, onChanged }) {
+function FindingCard({ finding, appId, onChanged }) {
   const [mode, setMode] = useState(null); // null | 'dispute'
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -173,14 +173,20 @@ function FindingCard({ finding, onChanged }) {
       </div>
 
       {err && <div className="small" style={{ color: 'var(--danger)', marginTop: 8, fontWeight: 600 }}>{err}</div>}
-      {canAct && (
-        <div className="row" style={{ gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
-          {mode !== 'dispute' && <button className="btn btn-sm primary" disabled={busy} onClick={accept}>Accept results</button>}
-          {mode !== 'dispute' && <button className="btn btn-sm ghost" onClick={() => setMode('dispute')}>Dispute an item</button>}
-          {mode === 'dispute' && <button className="btn btn-sm primary" disabled={busy} onClick={submitDispute}>Submit dispute</button>}
-          {mode === 'dispute' && <button className="btn btn-sm ghost" onClick={() => { setMode(null); setErr(''); }}>Cancel</button>}
-        </div>
-      )}
+      <div className="row" style={{ gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+        {canAct && mode !== 'dispute' && <button className="btn btn-sm primary" disabled={busy} onClick={accept}>Accept results</button>}
+        {canAct && mode !== 'dispute' && <button className="btn btn-sm ghost" onClick={() => setMode('dispute')}>Dispute an item</button>}
+        {mode === 'dispute' && <button className="btn btn-sm primary" disabled={busy} onClick={submitDispute}>Submit dispute</button>}
+        {mode === 'dispute' && <button className="btn btn-sm ghost" onClick={() => { setMode(null); setErr(''); }}>Cancel</button>}
+        {/* the borrower's OWN branded inspection report (PDF) — always available once findings exist */}
+        {mode !== 'dispute' && (
+          <button className="btn btn-sm ghost" disabled={busy}
+            title="A PILOT-branded PDF of your draw inspection — the schedule of values, what was approved, the inspector’s notes and photos."
+            onClick={() => { setErr(''); const w = window.open('', '_blank'); api.borrowerDrawReport(appId, finding.sitewire_draw_id, w).catch((e) => setErr(e?.data?.error || e.message || 'Could not open your report — please try again.')); }}>
+            Download report (PDF)
+          </button>
+        )}
+      </div>
     </div>
   );
 }
