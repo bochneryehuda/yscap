@@ -230,6 +230,39 @@ function diffBudget(desiredItems, links) {
 }
 
 /**
+ * Read-before-write adoption (G-ADOPT). A desired line with no crosswalk row is normally a CREATE — but
+ * if a job item of the SAME name already exists on the LIVE Sitewire budget, creating it makes a DUPLICATE,
+ * which then makes bind-by-name ambiguous ("… appears twice — cannot bind id"). Such a pre-existing line
+ * comes from either a Sitewire-seeded default (e.g. the standard "Exterior of House Photos" media anchor)
+ * or a line stranded by a partially-persisted / in-call-retried earlier push. So instead of blindly
+ * creating: ADOPT the existing line by its unique name; only a genuinely-absent name is created; a name
+ * that already appears MORE THAN ONCE live is ambiguous (park, never create a third).
+ *
+ * Pure — no I/O. Inputs:
+ *   creates       : the diffBudget().creates array (desired cells with no crosswalk id yet)
+ *   liveJobItems  : the LIVE budget's job_items ([{id,name,budgeted_cents}]) — omit/empty → every create
+ *                   stays a create (back-compat with a fresh, empty budget).
+ * Returns { create:[...unchanged desired cells...], adopt:[{...cell, sitewire_job_item_id, live_budgeted_cents}],
+ *           ambiguous:[name,...] }.
+ */
+function resolveCreatesAgainstLive(creates, liveJobItems) {
+  const byName = new Map();
+  for (const ji of (liveJobItems || [])) {
+    if (!ji || ji.name == null) continue;
+    if (!byName.has(ji.name)) byName.set(ji.name, ji);
+    else byName.set(ji.name, null); // duplicate live name -> ambiguous
+  }
+  const create = [], adopt = [], ambiguous = [];
+  for (const c of (creates || [])) {
+    if (!byName.size || !byName.has(c.name)) { create.push(c); continue; }
+    const ji = byName.get(c.name);
+    if (ji === null) { ambiguous.push(c.name); continue; }
+    adopt.push({ ...c, sitewire_job_item_id: ji.id, live_budgeted_cents: ji.budgeted_cents });
+  }
+  return { create, adopt, ambiguous };
+}
+
+/**
  * Reverse reconciliation (research doc §4.5): map pulled draw requests back through
  * the crosswalk to our SOW lines and compute drawn / remaining per line and per unit.
  *   requests: [{ job_item_id, requested_cents, approved_cents }]
@@ -310,5 +343,5 @@ module.exports = {
   CATS, SENTINEL, CAT_LABELS, DUP_TAX_NAMES, catLabelOf, uniquifyNames,
   unitCount, isMulti, lineName, sowCells,
   subtotalCents, contingencyCents, gcCents, mediaAnchors,
-  explodeSow, reconcileToBudget, diffBudget, reverseReconcile,
+  explodeSow, reconcileToBudget, diffBudget, resolveCreatesAgainstLive, reverseReconcile,
 };

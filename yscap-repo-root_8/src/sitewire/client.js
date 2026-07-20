@@ -85,7 +85,7 @@ function guardNoUnsafeWrite(path, body) {
 }
 const DRAW_TRANSITIONS = new Set(['approve', 'amend', 'reopen']); // reject is capital-partner-only; never ours
 
-async function call(path, { method = 'GET', body } = {}) {
+async function call(path, { method = 'GET', body, noRetry = false } = {}) {
   const isWrite = method !== 'GET';
   if (isWrite && body !== undefined) guardNoUnsafeWrite(path, body);
   // DRY-RUN: log the exact write and send nothing (reads still go through).
@@ -102,8 +102,13 @@ async function call(path, { method = 'GET', body } = {}) {
   // A non-idempotent POST must NOT be retried in-call: the first attempt may have COMMITTED
   // server-side before the response/connection was lost, so a retry would create a DUPLICATE
   // (Sitewire doesn't dedupe on loan_number). Fail fast + retryable; the durable queue re-drives
-  // through the G-DUPEPROP-guarded birth path. PATCH/GET stay retryable (idempotent).
-  const retryInCall = method !== 'POST';
+  // through the G-DUPEPROP-guarded birth path. PATCH/GET stay retryable (idempotent) — EXCEPT a
+  // budget PATCH that carries id-LESS job-item creates (noRetry): the verb is idempotent but the
+  // payload is NOT — a create sub-item has no id, so a lost-response in-call retry re-sends it and
+  // Sitewire makes a DUPLICATE line (the "Exterior of House Photos appears twice" class). Those
+  // re-drive through the durable queue, which then hits the read-before-write adopt path instead of
+  // blindly re-creating in-call.
+  const retryInCall = method !== 'POST' && !noRetry;
   const payload = body ? JSON.stringify(body) : undefined;
   let lastErr;
   for (let attempt = 1; attempt <= MAX_TRIES; attempt++) {
@@ -123,6 +128,13 @@ async function call(path, { method = 'GET', body } = {}) {
       continue;
     }
     let data; try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
+    // 304 NOT MODIFIED is a SUCCESS, not a failure. We never send conditional-request headers
+    // (If-None-Match / If-Modified-Since), so Sitewire returns 304 only to say "already in this
+    // state — nothing to change": re-assigning the SAME borrower email on a re-push, or re-sending
+    // an unchanged field. Treating any non-2xx as an error made that no-op look like a real failure
+    // and PARK it (owner-reported: "could not assign borrower … (Sitewire 304)"). `res.ok` is false
+    // for 304, so this MUST come before the throw below. Chokepoint fix — every write path benefits.
+    if (res.status === 304) return (data && typeof data === 'object' && !Array.isArray(data)) ? { ...data, __unchanged: true } : { __unchanged: true };
     if (!res.ok) throw httpError(method, path, res.status, parseInt(res.headers.get('retry-after') || '0', 10) || undefined, data);
     return data;
   }
@@ -144,7 +156,14 @@ const listQuickNotifyStatuses = () => call('/api/v2/quick_notify_statuses');
 const createProperty = (property) => call('/api/v2/properties', { method: 'POST', body: { property } });
 const updateProperty = (id, property) => call(`/api/v2/properties/${id}`, { method: 'PATCH', body: { property } });
 const assignBorrower = (id, contactEmail) => call(`/api/v2/properties/${id}/borrower`, { method: 'PATCH', body: { borrower: { contact_email: contactEmail } } });
-const updateBudget = (id, budget) => call(`/api/v2/budgets/${id}`, { method: 'PATCH', body: { budget } });
+const updateBudget = (id, budget) => {
+  // A budget PATCH that carries any id-LESS create sub-item is NOT safe to retry in-call (a lost
+  // response would re-send the create and duplicate the line). Disable the in-call retry for those;
+  // the durable queue re-drives them through the read-before-write adopt path. A pure update/delete
+  // batch (every job_item has an id) stays idempotent and retryable.
+  const hasIdlessCreate = Array.isArray(budget && budget.job_items) && budget.job_items.some((j) => j && j.id == null && !j._destroy);
+  return call(`/api/v2/budgets/${id}`, { method: 'PATCH', body: { budget }, noRetry: hasIdlessCreate });
+};
 const updateRequest = (id, request) => call(`/api/v2/requests/${id}`, { method: 'PATCH', body: { request } });
 const updateDraw = (id, draw) => call(`/api/v2/draws/${id}`, { method: 'PATCH', body: { draw } });
 function drawTransition(id, action) {

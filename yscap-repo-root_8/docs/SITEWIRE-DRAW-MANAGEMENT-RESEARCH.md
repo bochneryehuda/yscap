@@ -65,7 +65,7 @@ protection (see §7 for the full catalog).
 | `borrower_entity_name` | W | `llcs.entity_name`/`llc_name` via `applications.llc_id` | — |
 | `total_units` | W | `applications.units` | **G-UNITS**: units vs SOW unit count mismatch → review |
 | `development_type` (`single_family_residential`/`multi_family_residential`/`commercial`/`other`) | W | map from `applications.property_type` (SFR→single_family, Multi 2-4/5+→multi_family, Mixed/other→other) | **G-ENUM**: unrecognized type → leave null + review, never guess |
-| `construction_type` (`rehabilitation_or_remodel`/`ground_up`) | W | map from `loan_type`/`rehab_type` (Ground-up→ground_up else rehab) | **G-ENUM** |
+| `construction_type` (`rehabilitation_or_remodel`/`ground_up`) | W | map from `rehab_type`/registered program (ground-up signal→`ground_up`, **else** the remodel default). NOT from `loan_type` — Purchase/Refinance is an acquisition method, not a construction type (owner-reported 2026-07-20: `"Purchase/" didn't map`). A push always carries a construction budget, so this is never "unknown" and never parks. | — (always resolved) |
 | `inspection_method` (`mobile`/`traditional`) | W | **inspection-rules engine** (per capital partner) | — |
 | `require_sitewire_inspector` | W | rules engine | — |
 | `require_capital_partner_approval` | W | rules engine (default false — 35/35 live are false) | — |
@@ -805,8 +805,18 @@ Research shows the leading real-world draw problems; each maps to a guard/flag w
   each draw to a specific job item; nothing is matched by loose text.
 
 ### 16.7 Known limitations (documented, never silent)
-- **Duplicate SOW base labels** produce colliding exploded names → each now PARKs its own
-  `bind_ambiguous` row (visible); a deeper fix (enforced name uniqueness pre-push) is roadmap.
+- **Duplicate SOW base labels** produce colliding exploded names → `uniquifyNames`/`explodeSow` make every
+  pushed job-item name unique pre-push (the roadmap item is DONE), and any residual collision still PARKs a
+  visible `bind_ambiguous` row.
+- **A line Sitewire already has (seeded default or a stranded/retried earlier push)** used to be CREATED a
+  second time — the "`Exterior of House Photos` appears twice — cannot bind id" class (owner-reported
+  2026-07-20). Fixed at the chokepoint by a **read-before-write ADOPT** (`mapper.resolveCreatesAgainstLive`
+  + a `getBudget` in `pushBudgetInner`): a desired line with no crosswalk row is bound to the existing
+  live line of the same unique name instead of duplicated; a name already DOUBLED live parks (never a
+  third). Belt-and-suspenders: a budget PATCH carrying id-less creates is no longer retried in-call (a lost
+  response can't manufacture a duplicate; it re-drives through the queue → the adopt path). Also: a Sitewire
+  **304 Not Modified** (e.g. re-assigning the same borrower email on a re-push) is now a successful no-op,
+  not a parked "could not assign borrower … (Sitewire 304)".
 - **Reallocation apply TOCTOU** — re-validated at apply time against the live rollup, but not in a
   single transaction with the SOW write; a concurrent approval in the same instant is a rare edge.
 - **Retainage / lien waivers / stored materials / interest reserve** — modeled in the research,

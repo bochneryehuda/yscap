@@ -1398,6 +1398,19 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
           }
         } catch (e) { if (e && e.status === 404) reassign = true; /* holder's task deleted — claim gone; other errors: conservative */ }
       }
+      // Respect an explicit HUMAN ownership decision from the sync review ("this deal owns the number" /
+      // "this file is the copy", src/lib/sync-file-review.js). Once a person deliberately assigned the
+      // number to a file, the automated older-task-wins adjudication must NEVER silently flip it back off
+      // that file. FAIL-SAFE: any error here leaves the computed decision untouched.
+      if (reassign) {
+        try {
+          const decided = await db.query(
+            `SELECT 1 FROM audit_log WHERE action='loan_number_owner_decided' AND entity_id=$1
+               AND lower(btrim(detail->>'number'))=lower(btrim($2)) LIMIT 1`,
+            [holder.id, cols.ys_loan_number]);
+          if (decided.rowCount) reassign = false;
+        } catch (_) { /* fail-safe: keep the computed decision */ }
+      }
       if (reassign) {
         // Re-check the number in the WHERE so a concurrent ingest that just
         // gave the holder a DIFFERENT number can't be clobbered (audit nit).

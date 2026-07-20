@@ -23,6 +23,16 @@ assert.strictEqual(T.developmentType('spaceship'), null, 'unknown dev type -> nu
 assert.strictEqual(T.constructionType('Ground up', ''), 'ground_up');
 assert.strictEqual(T.constructionType('Purchase', 'Heavy'), 'rehabilitation_or_remodel');
 assert.strictEqual(T.constructionType('', ''), null, 'unknown construction -> null');
+// loan_type alone (Purchase / Refinance) is an ACQUISITION method, NOT a construction signal — it must
+// NOT drive construction_type. A plain "Purchase" with a blank rehab_type is unknown to the pure fn
+// (the Sitewire push then supplies the remodel default) — it must never falsely map, nor read as a hard
+// "unmapped" park (owner-reported 2026-07-20: `construction_type "Purchase/" didn't map`).
+assert.strictEqual(T.constructionType('Purchase', ''), null, 'loan_type alone is not a construction signal');
+assert.strictEqual(T.constructionType('Refinance — Cash-Out', ''), null, 'refinance alone is not a construction signal');
+// the registered program is a valid signal (Ground-Up program, or a rehab program)…
+assert.strictEqual(T.constructionType('Purchase', '', 'Ground-Up'), 'ground_up', 'program says ground-up');
+assert.strictEqual(T.constructionType('Purchase', 'Cosmetic'), 'rehabilitation_or_remodel', 'cosmetic rehab');
+assert.strictEqual(T.constructionType('Purchase', 'Adding SF'), 'rehabilitation_or_remodel', 'adding square footage is a remodel');
 ok('enum mapping never guesses');
 
 // ---- guard: reject clearing/garbage writes ----
