@@ -76,6 +76,19 @@ function compact(obj) {
    experience, admin markups/fees/manual basis) so the server-side frozen
    engines recompute exactly what the studio displayed. Borrowers may only
    send the knobs a borrower owns; the deal basis stays the file's. */
+// A structural leverage/ARV override (LTV/LTC/ARV) makes the registration a
+// MANUAL PRODUCT (server: manual-program.js). Markup/points/fees/rate alone do
+// not. Mirrors the server's STRUCTURAL_OVERRIDE_KEYS so the studio can prompt for
+// the required liquidity months before it registers.
+const MANUAL_STRUCTURAL_KEYS = ['ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct'];
+export function overridesAreManual(ov) {
+  if (!ov) return false;
+  return MANUAL_STRUCTURAL_KEYS.some((k) => {
+    const v = ov[k];
+    return v != null && v !== '' && Number(v) !== 0 && !Number.isNaN(Number(v));
+  });
+}
+
 export function overridesFromSnapshot(snap, mode) {
   const f = snap.fields;
   const d = snap.d || {};
@@ -253,6 +266,11 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
+  // Manual Program: months of liquidity the registrant must state before a
+  // manual product (LTV/LTC/ARV override) can register. Prefilled from the current
+  // manual registration or the admin default; required only when the scenario is
+  // actually manual.
+  const [assetMonths, setAssetMonths] = useState('');
   const [adminKey, setAdminKey] = useState('');   // set after a correct admin-mode password (borrower)
   const [adminOpen, setAdminOpen] = useState(false); // is the admin zone VISIBLE right now
   const [savedStudio, setSavedStudio] = useState(undefined);   // undefined = still loading, null = none saved
@@ -314,7 +332,16 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
 
   useEffect(() => {
     let alive = true;
-    loadPricing().then((d) => { if (alive) setData(d); })
+    loadPricing().then((d) => {
+      if (!alive) return;
+      setData(d);
+      // Prefill the liquidity-months field: the current manual registration's
+      // value, else the pending escalation's, else the company default.
+      const pre = (d && d.current && d.current.asset_months)
+        || (d && d.manualEscalation && d.manualEscalation.asset_months)
+        || (d && d.manualDefaults && d.manualDefaults.assetMonths);
+      if (pre != null) setAssetMonths(String(pre));
+    })
       .catch((e) => alive && setErr(e.message || 'Could not load product registration'));
     if (stateUrl) api.get(stateUrl).then((d) => alive && setSavedStudio((d && d.state && d.state.v) ? d.state : null)).catch(() => alive && setSavedStudio(null));
     else setSavedStudio(null);
@@ -560,11 +587,22 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       // — the admin key rides along even when the zone is locked shut, so the
       // changes made in admin mode STAY in the registration and the exports.
       const overrides = overridesFromSnapshot(s, adminActive ? 'staff' : mode);
+      // Manual product (LTV/LTC/ARV override): the registrant MUST state how many
+      // months of liquidity this file requires before it can register — it then
+      // goes to the super-admin escalation box. Block here with a clear ask rather
+      // than let the server 422 opaquely.
+      const manual = overridesAreManual(overrides);
+      const months = Number(assetMonths);
+      if (manual && !(Number.isFinite(months) && months >= 1 && months <= 24)) {
+        // The finally block clears busy + releases the submit gate on return.
+        setErr('This is a manual product — you changed the LTV, LTC or ARV. Enter how many months of assets/liquidity this file must show (1–24) below, then register. It will go to a super-admin for approval.');
+        return;
+      }
       // econVersion: the file-basis fingerprint this studio session prefilled
       // from — the server refuses (409) if the file's economics moved since,
       // so a stale sheet can never write old numbers back onto the file (#148).
       const econVersion = data && data.econVersion;
-      if (isStaff) await api.staffRegisterProduct(appId, s.program, overrides, econVersion);
+      if (isStaff) await api.staffRegisterProduct(appId, s.program, overrides, econVersion, manual ? months : undefined);
       else await api.borrowerRegisterProduct(appId, s.program, overrides, adminKey || undefined, econVersion);
       let note = 'Product registered — the loan file now carries these terms, the liquidity requirement and the term sheet.';
       if (pdf && pdf.blob) {
@@ -593,6 +631,9 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         setOpenStudio(false);
         try { const dNew = await loadPricing(); setData(dNew); } catch (_) { /* keep old */ }
         setErr(e.data.error || 'This file changed since the studio was opened — reopen the studio to pick up the latest values, then register again.');
+      } else if (e.status === 422 && e.data && e.data.code === 'manual_asset_months_required') {
+        if (e.data.suggestedAssetMonths != null && !assetMonths) setAssetMonths(String(e.data.suggestedAssetMonths));
+        setErr(e.data.error || 'This is a manual product — enter how many months of assets/liquidity this file must show, then register.');
       } else {
         const detail = e.data && e.data.reasons ? e.data.reasons.map((r) => r.msg).join(' ') : (e.message || 'Could not register');
         setErr(detail);
@@ -617,12 +658,19 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
     : (d && !(d.totalLoan > 0)) ? "This scenario didn't size a loan yet — check the purchase price, ARV / as-is value and rehab budget in the studio."
     : '';
 
+  // Is the LIVE studio scenario a manual product (LTV/LTC/ARV override)? Only
+  // admin staff can enter those knobs, so only they ever see the manual UI.
+  let manualLive = false;
+  try { manualLive = staffAdmin && snap && overridesAreManual(overridesFromSnapshot(snap, 'staff')); } catch (_) { manualLive = false; }
+  const esc = data && data.manualEscalation;
+  const escPending = esc && esc.status === 'pending';
+
   return (
     <div className="panel" style={{ marginTop: 18 }}>
       <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
         <h3 style={{ margin: 0 }}>Product registration & term sheet</h3>
         <div className="row" style={{ gap: 10, alignItems: 'center' }}>
-          {cur && <span className="ts-badge ok">Registered · {cur.program === 'gold' ? 'Gold Standard' : 'Standard'} · {money(cur.total_loan)} @ {pct(cur.note_rate)}</span>}
+          {cur && <span className={`ts-badge ${escPending ? 'warn' : 'ok'}`}>Registered · {cur.program === 'gold' ? 'Gold Standard' : cur.program === 'manual' ? 'Manual Program' : 'Standard'} · {money(cur.total_loan)} @ {pct(cur.note_rate)}</span>}
           <button className="btn primary small" onClick={() => setOpenStudio(true)}
             title="Opens the full-screen Term Sheet Studio — everything you enter autosaves to the file; leaving resumes where you left off.">
             {cur ? 'Reprice / re-register' : 'Open Products & Pricing'}
@@ -639,6 +687,32 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
           {app.pricing_stale_reason
             ? app.pricing_stale_reason.replace(/^\[auto\]\s*/, '')
             : 'A pricing input changed since this product was registered — re-register so the structure and loan amount match the new numbers.'}
+        </div>
+      )}
+      {/* Manual product escalation state — a registered manual file waits for a
+          super-admin approval (owner-directed 2026-07-20). */}
+      {cur && cur.program === 'manual' && esc && (
+        <div className={`notice ${escPending ? 'warn' : esc.status === 'approved' ? 'ok' : 'err'}`} style={{ marginTop: 10 }}>
+          <strong>Manual Program.</strong>{' '}
+          {escPending
+            ? `This product is registered but waiting for super-admin approval in the Escalations box${esc.asset_months ? ` (${esc.asset_months} month${esc.asset_months === 1 ? '' : 's'} of liquidity required)` : ''}.`
+            : esc.status === 'approved'
+              ? `Approved by a super-admin${esc.asset_months ? ` · ${esc.asset_months} month${esc.asset_months === 1 ? '' : 's'} of liquidity required` : ''}.`
+              : `Declined by a super-admin${esc.decision_note ? ` — ${esc.decision_note}` : ''}. Re-register the product.`}
+        </div>
+      )}
+      {/* Manual product — the registrant must state months of liquidity before
+          registering. Only admin staff can reach the LTV/LTC/ARV knobs. */}
+      {manualLive && (
+        <div className="notice" style={{ marginTop: 10 }}>
+          <strong>Manual product (custom LTV / LTC / ARV).</strong> This registers as a Manual Program and goes to a
+          super-admin for approval. Enter how many months of assets/liquidity this file must show:
+          <div className="row" style={{ gap: 8, alignItems: 'center', marginTop: 8 }}>
+            <input type="number" min="1" max="24" step="1" value={assetMonths}
+              onChange={(e) => setAssetMonths(e.target.value)} style={{ width: 90 }}
+              aria-label="Months of assets/liquidity required" placeholder="months" />
+            <span className="muted small">months of liquidity (required, 1–24)</span>
+          </div>
         </div>
       )}
       {err && !openStudio && <div role="alert" className="notice err" style={{ marginTop: 10 }}>{err}</div>}
@@ -705,6 +779,18 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
                 ? <TermSheetStudio ref={studioRef} prefill={prefill} lockedIds={lockedIds}
                     showAdmin={staffAdmin} onState={onStudioState} />
                 : <p className="muted small">Loading your scenario…</p>}
+              {manualLive && (
+                <div className="notice" style={{ margin: '10px 0' }}>
+                  <strong>Manual product (custom LTV / LTC / ARV).</strong> This registers as a Manual Program and needs
+                  super-admin approval. Enter how many months of assets/liquidity this file must show before registering:
+                  <div className="row" style={{ gap: 8, alignItems: 'center', marginTop: 8 }}>
+                    <input type="number" min="1" max="24" step="1" value={assetMonths}
+                      onChange={(e) => setAssetMonths(e.target.value)} style={{ width: 90 }}
+                      aria-label="Months of assets/liquidity required" placeholder="months" />
+                    <span className="muted small">months of liquidity (required, 1–24)</span>
+                  </div>
+                </div>
+              )}
               <div className="toolsheet-actions">
                 <button className="btn primary" disabled={busy} onClick={register}>
                   {busy ? 'Registering…' : cur ? 'Re-register this product' : 'Register this product'}

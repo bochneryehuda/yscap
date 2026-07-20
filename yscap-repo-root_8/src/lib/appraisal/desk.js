@@ -142,6 +142,10 @@ function fireFloodCheck(appraisalId, appId) {
         [appraisalId, appId, `FEMA zone ${r.femaZone}`, row.flood_zone ? `Appraisal zone ${row.flood_zone}` : null,
          'Flood zone disagrees with the FEMA flood map', cmp.note]);
     }
+    // A newly-known flood zone (SFHA) makes the flood-certificate condition
+    // required on EVERY program — re-run the Condition Center so it attaches now
+    // rather than waiting for the next file edit (db/207 + engine.in_flood_zone).
+    try { await require('../conditions/engine').evaluateApplication(appId, { reason: 'appraisal_flood_check', notify: false }); } catch (_) {}
   })().catch(() => { /* best-effort advisory — never breaks the import */ });
 }
 

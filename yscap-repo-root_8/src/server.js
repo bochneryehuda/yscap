@@ -218,6 +218,10 @@ app.use('/api/underwriting', require('./routes/underwriting'));
   // The router also applies its own requireAuth + platform_setup guards.
   app.use('/api/admin/clickup', requireAuth, requireStaff, require('./routes/admin-clickup'));
   app.use('/api/admin/sharepoint', requireAuth, requireStaff, require('./routes/admin-sharepoint'));
+  // Manual Program admin config + the super-admin escalation box. Each route
+  // adds its own capability/role gate (manage_pricing for settings, super_admin
+  // to decide an escalation).
+  app.use('/api/admin/manual-programs', requireAuth, requireStaff, require('./routes/admin-manual-programs'));
   app.use('/api/admin', requireAuth, requireStaff, require('./routes/admin'));
 }
 // SSE stream (live chat/presence/receipts). Mounted OUTSIDE the authenticated

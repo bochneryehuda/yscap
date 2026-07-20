@@ -73,6 +73,23 @@ async function loadRuleContext(appId) {
   const arv = num(a.arv);
   const cost = (num(a.purchase_price) || 0) + (num(a.rehab_budget) || 0);
 
+  // Known flood zone (SFHA) from the current appraisal — the FEMA SFHA flag, the
+  // FEMA-mapped zone, or the appraiser's stated zone (an A*/V* zone is an SFHA).
+  // Drives the flood-certificate condition: always required when a flood zone is
+  // known, regardless of program. Best-effort — absent appraisal ⇒ not flagged.
+  let inFloodZone = false;
+  try {
+    const fz = await db.query(
+      `SELECT fema_flood_sfha, fema_flood_zone, flood_zone
+         FROM appraisals WHERE application_id=$1 AND superseded=false
+        ORDER BY imported_at DESC NULLS LAST, id DESC LIMIT 1`, [appId]);
+    const row = fz.rows[0];
+    if (row) {
+      const isA = (z) => /^(A|V)/.test(String(z || '').trim().toUpperCase());
+      inFloodZone = row.fema_flood_sfha === true || isA(row.fema_flood_zone) || isA(row.flood_zone);
+    }
+  } catch (_) { /* appraisals table mid-migration or none — treat as not flagged */ }
+
   // Admin-defined custom fields: per-application answers live in
   // application_field_values and join the context like any built-in field.
   const customValues = {};
@@ -105,6 +122,7 @@ async function loadRuleContext(appId) {
     property_type: registry.normPropertyType(a.property_type),
     units: num(a.units),
     occupancy: registry.normOccupancy(a.occupancy),
+    in_flood_zone: inFloodZone,
 
     purchase_price: num(a.purchase_price),
     as_is_value: num(a.as_is_value),

@@ -96,7 +96,7 @@ function borrowerTermsKey({ program, productLabel, noteRate, totalLoan, quote, i
   ]);
 }
 
-async function persistProductRegistration(client, { appId, program, inputs, quote, registeredByStaffId }) {
+async function persistProductRegistration(client, { appId, program, inputs, quote, registeredByStaffId, isManual, assetMonths }) {
   const s = quote.sizing || {};
   const total = num(s.totalLoan);
   // Snapshot the PREVIOUS current registration BEFORE we supersede it, so we can
@@ -112,8 +112,8 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
   await client.query(`UPDATE product_registrations SET is_current=false WHERE application_id=$1 AND is_current`, [appId]);
   const ins = await client.query(
     `INSERT INTO product_registrations
-       (application_id, program, product_label, status, note_rate, total_loan, target_ltc, inputs, quote, is_current, registered_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,$10) RETURNING id`,
+       (application_id, program, product_label, status, note_rate, total_loan, target_ltc, inputs, quote, is_current, registered_by, is_manual, asset_months)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,$10,$11,$12) RETURNING id`,
     [
       appId,
       program,
@@ -125,6 +125,8 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
       JSON.stringify(inputs),
       JSON.stringify(quote),
       registeredByStaffId || null,
+      !!isManual || program === 'manual',
+      (assetMonths != null && isFinite(Number(assetMonths))) ? Math.round(Number(assetMonths)) : null,
     ]);
   const registrationId = ins.rows[0].id;
   // Registration COMMITS the priced scenario onto the file. Beyond loan amount /
