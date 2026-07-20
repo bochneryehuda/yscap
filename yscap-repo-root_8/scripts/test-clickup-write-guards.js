@@ -194,6 +194,21 @@ eq('garbage still rejected', normalizeTypedDate('26'), null);
   eq('users: already assigned = no-op', feq(USERS, [{ id: 81537660 }], { add: [81537660] }), true);
   eq('users: new assignee NOT equivalent', feq(USERS, [{ id: 111 }], { add: [81537660] }), false);
   eq('unknown object shape always writes', feq('f1', 'old', { some: 'thing' }), false);
+  // EMAIL: case-only difference is the SAME address (owner-reported 2026-07-20,
+  // Shloimy Friedman) — must be equivalent so no repush/review fires.
+  const EMAIL = F.SHARED.borrowerEmail;
+  eq('email: case-only difference equivalent', feq(EMAIL, 'Shloimy6125@gmail.com', 'shloimy6125@gmail.com'), true);
+  eq('email: surrounding whitespace equivalent', feq(EMAIL, ' a@b.com ', 'a@b.com'), true);
+  eq('email: genuinely different NOT equivalent', feq(EMAIL, 'a@b.com', 'c@b.com'), false);
+  eq('email: normalization applies to officer/processor emails too',
+     feq(F.EXTRA.processorEmail, 'Lisa.Katz@YS.com', 'lisa.katz@ys.com'), true);
+  // SSN: PILOT pushes 9 bare digits; ClickUp holds dashed — same number, must be
+  // equivalent (both mask ✱✱✱-✱✱-4776). A different SSN still writes/reviews.
+  const SSN = F.SHARED.borrowerSSN;
+  eq('ssn: digits-vs-dashed same number equivalent', feq(SSN, '123-45-4776', '123454776'), true);
+  eq('ssn: dashed-vs-dashed same number equivalent', feq(SSN, '123-45-4776', '123-45-4776'), true);
+  eq('ssn: different SSN NOT equivalent', feq(SSN, '123-45-4776', '999999999'), false);
+  eq('ssn: short/garbled falls through (not equivalent to a full ssn)', feq(SSN, '4776', '123454776'), false);
 }
 
 // ---- 10. a DOB is a human decision and belongs to an adult -------------------
