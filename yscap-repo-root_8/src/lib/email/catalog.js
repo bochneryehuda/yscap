@@ -21,6 +21,23 @@ const provider = require('./index');          // active email provider (.sendMai
 const { render } = require('./template');
 const cfg = require('../../config');
 
+// Short file identifier for the SUBJECT of a file-scoped catalog email
+// ("YS-1042 · 123 Main St"), so an invite / draw / sign email names its file in
+// the inbox the same way notify-routed emails do. Concise: loan# + a short
+// property, whichever are present.
+function fileTag(loanNumber, propertyLabel) {
+  const street = propertyLabel ? String(propertyLabel).split(',')[0].trim() : '';
+  return [loanNumber, street].filter(Boolean).join(' · ') || loanNumber || street || '';
+}
+// NOTE: these catalog builders take only TRUSTED structured data — a property
+// address, a staff/borrower name, a loan number, or a controlled label — none of
+// which ever carries a note-buyer / capital-partner name, so no scrub is applied
+// here. (Running the plain scrub over an address/name would WRONGLY mangle a legit
+// collision like "12 Churchill Lane" → "…Gold Standard program Lane"; that's why
+// the notify chokepoint uses scrubTextExcept with an address protect-list, not a
+// blanket scrub.) If a builder ever gains a STAFF-TYPED free-text field, scrub
+// THAT field with a protect-list like notifyBorrower does — never blanket-scrub.
+
 /* Absolute portal URL for a hash-route path, e.g. link('/verify?token=abc') ->
    https://host/portal/#/verify?token=abc . The SPA lives under cfg.portalPath
    ('/portal') with a HashRouter, so the path MUST be included or the link opens
@@ -83,6 +100,8 @@ function welcome({ firstName, verifyUrl } = {}) {
       'Tap the button below to activate your account — that’s it. The link is valid for 7 days.',
     ],
     cta: verifyUrl ? { label: 'Activate my account', url: verifyUrl } : null,
+    badge: { text: 'Portal ready', tone: 'positive' },
+    replyable: true,
     note: 'If you did not create this account, disregard this message and no action will be taken.',
   });
 }
@@ -97,6 +116,8 @@ function verifyEmail({ firstName, verifyUrl } = {}) {
     intro: 'Please confirm the email address on file for your YS Capital Group portal account.',
     lines: ['Tap the button below to confirm your email — no code to enter. The link is valid for 7 days.'],
     cta: verifyUrl ? { label: 'Confirm email address', url: verifyUrl } : null,
+    badge: { text: 'Confirm email', tone: 'gold' },
+    replyable: true,
     note: 'If you did not request this, you can safely ignore it.',
   });
 }
@@ -187,6 +208,8 @@ function leadReceived({ firstName, toolLabel, officerName } = {}) {
         : 'A member of our loan team will review it and follow up with you shortly to walk through next steps.',
       'If you need anything in the meantime, just reply to this email or call us.',
     ],
+    badge: { text: 'Received', tone: 'positive' },
+    replyable: true,
     note: 'You are receiving this because you submitted a request on yscapgroup.com.',
   });
 }
@@ -210,6 +233,8 @@ function coBorrowerInvite({ firstName, primaryName, acceptUrl, hasAccount, offic
   return render({
     audience: 'borrower',
     title: 'You have been added to a loan application',
+    badge: { text: 'Portal invite', tone: 'teal' },
+    replyable: true,
     preheader: 'Set up portal access to follow the file with ' + (primaryName || 'your co-borrower') + '.',
     greeting: greet(firstName),
     intro: (primaryName || 'Your co-borrower') + ' has named you as a co-borrower on a YS Capital Group loan application.',
@@ -235,6 +260,9 @@ function borrowerInvite({ firstName, propertyLabel, loanNumber, inviter, acceptU
   return render({
     audience: 'borrower',
     title: 'Your loan file is ready in the portal',
+    subjectTag: fileTag(loanNumber, propertyLabel),
+    badge: { text: 'Portal invite', tone: 'teal' },
+    replyable: true,
     preheader: 'Set up secure access to follow your loan with YS Capital Group.',
     greeting: greet(firstName),
     intro: (inviter ? inviter + ' at YS Capital Group' : 'Your loan team at YS Capital Group')
@@ -265,6 +293,9 @@ function esignReadyToSign({ firstName, propertyLabel, loanNumber, packageLabel, 
   return render({
     audience: 'borrower',
     title: 'Your documents are ready to sign',
+    subjectTag: fileTag(loanNumber, propertyLabel),
+    badge: { text: 'Signature needed', tone: 'gold' },
+    replyable: true,
     preheader: 'A secure electronic signature is needed on your loan documents.',
     greeting: greet(firstName),
     intro: 'Your ' + (packageLabel ? packageLabel.toLowerCase() : 'loan documents')
@@ -296,6 +327,8 @@ function staffInvite({ fullName, role, acceptUrl, inviter, days = 7 } = {}) {
     lines: ['Set up your account below to begin receiving and working loan files. This invitation expires in ' + days + ' days.'],
     meta,
     cta: acceptUrl ? { label: 'Set up your account', url: acceptUrl } : null,
+    badge: { text: 'Team invite', tone: 'teal' },
+    replyable: true,
     note: 'If you were not expecting this invitation, you can disregard it.',
   });
 }
@@ -317,6 +350,8 @@ function staffWelcome({ fullName, role, url, hasLogin } = {}) {
     ],
     meta: [{ label: 'Role', value: roleLabel }],
     cta: url ? { label: hasLogin ? 'Sign in to the console' : 'Set up your access', url } : null,
+    badge: { text: 'Console ready', tone: 'positive' },
+    replyable: true,
     note: 'If you were not expecting this, contact your administrator.',
   });
 }
@@ -331,6 +366,9 @@ function drawRequest({ borrowerName, propertyLabel, loanNumber } = {}) {
   return render({
     audience: 'staff',
     title: 'Draw setup needed — ' + (propertyLabel || 'funded file'),
+    subjectTag: fileTag(loanNumber, propertyLabel),
+    badge: { text: 'Draw setup', tone: 'gold' },
+    replyable: true,
     preheader: 'A borrower requested draw setup on a funded file.',
     intro: (borrowerName || 'The borrower') + ' is requesting to set up draws for this funded file. Please coordinate the draw process.',
     meta,
