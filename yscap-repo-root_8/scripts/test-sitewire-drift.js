@@ -57,8 +57,8 @@ async function drift(appId, cls) {
     // both approved changes were audited
     ok((await db.query(`SELECT count(*)::int c FROM sitewire_pull_field_change WHERE application_id=$1 AND field IN ('release_drift','total_approved_cents')`, [a.id])).rows[0].c === 2, 'both approved changes audited');
 
-    // --- budget drift: crosswalk expects 60000+40000=100000; Sitewire budget shows 110000 ---
-    await db.query(`INSERT INTO sitewire_job_item_links (application_id,sitewire_budget_id,sitewire_job_item_id,sow_line_key,budgeted_cents,name,section_token) VALUES ($1,$2,801,'k1',60000,'Kitchen','s1'),($1,$2,802,'k2',40000,'Roof','s2')`, [a.id, BUD]);
+    // --- budget drift: LIVE crosswalk expects 60000+40000=100000; Sitewire budget shows 110000 ---
+    await db.query(`INSERT INTO sitewire_job_item_links (application_id,sitewire_budget_id,sitewire_job_item_id,sow_line_key,budgeted_cents,name,section_token,state) VALUES ($1,$2,801,'k1',60000,'Kitchen','s1','live'),($1,$2,802,'k2',40000,'Roof','s2','live')`, [a.id, BUD]);
     BUDGET = { id: BUD, total_budgeted_cents: 110000, job_items: [{ id: 801, budgeted_cents: 60000 }, { id: 802, budgeted_cents: 50000 }] };
     await reconcile.verifyBudgetDrift(a.id, BUD);
     const bd = await drift(a.id, 'sitewire_budget_drift');
@@ -70,6 +70,15 @@ async function drift(appId, cls) {
     await reconcile.verifyBudgetDrift(a.id, BUD);
     const bdCount = (await db.query(`SELECT count(*)::int c FROM sync_review_queue WHERE application_id=$1 AND split_part(reason,':',1)='sitewire_budget_drift' AND status='open'`, [a.id])).rows[0].c;
     ok(bdCount === 1, 'a matching re-check does not pile up duplicate budget-drift rows');
+
+    // HIGH-1 regression: a DELETED SOW line keeps its old cents on the crosswalk but is gone from
+    // Sitewire — it must be EXCLUDED from the expected total, so it never raises a FALSE drift.
+    await db.query(`UPDATE sync_review_queue SET status='resolved' WHERE application_id=$1 AND split_part(reason,':',1)='sitewire_budget_drift'`, [a.id]);
+    await db.query(`INSERT INTO sitewire_job_item_links (application_id,sitewire_budget_id,sitewire_job_item_id,sow_line_key,budgeted_cents,name,section_token,state) VALUES ($1,$2,803,'k3',50000,'Removed','s3','deleted')`, [a.id, BUD]);
+    BUDGET = { id: BUD, total_budgeted_cents: 100000, job_items: [{ id: 801, budgeted_cents: 60000 }, { id: 802, budgeted_cents: 40000 }] }; // Sitewire holds the live lines only
+    await reconcile.verifyBudgetDrift(a.id, BUD);
+    const falseDrift = (await db.query(`SELECT count(*)::int c FROM sync_review_queue WHERE application_id=$1 AND split_part(reason,':',1)='sitewire_budget_drift' AND status='open'`, [a.id])).rows[0].c;
+    ok(falseDrift === 0, 'a DELETED budget line does not raise a false drift (excluded from expected total)');
 
     console.log(`\n${P} passed, ${F} failed`);
   } catch (e) { console.error('THREW', e && e.message, e && e.stack); F++; }

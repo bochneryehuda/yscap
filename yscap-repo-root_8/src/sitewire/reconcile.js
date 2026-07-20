@@ -159,8 +159,12 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText) {
 // so the coordinator can RESTORE PILOT's budget or ACCEPT Sitewire's. Throttled to hourly per file.
 async function verifyBudgetDrift(appId, budgetId) {
   if (!budgetId) return { checked: false };
+  // Match the read-after-write's canonical filter EXACTLY (orchestrator.js pushBudgetInner): only LIVE
+  // bound lines for THIS budget. A deleted SOW line keeps its old nonzero budgeted_cents on the crosswalk
+  // (only _destroy'd in Sitewire), so summing all links would compute expected = live + deleted while
+  // Sitewire's total is live-only → a recurring FALSE drift alert (audit HIGH-1).
   const links = (await db.query(
-    `SELECT sitewire_job_item_id, budgeted_cents FROM sitewire_job_item_links WHERE application_id=$1 AND sitewire_job_item_id IS NOT NULL`, [appId])).rows;
+    `SELECT sitewire_job_item_id, budgeted_cents FROM sitewire_job_item_links WHERE application_id=$1 AND sitewire_budget_id=$2 AND state='live' AND sitewire_job_item_id IS NOT NULL`, [appId, budgetId])).rows;
   if (!links.length) return { checked: false };
   const expById = new Map(links.map((l) => [Number(l.sitewire_job_item_id), Number(l.budgeted_cents) || 0]));
   const expectedTotal = links.reduce((s, l) => s + (Number(l.budgeted_cents) || 0), 0);
@@ -256,7 +260,12 @@ async function reconcileOne(appId) {
   // drift from yet). Best-effort — a drift check never fails the reconcile.
   try {
     const stale = !link.last_budget_verified_at || (Date.now() - new Date(link.last_budget_verified_at).getTime()) > 3600000;
-    if (!firstReconcile && stale && prop.budget && prop.budget.id) {
+    // Skip the drift check while a push is pending for this file: the budget is about to change (a Phase 3
+    // re-push, a reallocation apply, or a birth push mid-flight), so a comparison now could false-park on a
+    // value that's seconds from being corrected (audit LOW-1 mid-write race).
+    const pushing = stale ? (await db.query(
+      `SELECT 1 FROM sync_queue WHERE entity_type='application' AND entity_id=$1 AND target='sitewire' AND direction='push' AND op='push_file' AND status IN ('queued','processing') LIMIT 1`, [appId])).rowCount > 0 : false;
+    if (!firstReconcile && stale && !pushing && prop.budget && prop.budget.id) {
       await verifyBudgetDrift(appId, prop.budget.id);
       await db.query(`UPDATE sitewire_property_links SET last_budget_verified_at=now() WHERE application_id=$1`, [appId]);
     }
