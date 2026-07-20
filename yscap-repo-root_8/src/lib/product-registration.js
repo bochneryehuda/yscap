@@ -71,9 +71,44 @@ async function replaceProductConditions(client, { appId, registrationId, quote, 
   }
 }
 
+// The borrower's own headline loan terms — the "real numbers" a borrower would
+// notice. Two registrations with the same key mean the borrower's DEAL is
+// unchanged (an internal re-register for the same stuff), so the borrower should
+// NOT get another "your terms are ready" nudge (owner-directed 2026-07-20). Uses
+// the stable priced OUTPUTS (loan amount, rate, cash-to-close, term, program) —
+// not noisy internal fields — so a genuine change (any of these) re-notifies and
+// a no-op re-register stays silent.
+function borrowerTermsKey({ program, productLabel, noteRate, totalLoan, quote, inputs }) {
+  const q = quote || {}; const i = inputs || {}; const s = q.sizing || {};
+  return JSON.stringify([
+    program || '',
+    productLabel || '',
+    Math.round(num(totalLoan)),
+    noteRate == null ? null : Number(noteRate).toFixed(5),
+    i.term == null ? null : String(i.term),
+    q.cashToClose == null ? null : Math.round(num(q.cashToClose)),
+    // Also the money the borrower actually RECEIVES at closing vs. holds back —
+    // a split change (same total loan, different advance/holdback) is a real
+    // borrower-facing number even when cash-to-close is unchanged, so it must
+    // re-notify ("ANY number that really changed", owner-directed 2026-07-20).
+    s.initialAdvance == null ? null : Math.round(num(s.initialAdvance)),
+    s.rehabHoldback == null ? null : Math.round(num(s.rehabHoldback)),
+  ]);
+}
+
 async function persistProductRegistration(client, { appId, program, inputs, quote, registeredByStaffId }) {
   const s = quote.sizing || {};
   const total = num(s.totalLoan);
+  // Snapshot the PREVIOUS current registration BEFORE we supersede it, so we can
+  // tell the borrower email whether their deal actually changed.
+  const prev = (await client.query(
+    `SELECT program, product_label, note_rate, total_loan, quote, inputs
+       FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`, [appId])).rows[0] || null;
+  const newKey = borrowerTermsKey({ program, productLabel: quote.productLabel, noteRate: quote.noteRate, totalLoan: total, quote, inputs });
+  const prevKey = prev ? borrowerTermsKey({ program: prev.program, productLabel: prev.product_label, noteRate: prev.note_rate, totalLoan: prev.total_loan, quote: prev.quote, inputs: prev.inputs }) : null;
+  // First registration (no prev) always notifies; a re-register notifies only
+  // when a headline number actually moved.
+  const economicsChanged = prevKey == null || prevKey !== newKey;
   await client.query(`UPDATE product_registrations SET is_current=false WHERE application_id=$1 AND is_current`, [appId]);
   const ins = await client.query(
     `INSERT INTO product_registrations
@@ -166,7 +201,7 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
   // fatality guard, which filters `is_current AND NOT stale` (audit #4/#9/#13).
   await client.query(
     `UPDATE product_registrations SET stale=false, stale_reason=NULL WHERE id=$1`, [registrationId]);
-  return registrationId;
+  return { id: registrationId, economicsChanged };
 }
 
 /**
@@ -231,4 +266,4 @@ function borrowerTermsEmail({ ctx, quote, total, termMonths, officer } = {}) {
   };
 }
 
-module.exports = { persistProductRegistration, borrowerTermsEmail, money, productName };
+module.exports = { persistProductRegistration, borrowerTermsEmail, borrowerTermsKey, money, productName };
