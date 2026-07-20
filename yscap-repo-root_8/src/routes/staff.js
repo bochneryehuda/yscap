@@ -6555,6 +6555,45 @@ router.get('/esign/dashboard', async (req, res) => {
   } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
 });
 
+// ---- e-signature CONNECTION + MODE status (admin) ---------------------------
+// The plain-English "are we live?" readout so an admin can see exactly what still
+// keeps DocuSign in test mode. Reveals no secrets — just the mode flags and, if the
+// credentials authenticate, which DocuSign ACCOUNT we're bound to (practice vs live).
+// `liveToBorrowers` is the single yes/no: will a REAL borrower actually be emailed?
+router.get('/esign/connection', requireRole('admin'), async (req, res) => {
+  const ds = require('../lib/integrations/docusign');
+  const c = cfg.docusign;
+  const out = {
+    configured: ds.configured(),
+    demo: ds.isDemoHost(),                 // true = DocuSign PRACTICE/sandbox world
+    oauthHost: c.oauthBase || null,
+    sendEnabled: !!c.sendEnabled,          // master switch (DOCUSIGN_SEND_ENABLED)
+    testMode: !!c.testMode,                // gates sends to the allow-list on ANY host
+    allowlist: c.testEmailAllowlist || [], // the only emails reachable while in test mode
+    reachable: null,
+  };
+  if (out.configured) {
+    // Best-effort live auth check — never throws (bad/absent creds just report not-reachable),
+    // and time-boxed so the page can't hang on a slow DocuSign.
+    try {
+      const p = await Promise.race([
+        ds.ping(),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('timed out reaching DocuSign')), 8000)),
+      ]);
+      out.reachable = true;
+      out.demo = !!p.demo;                 // authoritative from the live host
+      out.accountName = p.accountName || null;
+      out.accountId = p.accountId || null;
+      out.userName = p.name || null;
+      out.userEmail = p.email || null;
+    } catch (e) { out.reachable = false; out.reachError = e.message; }
+  }
+  // Real borrowers are emailed ONLY when: configured + credentials reach a LIVE (non-demo)
+  // account + the master switch is on + test mode is off.
+  out.liveToBorrowers = !!(out.configured && out.reachable && !out.demo && out.sendEnabled && !out.testMode);
+  res.json(out);
+});
+
 router.get('/applications/:id/esign', async (req, res) => {
   try {
     res.json(await esignTracking.fileEsign(db, req.params.id));

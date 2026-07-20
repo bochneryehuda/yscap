@@ -90,6 +90,13 @@ async function main() {
     r = await api('GET', `/api/staff/applications/${appB}/esign`, admin);
     ok(r.status === 200 && (r.body.loanNumber == null), 'fileEsign returns null loanNumber for a file still missing one');
 
+    // 7) DocuSign connection/mode readout — admin sees it; a loan officer is forbidden.
+    r = await api('GET', '/api/staff/esign/connection', admin);
+    ok(r.status === 200 && typeof r.body.liveToBorrowers === 'boolean', 'admin gets the DocuSign connection/mode readout');
+    ok(r.body.liveToBorrowers === false && r.body.testMode === true, 'with no live creds it reports test mode / not live to borrowers');
+    r = await api('GET', '/api/staff/esign/connection', lo);
+    ok(r.status === 403, 'a non-admin cannot see the connection/mode readout (admin-only)');
+
     console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'}: ${pass} passed, ${fail} failed`);
   } finally {
     await db.query(`DELETE FROM applications WHERE id = ANY($1)`, [[appA, appB]]).catch(() => {});
