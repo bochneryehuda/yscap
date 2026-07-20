@@ -61,6 +61,37 @@ function parseBaths(raw) {
   return { text: s, full: null, half: null };
 }
 
+// ---- enrichment readers (never-guess; db/158) -------------------------------
+// A MISMO Y/N indicator → strict boolean. Blank/other → null (NEVER default false — a missing
+// flag is "unknown", not "no", and truthiness on a stray comment must never read as yes).
+function yn(v) { const s = clean(v); if (!s) return null; if (/^y/i.test(s)) return true; if (/^n/i.test(s)) return false; return null; }
+// Store a value ONLY if it exactly matches a known enum set — otherwise null (mirrors the UAD
+// C1-6/Q1-6 discipline). Case-sensitive as MISMO emits, with a case-insensitive fallback match.
+function enumOf(v, set) { const s = clean(v); if (!s) return null; if (set.includes(s)) return s; const hit = set.find((x) => x.toLowerCase() === s.toLowerCase()); return hit || null; }
+// A neighborhood _HOUSING price is in $THOUSANDS (575 = $575,000). Convert to dollars with a
+// magnitude guard so it can NEVER be confused with a full-dollar amount (a share of the corpus
+// carries these; feeding one into money() would store $575 and mis-scale an ARV check 1000×).
+function thousands(v) { const n = toNum(v); return n != null && n >= 1 && n <= 100000 ? Math.round(n * 1000) : null; }
+// A percent/ratio cell that may carry a trailing '%' or an N/A placeholder. toNum('99%') is NaN,
+// silently dropping a valid ratio — strip the '%' first.
+function percent(v) { if (v == null) return null; const s = String(v).replace(/%/g, '').trim(); return toNum(s); }
+// A small integer count (rooms, spaces, phases, units) — 0 is a VALID value here (unlike money()).
+function count(v, max) { const n = toNum(v); return n != null && Number.isInteger(n) && n >= 0 && n <= max ? n : null; }
+// A whole-years figure (age / economic life). 0 is valid ("effectively new"); reject the 999
+// placeholder and anything out of a sane range.
+function years(v, max) { const n = toNum(v); return n != null && n >= 0 && n <= max ? Math.round(n) : null; }
+// Length-cap a narrative before it goes to a text column / the report (one verbose appraiser can
+// carry 7KB in a single _AdditionalDescription — clamp so it can't bloat the row or the UI).
+function capText(v, max) { const s = clean(v); if (!s) return null; return s.length > max ? s.slice(0, max).trim() + '…' : s; }
+// A cleaner that ALSO rejects the placeholder phrases plain clean() misses in free-text site
+// fields ("subject to survey", "see attached map/addendum") — never store those as real data.
+function cleanField(v) { const s = clean(v); if (!s) return null; return /^(subject to survey|see attached(\s+(map|addendum))?)$/i.test(s) ? null : s; }
+// A prior-sale amount that is a NOMINAL / non-arm's-length transfer ($1 quitclaim, intra-family).
+// Returns true so callers can record the value but never let it drive a flip/appreciation calc.
+function isNominal(amt) { const n = toNum(amt); return n != null && n <= 1000; }
+// A geocoordinate bounded to ±lim; 0 rejected (a real US comp is never at 0,0).
+function geo(v, lim) { const n = toNum(v); return n != null && n !== 0 && n >= -lim && n <= lim ? n : null; }
+
 // ---- narrative sweep (for As-Is / hypothetical language) --------------------
 const NARR_ATTR = /(comment|description|text|addendum|summary|reconcil|analysis)/i;
 function narrativeTexts(root) {
@@ -180,10 +211,15 @@ function settledMonth(desc) {
 }
 // Comp-level grid data mined from a comp's SALE_PRICE_ADJUSTMENT rows + its COMPARISON_DETAIL.
 function compGrid(c) {
-  const out = { gla: null, saleDate: null, conditionUad: null, qualityUad: null, dom: null, pricePerGla: bounded(X.attr(c, 'SalesPricePerGrossLivingAreaAmount'), 1e8), adjustments: [] };
+  const out = { gla: null, saleDate: null, conditionUad: null, qualityUad: null, dom: null,
+    beds: null, bathsFull: null, bathsHalf: null, baths: null, totalRooms: null,
+    pricePerGla: bounded(X.attr(c, 'SalesPricePerGrossLivingAreaAmount'), 1e8), adjustments: [] };
   for (const spa of X.findAll(c, 'SALE_PRICE_ADJUSTMENT')) {
     const t = clean(X.attr(spa, '_Type'));
-    const d = clean(X.attr(spa, '_Description'));
+    // The "Other" adjustment's human label lives in _TypeOtherDescription, NOT _Description
+    // (which is empty) — fall back so the breakdown never shows a bare "Other" with a dollar figure.
+    let d = clean(X.attr(spa, '_Description'));
+    if (t === 'Other' && !d) d = clean(X.attr(spa, '_TypeOtherDescription'));
     const amt = toNum(X.attr(spa, '_Amount'));
     if (t) out.adjustments.push({ type: t, description: d, amount: amt });
     if (t === 'GrossLivingArea' && d) { const g = toNum(d); if (g != null && g > 100 && g < 100000) out.gla = g; }
@@ -192,6 +228,24 @@ function compGrid(c) {
     else if (t === 'Condition' && d && UAD_C.test(d)) out.conditionUad = d;
     else if (t === 'Quality' && d && UAD_Q.test(d)) out.qualityUad = d;
   }
+  // ROOM_ADJUSTMENT carries the comp's room-count line (beds/baths/rooms) — the single most-missed
+  // grid fact. On a multi-unit file it may repeat per unit; take the first (subject-comparison) row.
+  const ra = X.find(c, 'ROOM_ADJUSTMENT');
+  if (ra) {
+    out.totalRooms = count(X.attr(ra, 'TotalRoomCount'), 99);
+    out.beds = count(X.attr(ra, 'TotalBedroomCount'), 99);
+    const b = parseBaths(X.attr(ra, 'TotalBathroomCount'));
+    out.baths = b.text; out.bathsFull = b.full; out.bathsHalf = b.half;
+    const raAmt = toNum(X.attr(ra, 'RoomAdjustmentAmount'));
+    if (raAmt != null) out.adjustments.push({ type: 'RoomCount', description: null, amount: raAmt });
+  }
+  // OTHER_FEATURE_ADJUSTMENT — garage/fireplace/pool/attic/porch extras; a traditional grid shows
+  // every adjustment line, and net_adjustment won't reconcile without these.
+  for (const of of X.findAll(c, 'OTHER_FEATURE_ADJUSTMENT')) {
+    const d = clean(X.attr(of, 'PropertyFeatureDescription'));
+    const amt = toNum(X.attr(of, 'PropertyFeatureAdjustmentAmount'));
+    if (d || amt != null) out.adjustments.push({ type: 'OtherFeature', description: d, amount: amt });
+  }
   const cd = X.find(c, 'COMPARISON_DETAIL');
   if (cd) {
     if (!out.conditionUad) { const cc = clean(X.attr(cd, 'GSEOverallConditionType')); if (cc && UAD_C.test(cc)) out.conditionUad = cc; }
@@ -199,6 +253,14 @@ function compGrid(c) {
     const dom = toNum(X.attr(cd, 'GSEDaysOnMarketDescription')); if (dom != null && dom >= 0 && dom < 3000) out.dom = dom;
   }
   return out;
+}
+// Parse "New Haven, CT 06519" (a comp's PropertyStreetAddress2) → {city,state,zip}. Fallback for
+// the ~1/3 of files that omit the separate PropertyCity/State/PostalCode attrs. Never guessed —
+// only a clean "City, ST ZIP" match yields values.
+function splitCityLine(v) {
+  const s = clean(v); if (!s) return {};
+  const m = /^(.+?),\s*([A-Za-z]{2})\s+(\d{5})(?:-\d{4})?\s*$/.exec(s);
+  return m ? { city: clean(m[1]), state: upState(m[2]), zip: zip(m[3]) } : {};
 }
 
 // A comp's sale status from its data-source text. Returns 'active' / 'pending' when the source
@@ -223,19 +285,38 @@ function comparables(root) {
     seen.add(seq);
     const loc = X.find(c, 'LOCATION');
     const g = compGrid(c);
+    const cd = X.find(c, 'COMPARISON_DETAIL');
+    // city/state/zip: prefer the separate attrs; fall back to the "City, ST ZIP" line (36/37).
+    const fallback = (!clean(X.attr(loc, 'PropertyCity'))) ? splitCityLine(X.attr(loc, 'PropertyStreetAddress2')) : {};
+    // GSEListingStatusType is the AUTHORITATIVE status where present; the data-source regex is the
+    // fallback for files without COMPARISON_DETAIL.
+    const structStatus = { SettledSale: 'closed', Active: 'active', Contract: 'pending' }[clean(X.attr(cd, 'GSEListingStatusType'))];
+    // comp prior sale (flip signal) — record only when BOTH amount and date validate; a nominal
+    // (≤$1000) transfer is kept but flagged so it never drives a flip calc.
+    const ps = X.find(c, 'PRIOR_SALES');
+    const psAmt = ps ? money(X.attr(ps, 'PropertySalesAmount')) : null;
+    const psDate = ps ? isoDate(X.attr(ps, 'PropertySalesDate')) : null;
     comps.push({
       seq,
       address: clean(X.attr(loc, 'PropertyStreetAddress')),
-      city: clean(X.attr(loc, 'PropertyCity')),
-      state: upState(X.attr(loc, 'PropertyState')),
-      zip: zip(X.attr(loc, 'PropertyPostalCode')),
+      city: clean(X.attr(loc, 'PropertyCity')) || fallback.city || null,
+      state: upState(X.attr(loc, 'PropertyState')) || fallback.state || null,
+      zip: zip(X.attr(loc, 'PropertyPostalCode')) || fallback.zip || null,
       proximity: clean(X.attr(loc, 'ProximityToSubjectDescription')),
+      latitude: geo(X.attr(loc, 'LatitudeNumber'), 90),
+      longitude: geo(X.attr(loc, 'LongitudeNumber'), 180),
+      saleType: enumOf(X.attr(cd, 'GSESaleType'), ['ArmsLengthSale', 'REOSale', 'EstateSale', 'ShortSale', 'Listing', 'CourtOrderedSale']),
+      financingType: clean(X.attr(cd, 'GSEFinancingType')),
+      compConcession: (() => { const n = toNum(X.attr(cd, 'GSEConcessionAmount')); return n != null && n >= 0 && n < 1e9 ? n : null; })(),
+      priorSaleAmount: psAmt, priorSaleDate: psDate, priorSaleNominal: isNominal(psAmt),
+      beds: g.beds, bathsText: g.baths, bathsFull: g.bathsFull, bathsHalf: g.bathsHalf, totalRooms: g.totalRooms,
       // A comp's PropertySalesAmount holds the LIST/asking price on an active or pending listing —
       // NOT a closed sale. The review checks + scoring must not count a listing as a settled comp
       // (it inflates the "closed comps" pool and pollutes the implied-value median with an asking
       // price). saleStatus is 'active'/'pending' ONLY when the data source explicitly says so;
-      // everything else is a closed sale (the appraiser marks listings — never guessed).
-      saleStatus: saleStatus(c),
+      // everything else is a closed sale (the appraiser marks listings — never guessed). The
+      // structured GSEListingStatusType (via COMPARISON_DETAIL) is authoritative where present.
+      saleStatus: structStatus || saleStatus(c),
       salePrice: money(X.attr(c, 'PropertySalesAmount')),
       adjustedPrice: money(X.attr(c, 'AdjustedSalesPriceAmount')),
       netAdjustment: toNum(X.attr(c, 'SalePriceTotalAdjustmentAmount')),
@@ -282,6 +363,228 @@ function subjectCQ(subject0) {
   if (cRaw && UAD_C.test(cRaw)) out.conditionUad = cRaw; else if (cRaw) out.cqNonUad = true;
   if (qRaw && UAD_Q.test(qRaw)) out.qualityUad = qRaw; else if (qRaw) out.cqNonUad = true;
   return out;
+}
+
+// A node is subject-scoped when no COMPARABLE_SALE sits above it (the same tag repeats under each
+// comp; the subject copy must never pull a comp's site/flood/analysis data).
+function notComp(n) { let p = n && n.parent; while (p) { if (p.tag === 'COMPARABLE_SALE') return false; p = p.parent; } return true; }
+function subjFind(root, tag) { return X.findAll(root, tag).find(notComp) || null; }
+function subjAll(root, tag) { return X.findAll(root, tag).filter(notComp); }
+// Join a US mailing address from address parts (street[, city, ST zip]).
+function joinAddr(street, city, state, zipc) {
+  const s = clean(street), c = clean(city), st = upState(state), z = zip(zipc);
+  if (!s && !c) return null;
+  const tail = [c, [st, z].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+  return [s, tail].filter(Boolean).join(', ') || null;
+}
+
+// ---- ENRICHMENT: consistently-present XML the report was dropping (db/158) ----
+// Returns a flat object whose keys EXACTLY match db/158 column names (so import.js can map it
+// directly) + a couple of structured sub-objects. Every read is never-guess (enum whitelist,
+// unit-aware reader, Y/N→bool, placeholder rejection). All subject-scoped.
+function enrichment(root, prop, st, site, subject0, rep, formType) {
+  const o = {};
+  const A = (n, k) => (n ? X.attr(n, k) : null);
+
+  // -- neighborhood & market --
+  const nb = subjFind(root, 'NEIGHBORHOOD');
+  o.nbhd_value_trend = enumOf(A(nb, '_PropertyValueTrendType'), ['Increasing', 'Stable', 'Declining']);
+  o.nbhd_demand_supply = enumOf(A(nb, '_DemandSupplyType'), ['Shortage', 'InBalance', 'OverSupply']);
+  o.nbhd_marketing_time = enumOf(A(nb, '_TypicalMarketingTimeDurationType'), ['UnderThreeMonths', 'ThreeToSixMonths', 'OverSixMonths']);
+  o.nbhd_location_type = enumOf(A(nb, 'PropertyNeighborhoodLocationType'), ['Urban', 'Suburban', 'Rural']);
+  o.nbhd_builtup = enumOf(A(nb, '_BuiltupRangeType'), ['Over75Percent', '25To75Percent', 'Under25Percent', 'UnderTwentyFivePercent']);
+  o.nbhd_growth = enumOf(A(nb, '_GrowthPaceType'), ['Rapid', 'Stable', 'Slow']);
+  const housingType = { FNM1004: 'SingleFamily', FNM1025: 'TwoToFourFamily', FNM1073: 'Condominium' }[formType];
+  const houses = subjAll(root, '_HOUSING');
+  const house = houses.find((h) => X.attr(h, '_Type') === housingType) || houses[0] || null;
+  o.nbhd_price_low = thousands(A(house, '_LowPriceAmount'));
+  o.nbhd_price_high = thousands(A(house, '_HighPriceAmount'));
+  o.nbhd_price_predominant = thousands(A(house, '_PredominantPriceAmount'));
+  o.nbhd_age_predominant = years(A(house, '_PredominantAgeYearsCount'), 500);
+  const mk = subjFind(root, 'MARKET');
+  o.nbhd_adverse_financing = yn(A(mk, 'MarketTrendsAdverseFinancingIndicator'));
+  o.nbhd_foreclosure_activity = yn(A(mk, 'MarketTrendsForeclosureActivityIndicator'));
+
+  // -- site / occupancy --
+  o.occupancy_status = enumOf(A(prop, '_CurrentOccupancyType'), ['Vacant', 'TenantOccupied', 'OwnerOccupied']);
+  o.property_rights = clean(A(prop, '_RightsType'));
+  o.owner_of_record = clean(A(subjFind(root, '_OWNER'), '_Name'));
+  for (const pa of subjAll(root, 'PROPERTY_ANALYSIS')) {
+    const t = X.attr(pa, '_Type');
+    if (t === 'PhysicalDeficiency') { o.physical_deficiency = yn(X.attr(pa, '_ExistsIndicator')); o.physical_deficiency_note = capText(X.attr(pa, '_Comment'), 500); }
+    else if (t === 'AdverseSiteConditions') o.adverse_site_conditions = yn(X.attr(pa, '_ExistsIndicator'));
+  }
+  for (const sf of subjAll(root, 'SITE_FEATURE')) {
+    const t = X.attr(sf, '_Type');
+    if (t === 'View') o.view_rating = clean(X.attr(sf, '_Comment'));
+    else if (t === 'Shape') o.lot_shape = clean(X.attr(sf, '_Comment'));
+  }
+  o.lot_dimensions = cleanField(A(site, '_DimensionsDescription'));
+  o.zoning_compliance_note = capText(A(site, '_ZoningComplianceDescription'), 500);
+  const fz = subjFind(root, 'FLOOD_ZONE');
+  o.fema_panel_id = clean(A(fz, 'NFIPMapIdentifier'));
+  o.fema_panel_date = normDate(A(fz, 'NFIPMapPanelDate'));
+  o.special_flood_hazard = yn(A(fz, 'SpecialFloodHazardAreaIndicator'));
+  const utils = [];
+  for (const u of (site ? X.findAll(site, 'SITE_UTILITY') : [])) {
+    const t = clean(X.attr(u, '_Type')); if (!t) continue;
+    const pub = yn(X.attr(u, '_PublicIndicator'));
+    utils.push({ type: t, public: pub, note: clean(X.attr(u, '_NonPublicDescription')) });
+  }
+  o.utilities = utils.length ? utils : null;
+
+  // -- structure / systems --
+  o.effective_age = years(A(subjFind(root, 'STRUCTURE_ANALYSIS'), 'EffectiveAgeYearsCount'), 200);
+  o.updated_last_15yr = yn(A(subjFind(root, 'OVERALL_CONDITION_RATING'), 'GSEUpdateLastFifteenYearIndicator'));
+  const heat = st ? X.find(st, 'HEATING') : null;
+  o.heating_type = clean(A(heat, '_Type')) === 'Other' ? clean(A(heat, '_TypeOtherDescription')) : clean(A(heat, '_Type'));
+  o.heating_fuel = canonFuel(A(heat, '_FuelDescription'));
+  const cool = st ? X.find(st, 'COOLING') : null;
+  o.cooling = yn(A(cool, '_CentralizedIndicator')) === true ? 'Central' : clean(A(cool, '_UnitDescription'));
+  o.foundation_type = clean(A(st ? X.find(st, 'FOUNDATION') : null, '_Type'));
+  const bsmt = st ? X.find(st, 'BASEMENT') : null;
+  o.basement_sqft = bounded(A(bsmt, 'SquareFeetCount'), 1e6);
+  o.basement_finished_pct = o.basement_sqft != null ? count(A(bsmt, '_FinishedPercent'), 100) : null;
+  o.attic = yn(A(st ? X.find(st, 'ATTIC') : null, '_ExistsIndicator'));
+  o.has_adu = yn(A(st, '_AccessoryUnitExistsIndicator'));
+  for (const ef of (st ? X.findAll(st, 'EXTERIOR_FEATURE') : [])) { if (X.attr(ef, '_Type') === 'RoofSurface') o.roof_description = clean(X.attr(ef, '_Description')); }
+  const carAtt = st ? X.find(st, 'CAR_STORAGE') : null;
+  o.garage_type = clean(A(carAtt, '_AttachmentType'));
+  for (const cl of (st ? X.findAll(st, 'CAR_STORAGE_LOCATION') : [])) { if (X.attr(cl, '_Type') === 'Garage' && yn(X.attr(cl, '_ExistsIndicator')) !== false) { const n = count(X.attr(cl, 'ParkingSpacesCount'), 20); if (n != null) o.garage_spaces = n; } }
+  if (subject0) { const cd = X.find(subject0, 'COMPARISON_DETAIL'); o.below_grade_sqft = bounded(A(cd, 'GSEBelowGradeTotalSquareFeetNumber'), 1e6); o.below_grade_finished_sqft = bounded(A(cd, 'GSEBelowGradeFinishSquareFeetNumber'), 1e6); }
+  const updates = [];
+  for (const cdet of subjAll(root, 'CONDITION_DETAIL')) {
+    const area = enumOf(X.attr(cdet, 'GSEImprovementAreaType'), ['Kitchen', 'Bathrooms']);
+    const level = enumOf(X.attr(cdet, 'GSEImprovementDescriptionType'), ['Remodeled', 'Updated', 'NotUpdated', 'NotRemodeled']);
+    const when = enumOf(X.attr(cdet, 'GSEEstimateYearOfImprovementType'), ['LessThanOneYearAgo', 'OneToFiveYearsAgo', 'SixToTenYearsAgo', 'ElevenToFifteenYearsAgo']);
+    if (area && level) updates.push({ area, level, timeframe: when });
+  }
+  o.updates = updates.length ? updates : null;
+  const amen = [];
+  for (const a of (st ? X.findAll(st, 'AMENITY') : [])) {
+    const t = clean(X.attr(a, '_Type')); if (!t) continue;
+    const exists = yn(X.attr(a, '_ExistsIndicator'));
+    const cnt = count(X.attr(a, '_Count'), 100);
+    const desc = clean(X.attr(a, '_DetailedDescription'));
+    if (exists === true || (cnt != null && cnt > 0) || (desc && !/^0$/.test(desc))) amen.push({ type: t, count: cnt, description: /^(none|0)$/i.test(desc || '') ? null : desc });
+  }
+  o.amenities = amen.length ? amen : null;
+
+  // -- sales contract / concessions / listing --
+  const sc = subjFind(root, 'SALES_CONTRACT');
+  // Scope strictly to the subject contract — never fall back to a doc-wide find (a comp's
+  // SALES_TRANSACTION must not become the subject's sale type).
+  o.sale_type = enumOf(A(sc ? X.find(sc, 'SALES_TRANSACTION') : null, 'GSESaleType'), ['ArmsLengthSale', 'Listing', 'REOSale', 'ShortSale', 'EstateSale', 'CourtOrderedSale']);
+  o.concession_indicator = yn(A(sc, 'SalesConcessionIndicator'));
+  o.concession_amount = (() => { const n = toNum(A(sc, 'SalesConcessionAmount')); return n != null && n >= 0 && n < 1e9 ? n : null; })();
+  o.concession_description = capText(A(sc, 'SalesConcessionDescription'), 400);
+  o.contract_reviewed = yn(A(sc, '_ReviewedIndicator'));
+  o.contract_review_comment = capText(A(sc, '_ReviewComment'), 500);
+  o.seller_is_owner = yn(A(sc, 'SellerIsOwnerIndicator'));
+  o.contract_data_source = clean(A(sc, 'DataSourceDescription'));
+  const lh = subjFind(root, 'LISTING_HISTORY');
+  o.listed_within_year = yn(A(lh, 'ListedWithinPreviousYearIndicator'));
+  o.listing_history = capText(A(lh, 'ListedWithinPreviousYearDescription'), 500);
+
+  // -- cost approach detail --
+  const ca = subjFind(root, 'COST_ANALYSIS');
+  o.remaining_economic_life = years(A(ca, 'EstimatedRemainingEconomicLifeYearsCount'), 200);
+  o.cost_new_total = money(A(ca, 'NewImprovementTotalCostAmount'));
+  o.depreciated_cost_improvements = money(A(ca, 'NewImprovementDepreciatedCostAmount'));
+  o.site_improvements_value = money(A(ca, 'SiteOtherImprovementsAsIsAmount'));
+  o.cost_data_source = clean(A(ca, 'DataSourceDescription'));
+  o.cost_quality_rating = clean(A(ca, 'CostServiceQualityRatingDescription'));
+  const dep = ca ? X.find(ca, 'DEPRECIATION') : null;
+  o.depreciation_physical = money(A(dep, '_PhysicalAmount'));
+  o.depreciation_functional = money(A(dep, '_FunctionalAmount'));
+  o.depreciation_external = money(A(dep, '_ExteriorAmount'));
+  o.depreciation_total = money(A(dep, '_TotalAmount'));
+  for (const ni of (ca ? X.findAll(ca, 'NEW_IMPROVEMENT') : [])) {
+    const t = X.attr(ni, '_Type');
+    if (t === 'Dwelling' || t === 'SectionOne') { o.dwelling_cost_new = money(X.attr(ni, '_CostAmount')); o.dwelling_sqft = bounded(X.attr(ni, 'SquareFeetCount'), 1e6); o.dwelling_price_per_sqft = bounded(X.attr(ni, 'PricePerSquareFootAmount'), 1e6); }
+  }
+
+  // -- income / rent --
+  const inc = subjFind(root, 'INCOME_ANALYSIS');
+  o.est_market_monthly_rent = bounded(A(inc, 'EstimatedMarketMonthlyRentAmount'), 1e8);  // numeric(12,2) — bounded, not money()'s 1e12
+  const rentUtils = [];
+  for (const ru of subjAll(root, 'RENT_INCLUDES_UTILITY')) { if (yn(X.attr(ru, '_Indicator')) === true) { const t = clean(X.attr(ru, '_Type')); if (t) rentUtils.push(t === 'Other' ? (clean(X.attr(ru, '_TypeOtherDescription')) || 'Other') : t); } }
+  o.rent_included_utilities = rentUtils.length ? rentUtils : null;
+
+  // -- reconciliation / conditions / scope --
+  const rec = subjFind(root, '_RECONCILIATION');
+  o.reconciliation_comment = capText(A(rec, '_SummaryComment'), 1500);
+  o.conditions_comment = capText(A(rec, '_ConditionsComment'), 700);
+  o.appraisal_purpose = enumOf(A(rep, 'AppraisalPurposeType'), ['Purchase', 'Refinance', 'Other', 'ConstructionPermanent']);
+  o.appraisal_purpose_other = o.appraisal_purpose === 'Other' ? clean(A(rep, 'AppraisalPurposeTypeOtherDescription')) : null;
+  o.addendum_text = capText(A(subjFind(root, 'VALUATION_METHODS'), '_AdditionalDescription'), 4000);
+  o.uspap_report_type = enumOf(A(rep, 'USPAPReportDescription'), ['Summary Report', 'Self-Contained Report', 'Restricted Appraisal Report', 'Self Contained Report', 'Restricted Report']);
+
+  // -- appraiser / parties / inspection --
+  const ap = subjFind(root, 'APPRAISER');
+  o.appraiser_company_address = joinAddr(A(ap, '_StreetAddress'), A(ap, '_City'), A(ap, '_State'), A(ap, '_PostalCode'));
+  const insp = subjAll(root, 'INSPECTION').find((n) => X.attr(n, 'AppraisalInspectionPropertyType') === 'Subject') || subjFind(root, 'INSPECTION');
+  o.inspection_type = clean(A(insp, 'AppraisalInspectionType'));
+  const sup = subjFind(root, 'SUPERVISOR');
+  if (sup && clean(X.attr(sup, '_Name'))) {   // only a REAL supervisor (23/24 are empty placeholders)
+    const supLic = X.find(sup, 'APPRAISER_LICENSE');
+    o.supervisor_license_id = clean(A(supLic, '_Identifier'));
+    o.supervisor_license_state = upState(A(supLic, '_State'));
+    o.supervisor_license_exp = normDate(A(supLic, '_ExpirationDate'));
+  }
+  const lender = subjFind(root, 'LENDER');
+  o.lender_address = joinAddr(A(lender, '_StreetAddress'), A(lender, '_City'), A(lender, '_State'), A(lender, '_PostalCode')) || clean(A(lender, 'AppraisalFormsUnparsedAddress'));
+
+  // -- condo / PUD project (1073) --
+  if (formType === 'FNM1073') {
+    const pr = subjFind(root, 'PROJECT');
+    const stages = subjAll(root, 'DEVELOPMENT_STAGE');
+    const stage = stages.find((s) => X.attr(s, '_Type') === 'SubjectPhase') || stages[0] || null;
+    o.condo_units_planned = count(A(stage, 'PlannedUnitsCount'), 100000);
+    o.condo_units_completed = count(A(stage, 'CompletedUnitsCount'), 100000);
+    o.condo_units_sold = count(A(stage, 'UnitsSoldCount'), 100000);
+    o.condo_units_rented = count(A(stage, 'UnitsRentedCount'), 100000);
+    o.condo_units_for_sale = count(A(stage, 'UnitsForSaleCount'), 100000);
+    o.condo_owner_occupied = count(A(stage, 'OwnerOccupiedUnitCount'), 100000);
+    o.condo_total_phases = count(A(stages.find((s) => X.attr(s, '_TotalPhasesCount')) || stage, '_TotalPhasesCount'), 10000);
+    o.condo_common_elements = capText(A(pr, '_CommonElementsDescription'), 500);
+    o.condo_commercial_space = yn(A(pr, '_CommercialSpaceIndicator'));
+    o.condo_management_type = clean(A(pr, '_ManagementType'));
+    o.condo_developer_control = yn(A(pr, '_DeveloperControlsProjectManagementIndicator'));
+    o.condo_concentrated_ownership = yn(A(pr, '_ConcentratedOwnershipIndicator'));
+    const pcs = subjFind(root, 'PROJECT_CAR_STORAGE');
+    o.condo_parking_spaces = count(A(pcs, 'ParkingSpacesCount'), 100000);
+  }
+
+  // -- prior-sales research flag --
+  const rs = subjFind(root, 'RESEARCH');
+  const rsComp = rs ? X.find(rs, 'COMPARABLE') : null;
+  o.comps_have_prior_sales = yn(A(rsComp, '_HasPriorSalesIndicator'));
+
+  return o;
+}
+// Canonicalize a heating-fuel token (GAS/gas/NG → Gas; Elec./elec → Electric) — never drop unknowns.
+function canonFuel(v) {
+  const s = clean(v); if (!s) return null;
+  const t = s.toLowerCase();
+  if (/^(gas|ng|natural gas)\b/.test(t)) return 'Gas';
+  if (/^elec/.test(t)) return 'Electric';
+  if (/^oil/.test(t)) return 'Oil';
+  if (/^propane|^lp\b/.test(t)) return 'Propane';
+  return s;
+}
+// A unit's lease/occupancy status from its (free-text) lease-date fields — classified into a
+// controlled value, NEVER date-parsed. 'Vacant'/'MTM'/'monthly'/'OWNER'/'FAMILY'/'Not Provided'
+// are status tokens; two real dates = a term lease.
+function leaseStatus(startRaw, endRaw) {
+  const a = clean(startRaw), b = clean(endRaw);
+  const joined = `${a || ''} ${b || ''}`.toLowerCase();
+  if (/vacant/.test(joined)) return 'vacant';
+  if (/mtm|mo\/mo|month/.test(joined)) return 'month_to_month';
+  if (/owner/.test(joined)) return 'owner_occupied';
+  if (/family/.test(joined)) return 'family_occupied';
+  if (isoDate(a) || isoDate(b) || normDate(a) || normDate(b)) return 'leased';
+  return null;   // 'Not Provided' / blank → unknown, never 'vacant'
 }
 
 // ---- small validated readers ------------------------------------------------
@@ -336,6 +639,8 @@ function extract(xml) {
   gridSplit.comps.forEach((gc, i) => { if (comps[i]) comps[i].comp_set = gc.comp_set; });
   const cq = subjectCQ(subject0);
   const bathsParsed = parseBaths(X.attr(st, 'TotalBathroomCount'));
+  // Enrichment: the large set of consistently-present XML fields the report was dropping (db/158).
+  const enrich = enrichment(root, prop, st, site, subject0, rep, formType);
 
   const subject = {
     address: clean(X.attr(prop, '_StreetAddress')),
@@ -394,10 +699,23 @@ function extract(xml) {
     inspectionDate: normDate(X.attr(X.find(root, 'INSPECTION'), 'InspectionDate')),
   };
 
-  // 1025 per-unit rents
+  // 1025 per-unit rents + the per-unit mix (_UNIT_GROUP) + lease status. The lease dates carry a
+  // free-text occupancy status (Vacant / MTM / monthly / a real date), classified — never date-parsed.
+  const unitGroups = {};
+  for (const ug of X.findAll(st || root, '_UNIT_GROUP')) {
+    const key = { UnitOne: '1', UnitTwo: '2', UnitThree: '3', UnitFour: '4' }[clean(X.attr(ug, 'UnitType'))] || clean(X.attr(ug, 'UnitType'));
+    if (key) unitGroups[key] = { rooms: count(X.attr(ug, 'TotalRoomCount'), 99), beds: count(X.attr(ug, 'TotalBedroomCount'), 99), baths: parseBaths(X.attr(ug, 'TotalBathroomCount')).text, sqft: bounded(X.attr(ug, 'GrossLivingAreaSquareFeetCount'), 1e6) };
+  }
   const units = [];
   for (const u of X.findAll(root, 'UNIT_RENT_SCHEDULE')) {
-    units.push({ seq: X.attr(u, 'UnitSequenceIdentifier'), actualRent: money(X.attr(u, 'UnitActualRentAmount')), marketRent: money(X.attr(u, 'UnitMarketRentAmount')) });
+    const seq = X.attr(u, 'UnitSequenceIdentifier');
+    const mix = unitGroups[seq] || {};
+    const actualRent = money(X.attr(u, 'UnitActualRentAmount'));
+    const marketRent = money(X.attr(u, 'UnitMarketRentAmount'));
+    // Skip a fully-empty padded row (1025 schedules pad to 4 units even for a 2-unit property).
+    if (actualRent == null && marketRent == null && mix.beds == null && mix.rooms == null) continue;
+    units.push({ seq, actualRent, marketRent, rooms: mix.rooms || null, beds: mix.beds || null, baths: mix.baths || null, sqft: mix.sqft || null,
+      leaseStatus: leaseStatus(X.attr(u, 'LeaseStartDate'), X.attr(u, 'LeaseExpirationDate')) });
   }
   const mrs = X.find(root, 'MULTIFAMILY_RENT_SCHEDULE');
   const income = mrs ? { actualGrossRent: money(X.attr(mrs, 'RentalActualGrossMonthlyRentAmount')), marketGrossRent: money(X.attr(mrs, 'RentalEstimatedGrossMonthlyRentAmount')) } : null;
@@ -443,9 +761,30 @@ function extract(xml) {
   // reno file drives a review finding rather than a corrupt one-grid value check.
   if (gridSplit.needsReview) warnings.push({ code: 'comp_split_review', msg: 'As-Is vs ARV comp split needs review — some comps could not be assigned to a grid with certainty' });
 
+  // ---- enrichment tripwires (advisory underwriting flags from the new fields) ----
+  if (enrich.nbhd_value_trend === 'Declining') warnings.push({ code: 'nbhd_declining', msg: 'Neighborhood values are declining — exit-value risk' });
+  if (enrich.nbhd_demand_supply === 'OverSupply') warnings.push({ code: 'nbhd_oversupply', msg: 'Neighborhood is over-supplied — slower exit' });
+  if (enrich.sale_type && enrich.sale_type !== 'ArmsLengthSale') warnings.push({ code: 'sale_type_risk', msg: `Subject sale type is ${enrich.sale_type} — not an arm's-length purchase` });
+  if (enrich.seller_is_owner === false) warnings.push({ code: 'seller_not_owner', msg: 'Seller is not the owner of record — possible wholesale/assignment' });
+  if (enrich.contract_reviewed === false) warnings.push({ code: 'contract_not_analyzed', msg: 'Appraiser did not analyze the sale contract' });
+  if (enrich.concession_indicator === true || (enrich.concession_amount != null && enrich.concession_amount > 0)) warnings.push({ code: 'seller_concessions', msg: 'Seller concessions on the contract — effective price is lower' });
+  if (enrich.inspection_type === 'None') warnings.push({ code: 'no_inspection', msg: 'Desktop / no-inspection appraisal — no property inspection recorded' });
+  if (enrich.occupancy_status === 'TenantOccupied') warnings.push({ code: 'tenant_occupied', msg: 'Subject is tenant-occupied — possession/eviction risk on a flip' });
+  // expired appraiser license at signing (string YYYY-MM-DD compare; never new Date()). Read the
+  // BUILT appraiser object (ap is the raw XML node and has no licenseExp; using it both crashed on
+  // an APPRAISER-less file and made this warning permanently silent — audit MAJOR).
+  if (appraiser.licenseExp && appraiser.reportSignedDate && appraiser.licenseExp < appraiser.reportSignedDate) warnings.push({ code: 'license_expired_at_signing', msg: `Appraiser license expired ${appraiser.licenseExp} before the report was signed ${appraiser.reportSignedDate}` });
+  // condo owner-occupancy warrantability
+  if (enrich.condo_units_sold != null && enrich.condo_units_sold > 0 && enrich.condo_owner_occupied != null) {
+    const ooPct = enrich.condo_owner_occupied / enrich.condo_units_sold;
+    if (enrich.condo_owner_occupied > enrich.condo_units_sold) warnings.push({ code: 'condo_occupancy_conflict', msg: 'Condo owner-occupied count exceeds units sold — data conflict' });
+    else if (ooPct < 0.5) warnings.push({ code: 'condo_low_owner_occ', msg: `Condo project is ${Math.round(ooPct * 100)}% owner-occupied (<50%) — warrantability concern` });
+  }
+  if (enrich.condo_concentrated_ownership === true) warnings.push({ code: 'condo_concentrated_ownership', msg: 'Condo project has concentrated single-entity ownership — eligibility risk' });
+
   return {
     ok: true, formType,
-    subject, values: val, appraiser,
+    subject, values: val, appraiser, enrich,
     borrower: { name: borrower, isLlc, hasPartyName: !!borrower },
     comparables: comps, units, income, condo, photos,
     compSplit: { confidence: gridSplit.confidence, needsReview: gridSplit.needsReview, note: gridSplit.note,
