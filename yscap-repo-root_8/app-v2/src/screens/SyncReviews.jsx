@@ -46,7 +46,7 @@ const SITEWIRE_REASON_COPY = {
   sitewire_capital_partner_unmatched: 'The file’s capital partner couldn’t be matched to a Sitewire partner, so the property wasn’t created. Set the correct capital partner, or add the rule, and it retries.',
   sitewire_address_incomplete: 'The property address is missing part of the street / city / state / ZIP, so Sitewire can’t place it. Complete the address on the file.',
   sitewire_property_rejected: 'Sitewire rejected the property (usually the address wouldn’t geocode). Fix the address and it retries — nothing was guessed.',
-  sitewire_loan_already_in_sitewire: 'A Sitewire property already carries this loan number (hand-entered earlier). PILOT will not duplicate or take it over — decide by hand whether to manage it here.',
+  sitewire_loan_already_in_sitewire: 'A Sitewire property already carries this loan number. If it is the same property, click “Link” to manage it here — PILOT re-checks the loan number AND the address before adopting it, then updates that property instead of creating a duplicate. If it is a different deal, keep them separate.',
   sitewire_borrower_assign_failed: 'The borrower couldn’t be added to the Sitewire property by email. Check the borrower’s email on the file.',
   sitewire_budget_rejected: 'Sitewire rejected the budget push. The exact reason is in the details below — fix it and it retries.',
   sitewire_bind_missing: 'A budget line we created didn’t come back from Sitewire, so we couldn’t link it. This needs a quick manual check before draws reconcile.',
@@ -156,6 +156,14 @@ const FIELD_LABELS = {
 const RESOLVABLE = new Set(['date_of_birth', 'expected_closing', 'actual_closing', 'acquisition_date', 'ssn', 'status',
   'email', 'cell_phone', 'first_name', 'current_address']);
 const showVal = (v) => (v && /^\d{4}-\d{2}-\d{2}$/.test(String(v)) ? fmtDay(v) : (v == null || v === '' ? '—' : String(v)));
+
+// Per-reason resolution actions for a Sitewire draw review (mirror of the server's map in
+// src/routes/sitewire.js): an advisory note only "acknowledges" (never re-pushes — that looped); a real
+// "loan already in Sitewire" collision offers "link" (adopt the existing property) or dismiss; everything
+// else offers "retry" after the human fixed the cause.
+const SW_ADVISORY = new Set(['sitewire_units_note', 'sitewire_type_unmapped', 'sitewire_borrower_assign_failed', 'sitewire_reconcile_draw_error', 'sitewire_unknown_op']);
+const SW_DUPE = 'sitewire_loan_already_in_sitewire';
+const swReasonClass = (reason) => String(reason || '').split(':')[0];
 
 // Two-sided values: rows written since the upgrade carry clickup_value /
 // portal_value explicitly; older rows derive them from direction (inbound:
@@ -329,7 +337,25 @@ export default function SyncReviews() {
             {isSitewire && String(r.reason || '').includes(':') && (
               <p className="muted small" style={{ margin: '0 0 8px', fontStyle: 'italic' }}>{String(r.reason).split(':').slice(1).join(':').trim()}</p>
             )}
-            {status === 'open' && isSitewire && (
+            {status === 'open' && isSitewire && swReasonClass(r.reason) === SW_DUPE && (
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <button className="btn primary btn-sm" disabled={busyId === r.id}
+                  title="Link this file to the existing Sitewire property (adopt it). Verified by loan number + address before linking."
+                  onClick={() => sitewireAct(r.id, 'link')}>{busyId === r.id ? '…' : `Link to Sitewire property${r.current_value ? ' #' + r.current_value : ''}`}</button>
+                <button className="btn btn-sm" disabled={busyId === r.id}
+                  title="These are different properties — keep them separate" onClick={() => sitewireAct(r.id, 'dismiss')}>Not the same — keep separate</button>
+              </div>
+            )}
+            {status === 'open' && isSitewire && SW_ADVISORY.has(swReasonClass(r.reason)) && (
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <button className="btn primary btn-sm" disabled={busyId === r.id}
+                  title="This is an informational note — nothing to re-push. Acknowledge to clear it."
+                  onClick={() => sitewireAct(r.id, 'acknowledge')}>{busyId === r.id ? '…' : 'Acknowledge'}</button>
+                <button className="btn btn-sm" disabled={busyId === r.id}
+                  title="Close this without action" onClick={() => sitewireAct(r.id, 'dismiss')}>Dismiss</button>
+              </div>
+            )}
+            {status === 'open' && isSitewire && swReasonClass(r.reason) !== SW_DUPE && !SW_ADVISORY.has(swReasonClass(r.reason)) && (
               <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                 <button className="btn primary btn-sm" disabled={busyId === r.id}
                   title="Re-attempt the Sitewire push for this file (after fixing the cause above)"

@@ -40,7 +40,7 @@ async function journal(e) {
 // ---- park a stuck/ambiguous state for a human (never guess, never silently drop) ----
 // `dedupe` differentiates DISTINCT failures that share a reason class (e.g. a bind failure on
 // line A vs line B) so they don't collapse into one row and lose the second failure's detail.
-async function park({ appId, reason, fieldKey = 'sitewire', current = null, proposed = null, dedupe = null }) {
+async function park({ appId, reason, fieldKey = 'sitewire', current = null, proposed = null, dedupe = null, notify = true }) {
   const cls = String(reason).split(':')[0];
   // The shared open-review unique index is (COALESCE(task_id,''), field_key, direction,
   // COALESCE(proposed_value,'')) and does NOT include application_id. Stamp a per-(file,
@@ -56,7 +56,9 @@ async function park({ appId, reason, fieldKey = 'sitewire', current = null, prop
        VALUES ($1,$2,'outbound',$3,$4,$5,$6,'open') RETURNING id`,
       [appId, taskKey, fieldKey, current == null ? null : String(current), proposed == null ? null : String(proposed), reason]);
     const rid = r.rows[0].id;
-    try { await require('../lib/sync-review').notifyLoanOfficer(rid); } catch (_) {}
+    // Advisory notes (units mismatch, unmapped type) set notify:false — they appear in the review list
+    // but don't email the LO, so a file with several advisories doesn't send several blank-looking emails.
+    if (notify) { try { await require('../lib/sync-review').notifyLoanOfficer(rid); } catch (_) {} }
     return rid;
   } catch (err) {
     // A concurrent insert may have raced us to the same task_id — return THAT row rather than
@@ -257,7 +259,7 @@ async function pushFile(appId, opts = {}) {
   const fileUnits = (a.units != null && Number(a.units) > 0) ? Number(a.units) : 0;
   const physicalUnits = Math.max(1, fileUnits, sowUnits);
   if (fileUnits > 0 && fileUnits !== sowUnits) {
-    await park({ appId, dedupe: 'units', reason: `sitewire_units_note: the file lists ${fileUnits} unit(s) but the Scope of Work is built for ${sowUnits} — pushing the physical building count of ${physicalUnits} unit(s) (units with no work carry no budget lines). Update the file's unit count in the application if ${physicalUnits} is wrong.`, current: String(fileUnits), proposed: String(physicalUnits) });
+    await park({ appId, dedupe: 'units', notify: false, reason: `sitewire_units_note: the file lists ${fileUnits} unit(s) but the Scope of Work is built for ${sowUnits} — pushing the physical building count of ${physicalUnits} unit(s) (units with no work carry no budget lines). Update the file's unit count in the application if ${physicalUnits} is wrong.`, current: String(fileUnits), proposed: String(physicalUnits) });
   }
 
   // explode + G-RECON (must tie to the frozen budget to the cent BEFORE any write)
@@ -315,8 +317,8 @@ async function pushFile(appId, opts = {}) {
   // G-ENUM: a property/construction type we couldn't map is LEFT BLANK (never guessed) — but raise
   // an advisory review so someone sets it in Sitewire, rather than it silently going unset. Non-blocking
   // (the push still proceeds — these are optional Sitewire fields); deduped so it can't spam the queue.
-  if (a.property_type && !devType) await park({ appId, reason: `sitewire_type_unmapped: property type "${a.property_type}" didn't map to a Sitewire development_type — left blank, set it in Sitewire if needed`, dedupe: 'devtype' });
-  if ((a.loan_type || a.rehab_type) && !consType) await park({ appId, reason: `sitewire_type_unmapped: loan/rehab type "${a.loan_type || ''}/${a.rehab_type || ''}" didn't map to a Sitewire construction_type — left blank, set it in Sitewire if needed`, dedupe: 'construction' });
+  if (a.property_type && !devType) await park({ appId, reason: `sitewire_type_unmapped: property type "${a.property_type}" didn't map to a Sitewire development_type — left blank, set it in Sitewire if needed`, dedupe: 'devtype', notify: false });
+  if ((a.loan_type || a.rehab_type) && !consType) await park({ appId, reason: `sitewire_type_unmapped: loan/rehab type "${a.loan_type || ''}/${a.rehab_type || ''}" didn't map to a Sitewire construction_type — left blank, set it in Sitewire if needed`, dedupe: 'construction', notify: false });
   if (a.llc_name) propertyFields.borrower_entity_name = a.llc_name;
 
   let link = existingLink;
@@ -350,7 +352,10 @@ async function pushFile(appId, opts = {}) {
         return { parked: 'dupe_check_failed' };
       }
       if (existing) {
-        await park({ appId, reason: `sitewire_loan_already_in_sitewire: loan ${a.ys_loan_number} already exists in Sitewire (property ${existing.id}) — PILOT will not duplicate or adopt it`, current: String(existing.id) });
+        // Owner-directed 2026-07-20: a loan-number collision is often a GENUINE same-property match — PILOT
+        // won't duplicate it, but a coordinator may LINK this file to that existing property (adopt it) via
+        // the Sync-review "Link" action, which re-verifies loan# + address before adopting. Never automatic.
+        await park({ appId, reason: `sitewire_loan_already_in_sitewire: loan ${a.ys_loan_number} already exists in Sitewire (property ${existing.id}) — PILOT won't duplicate it. Open the review to LINK this file to that property, or keep them separate.`, current: String(existing.id) });
         return { parked: 'dupe_property' };
       }
     }
@@ -368,8 +373,10 @@ async function pushFile(appId, opts = {}) {
       throw e; // transient -> queue retries
     }
     if (property && property.__dryrun) return { dryrun: true, stage: 'property' };
-    propertyId = property && property.id;
-    budgetId = property && property.budget && property.budget.id;
+    propertyId = (property && property.id) || (link && link.sitewire_property_id) || null;
+    // A linked/adopted property's UPDATE response may omit budget.id — fall back to the id we stored when
+    // the property was linked, so a re-push of an adopted property doesn't false-park on "no budget id".
+    budgetId = (property && property.budget && property.budget.id) || (link && link.sitewire_budget_id) || null;
     // A 200 that came back without the ids we need to bind the crosswalk is NOT a success — never
     // proceed with undefined ids or write a link row we can't reconcile (G-RAW / E-RAW-NOID).
     if (!propertyId || !budgetId) {
@@ -410,8 +417,15 @@ async function pushFile(appId, opts = {}) {
     }
   }
 
-  // push the budget/job-items via the crosswalk
-  const budgetResult = await pushBudget(appId, budgetId, ex, budgetCents);
+  // push the budget/job-items via the crosswalk — UNLESS this is an adopted (linked) property. A linked
+  // property carries a HAND-ENTERED budget in Sitewire; diffing our SOW against an empty crosswalk would
+  // classify every line as a create and DUPLICATE the existing job items. So for a linked property PILOT
+  // mirrors/manages only (suppress the budget push) until a human binds the crosswalk (raw.suppress_budget_push).
+  let suppressBudget = false;
+  try { const lk = await getLink(appId); suppressBudget = !!(lk && (lk.matched_by === 'linked' || (lk.raw && lk.raw.suppress_budget_push))); } catch (_) {}
+  const budgetResult = suppressBudget
+    ? { skipped: 'linked_property_budget_suppressed' }
+    : await pushBudget(appId, budgetId, ex, budgetCents);
   return { ok: true, propertyId, budgetId, budget: budgetResult };
 }
 
@@ -550,4 +564,79 @@ async function pushBudgetInner(appId, budgetId, ex, budgetCents) {
   return { ok: true, created: diff.creates.length, updated: diff.updates.length, deleted: diff.deletes.length };
 }
 
-module.exports = { pushFile, pushBudget, park, journal, circuitCheck, resolveCapitalPartnerId, resolveRule, resolveInspection, resolveCoordinatorId, getLink, loadFile };
+// ---- Human-confirmed LINK/ADOPT of an existing Sitewire property (owner-directed 2026-07-20) ----
+// Called ONLY from the Sync-review "Link" action (never automatic). Adopts the existing Sitewire property
+// into PILOT's management (matched_by='linked') so future pushes UPDATE it instead of creating a duplicate,
+// and the reconcile mirrors its draws. GUARDED — the file's loan number AND address (house-number +
+// normalized street, the same comparator the SharePoint mirror trusts) must BOTH match the Sitewire
+// property, or the adopt is refused (never adopt the wrong property). The budget push is SUPPRESSED for a
+// linked property (raw.suppress_budget_push) so PILOT never duplicates a hand-entered budget's job items.
+function swAddrToStr(addr) {
+  if (!addr) return '';
+  if (typeof addr === 'string') return addr;
+  const street = addr.street || addr.line1 || addr.address || addr.street_with_unit || '';
+  const city = addr.city || '';
+  const state = addr.state || '';
+  const zip = addr.zip || addr.postal || addr.postal_code || '';
+  return `${street}, ${city} ${state} ${zip}`.replace(/\s+/g, ' ').trim();
+}
+// PURE (no DB / no network) adoption decision — the "never adopt the wrong property" guard set, split
+// out so it can be unit-tested in isolation and so the route + tests agree exactly. Returns {ok:true}
+// ONLY when: a valid property id, the file HAS a loan number, no CONFLICTING existing link, the Sitewire
+// property EXISTS, its loan number EQUALS the file's, AND the addresses match (house number + normalized
+// street tokens). Any failure returns {ok:false, error} with a human-readable reason.
+function adoptDecision({ propId, fileLoan, existingLinkPropId, swPresent, swLoan, fileAddrStr, swAddrStr }) {
+  const { addressMatches } = require('../lib/sharepoint-map');
+  if (!Number.isInteger(propId) || propId <= 0) return { ok: false, error: 'invalid Sitewire property id' };
+  if (!fileLoan) return { ok: false, error: 'this file has no YS loan number to match on' };
+  if (existingLinkPropId && Number(existingLinkPropId) !== propId) {
+    return { ok: false, error: `This file is already linked to Sitewire property ${existingLinkPropId}.` };
+  }
+  if (!swPresent) return { ok: false, error: `Sitewire property ${propId} was not found` };
+  if (String(swLoan || '') !== String(fileLoan)) {
+    return { ok: false, error: `That Sitewire property carries loan ${swLoan || '(none)'}, not this file's ${fileLoan} — not linked.` };
+  }
+  if (!fileAddrStr || !swAddrStr || !addressMatches(swAddrStr, fileAddrStr)) {
+    return { ok: false, error: `The address on Sitewire property ${propId} doesn't match this file — not linked (PILOT never adopts the wrong property).` };
+  }
+  return { ok: true };
+}
+
+async function adoptExistingProperty(appId, sitewirePropertyId, opts = {}) {
+  const propId = Number(sitewirePropertyId);
+  if (!Number.isInteger(propId) || propId <= 0) return { ok: false, error: 'invalid Sitewire property id' };
+  const a = await loadFile(appId);
+  if (!a) return { ok: false, error: 'file not found' };
+  // Cheap pre-checks BEFORE any Sitewire network read — a file with no loan number, or already linked to a
+  // DIFFERENT property, is refused without a wasted API call.
+  const existingLink = await getLink(appId);
+  const existingLinkPropId = existingLink && existingLink.sitewire_property_id;
+  const pre = adoptDecision({ propId, fileLoan: a.ys_loan_number, existingLinkPropId });
+  if (!pre.ok && (!a.ys_loan_number || (existingLinkPropId && Number(existingLinkPropId) !== propId))) return pre;
+  let prop;
+  try { prop = await client.getProperty(propId); }
+  catch (e) { const er = new Error(`could not read Sitewire property ${propId} (${e.message})`); er.retryable = e.retryable; throw er; }
+  const fa = T.addressForSitewire(a.property_address);
+  const fileAddrStr = fa && fa.street ? swAddrToStr(fa) : '';
+  const swAddrStr = swAddrToStr(prop && prop.address);
+  // Authoritative decision, re-asserting every guard against the LIVE Sitewire property (never trust the
+  // stale review hint): loan number AND address must both match, or the adopt is refused.
+  const decision = adoptDecision({
+    propId, fileLoan: a.ys_loan_number, existingLinkPropId,
+    swPresent: !!(prop && prop.id), swLoan: prop && prop.loan_number, fileAddrStr, swAddrStr,
+  });
+  if (!decision.ok) return decision;
+  const budgetId = prop.budget && prop.budget.id ? Number(prop.budget.id) : null;
+  const cp = await resolveCapitalPartnerId(a.lender);
+  const actorId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(opts.actorId || '')) ? opts.actorId : null;
+  const raw = { suppress_budget_push: true, matched: { loan_number: true, address: true }, sitewire_address: swAddrStr, sitewire_property_id: propId, linked_via: 'sync_review' };
+  await db.query(
+    `INSERT INTO sitewire_property_links (application_id, sitewire_property_id, sitewire_budget_id, capital_partner_id, matched_by, state, pushed_at, linked_by, linked_at, raw, updated_at)
+     VALUES ($1,$2,$3,$4,'linked','live',now(),$5,now(),$6,now())
+     ON CONFLICT (application_id) DO UPDATE SET sitewire_property_id=EXCLUDED.sitewire_property_id, sitewire_budget_id=EXCLUDED.sitewire_budget_id, capital_partner_id=COALESCE(EXCLUDED.capital_partner_id, sitewire_property_links.capital_partner_id), matched_by='linked', state='live', linked_by=EXCLUDED.linked_by, linked_at=now(), raw=EXCLUDED.raw, updated_at=now()`,
+    [appId, propId, budgetId, cp.id, actorId, JSON.stringify(raw)]);
+  await journal({ appId, propertyId: propId, budgetId, entity: 'property', entityId: propId, field: 'link', newValue: { matched_by: 'linked', sitewire_property_id: propId, sitewire_budget_id: budgetId }, source: 'link', changed: true });
+  return { ok: true, sitewire_property_id: propId, sitewire_budget_id: budgetId };
+}
+
+module.exports = { pushFile, pushBudget, park, journal, circuitCheck, resolveCapitalPartnerId, resolveRule, resolveInspection, resolveCoordinatorId, getLink, loadFile, adoptExistingProperty, adoptDecision, swAddrToStr };

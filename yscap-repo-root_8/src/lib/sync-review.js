@@ -94,6 +94,27 @@ async function queueReview({ applicationId, borrowerId, taskId, direction, field
  * files (deduped). Falls back to nothing quietly — notification must never
  * break the sync. notified_at marks delivery so re-queues never double-send.
  */
+// A one-line property address for a Sitewire draw-review email subject (from applications.property_address).
+function shortAddress(a) {
+  if (!a) return null;
+  if (typeof a === 'string') { const s = a.trim(); return s || null; }   // legacy: a bare address string
+  if (typeof a !== 'object') return null;
+  if (a.oneLine && String(a.oneLine).trim()) return String(a.oneLine).trim(); // the stored one-line form wins
+  const street = a.line1 || a.street || a.street_with_unit || null;
+  const cityState = [a.city, a.state].filter(Boolean).join(', ');
+  const tail = [cityState, a.zip || a.postal].filter(Boolean).join(' ');
+  const parts = [street, tail].filter(Boolean);
+  return parts.length ? parts.join(', ') : null;
+}
+// Turn a coded Sitewire park reason ("sitewire_units_note: the file lists 2 unit(s)…") into the plain
+// human sentence for the email body — the WHOLE issue, never blank (owner-directed 2026-07-20).
+function humanizeSitewireReason(reason) {
+  const s = String(reason || '').trim();
+  if (!s) return 'A draw-setup step on this file needs your review.';
+  const m = /^sitewire_[a-z0-9_]+:\s*(.+)$/is.exec(s);
+  return (m ? m[1] : s).trim();
+}
+
 async function notifyLoanOfficer(reviewId) {
   const r = await db.query(
     `SELECT q.*, b.first_name || ' ' || b.last_name AS borrower_name
@@ -129,22 +150,41 @@ async function notifyLoanOfficer(reviewId) {
   const notify = require('./notify');
   const label = FIELD_LABELS[row.field_key] || row.field_key;
   const who = row.borrower_name ? ` for ${row.borrower_name}` : '';
+  // ---- Sitewire construction-draw reviews get their OWN email: the property ADDRESS anchors the subject
+  // and the row's REASON (the full, human issue text) is the body. NEVER the ClickUp two-sided copy — a
+  // Sitewire row has no ClickUp side, so that template rendered "In ClickUp: — / In PILOT: —" (blank +
+  // wrong system name). Owner-directed 2026-07-20. ----
+  const isSitewire = row.field_key === 'sitewire';
+  let swAddress = null;
+  if (isSitewire && row.application_id) {
+    try { const ar = (await db.query(`SELECT property_address FROM applications WHERE id=$1`, [row.application_id])).rows[0]; swAddress = ar ? shortAddress(ar.property_address) : null; } catch (_) {}
+  }
   // FILE-LEVEL rows aren't a value disagreement — the email must say what the
   // situation is and that the review screen offers ACTIONS, not sides
   // (pre-merge audit #257 should-fix: the two-sided copy misdirected LOs).
   const fileLevel = ['file_link', 'push_job', 'ys_loan_number', 'sharepoint_folder', 'sharepoint_doc', 'co_first_name', 'co_cell_phone', 'borrower_identity', 'co_borrower_identity', 'shared_email'].includes(row.field_key);
-  const body = fileLevel
-    ? `A file${who} needs a decision: ${label.toLowerCase()}` +
-      (row.clickup_value ? ` (${row.clickup_value})` : '') + '. ' +
-      `Open the Sync review screen — it explains what happened and offers the resolution options (create the file, link it to an existing one, retry the push, or dismiss).`
-    : `PILOT and ClickUp disagree on the ${label.toLowerCase()}${who}. ` +
-      `In ClickUp: ${row.clickup_value || '—'}. In PILOT: ${row.portal_value || '—'}. ` +
-      `Open the Sync review screen, compare both sides, and choose which value should win — it will be applied to both systems.`;
+  let title, body;
+  if (isSitewire) {
+    const place = swAddress || row.borrower_name || 'a construction-draw file';
+    title = `Draw review needed — ${place}`;
+    body = `A construction-draw (Sitewire) review needs your decision${who}${swAddress ? ` — ${swAddress}` : ''}:\n\n` +
+      `${humanizeSitewireReason(row.reason)}\n\n` +
+      `Open the Sync review screen to resolve it — the card shows the exact options (e.g. link the property, retry the push, or dismiss).`;
+  } else {
+    title = `Sync review needed: ${label}${who}`;
+    body = fileLevel
+      ? `A file${who} needs a decision: ${label.toLowerCase()}` +
+        (row.clickup_value ? ` (${row.clickup_value})` : '') + '. ' +
+        `Open the Sync review screen — it explains what happened and offers the resolution options (create the file, link it to an existing one, retry the push, or dismiss).`
+      : `PILOT and ClickUp disagree on the ${label.toLowerCase()}${who}. ` +
+        `In ClickUp: ${row.clickup_value || '—'}. In PILOT: ${row.portal_value || '—'}. ` +
+        `Open the Sync review screen, compare both sides, and choose which value should win — it will be applied to both systems.`;
+  }
   for (const [staffId, o] of officers) {
     try {
       await notify.notifyStaff(staffId, {
         type: 'sync_review',
-        title: `Sync review needed: ${label}${who}`,
+        title,
         body,
         applicationId: row.application_id || o.appId || null,
         link: '/internal/sync-reviews',

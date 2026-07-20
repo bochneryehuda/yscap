@@ -724,34 +724,60 @@ router.patch('/settings', requirePermission('platform_setup'), async (req, res) 
   res.json({ ok: true, updated: updates });
 });
 
-// ---- POST /reviews/:id/:action — resolve a parked Sitewire review (retry | dismiss) ----
-// Sitewire parks are "fix the file, then re-push" rows. `retry` re-queues any dead push jobs
-// for the file (or enqueues a fresh push after the human fixed the upstream cause) and marks the
-// row resolved; `dismiss` closes it without action. Guarded + scoped like every draw-desk write.
+// ---- Per-reason resolution actions for a Sitewire review (owner-directed 2026-07-20) ----
+// Each parked reason gets the action(s) that ACTUALLY fix its cause, so a resolution isn't a no-op that
+// loops: an advisory note only "acknowledges" (never re-pushes — that was the loop); a real "loan already
+// in Sitewire" collision offers "link" (adopt the existing property) or "dismiss" (keep separate); every
+// other blocker offers "retry" (after the human fixed the upstream cause) or "dismiss".
+const { SITEWIRE_DUPE, sitewireReasonClass, sitewireAllowedActions } = require('../sitewire/review-actions');
 router.post('/reviews/:id/:action', requirePermission('manage_draws'), async (req, res) => {
   const { id, action } = req.params;
   if (!/^\d+$/.test(id)) return res.status(404).json({ error: 'not found' });
-  if (!['retry', 'dismiss'].includes(action)) return res.status(400).json({ error: 'action must be retry or dismiss' });
-  const row = (await db.query(`SELECT id, application_id, reason FROM sync_review_queue WHERE id=$1 AND field_key='sitewire' AND status='open'`, [id])).rows[0];
+  if (!['retry', 'dismiss', 'acknowledge', 'link'].includes(action)) return res.status(400).json({ error: 'action must be retry, acknowledge, link, or dismiss' });
+  const row = (await db.query(`SELECT id, application_id, reason, current_value FROM sync_review_queue WHERE id=$1 AND field_key='sitewire' AND status='open'`, [id])).rows[0];
   if (!row) return res.status(404).json({ error: 'review not found (or already resolved)' });
   if (!row.application_id || !(await canSeeFile(req, row.application_id))) return res.status(403).json({ error: 'forbidden' });
+  const reasonClass = sitewireReasonClass(row.reason);
+  // dismiss is always allowed; any other action must match the reason's action set (no acknowledging a
+  // blocker away without fixing it, no retrying an advisory into the loop, no linking a non-collision row).
+  if (action !== 'dismiss' && !sitewireAllowedActions(reasonClass).includes(action)) {
+    return res.status(400).json({ error: `That action isn't available for this review. Options: ${sitewireAllowedActions(reasonClass).join(', ')}.` });
+  }
   try {
-    if (action === 'retry') {
-      // re-arm every dead sitewire push job for this file (they re-run through all the guards)
-      const dead = await db.query(
-        `UPDATE sync_queue SET status='queued', attempts=0, run_after=now(), updated_at=now()
-          WHERE entity_type='application' AND entity_id=$1 AND target='sitewire' AND direction='push' AND status='dead' RETURNING id`, [row.application_id]);
-      // if nothing was dead-lettered, enqueue a fresh push so a fixed upstream cause re-attempts
-      if (!dead.rows.length) await enqueueSitewirePush(row.application_id, 'push_file').catch(() => {});
-      // sync_review_queue has NO updated_at column (resolved_at records the time). 'resolved' is the
-      // terminal "actioned" status used across the sync-review code (db/110 widened the CHECK to allow it).
-      await db.query(`UPDATE sync_review_queue SET status='resolved', resolved_by=$2, resolved_at=now(), resolution_note=$3 WHERE id=$1`,
-        [id, req.actor.id, dead.rows.length ? `retried ${dead.rows.length} push job(s)` : 're-queued a fresh push']);
-      return res.json({ ok: true, retried: dead.rows.length, requeued: !dead.rows.length });
+    if (action === 'dismiss') {
+      await db.query(`UPDATE sync_review_queue SET status='rejected', resolved_by=$2, resolved_at=now(), resolution_note='dismissed' WHERE id=$1`, [id, req.actor.id]);
+      return res.json({ ok: true, dismissed: true });
     }
-    await db.query(`UPDATE sync_review_queue SET status='rejected', resolved_by=$2, resolved_at=now(), resolution_note='dismissed' WHERE id=$1`, [id, req.actor.id]);
-    res.json({ ok: true, dismissed: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    if (action === 'acknowledge') {
+      // Advisory: just close it — NO push (this is what STOPS the units-note retry loop). The advisory was
+      // informational; the push already proceeded past it.
+      await db.query(`UPDATE sync_review_queue SET status='resolved', resolved_by=$2, resolved_at=now(), resolution_note='acknowledged' WHERE id=$1`, [id, req.actor.id]);
+      return res.json({ ok: true, acknowledged: true });
+    }
+    if (action === 'link') {
+      // Adopt the existing Sitewire property this collision named (current_value = its id). The orchestrator
+      // re-verifies loan# + address LIVE before linking; a mismatch comes back 422 (never adopt the wrong one).
+      const propId = Number(row.current_value);
+      if (!Number.isInteger(propId) || propId <= 0) return res.status(400).json({ error: 'This review has no Sitewire property to link to.' });
+      const r = await orchestrator.adoptExistingProperty(row.application_id, propId, { actorId: req.actor.id });
+      if (!r.ok) return res.status(422).json({ error: r.error || 'Could not link this property.' });
+      await db.query(`UPDATE sync_review_queue SET status='resolved', resolved_by=$2, resolved_at=now(), resolution_note=$3 WHERE id=$1`, [id, req.actor.id, `linked to Sitewire property ${propId}`]);
+      return res.json({ ok: true, linked: true, sitewire_property_id: r.sitewire_property_id });
+    }
+    // action === 'retry' — block if an OPEN BLOCKING collision review is still unresolved on this file:
+    // retrying now would just re-hit that wall and re-park (the loop the owner reported). Resolve it first.
+    const blocker = (await db.query(
+      `SELECT id FROM sync_review_queue WHERE application_id=$1 AND field_key='sitewire' AND status='open' AND id<>$2
+         AND split_part(reason,':',1) = $3 LIMIT 1`, [row.application_id, id, SITEWIRE_DUPE])).rows[0];
+    if (blocker) return res.status(409).json({ error: 'Resolve the “loan already in Sitewire” review first (Link the property to this file, or keep them separate) — retrying now would just hit that block again.' });
+    const dead = await db.query(
+      `UPDATE sync_queue SET status='queued', attempts=0, run_after=now(), updated_at=now()
+        WHERE entity_type='application' AND entity_id=$1 AND target='sitewire' AND direction='push' AND status='dead' RETURNING id`, [row.application_id]);
+    if (!dead.rows.length) await enqueueSitewirePush(row.application_id, 'push_file').catch(() => {});
+    await db.query(`UPDATE sync_review_queue SET status='resolved', resolved_by=$2, resolved_at=now(), resolution_note=$3 WHERE id=$1`,
+      [id, req.actor.id, dead.rows.length ? `retried ${dead.rows.length} push job(s)` : 're-queued a fresh push']);
+    return res.json({ ok: true, retried: dead.rows.length, requeued: !dead.rows.length });
+  } catch (e) { res.status(500).json({ error: 'Could not resolve this review — please try again.' }); }
 });
 
 // ---- health/status (setup screen) ----
@@ -777,7 +803,7 @@ router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, r
     let sowState = null;
     try { const s = (await db.query(`SELECT tool_payload FROM checklist_items WHERE application_id=$1 AND tool_key='rehab_budget' ORDER BY created_at LIMIT 1`, [appId])).rows[0]; sowState = s && s.tool_payload && s.tool_payload.state ? s.tool_payload.state : null; } catch (_) {}
     const rollup = await rollupMod.loadRollup(db, appId, { sowState });
-    const link = (await db.query(`SELECT l.*, cs.full_name AS coordinator_name FROM sitewire_property_links l LEFT JOIN staff_users cs ON cs.id=l.coordinator_staff_id WHERE l.application_id=$1 AND l.matched_by='created'`, [appId])).rows[0] || null;
+    const link = (await db.query(`SELECT l.*, cs.full_name AS coordinator_name FROM sitewire_property_links l LEFT JOIN staff_users cs ON cs.id=l.coordinator_staff_id WHERE l.application_id=$1 AND l.matched_by IN ('created','linked')`, [appId])).rows[0] || null;
     const draws = (await db.query(`SELECT sitewire_draw_id, number, name, status, risk_level, risk_flags, submitted_at, approved_at, pdf_src FROM sitewire_draws WHERE application_id=$1 ORDER BY number DESC NULLS LAST`, [appId])).rows;
     const requests = (await db.query(
       `SELECT r.sitewire_request_id, r.sitewire_draw_id, r.sitewire_job_item_id, r.job_item_name, r.requested_cents, r.approved_cents, r.inspection_count, r.lender_comments
@@ -826,7 +852,7 @@ router.get('/portfolio', requirePermission('manage_draws'), async (req, res) => 
               (SELECT count(*) FROM draw_findings df WHERE df.application_id=a.id AND df.status='accepted' AND df.wire_due_at < now()
                  AND NOT EXISTS (SELECT 1 FROM draw_disbursements dd WHERE dd.sitewire_draw_id=df.sitewire_draw_id AND dd.funded_status='released')) AS overdue_wire_count
          FROM sitewire_property_links l JOIN applications a ON a.id=l.application_id
-        WHERE a.deleted_at IS NULL AND l.sitewire_property_id IS NOT NULL AND l.matched_by='created'${sc.where}`, sc.params)).rows;
+        WHERE a.deleted_at IS NULL AND l.sitewire_property_id IS NOT NULL AND l.matched_by IN ('created','linked')${sc.where}`, sc.params)).rows;
     let budget = 0, drawn = 0, pendingReq = 0, pendingCount = 0, highRisk = 0;
     const files = rows.map((r) => {
       const b = Number(r.budget_cents) || 0, dr = Number(r.drawn_cents) || 0;
