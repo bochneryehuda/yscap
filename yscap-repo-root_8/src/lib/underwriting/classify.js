@@ -16,6 +16,7 @@
 const SIGNALS = [
   ['government_id', ["driver's license", 'driver license', 'identification card', 'passport', 'department of motor vehicles', 'dmv'], ['date of birth', 'class', 'endorsements', 'sex', 'height', 'eyes', 'expires']],
   ['purchase_contract', ['purchase and sale', 'purchase agreement', 'agreement of sale', 'contract of sale', 'residential contract', 'purchase contract'], ['earnest money', 'closing date', 'seller', 'buyer', 'contingency', 'as-is']],
+  ['contract_amendment', ['amendment to', 'addendum to', 'contract amendment', 'amendment to contract', 'amendment to purchase', 'first amendment', 'second amendment', 'amendment agreement'], ['amendment', 'addendum', 'amended', 'amends']],
   ['assignment', ['assignment of contract', 'assignment agreement', 'assignor', 'assignee', 'assignment fee'], ['assign', 'wholesale']],
   ['title', ['title commitment', 'preliminary report', 'commitment for title insurance', 'proposed insured', 'schedule b'], ['schedule a', 'vested', 'exceptions', 'legal description', 'title company']],
   ['appraisal', ['uniform residential appraisal', 'appraisal report', 'small residential income', 'sales comparison approach', 'after repair value', 'opinion of value'], ['as-is', 'arv', 'comparable', 'gross living area', 'appraiser', '1004', '1025', '1073']],
@@ -37,6 +38,7 @@ const FILENAME_HINTS = [
   [/articles|formation|cert.*org/i, 'llc_formation'],
   [/good\s*stand|existence|status/i, 'good_standing'],
   [/ein|cp.?575|147c|tax.?id/i, 'ein_letter'],
+  [/amend|addend/i, 'contract_amendment'],
   [/assign/i, 'assignment'],
   [/title|commitment|prelim/i, 'title'],
   [/apprais|1004|1025|1073/i, 'appraisal'],

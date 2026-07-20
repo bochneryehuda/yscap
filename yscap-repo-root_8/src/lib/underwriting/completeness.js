@@ -77,11 +77,20 @@ function statusFor(docType, byType, findingsByType) {
  */
 function assessCompleteness(flags = {}, extractions = [], findings = []) {
   const byType = new Map();
-  for (const e of extractions) if (!byType.has(e.doc_type)) byType.set(e.doc_type, e);
+  const typeByDocId = new Map();   // which document a finding was raised on -> its doc type
+  for (const e of extractions) {
+    if (!byType.has(e.doc_type)) byType.set(e.doc_type, e);
+    if (e.document_id) typeByDocId.set(e.document_id, e.doc_type);
+  }
+  // Group findings by the DOCUMENT they were raised on, not by `source` — some findings (a PDF
+  // tampering scan) carry a non-docType source (e.g. 'fraud_scan') but a real document_id, and
+  // must still count against that document's stipulation. Fall back to source when there's no
+  // document link (or the doc isn't a current extraction).
   const findingsByType = new Map();
   for (const f of findings) {
-    if (!findingsByType.has(f.source)) findingsByType.set(f.source, []);
-    findingsByType.get(f.source).push(f);
+    const t = (f.document_id && typeByDocId.get(f.document_id)) || f.source;
+    if (!findingsByType.has(t)) findingsByType.set(t, []);
+    findingsByType.get(t).push(f);
   }
 
   const stipulations = [];

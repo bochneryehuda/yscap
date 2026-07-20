@@ -15,6 +15,7 @@ const DOC_LABEL = {
   assignment: 'Assignment of contract', ein_letter: 'EIN letter', good_standing: 'Good standing',
   llc_formation: 'LLC formation', insurance: 'Insurance', flood: 'Flood cert',
   settlement: 'Settlement statement', credit_report: 'Credit report', background_report: 'Background / OFAC',
+  contract_amendment: 'Contract amendment',
 };
 const label = (t) => DOC_LABEL[t] || String(t || '').replace(/_/g, ' ');
 
@@ -402,6 +403,37 @@ function EntityChain({ entityChain }) {
   );
 }
 
+// Amendments — the GOVERNING contract terms (base overlaid by executed amendments) + their source.
+function Amendments({ amendments, appId, onChange }) {
+  if (!amendments || !amendments.hasAmendments) return null;
+  const eff = amendments.effective || {};
+  const prov = amendments.provenance || {};
+  const rows = [
+    ['Purchase price', eff.purchasePrice != null ? `$${Math.round(eff.purchasePrice).toLocaleString('en-US')}` : null, prov.purchasePrice],
+    ['Closing date', eff.closingDate || null, prov.closingDate],
+    ['Buyer', eff.buyerName || null, prov.buyerName],
+    ['Seller', eff.sellerName || null, prov.sellerName],
+  ].filter((r) => r[1] != null);
+  return (
+    <div style={{ marginBottom: 22 }}>
+      <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px' }}>Governing contract terms</h4>
+      <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginBottom: 10 }}>
+        The terms that actually govern after amendments{amendments.unexecuted > 0 ? ` · ${amendments.unexecuted} unexecuted amendment(s) do not yet govern` : ''}.
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(200px,1fr))', gap: 8, marginBottom: (amendments.findings || []).length ? 12 : 0 }}>
+        {rows.map((r, i) => (
+          <div key={i} style={{ border: '1px solid var(--line,#E7E1D3)', borderRadius: 10, background: 'var(--card,#fff)', padding: '8px 12px' }}>
+            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)' }}>{r[0]}</div>
+            <div style={{ fontSize: 14, fontWeight: 600 }}>{String(r[1])}</div>
+            {r[2] && <div style={{ fontSize: 10.5, color: r[2].source === 'amendment' ? 'var(--gold,#AE8746)' : 'var(--muted,#4B585C)' }}>{r[2].source === 'amendment' ? `by amendment${r[2].date ? ` ${r[2].date}` : ''}` : 'base contract'}</div>}
+          </div>
+        ))}
+      </div>
+      {(amendments.findings || []).map((f, i) => <Finding key={f.id || `am${i}`} appId={appId} f={f} onChange={onChange} resolvable={false} />)}
+    </div>
+  );
+}
+
 export default function UnderwritingPanel({ appId, docs = [], readOnly = false, onSummary }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -456,6 +488,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
   const entityChain = data && data.entityChain;
   const completeness = data && data.completeness;
   const risk = data && data.risk;
+  const amendments = data && data.amendments;
   const exts = (data && data.extractions) || [];
   const docTypes = (data && data.docTypes) || [];
   const analyzers = (data && data.analyzers) || {};
@@ -507,6 +540,9 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
 
       {/* conditions coverage — ties every document back to the checklist */}
       <ConditionCoverage coverage={coverage} />
+
+      {/* governing contract terms after amendments */}
+      <Amendments amendments={amendments} appId={appId} onChange={load} />
 
       {/* loan metrics — LTP/LTV/LTC/ARV vs caps */}
       <Metrics metrics={metrics} />

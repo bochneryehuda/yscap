@@ -268,8 +268,31 @@ function computeBackgroundFindings(b, subject, opts = {}) {
   return out;
 }
 
+// ---- Contract amendment / addendum ----
+// Per-document check only: is the amendment readable, and is it EXECUTED (signed by all parties)?
+// An unexecuted amendment is not yet governing. The cross-contract effective-terms resolution
+// (which value actually governs) is a file-level job — see amendments.js — not a per-doc check.
+function computeAmendmentFindings(am, subject, opts = {}) {
+  const out = []; if (!am) return out;
+  if (unreadable('contract_amendment', am, ['amendmentDate', 'changeSummary', 'newPurchasePrice', 'newClosingDate'])) {
+    return [verify('contract_amendment', 'contract amendment')];
+  }
+  // An amendment that changes a term but isn't fully signed does NOT govern — flag it so the
+  // file isn't underwritten to a term that isn't actually in force yet.
+  const changesSomething = am.newPurchasePrice != null || am.newClosingDate != null || am.newBuyerName != null || am.newSellerName != null;
+  if (changesSomething && am.executed === false) {
+    out.push(mk('contract_amendment', { code: 'amendment_unexecuted', severity: 'warning', field: 'executed',
+      docValue: am.changeSummary || 'changes a contract term', fileValue: 'not signed by all parties',
+      title: 'The contract amendment is not fully executed',
+      howTo: 'This amendment changes a contract term but is not signed by all parties, so it does not yet govern. Obtain the fully-executed amendment before underwriting to its terms.',
+      actions: ['request_document', 'post_condition', 'dismiss'] }));
+  }
+  return out;
+}
+
 module.exports = {
   computeAssignmentFindings, computeOperatingAgreementFindings, computeEinFindings,
   computeGoodStandingFindings, computeFormationFindings, computeInsuranceFindings,
   computeFloodFindings, computeSettlementFindings, computeCreditFindings, computeBackgroundFindings,
+  computeAmendmentFindings,
 };

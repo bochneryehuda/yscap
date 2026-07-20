@@ -406,8 +406,32 @@ const BACKGROUND_REPORT = {
   }),
 };
 
+// ---- Contract amendment / addendum (changes a term of the purchase contract) ----
+const CONTRACT_AMENDMENT = {
+  docType: 'contract_amendment',
+  instructions:
+    "You are reviewing an AMENDMENT or ADDENDUM to a real-estate purchase contract. It changes one " +
+    "or more terms of the base contract (price, closing date, parties, credits). Extract ONLY the NEW " +
+    "values it actually states — leave a field null if the amendment does not change it (do NOT copy " +
+    "the base contract's unchanged terms, and NEVER guess). Capture the amendment's own date, whether " +
+    "it is fully signed/executed by all parties, and a short description of what it changes. Prices as " +
+    "plain numbers, dates YYYY-MM-DD. readable=false if too poor to trust.",
+  schema: obj({
+    propertyAddress: addr(),
+    amendmentDate:   { type: ['string', 'null'] },   // the amendment's own execution/effective date
+    newPurchasePrice:{ type: ['number', 'null'] },   // null = price unchanged by this amendment
+    newClosingDate:  { type: ['string', 'null'] },   // null = closing date unchanged
+    newBuyerName:    { type: ['string', 'null'] },
+    newSellerName:   { type: ['string', 'null'] },
+    executed:        { type: ['boolean', 'null'] },  // signed by ALL parties (governing) vs draft
+    changeSummary:   { type: ['string', 'null'] },
+    readable:        { type: 'boolean' },
+    notes:           { type: ['string', 'null'] },
+  }),
+};
+
 module.exports = {
   GOVERNMENT_ID, PURCHASE_CONTRACT, TITLE, BANK_STATEMENT,
   ASSIGNMENT, OPERATING_AGREEMENT, EIN_LETTER, GOOD_STANDING, LLC_FORMATION,
-  INSURANCE, FLOOD, SETTLEMENT, CREDIT_REPORT, BACKGROUND_REPORT,
+  INSURANCE, FLOOD, SETTLEMENT, CREDIT_REPORT, BACKGROUND_REPORT, CONTRACT_AMENDMENT,
 };

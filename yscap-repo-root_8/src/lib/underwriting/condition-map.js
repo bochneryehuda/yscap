@@ -17,6 +17,7 @@
 const DOC_CONDITIONS = {
   government_id: { satisfies: ['rtl_p1_id', 'gov_id'], purpose: 'Verifies the borrower’s identity — name, date of birth, and address.' },
   purchase_contract: { satisfies: ['rtl_p1_contract', 'purchase_contract'], purpose: 'The executed purchase & sale contract — price, parties, property, and (if any) the assignment.' },
+  contract_amendment: { satisfies: ['rtl_p1_contract', 'purchase_contract'], purpose: 'An amendment/addendum to the purchase contract — the governing price, closing date, or parties once fully executed.' },
   assignment: { satisfies: ['rtl_p5_assign'], purpose: 'The assignment of contract — makes the borrowing entity the buyer of record and shows the assignment fee.' },
   title: { satisfies: ['rtl_cond_title', 'title_commitment'], purpose: 'The title commitment — who owns the property, liens to clear, and the vesting entity.' },
   insurance: { satisfies: ['rtl_cond_insurance', 'insurance_binder'], purpose: 'Evidence of insurance — the lender’s mortgagee clause, coverage, and the named insured entity.' },

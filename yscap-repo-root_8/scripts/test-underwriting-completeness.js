@@ -60,6 +60,20 @@ const exts = (arr) => arr.map(([doc_type, status = 'analyzed', confidence = 'ana
   assert.ok(!noTitle.docsComplete);
 }
 
+// ---- REGRESSION (audit): a finding whose source isn't a docType (a PDF tampering scan filed
+//      under 'fraud_scan') but carries the document_id must still count against that document ----
+{
+  const extractions = [
+    { doc_type: 'bank_statement', status: 'analyzed', confidence: 'analyzed', document_id: 'doc-bank-1' },
+  ];
+  const findings = [
+    { source: 'fraud_scan', severity: 'warning', status: 'open', document_id: 'doc-bank-1' }, // tampering on the bank doc
+  ];
+  const r = assessCompleteness({ isEntity: false, isAssignment: false }, extractions, findings);
+  const bank = r.stipulations.find((s) => s.docType === 'bank_statement');
+  assert.strictEqual(bank.status, 'received', 'a tampering warning on the doc → received, not cleared');
+}
+
 // ---- Owner + gating buckets are carried through ----
 {
   const r = assessCompleteness({ isEntity: true }, [], []);

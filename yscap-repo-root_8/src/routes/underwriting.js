@@ -44,6 +44,7 @@ const { computeMetrics } = require('../lib/underwriting/metrics');
 const { buildChain } = require('../lib/underwriting/entity-chain');
 const { assessCompleteness } = require('../lib/underwriting/completeness');
 const { computeRiskScore } = require('../lib/underwriting/risk-score');
+const { resolveEffectiveTerms } = require('../lib/underwriting/amendments');
 const exceptions = require('../lib/underwriting/exceptions');
 
 const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || ''));
@@ -156,7 +157,7 @@ router.get('/:appId', async (req, res, next) => {
     const extractions = exts.rows.map((e) => Object.assign({}, e, {
       conditions: conditionsForDoc(e.doc_type),
       purpose: purposeForDoc(e.doc_type),
-      readiness: docReadiness(ff.findings.filter((f) => f.source === e.doc_type)),
+      readiness: docReadiness(ff.findings.filter((f) => f.document_id === e.document_id || f.source === e.doc_type)),
     }));
     const conditionCoverage = fileConditionCoverage({ conditions: conds.rows, extractions: exts.rows, findings: ff.findings });
 
@@ -165,7 +166,15 @@ router.get('/:appId', async (req, res, next) => {
     // looking advisories the today-based per-document checks can't produce ("fresh now, stale by
     // closing"). These are non-blocking warnings, folded into the same roll-up.
     const pc = exts.rows.find((e) => e.doc_type === 'purchase_contract');
-    const closingDate = pc && pc.fields && pc.fields.closingDate ? pc.fields.closingDate : null;
+
+    // Amendments / versioning: resolve the GOVERNING contract terms (base overlaid by the latest
+    // fully-executed amendment) and flag when the file is stale vs the amended terms. The effective
+    // closing date (amended if applicable) drives staleness below.
+    const amendmentExts = exts.rows.filter((e) => e.doc_type === 'contract_amendment').map((e) => e.fields || {});
+    const amendments = resolveEffectiveTerms(pc && pc.fields ? pc.fields : null, amendmentExts,
+      { purchase_price: a.purchase_price });
+    const closingDate = amendments.effective.closingDate ||
+      (pc && pc.fields && pc.fields.closingDate ? pc.fields.closingDate : null);
     const staleness = assessStaleness(exts.rows, { today: todayISO(), closingDate });
 
     // Derived metrics: recompute LTP/LTV/LTC/ARV-LTV from the file's registered economics, report
@@ -193,7 +202,7 @@ router.get('/:appId', async (req, res, next) => {
     // Roll the tie-out discrepancies + the forward-looking staleness advisories + over-leverage
     // metric warnings into the same fatal/warning gate (all warning-only → never change the
     // CTC-blocking fatal count, but they surface in the roll-up).
-    const openAll = [...perDoc, ...cross, ...staleness.findings, ...metrics.findings, ...(entityChain ? entityChain.findings : [])];
+    const openAll = [...perDoc, ...cross, ...staleness.findings, ...metrics.findings, ...amendments.findings, ...(entityChain ? entityChain.findings : [])];
 
     // Fraud / red-flag score: aggregate every open signal above + the economic red flags into one
     // explainable 0-100 score. Its HIGH-band advisory is a non-blocking warning (folded into the
@@ -224,6 +233,9 @@ router.get('/:appId', async (req, res, next) => {
         ctcBlockers: completeness.ctcBlockers, docsComplete: completeness.docsComplete },
       risk: { score: risk.score, band: risk.band, sarRecommended: risk.sarRecommended,
         reasons: risk.reasons, finding: risk.finding ? decorate(risk.finding) : null },
+      amendments: { effective: amendments.effective, provenance: amendments.provenance,
+        hasAmendments: amendments.hasAmendments, unexecuted: amendments.unexecuted,
+        findings: amendments.findings.map(decorate) },
       summary,
       docTypes: registry.docTypes(),
       analyzers: { reader: docint.configured(), ai: azureOpenai.available() },
