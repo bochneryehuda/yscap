@@ -25,6 +25,18 @@ const MAX_REDIRECTS = 4;
 // resolved host must not be loopback/private/link-local/CGNAT/cloud-metadata. Redirects are followed
 // MANUALLY so a public URL can't 302 to an internal one. (Residual DNS-rebinding window is accepted
 // under the Sitewire trust model.)
+// Extract the embedded IPv4 from an IPv4-mapped IPv6 literal, in either the dotted
+// (::ffff:192.168.0.1) or hex (::ffff:c0a8:0001) form; null if not mapped.
+function mappedIpv4(l) {
+  let m = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(l);
+  if (m) return m[1];
+  m = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(l);
+  if (m) {
+    const hi = parseInt(m[1], 16), lo = parseInt(m[2], 16);
+    return `${(hi >> 8) & 255}.${hi & 255}.${(lo >> 8) & 255}.${lo & 255}`;
+  }
+  return null;
+}
 function isPrivateIp(ip) {
   if (net.isIPv4(ip)) {
     const p = ip.split('.').map(Number);
@@ -37,7 +49,14 @@ function isPrivateIp(ip) {
   }
   if (net.isIPv6(ip)) {
     const l = ip.toLowerCase().replace(/^\[|\]$/g, '');
-    return l === '::1' || l === '::' || l.startsWith('fc') || l.startsWith('fd') || l.startsWith('fe80') || l.startsWith('::ffff:127.') || l.startsWith('::ffff:10.') || l.startsWith('::ffff:169.254.');
+    if (l === '::1' || l === '::' || l.startsWith('fc') || l.startsWith('fd') || l.startsWith('fe80')) return true;
+    // IPv4-mapped IPv6 (::ffff:a.b.c.d dotted OR ::ffff:hhhh:hhhh hex) — extract the
+    // embedded IPv4 and re-run the IPv4 rules so 192.168/172.16-31/100.64/etc. and the
+    // hex form (::ffff:c0a8:0101 = 192.168.1.1) can't bypass the string-prefix checks
+    // (SSRF hardening — the guard must hold on every hop).
+    const v4 = mappedIpv4(l);
+    if (v4) return isPrivateIp(v4);
+    return false; // a genuine public IPv6
   }
   return true; // unresolvable / unknown family → reject
 }
@@ -53,7 +72,10 @@ async function assertPublicHttps(rawUrl) {
   for (const ip of ips) if (isPrivateIp(ip)) throw new Error('media url resolves to a private/internal address');
 }
 
-const sha256 = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
+// Hash a Buffer by its RAW bytes and a string by its text. The old `String(s)`
+// form UTF-8-decoded a Buffer (replacing every invalid byte with U+FFFD), so the
+// stored content hash was not the file's hash — pass the Buffer straight through.
+const sha256 = (s) => crypto.createHash('sha256').update(Buffer.isBuffer(s) ? s : String(s)).digest('hex');
 
 // content-type → a safe file extension for storage.save (falls back to the URL's own extension).
 function extFor(contentType, url) {
@@ -106,6 +128,25 @@ function planArchive({ lines = [], pdfSrc = null, archivedKeys = new Set() }) {
 
 // Fetch a public URL into a Buffer with SSRF validation on every hop + a timeout + size cap. Throws on any
 // failure (caller skips per item). Redirects are followed MANUALLY so each hop's host is re-validated.
+// Read a response body into a Buffer, aborting as soon as the accumulated size
+// exceeds `cap` — so a body with no/lying Content-Length can't be fully buffered.
+async function readCapped(r, cap) {
+  if (!r.body || typeof r.body.getReader !== 'function') {
+    const buf = Buffer.from(await r.arrayBuffer());   // no stream reader available
+    if (buf.length > cap) throw new Error('too large');
+    return buf;
+  }
+  const reader = r.body.getReader();
+  const chunks = []; let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > cap) { try { await reader.cancel(); } catch (_) { /* ignore */ } throw new Error('too large'); }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks);
+}
 async function fetchBinary(url) {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), FETCH_TIMEOUT_MS);
@@ -123,8 +164,9 @@ async function fetchBinary(url) {
       if (!r.ok) throw new Error(`fetch ${r.status}`);
       const len = Number(r.headers.get('content-length') || 0);
       if (len && len > PER_FILE_CAP) throw new Error('too large');
-      const buf = Buffer.from(await r.arrayBuffer());
-      if (buf.length > PER_FILE_CAP) throw new Error('too large');
+      // Stream the body with a running cap so a missing/lying Content-Length can't
+      // OOM the worker by buffering a multi-GB body before the size check.
+      const buf = await readCapped(r, PER_FILE_CAP);
       if (!buf.length) throw new Error('empty');
       return { buf, contentType: (r.headers.get('content-type') || '').split(';')[0].trim() || null };
     }

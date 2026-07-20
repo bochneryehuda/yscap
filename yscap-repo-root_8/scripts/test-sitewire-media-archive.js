@@ -71,6 +71,37 @@ for (const ip of ['127.0.0.1', '10.1.2.3', '172.16.0.1', '172.31.255.1', '192.16
 for (const ip of ['8.8.8.8', '1.1.1.1', '52.10.20.30', '172.15.0.1', '172.32.0.1', '192.167.0.1', '2600::1']) {
   ok(`public IP allowed: ${ip}`, ma.isPrivateIp(ip) === false);
 }
+// IPv4-mapped IPv6 must not bypass the private-IP guard (SSRF hardening) — both the
+// dotted (::ffff:a.b.c.d) and hex (::ffff:hhhh:hhhh) forms.
+for (const ip of ['::ffff:192.168.1.1', '::ffff:172.16.0.1', '::ffff:10.1.2.3', '::ffff:169.254.169.254', '::ffff:c0a8:0101' /* =192.168.1.1 */, '::ffff:ac10:0001' /* =172.16.0.1 */]) {
+  ok(`mapped-private IPv6 blocked: ${ip}`, ma.isPrivateIp(ip) === true);
+}
+for (const ip of ['::ffff:8.8.8.8', '::ffff:0808:0808' /* =8.8.8.8 */]) {
+  ok(`mapped-public IPv6 allowed: ${ip}`, ma.isPrivateIp(ip) === false);
+}
+
+// ---- 6b. sha256 hashes a Buffer by RAW bytes (the content-hash fix) ----
+{
+  const crypto = require('crypto');
+  const badBuf = Buffer.from([0xff, 0xfe, 0x00, 0x41]);   // invalid UTF-8
+  eq('sha256(Buffer) = raw-byte hash', ma.sha256(badBuf), crypto.createHash('sha256').update(badBuf).digest('hex'));
+  ok('sha256(Buffer) != sha256(String(Buffer)) for non-utf8 bytes',
+    ma.sha256(badBuf) !== crypto.createHash('sha256').update(String(badBuf)).digest('hex'));
+  eq('sha256(string) still hashes as text', ma.sha256('hello'), crypto.createHash('sha256').update('hello').digest('hex'));
+}
+
+// ---- 6c. parseTermMonths handles YEAR units (the false past-maturity fix) ----
+{
+  const mon = require('../src/sitewire/monitor');
+  eq('term "12 months" → 12', mon.parseTermMonths('12 months'), 12);
+  eq('term "18 mo" → 18', mon.parseTermMonths('18 mo'), 18);
+  eq('term "12" (bare → months) → 12', mon.parseTermMonths('12'), 12);
+  eq('term "1 year" → 12 (was misread as 1)', mon.parseTermMonths('1 year'), 12);
+  eq('term "2 yr" → 24', mon.parseTermMonths('2 yr'), 24);
+  eq('term "1.5 years" → 18', mon.parseTermMonths('1.5 years'), 18);
+  eq('term null → null', mon.parseTermMonths(null), null);
+  eq('term "0 months" → null', mon.parseTermMonths('0 months'), null);
+}
 
 // assertPublicHttps is async; run those + the summary inside an async main.
 (async () => {

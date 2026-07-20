@@ -102,7 +102,7 @@ router.get('/draws', requirePermission('manage_draws'), async (req, res) => {
         WHERE a.deleted_at IS NULL${sc.where}
         ORDER BY d.updated_at DESC NULLS LAST LIMIT 300`, sc.params)).rows;
     res.json({ draws: rows });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { console.warn('[sitewire] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
 // ---- GET /api/sitewire/files/:id — one file's Sitewire state (link, draws, requests, ledger) ----
@@ -116,7 +116,7 @@ router.get('/files/:id', requirePermission('manage_draws'), async (req, res) => 
       `SELECT r.* FROM sitewire_draw_requests r JOIN sitewire_draws d ON d.sitewire_draw_id=r.sitewire_draw_id WHERE d.application_id=$1`, [appId])).rows;
     const ledger = (await db.query(`SELECT * FROM draw_disbursements WHERE application_id=$1 ORDER BY created_at DESC`, [appId])).rows;
     res.json({ link, draws, requests, ledger });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { console.warn('[sitewire] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
 // ---- GET /api/sitewire/files/:id/findings/:drawId — pull full findings (photos + notes) ----
@@ -131,7 +131,7 @@ router.get('/files/:id/findings/:drawId', requirePermission('manage_draws'), asy
   try {
     const findings = await reconcile.fetchDrawFindings(req.params.drawId);
     res.json(findings);
-  } catch (e) { res.status(502).json({ error: e.message }); }
+  } catch (e) { console.warn('[sitewire] upstream error:', e && e.message); res.status(502).json({ error: 'the draw service is temporarily unavailable — nothing was changed; try again shortly' }); }
 });
 
 // ---- Durable inspector media (phase 2a): pull Sitewire's EXPIRING photo/video/PDF URLs into PILOT
@@ -206,7 +206,7 @@ router.get('/files/:id/report', requirePermission('manage_draws'), async (req, r
 router.post('/files/:id/reconcile', requirePermission('manage_draws'), async (req, res) => {
   if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   if (!cfg.sitewireEnabled) return res.status(503).json({ error: 'Sitewire is turned off' });
-  try { res.json(await reconcile.reconcileOne(req.params.id)); } catch (e) { res.status(502).json({ error: e.message }); }
+  try { res.json(await reconcile.reconcileOne(req.params.id)); } catch (e) { console.warn('[sitewire] upstream error:', e && e.message); res.status(502).json({ error: 'the draw service is temporarily unavailable — nothing was changed; try again shortly' }); }
 });
 
 // ---- POST /api/sitewire/files/:id/lifecycle — finish the draw process / mark paid off / re-open ----
@@ -298,7 +298,7 @@ router.get('/files/:id/draw-setup', requirePermission('manage_draws'), async (re
       can_start: !(rule && rule.handled_externally) && Object.values(prereqs).every(Boolean),
       switches: { enabled: cfg.sitewireEnabled, outbound: cfg.sitewireOutboundEnabled, dryrun: cfg.sitewireDryrun },
     });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { console.warn('[sitewire] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
 // ---- POST /files/:id/start-draw — the draw coordinator STARTS the draw lifecycle ----
@@ -632,7 +632,7 @@ router.get('/files/:id/gl-export', requirePermission('manage_draws'), async (req
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="draw-gl-${req.params.id}.xlsx"`);
     res.send(buf);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { console.warn('[sitewire] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
 // ---- inspection + fee rules (admin/setup) ----
@@ -746,7 +746,7 @@ router.post('/rules', requirePermission('platform_setup'), async (req, res) => {
        RETURNING *`,
       [cpId, partnerLabel, b.program || null, method, b.require_sitewire_inspector !== false, !!b.require_capital_partner_approval, !!b.allow_reallocation, feeVirtual, feePhysical, allowVirtual, allowPhysical, handledExternally])).rows[0];
     res.json({ ok: true, rule: row });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { console.warn('[sitewire] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
 // ---- GET /capital-partners — the Sitewire directory, for the smart-link picker ----
@@ -794,7 +794,7 @@ router.post('/partner-links', requirePermission('platform_setup'), async (req, r
        ON CONFLICT (label_norm) DO UPDATE SET label=EXCLUDED.label, sitewire_id=EXCLUDED.sitewire_id, confirmed_by=EXCLUDED.confirmed_by, updated_at=now()`,
       [labelNorm, label, sitewireId, actorId]);
     res.json({ ok: true, label, sitewire_id: sitewireId });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { console.warn('[sitewire] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
 // ---- refresh the capital-partner directory + staff<->Sitewire-user map ----
@@ -804,7 +804,7 @@ router.post('/sync-directory', requirePermission('platform_setup'), async (req, 
     const cp = await reconcile.syncCapitalPartners();
     const staff = await reconcile.syncStaffUsers();
     res.json({ ok: true, capital_partners: cp.count, staff_matched: staff.matched });
-  } catch (e) { res.status(502).json({ error: e.message }); }
+  } catch (e) { console.warn('[sitewire] upstream error:', e && e.message); res.status(502).json({ error: 'the draw service is temporarily unavailable — nothing was changed; try again shortly' }); }
 });
 
 // ---- settings (wire turnaround hours, variance) ----
@@ -900,7 +900,7 @@ router.get('/status', requirePermission(['manage_draws', 'platform_setup']), asy
     const draws = (await db.query(`SELECT count(*)::int c FROM sitewire_draws`)).rows[0].c;
     const openReviews = (await db.query(`SELECT count(*)::int c FROM sync_review_queue WHERE field_key='sitewire' AND status='open'`)).rows[0].c;
     res.json({ enabled: cfg.sitewireEnabled, outbound: cfg.sitewireOutboundEnabled, dryrun: cfg.sitewireDryrun, linked_files: linked, mirrored_draws: draws, open_reviews: openReviews });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { console.warn('[sitewire] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
 // ===================================================================================
@@ -955,7 +955,7 @@ router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, r
       // so the desk can show a proactive read-only banner + disable write buttons when writes are off
       // (an approve/release/finding write 503s unless BOTH the master switch and the write gate are on).
       switches: { enabled: cfg.sitewireEnabled, outbound: cfg.sitewireOutboundEnabled, dryrun: cfg.sitewireDryrun } });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { console.warn('[sitewire] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
 // ---- GET /portfolio — exposure / pacing dashboard across the actor's files ----
@@ -1011,7 +1011,7 @@ router.get('/portfolio', requirePermission('manage_draws'), async (req, res) => 
       pct_complete: budget > 0 ? Math.round((drawn / budget) * 1000) / 10 : 0, pending_requested_cents: pendingReq, pending_count: pendingCount, high_risk_count: highRisk,
       flagged: alerts.summary.flagged, alert_codes: alerts.summary.by_code },
       files: files.sort((a, b) => (b.alerts.length - a.alerts.length) || b.pending_count - a.pending_count || b.remaining_cents - a.remaining_cents) });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { console.warn('[sitewire] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
 // Assemble a file's complete draw audit trail (examiner-ready) from every source we record:
@@ -1114,14 +1114,14 @@ router.get('/files/:id/draws/:drawId/packet', requirePermission('manage_draws'),
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="draw-packet-${req.params.drawId}.xlsx"`);
     res.send(buf);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { console.warn('[sitewire] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
 // ---- GET /files/:id/activity — the draw audit trail (examiner-ready) ----
 router.get('/files/:id/activity', requirePermission('manage_draws'), async (req, res) => {
   if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   try { res.json({ activity: await buildDrawActivity(req.params.id) }); }
-  catch (e) { res.status(500).json({ error: e.message }); }
+  catch (e) { console.warn('[sitewire] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
 // ---- GET /files/:id/activity/export — audit trail as an Excel workbook ----
@@ -1135,7 +1135,7 @@ router.get('/files/:id/activity/export', requirePermission('manage_draws'), asyn
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="draw-activity-${req.params.id}.xlsx"`);
     res.send(buf);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { console.warn('[sitewire] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
 // ---- POST /files/:id/lien-waivers-setting — turn the lien-waiver workflow on/off for THIS project ----
@@ -1262,7 +1262,7 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
     await notify.notifyAppStaff(appId, { type: 'draw_findings', title: 'Draw findings delivered to borrower',
       body: `Inspection findings for ${addr} were delivered to the borrower to accept or dispute.`, applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
     res.json({ ok: true, ...result });
-  } catch (e) { res.status(502).json({ error: e.message }); }
+  } catch (e) { console.warn('[sitewire] upstream error:', e && e.message); res.status(502).json({ error: 'the draw service is temporarily unavailable — nothing was changed; try again shortly' }); }
 });
 
 // ---- GET /findings/:findingId — full finding detail (staff) ----
@@ -1392,7 +1392,7 @@ router.post('/files/:id/change-requests', requirePermission('manage_draws'), asy
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
       [cr.id, appId, JSON.stringify(proposedPayload), JSON.stringify(plan.cells), plan.totals.net_zero, phase === 'after_ctc', plan.needs_capital_partner, plan.needs_capital_partner ? 'pending' : null]);
     res.json({ ok: true, change_request_id: cr.id, plan });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { console.warn('[sitewire] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
 // ---- POST /change-requests/:crId/capital-partner — record capital-partner decision ----
@@ -1459,7 +1459,7 @@ router.post('/change-requests/:crId/apply', requirePermission('manage_draws'), a
     await notify.notifyAppStaff(appId, { type: 'sow_reallocation', title: 'Scope-of-Work change needs re-registration', badge: { text: 'Action needed', tone: 'action' },
       body: 'A Scope-of-Work change alters the construction total. Re-register the product on the new budget in Products & Pricing before it flows to draws.', applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
     res.json({ ok: true, applied: false, requires_reregister: true, plan });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { console.warn('[sitewire] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
 // ---- GET /change-requests/:crId/export — Version 1 vs Version 2 as an Excel workbook ----
