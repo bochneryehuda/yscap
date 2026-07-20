@@ -2912,6 +2912,32 @@ router.post('/applications/:id/assign', async (req, res) => {
         body: `${req.actor.name || 'An admin'} assigned this file to you as loan officer. The file details are below — open it to get started.`,
         applicationId: req.params.id, ctaLabel: 'Open the loan file',
         link: `/internal/app/${req.params.id}` });
+      // "Meet your loan officer" (owner-directed 2026-07-20): when the officer
+      // CHANGES to a new person, introduce them to the borrower so the
+      // relationship is personal and they know exactly who to reach (fileContext
+      // now auto-adds the officer's contact card to every borrower email, so the
+      // copy just needs to be the warm intro). Fires once per real change.
+      if (String(cur.rows[0].loan_officer_id || '') !== String(loanOfficerId)) {
+        try {
+          const o = await db.query(`SELECT full_name, title, email, phone, cell FROM staff_users WHERE id=$1`, [loanOfficerId]);
+          const oa = o.rows[0] || {};
+          const oname = oa.full_name || 'Your loan officer';
+          const reach = [oa.cell || oa.phone, oa.email].filter(Boolean).join(' or ');
+          await notify.notifyAppBorrowers(req.params.id, {
+            type: 'officer_assigned',
+            title: `${oname} is your loan officer`,
+            body: `${oname}${oa.title ? `, ${oa.title},` : ''} will be your point of contact at YS Capital Group, guiding your loan from here through closing.`,
+            lines: [
+              reach ? `You can reach ${oname.split(' ')[0]} directly at ${reach} — or just reply to this email and it goes straight to your loan team.`
+                    : `Just reply to this email any time and it goes straight to your loan team.`,
+              'Your loan officer and their contact details are always shown at the bottom of these emails and in your portal.',
+            ],
+            applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Open your file',
+            from: require('../lib/email').fromWithName(oname),
+            replyTo: oa.email || null,
+          });
+        } catch (_) { /* intro email is best-effort */ }
+      }
       await audit(req, 'assign_application', 'application', req.params.id, { from: cur.rows[0].loan_officer_id || null, to: loanOfficerId });
     }
     if (processorId) {

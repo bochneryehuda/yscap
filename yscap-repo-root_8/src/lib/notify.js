@@ -34,6 +34,8 @@ const KICKER_OF = {
   new_application: 'New application', unassigned_application: 'Needs assignment',
   new_lead: 'New lead', sync_review: 'Sync review', security: 'Security', account: 'Account',
   sharepoint_backlog_slo: 'Document sync', inbound_reply: 'File reply',
+  officer_assigned: 'Your loan officer', all_caught_up: 'You’re all set',
+  milestone: 'Milestone', digest: 'Your loan file',
 };
 
 /**
@@ -163,6 +165,9 @@ const CATEGORY_OF = {
   // Sitewire draw-management events (findings delivery, accept/dispute, SOW reallocations)
   draw_findings: 'draws', draw_accepted: 'draws', draw_disputed: 'draws',
   sow_reallocation: 'draws', sow_change_request: 'draws',
+  // New borrower touchpoints (owner-directed 2026-07-20)
+  officer_assigned: 'status_updates', all_caught_up: 'status_updates',
+  milestone: 'status_updates', digest: 'reminders',
 };
 // These always reach the borrower in-app even if the category is muted — they
 // require action and can't be silently dropped (email can still be turned off).
@@ -190,6 +195,10 @@ const BORROWER_MAJOR_EMAIL = new Set([
   // The borrower must review inspection findings and accept/dispute within the wire SLA —
   // this is a borrower action item, so it emails them (not just in-app).
   'draw_findings',
+  // New borrower touchpoints (owner-directed 2026-07-20): meet-your-officer,
+  // caught-up reassurance, key milestones, and the weekly outstanding-items
+  // digest. Each is a deliberate, low-frequency moment — not busywork.
+  'officer_assigned', 'all_caught_up', 'milestone', 'digest',
 ]);
 
 /** Notify a borrower, respecting their per-category preferences. */
