@@ -62,6 +62,10 @@ async function reconcileOne(appId) {
   const draws = (prop.budget && prop.budget.draws) || [];
   let n = 0;
   for (const d of draws) {
+   // A poison draw (null id, bad cents, a constraint violation) must skip to the NEXT draw — not throw
+   // out of the whole file's reconcile, which would strand every LATER draw's mirror on that file. Park
+   // it (deduped) so it's visible, never silently dropped.
+   try {
     // full detail for requests + events
     let full;
     try { full = await client.getDraw(d.id); } catch (_) { full = d; }
@@ -97,6 +101,11 @@ async function reconcileOne(appId) {
       }
     }
     n++;
+   } catch (drawErr) {
+     const emsg = db.describeError ? db.describeError(drawErr) : (drawErr && drawErr.message) || String(drawErr);
+     console.warn(`[sitewire] reconcile: skipped a bad draw row (draw ${d && d.id}): ${emsg}`);
+     try { await require('./orchestrator').park({ appId, dedupe: `drawrow:${d && d.id}`, reason: `sitewire_reconcile_draw_error: could not mirror Sitewire draw ${d && d.id} — ${String(emsg).slice(0, 200)}. It won't appear on the desk until reconciled by hand.` }); } catch (_) {}
+   }
   }
   await db.query(`UPDATE sitewire_property_links SET last_reconciled_at=now() WHERE application_id=$1`, [appId]);
   // refresh the advisory draw-risk snapshot (best-effort — never fail the reconcile on it)

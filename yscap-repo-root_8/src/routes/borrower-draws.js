@@ -13,7 +13,10 @@
  * is enforced on every read/write. Nothing is guessed — a dispute is queued for a human.
  */
 const express = require('express');
-const router = express.Router();
+// safe-router forwards any async-handler rejection to the global JSON error middleware
+// (fast generic 500/503) instead of letting the request hang — Express 4 does not catch
+// rejected promises from async handlers. Every borrower draw write must be hang-proof.
+const router = require('../lib/safe-router')();
 const db = require('../db');
 const { requireAuth, requireBorrower } = require('../auth');
 const rollupMod = require('../sitewire/rollup');
@@ -50,7 +53,7 @@ router.get('/draws', async (req, res) => {
         WHERE a.deleted_at IS NULL AND (${OWN_FILE_SQL('a', '$1')})
         ORDER BY d.updated_at DESC NULLS LAST LIMIT 200`, [me(req)])).rows;
     res.json({ draws: rows });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(500).json({ error: 'Something went wrong — please try again.' }); }
 });
 
 // ---- GET /draws/:appId/rollup — the unified per-line picture (borrower-safe) ----
@@ -72,7 +75,7 @@ router.get('/draws/:appId/rollup', async (req, res) => {
       });
     }
     res.json({ rollup });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(500).json({ error: 'Something went wrong — please try again.' }); }
 });
 
 // ---- GET /draws/:appId/findings — inspection findings delivered for this file ----
@@ -100,7 +103,7 @@ router.get('/draws/:appId/findings', async (req, res) => {
     out.push({ ...f, lines });
   }
   res.json({ findings: out });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(500).json({ error: 'Something went wrong — please try again.' }); }
 });
 
 // ---- POST /findings/:findingId/accept — borrower accepts (IN PILOT) → starts the wire SLA ----
@@ -180,7 +183,7 @@ router.post('/draws/:appId/change-request', async (req, res) => {
       body: 'The borrower proposed a Scope-of-Work change. Review it on the file before it flows to draws.', applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
     // borrower-safe: never echo capital-partner review status detail back to the borrower
     res.json({ ok: true, submitted: true, net_zero: plan.totals.net_zero });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(500).json({ error: 'Something went wrong — please try again.' }); }
 });
 
 async function wireTurnaroundHours() {

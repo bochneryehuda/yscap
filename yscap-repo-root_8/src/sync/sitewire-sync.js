@@ -54,11 +54,23 @@ async function pushOutboxOnce() {
       RETURNING id, entity_id, op, payload, attempts`);
   if (!claim.rowCount) return false;
   const job = claim.rows[0];
+  // Heartbeat the claimed job's updated_at while the push runs, so the 5-minute 'processing' reclaim
+  // floor (the claim's OR-branch above) can't catch a still-running slow push — a patient outage retry
+  // (600s each) can exceed 5 min — and let a concurrent drain double-run it (mirror the ClickUp worker).
+  const heartbeat = setInterval(() => {
+    db.query(`UPDATE sync_queue SET updated_at=now() WHERE id=$1 AND status='processing'`, [job.id]).catch(() => {});
+  }, 120000);
   try {
-    let res;
-    if (job.op === 'push_file') res = await orchestrator.pushFile(job.entity_id, { force: false });
-    else res = { skipped: `unknown op ${job.op}` };
-    await db.query(`UPDATE sync_queue SET status='done', updated_at=now() WHERE id=$1`, [job.id]);
+    if (job.op === 'push_file') {
+      await orchestrator.pushFile(job.entity_id, { force: false });
+      await db.query(`UPDATE sync_queue SET status='done', updated_at=now() WHERE id=$1`, [job.id]);
+    } else {
+      // An unrecognized op is a bug / unsupported job — DEAD-LETTER it and park a visible review row.
+      // Never mark it 'done' (that silently DROPS the work); never retry it (retrying won't help).
+      const msg = `unknown sitewire outbox op '${job.op}'`;
+      await db.query(`UPDATE sync_queue SET status='dead', attempts=$2, last_error=$3, updated_at=now() WHERE id=$1`, [job.id, (job.attempts || 0) + 1, msg]);
+      try { await orchestrator.park({ appId: job.entity_id, reason: `sitewire_unknown_op: ${msg} — not processed (dead-lettered for review)`, dedupe: 'unknownop' }); } catch (_) {}
+    }
     return true;
   } catch (e) {
     const outage = e.code === 'SITEWIRE_CIRCUIT_OPEN' || e.retryable === true;
@@ -73,6 +85,8 @@ async function pushOutboxOnce() {
       await db.query(`UPDATE sync_queue SET status='queued', attempts=$2, last_error=$3, run_after=now() + ($4 || ' seconds')::interval, updated_at=now() WHERE id=$1`, [job.id, attempts, msg, String(delaySec)]);
     }
     return true;
+  } finally {
+    clearInterval(heartbeat);
   }
 }
 
@@ -107,7 +121,14 @@ function start() {
   const drain = async (fn, name) => { try { let guard = 0; while (await fn() && guard++ < 500) {} } catch (e) { console.warn('[sitewire]', name, 'error:', e.message); } };
   // Start the push drain when OUTBOUND is on OR DRYRUN is on — so the staged step "ENABLED=1, OUTBOUND=0,
   // DRYRUN=1" actually previews the push bodies (log-not-send) without first turning on real writes.
-  if (cfg.sitewireOutboundEnabled || cfg.sitewireDryrun) setInterval(() => drain(pushOutboxOnce, 'push'), 4000);
+  // Non-reentrant: a new 4s tick must NOT stack on a still-running drain (a slow push could otherwise be
+  // double-driven), so guard with a flag and only re-arm after the previous drain settles.
+  let draining = false;
+  if (cfg.sitewireOutboundEnabled || cfg.sitewireDryrun) setInterval(() => {
+    if (draining) return;
+    draining = true;
+    drain(pushOutboxOnce, 'push').finally(() => { draining = false; });
+  }, 4000);
   setInterval(reconcileOnce, Math.max(60, cfg.sitewirePollSec) * 1000);
   setTimeout(reconcileOnce, 8000);
 }

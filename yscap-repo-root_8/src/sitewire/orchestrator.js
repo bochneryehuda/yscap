@@ -199,7 +199,11 @@ function resolveInspection(link, rule) {
   if (method === 'mobile' && !allowVirtual) method = allowPhysical ? 'traditional' : dflt;
   if (method === 'traditional' && !allowPhysical) method = allowVirtual ? 'mobile' : dflt;
   const feeKind = T.feeKindFor(method);
-  const ruleFee = rule ? (feeKind === 'physical' ? (rule.fee_cents_physical != null ? rule.fee_cents_physical : rule.fee_cents_virtual) : rule.fee_cents_virtual) : 29900;
+  const ruleFeeRaw = rule ? (feeKind === 'physical' ? (rule.fee_cents_physical != null ? rule.fee_cents_physical : rule.fee_cents_virtual) : rule.fee_cents_virtual) : 29900;
+  // Belt-and-suspenders: clamp the rule fee to a finite, non-negative amount so a bad stored fee
+  // (e.g. a negative physical fee that slipped in) can NEVER push a negative processing_fee_cents.
+  const ruleFeeN = Number(ruleFeeRaw);
+  const ruleFee = Number.isFinite(ruleFeeN) && ruleFeeN >= 0 ? ruleFeeN : (feeKind === 'physical' && rule && Number.isFinite(Number(rule.fee_cents_virtual)) && Number(rule.fee_cents_virtual) >= 0 ? Number(rule.fee_cents_virtual) : 29900);
   // The coordinator's per-file fee override (Start-draw screen) wins over the rule fee when set.
   // NULL / negative / non-finite falls back to the rule fee — a bad value can never zero the fee.
   const override = link && link.fee_cents_override != null ? Number(link.fee_cents_override) : null;

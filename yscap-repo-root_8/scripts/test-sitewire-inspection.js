@@ -62,4 +62,19 @@ r = resolveInspection({ inspection_method: null }, bothRule);
 assert.strictEqual(r.method, 'mobile');
 ok('null stored method -> rule default');
 
+// 8) A NEGATIVE stored physical fee is clamped — it can NEVER push a negative processing_fee_cents.
+const negPhys = { inspection_method: 'traditional', allow_virtual: true, allow_physical: true, fee_cents_virtual: 29900, fee_cents_physical: -5000 };
+r = resolveInspection({ inspection_method: 'traditional' }, negPhys);
+assert.strictEqual(r.method, 'traditional');
+assert.ok(r.feeCents >= 0, 'negative physical fee never yields a negative fee');
+assert.strictEqual(r.feeCents, 29900, 'negative physical fee falls back to the virtual fee (never < 0)');
+ok('fee: a negative on-site fee is clamped, falls back to the virtual fee (never negative)');
+
+// 9) A negative VIRTUAL fee (both-negative) clamps to the safe $299 default, never negative.
+const negBoth = { inspection_method: 'mobile', allow_virtual: true, allow_physical: true, fee_cents_virtual: -100, fee_cents_physical: -5000 };
+r = resolveInspection(null, negBoth);
+assert.ok(r.feeCents >= 0, 'a negative virtual fee never yields a negative fee');
+assert.strictEqual(r.feeCents, 29900, 'both-negative fees clamp to the $299 default');
+ok('fee: both-negative rule fees clamp to the $299 default (never negative)');
+
 console.log(`\nAll ${n} Sitewire inspection-policy checks passed.`);
