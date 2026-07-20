@@ -37,7 +37,7 @@ const { tieoutForFile } = require('../lib/underwriting/file-review');
 const { underwriterActions } = require('../lib/underwriting/actions');
 const { falseAlarmReport } = require('../lib/underwriting/feedback');
 const { classify } = require('../lib/underwriting/classify');
-const { conditionsForDoc, purposeForDoc, docReadiness, fileConditionCoverage } = require('../lib/underwriting/condition-map');
+const { conditionsForDoc, purposeForDoc, docReadiness, fileConditionCoverage, docTypesForCode, expectedDocTypeForCode } = require('../lib/underwriting/condition-map');
 const { ANALYZER_VERSION, subjectHash } = require('../lib/underwriting/fingerprint');
 const { assessFile: assessStaleness } = require('../lib/underwriting/staleness');
 const { computeMetrics } = require('../lib/underwriting/metrics');
@@ -175,6 +175,42 @@ router.get('/:appId', async (req, res, next) => {
     const mctx = await fileView.loadContext(db, app.id);
     const a = (mctx && mctx.app) || {};
 
+    // ----- Documents ON FILE, linked to their condition (the "where to find each document" bridge)
+    // Every uploaded document is filed under a checklist condition; that condition tells us which
+    // document type it is EXPECTED to be (the title commitment lives under the title condition, the
+    // insurance binder under the insurance condition, …). We walk that link so the desk knows a
+    // document is present the moment it's uploaded — never a false "missing" just because the AI
+    // hasn't read it yet — and so the auto-reader has a concrete queue of what to read, as what type,
+    // for each condition. Current, non-rejected documents only; chat attachments excluded.
+    const docsOnFile = await db.query(
+      `SELECT d.id, d.filename, d.doc_kind, d.checklist_item_id, t.code AS condition_code,
+              COALESCE(t.label, t.code) AS condition_label
+         FROM documents d
+         LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
+         LEFT JOIN checklist_templates t ON t.id = ci.template_id
+        WHERE d.application_id = $1 AND d.is_current = true
+          AND COALESCE(d.review_status, '') <> 'rejected'
+          AND COALESCE(d.source_type, '') <> 'chat_attachment'
+        ORDER BY d.created_at`, [app.id]);
+    const analyzedDocIds = new Set(exts.rows.filter((e) => e.document_id).map((e) => e.document_id));
+    // Map each on-file document to its EXPECTED type (from the condition it's filed under, falling
+    // back to its doc_kind) and whether it's been read. `attached` = the set of document types that
+    // have a real document present, feeding the completeness engine so "missing" means truly-absent.
+    const attached = new Set();
+    const documentsOnFile = [];
+    const autoReadQueue = [];
+    for (const d of docsOnFile.rows) {
+      const expectedType = expectedDocTypeForCode(d.condition_code) ||
+        (d.doc_kind ? expectedDocTypeForCode(d.doc_kind) : null);
+      const analyzed = analyzedDocIds.has(d.id);
+      if (expectedType) attached.add(expectedType);
+      const row = { documentId: d.id, filename: d.filename, conditionCode: d.condition_code || null,
+        conditionLabel: d.condition_label || null, docKind: d.doc_kind || null, expectedType, analyzed };
+      documentsOnFile.push(row);
+      // Anything present but not yet read (and that maps to a readable type) is the auto-read queue.
+      if (!analyzed && expectedType) autoReadQueue.push(row);
+    }
+
     // Data-comparison / tie-out over the file's current extractions + the appraisal.
     const tieout = await tieoutForFile(db, app.id, mctx);
     const cross = tieout.discrepancies;
@@ -248,7 +284,7 @@ router.get('/:appId', async (req, res, next) => {
     // against what's analyzed on file → outstanding-items list + a completeness %. A VIEW only.
     const completeness = assessCompleteness(
       { isEntity, isAssignment: !!a.is_assignment },
-      exts.rows, ff.findings);
+      exts.rows, ff.findings, attached);
 
     // Reasonability / data-integrity: value-level plausibility of what the documents and the file
     // actually say (a negative price, a loan bigger than the purchase, an ID that expired before it
@@ -321,7 +357,12 @@ router.get('/:appId', async (req, res, next) => {
         findings: experience.findings.map(decorate) } : null,
       completeness: { completenessPct: completeness.completenessPct, counts: completeness.counts,
         stipulations: completeness.stipulations, outstanding: completeness.outstanding,
-        ctcBlockers: completeness.ctcBlockers, docsComplete: completeness.docsComplete },
+        ctcBlockers: completeness.ctcBlockers, docsComplete: completeness.docsComplete,
+        trulyMissing: completeness.trulyMissing },
+      // The documents actually ON FILE (linked to their condition) + which still need reading — so
+      // the desk shows "on file" vs "not uploaded", and the reader knows what to auto-read.
+      documentsOnFile,
+      autoReadPending: autoReadQueue.length,
       risk: { score: risk.score, band: risk.band, sarRecommended: risk.sarRecommended,
         reasons: risk.reasons, finding: risk.finding ? decorate(risk.finding) : null },
       amendments: { effective: amendments.effective, provenance: amendments.provenance,

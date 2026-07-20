@@ -85,4 +85,42 @@ const exts = (arr) => arr.map(([doc_type, status = 'analyzed', confidence = 'ana
   assert.strictEqual(cr.gating, 'PTD');
 }
 
-console.log('test-underwriting-completeness: required-doc matrix + stipulation status + CTC blockers pass');
+// ---- ON_FILE: a document uploaded to its condition but NOT yet read is 'on_file', never a false
+//      'missing' (owner-reported 2026-07-20: "files that have all the documents still show missing").
+{
+  // Nothing uploaded, nothing analyzed → truly missing (unchanged behavior).
+  const none = assessCompleteness({ isEntity: false, isAssignment: false }, [], []);
+  assert.strictEqual(none.stipulations.find((s) => s.docType === 'government_id').status, 'missing', 'no upload, no read → missing');
+  assert.ok(none.trulyMissing.some((s) => s.docType === 'government_id'), 'truly-missing list includes it');
+
+  // The SAME file, but the government ID + purchase contract are UPLOADED to their conditions
+  // (attached) though not yet analyzed → 'on_file', and OUT of the truly-missing list.
+  const attached = new Set(['government_id', 'purchase_contract']);
+  const onFile = assessCompleteness({ isEntity: false, isAssignment: false }, [], [], attached);
+  assert.strictEqual(onFile.stipulations.find((s) => s.docType === 'government_id').status, 'on_file', 'uploaded but unread → on_file');
+  assert.strictEqual(onFile.stipulations.find((s) => s.docType === 'purchase_contract').status, 'on_file');
+  assert.ok(!onFile.trulyMissing.some((s) => s.docType === 'government_id'), 'an on_file doc is NOT truly missing');
+  assert.strictEqual(onFile.counts.on_file, 2, 'both attached docs counted on_file');
+  // Appraisal still not uploaded → still missing (only the attached ones flipped).
+  assert.strictEqual(onFile.stipulations.find((s) => s.docType === 'appraisal').status, 'missing');
+  // on_file is still "outstanding" (not cleared) — it just isn't a false "missing".
+  assert.ok(onFile.outstanding.some((s) => s.docType === 'government_id'));
+
+  // Once READ + clean, it's cleared regardless of the attached set (analysis wins).
+  const read = assessCompleteness({ isEntity: false }, [{ doc_type: 'government_id', status: 'analyzed', confidence: 'analyzed', document_id: 'd1' }], [], attached);
+  assert.strictEqual(read.stipulations.find((s) => s.docType === 'government_id').status, 'cleared', 'analyzed + clean → cleared');
+  // Accepts an array too (not just a Set).
+  const arr = assessCompleteness({ isEntity: false }, [], [], ['title']);
+  assert.strictEqual(arr.stipulations.find((s) => s.docType === 'title').status, 'on_file', 'attached accepts an array');
+}
+
+// ---- condition CODE -> expected docType (the "where to find each document" inverse map) ----
+{
+  const cm = require('../src/lib/underwriting/condition-map');
+  assert.strictEqual(cm.expectedDocTypeForCode('rtl_cond_title'), 'title', 'the title condition holds the title commitment');
+  assert.strictEqual(cm.expectedDocTypeForCode('rtl_cond_insurance'), 'insurance', 'the insurance condition holds evidence of insurance');
+  assert.ok(cm.docTypesForCode('rtl_p1_llc').length >= 1, 'the entity condition holds one or more entity docs');
+  assert.deepStrictEqual(cm.docTypesForCode('nope_not_a_code'), [], 'an unknown code maps to nothing (never guesses)');
+}
+
+console.log('test-underwriting-completeness: required-doc matrix + stipulation status + CTC blockers + on_file/linkage pass');
