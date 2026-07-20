@@ -59,7 +59,7 @@ async function enrichFileOpts(opts, audience) {
   const ctx = opts._fileCtx || await fileContext(opts.applicationId);
   if (!ctx) { opts._enriched = true; return opts; }
   const out = { ...opts, _enriched: true };
-  if (out.subjectTag == null) out.subjectTag = ctx.subjectTag || null;
+  if (out.subjectTag == null) out.subjectTag = (audience === 'borrower' ? (ctx.borrowerSubjectTag || ctx.subjectTag) : ctx.subjectTag) || null;
   if (!Array.isArray(out.meta) || !out.meta.length) {
     out.meta = audience === 'borrower' ? ctx.borrowerMeta : ctx.meta;
   }
@@ -540,10 +540,16 @@ async function fileContext(appId, extraMeta = []) {
       a.loan_type ? { label: 'Loan type', value: a.loan_type } : null,
       a.loan_amount != null ? { label: 'Loan amount', value: money(a.loan_amount) } : null,
     ].filter(Boolean);
-    // Short tag for the SUBJECT line: loan number (when assigned) + street, kept
-    // concise so it reads cleanly in an inbox.
-    const subjectTag = [hasLoanNo ? loanNo : null, street].filter(Boolean).join(' · ') || (hasLoanNo ? loanNo : addr);
-    return { label: `${loanNo} · ${addr}`, addr, street, loanNo, hasLoanNo, borrowerName, officer, officerRow, meta, borrowerMeta, subjectTag };
+    // Short tag appended to the SUBJECT line. Owner's preferred layout
+    // (2026-07-20): loan number · borrower name · property (street), kept concise
+    // so it reads cleanly in an inbox. The BORROWER's OWN email drops the name
+    // (it's their file — showing them their own name is redundant): loan number ·
+    // street. enrichFileOpts picks the right one by audience; the template's dedup
+    // guard makes sure none of these segments ever doubles a title that already
+    // names the file.
+    const subjectTag = [hasLoanNo ? loanNo : null, borrowerName, street].filter(Boolean).join(' · ') || (hasLoanNo ? loanNo : addr);
+    const borrowerSubjectTag = [hasLoanNo ? loanNo : null, street].filter(Boolean).join(' · ') || (hasLoanNo ? loanNo : addr);
+    return { label: `${loanNo} · ${addr}`, addr, street, loanNo, hasLoanNo, borrowerName, officer, officerRow, meta, borrowerMeta, subjectTag, borrowerSubjectTag };
   } catch (_) { return null; }
 }
 
