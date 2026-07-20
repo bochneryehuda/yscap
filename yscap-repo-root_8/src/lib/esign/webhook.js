@@ -245,6 +245,12 @@ async function reconcileEnvelope(db, docusign, storage, envelopeRow) {
       `UPDATE esign_envelopes
           SET status = $2, ${map.col} = COALESCE(${map.col}, now()), last_event_at = now(), updated_at = now()
         WHERE id = $1`, [envelopeRow.id, map.status]);
+    // MILESTONE: the borrower(s) finished signing but the lender still needs to
+    // counter-sign. The envelope stays 'sent' at DocuSign through this whole window,
+    // so without this the file's team never learns the deal is now waiting on THEM
+    // (owner-directed 2026-07-20). Fire exactly once (countersign_notified_at guard).
+    try { await maybeNotifyCountersign(db, envelopeRow); }
+    catch (e) { console.warn(`[esign] countersign notify failed for ${envelopeRow.id}: ${e.message}`); }
   } else if (status) {
     // Unrecognized DocuSign status (e.g. 'timedout', 'authoritativecopy'). Don't
     // silently ignore it — that would leave last_event_at stale and hot-loop the
@@ -271,11 +277,51 @@ async function notifyTerminal(db, envelopeRow, status, voidReason) {
     title = `E-signature cancelled/expired — ${label}`;
     body = `The ${label} is no longer active${voidReason ? ` (${voidReason})` : ''} and nothing was signed. Open the file to re-issue it if the borrower still needs to sign.`;
   } else { // completed
-    title = `Documents signed — ${label}`;
-    body = `The borrower completed signing the ${label}. The signed copies are now on the file.`;
+    title = `Fully signed — ${label}`;
+    body = envelopeRow.countersign_required
+      // A counter-signed package completes only AFTER the lender's admin counter-signs.
+      ? `The ${label} is fully executed — the borrower and the lender have both signed. The signed copies + Certificate of Completion are now on the file.`
+      : `The borrower completed signing the ${label}. The signed copy + Certificate of Completion are now on the file.`;
   }
   const opts = {
     type: 'status_change', title, body, applicationId: envelopeRow.application_id,
+    link: `${cfg.appUrl || ''}${cfg.portalPath}/#/internal/app/${envelopeRow.application_id}`,
+  };
+  const sent = await notify.notifyAppStaff(envelopeRow.application_id, opts);
+  if (!sent || !sent.length) await notify.notifyAdmins(opts);   // unassigned file → admins
+}
+
+/**
+ * MILESTONE notify: the borrower(s) finished signing (routing order 1) but the lender's
+ * admin counter-signature (routing order 2) is still outstanding. DocuSign keeps the
+ * envelope 'sent' through this whole window, so nothing else surfaces "now waiting on
+ * US" to the file's team. Fired at most ONCE per envelope (countersign_notified_at),
+ * and only for a counter-signed package on a real file that hasn't gone terminal.
+ */
+async function maybeNotifyCountersign(db, envelopeRow) {
+  if (!envelopeRow.countersign_required || !envelopeRow.application_id) return;
+  const recs = (await db.query(
+    `SELECT routing_order, signed_at, declined_at, status FROM esign_recipients WHERE envelope_row_id = $1`,
+    [envelopeRow.id])).rows;
+  const isSigned = (r) => !!(r.signed_at || r.status === 'completed' || r.status === 'signed');
+  const isDeclined = (r) => !!(r.declined_at || r.status === 'declined');
+  const order1 = recs.filter((r) => Number(r.routing_order) === 1);
+  const order1Done = order1.length > 0 && order1.every(isSigned);
+  const adminPending = recs.some((r) => Number(r.routing_order) >= 2 && !isSigned(r) && !isDeclined(r));
+  if (!(order1Done && adminPending)) return;
+  // Fire exactly once — the poller re-reads this envelope every ~60s while it waits.
+  const won = await db.query(
+    `UPDATE esign_envelopes SET countersign_notified_at = now()
+      WHERE id = $1 AND countersign_notified_at IS NULL RETURNING id`, [envelopeRow.id]);
+  if (!won.rows.length) return;
+  const notify = require('../notify');
+  const cfg = require('../../config');
+  const label = PURPOSE_LABEL[envelopeRow.purpose] || 'e-signature package';
+  const opts = {
+    type: 'status_change',
+    title: `Borrower signed — counter-signature needed on the ${label}`,
+    body: `The borrower has signed the ${label}. It now needs the lender's counter-signature to finish. The signer has been emailed the counter-signing link; open the file's e-signature section to counter-sign.`,
+    applicationId: envelopeRow.application_id,
     link: `${cfg.appUrl || ''}${cfg.portalPath}/#/internal/app/${envelopeRow.application_id}`,
   };
   const sent = await notify.notifyAppStaff(envelopeRow.application_id, opts);

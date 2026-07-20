@@ -66,11 +66,11 @@ can surface in the roll-up but can never flip the fatal clear-to-close gate.
   `Retry-After`, an error taxonomy (retry only 408/429/5xx + transient network), a per-endpoint
   circuit breaker (fail-fast + single half-open probe). Never throws. Surfaced on `/api/health`
   (`documentAi` block).
-- **Analyze-once idempotency** (`db/172`, `fingerprint.js`): skip a paid re-read when the content
+- **Analyze-once idempotency** (`db/174`, `fingerprint.js`): skip a paid re-read when the content
   hash + doc type + analyzer version + file-state fingerprint (incl. `today`, so date-relative
   fatals can't be served stale) are unchanged. Scoped per-application.
 - **Clear-to-close gate**: `underwriting_review_cleared` — enforced in the app layer
-  (`staff.js signOffGate`, `file-review.js fileFatalCount`) AND a DB trigger (`db/171`). No open
+  (`staff.js signOffGate`, `file-review.js fileFatalCount`) AND a DB trigger (`db/173`). No open
   fatal document finding (stored + tie-out) can be bypassed. Granting an EXCEPTION on a fatal
   blocking finding needs `waive_conditions` (`exceptions.js`), above the base `sign_off_conditions`.
 - **PII**: government-ID/account/EIN numbers masked to last-4 before storage (`store.js`, GLBA).
@@ -78,7 +78,7 @@ can surface in the roll-up but can never flip the fatal clear-to-close gate.
 ## Schema
 
 `db/169` (extractions + findings + the gate condition), `db/170` (suggested actions + opens
-condition), `db/171` (CTC guard trigger), `db/172` (idempotency columns). All idempotent.
+condition), `db/173` (CTC guard trigger), `db/174` (idempotency columns). All idempotent.
 
 ## Route (`src/routes/underwriting.js`, `/api/underwriting`, staff-only, per-file scoped)
 

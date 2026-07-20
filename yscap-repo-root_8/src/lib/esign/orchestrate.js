@@ -32,6 +32,7 @@ const sendEngine = require('./send');
 const gate = require('./gate');
 const docgen = require('./docgen');
 const onDeadLetter = require('./dead-letter');
+const { notifyReadyToSign } = require('./notify-signers');
 const { parseAddress } = require('../address');
 const cfg = require('../../config');
 
@@ -91,6 +92,24 @@ async function loadApplication(db, applicationId) {
       WHERE a.id = $1 AND a.deleted_at IS NULL`, [applicationId]);
   if (!r.rows.length) { const e = new Error('Application not found'); e.retryable = false; throw e; }
   return r.rows[0];
+}
+
+/**
+ * The file's team to COPY as viewers on the envelope — the active loan officer +
+ * processor + full-access assistants (application_assignees, #113). Returns
+ * de-duplicated { email, name } (one per distinct email). Owner-directed 2026-07-20:
+ * "add the loan officer and the processor as viewers for every envelope … so they can
+ * see everything happens in real life."
+ */
+async function loadCcViewers(db, applicationId) {
+  if (!applicationId) return [];
+  const r = await db.query(
+    `SELECT DISTINCT ON (lower(su.email)) su.email, su.full_name
+       FROM application_assignees aa JOIN staff_users su ON su.id = aa.staff_id
+      WHERE aa.application_id = $1 AND aa.removed_at IS NULL AND su.is_active = true
+        AND su.email IS NOT NULL AND su.email <> ''
+      ORDER BY lower(su.email)`, [applicationId]);
+  return r.rows.map((x) => ({ email: x.email, name: x.full_name || x.email }));
 }
 
 /** Resolve the checklist_item id for a template code on this application (or null). */
@@ -638,10 +657,31 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
     const e = new Error('Recipient roster not fully seeded yet — will retry.'); e.retryable = true; throw e;
   }
 
+  // Copy the file's team (loan officer + processor + assistants) as VIEWERS on every
+  // envelope so they receive the completed, signed copy from DocuSign and can watch it
+  // in real time (owner-directed 2026-07-20). Best-effort: deduped against the signer
+  // emails, with recipientIds + routing order AFTER the signers so they receive the
+  // fully-executed copy. A bad/missing officer email is dropped and NEVER blocks the
+  // borrower's send (buildEnvelopeDefinition also filters invalid CC entries).
+  let carbonCopies = [];
+  try {
+    const seen = new Set(signers.map((s) => String(s.email || '').toLowerCase()));
+    const viewers = await loadCcViewers(db, row.application_id);
+    let nextId = Math.max(0, ...signers.map((s) => Number(s.recipientId) || 0));
+    const ccOrder = Math.max(1, ...signers.map((s) => Number(s.routingOrder) || 1));
+    for (const v of viewers) {
+      const key = String(v.email).toLowerCase();
+      if (seen.has(key)) continue;   // already a signer (borrower/co/admin) or a dup — never copy twice
+      seen.add(key);
+      carbonCopies.push({ recipientId: String(++nextId), name: v.name, email: v.email, routingOrder: ccOrder });
+    }
+  } catch (e) { console.warn('[esign] cc viewers load failed (sending without CC):', e.message); carbonCopies = []; }
+
   const webhookUrl = `${cfg.appUrl}/api/esign/webhook`;
   return {
     documents,
     signers,
+    carbonCopies,
     subject: spec.subject(app.ys_loan_number),
     emailBlurb: spec.blurb,
     brandId: cfg.docusign.brandId || undefined,
@@ -701,6 +741,14 @@ async function sendPackage(applicationId, purpose, actor, opts = {}) {
     buildDefinition: (r) => buildDefinition(r, { db, storage }),
     onDeadLetter,   // a failed send notifies the file's team (in-app + email)
   });
+  // On a genuine fresh send, PILOT emails each borrower signer its OWN branded
+  // "ready to sign" invitation with a direct-to-DocuSign magic link (owner-directed
+  // 2026-07-20). Best-effort + only on `sent` (never `alreadySent` — that would
+  // double-email an idempotent re-entry). DocuSign's own email still goes too ("both").
+  if (result && result.sent) {
+    try { await notifyReadyToSign(row.id, { db }); }
+    catch (e) { console.warn('[esign] ready-to-sign email failed:', e.message); }
+  }
   // ok ONLY for a genuine send or an already-sent envelope — a merely queued /
   // backing-off row is NOT delivered and must not report success (the false "Sent").
   return { ok: !!(result && (result.sent || result.alreadySent)), envelopeRowId: row.id, result };

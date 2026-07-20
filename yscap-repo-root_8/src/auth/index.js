@@ -53,6 +53,13 @@ async function authenticate(req, res, next) {
   // A pending-MFA challenge is NOT an access token — it only authorizes the
   // /mfa/verify step. Reject it here or the second factor is bypassable.
   if (claims.mfa) return res.status(401).json({ error: 'mfa not completed' });
+  // Access tokens are ONLY 'staff' or 'borrower'. Any other kind — the e-sign
+  // magic-link tokens ('esign_magic'/'esign_return'), or any future special-purpose
+  // signed token — must NEVER be usable as a Bearer session, even if its `sub`
+  // happened to collide with a real id. Belt-and-suspenders alongside those tokens
+  // deliberately carrying a non-borrower `sub`.
+  if (claims.kind !== 'staff' && claims.kind !== 'borrower')
+    return res.status(401).json({ error: 'unauthenticated' });
   // token_version check (revocation). This runs on EVERY authenticated request,
   // so a DB blip here must answer 503 fast — never reject and hang the request.
   const tbl = claims.kind === 'staff' ? 'staff_users' : 'borrower_auth';
@@ -134,6 +141,19 @@ const requireStaff = (req, res, next) =>
 // ---------------- token helpers ----------------
 const borrowerToken = (id, tv) => C.signJwt({ sub: id, kind: 'borrower', role: 'borrower', tv });
 const staffToken    = (id, role, tv) => C.signJwt({ sub: id, kind: 'staff', role, tv });
+
+/**
+ * Mint a real borrower access session for an existing borrower id (reads the CURRENT
+ * token_version so it's revocable like any other session). Returns the JWT, or null
+ * if the borrower has no login row. Used by the e-sign magic-link session handoff
+ * (esign-public /claim-session) — the ONLY caller — so a borrower who signed from
+ * PILOT's branded email lands back INSIDE their loan file already logged in.
+ */
+async function mintBorrowerSession(borrowerId) {
+  const r = await db.query(`SELECT token_version FROM borrower_auth WHERE borrower_id=$1`, [borrowerId]);
+  if (!r.rows.length) return null;
+  return borrowerToken(borrowerId, r.rows[0].token_version || 0);
+}
 
 // ---------------- borrower register / login ----------------
 router.post('/borrower/register', async (req, res) => {
@@ -870,4 +890,4 @@ router.get('/me', requireAuth, async (req, res) => {
   res.json({ kind: 'borrower', ...r.rows[0] });
 });
 
-module.exports = { router, authenticate, requireAuth, requireRole, requirePermission, requireBorrower, requireStaff, issueEmailToken };
+module.exports = { router, authenticate, requireAuth, requireRole, requirePermission, requireBorrower, requireStaff, issueEmailToken, mintBorrowerSession };
