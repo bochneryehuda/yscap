@@ -184,6 +184,8 @@ assert.deepStrictEqual(codes(C.computeBackgroundFindings({ subjectName: 'John Sm
   const bad = C.computeVoidedCheckFindings({ readable: true, accountHolderName: 'Michael Goldberg', routingNumber: '12345', accountNumber: null }, subj, {});
   assert.ok(bad.some((f) => f.code === 'voided_check_bad_routing'));
   assert.ok(bad.some((f) => f.code === 'voided_check_no_account'));
+  // A MISSING routing number (not just malformed) is flagged too — you can't wire without it (audit MINOR).
+  assert.ok(C.computeVoidedCheckFindings({ readable: true, accountHolderName: 'Michael Goldberg', routingNumber: null, accountNumber: '6789' }, subj, {}).some((f) => f.code === 'voided_check_no_routing'));
   // Unreadable → single verify finding.
   assert.deepStrictEqual(codes(C.computeVoidedCheckFindings({ readable: false }, subj, {})), ['voided_check_unreadable']);
 }

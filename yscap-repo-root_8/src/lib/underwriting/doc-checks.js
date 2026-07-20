@@ -558,13 +558,20 @@ function computeVoidedCheckFindings(v, subject, opts = {}) {
         actions: ['request_document', 'post_condition', 'dismiss', 'decline'] }));
     }
   }
-  // Routing + account must be present to set up the wire.
+  // Routing + account must BOTH be present to set up the wire (a missing routing number is just as
+  // disqualifying as a missing account — you can't wire without it).
   const routing = String(v.routingNumber || '').replace(/\D/g, '');
-  if (v.routingNumber && routing.length !== 9) {
+  if (!v.routingNumber) {
+    out.push(mk('voided_check', { code: 'voided_check_no_routing', severity: 'warning', field: 'routing',
+      docValue: null, fileValue: null,
+      title: 'No routing number could be read from the voided check',
+      howTo: 'The 9-digit routing number is needed to set up the disbursement wire/ACH. Confirm it by hand or request a clearer voided check.',
+      actions: ['request_revision', 'post_condition', 'dismiss'] }));
+  } else if (routing.length !== 9) {
     out.push(mk('voided_check', { code: 'voided_check_bad_routing', severity: 'warning', field: 'routing',
-      docValue: v.routingNumber, fileValue: '9-digit ABA routing number',
-      title: 'The routing number does not look valid',
-      howTo: 'A US ABA routing number is 9 digits. Confirm the routing number on the check/wire sheet is complete and legible before setting up the disbursement.',
+      docValue: v.routingNumber, fileValue: '9-digit routing number',
+      title: 'The routing number is not 9 digits',
+      howTo: 'A US bank routing number is 9 digits. Confirm the routing number on the check/wire sheet is complete and legible before setting up the disbursement.',
       actions: ['request_revision', 'post_condition', 'dismiss'] }));
   }
   if (!v.accountNumber) {
