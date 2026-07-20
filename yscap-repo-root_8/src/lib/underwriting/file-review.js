@@ -55,7 +55,16 @@ async function fileFatalCount(client, appId) {
     const to = await tieoutForFile(client, appId);
     tieout = to.discrepancies.filter((f) => f.severity === 'fatal' && f.blocksCtc).length;
   } catch (_) { /* tie-out is best-effort; stored fatals still gate */ }
-  return { stored, tieout, total: stored + tieout };
+  // Experience dealbreakers (a heavy/ground-up deal with no verified comparable anchor) block CTC
+  // the SAME way — derived live, no stored row, so this covers previous AND future files. Best-effort:
+  // a compute error must never silently OPEN the gate, so a failure just leaves it uncounted.
+  let experience = 0;
+  try {
+    const { assessExperienceForFile } = require('./experience');
+    const exp = await assessExperienceForFile(client, appId, { today: new Date().toISOString().slice(0, 10) });
+    experience = exp ? exp.findings.filter((f) => f.severity === 'fatal' && f.blocksCtc).length : 0;
+  } catch (_) { /* experience is best-effort; stored + tie-out fatals still gate */ }
+  return { stored, tieout, experience, total: stored + tieout + experience };
 }
 
 module.exports = { tieoutForFile, fileFatalCount };

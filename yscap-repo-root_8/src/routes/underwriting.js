@@ -44,6 +44,7 @@ const { computeMetrics } = require('../lib/underwriting/metrics');
 const { buildChain } = require('../lib/underwriting/entity-chain');
 const { buildSellerChain } = require('../lib/underwriting/seller-chain');
 const { assessBankLiquidity, readRequiredLiquidity } = require('../lib/underwriting/bank-liquidity');
+const { assessExperienceForFile } = require('../lib/underwriting/experience');
 const { assessCompleteness } = require('../lib/underwriting/completeness');
 const { computeRiskScore } = require('../lib/underwriting/risk-score');
 const { resolveEffectiveTerms } = require('../lib/underwriting/amendments');
@@ -237,6 +238,12 @@ router.get('/:appId', async (req, res, next) => {
     // an unverified LLC → require the operating agreement) already lives in the bank-statement check.
     const bankLiquidity = assessBankLiquidity(mctx || {}, exts.rows, { requiredLiquidity });
 
+    // Experience / track record: for a HEAVY-rehab or GROUND-UP deal the borrower must have at least
+    // one VERIFIED comparable "anchor" project (right level + size, exited within 3 years). A missing
+    // or unverified anchor is a DEALBREAKER that blocks clear-to-close (owner-directed) — enforced at
+    // the gate via fileFatalCount (file-review.js), surfaced here for the desk.
+    const experience = await assessExperienceForFile(db, app.id, { today: todayISO() });
+
     // File completeness / stipulations: diff the required-document matrix (adapted to this deal)
     // against what's analyzed on file → outstanding-items list + a completeness %. A VIEW only.
     const completeness = assessCompleteness(
@@ -261,7 +268,7 @@ router.get('/:appId', async (req, res, next) => {
     // surface in the roll-up).
     const openRaw = [...perDoc, ...cross, ...staleness.findings, ...metrics.findings, ...amendments.findings,
       ...(entityChain ? entityChain.findings : []), ...reasonability.findings, ...sellerChain.findings,
-      ...bankLiquidity.findings];
+      ...bankLiquidity.findings, ...(experience ? experience.findings : [])];
     // De-duplicate the few FILE-economic findings that legitimately appear on more than one document
     // — the assignment fee over the cap shows on BOTH the purchase contract and the assignment, but
     // the desk should count/show it ONCE.
@@ -308,6 +315,10 @@ router.get('/:appId', async (req, res, next) => {
         excludedTotal: bankLiquidity.excludedTotal, shortfall: bankLiquidity.shortfall,
         accounts: bankLiquidity.accounts, statementsCount: bankLiquidity.statementsCount,
         findings: bankLiquidity.findings.map(decorate) },
+      experience: experience ? { demandTier: experience.demandTier, demandLabel: experience.demandLabel,
+        requiredLabel: experience.requiredLabel, gated: experience.gated, hasVerifiedAnchor: experience.hasVerifiedAnchor,
+        anchors: experience.anchors, trackRecordCount: experience.trackRecordCount,
+        findings: experience.findings.map(decorate) } : null,
       completeness: { completenessPct: completeness.completenessPct, counts: completeness.counts,
         stipulations: completeness.stipulations, outstanding: completeness.outstanding,
         ctcBlockers: completeness.ctcBlockers, docsComplete: completeness.docsComplete },

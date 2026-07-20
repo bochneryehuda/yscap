@@ -501,6 +501,39 @@ function BankLiquidity({ bankLiquidity, appId, onChange }) {
   );
 }
 
+// Experience — is the borrower's verified track record enough for THIS deal's rehab intensity?
+// A heavy-rehab or ground-up deal needs a verified comparable anchor; a light/moderate deal doesn't.
+function Experience({ experience, appId, onChange }) {
+  if (!experience) return null;
+  const findings = experience.findings || [];
+  // Nothing to show for an un-gated (light/moderate) deal with no findings — keep the desk quiet.
+  if (!experience.gated && !findings.length) return null;
+  const ok = experience.hasVerifiedAnchor || !experience.gated;
+  return (
+    <div style={{ marginBottom: 22 }}>
+      <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px' }}>Experience — is the track record enough for this deal?</h4>
+      <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginBottom: 10 }}>
+        This is a <b>{experience.demandLabel}</b> deal.{experience.gated ? ` It needs at least one verified, comparable project (${experience.requiredLabel} or heavier, about half this deal's size or bigger, completed within the last 3 years).` : ' Prior comparable experience is not required at this rehab level.'}
+        {' '}
+        <span style={{ fontWeight: 700, color: ok ? 'var(--good,#3F7A5B)' : 'var(--bad,#B4453B)' }}>
+          {ok ? (experience.gated ? 'Verified anchor on file ✓' : 'Not gated') : (experience.hasVerifiedAnchor ? '' : 'No verified anchor')}
+        </span>
+      </div>
+      {(experience.anchors || []).length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: findings.length ? 12 : 0 }}>
+          {experience.anchors.map((a, i) => (
+            <span key={i} style={{ fontSize: 11.5, border: '1px solid var(--line,#E7E1D3)', borderRadius: 999, padding: '3px 10px',
+              background: a.verified ? 'var(--good-bg,#E8F1EC)' : 'var(--card,#fff)', color: 'var(--ink,#141B22)' }}>
+              {a.label}{a.verified ? ' · verified' : ' · unverified'}
+            </span>
+          ))}
+        </div>
+      )}
+      {findings.map((f, i) => <Finding key={f.id || `xp${i}`} appId={appId} f={f} onChange={onChange} resolvable={false} />)}
+    </div>
+  );
+}
+
 // Amendments — the GOVERNING contract terms (base overlaid by executed amendments) + their source.
 function Amendments({ amendments, appId, onChange }) {
   if (!amendments || !amendments.hasAmendments) return null;
@@ -603,6 +636,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
   const entityChain = data && data.entityChain;
   const sellerChain = data && data.sellerChain;
   const bankLiquidity = data && data.bankLiquidity;
+  const experience = data && data.experience;
   const completeness = data && data.completeness;
   const risk = data && data.risk;
   const amendments = data && data.amendments;
@@ -689,6 +723,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
       <SellerChain sellerChain={sellerChain} />
       <EntityChain entityChain={entityChain} />
       <BankLiquidity bankLiquidity={bankLiquidity} appId={appId} onChange={load} />
+      <Experience experience={experience} appId={appId} onChange={load} />
 
       {/* document freshness / staleness */}
       <StalenessBoard staleness={staleness} />

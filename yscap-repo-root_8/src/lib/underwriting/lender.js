@@ -19,7 +19,7 @@ function clauseNamesLender(text) {
   const n = norm(text);
   if (!n) return null;
   const namesUs = /ys capital group/.test(n);
-  const successorLang = /\bisaoa\b|\batima\b|successors? and ?\/? ?or assigns|its successors and assigns/.test(n);
+  const successorLang = /\bisaoa\b|\batima\b|(?:its )?successors? and ?\/? ?or assigns|(?:its )?successors and assigns/.test(n);
   return namesUs && successorLang;
 }
 
