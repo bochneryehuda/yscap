@@ -91,6 +91,7 @@ export default function DrawsPanel({ appId }) {
   // Delivering findings needs Sitewire READS (it re-reads the draw), so it's gated by the MASTER
   // switch, not the write gate — it still works in the reads-on/writes-off state, but not when off.
   const readsOff = !!data.switches && !sw.enabled;
+  const pct = Math.max(0, Math.min(100, Number(rollup.project && rollup.project.pct_complete) || 0));
 
   async function act(key, fn) {
     setBusy(key); setMsg('');
@@ -129,41 +130,61 @@ export default function DrawsPanel({ appId }) {
         </>
       ) : (
         <>
-          {msg && <div className="panel" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)' }}>{msg}</div>}
+          {msg && <div className="dd-card" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)' }}>{msg}</div>}
 
-          {/* ---- "live in PILOT" banner: this property was pushed from our system; we're the source of record ---- */}
-          <div className="panel" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)', borderLeft: '3px solid var(--good,#3f7a4a)' }}>
-            <b>Live in PILOT{managed_since ? ` since ${fmtDay(managed_since)}` : ''}.</b>
-            <div className="muted small" style={{ marginTop: 3 }}>
-              PILOT pushed this property to Sitewire and is the source of record for its draw process — it follows the
-              draw requests, delivers the inspection findings, and runs our standard approval + release pipeline.
-              {go_live_date ? ` Draw-system go-live: ${fmtDay(go_live_date)}.` : ''}
+          {/* ---- header: status + released-vs-remaining meter + uniform KPI row (one cohesive card) ---- */}
+          <div className="dd-card" style={{ marginTop: 12 }}>
+            <div className="dd-card-h" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 10, marginBottom: 6 }}>
+              <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+                <span className="dd-card-ic"><SdIcon name="rocket" /></span>
+                <div>
+                  <h3>Construction draws</h3>
+                  <div className="dd-sub" style={{ marginTop: 1 }}>
+                    Live in PILOT{managed_since ? ` since ${fmtDay(managed_since)}` : ''} — PILOT is the source of record: it follows the draw requests, delivers the inspection findings, and runs the approval + release pipeline.{go_live_date ? ` Go-live: ${fmtDay(go_live_date)}.` : ''}
+                  </div>
+                </div>
+              </div>
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <span className={'dd-chip ' + (sw.enabled ? 'on' : 'off')}><span className="dot" />{sw.enabled ? 'Connected' : 'Sitewire off'}</span>
+                {sw.enabled && <span className={'dd-chip ' + (sw.outbound ? 'on' : 'warn')}><span className="dot" />{sw.outbound ? 'Writing on' : 'Read-only'}</span>}
+                {sw.dryrun && <span className="dd-chip warn"><span className="dot" />Dry-run</span>}
+              </div>
+            </div>
+
+            {/* released-vs-remaining meter */}
+            <div className="dd-hero-meter-top" style={{ marginTop: 10 }}>
+              <span className="dd-hero-label">Released vs. remaining</span>
+              <span className="dd-hero-pct">{pct}%</span>
+            </div>
+            <div className="dd-meter" style={{ height: 12 }} role="img" aria-label={`${pct}% of the construction budget released`}><i style={{ width: pct + '%' }} /></div>
+
+            {/* uniform KPI row — fixed value size so every tile matches (no per-box scaling) */}
+            <div style={{ marginTop: 16, display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gridAutoRows: '1fr' }}>
+              <KpiTile label="Construction budget" value={usd(rollup.project.budget)} />
+              <KpiTile label="Drawn (released)" value={usd(rollup.project.drawn)} sub={`${pct}% complete`} tone="teal" />
+              <KpiTile label="Remaining" value={usd(rollup.project.remaining)} tone="gold" />
+              <KpiTile label="In the pipeline" value={usd(rollup.project.requested_open)} sub="requested, not yet released" />
             </div>
           </div>
 
-          {/* ---- lifecycle: finish the draw process / mark paid off / re-open ---- */}
-          <LifecycleControl appId={appId} link={link} writesOff={writesOff} onChanged={load} />
-
           {/* ---- read-only notice when Sitewire writes are off (the default staged state) ---- */}
           {writesOff && (
-            <div className="panel" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)', borderLeft: '3px solid var(--gold,#ae8746)' }}>
+            <div className="dd-card" style={{ marginTop: 12, borderLeft: '3px solid var(--gold,#ae8746)' }}>
               <b>Sitewire is turned off.</b>
-              <div className="muted small" style={{ marginTop: 3 }}>
+              <div className="dd-sub" style={{ marginTop: 3 }}>
                 Approving a draw syncs to Sitewire, so <b>Approve / Amend / Reopen</b>, setting approved amounts{readsOff ? ' and delivering findings' : ''} are paused until it's switched on{sw.enabled && !sw.outbound ? ' (reads are on; writing is still off)' : ''}. The money ledger, releases and records are kept in PILOT and still work.
               </div>
             </div>
           )}
 
-          {/* ---- rollup summary tiles (responsive: wrap instead of squishing in the narrow file column) ---- */}
-          <div style={{ marginTop: 12, gap: 12, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gridAutoRows: '1fr' }}>
-            <Tile label="Construction budget" value={usd(rollup.project.budget)} />
-            <Tile label="Drawn (released)" value={usd(rollup.project.drawn)} sub={`${rollup.project.pct_complete}% complete`} />
-            <Tile label="Remaining" value={usd(rollup.project.remaining)} accent />
-            <Tile label="In the pipeline" value={usd(rollup.project.requested_open)} sub="requested, not yet released" />
-          </div>
+          {/* ---- lifecycle: finish the draw process / mark paid off / re-open ---- */}
+          <LifecycleControl appId={appId} link={link} writesOff={writesOff} onChanged={load} />
 
           {/* ---- the unified per-line / per-unit rollup ---- */}
-          <RollupTable rollup={rollup} />
+          <div className="dd-card" style={{ marginTop: 12, padding: 0, overflow: 'hidden' }}>
+            <div className="dd-card-h" style={{ padding: '16px 18px 0' }}><span className="dd-card-ic"><SdIcon name="list" /></span><h3>Scope of Work — budget vs. drawn</h3></div>
+            <RollupTable rollup={rollup} />
+          </div>
 
           {/* ---- draws ---- */}
           <div className="row between" style={{ marginTop: 22, marginBottom: 6, alignItems: 'baseline', flexWrap: 'wrap', gap: 8 }}>
@@ -466,18 +487,21 @@ function SdIcon({ name }) {
   const p = {
     rocket: <><path d="M12 3c3 1 5 4 5 8l-2 5H9l-2-5c0-4 2-7 5-8z" /><circle cx="12" cy="9" r="1.6" /><path d="M9 16l-2 3M15 16l2 3" /></>,
     ext: <><path d="M14 4h6v6" /><path d="M20 4l-8 8" /><path d="M18 14v4a2 2 0 01-2 2H6a2 2 0 01-2-2V8a2 2 0 012-2h4" /></>,
+    list: <><path d="M8 6h13M8 12h13M8 18h13" /><path d="M3 6h.01M3 12h.01M3 18h.01" /></>,
   }[name] || null;
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{p}</svg>;
 }
 
-function Tile({ label, value, sub, accent }) {
-  // Same container-query value tile as the portfolio, compact variant — the number scales to the box
-  // width so a large amount never spills outside it.
+/* A draw-desk KPI tile on the shared dd-kpi surface, with a FIXED value size so every tile in the row
+   matches exactly (the old stat-tile scaled each number to its own box width, which read as "different-size
+   boxes"). tone tints the value; sub is an optional caption. */
+function KpiTile({ label, value, sub, tone }) {
+  const color = tone === 'teal' ? 'var(--teal-br)' : tone === 'gold' ? 'var(--gold,#ae8746)' : 'var(--text)';
   return (
-    <div className="panel stat-tile compact">
-      <div className="stat-tile-label">{label}</div>
-      <div className={'stat-tile-value' + (accent ? ' gold' : '')}>{value}</div>
-      {sub && <div className="muted small stat-tile-sub">{sub}</div>}
+    <div className="dd-kpi">
+      <div className="dd-kpi-label">{label}</div>
+      <div className="dd-kpi-value" style={{ fontSize: 21, color }}>{value}</div>
+      {sub && <div className="dd-kpi-sub">{sub}</div>}
     </div>
   );
 }
@@ -496,7 +520,7 @@ function RollupTable({ rollup }) {
   const lines = rollup.lines.filter((l) => l.kind === 'line');
   const extras = rollup.lines.filter((l) => l.kind === 'contingency' || l.kind === 'gc');
   return (
-    <div className="panel" style={{ marginTop: 14, overflowX: 'auto', padding: 0 }}>
+    <div style={{ marginTop: 12, overflowX: 'auto' }}>
       <table className="table" style={{ width: '100%', minWidth: 640 }}>
         <thead><tr>
           <th>Scope-of-Work line</th><th style={{ textAlign: 'right' }}>Budget</th><th style={{ textAlign: 'right' }}>Drawn</th>
