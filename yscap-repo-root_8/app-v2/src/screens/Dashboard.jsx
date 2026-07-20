@@ -4,6 +4,7 @@ import { api } from '../lib/api.js';
 import { scenarioToDraft, scenarioLabelFromState } from '../lib/scenario.js';
 import BorrowerCreditCard from '../components/BorrowerCreditCard.jsx';
 import ActionNeeded from '../components/ActionNeeded.jsx';
+import { programLabel, loanTypeLabel, officerLabel } from '../lib/labels.js';
 
 // Files that are muted OUTSIDE the file (owner-directed): funded/terminal AND
 // ON-HOLD loans never nag in the cross-file "to complete" rollup or the per-loan
@@ -162,10 +163,10 @@ export default function Dashboard() {
         <span className="muted small">{a.ys_loan_number || 'Pending #'}</span>
       </div>
       <h3 style={{ marginBottom: 10 }}>{addrLine(a.property_address)}</h3>
-      <div className="metrow"><span className="k">Program</span><span className="v">{a.program || '—'}</span></div>
-      <div className="metrow"><span className="k">Loan type</span><span className="v">{a.loan_type || '—'}</span></div>
+      <div className="metrow"><span className="k">Program</span><span className="v">{programLabel(a.program, a.registered_product_label) || '—'}</span></div>
+      <div className="metrow"><span className="k">Loan type</span><span className="v">{loanTypeLabel(a.loan_type) || '—'}</span></div>
       <div className="metrow"><span className="k">Loan amount</span><span className="v ln-amount">{money(a.loan_amount)}</span></div>
-      <div className="metrow"><span className="k">Officer</span><span className="v">{a.loan_officer_name || 'Lead Capture'}</span></div>
+      <div className="metrow"><span className="k">Officer</span><span className="v">{officerLabel(a.loan_officer_name)}</span></div>
       {a.borrower_total > 0 && (
         <div style={{ marginTop: 12 }}>
           <div className="row" style={{ marginBottom: 4 }}>

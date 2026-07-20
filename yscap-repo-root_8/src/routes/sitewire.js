@@ -1259,7 +1259,9 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
     // background to completion (every step is idempotent + independently caught) — we just answer promptly.
     const work = drawReport.autoDeliverArtifacts(appId, drawId).catch(() => ({ archived: 0, reports: [] }));
     const budgetMs = Number(process.env.DRAW_AUTODELIVER_BUDGET_MS) || 20000;
-    const artifacts = await Promise.race([work, new Promise((r) => { setTimeout(() => r({ archived: 0, reports: [], pending: true }), budgetMs); })]);
+    // .unref() so the budget timer never keeps the event loop alive on the fast path (work wins → the timer
+    // is still armed but must not hold the process); it only resolves an already-settled race if it fires.
+    const artifacts = await Promise.race([work, new Promise((r) => { const t = setTimeout(() => r({ archived: 0, reports: [], pending: true }), budgetMs); if (t.unref) t.unref(); })]);
     res.json({ ok: true, ...result, media_archived: artifacts.archived, reports_ready: artifacts.reports, reports_pending: !!artifacts.pending });
   } catch (e) { console.warn('[sitewire] upstream error:', e && e.message); res.status(502).json({ error: 'the draw service is temporarily unavailable — nothing was changed; try again shortly' }); }
 });

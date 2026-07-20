@@ -10,6 +10,7 @@ import PropertyPhoto from '../components/PropertyPhoto.jsx';
 import ActivityFeed from '../components/ActivityFeed.jsx';
 import StatusTimeline from '../components/StatusTimeline.jsx';
 import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
+import { programLabel, loanTypeLabel, propertyTypeLabel, officerLabel } from '../lib/labels.js';
 import ToolModal from '../components/ToolModal.jsx';
 import LlcPicker from '../components/LlcPicker.jsx';
 import LlcManager from '../components/LlcManager.jsx';
@@ -762,7 +763,7 @@ export default function Application() {
         <Link to="/dashboard" className="btn link" style={{ flex: 'none' }}>← All loans</Link>
         <div className="file-top-main">
           <h1 className="file-top-addr">{addrLine(app.property_address)}</h1>
-          <span className="muted small">{app.ys_loan_number || 'Loan # pending'} · {app.program || '—'} · {app.loan_type || '—'}</span>
+          <span className="muted small">{app.ys_loan_number || 'Loan # pending'} · {programLabel(app.program, app.registered_product_label) || '—'} · {loanTypeLabel(app.loan_type) || '—'}</span>
         </div>
         {app.loan_amount != null && (
           <span className="file-top-amt">
@@ -793,7 +794,7 @@ export default function Application() {
           expectedClosing={app.expected_closing} actualClosing={app.actual_closing} />
         <div className="panel" style={{ marginTop: 0 }}>
           <h3 style={{ marginBottom: 12 }}>Loan snapshot <InfoTip tip="The headline numbers your loan team works from. Ask your officer to update deal numbers — they flow into pricing automatically." /></h3>
-          <div className="metrow"><span className="k">Officer</span><span className="v">{app.loan_officer_name || 'Lead Capture'}{app.team_online && <span title="Your loan team is online now" style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#3fb950', marginLeft: 8, verticalAlign: 'middle' }} />}</span></div>
+          <div className="metrow"><span className="k">Officer</span><span className="v">{officerLabel(app.loan_officer_name)}{app.team_online && <span title="Your loan team is online now" style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#3fb950', marginLeft: 8, verticalAlign: 'middle' }} />}</span></div>
           <div className="metrow"><span className="k">Purchase price</span><span className="v">{money(app.purchase_price)}</span></div>
           <div className="metrow"><span className="k">As-is value</span><span className="v">
             {money(app.as_is_value ?? app.purchase_price)}
@@ -871,9 +872,9 @@ export default function Application() {
         <div className="panel" style={{ marginTop: 0 }}>
           <h3 style={{ marginBottom: 12 }}>Property & transaction</h3>
           <div className="metrow"><span className="k">Address</span><span className="v">{addrLine(app.property_address)}</span></div>
-          <div className="metrow"><span className="k">Property type</span><span className="v">{app.property_type || '—'}{app.units ? ` · ${app.units} unit${app.units > 1 ? 's' : ''}` : ''}</span></div>
-          <div className="metrow"><span className="k">Program</span><span className="v">{app.program || '—'}</span></div>
-          <div className="metrow"><span className="k">Transaction</span><span className="v">{app.loan_type || '—'}</span></div>
+          <div className="metrow"><span className="k">Property type</span><span className="v">{propertyTypeLabel(app.property_type) || '—'}{app.units ? ` · ${app.units} unit${app.units > 1 ? 's' : ''}` : ''}</span></div>
+          <div className="metrow"><span className="k">Program</span><span className="v">{programLabel(app.program, app.registered_product_label) || '—'}</span></div>
+          <div className="metrow"><span className="k">Transaction</span><span className="v">{loanTypeLabel(app.loan_type) || '—'}</span></div>
           {isRefi ? <>
             <div className="metrow"><span className="k">Payoff amount</span><span className="v">{money(app.payoff_amount)}</span></div>
             <div className="metrow"><span className="k">Original purchase price</span><span className="v">{money(app.original_purchase_price)}</span></div>
@@ -1253,7 +1254,7 @@ export default function Application() {
           <div className="rail-team">
             <span className="rail-ava" aria-hidden="true" />
             <div className="rail-who">
-              <div className="rail-n">{(officer && officer.full_name) || app.loan_officer_name || 'Lead Capture'}</div>
+              <div className="rail-n">{officerLabel((officer && officer.full_name) || app.loan_officer_name)}</div>
               <div className="rail-r muted small">{(officer && officer.title) || 'Loan Officer'}{officer && officer.nmls ? ` · NMLS #${officer.nmls}` : ''}</div>
             </div>
           </div>

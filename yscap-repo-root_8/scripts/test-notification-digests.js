@@ -162,6 +162,16 @@ const to = (e) => sent.find((x) => (Array.isArray(x.to) ? x.to : [x.to]).include
   await db.query(`UPDATE applications SET status='funded' WHERE id=$1`, [app.id]);
   ok('withdrawn/declined file excluded from both draw reminders (F2)');
 
+  /* 6e) A paused (on_hold) file is excluded too — the rest of the system treats on_hold as inactive and
+     mutes its reminders; a borrower on a paused loan shouldn't be nudged "your result is waiting". */
+  await db.query(`DELETE FROM audit_log WHERE action IN ('draw_findings_reminder','draw_release_overdue') AND entity_id=$1`, [app.id]).catch(() => {});
+  await db.query(`UPDATE applications SET status='on_hold' WHERE id=$1`, [app.id]);
+  await db.query(`UPDATE draw_findings SET status='delivered', delivered_at=now()-interval '5 days', accepted_at=NULL, wire_due_at=NULL WHERE application_id=$1`, [app.id]);
+  reset(); const cHoldBorrower = await D.drawFindingsAwaitingBorrowerOnce();
+  assert.ok(cHoldBorrower === 0 && !to(bemail), 'borrower nudge suppressed on an on_hold file');
+  await db.query(`UPDATE applications SET status='funded' WHERE id=$1`, [app.id]);
+  ok('on_hold (paused) file excluded from draw reminders');
+
   await db.query(`DELETE FROM draw_findings WHERE application_id=$1`, [app.id]).catch(() => {});
   await db.query(`DELETE FROM sitewire_property_links WHERE application_id=$1`, [app.id]).catch(() => {});
 

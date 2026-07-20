@@ -3420,7 +3420,11 @@ router.get('/applications/:id/esign', async (req, res) => {
       };
     });
     res.json({ packages });
-  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+  } catch (e) {
+    // Log the DB detail server-side; the borrower gets a plain, non-leaking message.
+    console.warn(`[esign] borrower esign list failed (app ${req.params.id}): ${db.describeError ? db.describeError(e) : e && e.message}`);
+    res.status(500).json({ error: 'We couldn’t load your documents just now. Please refresh and try again.' });
+  }
 });
 
 // Mint the borrower's own embedded signing URL (single-use, ~5 min).
@@ -3444,8 +3448,11 @@ router.post('/applications/:id/esign/sign-view', async (req, res) => {
     await audit(req, 'esign_sign_view', 'application', req.params.id);
     res.json({ url });
   } catch (e) {
-    const status = e && e.retryable === false ? 400 : 500;
-    res.status(status).json({ error: e.message || 'server error' });
+    // Never leak the internal DocuSign/DB transport error to the borrower — log it
+    // server-side and show a friendly, actionable message. (The signer/turn/sent
+    // checks above already returned their own clear messages before we got here.)
+    console.warn(`[esign] borrower sign-view failed (app ${req.params.id}): ${e && e.message}`);
+    res.status(500).json({ error: 'We couldn’t open your signing session just now. Please try again in a moment — or use the signing link in the email we sent you.' });
   }
 });
 
