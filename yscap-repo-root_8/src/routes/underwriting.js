@@ -572,16 +572,31 @@ router.post('/:appId/experience-exception', requirePermission('waive_conditions'
     const grant = !(req.body && req.body.grant === false);
     const note = ((req.body && req.body.note) || '').slice(0, 2000);
     if (grant && !note.trim()) return res.status(400).json({ error: 'a reason is required to grant an experience exception' });
-    if (grant) {
-      await db.query(
-        `UPDATE applications SET experience_exception_at=now(), experience_exception_by=$2, experience_exception_note=$3 WHERE id=$1`,
-        [app.id, req.actor.id, note]);
-    } else {
-      await db.query(
-        `UPDATE applications SET experience_exception_at=NULL, experience_exception_by=NULL, experience_exception_note=NULL WHERE id=$1`,
-        [app.id]);
+    // The column write and its audit-log entry share ONE transaction so a gate-opening exception can
+    // never be persisted without its audit trail (this is a privileged CTC-gate override).
+    const client = await db.pool.connect();
+    try {
+      await client.query('BEGIN');
+      if (grant) {
+        await client.query(
+          `UPDATE applications SET experience_exception_at=now(), experience_exception_by=$2, experience_exception_note=$3 WHERE id=$1`,
+          [app.id, req.actor.id, note]);
+      } else {
+        await client.query(
+          `UPDATE applications SET experience_exception_at=NULL, experience_exception_by=NULL, experience_exception_note=NULL WHERE id=$1`,
+          [app.id]);
+      }
+      await client.query(
+        `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+         VALUES ('staff',$1,'underwriting_experience_exception','application',$2,$3)`,
+        [req.actor.id, app.id, JSON.stringify({ grant, note: note.slice(0, 300) })]);
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw e;
+    } finally {
+      client.release();
     }
-    await audit(req.actor.id, 'underwriting_experience_exception', app.id, { grant, note: note.slice(0, 300) });
     res.json({ ok: true, granted: grant });
   } catch (e) { next(e); }
 });

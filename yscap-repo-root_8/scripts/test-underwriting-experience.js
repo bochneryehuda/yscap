@@ -83,6 +83,9 @@ const codes = (r) => r.findings.map((f) => f.code);
   assert.strictEqual(assessExperience({ purchasePrice: 250000, asIsValue: 250000, rehabBudget: 160000, loanType: 'Purchase' }, [], { today: TODAY }).gated, true);
   assert.strictEqual(_internals.tierOf(150000, 400000, false), 3, '$150k on $400k (37%) is heavy');
   assert.strictEqual(_internals.tierOf(160000, 2000000, false), 1, '$160k on $2M (8%) is light');
+  // (audit MINOR) a very large-dollar rehab is heavy regardless of a low ratio.
+  assert.strictEqual(_internals.tierOf(1200000, 5000000, false), 3, '$1.2M on $5M (24%) is heavy by the absolute ceiling');
+  assert.strictEqual(assessExperience({ purchasePrice: 5000000, asIsValue: 5000000, rehabBudget: 1200000, loanType: 'Purchase' }, [], { today: TODAY }).gated, true, 'a $1.2M rehab is gated even at 24% ratio');
 }
 // ---- (audit MAJOR-2b) a mislabeled row still counts its real exit date (no false "never exited") ----
 {

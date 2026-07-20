@@ -45,18 +45,21 @@ function monthsBetween(fromISO, toISO) {
 // Classify a deal's rehab intensity into a tier. base = the value the rehab is measured against
 // (purchase price / as-is value). A ground-up flag wins outright.
 //
-// Intensity is measured by RATIO (rehab as a share of the asset value), NOT absolute dollars: a
-// $160k rehab is a gut job on a $250k house (64% → heavy) but a light cosmetic touch-up on a $2M
-// building (8% → not heavy). An earlier absolute "$150k = heavy" arm wrongly hard-blocked high-value
-// / multifamily deals (audit 2026-07-20), so the absolute floor now only applies when the rehab is
-// ALSO a meaningful share of value. Project SIZE (that the borrower has done deals in this range) is
-// handled separately by the anchor size test, not here.
+// Intensity is measured primarily by RATIO (rehab as a share of the asset value), NOT a low absolute
+// dollar floor: a $160k rehab is a gut job on a $250k house (64% → heavy) but a light cosmetic
+// touch-up on a $2M building (8% → not heavy). An earlier absolute "$150k = heavy" arm wrongly
+// hard-blocked high-value / multifamily deals (audit 2026-07-20). But a VERY large-dollar rehab is a
+// major construction project that needs real experience whatever the asset is worth, so a HIGH
+// absolute ceiling ($500k) forces heavy regardless of ratio — closing the "$1.2M rehab on a $5M
+// asset (24%) went un-gated" under-block the ratio-only rule opened (audit 2026-07-20). Between the
+// two, the $150k floor applies only when the rehab is also a meaningful share (≥25%) of value.
+const HEAVY_ABS_CEILING = 500000; // a rehab this large is always heavy, any asset value
 function tierOf(rehab, base, groundUp) {
   if (groundUp) return TIER.groundup;
   const r = numOf(rehab) || 0;
   const b = numOf(base);
   const ratio = b && b > 0 ? r / b : 0;
-  if (ratio >= 0.5 || (r >= 150000 && ratio >= 0.25)) return TIER.heavy;
+  if (ratio >= 0.5 || r >= HEAVY_ABS_CEILING || (r >= 150000 && ratio >= 0.25)) return TIER.heavy;
   if (ratio >= 0.15) return TIER.moderate;
   return TIER.light;
 }
