@@ -114,10 +114,21 @@ async function resolveCapitalPartnerId(lenderLabel) {
     return { id: null, ambiguous: false, linked: true, noPartner: true };
   }
 
-  const rows = (await db.query(`SELECT sitewire_id, name FROM sitewire_capital_partners`)).rows;
-  // 2) exact directory match (normalized) auto-binds.
+  const rows = (await db.query(`SELECT sitewire_id, name, on_our_lender FROM sitewire_capital_partners`)).rows;
+  // 2) exact directory match (normalized) auto-binds. Sitewire's directory can carry the SAME name
+  //    under more than one id (a duplicate partner entry) — after the owner renamed our note-buyer
+  //    labels to match Sitewire exactly (2026-07-20), a duplicate directory name is the one thing that
+  //    would otherwise PARK an otherwise-perfect exact match as ambiguous. When an exact name matches
+  //    more than one directory id, prefer the one attached to OUR lender (on_our_lender) — that's the
+  //    partner we actually work with, which is a fact, not a guess. Only a true tie with no single
+  //    on-our-lender winner stays ambiguous (never-guess).
   const exact = rows.filter((r) => linkNorm(r.name) === key);
   if (exact.length === 1) return { id: Number(exact[0].sitewire_id), ambiguous: false };
+  if (exact.length > 1) {
+    const ours = exact.filter((r) => r.on_our_lender);
+    if (ours.length === 1) return { id: Number(ours[0].sitewire_id), ambiguous: false, dedupedByLender: true };
+    return { id: null, ambiguous: true };
+  }
 
   // 3) fuzzy is NOT auto-bound (that would be a guess). Surface the single best CANDIDATE so the UI
   // can suggest it and the admin one-click confirms it into a durable link. Try a suffix-tolerant
