@@ -995,7 +995,7 @@ function ScoreCard({ score }) {
   );
 }
 
-export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
+export default function AppraisalPanel({ appId, readOnly = false, onSummary, reloadSignal = 0 }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
@@ -1010,7 +1010,10 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
       if (onSummary) onSummary(d && d.appraisal ? (d.summary || null) : null);
     } catch (e) { setErr(e.message || 'Could not load the appraisal'); }
     finally { setLoading(false); }
-  }, [appId, onSummary, readOnly]);
+    // reloadSignal is bumped by the parent when an appraisal is imported elsewhere
+    // (e.g. an XML dropped on the appraisal-documents condition), so the findings
+    // appear here immediately without a separate re-import.
+  }, [appId, onSummary, readOnly, reloadSignal]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -1034,6 +1037,17 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
       await load();
     } catch (e2) { setErr(e2.message || 'Import failed'); }
     finally { setImporting(false); }
+  };
+
+  const [undoing, setUndoing] = useState(false);
+  const undoImport = async () => {
+    if (!window.confirm('Remove this appraisal? This clears its findings and the imported appraisal data and restores the file to what it was before the import — so you can upload the correct appraisal fresh. This cannot be undone.')) return;
+    setUndoing(true); setErr('');
+    try {
+      await api.appraisalUndoImport(appId);
+      await load();
+    } catch (e4) { setErr(e4.message || 'Could not remove the appraisal'); }
+    finally { setUndoing(false); }
   };
 
   const [pulling, setPulling] = useState(false);
@@ -1072,6 +1086,13 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
             {importing ? 'Importing…' : a ? 'Re-import appraisal XML' : 'Import appraisal XML'}
             <input type="file" accept=".xml,text/xml,application/xml" onChange={onFile} disabled={importing} style={{ display: 'none' }} />
           </label>
+          {a && (
+            <button type="button" onClick={undoImport} disabled={undoing || importing}
+              style={{ ...btn(false), color: 'var(--crit,#B4483C)', borderColor: 'var(--crit,#B4483C)' }}
+              title="Remove this appraisal — clears the findings + imported data and restores the file, so you can upload the correct appraisal fresh">
+              {undoing ? 'Removing…' : 'Remove / undo this appraisal'}
+            </button>
+          )}
           {a && <span style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)' }}>Form {or(a.form_type)} · effective {or(a.effective_date)} · imported {a.imported_at ? String(a.imported_at).slice(0, 10) : '—'}</span>}
           {a && !expanded && <button onClick={() => setExpanded(true)} style={OPEN_BTN} title="Open the full property report">⤢ Open full report</button>}
         </div>

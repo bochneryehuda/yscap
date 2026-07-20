@@ -2208,6 +2208,7 @@ export default function StaffApplication() {
   // One in-flight action at a time: double-clicking Assign/Remind/Accept/Request
   // used to double-assign, double-email the borrower, or create duplicate items.
   const [busyAct, setBusyAct] = useState('');
+  const [apprReload, setApprReload] = useState(0);   // bumped when an XML upload auto-builds the appraisal
 
   const flash = (t) => { setMsg(t); setTimeout(() => setMsg(''), 4000); };
   const activityFetcher = useCallback(() => api.staffActivity(id), [id]);
@@ -2375,8 +2376,9 @@ export default function StaffApplication() {
     setBusyAct('upload'); setErr('');
     try {
       const slotBase = Number.isFinite(tgt.slotBase) ? tgt.slotBase : null;
+      let appraisal = null;
       for (let i = 0; i < files.length; i++) {
-        await api.staffUploadAppDoc(id, {
+        const resp = await api.staffUploadAppDoc(id, {
           checklistItemId: tgt.itemId || undefined,
           llcId: tgt.llcId || undefined,
           // LLC document slots are single-doc per slot (formation/EIN/…), so an
@@ -2386,8 +2388,14 @@ export default function StaffApplication() {
           replaceDocumentId: tgt.replaceDocumentId || undefined,
           filename: files[i].name, contentType: files[i].type, dataBase64: await fileToBase64(files[i]),
         });
+        if (resp && resp.appraisal) appraisal = resp.appraisal;   // XML dropped on the appraisal condition auto-built the findings
       }
-      flash(files.length > 1
+      // An appraisal XML on the appraisal-documents condition builds the findings
+      // right there — surface that and refresh the appraisal panel so the findings
+      // show immediately (no separate re-import into the findings screen).
+      if (appraisal && appraisal.ok) { setApprReload((n) => n + 1); flash('Appraisal imported ✓ — findings built from the XML.'); }
+      else if (appraisal && !appraisal.ok) { flash(`Uploaded, but the appraisal XML did not import: ${appraisal.error || 'check it is the DATA file (XML)'}.`); }
+      else flash(files.length > 1
         ? `${files.length} files uploaded ✓ — the borrower sees them too.`
         : 'Uploaded ✓ — the borrower sees it too.');
       setUploadTarget(null); await load();
@@ -2784,7 +2792,7 @@ export default function StaffApplication() {
       <Section id="sec-appraisal" title="Appraisal & PILOT findings"
         info="Import the appraisal XML (1004 / 1025 / 1073) and PILOT builds the whole property profile from it — As-Is, ARV, comparables, the appraiser and everything the file needs — then compares it to the loan file. Every value that differs becomes a PILOT finding your team reviews; a value change reprices the loan and nothing is ever overwritten silently."
         badge={apprSummary ? (apprSummary.fatal ? `${apprSummary.fatal} fatal` : (apprSummary.warning ? `${apprSummary.warning} warning` : 'Reviewed ✓')) : ''}>
-        <AppraisalPanel appId={id} onSummary={onApprSummary} />
+        <AppraisalPanel appId={id} onSummary={onApprSummary} reloadSignal={apprReload} />
       </Section>
 
       {can('manage_draws') && app.status === 'funded' && (

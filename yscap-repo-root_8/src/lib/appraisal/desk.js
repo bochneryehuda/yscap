@@ -244,4 +244,66 @@ async function backfillAppraisalPhotosOnce(limit = 25) {
   return { scanned, filled, photos };
 }
 
-module.exports = { ensureAppraisalCondition, runAppraisalImport, extractAndStorePhotos, repullAppraisalPhotos, backfillAppraisalPhotosOnce, todayNY };
+// Undo the current appraisal import (owner-directed 2026-07-20): a WRONG appraisal
+// was uploaded and must be removed before a replacement exists. Clears the findings
+// + the imported appraisal data, restores the file fields the import changed, and
+// resets the two internal appraisal conditions + the source documents so the
+// appraisal-documents condition is ready for a fresh upload. Transactional.
+async function undoAppraisalImport(appId, { actor = null } = {}) {
+  const client = await db.getClient();
+  try {
+    await client.query('BEGIN');
+    const cur = (await client.query(
+      `SELECT id, as_is_value, arv_value, appraiser_name FROM appraisals
+        WHERE application_id=$1 AND superseded=false ORDER BY imported_at DESC NULLS LAST LIMIT 1`, [appId])).rows[0];
+    if (!cur) { await client.query('ROLLBACK'); return { ok: false, error: 'no active appraisal to remove' }; }
+
+    // 1. Reverse any finding-resolution writes to the file (audited from/to). Newest
+    //    first so each field lands on its pre-appraisal value. Whitelisted columns
+    //    only (the field name comes from our own audit detail, gated here regardless).
+    const REV = new Set(['arv', 'as_is_value', 'purchase_price', 'units', 'property_type']);
+    const applies = (await client.query(
+      `SELECT detail FROM audit_log WHERE action='appraisal_finding_apply' AND entity_id=$1 ORDER BY created_at DESC`, [appId])).rows;
+    for (const row of applies) {
+      const d = row.detail || {};
+      if (d.field && REV.has(d.field)) {
+        await client.query(`UPDATE applications SET ${d.field} = $2, updated_at=now() WHERE id=$1`, [appId, d.from == null ? null : d.from]);
+      }
+    }
+    // 2. Undo the import's blank-fills (as_is_value / arv / appraiser_name) — back to
+    //    NULL only where the file still shows exactly what THIS appraisal imported
+    //    (nothing else changed it since; the import only ever fills a blank, so the
+    //    previous value was NULL).
+    if (cur.as_is_value != null) await client.query(`UPDATE applications SET as_is_value=NULL, updated_at=now() WHERE id=$1 AND as_is_value=$2`, [appId, cur.as_is_value]);
+    if (cur.arv_value != null) await client.query(`UPDATE applications SET arv=NULL, updated_at=now() WHERE id=$1 AND arv=$2`, [appId, cur.arv_value]);
+    if (cur.appraiser_name) await client.query(`UPDATE applications SET appraiser_name=NULL, updated_at=now() WHERE id=$1 AND appraiser_name=$2`, [appId, cur.appraiser_name]);
+
+    // 3. Delete findings first (the db/154 guard blocks satisfying the review condition
+    //    while an open fatal finding exists), then the appraisal row (cascade removes
+    //    comparables / units / photos / any remaining findings).
+    await client.query(`DELETE FROM appraisal_findings WHERE application_id=$1`, [appId]);
+    await client.query(`DELETE FROM appraisals WHERE id=$1`, [cur.id]);
+
+    // 4. Remove the two internal appraisal conditions (re-created on the next import).
+    await client.query(
+      `DELETE FROM checklist_items ci USING checklist_templates t
+        WHERE ci.template_id=t.id AND ci.application_id=$1
+          AND t.code IN ('appraisal_review_cleared','appraisal_as_is_verify')`, [appId]);
+
+    // 5. Soft-remove the appraisal source documents so the appraisal-documents
+    //    condition is clean for a fresh upload (kept in history; never hard-deleted).
+    await client.query(
+      `UPDATE documents SET is_current=false
+        WHERE application_id=$1 AND is_current AND doc_kind IN ('appraisal_xml','appraisal_pdf','appraisal_photo')`, [appId]);
+
+    await client.query('COMMIT');
+    return { ok: true, removedAppraisalId: cur.id };
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) { /* connection already broken */ }
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+module.exports = { ensureAppraisalCondition, runAppraisalImport, undoAppraisalImport, extractAndStorePhotos, repullAppraisalPhotos, backfillAppraisalPhotosOnce, todayNY };
