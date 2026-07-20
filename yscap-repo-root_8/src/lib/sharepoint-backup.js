@@ -98,16 +98,18 @@ async function acquireLease(key) {
 }
 async function renewLease(key) {
   try {
-    await db.query(
+    // Bounded: a lock-hung renew in the drain loop must not stall the pass (it's
+    // awaited after each doc). withTimeout defined below (hoisted).
+    await withTimeout(db.query(
       `UPDATE sync_locks SET expires_at = now() + make_interval(mins => ${LEASE_MINUTES})
-        WHERE lock_key = $1 AND holder = $2`, [key, _holderId]);
+        WHERE lock_key = $1 AND holder = $2`, [key, _holderId]), DB_OP_TIMEOUT_MS, 'lease renew timed out');
   } catch (_) { /* best-effort */ }
 }
 async function releaseLease(key) {
   try {
-    await db.query(
+    await withTimeout(db.query(
       `UPDATE sync_locks SET expires_at = now() WHERE lock_key = $1 AND holder = $2`,
-      [key, _holderId]);
+      [key, _holderId]), DB_OP_TIMEOUT_MS, 'lease release timed out');
   } catch (_) { /* best-effort */ }
 }
 
@@ -211,6 +213,23 @@ let _runSeq = 0;                   // generation token — a stalled pass can't 
 // wedged with no progress ages out. Guarded by the generation token so a zombie
 // pass can't keep a superseding pass's clock alive.
 function heartbeat(mySeq) { if (mySeq === _runSeq) _runningSince = Date.now(); }
+// A drain is "actively progressing in THIS process" — used to suppress a false
+// stall verdict while a legitimately slow batch (large/throttled uploads) runs.
+// The persistent heartbeat only stamps periodically, so a single long runOnce
+// could otherwise read stale cross-process; this in-process check is the truth
+// for the running instance.
+function drainProgressing() { return _running && Date.now() - _runningSince < DRAIN_STALL_CEILING_MS; }
+// Throttle the PERSISTENT heartbeat so a healthy long backfill keeps the
+// cross-process liveness fresh (not just once-per-batch) without a DB write per
+// document. Fire-and-forget — recordHeartbeat is self-guarding.
+let _lastPersistMs = 0;
+const HEARTBEAT_PERSIST_MIN_MS = 30000;
+function maybePersistHeartbeat(mySeq, stats) {
+  if (mySeq && mySeq !== _runSeq) return;
+  if (Date.now() - _lastPersistMs < HEARTBEAT_PERSIST_MIN_MS) return;
+  _lastPersistMs = Date.now();
+  recordHeartbeat(stats);
+}
 let _rekick = false;               // an upload arrived mid-drain — drain again after
 let _kickTimer = null;
 let _interval = null;
@@ -1416,6 +1435,7 @@ async function drainVerify() {
   const totals = { scanned: 0, ok: 0, mismatch: 0, sourceSuspect: 0, itemMissing: 0, localMissing: 0, errors: 0 };
   try {
     for (let i = 0; i < MAX_DRAIN_LOOPS; i++) {
+      if (mySeq !== _verifySeq) break;   // superseded by a fresher verify pass — stop (no 200× empty spin)
       const res = await verifyOnce({ seq: mySeq });
       await renewLease('sp-verify');
       _verifyRunningSince = Date.now();
@@ -1486,7 +1506,8 @@ async function runOnce({ limit = DEFAULT_BATCH, seq = 0 } = {}) {
     // take longer than the whole lease, and an expired lease mid-batch is
     // exactly the double-drain the lease exists to prevent.
     await renewLease('sp-drain');
-    heartbeat(seq);   // progress made — keep the stall guard from aging out a healthy pass
+    heartbeat(seq);   // in-process: keep the stall guard from aging out a healthy pass
+    maybePersistHeartbeat(seq, { mirrored, failed });   // cross-process: keep the watchdog from false-paging a slow batch
     await sleep(PACING_MS);
   }
   // Safety net: after the normal batch, force ONE real attempt on any document
@@ -1521,6 +1542,7 @@ async function runOnce({ limit = DEFAULT_BATCH, seq = 0 } = {}) {
       }
       await renewLease('sp-drain');
       heartbeat(seq);
+      maybePersistHeartbeat(seq, { mirrored, failed });
       await sleep(PACING_MS);
     }
   } catch (e) { console.warn('[sp-sync] stray sweep error:', e.message); }
@@ -1767,7 +1789,10 @@ async function reconciliation() {
   let workerStaleSec = null;
   try { workerStaleSec = await heartbeatStaleSec(); } catch (_) { /* best-effort */ }
   const graceSec = heartbeatGraceSec();
-  const workerStalled = workerStaleSec != null && workerStaleSec > graceSec;
+  // Stalled = the persistent heartbeat lapsed AND this process isn't actively
+  // progressing a (slow) pass — so a long legitimate backfill never reads as
+  // stalled/unhealthy.
+  const workerStalled = workerStaleSec != null && workerStaleSec > graceSec && !drainProgressing();
   const worker = {
     enabled: enabled(),
     lastPassAgeSec: workerStaleSec,          // seconds since the last completed pass (persistent)
@@ -2055,6 +2080,12 @@ function livenessAlertCooldownMin() {
 async function checkDrainLiveness() {
   if (!enabled()) return;
   try {
+    // If THIS process's drain is actively progressing (a legitimately slow
+    // large/throttled backfill — one runOnce can outlive the persistent
+    // heartbeat's grace), it is NOT stalled: never self-heal or alert. This is
+    // the truth for the running instance and prevents a false "worker stalled"
+    // page during a normal heavy backfill (the "silent" goal).
+    if (drainProgressing()) { await clearAlert('sp-liveness-alert'); return; }
     const staleSec = await heartbeatStaleSec();
     const graceSec = heartbeatGraceSec();
     // No heartbeat row at all. Fresh boot → give the boot drain one grace window
@@ -2084,11 +2115,11 @@ async function checkDrainLiveness() {
     console.warn(`[sp-sync] liveness: no completed pass in ${Math.round(staleSec / 60)} min (grace ${Math.round(graceSec / 60)} min) — kicking a recovery drain`);
     kick();
     // Tier 2 — only alert once self-heal has clearly failed (stale past 2×
-    // grace). One alert per episode; a distinct signature per stale-bucket so a
-    // worsening outage can re-alert but a steady one does not spam.
+    // grace). STABLE signature so this is truly once-per-episode: the cooldown
+    // (default 2h) governs any reminder cadence during a sustained outage — a
+    // 6-hour freeze pages roughly every 2h, not every 30 min. Recovery clears it.
     if (staleSec <= graceSec * 2) return;
-    const bucket = Math.floor(staleSec / (graceSec * 2));   // 1,2,3… as it worsens
-    if (!(await claimAlert('sp-liveness-alert', `stalled-${bucket}`, livenessAlertCooldownMin()))) return;
+    if (!(await claimAlert('sp-liveness-alert', 'stalled', livenessAlertCooldownMin()))) return;
     const mins = Math.round(staleSec / 60);
     const notify = require('./notify');
     await notify.notifyAdmins({

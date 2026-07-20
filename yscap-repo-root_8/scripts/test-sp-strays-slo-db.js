@@ -159,9 +159,14 @@ const ok = (name, cond) => { if (cond) pass++; else { fail++; console.log(`FAIL 
   await backup.checkDrainLiveness();
   const livAlert = (await db.query(`SELECT count(*)::int n FROM sync_locks WHERE lock_key='sp-liveness-alert'`)).rows[0].n;
   ok('the liveness watchdog raised the stall alert (deduped, distinct from backlog)', livAlert >= 1);
-  await backup.checkDrainLiveness();   // second run within cooldown must NOT re-raise
-  const livAlert2 = (await db.query(`SELECT holder FROM sync_locks WHERE lock_key='sp-liveness-alert'`)).rows;
-  ok('the stall alert is deduped (still a single active cooldown row)', livAlert2.length === 1);
+  // Worsening outage (heartbeat now even older) must NOT re-page within the
+  // cooldown — a stable signature, not an escalating per-bucket one.
+  await db.query(`UPDATE sync_locks SET expires_at = now() - make_interval(secs => $1) WHERE lock_key='sp-drain-heartbeat'`, [grace * 6]);
+  const holderBefore = (await db.query(`SELECT holder FROM sync_locks WHERE lock_key='sp-liveness-alert'`)).rows[0].holder;
+  await backup.checkDrainLiveness();   // still within cooldown → must NOT re-raise
+  const livRows2 = (await db.query(`SELECT holder FROM sync_locks WHERE lock_key='sp-liveness-alert'`)).rows;
+  ok('a WORSENING outage does not re-page within cooldown (once-per-episode)',
+    livRows2.length === 1 && livRows2[0].holder === holderBefore);
   // Recovery: a fresh heartbeat + a watchdog pass auto-clears the alert.
   await db.query(`UPDATE sync_locks SET expires_at = now() + make_interval(secs => $1) WHERE lock_key='sp-drain-heartbeat'`, [grace]);
   await backup.checkDrainLiveness();
