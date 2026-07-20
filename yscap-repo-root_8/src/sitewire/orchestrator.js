@@ -802,4 +802,67 @@ async function resendBorrowerInvite(appId) {
   }
 }
 
-module.exports = { pushFile, pushBudget, setPropertyLifecycle, resetDrawSetup, collisionProperty, getBorrowerInviteStatus, resendBorrowerInvite, park, journal, circuitCheck, resolveCapitalPartnerId, resolveRule, resolveInspection, resolveCoordinatorId, getLink, loadFile, isManaged, recordSetupStatus, SITEWIRE_BIRTH_REASONS, LIFECYCLE_STATES };
+/* Sitewire's pipeline / "quick-notify" status labels — the tags a draw can be moved through (e.g. "Sent to
+   wire department"). Live read; [] when Sitewire is off. (owner-directed 2026-07-20 — mirror every Sitewire
+   action into PILOT.) */
+async function listQuickNotifyStatuses() {
+  if (!cfg.sitewireEnabled) return [];
+  try {
+    const r = await client.listQuickNotifyStatuses();
+    const arr = Array.isArray(r) ? r : (r && (r.quick_notify_statuses || r.data)) || [];
+    return (Array.isArray(arr) ? arr : []).map((s) => ({ id: s.id, name: s.name || s.label || String(s.id) }));
+  } catch (_) { return []; }
+}
+
+/* Set a draw's pipeline/quick-notify status in Sitewire (the same status control Sitewire's own UI has),
+   through the guarded path: circuit check -> updateDraw -> read-after-write -> journal -> store locally.
+   GO-FORWARD ONLY (a managed draw on this file). Passing null clears it. */
+async function setDrawQuickNotify(appId, drawId, statusId) {
+  const own = (await db.query(`SELECT sitewire_draw_id FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [drawId, appId])).rows[0];
+  if (!own) return { error: 'draw_not_on_file' };
+  if (!(cfg.sitewireEnabled && (cfg.sitewireOutboundEnabled || cfg.sitewireDryrun))) return { error: 'writes_off' };
+  const sid = (statusId == null || statusId === '') ? null : Number(statusId);
+  if (sid != null && !Number.isFinite(sid)) return { error: 'bad_status' };
+  // A pipeline status can only be MOVED between real statuses, never CLEARED to null: the guarded client
+  // (guardNoUnsafeWrite) refuses any null-bearing body outright (a field-clearing null is never sent), so a
+  // "clear to none" write is impossible by design. Reject it cleanly here instead of letting it throw an
+  // opaque unsafe-write 502.
+  if (sid == null) return { error: 'clear_unsupported' };
+  await circuitCheck(1);
+  try {
+    const res = await client.updateDraw(drawId, { quick_notify_status_id: sid });
+    if (res && res.__dryrun) return { ok: true, sitewire: 'dryrun', quick_notify_status_id: sid };
+    // read-after-write: re-GET the draw and confirm the status persisted.
+    let confirmed = sid;
+    try {
+      const fresh = await client.getDraw(drawId);
+      const got = fresh && (fresh.quick_notify_status_id !== undefined ? fresh.quick_notify_status_id : (fresh.draw && fresh.draw.quick_notify_status_id));
+      if (got !== undefined) confirmed = got == null ? null : Number(got);
+    } catch (_) { /* verify best-effort; reconcile re-checks */ }
+    await db.query(`UPDATE sitewire_draws SET quick_notify_status_id=$3, updated_at=now() WHERE sitewire_draw_id=$1 AND application_id=$2`, [drawId, appId, confirmed]);
+    await journal({ appId, entity: 'draw', entityId: drawId, field: 'quick_notify_status_id', newValue: confirmed, source: 'quick_notify' });
+    return { ok: true, sitewire: 'synced', quick_notify_status_id: confirmed };
+  } catch (e) { if (e && e.retryable) return { error: 'transient' }; return { error: 'sitewire_' + ((e && e.status) || 'error') }; }
+}
+
+/* The Sitewire property's own documents (whatever the borrower/inspector uploaded on Sitewire's side) — a
+   LIVE read of property.documents[]. We surface them (name + open link) so the coordinator sees everything
+   Sitewire holds without leaving PILOT. Read-only; [] when off / not managed. URLs are Sitewire's (may expire). */
+async function getSitewireDocuments(appId) {
+  const link = await getLink(appId);
+  if (!link || !link.sitewire_property_id || link.matched_by !== 'created') return { managed: false, documents: [] };
+  if (!cfg.sitewireEnabled) return { managed: true, available: false, documents: [] };
+  try {
+    const p = await client.getProperty(link.sitewire_property_id);
+    const docs = (p && (p.documents || (p.property && p.property.documents))) || [];
+    const safeUrl = (u) => { try { const x = new URL(String(u)); return (x.protocol === 'http:' || x.protocol === 'https:') ? x.href : null; } catch (_) { return null; } };
+    return { managed: true, available: true, documents: (Array.isArray(docs) ? docs : []).map((d) => ({
+      name: d.name || d.filename || d.title || 'Document',
+      url: safeUrl(d.url || d.src || d.download_url || d.file_url), // only http(s) — never a javascript:/data: href
+      kind: d.kind || d.type || d.document_type || null,
+      uploaded_at: d.created_at || d.uploaded_at || d.inserted_at || null,
+    })) };
+  } catch (e) { return { managed: true, available: false, documents: [], error: (e && e.message) || 'error' }; }
+}
+
+module.exports = { pushFile, pushBudget, setPropertyLifecycle, resetDrawSetup, collisionProperty, getBorrowerInviteStatus, resendBorrowerInvite, listQuickNotifyStatuses, setDrawQuickNotify, getSitewireDocuments, park, journal, circuitCheck, resolveCapitalPartnerId, resolveRule, resolveInspection, resolveCoordinatorId, getLink, loadFile, isManaged, recordSetupStatus, SITEWIRE_BIRTH_REASONS, LIFECYCLE_STATES };
