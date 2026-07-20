@@ -16,12 +16,25 @@ const sectionBus = typeof window !== 'undefined' ? new EventTarget() : null;
 export function requestOpenSection(id) {
   if (sectionBus && id) sectionBus.dispatchEvent(new CustomEvent('pilot-open-section', { detail: id }));
 }
+/* The Conditions section is a tabbed hub; a caller (e.g. a "Go fix →" link) can
+   ask it to switch to a specific tab as it navigates there. */
+export function requestConditionsTab(tab) {
+  if (sectionBus && tab) sectionBus.dispatchEvent(new CustomEvent('pilot-conditions-tab', { detail: tab }));
+}
+export function subscribeConditionsTab(cb) {
+  if (!sectionBus) return () => {};
+  const h = (e) => cb(e.detail);
+  sectionBus.addEventListener('pilot-conditions-tab', h);
+  return () => sectionBus.removeEventListener('pilot-conditions-tab', h);
+}
 /* One-call "take me to that section": expand it, then smooth-scroll to it.
    The expand is dispatched first so the header is already rendered open when the
-   scroll lands. Reused by the rail, the outstanding-to-close list, etc. */
-export function goToSection(id) {
+   scroll lands. An optional `tab` also flips the Conditions hub to the right tab.
+   Reused by the rail, the outstanding-to-close list, etc. */
+export function goToSection(id, tab) {
   if (!id) return;
   requestOpenSection(id);
+  if (tab) requestConditionsTab(tab);
   const el = typeof document !== 'undefined' ? document.getElementById(id) : null;
   if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
