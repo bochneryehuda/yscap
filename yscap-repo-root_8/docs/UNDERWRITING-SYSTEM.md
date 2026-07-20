@@ -77,7 +77,7 @@ can surface in the roll-up but can never flip the fatal clear-to-close gate.
 
 ## Schema
 
-`db/169` (extractions + findings + the gate condition), `db/170` (suggested actions + opens
+`db/171` (extractions + findings + the gate condition), `db/172` (suggested actions + opens
 condition), `db/173` (CTC guard trigger), `db/174` (idempotency columns). All idempotent.
 
 ## Route (`src/routes/underwriting.js`, `/api/underwriting`, staff-only, per-file scoped)
