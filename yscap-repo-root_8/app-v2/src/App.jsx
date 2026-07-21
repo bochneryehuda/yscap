@@ -33,6 +33,7 @@ import StaffConditionStudio from './screens/StaffConditionStudio.jsx';
 import StaffCompanyPricing from './screens/StaffCompanyPricing.jsx';
 import StaffEscalations from './screens/StaffEscalations.jsx';
 import StaffFindingEscalations from './screens/StaffFindingEscalations.jsx';
+import StaffTrainingProposals from './screens/StaffTrainingProposals.jsx';
 import StaffArchived from './screens/StaffArchived.jsx';
 import StaffLeads from './screens/StaffLeads.jsx';
 import StaffLeadDetail from './screens/StaffLeadDetail.jsx';
@@ -137,6 +138,7 @@ export default function App() {
           <Route path="/internal/pricing" element={<StaffPrivate><StaffCompanyPricing /></StaffPrivate>} />
           <Route path="/internal/escalations" element={<StaffPrivate><StaffEscalations /></StaffPrivate>} />
           <Route path="/internal/findings-review" element={<StaffPrivate><StaffFindingEscalations /></StaffPrivate>} />
+          <Route path="/internal/training" element={<StaffPrivate><StaffTrainingProposals /></StaffPrivate>} />
           <Route path="/internal/archived" element={<StaffPrivate><StaffArchived /></StaffPrivate>} />
           <Route path="/internal/leads" element={<StaffPrivate><StaffLeads /></StaffPrivate>} />
           <Route path="/internal/leads/:id" element={<StaffPrivate><StaffLeadDetail /></StaffPrivate>} />

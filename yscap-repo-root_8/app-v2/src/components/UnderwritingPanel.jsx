@@ -62,6 +62,18 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
   const [escOpen, setEscOpen] = useState(false);
   const [escRole, setEscRole] = useState('super_admin');
   const [escNote, setEscNote] = useState('');
+  const [committeeBusy, setCommitteeBusy] = useState(false);
+  const [committeeOpinion, setCommitteeOpinion] = useState(null);
+  const runCommittee = async () => {
+    if (!f.id) return;
+    setCommitteeBusy(true);
+    try {
+      const r = await api.runCommitteeReview(appId, f.id, false);
+      setCommitteeOpinion(r.opinion || null);
+      onChange && onChange();
+    } catch (e) { alert(e.message || 'The panel could not be reached'); }
+    finally { setCommitteeBusy(false); }
+  };
   const s = SEV[f.severity] || SEV.info;
   // The document this finding was raised from — used for the "open the source document" link and
   // the (optional) page-number hint. `page_number` starts flowing once db/226 + the docint.js
@@ -185,9 +197,33 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
         </div>
       )}
       {canEscalate && !escalated && !escOpen && (
-        <div style={{ marginTop: 10 }}>
+        <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button disabled={busy} onClick={() => setEscOpen(true)} title="Send this finding to a super-admin, processor, or underwriter to decide"
             style={{ ...btn(), fontSize: 12, padding: '5px 10px' }}>↗ Escalate for review</button>
+          {resolvable && f.id && (
+            <button disabled={busy || committeeBusy} onClick={runCommittee}
+              title="Ask the multi-model reasoning committee (7 specialist reviewers) to independently confirm or REFUTE this finding"
+              style={{ ...btn(), fontSize: 12, padding: '5px 10px' }}>
+              {committeeBusy ? 'Panel reviewing…' : (committeeOpinion ? '↻ Re-run panel review' : '👥 Ask the panel')}
+            </button>
+          )}
+        </div>
+      )}
+      {committeeOpinion && committeeOpinion.committee && (
+        <div style={{ marginTop: 10, padding: 10, background: 'rgba(174,135,70,0.08)', border: '1px solid #AE8746', borderRadius: 8 }}>
+          <div style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: '#AE8746', marginBottom: 4 }}>Panel review</div>
+          <div style={{ fontSize: 13, color: 'var(--ivory,#141B22)', marginBottom: 6 }}>
+            <b>{String(committeeOpinion.committee.action).toUpperCase()}</b> at <b>{committeeOpinion.committee.adjudicated_severity}</b> — {committeeOpinion.committee.reasoning}
+          </div>
+          {Array.isArray(committeeOpinion.committee.votes) && committeeOpinion.committee.votes.length > 0 && (
+            <ul style={{ margin: 0, padding: 0, listStyle: 'none', fontSize: 12 }}>
+              {committeeOpinion.committee.votes.map((v, i) => (
+                <li key={i} style={{ color: 'var(--muted,#4B585C)' }}>
+                  {v.specialist}: {v.ok ? `${v.verdict.verdict} (${Math.round(Number(v.verdict.confidence || 0) * 100)}%) — ${v.verdict.reason}` : `failed (${v.reason})`}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
       {canEscalate && !escalated && escOpen && (
