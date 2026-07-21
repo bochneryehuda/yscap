@@ -122,6 +122,48 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
     findingIds.push(fr[0].id);
   }
 
+  // 4. Cure analysis (Sovereign 2/4, owner-directed 2026-07-21). If this
+  // document is FILED under a specific checklist_item, and that item's
+  // condition code carries a structured intent, produce a CURE PROOF:
+  // check each satisfaction requirement one-by-one against the extracted
+  // fields + the file's twin canonical facts, and spawn any new findings
+  // the cure surfaced. Best-effort — a cure analysis failure never blocks
+  // the extraction or its findings from persisting.
+  try {
+    if (appId && documentId) {
+      const linkQ = await client.query(
+        `SELECT d.checklist_item_id, ci.template_id, ct.code
+           FROM documents d
+           LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
+           LEFT JOIN checklist_templates ct ON ct.id = ci.template_id
+          WHERE d.id = $1`, [documentId]);
+      const link = linkQ.rows[0];
+      if (link && link.checklist_item_id && link.code) {
+        const cure = require('./cure');
+        const twin = require('./twin');
+        const intent = await cure.intentForCode(link.code, client);
+        if (intent) {
+          const twinRows = await twin.factsForFile(appId, client);
+          const twinFacts = Object.fromEntries(twinRows.map((r) => [r.fact_key, r]));
+          const analysis = cure.analyze({
+            intent,
+            extractionFields: ext.fields || {},
+            twinFacts,
+            subject: {},                 // caller can pass richer subject via extraction context
+            expected: {},                // program min FICO / required months etc. wired later
+          });
+          await cure.persistProof(client, {
+            appId,
+            checklistItemId: link.checklist_item_id,
+            intentId: intent.id,
+            documentId, extractionId,
+            analysis,
+          });
+        }
+      }
+    }
+  } catch (_) { /* cure is additive — never blocks the extraction */ }
+
   return { extractionId, findingIds };
 }
 
