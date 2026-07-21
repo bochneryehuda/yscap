@@ -38,7 +38,9 @@ async function claimOncePerPeriod({ action, entityId = null, interval, actorKind
     await client.query('BEGIN');
     // Serialize claimants on (action, entity) BEFORE the read — a separate
     // statement so the INSERT below gets a post-lock snapshot.
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [key]);
+    // hashtextextended returns a 64-bit hash; a 32-bit hashtext collision would silently serialize
+    // two unrelated (action, entity) pairs (audit finding 2026-07-21). Bumped to 64-bit.
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [key]);
     const q = entityId == null
       ? await client.query(
           `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)

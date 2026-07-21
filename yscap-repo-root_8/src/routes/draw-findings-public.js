@@ -32,7 +32,19 @@ const storage = require('../lib/storage');
 const drawReport = require('../sitewire/draw-report');
 const { serveDocument } = require('../lib/serve-document');
 const { setMediaHeaders } = require('../lib/media-headers');
+const { keyedRateLimit } = require('../lib/rate-limit');
 const scrub = (s) => (s == null ? null : borrowerSafe.scrubText(String(s)));
+
+// PER-TOKEN throttles for STATE-CHANGING endpoints (audit 2026-07-21). The per-IP bucket applied at
+// mount time (server.js `draw-public`) is the network-shape defense; these are the per-capability
+// defense so a leaked/forwarded reply_token behind a fresh IP can't be replayed on-repeat for 30
+// days. Reads (GET) intentionally aren't token-throttled — a borrower legitimately loads the page
+// once, then media/report tiles fetch — that's normal load. Writes get single-digit/minute quotas
+// because accept + dispute are one-shot user actions, never sustained traffic. keyOf reads the URL
+// param BEFORE the async handler runs; a bad-shape token still 429s (cheap) and the handler still
+// returns its own 404 for real not-found — the throttle just prevents replay.
+const tokenThrottleMutation = keyedRateLimit({ bucket: 'draw-token-mutation', windowMs: 60000, max: 5, keyOf: (req) => req.params.token });
+const tokenThrottleReport = keyedRateLimit({ bucket: 'draw-token-report',   windowMs: 60000, max: 8, keyOf: (req) => req.params.token });
 
 const isToken = (t) => typeof t === 'string' && /^[a-f0-9]{48}$/.test(t);
 // The one-click capability token is short-lived: a borrower should act within the wire SLA,
@@ -114,7 +126,7 @@ router.get('/:token/media/:mediaId', async (req, res) => {
 });
 
 // ---- GET /:token/report — the PILOT-branded, borrower-safe inspection PDF ----
-router.get('/:token/report', async (req, res) => {
+router.get('/:token/report', tokenThrottleReport, async (req, res) => {
   const f = await findingByToken(req.params.token);
   if (!f) return res.status(404).json({ error: 'not found' });
   if (isExpired(f.delivered_at) && f.status !== 'accepted') return res.status(410).json({ error: 'This link has expired — please sign in to your portal.', expired: true });
@@ -137,7 +149,7 @@ router.get('/:token/report', async (req, res) => {
 });
 
 // ---- POST /:token/accept — accept from the email (delivered → accepted) ----
-router.post('/:token/accept', async (req, res) => {
+router.post('/:token/accept', tokenThrottleMutation, async (req, res) => {
   const f = await findingByToken(req.params.token);
   if (!f) return res.status(404).json({ error: 'not found' });
   if (f.status === 'accepted') return res.json({ ok: true, already: true, wire_due_at: f.wire_due_at });
@@ -156,7 +168,7 @@ router.post('/:token/accept', async (req, res) => {
 // ---- POST /:token/dispute — push back per line from the email (amount + reason; no login) ----
 // Mirrors the authenticated portal dispute, minus photo evidence (an unauthenticated file upload
 // is an abuse surface — the borrower attaches photos from their portal). delivered → disputed.
-router.post('/:token/dispute', async (req, res) => {
+router.post('/:token/dispute', tokenThrottleMutation, async (req, res) => {
   const f = await findingByToken(req.params.token);
   if (!f) return res.status(404).json({ error: 'not found' });
   if (f.status === 'accepted') return res.status(409).json({ error: 'you already accepted these results' });

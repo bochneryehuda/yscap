@@ -1049,15 +1049,18 @@ router.post('/files/:id/retainage-release', requirePermission('manage_draws'), a
   const client = await db.getClient();
   try {
     await client.query('BEGIN');
-    await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`sw-retrel:${appId}`]);
+    await client.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [`sw-retrel:${appId}`]);
     const held = Number((await client.query(`SELECT COALESCE(sum(retainage_held_cents),0) h FROM draw_disbursements WHERE application_id=$1 AND kind='draw'`, [appId])).rows[0].h) || 0;
     const already = Number((await client.query(`SELECT COALESCE(sum(net_release_cents),0) r FROM draw_disbursements WHERE application_id=$1 AND kind='retainage_release'`, [appId])).rows[0].r) || 0;
     const toRelease = held - already;
     if (toRelease <= 0) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'no retainage is being held to release' }); }
+    // Snapshot the total-held at this moment onto the release row (db/226) so a later retro-edit
+    // of an old draw's retainage_held_cents can't silently shift the pool — the audit trail shows
+    // exactly what was held when we wired this release (audit finding 2026-07-21).
     const row = (await client.query(
-      `INSERT INTO draw_disbursements (application_id, approved_cents, fee_cents, retainage_held_cents, net_release_cents, release_date, funded_status, kind, note, created_by)
-       VALUES ($1,$2,0,0,$2,$3,'released','retainage_release',$4,$5) RETURNING *`,
-      [appId, toRelease, relDate, relNote, req.actor.id])).rows[0];
+      `INSERT INTO draw_disbursements (application_id, approved_cents, fee_cents, retainage_held_cents, net_release_cents, held_at_release_cents, release_date, funded_status, kind, note, created_by)
+       VALUES ($1,$2,0,0,$2,$3,$4,'released','retainage_release',$5,$6) RETURNING *`,
+      [appId, toRelease, held, relDate, relNote, req.actor.id])).rows[0];
     await client.query('COMMIT');
     // Milestone → borrower: the completion retainage has been released.
     try {

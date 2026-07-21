@@ -425,7 +425,7 @@ async function pushFile(appId, opts = {}) {
   try {
     if (!link || !link.sitewire_property_id) {
       lockConn = await db.getClient();
-      await lockConn.query('SELECT pg_advisory_lock(hashtext($1))', [lockKey]);
+      await lockConn.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', [lockKey]);
       link = await getLink(appId); // re-read UNDER the lock — the race loser now sees the winner's link and updates
     }
 
@@ -491,7 +491,7 @@ async function pushFile(appId, opts = {}) {
   } finally {
     if (lockConn) {
       let unlockErr = null;
-      try { await lockConn.query('SELECT pg_advisory_unlock(hashtext($1))', [lockKey]); } catch (e) { unlockErr = e; }
+      try { await lockConn.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [lockKey]); } catch (e) { unlockErr = e; }
       // if the unlock failed, DESTROY the connection (pass the error) — never return a still-lock-holding
       // session to the pool.
       lockConn.release(unlockErr || undefined);
@@ -545,11 +545,11 @@ async function pushBudget(appId, budgetId, ex, budgetCents) {
   const lockConn = await db.getClient();
   const lockKey = `sw-budget:${appId}`;
   try {
-    await lockConn.query('SELECT pg_advisory_lock(hashtext($1))', [lockKey]);
+    await lockConn.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', [lockKey]);
     return await pushBudgetInner(appId, budgetId, ex, budgetCents);
   } finally {
     let unlockErr = null;
-    try { await lockConn.query('SELECT pg_advisory_unlock(hashtext($1))', [lockKey]); } catch (e) { unlockErr = e; }
+    try { await lockConn.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [lockKey]); } catch (e) { unlockErr = e; }
     lockConn.release(unlockErr || undefined);
   }
 }
@@ -938,9 +938,19 @@ async function updatePropertyControls(appId, changes = {}, staffId = null) {
   }
   if (dryrun) sitewire = 'dryrun';
 
-  // Persist the coordinator's inspection choice + fee PILOT-side so resolveInspection + the next push agree.
-  if (newMethod != null) await db.query(`UPDATE sitewire_property_links SET inspection_method=$2, updated_at=now() WHERE application_id=$1`, [appId, newMethod]);
-  if (newFee != null) await db.query(`UPDATE sitewire_property_links SET fee_cents_override=$2, updated_at=now() WHERE application_id=$1`, [appId, newFee]);
+  // Persist the coordinator's inspection choice + fee PILOT-side so resolveInspection + the next push agree —
+  // BUT ONLY if Sitewire actually persisted it (audit finding, 2026-07-21). Previously these UPDATEs ran
+  // unconditionally: when Sitewire returned 200 with a body that omitted `processing_fee_cents` /
+  // `inspection_method` (the exact "200 that didn't save" class the verify above exists to catch), PILOT's
+  // shadow was updated but Sitewire wasn't — resolveInspection would then read the WRONG fee and the next
+  // push would fight it. On 'dryrun' we also skip the persist (nothing changed in Sitewire). On 'unverified'
+  // we skip too: the write may have taken but we couldn't confirm — fail closed rather than record a value
+  // we can't trust. When the write succeeded ('synced') the shadow update runs; when Sitewire outright
+  // failed the code already returned above via park().
+  if (sitewire === 'synced') {
+    if (newMethod != null) await db.query(`UPDATE sitewire_property_links SET inspection_method=$2, updated_at=now() WHERE application_id=$1`, [appId, newMethod]);
+    if (newFee != null) await db.query(`UPDATE sitewire_property_links SET fee_cents_override=$2, updated_at=now() WHERE application_id=$1`, [appId, newFee]);
+  }
   return { ok: true, ...newBools, inspection_method: newMethod, processing_fee_cents: newFee, draw_eligible: newDrawEligible, sitewire };
 }
 
@@ -1191,7 +1201,21 @@ async function setDrawQuickNotify(appId, drawId, statusId) {
 
 /* The Sitewire property's own documents (whatever the borrower/inspector uploaded on Sitewire's side) — a
    LIVE read of property.documents[]. We surface them (name + open link) so the coordinator sees everything
-   Sitewire holds without leaving PILOT. Read-only; [] when off / not managed. URLs are Sitewire's (may expire). */
+   Sitewire holds without leaving PILOT. Read-only; [] when off / not managed.
+   URLs are HOST-ALLOWLISTED (audit finding 2026-07-21): only the Sitewire host and AWS S3 (the ActiveStorage
+   redirect blobs Sitewire serves docs through) are honored. A compromised/mis-served Sitewire response can
+   no longer smuggle an arbitrary attacker origin — or a private cloud host — into the coordinator's
+   browser through the Documents tab. Same allowlist as web-client.js:assertUploadUrl. */
+const SITEWIRE_DOC_HOST = (() => { try { return new URL(cfg.sitewireBaseUrl || 'https://app.sitewire.co').host.toLowerCase(); } catch (_) { return 'app.sitewire.co'; } })();
+function safeSitewireDocUrl(u) {
+  if (u == null || u === '') return null;
+  let url; try { url = new URL(String(u)); } catch (_) { return null; }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return null; // never javascript:/data:/file:/…
+  const h = url.host.toLowerCase();
+  const okSitewire = h === SITEWIRE_DOC_HOST;
+  const okS3 = /(^|\.)s3[.-][a-z0-9-]*\.amazonaws\.com$/.test(h) || /(^|\.)s3\.amazonaws\.com$/.test(h) || h.endsWith('.amazonaws.com');
+  return (okSitewire || okS3) ? url.href : null;
+}
 async function getSitewireDocuments(appId) {
   const link = await getLink(appId);
   if (!link || !link.sitewire_property_id || link.matched_by !== 'created') return { managed: false, documents: [] };
@@ -1199,13 +1223,12 @@ async function getSitewireDocuments(appId) {
   try {
     const p = await client.getProperty(link.sitewire_property_id);
     const docs = (p && (p.documents || (p.property && p.property.documents))) || [];
-    const safeUrl = (u) => { try { const x = new URL(String(u)); return (x.protocol === 'http:' || x.protocol === 'https:') ? x.href : null; } catch (_) { return null; } };
     return { managed: true, available: true, documents: (Array.isArray(docs) ? docs : []).map((d) => ({
       name: d.name || d.filename || d.title || 'Document',
-      url: safeUrl(d.url || d.src || d.download_url || d.file_url), // only http(s) — never a javascript:/data: href
+      url: safeSitewireDocUrl(d.url || d.src || d.download_url || d.file_url),
       kind: d.kind || d.type || d.document_type || null,
       uploaded_at: d.created_at || d.uploaded_at || d.inserted_at || null,
-    })) };
+    })).filter((d) => d.url) }; // drop any entry whose URL failed the host allowlist — never render a null link
   } catch (e) { return { managed: true, available: false, documents: [], error: (e && e.message) || 'error' }; }
 }
 

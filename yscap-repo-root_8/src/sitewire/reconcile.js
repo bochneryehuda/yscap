@@ -131,7 +131,14 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText) {
 
   // A draw with no prior mirror row. ATOMIC claim: set the watermark only if still unset, and notify
   // only if THIS pass won it — so two overlapping reconcile passes can never double-notify (audit LOW-2).
+  // If Sitewire returned this draw with a NULL status (a rare drafting/transition state we can't
+  // interpret), DON'T commit the watermark yet — leave status_synced NULL AND rely on the schema-
+  // stamped first_seen_at to say "PILOT is watching this row" (audit finding 2026-07-21). The next
+  // poll that sees a real status takes the legacy branch below, which now distinguishes
+  // pre-migration legacy (first_seen_at IS NULL → silent baseline) from a first-status arrival on
+  // a row PILOT already knows about (first_seen_at set → notify the coordinator).
   if (!prev) {
+    if (newStatus == null) { await recordInboundChange(appId, drawId, 'draw', drawId, 'first_seen_no_status', null, null, false); return; }
     const won = (await db.query(`UPDATE sitewire_draws SET status_synced=$2 WHERE sitewire_draw_id=$1 AND status_synced IS NULL RETURNING sitewire_draw_id`, [drawId, newStatus])).rowCount === 1;
     if (firstReconcile) { await recordInboundChange(appId, drawId, 'draw', drawId, 'baseline', null, newStatus, false); return; }
     // A property PILOT created can only gain a draw AFTER we set it up, so a first-seen draw on an
@@ -146,11 +153,32 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText) {
     return;
   }
 
-  // A legacy row seen for the first time after the watermark column was added: baseline it silently
-  // (never notify for a transition that happened before we started watching — go-forward cutover).
+  // status_synced is NULL — two cases distinguished by first_seen_at (db/224):
+  //   (a) LEGACY row (first_seen_at IS NULL): pre-migration, we didn't know about the row when
+  //       whatever transition happened. Silent baseline — never notify for history (go-forward
+  //       cutover, unchanged from before).
+  //   (b) FIRST-STATUS ARRIVAL (first_seen_at IS NOT NULL): PILOT has been watching the row
+  //       (previously it had null status; now a real status arrived). This is the transition the
+  //       null-status skip above deferred — treat it as a genuine inbound and notify per REACT_STATUS.
+  //   In both cases: nothing to do while newStatus is still null.
   if (prev.status_synced == null) {
-    await db.query(`UPDATE sitewire_draws SET status_synced=$2 WHERE sitewire_draw_id=$1 AND status_synced IS NULL`, [drawId, newStatus]);
-    await recordInboundChange(appId, drawId, 'draw', drawId, 'baseline', prev.status, newStatus, false);
+    if (newStatus == null) return;
+    const isLegacy = prev.first_seen_at == null;
+    const won = (await db.query(`UPDATE sitewire_draws SET status_synced=$2 WHERE sitewire_draw_id=$1 AND status_synced IS NULL RETURNING sitewire_draw_id`, [drawId, newStatus])).rowCount === 1;
+    if (isLegacy || firstReconcile) {
+      await recordInboundChange(appId, drawId, 'draw', drawId, 'baseline', prev.status, newStatus, false);
+      return;
+    }
+    if (won) {
+      const r = REACT_STATUS[newStatus];
+      await recordInboundChange(appId, drawId, 'draw', drawId, 'first_status', null, newStatus, !!r);
+      if (r) {
+        await notify.notifyAppStaff(appId, {
+          type: 'draw_inbound', title: r.title, badge: { text: 'Sitewire update', tone: r.tone },
+          body: r.body(draw.number == null ? '—' : draw.number, addrText),
+          applicationId: appId, link: `/internal/app/${appId}/draws` }).catch(() => {});
+      }
+    }
     return;
   }
 
@@ -254,7 +282,7 @@ async function reconcileOne(appId) {
     // status TRANSITION (a partner approved/released a draw, a borrower submitted one) from a value
     // PILOT already reacted to. Best-effort — a read failure just skips the reaction, never the mirror.
     let prevDraw = null;
-    try { prevDraw = (await db.query(`SELECT status, status_synced, total_approved_cents FROM sitewire_draws WHERE sitewire_draw_id=$1`, [d.id])).rows[0] || null; } catch (_) {}
+    try { prevDraw = (await db.query(`SELECT status, status_synced, total_approved_cents, first_seen_at FROM sitewire_draws WHERE sitewire_draw_id=$1`, [d.id])).rows[0] || null; } catch (_) {}
     await db.query(
       `INSERT INTO sitewire_draws (application_id, sitewire_draw_id, sitewire_property_id, number, name, status, historical, total_requested_cents, total_approved_cents, coordinator_id, quick_notify_status_id, pdf_src, submitted_at, approved_at, budget_version_at_draw, events, sitewire_updated_at, updated_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,now())
@@ -474,28 +502,96 @@ async function persistDrawFindings(appId, sitewireDrawId, deliveredTo = null) {
     `SELECT sitewire_job_item_id, sow_line_key, unit_index FROM sitewire_job_item_links WHERE application_id=$1 AND sitewire_job_item_id IS NOT NULL`, [appId])).rows;
   const byJid = new Map(links.map((l) => [Number(l.sitewire_job_item_id), l]));
 
-  const token = crypto.randomBytes(24).toString('hex');
+  // Read the PRIOR finding state so a re-deliver preserves borrower dispute evidence (audit finding
+  // 2026-07-21): a force-re-deliver over an already accepted/disputed/resolved finding used to
+  // wholesale DELETE draw_finding_lines and reset the parent's accepted/disputed/resolved timestamps
+  // — wiping dispute_media (storage refs orphaned), dispute_status, dispute_desired_cents,
+  // dispute_note, dispute_decided_by/at, and any negotiated approved_cents the coordinator had
+  // recorded. Now the parent status is PROMOTED to 'delivered' only when the prior status was
+  // 'delivered' (a fresh re-deliver of undecided findings); accepted/disputed/resolved statuses are
+  // preserved so the borrower's decision isn't erased, and per-line dispute fields are MERGED on
+  // sitewire_request_id / sitewire_job_item_id instead of DELETE+INSERT so the evidence survives.
+  const prior = (await db.query(
+    `SELECT id, status, reply_token, accepted_at, accepted_via, disputed_at, resolved_at
+       FROM draw_findings WHERE sitewire_draw_id=$1`, [sitewireDrawId])).rows[0] || null;
+  const priorStatus = prior && prior.status;
+  const promotable = !priorStatus || priorStatus === 'delivered';
+
+  const token = (prior && prior.reply_token) || crypto.randomBytes(24).toString('hex');
+  // Only touch the borrower-decision timestamps when we're moving BACK to 'delivered' (a fresh
+  // re-deliver). Otherwise keep the prior status + prior timestamps intact.
   const finding = (await db.query(
     `INSERT INTO draw_findings (application_id, sitewire_draw_id, status, total_requested_cents, total_approved_cents, reply_token, delivered_to, delivered_at, updated_at)
      VALUES ($1,$2,'delivered',$3,$4,$5,$6,now(),now())
-     ON CONFLICT (sitewire_draw_id) DO UPDATE SET status='delivered', total_requested_cents=EXCLUDED.total_requested_cents, total_approved_cents=EXCLUDED.total_approved_cents,
-       reply_token=COALESCE(draw_findings.reply_token, EXCLUDED.reply_token), delivered_to=EXCLUDED.delivered_to, delivered_at=now(), accepted_at=NULL, accepted_via=NULL, disputed_at=NULL, resolved_at=NULL, updated_at=now()
+     ON CONFLICT (sitewire_draw_id) DO UPDATE SET
+       total_requested_cents=EXCLUDED.total_requested_cents,
+       total_approved_cents=EXCLUDED.total_approved_cents,
+       reply_token=COALESCE(draw_findings.reply_token, EXCLUDED.reply_token),
+       delivered_to=EXCLUDED.delivered_to,
+       delivered_at=CASE WHEN $7::boolean THEN now() ELSE draw_findings.delivered_at END,
+       status=CASE WHEN $7::boolean THEN 'delivered' ELSE draw_findings.status END,
+       accepted_at=CASE WHEN $7::boolean THEN NULL ELSE draw_findings.accepted_at END,
+       accepted_via=CASE WHEN $7::boolean THEN NULL ELSE draw_findings.accepted_via END,
+       disputed_at=CASE WHEN $7::boolean THEN NULL ELSE draw_findings.disputed_at END,
+       resolved_at=CASE WHEN $7::boolean THEN NULL ELSE draw_findings.resolved_at END,
+       updated_at=now()
      RETURNING id, reply_token`,
-    [appId, sitewireDrawId, detail.totals.requested_cents, detail.totals.approved_cents, token, deliveredTo ? JSON.stringify(deliveredTo) : null])).rows[0];
+    [appId, sitewireDrawId, detail.totals.requested_cents, detail.totals.approved_cents,
+     token, deliveredTo ? JSON.stringify(deliveredTo) : null, promotable])).rows[0];
 
-  // replace the finding lines (idempotent re-deliver)
-  await db.query(`DELETE FROM draw_finding_lines WHERE finding_id=$1`, [finding.id]);
-  for (const ln of detail.lines) {
-    const x = byJid.get(Number(ln.job_item_id)) || {};
-    await db.query(
-      `INSERT INTO draw_finding_lines (finding_id, sitewire_request_id, sitewire_job_item_id, sow_line_key, unit_index, name, requested_cents, approved_cents, not_approved_cents, inspector_comments, lender_comments, photo_count, video_count, media, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,now(),now())`,
-      [finding.id, ln.request_id || null, ln.job_item_id || null, x.sow_line_key || null, x.unit_index || null,
-       ln.name || null, ln.requested_cents || 0, ln.approved_cents || 0, ln.not_approved_cents || 0,
-       ln.inspector_comments || null, ln.lender_comments || null, ln.photo_count || 0, ln.video_count || 0,
-       ln.media ? JSON.stringify(ln.media) : null]);
+  // Read existing lines for this finding, keyed by (sitewire_request_id, sitewire_job_item_id) so a
+  // MERGE preserves dispute state. sitewire_request_id is the primary key when present; a legacy
+  // row with a null request id falls back to the job-item id.
+  const existing = new Map();
+  const priorLines = (await db.query(
+    `SELECT id, sitewire_request_id, sitewire_job_item_id, approved_cents, dispute_status, dispute_desired_cents,
+            dispute_note, dispute_media, dispute_decided_by, dispute_decided_at
+       FROM draw_finding_lines WHERE finding_id=$1`, [finding.id])).rows;
+  for (const r of priorLines) {
+    const key = r.sitewire_request_id != null ? `r:${r.sitewire_request_id}` : `j:${r.sitewire_job_item_id}`;
+    existing.set(key, r);
   }
-  return { finding_id: finding.id, reply_token: finding.reply_token, lines: detail.lines.length, totals: detail.totals, status: detail.status };
+
+  // Merge lines: UPDATE by key when present (keeps dispute_*), INSERT when new. A prior line that
+  // is NO LONGER in the new detail (Sitewire removed the request) is left in place with its dispute
+  // history intact — safer than wiping evidence a coordinator/borrower may still be looking at.
+  const seenKeys = new Set();
+  for (const ln of detail.lines) {
+    const key = ln.request_id != null ? `r:${ln.request_id}` : `j:${ln.job_item_id}`;
+    seenKeys.add(key);
+    const x = byJid.get(Number(ln.job_item_id)) || {};
+    const cur = existing.get(key);
+    // approved_cents is the NEGOTIATED figure once a dispute has been decided (dispute_status !== 'open').
+    // Preserve the coordinator-decided amount so a fresh Sitewire read doesn't overwrite it; when the
+    // dispute is still 'open' or absent, the Sitewire amount wins (source of truth).
+    const disputeDecided = cur && cur.dispute_status && cur.dispute_status !== 'open';
+    const approvedCents = disputeDecided ? Number(cur.approved_cents || 0) : (ln.approved_cents || 0);
+    const notApprovedCents = Math.max(0, (ln.requested_cents || 0) - approvedCents);
+    if (cur) {
+      await db.query(
+        `UPDATE draw_finding_lines
+            SET sitewire_request_id=$2, sitewire_job_item_id=$3, sow_line_key=$4, unit_index=$5, name=$6,
+                requested_cents=$7, approved_cents=$8, not_approved_cents=$9,
+                inspector_comments=$10, lender_comments=$11, photo_count=$12, video_count=$13, media=$14,
+                updated_at=now()
+          WHERE id=$1`,
+        [cur.id, ln.request_id || null, ln.job_item_id || null, x.sow_line_key || null, x.unit_index || null,
+         ln.name || null, ln.requested_cents || 0, approvedCents, notApprovedCents,
+         ln.inspector_comments || null, ln.lender_comments || null, ln.photo_count || 0, ln.video_count || 0,
+         ln.media ? JSON.stringify(ln.media) : null]);
+    } else {
+      await db.query(
+        `INSERT INTO draw_finding_lines (finding_id, sitewire_request_id, sitewire_job_item_id, sow_line_key, unit_index, name, requested_cents, approved_cents, not_approved_cents, inspector_comments, lender_comments, photo_count, video_count, media, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,now(),now())`,
+        [finding.id, ln.request_id || null, ln.job_item_id || null, x.sow_line_key || null, x.unit_index || null,
+         ln.name || null, ln.requested_cents || 0, approvedCents, notApprovedCents,
+         ln.inspector_comments || null, ln.lender_comments || null, ln.photo_count || 0, ln.video_count || 0,
+         ln.media ? JSON.stringify(ln.media) : null]);
+    }
+  }
+  return { finding_id: finding.id, reply_token: finding.reply_token, lines: detail.lines.length,
+    totals: detail.totals, status: promotable ? 'delivered' : priorStatus,
+    preserved_dispute_status: !promotable };
 }
 
 module.exports = { syncCapitalPartners, syncStaffUsers, reconcileOne, reconcileAll, fetchDrawFindings, deriveTimes, assessAndStoreRisk, persistDrawFindings, settingsMap, verifyBudgetDrift };
