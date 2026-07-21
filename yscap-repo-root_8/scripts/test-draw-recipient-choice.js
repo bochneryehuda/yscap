@@ -45,5 +45,26 @@ const dualSpec = { soloBorrower: false, countersignRequired: false };
   ok('5 dual: primary borrower first', r[0].role === 'borrower' && r[0].email === 'moshe@example.com');
   ok('5 dual: co-borrower second', r[1].role === 'co_borrower' && r[1].email === 'sarah@example.com'); }
 
+// ===== SEND-PATH re-resolution (the bug caught pre-merge): buildDefinition re-resolves each seeded
+// recipient's identity at send time. It MUST key on the stored borrower_id, not the role string, or a
+// co-borrower choice silently reverts to the primary borrower. resolveRecipientIdentity is that logic. =====
+const resolve = orch.resolveRecipientIdentity;
+ok('resolve exported', typeof resolve === 'function');
+// The seeded row for a co-borrower choice: role='borrower' (b1 anchors) but borrower_id = the co-borrower.
+{ const r = resolve({ role: 'borrower', borrower_id: 'C1' }, app);
+  ok('send: solo→co keeps co-borrower email', r.email === 'sarah@example.com' && r.name === 'Sarah Spitzer'); }
+// The seeded row for the primary borrower: role='borrower', borrower_id = the primary.
+{ const r = resolve({ role: 'borrower', borrower_id: 'B1' }, app);
+  ok('send: primary borrower stays primary', r.email === 'moshe@example.com'); }
+// A role='borrower' row with a borrower_id that ISN'T the co-borrower resolves to the primary (never leaks co).
+{ const r = resolve({ role: 'borrower', borrower_id: 'ZZ' }, app);
+  ok('send: unknown borrower_id → primary', r.email === 'moshe@example.com'); }
+// An explicit co_borrower-role recipient (multi-signer package) still resolves to the co-borrower.
+{ const r = resolve({ role: 'co_borrower', borrower_id: 'C1' }, app);
+  ok('send: co_borrower role → co-borrower', r.email === 'sarah@example.com'); }
+// Admin/other → keep seeded config (null identity).
+{ const r = resolve({ role: 'admin', borrower_id: null }, app);
+  ok('send: admin keeps config', r.email === null && r.name === null); }
+
 console.log(`\ntest-draw-recipient-choice: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
