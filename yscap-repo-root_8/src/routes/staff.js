@@ -5270,9 +5270,12 @@ function blockerReason(row) {
 }
 function decorateBlocker(row, kind) {
   const r = { ...row, kind, title: row.title || row.label };
-  r.section = sectionForBlocker(r);
+  // A blocker may pin its OWN destination + explanation (e.g. the underwriting
+  // dealbreaker points at the findings desk, not the conditions hub, and carries
+  // the actual finding text). Otherwise fall back to the derived section/reason.
+  r.section = row.section || sectionForBlocker(r);
   if (r.section === 'sec-conditions') r.condTab = condTabForBlocker(r);
-  r.reason = blockerReason(r);
+  r.reason = row.reason || blockerReason(r);
   return r;
 }
 async function advancementBlockers(appId, target) {
@@ -5322,10 +5325,32 @@ async function advancementBlockers(appId, target) {
   // navigates to the underwriting-conditions panel like the other first-class conditions.
   let underwritingFatals = [];
   try {
-    const { fileFatalCount } = require('../lib/underwriting/file-review');
-    const { total } = await fileFatalCount(db, appId);
-    if (total > 0) { const t = `Underwriting review — ${total} open dealbreaker finding${total === 1 ? '' : 's'} (resolve on the underwriting desk)`;
-      underwritingFatals = [{ id: 'underwriting_fatal', title: t, label: t, source: 'underwriting' }]; } // title+label so either client render works
+    const { fileFatalDetails } = require('../lib/underwriting/file-review');
+    // Pull the ACTUAL findings (title + what disagrees), not just a count — a loan
+    // officer needs to know WHAT the dealbreaker is, and "Go fix →" must land on the
+    // Document-review desk where the finding actually lives (not the conditions hub,
+    // where a derived tie-out/experience fatal has no row to show — that was the
+    // dead "Go fix" + vague "1 open dealbreaker finding" the LO reported).
+    const details = await fileFatalDetails(db, appId);
+    if (details.length) {
+      const first = details[0];
+      const more = details.length - 1;
+      const cap = (v, n) => String(v == null ? '' : v).trim().slice(0, n);
+      const title = details.length === 1
+        ? `Underwriting dealbreaker: ${cap(first.title, 140)}`
+        : `${details.length} underwriting dealbreakers to resolve`;
+      const bits = [];
+      const dv = cap(first.docValue, 120);
+      const fv = cap(first.fileValue, 120);
+      if (dv && fv) bits.push(`The document says “${dv}”, but our file says “${fv}”.`);
+      else if (first.howTo) bits.push(cap(first.howTo, 300));
+      if (more > 0) bits.push(`Plus ${more} more finding${more === 1 ? '' : 's'}.`);
+      bits.push('Open the “Document review & PILOT findings” section to fix it or grant an exception.');
+      underwritingFatals = [{
+        id: 'underwriting_fatal', title, label: title, source: 'underwriting',
+        section: 'sec-underwriting', reason: bits.join(' '),
+      }];
+    }
   } catch (_) { /* never break advancement gating on a tie-out compute error */ }
   return {
     conditions: [...underwriting, ...checklistConds.rows, ...underwritingFatals].map(r => decorateBlocker(r, 'condition')),
