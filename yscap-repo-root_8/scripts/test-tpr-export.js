@@ -7,7 +7,10 @@
  * (ISKA / investor structure), prior export artifacts.
  * Run: node scripts/test-tpr-export.js
  */
-process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://yscap:yscap@127.0.0.1:5432/yscap_test';
+// Requires DATABASE_URL with migrations applied. Skips cleanly otherwise — like every other
+// DB-gated test in `npm test` — so it doesn't fail CI (which has no database): the previous
+// self-assigned localhost default defeated the skip and hard-failed CI with ECONNREFUSED.
+if (!process.env.DATABASE_URL) { console.log('SKIP test-tpr-export (no DATABASE_URL)'); process.exit(0); }
 process.env.JWT_SECRET = 'test-secret-tpr';
 process.env.EMAIL_PROVIDER = 'none';
 process.env.NODE_ENV = 'test';
