@@ -201,7 +201,7 @@ export default function DrawsPanel({ appId }) {
             </Section>
 
             {/* DRAWS — the main content, open by default. */}
-            <Section id="dsec-draws" title="Draws" defaultOpen badge={draws.length || ''}
+            <Section id="dsec-draws" title="Draws" defaultOpen badge={draws.length || null}
               action={draws.length > 0 ? (
                 <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
                   <button className="btn btn-sm ghost" title="A PILOT-branded PDF of the whole construction project — schedule of values + every draw's inspection photos + notes."
