@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
+import { useAuth } from '../lib/auth.jsx';
 
 /* API Health (admin / platform_setup).
    One section per external API / integration: is it Live, Configured, Off, or Not connected —
@@ -103,7 +104,79 @@ function Card({ it, onTest, testing }) {
   );
 }
 
+/* Sitewire capability explorer (super_admin). Reads the Sitewire TEST system (never writes, never
+   prod) and lists every field it exposes — the ones we already control vs the ones we could add
+   next. This is how we turn "everything Sitewire can do" into PILOT buttons with confirmed field
+   names. Needs the SITEWIRE_TEST_* keys in Render; values are redacted (names/types only). */
+function SitewireExplorer() {
+  const [running, setRunning] = useState(false);
+  const [rep, setRep] = useState(null);
+  const [err, setErr] = useState('');
+
+  const run = async () => {
+    setRunning(true); setErr(''); setRep(null);
+    try { setRep(await api.sitewireExplore({})); }
+    catch (e) { setErr(e.message || 'Could not reach the Sitewire test environment.'); }
+    finally { setRunning(false); }
+  };
+
+  const types = rep && rep.catalog ? Object.keys(rep.catalog) : [];
+  const newCount = rep && rep.new_fields ? rep.new_fields.length : 0;
+
+  return (
+    <section style={{ marginTop: 22 }}>
+      <h3 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 2px' }}>Sitewire capability explorer</h3>
+      <p className="muted small" style={{ margin: '0 0 12px', maxWidth: 720 }}>
+        Reads the Sitewire <b>test</b> system and lists every field it has — the ones PILOT already controls, and the
+        ones we could add next — so nothing is guessed. It only ever <b>reads</b> (never changes anything), and uses a
+        separate test key set in the hosting settings (<code style={{ fontFamily: 'ui-monospace,Menlo,monospace' }}>SITEWIRE_TEST_…</code>), never your live key.
+      </p>
+      <button className="btn" disabled={running} onClick={run}>{running ? 'Reading Sitewire…' : 'Discover Sitewire fields'}</button>
+      {err && <p style={{ color: 'var(--crit,#B4483C)', fontSize: 13, marginTop: 10 }}>{err}</p>}
+
+      {rep && rep.error === 'test_creds_missing' && (
+        <div style={{ marginTop: 12, fontSize: 12.5, color: 'var(--amber,#B7791F)', background: 'var(--amber-bg,#F6EEDD)',
+          border: '1px solid var(--line,#E7E1D3)', borderRadius: 8, padding: '10px 12px' }}>
+          Add the test key in the hosting settings (Render → Environment) as <code>SITEWIRE_TEST_ACCESS_TOKEN</code>, <code>SITEWIRE_TEST_CLIENT</code>, <code>SITEWIRE_TEST_UID</code> (and <code>SITEWIRE_TEST_BASE_URL</code> if the test site uses a different address), then try again. Never paste the key here.
+        </div>
+      )}
+
+      {rep && rep.catalog && (
+        <div style={{ marginTop: 14 }}>
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+            <span style={{ fontSize: 12.5, fontWeight: 700, color: '#B4483C', background: '#F6E7E4', borderRadius: 999, padding: '4px 12px' }}>{newCount} new fields we could add</span>
+            {rep.counts && Object.entries(rep.counts).map(([k, v]) => (
+              <span key={k} className="muted" style={{ fontSize: 12, alignSelf: 'center' }}>{v} {k.replace(/_/g, ' ')}</span>
+            ))}
+          </div>
+          {rep.errors && rep.errors.length > 0 && (
+            <p className="muted small" style={{ marginBottom: 10 }}>Some endpoints did not return (test data may be sparse): {rep.errors.join(' · ')}</p>
+          )}
+          {types.map((t) => (
+            <div key={t} style={{ border: '1px solid var(--line,#E7E1D3)', borderRadius: 10, padding: '10px 12px', marginBottom: 10 }}>
+              <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6, fontFamily: 'ui-monospace,Menlo,monospace' }}>{t}</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {rep.catalog[t].map((f) => (
+                  <span key={f.name} title={`${f.type}${f.enum_values ? ' — ' + f.enum_values.join(', ') : ''}`}
+                    style={{ fontSize: 11.5, fontFamily: 'ui-monospace,Menlo,monospace', borderRadius: 6, padding: '2px 8px',
+                      border: '1px solid rgba(0,0,0,.06)',
+                      color: f.integrated ? '#3F7A5B' : '#B4483C',
+                      background: f.integrated ? 'rgba(63,122,91,.10)' : '#F6E7E4' }}>
+                    {f.integrated ? '✓' : '＋'} {f.name}{f.enum_values ? ` (${f.enum_values.slice(0, 4).join('/')})` : ''}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
+          <p className="muted small" style={{ marginTop: 4 }}>Green = PILOT already controls it · Red ＋ = available to add. Only field names/types shown (no borrower data).</p>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export default function StaffApiHealth() {
+  const { role } = useAuth();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
@@ -174,6 +247,8 @@ export default function StaffApiHealth() {
           </section>
         );
       })}
+
+      {role === 'super_admin' && <SitewireExplorer />}
     </div>
   );
 }

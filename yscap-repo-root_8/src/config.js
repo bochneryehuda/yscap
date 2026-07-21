@@ -279,6 +279,18 @@ module.exports = {
   // properties IT pushed to Sitewire from this date forward. Pre-existing Sitewire properties are never
   // adopted or followed. Informational (the born-on-push design already makes management go-forward-only).
   sitewireGoLiveDate:   process.env.SITEWIRE_GO_LIVE_DATE || '2026-07-20',
+  // --- Sitewire TEST-environment explorer (read-only field discovery) ---
+  // A SEPARATE credential set so we can safely READ the Sitewire test system and
+  // enumerate every field/button it exposes, WITHOUT ever touching the production
+  // creds above or writing anything. The explorer (src/sitewire/test-explorer.js)
+  // is GET-only and refuses to run unless these test-specific vars are set — a
+  // pasted-in-chat key is never used; the owner sets these in Render. Base URL
+  // falls back to the prod base only if the test system shares the same host.
+  sitewireTestBaseUrl:     (process.env.SITEWIRE_TEST_BASE_URL || process.env.SITEWIRE_BASE_URL || 'https://app.sitewire.co').replace(/\/+$/, ''),
+  sitewireTestAccessToken: process.env.SITEWIRE_TEST_ACCESS_TOKEN,
+  sitewireTestClient:      process.env.SITEWIRE_TEST_CLIENT,
+  sitewireTestUid:         process.env.SITEWIRE_TEST_UID,
+  sitewireTestLenderId:    parseInt(process.env.SITEWIRE_TEST_LENDER_ID || process.env.SITEWIRE_LENDER_ID || '236', 10),
 
   // --- address autocomplete / verification (server-side proxy) ---
   // The frontend calls OUR /api/address/*; any real key lives only here, never
