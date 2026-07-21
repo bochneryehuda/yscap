@@ -36,6 +36,15 @@ function dateGrounded(iso, hay) {
 
 // Keys we never grade (structural / model-authored, not copied off the page).
 const SKIP_KEYS = new Set(['readable', 'notes', 'holderisbusiness', 'isassignment', 'insfha', 'policypresent', 'buildersrisk', 'mortgageeclausepresent', 'assignorsigned', 'assigneesigned', 'signed', 'authorizesborrowing', 'ismanager', 'mortgagelates', 'hasbankruptcy', 'hasforeclosure', 'hasjudgmentorlien', 'pephit', 'hascriminalrecord']);
+// DERIVED / CLASSIFICATION keys the model ASSIGNS or INFERS rather than transcribes off the page —
+// a member's `type` enum, an INFERRED single-member `ownershipPct` (100%), a `propertyType` /
+// `accountType` / `entityType` classification. Their value is rarely a literal substring of the
+// document, so grounding them by text-match produces a FALSE "could not be confirmed in the document
+// text" finding even when the document was read perfectly (owner-reported 2026-07-21: an operating
+// agreement's members[0].ownershipPct / members[0].type flagged though the OA read fine). We never
+// GRADE or ESCALATE these — grounding is for values the AI TRANSCRIBED (names, addresses, amounts,
+// EIN, DOB, dates), where absence from the text is a real fabrication signal.
+const DERIVED_KEY = /(type$|^kind$|^role$|pct$|percent$|percentage$)/;
 // Critical field name fragments — an UNCONFIRMED value here is worth a finding (identity / money /
 // entity / property / authority). member|manager catches a fabricated managing member.
 const CRITICAL = /(name|holder|owner|seller|buyer|member|manager|address|price|amount|fee|balance|ein|dob|dateofbirth|score|value|arv|loan)/i;
@@ -70,7 +79,10 @@ function walk(obj, prefix, hay, hayDigits, out) {
   if (Array.isArray(obj)) { obj.forEach((v, i) => walk(v, `${prefix}[${i}]`, hay, hayDigits, out)); return; }
   if (typeof obj === 'object') {
     for (const [k, v] of Object.entries(obj)) {
-      if (SKIP_KEYS.has(k.toLowerCase())) continue;
+      const kl = k.toLowerCase();
+      // Skip structural/model-authored keys AND derived/classification keys (type enums, inferred
+      // percentages) — neither is transcribed off the page, so neither can be grounded by text match.
+      if (SKIP_KEYS.has(kl) || DERIVED_KEY.test(kl)) continue;
       walk(v, prefix ? `${prefix}.${k}` : k, hay, hayDigits, out);
     }
     return;
