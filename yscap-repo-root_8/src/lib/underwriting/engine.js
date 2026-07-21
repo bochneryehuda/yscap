@@ -17,6 +17,15 @@ const registry = require('./registry');
 const { analyzePdf } = require('./pdf-forensics');
 const { groundFields, groundingFinding } = require('./grounding');
 
+// The extractor's system prompt — shared by the first read and the vision SECOND-LOOK so both
+// speak to the model identically.
+const EXTRACT_SYSTEM = 'You extract fields from lending documents precisely. Never guess — use null when a value is absent or unreadable.';
+// Backup / second-look OCR (owner-directed 2026-07-21): when the first read of a document comes back
+// low-confidence (the model flagged it unreadable) and we have IMAGE bytes we did NOT already send,
+// give it a fresh set of eyes — re-run the extract WITH the image (a vision re-read). Default on;
+// UW_SECOND_LOOK_ENABLED=0 turns it off (it costs one extra paid model call, only on a bad read).
+const SECOND_LOOK_ENABLED = process.env.UW_SECOND_LOOK_ENABLED !== '0';
+
 // Turn a read/understand failure into a single, honest "verify by hand" finding — NEVER a false
 // mismatch and never a guess onto the file. The `meta` (from the analyzer's classified result)
 // lets the message name the OUTCOME so the underwriter knows why: blocked by a content filter
@@ -89,8 +98,8 @@ async function analyzeDocument({ docType, buffer, base64, mimeType, subject, tod
   baseExtraction.pageCount = ocr.ok ? (ocr.pageCount || null) : null;
 
   // 2. UNDERSTAND (extract fields to the type's schema).
-  const ext = await analyzer.extract({
-    system: 'You extract fields from lending documents precisely. Never guess — use null when a value is absent or unreadable.',
+  let ext = await analyzer.extract({
+    system: EXTRACT_SYSTEM,
     instructions: entry.instructions,
     schema: entry.schema,
     ocrText: ocr.ok ? ocr.text : null,
@@ -106,6 +115,32 @@ async function analyzeDocument({ docType, buffer, base64, mimeType, subject, tod
     };
   }
 
+  // 2b. SECOND-LOOK — a BACKUP read when the first came back low-confidence. The first read of a
+  // text-schema document uses the OCR text only; if the model flags it `readable:false` and we have
+  // real IMAGE bytes we did NOT already send (the analyzer only attaches image/* — Azure rejects a
+  // PDF as an image), re-run the extract WITH the image so a vision model can read what the OCR
+  // mangled (a faxed/photographed ID, a skewed scan). ONE retry only (cost), and we keep it ONLY if
+  // it read BETTER — a real read (readable !== false) replaces the unreadable one; otherwise the
+  // original stands. Best-effort: never throws (analyzer.extract returns a classified {ok:false}),
+  // and a failed/no-better retry leaves the honest "unreadable" first result untouched.
+  let secondLook = false;
+  const firstUnreadable = !!(ext.data && ext.data.readable === false);
+  const haveImageBytes = !!base64 && /^image\//i.test(mimeType || '');
+  if (SECOND_LOOK_ENABLED && firstUnreadable && haveImageBytes && !entry.image) {
+    const retry = await analyzer.extract({
+      system: EXTRACT_SYSTEM,
+      instructions: entry.instructions,
+      schema: entry.schema,
+      ocrText: ocr.ok ? ocr.text : null,
+      imageBase64: base64,
+      imageMime: mimeType,
+    });
+    if (retry && retry.ok && retry.data && retry.data.readable !== false) {
+      ext = retry;
+      secondLook = true;
+    }
+  }
+
   // 3. GROUND — verify the AI's extracted values against what the OCR physically read. A value
   // whose text isn't in the document is likely a hallucination; we NEVER underwrite against a
   // value the document doesn't contain, so a critical value that's ABSENT from the OCR raises an
@@ -119,7 +154,7 @@ async function analyzeDocument({ docType, buffer, base64, mimeType, subject, tod
   return {
     ok: true,
     extraction: Object.assign(baseExtraction, {
-      fields: ext.data, status: 'analyzed', confidence,
+      fields: ext.data, status: 'analyzed', confidence, secondLook,
       grounding: grounding ? { score: grounding.score, checked: grounding.checked, confirmed: grounding.confirmed, unconfirmed: grounding.unconfirmed.length } : null,
     }),
     findings,
