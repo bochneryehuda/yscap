@@ -185,4 +185,4 @@ function buildChain(fileCtx = {}, extractions = []) {
   return { status, edges, owners, vestingName, brokenEdges: broken.map((e) => e.id), findings };
 }
 
-module.exports = { buildChain, OWNERSHIP_PRONG_PCT };
+module.exports = { buildChain, OWNERSHIP_PRONG_PCT, PROGRAM_OWNER_RULES, ownerRuleFor };
