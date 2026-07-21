@@ -138,6 +138,45 @@ router.post('/retry-exhausted', async (req, res) => {
   }
 });
 
+// ---- State-machine (FSM) observability + dead-letter (Phase 3) --------------
+// Reads the explicit per-document mirror_status. Safe regardless of the
+// SHAREPOINT_MIRROR_FSM flag: the columns exist and are backfilled since Phase 1,
+// so the dashboard shows real state even before the FSM worker is enabled.
+const queue = require('../lib/sp-mirror-queue');
+
+// The correct-alerting dashboard: per-state counts, the dead-letter and
+// orphaned-lease counts (page-worthy), the dead-letter list (what the owner
+// manually reviews) and the leaked-lease list.
+router.get('/fsm', async (req, res) => {
+  try {
+    const [snapshot, deadLetter, expiredLeases] = await Promise.all([
+      queue.healthSnapshot(),
+      queue.deadLetterList(100),
+      queue.expiredLeaseList(100),
+    ]);
+    res.json({ ok: true, mode: queue.fsmMode(), snapshot, deadLetter, expiredLeases });
+  } catch (e) {
+    console.warn('[admin-sharepoint] handler error:', db.describeError(e));
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+// One-click requeue a dead-letter document (DEAD → PENDING, re-arms legacy too).
+// The Sync-review card auto-closes when it mirrors. Kicks a drain so it retries now.
+router.post('/fsm/doc/:id/requeue', async (req, res) => {
+  try {
+    if (!UUID_RE.test(String(req.params.id || ''))) return res.status(400).json({ error: 'invalid document id' });
+    const row = await queue.requeueDead(req.params.id);
+    if (!row) return res.status(404).json({ error: 'no dead-letter document with that id' });
+    try { backup.kick(); } catch (_) {}
+    await audit(req, 'sharepoint_fsm_requeue', { documentId: row.id, filename: row.filename });
+    res.json({ ok: true, documentId: row.id });
+  } catch (e) {
+    console.warn('[admin-sharepoint] handler error:', db.describeError(e));
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
 // Force ONE document to re-mirror (fresh copy uploaded, ref re-pointed).
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 router.post('/doc/:id/remirror', async (req, res) => {

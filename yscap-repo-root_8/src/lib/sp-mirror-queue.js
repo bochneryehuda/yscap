@@ -277,10 +277,162 @@ async function shadowCompare({ log = true } = {}) {
   return { fsm: fsmIds.length, legacy: legacyIds.length, onlyFsm, expectedLegacyOnly, unexpectedLegacyOnly, agree };
 }
 
+// ---------------------------------------------------------- observability (P3)
+
+/**
+ * One-query health snapshot for the admin dashboard + alerting. Counts per
+ * state, the dead-letter and orphaned-lease counts (the things to alert on),
+ * oldest CLAIMABLE age (a secondary drain-rate signal — NOT oldest-overall,
+ * which would wrongly include in-progress/dead rows), attempt distribution, and
+ * a 5-minute DONE throughput. This is the correct-alerting query from the design:
+ * page on DEAD/orphaned-lease (won't self-heal), warn on age.
+ */
+async function healthSnapshot() {
+  const { rows } = await db.query(
+    `SELECT
+       count(*) FILTER (WHERE sharepoint_mirror_status='PENDING')::int      AS pending,
+       count(*) FILTER (WHERE sharepoint_mirror_status='IN_PROGRESS')::int  AS in_progress,
+       count(*) FILTER (WHERE sharepoint_mirror_status='FAILED')::int       AS failed,
+       count(*) FILTER (WHERE sharepoint_mirror_status='DONE')::int         AS done,
+       count(*) FILTER (WHERE sharepoint_mirror_status='DEAD')::int         AS dead,
+       count(*) FILTER (WHERE sharepoint_mirror_status='SKIPPED')::int      AS skipped,
+       count(*) FILTER (WHERE sharepoint_mirror_status IS NULL)::int        AS unreconciled,
+       count(*) FILTER (WHERE sharepoint_mirror_status='IN_PROGRESS'
+                          AND sharepoint_lease_expires_at < now())::int     AS orphaned_leases,
+       COALESCE(EXTRACT(EPOCH FROM (now() - min(created_at)
+         FILTER (WHERE sharepoint_mirror_status IN ('PENDING','FAILED'))))::int, 0) AS oldest_claimable_secs,
+       COALESCE(max(sharepoint_backup_attempts)
+         FILTER (WHERE sharepoint_mirror_status IN ('PENDING','FAILED','IN_PROGRESS')), 0)::int AS max_attempts,
+       count(*) FILTER (WHERE sharepoint_mirror_status='DONE'
+                          AND sharepoint_backed_up_at > now() - interval '5 minutes')::int AS done_last_5m
+     FROM documents`);
+  return rows[0];
+}
+
+/** Dead-letter contents for the runbook / dashboard — what died and why. */
+async function deadLetterList(limit = 100) {
+  const { rows } = await db.query(
+    `SELECT id, filename, doc_kind, sharepoint_dead_reason AS dead_reason,
+            sharepoint_backup_attempts AS attempts, sharepoint_backup_error AS error,
+            round(EXTRACT(EPOCH FROM (now() - created_at)) / 3600.0, 1) AS age_hours
+       FROM documents WHERE sharepoint_mirror_status='DEAD'
+      ORDER BY created_at ASC LIMIT $1`, [limit]);
+  return rows;
+}
+
+/** Leases that leaked (a worker died mid-flight) — the other page-worthy signal. */
+async function expiredLeaseList(limit = 100) {
+  const { rows } = await db.query(
+    `SELECT id, filename, sharepoint_locked_by AS locked_by, sharepoint_backup_attempts AS attempts,
+            EXTRACT(EPOCH FROM (now() - sharepoint_lease_expires_at))::int AS overdue_secs
+       FROM documents WHERE sharepoint_mirror_status='IN_PROGRESS' AND sharepoint_lease_expires_at < now()
+      ORDER BY sharepoint_lease_expires_at ASC LIMIT $1`, [limit]);
+  return rows;
+}
+
+/**
+ * Admin requeue of a dead-letter document: DEAD → PENDING and re-arm the LEGACY
+ * columns too (attempts=0, error cleared), so both the FSM claim and the legacy
+ * drain re-attempt it. The Sync-review card auto-closes when it mirrors. Only a
+ * DEAD row can be requeued (a deliberate admin action out of the terminal state —
+ * reconcile never does this automatically). Returns the row or null.
+ */
+async function requeueDead(id) {
+  const { rows } = await db.query(
+    `UPDATE documents SET
+        sharepoint_mirror_status='PENDING', sharepoint_dead_reason=NULL,
+        sharepoint_next_attempt_at=now(), sharepoint_permanent_strikes=0,
+        sharepoint_lease_expires_at=NULL, sharepoint_locked_by=NULL,
+        sharepoint_backup_attempts=0, sharepoint_backup_error=NULL
+      WHERE id=$1 AND sharepoint_mirror_status='DEAD'
+      RETURNING id, filename`, [id]);
+  return rows[0] || null;
+}
+
+/**
+ * OWNER REQUIREMENT — the manual-review safety net must survive the state
+ * machine: every DEAD document (the dead-letter) gets a Sync-review card so a
+ * human reviews anything that has gone wrong, exactly like the legacy
+ * recordFailure/escalateStuckDocs path. Feeds the SAME sync_review_queue surface
+ * (field_key 'sharepoint_doc', task_id 'spdoc:<id>', reason
+ * 'sharepoint_mirror_failed'); queueReview dedups per doc so this is idempotent
+ * and never double-cards. This is the belt to the legacy suspenders in shadow,
+ * and becomes the PRIMARY carder at cutover (when the FSM, not recordFailure,
+ * decides DEAD). Returns how many new cards were opened.
+ */
+async function cardDeadLetter(limit = 200) {
+  const { rows } = await db.query(
+    `SELECT d.id, d.filename, d.doc_kind, ci.label AS item_label, d.slot_label,
+            d.sharepoint_dead_reason AS dead_reason, d.sharepoint_backup_attempts AS attempts,
+            d.sharepoint_backup_error AS error,
+            COALESCE(d.application_id, ci.application_id)                         AS app_id,
+            COALESCE(d.borrower_id, ci.borrower_id, l.borrower_id, a.borrower_id) AS borrower_id
+       FROM documents d
+       LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
+       LEFT JOIN llcs l             ON l.id = COALESCE(d.llc_id, ci.llc_id)
+       LEFT JOIN applications a     ON a.id = COALESCE(d.application_id, ci.application_id)
+      WHERE d.sharepoint_mirror_status='DEAD'
+        AND NOT EXISTS (SELECT 1 FROM sync_review_queue q
+                         WHERE q.task_id = 'spdoc:' || d.id::text
+                           AND q.field_key='sharepoint_doc' AND q.status='open')
+      LIMIT $1`, [limit]);
+  let carded = 0;
+  for (const d of rows) {
+    try {
+      await require('./sync-review').queueReview({
+        applicationId: d.app_id || null, borrowerId: d.borrower_id || null,
+        taskId: `spdoc:${d.id}`, direction: 'outbound', fieldKey: 'sharepoint_doc',
+        reason: 'sharepoint_mirror_failed', suppressIfRejected: true, clickupValue: null,
+        portalValue: `${d.filename || 'document'} — ${d.item_label || d.slot_label || d.doc_kind || 'file'}`.slice(0, 300),
+        rawValue: JSON.stringify({ docId: d.id, attempts: d.attempts, deadReason: d.dead_reason,
+          error: String(d.error || d.dead_reason || 'permanently failed').slice(0, 280), deadLetter: true }).slice(0, 500),
+      });
+      carded++;
+    } catch (_) { /* visibility is best-effort — never breaks a pass */ }
+  }
+  if (carded) console.log(`[sp-fsm] carded ${carded} dead-letter document(s) for manual Sync review`);
+  return carded;
+}
+
+/**
+ * Correct alerting: the dead-letter and orphaned leases are what never self-heal,
+ * so those are the page-worthy signals (not backlog age). Deduped per distinct
+ * episode via the shared restart-proof alert lock (sp-fsm-dead-alert), so a
+ * redeploy while the dead-letter is non-empty does NOT re-email. To avoid
+ * doubling the legacy backlog-age SLO email during shadow rollout, an email is
+ * only sent in 'on' mode; in shadow it logs + relies on the Sync-review cards
+ * (cardDeadLetter) for visibility. Returns the snapshot + whether it alerted.
+ */
+async function checkDeadLetterAlert() {
+  const snap = await healthSnapshot();
+  const dead = snap.dead || 0, orphaned = snap.orphaned_leases || 0;
+  if (dead === 0 && orphaned === 0) {
+    try { await backup.clearAlert('sp-fsm-dead-alert'); } catch (_) {}
+    return { alerted: false, ...snap };
+  }
+  // ONE alert per episode: a STABLE signature while the dead-letter is non-empty
+  // (which kind is present, not the exact count) so a fluctuating count does NOT
+  // re-fire every pass — the owner's hard "no repeat emails" rule. clearAlert()
+  // above resets the lock the moment it empties, so a genuinely NEW later episode
+  // re-alerts. Exact counts live in the admin dashboard + the log line.
+  const signature = `dead:${dead > 0}|orphaned:${orphaned > 0}`;
+  let firstThisEpisode = true;
+  try { firstThisEpisode = await backup.claimAlert('sp-fsm-dead-alert', signature, 60); } catch (_) {}
+  if (firstThisEpisode) {
+    // In shadow, cardDeadLetter already surfaces each doc in Sync review and the
+    // legacy backlog-age SLO still emails — so we log here (no duplicate email).
+    // The dedicated dead-letter email channel is turned on at Phase-4 cutover,
+    // when it replaces the legacy backlog-age alert.
+    console.warn(`[sp-fsm] DEAD-LETTER alert (${fsmMode()}): ${dead} dead, ${orphaned} orphaned lease(s) — admin → SharePoint → dead-letter`);
+  }
+  return { alerted: firstThisEpisode, ...snap };
+}
+
 /**
  * The per-pass FSM hook, called from the legacy runOnce when the flag is set.
- * shadow → reconcile + compare (read-only, legacy still uploads).
- * on     → (Phase 4) reap + claim + upload; not activated until cutover.
+ * shadow → reap + reconcile/compare (read-only mirroring; legacy still uploads)
+ *          + card every dead-letter doc for manual review + dead-letter alert.
+ * on     → (Phase 4) reap + claim + upload; carding/alerting; not wired until cutover.
  * off    → never called.
  */
 async function fsmPass() {
@@ -289,16 +441,22 @@ async function fsmPass() {
   // Crash-recovery lane runs in every active mode.
   let reaped = [];
   try { reaped = await reapExpiredLeases(); } catch (e) { console.warn('[sp-fsm] reaper error:', e.message); }
+  let cmp = null;
   if (mode === 'shadow') {
-    const cmp = await shadowCompare().catch((e) => { console.warn('[sp-fsm] shadow error:', e.message); return null; });
-    return { mode, reaped: reaped.length, shadow: cmp };
+    cmp = await shadowCompare().catch((e) => { console.warn('[sp-fsm] shadow error:', e.message); return null; });
   }
-  // mode === 'on' — reserved for Phase 4 cutover (claim + mirrorRow + persist).
-  return { mode, reaped: reaped.length };
+  // OWNER REQUIREMENT: every dead-letter doc gets a manual-review card. Best-effort.
+  let carded = 0;
+  try { carded = await cardDeadLetter(); } catch (e) { console.warn('[sp-fsm] dead-letter card error:', e.message); }
+  let alert = null;
+  try { alert = await checkDeadLetterAlert(); } catch (e) { console.warn('[sp-fsm] dead-letter alert error:', e.message); }
+  return { mode, reaped: reaped.length, shadow: cmp, carded, dead: alert && alert.dead };
 }
 
 module.exports = {
   fsmMode, claimBatch, wouldClaimIds, reapExpiredLeases, persistOutcome,
   reconcileStatus, shadowCompare, fsmPass, deriveStatusSql,
+  healthSnapshot, deadLetterList, expiredLeaseList, requeueDead,
+  cardDeadLetter, checkDeadLetterAlert,
   LEASE_MINUTES, _holderId,
 };
