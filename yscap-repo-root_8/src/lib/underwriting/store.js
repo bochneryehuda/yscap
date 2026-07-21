@@ -202,7 +202,21 @@ async function resolveFinding(client, { findingId, action, note, value, by } = {
       WHERE id = $1 AND status IN ('open')
       RETURNING *`,
     [findingId, status, v.action, note || null, value != null ? String(value) : null, terminal, by || null]);
-  return rows[0] || null;
+  const updated = rows[0] || null;
+  // Self-training capture (Sovereign 4/4, owner-directed 2026-07-21): every
+  // resolve is a labeled example — dismiss = false-positive candidate, grant/
+  // clear/decline = confirmed / condition / etc. Also compares the committee's
+  // action (if it ran) with the human's decision so a persistent disagreement
+  // pattern surfaces as a training_proposal. Best-effort — never blocks the
+  // resolve.
+  if (updated) {
+    try {
+      await require('./learning').captureFindingDecision(client, {
+        finding: updated, action: v.action, actorId: by, note,
+      });
+    } catch (_) { /* learning capture is additive */ }
+  }
+  return updated;
 }
 
 /**

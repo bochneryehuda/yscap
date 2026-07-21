@@ -549,7 +549,7 @@ async function confirmByHuman(client, { appId, factKey, valueJson, staffId, reas
   const normalizedValue = normalize(factKey, valueJson);
   // Supersede the current canonical + insert the human-confirmed row.
   const curQ = await client.query(
-    `SELECT id, value_json, status FROM loan_facts WHERE application_id=$1 AND fact_key=$2 AND effective_to IS NULL`,
+    `SELECT id, value_json, value_normalized, status FROM loan_facts WHERE application_id=$1 AND fact_key=$2 AND effective_to IS NULL`,
     [appId, factKey]);
   const current = curQ.rows[0] || null;
   if (current) {
@@ -568,6 +568,18 @@ async function confirmByHuman(client, { appId, factKey, valueJson, staffId, reas
      current && current.value_json != null ? JSON.stringify(current.value_json) : null,
      JSON.stringify(valueJson || null), current ? current.status : null,
      ins.rows[0].id, staffId || null, reason || 'staff confirmed']);
+  // Self-training capture (Sovereign 4/4): every human override of a canonical
+  // fact is a labeled example — the reconciler picked observedValue but the
+  // human says the truth is correctedValue. Fed into learning.proposeImprovements
+  // as normalizer_alias candidates when repeated on the same fact_key.
+  try {
+    await require('./learning').captureFactCorrection(client, {
+      appId, factKey,
+      observedValue: current ? current.value_normalized : null,
+      correctedValue: normalizedValue,
+      actorId: staffId, reason,
+    });
+  } catch (_) { /* learning capture is additive */ }
   return ins.rows[0];
 }
 
