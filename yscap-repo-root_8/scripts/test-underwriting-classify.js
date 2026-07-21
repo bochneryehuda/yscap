@@ -10,6 +10,7 @@ const cases = [
   ['llc_formation', 'ARTICLES OF ORGANIZATION. Registered Agent: ... Organizer: ...', 'articles.pdf'],
   ['title', 'COMMITMENT FOR TITLE INSURANCE. Schedule A. Proposed Insured. Schedule B exceptions. Legal description.', 't.pdf'],
   ['insurance', 'ACORD EVIDENCE OF PROPERTY INSURANCE. Named Insured. Mortgagee clause ISAOA/ATIMA. Dwelling coverage.', 'acord.pdf'],
+  ['insurance_invoice', 'INSURANCE PREMIUM INVOICE. Invoice number 5567. Premium $2,400. Amount paid in full. Balance due $0. Please remit.', 'Insurance Invoice.pdf'],
   ['flood', 'STANDARD FLOOD HAZARD DETERMINATION. Special Flood Hazard Area. FIRM panel. Flood zone AE.', 'flood.pdf'],
   ['settlement', 'ALTA SETTLEMENT STATEMENT. Cash to close. Disbursement date. Seller credit. Payoff.', 'alta.pdf'],
   ['bank_statement', 'Beginning balance ... Ending balance ... Statement period ... Deposits Withdrawals', 'stmt.pdf'],
@@ -38,5 +39,10 @@ assert.strictEqual(classify({ text: 'ARTICLES OF ORGANIZATION for the LLC. selle
 
 // A scope of work / rehab budget is recognized (and not confused with the purchase contract).
 assert.strictEqual(classify({ text: 'SCOPE OF WORK — rehab budget. Line item budget by contractor. Total renovation budget $60,000.', filename: 'SOW.pdf' }).docType, 'scope_of_work');
+
+// The insurance BINDER and the insurance INVOICE are told apart (the two documents the insurance
+// condition needs): a binder is not misread as the invoice, and vice-versa.
+assert.strictEqual(classify({ text: 'ACORD EVIDENCE OF PROPERTY INSURANCE. Declarations page. Named insured. Mortgagee clause.', filename: 'binder.pdf' }).docType, 'insurance', 'binder → insurance, not the invoice');
+assert.strictEqual(classify({ text: 'INSURANCE PREMIUM INVOICE. Invoice number 88. Amount due. Balance due. Paid in full.', filename: 'premium receipt.pdf' }).docType, 'insurance_invoice', 'premium invoice → insurance_invoice, not the binder');
 
 console.log('✓ test-underwriting-classify: document auto-classification cases pass');
