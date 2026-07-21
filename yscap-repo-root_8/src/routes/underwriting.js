@@ -36,6 +36,7 @@ const fileView = require('../lib/underwriting/file-view');
 const { tieoutForFile } = require('../lib/underwriting/file-review');
 const { underwriterActions } = require('../lib/underwriting/actions');
 const { falseAlarmReport, readabilityReport } = require('../lib/underwriting/feedback');
+const { programGuidelineSnapshot } = require('../lib/underwriting/program-guidelines');
 const { classify } = require('../lib/underwriting/classify');
 const { conditionsForDoc, purposeForDoc, docReadiness, fileConditionCoverage, docTypesForCode, expectedDocTypeForCode } = require('../lib/underwriting/condition-map');
 const { selectAutoReadQueue } = require('../lib/underwriting/auto-read');
@@ -353,6 +354,34 @@ router.get('/:appId', async (req, res, next) => {
     // initial advance from the current registration; absent it, those two metrics are skipped rather
     // than computed off the total loan.
     const reg = mctx && mctx.registration;
+
+    // AUS PROGRAM GUIDELINES (Item 11): resolve the file's registered program (registration first,
+    // application second — same precedence the beneficial-owner check uses) and compose the plain-
+    // language snapshot of the thresholds it's underwritten against (KYC owner %, required bank-
+    // statement months, Gold SOW contingency). Reads the canonical guideline sources; asserts no
+    // number of its own. For a MANUAL file the required months are the registrant-stated count, so
+    // fetch asset_months (Gold/Standard ignore it). Best-effort — never blocks the report.
+    const uwProgram = (reg && reg.program) || (a && a.program) || null;
+    let assetMonths = null;
+    if (/manual/i.test(String(uwProgram || ''))) {
+      try {
+        const am = await db.query(
+          `SELECT asset_months FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`, [app.id]);
+        if (am.rows[0] && am.rows[0].asset_months != null) assetMonths = am.rows[0].asset_months;
+      } catch (_) { assetMonths = null; }
+    }
+    // Resolve the SOW-contingency requirement from its authoritative source (Gold OR a Blue Lake
+    // note buyer) so the snapshot matches the real SOW gate exactly — not just the Gold arm. That
+    // function returns an OBJECT { required, reason, ... } (same as the staff.js caller), so read
+    // `.required` — passing the object would be truthy for EVERY file. Best-effort: on any error
+    // leave it undefined so the snapshot falls back to the program (Gold) arm.
+    let sowContingencyReq;
+    try {
+      const contReq = await require('../lib/rehab-budget').sowContingencyRequired(app.id);
+      sowContingencyReq = contReq && contReq.required;
+    } catch (_) { sowContingencyReq = undefined; }
+    const programGuidelines = programGuidelineSnapshot(uwProgram, { assetMonths, sowContingencyRequired: sowContingencyReq });
+
     const metrics = computeMetrics({
       loanAmount: a.loan_amount, initialAdvance: reg ? reg.initialAdvance : null,
       purchasePrice: a.purchase_price,
@@ -394,7 +423,8 @@ router.get('/:appId', async (req, res, next) => {
     // File completeness / stipulations: diff the required-document matrix (adapted to this deal)
     // against what's analyzed on file → outstanding-items list + a completeness %. A VIEW only.
     const completeness = assessCompleteness(
-      { isEntity, isAssignment: !!a.is_assignment },
+      { isEntity, isAssignment: !!a.is_assignment,
+        program: programGuidelines.program, bankStmtMonths: programGuidelines.bankStatementMonths },
       exts.rows, ff.findings, attached);
 
     // Reasonability / data-integrity: value-level plausibility of what the documents and the file
@@ -454,6 +484,8 @@ router.get('/:appId', async (req, res, next) => {
     res.json({
       escalatedFindings: escalatedByFinding,
       verdict,
+      // AUS: which program this file is underwritten against + that program's governing thresholds.
+      programGuidelines,
       extractions,
       findings: perDoc,
       tieout: { columns: tieout.columns, matrix: tieout.matrix, summary: tieout.summary },

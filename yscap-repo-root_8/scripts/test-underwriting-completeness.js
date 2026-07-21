@@ -138,6 +138,28 @@ const exts = (arr) => arr.map(([doc_type, status = 'analyzed', confidence = 'ana
   assert.strictEqual(arr.stipulations.find((s) => s.docType === 'title').status, 'on_file', 'attached accepts an array');
 }
 
+// ---- AUS: the bank-statement stipulation LABEL states the program's required month count --------
+{
+  // No program info → the generic label (unchanged behavior).
+  const generic = assessCompleteness({ isEntity: false }, [], []);
+  assert.strictEqual(generic.stipulations.find((s) => s.docType === 'bank_statement').label,
+    'Bank statements (proof of funds)', 'no program month count → generic label');
+
+  // Gold (2 months) / Standard (1 month) reflected in the label; gating/status unaffected.
+  const gold = assessCompleteness({ isEntity: false, program: 'gold', bankStmtMonths: 2 }, [], []);
+  assert.strictEqual(gold.stipulations.find((s) => s.docType === 'bank_statement').label,
+    'Bank statements — 2 months (proof of funds)', 'Gold shows 2 months');
+  const standard = assessCompleteness({ isEntity: false, program: 'standard', bankStmtMonths: 1 }, [], []);
+  assert.strictEqual(standard.stipulations.find((s) => s.docType === 'bank_statement').label,
+    'Bank statements — 1 month (proof of funds)', 'Standard shows 1 month (singular)');
+  // The count only relabels the bank-statement row — every other stipulation keeps its label.
+  assert.strictEqual(gold.stipulations.find((s) => s.docType === 'government_id').label, 'Government photo ID');
+  // A non-positive / non-finite count is ignored (falls back to the generic label).
+  const bad = assessCompleteness({ isEntity: false, program: 'gold', bankStmtMonths: 0 }, [], []);
+  assert.strictEqual(bad.stipulations.find((s) => s.docType === 'bank_statement').label,
+    'Bank statements (proof of funds)', 'a 0 month count is ignored');
+}
+
 // ---- condition CODE -> expected docType (the "where to find each document" inverse map) ----
 {
   const cm = require('../src/lib/underwriting/condition-map');

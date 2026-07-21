@@ -102,11 +102,20 @@ function assessCompleteness(flags = {}, extractions = [], findings = [], attache
     findingsByType.get(t).push(f);
   }
 
+  // Program-aware labeling (AUS, Item 11): when the file is registered, the bank-statement
+  // stipulation states the program's required month count (Gold 2 / Standard 1 / Manual N) so the
+  // "what's still needed" list reflects the program it's underwritten against. Label only — the
+  // month count is resolved by the caller from the canonical liquidity rule; gating is unchanged.
+  const bankMonths = Number(flags.bankStmtMonths);
   const stipulations = [];
   for (const req of REQUIREMENTS) {
     if (!applies(req, flags)) continue;
     const status = statusFor(req.docType, byType, findingsByType, attachedSet);
-    stipulations.push({ docType: req.docType, label: req.label, owner: req.owner, gating: req.gating, status });
+    let label = req.label;
+    if (req.docType === 'bank_statement' && Number.isFinite(bankMonths) && bankMonths > 0) {
+      label = `Bank statements — ${bankMonths} month${bankMonths === 1 ? '' : 's'} (proof of funds)`;
+    }
+    stipulations.push({ docType: req.docType, label, owner: req.owner, gating: req.gating, status });
   }
 
   const counts = { total: stipulations.length, cleared: 0, received: 0, insufficient: 0, on_file: 0, missing: 0 };
