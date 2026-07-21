@@ -786,6 +786,22 @@ router.post('/:appId/auto-read', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ---- Twin fact history (Sovereign 1/4 drilldown) --------------------------
+// Every observation of a fact + every state event, so the file view can show
+// the reconciliation trail behind a canonical value (WHY this value is
+// accepted, WHERE each source landed, WHEN each change was made).
+router.get('/:appId/twin/fact/:factKey', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const factKey = String(req.params.factKey || '').slice(0, 120);
+    if (!factKey) return res.status(400).json({ error: 'fact key required' });
+    const twin = require('../lib/underwriting/twin');
+    const history = await twin.factWithHistory(app.id, factKey, db);
+    res.json({ ok: true, factKey, ...history });
+  } catch (e) { next(e); }
+});
+
 // ---- Counterfactual structuring (Sovereign, blueprint sec. 12) ------------
 // "What would make this deal work?" Runs a set of ALTERNATIVE structures
 // through the frozen pricing engine and reports which levers move a file from

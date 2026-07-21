@@ -807,6 +807,18 @@ function Amendments({ amendments }) {
 function SovereignCockpit({ twinFacts, cureProofs, appId, canIssueCerts }) {
   const [openTwin, setOpenTwin] = useState(false);
   const [openCures, setOpenCures] = useState(false);
+  const [expandedFact, setExpandedFact] = useState(null);
+  const [factHistory, setFactHistory] = useState({});   // fact_key → { loading, canonical, observations, events }
+  const toggleFact = async (factKey) => {
+    if (expandedFact === factKey) { setExpandedFact(null); return; }
+    setExpandedFact(factKey);
+    if (factHistory[factKey]) return;   // cached
+    setFactHistory((h) => ({ ...h, [factKey]: { loading: true } }));
+    try {
+      const d = await api.factHistory(appId, factKey);
+      setFactHistory((h) => ({ ...h, [factKey]: { loading: false, ...d } }));
+    } catch (e) { setFactHistory((h) => ({ ...h, [factKey]: { loading: false, error: e.message || 'could not load' } })); }
+  };
   const twinCount = (twinFacts || []).length;
   const cureCount = (cureProofs || []).length;
   if (twinCount === 0 && cureCount === 0) return null;
@@ -862,14 +874,68 @@ function SovereignCockpit({ twinFacts, cureProofs, appId, canIssueCerts }) {
               <tbody>
                 {twinFacts.map((f) => {
                   const st = STATUS_STYLES[f.status] || STATUS_STYLES.observed;
+                  const isOpen = expandedFact === f.fact_key;
+                  const hist = factHistory[f.fact_key];
                   return (
-                    <tr key={f.fact_key} style={{ borderTop: '1px solid var(--line,#E7E1D3)' }}>
-                      <td style={{ padding: '5px 6px', color: 'var(--muted,#4B585C)' }}>{String(f.fact_key || '').replace(/_/g, ' ')}</td>
-                      <td style={{ padding: '5px 6px', overflowWrap: 'anywhere' }}>{stringifyValue(f.value_json && (f.value_json.value != null ? f.value_json.value : f.value_json))}</td>
-                      <td style={{ padding: '5px 6px' }}>
-                        <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: st.fg, background: st.bg, padding: '2px 7px', borderRadius: 6 }}>{st.label}</span>
-                      </td>
-                    </tr>
+                    <React.Fragment key={f.fact_key}>
+                      <tr onClick={() => appId && toggleFact(f.fact_key)}
+                          style={{ borderTop: '1px solid var(--line,#E7E1D3)', cursor: appId ? 'pointer' : 'default', background: isOpen ? 'rgba(174,135,70,0.05)' : 'transparent' }}
+                          title={appId ? 'Click to see every source that reported this' : ''}>
+                        <td style={{ padding: '5px 6px', color: 'var(--muted,#4B585C)' }}>
+                          {appId && <span style={{ marginRight: 4, color: '#AE8746' }}>{isOpen ? '▾' : '▸'}</span>}
+                          {String(f.fact_key || '').replace(/_/g, ' ')}
+                        </td>
+                        <td style={{ padding: '5px 6px', overflowWrap: 'anywhere' }}>{stringifyValue(f.value_json && (f.value_json.value != null ? f.value_json.value : f.value_json))}</td>
+                        <td style={{ padding: '5px 6px' }}>
+                          <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: st.fg, background: st.bg, padding: '2px 7px', borderRadius: 6 }}>{st.label}</span>
+                        </td>
+                      </tr>
+                      {isOpen && (
+                        <tr style={{ background: 'rgba(174,135,70,0.03)' }}>
+                          <td colSpan={3} style={{ padding: '10px 14px' }}>
+                            {(!hist || hist.loading) && <div className="muted" style={{ fontSize: 12 }}>Loading…</div>}
+                            {hist && hist.error && <div style={{ fontSize: 12, color: 'var(--crit,#B4483C)' }}>{hist.error}</div>}
+                            {hist && !hist.loading && !hist.error && (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                                <div>
+                                  <div style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted,#4B585C)', marginBottom: 4 }}>
+                                    Every source that reported this ({(hist.observations || []).length})
+                                  </div>
+                                  {(hist.observations || []).length === 0 && <div className="muted" style={{ fontSize: 12 }}>No source has reported this yet.</div>}
+                                  <ul style={{ listStyle: 'none', margin: 0, padding: 0, fontSize: 12 }}>
+                                    {(hist.observations || []).map((o) => (
+                                      <li key={o.id} style={{ padding: '4px 0', borderTop: '1px dotted var(--line,#E7E1D3)' }}>
+                                        <span style={{ color: o.agrees_with_canonical === false ? 'var(--crit,#B4483C)' : 'var(--good,#3F7A5B)', fontWeight: 700, marginRight: 6 }}>
+                                          {o.agrees_with_canonical === false ? '✕' : '✓'}
+                                        </span>
+                                        <b>{o.source_type === 'document' ? String(o.source_id || 'document').replace(/_/g, ' ') : (o.source_type === 'los_field' ? 'the loan file (LOS)' : o.source_type === 'api_verification' ? `${o.source_id || 'an outside API'} (verified)` : String(o.source_type).replace(/_/g, ' '))}</b>
+                                        {' said '}
+                                        <span style={{ overflowWrap: 'anywhere' }}>{stringifyValue(o.value_json && (o.value_json.value != null ? o.value_json.value : o.value_json)) || o.raw_value || '—'}</span>
+                                        <span className="muted"> · {new Date(o.created_at).toLocaleString()}</span>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                                {(hist.events || []).length > 0 && (
+                                  <div>
+                                    <div style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted,#4B585C)', marginBottom: 4 }}>Recent changes</div>
+                                    <ul style={{ listStyle: 'none', margin: 0, padding: 0, fontSize: 12 }}>
+                                      {hist.events.slice(0, 8).map((ev) => (
+                                        <li key={ev.id} style={{ padding: '3px 0', color: 'var(--muted,#4B585C)' }}>
+                                          {String(ev.event_type).replace(/_/g, ' ')}
+                                          {ev.reason ? ` — ${ev.reason}` : ''}
+                                          <span className="muted"> · {new Date(ev.created_at).toLocaleString()}</span>
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
                   );
                 })}
               </tbody>

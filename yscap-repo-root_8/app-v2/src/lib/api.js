@@ -455,6 +455,7 @@ export const api = {
   fileCertificateIssue:      (appId, milestone, reason) => req('POST', `/api/underwriting/${appId}/certificate/issue`, { milestone, reason: reason || undefined }),
   fileCertificateSurvey:     (appId) => req('POST', `/api/underwriting/${appId}/certificate/survey`, {}),
   fileStructuring:           (appId) => req('GET', `/api/underwriting/${appId}/structuring`),
+  factHistory:               (appId, factKey) => req('GET', `/api/underwriting/${appId}/twin/fact/${encodeURIComponent(factKey)}`),
   staffUploadAppDoc: (appId, b) => coalesceUpload('appDoc:' + appId, b, () => req('POST', `/api/staff/applications/${appId}/documents`, normalizeUpload(b))),
   staffAddLoanCondition: (appId, b) => req('POST', `/api/staff/applications/${appId}/loan-conditions`, b),
   staffClearCondition:   (cid) => req('POST', `/api/staff/loan-conditions/${cid}/clear`),
