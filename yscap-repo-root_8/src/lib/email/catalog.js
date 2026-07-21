@@ -310,6 +310,24 @@ function esignReadyToSign({ firstName, propertyLabel, loanNumber, packageLabel, 
   });
 }
 
+/* PILOT-branded DRAW wire-instructions signing invite (owner-directed 2026-07-21).
+   When the DocuSign "Draw Request & Wire Instructions" package goes out, PILOT sends
+   its OWN designed email with a DIRECT link into the signing session (magic link) —
+   emphasizing that wires release only after the form is signed and that the bank
+   details must be exact. Borrower-safe by construction (property + budget + loan #
+   only). Records to the DRAW email section (msg_type 'draw_request'). The magic
+   signUrl authenticates AS this borrower, so it is sent to the borrower ONLY —
+   never BCC'd to the desk/officer. */
+function drawWireReadyToSign({ firstName, propertyLabel, loanNumber, budgetCents, signUrl, portalUrl, officer } = {}) {
+  const { wireFormEmail } = require('./draw-setup-email');
+  const payload = wireFormEmail({
+    borrowerName: firstName, address: propertyLabel, budgetCents, signUrl, portalUrl, officer,
+  });
+  payload.subjectTag = fileTag(loanNumber, propertyLabel);
+  payload.preheader = 'Confirm your wire instructions so we can release your construction draw.';
+  return render(payload);
+}
+
 /* =====================================================================
    STAFF — TEAM ONBOARDING
    ===================================================================== */
@@ -409,7 +427,7 @@ const builders = {
   welcome, verifyEmail, loginCode,
   passwordReset, passwordChanged, mfaEnabled, newSignIn,
   staffInvite, staffWelcome, staffPasswordReset, leadReceived, coBorrowerInvite, borrowerInvite, drawRequest,
-  esignReadyToSign,
+  esignReadyToSign, drawWireReadyToSign,
 };
 
 /** Deliver an already-rendered { subject, html, text } to one/many recipients.

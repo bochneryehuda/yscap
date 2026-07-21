@@ -38,7 +38,7 @@ async function notifyReadyToSign(envelopeRowId, opts = {}) {
       `SELECT r.recipient_id_ds, r.borrower_id, r.name, r.email, r.role,
               b.first_name AS b_first,
               e.application_id, e.purpose, e.status, e.envelope_id,
-              a.ys_loan_number,
+              a.ys_loan_number, a.rehab_budget,
               COALESCE(a.property_address->>'oneLine',
                        NULLIF(concat_ws(', ', a.property_address->>'line1', a.property_address->>'city',
                                         a.property_address->>'state', a.property_address->>'zip'), ''),
@@ -74,13 +74,26 @@ async function notifyReadyToSign(envelopeRowId, opts = {}) {
         name: r.officer_name, title: r.officer_title, phone: r.officer_phone,
         email: r.officer_email, nmls: r.officer_nmls,
       } : null;
-      const res = await mail.send('esignReadyToSign', r.email, {
-        firstName: r.b_first || (r.name || '').split(' ')[0] || '',
-        propertyLabel: r.property_label || '',
-        loanNumber: r.ys_loan_number || '',
-        packageLabel: PACKAGE_LABEL[r.purpose] || 'loan documents',
-        signUrl, officer,
-      }, { replyTo: fileReplyTo(r.application_id) || undefined });
+      // A DRAW wire-instructions package gets PILOT's own DRAW-branded email (with the direct
+      // signing link) instead of the generic ready-to-sign one, and is recorded to the file's
+      // DRAW email section (msg_type 'draw_request') carrying the per-file reply-to that monitors
+      // replies. The magic signUrl authenticates AS this borrower — sent to the borrower only.
+      const isDrawWire = r.purpose === 'draw_request';
+      const res = isDrawWire
+        ? await mail.send('drawWireReadyToSign', r.email, {
+            firstName: r.b_first || (r.name || '').split(' ')[0] || '',
+            propertyLabel: r.property_label || '',
+            loanNumber: r.ys_loan_number || '',
+            budgetCents: r.rehab_budget != null ? Math.round(Number(r.rehab_budget) * 100) : 0,
+            signUrl, officer,
+          }, { replyTo: fileReplyTo(r.application_id) || undefined, applicationId: r.application_id, type: 'draw_request' })
+        : await mail.send('esignReadyToSign', r.email, {
+            firstName: r.b_first || (r.name || '').split(' ')[0] || '',
+            propertyLabel: r.property_label || '',
+            loanNumber: r.ys_loan_number || '',
+            packageLabel: PACKAGE_LABEL[r.purpose] || 'loan documents',
+            signUrl, officer,
+          }, { replyTo: fileReplyTo(r.application_id) || undefined });
       // ok = actually sent; skipped = provider intentionally no-op'd (EMAIL_PROVIDER=none
       // in dev) — both mean the pipeline ran; a hard failure (ok:false, not skipped) is a skip.
       if (res && (res.ok || res.skipped)) { out.sent++; out.recipients.push(r.email); }

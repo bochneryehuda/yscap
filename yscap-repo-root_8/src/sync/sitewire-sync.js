@@ -88,6 +88,10 @@ async function pushOutboxOnce() {
     if (job.op === 'push_file') {
       await orchestrator.pushFile(job.entity_id, { force: false });
       await db.query(`UPDATE sync_queue SET status='done', updated_at=now() WHERE id=$1`, [job.id]);
+      // The property is live in Sitewire now — send the borrower's one-time "draws are open"
+      // welcome (covers a file whose Start happened while Sitewire was off and pushed later here).
+      // Idempotent (single-send stamp) + best-effort, so it can never disrupt the drain.
+      require('../sitewire/draw-setup-notify').sendDrawSetupWelcome(job.entity_id).catch(() => {});
     } else {
       // An unrecognized op is a bug / unsupported job — DEAD-LETTER it and park a visible review row.
       // Never mark it 'done' (that silently DROPS the work); never retry it (retrying won't help).
