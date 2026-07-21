@@ -304,7 +304,8 @@ async function notifyStaff(staffId, opts) {
         if (decision.action === 'draft') {
           await loGate.recordDraft({ officerId: staffId, key: decision.key, audience: 'staff',
             recipientKind: 'staff', recipientId: staffId, applicationId: opts.applicationId,
-            type: opts.type, opts, recipientLabel: null });
+            type: opts.type, opts, recipientLabel: null,
+            autoSendAt: decision.autoSendAt || null });
           return null;
         }
       }
@@ -447,7 +448,8 @@ async function notifyBorrower(borrowerId, opts) {
         } catch (_) { /* label is optional */ }
         await loGate.recordDraft({ officerId: decision.officerId, key: decision.key, audience: 'borrower',
           recipientKind: 'borrower', recipientId: borrowerId, applicationId: opts.applicationId,
-          type: opts.type, opts, recipientLabel: label });
+          type: opts.type, opts, recipientLabel: label,
+          autoSendAt: decision.autoSendAt || null });
         return null;
       }
     } catch (_) { /* fall through and send */ }

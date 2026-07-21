@@ -18,6 +18,7 @@ import DealSnapshot from '../components/DealSnapshot.jsx';
 import ClearToClosePanel from '../components/ClearToClosePanel.jsx';
 import LoanProgress from '../components/LoanProgress.jsx';
 import SubmitFilePanel from '../components/SubmitFilePanel.jsx';
+import FileNotificationOverrides from '../components/FileNotificationOverrides.jsx';
 import { PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
 import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
@@ -2412,8 +2413,11 @@ export default function StaffApplication() {
     sp.delete('esign');
     nav({ pathname, search: sp.toString() ? `?${sp.toString()}` : '' }, { replace: true });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  const { role, can } = useAuth();
+  const { role, can, actor: authActor } = useAuth();
   const isAdmin = role === 'admin' || role === 'super_admin';
+  // For the per-file notification override panel — only surfaces when THIS
+  // user is the file's assigned loan officer.
+  const isMyFile = !!(authActor && app && app.loan_officer_id && String(authActor.id) === String(app.loan_officer_id));
   const completer = canComplete(role);   // may CLEAR (sign off) a condition; others only mark it reviewed
   const canDelete = can('delete_files');
   const [app, setApp] = useState(null);
@@ -2871,6 +2875,9 @@ export default function StaffApplication() {
       {/* Where the loan is up to — visible INSIDE the loan, not just on the
           pipeline (owner-directed 2026-07-20). */}
       <LoanProgress status={app.status} />
+      {/* Only the file's assigned LO sees this — presets to VIP / Quiet /
+          Silent + per-notification override rows for JUST this file. */}
+      <FileNotificationOverrides applicationId={id} isMyFile={isMyFile} />
       <DealSnapshot app={app} gating={gating} />
       <ClearToClosePanel gating={gating} />
       {/* THE WORKFLOW (owner-directed 2026-07-21) — the primary way a file moves.
