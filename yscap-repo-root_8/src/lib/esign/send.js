@@ -26,6 +26,7 @@
 const dbDefault = require('../../db');
 const docusignDefault = require('../integrations/docusign');
 const cfg = require('../../config').docusign;
+const switches = require('../integrations/switches'); // runtime on/off (env default unless flipped)
 
 const CLAIM_STALE_MIN = 5;
 const MAX_ATTEMPTS_OUTAGE = 40;
@@ -121,7 +122,7 @@ async function sendClaimedEnvelope(rowId, opts = {}) {
   // we build or POST anything: release the claim and roll back the attempt this
   // claim just added, leaving the row exactly as it was to re-drive cleanly when
   // sending is re-enabled. (The config is a singleton, so tests toggle it directly.)
-  if (!cfg.sendEnabled) {
+  if (!switches.on('DOCUSIGN_SEND_ENABLED')) {
     await db.query(
       `UPDATE esign_envelopes
           SET send_claimed_at = NULL, attempts = GREATEST(attempts - 1, 0), updated_at = now()

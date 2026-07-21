@@ -105,7 +105,7 @@ const INTEGRATIONS = [
     async probe() {
       const configured = !!(cfg.sitewireAccessToken && cfg.sitewireClient && cfg.sitewireUid);
       if (!configured) return { configured: false, live: null, detail: 'The Sitewire 3-part token is not set.' };
-      if (!cfg.sitewireEnabled) return { configured: true, enabled: false, live: null, detail: 'Keys are set, but the master switch (SITEWIRE_ENABLED) is off, so nothing syncs yet.' };
+      if (!require('./switches').on('SITEWIRE_ENABLED')) return { configured: true, enabled: false, live: null, detail: 'Keys are set, but the master switch (SITEWIRE_ENABLED) is off, so nothing syncs yet.' };
       try { const c = require('../../sitewire/client'); await timebox(c.getLender(cfg.sitewireLenderId)); return { configured: true, enabled: true, live: true, detail: 'Reached Sitewire.' }; }
       catch (e) { return { configured: true, enabled: true, live: false, detail: e.message === 'timed out' ? 'Timed out reaching Sitewire.' : (e.message || 'Not reachable.') }; }
     },
@@ -135,7 +135,7 @@ const INTEGRATIONS = [
     async probe() {
       const sp = require('../sharepoint');
       if (!sp.configured()) return { configured: false, live: null, detail: 'Microsoft Graph credentials (tenant + client id + secret or certificate) are not set.' };
-      if (!cfg.sharepointBackupEnabled) return { configured: true, enabled: false, live: null, detail: 'Credentials are set, but mirroring (SHAREPOINT_BACKUP_ENABLED) is off.' };
+      if (!require('./switches').on('SHAREPOINT_BACKUP_ENABLED')) return { configured: true, enabled: false, live: null, detail: 'Credentials are set, but mirroring (SHAREPOINT_BACKUP_ENABLED) is off.' };
       try {
         const reach = await graphTokenReachable();
         if (reach === true) return { configured: true, enabled: true, live: true, detail: 'Microsoft Graph credentials authenticate.' };
@@ -209,13 +209,28 @@ const INTEGRATIONS = [
     },
   },
   {
+    key: 'osm', name: 'OpenStreetMap (free address lookup)', group: 'data',
+    purpose: 'The free, keyless address autocomplete — the DEFAULT address service used whenever no Google or Smarty key is set.',
+    direction: 'Outbound (read-only)', auth: 'None (public)',
+    env: [{ name: 'OSM_CONTACT', required: false }], switches: [], liveProbe: true,
+    async probe() {
+      const active = cfg.addressProvider === 'osm';
+      try {
+        const r = await timebox(fetch('https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=us&q=1600+Pennsylvania+Ave', {
+          headers: { 'User-Agent': `YSCapitalPortal/1.0 (${cfg.osmContact})`, 'Accept-Language': 'en-US' },
+        }));
+        return { configured: true, live: r.ok, detail: r.ok ? `Reached OpenStreetMap${active ? ' — the active address service' : ' (Google/Smarty is currently active)'}.` : `OpenStreetMap returned HTTP ${r.status}.` };
+      } catch (e) { return { configured: true, live: false, detail: e.message === 'timed out' ? 'Timed out reaching OpenStreetMap.' : (e.message || 'Not reachable.') }; }
+    },
+  },
+  {
     key: 'fema_flood', name: 'FEMA flood + Census geocoder', group: 'data',
     purpose: 'Checks the appraisal’s flood zone against the official FEMA flood map (free government service).',
     direction: 'Outbound (read-only)', auth: 'None (public)',
     env: [], switches: [{ name: 'APPRAISAL_FLOOD_CHECK_ENABLED', label: 'Flood check' }],
     liveProbe: true,
     async probe() {
-      if (!cfg.appraisalFloodCheckEnabled) return { configured: true, enabled: false, live: null, detail: 'Free service (no key needed), but the flood check (APPRAISAL_FLOOD_CHECK_ENABLED) is off.' };
+      if (!require('./switches').on('APPRAISAL_FLOOD_CHECK_ENABLED')) return { configured: true, enabled: false, live: null, detail: 'Free service (no key needed), but the flood check (APPRAISAL_FLOOD_CHECK_ENABLED) is off.' };
       try {
         const r = await timebox(fetch('https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer/28?f=json'));
         return { configured: true, enabled: true, live: r.ok, detail: r.ok ? 'Reached the FEMA flood map service.' : `FEMA returned HTTP ${r.status}.` };
@@ -298,9 +313,14 @@ async function resolveOne(entry) {
     key: entry.key, name: entry.name, group: entry.group, purpose: entry.purpose,
     direction: entry.direction, auth: entry.auth, liveProbe: !!entry.liveProbe, notBuilt: !!entry.notBuilt,
     env: (entry.env || []).map((e) => ({ name: e.name, required: !!e.required, set: envSet(e.name) })),
-    // A switch reports only its on/off state (an env flag). `invert` marks a switch whose ON state is
-    // the CAUTIOUS one (e.g. DOCUSIGN_TEST_MODE on = sends are held to an allow-list).
-    switches: (entry.switches || []).map((s) => ({ name: s.name, label: s.label, on: envSet(s.name), invert: !!s.invert })),
+    // The RUNTIME on/off switches for this integration (from src/lib/integrations/switches.js) — each
+    // is the effective value (admin override ?? env default), plus whether it's dangerous (needs a
+    // typed confirm), currently overridden, and `resume` (a background poller that only resumes on the
+    // next restart). Toggled live from the API Health page. Any DOCUSIGN_TEST_MODE-style display-only
+    // env flags stay on `entry.switches` for read-only rendering.
+    switches: require('./switches').list().filter((s) => s.integration === entry.key)
+      .map((s) => ({ name: s.key, label: s.label, on: s.on, dangerous: s.dangerous, overridden: s.overridden, resume: s.resume, envDefault: s.envDefault, toggleable: true })),
+    displaySwitches: (entry.switches || []).map((s) => ({ name: s.name, label: s.label, on: envSet(s.name), invert: !!s.invert })),
     configured: !!r.configured, enabled: r.enabled === undefined ? null : r.enabled,
     live: r.live === undefined ? null : r.live, detail: r.detail || '',
     state: computeState(entry, r),

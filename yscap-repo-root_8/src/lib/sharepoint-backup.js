@@ -297,7 +297,7 @@ function withTimeout(promise, ms, message) {
 }
 
 function enabled() {
-  return !!cfg.sharepointBackupEnabled && sp.configured();
+  return require('./integrations/switches').on('SHAREPOINT_BACKUP_ENABLED') && sp.configured();
 }
 
 // ---------------------------------------------------------------- categorizing

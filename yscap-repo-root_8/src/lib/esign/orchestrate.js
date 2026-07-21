@@ -750,7 +750,7 @@ async function sendPackage(applicationId, purpose, actor, opts = {}) {
   const send = opts.send || sendEngine;
 
   const spec = packageSpec(purpose);
-  if (!cfg.docusign.sendEnabled) {
+  if (!require('../integrations/switches').on('DOCUSIGN_SEND_ENABLED')) {
     const e = new Error('DocuSign sending is disabled (DOCUSIGN_SEND_ENABLED is off).');
     e.code = 'DOCUSIGN_SEND_DISABLED'; e.retryable = false; throw e;
   }

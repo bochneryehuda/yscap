@@ -8,6 +8,12 @@ import { useAuth } from '../lib/auth.jsx';
    GET /api/admin/integrations/health, which is backed by the health registry, so any new
    integration added on the backend appears here automatically.
 
+   Each integration also shows its WORKING on/off switches: a real toggle you can flip right here,
+   backed by a runtime override (POST /api/admin/integrations/switches/:key). A switch that changes
+   live behavior (sending e-signatures, writing to ClickUp/Sitewire) is marked "changes live
+   behavior" and asks you to type a short confirmation first. Turning a switch off takes effect
+   immediately; a switch reverts to the hosting default with "Reset".
+
    Keys are set/rotated in the hosting dashboard (Render), never here — this page reads status
    only and never shows or accepts a secret value. */
 
@@ -55,8 +61,55 @@ function EnvChip({ e }) {
   );
 }
 
-function Card({ it, onTest, testing }) {
+// A real on/off toggle control (accessible: role="switch").
+function Toggle({ on, disabled, onClick, danger }) {
+  const track = on ? (danger ? '#B4483C' : '#2F7F86') : '#D5D5CC';
+  return (
+    <button type="button" role="switch" aria-checked={on} disabled={disabled} onClick={onClick}
+      style={{ width: 42, height: 24, borderRadius: 999, border: '1px solid rgba(0,0,0,.10)', position: 'relative', flex: '0 0 auto',
+        background: track, cursor: disabled ? 'default' : 'pointer', transition: 'background .15s', padding: 0, opacity: disabled ? 0.55 : 1 }}>
+      <span style={{ position: 'absolute', top: 1, left: on ? 20 : 1, width: 20, height: 20, borderRadius: 999,
+        background: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,.3)', transition: 'left .15s' }} />
+    </button>
+  );
+}
+
+// One runtime, toggleable switch (a real control).
+function SwitchRow({ s, busy, onToggle, onReset }) {
+  const sub = [];
+  sub.push(s.on ? 'On' : 'Off');
+  sub.push(s.overridden ? `overridden — the hosting default is ${s.envDefault ? 'on' : 'off'}` : 'matches the hosting default');
+  if (s.resume && s.on) sub.push('turning off applies right away; the background reader fully stops on the next restart');
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '8px 0', borderTop: '1px solid rgba(0,0,0,.06)' }}>
+      <Toggle on={s.on} danger={s.dangerous} disabled={busy} onClick={() => onToggle(s)} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+          {s.label}
+          {s.dangerous && (
+            <span title="Changes what the platform actually sends to the outside world — you’ll be asked to confirm."
+              style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.03em', textTransform: 'uppercase', color: '#B4483C',
+                background: '#F6E7E4', borderRadius: 999, padding: '1px 7px' }}>changes live behavior</span>
+          )}
+          {s.overridden && (
+            <span title="An admin flipped this from the hosting default. Reset returns it to the default."
+              style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.03em', textTransform: 'uppercase', color: '#B7791F',
+                background: '#F6EEDD', borderRadius: 999, padding: '1px 7px' }}>overridden</span>
+          )}
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--muted,#8A939A)', marginTop: 2 }}>{sub.join(' · ')}</div>
+      </div>
+      {s.overridden && (
+        <button className="btn ghost small" disabled={busy} onClick={() => onReset(s)} title="Return this switch to the hosting default">Reset</button>
+      )}
+    </div>
+  );
+}
+
+function Card({ it, onTest, testing, onToggle, onReset, switchBusy }) {
   const missingRequired = (it.env || []).filter((e) => e.required && !e.set);
+  const runtimeSwitches = (it.switches || []);
+  const displaySwitches = (it.displaySwitches || []);
   return (
     <div style={{ border: '1px solid var(--line,#E7E1D3)', borderLeft: `4px solid ${(STATE[it.state] || STATE.not_configured).fg}`,
       borderRadius: 12, background: 'var(--card,#fff)', padding: '14px 16px' }}>
@@ -75,14 +128,24 @@ function Card({ it, onTest, testing }) {
       {it.detail && <div style={{ fontSize: 12.5, marginBottom: 10 }}>{it.detail}</div>}
 
       {(it.env && it.env.length > 0) && (
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: (it.switches && it.switches.length) ? 8 : 0 }}>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: (runtimeSwitches.length || displaySwitches.length) ? 8 : 0 }}>
           {it.env.map((e) => <EnvChip key={e.name} e={e} />)}
         </div>
       )}
-      {(it.switches && it.switches.length > 0) && (
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-          {it.switches.map((s) => (
-            <span key={s.name} style={{ fontSize: 11, borderRadius: 6, padding: '2px 8px',
+
+      {runtimeSwitches.length > 0 && (
+        <div style={{ marginTop: 4, borderTop: '1px solid rgba(0,0,0,.06)' }}>
+          <div style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--muted,#8A939A)', padding: '8px 0 0' }}>Switches</div>
+          {runtimeSwitches.map((s) => (
+            <SwitchRow key={s.name} s={s} busy={switchBusy === s.name} onToggle={onToggle} onReset={onReset} />
+          ))}
+        </div>
+      )}
+
+      {displaySwitches.length > 0 && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginTop: 8 }}>
+          {displaySwitches.map((s) => (
+            <span key={s.name} title="Set in the hosting settings (Render), not here." style={{ fontSize: 11, borderRadius: 6, padding: '2px 8px',
               color: s.on ? '#256168' : '#8A939A', background: s.on ? 'rgba(47,127,134,.10)' : '#F1F1EC', border: '1px solid rgba(0,0,0,.06)' }}>
               {s.label}: <b>{s.on ? 'on' : 'off'}</b>
             </span>
@@ -175,12 +238,46 @@ function SitewireExplorer() {
   );
 }
 
+// The typed-confirmation modal for a switch that changes live behavior.
+function ConfirmModal({ pending, text, setText, busy, onCancel, onConfirm }) {
+  const phrase = pending.next ? 'TURN ON' : 'TURN OFF';
+  const ok = text.trim().toUpperCase() === phrase;
+  return (
+    <div onClick={onCancel} style={{ position: 'fixed', inset: 0, background: 'rgba(20,27,34,.45)', display: 'flex',
+      alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 16 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, maxWidth: 460, width: '100%',
+        padding: '20px 22px', boxShadow: '0 20px 60px rgba(0,0,0,.3)' }}>
+        <h3 style={{ margin: '0 0 8px', fontFamily: 'var(--serif,Georgia,serif)' }}>Confirm this change</h3>
+        <p style={{ fontSize: 13.5, margin: '0 0 8px' }}>
+          You’re about to <b>{pending.next ? 'turn ON' : 'turn OFF'}</b> “{pending.sw.label}”. This changes what the platform
+          actually sends to the outside world, so it takes effect right away.
+        </p>
+        <p style={{ fontSize: 13, margin: '0 0 6px' }}>Type <code style={{ fontFamily: 'ui-monospace,Menlo,monospace', background: '#F1F1EC', padding: '1px 6px', borderRadius: 5 }}>{phrase}</code> to confirm.</p>
+        <input autoFocus value={text} onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter' && ok && !busy) onConfirm(); }}
+          placeholder={phrase} style={{ width: '100%', fontSize: 16, padding: '9px 11px', borderRadius: 8,
+            border: '1px solid var(--line,#E7E1D3)', boxSizing: 'border-box' }} />
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 14 }}>
+          <button className="btn ghost" disabled={busy} onClick={onCancel}>Cancel</button>
+          <button className="btn" disabled={!ok || busy} onClick={onConfirm}
+            style={{ background: pending.next ? undefined : '#B4483C' }}>
+            {busy ? 'Working…' : (pending.next ? 'Turn on' : 'Turn off')}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function StaffApiHealth() {
   const { role } = useAuth();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   const [testing, setTesting] = useState(null); // key currently being re-tested
+  const [switchBusy, setSwitchBusy] = useState(null); // switch key currently being flipped
+  const [pending, setPending] = useState(null); // { sw, next } awaiting typed confirm
+  const [confirmText, setConfirmText] = useState('');
 
   const load = useCallback(async () => {
     setErr('');
@@ -200,6 +297,44 @@ export default function StaffApiHealth() {
     finally { setTesting(null); }
   };
 
+  // Merge a server-returned switch (from toggle/reset) back into whichever integration owns it.
+  const mergeSwitch = (after) => {
+    setData((prev) => prev ? {
+      ...prev,
+      integrations: prev.integrations.map((it) => ({
+        ...it,
+        switches: (it.switches || []).map((s) => s.name === after.key
+          ? { ...s, on: after.on, overridden: after.overridden, envDefault: after.envDefault } : s),
+      })),
+    } : prev);
+  };
+
+  const applyToggle = async (sw, enabled, confirm) => {
+    setSwitchBusy(sw.name); setErr('');
+    try { const d = await api.integrationToggleSwitch(sw.name, enabled, confirm); mergeSwitch(d.switch); }
+    catch (e) { setErr(e.message || 'Could not change that switch.'); }
+    finally { setSwitchBusy(null); }
+  };
+
+  const onToggle = (sw) => {
+    const next = !sw.on;
+    if (sw.dangerous) { setPending({ sw, next }); setConfirmText(''); return; }
+    applyToggle(sw, next, false);
+  };
+
+  const onReset = async (sw) => {
+    setSwitchBusy(sw.name); setErr('');
+    try { const d = await api.integrationResetSwitch(sw.name); mergeSwitch(d.switch); }
+    catch (e) { setErr(e.message || 'Could not reset that switch.'); }
+    finally { setSwitchBusy(null); }
+  };
+
+  const confirmToggle = async () => {
+    if (!pending) return;
+    await applyToggle(pending.sw, pending.next, true);
+    setPending(null); setConfirmText('');
+  };
+
   const integrations = (data && data.integrations) || [];
   const counts = integrations.reduce((a, i) => { a[i.state] = (a[i.state] || 0) + 1; return a; }, {});
   const checkedAt = data && data.checkedAt ? new Date(data.checkedAt).toLocaleString() : null;
@@ -210,8 +345,9 @@ export default function StaffApiHealth() {
         <div>
           <h1 style={{ margin: '0 0 4px' }}>API Health</h1>
           <p className="muted" style={{ margin: 0, maxWidth: 640 }}>
-            Every outside service PILOT connects to — whether it’s live, what it needs, and a one-click test.
-            Keys are set and rotated in the hosting settings (Render), never here, so a problem in the app can never leak a key.
+            Every outside service PILOT connects to — whether it’s live, what it needs, a one-click test, and the on/off
+            switches you can flip right here. Keys are set and rotated in the hosting settings (Render), never here, so a
+            problem in the app can never leak a key.
           </p>
         </div>
         <button className="btn" disabled={loading} onClick={() => { setLoading(true); load(); }}>{loading ? 'Checking…' : 'Refresh all'}</button>
@@ -242,13 +378,21 @@ export default function StaffApiHealth() {
             <h3 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 2px' }}>{meta.title}</h3>
             <p className="muted small" style={{ margin: '0 0 12px' }}>{meta.blurb}</p>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(330px,1fr))', gap: 12 }}>
-              {items.map((it) => <Card key={it.key} it={it} onTest={testOne} testing={testing === it.key} />)}
+              {items.map((it) => (
+                <Card key={it.key} it={it} onTest={testOne} testing={testing === it.key}
+                  onToggle={onToggle} onReset={onReset} switchBusy={switchBusy} />
+              ))}
             </div>
           </section>
         );
       })}
 
       {role === 'super_admin' && <SitewireExplorer />}
+
+      {pending && (
+        <ConfirmModal pending={pending} text={confirmText} setText={setConfirmText} busy={switchBusy === pending.sw.name}
+          onCancel={() => { setPending(null); setConfirmText(''); }} onConfirm={confirmToggle} />
+      )}
     </div>
   );
 }

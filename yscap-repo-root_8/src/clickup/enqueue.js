@@ -16,6 +16,7 @@
  */
 const db = require('../db');
 const cfg = require('../config');
+const switches = require('../lib/integrations/switches'); // runtime on/off (env default unless flipped)
 
 // only: array of logical field keys the edit changed (application/borrower column
 // names, or synthetic 'status'/'officer'/'processor'). The push writes ONLY the
@@ -31,7 +32,7 @@ const cfg = require('../config');
 // no-op-suppressed, breaker-limited like every write). Merged as a union so a
 // human edit is never lost when jobs coalesce.
 async function enqueueClickupPush(appId, only = [], opts = {}) {
-  if (!appId || !cfg.clickupSyncEnabled) return;
+  if (!appId || !switches.on('CLICKUP_SYNC_ENABLED')) return;
   const keys = Array.isArray(only) ? [...new Set(only.map(String).filter(Boolean))] : [];
   if (!keys.length) return;
   const keysJson = JSON.stringify(keys);
@@ -91,7 +92,7 @@ async function enqueueClickupPush(appId, only = [], opts = {}) {
 // checklist status-transition site. The logical key `checklist:<fieldId>` routes
 // through the same changed-fields-only push, so it can never rewrite the task.
 async function enqueueChecklistStatusPush(itemId) {
-  if (!itemId || !cfg.clickupSyncEnabled) return;
+  if (!itemId || !switches.on('CLICKUP_SYNC_ENABLED')) return;
   try {
     const r = await db.query(
       `SELECT ci.application_id, ci.clickup_field_id

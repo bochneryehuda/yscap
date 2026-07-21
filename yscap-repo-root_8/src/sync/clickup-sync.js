@@ -1,5 +1,5 @@
 /**
- * ClickUp sync worker. Four loops, all gated by cfg.clickupSyncEnabled:
+ * ClickUp sync worker. Four loops, all gated by switches.on('CLICKUP_SYNC_ENABLED'):
  *   pushOutbox   — drain sync_queue outbound jobs → orchestrator.pushApplication
  *   processInbox — drain clickup_webhook_inbox → ingest (with materialization gate)
  *   reconcile    — periodic filtered poll to catch missed webhooks + hot duplicates
@@ -9,6 +9,7 @@
  */
 const db = require('../db');
 const cfg = require('../config');
+const switches = require('../lib/integrations/switches'); // runtime on/off (env default unless flipped)
 const clickup = require('../clickup/client');
 const registry = require('../clickup/registry');
 const ingest = require('../clickup/ingest');
@@ -168,7 +169,7 @@ async function pushOutboxOnce() {
 // than 30 days, 50 files per boot. Idempotent: a successful create links the
 // file, dropping it from the next run's SELECT.
 async function recoverUnlinkedFilesOnce() {
-  if (!cfg.clickupOutboundEnabled) return 0;
+  if (!switches.on('CLICKUP_OUTBOUND_ENABLED')) return 0;
   const r = await db.query(
     `SELECT id FROM applications
       WHERE clickup_pipeline_task_id IS NULL AND deleted_at IS NULL
@@ -679,7 +680,7 @@ async function retryStuckTasksOnce() {
   // Without inbound creation the retry could only DEMOTE visibility (a re-
   // ingest that can't create resolves 'skipped', overwriting the ambiguous/
   // duplicate_pending flag that keeps the task in the manual-review queues).
-  if (!cfg.clickupInboundCreateFiles) { console.log('[clickup-sync] stuck-task retry skipped (inbound create OFF)'); return 0; }
+  if (!switches.on('CLICKUP_INBOUND_CREATE_FILES')) { console.log('[clickup-sync] stuck-task retry skipped (inbound create OFF)'); return 0; }
   // Oldest-first so a backlog wider than one boot's cap ROTATES instead of
   // starving the tail (a retried-but-still-stuck task refreshes snapshot_at,
   // sending it to the back of the line for the next boot).
@@ -797,9 +798,9 @@ async function ingestOne(taskId, opts = {}) {
   const task = await clickup.getTask(taskId, { include: ['custom_fields'] });
   const options = await optionMap();
   const read = mapper.readTaskFields(task, options);
-  // Inbound new-file creation is gated (see cfg.clickupInboundCreateFiles) to
+  // Inbound new-file creation is gated (see switches.on('CLICKUP_INBOUND_CREATE_FILES')) to
   // avoid duplicating an existing unlinked portal app; linked files still update.
-  const createFile = (cfg.clickupInboundCreateFiles || opts.forceCreate === true) && canMaterialize(read);
+  const createFile = (switches.on('CLICKUP_INBOUND_CREATE_FILES') || opts.forceCreate === true) && canMaterialize(read);
   return ingest.ingestTask(task, options, { createFile, forceCreate: opts.forceCreate === true });
 }
 
@@ -870,7 +871,7 @@ async function reconcileOnce() {
     try {
       const full = t.custom_fields ? t : await clickup.getTask(t.id, { include: ['custom_fields'] });
       const read = mapper.readTaskFields(full, options);
-      await ingest.ingestTask(full, options, { createFile: cfg.clickupInboundCreateFiles && canMaterialize(read) });
+      await ingest.ingestTask(full, options, { createFile: switches.on('CLICKUP_INBOUND_CREATE_FILES') && canMaterialize(read) });
     } catch (e) { hadFailure = true; console.error('[clickup] reconcile task failed', t.id, e.message); }
   }
   const advanced = nextWatermark({ preQueryMs, hadFailure, current });
@@ -1028,7 +1029,7 @@ async function reconcileLinkedProgramsOnce() {
       // duplicate workflow). Enqueue the scoped stamp push once per boot pass;
       // the push's no-op suppression makes an already-correct stamp write-free,
       // so this converges to zero writes after the first healing pass.
-      if (cfg.clickupOutboundEnabled && res && res.applicationId) {
+      if (switches.on('CLICKUP_OUTBOUND_ENABLED') && res && res.applicationId) {
         try { await require('../clickup/enqueue').enqueueClickupPush(res.applicationId, ['portal_stamp']); } catch (_) {}
       }
     } catch (e) {
@@ -1333,7 +1334,7 @@ function start() {
     return; // validation-only boot; do not start the live loops
   }
 
-  if (!cfg.clickupSyncEnabled) { console.log('[clickup-sync] disabled (CLICKUP_SYNC_ENABLED!=1)'); return; }
+  if (!switches.on('CLICKUP_SYNC_ENABLED')) { console.log('[clickup-sync] disabled (CLICKUP_SYNC_ENABLED!=1)'); return; }
   console.log('[clickup-sync] worker started');
 
   // Warm the dropdown-option cache immediately so outbound pushes for already-
@@ -1432,7 +1433,7 @@ function start() {
   // Inbound loops (ClickUp → portal) always run when the master switch is on —
   // the portal is the mirror, so pulling is always safe.
   console.log('[clickup-sync] inbound ' +
-    (cfg.clickupInboundCreateFiles
+    (switches.on('CLICKUP_INBOUND_CREATE_FILES')
       ? 'materializes new RTL loan files (CLICKUP_INBOUND_CREATE_FILES=1)'
       : 'identity-graph + linked-file updates only — new-file creation OFF (CLICKUP_INBOUND_CREATE_FILES!=1)'));
   setInterval(() => tick(processInboxOnce, 'inbox'), 4000);
@@ -1448,7 +1449,7 @@ function start() {
   // Stage 2 — outbound loops (portal → ClickUp writes) are gated separately so
   // inbound/backfill can run and be validated first, before the portal is
   // allowed to write to production ClickUp.
-  if (cfg.clickupOutboundEnabled) {
+  if (switches.on('CLICKUP_OUTBOUND_ENABLED')) {
     // SAFETY (post-incident): outbound pushes ONLY changes explicitly enqueued by a
     // staff edit in the portal (enqueue-on-write). The old "dirty sweep" auto-pushed
     // ANY file whose updated_at moved — including files just re-ingested FROM ClickUp

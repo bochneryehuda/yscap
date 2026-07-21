@@ -16,6 +16,7 @@
  */
 const db = require('../db');
 const cfg = require('../config');
+const switches = require('../lib/integrations/switches'); // runtime on/off (env default unless an admin flips it)
 const client = require('./client');
 const T = require('./transforms');
 const M = require('./mapper');
@@ -286,10 +287,10 @@ function resolveInspection(link, rule) {
  * force=true bypasses the master switch (used by an admin manual push, still guarded).
  */
 async function pushFile(appId, opts = {}) {
-  if (!cfg.sitewireEnabled && !opts.force) return { skipped: 'sitewire disabled' };
+  if (!switches.on('SITEWIRE_ENABLED') && !opts.force) return { skipped: 'sitewire disabled' };
   // The write gate is NOT bypassable by force (staging safety) — only dry-run lets a
   // push proceed with writes off (it validates the bodies + logs, sends nothing).
-  if (!cfg.sitewireOutboundEnabled && !cfg.sitewireDryrun) return { skipped: 'sitewire outbound disabled (set SITEWIRE_OUTBOUND_ENABLED=1 or SITEWIRE_DRYRUN=1)' };
+  if (!switches.on('SITEWIRE_OUTBOUND_ENABLED') && !cfg.sitewireDryrun) return { skipped: 'sitewire outbound disabled (set SITEWIRE_OUTBOUND_ENABLED=1 or SITEWIRE_DRYRUN=1)' };
   const a = await loadFile(appId);
   if (!a) return { skipped: 'file not found/deleted' };
   if (a.status !== 'funded' && !opts.allowUnfunded) return { skipped: 'file not funded' };
@@ -702,7 +703,7 @@ async function setPropertyLifecycle(appId, state, staffId = null) {
   const link = await getLink(appId);
   // only-ours: a pre-existing / unmanaged file has no created+live property to close out.
   if (!link || !link.sitewire_property_id || link.matched_by !== 'created') return { error: 'not_managed' };
-  const canSync = cfg.sitewireEnabled && (cfg.sitewireOutboundEnabled || cfg.sitewireDryrun);
+  const canSync = switches.on('SITEWIRE_ENABLED') && (switches.on('SITEWIRE_OUTBOUND_ENABLED') || cfg.sitewireDryrun);
   // Idempotent no-op — but ONLY when there is nothing left to do. If the state already matches AND it's
   // already synced to Sitewire (or we still can't sync), skip. If it matches but was recorded while writes
   // were OFF (synced=false) and we CAN sync now, fall THROUGH and actually push the deactivate — otherwise a
@@ -831,7 +832,7 @@ async function updatePropertyControls(appId, changes = {}, staffId = null) {
 
   // These are LIVE Sitewire settings (unlike lifecycle, PILOT keeps no shadow "inactive" to backfill), so
   // with writes off there is nothing to record — tell the caller the connection is off rather than pretend.
-  const canSync = cfg.sitewireEnabled && (cfg.sitewireOutboundEnabled || cfg.sitewireDryrun);
+  const canSync = switches.on('SITEWIRE_ENABLED') && (switches.on('SITEWIRE_OUTBOUND_ENABLED') || cfg.sitewireDryrun);
   if (!canSync) return { error: 'writes_off' };
 
   await circuitCheck(1);
@@ -892,7 +893,7 @@ async function getPropertyLive(appId) {
   const link = await getLink(appId);
   if (!link || !link.sitewire_property_id || link.matched_by !== 'created') return { available: false, reason: 'not_managed' };
   const propertyId = Number(link.sitewire_property_id);
-  if (!cfg.sitewireEnabled) return { available: false, reason: 'off', propertyId };
+  if (!switches.on('SITEWIRE_ENABLED')) return { available: false, reason: 'off', propertyId };
   try {
     const property = await client.getProperty(propertyId);
     return { available: true, propertyId, property: property || null };
@@ -911,7 +912,7 @@ async function getPropertyLive(appId) {
 async function pushJobItemDescription(appId, sowLineKey, description) {
   const link = await getLink(appId);
   if (!link || !link.sitewire_property_id || link.matched_by !== 'created' || !link.sitewire_budget_id) return { ok: false, reason: 'not_managed' };
-  const canSync = cfg.sitewireEnabled && (cfg.sitewireOutboundEnabled || cfg.sitewireDryrun);
+  const canSync = switches.on('SITEWIRE_ENABLED') && (switches.on('SITEWIRE_OUTBOUND_ENABLED') || cfg.sitewireDryrun);
   if (!canSync) return { ok: false, reason: 'writes_off' };
   const ids = (await db.query(
     `SELECT sitewire_job_item_id FROM sitewire_job_item_links
@@ -963,7 +964,7 @@ async function resetDrawSetup(appId, staffId = null) {
   }
   // (1) deactivate in Sitewire — best-effort so a testing reset is never blocked by a transient Sitewire issue;
   // the property id is tombstoned regardless, so the re-push is clean either way.
-  const canSync = cfg.sitewireEnabled && (cfg.sitewireOutboundEnabled || cfg.sitewireDryrun);
+  const canSync = switches.on('SITEWIRE_ENABLED') && (switches.on('SITEWIRE_OUTBOUND_ENABLED') || cfg.sitewireDryrun);
   let sitewire = 'skipped', deactivated = false;
   if (canSync) {
     try {
@@ -1007,7 +1008,7 @@ async function resetDrawSetup(appId, staffId = null) {
 async function getBorrowerInviteStatus(appId) {
   const link = await getLink(appId);
   if (!link || !link.sitewire_property_id || link.matched_by !== 'created') return { managed: false };
-  if (!cfg.sitewireEnabled) return { managed: true, available: false, reason: 'sitewire_off' };
+  if (!switches.on('SITEWIRE_ENABLED')) return { managed: true, available: false, reason: 'sitewire_off' };
   try {
     const p = await client.getProperty(link.sitewire_property_id);
     const b = (p && p.borrower) || {};
@@ -1023,7 +1024,7 @@ async function resendBorrowerInvite(appId) {
   if (!link || !link.sitewire_property_id || link.matched_by !== 'created') return { error: 'not_managed' };
   const a = await loadFile(appId);
   if (!a || !a.borrower_email) return { error: 'no_borrower_email' };
-  if (!(cfg.sitewireEnabled && (cfg.sitewireOutboundEnabled || cfg.sitewireDryrun))) return { error: 'writes_off' };
+  if (!(switches.on('SITEWIRE_ENABLED') && (switches.on('SITEWIRE_OUTBOUND_ENABLED') || cfg.sitewireDryrun))) return { error: 'writes_off' };
   await circuitCheck(1);
   try {
     const res = await client.assignBorrower(link.sitewire_property_id, a.borrower_email);
@@ -1040,7 +1041,7 @@ async function resendBorrowerInvite(appId) {
    wire department"). Live read; [] when Sitewire is off. (owner-directed 2026-07-20 — mirror every Sitewire
    action into PILOT.) */
 async function listQuickNotifyStatuses() {
-  if (!cfg.sitewireEnabled) return [];
+  if (!switches.on('SITEWIRE_ENABLED')) return [];
   try {
     const r = await client.listQuickNotifyStatuses();
     const arr = Array.isArray(r) ? r : (r && (r.quick_notify_statuses || r.data)) || [];
@@ -1054,7 +1055,7 @@ async function listQuickNotifyStatuses() {
 async function setDrawQuickNotify(appId, drawId, statusId) {
   const own = (await db.query(`SELECT sitewire_draw_id FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [drawId, appId])).rows[0];
   if (!own) return { error: 'draw_not_on_file' };
-  if (!(cfg.sitewireEnabled && (cfg.sitewireOutboundEnabled || cfg.sitewireDryrun))) return { error: 'writes_off' };
+  if (!(switches.on('SITEWIRE_ENABLED') && (switches.on('SITEWIRE_OUTBOUND_ENABLED') || cfg.sitewireDryrun))) return { error: 'writes_off' };
   const sid = (statusId == null || statusId === '') ? null : Number(statusId);
   if (sid != null && !Number.isFinite(sid)) return { error: 'bad_status' };
   // A pipeline status can only be MOVED between real statuses, never CLEARED to null: the guarded client
@@ -1085,7 +1086,7 @@ async function setDrawQuickNotify(appId, drawId, statusId) {
 async function getSitewireDocuments(appId) {
   const link = await getLink(appId);
   if (!link || !link.sitewire_property_id || link.matched_by !== 'created') return { managed: false, documents: [] };
-  if (!cfg.sitewireEnabled) return { managed: true, available: false, documents: [] };
+  if (!switches.on('SITEWIRE_ENABLED')) return { managed: true, available: false, documents: [] };
   try {
     const p = await client.getProperty(link.sitewire_property_id);
     const docs = (p && (p.documents || (p.property && p.property.documents))) || [];

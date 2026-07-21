@@ -16,8 +16,21 @@ const router = require('../lib/safe-router')();
 const db = require('../db');
 const { requireAuth, requirePermission } = require('../auth');
 const health = require('../lib/integrations/health-registry');
+const switches = require('../lib/integrations/switches');
+const flags = require('../lib/flags');
 
 router.use(requireAuth, requirePermission('platform_setup'));
+
+// Best-effort audit of a switch change (who flipped what, from/to, ip).
+async function auditSwitch(req, key, before, after, cleared) {
+  try {
+    await db.query(
+      `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, ip_address, user_agent, detail)
+            VALUES ('staff', $1, 'integration_switch', 'integration', NULL, $2, $3, $4)`,
+      [req.actor.id, req.ip, req.get('user-agent') || null,
+        JSON.stringify({ key, before, after, cleared: !!cleared })]);
+  } catch (_) { /* audit is best-effort */ }
+}
 
 const fail = (res, code, e, msg) => {
   console.warn('[admin-integrations] handler error:', db.describeError ? db.describeError(e) : (e && e.message));
@@ -28,6 +41,7 @@ const fail = (res, code, e, msg) => {
 // never hangs and a single down service can't fail the whole page.
 router.get('/health', async (req, res) => {
   try {
+    await flags.refresh(); // so the on/off switches show their live override state, not a stale cache
     const integrations = await health.probeAll();
     res.json({ checkedAt: new Date().toISOString(), integrations });
   } catch (e) { return fail(res, 500, e, 'could not read integration health'); }
@@ -63,6 +77,41 @@ router.post('/sitewire/explore', async (req, res) => {
     const report = await explorer.explore({ sampleProperties, sampleDraws });
     res.json({ checkedAt: new Date().toISOString(), ...report });
   } catch (e) { return fail(res, 502, e, 'could not reach the Sitewire test environment'); }
+});
+
+// The runtime on/off switches + their effective state (override ?? env default).
+router.get('/switches', async (req, res) => {
+  try { await flags.refresh(); res.json({ switches: switches.list() }); }
+  catch (e) { return fail(res, 500, e, 'could not read switches'); }
+});
+
+// Flip a switch. Body: { enabled: bool, confirm?: bool }. A DANGEROUS switch (a write/creation
+// switch) requires confirm:true (the UI shows a typed confirmation first). Audited.
+router.post('/switches/:key', async (req, res) => {
+  try {
+    const meta = switches.BY_KEY[req.params.key];
+    if (!meta) return res.status(404).json({ error: 'unknown switch' });
+    if (typeof req.body.enabled !== 'boolean') return res.status(400).json({ error: 'enabled (true/false) is required' });
+    if (meta.dangerous && req.body.confirm !== true) return res.status(400).json({ error: 'this switch changes live behavior — confirmation required' });
+    const before = switches.effective(meta.key).on;
+    await flags.setFlag(meta.key, req.body.enabled, req.actor.id, req.body.note || null);
+    const after = switches.effective(meta.key);
+    await auditSwitch(req, meta.key, before, after.on, false);
+    res.json({ switch: after });
+  } catch (e) { return fail(res, 500, e, 'could not change that switch'); }
+});
+
+// Reset a switch to its env/hosting default (remove the runtime override).
+router.post('/switches/:key/reset', async (req, res) => {
+  try {
+    const meta = switches.BY_KEY[req.params.key];
+    if (!meta) return res.status(404).json({ error: 'unknown switch' });
+    const before = switches.effective(meta.key).on;
+    await flags.clearFlag(meta.key);
+    const after = switches.effective(meta.key);
+    await auditSwitch(req, meta.key, before, after.on, true);
+    res.json({ switch: after });
+  } catch (e) { return fail(res, 500, e, 'could not reset that switch'); }
 });
 
 module.exports = router;
