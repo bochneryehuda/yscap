@@ -25,6 +25,7 @@
  */
 const azure = require('./docint');
 const google = require('./docai-google');
+const mistral = require('./docai-mistral');
 
 // A rescue is worth trying when the primary returned NO text at all, or so
 // little text that we suspect its OCR failed to segment the page (a scanned
@@ -70,6 +71,11 @@ async function read(args = {}) {
     const r = await azure.read(args);
     return { ...r, engine: 'azure-docint', engineSequence: sequence };
   }
+  if (args.forceEngine === 'mistral') {
+    sequence.push('mistral');
+    const r = await mistral.read(args);
+    return { ...r, engine: 'mistral-ocr', engineSequence: sequence };
+  }
 
   // Default: Azure primary, Google fallback.
   sequence.push('azure');
@@ -98,27 +104,53 @@ async function read(args = {}) {
       primaryReason: primary.reason || 'primary engine returned an empty read',
     };
   }
-  // Both empty / failed — return the primary result (which is what existing
-  // code paths already know how to handle) with both reasons noted.
+  // Google also failed — try Mistral as the THIRD independent engine
+  // (owner-directed 2026-07-21). Different failure modes than either Azure
+  // or Google, so it's a genuine third perspective for hard documents
+  // (dense tables, signatures, multi-column layouts).
+  if (!mistral.configured()) {
+    return {
+      ...primary,
+      engine: 'azure-docint',
+      engineSequence: sequence,
+      primaryReason: primary.reason,
+      challengerReason: rescued.reason || null,
+    };
+  }
+  sequence.push('mistral');
+  const thirdRescue = await mistral.read(args);
+  if (thirdRescue.ok && String(thirdRescue.text || '').trim().length > 0) {
+    return {
+      ...thirdRescue,
+      engine: 'mistral-ocr',
+      engineSequence: sequence,
+      rescuedFrom: 'azure-docint',
+      primaryReason: primary.reason || 'primary engine returned an empty read',
+      challengerReason: rescued.reason || 'challenger returned an empty read',
+    };
+  }
+  // Every engine failed / empty — return the primary's error with all reasons noted.
   return {
     ...primary,
     engine: 'azure-docint',
     engineSequence: sequence,
     primaryReason: primary.reason,
     challengerReason: rescued.reason || null,
+    thirdReason: thirdRescue.reason || null,
   };
 }
 
 /** True when ANY engine is configured (at least one usable). */
-function configured() { return azure.configured() || google.configured(); }
+function configured() { return azure.configured() || google.configured() || mistral.configured(); }
 
 /** Health probe — returns which engines are ready. */
 async function ping() {
-  const [a, g] = await Promise.all([
+  const [a, g, m] = await Promise.all([
     azure.configured() ? azure.ping() : Promise.resolve({ ok: false, reason: 'not configured' }),
     google.configured() ? google.ping() : Promise.resolve({ ok: false, reason: 'not configured' }),
+    mistral.configured() ? mistral.ping() : Promise.resolve({ ok: false, reason: 'not configured' }),
   ]);
-  return { ok: a.ok || g.ok, azure: a, google: g };
+  return { ok: a.ok || g.ok || m.ok, azure: a, google: g, mistral: m };
 }
 
 module.exports = { read, ping, configured, _internals: { primaryLooksEmpty } };

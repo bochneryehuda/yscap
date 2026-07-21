@@ -9,10 +9,12 @@
 const assert = require('assert');
 const Module = require('module');
 
-// Intercept the two engine modules BEFORE ocr-router requires them.
+// Intercept the three engine modules BEFORE ocr-router requires them.
 let azureImpl = () => ({ ok: false, reason: 'stub' });
 let googleImpl = () => ({ ok: false, reason: 'stub' });
+let mistralImpl = () => ({ ok: false, reason: 'stub' });
 let googleConfigured = true;
+let mistralConfigured = true;
 const origResolve = Module._resolveFilename;
 const origLoad = Module._load;
 Module._load = function stubbedLoad(request, parent, ...rest) {
@@ -21,6 +23,9 @@ Module._load = function stubbedLoad(request, parent, ...rest) {
   }
   if (request === './docai-google' && parent && parent.filename && parent.filename.includes('ocr-router')) {
     return { read: (a) => Promise.resolve(googleImpl(a)), configured: () => googleConfigured, ping: async () => ({ ok: true }) };
+  }
+  if (request === './docai-mistral' && parent && parent.filename && parent.filename.includes('ocr-router')) {
+    return { read: (a) => Promise.resolve(mistralImpl(a)), configured: () => mistralConfigured, ping: async () => ({ ok: true }) };
   }
   return origLoad.call(this, request, parent, ...rest);
 };
@@ -61,16 +66,19 @@ const router = require('../src/lib/ai/ocr-router');
     assert.strictEqual(r.primaryReason, 'Azure endpoint 500');
   }
 
-  // 4. Both engines empty/fail → returns the primary's error unchanged.
+  // 4. Both Azure + Google empty/fail with Mistral configured → tries Mistral
+  //    too; when all three fail, returns primary's error with every reason.
   azureImpl = () => ({ ok: false, reason: 'Azure timeout' });
   googleImpl = () => ({ ok: false, reason: 'Google not reachable' });
+  mistralImpl = () => ({ ok: false, reason: 'Mistral down too' });
   {
     const r = await router.read({ buffer: Buffer.alloc(300 * 1024) });
     assert.strictEqual(r.ok, false);
     assert.strictEqual(r.engine, 'azure-docint');
     assert.strictEqual(r.primaryReason, 'Azure timeout');
     assert.strictEqual(r.challengerReason, 'Google not reachable');
-    assert.deepStrictEqual(r.engineSequence, ['azure', 'google']);
+    assert.strictEqual(r.thirdReason, 'Mistral down too');
+    assert.deepStrictEqual(r.engineSequence, ['azure', 'google', 'mistral']);
   }
 
   // 5. Google NOT configured → no rescue attempted; primary result returned.
@@ -92,6 +100,52 @@ const router = require('../src/lib/ai/ocr-router');
     assert.strictEqual(r.ok, true);
     assert.strictEqual(r.engine, 'google-docai');
     assert.deepStrictEqual(r.engineSequence, ['google']);
+  }
+  // 6b. `forceEngine:'mistral'` also bypasses.
+  azureImpl = googleImpl = () => { throw new Error('should not be called'); };
+  mistralImpl = () => ({ ok: true, text: 'Direct to Mistral', pageCount: 1, pages: [] });
+  {
+    const r = await router.read({ buffer: Buffer.alloc(1000), forceEngine: 'mistral' });
+    assert.strictEqual(r.ok, true);
+    assert.strictEqual(r.engine, 'mistral-ocr');
+    assert.deepStrictEqual(r.engineSequence, ['mistral']);
+  }
+
+  // 6c. Azure empty → Google empty → Mistral rescues (the three-engine chain).
+  azureImpl = () => ({ ok: true, text: '', pageCount: 5, pages: [] });
+  googleImpl = () => ({ ok: false, reason: 'google 5xx' });
+  mistralImpl = () => ({ ok: true, text: 'Mistral saved this dense-table PDF that both others fumbled', pageCount: 5, pages: [] });
+  {
+    const r = await router.read({ buffer: Buffer.alloc(300 * 1024) });
+    assert.strictEqual(r.ok, true, 'Mistral rescues when both Azure + Google fail');
+    assert.strictEqual(r.engine, 'mistral-ocr');
+    assert.deepStrictEqual(r.engineSequence, ['azure', 'google', 'mistral']);
+    assert.ok(r.text.includes('Mistral saved'));
+  }
+
+  // 6d. Mistral NOT configured — falls back gracefully to primary's error.
+  mistralConfigured = false;
+  azureImpl = () => ({ ok: false, reason: 'azure timeout' });
+  googleImpl = () => ({ ok: false, reason: 'google 5xx' });
+  {
+    const r = await router.read({ buffer: Buffer.alloc(300 * 1024) });
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(r.engine, 'azure-docint');
+    assert.deepStrictEqual(r.engineSequence, ['azure', 'google'], 'no mistral in sequence when not configured');
+  }
+  mistralConfigured = true;
+
+  // 6e. All three engines fail — primary error with every reason recorded.
+  azureImpl = () => ({ ok: false, reason: 'azure' });
+  googleImpl = () => ({ ok: false, reason: 'google' });
+  mistralImpl = () => ({ ok: false, reason: 'mistral' });
+  {
+    const r = await router.read({ buffer: Buffer.alloc(300 * 1024) });
+    assert.strictEqual(r.ok, false);
+    assert.deepStrictEqual(r.engineSequence, ['azure', 'google', 'mistral']);
+    assert.strictEqual(r.primaryReason, 'azure');
+    assert.strictEqual(r.challengerReason, 'google');
+    assert.strictEqual(r.thirdReason, 'mistral');
   }
 
   // 7. primaryLooksEmpty heuristic — small docs are OK to be short; big docs are NOT.

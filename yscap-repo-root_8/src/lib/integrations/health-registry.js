@@ -91,6 +91,19 @@ const INTEGRATIONS = [
     },
   },
   {
+    key: 'mistral_ocr', name: 'Mistral OCR (third-look reader)', group: 'core',
+    purpose: 'Third independent OCR engine — runs only when Azure AND Google both fail on a document. Different failure modes than either, so it catches dense-table / signature / multi-column layouts the other two miss.',
+    direction: 'Outbound', auth: 'API key',
+    env: [{ name: 'MISTRAL_API_KEY', required: true }, { name: 'MISTRAL_OCR_ENDPOINT', required: false }, { name: 'MISTRAL_OCR_MODEL', required: false }],
+    switches: [], liveProbe: true,
+    async probe() {
+      const m = require('../ai/docai-mistral');
+      if (!m.configured()) return { configured: false, live: null, detail: 'MISTRAL_API_KEY not set.' };
+      try { const p = await timebox(m.ping()); return { configured: true, live: !!p.ok, detail: p.ok ? 'Reached Mistral OCR.' : (p.reason || 'Not reachable.') }; }
+      catch (e) { return { configured: true, live: false, detail: e.message === 'timed out' ? 'Timed out reaching Mistral OCR.' : (e.message || 'Not reachable.') }; }
+    },
+  },
+  {
     key: 'docusign', name: 'DocuSign (e-signatures)', group: 'workflow',
     purpose: 'Sends term sheets and disclosures for e-signature and receives the signed documents back.',
     direction: 'Two-way', auth: 'OAuth JWT (RSA key)',
