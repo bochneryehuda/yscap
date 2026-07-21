@@ -2918,7 +2918,11 @@ router.post('/applications/:id/orders/:kind/documents/:docId/classify', async (r
   try {
     const slotRaw = String((req.body && req.body.slot) || '').trim().slice(0, 80);
     const allowed = new Set(ORDER_SLOTS[kind]);
-    const slot = slotRaw && allowed.has(slotRaw) ? slotRaw : (slotRaw ? slotRaw : null);
+    // Empty clears back to unassigned; anything else must be one of this order's
+    // known slots (Binder / Invoice / Title Commitment / …) — an unknown label is
+    // rejected rather than stored as free text.
+    if (slotRaw && !allowed.has(slotRaw)) return res.status(400).json({ error: 'Choose one of the listed document types.', code: 'bad_slot' });
+    const slot = slotRaw || null;
     const upd = await db.query(
       `UPDATE documents SET slot_label=$4
         WHERE id=$1 AND application_id=$2 AND doc_kind=$3 RETURNING id`,
