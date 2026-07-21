@@ -48,10 +48,19 @@ function btn(primary, danger) {
 // src/lib/underwriting/exceptions.js. A signer WITHOUT waive (processor / coordinator / closer)
 // must not be shown those buttons on a fatal blocking finding: they would 403.
 const GATE_CLEARING_ACTIONS = new Set(['grant_exception', 'clear', 'fix_file', 'dismiss']);
-function Finding({ appId, f, onChange, resolvable, canWaive = true }) {
+// Who a finding can be escalated to — the super-admin workload, or a processor / underwriter.
+const ESCALATE_TARGETS = [
+  { key: 'super_admin', label: 'Super-admin' },
+  { key: 'processor', label: 'Processor' },
+  { key: 'underwriter', label: 'Underwriter' },
+];
+function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate = false, escalated = null }) {
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState(null); // the action awaiting its note/value
   const [text, setText] = useState('');
+  const [escOpen, setEscOpen] = useState(false);
+  const [escRole, setEscRole] = useState('super_admin');
+  const [escNote, setEscNote] = useState('');
   const s = SEV[f.severity] || SEV.info;
   const allActions = Array.isArray(f.availableActions) ? f.availableActions : [];
   const isFatalBlocking = f.severity === 'fatal' && (f.blocks_ctc != null ? f.blocks_ctc : (f.blocksCtc != null ? f.blocksCtc : false));
@@ -75,6 +84,24 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true }) {
     if (!pending) return;
     const extra = pending.needs === 'value' ? { value: text } : { note: text };
     submit(pending.key, extra); setPending(null);
+  };
+  // Escalate this finding into the super-admin / processor / underwriter workload — carrying a
+  // snapshot of the finding, its explanation, and the framed options — so a staffer who can't
+  // decide it can hand it off instead of guessing ("don't make up things — ask").
+  const submitEscalation = async () => {
+    setBusy(true);
+    try {
+      await api.underwritingEscalateFinding(appId, {
+        findingId: f.id || null,
+        finding: { code: f.code, severity: f.severity, field: f.field, title: f.title,
+          howTo, docValue: docVal, fileValue: fileVal, documentId: f.document_id || f.documentId,
+          availableActions: allActions },
+        targetRole: escRole, note: escNote,
+      });
+      setEscOpen(false); setEscNote('');
+      onChange && onChange();
+    } catch (e) { alert(e.message || 'Could not escalate the finding'); }
+    finally { setBusy(false); }
   };
 
   return (
@@ -110,6 +137,38 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true }) {
             style={{ flex: 1, minWidth: 180, padding: '7px 10px', border: '1px solid var(--line,#E7E1D3)', borderRadius: 8, fontSize: 14 }} />
           <button disabled={busy || !text.trim()} onClick={confirmPending} style={btn(true)}>{pending.label}</button>
           <button disabled={busy} onClick={() => setPending(null)} style={btn()}>Cancel</button>
+        </div>
+      )}
+      {/* Escalate — hand a finding you can't decide to the super-admin / processor / underwriter
+          workload. Available on EVERY finding (owner-directed 2026-07-21), even for a staffer who
+          can't resolve it. Once escalated, we show it's in someone's queue instead of a button. */}
+      {canEscalate && escalated && (
+        <div style={{ marginTop: 10, fontSize: 12, color: 'var(--teal-deep,#256168)' }}>
+          ↗ Escalated to {(ESCALATE_TARGETS.find((t) => t.key === escalated.targetRole) || {}).label || 'a reviewer'} — awaiting their review.
+        </div>
+      )}
+      {canEscalate && !escalated && !escOpen && (
+        <div style={{ marginTop: 10 }}>
+          <button disabled={busy} onClick={() => setEscOpen(true)} title="Send this finding to a super-admin, processor, or underwriter to decide"
+            style={{ ...btn(), fontSize: 12, padding: '5px 10px' }}>↗ Escalate for review</button>
+        </div>
+      )}
+      {canEscalate && !escalated && escOpen && (
+        <div style={{ marginTop: 10, padding: 10, border: '1px solid var(--line,#E7E1D3)', borderRadius: 10, background: 'var(--ink-2,#F4F1EA)' }}>
+          <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6, color: 'var(--ivory,#141B22)' }}>Escalate this finding — who should review it?</div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+            {ESCALATE_TARGETS.map((t) => (
+              <button key={t.key} onClick={() => setEscRole(t.key)} disabled={busy}
+                style={btn(escRole === t.key)}>{t.label}</button>
+            ))}
+          </div>
+          <textarea value={escNote} onChange={(e) => setEscNote(e.target.value)} rows={2}
+            placeholder="What do you need decided? (e.g. which guideline applies, is this a real issue, how should we condition it)"
+            style={{ width: '100%', boxSizing: 'border-box', padding: '7px 10px', border: '1px solid var(--line,#E7E1D3)', borderRadius: 8, fontSize: 13, color: 'var(--ivory,#141B22)', background: 'var(--card,#fff)' }} />
+          <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+            <button disabled={busy} onClick={submitEscalation} style={btn(true)}>Send to {(ESCALATE_TARGETS.find((t) => t.key === escRole) || {}).label}</button>
+            <button disabled={busy} onClick={() => { setEscOpen(false); setEscNote(''); }} style={btn()}>Cancel</button>
+          </div>
         </div>
       )}
     </div>
@@ -854,7 +913,8 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
           )}
           {allFindings.map((f, i) => (
             <Finding key={f.id || `${f.source || 'f'}-${f.code || 'x'}-${i}`} appId={appId} f={f}
-              onChange={load} resolvable={!readOnly && canResolve && !!f.id} canWaive={canWaive} />
+              onChange={load} resolvable={!readOnly && canResolve && !!f.id} canWaive={canWaive}
+              canEscalate={!readOnly} escalated={f.id ? (data && data.escalatedFindings && data.escalatedFindings[f.id]) : null} />
           ))}
         </div>
       )}

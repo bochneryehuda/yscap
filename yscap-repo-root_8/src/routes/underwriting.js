@@ -53,6 +53,8 @@ const { computeVerdict } = require('../lib/underwriting/verdict');
 const { assessReasonability } = require('../lib/underwriting/reasonability');
 const { toISODate } = require('../lib/underwriting/compare');
 const exceptions = require('../lib/underwriting/exceptions');
+const escalations = require('../lib/underwriting/escalations');
+const notify = require('../lib/notify');
 
 const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || ''));
 // today as a calendar string — no `new Date()` math in the date paths (CLAUDE.md rule).
@@ -148,6 +150,80 @@ router.get('/insights/feedback', async (req, res, next) => {
       `SELECT code, severity, status, resolution FROM document_findings
         WHERE status IN ('resolved','dismissed','open')`);
     res.json(falseAlarmReport(rows));
+  } catch (e) { next(e); }
+});
+
+// ---- Finding-escalation WORKLOAD (owner-directed 2026-07-21, Items 7 + 12) -----------------
+// A staffer who can't decide a finding escalates it to a super-admin / processor / underwriter,
+// creating a workload item that carries the file link, the finding, its explanation, and the
+// framed options. These routes are the reviewer's queue. Registered BEFORE '/:appId' so
+// 'escalations' isn't read as an application id.
+//
+// Any staffer with underwriting-desk access can SEE the queue scoped to what they should act on
+// (routed to their role, assigned to them, or raised by them); a see-all staffer sees everything.
+router.get('/escalations', async (req, res, next) => {
+  try {
+    const seeAll = can(req.actor, 'see_all_files');
+    const status = ['open', 'resolved', 'dismissed', 'all'].includes(req.query.status) ? req.query.status : 'open';
+    const rows = await escalations.listEscalations({ status, viewer: req.actor, seeAll });
+    const pendingCount = await escalations.pendingCount({ viewer: req.actor, seeAll });
+    // Who may DECIDE an escalation: a super-admin, or the person it was routed to
+    // (their role / assigned to them). The client uses this to show the decide controls.
+    res.json({ escalations: rows, pendingCount, canDecideAll: req.actor.role === 'super_admin' });
+  } catch (e) { next(e); }
+});
+
+router.get('/escalations/count', async (req, res, next) => {
+  try {
+    const seeAll = can(req.actor, 'see_all_files');
+    res.json({ pendingCount: await escalations.pendingCount({ viewer: req.actor, seeAll }) });
+  } catch (e) { next(e); }
+});
+
+// Decide (advise + close) an escalation. The person it was routed to may act on it — a
+// super-admin always, or a staffer whose role matches target_role or who it's assigned to.
+// Raising a finding does NOT let you decide your own escalation (that would defeat the point).
+router.post('/escalations/:id/decide', async (req, res, next) => {
+  try {
+    if (!isUuid(req.params.id)) return res.status(404).json({ error: 'not found' });
+    const row = (await db.query(`SELECT * FROM finding_escalations WHERE id=$1`, [req.params.id])).rows[0];
+    if (!row) return res.status(404).json({ error: 'not found' });
+    if (row.status !== 'open') return res.status(409).json({ error: 'this escalation was already handled' });
+    const isSuper = req.actor.role === 'super_admin';
+    if (!isSuper) {
+      // The person who RAISED it can't also decide it — that would defeat the purpose (and the
+      // audit trail would show the same staffer raised + resolved). A super-admin is exempt.
+      if (row.requested_by === req.actor.id) return res.status(403).json({ error: 'you raised this finding — another reviewer must decide it' });
+      // Otherwise: it was assigned to me personally (a deliberate hand-off), OR routed to my role
+      // AND I actually have access to the file (never let a scoped staffer decide on a file they
+      // can't see — same per-file scope as everywhere else).
+      let mayDecide = row.assigned_to === req.actor.id;
+      if (!mayDecide && row.target_role === req.actor.role) mayDecide = !!(await fileFor(req, row.application_id));
+      if (!mayDecide) return res.status(403).json({ error: 'this escalation was routed to someone else' });
+    }
+    const b = req.body || {};
+    const decision = b.decision === 'dismissed' ? 'dismissed' : 'resolved';
+    const note = (b.note || '').slice(0, 1000);
+    let updated;
+    const client = await db.pool.connect();
+    try {
+      await client.query('BEGIN');
+      updated = await escalations.decideEscalation(client, { id: row.id, decision, staffId: req.actor.id, note });
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; } finally { client.release(); }
+    if (!updated) return res.status(409).json({ error: 'this escalation was already handled' });
+    await audit(req.actor.id, 'underwriting_finding_escalation_decide', row.application_id,
+      { escalation: row.id, finding: row.code, decision, note: note.slice(0, 300) });
+    // Let the person who raised it know it was handled (in-app; email only if they turned it on).
+    if (row.requested_by && row.requested_by !== req.actor.id) {
+      notify.notifyStaff(row.requested_by, {
+        type: 'finding_escalation_decided', applicationId: row.application_id,
+        title: `Your escalated finding was ${decision === 'dismissed' ? 'dismissed' : 'resolved'}`,
+        body: `${row.title || 'A finding'} — ${note ? note : (decision === 'dismissed' ? 'no action needed.' : 'handled.')}`,
+        link: `/internal/app/${row.application_id}`,
+      }).catch(() => {});
+    }
+    res.json({ ok: true, escalation: updated });
   } catch (e) { next(e); }
 });
 
@@ -361,7 +437,16 @@ router.get('/:appId', async (req, res, next) => {
     // One plain-English headline tying every roll-up together — the owner's at-a-glance read.
     const verdict = computeVerdict({ summary, risk, completeness, entityChain, extractionsCount: exts.rows.length });
 
+    // Which findings on this file are already sitting in someone's escalation workload — so the desk
+    // shows an "Escalated" badge instead of offering to escalate it again (best-effort).
+    let escalatedByFinding = {};
+    try {
+      const escRows = await escalations.forFile(app.id, db);
+      for (const e of escRows) if (e.finding_id) escalatedByFinding[e.finding_id] = { id: e.id, targetRole: e.target_role, status: e.status };
+    } catch (_) { escalatedByFinding = {}; }
+
     res.json({
+      escalatedFindings: escalatedByFinding,
       verdict,
       extractions,
       findings: perDoc,
@@ -704,6 +789,81 @@ router.post('/:appId/findings/:fid/resolve', requirePermission('sign_off_conditi
     const crossFatal = tieout.discrepancies.filter((f) => f.severity === 'fatal' && f.blocksCtc).length;
 
     res.json({ ok: true, finding: decorate(updated), openFatal, crossFatal, blocksCtc: (openFatal + crossFatal) > 0 });
+  } catch (e) { next(e); }
+});
+
+// ---- POST /findings/escalate : send a finding to the super-admin workload ----------------------
+// Any staffer with underwriting-desk access can ESCALATE a finding they can't decide — to a
+// super-admin, a processor, or an underwriter (optionally a specific person). This does NOT
+// require sign_off_conditions: the WHOLE point is that the person stuck on the finding can't
+// resolve it and needs help. The escalation carries a SNAPSHOT of the finding (title, explanation,
+// the two values, the framed options) so it stays readable even if the finding later changes;
+// stored findings (a real uuid) dedupe to one open escalation, derived findings pass their snapshot.
+router.post('/:appId/findings/escalate', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const b = req.body || {};
+    const snap = b.finding && typeof b.finding === 'object' ? b.finding : {};
+    // A stored finding is identified by a uuid; a derived finding has none. When a uuid is given,
+    // load the authoritative row so the snapshot can't be spoofed and we can dedupe.
+    let findingId = null;
+    let finding = snap;
+    if (b.findingId && isUuid(b.findingId)) {
+      const row = (await db.query(
+        `SELECT id, document_id, borrower_id, code, severity, field, title, how_to, doc_value, file_value, suggested_actions
+           FROM document_findings WHERE id=$1 AND application_id=$2`, [b.findingId, app.id])).rows[0];
+      if (row) { findingId = row.id; finding = row; }
+    }
+    if (!finding || (!finding.title && !finding.code)) return res.status(400).json({ error: 'nothing to escalate' });
+    const targetRole = escalations.normTargetRole(b.targetRole);
+    const question = (b.note || b.question || '').slice(0, 2000);
+    // Route to a specific staffer only if they exist, are active, AND hold one of the reviewer
+    // roles — a finding is never assigned to a scoped loan-officer (who would then be able to
+    // decide it). Otherwise it routes to the role.
+    let assignedTo = null;
+    if (b.assignedTo && isUuid(b.assignedTo)) {
+      const st = (await db.query(
+        `SELECT id FROM staff_users WHERE id=$1 AND is_active=true AND role IN ('super_admin','processor','underwriter')`,
+        [b.assignedTo])).rows[0];
+      if (st) assignedTo = st.id;
+    }
+    let esc;
+    const client = await db.pool.connect();
+    try {
+      await client.query('BEGIN');
+      esc = await escalations.openEscalation(client, {
+        appId: app.id, findingId, finding, targetRole, assignedTo, question,
+        borrowerId: app.borrower_id, requestedBy: req.actor.id,
+      });
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; } finally { client.release(); }
+
+    await audit(req.actor.id, 'underwriting_finding_escalate', app.id,
+      { escalation: esc.id, finding: finding.code || null, targetRole, assignedTo: assignedTo || null,
+        note: question.slice(0, 300) });
+
+    // Notify the workload: a specific assignee gets it directly; otherwise everyone who can act on
+    // the target role is told. Best-effort — the escalation is already saved.
+    const title = `Finding escalated for review — ${finding.title || finding.code || 'underwriting'}`;
+    const body = question
+      ? `${req.actor.full_name || 'A staffer'} needs a decision: ${question}`
+      : `${req.actor.full_name || 'A staffer'} escalated a finding on this file for your review.`;
+    const link = `/internal/app/${app.id}`;
+    try {
+      if (assignedTo) {
+        notify.notifyStaff(assignedTo, { type: 'finding_escalation', applicationId: app.id, title, body, link, inAppOnly: false }).catch(() => {});
+      } else if (targetRole === 'super_admin') {
+        // Super-admins are notified via notifyAdmins; it fans out to admins + super-admins.
+        notify.notifyAdmins({ type: 'finding_escalation', applicationId: app.id, title, body, link }).catch(() => {});
+      } else {
+        // Route to everyone active in the target role (processor / underwriter).
+        const staff = (await db.query(`SELECT id FROM staff_users WHERE role=$1 AND is_active=true`, [targetRole])).rows;
+        for (const s of staff) notify.notifyStaff(s.id, { type: 'finding_escalation', applicationId: app.id, title, body, link, inAppOnly: false }).catch(() => {});
+      }
+    } catch (_) { /* notification is best-effort */ }
+
+    res.json({ ok: true, escalation: esc });
   } catch (e) { next(e); }
 });
 
