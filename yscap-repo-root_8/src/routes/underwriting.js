@@ -210,8 +210,14 @@ router.get('/:appId', async (req, res, next) => {
     const documentsOnFile = [];
     const autoReadQueue = [];
     for (const d of docsOnFile.rows) {
+      // The condition it's filed under names the expected type; fall back to the document's OWN
+      // doc_kind (a document TYPE, used directly — not looked up as a condition code, which always
+      // missed, so a settlement statement never got read). The fallback keeps a doc_kind only when
+      // it's a real readable type, so a photo_id / term sheet never pollutes the on-file type set.
+      // (A condition-derived type is kept as-is even if the reader doesn't own it — e.g. 'appraisal'
+      // stays in the on-file set for completeness but is excluded from the read queue below.)
       const expectedType = expectedDocTypeForCode(d.condition_code) ||
-        (d.doc_kind ? expectedDocTypeForCode(d.doc_kind) : null);
+        (d.doc_kind && registry.get(d.doc_kind) ? d.doc_kind : null);
       const analyzed = analyzedDocIds.has(d.id);
       if (expectedType) attached.add(expectedType);
       const row = { documentId: d.id, filename: d.filename, conditionCode: d.condition_code || null,

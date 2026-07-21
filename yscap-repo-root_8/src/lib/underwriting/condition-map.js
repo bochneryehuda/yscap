@@ -22,7 +22,7 @@ const DOC_CONDITIONS = {
   title: { satisfies: ['rtl_cond_title', 'title_commitment'], purpose: 'The title commitment — who owns the property, liens to clear, and the vesting entity.' },
   insurance: { satisfies: ['rtl_cond_insurance', 'insurance_binder'], purpose: 'Evidence of insurance — the lender’s mortgagee clause, coverage, and the named insured entity.' },
   insurance_invoice: { satisfies: ['rtl_cond_insurance'], purpose: 'The paid insurance invoice/receipt — proves the premium is paid so coverage is in force at funding. The insurance condition needs BOTH the binder and this proof of payment.' },
-  flood: { satisfies: ['rtl_cond_insurance'], purpose: 'The flood determination (and flood policy if the property is in a flood zone).' },
+  flood: { satisfies: ['rtl_cond_flood'], purpose: 'The flood determination (and flood policy if the property is in a flood zone) — filed under the file’s own flood condition, not the insurance condition.' },
   llc_formation: { satisfies: ['rtl_llc_formation', 'rtl_p1_llc', 'llc_docs'], purpose: 'The entity’s Articles of Organization — proves the borrowing entity legally exists.' },
   operating_agreement: { satisfies: ['rtl_llc_opagmt', 'rtl_p1_llc', 'operating_agmt'], purpose: 'The operating agreement — who controls the entity and is authorized to sign.' },
   ein_letter: { satisfies: ['rtl_llc_ein', 'rtl_p1_llc'], purpose: 'The IRS EIN letter — the entity’s federal tax ID and exact legal name.' },

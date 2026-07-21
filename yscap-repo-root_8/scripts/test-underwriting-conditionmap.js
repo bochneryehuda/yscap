@@ -17,6 +17,12 @@ assert.ok(/paid|invoice/i.test(purposeForDoc('insurance_invoice')), 'the invoice
   // so adding the invoice type must not change which type the reader expects there.
   assert.strictEqual(expectedDocTypeForCode('rtl_cond_insurance'), 'insurance', 'the binder stays the primary/expected type for the insurance condition');
 }
+
+// The flood determination is filed under its OWN condition (rtl_cond_flood), not the insurance
+// condition — so it reads AS a flood determination and its condition shows covered.
+assert.deepStrictEqual(conditionsForDoc('flood'), ['rtl_cond_flood'], 'flood maps to its own flood condition');
+assert.strictEqual(expectedDocTypeForCode('rtl_cond_flood'), 'flood', 'the flood condition expects a flood determination');
+assert.ok(!docTypesForCode('rtl_cond_insurance').includes('flood'), 'flood no longer rides the insurance condition');
 assert.ok(conditionsForDoc('operating_agreement').includes('rtl_llc_opagmt') && conditionsForDoc('operating_agreement').includes('rtl_p1_llc'));
 assert.ok(conditionsForDoc('bank_statement').includes('rtl_p3_assets'));
 assert.ok(conditionsForDoc('background_report').includes('rtl_cond_fraud'));

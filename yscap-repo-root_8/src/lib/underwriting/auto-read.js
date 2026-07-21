@@ -27,10 +27,13 @@ function selectAutoReadQueue({ documents = [], analyzedIds = new Set(), isReadab
   const queue = [];
   for (const d of documents) {
     if (!d || !d.id) continue;
-    // The condition the document is filed under says what type it should be; fall back to its
-    // doc_kind. Never guess — a document with no mapped type is left for a human.
-    const expectedType = expectedDocTypeForCode(d.condition_code) ||
-      (d.doc_kind ? expectedDocTypeForCode(d.doc_kind) : null);
+    // The condition the document is filed under says what type it should be; fall back to the
+    // document's OWN kind when the condition doesn't map (e.g. a settlement statement, which has no
+    // checklist condition, still reads as 'settlement' when it's tagged that way). doc_kind holds a
+    // document TYPE, so it's used directly — NOT looked up as a condition code (that always missed).
+    // The isReadable gate below drops any kind the reader has no checker for (a photo_id, a term
+    // sheet, …). Never guess — a document with no mapped, readable type is left for a human.
+    const expectedType = expectedDocTypeForCode(d.condition_code) || d.doc_kind || null;
     if (!expectedType || !isReadable(expectedType)) continue;
     if (analyzed.has(d.id)) continue; // already read — the analyze-once cache would no-op it anyway
     queue.push({ id: d.id, expectedType, conditionCode: d.condition_code || null, filename: d.filename || null });
