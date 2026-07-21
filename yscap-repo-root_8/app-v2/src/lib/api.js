@@ -219,6 +219,7 @@ export const api = {
   borrowerPricing:      (appId) => req('GET', `/api/borrower/applications/${appId}/pricing`),
   borrowerPricingQuote: (appId, overrides) => req('POST', `/api/borrower/applications/${appId}/pricing/quote`, { overrides }),
   borrowerRegisterProduct: (appId, program, overrides, adminKey, econVersion, submitException) => req('POST', `/api/borrower/applications/${appId}/pricing/register`, { program, overrides, adminKey, econVersion, submitException }),
+  borrowerRequestException: (appId, note) => req('POST', `/api/borrower/applications/${appId}/pricing/request-exception`, { note }),
   checklist:    (id) => req('GET', `/api/borrower/applications/${id}/checklist`),
   conditions:   (id) => req('GET', `/api/borrower/applications/${id}/conditions`),
   // Borrower change-request sandbox (S5-03) — borrower side. List their requests,
@@ -437,6 +438,7 @@ export const api = {
   staffPricing:      (appId) => req('GET', `/api/staff/applications/${appId}/pricing`),
   staffPricingQuote: (appId, overrides) => req('POST', `/api/staff/applications/${appId}/pricing/quote`, { overrides }),
   staffRegisterProduct: (appId, program, overrides, econVersion, assetMonths, submitException) => req('POST', `/api/staff/applications/${appId}/pricing/register`, { program, overrides, econVersion, assetMonths, submitException }),
+  staffRequestException: (appId, note) => req('POST', `/api/staff/applications/${appId}/pricing/request-exception`, { note }),
   // Manual Program admin config + the super-admin escalation box.
   manualProgramSettings:     () => req('GET', '/api/admin/manual-programs/settings'),
   saveManualProgramSettings: (b) => req('PUT', '/api/admin/manual-programs/settings', b),

@@ -1948,6 +1948,34 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
+// Request an EXCEPTION to a guideline that the deal otherwise follows — e.g. to
+// finance MORE of an assignment fee than the 15% cap (a bigger loan), or any
+// other over-guideline ask (owner-directed 2026-07-21). This does NOT change the
+// registered product; it raises an escalation into the super-admin Workflow +
+// Escalations box for review. A super-admin grants it by applying the relevant
+// admin override (e.g. the approved effective purchase price) and re-registering.
+router.post('/applications/:id/pricing/request-exception', async (req, res) => {
+  const appId = req.params.id;
+  try {
+    const note = String((req.body && req.body.note) || '').slice(0, 1000).trim();
+    if (!note) return res.status(400).json({ error: 'Describe the exception you’re requesting.' });
+    const ctx = await notify.fileContext(appId);
+    const wfNote = `Exception request: ${note}`;
+    await workflowAuto.onEscalationOpened(appId, { fromStaffId: req.actor.id, note: wfNote });
+    try {
+      await notify.notifyAdmins({
+        type: 'manual_escalation',
+        title: 'Exception request needs super-admin review',
+        body: `${req.actor.name || 'A team member'} requested an exception on ${ctx ? ctx.label : 'a file'}: ${note}`,
+        meta: (ctx && ctx.meta) || undefined, applicationId: appId,
+        link: '/internal/escalations', ctaLabel: 'Open the Escalations box',
+      });
+    } catch (_) { /* best-effort */ }
+    await audit(req, 'pricing_exception_requested', 'application', appId, { note });
+    res.json({ ok: true });
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
 // Staff build/adjust a file's rehab budget (scope of work) — for staff-run
 // files where the borrower isn't filling it in. Upserts the rehab_budget tool
 // item's payload and syncs applications.rehab_budget (feeds pricing).

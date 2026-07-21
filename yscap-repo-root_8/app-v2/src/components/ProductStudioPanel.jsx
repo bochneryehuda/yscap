@@ -272,6 +272,8 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   // actually manual.
   const [assetMonths, setAssetMonths] = useState('');
   const [exceptionInfo, setExceptionInfo] = useState(null);   // server exception_required payload (MANUAL scenario)
+  const [excReq, setExcReq] = useState('');                   // "request an exception" note
+  const [excReqOpen, setExcReqOpen] = useState(false);
   const [adminKey, setAdminKey] = useState('');   // set after a correct admin-mode password (borrower)
   const [adminOpen, setAdminOpen] = useState(false); // is the admin zone VISIBLE right now
   const [savedStudio, setSavedStudio] = useState(undefined);   // undefined = still loading, null = none saved
@@ -662,6 +664,23 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
     } finally { setBusy(false); gate.leave(); }
   }
 
+  // Request an EXCEPTION to a guideline the deal otherwise follows — e.g. to
+  // finance MORE of an assignment fee than the 15% cap (a bigger loan). Raises an
+  // escalation into the super-admin Workflow; it does NOT change the current
+  // registration (owner-directed 2026-07-21).
+  async function requestException() {
+    const note = excReq.trim();
+    if (!note) { setErr('Describe the exception you’re requesting.'); return; }
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      if (isStaff) await api.staffRequestException(appId, note);
+      else await api.borrowerRequestException(appId, note);
+      setExcReq(''); setExcReqOpen(false);
+      setMsg('Exception request sent — a super-admin will review it in the Escalations box.');
+    } catch (e) { setErr(e.message || 'Could not send the exception request'); }
+    finally { setBusy(false); }
+  }
+
   const statusLine = snap && !snap.ready ? 'Missing: ' + snap.missing.join(', ')
     : snap && !snap.program ? 'Tap a program card above to choose Standard or Gold Standard.'
     : d && d.totalLoan > 0 ? `${snap.program === 'gold' ? 'Gold Standard' : 'Standard'} · ${money(d.totalLoan)} @ ${d.rate ? d.rate.toFixed(2) + '%' : '—'} · cash to close ${money2(d.cashToClose)} · liquidity ${money2(d.liquidity)}`
@@ -750,6 +769,36 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       )}
       {err && !openStudio && <div role="alert" className="notice err" style={{ marginTop: 10 }}>{err}</div>}
       {msg && !openStudio && <div className="notice ok" style={{ marginTop: 10 }}>{msg}</div>}
+
+      {/* Request an exception to a guideline the deal otherwise follows — e.g. to
+          finance MORE of an assignment fee than the 15% cap (a bigger loan).
+          Goes to the super-admin Workflow; doesn't change the current terms. */}
+      {!openStudio && (
+        <div style={{ marginTop: 10 }}>
+          {!excReqOpen ? (
+            <button className="btn ghost small" onClick={() => { setExcReqOpen(true); setErr(''); setMsg(''); }}>
+              Request an exception
+            </button>
+          ) : (
+            <div className="notice" style={{ padding: 10 }}>
+              <div className="muted small" style={{ marginBottom: 6 }}>
+                Ask a super-admin to make an exception to a guideline — for example, to finance more of an
+                assignment fee than the 15% cap (a bigger loan). This doesn’t change your current terms; it
+                goes to the Escalations box for review.
+              </div>
+              <textarea className="input" rows={2} style={{ width: '100%' }}
+                placeholder="What exception are you requesting, and why?"
+                value={excReq} onChange={(e) => setExcReq(e.target.value)} />
+              <div className="row" style={{ gap: 8, marginTop: 8 }}>
+                <button className="btn primary small" disabled={busy || !excReq.trim()} onClick={requestException}>
+                  {busy ? 'Sending…' : 'Send request'}
+                </button>
+                <button className="btn ghost small" onClick={() => { setExcReqOpen(false); setExcReq(''); }}>Cancel</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
       {/* #148: the current terms carry an admin manual-pricing basis this role
           cannot re-register. Say so UPFRONT — the old behavior silently
           re-armed the admin knobs and refused the register after the fact. */}

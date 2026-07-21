@@ -82,5 +82,24 @@ check('Clean ELIGIBLE Standard/Gold does NOT need approval', () => {
   assert.strictEqual(manualProgram.needsSuperAdminApproval({ program: 'gold', status: 'ELIGIBLE' }), false);
 });
 
+console.log('Assignment over-cap registers (eligible, not manual review):');
+
+// An assignment fee over the 15% cap follows the program's normal mechanic: the
+// financeable fee is capped, the excess is brought to closing as extra cash, and
+// the loan sizes on the effective price. That is ELIGIBLE (registerable) — a
+// raise-the-cap ask is a separate exception REQUEST (owner-directed 2026-07-21).
+check('Standard assignment over the 15% cap → ELIGIBLE with excess to close', () => {
+  const q = pricing.quoteProgram('standard', {
+    loanType: 'Purchase', strategy: 'Fix & Flip', state: 'NJ', propertyType: 'SFR', units: 1,
+    fico: 740, expFlips: 5, term: 12,
+    isAssignment: true, sellerPrice: 100000, purchasePrice: 120000, asIsValue: 120000, arv: 200000, rehabBudget: 0,
+  });
+  assert.strictEqual(q.status, 'ELIGIBLE', `expected ELIGIBLE, got ${q.status} (${(q.reasons||[]).map(r=>r.msg).join('; ')})`);
+  assert(q.assignment && q.assignment.overLimit === true, 'assignment is over the 15% cap');
+  assert(Number(q.sizing.assignmentExcessOOP) > 0, 'the over-cap excess is brought to closing');
+  assert.strictEqual(manualProgram.needsSuperAdminApproval({ program: 'standard', status: q.status }), false,
+    'an over-cap assignment registers without super-admin approval');
+});
+
 if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
 console.log('\nAll pricing exception/escalation checks passed.');

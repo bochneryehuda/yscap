@@ -579,9 +579,9 @@
         usd(assignment.financeableFee) + " of the " + usd(assignment.fee) + " assignment fee is financed" +
         (assignment.excessOOP > 0.5 ? ("; " + usd(assignment.excessOOP) + " is brought out of pocket at closing") : "") + ".");
     } else if (assignment && assignment.overLimit) {
-      add("MANUAL", "Assignment fee of " + usd(assignment.fee) + " exceeds the 15% program limit (" + usd(assignment.maxFee) +
-        ", 15% of the " + usd(assignment.sellerPrice) + " original contract price). " + usd(assignment.financeableFee) + " is financeable; " +
-        usd(assignment.excessOOP) + " must be brought out of pocket at closing. A higher limit may be requested as an exception.");
+      add("ELIGIBLE", usd(assignment.financeableFee) + " of the " + usd(assignment.fee) + " assignment fee is financed (the 15% cap is " + usd(assignment.maxFee) +
+        ", 15% of the " + usd(assignment.sellerPrice) + " contract price); the loan is sized on the " + usd(assignment.recognizedPrice) + " effective price and the remaining " +
+        usd(assignment.excessOOP) + " is brought to closing as extra cash to close. To finance more of the assignment fee, request an exception.");
     }
     // Any assignment excess — over the 15% cap OR under an admin exception that still
     // leaves a remainder — is brought to the table. Set it on EVERY branch so cash-to-
