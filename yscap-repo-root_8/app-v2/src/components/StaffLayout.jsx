@@ -277,6 +277,8 @@ export default function StaffLayout({ children }) {
   const [escCount, setEscCount] = useState(0);
   // How many files are in MY personal Workflow right now (everyone has one).
   const [wfCount, setWfCount] = useState(0);
+  // Open finding-escalations routed to me (my role / assigned / raised) — the workload badge.
+  const [fescCount, setFescCount] = useState(0);
   useEffect(() => {
     let alive = true;
     const poll = () => api.workflowCount()
@@ -289,6 +291,16 @@ export default function StaffLayout({ children }) {
     let alive = true;
     const poll = () => api.get('/api/staff/sync-reviews/count')
       .then(r => { if (alive) setReviewCount(r.open || 0); }).catch(() => {});
+    poll();
+    const t = setInterval(poll, 120000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+  useEffect(() => {
+    // Every staffer can have findings escalated to them (their role / assigned / raised),
+    // so everyone polls their own scoped count.
+    let alive = true;
+    const poll = () => api.findingEscalationsCount()
+      .then(r => { if (alive) setFescCount((r && r.pendingCount) || 0); }).catch(() => {});
     poll();
     const t = setInterval(poll, 120000);
     return () => { alive = false; clearInterval(t); };
@@ -367,6 +379,9 @@ export default function StaffLayout({ children }) {
         <NavLink className="sb-link" to="/internal/workflow" title="My Workflow — every file submitted to you, in the order it arrived. Pick it up, do your part, then send it back.">
           <NavIcon name="workflow" />Workflow
           {wfCount > 0 && <span className="sb-badge">{wfCount > 99 ? '99+' : wfCount}</span>}</NavLink>
+        <NavLink className="sb-link" to="/internal/findings-review" title="Findings to review — underwriting findings a colleague couldn’t decide and escalated to you (or your role) to advise on.">
+          <NavIcon name="conditions" />Findings to review
+          {fescCount > 0 && <span className="sb-badge">{fescCount > 99 ? '99+' : fescCount}</span>}</NavLink>
         <NavLink className="sb-link" to="/internal/chat">
           <NavIcon name="chat" />Chat
           {unread > 0 && <span className="sb-badge">{unread > 99 ? '99+' : unread}</span>}

@@ -28,7 +28,10 @@ const web = require('../src/sitewire/web-client');
 
   const html = '<meta name="csrf-token" content="TOK-123">';
   ok('csrf: scrapes meta token', web._internal.scrapeCsrf(html) === 'TOK-123');
+  ok('csrf: content-first meta order', web._internal.scrapeCsrf('<meta content="TOK-9" name="csrf-token">') === 'TOK-9');
+  ok('csrf: hidden authenticity_token field', web._internal.scrapeCsrf('<input type="hidden" name="authenticity_token" value="TOK-7">') === 'TOK-7');
   ok('csrf: null when absent', web._internal.scrapeCsrf('<html></html>') === null);
+  ok('primeCsrf exported', typeof web.primeCsrf === 'function');
   ok('signedout: detects sign-in page', web._internal.looksSignedOut('<input name="user[password]"> /users/sign_in') === true);
   ok('signedout: false when logged in', web._internal.looksSignedOut('<a href="/users/sign_out">Log out</a>') === false);
 
@@ -56,6 +59,7 @@ const docPush = require('../src/sitewire/doc-push');
 // ---- stub the website robot (never a real network call) ----
 let uploadCalls = [], attachCalls = [], sessionErr = null;
 web.getSession = async () => (sessionErr ? { error: sessionErr, message: 'stub' } : { jar: {}, csrf: 'TOK' });
+web.primeCsrf = async (s) => { if (s) s.csrf = 'TOK'; return { ok: true }; };
 web.uploadBlob = async (_s, f) => { uploadCalls.push(f.filename); return { signed_id: 'sig_' + f.filename, checksum: 'c', byte_size: (f.bytes || Buffer.alloc(0)).length }; };
 web.attachDocument = async (_s, propId, sig) => { attachCalls.push({ propId, sig }); return { status: 302 }; };
 // ---- stub storage read (return deterministic bytes per ref) ----
@@ -169,6 +173,22 @@ const parkCount = async (app) => (await db.query(`SELECT count(*)::int c FROM sy
     const g = await docPush._internal.gatherSowExcel(app);
     ok('10 xlsx fallback generated', g && !g.missing && g.generated === true && g.filename === 'Scope of Work.xlsx');
     await cleanup(app, bor); sow.loadSow = realLoad; sow.buildSowExcel = realBuild; }
+
+  // 10b) APPRAISAL from the CONDITION PDF SLOT (doc_kind NULL) — must be found, same as the importer's kind.
+  { const tid = (await db.query(`SELECT id FROM checklist_templates WHERE code='rtl_cond_appraisaldocs' LIMIT 1`)).rows[0].id;
+    const { app, bor } = await seed({ appraisal: false, xlsx: false, pdf: false }); // no appraisal_pdf row at all
+    const ci = (await db.query(`INSERT INTO checklist_items(application_id,template_id,item_kind,status,scope,label) VALUES($1,$2,'document','received','application','Appraisal documents') RETURNING id`, [app, tid])).rows[0].id;
+    // the appraisal PDF on the condition's PDF slot + the appraisal XML on the XML slot (must pick the PDF, never the XML)
+    await db.query(`INSERT INTO documents(application_id,borrower_id,checklist_item_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label,is_current,visibility,source_type)
+      VALUES($1,$2,$3,'1053_appraisal.pdf','application/pdf',10,'local','ref/appr-pdf','staff',NULL,NULL,'PDF',true,'staff_only','staff_upload')`, [app, bor, ci]);
+    await db.query(`INSERT INTO documents(application_id,borrower_id,checklist_item_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label,is_current,visibility,source_type)
+      VALUES($1,$2,$3,'1053_appraisal.xml','application/xml',10,'local','ref/appr-xml','staff',NULL,NULL,'XML',true,'staff_only','staff_upload')`, [app, bor, ci]);
+    const g = await docPush._internal.gatherAppraisalPdf(app);
+    ok('10b appraisal found via PDF slot', g && !g.missing && g.filename === 'Appraisal.pdf');
+    ok('10b picked the PDF not the XML', g && g.sourceDocId && (await db.query(`SELECT content_type FROM documents WHERE id=$1`, [g.sourceDocId])).rows[0].content_type === 'application/pdf');
+    const st = await docPush.status(app);
+    ok('10b status shows appraisal available', st.slots.find((s) => s.which === 'appraisal_pdf').available === true);
+    await cleanup(app, bor); }
 
   // 11) status() — metadata-only availability (no bytes read), reflects managed + push state
   { storage.read = async () => { throw new Error('status() must NOT read bytes'); }; // prove no byte read

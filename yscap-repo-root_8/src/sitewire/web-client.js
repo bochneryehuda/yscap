@@ -78,8 +78,12 @@ async function fetchWithTimeout(url, opts) {
 
 // Rails prints the CSRF token in <meta name="csrf-token" content="..."> on every authenticated HTML page.
 function scrapeCsrf(html) {
-  const m = String(html || '').match(/<meta\s+name=["']csrf-token["']\s+content=["']([^"']+)["']/i)
-    || String(html || '').match(/name=["']authenticity_token["']\s+value=["']([^"']+)["']/i);
+  const s = String(html || '');
+  // name-first meta (Rails default), content-first meta (attribute order can vary), or the hidden form field.
+  const m = s.match(/<meta[^>]*\bname=["']csrf-token["'][^>]*\bcontent=["']([^"']+)["']/i)
+    || s.match(/<meta[^>]*\bcontent=["']([^"']+)["'][^>]*\bname=["']csrf-token["']/i)
+    || s.match(/name=["']authenticity_token["'][^>]*\bvalue=["']([^"']+)["']/i)
+    || s.match(/value=["']([^"']+)["'][^>]*\bname=["']authenticity_token["']/i);
   return m ? m[1] : null;
 }
 // Is this HTML an authenticated page (not the sign-in screen)?
@@ -105,9 +109,12 @@ async function getSession() {
       const eq = pair.indexOf('=');
       if (eq > 0) jar[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim();
     }
-    const csrf = await refreshCsrf(jar);
-    if (!csrf) return { error: 'web_session_invalid', message: 'The provided SITEWIRE_WEB_COOKIE did not resolve to a logged-in Sitewire session (it may have expired). Log in again and update the cookie, or set SITEWIRE_WEB_EMAIL/PASSWORD.' };
-    return { jar, csrf };
+    // Do NOT require a CSRF token from the account root here — Sitewire's root may be a JS app that
+    // doesn't server-render the token. The real CSRF is scraped from the actual PROPERTY page at push
+    // time (primeCsrf) — a page Rails always renders with <meta name="csrf-token">. So a provided cookie
+    // is accepted as-is; validity is confirmed when we prime the property page.
+    const csrf = await refreshCsrf(jar); // best-effort head start; may be null (fine — primeCsrf gets it later)
+    return { jar, csrf: csrf || null, viaCookie: true };
   }
   // Path A: automated Devise login.
   try {
@@ -137,10 +144,10 @@ async function getSession() {
       const body = await resp.text();
       if (looksSignedOut(body)) return { error: 'web_login_failed', message: 'Sitewire rejected the login (check SITEWIRE_WEB_EMAIL/PASSWORD, or the account may require MFA — then use SITEWIRE_WEB_COOKIE).' };
     }
-    // 3) Verify: fetch an authenticated page and confirm we are NOT signed out + grab a fresh CSRF.
+    // 3) We have a session cookie. Grab a best-effort CSRF now; the definitive token + auth check happens
+    // per-property in primeCsrf, so a JS-app root that doesn't render the token doesn't fail the login.
     const csrf = await refreshCsrf(jar);
-    if (!csrf) return { error: 'web_login_unverified', message: 'Logged in but could not confirm an authenticated Sitewire session. If MFA is on, set SITEWIRE_WEB_COOKIE.' };
-    return { jar, csrf };
+    return { jar, csrf: csrf || null, viaLogin: true };
   } catch (e) {
     return { error: 'web_login_error', message: `Sitewire website login failed: ${e.message}` };
   }
@@ -169,6 +176,35 @@ async function refreshCsrf(jar) {
     if (looksSignedOut(html)) return null;
     return scrapeCsrf(html);
   } catch { return null; }
+}
+
+/**
+ * Get a fresh CSRF token from the PROPERTY page (which Rails always server-renders with
+ * <meta name="csrf-token">), confirm the session is authenticated (not bounced to sign-in), and set it on
+ * the session. This is what makes the cookie method reliable regardless of how the sign-in screen is built.
+ * Returns { ok } or { error, message }. Never throws.
+ */
+async function primeCsrf(session, propertyId) {
+  try {
+    const url = `${webBase()}/properties/${encodeURIComponent(propertyId)}`;
+    let res = await fetchWithTimeout(url, { method: 'GET', headers: { Accept: 'text/html', Cookie: cookieHeader(session.jar) } });
+    mergeSetCookie(session.jar, res);
+    // Follow one same-host redirect (a signed-out session bounces to /users/sign_in).
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers.get('location');
+      const next = loc ? new URL(loc, webBase()) : null;
+      if (next && /sign_in|login|session/i.test(next.pathname)) {
+        return { error: 'web_session_invalid', message: 'The Sitewire login is no longer valid (the saved cookie has expired). Copy a fresh SITEWIRE_WEB_COOKIE from a logged-in Sitewire tab.' };
+      }
+      if (next && next.host === webHost()) { res = await fetchWithTimeout(next.toString(), { method: 'GET', headers: { Accept: 'text/html', Cookie: cookieHeader(session.jar) } }); mergeSetCookie(session.jar, res); }
+    }
+    const html = await res.text();
+    if (looksSignedOut(html)) return { error: 'web_session_invalid', message: 'The Sitewire login is no longer valid (the saved cookie has expired). Copy a fresh SITEWIRE_WEB_COOKIE from a logged-in Sitewire tab.' };
+    const token = scrapeCsrf(html) || session.csrf;
+    if (!token) return { error: 'web_no_csrf', message: 'Signed in, but could not read Sitewire’s security token from the property page.' };
+    session.csrf = token;
+    return { ok: true };
+  } catch (e) { return { error: 'web_prime_error', message: `Could not open the Sitewire property page: ${e.message}` }; }
 }
 
 /**
@@ -258,6 +294,6 @@ async function deleteDocument(session, propertyId, docId) {
 }
 
 module.exports = {
-  webConfigured, getSession, uploadBlob, attachDocument, deleteDocument,
+  webConfigured, getSession, primeCsrf, uploadBlob, attachDocument, deleteDocument,
   _internal: { scrapeCsrf, looksSignedOut, assertUploadUrl, mergeSetCookie, cookieHeader },
 };

@@ -48,6 +48,9 @@ const KICKER_OF = {
   order_docs_in: 'Order documents',
   // API Health monitor (owner-directed 2026-07-21): an integration went down or came back.
   integration_alert: 'System health',
+  // Finding escalation (owner-directed 2026-07-21): a finding was routed to your workload,
+  // or a finding you escalated was decided.
+  finding_escalation: 'Finding to review', finding_escalation_decided: 'Finding review',
 };
 
 /**
@@ -339,6 +342,9 @@ const CATEGORY_OF = {
   workflow_submitted: 'status_updates', workflow_returned: 'status_updates', workflow_ready: 'status_updates',
   // Orders desk — a staff-facing "documents came back" nudge.
   order_docs_in: 'documents',
+  // Finding escalation (owner-directed 2026-07-21) — action-bearing staff events, so
+  // NOT added to STAFF_INAPP_TYPES: the reviewer/escalator is emailed (unless muted).
+  finding_escalation: 'conditions', finding_escalation_decided: 'conditions',
 };
 // These always reach the borrower in-app even if the category is muted — they
 // require action and can't be silently dropped (email can still be turned off).
