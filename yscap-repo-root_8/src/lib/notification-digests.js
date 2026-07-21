@@ -357,6 +357,26 @@ async function trainingRunOnce() {
   } catch (e) { console.error('[digests] training-run', e && e.message); return 0; }
 }
 
+/* Sovereign continuous CTC surveillance (owner-directed 2026-07-21). Walks
+   every file with a VALID decision certificate; any canonical fact change
+   since issue flips the certificate to 'validation_required' so a coordinator
+   re-verifies before the file advances. Self-gated to at most once per day. */
+async function certificateSurveyOnce() {
+  if (!(await _gate('cert_survey_daily', null, '20 hours'))) return 0;
+  try {
+    const client = await db.getClient();
+    let result;
+    try {
+      await client.query('BEGIN');
+      result = await require('./underwriting/certificate').surveyAllValidCertificates(client);
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+    await _stamp('cert_survey_daily', null, result || {});
+    return (result && result.flagged) || 0;
+  } catch (e) { console.error('[digests] cert-survey', e && e.message); return 0; }
+}
+
 /* Time-gated dispatcher — morning window for staff/admin, business hours for the
    borrower digest; each function's own audit-gate enforces the true frequency. */
 async function runDue() {
@@ -367,6 +387,7 @@ async function runDue() {
     await workflowAgingOnce().catch((e) => console.error('[digests] workflow-aging', e && e.message));
     await drawReleaseOverdueOnce().catch((e) => console.error('[digests] draw-release', e && e.message));
     await trainingRunOnce().catch((e) => console.error('[digests] training-run', e && e.message));
+    await certificateSurveyOnce().catch((e) => console.error('[digests] cert-survey', e && e.message));
     if (weekday === 'Mon') await weeklyAdminSummaryOnce().catch((e) => console.error('[digests] admin', e && e.message));
   }
   if (hour >= 8 && hour < 18) {
@@ -391,5 +412,5 @@ module.exports = {
   start, runDue, nyParts,
   weeklyBorrowerOutstandingOnce, dailyPipelineDigestOnce, staleFileAlertsOnce, weeklyAdminSummaryOnce,
   drawFindingsAwaitingBorrowerOnce, drawReleaseOverdueOnce, workflowAgingOnce,
-  trainingRunOnce,
+  trainingRunOnce, certificateSurveyOnce,
 };

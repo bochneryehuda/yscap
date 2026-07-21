@@ -786,6 +786,64 @@ router.post('/:appId/auto-read', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ---- Decision Certificates (Sovereign, blueprint sec. 18/19) --------------
+// Issue an immutable signed snapshot of the file at a material milestone
+// (clear_to_close, pre_funding, purchase_review, ...). The snapshot captures
+// the canonical facts, open + resolved findings, exceptions granted, the
+// registered program, and the versions in play. Hashed sha256 so a later
+// audit can prove the file's state at the time of the decision. After issue,
+// continuous surveillance flags the certificate `validation_required` if any
+// canonical fact changes since.
+router.post('/:appId/certificate/issue', requirePermission('sign_off_conditions'), async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const cert = require('../lib/underwriting/certificate');
+    const milestone = String(req.body && req.body.milestone || '').trim();
+    if (!cert.MILESTONES.includes(milestone)) return res.status(400).json({ error: `milestone must be one of: ${cert.MILESTONES.join(', ')}` });
+    const client = await db.pool.connect();
+    let row;
+    try {
+      await client.query('BEGIN');
+      row = await cert.issueCertificate(client, {
+        appId: app.id, milestone, staffId: req.actor.id,
+        reason: req.body && req.body.reason,
+      });
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+    res.json({ ok: true, certificate: row });
+  } catch (e) { next(e); }
+});
+
+router.get('/:appId/certificate', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const cert = require('../lib/underwriting/certificate');
+    const all = await cert.allForFile(app.id, db);
+    const withIntegrity = all.map((c) => Object.assign({}, c, { integrity: cert.verifyDigestIntegrity(c) }));
+    res.json({ certificates: withIntegrity });
+  } catch (e) { next(e); }
+});
+
+router.post('/:appId/certificate/survey', requirePermission('sign_off_conditions'), async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const cert = require('../lib/underwriting/certificate');
+    const client = await db.pool.connect();
+    let results;
+    try {
+      await client.query('BEGIN');
+      results = await cert.surveillanceCheck(client, app.id);
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+    res.json({ ok: true, results });
+  } catch (e) { next(e); }
+});
+
 // ---- POST /findings/:fid/committee-review ---------------------------------
 // Run the multi-model reasoning committee on ONE finding (Sovereign 3/4,
 // owner-directed 2026-07-21). Specialist reviewers (identity, entity, credit,
