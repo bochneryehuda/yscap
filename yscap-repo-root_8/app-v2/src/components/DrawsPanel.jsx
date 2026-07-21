@@ -478,11 +478,11 @@ function ControlRow({ title, status, statusTone, sub, btnLabel, busy, disabled, 
 
 /* Sitewire PROPERTY CONTROLS from the PILOT desk (owner-directed 2026-07-21 — "ALL features that we have in
    Sitewire… control the entire process from our system"). Reads the LIVE Sitewire property and offers ALL FOUR
-   controls, each a real guarded write that reads back what it wrote (never a fake button). Field names are
-   CONFIRMED, not guessed: inactive + inspection_method from our own integration; accepting_draws (Block Draws)
-   + sitewire_review (GC↔in-house review) from Sitewire's OWN portal toggle endpoints in the owner-provided
-   capture. Mirrors Sitewire's screen: when the property is INACTIVE the other controls collapse (only
-   Reactivate shows), exactly as Sitewire does. */
+   controls, each a real guarded write that reads back what it wrote (never a fake button). Field names use the
+   OFFICIAL Sitewire API v2 spec (never guessed): property.inactive, property.require_sitewire_inspector
+   (Sitewire GC↔in-house review), property.inspection_method, property.processing_fee_cents, and
+   budget.draw_eligible (Block Draws — lives on the budget, not the property). Mirrors Sitewire's screen: when
+   the property is INACTIVE the other controls collapse (only Reactivate shows), exactly as Sitewire does. */
 const INSP_LABEL = { mobile: 'Virtual (Sitewire mobile app)', traditional: 'On-site (in person)' };
 function SitewirePropertyControls({ appId, onChanged }) {
   const [d, setD] = useState(null);
@@ -535,9 +535,11 @@ function SitewirePropertyControls({ appId, onChanged }) {
   }
 
   const prop = d.property || {};
-  const active = prop.inactive !== true;                 // Sitewire `inactive` boolean → active = not inactive
-  const drawsAllowed = prop.accepting_draws !== false;   // default allowed (Sitewire default)
-  const sitewireReview = prop.sitewire_review !== false; // default Sitewire GC review (Sitewire default)
+  const active = prop.inactive !== true;                 // property.inactive boolean → active = not inactive
+  // Draws-allowed lives on the BUDGET (budget.draw_eligible); default allowed. Sitewire-vs-in-house review is
+  // property.require_sitewire_inspector (default false = in-house). Both are read straight off the live property.
+  const drawsAllowed = !(prop.budget && prop.budget.draw_eligible === false);
+  const sitewireReview = prop.require_sitewire_inspector === true;
   const insp = d.inspection || {};
   const method = insp.method || prop.inspection_method || 'mobile';
   const canSwitch = insp.can_switch !== false;
@@ -577,7 +579,7 @@ function SitewirePropertyControls({ appId, onChanged }) {
         <div className="dd-sub" style={{ marginTop: 8 }}>The other controls appear once the property is active again.</div>
       ) : (
         <>
-          {/* DRAWS — Allowed ↔ Blocked (accepting_draws) */}
+          {/* DRAWS — Allowed ↔ Blocked (budget.draw_eligible) */}
           <ControlRow
             title={drawsAllowed ? 'Draws Allowed' : 'Draws Blocked'}
             status={drawsAllowed ? 'Borrower can submit draws' : 'Borrower cannot submit draws'}
@@ -586,7 +588,7 @@ function SitewirePropertyControls({ appId, onChanged }) {
             busy={busy === 'draws'} disabled={off || busy === 'draws'}
             onClick={() => confirmApply(
               drawsAllowed ? 'Block draws on this property? The borrower won’t be able to submit any new draws.' : 'Allow draws on this property again?',
-              { accepting_draws: !drawsAllowed }, 'draws', drawsAllowed ? 'Blocked draws.' : 'Draws allowed.')}
+              { draw_eligible: !drawsAllowed }, 'draws', drawsAllowed ? 'Blocked draws.' : 'Draws allowed.')}
           />
 
           {/* INSPECTION — Virtual/mobile ↔ On-site/traditional */}
@@ -621,7 +623,7 @@ function SitewirePropertyControls({ appId, onChanged }) {
             )}
           </div>
 
-          {/* REVIEW — Sitewire GC review ↔ In-house review (sitewire_review) */}
+          {/* REVIEW — Sitewire GC review ↔ In-house review (property.require_sitewire_inspector) */}
           <ControlRow
             title={sitewireReview ? 'Sitewire Review' : 'In-house Review'}
             status={sitewireReview ? 'A Sitewire GC partner will review each virtual inspection' : 'No review by Sitewire GC partner'}
@@ -629,7 +631,7 @@ function SitewirePropertyControls({ appId, onChanged }) {
             busy={busy === 'review'} disabled={off || busy === 'review'}
             onClick={() => confirmApply(
               sitewireReview ? 'Switch to IN-HOUSE review? A Sitewire GC partner will no longer review each inspection.' : 'Switch back to SITEWIRE review? A Sitewire GC partner will review each inspection.',
-              { sitewire_review: !sitewireReview }, 'review', sitewireReview ? 'Switched to in-house review.' : 'Switched to Sitewire review.')}
+              { require_sitewire_inspector: !sitewireReview }, 'review', sitewireReview ? 'Switched to in-house review.' : 'Switched to Sitewire review.')}
           />
         </>
       )}
