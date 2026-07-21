@@ -336,6 +336,27 @@ async function workflowAgingOnce() {
   return sent;
 }
 
+/* Sovereign 4/4 nightly training-loop aggregation (owner-directed 2026-07-21).
+   Runs learning.runTraining once per day inside the morning window so any new
+   correction patterns from the prior 24 hours become CANDIDATE improvements
+   in the training queue (super-admin still has to promote — nothing auto-
+   promotes to production). Self-gated to at most one run per day via _gate. */
+async function trainingRunOnce() {
+  if (!(await _gate('training_run_daily', null, '20 hours'))) return 0;
+  try {
+    const client = await db.getClient();
+    let result;
+    try {
+      await client.query('BEGIN');
+      result = await require('./underwriting/learning').runTraining(client);
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+    await _stamp('training_run_daily', null, result || {});
+    return (result && result.inserted) || 0;
+  } catch (e) { console.error('[digests] training-run', e && e.message); return 0; }
+}
+
 /* Time-gated dispatcher — morning window for staff/admin, business hours for the
    borrower digest; each function's own audit-gate enforces the true frequency. */
 async function runDue() {
@@ -345,6 +366,7 @@ async function runDue() {
     await staleFileAlertsOnce().catch((e) => console.error('[digests] stale', e && e.message));
     await workflowAgingOnce().catch((e) => console.error('[digests] workflow-aging', e && e.message));
     await drawReleaseOverdueOnce().catch((e) => console.error('[digests] draw-release', e && e.message));
+    await trainingRunOnce().catch((e) => console.error('[digests] training-run', e && e.message));
     if (weekday === 'Mon') await weeklyAdminSummaryOnce().catch((e) => console.error('[digests] admin', e && e.message));
   }
   if (hour >= 8 && hour < 18) {
@@ -369,4 +391,5 @@ module.exports = {
   start, runDue, nyParts,
   weeklyBorrowerOutstandingOnce, dailyPipelineDigestOnce, staleFileAlertsOnce, weeklyAdminSummaryOnce,
   drawFindingsAwaitingBorrowerOnce, drawReleaseOverdueOnce, workflowAgingOnce,
+  trainingRunOnce,
 };
