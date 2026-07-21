@@ -184,6 +184,14 @@ function call(server, method, path, token, body) {
     r = await call(server, 'GET', `/api/staff/workflow`, superT);
     assert(r.body.some(x => x.application_id === app2 && x.submission_type === 'exception'), 'the chosen recipient sees the exception in their workflow');
 
+    // ---- exception to a NON-see_all_files recipient: they can OPEN the file ----
+    // (proc2 is a plain processor, not assigned to app2 — before the workflow
+    // access term they'd 403 opening a file merely submitted to them.)
+    r = await call(server, 'POST', `/api/staff/applications/${app2}/workflow/submit`, loT, { submissionType: 'exception', toStaffId: proc2Id });
+    assert(r.status === 200, 'an exception can be routed to a plain processor');
+    r = await call(server, 'GET', `/api/staff/applications/${app2}/workflow/options`, proc2T);
+    assert(r.status === 200, 'a processor a file was submitted to can OPEN the file (workflow grants access)');
+
     // ---- the existing internal-status door still works after the refactor ----
     r = await call(server, 'POST', `/api/staff/applications/${app2}/internal-status`, superT, { internalStatus: 'closed reconciled' });
     assert(r.status === 200 && r.body.status === 'funded', 'the manual internal-status door still works (super-admin override)');

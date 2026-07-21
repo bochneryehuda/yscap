@@ -157,7 +157,13 @@ const VISIBLE_OFFICERS_SQL = (alias, p) =>
   `(${alias}.loan_officer_id=${p} OR ${alias}.processor_id=${p}` +
   ` OR ${alias}.loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=${p})` +
   ` OR EXISTS (SELECT 1 FROM application_assignees aa` +
-  ` WHERE aa.application_id=${alias}.id AND aa.staff_id=${p} AND aa.removed_at IS NULL))`;
+  ` WHERE aa.application_id=${alias}.id AND aa.staff_id=${p} AND aa.removed_at IS NULL)` +
+  // The Workflow (owner-directed 2026-07-21): a person a file was SUBMITTED to
+  // (an open/in-progress hand-off routed to them) can open + work it — e.g. an
+  // exception sent to a processor/closer who isn't otherwise on the file. Access
+  // ends when they send it back (status leaves open/in_progress).
+  ` OR EXISTS (SELECT 1 FROM workflow_items wi` +
+  ` WHERE wi.application_id=${alias}.id AND wi.to_staff_id=${p} AND wi.status IN ('open','in_progress')))`;
 function scopeClause(req, alias = 'a') {
   if (seesAll(req)) return { where: '', params: [] };
   return { where: `AND ${VISIBLE_OFFICERS_SQL(alias, '$SCOPE')}`, params: [req.actor.id] };
@@ -5766,12 +5772,13 @@ router.post('/applications/:id/workflow/submit', async (req, res) => {
         statusResult = await applyInternalStatus(appId, cfg.internalStatus, { actorId: req.actor.id, canDecide: true, force: isAdmin(req), allowForce: isAdmin(req) });
       } catch (_) { statusResult = null; }
     }
-    // Notify the recipient it's in their Workflow.
+    // Notify the recipient it's in their Workflow (best-effort — the hand-off
+    // already committed, so a notify hiccup must never fail the submit).
     await notify.notifyStaff(toStaffId, {
       type: 'workflow_submitted', title: `New in your Workflow: ${cfg.label}`,
       body: `${req.actor.name || 'A team member'} submitted this file to you for ${cfg.label}.${b.note ? ' Note: ' + String(b.note).slice(0, 300) : ''}`,
       applicationId: appId, ctaLabel: 'Open my Workflow', link: '/internal/workflow',
-    });
+    }).catch(() => {});
     await audit(req, 'workflow_submit', 'application', appId, { submissionType: b.submissionType, toStaffId, itemId: item.id, statusApplied: statusResult && statusResult.ok ? statusResult.status : undefined });
     res.json({ ok: true, item, status: statusResult && statusResult.ok ? statusResult.status : undefined, statusBlocked: statusResult && statusResult.blocked ? true : undefined });
   } catch (e) { console.warn('[workflow] submit error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
@@ -5827,7 +5834,7 @@ router.post('/workflow/:itemId/return', async (req, res) => {
         type: 'workflow_returned', title: `${req.actor.name || 'A team member'} finished ${label}: ${outcomeLabel}`,
         body: `Your ${label} submission was finished and sent back to you.${note ? ' Note: ' + String(note).slice(0, 300) : ''}`,
         applicationId: it.application_id, ctaLabel: 'Open the loan file', link: `/internal/app/${it.application_id}`,
-      });
+      }).catch(() => {});
     }
     await audit(req, 'workflow_return', 'application', it.application_id, { itemId: req.params.itemId, outcomeLabel });
     res.json({ ok: true, item });
