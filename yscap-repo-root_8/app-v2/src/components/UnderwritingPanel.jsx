@@ -227,18 +227,40 @@ const CELL = {
 const ROWCAT = { identity: 'Identity', entity: 'Entity', collateral: 'Property', economics: 'Economics', valuation: 'Value', rehab: 'Rehab' };
 
 function TieOutMatrix({ tieout }) {
+  // Exception-first: a "Show only mismatches" focus toggle (owner-directed 2026-07-21 — the
+  // research's exception-first pattern). Default shows every fact (the owner wants "every fact,
+  // every document"); one click narrows to just the rows that disagree so an underwriter can
+  // triage. Hooks must run before any early return.
+  const [onlyIssues, setOnlyIssues] = useState(false);
   if (!tieout || !tieout.matrix || !tieout.matrix.length) return null;
   const { columns, matrix, summary } = tieout;
   const shown = matrix.filter((r) => r.status !== 'none'); // hide facts nothing in the file speaks to
   if (!shown.length) return null;
+  const mismatchCount = shown.filter((r) => r.status === 'mismatch').length;
+  // Per-category mismatch tally for the section-header badges.
+  const catMismatch = {};
+  for (const r of shown) if (r.status === 'mismatch') catMismatch[r.category] = (catMismatch[r.category] || 0) + 1;
+  const visible = onlyIssues ? shown.filter((r) => r.status === 'mismatch') : shown;
   const th = { padding: '7px 10px', fontSize: 10.5, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)', textAlign: 'left', whiteSpace: 'nowrap', borderBottom: '1px solid var(--line,#E7E1D3)' };
   const cellStyle = (s) => ({ padding: '7px 10px', fontSize: 12.5, borderBottom: '1px solid var(--line-soft,#EFEADD)', background: (CELL[s] || CELL.noref).bg, color: (CELL[s] || CELL.noref).fg, verticalAlign: 'top' });
   let lastCat = null;
   return (
     <div style={{ marginBottom: 22 }}>
-      <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px' }}>Data comparison — every fact, every document</h4>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+        <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px' }}>Data comparison — every fact, every document</h4>
+        {mismatchCount > 0 && (
+          <button onClick={() => setOnlyIssues((v) => !v)}
+            title={onlyIssues ? 'Show every fact again' : 'Show only the facts that disagree'}
+            style={{ fontSize: 12, fontWeight: 600, borderRadius: 8, padding: '5px 11px', cursor: 'pointer',
+              border: '1px solid ' + (onlyIssues ? 'var(--crit,#B4483C)' : 'var(--line,#D9D4C8)'),
+              background: onlyIssues ? 'var(--crit,#B4483C)' : 'var(--ink-2,#F4F1EA)',
+              color: onlyIssues ? '#fff' : 'var(--ivory,#141B22)' }}>
+            {onlyIssues ? `Showing ${mismatchCount} issue${mismatchCount === 1 ? '' : 's'} — show all` : `Show only issues (${mismatchCount})`}
+          </button>
+        )}
+      </div>
       <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginBottom: 10 }}>
-        {summary ? `${summary.matched} of ${summary.facts} facts tie out · ` : ''}
+        {summary ? `${summary.matched} of ${summary.facts} facts tie out${mismatchCount ? ` · ${mismatchCount} disagree` : ' · everything agrees'} · ` : ''}
         <span style={{ color: 'var(--good,#3F7A5B)' }}>✓ agrees</span> · <span style={{ color: 'var(--crit,#B4483C)' }}>✕ differs</span> · <span style={{ color: 'var(--amber,#B7791F)' }}>– missing</span> · <span style={{ color: 'var(--muted,#4B585C)' }}>· not on this document</span>
       </div>
       <div style={{ overflowX: 'auto', border: '1px solid var(--line,#E7E1D3)', borderRadius: 12 }}>
@@ -250,12 +272,16 @@ function TieOutMatrix({ tieout }) {
             </tr>
           </thead>
           <tbody>
-            {shown.map((row) => {
+            {visible.map((row) => {
               const catHeader = ROWCAT[row.category] && row.category !== lastCat ? (lastCat = row.category, ROWCAT[row.category]) : null;
+              const catBad = catHeader ? (catMismatch[row.category] || 0) : 0;
               return (
                 <React.Fragment key={row.key}>
                   {catHeader && (
-                    <tr><td colSpan={columns.length + 1} style={{ padding: '8px 10px 3px', fontSize: 10, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--gold,#AE8746)' }}>{catHeader}</td></tr>
+                    <tr><td colSpan={columns.length + 1} style={{ padding: '8px 10px 3px', fontSize: 10, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--gold,#AE8746)' }}>
+                      {catHeader}
+                      {catBad > 0 && <span style={{ marginLeft: 8, color: 'var(--crit,#B4483C)', fontWeight: 800 }}>● {catBad} {catBad === 1 ? 'mismatch' : 'mismatches'}</span>}
+                    </td></tr>
                   )}
                   <tr>
                     <td style={{ ...cellStyle('noref'), position: 'sticky', left: 0, background: 'var(--card,#fff)', fontWeight: 600, whiteSpace: 'nowrap' }}>
