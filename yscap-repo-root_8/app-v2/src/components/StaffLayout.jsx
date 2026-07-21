@@ -34,6 +34,7 @@ const NAV_ICON = {
   audit: <><path d="M12 3.5 5.5 6v5.2c0 4.1 2.8 6.9 6.5 8.3 3.7-1.4 6.5-4.2 6.5-8.3V6L12 3.5Z" /><path d="m9.2 11.8 2 2 3.6-3.6" /></>,
   esign: <><path d="M4 17.5c1.8-.4 2.6-2.2 3.4-4.3.7-2 1.3-4.2 2.3-4.2.8 0 .9 1.2.7 2.8-.3 2-.8 3.9 0 4.4.9.6 2-.7 2.8-1.6" /><path d="M14 20h6" /></>,
   emails: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m4 7 8 6 8-6" /></>,
+  health: <><path d="M3 12h3.5l2-5.5 3.5 11 2.5-6 1.5 3H21" /></>,
 };
 function NavIcon({ name }) {
   return (
@@ -387,6 +388,7 @@ export default function StaffLayout({ children }) {
         {canManagePricing && <NavLink className="sb-link" to="/internal/pricing" title="Pricing Admin Center — company-wide markup, origination & fee defaults"><NavIcon name="pricing" />Pricing</NavLink>}
         {(canManagePricing || role === 'super_admin') && <NavLink className="sb-link" to="/internal/escalations" title="Manual programs & escalations — approve manual products (custom LTV/LTC/ARV) and set the manual-program defaults"><NavIcon name="pricing" />Manual / Escalations
           {escCount > 0 && <span className="sb-badge">{escCount > 99 ? '99+' : escCount}</span>}</NavLink>}
+        {canPlatformSetup && <NavLink className="sb-link" to="/internal/api-health" title="API Health — every integration & API: live or down, what it needs, and a one-click test"><NavIcon name="health" />API Health</NavLink>}
         {canPlatformSetup && <NavLink className="sb-link" to="/internal/clickup" title="ClickUp Control Center — sync health, dry-run, backfill"><NavIcon name="clickup" />ClickUp</NavLink>}
         {canPlatformSetup && <NavLink className="sb-link" to="/internal/draw-rules" title="Inspection & fee rules — virtual vs on-site and the per-partner fee schedule for draws"><NavIcon name="pipeline" />Draw rules</NavLink>}
         {canViewAudit && <NavLink className="sb-link" to="/internal/audit" title="System audit log — every action across every file & borrower"><NavIcon name="audit" />Audit log</NavLink>}

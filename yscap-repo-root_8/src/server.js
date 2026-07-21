@@ -218,6 +218,9 @@ app.use('/api/underwriting', require('./routes/underwriting'));
   // The router also applies its own requireAuth + platform_setup guards.
   app.use('/api/admin/clickup', requireAuth, requireStaff, require('./routes/admin-clickup'));
   app.use('/api/admin/sharepoint', requireAuth, requireStaff, require('./routes/admin-sharepoint'));
+  // API Health — the status of every external API / integration (config presence + live reach).
+  // The router applies its own requireAuth + platform_setup guards.
+  app.use('/api/admin/integrations', requireAuth, requireStaff, require('./routes/admin-integrations'));
   // Manual Program admin config + the super-admin escalation box. Each route
   // adds its own capability/role gate (manage_pricing for settings, super_admin
   // to decide an escalation).

@@ -141,7 +141,7 @@ async function editLine(appId, { sow_line_key, label, desc }, actorId) {
         const cfg = require('../config');
         if (cfg.sitewireEnabled && (cfg.sitewireOutboundEnabled || cfg.sitewireDryrun)) {
           const r = await orchestrator.pushFile(appId, {});
-          sitewire = r && r.parked ? 'parked' : r && r.ok ? 'pushed' : 'pushed';
+          sitewire = r && r.parked ? 'parked' : 'pushed';
         } else { sitewire = 'writes_off'; }
       } else { sitewire = 'not_managed'; }
     } catch (e) { sitewire = 'push_error'; }
