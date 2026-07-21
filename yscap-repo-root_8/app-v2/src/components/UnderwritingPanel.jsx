@@ -496,7 +496,7 @@ function BankLiquidity({ bankLiquidity }) {
           </div>
         )}
       </div>
-      <div style={{ overflowX: 'auto', marginBottom: (bankLiquidity.findings || []).length ? 12 : 0 }}>
+      <div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
           <thead>
             <tr style={{ textAlign: 'left', color: 'var(--muted,#4B585C)' }}>
