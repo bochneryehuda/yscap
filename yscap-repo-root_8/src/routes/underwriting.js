@@ -767,6 +767,78 @@ router.post('/:appId/auto-read', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ---- POST /findings/:fid/committee-review ---------------------------------
+// Run the multi-model reasoning committee on ONE finding (Sovereign 3/4,
+// owner-directed 2026-07-21). Specialist reviewers (identity, entity, credit,
+// fraud, appraisal, title, insurance) independently confirm or REFUTE the
+// finding via strict-JSON verdicts; a pure adjudicator combines them into a
+// committee opinion. The result is persisted on the finding (committee_action /
+// committee_severity / committee_confidence / committee_reviewed_at) and in a
+// dedicated finding_committee_reviews row so multiple review rounds don't
+// overwrite each other. Best-effort — a committee failure never blocks the
+// finding from being resolved via the normal /resolve route below.
+router.post('/:appId/findings/:fid/committee-review', requirePermission('sign_off_conditions'), async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    if (!isUuid(req.params.fid)) return res.status(404).json({ error: 'finding not found' });
+    const fnd = (await db.query(
+      `SELECT df.id, df.code, df.severity, df.title, df.field, df.doc_value, df.file_value, df.how_to,
+              a.property_address, a.program, a.loan_amount,
+              b.first_name, b.last_name,
+              l.llc_name AS entity_name
+         FROM document_findings df
+         JOIN applications a ON a.id = df.application_id
+         LEFT JOIN borrowers b ON b.id = a.borrower_id
+         LEFT JOIN llcs l ON l.id = a.llc_id
+        WHERE df.id=$1 AND df.application_id=$2 AND df.status='open'`,
+      [req.params.fid, app.id])).rows[0];
+    if (!fnd) return res.status(404).json({ error: 'finding not found or already resolved' });
+    const context = {
+      borrowerName: [fnd.first_name, fnd.last_name].filter(Boolean).join(' ') || null,
+      entityName:   fnd.entity_name || null,
+      propertyAddress: fnd.property_address && (fnd.property_address.line1 || fnd.property_address.address) || null,
+      program:      fnd.program || null,
+      loanAmount:   fnd.loan_amount || null,
+    };
+    const committee = require('../lib/ai/committee');
+    const opinion = await committee.review({
+      id: fnd.id, code: fnd.code, severity: fnd.severity, title: fnd.title,
+      docValue: fnd.doc_value, fileValue: fnd.file_value, field: fnd.field, howTo: fnd.how_to,
+    }, context, { all: !!(req.body && req.body.all) });
+
+    // Persist: one row per review round + snapshot columns on the finding.
+    const client = await db.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `INSERT INTO finding_committee_reviews
+           (application_id, finding_id, committee_version, action, original_severity,
+            adjudicated_severity, confidence, reasoning, votes_json, dissents_json,
+            abstained_json, failed_json, requested_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11::jsonb,$12::jsonb,$13)`,
+        [app.id, fnd.id, opinion.committee_version || 'v1',
+         opinion.committee.action, opinion.committee.original_severity,
+         opinion.committee.adjudicated_severity, opinion.committee.confidence,
+         opinion.committee.reasoning, JSON.stringify(opinion.committee.votes || []),
+         JSON.stringify(opinion.committee.dissents || []),
+         JSON.stringify(opinion.committee.abstained || []),
+         JSON.stringify(opinion.committee.failed || []),
+         req.actor.id]);
+      await client.query(
+        `UPDATE document_findings
+            SET committee_action=$2, committee_severity=$3, committee_confidence=$4,
+                committee_reviewed_at=now()
+          WHERE id=$1`,
+        [fnd.id, opinion.committee.action, opinion.committee.adjudicated_severity,
+         opinion.committee.confidence]);
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+    res.json({ ok: true, opinion });
+  } catch (e) { next(e); }
+});
+
 // ---- POST /findings/:fid/resolve -------------------------------------------
 // Resolving a finding gates clear-to-close and records an underwriter decision — the same
 // capability that signs off conditions on the appraisal desk. Loan officers may SEE findings
