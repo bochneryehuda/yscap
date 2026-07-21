@@ -2497,6 +2497,75 @@ function consolidateEmailRows(rows) {
   return out;
 }
 
+// The DRAW email center folds in two sources beyond PILOT's own emails so the coordinator sees
+// EVERYTHING that happened on the draws in one place (owner-directed 2026-07-20): (1) the DocuSign
+// "Draw Request & Wire Instructions" form's send/sign lifecycle, and (2) Sitewire's OWN activity events
+// (inspector assigned, inspection completed, borrower submitted, lender approved). Sitewire's API does
+// NOT expose the actual emails it sends (to the inspector/borrower) — only lifecycle EVENTS with an
+// actor + timestamp — so those render as clearly-labeled "From Sitewire" activity rows (the fullest
+// their system allows). Returns rows already in the frontend email-row shape, tagged kind:'event'.
+const SW_DRAW_EVENT = {
+  created: 'Borrower started a draw request',
+  submit: 'Borrower submitted a draw request',
+  delegate_submit: 'A draw request was submitted',
+  inspector_assigned: 'An inspector was assigned',
+  inspector_approve: 'The inspection was completed',
+  lender_approve: 'The draw was approved',
+};
+function drawEventRow({ id, source, subject, preview, occurredAt, toName, body }) {
+  return {
+    id, kind: 'event', source, direction: 'event', type: `${source}_event`,
+    subject: subject || '(activity)', preview: preview || '', category: 'draws',
+    from_email: null, from_name: source === 'docusign' ? 'DocuSign' : 'Sitewire',
+    to: toName ? [{ email: null, name: toName }] : [], reply_to: null,
+    recipient_kind: null, recipient_name: toName || null, audience: 'staff',
+    status: 'event', error: null, attachments: [], meta: null, reconstructed: false,
+    has_body: false, body: body || preview || '', thread_key: id, occurred_at: occurredAt,
+    application_id: null,
+    recipients: toName ? [{ email: null, name: toName, kind: null, status: 'event' }] : [],
+    recipient_count: toName ? 1 : 0, opened_at: null, open_count: 0,
+  };
+}
+async function assembleDrawEventRows(appId) {
+  const rows = [];
+  const iso = (v) => { try { return new Date(v).toISOString(); } catch (_) { return null; } };
+  // (1) DocuSign draw-request/wire form send + sign lifecycle.
+  try {
+    const envs = (await db.query(
+      `SELECT e.id, e.status, e.sent_at, e.delivered_at, e.completed_at, e.declined_at, e.voided_at,
+              (SELECT r.name FROM esign_recipients r WHERE r.envelope_row_id = e.id AND r.role = 'borrower'
+                ORDER BY r.routing_order LIMIT 1) AS borrower_name
+         FROM esign_envelopes e WHERE e.application_id = $1 AND e.purpose = 'draw_request'`, [appId])).rows;
+    for (const e of envs) {
+      const who = e.borrower_name || 'the borrower';
+      if (e.sent_at) rows.push(drawEventRow({ id: `ds:${e.id}:sent`, source: 'docusign', occurredAt: iso(e.sent_at), toName: who, subject: 'Draw Request & Wire Instructions form sent for signature', preview: `Sent to ${who} via DocuSign`, body: `The Draw Request & Wire Instructions form was sent to ${who} for signature through DocuSign.` }));
+      if (e.delivered_at) rows.push(drawEventRow({ id: `ds:${e.id}:viewed`, source: 'docusign', occurredAt: iso(e.delivered_at), toName: who, subject: 'Borrower opened the draw request form', preview: `${who} opened the form` }));
+      if (e.completed_at) rows.push(drawEventRow({ id: `ds:${e.id}:signed`, source: 'docusign', occurredAt: iso(e.completed_at), toName: who, subject: 'Borrower signed the draw request form', preview: `${who} finished signing — wire instructions captured`, body: `${who} signed the Draw Request & Wire Instructions form. The signed form and the typed wire instructions were captured to the file.` }));
+      if (e.declined_at) rows.push(drawEventRow({ id: `ds:${e.id}:declined`, source: 'docusign', occurredAt: iso(e.declined_at), toName: who, subject: 'Borrower declined the draw request form', preview: `${who} declined to sign` }));
+      if (e.voided_at) rows.push(drawEventRow({ id: `ds:${e.id}:voided`, source: 'docusign', occurredAt: iso(e.voided_at), subject: 'Draw request form was voided', preview: 'The signing request was voided' }));
+    }
+  } catch (_) { /* esign tables optional */ }
+  // (2) Sitewire's OWN activity events (from the pulled draw_events jsonb).
+  try {
+    const draws = (await db.query(`SELECT number, sitewire_draw_id, events FROM sitewire_draws WHERE application_id = $1`, [appId])).rows;
+    for (const d of draws) {
+      const evs = Array.isArray(d.events) ? d.events : [];
+      evs.forEach((e, i) => {
+        if (!e || !e.occurred_at) return;
+        const label = SW_DRAW_EVENT[e.event] || String(e.event || 'activity').replace(/_/g, ' ');
+        const actor = String(e.actor_role || e.actor || '').replace(/_/g, ' ').trim();
+        rows.push(drawEventRow({
+          id: `sw:${d.sitewire_draw_id}:${i}`, source: 'sitewire', occurredAt: iso(e.occurred_at),
+          subject: `Draw #${d.number == null ? '—' : d.number} — ${label}`,
+          preview: actor ? `From Sitewire · ${actor}` : 'From Sitewire',
+          body: `Sitewire activity on draw #${d.number == null ? '—' : d.number}: ${label}.${actor ? ` (by ${actor})` : ''} Sitewire shares the activity it recorded, not the exact email it sent to the inspector or borrower.`,
+        }));
+      });
+    }
+  } catch (_) { /* sitewire tables optional */ }
+  return rows.filter((r) => r.occurred_at);
+}
+
 // Per-file email history (newest first), grouped into threads client-side by
 // thread_key. Backfills THIS file's prior history on read so it's always complete.
 router.get('/applications/:id/emails', async (req, res) => {
@@ -2505,8 +2574,9 @@ router.get('/applications/:id/emails', async (req, res) => {
     await emailLog.ensureFileBackfilled(req.params.id).catch(() => {});
     // scope=draw → the DRAW email center: only draw/scope-of-work alerts (draw%, sow_%)
     // plus every message in those same conversation THREADS (so borrower replies and
-    // coordinator follow-ups on a draw email stay attached). The unscoped call returns the
-    // file's whole email history (the regular file Email Center) — byte-identical to before.
+    // coordinator follow-ups on a draw email stay attached), AND — folded in below — the
+    // DocuSign draw-request form lifecycle + Sitewire's own activity events. The unscoped
+    // call returns the file's whole email history (the regular file Email Center) — byte-identical.
     const drawScope = String(req.query.scope || '') === 'draw';
     const scopeSql = drawScope
       ? `AND (em.msg_type LIKE 'draw%' OR em.msg_type LIKE 'sow_%'
@@ -2531,7 +2601,14 @@ router.get('/applications/:id/emails', async (req, res) => {
         WHERE em.application_id = $1 ${scopeSql}
         ORDER BY em.occurred_at DESC
         LIMIT 500`, [req.params.id]);
-    res.json(consolidateEmailRows(r.rows));
+    let out = consolidateEmailRows(r.rows);
+    if (drawScope) {
+      // Fold in the DocuSign wire-form lifecycle + Sitewire's own activity events, newest first,
+      // so the draw email center is the ONE place that shows everything that happened on the draws.
+      const extra = await assembleDrawEventRows(req.params.id).catch(() => []);
+      out = out.concat(extra).sort((a, b) => new Date(b.occurred_at || 0) - new Date(a.occurred_at || 0));
+    }
+    res.json(out);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
@@ -7801,3 +7878,5 @@ router.post('/esign/drain', async (req, res) => {
 router.use(require('./staff-chat'));
 
 module.exports = router;
+// exported for tests (the draw email center's DocuSign + Sitewire activity fold-in)
+module.exports.assembleDrawEventRows = assembleDrawEventRows;
