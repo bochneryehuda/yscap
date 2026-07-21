@@ -2779,3 +2779,12 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .app .wf-submit-form{grid-column:1/-1;display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
   gap:10px;border-top:1px solid var(--surface-soft);padding-top:10px;margin-top:2px}
 .app .wf-help-group{margin-top:6px}
+
+/* Workflow phase-two: recommended-next-step highlight + SLA cues */
+.app .wf-submit-card.is-recommended{border-color:var(--teal,#2F7F86);
+  box-shadow:0 0 0 1px var(--teal,#2F7F86), 0 8px 30px rgba(47,127,134,.12)}
+.app .wf-rec-chip{display:inline-block;margin-left:8px;font-size:11px;font-weight:600;letter-spacing:.02em;
+  color:#fff;background:var(--teal,#2F7F86);border-radius:999px;padding:2px 8px;vertical-align:middle}
+.app .wf-rec-banner{background:color-mix(in srgb,var(--teal,#2F7F86) 12%,transparent);
+  border:1px solid color-mix(in srgb,var(--teal,#2F7F86) 30%,transparent);border-radius:10px;
+  padding:10px 13px;margin-bottom:12px;font-size:14px}
