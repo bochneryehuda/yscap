@@ -153,7 +153,7 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText) {
     return;
   }
 
-  // status_synced is NULL — two cases distinguished by first_seen_at (db/224):
+  // status_synced is NULL — two cases distinguished by first_seen_at (db/227):
   //   (a) LEGACY row (first_seen_at IS NULL): pre-migration, we didn't know about the row when
   //       whatever transition happened. Silent baseline — never notify for history (go-forward
   //       cutover, unchanged from before).
