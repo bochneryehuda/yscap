@@ -85,6 +85,11 @@ const FACTS = [
   { key: 'year_built', label: 'Year built', category: 'collateral', kind: 'count', severity: 'info', file: () => null },
   { key: 'living_area', label: 'Living area (sq ft)', category: 'collateral', kind: 'measure', severity: 'info', file: () => null },
   { key: 'market_rent', label: 'Market rent (1007)', category: 'valuation', kind: 'money', severity: 'info', file: () => null },
+  // ---- closing economics (owner-directed 2026-07-21 — the settlement statement is the
+  // reconciliation SINK; surface its figures in the comparison). Doc-carried facts (the loan file
+  // doesn't store the earnest money or cash-to-close), so they show + tie out doc-vs-doc.
+  { key: 'earnest_money', label: 'Earnest money (EMD)', category: 'economics', kind: 'money', severity: 'info', file: () => null },
+  { key: 'cash_to_close', label: 'Cash to close', category: 'economics', kind: 'money', severity: 'info', file: () => null },
 ];
 const FACT_BY_KEY = Object.create(null);
 for (const f of FACTS) FACT_BY_KEY[f.key] = f;
@@ -112,11 +117,11 @@ const DOC_CLAIMS = {
   good_standing: (f) => ({ entity_name: f.entityLegalName }),
   llc_formation: (f) => ({ entity_name: f.entityLegalName }),
   credit_report: (f) => ({ borrower_name: f.subjectName, borrower_dob: f.dob }),
-  settlement: (f) => ({ property_address: f.propertyAddress, purchase_price: f.contractSalesPrice, seller_name: f.sellerName ? [f.sellerName] : null, entity_name: f.buyerName, loan_amount: f.loanAmount, assignment_fee: f.assignmentFee }),
+  settlement: (f) => ({ property_address: f.propertyAddress, purchase_price: f.contractSalesPrice, seller_name: f.sellerName ? [f.sellerName] : null, entity_name: f.buyerName, loan_amount: f.loanAmount, assignment_fee: f.assignmentFee, earnest_money: f.earnestMoney, cash_to_close: f.cashToClose }),
   flood: (f) => ({ property_address: f.propertyAddress }),
   scope_of_work: (f) => ({ property_address: f.propertyAddress, rehab_budget: f.totalBudget }),
   payoff_statement: (f) => ({ property_address: f.propertyAddress }),
-  signed_term_sheet: (f) => ({ property_address: f.propertyAddress }),
+  signed_term_sheet: (f) => ({ property_address: f.propertyAddress, loan_amount: f.loanAmount }),
   signed_application: (f) => ({ property_address: f.propertyAddress, entity_name: f.entityName }),
   investor_structure: (f) => ({ property_address: f.propertyAddress }),
 };
@@ -137,11 +142,11 @@ const DOC_CARRIES = {
   good_standing: ['entity_name'],
   llc_formation: ['entity_name'],
   credit_report: ['borrower_name', 'borrower_dob'],
-  settlement: ['property_address', 'purchase_price', 'seller_name', 'entity_name', 'loan_amount', 'assignment_fee'],
+  settlement: ['property_address', 'purchase_price', 'seller_name', 'entity_name', 'loan_amount', 'assignment_fee', 'earnest_money', 'cash_to_close'],
   flood: ['property_address'],
   scope_of_work: ['property_address', 'rehab_budget'],
   payoff_statement: ['property_address'],
-  signed_term_sheet: ['property_address'],
+  signed_term_sheet: ['property_address', 'loan_amount'],
   signed_application: ['property_address', 'entity_name'],
   investor_structure: ['property_address'],
 };
