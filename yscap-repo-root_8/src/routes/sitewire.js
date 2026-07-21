@@ -343,8 +343,8 @@ router.post('/files/:id/property-settings', requirePermission('manage_draws'), a
 // ==== Super-admin Scope-of-Work line-item editing (owner-directed 2026-07-21) ====
 // Editing a line's WORDING (label) + DESCRIPTION is NOT allowed by default. A SUPER-ADMIN must UNLOCK the
 // file's SOW editing first (mirrors the structural unlock). Each edit updates the REAL Scope of Work +
-// regenerates its Excel + pushes the new wording to Sitewire. The description stays PILOT-side (Sitewire's
-// job-item description is read-only for us — never guessed).
+// regenerates its Excel + pushes the new wording AND description to Sitewire (owner-directed 2026-07-21 — a
+// capture confirmed the job item's `description` field is writable, so it's no longer read-only-for-us).
 const isSuperAdmin = (req) => !!(req.actor && req.actor.role === 'super_admin');
 
 // GET the SOW lines for the editor: each line's wording/description/amount + whether it's drawn-locked in
@@ -1875,17 +1875,29 @@ router.post('/findings/:findingId/lines/:lineId/decide', requirePermission('mana
   if (!line) return res.status(404).json({ error: 'line not found' });
   if (line.dispute_status !== 'open') return res.status(409).json({ error: 'line is not under an open dispute' });
 
-  // On APPROVE, push the borrower's desired approved amount back to Sitewire (guarded) — or
-  // fall back to a processor-confirm note if writes are off. Never guessed.
+  // On APPROVE, the corrected approved figure is EITHER an exact amount staff type (a negotiated figure)
+  // OR, if none is typed, the borrower's requested amount. It can never exceed what the borrower requested
+  // for that line (you can't approve more than was asked). Owner-directed 2026-07-21.
+  if (decision === 'approved' && req.body.approved_cents != null && req.body.approved_cents !== '') {
+    const v = Number(req.body.approved_cents);
+    if (!Number.isFinite(v) || v < 0) return res.status(400).json({ error: 'The approved amount must be a whole dollar amount of $0 or more.' });
+  }
+  // The corrected approved amount (cents) on APPROVE: an exact typed figure, else the borrower's requested
+  // amount — capped at the requested amount, never negative (src/sitewire/money.disputeApprovedCents).
+  const target = require('../sitewire/money').disputeApprovedCents({
+    decision, requestedCents: line.requested_cents, typedCents: req.body.approved_cents, desiredCents: line.dispute_desired_cents,
+  });
+
+  // Push the corrected approved amount back to Sitewire (guarded, read-after-write verified) — this is the
+  // OVERRIDE of Sitewire's approved figure. Falls back to a processor-confirm note if writes are off. Never guessed.
   let pushed = false, pushNote = null;
-  if (decision === 'approved' && line.dispute_desired_cents != null && line.sitewire_request_id) {
+  if (decision === 'approved' && target != null && line.sitewire_request_id) {
     if (cfg.sitewireEnabled && cfg.sitewireOutboundEnabled) {
       try {
         await orchestrator.circuitCheck(1);
-        const desired = Math.round(Number(line.dispute_desired_cents));
-        const r = await client.updateRequest(line.sitewire_request_id, { approved_cents: desired, lender_comments: `Dispute approved (PILOT): ${req.body.note || ''}`.slice(0, 240) });
+        const r = await client.updateRequest(line.sitewire_request_id, { approved_cents: target, lender_comments: `Dispute approved (PILOT): ${req.body.note || ''}`.slice(0, 240) });
         if (!(r && r.__dryrun)) {
-          let saved = desired; try { const fresh = await client.getRequest(line.sitewire_request_id); if (fresh && fresh.approved_cents != null) saved = fresh.approved_cents; } catch (_) {}
+          let saved = target; try { const fresh = await client.getRequest(line.sitewire_request_id); if (fresh && fresh.approved_cents != null) saved = fresh.approved_cents; } catch (_) {}
           await db.query(`UPDATE sitewire_draw_requests SET approved_cents=$2, updated_at=now() WHERE sitewire_request_id=$1`, [line.sitewire_request_id, saved]);
           await orchestrator.journal({ appId: f.application_id, entity: 'request', entityId: Number(line.sitewire_request_id), field: 'approved_cents', newValue: saved, source: 'dispute' });
           pushed = true;
@@ -1893,8 +1905,10 @@ router.post('/findings/:findingId/lines/:lineId/decide', requirePermission('mana
       } catch (e) { pushNote = `Sitewire push failed (${e.message}); confirm the new amount by hand`; }
     } else pushNote = 'Sitewire writes are off — a processor must confirm the new amount by hand';
   }
-  await db.query(`UPDATE draw_finding_lines SET dispute_status=$2, lender_comments=COALESCE($3,lender_comments), dispute_decided_by=$4, dispute_decided_at=now(), approved_cents=CASE WHEN $2='approved' AND dispute_desired_cents IS NOT NULL THEN dispute_desired_cents ELSE approved_cents END, not_approved_cents=CASE WHEN $2='approved' AND dispute_desired_cents IS NOT NULL THEN GREATEST(0, requested_cents - dispute_desired_cents) ELSE not_approved_cents END, updated_at=now() WHERE id=$1`,
-    [lineId, decision, req.body.note || null, req.actor.id]);
+  // Record the corrected approved figure on the line (approved_cents=$5). $5 NULL leaves the amount as-is
+  // (a plain reject, or an approve with no desired/typed amount).
+  await db.query(`UPDATE draw_finding_lines SET dispute_status=$2, lender_comments=COALESCE($3,lender_comments), dispute_decided_by=$4, dispute_decided_at=now(), approved_cents=CASE WHEN $2='approved' AND $5::bigint IS NOT NULL THEN $5::bigint ELSE approved_cents END, not_approved_cents=CASE WHEN $2='approved' AND $5::bigint IS NOT NULL THEN GREATEST(0, requested_cents - $5::bigint) ELSE not_approved_cents END, updated_at=now() WHERE id=$1`,
+    [lineId, decision, req.body.note || null, req.actor.id, target]);
   // if no more open disputes, mark the finding resolved AND close the loop back to the borrower
   const openLeft = (await db.query(`SELECT count(*)::int c FROM draw_finding_lines WHERE finding_id=$1 AND dispute_status='open'`, [findingId])).rows[0].c;
   if (openLeft === 0) {

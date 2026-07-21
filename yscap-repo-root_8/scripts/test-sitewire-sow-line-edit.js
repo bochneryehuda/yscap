@@ -87,6 +87,7 @@ const stateOf = async (app) => (await db.query(`SELECT tool_payload FROM checkli
     const doc = await db.query(`SELECT COUNT(*)::int c FROM documents WHERE application_id=$1 AND doc_kind='rehab_budget_export' AND is_current=true`, [app]);
     ok('editLine: regenerated SOW Excel document created', doc.rows[0].c >= 1);
     ok('editLine: unmanaged file → wording not pushed to Sitewire (not_managed)', r.sitewire === 'not_managed' || r.sitewire === 'not_pushed');
+    ok('editLine: unmanaged file → description not pushed to Sitewire (not_managed)', r.desc_sitewire === 'not_managed' || r.desc_sitewire === 'not_pushed');
     // a second edit supersedes the prior Excel (still exactly one current)
     await sle.editLine(app, { sow_line_key: 'baths:0', desc: 'tile + fixtures' }, null);
     const cur = await db.query(`SELECT COUNT(*)::int c FROM documents WHERE application_id=$1 AND doc_kind='rehab_budget_export' AND is_current=true`, [app]);

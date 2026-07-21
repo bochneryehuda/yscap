@@ -902,6 +902,45 @@ async function getPropertyLive(appId) {
 }
 
 /**
+ * Push a line item's DESCRIPTION to Sitewire (owner-directed 2026-07-21; a capture of Sitewire's own loan-edit
+ * screen confirmed the job item carries a writable `description` field). The description of a SOW line explodes
+ * to one or more Sitewire job items (per unit); this sets the same description on each bound job item via the
+ * guarded budget PATCH — merge-by-id, so no other line is touched — then read-after-write verifies against
+ * getBudget. Never guessed: `description` is the real field. Returns a small result the caller maps to a note.
+ */
+async function pushJobItemDescription(appId, sowLineKey, description) {
+  const link = await getLink(appId);
+  if (!link || !link.sitewire_property_id || link.matched_by !== 'created' || !link.sitewire_budget_id) return { ok: false, reason: 'not_managed' };
+  const canSync = cfg.sitewireEnabled && (cfg.sitewireOutboundEnabled || cfg.sitewireDryrun);
+  if (!canSync) return { ok: false, reason: 'writes_off' };
+  const ids = (await db.query(
+    `SELECT sitewire_job_item_id FROM sitewire_job_item_links
+      WHERE application_id=$1 AND sitewire_budget_id=$2 AND sow_line_key=$3 AND sitewire_job_item_id IS NOT NULL AND state<>'deleted'`,
+    [appId, link.sitewire_budget_id, sowLineKey])).rows.map((r) => Number(r.sitewire_job_item_id)).filter(Number.isFinite);
+  if (!ids.length) return { ok: false, reason: 'no_job_item' };
+  const desc = String(description == null ? '' : description).slice(0, 2000);
+  await circuitCheck(1);
+  const job_items = ids.map((id) => ({ id, description: desc })); // PATCH merges by id — omitted items untouched
+  let res;
+  try {
+    res = await client.updateBudget(link.sitewire_budget_id, { job_items });
+  } catch (e) {
+    if (e.retryable) throw e;
+    await park({ appId, reason: `sitewire_jobitem_desc_failed: could not set description on ${ids.length} job item(s) of budget ${link.sitewire_budget_id} (${e.status || 'error'})` });
+    return { ok: false, parked: true };
+  }
+  if (res && res.__dryrun) return { ok: true, sitewire: 'dryrun', items: ids.length };
+  let verified = false;
+  try {
+    const live = await client.getBudget(link.sitewire_budget_id);
+    const byId = new Map(((live && live.job_items) || []).map((j) => [Number(j.id), j]));
+    verified = ids.every((id) => { const j = byId.get(id); return j && String(j.description == null ? '' : j.description) === desc; });
+  } catch (e) { console.warn('[sitewire] job-item description verify GET failed (unverified):', e && e.message); }
+  await journal({ appId, budgetId: link.sitewire_budget_id, entity: 'budget', entityId: link.sitewire_budget_id, field: 'job_item_description', newValue: desc.slice(0, 60), source: 'sow_line_edit' });
+  return { ok: true, sitewire: verified ? 'synced' : 'unverified', items: ids.length };
+}
+
+/**
  * Reset a file's draw setup so the coordinator can start over / re-push (owner-directed 2026-07-20 — a
  * delete-and-re-push control for testing). Sitewire has NO delete endpoint, so this does the closest safe
  * thing: (1) DEACTIVATES the Sitewire property (`inactive=true`, guarded) so it accepts no more draws, then
@@ -1060,4 +1099,4 @@ async function getSitewireDocuments(appId) {
   } catch (e) { return { managed: true, available: false, documents: [], error: (e && e.message) || 'error' }; }
 }
 
-module.exports = { pushFile, pushBudget, setPropertyLifecycle, updatePropertyControls, getPropertyLive, resetDrawSetup, collisionProperty, getBorrowerInviteStatus, resendBorrowerInvite, listQuickNotifyStatuses, setDrawQuickNotify, getSitewireDocuments, park, journal, circuitCheck, resolveCapitalPartnerId, resolveRule, resolveInspection, resolveCoordinatorId, getLink, loadFile, isManaged, recordSetupStatus, SITEWIRE_BIRTH_REASONS, LIFECYCLE_STATES, INSPECTION_METHODS };
+module.exports = { pushFile, pushBudget, setPropertyLifecycle, updatePropertyControls, getPropertyLive, pushJobItemDescription, resetDrawSetup, collisionProperty, getBorrowerInviteStatus, resendBorrowerInvite, listQuickNotifyStatuses, setDrawQuickNotify, getSitewireDocuments, park, journal, circuitCheck, resolveCapitalPartnerId, resolveRule, resolveInspection, resolveCoordinatorId, getLink, loadFile, isManaged, recordSetupStatus, SITEWIRE_BIRTH_REASONS, LIFECYCLE_STATES, INSPECTION_METHODS };

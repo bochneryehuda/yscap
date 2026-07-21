@@ -1,7 +1,7 @@
 'use strict';
 /* Sitewire money model — retainage + lien-waiver gate. NO DB. Run: node scripts/test-sitewire-money.js */
 const assert = require('assert');
-const { computeRelease, waiverGate } = require('../src/sitewire/money');
+const { computeRelease, waiverGate, disputeApprovedCents } = require('../src/sitewire/money');
 
 let n = 0; const ok = (m) => { n++; console.log('  ok -', m); };
 
@@ -56,5 +56,17 @@ assert.strictEqual(g.ok, false, 'an unknown-status waiver blocks the release');
 g = waiverGate([{ status: 'received' }, { status: null }], { enabled: true });
 assert.strictEqual(g.ok, false, 'one received + one null-status → still blocked');
 ok('lien waivers: any non-received/waived/na status (null/blank/unknown) blocks — never guesses satisfied');
+
+// ---- dispute: corrected approved figure (Feature C, owner-directed 2026-07-21) ----
+assert.strictEqual(disputeApprovedCents({ decision: 'rejected', requestedCents: 500000 }), null, 'reject → null (leave amount as-is)');
+assert.strictEqual(disputeApprovedCents({ decision: 'approved', requestedCents: 500000, typedCents: 420000 }), 420000, 'approve with a typed figure → that exact figure');
+assert.strictEqual(disputeApprovedCents({ decision: 'approved', requestedCents: 500000, typedCents: 900000 }), 500000, 'typed figure ABOVE requested is capped at requested (never approve more than asked)');
+assert.strictEqual(disputeApprovedCents({ decision: 'approved', requestedCents: 500000, desiredCents: 480000 }), 480000, 'no typed figure → falls back to the borrower’s desired amount');
+assert.strictEqual(disputeApprovedCents({ decision: 'approved', requestedCents: 500000, typedCents: '', desiredCents: 480000 }), 480000, 'blank typed string → falls back to desired');
+assert.strictEqual(disputeApprovedCents({ decision: 'approved', requestedCents: 500000, desiredCents: 900000 }), 500000, 'desired above requested is also capped at requested');
+assert.strictEqual(disputeApprovedCents({ decision: 'approved', requestedCents: 500000, typedCents: -100 }), 0, 'a negative typed figure floors at $0');
+assert.strictEqual(disputeApprovedCents({ decision: 'approved', requestedCents: 500000 }), null, 'approve with NO typed or desired amount → null (leave as-is)');
+assert.strictEqual(disputeApprovedCents({ decision: 'approved', requestedCents: 0, typedCents: 30000 }), 30000, 'no requested cap (0) → typed figure used verbatim');
+ok('dispute figure: typed exact amount wins, capped at requested, floored at $0; falls back to desired; reject/none → null');
 
 console.log(`\nAll ${n} Sitewire money checks passed.`);
