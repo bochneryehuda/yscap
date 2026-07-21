@@ -165,6 +165,13 @@ const FIELDS = [
       { v: 'bluelake', label: 'Blue Lake' }, { v: 'corrfirst', label: 'CorrFirst' },
       { v: 'fidelis', label: 'Fidelis' }],
     description: 'The note buyer / capital partner the file is sold to (from ClickUp; staff-only, never shown to the borrower).' },
+  // YS loan number (applications.ys_loan_number). Referenced by the rule engine so
+  // the "loan number missing" internal condition can attach while it is blank and
+  // retract the moment it is filled. Not writable via an info-condition (staff set
+  // it through the dedicated loan-number entry, which enforces the YSCAP format +
+  // cross-file uniqueness); it is a rule/evaluation field only.
+  { key: 'ys_loan_number', label: 'YS loan number', group: 'Loan & program', type: 'text',
+    description: 'The YS loan number on the file (starts with YSCAP…). Blank triggers the "loan number missing" internal condition.' },
   { key: 'status', label: 'File status', group: 'Loan & program', type: 'enum',
     options: [
       { v: 'file_intake', label: 'File intake' },
