@@ -7840,12 +7840,20 @@ router.post('/vendors/merge', async (req, res) => {
     const mdPhones = Array.isArray(md.phones) ? md.phones : (md.phone ? [md.phone] : []);
     const emails = Array.isArray(b.emails) ? dedupBy(b.emails, vendorNormEmail) : dedupBy([...svEmails, ...mdEmails], vendorNormEmail);
     const phones = Array.isArray(b.phones) ? dedupBy(b.phones, vendorNormPhone) : dedupBy([...svPhones, ...mdPhones], vendorNormPhone);
-    // Primary email/phone = the caller's pick if present, else the FIRST of the
-    // merged array — never blank when there IS an entry available.
-    const primaryEmail = picks.primaryEmail !== undefined
-      ? (picks.primaryEmail || null) : (emails[0] || null);
-    const primaryPhone = picks.primaryPhone !== undefined
-      ? (picks.primaryPhone || null) : (phones[0] || null);
+    // Primary email/phone = the caller's pick if present AND actually kept in
+    // the final array (post-merge-review 2026-07-21: the UI let a user pick a
+    // primary and then uncheck that same value from the list — the primary
+    // would then point at an email the vendor no longer carries). Fall back to
+    // the FIRST of the merged array so the primary is always a real, retained
+    // value — never blank when there IS an entry available.
+    const emailKeys = new Set(emails.map(vendorNormEmail));
+    const phoneKeys = new Set(phones.map(vendorNormPhone));
+    const primaryEmail = (picks.primaryEmail !== undefined && picks.primaryEmail
+      && emailKeys.has(vendorNormEmail(picks.primaryEmail)))
+      ? picks.primaryEmail : (emails[0] || null);
+    const primaryPhone = (picks.primaryPhone !== undefined && picks.primaryPhone
+      && phoneKeys.has(vendorNormPhone(picks.primaryPhone)))
+      ? picks.primaryPhone : (phones[0] || null);
     await client.query(
       `UPDATE service_contacts
           SET contact_type=$2, company_name=$3, contact_name=$4, address=$5, notes=$6,
