@@ -211,7 +211,7 @@ function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
       {/* Vendor / contact */}
       {order.vendor
         ? <div className="muted small" style={{ marginBottom: 6 }}>
-            To: <b style={{ color: 'var(--ink,#141B22)' }}>{order.vendor.name || order.vendor.email}</b>{order.vendor.email ? ` · ${order.vendor.email}` : ''}{order.vendor.phone ? ` · ${order.vendor.phone}` : ''}
+            To: <b style={{ color: 'var(--ivory,#141B22)' }}>{order.vendor.name || order.vendor.email}</b>{order.vendor.email ? ` · ${order.vendor.email}` : ''}{order.vendor.phone ? ` · ${order.vendor.phone}` : ''}
           </div>
         : <div className="muted small" style={{ marginBottom: 6 }}>
             No {CONTACT_ASK[kind]} on the file yet — add one below to order.
@@ -234,7 +234,7 @@ function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
         </div>
       )}
 
-      {order.condition && <div className="muted small" style={{ marginBottom: 6 }}>Documents file into the <b style={{ color: 'var(--ink,#141B22)' }}>{order.condition.label}</b> condition{order.condition.status ? ` (${order.condition.status})` : ''}.</div>}
+      {order.condition && <div className="muted small" style={{ marginBottom: 6 }}>Documents file into the <b style={{ color: 'var(--ivory,#141B22)' }}>{order.condition.label}</b> condition{order.condition.status ? ` (${order.condition.status})` : ''}.</div>}
 
       {order.orderedAt && <div className="muted small" style={{ marginBottom: 6 }}>Ordered {when(order.orderedAt)}{order.lastFollowupAt ? ` · last follow-up ${when(order.lastFollowupAt)}` : ''}</div>}
 
