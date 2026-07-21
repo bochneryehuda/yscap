@@ -86,10 +86,34 @@ export default function StaffFindingEscalations() {
       const extra = { action };
       // Post-condition / request-document need a note; others accept the reviewer note as advisory.
       if (note) extra.note = note;
-      await api.underwritingResolveFinding(row.application_id, row.finding_id, extra);
-      // Also close the escalation — advice recorded as the decision note.
-      await api.decideFindingEscalation(row.id, 'resolved', note || `Applied "${action}" from the queue`);
-      flash(true, `Applied ${action.replace(/_/g, ' ')} — the finding is resolved and the person who raised it was notified.`);
+      // Two-call sequence, made RETRY-SAFE (owner-directed fix after pre-merge audit 2026-07-21):
+      // if a previous attempt already resolved the finding OR closed the escalation, don't error
+      // out and leave the queue row stranded — treat those "already done" cases as success and
+      // move on to whatever step remains. The endpoints return 404 (finding: not found / already
+      // resolved) and 409 (escalation: already decided).
+      let alreadyResolved = false;
+      try {
+        await api.underwritingResolveFinding(row.application_id, row.finding_id, extra);
+      } catch (err) {
+        const msg = String((err && err.message) || '').toLowerCase();
+        const status = err && (err.status || err.statusCode);
+        if (status === 404 || /not found|already/i.test(msg)) { alreadyResolved = true; }
+        else { throw err; }
+      }
+      let alreadyDecided = false;
+      try {
+        await api.decideFindingEscalation(row.id, 'resolved', note || `Applied "${action}" from the queue${alreadyResolved ? ' (finding was already resolved)' : ''}`);
+      } catch (err) {
+        const msg = String((err && err.message) || '').toLowerCase();
+        const status = err && (err.status || err.statusCode);
+        if (status === 409 || /already/i.test(msg)) { alreadyDecided = true; }
+        else { throw err; }
+      }
+      flash(true, alreadyResolved
+        ? 'The finding was already resolved — queue item closed.'
+        : (alreadyDecided
+          ? `Applied ${action.replace(/_/g, ' ')} — queue item was already closed.`
+          : `Applied ${action.replace(/_/g, ' ')} — the finding is resolved and the person who raised it was notified.`));
       await load();
     } catch (e) { flash(false, e.message || 'could not apply the action'); }
     finally { setBusy(false); }
