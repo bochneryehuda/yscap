@@ -2973,6 +2973,52 @@ router.post('/applications/:id/orders/:kind/cancel', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
+// GLOBAL ORDERS QUEUE — every title/insurance order across the files the viewer
+// can see, so a processor can track all orders (and what's waiting to be
+// classified) in one place. Scoped like every other cross-file view.
+router.get('/orders', async (req, res) => {
+  try {
+    const params = [];
+    let scopeSql = '';
+    if (!seesAll(req)) { params.push(req.actor.id); scopeSql = `AND ${VISIBLE_OFFICERS_SQL('a', '$1')}`; }
+    const r = await db.query(
+      `SELECT a.id AS application_id, a.ys_loan_number, a.property_address, a.status AS file_status,
+              b.first_name, b.last_name,
+              o.order_type, o.status, o.vendor_name, o.ordered_at, o.last_followup_at, o.followup_count,
+              COALESCE(dc.unassigned, 0)::int AS unassigned_docs, COALESCE(dc.total, 0)::int AS returned_docs
+         FROM file_orders o
+         JOIN applications a ON a.id = o.application_id AND a.deleted_at IS NULL
+         JOIN borrowers b ON b.id = a.borrower_id
+         LEFT JOIN LATERAL (
+           SELECT count(*) FILTER (WHERE slot_label IS NULL) AS unassigned, count(*) AS total
+             FROM documents d
+            WHERE d.application_id = o.application_id AND d.is_current = true
+              AND d.doc_kind = CASE o.order_type WHEN 'title' THEN 'title_order_return' ELSE 'insurance_order_return' END
+         ) dc ON true
+        WHERE o.status <> 'cancelled' ${scopeSql}
+        ORDER BY (COALESCE(dc.unassigned, 0) > 0) DESC, o.ordered_at DESC NULLS LAST`, params);
+    // Group into one row per file with a title + insurance sub-object.
+    const byFile = new Map();
+    for (const row of r.rows) {
+      if (!byFile.has(row.application_id)) {
+        byFile.set(row.application_id, {
+          applicationId: row.application_id, loanNumber: row.ys_loan_number,
+          propertyAddress: row.property_address, fileStatus: row.file_status,
+          borrowerName: [row.first_name, row.last_name].filter(Boolean).join(' '),
+          title: null, insurance: null,
+        });
+      }
+      const f = byFile.get(row.application_id);
+      f[row.order_type] = {
+        status: row.status, vendorName: row.vendor_name, orderedAt: row.ordered_at,
+        lastFollowupAt: row.last_followup_at, followupCount: row.followup_count,
+        unassignedDocs: row.unassigned_docs, returnedDocs: row.returned_docs,
+      };
+    }
+    res.json([...byFile.values()]);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // A short "which file" label for a mailbox row (loan# · street · borrower).
 function fileLabelOf(r) {
   const pa = r.property_address || {};
