@@ -534,6 +534,25 @@ router.get('/:appId', async (req, res, next) => {
       summary,
       docTypes: registry.docTypes(),
       analyzers: { reader: docint.configured(), ai: azureOpenai.available() },
+      // --- Sovereign additions (owner-directed 2026-07-21) ---
+      // Twin canonical facts + the file's condition clearance proofs. Both are
+      // additive read-only sections the file view renders below the classic
+      // findings list. Best-effort — a failure here degrades the panel
+      // gracefully (empty section) instead of breaking the whole load.
+      twinFacts: await (async () => {
+        try { return await require('../lib/underwriting/twin').factsForFile(app.id, db); }
+        catch (_) { return []; }
+      })(),
+      cureProofs: await (async () => {
+        try {
+          const rows = await db.query(
+            `SELECT DISTINCT ON (checklist_item_id) *
+               FROM condition_clearance_proofs
+              WHERE application_id = $1
+              ORDER BY checklist_item_id, created_at DESC`, [app.id]);
+          return rows.rows;
+        } catch (_) { return []; }
+      })(),
     });
   } catch (e) { next(e); }
 });

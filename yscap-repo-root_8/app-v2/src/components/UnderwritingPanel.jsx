@@ -763,6 +763,131 @@ function Amendments({ amendments }) {
 // exception) — those need waive_conditions (underwriter/admin). A signer without it
 // (processor / coordinator / closer) sees the non-senior actions but not the gate-clearing
 // ones, so no button 403s. Defaults true for back-compat.
+// The Sovereign cockpit — collapsible summary of canonical facts (from the
+// loan digital twin, db/227) and per-condition cure proofs (db/228).
+// Read-only presentation of what the underlying Sovereign engines produced.
+// Both sections start collapsed so the classic findings list stays the
+// default view; a reviewer opens them when they want the evidence trail.
+function SovereignCockpit({ twinFacts, cureProofs }) {
+  const [openTwin, setOpenTwin] = useState(false);
+  const [openCures, setOpenCures] = useState(false);
+  const twinCount = (twinFacts || []).length;
+  const cureCount = (cureProofs || []).length;
+  if (twinCount === 0 && cureCount === 0) return null;
+  const STATUS_STYLES = {
+    verified:            { fg: 'var(--good,#3F7A5B)',      bg: 'rgba(63,122,91,.12)',    label: 'Verified' },
+    corroborated:        { fg: 'var(--good,#3F7A5B)',      bg: 'rgba(63,122,91,.10)',    label: 'Corroborated' },
+    observed:            { fg: 'var(--muted,#4B585C)',     bg: 'var(--paper,#F6F3EC)',   label: 'Observed' },
+    disputed:            { fg: 'var(--crit,#B4483C)',      bg: 'var(--crit-bg,#F6E7E4)', label: 'Disputed' },
+    human_confirmed:     { fg: 'var(--teal-deep,#256168)', bg: 'rgba(47,127,134,.12)',   label: 'Confirmed by staff' },
+    superseded:          { fg: 'var(--muted,#4B585C)',     bg: 'var(--paper,#F6F3EC)',   label: 'Superseded' },
+    unable_to_determine: { fg: 'var(--amber,#B7791F)',     bg: 'var(--amber-bg,#F6EEDD)',label: 'Unable to determine' },
+  };
+  const RESULT_STYLES = {
+    satisfied:           { fg: 'var(--good,#3F7A5B)',      bg: 'rgba(63,122,91,.12)',    label: 'Satisfied' },
+    partially_satisfied: { fg: 'var(--amber,#B7791F)',     bg: 'var(--amber-bg,#F6EEDD)',label: 'Partial' },
+    not_satisfied:       { fg: 'var(--crit,#B4483C)',      bg: 'var(--crit-bg,#F6E7E4)', label: 'Not satisfied' },
+    creates_new_finding: { fg: 'var(--crit,#B4483C)',      bg: 'var(--crit-bg,#F6E7E4)', label: 'New finding surfaced' },
+    unable_to_determine: { fg: 'var(--muted,#4B585C)',     bg: 'var(--paper,#F6F3EC)',   label: 'Unable to determine' },
+  };
+  const REQ_STYLES = {
+    satisfied:           { color: 'var(--good,#3F7A5B)',  mark: '✓' },
+    not_satisfied:       { color: 'var(--crit,#B4483C)',  mark: '✕' },
+    unable_to_determine: { color: 'var(--muted,#4B585C)', mark: '?' },
+  };
+  const stringifyValue = (v) => {
+    if (v == null) return '—';
+    if (typeof v === 'string') return v.length > 90 ? v.slice(0, 90) + '…' : v;
+    try { return JSON.stringify(v).slice(0, 90); } catch (_) { return '—'; }
+  };
+  return (
+    <div style={{ marginBottom: 22, border: '1px solid var(--line,#E7E1D3)', borderRadius: 12, background: 'var(--card,#fff)', overflow: 'hidden' }}>
+      <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--line,#E7E1D3)', background: 'rgba(174,135,70,0.05)' }}>
+        <div style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', color: '#AE8746', marginBottom: 2 }}>Sovereign evidence</div>
+        <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)' }}>
+          Canonical facts and per-condition cure proofs — the underlying evidence layer PILOT computes on.
+        </div>
+      </div>
+      {twinCount > 0 && (
+        <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--line,#E7E1D3)' }}>
+          <button onClick={() => setOpenTwin((v) => !v)} style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'none', border: 'none', cursor: 'pointer', padding: 0, textAlign: 'left', width: '100%' }}>
+            <span style={{ fontSize: 14, fontWeight: 700 }}>Canonical facts ({twinCount})</span>
+            <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--muted,#4B585C)' }}>{openTwin ? 'hide' : 'show'}</span>
+          </button>
+          {openTwin && (
+            <table style={{ width: '100%', marginTop: 10, borderCollapse: 'collapse', fontSize: 12.5 }}>
+              <thead>
+                <tr style={{ textAlign: 'left', color: 'var(--muted,#4B585C)' }}>
+                  <th style={{ padding: '4px 6px' }}>Fact</th>
+                  <th style={{ padding: '4px 6px' }}>Accepted value</th>
+                  <th style={{ padding: '4px 6px' }}>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {twinFacts.map((f) => {
+                  const st = STATUS_STYLES[f.status] || STATUS_STYLES.observed;
+                  return (
+                    <tr key={f.fact_key} style={{ borderTop: '1px solid var(--line,#E7E1D3)' }}>
+                      <td style={{ padding: '5px 6px', color: 'var(--muted,#4B585C)' }}>{String(f.fact_key || '').replace(/_/g, ' ')}</td>
+                      <td style={{ padding: '5px 6px', overflowWrap: 'anywhere' }}>{stringifyValue(f.value_json && (f.value_json.value != null ? f.value_json.value : f.value_json))}</td>
+                      <td style={{ padding: '5px 6px' }}>
+                        <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: st.fg, background: st.bg, padding: '2px 7px', borderRadius: 6 }}>{st.label}</span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+      {cureCount > 0 && (
+        <div style={{ padding: '10px 14px' }}>
+          <button onClick={() => setOpenCures((v) => !v)} style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'none', border: 'none', cursor: 'pointer', padding: 0, textAlign: 'left', width: '100%' }}>
+            <span style={{ fontSize: 14, fontWeight: 700 }}>Condition cure proofs ({cureCount})</span>
+            <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--muted,#4B585C)' }}>{openCures ? 'hide' : 'show'}</span>
+          </button>
+          {openCures && (
+            <div style={{ marginTop: 10 }}>
+              {cureProofs.map((p) => {
+                const rs = RESULT_STYLES[p.result] || RESULT_STYLES.unable_to_determine;
+                const reqs = Array.isArray(p.requirements_json) ? p.requirements_json : [];
+                return (
+                  <div key={p.id} style={{ border: '1px solid var(--line,#E7E1D3)', borderRadius: 8, padding: 10, marginBottom: 8 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+                      <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: rs.fg, background: rs.bg, padding: '2px 7px', borderRadius: 6 }}>{rs.label}</span>
+                      {p.recommended_action && (
+                        <span style={{ fontSize: 11.5, color: 'var(--muted,#4B585C)' }}>· recommended: {String(p.recommended_action).replace(/_/g, ' ')}</span>
+                      )}
+                    </div>
+                    {p.reviewer_summary && (
+                      <div style={{ fontSize: 12.5, color: 'var(--ivory,#141B22)', marginBottom: 6 }}>{p.reviewer_summary}</div>
+                    )}
+                    {reqs.length > 0 && (
+                      <ul style={{ margin: 0, padding: 0, listStyle: 'none' }}>
+                        {reqs.map((r, idx) => {
+                          const s = REQ_STYLES[r.status] || REQ_STYLES.unable_to_determine;
+                          return (
+                            <li key={idx} style={{ fontSize: 12.5, padding: '2px 0', color: 'var(--ivory,#141B22)' }}>
+                              <span style={{ color: s.color, fontWeight: 700, marginRight: 6 }}>{s.mark}</span>
+                              <span>{r.label || r.id}</span>
+                              {r.reason && <span style={{ color: 'var(--muted,#4B585C)' }}> — {r.reason}</span>}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function UnderwritingPanel({ appId, docs = [], readOnly = false, canResolve = true, canWaive = true, onSummary }) {
   const [data, setData] = useState(null);
   const [appr, setAppr] = useState(null); // appraisal findings folded into this ONE findings section
@@ -988,6 +1113,16 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
           </div>
         );
       })()}
+
+      {/* Sovereign Cockpit — Canonical facts (twin) + Condition cure proofs
+          (Sovereign 1/4 + 2/4, owner-directed 2026-07-21). These two collapsible
+          sections surface the underlying evidence layer PILOT computes on:
+          canonical facts show WHICH source won on each underwriting value and
+          what the status is (verified / disputed / observed / human-confirmed);
+          cure proofs show, per condition, exactly which satisfaction
+          requirements a submitted document met and which it didn't. Both are
+          additive read-only — the classic findings list below still works. */}
+      <SovereignCockpit twinFacts={(data && data.twinFacts) || []} cureProofs={(data && data.cureProofs) || []} />
 
       {/* ALL open findings, in ONE place — exactly the set the roll-up counts, so the "2 warnings"
           chip maps to two visible, actionable items. A persisted per-document finding (has an id) is
