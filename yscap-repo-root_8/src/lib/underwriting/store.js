@@ -83,12 +83,12 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
   const { rows } = await client.query(
     `INSERT INTO document_extractions
        (document_id, application_id, borrower_id, doc_type, fields, ocr_engine, ai_model, page_count, confidence, status, reason,
-        analyzed_sha256, analyzer_version, subject_hash)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,
+        analyzed_sha256, analyzer_version, subject_hash, second_look)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
     [documentId, appId, borId, docType, JSON.stringify(safeFields),
      ext.ocrEngine || null, ext.aiModel || null, ext.pageCount || null,
      ext.confidence || null, ext.status || 'analyzed', ext.reason || null,
-     analyzedSha256 || null, analyzerVersion || null, subjectHash || null]);
+     analyzedSha256 || null, analyzerVersion || null, subjectHash || null, !!ext.secondLook]);
   const extractionId = rows[0].id;
 
   // 3. Insert findings.

@@ -35,7 +35,7 @@ const registry = require('../lib/underwriting/registry');
 const fileView = require('../lib/underwriting/file-view');
 const { tieoutForFile } = require('../lib/underwriting/file-review');
 const { underwriterActions } = require('../lib/underwriting/actions');
-const { falseAlarmReport } = require('../lib/underwriting/feedback');
+const { falseAlarmReport, readabilityReport } = require('../lib/underwriting/feedback');
 const { classify } = require('../lib/underwriting/classify');
 const { conditionsForDoc, purposeForDoc, docReadiness, fileConditionCoverage, docTypesForCode, expectedDocTypeForCode } = require('../lib/underwriting/condition-map');
 const { selectAutoReadQueue } = require('../lib/underwriting/auto-read');
@@ -149,7 +149,13 @@ router.get('/insights/feedback', async (req, res, next) => {
     const { rows } = await db.query(
       `SELECT code, severity, status, resolution FROM document_findings
         WHERE status IN ('resolved','dismissed','open')`);
-    res.json(falseAlarmReport(rows));
+    // READABILITY self-audit (Item 13): root-cause "why can't PILOT read certain documents." Scores
+    // the CURRENT read of each document (clean vs unreadable vs error) + how often the backup vision
+    // second-look (#537) rescued it, per document type. Attached alongside the false-alarm report so
+    // the existing shape is preserved (back-compat — old callers keep reading byCode/totals).
+    const ext = await db.query(
+      `SELECT doc_type, confidence, status, second_look FROM document_extractions WHERE is_current`);
+    res.json(Object.assign(falseAlarmReport(rows), { readability: readabilityReport(ext.rows) }));
   } catch (e) { next(e); }
 });
 
