@@ -143,6 +143,33 @@ function sowCells(state) {
   return cells;
 }
 
+// Per-line summary for the Scope-of-Work Excel + the super-admin line editor: one entry per ON line with its
+// BASE display name (label wins), its description (state.items[key].desc, or a custom line's desc), and its
+// total cents (Σ of the line's cells across units/sections). Uses the same authoritative sowCells() math, so
+// the Excel never diverges from what explodes to Sitewire. $0 lines ARE included here (the SOW shows them).
+function sowLineSummary(state) {
+  const items = (state && state.items) || {};
+  const custom = (state && state.custom) || [];
+  const byKey = new Map();
+  for (const c of sowCells(state)) {
+    const cur = byKey.get(c.sow_line_key) || 0;
+    byKey.set(c.sow_line_key, cur + (c.budgeted_cents || 0));
+  }
+  const out = [];
+  for (const [key, cents] of byKey) {
+    let desc = '';
+    if (key.indexOf('x:') === 0) {
+      const cu = custom.find((x) => 'x:' + String(x.id) === key);
+      desc = (cu && (cu.desc || cu.description)) ? String(cu.desc || cu.description) : '';
+    } else {
+      const it = items[key] || {};
+      desc = it.desc ? String(it.desc) : '';
+    }
+    out.push({ sow_line_key: key, name: lineName(state, key), desc, cents });
+  }
+  return out;
+}
+
 // Contingency + GC amounts from the saved state (mirror contingency()/gcFeeAmt()).
 function subtotalCents(cells) { return cells.reduce((s, c) => s + (c.budgeted_cents || 0), 0); }
 function contingencyCents(state, subCents) {
@@ -364,7 +391,7 @@ function reconcileToBudget(ex, budgetCents, tolCents = 100) {
 
 module.exports = {
   CATS, SENTINEL, CAT_LABELS, DUP_TAX_NAMES, catLabelOf, uniquifyNames,
-  unitCount, isMulti, lineName, sowCells,
+  unitCount, isMulti, lineName, sowCells, sowLineSummary,
   subtotalCents, contingencyCents, gcCents, mediaAnchors,
   explodeSow, reconcileToBudget, diffBudget, resolveCreatesAgainstLive, reverseReconcile,
 };

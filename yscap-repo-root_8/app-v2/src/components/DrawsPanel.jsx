@@ -222,9 +222,10 @@ export default function DrawsPanel({ appId }) {
               ))}
             </Section>
 
-            {/* SCOPE OF WORK — budget vs. drawn rollup. */}
+            {/* SCOPE OF WORK — budget vs. drawn rollup + (super-admin) line wording/description editor. */}
             <Section id="dsec-sow" title="Scope of Work — budget vs. drawn" defaultOpen={false}>
               <div className="dd-card" style={{ padding: 0, overflow: 'hidden' }}><RollupTable rollup={rollup} /></div>
+              <SowLineEditor appId={appId} />
             </Section>
 
             {/* MONEY — the ledger + retainage/waivers. */}
@@ -968,6 +969,87 @@ function Bar({ pct }) {
   return (
     <div style={{ height: 6, background: 'var(--line,#e6e0d4)', borderRadius: 4, overflow: 'hidden', minWidth: 60 }}>
       <div style={{ width: p + '%', height: '100%', background: p >= 100 ? 'var(--bad,#b04a3f)' : 'var(--teal,#2f7f86)' }} />
+    </div>
+  );
+}
+
+/* Super-admin Scope-of-Work line editor (owner-directed 2026-07-21). Only a super-admin sees it, and only
+   after clicking "Unlock editing" (frozen by default). Per line: change the WORDING + add a DESCRIPTION for
+   the investor — updates the real Scope of Work + its Excel, and the new wording syncs to Sitewire (a line
+   already drawn against keeps its Sitewire name). The description stays in our SOW + Excel (Sitewire's line
+   description is read-only for us). Renders nothing for non-super-admins or a file with no Scope of Work. */
+function SowLineEditor({ appId }) {
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState('');
+  const [msg, setMsg] = useState('');
+  const [editing, setEditing] = useState(null);
+  const [label, setLabel] = useState('');
+  const [desc, setDesc] = useState('');
+  const load = useCallback(() => { api.get(`/api/sitewire/files/${appId}/sow-lines`).then(setData).catch(() => setData(null)); }, [appId]);
+  useEffect(() => { load(); }, [load]);
+  if (!data || !data.available || !data.is_super_admin) return null;
+
+  async function setUnlock(unlocked) {
+    setBusy('lock'); setMsg('');
+    try { await api.post(`/api/sitewire/files/${appId}/sow-edit-lock`, { unlocked }); setEditing(null); load(); }
+    catch (e) { setMsg(e?.data?.error || e.message || 'That didn’t work.'); } finally { setBusy(''); }
+  }
+  function startEdit(l) { setEditing(l.sow_line_key); setLabel(l.name || ''); setDesc(l.desc || ''); setMsg(''); }
+  async function save() {
+    setBusy('save'); setMsg('');
+    try {
+      const r = await api.post(`/api/sitewire/files/${appId}/sow-line-edit`, { sow_line_key: editing, label, desc });
+      const sw = r.sitewire === 'pushed' ? ' New wording sent to Sitewire.'
+        : r.sitewire === 'parked' ? ' (A Sitewire sync review was opened so nothing is lost.)'
+        : r.sitewire === 'writes_off' ? ' (Sitewire writing is off — the wording will sync when it’s on.)'
+        : '';
+      setMsg('Saved to the Scope of Work + Excel.' + sw);
+      setEditing(null); load();
+    } catch (e) { setMsg(e?.data?.error || e.message || 'That didn’t work.'); } finally { setBusy(''); }
+  }
+  const inputStyle = { width: '100%', padding: '5px 7px', fontSize: 14, boxSizing: 'border-box' };
+
+  return (
+    <div className="dd-card" style={{ marginTop: 12 }}>
+      <div className="row between" style={{ gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div style={{ minWidth: 200, flex: '1 1 260px' }}>
+          <b>Edit line wording &amp; descriptions</b>
+          <div className="dd-sub" style={{ marginTop: 1 }}>Super-admin only. Changes update the Scope of Work + its Excel; new wording also syncs to Sitewire.</div>
+        </div>
+        <button className="btn btn-sm ghost" style={{ flex: '0 0 auto' }} disabled={busy === 'lock'}
+          onClick={() => setUnlock(!data.unlocked)}>{busy === 'lock' ? '…' : (data.unlocked ? 'Lock editing' : 'Unlock editing')}</button>
+      </div>
+
+      {!data.unlocked ? (
+        <div className="dd-sub" style={{ marginTop: 8 }}>Editing is frozen. Click <b>Unlock editing</b> to change a line’s wording or add a description.</div>
+      ) : (
+        <div style={{ marginTop: 8 }}>
+          {data.lines.map((l) => (
+            <div key={l.sow_line_key} style={{ borderTop: '1px solid var(--hairline,#e7e0d4)', padding: '8px 0' }}>
+              {editing === l.sow_line_key ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Line wording" maxLength={200} style={inputStyle} aria-label="Line wording" />
+                  <textarea value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="Description for the investor (optional)" maxLength={2000} rows={2} style={inputStyle} aria-label="Line description" />
+                  <div className="row" style={{ gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <button className="btn btn-sm" disabled={busy === 'save'} onClick={save}>{busy === 'save' ? 'Saving…' : 'Save'}</button>
+                    <button className="btn btn-sm ghost" onClick={() => setEditing(null)}>Cancel</button>
+                    {l.drawn_locked && <span className="dd-sub" style={{ color: 'var(--gold,#ae8746)' }}>Sitewire keeps this line’s name (already drawn) — the wording still updates our Scope of Work + Excel.</span>}
+                  </div>
+                </div>
+              ) : (
+                <div className="row between" style={{ gap: 10, alignItems: 'flex-start' }}>
+                  <div style={{ minWidth: 0, flex: '1 1 auto' }}>
+                    <div><b>{l.name}</b> <span className="dd-sub">· {l.amount}</span>{l.drawn_locked && <span className="dd-sub" style={{ color: 'var(--gold,#ae8746)' }}> · Sitewire name locked</span>}</div>
+                    {l.desc && <div className="dd-sub" style={{ marginTop: 1 }}>{l.desc}</div>}
+                  </div>
+                  <button className="btn btn-xs ghost" style={{ flex: '0 0 auto' }} onClick={() => startEdit(l)}>Edit</button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {msg && <div className="dd-sub" style={{ marginTop: 6 }}>{msg}</div>}
     </div>
   );
 }
