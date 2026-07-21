@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import EmailCenter from './EmailCenter.jsx';
+import FileSections, { Section } from './FileSections.jsx';
 
 /* Per-file construction-draw desk (staff). One place tying draws ↔ Scope of Work ↔
    construction budget: the unified per-line/per-unit rollup, each draw's per-line
@@ -103,6 +104,20 @@ export default function DrawsPanel({ appId }) {
     finally { setBusy(''); }
   }
 
+  // The left section rail for the (linked) draw desk — grouped like the loan file.
+  const drawSections = [
+    { id: 'dsec-overview', label: 'Overview', group: 'Draw' },
+    { id: 'dsec-draws', label: 'Draws', group: 'Draw', badge: draws.length || '' },
+    { id: 'dsec-sow', label: 'Scope of Work', group: 'Draw' },
+    { id: 'dsec-ledger', label: 'Money ledger', group: 'Money' },
+    { id: 'dsec-waivers', label: 'Retainage & waivers', group: 'Money' },
+    { id: 'dsec-request', label: 'Draw request & wire', group: 'Communication' },
+    { id: 'dsec-emails', label: 'Emails & activity', group: 'Communication' },
+    { id: 'dsec-docs', label: 'Documents & borrower', group: 'Communication' },
+    { id: 'dsec-changes', label: 'Change requests', group: 'Manage' },
+    { id: 'dsec-lifecycle', label: 'Project status', group: 'Manage' },
+  ];
+
   return (
     <div>
       {notLinked ? (
@@ -140,109 +155,108 @@ export default function DrawsPanel({ appId }) {
         <>
           {msg && <div className="dd-card" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)' }}>{msg}</div>}
 
-          {/* ---- header: status + released-vs-remaining meter + uniform KPI row (one cohesive card) ---- */}
-          <div className="dd-card" style={{ marginTop: 12 }}>
-            <div className="dd-card-h" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 10, marginBottom: 6 }}>
-              <div className="row" style={{ gap: 10, alignItems: 'center' }}>
-                <span className="dd-card-ic"><SdIcon name="rocket" /></span>
-                <div>
-                  <h3>Construction draws</h3>
-                  <div className="dd-sub" style={{ marginTop: 1 }}>
-                    Live in PILOT{managed_since ? ` since ${fmtDay(managed_since)}` : ''} — PILOT is the source of record: it follows the draw requests, delivers the inspection findings, and runs the approval + release pipeline.{go_live_date ? ` Go-live: ${fmtDay(go_live_date)}.` : ''}
+          {/* Redesigned draw desk: a sticky left section rail (like the loan file) + collapsible sections,
+              so the whole draw process is scannable without endless scrolling. Each section opens on demand;
+              a rail click jumps to it and expands it. */}
+          <FileSections sections={drawSections}>
+            {/* OVERVIEW — always open: status chips + released-vs-remaining meter + KPI row. */}
+            <Section id="dsec-overview" title="Overview" collapsible={false}>
+              <div className="dd-card">
+                <div className="dd-card-h" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 10, marginBottom: 6 }}>
+                  <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+                    <span className="dd-card-ic"><SdIcon name="rocket" /></span>
+                    <div>
+                      <h3>Construction draws</h3>
+                      <div className="dd-sub" style={{ marginTop: 1 }}>
+                        Live in PILOT{managed_since ? ` since ${fmtDay(managed_since)}` : ''} — PILOT is the source of record: it follows the draw requests, delivers the inspection findings, and runs the approval + release pipeline.{go_live_date ? ` Go-live: ${fmtDay(go_live_date)}.` : ''}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                    <span className={'dd-chip ' + (sw.enabled ? 'on' : 'off')}><span className="dot" />{sw.enabled ? 'Connected' : 'Sitewire off'}</span>
+                    {sw.enabled && <span className={'dd-chip ' + (sw.outbound ? 'on' : 'warn')}><span className="dot" />{sw.outbound ? 'Writing on' : 'Read-only'}</span>}
+                    {sw.dryrun && <span className="dd-chip warn"><span className="dot" />Dry-run</span>}
                   </div>
                 </div>
+                <div className="dd-hero-meter-top" style={{ marginTop: 10 }}>
+                  <span className="dd-hero-label">Released vs. remaining</span>
+                  <span className="dd-hero-pct">{pct}%</span>
+                </div>
+                <div className="dd-meter" style={{ height: 12 }} role="img" aria-label={`${pct}% of the construction budget released`}><i style={{ width: pct + '%' }} /></div>
+                <div style={{ marginTop: 16, display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gridAutoRows: '1fr' }}>
+                  <KpiTile label="Construction budget" value={usd(rollup.project.budget)} />
+                  <KpiTile label="Drawn (released)" value={usd(rollup.project.drawn)} sub={`${pct}% complete`} tone="teal" />
+                  <KpiTile label="Remaining" value={usd(rollup.project.remaining)} tone="gold" />
+                  <KpiTile label="In the pipeline" value={usd(rollup.project.requested_open)} sub="requested, not yet released" />
+                </div>
               </div>
-              <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                <span className={'dd-chip ' + (sw.enabled ? 'on' : 'off')}><span className="dot" />{sw.enabled ? 'Connected' : 'Sitewire off'}</span>
-                {sw.enabled && <span className={'dd-chip ' + (sw.outbound ? 'on' : 'warn')}><span className="dot" />{sw.outbound ? 'Writing on' : 'Read-only'}</span>}
-                {sw.dryrun && <span className="dd-chip warn"><span className="dot" />Dry-run</span>}
-              </div>
-            </div>
+              {writesOff && (
+                <div className="dd-card" style={{ marginTop: 12, borderLeft: '3px solid var(--gold,#ae8746)' }}>
+                  <b>Sitewire is turned off.</b>
+                  <div className="dd-sub" style={{ marginTop: 3 }}>
+                    Approving a draw syncs to Sitewire, so <b>Approve / Amend / Reopen</b>, setting approved amounts{readsOff ? ' and delivering findings' : ''} are paused until it's switched on{sw.enabled && !sw.outbound ? ' (reads are on; writing is still off)' : ''}. The money ledger, releases and records are kept in PILOT and still work.
+                  </div>
+                </div>
+              )}
+            </Section>
 
-            {/* released-vs-remaining meter */}
-            <div className="dd-hero-meter-top" style={{ marginTop: 10 }}>
-              <span className="dd-hero-label">Released vs. remaining</span>
-              <span className="dd-hero-pct">{pct}%</span>
-            </div>
-            <div className="dd-meter" style={{ height: 12 }} role="img" aria-label={`${pct}% of the construction budget released`}><i style={{ width: pct + '%' }} /></div>
+            {/* DRAWS — the main content, open by default. */}
+            <Section id="dsec-draws" title="Draws" defaultOpen badge={draws.length || ''}
+              action={draws.length > 0 ? (
+                <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                  <button className="btn btn-sm ghost" title="A PILOT-branded PDF of the whole construction project — schedule of values + every draw's inspection photos + notes."
+                    onClick={() => { const w = window.open('', '_blank'); act('projreport', async () => { await api.sitewireProjectReport(appId, 'staff', w); return { msg: 'Opened the whole-project report in a new tab.' }; }); }}>
+                    Whole-project report
+                  </button>
+                  <button className="btn btn-sm ghost" title="The same whole-project report, borrower-safe (no capital-partner name, no fee/net, no photo GPS). Generating it shares it with the borrower."
+                    onClick={() => { if (!window.confirm('Share the borrower-safe whole-project report with the borrower? They’ll be able to see it in their portal.')) return; const w = window.open('', '_blank'); act('projreportb', async () => { await api.sitewireProjectReport(appId, 'borrower', w); return { msg: 'Shared the borrower-safe whole-project report with the borrower.' }; }); }}>
+                    Borrower copy
+                  </button>
+                </div>
+              ) : null}>
+              {draws.length === 0 && <div className="muted">No draws yet on this file.</div>}
+              {draws.map((d) => (
+                <DrawCard key={d.sitewire_draw_id} appId={appId} draw={d} requests={reqsByDraw[d.sitewire_draw_id] || []}
+                  finding={findingByDraw[d.sitewire_draw_id]} busy={busy} act={act} reload={load} writesOff={writesOff} readsOff={readsOff} quickStatuses={quickStatuses} />
+              ))}
+            </Section>
 
-            {/* uniform KPI row — fixed value size so every tile matches (no per-box scaling) */}
-            <div style={{ marginTop: 16, display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gridAutoRows: '1fr' }}>
-              <KpiTile label="Construction budget" value={usd(rollup.project.budget)} />
-              <KpiTile label="Drawn (released)" value={usd(rollup.project.drawn)} sub={`${pct}% complete`} tone="teal" />
-              <KpiTile label="Remaining" value={usd(rollup.project.remaining)} tone="gold" />
-              <KpiTile label="In the pipeline" value={usd(rollup.project.requested_open)} sub="requested, not yet released" />
-            </div>
-          </div>
+            {/* SCOPE OF WORK — budget vs. drawn rollup. */}
+            <Section id="dsec-sow" title="Scope of Work — budget vs. drawn" defaultOpen={false}>
+              <div className="dd-card" style={{ padding: 0, overflow: 'hidden' }}><RollupTable rollup={rollup} /></div>
+            </Section>
 
-          {/* ---- Draw request & wire instructions (DocuSign) — visible throughout the draw process ---- */}
-          <DrawRequestCard appId={appId} />
+            {/* MONEY — the ledger + retainage/waivers. */}
+            <Section id="dsec-ledger" title="Money ledger" defaultOpen={false}>
+              <LedgerPanel appId={appId} ledger={ledger} draws={draws} retainage={retainage} onSaved={load} act={act} busy={busy} />
+            </Section>
+            <Section id="dsec-waivers" title="Retainage & lien waivers" defaultOpen={false}>
+              <LienWaivers appId={appId} enabled={lien_waivers_enabled} fileOverride={data.lien_waivers_file_override}
+                canSetup={can('platform_setup')} waivers={waivers} draws={draws} onChanged={load} />
+            </Section>
 
-          {/* ---- Sitewire borrower-invite status + resend ---- */}
-          <BorrowerInviteStatus appId={appId} writesOff={writesOff} readsOff={readsOff} />
+            {/* COMMUNICATION — draw request/wire, the unified email + activity, docs + borrower invite. */}
+            <Section id="dsec-request" title="Draw request & wire instructions" defaultOpen={false}>
+              <DrawRequestCard appId={appId} />
+            </Section>
+            <Section id="dsec-emails" title="Emails & activity" defaultOpen={false}>
+              <DrawEmailCenter appId={appId} />
+            </Section>
+            <Section id="dsec-docs" title="Documents & borrower invite" defaultOpen={false}>
+              <BorrowerInviteStatus appId={appId} writesOff={writesOff} readsOff={readsOff} />
+              <SitewireDocuments appId={appId} readsOff={readsOff} />
+            </Section>
 
-          {/* ---- Sitewire property documents (whatever's uploaded on Sitewire's side) ---- */}
-          <SitewireDocuments appId={appId} readsOff={readsOff} />
-
-          {/* ---- read-only notice when Sitewire writes are off (the default staged state) ---- */}
-          {writesOff && (
-            <div className="dd-card" style={{ marginTop: 12, borderLeft: '3px solid var(--gold,#ae8746)' }}>
-              <b>Sitewire is turned off.</b>
-              <div className="dd-sub" style={{ marginTop: 3 }}>
-                Approving a draw syncs to Sitewire, so <b>Approve / Amend / Reopen</b>, setting approved amounts{readsOff ? ' and delivering findings' : ''} are paused until it's switched on{sw.enabled && !sw.outbound ? ' (reads are on; writing is still off)' : ''}. The money ledger, releases and records are kept in PILOT and still work.
-              </div>
-            </div>
-          )}
-
-          {/* ---- lifecycle: finish the draw process / mark paid off / re-open ---- */}
-          <LifecycleControl appId={appId} link={link} writesOff={writesOff} onChanged={load} />
-
-          {/* ---- the unified per-line / per-unit rollup ---- */}
-          <div className="dd-card" style={{ marginTop: 12, padding: 0, overflow: 'hidden' }}>
-            <div className="dd-card-h" style={{ padding: '16px 18px 0' }}><span className="dd-card-ic"><SdIcon name="list" /></span><h3>Scope of Work — budget vs. drawn</h3></div>
-            <RollupTable rollup={rollup} />
-          </div>
-
-          {/* ---- draws ---- */}
-          <div className="row between" style={{ marginTop: 22, marginBottom: 6, alignItems: 'baseline', flexWrap: 'wrap', gap: 8 }}>
-            <h3 style={{ margin: 0 }}>Draws</h3>
-            {draws.length > 0 && (
-              <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-                <button className="btn btn-sm ghost" title="A PILOT-branded PDF of the whole construction project — schedule of values + every draw's inspection photos + notes."
-                  onClick={() => { const w = window.open('', '_blank'); act('projreport', async () => { await api.sitewireProjectReport(appId, 'staff', w); return { msg: 'Opened the whole-project report in a new tab.' }; }); }}>
-                  Whole-project report
-                </button>
-                <button className="btn btn-sm ghost" title="The same whole-project report, borrower-safe (no capital-partner name, no fee/net, no photo GPS). Generating it shares it with the borrower."
-                  onClick={() => { if (!window.confirm('Share the borrower-safe whole-project report with the borrower? They’ll be able to see it in their portal.')) return; const w = window.open('', '_blank'); act('projreportb', async () => { await api.sitewireProjectReport(appId, 'borrower', w); return { msg: 'Shared the borrower-safe whole-project report with the borrower.' }; }); }}>
-                  Borrower copy
-                </button>
-              </div>
-            )}
-          </div>
-          {draws.length === 0 && <div className="muted">No draws yet on this file.</div>}
-          {draws.map((d) => (
-            <DrawCard key={d.sitewire_draw_id} appId={appId} draw={d} requests={reqsByDraw[d.sitewire_draw_id] || []}
-              finding={findingByDraw[d.sitewire_draw_id]} busy={busy} act={act} reload={load} writesOff={writesOff} readsOff={readsOff} quickStatuses={quickStatuses} />
-          ))}
-
-          {/* ---- draw email center — the full Gmail-style inbox, scoped to draw alerts ---- */}
-          <DrawEmailCenter appId={appId} />
-
-          {/* ---- money ledger ---- */}
-          <LedgerPanel appId={appId} ledger={ledger} draws={draws} retainage={retainage} onSaved={load} act={act} busy={busy} />
-
-          {/* ---- lien waivers — OFF by default; opt in per project ---- */}
-          <LienWaivers appId={appId} enabled={lien_waivers_enabled} fileOverride={data.lien_waivers_file_override}
-            canSetup={can('platform_setup')} waivers={waivers} draws={draws} onChanged={load} />
-
-          {/* ---- Scope-of-Work reallocations ---- */}
-          <ChangeRequests appId={appId} items={change_requests} busy={busy} act={act} />
-
-          {/* ---- audit trail ---- */}
-          <ActivityTrail appId={appId} />
-
-          {/* ---- reset / re-push (testing): unlink + start the draw process over ---- */}
-          <ResetDrawControl appId={appId} onChanged={load} />
+            {/* MANAGE — reallocations, project status + controls. */}
+            <Section id="dsec-changes" title="Scope-of-Work change requests" defaultOpen={false}>
+              <ChangeRequests appId={appId} items={change_requests} busy={busy} act={act} />
+            </Section>
+            <Section id="dsec-lifecycle" title="Project status & controls" defaultOpen={false}>
+              <LifecycleControl appId={appId} link={link} writesOff={writesOff} onChanged={load} />
+              <ActivityTrail appId={appId} />
+              <ResetDrawControl appId={appId} onChanged={load} />
+            </Section>
+          </FileSections>
         </>
       )}
     </div>
