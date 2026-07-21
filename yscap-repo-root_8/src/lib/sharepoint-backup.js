@@ -59,7 +59,19 @@ const PACING_MS = 300;             // between uploads — keeps Graph bursts pol
 // prior of the SAME report identity. So it takes the REGEN path (settle superseded copies without a Version-N
 // shuffle, land in the category root) exactly like tpr_export / track_record_html — never the human Version-N
 // path, which would churn the mirror every time a draw changes.
-const REGEN_KIND_SQL = `(d.doc_kind = 'track_record_html' OR d.doc_kind = 'tpr_export' OR d.doc_kind = 'draw_inspection_report' OR d.doc_kind LIKE '%\\_export')`;
+// NULL-SAFE (root fix 2026-07-21): a bare `d.doc_kind` here is a SQL three-valued-
+// logic trap. For an ORDINARY upload doc_kind IS NULL, so `NULL = 'x'` / `NULL LIKE
+// '…'` are NULL (not FALSE), making this whole expression NULL. Fed into the drain
+// + stray-net regen-skip guard `NOT (REGEN_KIND_SQL AND is_current=false)`, a doc
+// with doc_kind NULL AND is_current=false evaluates to `NOT(NULL)=NULL` → the row
+// is FILTERED OUT of BOTH pendingBatch and neverAttemptedStrays, yet stuckDocuments/
+// reconciliation (no regen guard) still count it → it sat "(not yet attempted)" for
+// hours (a superseded insurance PDF, etc.) until the 12h escalation force-attempted
+// it. COALESCE(d.doc_kind,'') makes this strictly TRUE/FALSE, matching the JS
+// isRegenKind() below and NEVER_MIRROR_SQL, so a doc_kind-NULL doc is correctly
+// non-regen (FALSE) and the guard becomes `NOT(FALSE AND …)=TRUE` → selected +
+// mirrored within seconds. Every consumer derives from this ONE constant.
+const REGEN_KIND_SQL = `(COALESCE(d.doc_kind,'') = 'track_record_html' OR COALESCE(d.doc_kind,'') = 'tpr_export' OR COALESCE(d.doc_kind,'') = 'draw_inspection_report' OR COALESCE(d.doc_kind,'') LIKE '%\\_export')`;
 function isRegenKind(k) { return k === 'track_record_html' || k === 'tpr_export' || k === 'draw_inspection_report' || /_export$/.test(String(k || '')); }
 // ONE definition of "deliberately NEVER mirrored to SharePoint" (owner-directed).
 // The drain-exclusion SQL, the settle pass, AND the upload chokepoint ALL derive
@@ -1986,7 +1998,15 @@ async function stuckDocuments(limit = 25) {
 function stuckEscalateHours() {
   const slo = Number(process.env.SHAREPOINT_BACKLOG_SLO_HOURS || 6);
   const v = Number(process.env.SHAREPOINT_STUCK_ESCALATE_HOURS || 0);
-  return v > 0 ? v : Math.max(12, slo * 2);
+  // Belt-and-suspenders (2026-07-21): escalate at the SAME threshold the alert
+  // fires, not 2x later. checkBacklogSlo() calls escalateStuckDocs() before EVERY
+  // alert, so a never-tried doc is force-attempted the instant it breaches — it
+  // then mirrors or yields a REAL error (and usually drops out of the alert),
+  // instead of sitting "(not yet attempted)" for the 6h→12h window. So even if a
+  // FUTURE selection bug ever strands a doc again, it self-heals when we'd alert,
+  // never for 30h. The primary fix is the NULL-safe REGEN_KIND_SQL; this is the
+  // second line of defense. Env override preserved.
+  return v > 0 ? v : Math.max(1, slo);
 }
 // Force ONE document through the mirror, bypassing pendingBatch selection, with
 // a hard timeout so a hanging upload (a poison-pill file) can't strand the doc
@@ -2343,7 +2363,7 @@ module.exports = {
   verifyOnce, drainVerify, settleSupersededSnapshots, isRegenKind,
   reconciliation, checkBacklogSlo, stuckDocuments, escalateStuckDocs,
   classifyMirrorError, forceAttemptDoc,
-  neverAttemptedStrays, explainExclusion,
+  neverAttemptedStrays, pendingBatch, explainExclusion,
   sloSignature, claimSloAlert, clearSloAlert,
   claimAlert, clearAlert,
   withTimeout,
