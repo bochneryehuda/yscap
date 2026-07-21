@@ -20,6 +20,8 @@ const { redactPII } = require('../lib/redact');
 const { serveDocument } = require('../lib/serve-document');
 const { decodeUploadBase64, safeFilename } = require('../lib/upload-bytes');
 const pricing = require('../lib/pricing');
+const manualProgram = require('../lib/manual-program');
+const workflowAuto = require('../lib/workflow-automation');
 const { persistProductRegistration } = require('../lib/product-registration');
 const { syncExperienceChecklistForApplication, syncExperienceChecklistForBorrower, RECENT_EXIT_SQL } = require('../lib/experience');
 const llcLib = require('../lib/llc');
@@ -864,6 +866,27 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const total = quote.sizing ? quote.sizing.totalLoan : 0;
     if (!(total > 0)) return refuse(422, { error: 'no loan sized', quote: stripQuoteInternal(quote) }, 'no_loan_sized', { program });
 
+    // Owner-directed 2026-07-21: a MANUAL result is NOT eligible as-is — it is a
+    // manual-review EXCEPTION (below the $100,000 minimum, over the maximum, or any
+    // other guideline exception the engine flags). A borrower can NEVER self-confirm
+    // such terms: block the plain register (the portal then offers "Submit exception
+    // request") and, only when they explicitly submit the exception, register it as
+    // pending and open a super-admin escalation. The borrower is not sent terms
+    // unless a super-admin approves it.
+    const submitException = !!b.submitException;
+    const manualReasons = (quote.reasons || [])
+      .filter((r) => r && r.level === 'MANUAL').map((r) => r.msg).filter(Boolean);
+    if (quote.status === 'MANUAL' && !submitException) {
+      return refuse(422, {
+        error: 'exception_required',
+        code: 'exception_required',
+        message: `This scenario isn’t eligible as-is on the ${pricing.PROGRAM_LABEL[program]}. It needs a manual-review exception: ${manualReasons.join('; ') || 'a guideline exception'}. Submit an exception request and your loan team will review it — you won’t receive terms unless it’s approved.`,
+        reasons: quote.reasons, quote: stripQuoteInternal(quote),
+        exceptionRequired: true, manualReasons,
+      }, 'exception_required', { program, manualReasons });
+    }
+    const needsEscalation = manualProgram.needsSuperAdminApproval({ program, status: quote.status });
+
     // Superseded terms, captured before the new registration lands — so the
     // audit trail / Activity feed can say exactly what the reprice changed.
     const prevQ = await db.query(
@@ -881,6 +904,24 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       });
       regId = reg.id;
       economicsChanged = reg.economicsChanged;
+      // A borrower-submitted exception (MANUAL) opens a super-admin escalation and
+      // stays pending until approved; a clean product closes any stale escalation.
+      if (needsEscalation) {
+        await manualProgram.openEscalation(client, {
+          appId, registrationId: regId, assetMonths: null, overrides: {},
+          summary: {
+            kind: 'manual_review', program, status: quote.status,
+            totalLoan: total, noteRate: quote.noteRate,
+            acqLtvPct: quote.sizing ? quote.sizing.acqLtvPct : null,
+            arvPct: quote.sizing ? quote.sizing.arvPct : null,
+            ltcPct: quote.sizing ? quote.sizing.ltcPct : null,
+            manualReasons, requestedByBorrower: true,
+          },
+          requestedBy: null,
+        });
+      } else {
+        await manualProgram.closePendingForApp(client, appId);
+      }
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK'); throw e; }
     finally { client.release(); }
@@ -942,27 +983,38 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
           link: `/internal/app/${appId}`, ctaLabel: 'Open the loan file',
         });
       // The borrower gets the SAME rich, borrower-safe loan-terms email as on the
-      // staff register path — but ONLY when a headline number actually changed
-      // (owner-directed 2026-07-20): a re-register with the same loan amount /
-      // rate / cash-to-close / term / program is an internal no-op and must not
-      // nudge the borrower again. The team notice above still fires.
-      if (economicsChanged) try {
-        let officer = null;
-        if (row.loan_officer_id) {
-          const o = await db.query(`SELECT full_name, title, email, phone, cell, nmls FROM staff_users WHERE id=$1`, [row.loan_officer_id]);
-          if (o.rows[0]) officer = { name: o.rows[0].full_name, title: o.rows[0].title, email: o.rows[0].email, phone: o.rows[0].cell || o.rows[0].phone, nmls: o.rows[0].nmls };
-        }
-        await notify.notifyAppBorrowers(appId, {
-          ...require('../lib/product-registration').borrowerTermsEmail({ ctx, quote, total, termMonths: inputs && inputs.term, officer }),
-          applicationId: appId,
-          link: `/app/${appId}`,
-          from: officer ? require('../lib/email').fromWithName(officer.name) : null,
-          replyTo: officer ? officer.email : null,
-        });
-      } catch (_) { /* borrower terms email is best-effort */ }
+      // staff register path — but ONLY when (a) a headline number actually changed
+      // (owner-directed 2026-07-20 — a same-numbers re-register is a no-op) AND
+      // (b) the registration does NOT need super-admin approval (owner-directed
+      // 2026-07-21 — a manual-review exception is confirmed to the borrower ONLY
+      // after a super-admin approves it). The team notice above always fires.
+      if (economicsChanged && !needsEscalation) {
+        try { await require('../lib/terms-notify').sendBorrowerTerms(appId, { quote, total, termMonths: inputs && inputs.term }); }
+        catch (_) { /* borrower terms email is best-effort */ }
+      }
+      // Borrower submitted a manual-review exception → alert the admins/super-admins
+      // that it's waiting in the Escalations box AND raise it into the super-admin
+      // Workflow (best-effort).
+      if (needsEscalation) {
+        try {
+          await notify.notifyAdmins({
+            type: 'manual_escalation',
+            title: 'Exception request needs super-admin approval',
+            body: `The borrower submitted a ${pricing.PROGRAM_LABEL[program]} exception request on ${ctx ? ctx.label : (row.ys_loan_number || 'a file')} (${manualReasons.join('; ') || 'guideline exception'}) — it’s waiting for super-admin approval in the Escalations box. No terms are sent unless it’s approved. Loan amount ${money(total)}.`,
+            meta: (ctx && ctx.meta) || undefined, applicationId: appId,
+            link: '/internal/escalations', ctaLabel: 'Open the Escalations box',
+          });
+        } catch (_) { /* best-effort */ }
+        try {
+          const wfNote = `${pricing.PROGRAM_LABEL[program]} — borrower exception request: ${manualReasons.join('; ') || 'guideline exception'}. ${money(total)}. Review and approve/decline it in the Escalations box.`;
+          await workflowAuto.onEscalationOpened(appId, { fromStaffId: null, note: wfNote });
+        } catch (_) { /* best-effort */ }
+      } else {
+        workflowAuto.closeEscalationWorkflow(appId, 'Re-registered as eligible').catch(() => {});
+      }
     } catch (_) {}
 
-    res.status(201).json({ ok: true, registrationId: regId, quote: stripQuoteInternal(quote) });
+    res.status(201).json({ ok: true, registrationId: regId, quote: stripQuoteInternal(quote), pendingApproval: needsEscalation });
   } catch (e) { console.error('[borrower pricing]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 

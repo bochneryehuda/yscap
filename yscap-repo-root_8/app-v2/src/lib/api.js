@@ -218,7 +218,7 @@ export const api = {
   requestDraw:  (id) => req('POST', `/api/borrower/applications/${id}/request-draw`),
   borrowerPricing:      (appId) => req('GET', `/api/borrower/applications/${appId}/pricing`),
   borrowerPricingQuote: (appId, overrides) => req('POST', `/api/borrower/applications/${appId}/pricing/quote`, { overrides }),
-  borrowerRegisterProduct: (appId, program, overrides, adminKey, econVersion) => req('POST', `/api/borrower/applications/${appId}/pricing/register`, { program, overrides, adminKey, econVersion }),
+  borrowerRegisterProduct: (appId, program, overrides, adminKey, econVersion, submitException) => req('POST', `/api/borrower/applications/${appId}/pricing/register`, { program, overrides, adminKey, econVersion, submitException }),
   checklist:    (id) => req('GET', `/api/borrower/applications/${id}/checklist`),
   conditions:   (id) => req('GET', `/api/borrower/applications/${id}/conditions`),
   // Borrower change-request sandbox (S5-03) — borrower side. List their requests,
@@ -436,7 +436,7 @@ export const api = {
   staffExportPipeline: (params) => download(`/api/staff/applications/export${qs(params)}`),
   staffPricing:      (appId) => req('GET', `/api/staff/applications/${appId}/pricing`),
   staffPricingQuote: (appId, overrides) => req('POST', `/api/staff/applications/${appId}/pricing/quote`, { overrides }),
-  staffRegisterProduct: (appId, program, overrides, econVersion, assetMonths) => req('POST', `/api/staff/applications/${appId}/pricing/register`, { program, overrides, econVersion, assetMonths }),
+  staffRegisterProduct: (appId, program, overrides, econVersion, assetMonths, submitException) => req('POST', `/api/staff/applications/${appId}/pricing/register`, { program, overrides, econVersion, assetMonths, submitException }),
   // Manual Program admin config + the super-admin escalation box.
   manualProgramSettings:     () => req('GET', '/api/admin/manual-programs/settings'),
   saveManualProgramSettings: (b) => req('PUT', '/api/admin/manual-programs/settings', b),

@@ -84,7 +84,7 @@ export default function StaffEscalations() {
     setBusy(true);
     try {
       await api.decideManualEscalation(id, decision, notes[id] || '');
-      flash(true, `Manual product ${decision === 'approved' ? 'approved' : 'declined'}.`);
+      flash(true, `Exception ${decision === 'approved' ? 'approved — the borrower will be sent their terms' : 'declined'}.`);
       await loadEscalations();
     } catch (e) { flash(false, e.message || 'could not record the decision'); }
     finally { setBusy(false); }
@@ -171,13 +171,23 @@ export default function StaffEscalations() {
                     {r.property_address ? ` · ${fmtAddr(r.property_address)}` : ''}
                   </div>
                   <div className="muted small" style={{ marginTop: 4 }}>
-                    Manual Program · {money(s.totalLoan != null ? s.totalLoan : r.loan_amount)} loan
+                    {s.kind === 'manual_review'
+                      ? `${s.program === 'gold' ? 'Gold Standard' : 'Standard'} — manual-review exception`
+                      : 'Manual Program'}
+                    {' · '}{money(s.totalLoan != null ? s.totalLoan : r.loan_amount)} loan
                     {s.noteRate != null ? ` @ ${(Number(s.noteRate) * 100).toFixed(2)}%` : ''}
-                    {' · '}{r.asset_months != null ? `${r.asset_months} month${r.asset_months === 1 ? '' : 's'} liquidity` : ''}
+                    {r.asset_months != null ? ` · ${r.asset_months} month${r.asset_months === 1 ? '' : 's'} liquidity` : ''}
                   </div>
+                  {Array.isArray(s.manualReasons) && s.manualReasons.length > 0 && (
+                    <div className="muted small" style={{ marginTop: 2 }}>
+                      Why it needs an exception: {s.manualReasons.join('; ')}
+                    </div>
+                  )}
                   <div className="muted small" style={{ marginTop: 2 }}>
-                    Leverage: acq LTV {pctOf(s.acqLtvPct)} · ARV {pctOf(s.arvPct)} · LTC {pctOf(s.ltcPct)}
-                    {r.requested_by_name ? ` · requested by ${r.requested_by_name}` : ''}
+                    {s.kind === 'manual_review'
+                      ? `Leverage: ${pctOf(s.acqLtvPct)} as-is · ${pctOf(s.arvPct)} ARV · ${pctOf(s.ltcPct)} LTC`
+                      : `Leverage: acq LTV ${pctOf(s.acqLtvPct)} · ARV ${pctOf(s.arvPct)} · LTC ${pctOf(s.ltcPct)}`}
+                    {r.requested_by_name ? ` · requested by ${r.requested_by_name}` : (s.requestedByBorrower ? ' · requested by the borrower' : '')}
                   </div>
                 </div>
                 <span className={`ts-badge ${r.status === 'pending' ? 'warn' : r.status === 'approved' ? 'ok' : 'err'}`}>{r.status}</span>

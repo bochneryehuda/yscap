@@ -144,6 +144,7 @@ export default function StaffWorkflow() {
                           {it.sla_state === 'overdue' ? 'Overdue' : ageText(it.age_seconds)}</span>
                         <span className="wf-acts">
                           {it.status === 'open' && <button className="btn ghost small" disabled={busy === it.id} onClick={() => pickup(it.id)}>Pick up</button>}
+                          {it.submission_type === 'escalation' && <Link className="btn primary small" to="/internal/escalations" title="Review the exception request and approve or decline it">Review exception</Link>}
                           <button className="btn primary small" disabled={busy === it.id} onClick={() => { setReturning(returning === it.id ? null : it.id); setOutcome(''); setNote(''); }}>Send back</button>
                           <Link className="btn ghost small" to={`/internal/app/${it.application_id}`}>Open</Link>
                         </span>
