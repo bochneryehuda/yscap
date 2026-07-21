@@ -612,9 +612,198 @@ async function supersedeObservationsForDocument(client, documentId, reason) {
   }
 }
 
+// -------------------------------------------------------------------------
+// EXTRACTED_FIELD_MAP — per (doc_type, extracted_field), the fact_key that
+// observation covers. Populated across the document types PILOT extracts.
+// A field not listed is IGNORED (no observation recorded) — new fact keys
+// require deliberate wiring. Kept next to the reconciliation logic so it's
+// obvious which extractions flow into the twin.
+// -------------------------------------------------------------------------
+const EXTRACTED_FIELD_MAP = Object.freeze({
+  government_id: {
+    name:            FACT_KEYS.BORROWER_NAME,
+    dateOfBirth:     FACT_KEYS.BORROWER_DOB,
+    address:         FACT_KEYS.BORROWER_ADDRESS,
+  },
+  purchase_contract: {
+    price:           FACT_KEYS.PURCHASE_PRICE,
+    propertyAddress: FACT_KEYS.PROPERTY_ADDRESS,
+    closingDate:     FACT_KEYS.CLOSING_DATE,
+    buyerName:       FACT_KEYS.ENTITY_NAME,
+  },
+  contract_amendment: {
+    price:           FACT_KEYS.PURCHASE_PRICE,
+    closingDate:     FACT_KEYS.CLOSING_DATE,
+  },
+  title: {
+    propertyAddress: FACT_KEYS.PROPERTY_ADDRESS,
+    vesting:         FACT_KEYS.TITLE_VESTING,
+    liens:           FACT_KEYS.TITLE_LIENS,
+  },
+  appraisal: {
+    propertyAddress: FACT_KEYS.PROPERTY_ADDRESS,
+    propertyType:    FACT_KEYS.PROPERTY_TYPE,
+    units:           FACT_KEYS.PROPERTY_UNITS,
+    yearBuilt:       FACT_KEYS.PROPERTY_YEAR_BUILT,
+    asIsValue:       FACT_KEYS.APPRAISAL_AS_IS,
+    arv:             FACT_KEYS.APPRAISAL_ARV,
+    marketRent:      FACT_KEYS.APPRAISAL_RENT,
+  },
+  insurance: {
+    insuredName:     FACT_KEYS.INSURANCE_INSURED,
+    coverageAmount:  FACT_KEYS.INSURANCE_COVERAGE,
+    effectiveDate:   FACT_KEYS.INSURANCE_EFFECTIVE,
+    propertyAddress: FACT_KEYS.PROPERTY_ADDRESS,
+  },
+  flood: {
+    floodZone:       FACT_KEYS.PROPERTY_FLOOD_ZONE,
+    propertyAddress: FACT_KEYS.PROPERTY_ADDRESS,
+  },
+  llc_formation: {
+    entityName:      FACT_KEYS.ENTITY_NAME,
+    formationDate:   FACT_KEYS.ENTITY_FORMATION_DATE,
+    state:           FACT_KEYS.ENTITY_STATE,
+  },
+  operating_agreement: {
+    entityName:      FACT_KEYS.ENTITY_NAME,
+  },
+  ein_letter: {
+    entityName:      FACT_KEYS.ENTITY_NAME,
+    ein:             FACT_KEYS.ENTITY_EIN,
+  },
+  good_standing: {
+    entityName:      FACT_KEYS.ENTITY_NAME,
+    goodStanding:    FACT_KEYS.ENTITY_GOOD_STANDING,
+  },
+  bank_statement: {
+    accountOwner:    FACT_KEYS.BANK_ACCOUNT_OWNER,
+    endingBalance:   FACT_KEYS.BANK_ENDING_BALANCE,
+  },
+  voided_check: {
+    accountOwner:    FACT_KEYS.BANK_ACCOUNT_OWNER,
+  },
+  credit_report: {
+    borrowerName:    FACT_KEYS.BORROWER_NAME,
+    fico:            FACT_KEYS.BORROWER_FICO,
+  },
+  background_report: {
+    subjectName:     FACT_KEYS.OFAC_SUBJECT,
+    ofacResult:      FACT_KEYS.OFAC_RESULT,
+  },
+  signed_application: {
+    loanAmount:      FACT_KEYS.LOAN_AMOUNT,
+    borrowerName:    FACT_KEYS.BORROWER_NAME,
+  },
+  signed_term_sheet: {
+    loanAmount:      FACT_KEYS.LOAN_AMOUNT,
+    noteRate:        FACT_KEYS.LOAN_RATE,
+    term:            FACT_KEYS.LOAN_TERM_MONTHS,
+  },
+  settlement: {
+    purchasePrice:   FACT_KEYS.PURCHASE_PRICE,
+    loanAmount:      FACT_KEYS.LOAN_AMOUNT,
+    propertyAddress: FACT_KEYS.PROPERTY_ADDRESS,
+    closingDate:     FACT_KEYS.CLOSING_DATE,
+  },
+});
+
+/**
+ * Wire an extraction into the twin: for every extracted field the map covers,
+ * record a fact observation. Called from the extraction persist path.
+ * Best-effort at the call site — a twin recording error never blocks an
+ * extraction from persisting.
+ *   opts.appId, opts.documentId, opts.docType, opts.extractionId — required
+ *   opts.fields — the extraction's field map (raw values before masking)
+ *   opts.ocrEngine, opts.aiModel, opts.confidence — provenance
+ *   opts.pageNumberFor(field) — optional function returning the page number
+ *     the field was seen on (if the extractor knows). Defaults to null.
+ */
+async function recordFactsFromExtraction(client, opts = {}) {
+  const { appId, documentId, docType, extractionId, fields } = opts;
+  if (!appId || !docType || !extractionId || !fields || typeof fields !== 'object') return { recorded: 0 };
+  const map = EXTRACTED_FIELD_MAP[docType];
+  if (!map) return { recorded: 0 };
+  const pageNumberFor = typeof opts.pageNumberFor === 'function' ? opts.pageNumberFor : () => null;
+  let recorded = 0;
+  for (const [extractedField, factKey] of Object.entries(map)) {
+    const value = fields[extractedField];
+    if (value == null || value === '') continue;
+    try {
+      await recordObservation(client, {
+        appId, factKey,
+        sourceType: 'document', sourceId: docType,
+        documentId, extractionId,
+        pageNumber: pageNumberFor(extractedField),
+        rawValue: typeof value === 'object' ? JSON.stringify(value) : String(value),
+        valueJson: value,
+        ocrEngine: opts.ocrEngine || null,
+        extractionEngine: opts.aiModel || null,
+        extractionConfidence: confidenceToNumber(opts.confidence),
+        reason: `${docType} extraction`,
+      });
+      recorded += 1;
+    } catch (_) { /* one bad field never blocks the rest */ }
+  }
+  return { recorded };
+}
+
+function confidenceToNumber(v) {
+  if (v == null) return null;
+  if (typeof v === 'number') return isFinite(v) ? v : null;
+  const s = String(v).toLowerCase();
+  if (s === 'definite') return 0.95;
+  if (s === 'partial') return 0.7;
+  if (s === 'unreadable') return 0.2;
+  const n = parseFloat(s);
+  return isFinite(n) ? n : null;
+}
+
+/**
+ * Record a batch of LOS field observations for a file — used when the
+ * application row itself is (re)written (staff or borrower edit, ClickUp
+ * inbound). One observation per (fact_key, current-value). Called
+ * best-effort from write endpoints.
+ */
+async function recordLosFieldFacts(client, appId, appRow) {
+  if (!appId || !appRow || typeof appRow !== 'object') return { recorded: 0 };
+  const mapping = [
+    ['loan_amount',               FACT_KEYS.LOAN_AMOUNT,        'applications.loan_amount'],
+    ['purchase_price',            FACT_KEYS.PURCHASE_PRICE,     'applications.purchase_price'],
+    ['as_is_value',               FACT_KEYS.APPRAISAL_AS_IS,    'applications.as_is_value'],
+    ['arv',                       FACT_KEYS.APPRAISAL_ARV,      'applications.arv'],
+    ['rehab_budget',              FACT_KEYS.REHAB_BUDGET,       'applications.rehab_budget'],
+    ['assignment_fee',            FACT_KEYS.ASSIGNMENT_FEE,     'applications.assignment_fee'],
+    ['underlying_contract_price', FACT_KEYS.UNDERLYING_PRICE,   'applications.underlying_contract_price'],
+    ['property_type',             FACT_KEYS.PROPERTY_TYPE,      'applications.property_type'],
+    ['units',                     FACT_KEYS.PROPERTY_UNITS,     'applications.units'],
+    ['property_address',          FACT_KEYS.PROPERTY_ADDRESS,   'applications.property_address'],
+    ['program',                   FACT_KEYS.LOAN_PROGRAM,       'applications.program'],
+    ['loan_type',                 FACT_KEYS.LOAN_TYPE,          'applications.loan_type'],
+    ['fico',                      FACT_KEYS.BORROWER_FICO,      'applications.fico'],
+  ];
+  let recorded = 0;
+  for (const [col, factKey, sourceId] of mapping) {
+    const v = appRow[col];
+    if (v == null || v === '') continue;
+    try {
+      await recordObservation(client, {
+        appId, factKey,
+        sourceType: 'los_field', sourceId,
+        rawValue: typeof v === 'object' ? JSON.stringify(v) : String(v),
+        valueJson: v,
+        reason: 'LOS field write',
+      });
+      recorded += 1;
+    } catch (_) { /* per-field failures don't stop the loop */ }
+  }
+  return { recorded };
+}
+
 module.exports = {
   FACT_KEYS, SOURCE_HIERARCHY, NORMALIZERS, normalize,
+  EXTRACTED_FIELD_MAP,
   recordObservation, reconcile, confirmByHuman,
+  recordFactsFromExtraction, recordLosFieldFacts,
   factsForFile, factWithHistory, supersedeObservationsForDocument,
   _internals: { pickWinning },
 };

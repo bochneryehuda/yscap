@@ -91,6 +91,23 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
      analyzedSha256 || null, analyzerVersion || null, subjectHash || null, !!ext.secondLook]);
   const extractionId = rows[0].id;
 
+  // 2b. Loan Digital Twin (owner-directed 2026-07-21, Sovereign 1/4): for every
+  // extracted field the twin's EXTRACTED_FIELD_MAP recognizes for this doc_type
+  // (borrower_name from a government_id, property_address from a title, arv
+  // from an appraisal, ...), record a fact observation and reconcile the
+  // canonical fact. Best-effort — twin recording never blocks an extraction
+  // from persisting. Uses the ORIGINAL unmasked fields (safeFields is masked
+  // for storage; the twin records the real values behind its own audit trail).
+  try {
+    await require('./twin').recordFactsFromExtraction(client, {
+      appId, documentId, docType, extractionId,
+      fields: ext.fields || {},
+      ocrEngine: ext.ocrEngine || null,
+      aiModel: ext.aiModel || null,
+      confidence: ext.confidence || null,
+    });
+  } catch (_) { /* twin is additive — never blocks the extraction */ }
+
   // 3. Insert findings.
   const findingIds = [];
   for (const f of (findings || [])) {
