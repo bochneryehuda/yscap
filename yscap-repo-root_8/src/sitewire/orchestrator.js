@@ -518,6 +518,18 @@ async function pushFile(appId, opts = {}) {
   // push the budget/job-items via the crosswalk. PILOT only ever manages properties it created, so the
   // crosswalk is always PILOT's own (born on this push) — a clean explode → create → bind → verify.
   const budgetResult = await pushBudget(appId, budgetId, ex, budgetCents);
+
+  // Auto-push the 3 property documents (appraisal PDF + Scope of Work Excel + Scope of Work PDF) into the
+  // Sitewire property's Documents tab. There is NO API upload endpoint, so this uses the website "browser
+  // robot" (doc-push.js → web-client.js). FIRE-AND-FORGET + FULLY isolated: the document upload (a website
+  // login + up to 3 uploads) must never make the caller — e.g. the coordinator's Start-draw button — WAIT,
+  // and a failure must never fail/reverse/unbind the property push. It self-gates on SITEWIRE_DOCS_ENABLED
+  // and parks on its own errors. Lazy-required to avoid a require cycle (doc-push requires this orchestrator).
+  try {
+    Promise.resolve(require('./doc-push').pushDocuments(appId, { source: 'auto_on_push' }))
+      .catch((e) => console.warn(`[sitewire] auto document push failed (app=${appId}, non-fatal): ${e && e.message}`));
+  } catch (e) { console.warn(`[sitewire] auto document push could not start (app=${appId}, non-fatal): ${e && e.message}`); }
+
   return { ok: true, propertyId, budgetId, budget: budgetResult };
 }
 
@@ -934,8 +946,8 @@ async function updatePropertyControls(appId, changes = {}, staffId = null) {
 
 /**
  * Read the LIVE Sitewire property (managed-only) so the desk can show its real current settings and offer the
- * controls above (inactive / accepting_draws / sitewire_review / inspection_method are read straight off the
- * returned property). The raw property object is also surfaced in the UI's advanced view. Never throws —
+ * controls above (inactive / require_sitewire_inspector / inspection_method off the property, and draw_eligible
+ * off property.budget). The raw property object is also surfaced in the UI's advanced view. Never throws —
  * returns { available:false, reason } when unmanaged / off / unreachable.
  */
 async function getPropertyLive(appId) {

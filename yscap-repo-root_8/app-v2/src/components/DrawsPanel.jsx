@@ -246,6 +246,7 @@ export default function DrawsPanel({ appId }) {
             </Section>
             <Section id="dsec-docs" title="Documents & borrower invite" defaultOpen={false}>
               <BorrowerInviteStatus appId={appId} writesOff={writesOff} readsOff={readsOff} />
+              <SitewireDocumentPush appId={appId} writesOff={writesOff} />
               <SitewireDocuments appId={appId} readsOff={readsOff} />
             </Section>
 
@@ -987,6 +988,8 @@ function SdIcon({ name }) {
     mail: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M3 7l9 6 9-6" /></>,
     reply: <><path d="M9 17l-5-5 5-5" /><path d="M4 12h11a5 5 0 015 5v1" /></>,
     folder: <><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v7a2 2 0 01-2 2H5a2 2 0 01-2-2z" /></>,
+    upload: <><path d="M12 16V4" /><path d="M7 9l5-5 5 5" /><path d="M4 20h16" /></>,
+    file: <><path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8z" /><path d="M14 3v5h5" /></>,
     dollar: <><path d="M12 2v20" /><path d="M17 6.5C17 4.6 14.8 3.5 12 3.5S7 4.6 7 6.5 9.2 9.5 12 10s5 1.6 5 3.5-2.2 3-5 3-5-1.1-5-3" /></>,
     settings: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.6 1.6 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.6 1.6 0 00-1.8-.3 1.6 1.6 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.6 1.6 0 00-1-1.5 1.6 1.6 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.6 1.6 0 00.3-1.8 1.6 1.6 0 00-1.5-1H3a2 2 0 110-4h.1a1.6 1.6 0 001.5-1 1.6 1.6 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.6 1.6 0 001.8.3H9a1.6 1.6 0 001-1.5V3a2 2 0 114 0v.1a1.6 1.6 0 001 1.5 1.6 1.6 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.6 1.6 0 00-.3 1.8V9a1.6 1.6 0 001.5 1H21a2 2 0 110 4h-.1a1.6 1.6 0 00-1.5 1z" /></>,
   }[name] || null;
@@ -1181,6 +1184,67 @@ function SitewireDocuments({ appId, readsOff }) {
               {doc.url ? <a className="btn btn-sm ghost" href={doc.url} target="_blank" rel="noreferrer" style={{ flex: '0 0 auto' }}>Open ↗</a> : <span className="dd-sub">no link</span>}
             </div>
           ))}</div>}
+    </div>
+  );
+}
+
+// Push OUR 3 property documents (appraisal PDF + Scope of Work Excel + Scope of Work PDF) INTO the Sitewire
+// property's Documents tab — the website workaround (Sitewire has no upload API). Runs automatically on every
+// property push; this panel is the manual "Send" + "Re-send" for the desk, and shows what's confirmed present.
+function SitewireDocumentPush({ appId, writesOff }) {
+  const [d, setD] = useState(null);
+  const [busy, setBusy] = useState(null);
+  const [msg, setMsg] = useState(null);
+  const reload = () => api.get(`/api/sitewire/files/${appId}/documents-push`).then(setD).catch(() => setD(null));
+  useEffect(() => { reload(); }, [appId]);
+  if (!d || !d.managed) return null;
+  const slots = d.slots || [];
+  const anyAvailable = slots.some((s) => s.available);
+  const anyPushed = slots.some((s) => s.pushed);
+
+  async function push(opts) {
+    setBusy(opts.which || (opts.force ? 'resend' : 'send')); setMsg(null);
+    try {
+      const r = await api.post(`/api/sitewire/files/${appId}/documents-push`, opts);
+      setMsg({ t: r && r.dryrun ? 'Prepared (test mode — nothing sent).' : 'Sent the documents to Sitewire.' });
+    } catch (e) { setMsg({ err: true, t: (e && e.message) || 'Couldn’t send the documents right now.' }); }
+    finally { setBusy(null); await reload(); }
+  }
+  const stateLabel = (s) => s.verified ? 'Confirmed in Sitewire' : s.pushed ? 'Sent' : s.available ? 'Ready to send' : 'Not available yet';
+  const stateCls = (s) => s.verified ? 'sw-ok' : s.pushed ? 'sw-insp' : s.available ? '' : 'sw-warn';
+
+  return (
+    <div className="dd-card" style={{ marginTop: 12 }}>
+      <div className="dd-card-h" style={{ justifyContent: 'space-between' }}>
+        <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+          <span className="dd-card-ic"><SdIcon name="upload" /></span>
+          <div><h3>Send our documents to Sitewire</h3><div className="dd-sub" style={{ marginTop: 1 }}>Appraisal PDF, Scope of Work (Excel), Scope of Work (PDF) — placed in Sitewire’s Documents tab automatically. No need to log into Sitewire.</div></div>
+        </div>
+      </div>
+      {!d.enabled && <div className="dd-sub" style={{ marginTop: 8, color: 'var(--warn, #9a6b00)' }}>Sending documents to Sitewire isn’t switched on yet. It turns on once the Sitewire website login is set up.</div>}
+      {d.enabled && !d.web_configured && <div className="dd-sub" style={{ marginTop: 8, color: 'var(--warn, #9a6b00)' }}>The Sitewire website login isn’t set up yet, so documents can’t be sent. Add it in the app settings.</div>}
+      <div style={{ marginTop: 6 }}>
+        {slots.map((s) => (
+          <div key={s.which} className="row" style={{ gap: 10, alignItems: 'center', padding: '8px 0', borderTop: '1px solid var(--line)' }}>
+            <span className="dd-card-ic" style={{ width: 24, height: 24, background: 'var(--primary-soft)' }}><SdIcon name="file" /></span>
+            <span style={{ flex: '1 1 auto', minWidth: 0 }}>
+              <b style={{ fontSize: 13 }}>{s.label}</b>
+              {s.missing && <span className="dd-sub"> · not on this file yet</span>}
+              {s.last_error && !s.pushed && <span className="dd-sub" style={{ color: 'var(--danger,#b00)' }}> · last try failed</span>}
+            </span>
+            <span className={'pill ' + stateCls(s)} style={{ flex: '0 0 auto' }}>{stateLabel(s)}</span>
+            {s.pushed && !writesOff && <button className="btn btn-sm ghost" disabled={busy === s.which} onClick={() => push({ which: s.which, force: true })} style={{ flex: '0 0 auto' }}>{busy === s.which ? '…' : 'Re-send'}</button>}
+          </div>
+        ))}
+      </div>
+      {msg && <div className="dd-sub" style={{ marginTop: 8, color: msg.err ? 'var(--danger,#b00)' : 'var(--ok,#137333)' }}>{msg.t}</div>}
+      <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+        <button className="btn btn-sm" disabled={writesOff || !d.enabled || !d.web_configured || !anyAvailable || busy === 'send'}
+          title={writesOff ? 'Sitewire writing is off' : undefined}
+          onClick={() => push({})}>{busy === 'send' ? 'Sending…' : 'Send documents to Sitewire'}</button>
+        {anyPushed && <button className="btn btn-sm ghost" disabled={writesOff || !d.enabled || !d.web_configured || busy === 'resend'}
+          onClick={() => push({ force: true })}>{busy === 'resend' ? 'Re-sending…' : 'Re-send all'}</button>}
+      </div>
     </div>
   );
 }
