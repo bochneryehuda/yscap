@@ -7,10 +7,10 @@
  * the worker's reconcile pass is the catch-all backstop.
  */
 const db = require('../db');
-const cfg = require('../config');
+const switches = require('../lib/integrations/switches'); // runtime on/off (env default unless flipped)
 
 async function enqueueSitewirePush(appId, op = 'push_file', payload = {}) {
-  if (!appId || !cfg.sitewireEnabled) return;
+  if (!appId || !switches.on('SITEWIRE_ENABLED')) return;
   const body = JSON.stringify(payload || {});
   try {
     const merged = await db.query(

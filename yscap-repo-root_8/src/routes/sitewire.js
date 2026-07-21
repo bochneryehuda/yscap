@@ -14,6 +14,7 @@ const express = require('express');
 const router = require('../lib/safe-router')();
 const db = require('../db');
 const cfg = require('../config');
+const switches = require('../lib/integrations/switches'); // runtime on/off (env default unless flipped on the API Health page)
 const { requireAuth, requireStaff, requirePermission } = require('../auth');
 const { can, assigneeExistsSql } = require('../lib/permissions');
 const client = require('../sitewire/client');
@@ -149,7 +150,7 @@ router.get('/files/:id', requirePermission('manage_draws'), async (req, res) => 
 router.get('/files/:id/findings/:drawId', requirePermission('manage_draws'), async (req, res) => {
   if (!/^\d+$/.test(req.params.drawId)) return res.status(404).json({ error: 'draw not found' });
   if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
-  if (!cfg.sitewireEnabled) return res.status(503).json({ error: 'Sitewire is turned off' });
+  if (!switches.on('SITEWIRE_ENABLED')) return res.status(503).json({ error: 'Sitewire is turned off' });
   // the draw MUST be one PILOT mirrored for THIS file (only-ours + IDOR guard) — never
   // fetch an arbitrary Sitewire draw id the caller supplies.
   const own = await db.query(`SELECT 1 FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [req.params.drawId, req.params.id]);
@@ -235,7 +236,7 @@ router.get('/files/:id/report', requirePermission('manage_draws'), async (req, r
 // ---- POST /api/sitewire/files/:id/reconcile — pull now ----
 router.post('/files/:id/reconcile', requirePermission('manage_draws'), async (req, res) => {
   if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
-  if (!cfg.sitewireEnabled) return res.status(503).json({ error: 'Sitewire is turned off' });
+  if (!switches.on('SITEWIRE_ENABLED')) return res.status(503).json({ error: 'Sitewire is turned off' });
   try { res.json(await reconcile.reconcileOne(req.params.id)); } catch (e) { console.warn('[sitewire] upstream error:', e && e.message); res.status(502).json({ error: 'the draw service is temporarily unavailable — nothing was changed; try again shortly' }); }
 });
 
@@ -307,7 +308,7 @@ router.get('/files/:id/sitewire-property', requirePermission('manage_draws'), as
     res.json({
       ...live,
       inspection,
-      switches: { enabled: cfg.sitewireEnabled, outbound: cfg.sitewireOutboundEnabled, dryrun: cfg.sitewireDryrun },
+      switches: { enabled: switches.on('SITEWIRE_ENABLED'), outbound: switches.on('SITEWIRE_OUTBOUND_ENABLED'), dryrun: cfg.sitewireDryrun },
     });
   } catch (e) { console.warn('[sitewire] sitewire-property error:', e && e.message); res.status(500).json({ error: 'Couldn’t read the Sitewire property right now — please try again shortly.' }); }
 });
@@ -627,7 +628,7 @@ router.get('/files/:id/draw-setup', requirePermission('manage_draws'), async (re
       prereqs,
       open_reviews: openReviews,
       can_start: !(rule && rule.handled_externally) && Object.values(prereqs).every(Boolean),
-      switches: { enabled: cfg.sitewireEnabled, outbound: cfg.sitewireOutboundEnabled, dryrun: cfg.sitewireDryrun },
+      switches: { enabled: switches.on('SITEWIRE_ENABLED'), outbound: switches.on('SITEWIRE_OUTBOUND_ENABLED'), dryrun: cfg.sitewireDryrun },
     });
   } catch (e) { console.warn('[sitewire] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
@@ -693,7 +694,7 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
     // ("when the draw is being pushed / registered"). Fires once per Start; best-effort.
     notify.notifyAppStaff(appId, {
       type: 'draw_started', title: 'Draw process started',
-      body: `The draw process was started for this file — property, construction budget, Scope of Work and fees ${cfg.sitewireEnabled ? 'were pushed to Sitewire.' : 'will push to Sitewire once it is turned on.'}`,
+      body: `The draw process was started for this file — property, construction budget, Scope of Work and fees ${switches.on('SITEWIRE_ENABLED') ? 'were pushed to Sitewire.' : 'will push to Sitewire once it is turned on.'}`,
       badge: { text: 'Draw started', tone: 'teal' }, applicationId: appId, link: `/internal/app/${appId}/draws`,
       // Owner-directed 2026-07-20: a confirmation of an action the coordinator
       // just took is IN-APP ONLY — no whole-team email. It shows on the draw desk.
@@ -702,7 +703,7 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
     // push everything now (guarded). When Sitewire is off, the link row above (draw_setup_started_at)
     // is the durable birth record — the worker's stranded-birth backfill enqueues the push the moment
     // the switch is turned on, so nothing is lost while staged off.
-    if (!cfg.sitewireEnabled) {
+    if (!switches.on('SITEWIRE_ENABLED')) {
       return res.json({ ok: true, started: true, pushed: false, note: 'Draw setup recorded. Sitewire is currently off — it will push automatically when turned on.' });
     }
     // Push now for immediate read-after-write feedback. A guard failure comes back as
@@ -773,10 +774,10 @@ router.get('/files/:id/draw-request', requirePermission('manage_draws'), async (
         WHERE application_id=$1 AND doc_kind='draw_request_signed' AND is_current=true
         ORDER BY created_at DESC LIMIT 1`, [appId])).rows[0] || null;
     res.json({
-      docusign_enabled: !!cfg.docusign.sendEnabled,
+      docusign_enabled: switches.on('DOCUSIGN_SEND_ENABLED'),
       docusign_test_mode: !!cfg.docusign.testMode,
       prereqs,
-      can_send: !!cfg.docusign.sendEnabled && Object.values(prereqs).every(Boolean),
+      can_send: switches.on('DOCUSIGN_SEND_ENABLED') && Object.values(prereqs).every(Boolean),
       envelope: env ? {
         status: env.status, sent_at: env.sent_at, completed_at: env.completed_at, created_at: env.created_at,
         terminal: ['completed', 'declined', 'voided'].includes(String(env.status || '')),
@@ -806,7 +807,7 @@ router.post('/files/:id/draw-request/send', requirePermission('manage_draws'), a
     if (!a.ys_loan_number || !(addr && (addr.street || addr.city || addr.state || addr.zip))) {
       return res.status(422).json({ error: 'The file needs a loan number and a property address before the draw request can go out.' });
     }
-    if (!cfg.docusign.sendEnabled) {
+    if (!switches.on('DOCUSIGN_SEND_ENABLED')) {
       return res.status(422).json({ error: 'DocuSign sending is turned off (DOCUSIGN_SEND_ENABLED). Turn it on to send the draw request form.' });
     }
     // Ensure the draw condition exists FIRST so the signed PDF has somewhere to file back to.
@@ -836,7 +837,7 @@ router.post('/files/:id/draw-request/send', requirePermission('manage_draws'), a
 
 // ---- POST /api/sitewire/requests/:reqId/approve — set approved_cents on a draw line ----
 router.post('/requests/:reqId/approve', requirePermission('manage_draws'), async (req, res) => {
-  if (!cfg.sitewireEnabled || !cfg.sitewireOutboundEnabled) return res.status(503).json({ error: 'Sitewire writes are turned off' });
+  if (!switches.on('SITEWIRE_ENABLED') || !switches.on('SITEWIRE_OUTBOUND_ENABLED')) return res.status(503).json({ error: 'Sitewire writes are turned off' });
   const reqId = req.params.reqId;
   if (!/^\d+$/.test(reqId)) return res.status(404).json({ error: 'request not found' });
   const approvedCents = Math.round(Number(req.body.approved_cents));
@@ -881,7 +882,7 @@ router.post('/requests/:reqId/approve', requirePermission('manage_draws'), async
 
 // ---- POST /api/sitewire/draws/:drawId/:action — approve / amend / reopen ----
 router.post('/draws/:drawId/:action', requirePermission('manage_draws'), async (req, res) => {
-  if (!cfg.sitewireEnabled || !cfg.sitewireOutboundEnabled) return res.status(503).json({ error: 'Sitewire writes are turned off' });
+  if (!switches.on('SITEWIRE_ENABLED') || !switches.on('SITEWIRE_OUTBOUND_ENABLED')) return res.status(503).json({ error: 'Sitewire writes are turned off' });
   const { drawId, action } = req.params;
   if (!/^\d+$/.test(drawId)) return res.status(404).json({ error: 'draw not found' });
   if (!client.DRAW_TRANSITIONS.has(action)) return res.status(400).json({ error: 'action must be approve, amend, or reopen' });
@@ -1256,7 +1257,7 @@ router.post('/partner-links', requirePermission('platform_setup'), async (req, r
 
 // ---- refresh the capital-partner directory + staff<->Sitewire-user map ----
 router.post('/sync-directory', requirePermission('platform_setup'), async (req, res) => {
-  if (!cfg.sitewireEnabled) return res.status(503).json({ error: 'Sitewire is turned off' });
+  if (!switches.on('SITEWIRE_ENABLED')) return res.status(503).json({ error: 'Sitewire is turned off' });
   try {
     const cp = await reconcile.syncCapitalPartners();
     const staff = await reconcile.syncStaffUsers();
@@ -1373,7 +1374,7 @@ router.get('/status', requirePermission(['manage_draws', 'platform_setup']), asy
     const linked = (await db.query(`SELECT count(*)::int c FROM sitewire_property_links WHERE sitewire_property_id IS NOT NULL`)).rows[0].c;
     const draws = (await db.query(`SELECT count(*)::int c FROM sitewire_draws`)).rows[0].c;
     const openReviews = (await db.query(`SELECT count(*)::int c FROM sync_review_queue WHERE field_key='sitewire' AND status='open'`)).rows[0].c;
-    res.json({ enabled: cfg.sitewireEnabled, outbound: cfg.sitewireOutboundEnabled, dryrun: cfg.sitewireDryrun, linked_files: linked, mirrored_draws: draws, open_reviews: openReviews });
+    res.json({ enabled: switches.on('SITEWIRE_ENABLED'), outbound: switches.on('SITEWIRE_OUTBOUND_ENABLED'), dryrun: cfg.sitewireDryrun, linked_files: linked, mirrored_draws: draws, open_reviews: openReviews });
   } catch (e) { console.warn('[sitewire] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -1428,7 +1429,7 @@ router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, r
       preexisting, setup_status: setupStatus, managed_since: link ? link.pushed_at : null, go_live_date: cfg.sitewireGoLiveDate,
       // so the desk can show a proactive read-only banner + disable write buttons when writes are off
       // (an approve/release/finding write 503s unless BOTH the master switch and the write gate are on).
-      switches: { enabled: cfg.sitewireEnabled, outbound: cfg.sitewireOutboundEnabled, dryrun: cfg.sitewireDryrun } });
+      switches: { enabled: switches.on('SITEWIRE_ENABLED'), outbound: switches.on('SITEWIRE_OUTBOUND_ENABLED'), dryrun: cfg.sitewireDryrun } });
   } catch (e) { console.warn('[sitewire] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -1762,7 +1763,7 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
   const appId = req.params.id, drawId = req.params.drawId;
   if (!/^\d+$/.test(drawId)) return res.status(404).json({ error: 'draw not found' });
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
-  if (!cfg.sitewireEnabled) return res.status(503).json({ error: 'Sitewire is turned off' });
+  if (!switches.on('SITEWIRE_ENABLED')) return res.status(503).json({ error: 'Sitewire is turned off' });
   const own = await db.query(`SELECT 1 FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [drawId, appId]);
   if (!own.rowCount) return res.status(404).json({ error: 'draw not found on this file' });
   // Never re-deliver over a finding the borrower has already acted on — persisting would wipe
@@ -1909,7 +1910,7 @@ router.post('/findings/:findingId/lines/:lineId/decide', requirePermission('mana
   // OVERRIDE of Sitewire's approved figure. Falls back to a processor-confirm note if writes are off. Never guessed.
   let pushed = false, pushNote = null;
   if (decision === 'approved' && target != null && line.sitewire_request_id) {
-    if (cfg.sitewireEnabled && cfg.sitewireOutboundEnabled) {
+    if (switches.on('SITEWIRE_ENABLED') && switches.on('SITEWIRE_OUTBOUND_ENABLED')) {
       try {
         await orchestrator.circuitCheck(1);
         const r = await client.updateRequest(line.sitewire_request_id, { approved_cents: target, lender_comments: `Dispute approved (PILOT): ${req.body.note || ''}`.slice(0, 240) });
@@ -2065,7 +2066,7 @@ router.post('/change-requests/:crId/apply', requirePermission('manage_draws'), a
       await db.query(`UPDATE sow_change_request_details SET updated_at=now() WHERE change_request_id=$1`, [crId]);
       // Only claim a Sitewire push when the integration is actually on — otherwise the enqueue
       // no-ops and the DB SOW would silently diverge from Sitewire (audit E-REALLOC-FALSEPUSH).
-      const willPush = !!cfg.sitewireEnabled;
+      const willPush = switches.on('SITEWIRE_ENABLED');
       // In-app only (owner-directed 2026-07-20): a confirmation that a reallocation
       // was APPLIED is a desk marker, not a whole-team email. (The "needs
       // re-registration" variant below is Action-needed and still emails.)

@@ -105,7 +105,7 @@ async function dashboard(db, scope = { where: '', params: [] }) {
        count(*) FILTER (WHERE sent_at > now() - interval '10 minutes' AND application_id IS NOT NULL) AS "sent10min"
      FROM esign_envelopes`)).rows[0];
   const sendHealth = {
-    sendEnabled: !!cfg.sendEnabled,
+    sendEnabled: require('../integrations/switches').on('DOCUSIGN_SEND_ENABLED'),
     breakerOpen: Number(sh.sent10min) >= cfg.maxSends10min,
     queued: Number(sh.queued),
     backingOff: Number(sh.backingOff),

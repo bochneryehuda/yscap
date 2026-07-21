@@ -736,8 +736,8 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
  * envelope row (+ docs map + recipient roster), then hands off to the send-once
  * engine. Returns { ok, envelopeRowId, result } or throws with a clear reason.
  *
- * Gated: refuses unless cfg.docusign.sendEnabled (master switch) is on — enforced
- * here AND in the send engine (sendClaimedEnvelope), so a paused switch stops queued
+ * Gated: refuses unless the DOCUSIGN_SEND_ENABLED switch (runtime override ?? env) is on —
+ * enforced here (switches.on) AND in the send engine (sendClaimedEnvelope), so a paused switch stops queued
  * retries too. In TEST mode the engine also blocks any non-allow-listed recipient;
  * once LIVE (test mode off) that backstop is intentionally gone, and real borrowers
  * are protected by the appraisal gate + validateGenerated + the roster completeness
