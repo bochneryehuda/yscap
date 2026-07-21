@@ -80,7 +80,7 @@ router.get('/diag', async (req, res) => {
 
 router.get('/health', async (req, res) => {
   const out = {
-    enabled: cfg.clickupSyncEnabled, tokenSet: !!cfg.clickupToken, webhookSecretSet: !!cfg.clickupWebhookSecret,
+    enabled: require('../lib/integrations/switches').on('CLICKUP_SYNC_ENABLED'), tokenSet: !!cfg.clickupToken, webhookSecretSet: !!cfg.clickupWebhookSecret,
     teamId: cfg.clickupTeamId, pipelineSpace: cfg.clickupPipelineSpace, pollSec: cfg.clickupPollSec,
     counts: {}, inbox: {}, queue: {},
   };

@@ -8351,7 +8351,7 @@ router.get('/esign/connection', requireRole('admin'), async (req, res) => {
     configured: ds.configured(),
     demo: ds.isDemoHost(),                 // true = DocuSign PRACTICE/sandbox world
     oauthHost: c.oauthBase || null,
-    sendEnabled: !!c.sendEnabled,          // master switch (DOCUSIGN_SEND_ENABLED)
+    sendEnabled: require('../lib/integrations/switches').on('DOCUSIGN_SEND_ENABLED'), // master switch (runtime override ?? DOCUSIGN_SEND_ENABLED env)
     testMode: !!c.testMode,                // gates sends to the allow-list on ANY host
     allowlist: c.testEmailAllowlist || [], // the only emails reachable while in test mode
     reachable: null,
@@ -8486,8 +8486,9 @@ router.post('/esign/:rowId/resend', async (req, res) => {
     if (!row) return res.status(status).json({ error });
     if (!row.envelope_id) return res.status(409).json({ error: 'envelope not sent yet' });
     if (['completed', 'declined', 'voided'].includes(row.status)) return res.status(409).json({ error: `envelope already ${row.status}` });
-    // Resend is a real borrower email — the master kill-switch must gate it too.
-    if (!cfg.docusign.sendEnabled) return res.status(409).json({ error: 'Sending is paused right now. Turn sending back on before resending.' });
+    // Resend is a real borrower email — the master kill-switch must gate it too. Read the RUNTIME
+    // switch (override ?? env) so flipping DocuSign off on the API Health page stops resends immediately.
+    if (!require('../lib/integrations/switches').on('DOCUSIGN_SEND_ENABLED')) return res.status(409).json({ error: 'Sending is paused right now. Turn sending back on before resending.' });
     // A resend can only re-notify the address DocuSign baked into the envelope at
     // send time — it cannot re-address. If the file's borrower email changed since,
     // a resend would nudge the STALE address. Refuse and steer staff to void +

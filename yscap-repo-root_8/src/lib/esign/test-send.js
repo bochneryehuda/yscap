@@ -136,7 +136,7 @@ async function sendOnePackage({ db, docusign, actorId, name, email, pkg }) {
 }
 
 async function sendTestEnvelope({ actorId, db = dbDefault, docusign = docusignDefault } = {}) {
-  if (!cfg.docusign.sendEnabled) {
+  if (!require('../integrations/switches').on('DOCUSIGN_SEND_ENABLED')) {
     const e = new Error('Sending is off — set DOCUSIGN_SEND_ENABLED=1 (test mode) in Render first, then try again.');
     e.code = 'DOCUSIGN_SEND_DISABLED'; e.retryable = false; throw e;
   }
