@@ -235,6 +235,29 @@ function render(p) {
       '</td></tr></table>';
   }
 
+  /* ---------------- CONTENT SECTIONS (titled how-to blocks) ----------------
+     A clean, professional stack of titled blocks — a small gold eyebrow title, a
+     body (string or several lines), and an optional inline teal link. Used to lay
+     out multi-part instructions (e.g. "How to request a draw", "What happens
+     next") without emoji clutter. Bulletproof: plain tables, hairline dividers. */
+  function sectionBlocks(list) {
+    var blocks = list.map(function (s, i) {
+      var bodyLines = Array.isArray(s.body) ? s.body : (s.body ? [s.body] : []);
+      var bodyHtml = bodyLines.map(function (b) {
+        return '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.6;color:' + BRAND.ink + ';margin:0 0 6px;">' + esc(b) + '</div>';
+      }).join('');
+      var linkHtml = (s.link && s.link.url)
+        ? '<div style="margin:8px 0 0;"><a href="' + esc(s.link.url) + '" target="_blank" style="font-family:Arial,Helvetica,sans-serif;font-size:13px;font-weight:700;color:' + BRAND.tealDk + ';text-decoration:none;">' + esc(s.link.label || 'Learn more') + ' &rarr;</a></div>'
+        : '';
+      var top = i === 0 ? '' : 'border-top:1px solid ' + BRAND.line + ';';
+      return '<tr><td style="padding:' + (i === 0 ? '2px' : '16px') + ' 0 14px;' + top + '">' +
+          (s.title ? '<div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:' + BRAND.gold + ';margin:0 0 7px;">' + esc(s.title) + '</div>' : '') +
+          bodyHtml + linkHtml +
+        '</td></tr>';
+    }).join('');
+    return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:14px 0 2px;">' + blocks + '</table>';
+  }
+
   /* ---------------- META ROWS (label / value grid) ---------------- */
   var metaHtml = '';
   if (meta.length) {
@@ -367,6 +390,8 @@ function render(p) {
       '</tr></table>'
     : '';
   var heroHtml     = hero ? heroBand(hero) : '';
+  var sections = Array.isArray(p.sections) ? p.sections.filter(function (s) { return s && (s.title || s.body); }) : [];
+  var sectionsHtml = sections.length ? sectionBlocks(sections) : '';
   var stepsHtml    = steps.length ? stepper(steps) : '';
   var progressHtml = progress ? meter(progress) : '';
   var calloutHtml  = callout ? calloutBox(callout) : '';
@@ -398,7 +423,7 @@ function render(p) {
           heroHtml +
           '<h1 style="margin:0 0 16px;font-family:Georgia,\'Times New Roman\',serif;font-size:23px;' +
             'line-height:1.28;font-weight:700;color:' + BRAND.ink + ';">' + esc(title) + '</h1>' +
-          greetHtml + body + stepsHtml + progressHtml + calloutHtml + codeHtml + metaHtml + officerHtml + filesHtml + ctaHtml + noteHtml +
+          greetHtml + body + sectionsHtml + stepsHtml + progressHtml + calloutHtml + codeHtml + metaHtml + officerHtml + filesHtml + ctaHtml + noteHtml +
         '</td></tr>' +
         /* footer */
         '<tr><td style="padding:22px 34px 26px;background:' + BRAND.soft + ';border-top:1px solid ' + BRAND.line + ';">' +
@@ -443,6 +468,12 @@ function render(p) {
   if (greeting) t.push(greeting, '');
   if (intro) t.push(intro, '');
   lines.forEach(function (l) { t.push(l, ''); });
+  sections.forEach(function (s) {
+    if (s.title) t.push(String(s.title).toUpperCase());
+    (Array.isArray(s.body) ? s.body : (s.body ? [s.body] : [])).forEach(function (b) { t.push(b); });
+    if (s.link && s.link.url) t.push((s.link.label || 'Learn more') + ': ' + s.link.url);
+    t.push('');
+  });
   if (code) t.push('Code: ' + code, '');
   if (files.length) { t.push((files.length === 1 ? 'Attached: ' : 'Attachments: ') + files.join(', '), ''); }
   if (meta.length) { meta.forEach(function (m) { t.push(m.label + ': ' + m.value); }); t.push(''); }

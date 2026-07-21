@@ -27,6 +27,7 @@ const T = require('../sitewire/transforms');
 const rehab = require('../lib/rehab-budget');
 const { sanitizeDateOnly } = require('../lib/fields'); // strict YYYY-MM-DD validation for date inputs
 const notify = require('../lib/notify');
+const { drawSetupNotifyOpts } = require('../lib/email/draw-setup-email');
 const { enqueueSitewirePush } = require('../sitewire/enqueue');
 const { buildXlsx } = require('../lib/xlsx');
 const mediaArchive = require('../sitewire/media-archive');
@@ -696,6 +697,8 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
     // coordinator's Start is as reliable as the borrower's request-a-draw path (audit L1).
     try {
       const result = await orchestrator.pushFile(appId, {});
+      // Property is live in Sitewire now — welcome the borrower (once), best-effort, never blocks.
+      require('../sitewire/draw-setup-notify').sendDrawSetupWelcome(appId).catch(() => {});
       return res.json({ ok: true, started: true, result });
     } catch (e) {
       await enqueueSitewirePush(appId, 'push_file').catch(() => {});

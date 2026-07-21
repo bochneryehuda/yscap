@@ -32,6 +32,7 @@ const KICKER_OF = {
   llc_verified: 'Your entity', llc_unverified: 'Your entity',
   track_record_unverified: 'Track record',
   draw: 'Construction draw', draw_request: 'Construction draw', draw_findings: 'Draw inspection',
+  draw_setup: 'Construction draws are open',
   draw_accepted: 'Construction draw', draw_disputed: 'Construction draw', draw_dispute_resolved: 'Draw inspection',
   draw_message: 'Message from your loan team', draw_started: 'Construction draw', draw_inbound: 'Construction draw',
   sow_reallocation: 'Budget change', sow_change_request: 'Budget change',
@@ -123,6 +124,9 @@ function buildEmail(opts, audience) {
     progress:  opts.progress || null,
     callout:   opts.callout || null,
     officer:   opts.officer || null,
+    // Titled how-to blocks (owner-directed 2026-07-21) — clean, professional
+    // instruction sections (e.g. "How to request a draw", "What happens next").
+    sections:  opts.sections || null,
     audience,
   });
 }
@@ -322,7 +326,7 @@ const CATEGORY_OF = {
   condition_added: 'conditions',
   product_registered: 'pricing', term_sheet: 'pricing', pricing_update: 'pricing',
   reminder: 'reminders',
-  draw: 'draws', draw_request: 'draws',
+  draw: 'draws', draw_request: 'draws', draw_setup: 'draws',
   // Sitewire draw-management events (findings delivery, accept/dispute, SOW reallocations)
   draw_findings: 'draws', draw_accepted: 'draws', draw_disputed: 'draws', draw_dispute_resolved: 'draws',
   draw_message: 'draws', draw_started: 'draws', draw_inbound: 'draws',
@@ -366,6 +370,9 @@ const BORROWER_MAJOR_EMAIL = new Set([
   'doc_rejected', 'doc_requested', 'condition_added',
   'llc_unverified', 'track_record_unverified',
   'message', 'draw', 'draw_request', 'security', 'account',
+  // The coordinator finished setting up construction draws — a real milestone the
+  // borrower is waiting on (they can now request funds), so it emails them.
+  'draw_setup',
   // A coordinator's direct message to the borrower from the draw desk always emails them.
   'draw_message',
   // The borrower must review inspection findings and accept/dispute within the wire SLA —
@@ -432,12 +439,31 @@ async function notifyBorrower(borrowerId, opts) {
     callout: scrubObj(opts.callout, ['title', 'body']),
     hero: scrubObj(opts.hero, ['label', 'value', 'sub']),
     badge: scrubObj(opts.badge, ['text']),
+    // Titled how-to sections can carry free text — scrub each section's title +
+    // body (string or line-array) so a partner name can never slip through here
+    // either (defense-in-depth; the draw builders carry no partner names).
+    sections: Array.isArray(opts.sections) ? opts.sections.map((s) => {
+      if (!s || typeof s !== 'object') return s;
+      const body = Array.isArray(s.body) ? s.body.map((b) => scrubTextExcept(b, protect))
+        : (typeof s.body === 'string' ? scrubTextExcept(s.body, protect) : s.body);
+      return { ...s, title: typeof s.title === 'string' ? scrubTextExcept(s.title, protect) : s.title, body };
+    }) : opts.sections,
     // Owner-directed 2026-07-20: silently BCC the file's assigned loan officer on
     // the borrower's email so the LO sees in real time exactly what their borrower
     // received. The officer comes from enrichFileOpts (fileContext) — their own
     // business contact. An explicit opts.bcc wins; the provider drops any BCC that
     // is already a To recipient, so no self-duplicate.
-    bcc: opts.bcc || ((cfg.ccLoanOfficerOnBorrowerEmail && !opts._skipOfficerBcc && opts.officer && opts.officer.email) ? [opts.officer.email] : undefined),
+    // The officer BCC (monitoring copy) plus any caller-supplied `bccExtra` (e.g. the
+    // draw-coordinator desk draws@ on a draw email) — both ride the PRIMARY borrower only
+    // (skipped on co-borrower fan-out via _skipOfficerBcc) so no monitor gets two copies.
+    bcc: opts.bcc || (function () {
+      if (opts._skipOfficerBcc) return undefined;
+      const list = [];
+      if (cfg.ccLoanOfficerOnBorrowerEmail && opts.officer && opts.officer.email) list.push(opts.officer.email);
+      if (Array.isArray(opts.bccExtra)) for (const e of opts.bccExtra) if (e) list.push(e);
+      const uniq = [...new Set(list.map((e) => String(e).trim().toLowerCase()).filter(Boolean))];
+      return uniq.length ? uniq : undefined;
+    })(),
   };
   const { rows } = await db.query(
     `INSERT INTO notifications (recipient_kind,borrower_id,type,title,body,application_id,link)

@@ -119,7 +119,7 @@ const CATEGORY_OF = {
   condition_added: 'conditions',
   product_registered: 'pricing', term_sheet: 'pricing', pricing_update: 'pricing',
   reminder: 'reminders', digest: 'reminders',
-  draw: 'draws', draw_request: 'draws', draw_findings: 'draws', draw_accepted: 'draws',
+  draw: 'draws', draw_setup: 'draws', draw_request: 'draws', draw_findings: 'draws', draw_accepted: 'draws',
   draw_disputed: 'draws', draw_dispute_resolved: 'draws', sow_reallocation: 'draws', sow_change_request: 'draws',
   // Orders desk (#orders): a title / insurance order, its follow-ups, and the
   // vendor's replies all bucket under 'orders' so the file's Orders inbox filters
@@ -292,7 +292,7 @@ const BACKFILL_NOTIF_SQL = `
            WHEN 'condition_added' THEN 'conditions'
            WHEN 'product_registered' THEN 'pricing' WHEN 'term_sheet' THEN 'pricing' WHEN 'pricing_update' THEN 'pricing'
            WHEN 'reminder' THEN 'reminders' WHEN 'digest' THEN 'reminders'
-           WHEN 'draw' THEN 'draws' WHEN 'draw_request' THEN 'draws' WHEN 'draw_findings' THEN 'draws' WHEN 'draw_accepted' THEN 'draws'
+           WHEN 'draw' THEN 'draws' WHEN 'draw_setup' THEN 'draws' WHEN 'draw_request' THEN 'draws' WHEN 'draw_findings' THEN 'draws' WHEN 'draw_accepted' THEN 'draws'
            WHEN 'draw_disputed' THEN 'draws' WHEN 'draw_dispute_resolved' THEN 'draws' WHEN 'sow_reallocation' THEN 'draws' WHEN 'sow_change_request' THEN 'draws'
            WHEN 'security' THEN 'account' WHEN 'account' THEN 'account'
            ELSE 'other' END,
