@@ -1,4 +1,5 @@
--- 208_file_orders.sql — the ORDERS desk (owner-directed 2026-07-20).
+-- 211_file_orders.sql — the ORDERS desk (owner-directed 2026-07-20).
+-- (Renumbered from 208 on merge — a parallel migration took 208 first.)
 --
 -- A loan file needs TITLE and INSURANCE ordered from outside vendors. Until now
 -- that happened by hand outside the portal. This adds a first-class, per-file
