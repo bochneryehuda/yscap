@@ -279,6 +279,8 @@ export default function StaffLayout({ children }) {
   const [wfCount, setWfCount] = useState(0);
   // Open finding-escalations routed to me (my role / assigned / raised) — the workload badge.
   const [fescCount, setFescCount] = useState(0);
+  // My Notification Center draft queue — how many parked notifications are waiting for me to Send.
+  const [notifDraftCount, setNotifDraftCount] = useState(0);
   useEffect(() => {
     let alive = true;
     const poll = () => api.workflowCount()
@@ -301,6 +303,14 @@ export default function StaffLayout({ children }) {
     let alive = true;
     const poll = () => api.findingEscalationsCount()
       .then(r => { if (alive) setFescCount((r && r.pendingCount) || 0); }).catch(() => {});
+    poll();
+    const t = setInterval(poll, 120000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+  useEffect(() => {
+    let alive = true;
+    const poll = () => api.loNotifDraftCount()
+      .then((r) => { if (alive) setNotifDraftCount((r && r.pending) || 0); }).catch(() => {});
     poll();
     const t = setInterval(poll, 120000);
     return () => { alive = false; clearInterval(t); };
@@ -391,6 +401,10 @@ export default function StaffLayout({ children }) {
         <div className="sb-sec">Files</div>
         <NavLink className="sb-link" to="/internal/borrowers" title="Your borrowers — invite to PILOT, reset or set a password, see last login"><NavIcon name="borrowers" />Borrowers</NavLink>
         <NavLink className="sb-link" to="/internal/emails" title="Email Center — every email & notification sent across your files, to exactly whom, with its full body, delivery status, and replies"><NavIcon name="emails" />Email Center</NavLink>
+        <NavLink className="sb-link" to="/internal/notifications" title="Notification Center — the master control for every notification your borrowers receive: turn any single one off, keep it automatic, or park it as a draft to review before it goes out">
+          <NavIcon name="emails" />Notifications
+          {notifDraftCount > 0 && <span className="sb-badge">{notifDraftCount > 99 ? '99+' : notifDraftCount}</span>}
+        </NavLink>
         <NavLink className="sb-link" to="/internal/esign" title="E-Signatures — PILOT’s own DocuSign cockpit: every package, every signer, live"><NavIcon name="esign" />E-signatures</NavLink>
         <NavLink className="sb-link" to="/internal/orders" title="Orders — every title & insurance order across your files, and what's waiting to be classified"><NavIcon name="vendors" />Orders</NavLink>
         {canManageDraws && <NavLink className="sb-link" to="/internal/draws" title="Draw Management — the post-funding phase: every draw, approvals, inspector photos, releases, and reports"><NavIcon name="pipeline" />Draw Management</NavLink>}

@@ -601,6 +601,9 @@ export const api = {
   staffAddVendor:    (b) => req('POST', '/api/staff/vendors', b),
   staffUpdateVendor: (id, b) => req('PATCH', `/api/staff/vendors/${id}`, b),
   staffDeleteVendor: (id) => req('DELETE', `/api/staff/vendors/${id}`),
+  // Manual vendor merge (owner-directed 2026-07-21). Body: { survivorId, mergedId,
+  // picks:{...}, emails:[...], phones:[...] }.
+  staffMergeVendors: (body) => req('POST', '/api/staff/vendors/merge', body),
   // general file contacts (#144) — staff side + a borrower's whole vendor list
   staffFileContacts:   (appId) => req('GET', `/api/staff/applications/${appId}/file-contacts`),
   staffAddFileContact: (appId, b) => req('POST', `/api/staff/applications/${appId}/file-contacts`, b),
@@ -676,4 +679,25 @@ export const api = {
   // ---- Pricing Admin Center (manage_pricing): company-wide markup/fee defaults ----
   adminPricingGet: () => req('GET', '/api/admin/pricing'),
   adminPricingPut: (b) => req('PUT', '/api/admin/pricing', b),
+
+  // ---- Loan-Officer Notification Center: per-notification prefs + draft queue ----
+  loNotifCatalog:      () => req('GET',  '/api/staff/notification-center/catalog'),
+  loNotifPrefs:        () => req('GET',  '/api/staff/notification-center/prefs'),
+  loNotifSavePref:     (key, body) => req('PUT', `/api/staff/notification-center/prefs/${encodeURIComponent(key)}`, body),
+  loNotifBulkSave:     (changes) => req('POST', '/api/staff/notification-center/prefs/bulk', { changes }),
+  loNotifDrafts:       (params) => req('GET',  '/api/staff/notification-center/drafts' + qs(typeof params === 'string' ? { status: params } : (params || {}))),
+  loNotifDraftCount:   () => req('GET',  '/api/staff/notification-center/drafts/count'),
+  loNotifDraftPreview: (id) => req('GET',  `/api/staff/notification-center/drafts/${id}/preview`),
+  loNotifDraftSend:    (id, edits) => req('POST', `/api/staff/notification-center/drafts/${id}/send`, edits || {}),
+  loNotifDraftDiscard: (id) => req('POST', `/api/staff/notification-center/drafts/${id}/discard`),
+  loNotifDraftSchedule:(id, at) => req('POST', `/api/staff/notification-center/drafts/${id}/schedule`, { at }),
+  loNotifDraftSnooze:  (id, minutes) => req('POST', `/api/staff/notification-center/drafts/${id}/snooze`, { minutes }),
+  loNotifDraftsBulk:   (ids, action, extra) => req('POST', '/api/staff/notification-center/drafts/bulk', { ids, action, ...(extra || {}) }),
+  loNotifRulesGet:     () => req('GET',  '/api/staff/notification-center/rules'),
+  loNotifRulesPut:     (b) => req('PUT',  '/api/staff/notification-center/rules', b),
+  loNotifOverrides:    (appId) => req('GET',  `/api/staff/notification-center/overrides?applicationId=${encodeURIComponent(appId)}`),
+  loNotifSaveOverride: (b) => req('PUT',  '/api/staff/notification-center/overrides', b),
+  loNotifClearOverride:(appId, key) => req('DELETE', `/api/staff/notification-center/overrides?applicationId=${encodeURIComponent(appId)}&key=${encodeURIComponent(key)}`),
+  loNotifCompose:      (b) => req('POST', '/api/staff/notification-center/compose', b),
+  loNotifAnalytics:    (days) => req('GET',  `/api/staff/notification-center/analytics${days ? `?days=${days}` : ''}`),
 };
