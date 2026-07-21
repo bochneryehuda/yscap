@@ -26,9 +26,25 @@ const PIPELINE_FOLDERS = () => {
   return [...f];
 };
 
-// A task is "real enough" to materialize a portal file: >=2 identity fields and
-// past the scratch statuses. (§4.3/§4.4)
-const SCRATCH = new Set(['starting', 'prospect / pricing']);
+// A task is "real enough" to materialize a portal file: >=2 identity fields.
+//
+// 'starting' NO LONGER blocks materialization (owner-directed 2026-07-21). The
+// ClickUp 'starting' status maps 1:1 to the portal's FILE_INTAKE stage
+// (status.js EXTERNAL_FOR), so a task an officer creates DIRECTLY in ClickUp in
+// 'starting' now syncs in RIGHT AWAY as an intake file, correctly mapped. This
+// closes the gap behind the Moshe Spitzer / 76 Thompson St duplicate: an
+// officer's June 'starting' card stayed invisible to the portal (scratch-gated),
+// so when the same deal was later typed into the portal a SECOND ClickUp card
+// was minted — two RTL-purchase twins. Syncing 'starting' cards in immediately
+// means the deal already exists (and is task-linked) before anyone re-enters it,
+// so no duplicate is created.
+//
+// The >=2 identity-field threshold (identity.canMaterialize) STAYS as the junk
+// filter — a placeholder card with no real borrower ("h", "Miller", "mandel")
+// still does not create a file until it carries at least two identity fields.
+// 'prospect / pricing' (a softer, pre-file pricing prospect that may never
+// become a deal) remains a scratch status that does not auto-create a file.
+const SCRATCH = new Set(['prospect / pricing']);
 function canMaterialize(read) {
   const idObj = ingest.identityFrom(read);
   if (!identity.canMaterialize(idObj)) return false;
