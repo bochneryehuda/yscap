@@ -125,6 +125,32 @@ assert.strictEqual(sumItems(ex4), budget4, 'single-family Σ == frozen budget');
 ok('single-family: one line per item (section "all"), one video anchor, Σ ties to budget');
 
 // ============================================================================
+// CASE 4b — $0 budget lines are DROPPED (never pushed as empty Sitewire job items),
+// while funded lines and the mandatory $0 media anchors are kept, and Σ still ties.
+// (owner-reported 2026-07-21: empty lines were coming up in Sitewire on push)
+// ============================================================================
+const c4b = {
+  propType: 'multi', units: 3,
+  items: {
+    'exterior:0': { on: true, applies: 'each', each: '6000', label: 'Roof' },        // funded (each unit)
+    'kitchen:0': { on: true, applies: 'common', common: '0', label: 'Cabinets' },     // ON but $0 -> DROP
+    'baths:0': { on: true, applies: 'each', each: '0', label: 'Bath' },               // ON but $0 (all units) -> DROP
+    'mep:6': { on: true, applies: 'split', u: { u1: '4000', u2: '0', u3: '5000' }, label: 'HVAC' }, // unit 2 = $0 -> DROP just u2
+  },
+  cont: { mode: 'usd', value: '0' }, gcFee: { mode: 'usd', value: '0' },
+};
+const ex4b = M.explodeSow(c4b);
+const budgetItems4b = ex4b.items.filter((i) => !i.is_media_item);
+assert.ok(!budgetItems4b.some((i) => Number(i.budgeted_cents) === 0), 'no $0 BUDGET line is emitted');
+assert.ok(!budgetItems4b.some((i) => /Cabinets/.test(i.name)), 'a fully-$0 "common" line (Cabinets) is dropped');
+assert.ok(!budgetItems4b.some((i) => /Bath/.test(i.name)), 'a fully-$0 "each" line (Bath) is dropped');
+assert.strictEqual(budgetItems4b.filter((i) => /HVAC/.test(i.name)).length, 2, 'split HVAC: only the 2 funded units survive ($0 unit 2 dropped)');
+assert.strictEqual(budgetItems4b.filter((i) => /Roof/.test(i.name)).length, 3, 'funded "each" Roof still explodes to all 3 units');
+assert.ok(ex4b.items.some((i) => i.is_media_item && /Exterior of House Photos/.test(i.name)), 'the mandatory $0 exterior-photo anchor is KEPT');
+assert.strictEqual(sumItems(ex4b), frozenBudgetCents(c4b), 'dropping $0 lines does NOT change Σ — still ties to the frozen budget exactly');
+ok('$0 budget lines dropped (no empty Sitewire items); funded units + mandatory media anchors kept; Σ still ties');
+
+// ============================================================================
 // CASE 5 — every exploded name is UNIQUE (so bind-by-name can never mis-bind)
 // ============================================================================
 for (const st of [c1, c2, c3, c4]) {

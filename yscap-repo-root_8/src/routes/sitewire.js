@@ -270,6 +270,65 @@ router.post('/files/:id/reset-draw', requirePermission('manage_draws'), async (r
   } catch (e) { console.warn('[sitewire] reset-draw error:', e && e.message); res.status(500).json({ error: 'Couldn’t reset the draw setup right now — please try again shortly.' }); }
 });
 
+// ---- GET /files/:id/sitewire-property — the LIVE Sitewire property settings for the draw desk ----
+// Owner-directed 2026-07-21: bring Sitewire's property controls into PILOT. This reads the real property
+// from Sitewire (managed-only) so the desk shows its true current state (active/inactive, inspection method)
+// and offers the toggles. It also returns the raw property object — the honest way to reveal the exact field
+// names Sitewire uses for the two toggles we haven't confirmed yet (Block Draws / review type). manage_draws
+// + canSeeFile. Degrades gracefully: available:false when the file isn't PILOT-managed or the connection is off.
+router.get('/files/:id/sitewire-property', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const live = await orchestrator.getPropertyLive(appId);
+    // resolve the file's inspection rule so the UI knows which methods are switchable + the current choice
+    let inspection = null;
+    try {
+      const a = await orchestrator.loadFile(appId);
+      const link = await orchestrator.getLink(appId);
+      if (a && link) {
+        const program = /gold/i.test(String(a.registered_program || '')) ? 'gold' : 'standard';
+        const cp = await orchestrator.resolveCapitalPartnerId(a.lender);
+        const rule = await orchestrator.resolveRule(a.lender, cp.id, program);
+        const insp = orchestrator.resolveInspection(link, rule);
+        inspection = {
+          method: insp.method, allow_virtual: insp.allowVirtual, allow_physical: insp.allowPhysical,
+          can_switch: insp.allowVirtual && insp.allowPhysical, default_method: (rule && rule.inspection_method) || 'mobile',
+        };
+      }
+    } catch (_) { /* inspection is advisory context — never fail the read on it */ }
+    res.json({
+      ...live,
+      inspection,
+      switches: { enabled: cfg.sitewireEnabled, outbound: cfg.sitewireOutboundEnabled, dryrun: cfg.sitewireDryrun },
+    });
+  } catch (e) { console.warn('[sitewire] sitewire-property error:', e && e.message); res.status(500).json({ error: 'Couldn’t read the Sitewire property right now — please try again shortly.' }); }
+});
+
+// ---- POST /files/:id/property-settings — flip a CONFIRMED Sitewire property control from the desk ----
+// Owner-directed 2026-07-21: control the process from PILOT. Only the two controls whose Sitewire field name
+// is confirmed are wired — inactive (Active↔Inactive) + inspection_method (Virtual↔On-site). The guarded
+// orchestrator write reads back what it wrote (never a silent 200-that-did-nothing). manage_draws + canSeeFile.
+router.post('/files/:id/property-settings', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const b = req.body || {};
+  const changes = {};
+  if (Object.prototype.hasOwnProperty.call(b, 'inactive')) changes.inactive = !!b.inactive;
+  if (b.inspection_method != null && b.inspection_method !== '') changes.inspection_method = String(b.inspection_method);
+  if (Object.keys(changes).length === 0) return res.status(400).json({ error: 'Nothing to change.' });
+  try {
+    const r = await orchestrator.updatePropertyControls(appId, changes, req.actor && req.actor.id);
+    if (r.error === 'not_managed') return res.status(409).json({ error: 'This file isn’t managed by PILOT in Sitewire yet — start the draw process first.' });
+    if (r.error === 'invalid_method') return res.status(400).json({ error: 'Pick Virtual or On-site.' });
+    if (r.error === 'method_forbidden') return res.status(422).json({ error: 'The capital partner doesn’t allow that inspection type for this file.' });
+    if (r.error === 'writes_off') return res.status(409).json({ error: 'The Sitewire connection is currently turned off, so this change can’t be sent yet.' });
+    if (r.error === 'nothing_to_change') return res.status(400).json({ error: 'Nothing to change.' });
+    if (r.parked) return res.status(502).json({ error: 'Couldn’t save the change to Sitewire — a review was opened so nothing is lost.', parked: r.parked });
+    res.json(r);
+  } catch (e) { console.warn('[sitewire] property-settings error:', e && e.message); res.status(502).json({ error: 'Couldn’t reach Sitewire right now — please try again shortly.' }); }
+});
+
 // ---- GET /files/:id/notifications — the DRAW file's email/notification center (staff) ----
 // The draw coordinator's per-file email section: every DRAW-RELATED notification PILOT sent about this file
 // (who it went to, when, delivery status, full content) plus the borrower's email REPLIES we've received.

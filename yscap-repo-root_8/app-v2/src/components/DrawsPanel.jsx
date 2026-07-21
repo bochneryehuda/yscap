@@ -115,6 +115,7 @@ export default function DrawsPanel({ appId }) {
     { id: 'dsec-emails', label: 'Emails & activity', group: 'Communication' },
     { id: 'dsec-docs', label: 'Documents & borrower', group: 'Communication' },
     { id: 'dsec-changes', label: 'Change requests', group: 'Manage' },
+    { id: 'dsec-controls', label: 'Sitewire controls', group: 'Manage' },
     { id: 'dsec-lifecycle', label: 'Project status', group: 'Manage' },
   ];
 
@@ -250,6 +251,9 @@ export default function DrawsPanel({ appId }) {
             {/* MANAGE — reallocations, project status + controls. */}
             <Section id="dsec-changes" title="Scope-of-Work change requests" defaultOpen={false}>
               <ChangeRequests appId={appId} items={change_requests} busy={busy} act={act} />
+            </Section>
+            <Section id="dsec-controls" title="Sitewire property controls" defaultOpen={false}>
+              <SitewirePropertyControls appId={appId} onChanged={load} />
             </Section>
             <Section id="dsec-lifecycle" title="Project status & controls" defaultOpen={false}>
               <LifecycleControl appId={appId} link={link} writesOff={writesOff} onChanged={load} />
@@ -450,6 +454,127 @@ function LifecycleControl({ appId, link, writesOff, onChanged }) {
       </div>
       {writesOff && state === 'active' && <div className="muted small" style={{ marginTop: 4 }}>Sitewire writing is off — closing a project is recorded in PILOT now and synced to Sitewire once writing is turned on.</div>}
       {msg && <div className="muted small" style={{ marginTop: 4 }}>{msg}</div>}
+    </div>
+  );
+}
+
+/* Sitewire PROPERTY CONTROLS from the PILOT desk (owner-directed 2026-07-21 — "ALL features that we have in
+   Sitewire… control the entire process from our system"). Reads the LIVE Sitewire property and offers the two
+   controls whose Sitewire field name we've CONFIRMED — Active↔Inactive and Virtual↔On-site inspection — each a
+   real guarded write that reads back what it wrote (never a fake button). The two we haven't confirmed
+   (Block draws / who reviews the inspection) are shown as "coming" with the live raw settings exposed below so
+   the exact Sitewire field names can be confirmed and wired next — a guessed field name would silently no-op. */
+const INSP_LABEL = { mobile: 'Virtual (Sitewire mobile app)', traditional: 'On-site (in person)' };
+function SitewirePropertyControls({ appId, onChanged }) {
+  const [d, setD] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState('');
+  const [msg, setMsg] = useState('');
+  const [showRaw, setShowRaw] = useState(false);
+  const loadIt = useCallback(() => {
+    setLoading(true);
+    api.get(`/api/sitewire/files/${appId}/sitewire-property`)
+      .then(setD).catch(() => setD(null)).finally(() => setLoading(false));
+  }, [appId]);
+  useEffect(() => { loadIt(); }, [loadIt]);
+
+  async function apply(changes, key, done) {
+    setBusy(key); setMsg('');
+    try {
+      const r = await api.post(`/api/sitewire/files/${appId}/property-settings`, changes);
+      const note = r.sitewire === 'synced' ? ' Saved in Sitewire.' : r.sitewire === 'dryrun' ? ' (dry-run — nothing sent to Sitewire.)' : ' Sent to Sitewire (not yet confirmed).';
+      setMsg((done || 'Updated.') + note);
+      loadIt(); if (onChanged) onChanged();
+    } catch (e) { setMsg(e?.data?.error || e.message || 'That didn’t work.'); }
+    finally { setBusy(''); }
+  }
+
+  if (loading) return <div className="dd-card" style={{ marginTop: 12 }}>Loading Sitewire settings…</div>;
+  if (!d) return null;
+  const sw = d.switches || {};
+  const writesOff = !(sw.enabled && sw.outbound);
+
+  // Not a PILOT-managed property, or the connection is off — say so plainly, don't show dead buttons.
+  if (!d.available) {
+    if (d.reason === 'not_managed') return null; // the Start-draw / preexisting cards already explain this
+    return (
+      <div className="dd-card" style={{ marginTop: 12 }}>
+        <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+          <span className="dd-card-ic"><SdIcon name="settings" /></span>
+          <div>
+            <b>Sitewire property controls</b>
+            <div className="dd-sub" style={{ marginTop: 1 }}>
+              {d.reason === 'off' ? 'The Sitewire connection is turned off, so its live settings can’t be shown right now.' : 'Couldn’t read the property from Sitewire right now — try again shortly.'}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const prop = d.property || {};
+  const active = prop.inactive !== true; // Sitewire `inactive` boolean → active = not inactive
+  const insp = d.inspection || {};
+  const method = insp.method || prop.inspection_method || 'mobile';
+  const canSwitch = insp.can_switch !== false;
+  const otherMethod = method === 'mobile' ? 'traditional' : 'mobile';
+
+  return (
+    <div className="dd-card" style={{ marginTop: 12 }}>
+      <div className="row" style={{ gap: 10, alignItems: 'center', marginBottom: 8 }}>
+        <span className="dd-card-ic"><SdIcon name="settings" /></span>
+        <div>
+          <b>Sitewire property controls</b>
+          <div className="dd-sub" style={{ marginTop: 1 }}>Change these here instead of logging into Sitewire — each one is sent straight to Sitewire.</div>
+        </div>
+      </div>
+
+      {/* Active / Inactive (Sitewire "Mark Inactive") */}
+      <div className="row between" style={{ gap: 10, flexWrap: 'wrap', alignItems: 'center', padding: '8px 0', borderTop: '1px solid var(--hairline,#e7e0d4)' }}>
+        <div style={{ minWidth: 200, flex: '1 1 260px' }}>
+          <div><b>Visibility</b> — <span style={{ color: active ? 'var(--success,#3f7a4a)' : 'var(--text-muted)' }}>{active ? 'Active (visible, accepting draws)' : 'Inactive (hidden — no new draws)'}</span></div>
+          <div className="dd-sub" style={{ marginTop: 1 }}>Inactive hides the property in Sitewire and stops new borrower draws.</div>
+        </div>
+        <button className="btn btn-sm ghost" style={{ flex: '0 0 auto' }} disabled={writesOff || busy === 'inactive'}
+          title={writesOff ? 'Sitewire writing is off' : ''}
+          onClick={() => { const next = active; if (!window.confirm(next ? 'Mark this property INACTIVE in Sitewire? It’s hidden and no new draws can be submitted.' : 'Make this property ACTIVE in Sitewire again?')) return; apply({ inactive: next }, 'inactive', next ? 'Marked inactive.' : 'Marked active.'); }}>
+          {busy === 'inactive' ? 'Saving…' : (active ? 'Mark inactive' : 'Make active')}
+        </button>
+      </div>
+
+      {/* Inspection method (Virtual/mobile ↔ On-site/traditional) */}
+      <div className="row between" style={{ gap: 10, flexWrap: 'wrap', alignItems: 'center', padding: '8px 0', borderTop: '1px solid var(--hairline,#e7e0d4)' }}>
+        <div style={{ minWidth: 200, flex: '1 1 260px' }}>
+          <div><b>Inspection type</b> — <span>{INSP_LABEL[method] || method}</span></div>
+          <div className="dd-sub" style={{ marginTop: 1 }}>
+            {canSwitch ? `Switch to ${INSP_LABEL[otherMethod]} for this property.` : 'The capital partner sets this — it can’t be switched for this file.'}
+          </div>
+        </div>
+        {canSwitch && (
+          <button className="btn btn-sm ghost" style={{ flex: '0 0 auto' }} disabled={writesOff || busy === 'method'}
+            title={writesOff ? 'Sitewire writing is off' : ''}
+            onClick={() => { if (!window.confirm(`Change the inspection type to ${INSP_LABEL[otherMethod]}?`)) return; apply({ inspection_method: otherMethod }, 'method', `Switched to ${INSP_LABEL[otherMethod]}.`); }}>
+            {busy === 'method' ? 'Saving…' : `Change to ${method === 'mobile' ? 'On-site' : 'Virtual'}`}
+          </button>
+        )}
+      </div>
+
+      {/* The two controls whose Sitewire field name isn't confirmed yet — honest, not a fake button. */}
+      <div className="dd-sub" style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--hairline,#e7e0d4)' }}>
+        Two more Sitewire switches — <b>Block draws</b> and <b>who reviews the inspection</b> (Sitewire’s GC partner vs. in-house) —
+        are coming here next. We’re confirming exactly how Sitewire names them so the button truly changes Sitewire and doesn’t just look like it did. Their live values are in the details below.
+      </div>
+
+      {writesOff && <div className="muted small" style={{ marginTop: 6 }}>Sitewire writing is currently off, so these buttons are disabled until it’s turned on.</div>}
+      {msg && <div className="dd-sub" style={{ marginTop: 6 }}>{msg}</div>}
+
+      {/* Discovery: the raw live property (reveals the real field names for the two not-yet-wired toggles). */}
+      <details style={{ marginTop: 8 }} open={showRaw} onToggle={(e) => setShowRaw(e.target.open)}>
+        <summary className="small" style={{ cursor: 'pointer', color: 'var(--text-muted)' }}>Advanced — live Sitewire settings for this property</summary>
+        <pre style={{ marginTop: 6, maxHeight: 320, overflow: 'auto', background: 'var(--paper,#f6f3ec)', padding: 10, borderRadius: 6, fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+          {JSON.stringify(prop, null, 2)}
+        </pre>
+      </details>
     </div>
   );
 }
@@ -751,6 +876,7 @@ function SdIcon({ name }) {
     reply: <><path d="M9 17l-5-5 5-5" /><path d="M4 12h11a5 5 0 015 5v1" /></>,
     folder: <><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v7a2 2 0 01-2 2H5a2 2 0 01-2-2z" /></>,
     dollar: <><path d="M12 2v20" /><path d="M17 6.5C17 4.6 14.8 3.5 12 3.5S7 4.6 7 6.5 9.2 9.5 12 10s5 1.6 5 3.5-2.2 3-5 3-5-1.1-5-3" /></>,
+    settings: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.6 1.6 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.6 1.6 0 00-1.8-.3 1.6 1.6 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.6 1.6 0 00-1-1.5 1.6 1.6 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.6 1.6 0 00.3-1.8 1.6 1.6 0 00-1.5-1H3a2 2 0 110-4h.1a1.6 1.6 0 001.5-1 1.6 1.6 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.6 1.6 0 001.8.3H9a1.6 1.6 0 001-1.5V3a2 2 0 114 0v.1a1.6 1.6 0 001 1.5 1.6 1.6 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.6 1.6 0 00-.3 1.8V9a1.6 1.6 0 001.5 1H21a2 2 0 110 4h-.1a1.6 1.6 0 00-1.5 1z" /></>,
   }[name] || null;
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{p}</svg>;
 }

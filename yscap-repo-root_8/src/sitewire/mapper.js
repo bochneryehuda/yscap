@@ -110,7 +110,8 @@ function uniquifyNames(items) {
 //   { sow_line_key, section_token, unit_index, name, budgeted_cents }
 // Contingency + GC are appended as their own project cells (so the Sitewire total ties
 // to rehab_budget). Lines toggled OFF are skipped; an ON line with a $0 cell is still
-// emitted (so a $0 line still has a Sitewire counterpart) — callers may drop zero cells.
+// emitted here (this is the raw cell set) — explodeSow() drops the $0 budget cells so
+// no empty line item is ever pushed to Sitewire (the mandatory $0 media anchors are kept).
 function sowCells(state) {
   const cells = [];
   if (!state || typeof state !== 'object') return cells;
@@ -181,10 +182,20 @@ function mediaAnchors(state, defaults = {}) {
 function explodeSow(state, opts = {}) {
   const perLineImg = opts.required_image_count != null ? opts.required_image_count : 5;
   const perLineVid = opts.required_video_count != null ? opts.required_video_count : 0;
-  const budgetCells = sowCells(state).map((c) => ({
-    ...c, is_media_item: false, mandatory: false,
-    required_image_count: perLineImg, required_video_count: perLineVid,
-  }));
+  // Drop $0 BUDGET lines: an ON Scope-of-Work line carrying no dollars is an EMPTY job item
+  // that just clutters Sitewire (owner-reported 2026-07-21 — "when you push it to Sitewire it
+  // still comes up all the empty fields as well"). Our own draw screen already hides these, so
+  // Sitewire must match. Safe for G-RECON: a $0 cell adds nothing to the subtotal, so Σ items
+  // still ties to the frozen budget to the cent. The mandatory $0 MEDIA anchors (Exterior Photos,
+  // Interior Video Tour) are added SEPARATELY below and are NOT budget cells — they must stay
+  // (they are the photo/video inspection gates, not empty money lines). A per-unit 'split' line
+  // with some columns at $0 correctly pushes only the funded units.
+  const budgetCells = sowCells(state)
+    .filter((c) => Number(c.budgeted_cents || 0) > 0)
+    .map((c) => ({
+      ...c, is_media_item: false, mandatory: false,
+      required_image_count: perLineImg, required_video_count: perLineVid,
+    }));
   const sub = subtotalCents(budgetCells);
   const cont = contingencyCents(state, sub);
   const gc = gcCents(state, sub);
