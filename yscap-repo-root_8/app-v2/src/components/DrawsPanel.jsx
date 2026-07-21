@@ -693,10 +693,15 @@ function BorrowerInviteStatus({ appId, writesOff, readsOff }) {
   const [st, setSt] = useState(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
+  const [editing, setEditing] = useState(false);
+  const [emailInput, setEmailInput] = useState('');
   const loadStatus = useCallback(() => { api.get(`/api/sitewire/files/${appId}/borrower-status`).then(setSt).catch(() => setSt(null)); }, [appId]);
   useEffect(() => { loadStatus(); }, [loadStatus]);
-  if (!st || !st.managed) return null;
+  if (!st) return null;
   const info = (st.available && INVITE[st.status]) || null;
+  const accepted = st.status === 'assigned';
+  const invited = st.invite_email || st.borrower_email || '';
+  const isOverride = !!st.override_email && st.override_email !== st.borrower_email;
   async function resend() {
     setBusy(true); setMsg('');
     try {
@@ -706,26 +711,62 @@ function BorrowerInviteStatus({ appId, writesOff, readsOff }) {
     } catch (e) { setMsg(e?.data?.error || e.message || 'That didn’t work.'); }
     finally { setBusy(false); }
   }
-  const accepted = st.status === 'assigned';
+  async function saveEmail() {
+    const email = String(emailInput || '').trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { setMsg('Please enter a valid email address.'); return; }
+    setBusy(true); setMsg('');
+    try {
+      const r = await api.setDrawInviteEmail(appId, email);
+      setMsg(r.sitewire === 'synced' ? `Invitation now goes to ${r.email} — a fresh invite was sent.`
+        : r.sitewire === 'not_pushed' ? `Saved. The invitation will go to ${r.email} when the draw starts.`
+        : r.sitewire === 'dryrun' ? 'Dry-run — nothing was actually sent.'
+        : `Saved ${r.email}.`);
+      setEditing(false);
+      setTimeout(loadStatus, 800);
+    } catch (e) { setMsg(e?.data?.error || e.message || 'That didn’t work.'); }
+    finally { setBusy(false); }
+  }
   return (
     <div className="dd-card" style={{ marginTop: 12 }}>
       <div className="row between" style={{ gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
         <div className="row" style={{ gap: 10, alignItems: 'center', minWidth: 0 }}>
           <span className="dd-card-ic"><SdIcon name="mail" /></span>
-          <div>
-            <b>Borrower in Sitewire</b>
-            {info
-              ? <div className="dd-sub" style={{ marginTop: 1, color: info.tone }}>{info.label}{st.contact_email ? ` · ${st.contact_email}` : ''}</div>
-              : <div className="dd-sub" style={{ marginTop: 1 }}>{readsOff ? 'Turn Sitewire on to see the borrower’s invite status.' : 'Status unavailable right now.'}</div>}
+          <div style={{ minWidth: 0 }}>
+            <b>Borrower invite in Sitewire</b>
+            {st.managed
+              ? (info
+                ? <div className="dd-sub" style={{ marginTop: 1, color: info.tone }}>{info.label}{st.contact_email ? ` · ${st.contact_email}` : ''}</div>
+                : <div className="dd-sub" style={{ marginTop: 1 }}>{readsOff ? 'Turn Sitewire on to see the borrower’s invite status.' : 'Status unavailable right now.'}</div>)
+              : <div className="dd-sub" style={{ marginTop: 1 }}>The invitation goes out when the draw process starts.</div>}
+            {!editing && invited && (
+              <div className="dd-sub" style={{ marginTop: 3 }}>
+                Invitation email: <b>{invited}</b>{isOverride ? ' (instead of the borrower — e.g. their GC/partner)' : ''}
+              </div>
+            )}
           </div>
         </div>
-        {!accepted && !readsOff && (
-          <button className="btn btn-sm ghost" style={{ flex: '0 0 auto' }} disabled={busy || writesOff}
-            title={writesOff ? 'Sitewire writing is off' : 'Re-send the Sitewire borrower invite'} onClick={resend}>
-            {busy ? 'Sending…' : (st.status === 'invited' ? 'Resend invite' : 'Send invite')}
-          </button>
-        )}
+        <div className="row" style={{ gap: 8, flex: '0 0 auto', flexWrap: 'wrap' }}>
+          {!accepted && !editing && (
+            <button className="btn btn-sm ghost" disabled={busy}
+              title="Send the Sitewire invite to a different email (e.g. the borrower’s contractor or partner)"
+              onClick={() => { setEmailInput(invited); setEditing(true); setMsg(''); }}>Change email</button>
+          )}
+          {st.managed && !accepted && !readsOff && !editing && (
+            <button className="btn btn-sm ghost" disabled={busy || writesOff}
+              title={writesOff ? 'Sitewire writing is off' : 'Re-send the Sitewire borrower invite'} onClick={resend}>
+              {busy ? 'Sending…' : (st.status === 'invited' ? 'Resend invite' : 'Send invite')}
+            </button>
+          )}
+        </div>
       </div>
+      {editing && (
+        <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+          <input type="email" value={emailInput} onChange={(e) => setEmailInput(e.target.value)} placeholder="name@email.com"
+            style={{ flex: '1 1 220px', minWidth: 0, fontSize: 16, padding: '7px 10px', border: '1px solid var(--line)', borderRadius: 8 }} />
+          <button className="btn btn-sm" disabled={busy} onClick={saveEmail}>{busy ? 'Saving…' : 'Save & send invite'}</button>
+          <button className="btn btn-sm ghost" disabled={busy} onClick={() => { setEditing(false); setMsg(''); }}>Cancel</button>
+        </div>
+      )}
       {msg && <div className="dd-sub" style={{ marginTop: 6 }}>{msg}</div>}
     </div>
   );

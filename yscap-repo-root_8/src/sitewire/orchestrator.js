@@ -257,6 +257,17 @@ async function getLink(appId) {
   return (await db.query(`SELECT * FROM sitewire_property_links WHERE application_id=$1`, [appId])).rows[0] || null;
 }
 
+// The email Sitewire's borrower invite is sent to: the coordinator's per-file OVERRIDE
+// (link.invite_email — e.g. the borrower's GC/partner, since Sitewire allows only ONE email per
+// property) if set, else the file's own borrower email. Used by every assign/resend so the whole
+// system honors a changed invite email consistently.
+function inviteEmailFor(link, a) {
+  const ov = link && typeof link.invite_email === 'string' ? link.invite_email.trim() : '';
+  if (ov) return ov;
+  return (a && a.borrower_email) || null;
+}
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 // Resolve the inspection method for a file: the coordinator's per-file choice (link.inspection_method)
 // if set, else the rule's DEFAULT (auto virtual/physical). The choice is validated against what the
 // rule ALLOWS — a stored method the rule no longer allows falls back to an allowed one (never a
@@ -487,18 +498,20 @@ async function pushFile(appId, opts = {}) {
     }
   }
 
-  // assign borrower (best-effort; parks on 422)
-  if (a.borrower_email) {
+  // assign borrower (best-effort; parks on 422). Uses the per-file invite-email override if the
+  // coordinator set one (send the invite to the borrower's GC/partner instead), else the borrower email.
+  const inviteEmail = inviteEmailFor(link, a);
+  if (inviteEmail) {
     await circuitCheck(1); // count this write toward the breaker so a runaway re-push loop still halts here
     try {
-      const res = await client.assignBorrower(propertyId, a.borrower_email);
-      if (!(res && res.__dryrun)) await journal({ appId, propertyId, entity: 'borrower', field: 'contact_email', newValue: a.borrower_email, source: 'push' });
+      const res = await client.assignBorrower(propertyId, inviteEmail);
+      if (!(res && res.__dryrun)) await journal({ appId, propertyId, entity: 'borrower', field: 'contact_email', newValue: inviteEmail, source: 'push' });
     } catch (e) {
       if (e.retryable) throw e; // transient → the queue retries the whole push
       // Any NON-retryable failure (422/400/403/404/409/…) must PARK, never be silently swallowed —
       // Sitewire owns borrower draw submission, so an unassigned borrower can't submit and someone
       // must be told (never-silently-drop).
-      await park({ appId, reason: `sitewire_borrower_assign_failed: could not assign borrower ${a.borrower_email} (Sitewire ${e.status || 'error'})` });
+      await park({ appId, reason: `sitewire_borrower_assign_failed: could not assign borrower ${inviteEmail} (Sitewire ${e.status || 'error'})` });
     }
   }
 
@@ -1007,13 +1020,22 @@ async function resetDrawSetup(appId, staffId = null) {
    Sitewire reads are off or the call fails. Staff-only (the route is manage_draws). */
 async function getBorrowerInviteStatus(appId) {
   const link = await getLink(appId);
-  if (!link || !link.sitewire_property_id || link.matched_by !== 'created') return { managed: false };
-  if (!switches.on('SITEWIRE_ENABLED')) return { managed: true, available: false, reason: 'sitewire_off' };
+  const a = await loadFile(appId).catch(() => null);
+  // The email the UI prefills/shows: the per-file override if set, else the borrower's own email; plus
+  // the stored override itself (so the UI can show "invited to <someone else>"). Available before + after push.
+  const overrideEmail = link && typeof link.invite_email === 'string' && link.invite_email.trim() ? link.invite_email.trim() : null;
+  const prefill = inviteEmailFor(link, a);
+  const base = {
+    managed: !!(link && link.sitewire_property_id && link.matched_by === 'created'),
+    override_email: overrideEmail, invite_email: prefill, borrower_email: (a && a.borrower_email) || null,
+  };
+  if (!base.managed) return base;
+  if (!switches.on('SITEWIRE_ENABLED')) return { ...base, available: false, reason: 'sitewire_off' };
   try {
     const p = await client.getProperty(link.sitewire_property_id);
     const b = (p && p.borrower) || {};
-    return { managed: true, available: true, status: b.status || 'unassigned', contact_email: b.contact_email || null };
-  } catch (e) { return { managed: true, available: false, reason: (e && e.message) || 'error' }; }
+    return { ...base, available: true, status: b.status || 'unassigned', contact_email: b.contact_email || null };
+  } catch (e) { return { ...base, available: false, reason: (e && e.message) || 'error' }; }
 }
 
 /* (Re)send the Sitewire borrower invite by re-asserting the borrower's contact email on the property — the
@@ -1023,18 +1045,54 @@ async function resendBorrowerInvite(appId) {
   const link = await getLink(appId);
   if (!link || !link.sitewire_property_id || link.matched_by !== 'created') return { error: 'not_managed' };
   const a = await loadFile(appId);
-  if (!a || !a.borrower_email) return { error: 'no_borrower_email' };
+  const email = inviteEmailFor(link, a);
+  if (!email) return { error: 'no_borrower_email' };
   if (!(switches.on('SITEWIRE_ENABLED') && (switches.on('SITEWIRE_OUTBOUND_ENABLED') || cfg.sitewireDryrun))) return { error: 'writes_off' };
   await circuitCheck(1);
   try {
-    const res = await client.assignBorrower(link.sitewire_property_id, a.borrower_email);
-    if (res && res.__dryrun) return { ok: true, sitewire: 'dryrun', email: a.borrower_email };
-    await journal({ appId, propertyId: link.sitewire_property_id, entity: 'borrower', field: 'contact_email', newValue: a.borrower_email, source: 'resend_invite' });
-    return { ok: true, sitewire: 'synced', email: a.borrower_email };
+    const res = await client.assignBorrower(link.sitewire_property_id, email);
+    if (res && res.__dryrun) return { ok: true, sitewire: 'dryrun', email };
+    await journal({ appId, propertyId: link.sitewire_property_id, entity: 'borrower', field: 'contact_email', newValue: email, source: 'resend_invite' });
+    return { ok: true, sitewire: 'synced', email };
   } catch (e) {
     if (e.retryable) return { error: 'transient' };
     return { error: 'sitewire_' + ((e && e.status) || 'error') };
   }
+}
+
+/* Set / change the per-file Sitewire invite email (owner-directed 2026-07-21). Sitewire keeps ONE email
+   per property, so changing it REPLACES the pending invite and sends a fresh one — this is how staff send
+   the invite to the borrower's GC/partner instead. Stores the override on the file's link row (so a later
+   push/resend honors it), and — when the property is already live in Sitewire and writes are on — assigns
+   the new email immediately (guarded + journaled). Before the push, it just stores the choice. Never guesses
+   an email. GO-FORWARD (managed for the live assign); a not-yet-pushed file stores the override for its push. */
+async function setBorrowerInviteEmail(appId, email, staffId) {
+  const clean = String(email == null ? '' : email).trim();
+  if (!EMAIL_RE.test(clean) || clean.length > 254) return { error: 'invalid_email' };
+  // Persist the override on the link row (create a pending row if the file was never started — harmless:
+  // it carries no birth stamp, so the stranded-birth backfill ignores it; the push reads invite_email).
+  await db.query(
+    `INSERT INTO sitewire_property_links (application_id, matched_by, state, invite_email)
+     VALUES ($1,'created','pending',$2)
+     ON CONFLICT (application_id) DO UPDATE SET invite_email=$2, updated_at=now()`,
+    [appId, clean]);
+  await journal({ appId, entity: 'borrower', field: 'invite_email', newValue: clean, source: 'invite_email_set', changed: true, staffId }).catch(() => {});
+  const link = await getLink(appId);
+  // Live-assign now only when the property actually exists in Sitewire and writes are on.
+  if (link && link.sitewire_property_id && link.matched_by === 'created'
+      && switches.on('SITEWIRE_ENABLED') && (switches.on('SITEWIRE_OUTBOUND_ENABLED') || cfg.sitewireDryrun)) {
+    await circuitCheck(1);
+    try {
+      const res = await client.assignBorrower(link.sitewire_property_id, clean);
+      if (res && res.__dryrun) return { ok: true, stored: true, sitewire: 'dryrun', email: clean };
+      await journal({ appId, propertyId: link.sitewire_property_id, entity: 'borrower', field: 'contact_email', newValue: clean, source: 'invite_email_change' });
+      return { ok: true, stored: true, sitewire: 'synced', email: clean };
+    } catch (e) {
+      if (e.retryable) return { ok: true, stored: true, sitewire: 'transient', email: clean };
+      return { ok: true, stored: true, sitewire: 'sitewire_' + ((e && e.status) || 'error'), email: clean };
+    }
+  }
+  return { ok: true, stored: true, sitewire: 'not_pushed', email: clean };
 }
 
 /* Sitewire's pipeline / "quick-notify" status labels — the tags a draw can be moved through (e.g. "Sent to
@@ -1100,4 +1158,4 @@ async function getSitewireDocuments(appId) {
   } catch (e) { return { managed: true, available: false, documents: [], error: (e && e.message) || 'error' }; }
 }
 
-module.exports = { pushFile, pushBudget, setPropertyLifecycle, updatePropertyControls, getPropertyLive, pushJobItemDescription, resetDrawSetup, collisionProperty, getBorrowerInviteStatus, resendBorrowerInvite, listQuickNotifyStatuses, setDrawQuickNotify, getSitewireDocuments, park, journal, circuitCheck, resolveCapitalPartnerId, resolveRule, resolveInspection, resolveCoordinatorId, getLink, loadFile, isManaged, recordSetupStatus, SITEWIRE_BIRTH_REASONS, LIFECYCLE_STATES, INSPECTION_METHODS };
+module.exports = { pushFile, pushBudget, setPropertyLifecycle, updatePropertyControls, getPropertyLive, pushJobItemDescription, resetDrawSetup, collisionProperty, getBorrowerInviteStatus, resendBorrowerInvite, setBorrowerInviteEmail, inviteEmailFor, listQuickNotifyStatuses, setDrawQuickNotify, getSitewireDocuments, park, journal, circuitCheck, resolveCapitalPartnerId, resolveRule, resolveInspection, resolveCoordinatorId, getLink, loadFile, isManaged, recordSetupStatus, SITEWIRE_BIRTH_REASONS, LIFECYCLE_STATES, INSPECTION_METHODS };

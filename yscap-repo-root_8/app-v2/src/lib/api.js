@@ -328,6 +328,9 @@ export const api = {
   // #83 — loan-officer borrower management
   staffBorrowers:   () => req('GET', '/api/staff/borrowers'),
   staffBorrowerInvite: (id) => req('POST', `/api/staff/borrowers/${id}/portal-invite`),
+  // Change WHICH email the Sitewire borrower invite goes to (borrower / GC / partner). Replaces the
+  // pending invite (Sitewire keeps one email per property) + stores it so the push/resend honor it.
+  setDrawInviteEmail: (appId, email) => req('POST', `/api/sitewire/files/${appId}/invite-email`, { email }),
   staffBorrowerResetPassword: (id) => req('POST', `/api/staff/borrowers/${id}/reset-password`),
   staffBorrowerSetPassword: (id, password) => req('POST', `/api/staff/borrowers/${id}/set-password`, { password }),
   staffBorrower:    (id) => req('GET', `/api/staff/borrowers/${id}`),
