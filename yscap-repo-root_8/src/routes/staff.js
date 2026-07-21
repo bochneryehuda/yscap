@@ -5687,6 +5687,24 @@ router.patch('/applications/:id/details', async (req, res) => {
     if (Object.keys(changes).length) {
       try { conditions = await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'details_edited' }); }
       catch (_) { /* best-effort */ }
+      // Loan Digital Twin (Sovereign 1/4): the same-write also feeds the twin so
+      // the LOS-side value shows up as an observation next to any document-sourced
+      // observations for the same fact. Best-effort.
+      try {
+        const row = (await db.query(
+          `SELECT loan_amount, purchase_price, as_is_value, arv, rehab_budget, assignment_fee,
+                  underlying_contract_price, property_type, units, property_address, program, loan_type
+             FROM applications WHERE id=$1`, [req.params.id])).rows[0];
+        if (row) {
+          const client = await db.getClient();
+          try {
+            await client.query('BEGIN');
+            await require('../lib/underwriting/twin').recordLosFieldFacts(client, req.params.id, row);
+            await client.query('COMMIT');
+          } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+          finally { client.release(); }
+        }
+      } catch (_) { /* twin capture is additive */ }
     }
     res.json({ ok: true, changed: Object.keys(changes), conditions });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
@@ -5958,6 +5976,26 @@ async function completeFields(req, res, borrowerScoped) {
       // details edit path does. Best-effort — never blocks the save.
       try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'completeness_edited' }); } catch (_) {}
       try { await require('../lib/rehab-budget').enforceSowContingency(req.params.id); } catch (_) {}
+      // Loan Digital Twin (Sovereign 1/4, owner-directed 2026-07-21): every LOS
+      // field write is a fresh observation of the underlying canonical facts
+      // (loan.amount, property.address, etc.). Feeds the twin so the completeness
+      // edit shows up in the "canonical facts" cockpit alongside every document-
+      // sourced observation. Best-effort — never blocks the save.
+      try {
+        const row = (await db.query(
+          `SELECT loan_amount, purchase_price, as_is_value, arv, rehab_budget, assignment_fee,
+                  underlying_contract_price, property_type, units, property_address, program, loan_type
+             FROM applications WHERE id=$1`, [req.params.id])).rows[0];
+        if (row) {
+          const client = await db.getClient();
+          try {
+            await client.query('BEGIN');
+            await require('../lib/underwriting/twin').recordLosFieldFacts(client, req.params.id, row);
+            await client.query('COMMIT');
+          } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+          finally { client.release(); }
+        }
+      } catch (_) { /* twin capture is additive */ }
     }
     const brVals = [bid]; const brSets = []; const brKeys = [];
     for (const [k, t] of Object.entries(COMPLETE_BORROWER_FIELDS)) {
