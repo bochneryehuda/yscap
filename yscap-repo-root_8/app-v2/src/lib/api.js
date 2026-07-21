@@ -532,6 +532,9 @@ export const api = {
   // Read-only Sitewire TEST-environment capability explorer (super_admin). Lists every field/button
   // Sitewire exposes so new integrations use confirmed names. Uses SITEWIRE_TEST_* creds; never writes.
   sitewireExplore:    (opts) => req('POST', '/api/admin/integrations/sitewire/explore', opts || {}),
+  integrationSwitches: () => req('GET', '/api/admin/integrations/switches'),
+  integrationToggleSwitch: (key, enabled, confirm) => req('POST', `/api/admin/integrations/switches/${encodeURIComponent(key)}`, { enabled, confirm }),
+  integrationResetSwitch:  (key) => req('POST', `/api/admin/integrations/switches/${encodeURIComponent(key)}/reset`),
   clickupHealth:    () => req('GET', '/api/admin/clickup/health'),
   clickupActivity:  () => req('GET', '/api/admin/clickup/activity'),
   clickupBackfill:  (mode, sample) => req('POST', '/api/admin/clickup/backfill', { mode, sample }),

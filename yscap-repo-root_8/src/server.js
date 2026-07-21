@@ -525,6 +525,9 @@ if (require.main === module) {
     // alerts, and the Monday admin summary. Each self-gates via audit_log so it
     // sends at most once per period; timed to the morning/business-hours window in
     // the team's timezone. Kill-switch NOTIFY_DIGESTS_ENABLED=0.
+    // Runtime feature-flag cache (the API Health "working switches"): load overrides once, refresh
+    // periodically. Gates fall back to their env default until this loads, so it's safe if it lags.
+    try { require('./lib/flags').start(); } catch (e) { console.warn('flags cache not started:', e.message); }
     try { require('./lib/notification-digests').start(); } catch (e) { console.warn('notification digests not started:', e.message); }
     // API Health down-alerts (owner-directed 2026-07-21): probe every integration on a
     // schedule and email the admins when one that was reachable goes DOWN (and when it

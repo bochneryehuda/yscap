@@ -13,6 +13,7 @@
  */
 const db = require('../../db');
 const cfg = require('../../config');
+const switches = require('../integrations/switches'); // runtime on/off (env default unless flipped)
 const storage = require('../storage');
 const { importAppraisal } = require('./import');
 const { extract } = require('./extract');
@@ -119,7 +120,7 @@ async function extractAndStorePhotos(appraisalId, appId, pdfB64, importedBy) {
 // raises a WARNING finding when the appraisal disagrees with FEMA on special-flood-hazard status.
 // Best-effort and never-guess: unreachable services store nothing and raise nothing.
 function fireFloodCheck(appraisalId, appId) {
-  if (!cfg.appraisalFloodCheckEnabled || !appraisalId) return;
+  if (!switches.on('APPRAISAL_FLOOD_CHECK_ENABLED') || !appraisalId) return;
   (async () => {
     const row = (await db.query(
       `SELECT subject_address, subject_city, subject_state, subject_zip, flood_zone FROM appraisals WHERE id=$1`, [appraisalId])).rows[0];

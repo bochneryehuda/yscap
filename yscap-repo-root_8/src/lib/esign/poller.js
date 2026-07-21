@@ -48,7 +48,7 @@ async function retrySend(opts = {}) {
   // also refuses): when sending is paused, don't even claim/drain the send queue.
   // Reconcile of already-sent envelopes still runs (tracking must not stop). Tests
   // toggle the config singleton, so read it live rather than caching a boolean.
-  if (!cfg.sendEnabled) return { paused: true };
+  if (!require('../integrations/switches').on('DOCUSIGN_SEND_ENABLED')) return { paused: true };
   const db = opts.db || dbDefault;
   const storage = opts.storage || storageDefault;
   const ds = opts.docusign || docusign;

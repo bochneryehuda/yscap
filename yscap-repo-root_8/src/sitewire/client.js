@@ -13,6 +13,7 @@
  * retried) so the orchestrator can park them for review.
  */
 const cfg = require('../config');
+const switches = require('../lib/integrations/switches'); // runtime on/off (env default unless flipped)
 const T = require('./transforms');
 
 function base() { return cfg.sitewireBaseUrl || 'https://app.sitewire.co'; }
@@ -95,7 +96,7 @@ async function call(path, { method = 'GET', body, noRetry = false } = {}) {
   }
   // Defense-in-depth: the outbound write gate is enforced at every caller, but also fail-closed HERE
   // so a future write path that forgets the check can never send a live write while OUTBOUND is off.
-  if (isWrite && !cfg.sitewireOutboundEnabled) {
+  if (isWrite && !switches.on('SITEWIRE_OUTBOUND_ENABLED')) {
     const e = new Error(`SITEWIRE_OUTBOUND_DISABLED: refusing ${method} ${path} — writes are gated off`);
     e.code = 'SITEWIRE_OUTBOUND_DISABLED'; throw e;
   }

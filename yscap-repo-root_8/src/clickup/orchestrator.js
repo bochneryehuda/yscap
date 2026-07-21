@@ -6,11 +6,12 @@
  * (idempotent COALESCE + no-downgrade checklist + scoped enqueue-on-write), not a
  * separate echo-suppression pass.
  *
- * Gated by cfg.clickupSyncEnabled; every call is a no-op when the master switch
+ * Gated by switches.on('CLICKUP_SYNC_ENABLED'); every call is a no-op when the master switch
  * is off, so this is safe to wire before go-live.
  */
 const db = require('../db');
 const cfg = require('../config');
+const switches = require('../lib/integrations/switches'); // runtime on/off (env default unless flipped)
 const clickup = require('./client');
 const registry = require('./registry');
 const mapper = require('./mapper');
@@ -215,7 +216,7 @@ function assertPushComplete(journalStats, failures) {
 
 /** Create or update the Pipeline task for an application. No-op if sync disabled. */
 async function pushApplication(appId, opts = {}) {
-  if (!cfg.clickupSyncEnabled && !opts.force) return { skipped: 'sync disabled' };
+  if (!switches.on('CLICKUP_SYNC_ENABLED') && !opts.force) return { skipped: 'sync disabled' };
   const ctx = await loadPushContext(appId);
   if (!ctx) return { skipped: 'not found' };
   // HARD RULE: a file archived/deleted in the portal must NEVER be deleted or

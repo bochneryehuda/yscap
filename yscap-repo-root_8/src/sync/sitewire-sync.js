@@ -10,6 +10,7 @@
  */
 const db = require('../db');
 const cfg = require('../config');
+const switches = require('../lib/integrations/switches'); // runtime on/off (env default unless flipped)
 const orchestrator = require('../sitewire/orchestrator');
 const reconcile = require('../sitewire/reconcile');
 const { enqueueSitewirePush } = require('../sitewire/enqueue');
@@ -50,7 +51,7 @@ async function backfillStrandedBirthsOnce() {
  * leaves synced=false to retry next start. Gated on the write gate (nothing to sync without it).
  */
 async function backfillUnsyncedLifecycleOnce() {
-  if (!(cfg.sitewireOutboundEnabled || cfg.sitewireDryrun)) return;
+  if (!(switches.on('SITEWIRE_OUTBOUND_ENABLED') || cfg.sitewireDryrun)) return;
   try {
     const rows = (await db.query(
       `SELECT application_id, lifecycle_state FROM sitewire_property_links
@@ -143,13 +144,17 @@ function start() {
   setTimeout(() => backfillStrandedBirthsOnce(), 3000);
   setTimeout(() => backfillUnsyncedLifecycleOnce(), 5000);   // catch lifecycle changes recorded while writes were off
   const drain = async (fn, name) => { try { let guard = 0; while (await fn() && guard++ < 500) {} } catch (e) { console.warn('[sitewire]', name, 'error:', e.message); } };
-  // Start the push drain when OUTBOUND is on OR DRYRUN is on — so the staged step "ENABLED=1, OUTBOUND=0,
-  // DRYRUN=1" actually previews the push bodies (log-not-send) without first turning on real writes.
-  // Non-reentrant: a new 4s tick must NOT stack on a still-running drain (a slow push could otherwise be
-  // double-driven), so guard with a flag and only re-arm after the previous drain settles.
+  // Drive the push drain when OUTBOUND is on OR DRYRUN is on — so the staged step "ENABLED=1, OUTBOUND=0,
+  // DRYRUN=1" actually previews the push bodies (log-not-send) without first turning on real writes. The
+  // gate is checked INSIDE the tick via switches.on() (not once at boot), so flipping SITEWIRE_OUTBOUND_ENABLED
+  // on the API Health page starts/stops the drain at runtime without a restart (that's why the switch is not
+  // marked `resume`); the guarded client is a fail-closed backstop when it's off. Non-reentrant: a new 4s tick
+  // must NOT stack on a still-running drain (a slow push could otherwise be double-driven), so guard with a
+  // flag and only re-arm after the previous drain settles.
   let draining = false;
-  if (cfg.sitewireOutboundEnabled || cfg.sitewireDryrun) setInterval(() => {
+  setInterval(() => {
     if (draining) return;
+    if (!(switches.on('SITEWIRE_OUTBOUND_ENABLED') || cfg.sitewireDryrun)) return;
     draining = true;
     drain(pushOutboxOnce, 'push').finally(() => { draining = false; });
   }, 4000);
