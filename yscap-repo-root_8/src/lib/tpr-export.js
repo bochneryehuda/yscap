@@ -1,75 +1,219 @@
 /**
- * TPR / file export (#148; layout reworked owner-directed 2026-07-13;
- * EVERYTHING-on-the-file selection owner-directed 2026-07-16).
- * Packages EVERY current document on the file — internal-condition docs
- * (fraud / credit / insurance / title / appraisal), borrower-condition docs,
- * loose attachments, the vesting entity's docs INCLUDING layered owning
- * entities, and borrower-profile docs for borrower + co-borrower — whether or
- * not review has finished (the manifest labels each doc's review status
- * instead of dropping it). Into a property-centric ZIP whose subject folder is
- * organized BY CONDITION NAME, mirroring the SharePoint "YS portal syncing"
- * folder layout:
+ * TPR / file export (#148; layout REWORKED owner-directed 2026-07-21).
  *
- *   01_Subject_Property__<address>/
- *      00_REGISTERED_PRODUCT.{json,txt}
- *      01_<Condition label>/ …          one folder per condition, every document
- *      NN_General_Documents/            docs with no condition (except term sheet)
- *   02_Term_Sheet/                      the signed term sheet, pulled out on its own
- *   03_Track_Record/
- *      Track_Record.html                a branded, printable operational track record
- *      Track_Record.xlsx                the same as a real Excel workbook
- *      <prior property address>/        each line item's verification docs, foldered
- *   00_MANIFEST.json / 00_INDEX.txt
+ * Packages EVERY current document on the file into ONE property-named folder
+ * whose subfolders are the fixed, cleanly-named document CATEGORIES the owner
+ * keeps on the SharePoint file (no "01_"/"02_" number prefixes, no three
+ * top-level Subject/Term-Sheet/Track-Record folders any more):
  *
- * What stays OUT (each a deliberate, individually-decided exclusion):
+ *   <Subject Property Address>/
+ *      Application/            signed application + business-purpose disclosure
+ *      Appraisal/              appraisal report (PDF/XML) + photos + appraisal docs
+ *      Background Check/       background report (fraud condition, background slot)
+ *      Bank Statements/        bank statements / assets / voided check
+ *      Contract & Assignment/  purchase contract + assignment + EMD proof
+ *      Credit Report/          credit report
+ *      Criminal Check/         criminal report (fraud condition, criminal slot)
+ *      Flood Cert/             flood certificate
+ *      ID/                     photo ID + Social Security card
+ *      Insurance/              insurance binder + invoice + insurance replies
+ *      LLC/                    every entity document (incl. layered owning LLCs)
+ *      REO/                    Track Record.xlsx  +  one folder per prior property
+ *      Scope of Work/          scope of work + rehab budget + plans & permits
+ *      Term Sheet/             uploaded + signed term sheet (+ registered terms)
+ *      TITLE/                  title documents + title replies
+ *      Other Documents/        anything that didn't match a category (flagged)
+ *      _Package Index.txt      human-readable list of everything in the package
+ *      _Manifest.json          machine-readable manifest + integrity report
+ *
+ * HARD FREEZE (owner-directed): the Heter Iska — unsigned AND signed — is NEVER
+ * in the TPR export. Guarded THREE independent ways in the selection: the
+ * rtl_cond_iska condition is tpr_exclude=true; the doc_kinds heter_iska /
+ * heter_iska_signed are denied; and a word-boundary "iska"/"heter" match on the
+ * condition label AND the filename is denied. DocuSign completion certificates
+ * (esign_certificate) are also excluded — one of them belongs to the Iska
+ * envelope and would reveal it. See docs/DOCUSIGN-DOCUMENT-BUILD-SPEC Addendum A.9.
+ *
+ * What else stays OUT (each a deliberate, individually-decided exclusion):
  *   - rejected documents and superseded versions (is_current=false) — trash
  *   - chat attachments (conversation exhibits, not file documents)
  *   - items flagged tpr_exclude (owner-directed per-condition exclusions:
- *     ISKA, investor-structure printout — db/051/db/056)
+ *     ISKA, investor-structure printout, settlement statement, draw request /
+ *     wire forms — db/051/db/056/db/215/db/206)
  *   - an EXPIRED Certificate of Good Standing (#83 — behaves like empty)
  *   - system-generated regen artifacts (prior TPR zips, autosaved track-record
- *     printouts) — the export builds its own live versions of those
- * Track-record verification docs are gated at the LINE-ITEM level (a project's
- * documents ride on its is_verified flag — the individual files are 'pending'
- * because verification is per project, not per document).
+ *     printouts, PILOT draw-inspection reports) — the export builds its own.
+ * Track-record verification docs are gated at the LINE-ITEM level (they ride on
+ * the project's is_verified flag) and land under REO/<prior property>.
+ *
+ * CORRUPTION DEFENCE (owner-directed 2026-07-21 "the PDF should not be
+ * corrupted"): three layers. (1) the ZIP writer sets the UTF-8 name flag and
+ * always stores real Buffers with a correct CRC, so good bytes are never
+ * mangled by the packaging; (2) every source document is INTEGRITY-VERIFIED as
+ * it is packed — the bytes read from storage are checked against the recorded
+ * sha256 / size_bytes, and a PDF is sniffed for its "%PDF" magic — and any
+ * mismatch is recorded in _Manifest.json / _Package Index.txt so staff can
+ * re-request that one file (the doc still ships, flagged, so nothing is
+ * silently dropped); (3) a file that cannot be read at all is listed as
+ * unavailable rather than shipped as an empty/half file.
  *
  * Every generated export is ALSO saved as a document row (doc_kind 'tpr_export',
  * visibility 'internal' so it can never ride into a future buyer package) —
- * which makes the SharePoint mirror pick it up into the file's
- * "YS portal syncing/TPR Exports" folder, with Version-N history on re-export.
+ * which makes the SharePoint mirror pick it up into the file's TPR Exports
+ * folder, with Version-N history on re-export.
  */
+const crypto = require('crypto');
 const db = require('../db');
 const storage = require('./storage');
 const { zip } = require('./zip');
 
-// Map a subject-file checklist label to a stacking category folder (WITHIN the
-// subject-property folder). The term sheet is handled separately, not here.
-function folderFor(label = '') {
-  const s = label.toLowerCase();
-  if (/assignment/.test(s)) return '05_Purchase_Contract';
-  if (/purchase|contract|sales/.test(s)) return '05_Purchase_Contract';
-  if (/appraisal|valuation|bpo/.test(s)) return '07_Appraisal_Valuation';
-  if (/title/.test(s)) return '08_Title_and_Insurance';
-  if (/insurance|hazard|flood/.test(s)) return '08_Title_and_Insurance';
-  if (/llc|operating agreement|ein|formation|entity|articles/.test(s)) return '03_Entity_LLC';
-  if (/rehab|budget|scope|sow|construction/.test(s)) return '06_Rehab_Budget_SOW';
-  if (/bank|statement|liquid|asset|reserve|proof of funds/.test(s)) return '02_Borrower_and_Credit';
-  if (/\bid\b|license|passport|photo id|driver/.test(s)) return '02_Borrower_and_Credit';
-  if (/credit|fico|bureau/.test(s)) return '02_Borrower_and_Credit';
-  if (/reo|experience|track record|prior/.test(s)) return '04_Experience';
-  if (/closing|hud|cd|settlement|note|mortgage|deed/.test(s)) return '09_Closing';
-  return '01_Application_and_Terms';
-}
-// A term-sheet document is the one that goes in its own folder.
-const isTermSheet = (d) => d.doc_kind === 'term_sheet' || /term\s*sheet/i.test(d.item_label || '') || /term\s*sheet/i.test(d.filename || '');
+// ------------------------------------------------------- category folder names
+// The fixed set of clean folder names (owner-directed 2026-07-21). Every
+// document lands in EXACTLY ONE of these — by clean name, no number prefixes.
+const C = {
+  APPLICATION: 'Application',
+  APPRAISAL: 'Appraisal',
+  BACKGROUND: 'Background Check',
+  BANK: 'Bank Statements',
+  CONTRACT: 'Contract & Assignment',
+  CREDIT: 'Credit Report',
+  CRIMINAL: 'Criminal Check',
+  FLOOD: 'Flood Cert',
+  ID: 'ID',
+  INSURANCE: 'Insurance',
+  LLC: 'LLC',
+  REO: 'REO',
+  SOW: 'Scope of Work',
+  TERMSHEET: 'Term Sheet',
+  TITLE: 'TITLE',
+  OTHER: 'Other Documents',
+};
 
-const sanitize = (s) => String(s || 'document').replace(/[^a-zA-Z0-9._ -]/g, '').replace(/\s+/g, '_').slice(0, 80);
-// Folder-name form of an address (spaces/commas kept as separators, trimmed).
-// Path separators AND dot-runs are neutralized so a crafted address can never
-// produce a `..` traversal segment in a ZIP entry name.
+// Exact checklist-template code → category. The most reliable signal for a
+// condition-attached document (the code is stable; labels get relabeled).
+const CODE_CATEGORY = {
+  // ID (photo ID + Social Security card)
+  gov_id: C.ID, rtl_p1_id: C.ID, rtl_p1_ssn: C.ID,
+  // Contract & Assignment (purchase contract, assignment letter, EMD proof)
+  purchase_contract: C.CONTRACT, rtl_p1_contract: C.CONTRACT, rtl_p5_assign: C.CONTRACT,
+  cond_emd_corrfirst: C.CONTRACT,
+  // LLC / vesting entity documents
+  llc_docs: C.LLC, operating_agmt: C.LLC, rtl_p1_llc: C.LLC,
+  rtl_llc_formation: C.LLC, rtl_llc_ein: C.LLC, rtl_llc_opagmt: C.LLC, rtl_llc_goodstanding: C.LLC,
+  // Credit report
+  rtl_cond_credit: C.CREDIT, rtl_p3_credit: C.CREDIT,
+  // Insurance (binder + invoice)
+  insurance_binder: C.INSURANCE, rtl_cond_insurance: C.INSURANCE,
+  // Title
+  title_commitment: C.TITLE, rtl_cond_title: C.TITLE,
+  // Flood
+  rtl_cond_flood: C.FLOOD,
+  // Bank statements / assets
+  bank_statements: C.BANK, rtl_p3_assets: C.BANK, voided_check: C.BANK,
+  // Appraisal
+  rtl_cond_appraisaldocs: C.APPRAISAL,
+  // Application (signed application + business-purpose disclosure)
+  rtl_cond_signed_app: C.APPLICATION, rtl_cond_disclosures: C.APPLICATION,
+  // Term sheet
+  rtl_cond_signedts: C.TERMSHEET,
+  // REO / experience
+  rtl_p3_reo: C.REO,
+  // Scope of Work / rehab budget / plans & permits
+  scope_of_work: C.SOW, rtl_p3_sow1: C.SOW, rtl_p1_budget: C.SOW, rtl_p1_plans: C.SOW,
+  // (rtl_cond_fraud is handled specially below — it holds BOTH background and
+  //  criminal reports, split by the document's slot.)
+};
+
+// Keyword fallback on a document's label + filename when neither the doc_kind
+// nor the exact template code identified it. Ordered so the most specific
+// categories win. Returns null → the document is "Other Documents".
+function keywordCategory(text) {
+  const s = ' ' + String(text || '').toLowerCase() + ' ';
+  if (/criminal/.test(s)) return C.CRIMINAL;
+  if (/background/.test(s)) return C.BACKGROUND;
+  if (/credit|fico|bureau|xactus/.test(s)) return C.CREDIT;
+  if (/flood/.test(s)) return C.FLOOD;
+  // Title BEFORE insurance: "title insurance" / "title policy" is a TITLE doc,
+  // not an Insurance one — the insurance branch would otherwise swallow it.
+  if (/\btitle\b|commitment/.test(s)) return C.TITLE;
+  if (/insurance|hazard|\bbinder\b/.test(s)) return C.INSURANCE;
+  if (/appraisal|valuation|\bbpo\b/.test(s)) return C.APPRAISAL;
+  if (/scope of work|\bsow\b|rehab budget|construction budget|\bplans\b|permit/.test(s)) return C.SOW;
+  if (/earnest|\bemd\b|escrow deposit/.test(s)) return C.CONTRACT;
+  if (/assignment|purchase (contract|agreement|and sale)|sales? contract|contract of sale|executed contract|\bpsa\b/.test(s)) return C.CONTRACT;
+  if (/bank statement|statement|voided check|proof of funds|liquid|reserve|\basset/.test(s)) return C.BANK;
+  if (/operating agreement|certificate of formation|articles of organization|ein|good standing|\bllc\b|entity/.test(s)) return C.LLC;
+  if (/social security|\bss card\b|\bssn\b|photo id|government|driver|passport|license|\bid\b/.test(s)) return C.ID;
+  if (/term sheet/.test(s)) return C.TERMSHEET;
+  if (/disclosure|signed application|loan application|\bapplication\b/.test(s)) return C.APPLICATION;
+  if (/\breo\b|experience|track record/.test(s)) return C.REO;
+  return null;
+}
+
+// The category folder a subject-file document belongs in. Signal order:
+// generated/system doc_kind → entity scope → the fraud slot split → the exact
+// condition code → keyword fallback → Other Documents (never dropped).
+function categoryFor(d) {
+  const kind = String(d.doc_kind || '').toLowerCase();
+  const code = String(d.template_code || '').toLowerCase();
+
+  // 1) doc_kind — generated / uploaded system documents.
+  if (kind === 'photo_id') return C.ID;
+  if (kind === 'term_sheet' || kind === 'term_sheet_signed') return C.TERMSHEET;
+  if (kind === 'application_signed') return C.APPLICATION;
+  if (kind === 'bp_disclosure_signed') return C.APPLICATION;
+  if (kind.indexOf('appraisal_') === 0) return C.APPRAISAL;   // appraisal_pdf/xml/photo
+  if (kind === 'title_order_return') return C.TITLE;
+  if (kind === 'insurance_order_return') return C.INSURANCE;
+
+  // 2) Entity (vesting LLC + layered owning LLCs) — any doc carrying an llc_id.
+  if (d.llc_id) return C.LLC;
+
+  // 3) The fraud/background condition holds BOTH reports — split by the slot.
+  if (code === 'rtl_cond_fraud') {
+    const s = `${d.slot_label || ''} ${d.item_label || ''} ${d.filename || ''}`.toLowerCase();
+    return /criminal/.test(s) ? C.CRIMINAL : C.BACKGROUND;
+  }
+
+  // 4) Exact condition code.
+  if (CODE_CATEGORY[code]) return CODE_CATEGORY[code];
+
+  // 5) Keyword fallback, else Other Documents.
+  return keywordCategory(`${d.item_label || ''} ${d.filename || ''}`) || C.OTHER;
+}
+
+// ------------------------------------------------------------------- name safety
+// Folder-name form of an address / project label. Path separators AND dot-runs
+// are neutralized so a crafted value can never produce a `..` traversal segment.
 const folderName = (s) => String(s || 'Property')
-  .replace(/[\\/:*?"<>|]/g, ' ').replace(/\.{2,}/g, '.').replace(/(^[.\s]+|[.\s]+$)/g, '')
+  .replace(/[\\/:*?"<>|\x00-\x1f]/g, ' ').replace(/\.{2,}/g, '.').replace(/(^[.\s]+|[.\s]+$)/g, '')
   .replace(/\s+/g, ' ').trim().slice(0, 90) || 'Property';
+
+// Clean, human-readable file name: keep spaces + the extension, strip only the
+// path-dangerous / control characters and any `..` run, never leading dots.
+const cleanFileName = (s) => {
+  const base = String(s || 'document')
+    .replace(/[\\/:*?"<>|\x00-\x1f]/g, ' ').replace(/\.{2,}/g, '.')
+    .replace(/^[.\s]+/, '').replace(/\s+/g, ' ').trim();
+  return base.slice(0, 120) || 'document';
+};
+
+// De-duplicate a file name WITHIN one folder ("Deed.pdf" → "Deed (2).pdf"),
+// so two documents that share a name never collide (or overwrite) in the ZIP.
+function uniqueIn(usedByDir, dir, name) {
+  const set = usedByDir[dir] || (usedByDir[dir] = new Set());
+  if (!set.has(name.toLowerCase())) { set.add(name.toLowerCase()); return name; }
+  const m = name.match(/^(.*?)(\.[a-zA-Z0-9]{1,8})?$/);
+  const stem = m && m[1] ? m[1] : name;
+  const ext = m && m[2] ? m[2] : '';
+  let i = 2;
+  while (set.has(`${stem} (${i})${ext}`.toLowerCase())) i += 1;
+  const out = `${stem} (${i})${ext}`;
+  set.add(out.toLowerCase());
+  return out;
+}
+
+const sanitize = (s) => String(s || 'file').replace(/[^a-zA-Z0-9._ -]/g, '').replace(/\s+/g, '_').slice(0, 80);
 
 function addrText(a) {
   if (!a) return '';
@@ -147,75 +291,19 @@ function buildXlsx(rows, sheetName = 'Track Record') {
   return zip(files);
 }
 
-// --------------------------------------------------------------- HTML report
-function trackRecordHtml({ borrowerName, generatedAt, loanNumber, records }) {
-  const verified = records.filter((r) => r.is_verified).length;
-  const counting = records.filter((r) => exitInfo(r).counts).length;
-  const totalPurchase = records.reduce((n, r) => n + (Number(r.purchase_price) || 0), 0);
-  const totalRehab = records.reduce((n, r) => n + (Number(r.rehab_amount) || 0), 0);
-  const rowsHtml = records.map((r) => {
-    const { exit, counts } = exitInfo(r);
-    return `<tr>
-      <td>${xmlEsc(addrText(r.property_address) || '—')}</td>
-      <td>${xmlEsc(dealLabel(r.deal_type))}</td>
-      <td class="num">${xmlEsc(money(r.purchase_price))}</td>
-      <td class="num">${xmlEsc(money(r.rehab_amount))}</td>
-      <td class="num">${xmlEsc(money(r.sale_price || r.refi_amount || r.current_value))}</td>
-      <td>${xmlEsc(dateStr(r.purchase_date))}</td>
-      <td>${xmlEsc(dateStr(exit))}</td>
-      <td>${r.is_verified ? '<span class="badge ok">Verified</span>' : '<span class="badge">Unverified</span>'}</td>
-      <td>${counts ? 'Yes' : 'No'}</td>
-    </tr>`;
-  }).join('');
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>Track Record — ${xmlEsc(borrowerName)}</title>
-<style>
-  :root{color-scheme:light}
-  body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#111;background:#fff;margin:0;padding:32px}
-  h1{margin:0 0 2px;font-size:22px}
-  .sub{color:#555;font-size:13px;margin-bottom:18px}
-  .stats{display:flex;gap:24px;flex-wrap:wrap;margin:0 0 20px;padding:14px 16px;background:#f6f7f9;border:1px solid #e5e7eb;border-radius:10px}
-  .stat b{display:block;font-size:19px}
-  .stat span{color:#666;font-size:12px}
-  table{border-collapse:collapse;width:100%;font-size:13px}
-  th,td{border:1px solid #e5e7eb;padding:7px 9px;text-align:left;vertical-align:top}
-  th{background:#0b2a4a;color:#fff;font-weight:600;font-size:12px}
-  td.num,th.num{text-align:right;white-space:nowrap}
-  tr:nth-child(even) td{background:#fafbfc}
-  .badge{display:inline-block;padding:2px 8px;border-radius:999px;background:#eee;color:#555;font-size:11px}
-  .badge.ok{background:#e7f6ec;color:#1a7f3c}
-  .foot{margin-top:16px;color:#888;font-size:11px}
-</style></head><body>
-  <h1>Operating Track Record</h1>
-  <div class="sub">${xmlEsc(borrowerName)}${loanNumber ? ' · Loan ' + xmlEsc(loanNumber) : ''} · Generated ${xmlEsc(String(generatedAt).slice(0, 10))} · YS Capital Group</div>
-  <div class="stats">
-    <div class="stat"><b>${records.length}</b><span>Projects</span></div>
-    <div class="stat"><b>${verified}</b><span>Verified</span></div>
-    <div class="stat"><b>${counting}</b><span>Count toward experience (3-yr exit)</span></div>
-    <div class="stat"><b>${xmlEsc(money(totalPurchase))}</b><span>Total acquisition</span></div>
-    <div class="stat"><b>${xmlEsc(money(totalRehab))}</b><span>Total rehab</span></div>
-  </div>
-  <table><thead><tr>
-    <th>Property</th><th>Deal type</th><th class="num">Purchase</th><th class="num">Rehab</th>
-    <th class="num">Sale / Refi / Value</th><th>Purchased</th><th>Exited</th><th>Status</th><th>Counts</th>
-  </tr></thead><tbody>
-  ${rowsHtml || '<tr><td colspan="9" style="text-align:center;color:#888">No track-record projects on file.</td></tr>'}
-  </tbody></table>
-  <div class="foot">Verification is performed per project by YS Capital Group underwriting. "Counts toward experience" reflects a completed exit dated within the last 36 months.</div>
-</body></html>`;
-}
-
 /* ---------------- shared TPR document selection (the ONE chokepoint) --------
-   Owner-directed 2026-07-16 ("every single document needs to be part of the
-   TPR export"): the package includes every CURRENT document connected to the
-   file, across every source — the application's own docs (any condition,
-   internal or borrower, plus loose attachments), the vesting entity's docs
-   including LAYERED owning entities (db/094), and borrower-profile docs
-   (photo ID etc.) for borrower + co-borrower. Review no longer gates
-   inclusion — a pending doc ships and is LABELED pending in the manifest.
-   Both the ZIP builder and the staff preview endpoint MUST draw from these
-   helpers so the panel's promised count can never disagree with the package. */
+   The package includes every CURRENT document connected to the file, across
+   every source — the application's own docs (any condition, internal or
+   borrower, plus loose attachments), the vesting entity's docs including
+   LAYERED owning entities (db/094), and borrower-profile docs (photo ID etc.)
+   for borrower + co-borrower. Review no longer gates inclusion — a pending doc
+   ships and is LABELED pending in the manifest. Both the ZIP builder and the
+   staff preview endpoint MUST draw from these helpers so the panel's promised
+   count can never disagree with the package.
+
+   Now also returns template_code / slot_label / llc_id and the integrity
+   columns (sha256 / size_bytes / content_type) so the builder can both
+   CATEGORIZE the document and VERIFY its bytes are not corrupt. */
 const TPR_DOC_SELECT = `
   WITH RECURSIVE ctx AS (
     SELECT borrower_id, co_borrower_id, llc_id FROM applications WHERE id=$1
@@ -226,10 +314,12 @@ const TPR_DOC_SELECT = `
      WHERE m.owner_llc_id IS NOT NULL
   )
   SELECT d.id, d.filename, d.storage_ref, d.reviewed_at, d.created_at, d.doc_kind,
+         d.slot_label, d.llc_id, d.sha256, d.size_bytes, d.content_type,
          COALESCE(d.review_status,'pending') AS review_status,
-         ci.label AS item_label, s.full_name AS reviewed_by_name
+         ci.label AS item_label, ct.code AS template_code, s.full_name AS reviewed_by_name
     FROM documents d
     LEFT JOIN checklist_items ci ON ci.id=d.checklist_item_id
+    LEFT JOIN checklist_templates ct ON ct.id=ci.template_id
     LEFT JOIN staff_users s ON s.id=d.reviewed_by
    WHERE (d.application_id=$1
           OR (d.application_id IS NULL AND d.llc_id IN (SELECT id FROM entity_tree))
@@ -247,11 +337,17 @@ const TPR_DOC_SELECT = `
      -- never happen. Keep this list in step with sharepoint-backup.isRegenKind.
      AND COALESCE(d.doc_kind,'') NOT IN ('track_record_html','tpr_export','draw_inspection_report')
      AND COALESCE(d.doc_kind,'') NOT LIKE '%\\_export'
-     -- HARD RULE (owner-directed): the signed Heter Iska is NEVER in the TPR
-     -- export (kept only in-system + on DocuSign). Belt-and-suspenders alongside
-     -- rtl_cond_iska.tpr_exclude=true — a loosely-attached heter_iska_signed
-     -- must not slip through. See docs/DOCUSIGN-DOCUMENT-BUILD-SPEC Addendum A.9.
-     AND COALESCE(d.doc_kind,'') <> 'heter_iska_signed'
+     -- HARD FREEZE (owner-directed): the Heter Iska — unsigned AND signed — is
+     -- NEVER in the TPR export (kept only in-system + on DocuSign). THREE guards:
+     --   (a) rtl_cond_iska.tpr_exclude=true (the condition exclusion above),
+     --   (b) the doc_kinds heter_iska / heter_iska_signed are denied here,
+     --   (c) a word-boundary "iska"/"heter" match on the condition label AND on
+     --       the filename is denied — so a loosely-attached copy can't slip in.
+     -- DocuSign completion certificates are excluded too: one belongs to the
+     -- Iska envelope and would reveal it. See docs/DOCUSIGN…-SPEC Addendum A.9.
+     AND COALESCE(d.doc_kind,'') NOT IN ('heter_iska','heter_iska_signed','esign_certificate')
+     AND COALESCE(ci.label,'') !~* '\\y(iska|heter)\\y'
+     AND COALESCE(d.filename,'') !~* '\\y(iska|heter)\\y'
      -- #83: an EXPIRED Certificate of Good Standing behaves like empty
      -- everywhere, so it must not ship as if it were a live document. Guard the
      -- template_id IS NOT NULL first: a loose/profile/entity doc has NULL
@@ -284,12 +380,33 @@ async function selectTprMissing(appId) {
 async function selectTrackRecordDocs(trIds) {
   if (!trIds || !trIds.length) return [];
   return (await db.query(
-    `SELECT id, track_record_id, filename, storage_ref, created_at
+    `SELECT id, track_record_id, filename, storage_ref, sha256, size_bytes, content_type, created_at
        FROM documents
       WHERE track_record_id = ANY($1::uuid[]) AND is_current=true
         AND COALESCE(source_type,'') <> 'chat_attachment'
         AND COALESCE(review_status,'pending') <> 'rejected'
       ORDER BY created_at`, [trIds])).rows;
+}
+
+// ------------------------------------------------------------- integrity check
+// Verify the bytes we are about to pack are not corrupt. Returns null when
+// everything checks out, or a short reason string when something is off. The
+// document still ships (nothing is silently dropped) — the reason is recorded
+// in the manifest so staff can re-request that one file.
+function integrityIssue(row, bytes) {
+  if (!bytes || bytes.length === 0) return 'empty file (0 bytes)';
+  if (row.size_bytes != null && Number(row.size_bytes) > 0 && Number(row.size_bytes) !== bytes.length) {
+    return `size mismatch (recorded ${row.size_bytes}, packed ${bytes.length})`;
+  }
+  if (row.sha256) {
+    const got = crypto.createHash('sha256').update(bytes).digest('hex');
+    if (got !== row.sha256) return 'content hash mismatch (bytes changed since upload)';
+  }
+  // A file that claims to be a PDF must actually start with the %PDF magic —
+  // this catches an HTML error page or a base64-garbled upload saved as .pdf.
+  const looksPdf = /\.pdf$/i.test(row.filename || '') || String(row.content_type || '').includes('pdf');
+  if (looksPdf && bytes.slice(0, 5).toString('latin1') !== '%PDF-') return 'not a valid PDF (missing %PDF header)';
+  return null;
 }
 
 async function buildTprExport(appId) {
@@ -312,8 +429,8 @@ async function buildTprExport(appId) {
     registration.quote = rest;
   }
 
-  // EVERYTHING on the file (owner-directed 2026-07-16) — see the shared
-  // selection above for the full inclusion/exclusion contract.
+  // EVERYTHING on the file — see the shared selection above for the full
+  // inclusion/exclusion contract (incl. the Heter Iska hard freeze).
   const docs = await selectTprDocuments(appId);
 
   // Document conditions that would ship empty — the pre-flight list.
@@ -330,8 +447,7 @@ async function buildTprExport(appId) {
       ORDER BY COALESCE(sale_date, refi_date, rent_date, purchase_date) DESC NULLS LAST, created_at DESC`,
     [borrowerIds])).rows;
 
-  // Per-line-item verification documents (current, non-chat). Verification is at
-  // the project level, so these ride on the line item's is_verified flag.
+  // Per-line-item verification documents (current, non-chat).
   const trDocs = await selectTrackRecordDocs(records.map(r => r.id));
   const docsByTr = {};
   for (const d of trDocs) (docsByTr[d.track_record_id] = docsByTr[d.track_record_id] || []).push(d);
@@ -339,53 +455,42 @@ async function buildTprExport(appId) {
   const files = [];
   const manifestDocs = [];
   const unavailable = [];
-  const counters = {};
+  const integrityWarnings = [];
+  const usedByDir = {};   // folderPath -> Set(lowercased names) — collision guard
 
   const subjectAddr = addrText(app.property_address) || 'Property';
-  const SUBJECT = `01_Subject_Property__${folderName(subjectAddr)}`;
-  const TERMSHEET = '02_Term_Sheet';
-  const TRACK = '03_Track_Record';
+  const ROOT = folderName(subjectAddr);   // the ONE top folder, named for the property
 
-  // 1) Subject-file documents → subject-property folder, ONE FOLDER PER
-  //    CONDITION (exact condition names — the same layout as the SharePoint
-  //    "YS portal syncing" mirror), with the term sheet pulled out on its own.
-  //    Folder numbers follow first appearance (docs arrive ordered by the
-  //    condition's sort_order), so the package reads in checklist order.
-  const conditionFolders = {};   // condition label -> numbered folder name
-  let conditionSeq = 0;
-  const conditionFolderFor = (label) => {
-    const key = folderName(label || 'General Documents');
-    if (!conditionFolders[key]) {
-      conditionSeq += 1;
-      conditionFolders[key] = `${String(conditionSeq).padStart(2, '0')}_${key}`;
-    }
-    return conditionFolders[key];
-  };
+  // 1) Subject-file documents → ROOT/<Category>/<clean filename>.
   for (const d of docs) {
     let bytes;
     try { bytes = await storage.read(d.storage_ref); }
     catch (_) { unavailable.push({ source: d.filename, requirement: d.item_label || null }); continue; }
-    const top = isTermSheet(d) ? TERMSHEET : `${SUBJECT}/${conditionFolderFor(d.item_label)}`;
-    counters[top] = (counters[top] || 0) + 1;
-    const nn = String(counters[top]).padStart(2, '0');
-    const ext = (d.filename.match(/\.[a-zA-Z0-9]{1,6}$/) || [''])[0] || '';
-    const base = sanitize(d.filename.replace(/\.[^.]+$/, '') || d.item_label || 'document');
-    const name = `${top}/${nn}_${base}${ext}`;
-    files.push({ name, data: bytes });
-    // Inclusion no longer waits on review — label the status instead, so the
-    // reader can tell an accepted document from one still pending review.
+    if (!Buffer.isBuffer(bytes)) bytes = Buffer.from(bytes || '');
+
+    const category = categoryFor(d);
+    const dir = `${ROOT}/${category}`;
+    const name = uniqueIn(usedByDir, dir, cleanFileName(d.filename));
+    const path = `${dir}/${name}`;
+    files.push({ name: path, data: bytes });
+
+    const issue = integrityIssue(d, bytes);
+    if (issue) integrityWarnings.push({ file: path, source: d.filename, issue });
+
     manifestDocs.push({
-      file: name, source: d.filename, requirement: d.item_label || null,
+      file: path, source: d.filename, category, requirement: d.item_label || null,
       review: d.review_status,
       accepted_by: d.review_status === 'accepted' ? (d.reviewed_by_name || null) : null,
       accepted_at: d.review_status === 'accepted' ? (d.reviewed_at || d.created_at) : null,
+      integrity: issue ? 'CHECK' : 'ok',
     });
   }
 
-  // 2) Track record → HTML + Excel + per-property verification-doc subfolders.
+  // 2) REO → Track Record.xlsx first, then one folder per prior property with
+  //    that project's verification documents.
   const borrowerName = `${app.first_name || ''} ${app.last_name || ''}`.trim();
   const generatedAt = new Date().toISOString();
-  files.push({ name: `${TRACK}/Track_Record.html`, data: Buffer.from(trackRecordHtml({ borrowerName, generatedAt, loanNumber: app.ys_loan_number, records }), 'utf8') });
+  const REO = `${ROOT}/${C.REO}`;
 
   const xlsxHeader = ['Property', 'Deal type', 'Purchase', 'Rehab', 'Sale / Refi / Value', 'Purchased', 'Exited', 'Verified', 'Counts toward experience'];
   const xlsxRows = [xlsxHeader];
@@ -400,9 +505,8 @@ async function buildTprExport(appId) {
       r.is_verified ? 'Verified' : 'Unverified', counts ? 'Yes' : 'No',
     ]);
   }
-  files.push({ name: `${TRACK}/Track_Record.xlsx`, data: buildXlsx(xlsxRows) });
+  files.push({ name: `${REO}/Track Record.xlsx`, data: buildXlsx(xlsxRows) });
 
-  // Per-line-item verification docs, foldered by that property's address.
   const trFolderCounts = {};
   const trManifest = [];
   for (const r of records) {
@@ -412,52 +516,27 @@ async function buildTprExport(appId) {
     // Disambiguate two projects that normalize to the same folder name.
     if (trFolderCounts[folder]) folder = `${folder} (${trFolderCounts[folder] + 1})`;
     trFolderCounts[folderName(label)] = (trFolderCounts[folderName(label)] || 0) + 1;
+    const dir = `${REO}/${folder}`;
     let docCount = 0;
     for (const d of rdocs) {
       let bytes;
       try { bytes = await storage.read(d.storage_ref); }
-      catch (_) { unavailable.push({ source: d.filename, requirement: `track record — ${label}` }); continue; }
+      catch (_) { unavailable.push({ source: d.filename, requirement: `REO — ${label}` }); continue; }
+      if (!Buffer.isBuffer(bytes)) bytes = Buffer.from(bytes || '');
       docCount += 1;
-      const nn = String(docCount).padStart(2, '0');
-      const ext = (d.filename.match(/\.[a-zA-Z0-9]{1,6}$/) || [''])[0] || '';
-      const base = sanitize(d.filename.replace(/\.[^.]+$/, ''));
-      const name = `${TRACK}/${folder}/${nn}_${base}${ext}`;
-      files.push({ name, data: bytes });
-      manifestDocs.push({ file: name, source: d.filename, requirement: `track record — ${label}`, accepted_by: null, accepted_at: d.created_at });
+      const name = uniqueIn(usedByDir, dir, cleanFileName(d.filename));
+      const path = `${dir}/${name}`;
+      files.push({ name: path, data: bytes });
+      const issue = integrityIssue(d, bytes);
+      if (issue) integrityWarnings.push({ file: path, source: d.filename, issue });
+      manifestDocs.push({ file: path, source: d.filename, category: C.REO, requirement: `REO — ${label}`, review: 'n/a', accepted_by: null, accepted_at: d.created_at, integrity: issue ? 'CHECK' : 'ok' });
     }
     trManifest.push({ property: label, deal_type: r.deal_type || null, verified: !!r.is_verified, documents: docCount });
   }
 
-  const propLabel = subjectAddr;
-  const manifest = {
-    generated_at: generatedAt,
-    lender: 'YS Capital Group',
-    loan_number: app.ys_loan_number || null,
-    borrower: borrowerName,
-    property: propLabel,
-    program: app.program || null,
-    loan_type: app.loan_type || null,
-    registered_terms: registration ? {
-      program: registration.program,
-      product_label: registration.product_label,
-      status: registration.status,
-      note_rate: registration.note_rate,
-      total_loan: registration.total_loan,
-      target_ltc: registration.target_ltc,
-      quote: registration.quote,
-      registered_at: registration.created_at,
-    } : null,
-    included_documents: manifestDocs,
-    included_count: manifestDocs.length,
-    track_record: { projects: records.length, verified: records.filter(r => r.is_verified).length, line_items: trManifest },
-    unavailable_documents: unavailable,
-    open_conditions_without_documents: missing,
-  };
+  // 3) Registered loan terms → a plain-text summary inside the Term Sheet folder
+  //    (the terms travel with the term sheet). Internal margin already stripped.
   if (registration) {
-    files.push({
-      name: `${SUBJECT}/00_REGISTERED_PRODUCT.json`,
-      data: Buffer.from(JSON.stringify(manifest.registered_terms, null, 2), 'utf8'),
-    });
     const q = registration.quote || {};
     const s = q.sizing || {};
     const pct = (v, d = 2) => v == null ? 'n/a' : (Number(v) * 100).toFixed(d) + '%';
@@ -466,7 +545,7 @@ async function buildTprExport(appId) {
     // fee must not round); loan/advance/holdback/reserve stay whole-dollar (frozen).
     const m2 = (v) => v == null ? 'n/a' : '$' + Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     files.push({
-      name: `${SUBJECT}/00_REGISTERED_PRODUCT.txt`,
+      name: `${ROOT}/${C.TERMSHEET}/Registered Loan Terms.txt`,
       data: Buffer.from([
         'YS CAPITAL GROUP - REGISTERED PRODUCT TERMS',
         `Product: ${[q.programLabel, q.productLabel].filter(Boolean).join(' - ') || registration.program}`,
@@ -487,28 +566,67 @@ async function buildTprExport(appId) {
       ].join('\n'), 'utf8'),
     });
   }
-  files.push({ name: '00_MANIFEST.json', data: Buffer.from(JSON.stringify(manifest, null, 2), 'utf8') });
 
-  // Human-readable index.
+  // 4) Manifest + human index — filed inside ROOT so the ZIP is ONE clean folder.
+  const propLabel = subjectAddr;
+  const categoryCounts = {};
+  for (const m of manifestDocs) categoryCounts[m.category] = (categoryCounts[m.category] || 0) + 1;
+  const otherDocs = manifestDocs.filter(m => m.category === C.OTHER);
+
+  const manifest = {
+    generated_at: generatedAt,
+    lender: 'YS Capital Group',
+    loan_number: app.ys_loan_number || null,
+    borrower: borrowerName,
+    property: propLabel,
+    program: app.program || null,
+    loan_type: app.loan_type || null,
+    registered_terms: registration ? {
+      program: registration.program,
+      product_label: registration.product_label,
+      status: registration.status,
+      note_rate: registration.note_rate,
+      total_loan: registration.total_loan,
+      target_ltc: registration.target_ltc,
+      quote: registration.quote,
+      registered_at: registration.created_at,
+    } : null,
+    documents_by_category: categoryCounts,
+    included_documents: manifestDocs,
+    included_count: manifestDocs.length,
+    track_record: { projects: records.length, verified: records.filter(r => r.is_verified).length, line_items: trManifest },
+    unmatched_documents: otherDocs.map(m => ({ file: m.file, source: m.source, requirement: m.requirement })),
+    integrity_warnings: integrityWarnings,
+    unavailable_documents: unavailable,
+    open_conditions_without_documents: missing,
+  };
+  files.push({ name: `${ROOT}/_Manifest.json`, data: Buffer.from(JSON.stringify(manifest, null, 2), 'utf8') });
+
+  const catLine = Object.keys(categoryCounts).sort().map(c => `  ${c}: ${categoryCounts[c]}`);
   const lines = [
     `YS CAPITAL GROUP — TPR FILE PACKAGE (every current document on the file)`,
     `Loan: ${app.ys_loan_number || '(pending)'}   Borrower: ${borrowerName}   Property: ${propLabel}`,
     `Generated: ${generatedAt}`, '',
-    `PACKAGE LAYOUT:`,
-    `  ${SUBJECT}/         subject property — one folder per condition, in checklist order`,
-    `  ${TERMSHEET}/                       signed term sheet`,
-    `  ${TRACK}/                    operating track record (HTML + Excel) + per-property verification docs`,
-    '',
-    `INCLUDED DOCUMENTS (${manifestDocs.length}):`,
-    ...manifestDocs.map(m => `  - ${m.file}${m.accepted_by ? `  (accepted by ${m.accepted_by})` : (m.review && m.review !== 'accepted' ? `  (${m.review} review)` : '')}`),
-    '', `TRACK RECORD: ${records.length} project(s), ${manifest.track_record.verified} verified.`,
+    `This package is ONE folder — "${ROOT}" — organized into these document folders:`,
+    ...catLine,
+    '', `TRACK RECORD (REO): ${records.length} project(s), ${manifest.track_record.verified} verified — see the REO folder (Track Record.xlsx + one folder per property).`,
+    '', `INCLUDED DOCUMENTS (${manifestDocs.length}):`,
+    ...manifestDocs.map(m => `  - ${m.file}${m.accepted_by ? `  (accepted by ${m.accepted_by})` : (m.review && !['accepted', 'n/a'].includes(m.review) ? `  (${m.review} review)` : '')}${m.integrity === 'CHECK' ? '  [CHECK — see integrity notes]' : ''}`),
     '', `OPEN CONDITIONS WITH NO DOCUMENT YET (${missing.length}):`,
     ...(missing.length ? missing.map(m => `  - ${m}`) : ['  (none)']),
   ];
+  if (otherDocs.length) {
+    lines.push('', `UNMATCHED — filed under "Other Documents" (${otherDocs.length}), please tell us where these belong:`,
+      ...otherDocs.map(m => `  - ${m.source}${m.requirement ? `  (from: ${m.requirement})` : ''}`));
+  }
+  if (integrityWarnings.length) {
+    lines.push('', `INTEGRITY CHECKS — these files may be corrupt at the source; re-request a fresh copy (${integrityWarnings.length}):`,
+      ...integrityWarnings.map(w => `  - ${w.file}: ${w.issue}`));
+  }
   if (unavailable.length) {
     lines.push('', `UNREADABLE / SKIPPED (${unavailable.length}):`, ...unavailable.map(u => `  - ${u.source} (${u.requirement || 'file'})`));
   }
-  files.push({ name: '00_INDEX.txt', data: Buffer.from(lines.join('\n'), 'utf8') });
+  files.push({ name: `${ROOT}/_Package Index.txt`, data: Buffer.from(lines.join('\n'), 'utf8') });
 
   const filename = `TPR_${sanitize(app.ys_loan_number || app.last_name || 'file')}_${generatedAt.slice(0, 10)}.zip`;
   return { zip: zip(files), filename, includedCount: manifestDocs.length, missing };
@@ -516,11 +634,10 @@ async function buildTprExport(appId) {
 
 /**
  * Persist a generated export as a document on the file (owner-directed
- * 2026-07-13) so the SharePoint mirror files it into
- * "YS portal syncing/TPR Exports" — with Version-N history on re-export.
- * visibility 'internal' structurally excludes it from every future buyer
- * package; superseding the previous export drives the mirror's versioning.
- * Best-effort: a failure here never blocks the download.
+ * 2026-07-13) so the SharePoint mirror files it into the TPR Exports folder —
+ * with Version-N history on re-export. visibility 'internal' structurally
+ * excludes it from every future buyer package; superseding the previous export
+ * drives the mirror's versioning. Best-effort: a failure never blocks download.
  */
 async function saveTprExportDocument(appId, zipBuf, filename, actorId) {
   const app = (await db.query('SELECT borrower_id FROM applications WHERE id=$1', [appId])).rows[0];
@@ -542,8 +659,10 @@ async function saveTprExportDocument(appId, zipBuf, filename, actorId) {
 }
 
 module.exports = {
-  buildTprExport, saveTprExportDocument, folderFor, buildXlsx,
+  buildTprExport, saveTprExportDocument, buildXlsx,
   // the shared selection chokepoint — the preview endpoint MUST use these so
   // its promised counts can never disagree with the built package
   selectTprDocuments, selectTprMissing, selectTrackRecordDocs,
+  // exported for unit tests
+  categoryFor, keywordCategory, integrityIssue, cleanFileName,
 };
