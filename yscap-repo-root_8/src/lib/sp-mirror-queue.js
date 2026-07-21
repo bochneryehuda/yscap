@@ -159,6 +159,13 @@ async function persistOutcome(id, holder, decision) {
     return rowCount > 0;
   }
   const delayMs = Math.max(0, d.delayMs || 0);
+  // A budget-NEUTRAL outcome (throttle 429, benign 412/416) must NOT consume the
+  // retry budget: claimBatch already incremented attempts at claim, so roll that
+  // one back here. Otherwise a sustained throttling episode (exactly when many
+  // docs are queued) would drive good documents to attempts>=MAX and dead-letter
+  // them — the opposite of "honor Retry-After indefinitely". GREATEST(0,…) guards
+  // against ever going negative.
+  const undoAttempt = (d.countsAttempt === false) ? 1 : 0;
   const { rowCount } = await db.query(
     `UPDATE documents
         SET sharepoint_mirror_status = $3,
@@ -167,9 +174,10 @@ async function persistOutcome(id, holder, decision) {
             sharepoint_permanent_strikes = $6,
             sharepoint_lease_expires_at = NULL,
             sharepoint_locked_by = NULL,
+            sharepoint_backup_attempts = GREATEST(0, sharepoint_backup_attempts - $8),
             sharepoint_backup_error = COALESCE($7, sharepoint_backup_error)
       WHERE id=$1 AND sharepoint_locked_by=$2 AND sharepoint_mirror_status='IN_PROGRESS'`,
-    [id, holder, d.status, d.deadReason || null, delayMs / 1000, d.permanentStrikes || 0, d.error || null]);
+    [id, holder, d.status, d.deadReason || null, delayMs / 1000, d.permanentStrikes || 0, d.error || null, undoAttempt]);
   return rowCount > 0;
 }
 
@@ -216,7 +224,8 @@ async function reconcileStatus() {
             sharepoint_dead_reason = CASE
               WHEN d.sharepoint_backed_up_at IS NULL AND d.sharepoint_skipped_reason IS NULL
                AND COALESCE(d.sharepoint_backup_attempts,0) >= ${backup.MAX_ATTEMPTS}
-              THEN COALESCE(d.sharepoint_dead_reason,'transient_exhausted') ELSE d.sharepoint_dead_reason END
+              THEN COALESCE(d.sharepoint_dead_reason,'transient_exhausted')
+              ELSE NULL END   -- non-DEAD derived status carries no dead_reason (clears a healed row's stale one)
       WHERE d.id IN (
         SELECT id FROM documents
          WHERE sharepoint_mirror_status IS DISTINCT FROM (${derive})
@@ -275,6 +284,67 @@ async function shadowCompare({ log = true } = {}) {
     console.log(`[sp-fsm shadow] claim-set parity OK (${fsmIds.length} fsm-claimable; ${expectedLegacyOnly.length} legacy rows held for backoff/in-flight)`);
   }
   return { fsm: fsmIds.length, legacy: legacyIds.length, onlyFsm, expectedLegacyOnly, unexpectedLegacyOnly, agree };
+}
+
+// ---------------------------------------------------------- cutover drain (P4)
+const MIRROR_TIMEOUT_MS = 600000;   // 10 min — matches the legacy per-attempt cap
+const PACING_MS = 300;              // polite gap between Graph uploads
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * 'on'-mode drain (Phase 4 cutover): claim a batch and, for each claimed row,
+ * perform the ACTUAL upload via the existing mirrorRow() — so every owner-directed
+ * upload behavior (Version-N folders, dedup/adopt, integrity, one-way/no-delete)
+ * is preserved verbatim — then persist the outcome from the pure decision.
+ * claim-before-work already stamped IN_PROGRESS + attempts++ + lease, so a crash
+ * anywhere here leaves an expired lease the reaper reclaims — never a silent NULL.
+ * Never throws for one document. Returns { claimed, mirrored, failed }.
+ */
+async function drainClaimed(limit = backup.DEFAULT_BATCH, { holder = _holderId } = {}) {
+  const claimed = await claimBatch(limit, { holder });
+  let mirrored = 0, failed = 0;
+  for (const c of claimed) {
+    let row, enrichThrew = false;
+    try { row = await backup.enrichedRowById(c.id); } catch (_) { enrichThrew = true; row = null; }
+    if (enrichThrew) {
+      // A THROWN error on the pre-mirror SELECT is a transient DB blip, NOT a
+      // deleted document — treat it as a retryable transient (FAILED+backoff, DEAD
+      // only at the cap), never a permanent document_gone. Distinct from the
+      // genuine 0-row case below.
+      const decision = state.decideAfterAttempt(503, {}, Number(c.attempts || 0), Number(c.strikes || 0));
+      decision.error = 'transient: could not load document row for mirroring (will retry)';
+      await persistOutcome(c.id, holder, decision).catch(() => {});
+      failed++;
+      continue;
+    }
+    if (!row) {
+      // Genuine 0-row result: the document row really is gone — terminal.
+      await persistOutcome(c.id, holder, { status: 'DEAD', deadReason: 'document_gone', error: 'document row no longer exists' }).catch(() => {});
+      continue;
+    }
+    try {
+      await backup.withTimeout(backup.mirrorRow(row), MIRROR_TIMEOUT_MS,
+        'mirror attempt timed out (a Graph or database call stalled)');
+      await persistOutcome(c.id, holder, { status: 'DONE' });
+      mirrored++;
+    } catch (e) {
+      failed++;
+      // Map the legacy error classification onto the pure state decision. A
+      // representative HTTP status carries the class into decideAfterAttempt when
+      // the thrown error has no real e.status (mirrorRow's own 409/adopt handling
+      // means a genuine conflict rarely propagates here).
+      const v = backup.classifyMirrorError(String((e && e.message) || e));
+      const status = (e && e.status) || ({ throttle: 429, permanent: 400, transient: 503 })[v.class] || null;
+      const attempts = Number(c.attempts || 0);
+      const strikes = Number(c.strikes || 0);
+      const decision = state.decideAfterAttempt(status, (e && e.headers) || {}, attempts, strikes);
+      decision.error = `[${v.class}] ${v.cause || ''} · ${String((e && e.message) || e)}`.slice(0, 500);
+      await persistOutcome(c.id, holder, decision).catch(() => {});
+    }
+    await sleep(PACING_MS);
+  }
+  if (claimed.length) console.log(`[sp-fsm] on-drain: claimed ${claimed.length}, mirrored ${mirrored}, failed ${failed}`);
+  return { claimed: claimed.length, mirrored, failed };
 }
 
 // ---------------------------------------------------------- observability (P3)
@@ -372,6 +442,11 @@ async function cardDeadLetter(limit = 200) {
        LEFT JOIN llcs l             ON l.id = COALESCE(d.llc_id, ci.llc_id)
        LEFT JOIN applications a     ON a.id = COALESCE(d.application_id, ci.application_id)
       WHERE d.sharepoint_mirror_status='DEAD'
+        -- A DEAD row that actually has backed_up_at set is a RACED SUCCESS (the
+        -- upload landed but the lease had expired so the fenced DONE write no-oped);
+        -- it is not a real dead-letter — the next reconcile flips it to DONE. Never
+        -- card it (would be a spurious manual-review card + false alarm).
+        AND d.sharepoint_backed_up_at IS NULL
         AND NOT EXISTS (SELECT 1 FROM sync_review_queue q
                          WHERE q.task_id = 'spdoc:' || d.id::text
                            AND q.field_key='sharepoint_doc' AND q.status='open')
@@ -441,21 +516,30 @@ async function fsmPass() {
   // Crash-recovery lane runs in every active mode.
   let reaped = [];
   try { reaped = await reapExpiredLeases(); } catch (e) { console.warn('[sp-fsm] reaper error:', e.message); }
-  let cmp = null;
+  let cmp = null, drain = null;
   if (mode === 'shadow') {
     cmp = await shadowCompare().catch((e) => { console.warn('[sp-fsm] shadow error:', e.message); return null; });
+  } else if (mode === 'on') {
+    // Cutover: the FSM does the actual uploads (runOnce skips its legacy loop
+    // when on). Reconcile first so status tracks any legacy settle stamps.
+    try { await reconcileStatus(); } catch (e) { console.warn('[sp-fsm] reconcile error:', e.message); }
+    drain = await drainClaimed().catch((e) => { console.warn('[sp-fsm] on-drain error:', e.message); return null; });
+    // Heal any raced success (backed_up_at set by the unfenced upload write while
+    // the reaper had reclaimed the row → transiently DEAD) to DONE BEFORE carding/
+    // alerting below, so a successfully-mirrored doc is never spuriously carded.
+    try { await reconcileStatus(); } catch (e) { console.warn('[sp-fsm] post-drain reconcile error:', e.message); }
   }
   // OWNER REQUIREMENT: every dead-letter doc gets a manual-review card. Best-effort.
   let carded = 0;
   try { carded = await cardDeadLetter(); } catch (e) { console.warn('[sp-fsm] dead-letter card error:', e.message); }
   let alert = null;
   try { alert = await checkDeadLetterAlert(); } catch (e) { console.warn('[sp-fsm] dead-letter alert error:', e.message); }
-  return { mode, reaped: reaped.length, shadow: cmp, carded, dead: alert && alert.dead };
+  return { mode, reaped: reaped.length, shadow: cmp, drain, carded, dead: alert && alert.dead };
 }
 
 module.exports = {
   fsmMode, claimBatch, wouldClaimIds, reapExpiredLeases, persistOutcome,
-  reconcileStatus, shadowCompare, fsmPass, deriveStatusSql,
+  reconcileStatus, shadowCompare, fsmPass, deriveStatusSql, drainClaimed,
   healthSnapshot, deadLetterList, expiredLeaseList, requeueDead,
   cardDeadLetter, checkDeadLetterAlert,
   LEASE_MINUTES, _holderId,

@@ -71,6 +71,13 @@ const openCard = async (id) => (await db.query(
   assert.ok(!carded2 || carded2 === 0, 'no duplicate cards on re-run');
   ok('cardDeadLetter cards EVERY dead-letter doc into Sync review (manual-review preserved), idempotently');
 
+  // a DEAD row that actually mirrored (backed_up_at set — a raced success the next
+  // reconcile will heal to DONE) must NOT be carded (would be a spurious alarm).
+  const racedDead = await seed({ status: 'DEAD', attempts: 8, backedUp: true });
+  await q.cardDeadLetter();
+  assert.strictEqual(await openCard(racedDead), 0, 'a raced-success DEAD (backed_up_at set) is NOT carded');
+  ok('cardDeadLetter never cards a raced success (DEAD-with-backed_up_at) — no false alarm');
+
   // ---- 4. requeue is fenced to DEAD and re-arms legacy columns --------------
   const notDead = await seed({ status: 'FAILED', attempts: 3 });
   assert.strictEqual(await q.requeueDead(notDead), null, 'requeue refuses a non-DEAD row');
