@@ -40,12 +40,17 @@ UPDATE sync_review_queue
    AND split_part(reason, ':', 1) = 'sitewire_type_unmapped'
    AND reason LIKE '%construction_type%';
 
--- Error 1 — duplicate $0 media anchor (now binds to one copy on re-drive).
-UPDATE sync_review_queue
+-- Error 1 — duplicate $0 media anchor (now binds to one copy on re-drive). Scoped to MANAGED files
+-- (a live PILOT-created property) for symmetry with the re-drive below — a non-managed file routes
+-- errors to setup_status, not the queue, so it should have no such row anyway.
+UPDATE sync_review_queue q
    SET status = 'resolved', auto_resolved = true, resolved_at = now(),
        resolution_note = 'Auto-closed — the duplicate photo-requirement line now binds to one copy automatically. Re-pushing the file resolves it; a genuine budget-line duplicate would re-flag.'
- WHERE status = 'open' AND field_key = 'sitewire'
-   AND split_part(reason, ':', 1) = 'sitewire_bind_ambiguous';
+ WHERE q.status = 'open' AND q.field_key = 'sitewire'
+   AND split_part(q.reason, ':', 1) = 'sitewire_bind_ambiguous'
+   AND EXISTS (SELECT 1 FROM sitewire_property_links pl
+                WHERE pl.application_id = q.application_id AND pl.matched_by = 'created'
+                  AND pl.sitewire_property_id IS NOT NULL);
 
 -- Re-drive every file whose obsolete rows we just closed, so the FIXED push binds /
 -- verifies (and any genuine remaining ambiguity re-parks). Only files with a live,
