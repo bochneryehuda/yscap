@@ -166,17 +166,27 @@ async function upsertLink(appId, propertyId, g, patch) {
      patch.last_error || null, patch.pushed_by || null, patch.pushed_at || null]);
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, Math.max(0, ms)));
+const VERIFY_DELAY_MS = parseInt(process.env.SITEWIRE_DOC_VERIFY_DELAY_MS || '1500', 10);
+
 // Read-after-write: confirm (via the TRUSTED API) that a document with our filename now exists on the
-// property. Returns the confirmed Sitewire document name, or null if it isn't visible yet.
-async function verifyPresent(appId, filename) {
-  try {
-    const res = await orch.getSitewireDocuments(appId);
-    if (!res || !res.available || !Array.isArray(res.documents)) return null;
-    const want = String(filename || '').toLowerCase();
-    const hit = res.documents.find((d) => String(d.name || '').toLowerCase() === want)
-      || res.documents.find((d) => String(d.name || '').toLowerCase().includes(want.replace(/\.[a-z0-9]+$/, '')));
-    return hit ? (hit.name || filename) : null;
-  } catch (_) { return null; }
+// property. The API can lag a moment behind the upload, so retry a few times. Returns the confirmed
+// Sitewire document name, or null if it never shows up.
+async function verifyPresent(appId, filename, tries = 3) {
+  const want = String(filename || '').toLowerCase();
+  const stem = want.replace(/\.[a-z0-9]+$/, '');
+  for (let i = 0; i < tries; i++) {
+    try {
+      const res = await orch.getSitewireDocuments(appId);
+      if (res && res.available && Array.isArray(res.documents)) {
+        const hit = res.documents.find((d) => String(d.name || '').toLowerCase() === want)
+          || res.documents.find((d) => String(d.name || '').toLowerCase().includes(stem));
+        if (hit) return hit.name || filename;
+      }
+    } catch (_) { /* ignore + retry */ }
+    if (i < tries - 1) await sleep(VERIFY_DELAY_MS);
+  }
+  return null;
 }
 
 /**
@@ -253,18 +263,36 @@ async function pushDocuments(appId, opts = {}) {
     try {
       await orch.circuitCheck(1); // count each upload toward the runaway breaker
       const blob = await web.uploadBlob(session, { filename: g.filename, contentType: g.contentType, bytes: g.bytes });
-      await web.attachDocument(session, propertyId, blob.signed_id, { filename: g.filename });
-      // Read-after-write via the TRUSTED API — do not trust the website flow's own response.
-      const confirmedName = await verifyPresent(appId, g.filename);
-      const st = confirmedName ? 'verified' : 'pushed'; // 'pushed' = sent but not yet visible in the API list
-      await upsertLink(appId, propertyId, g, { sha256: digest, signed_id: blob.signed_id, status: st, sitewire_document_name: confirmedName, pushed_by: opts.staffId || null, pushed_at: new Date() });
-      // NB: signed_id is an opaque ActiveStorage STRING, not a bigint — it goes in newValue, never entityId.
-      await orch.journal({ appId, propertyId, entity: 'document', field: g.which, newValue: { filename: g.filename, bytes: g.bytes.length, signed_id: blob.signed_id, verified: !!confirmedName }, source });
-      if (!confirmedName) {
-        // Uploaded but not verifiable in the API list — park so a human confirms rather than assuming success.
-        await orch.park({ appId, reason: 'sitewire_doc_unverified', dedupe: g.which, current: g.filename, proposed: `slot=${g.which}` });
+      // Attach. The website's Turbo form can return a non-2xx (e.g. a 406 content-negotiation quirk) even when
+      // Sitewire SAVED the document — so a NON-retryable attach error is NOT treated as a failure yet: the
+      // TRUSTED API (property.documents[]) is the source of truth. A retryable error (network/5xx/auth) still
+      // rethrows/parks. This is exactly the "document is in Sitewire but PILOT still errored" case.
+      let attachErr = null;
+      try { await web.attachDocument(session, propertyId, blob.signed_id, { filename: g.filename }); }
+      catch (e) {
+        if (e.retryable) throw e; // real transient failure — let the outer catch retry/park
+        attachErr = e;            // non-retryable (e.g. 406): defer the verdict to the API check below
       }
-      results.push({ which: g.which, pushed: true, verified: !!confirmedName, filename: g.filename, sitewire_name: confirmedName });
+      // Read-after-write via the TRUSTED API — the real proof the document landed.
+      const confirmedName = await verifyPresent(appId, g.filename);
+      if (confirmedName) {
+        // It's actually in Sitewire → SUCCESS, regardless of any website-response quirk.
+        await upsertLink(appId, propertyId, g, { sha256: digest, signed_id: blob.signed_id, status: 'verified', sitewire_document_name: confirmedName, pushed_by: opts.staffId || null, pushed_at: new Date() });
+        // NB: signed_id is an opaque ActiveStorage STRING, not a bigint — it goes in newValue, never entityId.
+        await orch.journal({ appId, propertyId, entity: 'document', field: g.which, newValue: { filename: g.filename, bytes: g.bytes.length, signed_id: blob.signed_id, verified: true, attach_status: attachErr ? attachErr.status : 'ok' }, source });
+        results.push({ which: g.which, pushed: true, verified: true, filename: g.filename, sitewire_name: confirmedName });
+      } else if (attachErr) {
+        // The website rejected the attach AND the document is not in Sitewire → a real failure. Park it.
+        await upsertLink(appId, propertyId, g, { sha256: digest, status: 'failed', last_error: String(attachErr.message || attachErr).slice(0, 300), pushed_by: opts.staffId || null, pushed_at: new Date() });
+        await orch.park({ appId, reason: `sitewire_doc_push_failed:${g.which}`, dedupe: g.which, current: g.filename, proposed: String(attachErr.message || attachErr).slice(0, 200) });
+        results.push({ which: g.which, error: String(attachErr.message || attachErr) });
+      } else {
+        // Attach returned OK but the API doesn't list it yet — sent, not yet confirmed. Soft state (not failed).
+        await upsertLink(appId, propertyId, g, { sha256: digest, signed_id: blob.signed_id, status: 'pushed', sitewire_document_name: null, pushed_by: opts.staffId || null, pushed_at: new Date() });
+        await orch.journal({ appId, propertyId, entity: 'document', field: g.which, newValue: { filename: g.filename, bytes: g.bytes.length, signed_id: blob.signed_id, verified: false }, source });
+        await orch.park({ appId, reason: 'sitewire_doc_unverified', dedupe: g.which, current: g.filename, proposed: `slot=${g.which}` });
+        results.push({ which: g.which, pushed: true, verified: false, filename: g.filename });
+      }
     } catch (e) {
       await upsertLink(appId, propertyId, g, { sha256: digest, status: 'failed', last_error: String(e.message || e).slice(0, 300), pushed_by: opts.staffId || null, pushed_at: new Date() });
       if (e.retryable) {
