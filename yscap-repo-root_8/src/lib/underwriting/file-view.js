@@ -37,11 +37,41 @@ async function loadContext(client, appId) {
   const entities = app.borrower_id
     ? (await client.query(`SELECT llc_name FROM llcs WHERE borrower_id = $1 ORDER BY llc_name`, [app.borrower_id])).rows
     : [];
+  // The current registered product breakdown — the engine's own SIZED figures. The leverage metrics
+  // need the INITIAL ADVANCE (acquisition portion), NOT the total loan, to check loan-to-purchase /
+  // as-is LTV: the frozen engine caps `maxAcqLTV * acqDenom` on the acquisition advance, while the
+  // rehab holdback (part of the total loan) is legitimately allowed above those caps. Also exposes
+  // the REGISTERED program so program-aware rules (e.g. the owner-verification threshold) use the
+  // product the deal is actually registered under, not just applications.program. Read-only.
+  const reg = (await client.query(
+    `SELECT program, total_loan, quote FROM product_registrations
+      WHERE application_id = $1 AND is_current LIMIT 1`, [appId])).rows[0] || null;
+  let quoteObj = reg && reg.quote;
+  if (typeof quoteObj === 'string') { try { quoteObj = JSON.parse(quoteObj); } catch (_) { quoteObj = null; } }
+  const sizing = quoteObj && quoteObj.sizing ? quoteObj.sizing : null;
+  const numOrNull = (v) => (v == null || !isFinite(Number(v)) ? null : Number(v));
+  const qcaps = quoteObj && quoteObj.caps ? quoteObj.caps : null;
+  const registration = reg ? {
+    program: reg.program || null,
+    totalLoan: numOrNull(reg.total_loan),
+    initialAdvance: sizing ? numOrNull(sizing.initialAdvance) : null,
+    rehabHoldback: sizing ? numOrNull(sizing.rehabHoldback) : null,
+    financedReserve: sizing ? numOrNull(sizing.financedReserve) : null,
+    // The file's ACTUAL registered engine caps (per-tier fractions) — so the underwriting metrics
+    // check leverage against the SAME caps the loan was sized under, not a generic default (a
+    // validly-sized loan can then never exceed its own caps → no spurious over-leverage findings).
+    caps: qcaps ? {
+      maxAcqLtv: numOrNull(qcaps.maxAcqLtv),
+      maxArvLtv: numOrNull(qcaps.maxArvLtv),
+      maxLtc: numOrNull(qcaps.maxLtc),
+    } : null,
+  } : null;
   return {
     app, borrower,
     vestingName: vesting && vesting.llc_name,
     ein: vesting && vesting.ein,
     entityNames: entities.map((r) => r.llc_name).filter(Boolean),
+    registration,
   };
 }
 

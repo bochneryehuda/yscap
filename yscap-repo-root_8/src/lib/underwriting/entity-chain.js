@@ -20,7 +20,22 @@
  */
 const { entityMatch, namesMatchLoose } = require('./compare');
 
-const OWNERSHIP_PRONG_PCT = 25;   // FinCEN CDD: identify every individual owning >= 25%.
+const OWNERSHIP_PRONG_PCT = 25;   // FinCEN CDD default / fallback: identify every individual owning >= 25%.
+
+// The beneficial-owner verification threshold + treatment is PROGRAM-DEPENDENT (owner-directed
+// 2026-07-21): the tighter the program, the LOWER the ownership % that must be verified and brought
+// onto the file. Standard >=15%, Manual >=20%, Gold >=25%. Absent a registered program, fall back to
+// the FinCEN CDD 25% baseline (never guess a stricter threshold than we can justify).
+const PROGRAM_OWNER_RULES = {
+  standard: { pct: 15, label: 'Standard', treatment: 'verified and added to the file as a co-borrower' },
+  manual:   { pct: 20, label: 'Manual', treatment: 'brought onto the file as a co-borrower, guarantor, and signer, with a government ID' },
+  gold:     { pct: 25, label: 'Gold Standard', treatment: 'added to the file as a co-borrower, guarantor, and qualifier' },
+};
+function ownerRuleFor(program) {
+  const p = String(program || '').toLowerCase().trim();
+  return PROGRAM_OWNER_RULES[p] ||
+    { pct: OWNERSHIP_PRONG_PCT, label: null, treatment: 'identified with a government ID (KYC — every owner of 25% or more)' };
+}
 
 // Is `member` the SAME natural person as the file's borrower? namesMatchLoose tolerates format, but
 // a distinguishing generational suffix (Jr / Sr / III) means a DIFFERENT person (John Smith vs John
@@ -117,7 +132,12 @@ function buildChain(fileCtx = {}, extractions = []) {
   nameEdge('entity_on_title', 'Entity is the vesting party on title', vestingName, title && (Array.isArray(title.buyerNames) ? title.buyerNames[0] : title.buyerNames), 'vesting entity', 'title commitment');
   nameEdge('entity_insured', 'Entity is the named insured', vestingName, ins && ins.namedInsured, 'vesting entity', 'insurance');
 
-  // Beneficial owners (>= 25%) and whether each has an ID on file — the KYC gap nobody else checks.
+  // Beneficial owners and whether each has an ID on file — the KYC gap nobody else checks. The
+  // threshold + required treatment come from the REGISTERED program (Standard 15% / Manual 20% /
+  // Gold 25%), falling back to the FinCEN 25% baseline when the program is unknown.
+  const rule = ownerRuleFor(fileCtx.program);
+  const threshold = rule.pct;
+  const progLabel = rule.label ? `the ${rule.label} program` : 'this program';
   const owners = [];
   const findings = [];
   const borrowerNm = fileCtx.borrowerName || null;   // the file's borrower (the person we underwrote)
@@ -126,7 +146,7 @@ function buildChain(fileCtx = {}, extractions = []) {
     for (const m of oa.members) {
       if (!m || !m.name) continue;
       const pct = typeof m.ownershipPct === 'number' ? m.ownershipPct : null;
-      const isBeneficial = pct != null && pct >= OWNERSHIP_PRONG_PCT;
+      const isBeneficial = pct != null && pct >= threshold;
       const identified = hasIdFor(m.name, idNames);
       const isBorrower = borrowerNm ? isSameBorrower(m.name, borrowerNm) : null;
       owners.push({ name: m.name, ownershipPct: pct, isManager: !!m.isManager, beneficialOwner: isBeneficial, identified, isBorrower });
@@ -134,8 +154,8 @@ function buildChain(fileCtx = {}, extractions = []) {
       if (isBeneficial && !identified) {
         findings.push({ source: 'operating_agreement', code: 'beneficial_owner_unidentified', severity: 'warning', status: 'open',
           field: 'ownership', docValue: `${m.name} (${pct}%)`, fileValue: 'no ID on file', blocksCtc: false,
-          title: 'A 25%+ owner has no ID on file',
-          howTo: `${m.name} holds ${pct}% of the entity (a beneficial owner) but has no government ID on file. Collect and verify ID for every owner of 25% or more (KYC).`,
+          title: `A ${threshold}%+ owner has no ID on file`,
+          howTo: `${m.name} holds ${pct}% of the entity (a beneficial owner) but has no government ID on file. On ${progLabel}, every owner of ${threshold}% or more must be ${rule.treatment}.`,
           actions: ['request_document', 'post_condition', 'dismiss'] });
       }
     }
