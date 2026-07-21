@@ -119,6 +119,23 @@ function humanizeSitewireReason(reason) {
   return (m ? m[1] : s).trim();
 }
 
+// A SharePoint document-mirror failure is NOT a value disagreement and NOT a file-link problem —
+// so it must NOT get the generic file-level copy ("create the file / link it to an existing one"),
+// which lists the wrong actions and confused LOs. It gets its own plain-language email naming the
+// specific document, that it could not be copied into the team drive, and the RIGHT next steps
+// (retry / re-check filing on the review screen, or ask for a re-upload if the saved copy is
+// damaged). Pure + exported so the copy is unit-tested without a DB. Owner-directed 2026-07-21.
+function sharepointDocEmail({ borrowerName, portalValue } = {}) {
+  const who = borrowerName ? ` for ${borrowerName}` : '';
+  const spec = portalValue ? `: ${String(portalValue).trim()}` : '';
+  return {
+    title: `A document couldn’t be saved to SharePoint${who}`,
+    body: `A document${who} couldn’t be copied into your SharePoint team drive${spec}. ` +
+      `PILOT keeps retrying on its own, but this one needs a look so the document isn’t missing from the drive. ` +
+      `Open the Sync review screen to retry it or re-check where it files — and if the document’s saved copy is damaged, ask the borrower to upload it again.`,
+  };
+}
+
 async function notifyLoanOfficer(reviewId) {
   const r = await db.query(
     `SELECT q.*, b.first_name || ' ' || b.last_name AS borrower_name
@@ -159,6 +176,7 @@ async function notifyLoanOfficer(reviewId) {
   // Sitewire row has no ClickUp side, so that template rendered "In ClickUp: — / In PILOT: —" (blank +
   // wrong system name). Owner-directed 2026-07-20. ----
   const isSitewire = row.field_key === 'sitewire';
+  const isSharepointDoc = row.field_key === 'sharepoint_doc';
   let swAddress = null;
   if (isSitewire && row.application_id) {
     try { const ar = (await db.query(`SELECT property_address FROM applications WHERE id=$1`, [row.application_id])).rows[0]; swAddress = ar ? shortAddress(ar.property_address) : null; } catch (_) {}
@@ -166,9 +184,11 @@ async function notifyLoanOfficer(reviewId) {
   // FILE-LEVEL rows aren't a value disagreement — the email must say what the
   // situation is and that the review screen offers ACTIONS, not sides
   // (pre-merge audit #257 should-fix: the two-sided copy misdirected LOs).
-  const fileLevel = ['file_link', 'push_job', 'ys_loan_number', 'sharepoint_folder', 'sharepoint_doc', 'co_first_name', 'co_cell_phone', 'borrower_identity', 'co_borrower_identity', 'shared_email'].includes(row.field_key);
+  const fileLevel = ['file_link', 'push_job', 'ys_loan_number', 'sharepoint_folder', 'co_first_name', 'co_cell_phone', 'borrower_identity', 'co_borrower_identity', 'shared_email'].includes(row.field_key);
   let title, body;
-  if (isSitewire) {
+  if (isSharepointDoc) {
+    ({ title, body } = sharepointDocEmail({ borrowerName: row.borrower_name, portalValue: row.portal_value }));
+  } else if (isSitewire) {
     const place = swAddress || row.borrower_name || 'a construction-draw file';
     title = `Draw review needed — ${place}`;
     body = `A construction-draw (Sitewire) review needs your decision${who}${swAddress ? ` — ${swAddress}` : ''}:\n\n` +
@@ -330,4 +350,4 @@ async function sendReviewDigestOnce() {
   } catch (e) { console.warn('[sync-review] digest skipped:', e.message); return false; }
 }
 
-module.exports = { queueReview, notifyLoanOfficer, closeStaleReviews, remindStaleReviewsOnce, sendReviewDigestOnce, FIELD_LABELS };
+module.exports = { queueReview, notifyLoanOfficer, closeStaleReviews, remindStaleReviewsOnce, sendReviewDigestOnce, FIELD_LABELS, sharepointDocEmail };

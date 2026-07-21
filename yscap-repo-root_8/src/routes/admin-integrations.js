@@ -42,4 +42,27 @@ router.post('/:key/test', async (req, res) => {
   } catch (e) { return fail(res, 500, e, 'could not test that integration'); }
 });
 
+// Sitewire TEST-environment capability explorer (READ-ONLY field discovery). super_admin only —
+// it reaches a live external system to enumerate every field/button Sitewire exposes so new
+// integrations can be built on CONFIRMED field names (never-guess). It cannot write (the underlying
+// module is GET-only) and uses a SEPARATE test credential set (SITEWIRE_TEST_*), never the prod
+// creds. Values are redacted; only field names, types, and non-PII enum values are returned.
+router.post('/sitewire/explore', async (req, res) => {
+  if (req.actor.role !== 'super_admin') return res.status(403).json({ error: 'super_admin only' });
+  try {
+    const explorer = require('../sitewire/test-explorer');
+    if (!explorer.testConfigured()) {
+      return res.status(400).json({
+        error: 'test_creds_missing',
+        message: 'Set SITEWIRE_TEST_ACCESS_TOKEN, SITEWIRE_TEST_CLIENT, SITEWIRE_TEST_UID (and SITEWIRE_TEST_BASE_URL ' +
+          'if the test system uses a different address) in Render, then run again. Never paste the key here.',
+      });
+    }
+    const sampleProperties = Math.min(20, Math.max(1, parseInt(req.body && req.body.sampleProperties, 10) || 5));
+    const sampleDraws = Math.min(20, Math.max(1, parseInt(req.body && req.body.sampleDraws, 10) || 5));
+    const report = await explorer.explore({ sampleProperties, sampleDraws });
+    res.json({ checkedAt: new Date().toISOString(), ...report });
+  } catch (e) { return fail(res, 502, e, 'could not reach the Sitewire test environment'); }
+});
+
 module.exports = router;
