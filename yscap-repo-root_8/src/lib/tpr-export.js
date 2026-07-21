@@ -133,8 +133,10 @@ function keywordCategory(text) {
   if (/background/.test(s)) return C.BACKGROUND;
   if (/credit|fico|bureau|xactus/.test(s)) return C.CREDIT;
   if (/flood/.test(s)) return C.FLOOD;
+  // Title BEFORE insurance: "title insurance" / "title policy" is a TITLE doc,
+  // not an Insurance one — the insurance branch would otherwise swallow it.
+  if (/\btitle\b|commitment/.test(s)) return C.TITLE;
   if (/insurance|hazard|\bbinder\b/.test(s)) return C.INSURANCE;
-  if (/\btitle\b|commitment|title\s*policy/.test(s)) return C.TITLE;
   if (/appraisal|valuation|\bbpo\b/.test(s)) return C.APPRAISAL;
   if (/scope of work|\bsow\b|rehab budget|construction budget|\bplans\b|permit/.test(s)) return C.SOW;
   if (/earnest|\bemd\b|escrow deposit/.test(s)) return C.CONTRACT;

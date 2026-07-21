@@ -43,6 +43,8 @@ async function main() {
   ok(cat({ template_code: 'rtl_p1_llc' }) === 'LLC', 'categoryFor: LLC condition → LLC');
   ok(cat({ llc_id: 'x' }) === 'LLC', 'categoryFor: any entity doc → LLC');
   ok(cat({ template_code: 'rtl_cond_signed_app' }) === 'Application', 'categoryFor: signed app → Application');
+  ok(cat({ filename: 'Title Insurance Policy.pdf' }) === 'TITLE', 'categoryFor: loose "title insurance" → TITLE (not Insurance)');
+  ok(cat({ filename: 'Hazard Insurance.pdf' }) === 'Insurance', 'categoryFor: loose hazard insurance → Insurance');
   ok(cat({ filename: 'mystery-doc.pdf' }) === 'Other Documents', 'categoryFor: unknown → Other Documents');
   ok(/PDF/.test(tpr.integrityIssue({ filename: 'x.pdf' }, Buffer.from('<html>nope')) || ''), 'integrity: HTML masquerading as .pdf is flagged');
   ok(tpr.integrityIssue({ filename: 'x.pdf' }, Buffer.from('%PDF-1.7 ok')) === null, 'integrity: real %PDF header passes');

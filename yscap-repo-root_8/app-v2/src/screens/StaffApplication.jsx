@@ -3541,7 +3541,7 @@ function TprExport({ appId }) {
       <div className="row" style={{ marginBottom: 6 }}>
         <h3>TPR / clean-file export</h3>
         <div className="spacer" />
-        <button className="btn primary" onClick={download} disabled={busy || !prev || prev.includedCount === 0}>
+        <button className="btn primary" onClick={download} disabled={busy || !prev || (prev.includedCount === 0 && !prev.trackDocs)}>
           {busy ? 'Building…' : 'Export clean file (ZIP)'}
         </button>
       </div>
