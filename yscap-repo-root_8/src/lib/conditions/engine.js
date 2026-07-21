@@ -114,6 +114,10 @@ async function loadRuleContext(appId) {
     // Note buyer / capital partner (applications.lender), normalized to a stable
     // key so a rule matches "CorrFirst" / "Corr First" / "corrfirst" the same.
     note_buyer: registry.normNoteBuyer(a.lender),
+    // Loan number — blank/absent drives the "loan number missing" internal
+    // condition (rules is_empty). Kept as the raw string (null when blank) so
+    // is_empty/not_empty fire correctly.
+    ys_loan_number: (a.ys_loan_number && String(a.ys_loan_number).trim()) || null,
     status: a.status,
 
     property_state: registry.normState(addr.state),

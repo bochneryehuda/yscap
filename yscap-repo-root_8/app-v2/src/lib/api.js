@@ -380,6 +380,14 @@ export const api = {
   staffEmailStats:  () => req('GET', '/api/staff/emails/stats'),
   staffAppEmailResend: (appId, msgId) => req('POST', `/api/staff/applications/${appId}/emails/${msgId}/resend`),
   staffAppEmailAttachment: (appId, msgId, idx) => download(`/api/staff/applications/${appId}/emails/${msgId}/attachments/${idx}`),
+  // Orders desk (#orders) — title + insurance orders on a file.
+  staffOrders:        (appId) => req('GET', `/api/staff/applications/${appId}/orders`),
+  staffPlaceOrder:    (appId, kind, body) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/place`, body || {}),
+  staffOrderFollowup: (appId, kind, body) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/followup`, body || {}),
+  staffClassifyOrderDoc: (appId, kind, docId, slot) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/documents/${docId}/classify`, { slot }),
+  staffCancelOrder:   (appId, kind, reopen) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/cancel`, reopen ? { reopen: true } : {}),
+  staffAllOrders:     () => req('GET', '/api/staff/orders'),   // global orders queue (all visible files)
+  staffSetLoanNumber: (appId, loanNumber) => req('POST', `/api/staff/applications/${appId}/loan-number`, { loanNumber }),
   staffPostClosing: (appId) => req('GET', `/api/staff/applications/${appId}/post-closing`),
   staffSeedPostClosing: (appId) => req('POST', `/api/staff/applications/${appId}/post-closing/seed`),
   staffPatchPostClosing: (pid, b) => req('PATCH', `/api/staff/post-closing/${pid}`, b),

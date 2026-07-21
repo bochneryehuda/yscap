@@ -37,6 +37,7 @@ import StaffLeads from './screens/StaffLeads.jsx';
 import StaffLeadDetail from './screens/StaffLeadDetail.jsx';
 import StaffBorrowers from './screens/StaffBorrowers.jsx';
 import StaffEmails from './screens/StaffEmails.jsx';
+import StaffOrders from './screens/StaffOrders.jsx';
 import StaffBorrowerDetail from './screens/StaffBorrowerDetail.jsx';
 import StaffVendors from './screens/StaffVendors.jsx';
 import StaffChat from './screens/StaffChat.jsx';
@@ -137,6 +138,7 @@ export default function App() {
           <Route path="/internal/leads" element={<StaffPrivate><StaffLeads /></StaffPrivate>} />
           <Route path="/internal/leads/:id" element={<StaffPrivate><StaffLeadDetail /></StaffPrivate>} />
           <Route path="/internal/emails" element={<StaffPrivate><StaffEmails /></StaffPrivate>} />
+          <Route path="/internal/orders" element={<StaffPrivate><StaffOrders /></StaffPrivate>} />
           <Route path="/internal/borrowers" element={<StaffPrivate><StaffBorrowers /></StaffPrivate>} />
           <Route path="/internal/borrowers/:id" element={<StaffPrivate><StaffBorrowerDetail /></StaffPrivate>} />
           <Route path="/internal/vendors" element={<StaffPrivate><StaffVendors /></StaffPrivate>} />

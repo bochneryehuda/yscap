@@ -43,7 +43,7 @@ const cfg = require('../config');
 const db = require('../db');
 const email = require('./email');
 const notify = require('./notify');
-const { fileReplyTo, applicationIdFromRecipient } = require('./file-address');
+const { fileReplyTo, applicationIdFromRecipient, orderRefFromRecipient } = require('./file-address');
 
 const RESEND_BASE = 'https://api.resend.com';
 // Attachment forwarding is best-effort + bounded so a huge or broken attachment
@@ -380,6 +380,17 @@ async function processReceivedEvent(event) {
     const id = applicationIdFromRecipient(r);
     if (id && !applicationIds.includes(id)) applicationIds.push(id);
   }
+  // Order reply addresses (title+<id>@ / insurance+<id>@, #orders). Their file is
+  // treated like a file+ address for the forward + Email Center capture, AND the
+  // vendor's attachments are saved back onto the order as returned documents.
+  const orderRefs = [];
+  for (const r of recips) {
+    const ref = orderRefFromRecipient(r);
+    if (ref && !orderRefs.some((o) => o.applicationId === ref.applicationId && o.orderType === ref.orderType)) {
+      orderRefs.push(ref);
+      if (!applicationIds.includes(ref.applicationId)) applicationIds.push(ref.applicationId);
+    }
+  }
   const chatKey = chatKeyFromRecipients(recips);
 
   // Idempotency claim — keyed on the Resend email_id. A fresh insert wins the
@@ -490,13 +501,19 @@ async function processReceivedEvent(event) {
   const fromEmail = extractAddress(full.from);
   const subject = full.subject || '';
 
+  // An order reply (title+/insurance+) is tagged so the order-scoped Email Center
+  // shows the vendor's reply directly (belt on top of subject threading).
+  const orderMsgType = orderRefs.length
+    ? (orderRefs[0].orderType === 'title' ? 'title_message' : 'insurance_message')
+    : undefined;
+
   // Persist the inbound reply into the Email Center (the actual body + who/when),
   // so the file's email history shows the reply itself — not just that one arrived.
   // Best-effort; the final status is refined by the aggregate-outcome capture below.
   try {
     const emailLog = require('./email-log');
     await emailLog.captureInbound({ inboundId: rowId, applicationId: applicationIds[0] || null,
-      from: fromEmail, subject, html: full.html, text: full.text, status: 'received' });
+      from: fromEmail, subject, html: full.html, text: full.text, status: 'received', msgType: orderMsgType });
   } catch (_) { /* best-effort */ }
 
   // Auto-generated mail (auto-acks, OOO, bounces) is recorded, never forwarded —
@@ -510,6 +527,41 @@ async function processReceivedEvent(event) {
   const appResults = { ...priorAppResults };
   let forwardedTotal = 0;
   let retryableFailure = null;   // { status } of the first transient failure
+
+  // ---- returned documents (#orders): save the vendor's attachments back onto
+  // the order(s) as UNASSIGNED documents for the team to classify. Runs AFTER the
+  // auto-reply return (an auto-ack never files docs) and is IDEMPOTENT across
+  // webhook redeliveries via an appResults marker — the 120s doc-dedup window is
+  // not enough when a retryable failure redelivers minutes later, so a persisted
+  // per-order 'saved' marker (like appResults[appId]==='forwarded') is what
+  // guarantees no double-filing. Best-effort — the reply still forwards regardless.
+  if (orderRefs.length && Array.isArray(full.attachments) && full.attachments.length) {
+    const pending = orderRefs.filter((ref) => appResults['__order_' + ref.orderType] !== 'saved');
+    if (pending.length) {
+      try {
+        const orderAtts = await retrieveAttachmentsSafe(emailId, full.attachments).catch(() => []);
+        // Never a SILENT cap: retrieveAttachmentsSafe bounds count/size, so a large
+        // title package (11+ files, or big binders under the Graph budget) may drop
+        // the overflow from the returned-docs save — say so (the reply + all files
+        // still forward to the team, who can pull the rest from the original).
+        if (orderAtts.length < full.attachments.length) {
+          console.warn(`[order-inbox] ${full.attachments.length - orderAtts.length} of ${full.attachments.length} returned attachment(s) exceeded the retrieval caps and were not filed to the order (they still forwarded to the team).`);
+        }
+        if (orderAtts.length) {
+          const orderInbox = require('./order-inbox');
+          for (const ref of pending) {
+            try {
+              await orderInbox.saveReturnedDocs({
+                applicationId: ref.applicationId, orderType: ref.orderType,
+                attachments: orderAtts, fromEmail,
+              });
+              appResults['__order_' + ref.orderType] = 'saved';   // persisted below → a redelivery skips it
+            } catch (_) { /* leave unmarked so a redelivery retries this order */ }
+          }
+        }
+      } catch (_) { /* best-effort — never fail the webhook over doc capture */ }
+    }
+  }
 
   // ---- chat+ guest reply (#75): post into the conversation ----
   if (chatKey && appResults.__chat !== 'posted') {

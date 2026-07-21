@@ -217,8 +217,12 @@ router.get('/:appId', async (req, res, next) => {
       const row = { documentId: d.id, filename: d.filename, conditionCode: d.condition_code || null,
         conditionLabel: d.condition_label || null, docKind: d.doc_kind || null, expectedType, analyzed };
       documentsOnFile.push(row);
-      // Anything present but not yet read (and that maps to a readable type) is the auto-read queue.
-      if (!analyzed && expectedType) autoReadQueue.push(row);
+      // Anything present, not yet read, AND that maps to a type the reader can actually read is the
+      // auto-read queue. The registry.get gate MUST match the /auto-read endpoint's selectAutoReadQueue
+      // (isReadable), or the count here would include a type the reader skips (e.g. a document under
+      // the appraisal-documents condition → 'appraisal', which the appraisal desk owns, not this
+      // reader) and the desk's "read them all" button would never clear a stuck count.
+      if (!analyzed && expectedType && registry.get(expectedType)) autoReadQueue.push(row);
     }
 
     // Data-comparison / tie-out over the file's current extractions + the appraisal.
@@ -379,6 +383,13 @@ router.get('/:appId', async (req, res, next) => {
         hasAmendments: amendments.hasAmendments, unexecuted: amendments.unexecuted,
         findings: amendments.findings.map(decorate) },
       reasonability: { checks: reasonability.checks, findings: reasonability.findings.map(decorate) },
+      // ONE consolidated list of every open finding the summary counts — so "2 warnings" maps to a
+      // visible list of exactly 2 items (owner-reported: "it says 2 warnings and I can't see them").
+      // It's the same de-duplicated roll-up (openWithRisk) the counts come from, decorated so each is
+      // actionable; the desk shows it once at the top instead of scattering findings across sections.
+      // A persisted per-document finding (has an id) is resolvable; a derived advisory (tie-out /
+      // metric / staleness) is display-only and clears when its underlying data changes.
+      allFindings: openWithRisk.map(decorate),
       summary,
       docTypes: registry.docTypes(),
       analyzers: { reader: docint.configured(), ai: azureOpenai.available() },
@@ -472,7 +483,10 @@ async function analyzeOneDocument(app, doc, docType, opts = {}) {
       findings: result.findings || [], reason: result.reason || null,
     };
   } catch (e) {
-    return { ...base, ok: false, error: 'analyze_failed', message: e && e.message };
+    // Keep the ORIGINAL error object (with .code/.status) so the manual endpoint can propagate it to
+    // the global handler unchanged — a DB outage mid-persist must still surface as 503, a 22P02 as
+    // 400, not a bare 500. The auto-read batch ignores `cause` and just records the failure.
+    return { ...base, ok: false, error: 'analyze_failed', message: e && e.message, cause: e };
   }
 }
 
@@ -531,7 +545,7 @@ router.post('/:appId/documents/:documentId/analyze', async (req, res, next) => {
     if (r.error === 'cooldown') return res.status(429).json({ error: `this document was just analyzed — try again in ${r.retryAfterSeconds}s`, retryAfterSeconds: r.retryAfterSeconds });
     if (r.error === 'too_large') return res.status(413).json({ error: `this document is too large to analyze (limit ${Math.round(MAX_ANALYZE_BYTES / (1024 * 1024))} MB)` });
     if (r.error === 'storage_read_failed' || r.error === 'no_stored_file') return res.status(422).json({ error: 'could not read the stored document' });
-    if (r.error === 'analyze_failed') return next(new Error(r.message || 'analyze failed'));
+    if (r.error === 'analyze_failed') return next(r.cause || new Error(r.message || 'analyze failed'));
     res.json({
       ok: r.ok, docType, cached: !!r.cached, extractionId: r.extractionId,
       status: r.status, confidence: r.confidence,
@@ -593,17 +607,22 @@ router.post('/:appId/auto-read', async (req, res, next) => {
 
     const batch = queue.slice(0, AUTOREAD_MAX_PER_CALL);
     const results = [];
-    let read = 0, cached = 0;
+    let read = 0, cached = 0, unreadable = 0;
     for (const item of batch) {
       const doc = await fileDoc(app, item.id);
-      if (!doc) { results.push({ documentId: item.id, filename: item.filename, docType: item.expectedType, ok: false, error: 'not_found', findings: 0 }); continue; }
+      if (!doc) { results.push({ documentId: item.id, filename: item.filename, docType: item.expectedType, ok: false, error: 'not_found', unreadable: false, findings: 0 }); continue; }
       const r = await analyzeOneDocument(app, doc, item.expectedType, { actorId: req.actor.id });
+      // The read succeeded but the document's fields couldn't be extracted as THIS type — the document
+      // filed under this condition may be the WRONG document (e.g. not actually a title commitment) or
+      // a poor scan. The desk flags it for the underwriter to confirm the right document is here.
+      const notReadable = !!(r.ok && r.confidence === 'unreadable');
       if (r.ok && r.cached) cached++;
       else if (r.ok) read++;
-      results.push({ documentId: item.id, filename: item.filename, docType: item.expectedType, conditionCode: item.conditionCode, ok: !!r.ok, cached: !!r.cached, error: r.error || null, findings: (r.findings || []).length });
+      if (notReadable) unreadable++;
+      results.push({ documentId: item.id, filename: item.filename, docType: item.expectedType, conditionCode: item.conditionCode, ok: !!r.ok, cached: !!r.cached, unreadable: notReadable, error: r.error || null, findings: (r.findings || []).length });
     }
-    await audit(req.actor.id, 'underwriting_auto_read', app.id, { total: queue.length, read, cached, failed: results.filter((x) => !x.ok).length });
-    return res.json({ readerOn: true, read, cached, pending: Math.max(0, queue.length - batch.length), total: queue.length, results });
+    await audit(req.actor.id, 'underwriting_auto_read', app.id, { total: queue.length, read, cached, unreadable, failed: results.filter((x) => !x.ok).length });
+    return res.json({ readerOn: true, read, cached, unreadable, pending: Math.max(0, queue.length - batch.length), total: queue.length, results });
   } catch (e) { next(e); }
 });
 

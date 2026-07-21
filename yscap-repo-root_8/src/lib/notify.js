@@ -44,6 +44,7 @@ const KICKER_OF = {
   // The Workflow (owner-directed 2026-07-21): a file was submitted to your
   // personal work queue, or a file you submitted was finished + sent back.
   workflow_submitted: 'Workflow', workflow_returned: 'Workflow',
+  order_docs_in: 'Order documents',
 };
 
 /**
@@ -330,6 +331,8 @@ const CATEGORY_OF = {
   // The Workflow (owner-directed 2026-07-21) — staff hand-off events. Action-
   // bearing, so NOT added to STAFF_INAPP_TYPES: they email the recipient/submitter.
   workflow_submitted: 'status_updates', workflow_returned: 'status_updates',
+  // Orders desk — a staff-facing "documents came back" nudge.
+  order_docs_in: 'documents',
 };
 // These always reach the borrower in-app even if the category is muted — they
 // require action and can't be silently dropped (email can still be turned off).

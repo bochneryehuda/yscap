@@ -761,6 +761,114 @@ async function setPropertyLifecycle(appId, state, staffId = null) {
   return { ok: true, state, inactive, sitewire };
 }
 
+const INSPECTION_METHODS = new Set(['mobile', 'traditional']);
+
+/**
+ * Update the live Sitewire PROPERTY controls the coordinator should own from the PILOT desk instead of
+ * logging into Sitewire (owner-directed 2026-07-21 — "ALL features that we have in Sitewire… control the
+ * entire process from our system"). ONLY the two controls whose Sitewire field name we have CONFIRMED are
+ * wired here (never-guess rule — a wrong field name is a silent 200-that-did-nothing):
+ *   • inactive          → Active ↔ Inactive (Sitewire "Mark Inactive": hide/pause the property)
+ *   • inspection_method → Virtual/mobile ↔ On-site/traditional (validated against the capital-partner rule)
+ * The "Block Draws" and "Sitewire-GC ↔ In-house review" toggles are intentionally NOT here: their Sitewire
+ * field names are not established anywhere in the integration, so shipping a guessed key would silently no-op.
+ * Same guarded path as every other write: managed-only (only-ours) → circuit breaker → updateProperty →
+ * read-after-write verify (fail closed, park on mismatch) → journal → persist PILOT-side. Returns a result
+ * object; a route maps the codes to HTTP. `changes` may carry either/both of { inactive, inspection_method }.
+ */
+async function updatePropertyControls(appId, changes = {}, staffId = null) {
+  const link = await getLink(appId);
+  // only-ours / go-forward: only a PILOT-created live property can be controlled.
+  if (!link || !link.sitewire_property_id || link.matched_by !== 'created') return { error: 'not_managed' };
+
+  const wantInactive = Object.prototype.hasOwnProperty.call(changes, 'inactive');
+  const wantMethod = changes.inspection_method != null && changes.inspection_method !== '';
+  const patch = {};
+  let newInactive = null;
+  let newMethod = null;
+
+  if (wantMethod) {
+    const m = String(changes.inspection_method);
+    if (!INSPECTION_METHODS.has(m)) return { error: 'invalid_method' };
+    // Validate against the capital-partner rule's allow flags — never push a method the partner forbids.
+    const a = await loadFile(appId);
+    const program = /gold/i.test(String((a && a.registered_program) || '')) ? 'gold' : 'standard';
+    const cp = a ? await resolveCapitalPartnerId(a.lender) : { id: null };
+    const rule = await resolveRule(a ? a.lender : null, cp.id, program);
+    const allowVirtual = !rule || rule.allow_virtual !== false;
+    const allowPhysical = !rule || rule.allow_physical !== false;
+    if (m === 'mobile' && !allowVirtual) return { error: 'method_forbidden', method: m };
+    if (m === 'traditional' && !allowPhysical) return { error: 'method_forbidden', method: m };
+    patch.inspection_method = m;
+    newMethod = m;
+  }
+  if (wantInactive) { newInactive = !!changes.inactive; patch.inactive = newInactive; }
+  if (Object.keys(patch).length === 0) return { error: 'nothing_to_change' };
+
+  // These are LIVE Sitewire settings (unlike lifecycle, PILOT keeps no shadow "inactive" to backfill), so
+  // with writes off there is nothing to record — tell the caller the connection is off rather than pretend.
+  const canSync = cfg.sitewireEnabled && (cfg.sitewireOutboundEnabled || cfg.sitewireDryrun);
+  if (!canSync) return { error: 'writes_off' };
+
+  await circuitCheck(1);
+  let property;
+  try {
+    property = await client.updateProperty(link.sitewire_property_id, patch);
+  } catch (e) {
+    if (e.retryable) throw e;   // transient → caller/queue retries; nothing changed
+    await park({ appId, reason: `sitewire_property_settings_failed: could not update property ${link.sitewire_property_id} (${Object.keys(patch).join(', ')}) in Sitewire (${e.status || 'error'})` });
+    return { parked: 'settings_' + (e.status || 'error') };
+  }
+  let sitewire = 'unverified';
+  if (property && property.__dryrun) { sitewire = 'dryrun'; }
+  else {
+    // read-after-write verify, FAIL CLOSED (mirrors setPropertyLifecycle): a mismatch on a field we KNOW
+    // came back parks; a throwing/absent field is not proof it stuck → leaves sitewire='unverified'.
+    let verified = true;
+    try {
+      const fresh = await client.getProperty(link.sitewire_property_id);
+      if (fresh) {
+        if (newInactive != null) {
+          if (typeof fresh.inactive === 'boolean') {
+            if (fresh.inactive !== newInactive) { await park({ appId, reason: `sitewire_property_verify_failed: Sitewire property ${link.sitewire_property_id} did not persist inactive=${newInactive}` }); return { parked: 'verify_failed' }; }
+          } else verified = false;
+        }
+        if (newMethod != null) {
+          if (fresh.inspection_method != null) {
+            if (String(fresh.inspection_method) !== newMethod) { await park({ appId, reason: `sitewire_property_verify_failed: Sitewire property ${link.sitewire_property_id} did not persist inspection_method=${newMethod}` }); return { parked: 'verify_failed' }; }
+          } else verified = false;
+        }
+      } else verified = false;
+    } catch (e) { console.warn('[sitewire] property-settings verify GET failed (unverified):', e && e.message); verified = false; }
+    if (newInactive != null) await journal({ appId, propertyId: link.sitewire_property_id, entity: 'property', entityId: link.sitewire_property_id, field: 'inactive', oldValue: null, newValue: newInactive, source: 'property_settings' });
+    if (newMethod != null) await journal({ appId, propertyId: link.sitewire_property_id, entity: 'property', entityId: link.sitewire_property_id, field: 'inspection_method', oldValue: link.inspection_method || null, newValue: newMethod, source: 'property_settings' });
+    sitewire = verified ? 'synced' : 'unverified';
+  }
+  // Persist the coordinator's inspection choice PILOT-side so resolveInspection + the next push agree.
+  // `inactive` has no shadow column (the desk reads it live from Sitewire), so nothing to persist for it.
+  if (newMethod != null) await db.query(`UPDATE sitewire_property_links SET inspection_method=$2, updated_at=now() WHERE application_id=$1`, [appId, newMethod]);
+  return { ok: true, inactive: newInactive, inspection_method: newMethod, sitewire };
+}
+
+/**
+ * Read the LIVE Sitewire property (managed-only) so the desk can show its real current settings and offer the
+ * controls above. Also the honest discovery surface for the two not-yet-wired toggles (Block Draws / review
+ * type): the raw property object reveals the exact field names Sitewire uses, so they can be wired with no
+ * guessing. Never throws — returns { available:false, reason } when unmanaged / off / unreachable.
+ */
+async function getPropertyLive(appId) {
+  const link = await getLink(appId);
+  if (!link || !link.sitewire_property_id || link.matched_by !== 'created') return { available: false, reason: 'not_managed' };
+  const propertyId = Number(link.sitewire_property_id);
+  if (!cfg.sitewireEnabled) return { available: false, reason: 'off', propertyId };
+  try {
+    const property = await client.getProperty(propertyId);
+    return { available: true, propertyId, property: property || null };
+  } catch (e) {
+    return { available: false, reason: 'error', error: e && e.message, propertyId };
+  }
+}
+
 /**
  * Reset a file's draw setup so the coordinator can start over / re-push (owner-directed 2026-07-20 — a
  * delete-and-re-push control for testing). Sitewire has NO delete endpoint, so this does the closest safe
@@ -920,4 +1028,4 @@ async function getSitewireDocuments(appId) {
   } catch (e) { return { managed: true, available: false, documents: [], error: (e && e.message) || 'error' }; }
 }
 
-module.exports = { pushFile, pushBudget, setPropertyLifecycle, resetDrawSetup, collisionProperty, getBorrowerInviteStatus, resendBorrowerInvite, listQuickNotifyStatuses, setDrawQuickNotify, getSitewireDocuments, park, journal, circuitCheck, resolveCapitalPartnerId, resolveRule, resolveInspection, resolveCoordinatorId, getLink, loadFile, isManaged, recordSetupStatus, SITEWIRE_BIRTH_REASONS, LIFECYCLE_STATES };
+module.exports = { pushFile, pushBudget, setPropertyLifecycle, updatePropertyControls, getPropertyLive, resetDrawSetup, collisionProperty, getBorrowerInviteStatus, resendBorrowerInvite, listQuickNotifyStatuses, setDrawQuickNotify, getSitewireDocuments, park, journal, circuitCheck, resolveCapitalPartnerId, resolveRule, resolveInspection, resolveCoordinatorId, getLink, loadFile, isManaged, recordSetupStatus, SITEWIRE_BIRTH_REASONS, LIFECYCLE_STATES, INSPECTION_METHODS };

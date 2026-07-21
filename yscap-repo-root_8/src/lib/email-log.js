@@ -121,6 +121,11 @@ const CATEGORY_OF = {
   reminder: 'reminders', digest: 'reminders',
   draw: 'draws', draw_request: 'draws', draw_findings: 'draws', draw_accepted: 'draws',
   draw_disputed: 'draws', draw_dispute_resolved: 'draws', sow_reallocation: 'draws', sow_change_request: 'draws',
+  // Orders desk (#orders): a title / insurance order, its follow-ups, and the
+  // vendor's replies all bucket under 'orders' so the file's Orders inbox filters
+  // cleanly (the order Email Center scopes on the msg_type 'title_%' / 'insurance_%').
+  title_order: 'orders', title_followup: 'orders', title_message: 'orders',
+  insurance_order: 'orders', insurance_followup: 'orders', insurance_message: 'orders',
   security: 'account', account: 'account',
 };
 const categoryOf = (type) => CATEGORY_OF[type] || 'other';
@@ -154,6 +159,9 @@ async function captureOutbound(send = {}, ctx = {}) {
       : null;
     const recipientKind = ctx.recipientKind
       || (ctx.audience === 'staff' ? 'staff' : ctx.audience === 'borrower' ? 'borrower' : 'external');
+    // Visible CC list (#orders) — stored so the Email Center can show WHO was on
+    // the chain (borrower / loan officer / processor / vendor). Metadata only.
+    const cc = toRecipients(send.cc);
     const meta = {};
     if (ctx.subjectTag) meta.subjectTag = ctx.subjectTag;
     if (ctx.kicker) meta.kicker = ctx.kicker;
@@ -161,10 +169,10 @@ async function captureOutbound(send = {}, ctx = {}) {
     await db.query(
       `INSERT INTO email_messages
          (application_id, thread_key, direction, notification_id, msg_type, category,
-          from_email, from_name, to_emails, reply_to, subject, preview, body_html, body_text,
+          from_email, from_name, to_emails, cc_emails, reply_to, subject, preview, body_html, body_text,
           recipient_kind, audience, provider, provider_message_id, status, error, attachments, meta,
           reconstructed, occurred_at)
-       VALUES ($1,$2,'outbound',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,false, now())
+       VALUES ($1,$2,'outbound',$3,$4,$5,$6,$7,$8,$22,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,false, now())
        ON CONFLICT (notification_id) WHERE notification_id IS NOT NULL
        DO UPDATE SET status = EXCLUDED.status,
                      provider_message_id = COALESCE(EXCLUDED.provider_message_id, email_messages.provider_message_id),
@@ -181,7 +189,8 @@ async function captureOutbound(send = {}, ctx = {}) {
        (cfg.emailProvider || null), ctx.providerId || null,
        ctx.status || 'sent', ctx.error ? String(ctx.error).slice(0, 400) : null,
        attachments ? JSON.stringify(attachments) : null,
-       Object.keys(meta).length ? JSON.stringify(meta) : null]);
+       Object.keys(meta).length ? JSON.stringify(meta) : null,
+       cc.length ? JSON.stringify(cc) : null]);
   } catch (e) {
     // recording is best-effort; a capture failure must never surface to a send
     if (process.env.EMAIL_LOG_DEBUG) console.warn('[email-log] captureOutbound failed:', e.message);
@@ -201,12 +210,17 @@ async function captureInbound(p = {}) {
     const from = bareAddress(p.from).toLowerCase() || null;
     const meta = {};
     if (Array.isArray(p.forwardedTo) && p.forwardedTo.length) meta.forwardedTo = p.forwardedTo.slice(0, 50);
+    // An order vendor's reply (#orders) is tagged 'title_message' / 'insurance_message'
+    // so the order-scoped Email Center picks it up directly (belt-and-suspenders on
+    // top of the subject-thread linkage). A normal file reply stays 'inbound_reply'.
+    const msgType = (p.msgType === 'title_message' || p.msgType === 'insurance_message') ? p.msgType : 'inbound_reply';
+    const category = categoryOf(msgType) === 'other' ? 'messages' : categoryOf(msgType);
     await db.query(
       `INSERT INTO email_messages
          (application_id, thread_key, direction, inbound_id, msg_type, category,
           from_email, to_emails, subject, preview, body_html, body_text,
           recipient_kind, provider, provider_message_id, status, meta, reconstructed, occurred_at)
-       VALUES ($1,$2,'inbound',$3,'inbound_reply','messages',$4,'[]'::jsonb,$5,$6,$7,$8,'external',$9,$10,$11,$12,$13, now())
+       VALUES ($1,$2,'inbound',$3,$14,$15,$4,'[]'::jsonb,$5,$6,$7,$8,'external',$9,$10,$11,$12,$13, now())
        ON CONFLICT (inbound_id) WHERE inbound_id IS NOT NULL
        DO UPDATE SET status = EXCLUDED.status,
                      body_html = COALESCE(EXCLUDED.body_html, email_messages.body_html),
@@ -218,7 +232,7 @@ async function captureInbound(p = {}) {
        from, subject, previewOf(text, html), html, text,
        (cfg.emailProvider || null), p.providerId || null, p.status || 'received',
        Object.keys(meta).length ? JSON.stringify(meta) : null,
-       p.reconstructed === true]);
+       p.reconstructed === true, msgType, category]);
   } catch (e) {
     if (process.env.EMAIL_LOG_DEBUG) console.warn('[email-log] captureInbound failed:', e.message);
   }
