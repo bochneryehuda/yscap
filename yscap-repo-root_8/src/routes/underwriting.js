@@ -27,7 +27,10 @@ const db = require('../db');
 const { requireAuth, requireStaff, requirePermission } = require('../auth');
 const { can, assigneeExistsSql } = require('../lib/permissions');
 const storage = require('../lib/storage');
-const docint = require('../lib/ai/docint');
+// Route via the multi-engine OCR router (owner-directed 2026-07-21): Azure Doc
+// Intelligence stays the primary; Google Doc AI kicks in automatically when
+// Azure returns nothing on a scanned/rotated page. Same call shape as before.
+const docint = require('../lib/ai/ocr-router');
 const azureOpenai = require('../lib/ai/azure-openai');
 const engine = require('../lib/underwriting/engine');
 const store = require('../lib/underwriting/store');

@@ -64,7 +64,7 @@ const INTEGRATIONS = [
   },
   {
     key: 'azure_docint', name: 'Azure Document Intelligence (OCR)', group: 'core',
-    purpose: 'Turns scanned or blurry document pages into clean text for the analyzer to read.',
+    purpose: 'Turns scanned or blurry document pages into clean text for the analyzer to read (primary OCR engine).',
     direction: 'Outbound', auth: 'Azure resource key',
     env: [{ name: 'AZURE_DOCINT_ENDPOINT', required: true }, { name: 'AZURE_DOCINT_KEY', required: true },
       { name: 'AZURE_DOCINT_MODEL', required: false }, { name: 'AZURE_DOCINT_API_VERSION', required: false }],
@@ -74,6 +74,20 @@ const INTEGRATIONS = [
       if (!m.configured()) return { configured: false, live: null, detail: 'Endpoint or key not set.' };
       try { const p = await timebox(m.ping()); return { configured: true, live: !!p.ok, detail: p.ok ? 'Reached the OCR reader.' : (p.reason || 'Not reachable.') }; }
       catch (e) { return { configured: true, live: false, detail: e.message === 'timed out' ? 'Timed out reaching the OCR reader.' : (e.message || 'Not reachable.') }; }
+    },
+  },
+  {
+    key: 'google_docai', name: 'Google Document AI (backup OCR)', group: 'core',
+    purpose: 'Independent second OCR engine — runs automatically when Azure returns nothing on a scanned or rotated document, so a hard-to-read file has a second chance before an underwriter has to key it by hand.',
+    direction: 'Outbound', auth: 'Google service-account JSON',
+    env: [{ name: 'GOOGLE_DOCAI_KEY_JSON', required: true }, { name: 'GOOGLE_DOCAI_PROJECT_ID', required: true },
+      { name: 'GOOGLE_DOCAI_LOCATION', required: true }, { name: 'GOOGLE_DOCAI_PROCESSOR_ID', required: true }],
+    switches: [], liveProbe: true,
+    async probe() {
+      const m = require('../ai/docai-google');
+      if (!m.configured()) return { configured: false, live: null, detail: 'One of the four Google Document AI values is not set.' };
+      try { const p = await timebox(m.ping()); return { configured: true, live: !!p.ok, detail: p.ok ? 'Reached the backup OCR reader.' : (p.reason || 'Not reachable.') }; }
+      catch (e) { return { configured: true, live: false, detail: e.message === 'timed out' ? 'Timed out reaching the backup OCR reader.' : (e.message || 'Not reachable.') }; }
     },
   },
   {

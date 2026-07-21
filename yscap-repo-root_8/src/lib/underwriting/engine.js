@@ -11,7 +11,14 @@
  * understand failure NEVER throws; it returns an 'error' extraction plus a single
  * "verify by hand" finding (never a false mismatch, never a guess onto the file).
  */
-const docint = require('../ai/docint');
+// Multi-engine OCR router (owner-directed 2026-07-21): Azure Document Intelligence
+// remains the PRIMARY engine; Google Document AI is a CHALLENGER that runs only
+// when Azure returns an empty read (a scanned PDF where Azure's OCR silently
+// failed to segment the page). The router keeps the same return shape as the
+// single-engine reader, plus an `engineSequence`/`engine` pair recording which
+// engine actually produced the text — surfaced onto the extraction so a finding
+// can honestly say "read by Google after Azure returned nothing."
+const docint = require('../ai/ocr-router');
 const azureOpenai = require('../ai/azure-openai');
 const registry = require('./registry');
 const { analyzePdf } = require('./pdf-forensics');
@@ -93,8 +100,12 @@ async function analyzeDocument({ docType, buffer, base64, mimeType, subject, tod
   // transient give-up, rather than letting it propagate. (audit 2026-07-20)
   try {
   // 1. READ (OCR) — best-effort; GPT can still read a clean image/text if OCR is thin.
+  // The router tries Azure first and falls back to Google Document AI when Azure
+  // returns nothing. ocr.engine names the WINNER; ocr.engineSequence lists every
+  // engine actually tried, so the extraction records both.
   const ocr = await reader.read({ buffer, base64, mimeType });
-  baseExtraction.ocrEngine = ocr.ok ? 'document_intelligence' : null;
+  baseExtraction.ocrEngine = ocr.ok ? (ocr.engine || 'document_intelligence') : null;
+  baseExtraction.ocrEngineSequence = Array.isArray(ocr.engineSequence) ? ocr.engineSequence.slice() : null;
   baseExtraction.pageCount = ocr.ok ? (ocr.pageCount || null) : null;
 
   // 2. UNDERSTAND (extract fields to the type's schema).

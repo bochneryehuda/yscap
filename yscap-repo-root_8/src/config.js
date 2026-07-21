@@ -421,4 +421,31 @@ module.exports = {
     // hidden reasoning from consuming the output budget; raise only if accuracy needs it.
     reasoningEffort: (process.env.AZURE_OPENAI_REASONING_EFFORT || 'low').trim(),
   },
+  // Google Cloud Document AI — the INDEPENDENT SECOND OCR engine (owner-directed
+  // 2026-07-21). Runs as a fallback when Azure Document Intelligence returns no
+  // text / very short text / an error. Different failure modes than Azure, so it
+  // catches what Azure misses (rotated scans, faxes, low-quality PDFs).
+  // Authentication is a service-account JWT → OAuth2 access token (no SDK; pure
+  // fetch + Node's built-in crypto). Everything stays dormant until the four
+  // Render env vars are set.
+  //   GOOGLE_DOCAI_KEY_JSON      the full service-account JSON (the private key
+  //                              lives inside it — never commit, only Render env)
+  //   GOOGLE_DOCAI_PROJECT_ID    e.g. yscap-docai
+  //   GOOGLE_DOCAI_LOCATION      us | eu (matches the processor's region)
+  //   GOOGLE_DOCAI_PROCESSOR_ID  the alphanumeric ID of the "Enterprise Document OCR" processor
+  docai: {
+    keyJson:     process.env.GOOGLE_DOCAI_KEY_JSON || '',
+    projectId:   (process.env.GOOGLE_DOCAI_PROJECT_ID || '').trim(),
+    location:    (process.env.GOOGLE_DOCAI_LOCATION || 'us').trim(),
+    processorId: (process.env.GOOGLE_DOCAI_PROCESSOR_ID || '').trim(),
+  },
+  // Mistral OCR — the THIRD OCR engine (owner-directed 2026-07-21). Used only
+  // when Azure AND Google disagree or both fail on a hard document (dense
+  // tables, signatures, multi-column layouts). Single API key, pay-as-you-go.
+  //   MISTRAL_API_KEY  the key from console.mistral.ai
+  mistralOcr: {
+    key:      process.env.MISTRAL_API_KEY || '',
+    endpoint: (process.env.MISTRAL_OCR_ENDPOINT || 'https://api.mistral.ai').trim().replace(/\/+$/, ''),
+    model:    (process.env.MISTRAL_OCR_MODEL || 'mistral-ocr-latest').trim(),
+  },
 };
