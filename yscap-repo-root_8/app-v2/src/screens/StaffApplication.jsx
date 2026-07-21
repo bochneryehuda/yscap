@@ -20,7 +20,7 @@ import LoanProgress from '../components/LoanProgress.jsx';
 import { PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
 import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
-import FileSections, { Section, InfoTip, subscribeConditionsTab } from '../components/FileSections.jsx';
+import FileSections, { Section, InfoTip, subscribeConditionsTab, goToSection } from '../components/FileSections.jsx';
 import EsignFileSection from '../components/EsignFileSection.jsx';
 import OrdersPanel from '../components/OrdersPanel.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
@@ -2400,6 +2400,16 @@ export default function StaffApplication() {
   const completer = canComplete(role);   // may CLEAR (sign off) a condition; others only mark it reviewed
   const canDelete = can('delete_files');
   const [app, setApp] = useState(null);
+  // Deep-link to a section: a URL ending in "#sec-<name>" (e.g. the Orders queue's
+  // "Open" button → #sec-orders) opens + scrolls to that collapsed section once the
+  // file has rendered. Best-effort; a no-op when the fragment names no real section.
+  useEffect(() => {
+    if (!app) return;
+    const m = String(window.location.hash || '').match(/#(sec-[a-z-]+)$/);
+    if (!m) return;
+    const t = setTimeout(() => goToSection(m[1]), 250);
+    return () => clearTimeout(t);
+  }, [app, id]);
   const [items, setItems] = useState([]);
   const [docs, setDocs] = useState([]);
   const [dlBusy, setDlBusy] = useState(null);
