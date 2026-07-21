@@ -8835,6 +8835,7 @@ router.post('/esign/drain', async (req, res) => {
 // Mounted last so the /applications/:id scope guard above still covers the
 // application-scoped chat routes (create chat / export).
 router.use(require('./staff-chat'));
+router.use(require('./staff-notif-center'));
 
 module.exports = router;
 // exported for tests (the draw email center's DocuSign + Sitewire activity fold-in)

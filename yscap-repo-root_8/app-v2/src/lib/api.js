@@ -679,4 +679,14 @@ export const api = {
   // ---- Pricing Admin Center (manage_pricing): company-wide markup/fee defaults ----
   adminPricingGet: () => req('GET', '/api/admin/pricing'),
   adminPricingPut: (b) => req('PUT', '/api/admin/pricing', b),
+
+  // ---- Loan-Officer Notification Center: per-notification prefs + draft queue ----
+  loNotifCatalog:      () => req('GET',  '/api/staff/notification-center/catalog'),
+  loNotifPrefs:        () => req('GET',  '/api/staff/notification-center/prefs'),
+  loNotifSavePref:     (key, body) => req('PUT', `/api/staff/notification-center/prefs/${encodeURIComponent(key)}`, body),
+  loNotifBulkSave:     (changes) => req('POST', '/api/staff/notification-center/prefs/bulk', { changes }),
+  loNotifDrafts:       (status) => req('GET',  '/api/staff/notification-center/drafts' + (status ? `?status=${status}` : '')),
+  loNotifDraftCount:   () => req('GET',  '/api/staff/notification-center/drafts/count'),
+  loNotifDraftSend:    (id, edits) => req('POST', `/api/staff/notification-center/drafts/${id}/send`, edits || {}),
+  loNotifDraftDiscard: (id) => req('POST', `/api/staff/notification-center/drafts/${id}/discard`),
 };
