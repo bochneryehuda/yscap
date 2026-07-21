@@ -250,16 +250,31 @@ const INTEGRATIONS = [
     async probe() { const m = require('./xactus'); return m.configured() ? { configured: true, live: null, detail: 'Credentials set — the request/response mapping is still a placeholder pending the vendor packet.' } : { configured: false, live: null, detail: 'Not connected — awaiting the Xactus onboarding packet + credentials.' }; },
   },
   {
-    key: 'encompass', name: 'Encompass (loan origination system)', group: 'planned',
-    purpose: 'The loan-origination system. Today only a read-only status field flows in via ClickUp — there is no direct Encompass connection yet.',
-    direction: '—', auth: '—', env: [], switches: [], liveProbe: false, notBuilt: true,
-    async probe() { return { configured: false, live: null, detail: 'Not connected. A direct Encompass/Ellie Mae API is not built yet — this is a reserved slot for when we wire it up.' }; },
+    key: 'usps', name: 'USPS (address validation)', group: 'data',
+    purpose: 'Official USPS address standardization + ZIP+4 (free with a USPS developer account).',
+    direction: 'Outbound', auth: 'OAuth2 client credentials',
+    env: [{ name: 'USPS_CLIENT_ID', required: true }, { name: 'USPS_CLIENT_SECRET', required: true }],
+    switches: [], liveProbe: true,
+    async probe() {
+      const m = require('./usps');
+      if (!m.configured()) return { configured: false, live: null, detail: 'Not connected. The connector is built — add a free USPS developer key (USPS_CLIENT_ID / USPS_CLIENT_SECRET from developer.usps.com) to turn on official USPS address checking. Until then, address lookup runs through Google / OpenStreetMap.' };
+      try { const p = await timebox(m.ping()); return { configured: true, live: !!p.ok, detail: p.ok ? 'USPS credentials authenticate.' : (p.reason || 'Not reachable.') }; }
+      catch (e) { return { configured: true, live: false, detail: e.message === 'timed out' ? 'Timed out reaching USPS.' : (e.message || 'Not reachable.') }; }
+    },
   },
   {
-    key: 'usps', name: 'USPS (address validation)', group: 'planned',
-    purpose: 'Official USPS address standardization. Not built — address checking is currently handled by Google / OpenStreetMap.',
-    direction: '—', auth: '—', env: [], switches: [], liveProbe: false, notBuilt: true,
-    async probe() { return { configured: false, live: null, detail: 'Not connected. No USPS API is wired up yet — a reserved slot for when we add it.' }; },
+    key: 'encompass', name: 'Encompass (loan origination system)', group: 'framework',
+    purpose: 'The loan-origination system (ICE / Ellie Mae). The connector is built; it needs your instance credentials, then the loan field-mapping is finalized against your instance.',
+    direction: 'Two-way (planned)', auth: 'OAuth2 (Developer Connect)',
+    env: [{ name: 'ENCOMPASS_CLIENT_ID', required: true }, { name: 'ENCOMPASS_CLIENT_SECRET', required: true },
+      { name: 'ENCOMPASS_INSTANCE_ID', required: true }, { name: 'ENCOMPASS_USERNAME', required: false }, { name: 'ENCOMPASS_PASSWORD', required: false }],
+    switches: [], liveProbe: true,
+    async probe() {
+      const m = require('./encompass');
+      if (!m.configured()) return { configured: false, live: null, detail: 'Not connected. The connector is built — add your Encompass Developer Connect credentials (client id + secret + instance id) to authenticate. The loan field-mapping is the next step, finalized against your instance. (Today an Encompass status field only rides in read-only via ClickUp.)' };
+      try { const p = await timebox(m.ping()); return { configured: true, live: !!p.ok, detail: p.ok ? 'Encompass credentials authenticate — loan field-mapping is the next step.' : (p.reason || 'Not reachable.') }; }
+      catch (e) { return { configured: true, live: false, detail: e.message === 'timed out' ? 'Timed out reaching Encompass.' : (e.message || 'Not reachable.') }; }
+    },
   },
 ];
 
