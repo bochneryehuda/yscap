@@ -14,7 +14,35 @@
  * data-comparison is a single entry in DOC_CLAIMS + DOC_CARRIES here — the engine, route,
  * and UI never change.
  */
-const { namesMatchLoose, entityMatch, withinMoney, addrMatches, addrLine, toISODate, digitsOnly, num } = require('./compare');
+const { namesMatchLoose, entityMatch, withinMoney, addrMatches, addrLine, toISODate, digitsOnly, num, norm } = require('./compare');
+
+// ---- Enum canonicalizers (collateral classifications) ----------------------------------------
+// Property type + occupancy come off different documents in different words ("SFR" / "Single
+// Family" / "1-unit"; "Tenant" / "Investment" / "Non-owner"). Canonicalize to a small code set so
+// the appraisal and the application only flag a REAL disagreement (a 1-unit called a 2-4), never a
+// wording difference. When a value doesn't map to a known bucket we return null (uncomparable) —
+// never a guessed bucket — so an unrecognized string is shown but never raises a false mismatch.
+function canonPropertyType(v) {
+  const s = norm(String(v == null ? '' : v));
+  if (!s) return null;
+  if (/\b(5|five|six|seven|eight|nine|ten|\d{2,})\b.*unit|multi.*(5|five)\+?|5\+/.test(s) || /apartment|multifamily 5/.test(s)) return 'multi_5plus';
+  if (/\b(2|3|4|two|three|four|duplex|triplex|fourplex|quad)\b.*unit|multi.*2.?4|2.?4 unit|two to four/.test(s) || /\bduplex\b|\btriplex\b|\bfourplex\b/.test(s)) return 'multi_2_4';
+  if (/condo|condominium/.test(s)) return 'condo';
+  if (/town\s?home|town\s?house|\bpud\b|planned unit/.test(s)) return 'townhouse';
+  if (/mixed.?use/.test(s)) return 'mixed_use';
+  if (/\bland\b|lot only|vacant land/.test(s)) return 'land';
+  if (/manufactured|mobile/.test(s)) return 'manufactured';
+  if (/sfr|single.?family|1.?unit|one unit|detached|\bsfd\b/.test(s)) return 'sfr';
+  return null; // unrecognized → uncomparable, never a guessed bucket
+}
+function canonOccupancy(v) {
+  const s = norm(String(v == null ? '' : v));
+  if (!s) return null;
+  if (/vacant|unoccupied/.test(s)) return 'vacant';
+  if (/tenant|rented|lease|investment|non.?owner|investor|rental/.test(s)) return 'tenant';
+  if (/owner.?occupied|owner\b|primary|occupant owner/.test(s)) return 'owner';
+  return null;
+}
 
 function borrowerName(b) {
   if (!b) return null;
@@ -47,6 +75,16 @@ const FACTS = [
   { key: 'as_is_value', label: 'As-is value', category: 'valuation', kind: 'money', severity: 'warning', file: (c) => (c.app ? c.app.as_is_value : null) },
   { key: 'arv', label: 'After-repair value', category: 'valuation', kind: 'money', severity: 'warning', file: (c) => (c.app ? c.app.arv : null) },
   { key: 'rehab_budget', label: 'Rehab budget', category: 'rehab', kind: 'money', severity: 'warning', file: (c) => (c.app ? c.app.rehab_budget : null) },
+  // ---- collateral physicals (owner-directed 2026-07-21 — pull EVERY appraisal fact into the
+  // comparison). The appraisal is the authority; the application/file carries units/type/occupancy,
+  // so these cross-check appraisal-vs-file. Year built / living area / market rent are appraisal-
+  // carried facts we surface even when nothing else states them (single-source display).
+  { key: 'units', label: 'Number of units', category: 'collateral', kind: 'count', severity: 'warning', file: (c) => (c.app ? c.app.units : null) },
+  { key: 'property_type', label: 'Property type', category: 'collateral', kind: 'propertyType', severity: 'warning', file: (c) => (c.app ? c.app.property_type : null) },
+  { key: 'occupancy', label: 'Occupancy', category: 'collateral', kind: 'occupancy', severity: 'info', file: (c) => (c.app ? c.app.occupancy : null) },
+  { key: 'year_built', label: 'Year built', category: 'collateral', kind: 'count', severity: 'info', file: () => null },
+  { key: 'living_area', label: 'Living area (sq ft)', category: 'collateral', kind: 'measure', severity: 'info', file: () => null },
+  { key: 'market_rent', label: 'Market rent (1007)', category: 'valuation', kind: 'money', severity: 'info', file: () => null },
 ];
 const FACT_BY_KEY = Object.create(null);
 for (const f of FACTS) FACT_BY_KEY[f.key] = f;
@@ -58,7 +96,12 @@ const DOC_CLAIMS = {
   government_id: (f) => ({ borrower_name: f.fullName || nm(f.firstName, f.lastName), borrower_dob: f.dateOfBirth, borrower_address: f.address }),
   purchase_contract: (f) => ({ property_address: f.propertyAddress, purchase_price: f.purchasePrice, seller_name: f.sellerNames, entity_name: f.buyerName, assignment_fee: f.assignmentFee, underlying_price: f.underlyingPrice }),
   title: (f) => ({ property_address: f.propertyAddress, seller_name: f.vestedOwners, entity_name: f.buyerNames }),
-  appraisal: (f) => ({ property_address: f.propertyAddress, purchase_price: pick(f.contractPrice, f.salePrice), seller_name: f.sellerNames || arr(f.ownerOfRecord) || arr(f.sellerName), as_is_value: pick(f.asIsValue, f.as_is_value), arv: pick(f.arvValue, f.arv) }),
+  appraisal: (f) => ({ property_address: f.propertyAddress, purchase_price: pick(f.contractPrice, f.salePrice), seller_name: f.sellerNames || arr(f.ownerOfRecord) || arr(f.sellerName), as_is_value: pick(f.asIsValue, f.as_is_value), arv: pick(f.arvValue, f.arv),
+    // Collateral physicals off the appraisal (owner-directed 2026-07-21) — the appraisal is the
+    // authority for what the property physically IS; these tie out against the application.
+    units: pick(f.units, f.unitCount), property_type: pick(f.propertyType, f.property_type),
+    occupancy: pick(f.occupancy), year_built: pick(f.yearBuilt, f.year_built),
+    living_area: pick(f.gla, f.sqft, f.livingArea), market_rent: pick(f.marketRent, f.market_rent) }),
   bank_statement: (f) => (f.holderIsBusiness ? { entity_name: f.accountHolderName } : { borrower_name: f.accountHolderName }),
   // ---- expanded document types (Phase B) ----
   assignment: (f) => ({ entity_name: f.assigneeName, underlying_price: f.originalPurchasePrice, assignment_fee: f.assignmentFee, property_address: f.propertyAddress, seller_name: f.sellerName ? [f.sellerName] : null }),
@@ -84,7 +127,7 @@ const DOC_CARRIES = {
   government_id: ['borrower_name', 'borrower_dob', 'borrower_address'],
   purchase_contract: ['property_address', 'purchase_price', 'seller_name', 'entity_name', 'assignment_fee', 'underlying_price'],
   title: ['property_address', 'seller_name', 'entity_name'],
-  appraisal: ['property_address', 'purchase_price', 'seller_name', 'as_is_value', 'arv'],
+  appraisal: ['property_address', 'purchase_price', 'seller_name', 'as_is_value', 'arv', 'units', 'property_type', 'occupancy', 'year_built', 'living_area', 'market_rent'],
   bank_statement: ['entity_name', 'borrower_name'],
   assignment: ['entity_name', 'underlying_price', 'assignment_fee', 'property_address', 'seller_name'],
   insurance: ['entity_name', 'property_address', 'policy_number'],
@@ -125,6 +168,15 @@ function matchScalar(kind, a, b) {
     // to ***last4, so only the last 4 are ever available to compare (and to display).
     case 'digits': { const x = digitsOnly(a).slice(-4), y = digitsOnly(b).slice(-4); return x.length === 4 && y.length === 4 ? x === y : null; }
     case 'ident': { const x = identKey(a), y = identKey(b); return x && y ? x === y : null; }
+    // A whole-number count (units, year built): equal when the rounded integers match.
+    case 'count': { const x = num(a), y = num(b); return x != null && y != null ? Math.round(x) === Math.round(y) : null; }
+    // A measurement (square footage): agrees within a small percentage tolerance (appraisers and
+    // tax records round differently), so a 1% GLA difference is not a "mismatch".
+    case 'measure': { const x = num(a), y = num(b); if (x == null || y == null || x <= 0 || y <= 0) return null; return Math.abs(x - y) / Math.max(x, y) <= 0.03; }
+    // Classification enums (property type, occupancy): compare on the canonical bucket. When either
+    // value doesn't map to a known bucket, it's uncomparable (null) — never a guessed mismatch.
+    case 'propertyType': { const x = canonPropertyType(a), y = canonPropertyType(b); return x && y ? x === y : null; }
+    case 'occupancy': { const x = canonOccupancy(a), y = canonOccupancy(b); return x && y ? x === y : null; }
     case 'name': return namesMatchLoose(a, b);
     case 'entity': return entityMatch(a, b);
     case 'nameOrEntity': {
@@ -154,6 +206,8 @@ function display(kind, v) {
   if (v == null) return null;
   if (Array.isArray(v)) return v.filter((x) => x != null && x !== '').map((x) => display(kind === 'nameOrEntity' ? 'name' : kind, x)).join(' / ') || null;
   if (kind === 'money') { const n = num(v); return n == null ? String(v) : `$${n.toLocaleString('en-US')}`; }
+  if (kind === 'count') { const n = num(v); return n == null ? String(v) : String(Math.round(n)); }
+  if (kind === 'measure') { const n = num(v); return n == null ? String(v) : `${Math.round(n).toLocaleString('en-US')} sq ft`; }
   if (kind === 'digits') { const d = digitsOnly(v); return d ? `***${d.slice(-4)}` : String(v); } // never show a full identifier
   if (kind === 'address') return addrLine(v) || (typeof v === 'string' ? v : null);
   if (kind === 'date') { const d = toISODate(dateStr(v)); return d || String(v); }
