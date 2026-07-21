@@ -804,7 +804,7 @@ function Amendments({ amendments }) {
 // Read-only presentation of what the underlying Sovereign engines produced.
 // Both sections start collapsed so the classic findings list stays the
 // default view; a reviewer opens them when they want the evidence trail.
-function SovereignCockpit({ twinFacts, cureProofs }) {
+function SovereignCockpit({ twinFacts, cureProofs, appId, canIssueCerts }) {
   const [openTwin, setOpenTwin] = useState(false);
   const [openCures, setOpenCures] = useState(false);
   const twinCount = (twinFacts || []).length;
@@ -917,6 +917,192 @@ function SovereignCockpit({ twinFacts, cureProofs }) {
                 );
               })}
             </div>
+          )}
+        </div>
+      )}
+      {appId && <SovereignCertificatesSection appId={appId} canIssue={canIssueCerts} />}
+      {appId && <SovereignStructuringSection appId={appId} />}
+    </div>
+  );
+}
+
+// Decision Certificates section (Sovereign — blueprint sec. 18/19). Fetches on
+// mount; shows one row per milestone with the current signed snapshot's
+// surveillance state + an "Issue" button for the milestones that haven't been
+// stamped yet. Read-only for non-underwriters.
+const MILESTONES = [
+  { key: 'initial_review',        label: 'Initial review' },
+  { key: 'conditional_approval',  label: 'Conditional approval' },
+  { key: 'resubmission',          label: 'Resubmission review' },
+  { key: 'clear_to_close',        label: 'Clear to close' },
+  { key: 'pre_funding',           label: 'Pre-funding QC' },
+  { key: 'purchase_review',       label: 'Purchase review' },
+  { key: 'post_closing_qc',       label: 'Post-closing QC' },
+];
+const CERT_STATE_STYLES = {
+  valid:                { fg: 'var(--good,#3F7A5B)',  bg: 'rgba(63,122,91,.12)',   label: 'Valid' },
+  validation_required:  { fg: 'var(--crit,#B4483C)',  bg: 'var(--crit-bg,#F6E7E4)', label: 'Needs re-verification' },
+  suspended:            { fg: 'var(--amber,#B7791F)', bg: 'var(--amber-bg,#F6EEDD)',label: 'Suspended' },
+  revoked:              { fg: 'var(--crit,#B4483C)',  bg: 'var(--crit-bg,#F6E7E4)', label: 'Revoked' },
+  superseded:           { fg: 'var(--muted,#4B585C)', bg: 'var(--paper,#F6F3EC)',   label: 'Superseded' },
+};
+function SovereignCertificatesSection({ appId, canIssue }) {
+  const [open, setOpen] = useState(false);
+  const [certs, setCerts] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const load = () => api.fileCertificates(appId)
+    .then((d) => setCerts(d.certificates || []))
+    .catch(() => setCerts([]));
+  useEffect(() => { if (open && appId) load(); /* eslint-disable-next-line */ }, [open, appId]);
+  const latestFor = (mkey) => certs.filter((c) => c.milestone === mkey).sort((a, b) => new Date(b.issued_at) - new Date(a.issued_at))[0] || null;
+  async function issue(mkey) {
+    setBusy(true); setMsg(null);
+    try { await api.fileCertificateIssue(appId, mkey); setMsg({ ok: true, text: 'Signed snapshot recorded.' }); await load(); }
+    catch (e) { setMsg({ ok: false, text: e.message || 'Could not record the signed snapshot.' }); }
+    finally { setBusy(false); setTimeout(() => setMsg(null), 8000); }
+  }
+  async function survey() {
+    setBusy(true); setMsg(null);
+    try { const r = await api.fileCertificateSurvey(appId);
+      const flagged = (r.results || []).filter((x) => x.transitioned).length;
+      setMsg({ ok: true, text: flagged > 0 ? `${flagged} signed snapshot(s) need a re-verification.` : 'Every signed snapshot is still valid.' });
+      await load();
+    } catch (e) { setMsg({ ok: false, text: e.message || 'Could not re-check.' }); }
+    finally { setBusy(false); setTimeout(() => setMsg(null), 8000); }
+  }
+  return (
+    <div style={{ padding: '10px 14px', borderTop: '1px solid var(--line,#E7E1D3)' }}>
+      <button onClick={() => setOpen((v) => !v)} style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'none', border: 'none', cursor: 'pointer', padding: 0, textAlign: 'left', width: '100%' }}>
+        <span style={{ fontSize: 14, fontWeight: 700 }}>Signed snapshots at each milestone</span>
+        <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--muted,#4B585C)' }}>{open ? 'hide' : 'show'}</span>
+      </button>
+      {open && (
+        <div style={{ marginTop: 10 }}>
+          <p style={{ fontSize: 12, color: 'var(--muted,#4B585C)', margin: '0 0 10px' }}>
+            At every big step (initial review, clear-to-close, before funding, after closing), PILOT saves an unchangeable copy of what the file said at that moment — the numbers, the findings, the exceptions granted, and what version of the rules was in use. If anything on the file changes later, the snapshot flags itself so you know to re-verify.
+          </p>
+          {msg && <div className={`notice ${msg.ok ? 'ok' : 'err'}`} style={{ marginBottom: 8, fontSize: 12.5 }}>{msg.text}</div>}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+            <button disabled={busy || !canIssue} onClick={survey} style={{ fontSize: 12, padding: '5px 10px', border: '1px solid var(--line,#E7E1D3)', borderRadius: 6, background: 'var(--paper,#F6F3EC)', cursor: 'pointer' }}>
+              Re-check every snapshot on this file
+            </button>
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+            <thead>
+              <tr style={{ textAlign: 'left', color: 'var(--muted,#4B585C)' }}>
+                <th style={{ padding: '4px 6px' }}>Milestone</th>
+                <th style={{ padding: '4px 6px' }}>Stamped</th>
+                <th style={{ padding: '4px 6px' }}>State</th>
+                <th style={{ padding: '4px 6px' }}>Integrity</th>
+                {canIssue && <th style={{ padding: '4px 6px' }}></th>}
+              </tr>
+            </thead>
+            <tbody>
+              {MILESTONES.map((m) => {
+                const cur = latestFor(m.key);
+                const st = cur ? (CERT_STATE_STYLES[cur.surveillance_state] || CERT_STATE_STYLES.valid) : null;
+                return (
+                  <tr key={m.key} style={{ borderTop: '1px solid var(--line,#E7E1D3)' }}>
+                    <td style={{ padding: '5px 6px' }}>{m.label}</td>
+                    <td style={{ padding: '5px 6px', color: 'var(--muted,#4B585C)' }}>
+                      {cur ? new Date(cur.issued_at).toLocaleString() : '—'}
+                    </td>
+                    <td style={{ padding: '5px 6px' }}>
+                      {cur ? (
+                        <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: st.fg, background: st.bg, padding: '2px 7px', borderRadius: 6 }}>{st.label}</span>
+                      ) : <span style={{ color: 'var(--muted,#4B585C)' }}>not stamped yet</span>}
+                    </td>
+                    <td style={{ padding: '5px 6px', color: cur && cur.integrity && cur.integrity.ok === false ? 'var(--crit,#B4483C)' : 'var(--good,#3F7A5B)' }}>
+                      {cur ? (cur.integrity && cur.integrity.ok === false ? 'FAILED' : 'ok') : ''}
+                    </td>
+                    {canIssue && (
+                      <td style={{ padding: '5px 6px', textAlign: 'right' }}>
+                        <button disabled={busy} onClick={() => issue(m.key)} style={{ fontSize: 12, padding: '4px 10px', border: '1px solid #AE8746', borderRadius: 6, background: '#AE8746', color: '#fff', cursor: 'pointer' }}>
+                          {cur ? 'Stamp a fresh snapshot' : 'Stamp this milestone'}
+                        </button>
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Counterfactual structuring section (Sovereign — blueprint sec. 12). Shows
+// alternative structures that would move the file to ELIGIBLE — reduce loan
+// by 1/2/5/10%, switch program, longer term, interest-only. Read-only.
+function SovereignStructuringSection({ appId }) {
+  const [open, setOpen] = useState(false);
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  useEffect(() => {
+    if (!open || !appId) return;
+    setLoading(true);
+    api.fileStructuring(appId)
+      .then((d) => setData(d && d.ok !== false ? d : { ok: false, reason: (d && d.reason) || 'no data' }))
+      .catch(() => setData({ ok: false, reason: 'could not load alternatives' }))
+      .finally(() => setLoading(false));
+  }, [open, appId]);
+  const dollars = (n) => n == null ? '—' : `$${Math.round(Number(n) || 0).toLocaleString('en-US')}`;
+  const rate = (r) => r == null ? '—' : `${(Number(r) * 100).toFixed(3)}%`;
+  const STATUS_STYLES = {
+    ELIGIBLE:   { fg: 'var(--good,#3F7A5B)',  bg: 'rgba(63,122,91,.12)',    label: 'Would qualify' },
+    MANUAL:     { fg: 'var(--amber,#B7791F)', bg: 'var(--amber-bg,#F6EEDD)',label: 'Manual review' },
+    INELIGIBLE: { fg: 'var(--crit,#B4483C)',  bg: 'var(--crit-bg,#F6E7E4)', label: 'Would not qualify' },
+    ERROR:      { fg: 'var(--muted,#4B585C)', bg: 'var(--paper,#F6F3EC)',   label: 'Could not size' },
+  };
+  return (
+    <div style={{ padding: '10px 14px', borderTop: '1px solid var(--line,#E7E1D3)' }}>
+      <button onClick={() => setOpen((v) => !v)} style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'none', border: 'none', cursor: 'pointer', padding: 0, textAlign: 'left', width: '100%' }}>
+        <span style={{ fontSize: 14, fontWeight: 700 }}>What would make this deal work?</span>
+        <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--muted,#4B585C)' }}>{open ? 'hide' : 'show'}</span>
+      </button>
+      {open && (
+        <div style={{ marginTop: 10 }}>
+          <p style={{ fontSize: 12, color: 'var(--muted,#4B585C)', margin: '0 0 10px' }}>
+            Alternative structures for this file. Each row is the same deal with one thing changed — a smaller loan, the other program, a longer term. The math uses the same pricing engine the file was registered against; nothing here changes the file.
+          </p>
+          {loading && <div className="muted" style={{ fontSize: 12 }}>Working it out…</div>}
+          {!loading && data && data.ok === false && <div className="muted" style={{ fontSize: 12 }}>{data.reason || 'Nothing to show yet — register the file first, then come back.'}</div>}
+          {!loading && data && data.ok && Array.isArray(data.alternatives) && data.alternatives.length > 0 && (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+              <thead>
+                <tr style={{ textAlign: 'left', color: 'var(--muted,#4B585C)' }}>
+                  <th style={{ padding: '4px 6px' }}>Change</th>
+                  <th style={{ padding: '4px 6px' }}>Would qualify?</th>
+                  <th style={{ padding: '4px 6px' }}>Loan</th>
+                  <th style={{ padding: '4px 6px' }}>Rate</th>
+                  <th style={{ padding: '4px 6px' }}>vs current</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.alternatives.map((alt) => {
+                  const st = STATUS_STYLES[alt.status] || STATUS_STYLES.ERROR;
+                  const dTotal = alt.delta && Number.isFinite(alt.delta.totalLoan) ? alt.delta.totalLoan : null;
+                  const dBps = alt.delta && Number.isFinite(alt.delta.noteRateBps) ? alt.delta.noteRateBps : null;
+                  return (
+                    <tr key={alt.key} style={{ borderTop: '1px solid var(--line,#E7E1D3)' }}>
+                      <td style={{ padding: '5px 6px' }}>{alt.label}</td>
+                      <td style={{ padding: '5px 6px' }}>
+                        <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: st.fg, background: st.bg, padding: '2px 7px', borderRadius: 6 }}>{st.label}</span>
+                      </td>
+                      <td style={{ padding: '5px 6px' }}>{dollars(alt.quote && alt.quote.totalLoan)}</td>
+                      <td style={{ padding: '5px 6px' }}>{rate(alt.quote && alt.quote.noteRate)}</td>
+                      <td style={{ padding: '5px 6px', color: 'var(--muted,#4B585C)' }}>
+                        {dTotal != null ? `${dTotal >= 0 ? '+' : ''}${dollars(dTotal).replace('$', '$')}` : '—'}
+                        {dBps != null ? ` · ${dBps >= 0 ? '+' : ''}${dBps} bps` : ''}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           )}
         </div>
       )}
@@ -1158,7 +1344,8 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
           cure proofs show, per condition, exactly which satisfaction
           requirements a submitted document met and which it didn't. Both are
           additive read-only — the classic findings list below still works. */}
-      <SovereignCockpit twinFacts={(data && data.twinFacts) || []} cureProofs={(data && data.cureProofs) || []} />
+      <SovereignCockpit twinFacts={(data && data.twinFacts) || []} cureProofs={(data && data.cureProofs) || []}
+        appId={appId} canIssueCerts={canResolve} />
 
       {/* ALL open findings, in ONE place — exactly the set the roll-up counts, so the "2 warnings"
           chip maps to two visible, actionable items. A persisted per-document finding (has an id) is
