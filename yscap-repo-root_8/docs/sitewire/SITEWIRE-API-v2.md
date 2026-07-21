@@ -72,10 +72,14 @@ The confirmed website flow (captured from a real browser session — never guess
 
 **Staged like every write** — OFF unless `SITEWIRE_DOCS_ENABLED=1`, and still gated by `SITEWIRE_OUTBOUND_ENABLED`
 + `SITEWIRE_DRYRUN`. **Secrets go in Render env only** (never committed, never pasted in chat):
-- `SITEWIRE_WEB_EMAIL` + `SITEWIRE_WEB_PASSWORD` — the preferred, durable path: PILOT logs itself in (a
-  `lender_owner` website login) and refreshes its own session.
-- `SITEWIRE_WEB_COOKIE` — fallback for when SSO/MFA blocks an automated login: a session cookie copied from a
-  logged-in Sitewire browser tab (expires — the login above is preferred).
+- `SITEWIRE_WEB_EMAIL` + `SITEWIRE_WEB_PASSWORD` — the preferred, durable path (used FIRST when both are set):
+  PILOT logs itself in fresh on each push, so the session **never expires** (no cookie to go stale). The real
+  login (confirmed from a live capture 2026-07-21): `GET /login` for the `authenticity_token`, then
+  `POST /login` (form-urlencoded) `authenticity_token` + `password_step=true` + `user[email]` + `user[password]`
+  with `Origin`/`Referer` set → 302 (signed in). The CSRF token for the upload is then read per-property.
+- `SITEWIRE_WEB_COOKIE` — fallback only (used when email+password are NOT set): a session cookie (`name=value`)
+  copied from a logged-in Sitewire tab. Expires — the login above is preferred. The cookie path does NOT warm
+  up on the site root (that rotates the session cookie and would make a valid cookie look expired).
 - Optional overrides: `SITEWIRE_WEB_BASE_URL`, `SITEWIRE_WEB_SIGNIN_PATH` (default `/users/sign_in`), `SITEWIRE_WEB_TIMEOUT_MS`.
 
 The document WRITE uses only the confirmed field names above; a wrong login shape simply fails to authenticate

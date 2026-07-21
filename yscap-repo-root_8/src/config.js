@@ -295,8 +295,9 @@ module.exports = {
   // Fallback (for when MFA/SSO blocks an automated login): a session cookie the owner copies from
   // their browser's logged-in Sitewire tab. Expires — the automated login above is preferred.
   sitewireWebCookie:    process.env.SITEWIRE_WEB_COOKIE || null,
-  // Devise sign-in shape — overridable in case Sitewire's login route/fields differ from the default.
-  sitewireWebSignInPath: process.env.SITEWIRE_WEB_SIGNIN_PATH || '/users/sign_in',
+  // Sitewire's real login route (confirmed from a live login capture 2026-07-21): POST /login with
+  // authenticity_token + password_step=true + user[email] + user[password]. Overridable if it ever changes.
+  sitewireWebSignInPath: process.env.SITEWIRE_WEB_SIGNIN_PATH || '/login',
   sitewireWebTimeoutMs: Math.max(5000, parseInt(process.env.SITEWIRE_WEB_TIMEOUT_MS || '45000', 10) || 45000),
   // --- Sitewire TEST-environment explorer (read-only field discovery) ---
   // A SEPARATE credential set so we can safely READ the Sitewire test system and

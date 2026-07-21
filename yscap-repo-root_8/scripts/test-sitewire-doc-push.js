@@ -58,6 +58,7 @@ const docPush = require('../src/sitewire/doc-push');
 
 // ---- stub the website robot (never a real network call) ----
 let uploadCalls = [], attachCalls = [], sessionErr = null;
+const realGetSession = web.getSession; // captured before stubbing — the cookie path does NO network
 web.getSession = async () => (sessionErr ? { error: sessionErr, message: 'stub' } : { jar: {}, csrf: 'TOK' });
 web.primeCsrf = async (s) => { if (s) s.csrf = 'TOK'; return { ok: true }; };
 web.uploadBlob = async (_s, f) => { uploadCalls.push(f.filename); return { signed_id: 'sig_' + f.filename, checksum: 'c', byte_size: (f.bytes || Buffer.alloc(0)).length }; };
@@ -202,6 +203,17 @@ const parkCount = async (app) => (await db.query(`SELECT count(*)::int c FROM sy
     ok('11 not pushed yet', st.slots.every((s) => !s.pushed));
     await cleanup(app, bor);
     storage.read = async (ref) => Buffer.from('BYTES:' + ref); } // restore
+
+  // 12) getSession cookie path parsing — hermetic, NO network (login-primary means we null email/pw first)
+  { const sc = cfg.sitewireWebCookie, se = cfg.sitewireWebEmail, sp = cfg.sitewireWebPassword;
+    cfg.sitewireWebEmail = null; cfg.sitewireWebPassword = null;
+    cfg.sitewireWebCookie = '_sitewire_session=abc123';
+    const s1 = await realGetSession();
+    ok('12 cookie parsed into jar', s1 && s1.jar && s1.jar._sitewire_session === 'abc123' && s1.viaCookie === true && !s1.error);
+    cfg.sitewireWebCookie = 'justavaluewithnoequals';
+    const s2 = await realGetSession();
+    ok('12 malformed cookie rejected', s2 && s2.error === 'web_cookie_malformed');
+    cfg.sitewireWebCookie = sc; cfg.sitewireWebEmail = se; cfg.sitewireWebPassword = sp; }
 
   console.log(`\ntest-sitewire-doc-push: ${pass} passed, ${fail} failed`);
   await db.pool.end().catch(() => {});
