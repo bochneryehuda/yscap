@@ -184,4 +184,39 @@ assert.strictEqual(claimsFor('bank_statement', { accountHolderName: 'John Smith'
   assert.ok(r2.discrepancies.some((d) => d.field === 'property_address'), 'a SOW for the wrong property is caught by the tie-out');
 }
 
+// ===== COLLATERAL PHYSICALS (owner-directed 2026-07-21): the appraisal's units / type / occupancy /
+// year built / living area / market rent are pulled into the comparison and tie out vs the file =====
+{
+  const cx = { ...ctx, app: { ...ctx.app, units: 2, property_type: 'SFR', occupancy: 'Investment' } };
+  // Appraisal AGREES with the file on units/type/occupancy (wording differs but canonical matches),
+  // and contributes year built / living area / market rent that only it carries.
+  const ok = buildTieout(cx, [{ id: 'a', docType: 'appraisal', fields: {
+    propertyAddress: ADDR, unitCount: undefined, units: 2, propertyType: 'Single Family Detached',
+    occupancy: 'Tenant', yearBuilt: 1998, gla: 1850, marketRent: 2400 } }]);
+  assert.ok(!ok.discrepancies.some((d) => d.field === 'units'), '2 units on file and appraisal → no unit discrepancy');
+  assert.ok(!ok.discrepancies.some((d) => d.field === 'property_type'), 'SFR vs "Single Family Detached" canonicalize equal → no type discrepancy');
+  assert.ok(!ok.discrepancies.some((d) => d.field === 'occupancy'), 'Investment vs Tenant canonicalize to tenant → no occupancy discrepancy');
+  // The appraisal-only physicals appear in the matrix (single-source) so the desk shows every fact.
+  const yb = ok.matrix.find((m) => m.key === 'year_built');
+  assert.ok(yb && yb.cells.some((c) => c.value === '1998'), 'year built surfaced from the appraisal');
+  const la = ok.matrix.find((m) => m.key === 'living_area');
+  assert.ok(la && la.cells.some((c) => String(c.value).indexOf('1,850') !== -1), 'living area shown with sq ft formatting');
+  const mr = ok.matrix.find((m) => m.key === 'market_rent');
+  assert.ok(mr && mr.cells.some((c) => c.value === '$2,400'), 'market rent shown as money');
+
+  // A REAL unit-count / property-type disagreement IS flagged (appraisal says a different property).
+  const bad = buildTieout(cx, [{ id: 'a', docType: 'appraisal', fields: {
+    propertyAddress: ADDR, units: 4, propertyType: 'Condominium', occupancy: 'Owner Occupied' } }]);
+  assert.ok(bad.discrepancies.some((d) => d.field === 'units'), 'file 2 units vs appraisal 4 units → discrepancy');
+  assert.ok(bad.discrepancies.some((d) => d.field === 'property_type'), 'SFR vs Condo → discrepancy');
+  // Occupancy owner-vs-tenant IS a real disagreement (info severity — a business-purpose flag).
+  assert.ok(bad.discrepancies.some((d) => d.field === 'occupancy'), 'Investment (file) vs Owner Occupied (appraisal) → discrepancy');
+}
+
+// An UNRECOGNIZED property-type string is uncomparable, never a false mismatch.
+assert.strictEqual(factMatch('propertyType', 'Zorptown Special', 'SFR'), null, 'unknown property type → uncomparable, no false mismatch');
+assert.strictEqual(factMatch('count', 2, '2'), true, 'count matches across string/number');
+assert.strictEqual(factMatch('measure', 1850, 1870), true, 'GLA within 3% tolerance ties out');
+assert.strictEqual(factMatch('measure', 1850, 2400), false, 'GLA far apart is a mismatch');
+
 console.log('✓ test-underwriting-tieout: fact registry + data-comparison matrix + discrepancies pass');

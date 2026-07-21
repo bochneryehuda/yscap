@@ -25,9 +25,13 @@ async function tieoutForFile(client, appId, preloadedCtx) {
   const sources = rows.filter((e) => e.doc_type !== 'contract_amendment')
     .map((e) => ({ id: e.id, docType: e.doc_type, fields: e.fields }));
 
-  // Fold in the appraisal (its own table) so property/price/value tie into the matrix too.
+  // Fold in the appraisal (its own table) so the WHOLE appraisal ties into the matrix — not just
+  // address/price/value, but the collateral physicals the appraiser is the authority on (units,
+  // property type, occupancy, year built, living area, 1007 market rent), so they cross-check the
+  // application (owner-directed 2026-07-21: "pull every fact from every document into the comparison").
   const appr = (await client.query(
-    `SELECT subject_address, subject_city, subject_state, subject_zip, contract_price, as_is_value, arv_value
+    `SELECT subject_address, subject_city, subject_state, subject_zip, contract_price, as_is_value, arv_value,
+            units, property_type, occupancy, year_built, gla, sqft, market_rent
        FROM appraisals WHERE application_id=$1 AND superseded=false ORDER BY imported_at DESC LIMIT 1`, [appId])).rows[0];
   if (appr) {
     sources.push({
@@ -35,6 +39,8 @@ async function tieoutForFile(client, appId, preloadedCtx) {
       fields: {
         propertyAddress: appr.subject_address ? { line1: appr.subject_address, city: appr.subject_city, state: appr.subject_state, zip: appr.subject_zip } : null,
         contractPrice: appr.contract_price, asIsValue: appr.as_is_value, arvValue: appr.arv_value,
+        units: appr.units, propertyType: appr.property_type, occupancy: appr.occupancy,
+        yearBuilt: appr.year_built, gla: appr.gla != null ? appr.gla : appr.sqft, marketRent: appr.market_rent,
       },
     });
   }
