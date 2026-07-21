@@ -102,54 +102,66 @@ async function getSession() {
   if (!webConfigured()) {
     return { error: 'web_creds_missing', message: 'Set SITEWIRE_WEB_EMAIL + SITEWIRE_WEB_PASSWORD (preferred) or SITEWIRE_WEB_COOKIE in Render to enable pushing documents to Sitewire.' };
   }
-  const jar = {};
-  // Path B: a provided cookie — seed the jar, then refresh a live CSRF token from an authenticated page.
+  // Path A (PREFERRED, self-renewing): log in with email + password. Because PILOT logs itself in fresh each
+  // time, the session can NEVER be "expired" — there is no cookie to go stale. This is the durable option.
+  if (cfg.sitewireWebEmail && cfg.sitewireWebPassword) return loginWithPassword();
+  // Path B (fallback, e.g. if login is ever blocked): a provided session cookie. Seed the jar and return —
+  // do NOT warm up on the site root (that response rotates the session cookie and would clobber the good
+  // one, making a valid cookie look "expired"). The CSRF token + auth check happen on the property page.
   if (cfg.sitewireWebCookie) {
+    const jar = {};
     for (const pair of String(cfg.sitewireWebCookie).split(/;\s*/)) {
       const eq = pair.indexOf('=');
       if (eq > 0) jar[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim();
     }
-    // Do NOT require a CSRF token from the account root here — Sitewire's root may be a JS app that
-    // doesn't server-render the token. The real CSRF is scraped from the actual PROPERTY page at push
-    // time (primeCsrf) — a page Rails always renders with <meta name="csrf-token">. So a provided cookie
-    // is accepted as-is; validity is confirmed when we prime the property page.
-    const csrf = await refreshCsrf(jar); // best-effort head start; may be null (fine — primeCsrf gets it later)
-    return { jar, csrf: csrf || null, viaCookie: true };
+    if (!Object.keys(jar).length) {
+      return { error: 'web_cookie_malformed', message: 'The Sitewire cookie must be in name=value form (for example _sitewire_session=abc123…). Copy the cookie’s NAME and its value together, not just the value.' };
+    }
+    return { jar, csrf: null, viaCookie: true };
   }
-  // Path A: automated Devise login.
+  return { error: 'web_creds_missing', message: 'Set SITEWIRE_WEB_EMAIL + SITEWIRE_WEB_PASSWORD in Render to enable pushing documents to Sitewire.' };
+}
+
+// Log into Sitewire the way the website itself does (confirmed from a live capture 2026-07-21):
+//   GET /login  → the form's authenticity_token
+//   POST /login (application/x-www-form-urlencoded): authenticity_token + password_step=true +
+//                user[email] + user[password]  → 302 to / (signed in)
+// A fresh login each push = the session never "expires". Returns {jar, csrf, viaLogin} or {error, message}.
+async function loginWithPassword() {
+  const jar = {};
   try {
-    const signInUrl = webBase() + (cfg.sitewireWebSignInPath || '/users/sign_in');
-    // 1) GET the sign-in page → session cookie + the form's authenticity_token.
+    const signInUrl = webBase() + (cfg.sitewireWebSignInPath || '/login');
+    // 1) GET the login page → session cookie + the form's authenticity_token.
     const page = await fetchWithTimeout(signInUrl, { method: 'GET', headers: { Accept: 'text/html' } });
     mergeSetCookie(jar, page);
-    const pageHtml = await page.text();
-    const token = scrapeCsrf(pageHtml);
-    if (!token) return { error: 'web_login_no_token', message: 'Could not read the Sitewire sign-in form. If Sitewire uses SSO/MFA, set SITEWIRE_WEB_COOKIE instead.' };
-    // 2) POST credentials (standard Devise field names).
+    const token = scrapeCsrf(await page.text());
+    if (!token) return { error: 'web_login_no_token', message: 'Could not read the Sitewire login form (the login page may have changed). Re-capture the login if this persists.' };
+    // 2) POST the exact fields Sitewire's login form submits (incl. password_step=true + Origin/Referer,
+    // which Rails' forgery protection checks). Extra Devise fields are intentionally NOT sent.
     const form = new URLSearchParams();
     form.set('authenticity_token', token);
+    form.set('password_step', 'true');
     form.set('user[email]', cfg.sitewireWebEmail);
     form.set('user[password]', cfg.sitewireWebPassword);
-    form.set('user[remember_me]', '0');
-    form.set('commit', 'Log in');
     const resp = await fetchWithTimeout(signInUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'text/html', Cookie: cookieHeader(jar), 'X-CSRF-Token': token },
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded', Accept: 'text/html',
+        Cookie: cookieHeader(jar), 'X-CSRF-Token': token, Origin: webBase(), Referer: signInUrl,
+      },
       body: form.toString(),
     });
     mergeSetCookie(jar, resp);
-    // Devise success = a 3xx redirect (usually to the dashboard). A 200 back on /sign_in = bad credentials.
-    const status = resp.status;
-    if (status === 200) {
+    // Success = a 302 redirect (to / then /draws). A 200 back on /login = bad credentials / rejected.
+    if (resp.status === 200) {
       const body = await resp.text();
-      if (looksSignedOut(body)) return { error: 'web_login_failed', message: 'Sitewire rejected the login (check SITEWIRE_WEB_EMAIL/PASSWORD, or the account may require MFA — then use SITEWIRE_WEB_COOKIE).' };
+      if (looksSignedOut(body)) return { error: 'web_login_failed', message: 'Sitewire rejected the login — double-check SITEWIRE_WEB_EMAIL and SITEWIRE_WEB_PASSWORD in Render.' };
     }
-    // 3) We have a session cookie. Grab a best-effort CSRF now; the definitive token + auth check happens
-    // per-property in primeCsrf, so a JS-app root that doesn't render the token doesn't fail the login.
-    const csrf = await refreshCsrf(jar);
-    return { jar, csrf: csrf || null, viaLogin: true };
+    // We have an authenticated session cookie; the definitive CSRF token + auth confirmation happen
+    // per-property in primeCsrf (never touch the site root here — it would rotate/clobber the session).
+    return { jar, csrf: null, viaLogin: true };
   } catch (e) {
-    return { error: 'web_login_error', message: `Sitewire website login failed: ${e.message}` };
+    return { error: 'web_login_error', message: `Sitewire login failed: ${e.message}` };
   }
 }
 
