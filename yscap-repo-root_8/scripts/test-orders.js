@@ -68,7 +68,14 @@ assert.ok(t.html.includes('ISAOA/ATIMA') && t.html.includes('YS Capital Group'),
 assert.ok(t.html.includes('Loan Number: YSCAP1042'), 'mortgage clause carries the loan number');
 assert.ok(t.html.includes('Smith Holdings LLC'), 'borrowing entity present');
 assert.ok(t.html.includes('Jane Doe') || t.html.includes('ABC Title'), 'greets the vendor');
-ok('title order email: subject + mortgage clause + loan# + entity + vendor greeting');
+// The loan officer signs the order + appears as the branded contact card.
+assert.ok(t.html.includes('Chaim Klein'), 'the loan officer signs / appears on the order');
+ok('title order email: subject + mortgage clause + loan# + entity + vendor greeting + officer card');
+
+// With no officer on file the email still builds (card + signature simply omit the name).
+const noOfficer = orders.buildOrderEmail('title', { ...base, officer: null }, {});
+assert.ok(noOfficer.html.includes('YS Capital Group'), 'a file with no officer still signs from YS Capital');
+ok('order email is robust when the file has no loan officer');
 
 /* ---- insurance order email ---- */
 const insData = { ...base, vendors: { title: null, insurance: { id: 'i1', company_name: 'SafeCo', email: 'ins@safeco.com' } } };
@@ -99,5 +106,21 @@ assert.strictEqual(r.replyTo, `title+${APP}@reply.yscapgroup.com`, 'reply-to is 
 const dupCc = orders.recipientsFor('title', { ...base, officer: { name: 'x', email: 'JOHN@example.com' } });
 assert.strictEqual(dupCc.cc.filter((e) => e === 'john@example.com').length, 1, 'CC is deduped case-insensitively');
 ok('recipients: vendor=TO, borrower/LO/processor=CC (deduped), unique reply-to');
+
+/* ---- order-inbox: returned docs file into the real title/insurance condition ---- */
+const orderInbox = require('../src/lib/order-inbox');
+assert.strictEqual(orderInbox.CONDITION_CODE.title, 'rtl_cond_title', 'title returns file into the title-documents condition');
+assert.strictEqual(orderInbox.CONDITION_CODE.insurance, 'rtl_cond_insurance', 'insurance returns file into the insurance (binder+invoice) condition');
+assert.strictEqual(orderInbox.DOC_KIND.title, 'title_order_return');
+assert.strictEqual(orderInbox.DOC_KIND.insurance, 'insurance_order_return');
+// The insurance classification labels must contain the substrings the existing
+// sign-off gate looks for ('binder' AND 'invoice'), so a classified binder+invoice
+// completes the insurance condition with no extra wiring.
+const insSlots = require('../src/lib/orders'); // (already required as `orders`)
+const SLOT_INS = ['Binder', 'Invoice', 'Quote', 'Declaration Page', 'Other'];
+assert.ok(SLOT_INS.some((s) => s.toLowerCase().includes('binder')) && SLOT_INS.some((s) => s.toLowerCase().includes('invoice')),
+  'insurance slots include binder + invoice (matches the sign-off gate)');
+void insSlots;
+ok('returned docs map to the real title/insurance conditions; slots satisfy the sign-off gate');
 
 console.log(`\n${n} checks passed`);

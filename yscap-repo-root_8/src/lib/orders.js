@@ -68,7 +68,8 @@ async function getOrderData(appId) {
             b.first_name, b.last_name, b.email AS borrower_email, b.date_of_birth,
             cb.first_name AS co_first, cb.last_name AS co_last, cb.email AS co_email,
             l.llc_name AS entity_name,
-            lo.full_name AS lo_name, lo.email AS lo_email,
+            lo.full_name AS lo_name, lo.email AS lo_email, lo.title AS lo_title,
+            lo.phone AS lo_phone, lo.cell AS lo_cell, lo.nmls AS lo_nmls,
             pr.full_name AS proc_name, pr.email AS proc_email
        FROM applications a
        JOIN borrowers b ON b.id = a.borrower_id
@@ -105,7 +106,10 @@ async function getOrderData(appId) {
     dob: a.date_of_birth ? new Date(a.date_of_birth).toLocaleDateString('en-US') : '',
     entityName: a.entity_name || '',
     loanAmount: a.loan_amount != null ? money(a.loan_amount) : '',
-    officer: a.lo_name ? { name: a.lo_name, email: a.lo_email || null } : null,
+    officer: a.lo_name
+      ? { name: a.lo_name, title: a.lo_title || 'Loan Officer', email: a.lo_email || null,
+          phone: a.lo_cell || a.lo_phone || null, nmls: a.lo_nmls || null }
+      : null,
     processor: a.proc_name ? { name: a.proc_name, email: a.proc_email || null } : null,
     vendors: { title: vendorOf('title_company'), insurance: vendorOf('insurance_agent') },
   };
@@ -136,6 +140,13 @@ function buildOrderEmail(kind, data, { followup = false, note = '' } = {}) {
   const subjectTag = [data.loanNumber || null, data.borrowerName, data.propertyLine.split(',')[0]].filter(Boolean).join(' · ');
 
   const clause = MORTGAGEE_CLAUSE.concat(`Loan Number: ${data.loanNumber || '(pending)'}`).join('\n');
+  // The loan officer signs the order (a real person the vendor can reach) — as
+  // the branded contact card the template already renders.
+  const officerCard = data.officer
+    ? { name: data.officer.name, title: data.officer.title || 'Loan Officer',
+        email: data.officer.email || null, phone: data.officer.phone || null, nmls: data.officer.nmls || null }
+    : null;
+  const signOff = data.officer ? `Thank you,\n${data.officer.name}${data.officer.title ? `, ${data.officer.title}` : ''}\nYS Capital Group` : 'Thank you,\nYS Capital Group';
 
   if (followup) {
     // The follow-up is a SEPARATE, lighter message on the same thread — it is
@@ -154,12 +165,13 @@ function buildOrderEmail(kind, data, { followup = false, note = '' } = {}) {
       intro: note && String(note).trim()
         ? String(note).trim()
         : `Following up to confirm when we can expect the ${kind === 'title' ? 'title search' : 'insurance quote'} to be completed. Please provide the following as soon as they become available:`,
-      lines: wantLines,
+      lines: wantLines.concat(['', signOff]),
       meta: [
         { label: 'Property', value: data.propertyLine || '—' },
         { label: 'Borrower', value: data.borrowerName },
         data.loanNumber ? { label: 'Loan Number', value: data.loanNumber } : null,
       ].filter(Boolean),
+      officer: officerCard,
       note: 'Reply to this email and it reaches the whole loan team.',
       replyable: true,
       audience: 'staff',
@@ -182,10 +194,11 @@ function buildOrderEmail(kind, data, { followup = false, note = '' } = {}) {
     ? `Hi ${vendorGreetName(vendor)}, please proceed with ordering title for the following transaction:`
     : `Hi ${vendorGreetName(vendor)}, could you please provide an insurance quote for the following transaction? Let us know if you require any additional details to proceed.`;
 
-  const lines = kind === 'insurance'
+  const lines = (kind === 'insurance'
     ? ['Please quote a Builders Risk policy issued in the business entity name, covering a vacant rental property under renovation, with renovations permitted.',
-       'Please let us know if you need any additional information to complete the order. Thank you.']
-    : ['Please let us know if you need any additional information to complete the order. Thank you.'];
+       'Please let us know if you need any additional information to complete the order.']
+    : ['Please let us know if you need any additional information to complete the order.'])
+    .concat(['', signOff]);
 
   const built = tpl.render({
     title: `${label} Order Request`,
@@ -199,6 +212,8 @@ function buildOrderEmail(kind, data, { followup = false, note = '' } = {}) {
     // The mortgagee clause as a highlighted callout — it's the load-bearing part
     // of the order (the vendor lists us as mortgagee with this exact loan number).
     callout: { title: 'Mortgagee Clause', body: clause },
+    // The loan officer's contact card so the vendor has a real person to reach.
+    officer: officerCard,
     note: 'Reply to this email and it reaches the whole loan team.',
     replyable: true,
     audience: 'staff',

@@ -97,45 +97,63 @@ function LoanNumberEntry({ appId, onSaved }) {
   );
 }
 
-/* One returned document row — classify (assign a slot) + download. */
-function ReturnedDoc({ appId, kind, doc, slots, onChanged }) {
-  const [busy, setBusy] = useState(false);
+/* One returned document row — classify (assign a slot), accept/reject + download. */
+function ReturnedDoc({ appId, kind, doc, slots, canAccept, onChanged }) {
+  const [busy, setBusy] = useState('');
+  const [err, setErr] = useState('');
   const classify = async (slot) => {
-    setBusy(true);
+    setBusy('slot'); setErr('');
     try { await api.staffClassifyOrderDoc(appId, kind, doc.id, slot); onChanged && onChanged(); }
-    catch (_) { /* ignore */ }
-    finally { setBusy(false); }
+    catch (e) { setErr((e && e.message) || 'Could not classify.'); }
+    finally { setBusy(''); }
   };
   const download = async () => {
-    setBusy(true);
+    setBusy('dl');
     try { const { blob, filename } = await api.staffDownloadDoc(doc.id); saveBlob(blob, filename || doc.filename); }
     catch (_) { /* ignore */ }
-    finally { setBusy(false); }
+    finally { setBusy(''); }
+  };
+  const review = async (action) => {
+    if (action === 'accept' && !doc.slot_label && !window.confirm('Accept this document without assigning a type (binder / invoice / …)? You can assign it first.')) return;
+    let reason;
+    if (action === 'reject') { reason = window.prompt('Why is this document being rejected? (the reason is recorded)'); if (!reason) return; }
+    setBusy('review'); setErr('');
+    try { await api.staffReviewDoc(doc.id, action, reason); onChanged && onChanged(); }
+    catch (e) { setErr((e && e.message) || 'Could not update.'); }
+    finally { setBusy(''); }
   };
   const unassigned = !doc.slot_label;
+  const rs = doc.review_status || 'pending';
+  const rsTone = rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' }
+    : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : { opacity: 0.7 };
   return (
     <div className="checkitem" style={{ alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
       <span className="dot" style={{ marginTop: 0 }} />
       <div style={{ flex: 1, minWidth: 180 }}>
         <div style={{ fontWeight: 600 }}>{doc.filename}</div>
-        <div className="muted small">{KB(doc.size_bytes)} · {new Date(doc.created_at).toLocaleDateString()} · {doc.review_status || 'pending'}</div>
+        <div className="muted small">{KB(doc.size_bytes)} · {new Date(doc.created_at).toLocaleDateString()}</div>
+        {err && <div className="small" style={{ color: 'var(--danger)' }}>{err}</div>}
       </div>
       <span className="pill" style={unassigned ? { borderColor: 'var(--gold)', color: 'var(--gold)' } : { borderColor: 'var(--teal,#2F7F86)', color: 'var(--teal,#2F7F86)' }}>
         {unassigned ? 'Unassigned' : doc.slot_label}
       </span>
-      <select className="input" style={{ width: 'auto' }} disabled={busy} value={doc.slot_label || ''} onChange={e => classify(e.target.value)}>
+      <span className="pill" style={rsTone}>{rs}</span>
+      <select className="input" style={{ width: 'auto' }} disabled={!!busy} value={doc.slot_label || ''} onChange={e => classify(e.target.value)} title="Assign a document type">
         <option value="">Unassigned…</option>
         {slots.map(s => <option key={s} value={s}>{s}</option>)}
       </select>
-      <button className="btn ghost small" disabled={busy} onClick={download}>Download</button>
+      <button className="btn ghost small" disabled={!!busy} onClick={download}>Download</button>
+      {rs !== 'accepted' && canAccept && <button className="btn primary small" disabled={!!busy} onClick={() => review('accept')}>Accept</button>}
+      {rs !== 'rejected' && <button className="btn ghost small" disabled={!!busy} onClick={() => review('reject')}>Reject</button>}
     </div>
   );
 }
 
 /* One order card (Title or Insurance). */
-function OrderCard({ appId, kind, order, file, onChanged }) {
+function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
   const [addingContact, setAddingContact] = useState(false);
   const [showThread, setShowThread] = useState(false);
+  const [showRecipients, setShowRecipients] = useState(false);
   const [followOpen, setFollowOpen] = useState(false);
   const [followMsg, setFollowMsg] = useState('');
   const [busy, setBusy] = useState('');
@@ -145,6 +163,15 @@ function OrderCard({ appId, kind, order, file, onChanged }) {
   const needsLoan = blockers.includes('loan_number');
   const needsContact = blockers.includes('contact');
   const placed = order.status !== 'not_ordered' && order.status !== 'cancelled';
+  const recips = order.recipients || { to: [], cc: [] };
+
+  const cancel = async (reopen) => {
+    if (!reopen && !window.confirm(`Cancel the ${kind} order? It won't email anyone; you can re-order afterward.`)) return;
+    setBusy('cancel'); setMsg(null);
+    try { await api.staffCancelOrder(appId, kind, reopen); onChanged && onChanged(); }
+    catch (e) { setMsg({ tone: 'err', text: (e && e.message) || 'Could not update the order.' }); }
+    finally { setBusy(''); }
+  };
 
   const place = async (force) => {
     setBusy('place'); setMsg(null);
@@ -192,6 +219,24 @@ function OrderCard({ appId, kind, order, file, onChanged }) {
           </div>}
       {addingContact && <ContactForm appId={appId} kind={kind} onSaved={() => { setAddingContact(false); onChanged && onChanged(); }} onCancel={() => setAddingContact(false)} />}
 
+      {/* Who this order reaches — shown before you send so there are no surprises. */}
+      {(recips.to.length > 0 || recips.cc.length > 0) && (
+        <div className="muted small" style={{ marginBottom: 6 }}>
+          <button className="btn link small" style={{ padding: 0 }} onClick={() => setShowRecipients(s => !s)}>
+            {showRecipients ? 'Hide' : 'Show'} who gets this email
+          </button>
+          {showRecipients && (
+            <div style={{ marginTop: 4 }}>
+              <div><b>To:</b> {recips.to.join(', ') || '—'}</div>
+              <div><b>Cc:</b> {recips.cc.join(', ') || '—'} <span className="muted">(visible to everyone)</span></div>
+              <div className="muted">Replies + returned documents come back to this order automatically.</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {order.condition && <div className="muted small" style={{ marginBottom: 6 }}>Documents file into the <b style={{ color: 'var(--ink,#141B22)' }}>{order.condition.label}</b> condition{order.condition.status ? ` (${order.condition.status})` : ''}.</div>}
+
       {order.orderedAt && <div className="muted small" style={{ marginBottom: 6 }}>Ordered {when(order.orderedAt)}{order.lastFollowupAt ? ` · last follow-up ${when(order.lastFollowupAt)}` : ''}</div>}
 
       {/* Actions */}
@@ -208,7 +253,11 @@ function OrderCard({ appId, kind, order, file, onChanged }) {
             <button className="btn ghost small" disabled={!!busy || needsContact} onClick={() => place(true)} title="Re-send the full order to the vendor + CC chain">
               {busy === 'place' ? 'Sending…' : 'Re-send order'}
             </button>
+            <button className="btn ghost small" disabled={!!busy} style={{ color: 'var(--danger)' }} onClick={() => cancel(false)} title="Cancel this order (no email is sent)">Cancel order</button>
           </>
+        )}
+        {order.status === 'cancelled' && (
+          <button className="btn ghost small" disabled={!!busy} onClick={() => cancel(true)} title="Reopen without re-sending">Reopen order</button>
         )}
         {((order.returnedDocs || []).length > 0 || placed) && (
           <button className="btn ghost small" onClick={() => setShowThread(s => !s)}>{showThread ? 'Hide' : 'Open'} {kind} email thread</button>
@@ -240,7 +289,7 @@ function OrderCard({ appId, kind, order, file, onChanged }) {
           <div className="muted small" style={{ marginBottom: 4, fontWeight: 600 }}>Documents returned by the {CONTACT_ASK[kind]}</div>
           <div style={{ display: 'grid', gap: 6 }}>
             {order.returnedDocs.map(d => (
-              <ReturnedDoc key={d.id} appId={appId} kind={kind} doc={d} slots={order.slots || []} onChanged={onChanged} />
+              <ReturnedDoc key={d.id} appId={appId} kind={kind} doc={d} slots={order.slots || []} canAccept={canAccept} onChanged={onChanged} />
             ))}
           </div>
         </div>
@@ -256,7 +305,7 @@ function OrderCard({ appId, kind, order, file, onChanged }) {
   );
 }
 
-export default function OrdersPanel({ appId }) {
+export default function OrdersPanel({ appId, canAccept = false }) {
   const [data, setData] = useState(null);
   const [err, setErr] = useState('');
 
@@ -277,8 +326,8 @@ export default function OrdersPanel({ appId }) {
       </p>
       {!data.file.hasLoanNumber && <LoanNumberEntry appId={appId} onSaved={load} />}
       <div style={{ display: 'grid', gap: 14 }}>
-        <OrderCard appId={appId} kind="title" order={data.orders.title} file={data.file} onChanged={load} />
-        <OrderCard appId={appId} kind="insurance" order={data.orders.insurance} file={data.file} onChanged={load} />
+        <OrderCard appId={appId} kind="title" order={data.orders.title} file={data.file} canAccept={canAccept} onChanged={load} />
+        <OrderCard appId={appId} kind="insurance" order={data.orders.insurance} file={data.file} canAccept={canAccept} onChanged={load} />
       </div>
     </div>
   );

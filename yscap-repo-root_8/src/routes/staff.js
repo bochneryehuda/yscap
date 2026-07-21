@@ -2799,10 +2799,21 @@ router.get('/applications/:id/orders', async (req, res) => {
         ORDER BY created_at DESC`,
       [req.params.id, Object.values(ORDER_RETURN_KIND)])).rows;
     const docsFor = (k) => docs.filter((d) => d.doc_kind === ORDER_RETURN_KIND[k] && d.is_current !== false);
+    // The real document condition each order files into (rtl_cond_title /
+    // rtl_cond_insurance) — so the panel can show where returned docs land + its
+    // current status.
+    const CONDITION_CODE = { title: 'rtl_cond_title', insurance: 'rtl_cond_insurance' };
+    const conds = (await db.query(
+      `SELECT ci.id, ci.status, t.code, t.label
+         FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
+        WHERE ci.application_id=$1 AND t.code = ANY($2::text[])`,
+      [req.params.id, Object.values(CONDITION_CODE)])).rows;
+    const condOf = (k) => conds.find((c) => c.code === CONDITION_CODE[k]) || null;
 
     const shape = (k) => {
       const row = orderOf(k);
       const vendor = data.vendors[k];
+      const cond = condOf(k);
       return {
         orderType: k,
         status: row ? row.status : 'not_ordered',
@@ -2813,16 +2824,26 @@ router.get('/applications/:id/orders', async (req, res) => {
         followupCount: row ? row.followup_count : 0,
         sendCount: row ? row.send_count : 0,
         slots: ORDER_SLOTS[k],
+        condition: cond ? { label: cond.label, status: cond.status } : null,
         returnedDocs: docsFor(k),
       };
+    };
+    // Who an order will reach, so the panel can show it before sending.
+    const recipientsPreview = (k) => {
+      const { to, cc } = orders.recipientsFor(k, data);
+      return { to, cc };
     };
     res.json({
       file: {
         loanNumber: data.loanNumber, hasLoanNumber: data.hasLoanNumber,
         propertyLine: data.propertyLine, borrowerName: data.borrowerName,
+        borrowerEmail: data.borrowerEmail, coBorrowerEmail: data.coBorrowerEmail,
         officer: data.officer, processor: data.processor,
       },
-      orders: { title: shape('title'), insurance: shape('insurance') },
+      orders: {
+        title: { ...shape('title'), recipients: recipientsPreview('title') },
+        insurance: { ...shape('insurance'), recipients: recipientsPreview('insurance') },
+      },
     });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -2930,6 +2951,25 @@ router.post('/applications/:id/orders/:kind/documents/:docId/classify', async (r
     if (!upd.rows[0]) return res.status(404).json({ error: 'not found' });
     await audit(req, 'order_doc_classified', 'application', appId, { kind, slot: slot || 'unassigned' });
     res.json({ ok: true, slot });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Cancel an order (or reopen a cancelled one). Cancelling frees it to be
+// re-ordered from scratch (the place gate treats 'cancelled' like 'not_ordered').
+router.post('/applications/:id/orders/:kind/cancel', async (req, res) => {
+  const appId = req.params.id;
+  const kind = req.params.kind;
+  if (!isOrderKind(kind)) return res.status(400).json({ error: 'unknown order type' });
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const reopen = req.body && (req.body.reopen === true || req.body.reopen === 'true');
+    const next = reopen ? 'ordered' : 'cancelled';
+    const upd = await db.query(
+      `UPDATE file_orders SET status=$3, updated_at=now()
+        WHERE application_id=$1 AND order_type=$2 RETURNING status`, [appId, kind, next]);
+    if (!upd.rows[0]) return res.status(404).json({ error: 'This order has not been created yet.' });
+    await audit(req, reopen ? 'order_reopened' : 'order_cancelled', 'application', appId, { kind });
+    res.json({ ok: true, status: upd.rows[0].status });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 

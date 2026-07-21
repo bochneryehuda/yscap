@@ -3096,7 +3096,7 @@ export default function StaffApplication() {
 
       <Section id="sec-orders" title="Orders (title &amp; insurance)" defaultOpen={false}
         info="Order title and insurance from the vendor on the file. Each order emails the vendor with the borrower, loan officer and processor copied, tracks its own thread, and files the documents the vendor sends back here for you to classify.">
-      <OrdersPanel appId={id} />
+      <OrdersPanel appId={id} canAccept={canComplete(role)} />
       </Section>
 
       <Section id="sec-documents" title="Documents & exports" defaultOpen={false}
