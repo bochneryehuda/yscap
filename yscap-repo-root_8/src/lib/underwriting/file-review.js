@@ -29,10 +29,15 @@ async function tieoutForFile(client, appId, preloadedCtx) {
   // address/price/value, but the collateral physicals the appraiser is the authority on (units,
   // property type, occupancy, year built, living area, 1007 market rent), so they cross-check the
   // application (owner-directed 2026-07-21: "pull every fact from every document into the comparison").
+  // The physicals live on the appraisals row (units/property_type/occupancy_status/year_built/gla);
+  // the 1007 market rent lives per-unit on the appraisal_units child, so we sum it for the property.
+  // (occupancy is stored as occupancy_status — canonOccupancy maps its Vacant/TenantOccupied/
+  // OwnerOccupied values; there is no `sqft`/`market_rent` column on appraisals — see db/137/158.)
   const appr = (await client.query(
-    `SELECT subject_address, subject_city, subject_state, subject_zip, contract_price, as_is_value, arv_value,
-            units, property_type, occupancy, year_built, gla, sqft, market_rent
-       FROM appraisals WHERE application_id=$1 AND superseded=false ORDER BY imported_at DESC LIMIT 1`, [appId])).rows[0];
+    `SELECT a.subject_address, a.subject_city, a.subject_state, a.subject_zip, a.contract_price, a.as_is_value, a.arv_value,
+            a.units, a.property_type, a.occupancy_status AS occupancy, a.year_built, a.gla,
+            (SELECT sum(u.market_rent) FROM appraisal_units u WHERE u.appraisal_id = a.id) AS market_rent
+       FROM appraisals a WHERE a.application_id=$1 AND a.superseded=false ORDER BY a.imported_at DESC LIMIT 1`, [appId])).rows[0];
   if (appr) {
     sources.push({
       id: 'appraisal', docType: 'appraisal',
@@ -40,7 +45,7 @@ async function tieoutForFile(client, appId, preloadedCtx) {
         propertyAddress: appr.subject_address ? { line1: appr.subject_address, city: appr.subject_city, state: appr.subject_state, zip: appr.subject_zip } : null,
         contractPrice: appr.contract_price, asIsValue: appr.as_is_value, arvValue: appr.arv_value,
         units: appr.units, propertyType: appr.property_type, occupancy: appr.occupancy,
-        yearBuilt: appr.year_built, gla: appr.gla != null ? appr.gla : appr.sqft, marketRent: appr.market_rent,
+        yearBuilt: appr.year_built, gla: appr.gla, marketRent: appr.market_rent,
       },
     });
   }
