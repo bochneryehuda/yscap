@@ -5335,14 +5335,15 @@ async function advancementBlockers(appId, target) {
     if (details.length) {
       const first = details[0];
       const more = details.length - 1;
+      const cap = (v, n) => String(v == null ? '' : v).trim().slice(0, n);
       const title = details.length === 1
-        ? `Underwriting dealbreaker: ${first.title}`
+        ? `Underwriting dealbreaker: ${cap(first.title, 140)}`
         : `${details.length} underwriting dealbreakers to resolve`;
       const bits = [];
-      const dv = first.docValue != null ? String(first.docValue).trim() : '';
-      const fv = first.fileValue != null ? String(first.fileValue).trim() : '';
+      const dv = cap(first.docValue, 120);
+      const fv = cap(first.fileValue, 120);
       if (dv && fv) bits.push(`The document says “${dv}”, but our file says “${fv}”.`);
-      else if (first.howTo) bits.push(String(first.howTo).slice(0, 300));
+      else if (first.howTo) bits.push(cap(first.howTo, 300));
       if (more > 0) bits.push(`Plus ${more} more finding${more === 1 ? '' : 's'}.`);
       bits.push('Open the “Document review & PILOT findings” section to fix it or grant an exception.');
       underwritingFatals = [{

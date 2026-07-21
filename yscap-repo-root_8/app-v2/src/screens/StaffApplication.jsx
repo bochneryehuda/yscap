@@ -3084,7 +3084,7 @@ export default function StaffApplication() {
       <Section id="sec-underwriting" title="Document review & PILOT findings" defaultOpen={false}
         info="PILOT reads every uploaded document (government ID, purchase contract, title, bank statement and more), understands it, and checks it against the loan file — flagging anything that doesn't match on the document itself AND anything that disagrees across documents (the seller, price, and property address must be the same on the contract, title, and appraisal). Choose a document and the type it is, and PILOT reads and checks it. Each finding is yours to resolve: post a condition, request a document, fix the file, clear it, grant an exception, dismiss, or decline. Nothing is ever written onto the loan file automatically."
         badge={uwSummary ? (uwSummary.fatal ? `${uwSummary.fatal} fatal` : (uwSummary.warning ? `${uwSummary.warning} warning` : 'Reviewed ✓')) : ''}>
-        <UnderwritingPanel appId={id} docs={docs} onSummary={onUwSummary} canResolve={can('sign_off_conditions')} />
+        <UnderwritingPanel appId={id} docs={docs} onSummary={onUwSummary} canResolve={can('sign_off_conditions')} canWaive={can('waive_conditions')} />
       </Section>
 
       {/* ONE Conditions hub with tabs (owner-directed cleanup): the borrower's

@@ -40,12 +40,19 @@ function btn(primary, danger) {
 // One finding card — its own action menu comes from the server (availableActions), so the UI
 // never hard-codes which actions a finding allows. An action that needs a note or a corrected
 // value reveals an inline input before it will submit.
-function Finding({ appId, f, onChange, resolvable }) {
+// Clearing a hard, clear-to-close-BLOCKING dealbreaker (grant an exception / clear / fix the
+// file / dismiss) needs senior authority (waive_conditions) — mirrors the server gate in
+// src/lib/underwriting/exceptions.js. A signer WITHOUT waive (processor / coordinator / closer)
+// must not be shown those buttons on a fatal blocking finding: they would 403.
+const GATE_CLEARING_ACTIONS = new Set(['grant_exception', 'clear', 'fix_file', 'dismiss']);
+function Finding({ appId, f, onChange, resolvable, canWaive = true }) {
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState(null); // the action awaiting its note/value
   const [text, setText] = useState('');
   const s = SEV[f.severity] || SEV.info;
-  const actions = Array.isArray(f.availableActions) ? f.availableActions : [];
+  const allActions = Array.isArray(f.availableActions) ? f.availableActions : [];
+  const isFatalBlocking = f.severity === 'fatal' && (f.blocks_ctc != null ? f.blocks_ctc : (f.blocksCtc != null ? f.blocksCtc : false));
+  const actions = allActions.filter((a) => !(isFatalBlocking && !canWaive && GATE_CLEARING_ACTIONS.has(a.key)));
   const docVal = f.doc_value != null ? f.doc_value : f.docValue;
   const fileVal = f.file_value != null ? f.file_value : f.fileValue;
   const howTo = f.how_to != null ? f.how_to : f.howTo;
@@ -88,6 +95,9 @@ function Finding({ appId, f, onChange, resolvable }) {
               style={btn(a.key === 'post_condition' || a.key === 'request_document', a.key === 'decline')}>{a.label}</button>
           ))}
         </div>
+      )}
+      {resolvable && actions.length === 0 && allActions.length > 0 && (
+        <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)' }}>An underwriter or admin can clear this dealbreaker.</div>
       )}
       {resolvable && pending && (
         <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
@@ -623,7 +633,12 @@ function Amendments({ amendments }) {
 // exception). Those actions require sign_off_conditions on the server, so a loan officer —
 // who can SEE every finding but not act on it — must not be shown dead resolve buttons that
 // 403 with a cryptic alert. Defaults true for back-compat (read-only callers already hide it).
-export default function UnderwritingPanel({ appId, docs = [], readOnly = false, canResolve = true, onSummary }) {
+// canWaive: whether this user may CLEAR a clear-to-close-blocking dealbreaker (grant an
+// exception / clear / fix the file / dismiss on a fatal finding, or grant an experience
+// exception) — those need waive_conditions (underwriter/admin). A signer without it
+// (processor / coordinator / closer) sees the non-senior actions but not the gate-clearing
+// ones, so no button 403s. Defaults true for back-compat.
+export default function UnderwritingPanel({ appId, docs = [], readOnly = false, canResolve = true, canWaive = true, onSummary }) {
   const [data, setData] = useState(null);
   const [appr, setAppr] = useState(null); // appraisal findings folded into this ONE findings section
   const [loading, setLoading] = useState(true);
@@ -836,7 +851,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
           )}
           {allFindings.map((f, i) => (
             <Finding key={f.id || `${f.source || 'f'}-${f.code || 'x'}-${i}`} appId={appId} f={f}
-              onChange={load} resolvable={!readOnly && canResolve && !!f.id} />
+              onChange={load} resolvable={!readOnly && canResolve && !!f.id} canWaive={canWaive} />
           ))}
         </div>
       )}
@@ -886,7 +901,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
       <SellerChain sellerChain={sellerChain} />
       <EntityChain entityChain={entityChain} />
       <BankLiquidity bankLiquidity={bankLiquidity} />
-      <Experience experience={experience} appId={appId} onChange={load} readOnly={readOnly || !canResolve} />
+      <Experience experience={experience} appId={appId} onChange={load} readOnly={readOnly || !canWaive} />
 
       {/* document freshness / staleness */}
       <StalenessBoard staleness={staleness} />
