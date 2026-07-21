@@ -1651,6 +1651,15 @@ async function runOnce({ limit = DEFAULT_BATCH, seq = 0 } = {}) {
       await sleep(PACING_MS);
     }
   } catch (e) { console.warn('[sp-sync] stray sweep error:', e.message); }
+  // Explicit state-machine hook (Phase 2). Inert unless SHAREPOINT_MIRROR_FSM is
+  // set: in 'shadow' it dual-writes sharepoint_mirror_status and logs any claim-
+  // set divergence from this legacy pass (the legacy path still did every upload
+  // above); reclaims crashed leases. Best-effort — a FSM error never breaks the
+  // mirror. Lazy require avoids any load-order cycle with sp-mirror-queue.
+  try {
+    const q = require('./sp-mirror-queue');
+    if (q.fsmMode() !== 'off') await withTimeout(q.fsmPass(), DB_OP_TIMEOUT_MS, 'fsm shadow pass timed out');
+  } catch (e) { console.warn('[sp-fsm] pass error:', e.message); }
   _lastPass = { at: new Date().toISOString(), scanned: rows.length + strayForced, mirrored, failed, strays: strayForced };
   // Liveness dead-man's switch: a COMPLETED pass (even an idle one) stamps the
   // persistent heartbeat, so "the worker last made progress at T" is always
@@ -2369,4 +2378,9 @@ module.exports = {
   withTimeout,
   checkDrainLiveness, recordHeartbeat, heartbeatStaleSec, heartbeatGraceSec,
   MAX_ATTEMPTS, VERIFY_RECHECK_DAYS,
+  // Shared selector fragments — exported so the state-machine queue
+  // (sp-mirror-queue.js, Phase 2) reuses the SAME never-mirror / regen-skip SQL
+  // instead of re-deriving it. These are the historically divergence-prone bits;
+  // one definition keeps the FSM claim and the legacy drain forever in agreement.
+  REGEN_KIND_SQL, NEVER_MIRROR_SQL, snapshotSettleSec, DEFAULT_BATCH,
 };

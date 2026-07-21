@@ -314,16 +314,18 @@ router.get('/files/:id/sitewire-property', requirePermission('manage_draws'), as
 });
 
 // ---- POST /files/:id/property-settings — flip a Sitewire property control from the desk ----
-// Owner-directed 2026-07-21: control the process from PILOT. All four controls carry CONFIRMED Sitewire field
-// names — inactive (Active↔Inactive), accepting_draws (Block Draws), sitewire_review (GC↔in-house review),
-// inspection_method (Virtual↔On-site). The guarded orchestrator write reads back what it wrote (never a silent
-// 200-that-did-nothing). manage_draws + canSeeFile.
+// Owner-directed 2026-07-21: control the process from PILOT. All controls use the OFFICIAL Sitewire API v2
+// field names (verified against the saved swagger) — inactive (Active↔Inactive), require_sitewire_inspector
+// (Sitewire GC↔in-house review), inspection_method (Virtual↔On-site), processing_fee_cents (fee), and
+// draw_eligible (Block Draws — this lives on the BUDGET). The guarded orchestrator write reads back what it
+// wrote (never a silent 200-that-did-nothing). manage_draws + canSeeFile.
 router.post('/files/:id/property-settings', requirePermission('manage_draws'), async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
   const b = req.body || {};
   const changes = {};
-  for (const f of ['inactive', 'accepting_draws', 'sitewire_review']) {
+  // Boolean controls: property `inactive` + `require_sitewire_inspector`, and the BUDGET `draw_eligible`.
+  for (const f of ['inactive', 'require_sitewire_inspector', 'draw_eligible']) {
     if (Object.prototype.hasOwnProperty.call(b, f)) changes[f] = !!b[f];
   }
   if (b.inspection_method != null && b.inspection_method !== '') changes.inspection_method = String(b.inspection_method);
@@ -335,6 +337,7 @@ router.post('/files/:id/property-settings', requirePermission('manage_draws'), a
     if (r.error === 'invalid_method') return res.status(400).json({ error: 'Pick Virtual or On-site.' });
     if (r.error === 'invalid_fee') return res.status(400).json({ error: 'The draw fee must be a dollar amount between $0 and $100,000.' });
     if (r.error === 'method_forbidden') return res.status(422).json({ error: 'The capital partner doesn’t allow that inspection type for this file.' });
+    if (r.error === 'no_budget') return res.status(409).json({ error: 'This file’s construction budget isn’t in Sitewire yet, so draws can’t be blocked/allowed — start or re-push the draw first.' });
     if (r.error === 'writes_off') return res.status(409).json({ error: 'The Sitewire connection is currently turned off, so this change can’t be sent yet.' });
     if (r.error === 'nothing_to_change') return res.status(400).json({ error: 'Nothing to change.' });
     if (r.parked) return res.status(502).json({ error: 'Couldn’t save the change to Sitewire — a review was opened so nothing is lost.', parked: r.parked });

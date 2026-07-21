@@ -41,7 +41,7 @@ const { conditionsForDoc, purposeForDoc, docReadiness, fileConditionCoverage, do
 const { selectAutoReadQueue } = require('../lib/underwriting/auto-read');
 const { ANALYZER_VERSION, subjectHash } = require('../lib/underwriting/fingerprint');
 const { assessFile: assessStaleness } = require('../lib/underwriting/staleness');
-const { computeMetrics } = require('../lib/underwriting/metrics');
+const { computeMetrics, capsFromRegistration } = require('../lib/underwriting/metrics');
 const { buildChain } = require('../lib/underwriting/entity-chain');
 const { buildSellerChain } = require('../lib/underwriting/seller-chain');
 const { assessBankLiquidity, readRequiredLiquidity } = require('../lib/underwriting/bank-liquidity');
@@ -266,10 +266,16 @@ router.get('/:appId', async (req, res, next) => {
 
     // Derived metrics: recompute LTP/LTV/LTC/ARV-LTV from the file's registered economics, report
     // the binding cap, and warn on over-leverage. Pure math over the loan file (no document read).
+    // Acquisition leverage (LTP / as-is LTV) is measured on the INITIAL ADVANCE, not the total loan
+    // (the rehab holdback is legitimately allowed above those caps) — pull the engine's own sized
+    // initial advance from the current registration; absent it, those two metrics are skipped rather
+    // than computed off the total loan.
+    const reg = mctx && mctx.registration;
     const metrics = computeMetrics({
-      loanAmount: a.loan_amount, purchasePrice: a.purchase_price,
+      loanAmount: a.loan_amount, initialAdvance: reg ? reg.initialAdvance : null,
+      purchasePrice: a.purchase_price,
       asIsValue: a.as_is_value, arv: a.arv, rehabBudget: a.rehab_budget,
-    });
+    }, capsFromRegistration(reg ? reg.caps : null));
 
     // Entity-resolution chain: only meaningful for an entity (LLC) borrower — an individual file
     // would show every entity edge as "missing" (noise). Compose the signing-authority / ownership
@@ -278,7 +284,10 @@ router.get('/:appId', async (req, res, next) => {
     const isEntity = !!((mctx && mctx.vestingName) || a.llc_id ||
       exts.rows.some((e) => e.doc_type === 'operating_agreement'));
     const entityChain = isEntity ? buildChain(
-      { vestingName: mctx && mctx.vestingName, borrowerName: fileView.borrowerName(mctx && mctx.borrower) }, exts.rows) : null;
+      { vestingName: mctx && mctx.vestingName, borrowerName: fileView.borrowerName(mctx && mctx.borrower),
+        // The beneficial-owner verification threshold is program-dependent (Standard 15% / Manual 20%
+        // / Gold 25%) — prefer the REGISTERED program, falling back to the application's program.
+        program: (reg && reg.program) || (a && a.program) || null }, exts.rows) : null;
 
     // Seller → buyer OWNERSHIP CHAIN: compose the visual purchase chain (owner of record → seller →
     // buyer/assignee → the vesting LLC) so the desk can SHOW how the property gets into our

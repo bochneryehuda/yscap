@@ -81,4 +81,39 @@ Closing Date: 2026-08-15
   assert.strictEqual(g.criticalAbsent.length, 0);
 }
 
-console.log('✓ test-underwriting-grounding: OCR-grounding verification (real reasoning) cases pass');
+// ---- DERIVED / CLASSIFICATION fields (owner-reported 2026-07-21) are NEVER graded or escalated:
+//      a member's inferred ownershipPct + type enum can't be found by text-match even when the OA
+//      read perfectly, so they must not produce a false "could not be confirmed" finding — while a
+//      TRANSCRIBED value (a fabricated member NAME) absent from the text still flags. ----
+{
+  const oaOcr = `
+OPERATING AGREEMENT OF MAPLE GROVE HOLDINGS LLC
+The sole member of the Company is John Q Borrower.
+This agreement is executed as of January 3, 2026.
+`;
+  // A single-member OA: the AI INFERS ownershipPct=100 (never printed) and classifies type='individual'.
+  const g = groundFields({
+    entityLegalName: 'Maple Grove Holdings LLC',
+    members: [{ name: 'John Q Borrower', ownershipPct: 100, type: 'individual', isManager: true }],
+    readable: true,
+  }, oaOcr);
+  assert.ok(!g.criticalAbsent.some((a) => /ownershippct|members\[0\]\.type/i.test(a.field)),
+    'an inferred ownershipPct / classified member type is NOT escalated as unconfirmed');
+  assert.strictEqual(groundingFinding('operating_agreement', g), null,
+    'a fully-readable OA raises NO "values could not be confirmed" finding for its derived fields');
+
+  // But a TRANSCRIBED member name that is NOT in the document still flags (fabrication signal intact).
+  const g2 = groundFields({
+    entityLegalName: 'Maple Grove Holdings LLC',
+    members: [{ name: 'Phantom Nonmember Person', ownershipPct: 50, type: 'individual' }],
+    readable: true,
+  }, oaOcr);
+  assert.ok(g2.criticalAbsent.some((a) => /members\[0\]\.name/i.test(a.field)),
+    'a member NAME absent from the document still flags — grounding of transcribed values is unchanged');
+  // Classification keys anywhere (propertyType/accountType/etc.) are likewise never escalated.
+  const g3 = groundFields({ propertyType: 'Single Family Residence', accountType: 'checking', readable: true },
+    'Statement of account. Balance $10,000.');
+  assert.strictEqual(g3.criticalAbsent.length, 0, 'propertyType/accountType classifications are never escalated');
+}
+
+console.log('✓ test-underwriting-grounding: OCR-grounding verification + derived-field discipline cases pass');
