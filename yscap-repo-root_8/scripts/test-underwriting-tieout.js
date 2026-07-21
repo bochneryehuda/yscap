@@ -219,4 +219,21 @@ assert.strictEqual(factMatch('count', 2, '2'), true, 'count matches across strin
 assert.strictEqual(factMatch('measure', 1850, 1870), true, 'GLA within 3% tolerance ties out');
 assert.strictEqual(factMatch('measure', 1850, 2400), false, 'GLA far apart is a mismatch');
 
+// ===== CLOSING ECONOMICS (owner-directed 2026-07-21): the term sheet's loan amount ties out vs the
+// file + settlement, and the settlement's earnest money / cash-to-close surface in the comparison =====
+{
+  // Term sheet loan amount AGREES with the file (300000) → no discrepancy; a wrong one flags.
+  const okTs = buildTieout(ctx, [{ id: 'ts', docType: 'signed_term_sheet', fields: { propertyAddress: ADDR, loanAmount: 300000 } }]);
+  assert.ok(!okTs.discrepancies.some((d) => d.field === 'loan_amount'), 'term sheet loan amount matching the file → no discrepancy');
+  const badTs = buildTieout(ctx, [{ id: 'ts', docType: 'signed_term_sheet', fields: { propertyAddress: ADDR, loanAmount: 275000 } }]);
+  assert.ok(badTs.discrepancies.some((d) => d.field === 'loan_amount'), 'term sheet loan amount differing from the file → discrepancy');
+
+  // Settlement earnest money + cash to close surface in the matrix (doc-carried, single-source).
+  const st = buildTieout(ctx, [{ id: 's', docType: 'settlement', fields: { propertyAddress: ADDR, contractSalesPrice: 412000, loanAmount: 300000, earnestMoney: 10000, cashToClose: 25000 } }]);
+  assert.ok(st.matrix.find((m) => m.key === 'earnest_money').cells.some((c) => c.value === '$10,000'), 'earnest money surfaced from settlement');
+  assert.ok(st.matrix.find((m) => m.key === 'cash_to_close').cells.some((c) => c.value === '$25,000'), 'cash to close surfaced from settlement');
+  // The settlement's loan amount also ties out to the file (300000) with no discrepancy.
+  assert.ok(!st.discrepancies.some((d) => d.field === 'loan_amount'), 'settlement loan amount matches the file');
+}
+
 console.log('✓ test-underwriting-tieout: fact registry + data-comparison matrix + discrepancies pass');
