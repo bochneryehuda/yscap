@@ -32,7 +32,7 @@ const DOC_CONDITIONS = {
   background_report: { satisfies: ['rtl_cond_fraud'], purpose: 'The background / OFAC / fraud screen — sanctions and integrity check.' },
   appraisal: { satisfies: ['rtl_cond_appraisaldocs'], purpose: 'The appraisal — the property valuation the loan is sized on (handled by the appraisal desk).' },
   scope_of_work: { satisfies: ['rtl_p1_contract'], purpose: 'The scope of work / rehab budget — the renovation plan the loan-to-cost and after-repair value are sized on.' },
-  settlement: { satisfies: [], purpose: 'The closing settlement statement — the final sources & uses (reviewed at closing).' },
+  settlement: { satisfies: ['rtl_cond_settlement'], purpose: 'The closing settlement statement — the final sources & uses (reviewed at closing); filed under its own settlement condition so it is read and checked.' },
   payoff_statement: { satisfies: [], purpose: 'The payoff statement for the loan being refinanced — the exact amount and good-through date to clear the existing lien.' },
   voided_check: { satisfies: ['voided_check'], purpose: 'The voided check / wire instructions — the borrower\'s disbursement account for loan proceeds and draws.' },
   plans_permits: { satisfies: ['rtl_p1_plans'], purpose: 'Ground-up plans & the building permit — the approved scope construction is authorized to build.' },
