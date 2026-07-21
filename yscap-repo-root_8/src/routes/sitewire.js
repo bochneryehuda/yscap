@@ -544,6 +544,20 @@ router.post('/files/:id/resend-invite', requirePermission('manage_draws'), async
   } catch (e) { res.status(500).json({ error: 'Couldn’t send the invite right now — please try again shortly.' }); }
 });
 
+// ---- POST /files/:id/invite-email — set/change WHICH email the Sitewire borrower invite goes to ----
+// Sitewire keeps ONE email per property, so this REPLACES the pending invite and re-invites (send it to
+// the borrower's GC/partner instead). Stored on the file so a later push/resend honors it; assigned to
+// Sitewire immediately when the property is already live. Prefilled with the borrower's email on the UI.
+router.post('/files/:id/invite-email', requirePermission('manage_draws'), async (req, res) => {
+  if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const r = await orchestrator.setBorrowerInviteEmail(req.params.id, (req.body || {}).email, req.actor.id);
+    if (r.error === 'invalid_email') return res.status(400).json({ error: 'Please enter a valid email address.' });
+    if (r.error) return res.status(502).json({ error: 'Couldn’t update the invite email through Sitewire — please try again shortly.' });
+    res.json(r);
+  } catch (e) { res.status(500).json({ error: 'Couldn’t update the invite email right now — please try again shortly.' }); }
+});
+
 // ---- POST /api/sitewire/files/:id/push — manual birth push (admin/setup, guarded) ----
 router.post('/files/:id/push', requirePermission('platform_setup'), async (req, res) => {
   // scope like every other per-file route — platform_setup alone (e.g. the software_setup persona) must
