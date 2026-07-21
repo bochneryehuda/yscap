@@ -815,6 +815,18 @@ async function updatePropertyControls(appId, changes = {}, staffId = null) {
     patch.inspection_method = m;
     newMethod = m;
   }
+
+  // Draw FEE change after the property is pushed (owner-directed 2026-07-21 — "change the fee during the
+  // process… that should sync directly to Sitewire"). `processing_fee_cents` is a CONFIRMED property field
+  // (we already push it on create, propertyFields.processing_fee_cents). Integer cents, $0..$100k. The change
+  // PATCHes it live AND is persisted as the per-file fee_cents_override so resolveInspection + any re-push agree.
+  let newFee = null;
+  if (changes.processing_fee_cents != null && changes.processing_fee_cents !== '') {
+    const fc = Math.round(Number(changes.processing_fee_cents));
+    if (!Number.isFinite(fc) || fc < 0 || fc > 10000000) return { error: 'invalid_fee' };
+    patch.processing_fee_cents = fc;
+    newFee = fc;
+  }
   if (Object.keys(patch).length === 0) return { error: 'nothing_to_change' };
 
   // These are LIVE Sitewire settings (unlike lifecycle, PILOT keeps no shadow "inactive" to backfill), so
@@ -850,16 +862,24 @@ async function updatePropertyControls(appId, changes = {}, staffId = null) {
             if (String(fresh.inspection_method) !== newMethod) { await park({ appId, reason: `sitewire_property_verify_failed: Sitewire property ${link.sitewire_property_id} did not persist inspection_method=${newMethod}` }); return { parked: 'verify_failed' }; }
           } else verified = false;
         }
+        if (newFee != null) {
+          const gotFee = Number(fresh.processing_fee_cents);
+          if (fresh.processing_fee_cents != null && Number.isFinite(gotFee)) {
+            if (gotFee !== newFee) { await park({ appId, reason: `sitewire_property_verify_failed: Sitewire property ${link.sitewire_property_id} did not persist processing_fee_cents=${newFee}` }); return { parked: 'verify_failed' }; }
+          } else verified = false;
+        }
       } else verified = false;
     } catch (e) { console.warn('[sitewire] property-settings verify GET failed (unverified):', e && e.message); verified = false; }
     for (const [f, want] of Object.entries(newBools)) await journal({ appId, propertyId: link.sitewire_property_id, entity: 'property', entityId: link.sitewire_property_id, field: f, oldValue: null, newValue: want, source: 'property_settings' });
     if (newMethod != null) await journal({ appId, propertyId: link.sitewire_property_id, entity: 'property', entityId: link.sitewire_property_id, field: 'inspection_method', oldValue: link.inspection_method || null, newValue: newMethod, source: 'property_settings' });
+    if (newFee != null) await journal({ appId, propertyId: link.sitewire_property_id, entity: 'property', entityId: link.sitewire_property_id, field: 'processing_fee_cents', oldValue: link.fee_cents_override != null ? Number(link.fee_cents_override) : null, newValue: newFee, source: 'property_settings' });
     sitewire = verified ? 'synced' : 'unverified';
   }
-  // Persist the coordinator's inspection choice PILOT-side so resolveInspection + the next push agree.
+  // Persist the coordinator's inspection choice + fee PILOT-side so resolveInspection + the next push agree.
   // The boolean fields have no shadow column (the desk reads them live from Sitewire), so nothing to persist.
   if (newMethod != null) await db.query(`UPDATE sitewire_property_links SET inspection_method=$2, updated_at=now() WHERE application_id=$1`, [appId, newMethod]);
-  return { ok: true, ...newBools, inspection_method: newMethod, sitewire };
+  if (newFee != null) await db.query(`UPDATE sitewire_property_links SET fee_cents_override=$2, updated_at=now() WHERE application_id=$1`, [appId, newFee]);
+  return { ok: true, ...newBools, inspection_method: newMethod, processing_fee_cents: newFee, sitewire };
 }
 
 /**

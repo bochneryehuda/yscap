@@ -489,6 +489,8 @@ function SitewirePropertyControls({ appId, onChanged }) {
   const [busy, setBusy] = useState('');
   const [msg, setMsg] = useState('');
   const [showRaw, setShowRaw] = useState(false);
+  const [feeEdit, setFeeEdit] = useState(false);
+  const [feeInput, setFeeInput] = useState('');
   const loadIt = useCallback(() => {
     setLoading(true);
     api.get(`/api/sitewire/files/${appId}/sitewire-property`)
@@ -539,6 +541,13 @@ function SitewirePropertyControls({ appId, onChanged }) {
   const method = insp.method || prop.inspection_method || 'mobile';
   const canSwitch = insp.can_switch !== false;
   const otherMethod = method === 'mobile' ? 'traditional' : 'mobile';
+  const feeCents = insp.fee_cents != null ? Number(insp.fee_cents) : null;
+  function saveFee() {
+    const dollars = Number(feeInput);
+    if (!Number.isFinite(dollars) || dollars < 0 || dollars > 100000) { setMsg('Enter a fee between $0 and $100,000.'); return; }
+    setFeeEdit(false);
+    apply({ fee_cents: Math.round(dollars * 100) }, 'fee', 'Draw fee updated.');
+  }
 
   return (
     <div className="dd-card" style={{ marginTop: 12 }}>
@@ -588,6 +597,28 @@ function SitewirePropertyControls({ appId, onChanged }) {
             busy={busy === 'method'} disabled={off || busy === 'method'}
             onClick={() => confirmApply(`Change the inspection type to ${INSP_LABEL[otherMethod]}?`, { inspection_method: otherMethod }, 'method', `Switched to ${INSP_LABEL[otherMethod]}.`)}
           />
+
+          {/* DRAW FEE — change the processing fee after the property is pushed; syncs to Sitewire. */}
+          <div className="row between" style={{ gap: 10, flexWrap: 'wrap', alignItems: 'center', padding: '8px 0', borderTop: '1px solid var(--hairline,#e7e0d4)' }}>
+            <div style={{ minWidth: 200, flex: '1 1 260px' }}>
+              <div><b>Draw processing fee</b>{feeCents != null ? <> — <span>{usd(feeCents)}</span></> : null}</div>
+              <div className="dd-sub" style={{ marginTop: 1 }}>{insp.fee_overridden ? 'Custom fee set for this file.' : 'Standard fee for this partner/method.'} Charged per draw — a change is sent straight to Sitewire.</div>
+            </div>
+            {!feeEdit ? (
+              <button className="btn btn-sm ghost" style={{ flex: '0 0 auto' }} disabled={off || busy === 'fee'}
+                onClick={() => { setFeeInput(feeCents != null ? String(Math.round(feeCents) / 100) : ''); setFeeEdit(true); setMsg(''); }}>
+                {busy === 'fee' ? 'Saving…' : 'Change fee'}
+              </button>
+            ) : (
+              <div className="row" style={{ gap: 6, flex: '0 0 auto', alignItems: 'center' }}>
+                <span className="dd-sub">$</span>
+                <input type="number" min="0" max="100000" step="1" value={feeInput} onChange={(e) => setFeeInput(e.target.value)}
+                  style={{ width: 100, padding: '4px 6px', fontSize: 14 }} aria-label="New draw fee (dollars)" />
+                <button className="btn btn-sm" disabled={off || busy === 'fee'} onClick={saveFee}>Save</button>
+                <button className="btn btn-sm ghost" onClick={() => setFeeEdit(false)}>Cancel</button>
+              </div>
+            )}
+          </div>
 
           {/* REVIEW — Sitewire GC review ↔ In-house review (sitewire_review) */}
           <ControlRow

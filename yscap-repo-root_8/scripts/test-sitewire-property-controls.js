@@ -131,6 +131,36 @@ const cleanup = async (app, bor) => { await db.query(`DELETE FROM applications W
     await cleanup(app, bor);
   }
 
+  // ============ 5e. FEE change post-push → processing_fee_cents PATCHed, verified, persisted as override ============
+  {
+    updateCalls = []; updateImpl = async (id, body) => { updateCalls.push({ id, body }); return { id, ...body }; };
+    getImpl = async (id) => ({ id, processing_fee_cents: 45000 });
+    const { app, bor } = await seedManaged();
+    const r = await orch.updatePropertyControls(app, { processing_fee_cents: 45000 }, null);
+    ok('fee: client called with processing_fee_cents=45000', updateCalls.length === 1 && updateCalls[0].body.processing_fee_cents === 45000);
+    ok('fee: synced + returned', r.ok === true && r.sitewire === 'synced' && r.processing_fee_cents === 45000);
+    const feeRow = await db.query(`SELECT fee_cents_override FROM sitewire_property_links WHERE application_id=$1`, [app]);
+    ok('fee: persisted as fee_cents_override', Number(feeRow.rows[0].fee_cents_override) === 45000);
+    const jr = await db.query(`SELECT 1 FROM sitewire_write_log WHERE application_id=$1 AND field='processing_fee_cents'`, [app]);
+    ok('fee: journaled', jr.rowCount >= 1);
+    await cleanup(app, bor);
+  }
+
+  // ============ 5f. FEE out of range rejected; FEE verify mismatch parks ============
+  {
+    const { app, bor } = await seedManaged();
+    ok('fee: over $100k rejected', (await orch.updatePropertyControls(app, { processing_fee_cents: 10000001 }, null)).error === 'invalid_fee');
+    ok('fee: negative rejected', (await orch.updatePropertyControls(app, { processing_fee_cents: -5 }, null)).error === 'invalid_fee');
+    await cleanup(app, bor);
+  }
+  {
+    updateImpl = async (id, body) => ({ id, ...body }); getImpl = async (id) => ({ id, processing_fee_cents: 29900 }); // asked 45000, still 29900
+    const { app, bor } = await seedManaged();
+    const r = await orch.updatePropertyControls(app, { processing_fee_cents: 45000 }, null);
+    ok('fee verify-fail: parked', r.parked === 'verify_failed');
+    await cleanup(app, bor);
+  }
+
   // ============ 6. read-after-write MISMATCH parks (200 that didn't stick) — never persists ============
   {
     updateImpl = async (id, body) => ({ id, ...body }); getImpl = async (id) => ({ id, inactive: false, inspection_method: 'mobile' }); // asked inactive=true, Sitewire shows false
