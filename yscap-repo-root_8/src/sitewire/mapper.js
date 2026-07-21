@@ -283,6 +283,16 @@ function diffBudget(desiredItems, links) {
   }
   for (const l of links) {
     if (l.sitewire_job_item_id == null) continue;
+    // A `__media__:sw_<jobitemid>` link is a Sitewire-SEEDED mandatory media item that reconcile
+    // auto-adopted into the crosswalk (owner-reported 2026-07-21). It will NEVER appear in the
+    // desired explosion (PILOT only emits its own __media__:exterior / __media__:video[_uN]
+    // anchors), so a plain "not in desired → delete" would push a `_destroy` on the anchor
+    // Sitewire itself seeded — either 422ing the whole PATCH or removing a mandatory item until
+    // Sitewire re-seeds it. Skip: these are structural inspection gates, not budget lines PILOT
+    // owns. A tombstoned `state='deleted'` link is likewise skipped so we don't re-`_destroy`
+    // an id Sitewire already deleted (which would 422 "unknown id").
+    if (String(l.sow_line_key || '').indexOf('__media__:sw_') === 0) continue;
+    if (l.state === 'deleted') continue;
     if (!seen.has(keyOf(l))) deletes.push(l);
   }
   return { creates, updates, deletes };
