@@ -24,6 +24,7 @@ const { requireAuth, requireRole, issueEmailToken } = require('../auth');
 const pricing = require('../lib/pricing');
 const { persistProductRegistration } = require('../lib/product-registration');
 const manualProgram = require('../lib/manual-program');
+const workflow = require('../lib/workflow');
 const { syncExperienceChecklistForApplication, RECENT_EXIT_SQL, EXIT_DATE_SQL } = require('../lib/experience');
 const { enqueueClickupPush, enqueueChecklistStatusPush } = require('../clickup/enqueue');
 const statusMap = require('../clickup/status');
@@ -37,7 +38,10 @@ const { raiseEntityIssue } = require('../lib/raise-issue');
 const { can } = require('../lib/permissions');
 // Every staff persona reaches the console; per-file scoping + capability gates
 // (below) decide what each can see and do.
-router.use(requireAuth, requireRole('admin', 'loan_officer', 'processor', 'underwriter', 'loan_coordinator', 'software_setup'));
+// draw_coordinator + closer are here so they can reach their OWN personal
+// Workflow queue (/api/staff/workflow) and the files handed to them; every route
+// still applies its own per-route capability / see_all_files / file-scope gate.
+router.use(requireAuth, requireRole('admin', 'loan_officer', 'processor', 'underwriter', 'loan_coordinator', 'draw_coordinator', 'closer', 'software_setup'));
 // Who sees every file vs. only their assigned ones — now a capability, so an
 // admin can grant "see all files" to a coordinator without a code change.
 const seesAll = (req) => can(req.actor, 'see_all_files');
@@ -5040,13 +5044,15 @@ async function advancementBlockers(appId, target) {
 // Readiness for the gated transitions — powers the "conditions to close" widget.
 router.get('/applications/:id/gating', async (req, res) => {
   try {
-    const [ctc, fund] = await Promise.all([
+    const [ctc, fund, cleared] = await Promise.all([
       advancementBlockers(req.params.id, 'clear_to_close'),
       advancementBlockers(req.params.id, 'funded'),
+      workflow.conditionsClearedPct(req.params.id),   // powers the condition-clearing submit + helper text
     ]);
     res.json({
       clear_to_close: { ready: !ctc.conditions.length && !ctc.gates.length, ...ctc },
       funded: { ready: !fund.conditions.length && !fund.gates.length, ...fund },
+      conditions_cleared: cleared,
     });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -5464,6 +5470,57 @@ router.get('/note-buyers', async (req, res) => {
 // into one. A loan officer or processor can advance a file through the working
 // statuses but cannot approve, clear-to-close, fund, or decline it.
 const DECISION_STATUSES = new Set(['approved', 'clear_to_close', 'funded', 'declined']);
+
+// Shared status DOOR (owner-directed 2026-07-21). Set the EXACT ClickUp internal
+// status, re-derive the borrower-facing bucket, mirror to ClickUp, record the
+// transition on the file timeline, seed post-closing on funded, re-run the
+// condition rule engine, and announce the transition to borrower + team. BOTH the
+// internal-status route AND the new WORKFLOW submit path call this — so a
+// workflow button click drives the status + ClickUp card automatically (the
+// workflow drives the status, not the other way around). The caller audits (audit
+// needs the request); this returns everything the caller needs to log it.
+//   opts: { actorId, canDecide (see_all_files), force, allowForce (isAdmin) }
+//   returns one of:
+//     { unchanged:true, internal_status, status }
+//     { forbidden:true, reason }                         — decision-grade + not canDecide
+//     { blocked:true, target, blockers }                 — conditions/gates outstanding + not forced
+//     { ok:true, internal_status, status, fromStatus, forced }
+async function applyInternalStatus(appId, internalStatus, opts = {}) {
+  if (!statusMap.isKnownInternal(internalStatus)) { const e = new Error('unknown internal status'); e.code = 'unknown_status'; throw e; }
+  const external = statusMap.externalFor(internalStatus);
+  const cur = await db.query(`SELECT status, internal_status FROM applications WHERE id=$1`, [appId]);
+  if (!cur.rows[0]) { const e = new Error('not found'); e.code = 'not_found'; throw e; }
+  if (statusMap.norm(cur.rows[0].internal_status) === statusMap.norm(internalStatus))
+    return { unchanged: true, internal_status: internalStatus, status: external };
+  if (DECISION_STATUSES.has(external) && !opts.canDecide)
+    return { forbidden: true, reason: 'Only an underwriter or admin can move a file to this status.' };
+  let forced = false;
+  if (external === 'clear_to_close' || external === 'funded') {
+    const blockers = await advancementBlockers(appId, external);
+    if (blockers.conditions.length || blockers.gates.length) {
+      if (!(opts.force && opts.allowForce)) return { blocked: true, target: external, blockers };
+      forced = true;
+    }
+  }
+  await db.query(
+    // status_notified_external tracks the announced status (db/187) so a ClickUp
+    // echo of this change never re-notifies the borrower.
+    `UPDATE applications SET internal_status=$2, status=$3, status_notified_external=$3, status_changed_at=now(), updated_at=now() WHERE id=$1`,
+    [appId, internalStatus, external]);
+  enqueueClickupPush(appId, ['internal_status']).catch(() => {}); // push the ClickUp task status + the mirror
+  await db.query(
+    `INSERT INTO application_status_history (application_id, from_status, to_status, changed_by, forced)
+     VALUES ($1,$2,$3,$4,$5)`, [appId, cur.rows[0].status, external, opts.actorId || null, forced]);
+  if (external === 'funded') { try { await seedPostClosing(appId); } catch (_) {} }
+  try { await conditionEngine.evaluateApplication(appId, { actor: opts.actorId ? { id: opts.actorId } : undefined, reason: 'status_change' }); } catch (_) {}
+  // Announce only when the BORROWER-FACING bucket actually changed (many internal
+  // statuses map to the same external bucket — re-announcing would be a wrong email).
+  if (external !== cur.rows[0].status) {
+    await notifyStatusTransition(appId, cur.rows[0].status, external, { forced, actorId: opts.actorId });
+  }
+  return { ok: true, internal_status: internalStatus, status: external, fromStatus: cur.rows[0].status, forced };
+}
+
 router.patch('/applications/:id', async (req, res) => {
   const { status } = req.body || {};
   const force = !!(req.body && req.body.force);
@@ -5514,55 +5571,296 @@ router.patch('/applications/:id', async (req, res) => {
 router.post('/applications/:id/internal-status', async (req, res) => {
   const internalStatus = req.body && req.body.internalStatus;
   if (!statusMap.isKnownInternal(internalStatus)) return res.status(400).json({ error: 'unknown internal status' });
-  const external = statusMap.externalFor(internalStatus);
   try {
-    const cur = await db.query(`SELECT status, internal_status FROM applications WHERE id=$1`, [req.params.id]);
-    if (!cur.rows[0]) return res.status(404).json({ error: 'not found' });
-    if (statusMap.norm(cur.rows[0].internal_status) === statusMap.norm(internalStatus))
-      return res.json({ ok: true, unchanged: true, internal_status: internalStatus, status: external });
-    // S3-05: the internal-status path re-derives the borrower-facing status, so it
-    // is a second door into the decision-grade buckets — gate it the same way.
-    if (DECISION_STATUSES.has(external) && !seesAll(req))
-      return res.status(403).json({ error: 'Only an underwriter or admin can move a file to this status.' });
-    // S3-05 / H2: the internal-status path re-derives the borrower-facing status,
-    // so it is a SECOND door into clear-to-close / funded — gate it the SAME way as
-    // PATCH /:id, or a file could be advanced past unsatisfied required conditions
-    // and gate items. Admin may override with force.
-    let forced = false;
-    if (external === 'clear_to_close' || external === 'funded') {
-      const blockers = await advancementBlockers(req.params.id, external);
-      if (blockers.conditions.length || blockers.gates.length) {
-        const force = !!(req.body && req.body.force);
-        if (!(force && isAdmin(req))) return res.status(409).json({ error: 'blocked', target: external, blockers });
-        forced = true;
-      }
-    }
-    await db.query(
-      // status_notified_external tracks the announced status (db/187) so a ClickUp
-      // echo of this change never re-notifies the borrower.
-      `UPDATE applications SET internal_status=$2, status=$3, status_notified_external=$3, status_changed_at=now(), updated_at=now() WHERE id=$1`,
-      [req.params.id, internalStatus, external]);
-    enqueueClickupPush(req.params.id, ['internal_status']).catch(() => {}); // WO-16 (F-M1): a DELIBERATE internal-status change pushes the ClickUp task status + the mirror
-    // Record the (borrower-facing) transition on the file's timeline, like PATCH /:id.
-    await db.query(
-      `INSERT INTO application_status_history (application_id, from_status, to_status, changed_by, forced)
-       VALUES ($1,$2,$3,$4,$5)`, [req.params.id, cur.rows[0].status, external, req.actor.id, forced]);
-    // Funding seeds the post-closing trailing-doc checklist (parity with PATCH /:id).
-    if (external === 'funded') { try { await seedPostClosing(req.params.id); } catch (_) {} }
+    const before = await db.query(`SELECT internal_status FROM applications WHERE id=$1`, [req.params.id]);
+    // The shared status door does all the work (re-derive external, gate, push,
+    // history, seed post-closing, re-run conditions, announce). This route just
+    // maps its verdict to the right HTTP response + audits.
+    const r = await applyInternalStatus(req.params.id, internalStatus, {
+      actorId: req.actor.id, canDecide: seesAll(req),
+      force: !!(req.body && req.body.force), allowForce: isAdmin(req),
+    });
+    if (r.forbidden) return res.status(403).json({ error: r.reason });
+    if (r.blocked) return res.status(409).json({ error: 'blocked', target: r.target, blockers: r.blockers });
+    if (r.unchanged) return res.json({ ok: true, unchanged: true, internal_status: r.internal_status, status: r.status });
     await audit(req, 'internal_status_change', 'application', req.params.id,
-      { from: cur.rows[0].internal_status, to: internalStatus, external, forced: forced || undefined });
-    // Status is a rule-engine field — re-run conditions on the new external bucket.
-    try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'status_change' }); } catch (_) {}
-    // Parity with PATCH /:id: if this internal-status move changed the
-    // BORROWER-FACING bucket, announce it exactly like the other door — so
-    // funding/approving via the 38-status dropdown emails the borrower too. Guard
-    // on a real external change: many internal statuses map to the same external
-    // bucket, and re-announcing an unchanged bucket would be a wrong-time email.
-    if (external !== cur.rows[0].status) {
-      await notifyStatusTransition(req.params.id, cur.rows[0].status, external, { forced, actorId: req.actor.id });
+      { from: before.rows[0] ? before.rows[0].internal_status : null, to: internalStatus, external: r.status, forced: r.forced || undefined });
+    res.json({ ok: true, internal_status: r.internal_status, status: r.status });
+  } catch (e) {
+    if (e && e.code === 'not_found') return res.status(404).json({ error: 'not found' });
+    if (e && e.code === 'unknown_status') return res.status(400).json({ error: 'unknown internal status' });
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+// ===========================================================================
+// THE WORKFLOW (owner-directed 2026-07-21) — submission hand-offs + personal
+// work queues. A plain Submit button inside a file drops it onto the right
+// downstream person's queue AND sets the file's status automatically (the
+// workflow drives the status). Every recipient has their own ordered "up next"
+// list + a "what I finished / sent back" history. The pure data logic lives in
+// src/lib/workflow.js; this is the HTTP layer + the gating (which reuses the
+// existing completeness / advancementBlockers / status-door machinery).
+// ===========================================================================
+
+// "Application completeness" for the Loan Setup gate — the file's core product +
+// borrower identity must be filled before it can be set up. Returns the missing
+// items in plain language so the Submit panel can show exactly what's needed.
+async function applicationCompleteness(appId) {
+  const r = await db.query(
+    `SELECT a.program, a.loan_type, a.property_type, b.cell_phone, b.date_of_birth, b.fico
+       FROM applications a JOIN borrowers b ON b.id = a.borrower_id WHERE a.id = $1`, [appId]);
+  const row = r.rows[0] || {};
+  const need = [
+    [row.program, 'Program'], [row.loan_type, 'Loan type'], [row.property_type, 'Property type'],
+    [row.cell_phone, 'Borrower phone'], [row.date_of_birth, 'Borrower date of birth'], [row.fico, 'Borrower FICO score'],
+  ];
+  const missing = need.filter(([v]) => v == null || v === '').map(([, label]) => label);
+  return { complete: missing.length === 0, missing };
+}
+const COND_CLEAR_THRESHOLD = 0.80;   // "once 80–90% of conditions are cleared" (owner)
+
+// The data behind the file's Submit panel: which people each type routes to (the
+// already-assigned person or the list to pick from), what's already in someone's
+// queue, and the gating status per type so a button can disable + explain itself.
+router.get('/applications/:id/workflow/options', async (req, res) => {
+  const appId = req.params.id;
+  try {
+    const app = (await db.query(
+      `SELECT a.id, a.status, a.processor_id, a.closer_id, a.underwriter_id, a.loan_officer_id, a.expected_closing,
+              p.full_name AS processor_name, c.full_name AS closer_name, u.full_name AS underwriter_name
+         FROM applications a
+         LEFT JOIN staff_users p ON p.id = a.processor_id
+         LEFT JOIN staff_users c ON c.id = a.closer_id
+         LEFT JOIN staff_users u ON u.id = a.underwriter_id
+        WHERE a.id = $1 AND a.deleted_at IS NULL`, [appId])).rows[0];
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const [completeness, cleared, live, ctc, procs, closers, draws, sadmins, everyone] = await Promise.all([
+      applicationCompleteness(appId),
+      workflow.conditionsClearedPct(appId),
+      workflow.fileLiveItems(appId),
+      advancementBlockers(appId, 'clear_to_close'),
+      workflow.candidatesForRole('processor'),
+      workflow.candidatesForRole('closer'),
+      workflow.candidatesForRole('draw_coordinator'),
+      workflow.candidatesForRole('super_admin'),
+      workflow.allActiveStaff(),
+    ]);
+    res.json({
+      types: workflow.TYPES,
+      appStatus: app.status,
+      funded: app.status === 'funded',
+      assigned: {
+        processor: app.processor_id ? { id: app.processor_id, name: app.processor_name } : null,
+        closer: app.closer_id ? { id: app.closer_id, name: app.closer_name } : null,
+        underwriter: app.underwriter_id ? { id: app.underwriter_id, name: app.underwriter_name } : null,
+      },
+      candidates: { processor: procs, closer: closers, draw_coordinator: draws, super_admin: sadmins, all: everyone },
+      completeness,
+      conditionsCleared: cleared,
+      conditionsThreshold: COND_CLEAR_THRESHOLD,
+      ctcReady: !ctc.conditions.length && !ctc.gates.length,
+      ctcHardBlockers: ctc.conditions.filter((c) => c.source === 'underwriting'),
+      live,
+      outcomeLabels: workflow.OUTCOME_LABELS,
+      expectedClosing: app.expected_closing || null,
+    });
+  } catch (e) { console.warn('[workflow] options error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// The file's Workflow timeline (every hand-off event) for the file page.
+router.get('/applications/:id/workflow/timeline', async (req, res) => {
+  try { res.json(await workflow.fileTimeline(req.params.id)); }
+  catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// SUBMIT a file into the workflow. Body: { submissionType, toStaffId?, note?,
+// priority?, estClosingDate? }. Gates per type, resolves the recipient (assigned
+// person, else the chosen one), records the hand-off + event, opens the closing
+// sub-workflow for a closing submit, then DRIVES the status via the shared door.
+router.post('/applications/:id/workflow/submit', async (req, res) => {
+  const appId = req.params.id;
+  const b = req.body || {};
+  const cfg = workflow.typeConfig(b.submissionType);
+  if (!cfg) return res.status(400).json({ error: 'unknown submission type' });
+  try {
+    const app = (await db.query(
+      `SELECT id, status, processor_id, closer_id, underwriter_id, loan_officer_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0];
+    if (!app) return res.status(404).json({ error: 'not found' });
+
+    // ---- GATE per submission type (reuses the existing engines) ----
+    if (cfg.gate === 'completeness') {
+      const c = await applicationCompleteness(appId);
+      if (!c.complete) return res.status(409).json({ error: 'incomplete', missing: c.missing });
+    } else if (cfg.gate === 'conditions') {
+      const cc = await workflow.conditionsClearedPct(appId);
+      if (cc.pct < COND_CLEAR_THRESHOLD) return res.status(409).json({ error: 'conditions_not_ready', ...cc, threshold: COND_CLEAR_THRESHOLD });
+    } else if (cfg.gate === 'ctc') {
+      // The LO marks his side done but does NOT sign off — the CTC handler signs
+      // off in the workflow. So only HARD underwriting dealbreakers block the
+      // SUBMIT; open sign-offs are expected and do not block.
+      const blk = await advancementBlockers(appId, 'clear_to_close');
+      const fatal = blk.conditions.filter((c) => c.source === 'underwriting');
+      if (fatal.length) return res.status(409).json({ error: 'blocked', blockers: { conditions: fatal, gates: [] } });
+    } else if (cfg.gate === 'funded') {
+      if (app.status !== 'funded') return res.status(409).json({ error: 'not_funded' });
+    } else if (cfg.gate === 'recipient') {
+      if (!b.toStaffId) return res.status(400).json({ error: 'pick_recipient', role: null });
     }
-    res.json({ ok: true, internal_status: internalStatus, status: external });
+
+    // ---- RESOLVE the recipient: assigned person, else the submitter's pick ----
+    let toStaffId = null, setPointer = false;
+    if (cfg.pointer && app[cfg.pointer]) {
+      toStaffId = app[cfg.pointer];
+    } else if (b.toStaffId) {
+      toStaffId = b.toStaffId;
+      setPointer = !!(cfg.pointer && cfg.assigns);
+    } else if (cfg.role) {
+      const cands = await workflow.candidatesForRole(cfg.role);
+      if (cands.length === 1) { toStaffId = cands[0].id; setPointer = !!(cfg.pointer && cfg.assigns); }
+      else return res.status(400).json({ error: 'pick_recipient', role: cfg.role, candidates: cands });
+    } else {
+      return res.status(400).json({ error: 'pick_recipient', role: null });
+    }
+    const recipient = (await db.query(`SELECT id, full_name, role FROM staff_users WHERE id=$1 AND is_active=true`, [toStaffId])).rows[0];
+    if (!recipient) return res.status(400).json({ error: 'recipient not found or inactive' });
+
+    // ---- estimated closing date (closing only) ----
+    let estClosing = null;
+    if (cfg.needsEstClosing) {
+      estClosing = b.estClosingDate ? require('../lib/fields').normalizeTypedDate(b.estClosingDate) : null;
+      if (!estClosing) return res.status(400).json({ error: 'Enter an estimated closing date (a real YYYY-MM-DD date).' });
+    }
+
+    // ---- transaction: assign the pointer (if picking a new person), insert the
+    //      hand-off + event, open the closing row for a closing submit ----
+    const client = await db.getClient();
+    let item;
+    try {
+      await client.query('BEGIN');
+      if (setPointer && cfg.pointer) await client.query(`UPDATE applications SET ${cfg.pointer}=$2, updated_at=now() WHERE id=$1`, [appId, toStaffId]);
+      item = await workflow.submitItem(client, {
+        appId, submissionType: b.submissionType, fromStaffId: req.actor.id, toStaffId, toRole: recipient.role,
+        note: b.note, priority: Number(b.priority), estClosingDate: estClosing,
+      });
+      if (b.submissionType === 'closing') await workflow.openClosing(client, { appId, workflowItemId: item.id, estClosingDate: estClosing, actorId: req.actor.id });
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+
+    // ---- side effects (outside the tx) ----
+    // A newly-picked processor is mirrored to ClickUp (processor syncs both ways);
+    // the db/103 trigger already granted the person file access via the pointer.
+    if (setPointer && cfg.pointer === 'processor_id') enqueueClickupPush(appId, ['processor']).catch(() => {});
+    // Closing writes the estimated closing date onto the file too (borrower-facing).
+    if (b.submissionType === 'closing' && estClosing) {
+      try { await db.query(`UPDATE applications SET expected_closing=$2, updated_at=now() WHERE id=$1`, [appId, estClosing]); enqueueClickupPush(appId, ['expected_closing']).catch(() => {}); } catch (_) {}
+    }
+    // DRIVE the status automatically (the workflow drives the status). The
+    // workflow is the authorized path, so it may set decision-grade statuses
+    // (canDecide:true); it is BEST-EFFORT — the hand-off already landed, so a
+    // status gate/decline never fails the submit (the status catches up later).
+    let statusResult = null;
+    if (cfg.internalStatus) {
+      try {
+        statusResult = await applyInternalStatus(appId, cfg.internalStatus, { actorId: req.actor.id, canDecide: true, force: isAdmin(req), allowForce: isAdmin(req) });
+      } catch (_) { statusResult = null; }
+    }
+    // Notify the recipient it's in their Workflow.
+    await notify.notifyStaff(toStaffId, {
+      type: 'workflow_submitted', title: `New in your Workflow: ${cfg.label}`,
+      body: `${req.actor.name || 'A team member'} submitted this file to you for ${cfg.label}.${b.note ? ' Note: ' + String(b.note).slice(0, 300) : ''}`,
+      applicationId: appId, ctaLabel: 'Open my Workflow', link: '/internal/workflow',
+    });
+    await audit(req, 'workflow_submit', 'application', appId, { submissionType: b.submissionType, toStaffId, itemId: item.id, statusApplied: statusResult && statusResult.ok ? statusResult.status : undefined });
+    res.json({ ok: true, item, status: statusResult && statusResult.ok ? statusResult.status : undefined, statusBlocked: statusResult && statusResult.blocked ? true : undefined });
+  } catch (e) { console.warn('[workflow] submit error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// MY personal workflow. ?tab=next|history &sort=received|priority|aging &type=…
+router.get('/workflow', async (req, res) => {
+  try {
+    const rows = await workflow.listQueue(req.actor.id, { tab: req.query.tab, sort: req.query.sort, type: req.query.type });
+    res.json(rows);
+  } catch (e) { console.warn('[workflow] list error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// Counts for the nav badge + KPI tiles.
+router.get('/workflow/count', async (req, res) => {
+  try { res.json(await workflow.queueCounts(req.actor.id)); }
+  catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// PICK UP an item (start working it). Only the person it's routed to (or an admin).
+router.post('/workflow/:itemId/pickup', async (req, res) => {
+  try {
+    const it = (await db.query(`SELECT to_staff_id, status FROM workflow_items WHERE id=$1`, [req.params.itemId])).rows[0];
+    if (!it) return res.status(404).json({ error: 'not found' });
+    if (String(it.to_staff_id || '') !== String(req.actor.id) && !isAdmin(req)) return res.status(403).json({ error: 'this item is not in your workflow' });
+    const client = await db.getClient();
+    let item;
+    try { await client.query('BEGIN'); item = await workflow.pickItem(client, req.params.itemId, req.actor.id); await client.query('COMMIT'); }
+    catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; } finally { client.release(); }
+    res.json({ ok: true, item });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// RETURN an item — finished; send it back to whoever submitted it, with an
+// outcome label + optional note. Leaves the live queue, stays in history.
+router.post('/workflow/:itemId/return', async (req, res) => {
+  const outcomeLabel = req.body && req.body.outcomeLabel;
+  const note = req.body && req.body.note;
+  if (!outcomeLabel) return res.status(400).json({ error: 'pick an outcome (what you finished / did)' });
+  try {
+    const it = (await db.query(`SELECT application_id, to_staff_id, from_staff_id, submission_type, status FROM workflow_items WHERE id=$1`, [req.params.itemId])).rows[0];
+    if (!it) return res.status(404).json({ error: 'not found' });
+    if (String(it.to_staff_id || '') !== String(req.actor.id) && !isAdmin(req)) return res.status(403).json({ error: 'this item is not in your workflow' });
+    if (!['open', 'in_progress'].includes(it.status)) return res.status(409).json({ error: 'this item is already finished' });
+    const client = await db.getClient();
+    let item;
+    try { await client.query('BEGIN'); item = await workflow.returnItem(client, req.params.itemId, req.actor.id, outcomeLabel, note); await client.query('COMMIT'); }
+    catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; } finally { client.release(); }
+    // Tell the person who submitted it that it's been finished + sent back.
+    if (it.from_staff_id && String(it.from_staff_id) !== String(req.actor.id)) {
+      const label = (workflow.typeConfig(it.submission_type) || {}).label || it.submission_type;
+      await notify.notifyStaff(it.from_staff_id, {
+        type: 'workflow_returned', title: `${req.actor.name || 'A team member'} finished ${label}: ${outcomeLabel}`,
+        body: `Your ${label} submission was finished and sent back to you.${note ? ' Note: ' + String(note).slice(0, 300) : ''}`,
+        applicationId: it.application_id, ctaLabel: 'Open the loan file', link: `/internal/app/${it.application_id}`,
+      });
+    }
+    await audit(req, 'workflow_return', 'application', it.application_id, { itemId: req.params.itemId, outcomeLabel });
+    res.json({ ok: true, item });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Advance the closing sub-workflow. Body: { stage }. fully_closed → funded (the
+// owner's "fully closed links funded"), done via the shared status door.
+router.post('/applications/:id/closing-workflow', async (req, res) => {
+  const stage = req.body && req.body.stage;
+  if (!workflow.CLOSING_STAGES.includes(stage)) return res.status(400).json({ error: 'unknown closing stage' });
+  try {
+    const client = await db.getClient();
+    let out;
+    try { await client.query('BEGIN'); out = await workflow.advanceClosing(client, req.params.id, stage, req.actor.id); await client.query('COMMIT'); }
+    catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; } finally { client.release(); }
+    // Drive the matching ClickUp status (fully_closed → funded) best-effort.
+    let statusResult = null;
+    if (out.internalStatus) {
+      try { statusResult = await applyInternalStatus(req.params.id, out.internalStatus, { actorId: req.actor.id, canDecide: true, force: isAdmin(req), allowForce: isAdmin(req) }); } catch (_) {}
+    }
+    await audit(req, 'closing_workflow_stage', 'application', req.params.id, { stage, statusApplied: statusResult && statusResult.ok ? statusResult.status : undefined });
+    res.json({ ok: true, closing: out.row, status: statusResult && statusResult.ok ? statusResult.status : undefined, statusBlocked: statusResult && statusResult.blocked ? true : undefined });
+  } catch (e) {
+    if (e && e.code === 'bad_stage') return res.status(400).json({ error: 'unknown closing stage' });
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+// The closing sub-workflow state for the file page.
+router.get('/applications/:id/closing-workflow', async (req, res) => {
+  try { res.json(await workflow.getClosing(req.params.id) || { stage: null }); }
+  catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
 // #84 — super-admin STRUCTURAL UNLOCK. A clear-to-close / funded file's loan

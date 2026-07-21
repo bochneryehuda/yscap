@@ -17,6 +17,7 @@ import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
 import DealSnapshot from '../components/DealSnapshot.jsx';
 import ClearToClosePanel from '../components/ClearToClosePanel.jsx';
 import LoanProgress from '../components/LoanProgress.jsx';
+import SubmitFilePanel from '../components/SubmitFilePanel.jsx';
 import { PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
 import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
@@ -2758,6 +2759,9 @@ export default function StaffApplication() {
       <LoanProgress status={app.status} />
       <DealSnapshot app={app} gating={gating} />
       <ClearToClosePanel gating={gating} />
+      {/* THE WORKFLOW (owner-directed 2026-07-21) — the primary way a file moves.
+          Submit it to the next person; the status follows automatically. */}
+      <SubmitFilePanel appId={id} onChange={load} />
       {showPipeline && <ClickupSyncPanel app={app} canSetup={can('platform_setup')} isAdmin={isAdmin} onResynced={load} />}
       {/* Status, ClickUp status & closing — one clean labeled control panel. The
           old version crammed the selects + buttons into loose rows and cut off the
@@ -2782,16 +2786,21 @@ export default function StaffApplication() {
           </button>
         </div>
 
+        {/* The workflow moves the status automatically now (owner-directed
+            2026-07-21) — the team uses the Submit buttons above, not this
+            dropdown. Only a super-admin keeps a manual override. Everyone else
+            sees the status read-only. */}
+        {role === 'super_admin' ? (
         <div className={showPipeline ? 'grid cols-2' : ''} style={{ gap: 16 }}>
           <div className="field" style={{ marginBottom: 0 }}>
-            <label>Borrower-facing status</label>
+            <label>Borrower-facing status <span className="muted small">(super-admin override)</span></label>
             <select className="input" value={app.status} onChange={e => changeStatus(e.target.value)}>
               {APP_STATUSES.map(s => <option key={s} value={s}>{APP_STATUS_LABEL[s]}</option>)}
             </select>
-            <div className="hint" style={{ marginTop: 6 }}>Advancing notifies the borrower &amp; assigned team.</div>
+            <div className="hint" style={{ marginTop: 6 }}>Manual override — normally the Submit buttons move this. Advancing notifies the borrower &amp; assigned team.</div>
           </div>
           {showPipeline && <div className="field" style={{ marginBottom: 0 }}>
-            <label>Internal status (ClickUp)</label>
+            <label>Internal status (ClickUp) <span className="muted small">(override)</span></label>
             <select className="input" value={app.internal_status || ''}
               onChange={e => changeInternalStatus(e.target.value)}
               title="The exact ClickUp task status (38-status workflow). Setting it re-derives the borrower-facing status and pushes to ClickUp.">
@@ -2813,6 +2822,16 @@ export default function StaffApplication() {
             <div className="hint" style={{ marginTop: 6 }}>Pushes the exact status to ClickUp; borrower status is re-derived.</div>
           </div>}
         </div>
+        ) : (
+          <div className="field" style={{ marginBottom: 0 }}>
+            <label>Status</label>
+            <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+              <span className={`pill ${app.status}`}>{APP_STATUS_LABEL[app.status] || app.status}</span>
+              {showPipeline && app.internal_status && <span className="muted small">ClickUp: {app.internal_status}</span>}
+            </div>
+            <div className="hint" style={{ marginTop: 6 }}>The status moves on its own when you use the Submit buttons above — you don’t set it by hand.</div>
+          </div>
+        )}
 
         <div className="grid cols-2" style={{ gap: 16, marginTop: 14 }}>
           <div className="field" style={{ marginBottom: 0 }}>

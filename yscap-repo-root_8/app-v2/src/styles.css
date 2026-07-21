@@ -2744,3 +2744,38 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   border-radius:999px; padding:0 7px; line-height:17px; white-space:nowrap; }
 .ec-recip.opened{ border-color:rgba(46,122,94,.4); }
 .ec-recip .ec-opened{ margin-left:3px; padding:0 5px; }
+
+/* ===== THE WORKFLOW (owner-directed 2026-07-21) — submission hand-offs + queues ===== */
+/* My-workflow queue table: File | What for | From | Waiting | Do */
+.app .wf-table.q-table .q-head,.app .wf-table .q-row{
+  grid-template-columns:minmax(180px,2.2fr) minmax(150px,1.6fr) minmax(90px,1fr) 80px minmax(150px,auto);}
+.app .wf-hist.q-table .q-head,.app .wf-hist .q-row{
+  grid-template-columns:minmax(160px,2fr) minmax(130px,1.3fr) minmax(180px,2fr) minmax(120px,1.3fr);}
+.app .wf-file{display:flex;gap:10px;align-items:center;color:inherit;text-decoration:none;min-width:0}
+.app .wf-file .who{display:block;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.app .wf-file .what{display:block;font-size:12.5px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.app .wf-file .mono{flex:none;width:30px;height:30px;border-radius:8px;display:grid;place-items:center;
+  background:var(--surface-soft);font-size:12px;font-weight:700}
+.app .wf-acts{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.app .wf-returnbar{grid-column:1/-1;background:var(--surface-soft);border-radius:10px;padding:12px 14px;margin:2px 0 8px}
+.app .due.today{color:var(--gold,#AE8746);font-weight:600}
+.app .due.over{color:var(--danger,#b3261e);font-weight:700}
+@media(max-width:960px){
+  .app .wf-table.q-table .q-head,.app .wf-hist.q-table .q-head{display:none}
+  .app .wf-table .q-row,.app .wf-hist .q-row{grid-template-columns:1fr;gap:8px}
+  .app .wf-returnbar{grid-column:1}
+}
+/* The Submit-file panel on a loan file: one plain card per step. */
+.app .wf-submit-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
+.app .wf-submit-card{border:1px solid var(--border);border-radius:12px;padding:14px;display:grid;
+  grid-template-columns:1fr auto;gap:10px;align-items:start;background:var(--surface)}
+.app .wf-submit-card.is-blocked{opacity:.72}
+.app .wf-submit-main{min-width:0}
+.app .wf-submit-title{font-weight:700;font-size:15px}
+.app .wf-submit-help{margin-top:2px}
+.app .wf-submit-goes{margin-top:6px}
+.app .wf-blockmsg{color:var(--danger,#b3261e)}
+.app .wf-submit-act{align-self:center}
+.app .wf-submit-form{grid-column:1/-1;display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
+  gap:10px;border-top:1px solid var(--surface-soft);padding-top:10px;margin-top:2px}
+.app .wf-help-group{margin-top:6px}

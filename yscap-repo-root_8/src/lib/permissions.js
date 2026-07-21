@@ -21,6 +21,10 @@ const ROLES = [
   { key: 'loan_coordinator', label: 'Loan Coordinator' },
   { key: 'draw_coordinator', label: 'Draw Coordinator' },
   { key: 'processor', label: 'Loan Processor' },
+  // The Closer persona (owner-directed 2026-07-21): runs the closing sub-workflow
+  // (estimated date → ready for docs → wire sent → fully closed → reconciled).
+  // A file reaches them through the Workflow's "Submit for Closing".
+  { key: 'closer', label: 'Closer' },
   { key: 'software_setup', label: 'Software Setup' },
 ];
 const ROLE_KEYS = ROLES.map((r) => r.key);
@@ -66,6 +70,10 @@ const ROLE_DEFAULTS = {
   // by the Draw Coordinator / Processor / Admin / Super Admin — never a loan officer unless an admin
   // explicitly grants it per-person from the Team screen. (super_admin has every capability implicitly.)
   loan_officer: ['review_conditions'],
+  // Closers see the whole pipeline (they need the closing queue across files) and
+  // can review + sign off closing conditions on the files handed to them. An admin
+  // can widen/narrow per-person from the Team screen.
+  closer: ['see_all_files', 'review_conditions', 'sign_off_conditions'],
   software_setup: ['manage_conditions', 'platform_setup'],
 };
 

@@ -26,6 +26,7 @@ import StaffLogin from './screens/StaffLogin.jsx';
 import StaffQueue from './screens/StaffQueue.jsx';
 import StaffNewFile from './screens/StaffNewFile.jsx';
 import StaffTasks from './screens/StaffTasks.jsx';
+import StaffWorkflow from './screens/StaffWorkflow.jsx';
 import StaffApplication from './screens/StaffApplication.jsx';
 import StaffTeam from './screens/StaffTeam.jsx';
 import StaffConditionStudio from './screens/StaffConditionStudio.jsx';
@@ -125,6 +126,7 @@ export default function App() {
           <Route path="/internal" element={<StaffPrivate><StaffQueue /></StaffPrivate>} />
           <Route path="/internal/new" element={<StaffPrivate><StaffNewFile /></StaffPrivate>} />
           <Route path="/internal/tasks" element={<StaffPrivate><StaffTasks /></StaffPrivate>} />
+          <Route path="/internal/workflow" element={<StaffPrivate><StaffWorkflow /></StaffPrivate>} />
           <Route path="/internal/app/:id" element={<StaffPrivate><StaffApplication /></StaffPrivate>} />
           <Route path="/internal/app/:id/draws" element={<StaffPrivate><StaffFileDraws /></StaffPrivate>} />
           <Route path="/internal/team" element={<StaffPrivate><StaffTeam /></StaffPrivate>} />
