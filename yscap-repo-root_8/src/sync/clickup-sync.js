@@ -331,18 +331,42 @@ async function auditIdentityMismatchesOnce() {
   // is a real disagreement. Full canonicalization (Google place_id) is the
   // owner's follow-up project — this kills the formatting-noise class now.
   const STREET_ABBR = { avenue: 'ave', av: 'ave', street: 'st', road: 'rd', drive: 'dr', lane: 'ln', court: 'ct',
-    place: 'pl', boulevard: 'blvd', terrace: 'ter', highway: 'hwy', parkway: 'pkwy', circle: 'cir', square: 'sq', trail: 'trl' };
+    place: 'pl', boulevard: 'blvd', terrace: 'ter', highway: 'hwy', parkway: 'pkwy', circle: 'cir', square: 'sq', trail: 'trl',
+    way: 'way', route: 'rte', turnpike: 'tpke', expressway: 'expy', causeway: 'cswy', crescent: 'cres', alley: 'aly',
+    plaza: 'plz', loop: 'loop', bend: 'bnd', crossing: 'xing', ridge: 'rdg', run: 'run', walk: 'walk' };
+  // Post-normalization tokens that mean "street" — used to CUT the address at the street body
+  // so a trailing unit token like "e6" (no unit prefix, owner-reported 2026-07-21 endless
+  // re-flag on 4716 14th Ave e6 vs 4716 14th Ave) never becomes part of the street name.
+  const STREET_TYPES = new Set(['ave', 'st', 'rd', 'dr', 'ln', 'ct', 'pl', 'blvd', 'ter', 'hwy',
+    'pkwy', 'cir', 'sq', 'trl', 'way', 'rte', 'tpke', 'expy', 'cswy', 'cres', 'aly', 'plz',
+    'loop', 'bnd', 'xing', 'rdg', 'run', 'walk']);
   const addrParts = (t) => {
     const raw = String(t || '');
     if (!raw.trim()) return null;
     const s = raw.toLowerCase()
-      .replace(/\b(unit|apt|apartment|suite|ste)\s*#?\s*[\w-]+/g, ' ')
+      // Strip PREFIXED units (unit/apt/…) plus BARE forms — "#3B", "ste 4", "e-6", or a trailing
+      // ", e6" hanging off a street body — before we tokenize. A hyphenated unit stays one token.
+      .replace(/\b(unit|apt|apartment|suite|ste|room|rm|floor|fl|bldg|building)\s*#?\s*[\w-]+/g, ' ')
       .replace(/#\s*[\w-]+/g, ' ')
       .replace(/\b(village|town|city|borough|township)\s+of\b/g, ' ')
       .replace(/[^a-z0-9 ]+/g, ' ');
     const toks = s.split(/\s+/).filter(Boolean).map((w) => STREET_ABBR[w] || w);
-    const num = toks.find((w) => /^\d/.test(w)) || '';
-    const street = toks.filter((w) => /^[a-z]/.test(w)).slice(0, 2).join(' ');
+    // Find the house NUMBER, then the STREET-TYPE token after it. The street body is the
+    // tokens BETWEEN them (inclusive of the street type). Everything AFTER the street type
+    // (unit letter/number, city, state, country) is dropped — that's what stopped "e6" being
+    // treated as part of "ave". A locality-only address with no street-type falls back to the
+    // first two letter-starting tokens after the number (old behavior).
+    const numIdx = toks.findIndex((w) => /^\d/.test(w));
+    const num = numIdx >= 0 ? toks[numIdx] : '';
+    let street = '';
+    if (numIdx >= 0) {
+      const styIdx = toks.findIndex((w, i) => i > numIdx && STREET_TYPES.has(w));
+      if (styIdx > numIdx) {
+        street = toks.slice(numIdx + 1, styIdx + 1).join(' ');
+      } else {
+        street = toks.slice(numIdx + 1).filter((w) => /^[a-z]/.test(w)).slice(0, 2).join(' ');
+      }
+    }
     const zip = (raw.match(/\b(\d{5})(?:-\d{4})?\b(?!.*\b\d{5}\b)/) || [])[1] || '';
     return num && street ? { num, street, zip } : null;
   };

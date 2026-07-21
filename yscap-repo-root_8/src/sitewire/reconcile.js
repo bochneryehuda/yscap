@@ -14,6 +14,47 @@ const client = require('./client');
 const T = require('./transforms');
 const rollupMod = require('./rollup');
 const risk = require('./risk');
+const M = require('./mapper');
+
+/**
+ * Auto-adopt Sitewire-seeded MANDATORY MEDIA items that PILOT never pushed.
+ * Owner-reported 2026-07-21: Sitewire seeds mandatory items like "Video Walkthrough"
+ * and "External Pictures" on every draw. PILOT's crosswalk doesn't have them, so a
+ * draw request against them lands in rollup.unknown → parked as
+ * sitewire_unknown_draw_line ("reconcile by hand"). Root fix: bind those $0
+ * name-recognized media job items into the crosswalk as sitewire-seeded media
+ * anchors so the reconcile is automatic, exactly like PILOT's own media anchors.
+ *
+ * Only adopts an item that is BOTH structurally media (name matches
+ * isMandatoryMediaName) AND carries no money (budgeted_cents === 0) — a real
+ * budget line would never be silently absorbed. Uses sow_line_key
+ * `__media__:sw_<jobitemid>` so it can't collide with PILOT's own media keys
+ * (__media__:exterior / __media__:video / __media__:video_uN) or with a real
+ * SOW cell. Best-effort per row; a failure never breaks the reconcile.
+ */
+async function adoptSeededMediaItems(appId, budgetId, jobItems) {
+  if (!appId || !budgetId || !Array.isArray(jobItems) || !jobItems.length) return { adopted: 0 };
+  const bound = new Set((await db.query(
+    `SELECT sitewire_job_item_id FROM sitewire_job_item_links WHERE application_id=$1 AND sitewire_job_item_id IS NOT NULL`,
+    [appId])).rows.map((r) => Number(r.sitewire_job_item_id)));
+  let adopted = 0;
+  for (const ji of jobItems) {
+    if (!ji || ji.id == null) continue;
+    const jid = Number(ji.id);
+    if (bound.has(jid)) continue;
+    if (Number(ji.budgeted_cents || 0) !== 0) continue;
+    if (!M.isMandatoryMediaName(ji.name)) continue;
+    try {
+      await db.query(
+        `INSERT INTO sitewire_job_item_links (application_id, sitewire_budget_id, sow_line_key, section_token, unit_index, sitewire_job_item_id, name, budgeted_cents, is_media_item, state, last_pushed_at, updated_at)
+         VALUES ($1,$2,$3,'media',NULL,$4,$5,0,true,'live',NULL,now())
+         ON CONFLICT (application_id, sow_line_key, section_token) DO NOTHING`,
+        [appId, budgetId, `__media__:sw_${jid}`, jid, String(ji.name)]);
+      adopted++;
+    } catch (_) { /* best-effort — a bad row must not stop the reconcile */ }
+  }
+  return { adopted };
+}
 
 // ---- capital-partner directory cache (+ which are on our lender) ----
 async function syncCapitalPartners() {
@@ -254,6 +295,13 @@ async function reconcileOne(appId) {
      try { await require('./orchestrator').park({ appId, dedupe: `drawrow:${d && d.id}`, reason: `sitewire_reconcile_draw_error: could not mirror Sitewire draw ${d && d.id} — ${String(emsg).slice(0, 200)}. It won't appear on the desk until reconciled by hand.` }); } catch (_) {}
    }
   }
+  // Auto-adopt Sitewire-seeded MANDATORY MEDIA items (Video Walkthrough, External Pictures,
+  // …) that PILOT never pushed, so a draw against them stops parking as unknown. Runs BEFORE
+  // assessAndStoreRisk so rollup.unknown sees the newly-bound ids and never flags them.
+  try {
+    const jobItems = (prop.budget && Array.isArray(prop.budget.job_items)) ? prop.budget.job_items : [];
+    if (jobItems.length) await adoptSeededMediaItems(appId, prop.budget && prop.budget.id, jobItems);
+  } catch (_) { /* best-effort */ }
   await db.query(`UPDATE sitewire_property_links SET last_reconciled_at=now() WHERE application_id=$1`, [appId]);
   // Bidirectional Phase 2: re-verify the managed budget against what PILOT pushed, at most HOURLY per
   // file (the extra getBudget read stays cheap), and never on a file's first reconcile (nothing to
@@ -294,14 +342,49 @@ async function assessAndStoreRisk(appId) {
   const rollup = await rollupMod.loadRollup(db, appId);
   // CLAUDE.md rule 5: an UNKNOWN inbound draw line (a Sitewire job item with no crosswalk row)
   // must PARK a review row — never just an advisory flag that vanishes when the draw is approved.
-  if (rollup.unknown && rollup.unknown.length) {
+  // Belt-and-suspenders (owner-reported 2026-07-21): Sitewire seeds MANDATORY MEDIA items (Video
+  // Walkthrough, External Pictures, …) on every draw. adoptSeededMediaItems in reconcileOne binds
+  // them into the crosswalk BEFORE this runs, but on the very first pass — or if the property
+  // read didn't include job_items — an unknown media-named line can still slip through. Filter
+  // those out by NAME + $0 request/approved here so a photo/video gate is NEVER parked as
+  // "reconcile by hand" (a media anchor is a structural inspection gate, not money to reconcile).
+  let unknownIds = Array.isArray(rollup.unknown) ? rollup.unknown.slice() : [];
+  if (unknownIds.length) {
+    try {
+      const meta = (await db.query(
+        `SELECT r.sitewire_job_item_id AS jid, MAX(r.job_item_name) AS name,
+                COALESCE(SUM(r.requested_cents),0)::bigint AS req,
+                COALESCE(SUM(COALESCE(r.approved_cents,0)),0)::bigint AS appr
+           FROM sitewire_draw_requests r JOIN sitewire_draws d ON d.sitewire_draw_id=r.sitewire_draw_id
+          WHERE d.application_id=$1 AND r.sitewire_job_item_id = ANY($2::bigint[])
+          GROUP BY r.sitewire_job_item_id`, [appId, unknownIds])).rows;
+      const dropIf = new Set();
+      for (const m of meta) {
+        if (Number(m.req) === 0 && Number(m.appr) === 0 && M.isMandatoryMediaName(m.name)) dropIf.add(Number(m.jid));
+      }
+      if (dropIf.size) unknownIds = unknownIds.filter((id) => !dropIf.has(Number(id)));
+    } catch (_) { /* best-effort — fall through to the original park behavior */ }
+  }
+  if (unknownIds.length) {
     try {
       await require('./orchestrator').park({
-        appId, dedupe: rollup.unknown.slice().sort((a, b) => a - b).join('-'),
-        reason: `sitewire_unknown_draw_line: Sitewire draw line id(s) ${rollup.unknown.join(', ')} have no Scope-of-Work match — reconcile by hand, never auto-applied`,
-        current: rollup.unknown.join(','),
+        appId, dedupe: unknownIds.slice().sort((a, b) => a - b).join('-'),
+        reason: `sitewire_unknown_draw_line: Sitewire draw line id(s) ${unknownIds.join(', ')} have no Scope-of-Work match — reconcile by hand, never auto-applied`,
+        current: unknownIds.join(','),
       });
     } catch (_) {}
+  } else {
+    // Nothing unknown after the media auto-adopt / media-name filter — auto-close any lingering
+    // sitewire_unknown_draw_line park rows for this file so a person no longer has to click through
+    // the ones raised before the fix landed (the row stays as HISTORY, marked auto_resolved).
+    try {
+      await db.query(
+        `UPDATE sync_review_queue
+            SET status='resolved', auto_resolved=true, resolved_at=now(),
+                resolution_note='auto-closed — Sitewire-seeded mandatory media items (video walkthrough / external pictures) are now auto-bound to the crosswalk; no unknown draw line remains'
+          WHERE status='open' AND application_id=$1 AND field_key='sitewire'
+            AND task_id LIKE 'sitewire:%:sitewire_unknown_draw_line%'`, [appId]);
+    } catch (_) { /* best-effort */ }
   }
   const s = await settingsMap();
   const opts = { frontLoadPct: Number(s.front_load_pct) || 40, firstDrawMaxPct: Number(s.first_draw_max_pct) || 30 };

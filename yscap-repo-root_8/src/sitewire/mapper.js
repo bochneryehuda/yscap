@@ -183,6 +183,27 @@ function gcCents(state, subCents) {
   return T.dollarsToCents(g.value);
 }
 
+/**
+ * Does a Sitewire job-item NAME look like a mandatory MEDIA anchor (a photo/video
+ * inspection gate, not a money line)? Owner-reported 2026-07-21: Sitewire seeds
+ * additional mandatory media items (e.g. "Video Walkthrough", "External Pictures")
+ * on top of the anchors PILOT pushes, so a draw referencing them arrives with a
+ * job_item_id PILOT has no crosswalk for — flagged as sitewire_unknown_draw_line
+ * and forced to reconcile by hand. Recognizing them by NAME lets reconcile
+ * silently auto-adopt them into the crosswalk (paired with a $0 budget check —
+ * media items carry no money, so we never adopt a real budget line by mistake).
+ * Matches PILOT's own mediaAnchors names + the common Sitewire-seeded variants,
+ * case- and punctuation-insensitive; whole-name match (a substring like
+ * "kitchen video" is NOT media).
+ */
+const MEDIA_NAME_RE = /^(?:(?:common\s+areas?|exterior|project|unit\s*\d+)(?:\s*-\s*|\s+))?(?:exterior\s+of\s+house\s+photos?|exterior\s+(?:photos?|pictures?)|external\s+(?:photos?|pictures?)|house\s+exterior\s+photos?|(?:interior\s+)?video\s+(?:tour|walkthrough|walk\s*through)|walkthrough\s+video|video\s+of\s+(?:interior|walkthrough)|inspection\s+(?:photos?|video)|inspection\s+media)$/i;
+function isMandatoryMediaName(name) {
+  if (name == null) return false;
+  const s = String(name).replace(/[.,#]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!s) return false;
+  return MEDIA_NAME_RE.test(s);
+}
+
 // Standard $0 mandatory media anchors (gate every draw). Per-unit video tour + one
 // exterior photo set — matching what YS enters by hand in Sitewire today.
 function mediaAnchors(state, defaults = {}) {
@@ -392,6 +413,6 @@ function reconcileToBudget(ex, budgetCents, tolCents = 100) {
 module.exports = {
   CATS, SENTINEL, CAT_LABELS, DUP_TAX_NAMES, catLabelOf, uniquifyNames,
   unitCount, isMulti, lineName, sowCells, sowLineSummary,
-  subtotalCents, contingencyCents, gcCents, mediaAnchors,
+  subtotalCents, contingencyCents, gcCents, mediaAnchors, isMandatoryMediaName,
   explodeSow, reconcileToBudget, diffBudget, resolveCreatesAgainstLive, reverseReconcile,
 };
