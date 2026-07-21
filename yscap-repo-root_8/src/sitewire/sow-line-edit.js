@@ -7,11 +7,10 @@
  *   1. updates the REAL Scope of Work (the rehab_budget checklist item's tool_payload.state), then
  *   2. regenerates the SOW EXCEL as a fresh, superseding version (documents row, SharePoint-mirrored), then
  *   3. pushes the new WORDING to Sitewire (the job-item name) via the guarded full push — a line already
- *      drawn against is never renamed there (Sitewire locks it; the push handles that safely).
- *
- * The DESCRIPTION is NOT pushed to Sitewire: our integration exposes the job-item description as READ-only;
- * writing it would require confirming a Sitewire field name we don't have, so the description lives in the
- * SOW + the Excel the investor receives. (When a capture confirms the write, wiring it is a small addition.)
+ *      drawn against is never renamed there (Sitewire locks it; the push handles that safely), and
+ *   4. pushes the DESCRIPTION to Sitewire's line item (owner-directed 2026-07-21 — a capture of Sitewire's
+ *      own loan-edit screen confirmed the job item carries a writable `description` field, so this is no
+ *      longer a guess). Guarded budget PATCH (merge-by-id) + read-after-write verify.
  *
  * Never touches money: only `label`/`desc` change, so Σ budget is unchanged and G-RECON still holds.
  */
@@ -118,6 +117,7 @@ async function editLine(appId, { sow_line_key, label, desc }, actorId) {
   const applied = applyEdit(sow.state, sow_line_key, { label, desc });
   if (!applied.found) return { error: 'line_not_found' };
   const labelChanged = label != null && String(label).slice(0, MAX_LABEL) !== (applied.oldLabel || '');
+  const descChanged = desc != null && String(desc).slice(0, MAX_DESC) !== (applied.oldDesc || '');
 
   // persist the updated real Scope of Work (tool_payload.state + the mirrored tool_state)
   const nextPayload = { ...sow.payload, state: sow.state };
@@ -146,7 +146,19 @@ async function editLine(appId, { sow_line_key, label, desc }, actorId) {
       } else { sitewire = 'not_managed'; }
     } catch (e) { sitewire = 'push_error'; }
   }
-  return { ok: true, key: applied.key, label_changed: labelChanged, desc_changed: desc != null, excel, sitewire };
+
+  // push the DESCRIPTION to Sitewire's line item (confirmed writable `description` field). Only when it
+  // changed AND the file is managed. Guarded budget PATCH (merge-by-id) + read-after-write verify.
+  let descSitewire = 'not_pushed';
+  if (descChanged) {
+    try {
+      const orchestrator = require('./orchestrator');
+      const dr = await orchestrator.pushJobItemDescription(appId, applied.key, desc);
+      descSitewire = dr.parked ? 'parked' : dr.ok ? (dr.sitewire || 'pushed') : dr.reason || 'not_pushed';
+    } catch (e) { descSitewire = 'push_error'; }
+  }
+
+  return { ok: true, key: applied.key, label_changed: labelChanged, desc_changed: descChanged, excel, sitewire, desc_sitewire: descSitewire };
 }
 
 // List the SOW lines (for the editor UI): each line's key + current wording + description + amount, and

@@ -51,4 +51,23 @@ function waiverGate(waivers, { enabled = false } = {}) {
   return { ok: missing.length === 0, missing };
 }
 
-module.exports = { computeRelease, waiverGate };
+// Resolve the corrected APPROVED amount (cents) when staff decide a disputed draw line (owner-directed
+// 2026-07-21). On approve, staff may type an EXACT negotiated figure; if they don't, the borrower's requested
+// amount is used. The result can NEVER exceed what the borrower requested for that line, and never go negative.
+// Returns null on a plain reject / an approve with no typed or desired amount (leave the line's amount as-is).
+function disputeApprovedCents({ decision, requestedCents, typedCents, desiredCents } = {}) {
+  if (decision !== 'approved') return null;
+  const req = Math.max(0, Math.round(N(requestedCents)));
+  const hasTyped = typedCents != null && typedCents !== '' && Number.isFinite(Number(typedCents));
+  if (hasTyped) {
+    const v = Math.max(0, Math.round(Number(typedCents)));
+    return req > 0 ? Math.min(v, req) : v; // never approve more than requested
+  }
+  if (desiredCents != null && Number.isFinite(Number(desiredCents))) {
+    const d = Math.max(0, Math.round(Number(desiredCents)));
+    return req > 0 ? Math.min(d, req) : d;
+  }
+  return null;
+}
+
+module.exports = { computeRelease, waiverGate, disputeApprovedCents };

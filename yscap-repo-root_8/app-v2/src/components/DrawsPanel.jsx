@@ -999,9 +999,12 @@ function SowLineEditor({ appId }) {
     setBusy('save'); setMsg('');
     try {
       const r = await api.post(`/api/sitewire/files/${appId}/sow-line-edit`, { sow_line_key: editing, label, desc });
-      const sw = r.sitewire === 'pushed' ? ' New wording sent to Sitewire.'
-        : r.sitewire === 'parked' ? ' (A Sitewire sync review was opened so nothing is lost.)'
-        : r.sitewire === 'writes_off' ? ' (Sitewire writing is off — the wording will sync when it’s on.)'
+      const parts = [];
+      if (r.sitewire === 'pushed' || r.sitewire === 'synced') parts.push('wording');
+      if (r.desc_sitewire === 'pushed' || r.desc_sitewire === 'synced' || r.desc_sitewire === 'unverified') parts.push('description');
+      const sw = parts.length ? ` ${parts.join(' + ')} sent to Sitewire.`
+        : (r.sitewire === 'parked' || r.desc_sitewire === 'parked') ? ' (A Sitewire sync review was opened so nothing is lost.)'
+        : (r.sitewire === 'writes_off' || r.desc_sitewire === 'writes_off') ? ' (Sitewire writing is off — it will sync when it’s on.)'
         : '';
       setMsg('Saved to the Scope of Work + Excel.' + sw);
       setEditing(null); load();
@@ -1263,20 +1266,31 @@ function AuthImg({ path, alt, style, onOpen }) {
 
 function FindingStatus({ appId, finding, reload }) {
   const [detail, setDetail] = useState(null);
+  const [amt, setAmt] = useState({}); // per-line typed approved dollars (override); defaults to the borrower's ask
   const badge = { delivered: 'Awaiting the borrower', accepted: 'Accepted', disputed: 'Disputed — needs review', resolved: 'Resolved' }[finding.status] || finding.status;
   useEffect(() => { if (finding.status === 'disputed') api.get(`/api/sitewire/findings/${finding.id}`).then(setDetail).catch(() => {}); }, [finding.id, finding.status]);
-  async function decide(lineId, decision) {
-    try { await api.post(`/api/sitewire/findings/${finding.id}/lines/${lineId}/decide`, { decision }); const d = await api.get(`/api/sitewire/findings/${finding.id}`); setDetail(d); reload(); } catch (e) { /* surfaced by parent on reload */ }
+  async function decide(lineId, decision, dollars) {
+    const body = { decision };
+    // On approve, send the exact figure staff typed (a negotiated amount) — it overrides in Sitewire.
+    if (decision === 'approved' && dollars != null && dollars !== '' && Number.isFinite(Number(dollars))) body.approved_cents = Math.round(Number(dollars) * 100);
+    try { await api.post(`/api/sitewire/findings/${finding.id}/lines/${lineId}/decide`, body); const d = await api.get(`/api/sitewire/findings/${finding.id}`); setDetail(d); reload(); } catch (e) { /* surfaced by parent on reload */ }
   }
   return (
     <div style={{ marginTop: 8, borderTop: '1px dashed var(--line,#e6e0d4)', paddingTop: 8 }}>
       <div className="small"><b>Inspection findings:</b> {badge}{finding.wire_due_at && finding.status === 'accepted' ? ` · release due ${new Date(finding.wire_due_at).toLocaleString('en-US')}` : ''}</div>
-      {detail && detail.lines && detail.lines.filter((l) => l.dispute_status === 'open').map((l) => (
+      {detail && detail.lines && detail.lines.filter((l) => l.dispute_status === 'open').map((l) => {
+        const defDollars = l.dispute_desired_cents != null ? String(Math.round(Number(l.dispute_desired_cents)) / 100) : '';
+        const val = amt[l.id] != null ? amt[l.id] : defDollars;
+        return (
         <div key={l.id} style={{ marginTop: 8, padding: '8px 10px', border: '1px solid var(--line)', borderRadius: 8 }}>
           <div className="row between" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-            <div className="small">{l.name}: borrower wants {l.dispute_desired_cents == null ? '(review)' : usd2(l.dispute_desired_cents)}{l.dispute_note ? ` — "${l.dispute_note}"` : ''}</div>
-            <div className="row" style={{ gap: 6 }}>
-              <button className="btn btn-sm primary" onClick={() => decide(l.id, 'approved')}>Approve</button>
+            <div className="small">{l.name}: borrower wants {l.dispute_desired_cents == null ? '(review)' : usd2(l.dispute_desired_cents)}{l.requested_cents != null ? ` · requested ${usd2(l.requested_cents)}` : ''}{l.dispute_note ? ` — "${l.dispute_note}"` : ''}</div>
+            <div className="row" style={{ gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+              <span className="small muted">Approve $</span>
+              <input type="number" min="0" step="1" value={val} onChange={(e) => setAmt((m) => ({ ...m, [l.id]: e.target.value }))}
+                style={{ width: 90, padding: '3px 6px', fontSize: 14 }} aria-label="Approved amount (dollars)"
+                title="The amount to approve — overrides in Sitewire. Can't exceed the requested amount." />
+              <button className="btn btn-sm primary" onClick={() => decide(l.id, 'approved', val)}>Approve</button>
               <button className="btn btn-sm ghost" onClick={() => decide(l.id, 'rejected')}>Reject</button>
             </div>
           </div>
@@ -1292,7 +1306,8 @@ function FindingStatus({ appId, finding, reload }) {
             </div>
           )}
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
