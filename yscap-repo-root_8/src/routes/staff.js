@@ -2040,17 +2040,30 @@ router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
       regId = reg.id;
       // The LO's accept IS the approval. Mark THIS row 'approved' (persistProductRegistration
       // may have opened a NEW escalation for the re-register — that's a separate row and stays
-      // pending only if the new scenario is itself manual-review, which is fine).
+      // pending only if the new scenario is itself manual-review, which is fine). The status
+      // guard makes the UPDATE strict — a parallel super-admin decide/counter that landed a
+      // millisecond earlier won't get clobbered here.
       await client.query(
         `UPDATE manual_program_escalations
             SET status='approved', decided_by=$2, decided_at=now(),
                 decision_note=COALESCE(decision_note,'Loan officer accepted the counter-offer'),
                 updated_at=now()
-          WHERE id=$1`,
+          WHERE id=$1 AND status='countered'`,
         [esc.id, req.actor.id]);
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK'); throw e; }
     finally { client.release(); }
+
+    // Post-register rule re-evaluation — the accept-counter path RE-REGISTERS the file with
+    // new economics, so the same downstream re-evaluations the normal /register endpoint runs
+    // (rule-driven conditions like liquidity months, the EMD condition on note-buyer changes,
+    // the Blue Lake 5% SOW contingency) must run here too. Otherwise a countered file lands
+    // with stale conditions. All best-effort (they never break the accept).
+    try { await conditionEngine.evaluateApplication(appId, { actor: req.actor, reason: 'counter_accepted' }); } catch (_) {}
+    try { await require('../lib/liquidity').syncLiquidityCondition(appId, quote, db, program === 'manual' ? { program, assetMonths: esc.asset_months } : {}); } catch (_) {}
+    try { await require('../lib/rehab-budget').enforceGoldSowContingency(appId); } catch (_) {}
+    // Push the new economics to ClickUp so the task mirrors the accepted terms.
+    try { require('../clickup/orchestrator').pushApplication(appId).catch(() => {}); } catch (_) {}
 
     await audit(req, 'manual_program_counter_accepted', 'application', appId,
       { escalationId: esc.id, registrationId: regId, counterTerms: ct, totalLoan: total });
