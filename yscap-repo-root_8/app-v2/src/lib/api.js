@@ -529,6 +529,9 @@ export const api = {
   // API Health — status of every external API / integration.
   integrationsHealth: () => req('GET', '/api/admin/integrations/health'),
   integrationTest:    (key) => req('POST', `/api/admin/integrations/${encodeURIComponent(key)}/test`),
+  // Read-only Sitewire TEST-environment capability explorer (super_admin). Lists every field/button
+  // Sitewire exposes so new integrations use confirmed names. Uses SITEWIRE_TEST_* creds; never writes.
+  sitewireExplore:    (opts) => req('POST', '/api/admin/integrations/sitewire/explore', opts || {}),
   clickupHealth:    () => req('GET', '/api/admin/clickup/health'),
   clickupActivity:  () => req('GET', '/api/admin/clickup/activity'),
   clickupBackfill:  (mode, sample) => req('POST', '/api/admin/clickup/backfill', { mode, sample }),
