@@ -75,6 +75,15 @@ const TYPES = {
 };
 const TYPE_KEYS = Object.keys(TYPES);
 
+// Service-level target per hand-off, in BUSINESS-ish hours (we keep it simple —
+// wall-clock hours from when it lands in the queue). Drives the on-time /
+// at-risk / overdue read and the overdue nudge (db/213). Tunable here.
+const SLA_HOURS = {
+  loan_setup: 24, processing: 48, condition_clearing: 48, clear_to_close: 24,
+  closing: 72, draw_setup: 48, post_closing: 72, exception: 24, escalation: 24,
+};
+function slaHoursFor(t) { return SLA_HOURS[t] || null; }
+
 function typeConfig(t) { return TYPES[t] || null; }
 
 // Plain-language outcome labels the recipient picks when sending a file back.
@@ -156,8 +165,9 @@ async function fileTimeline(appId, client = db) {
 // Returns the new workflow_items row.
 // ---------------------------------------------------------------------------
 async function submitItem(client, {
-  appId, submissionType, fromStaffId, toStaffId, toRole, note, priority, estClosingDate,
+  appId, submissionType, fromStaffId, toStaffId, toRole, note, priority, estClosingDate, auto,
 }) {
+  const slaHours = slaHoursFor(submissionType);
   // A re-submit supersedes the prior live hand-off of the same type (keeps the
   // partial-unique index happy + records the supersede in history).
   const superseded = await client.query(
@@ -173,12 +183,14 @@ async function submitItem(client, {
   }
   const ins = await client.query(
     `INSERT INTO workflow_items
-       (application_id, submission_type, from_staff_id, to_staff_id, to_role, status, note, priority, est_closing_date, received_at)
-     VALUES ($1,$2,$3,$4,$5,'open',$6,$7,$8, now())
+       (application_id, submission_type, from_staff_id, to_staff_id, to_role, status, note, priority,
+        est_closing_date, received_at, sla_hours, due_at, auto)
+     VALUES ($1,$2,$3,$4,$5,'open',$6,$7,$8, now(), $9::int,
+             CASE WHEN $9::int IS NULL THEN NULL ELSE now() + ($9::int * interval '1 hour') END, $10)
      RETURNING *`,
     [appId, submissionType, fromStaffId || null, toStaffId || null, toRole || null,
      note ? String(note).slice(0, 1000) : null, Number.isFinite(priority) ? Math.round(priority) : 0,
-     estClosingDate || null]);
+     estClosingDate || null, slaHours, !!auto]);
   const item = ins.rows[0];
   await client.query(
     `INSERT INTO workflow_events (workflow_item_id, application_id, event_type, actor_staff_id, from_staff_id, to_staff_id, submission_type, note)
@@ -263,8 +275,13 @@ async function listQueue(staffId, { tab = 'next', sort = 'received', type = null
   const orderBy = SORTS[sort] || SORTS.received;
   const r = await client.query(
     `SELECT w.id, w.application_id, w.submission_type, w.status, w.priority, w.note,
-            w.est_closing_date, w.received_at, w.picked_up_at, w.to_role,
+            w.est_closing_date, w.received_at, w.picked_up_at, w.to_role, w.due_at, w.auto,
             EXTRACT(EPOCH FROM (now() - w.received_at)) AS age_seconds,
+            -- on-time / at-risk (past 75% of the SLA window) / overdue (past due)
+            CASE WHEN w.due_at IS NULL THEN NULL
+                 WHEN now() >= w.due_at THEN 'overdue'
+                 WHEN now() >= w.received_at + (w.due_at - w.received_at) * 0.75 THEN 'at_risk'
+                 ELSE 'ok' END AS sla_state,
             a.ys_loan_number, a.property_address, a.status AS app_status,
             b.first_name, b.last_name,
             fr.full_name AS from_name
@@ -277,6 +294,19 @@ async function listQueue(staffId, { tab = 'next', sort = 'received', type = null
         AND a.deleted_at IS NULL
         ${typeClause}
       ORDER BY ${orderBy}`, params);
+  return r.rows;
+}
+
+// Recipients with overdue live items — for the scheduled aging nudge (db/213).
+// Returns [{ to_staff_id, full_name, email, overdue }]. Best-effort read.
+async function overdueByRecipient(client = db) {
+  const r = await client.query(
+    `SELECT w.to_staff_id, s.full_name, s.email, count(*)::int AS overdue
+       FROM workflow_items w
+       JOIN applications a ON a.id = w.application_id AND a.deleted_at IS NULL
+       JOIN staff_users s ON s.id = w.to_staff_id AND s.is_active = true
+      WHERE w.status IN ('open','in_progress') AND w.due_at IS NOT NULL AND now() >= w.due_at
+      GROUP BY w.to_staff_id, s.full_name, s.email`);
   return r.rows;
 }
 
@@ -355,9 +385,9 @@ async function advanceClosing(client, appId, stage, actorId) {
 }
 
 module.exports = {
-  TYPES, TYPE_KEYS, typeConfig, OUTCOME_LABELS,
+  TYPES, TYPE_KEYS, typeConfig, OUTCOME_LABELS, SLA_HOURS, slaHoursFor,
   candidatesForRole, allActiveStaff,
   conditionsClearedPct, fileLiveItems, fileTimeline,
-  submitItem, pickItem, returnItem, listQueue, queueCounts,
+  submitItem, pickItem, returnItem, listQueue, queueCounts, overdueByRecipient,
   CLOSING_STAGES, getClosing, openClosing, advanceClosing,
 };

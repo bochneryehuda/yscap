@@ -21,6 +21,7 @@
  */
 const db = require('../db');
 const notify = require('./notify');
+const workflow = require('./workflow');
 const { outstandingItems } = require('./reminders');
 const { claimOncePerPeriod } = require('./throttle-claim');
 
@@ -312,6 +313,29 @@ async function drawReleaseOverdueOnce() {
   return sent;
 }
 
+/* THE WORKFLOW, phase two: nudge anyone whose personal Workflow has OVERDUE
+   hand-offs (past their SLA due date), once/day per person. Keeps files moving
+   without a manager having to chase — mirrors the draw-overdue self-gate. */
+async function workflowAgingOnce() {
+  let sent = 0;
+  let rows = [];
+  try { rows = await workflow.overdueByRecipient(); } catch (_) { return 0; }
+  for (const r of rows) {
+    try {
+      if (!r.to_staff_id || !(await _gate('workflow_overdue', r.to_staff_id, '20 hours'))) continue;
+      await notify.notifyStaff(r.to_staff_id, {
+        type: 'workflow_ready',
+        title: r.overdue === 1 ? 'A file in your Workflow is overdue' : `${r.overdue} files in your Workflow are overdue`,
+        badge: { text: 'Overdue', tone: 'action' },
+        body: `You have ${r.overdue} file${r.overdue === 1 ? '' : 's'} in your Workflow past ${r.overdue === 1 ? 'its' : 'their'} target time. Open your Workflow to pick ${r.overdue === 1 ? 'it' : 'them'} up or send ${r.overdue === 1 ? 'it' : 'them'} back.`,
+        link: '/internal/workflow', ctaLabel: 'Open my Workflow' });
+      await _stamp('workflow_overdue', r.to_staff_id, { overdue: r.overdue });
+      sent++;
+    } catch (e) { console.error('[digest] workflow-aging', r.to_staff_id, e && e.message); }
+  }
+  return sent;
+}
+
 /* Time-gated dispatcher — morning window for staff/admin, business hours for the
    borrower digest; each function's own audit-gate enforces the true frequency. */
 async function runDue() {
@@ -319,6 +343,7 @@ async function runDue() {
   if (hour >= 7 && hour < 11) {
     await dailyPipelineDigestOnce().catch((e) => console.error('[digests] pipeline', e && e.message));
     await staleFileAlertsOnce().catch((e) => console.error('[digests] stale', e && e.message));
+    await workflowAgingOnce().catch((e) => console.error('[digests] workflow-aging', e && e.message));
     await drawReleaseOverdueOnce().catch((e) => console.error('[digests] draw-release', e && e.message));
     if (weekday === 'Mon') await weeklyAdminSummaryOnce().catch((e) => console.error('[digests] admin', e && e.message));
   }
@@ -343,5 +368,5 @@ function start() {
 module.exports = {
   start, runDue, nyParts,
   weeklyBorrowerOutstandingOnce, dailyPipelineDigestOnce, staleFileAlertsOnce, weeklyAdminSummaryOnce,
-  drawFindingsAwaitingBorrowerOnce, drawReleaseOverdueOnce,
+  drawFindingsAwaitingBorrowerOnce, drawReleaseOverdueOnce, workflowAgingOnce,
 };

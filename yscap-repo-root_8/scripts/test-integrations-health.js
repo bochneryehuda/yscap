@@ -39,9 +39,12 @@ const health = require('../src/lib/integrations/health-registry');
     }
   }
 
-  // The not-built placeholders read as 'planned' (reserved slots, never "live").
-  assert.strictEqual(list.find((r) => r.key === 'encompass').state, 'planned', 'Encompass is a reserved slot');
-  assert.strictEqual(list.find((r) => r.key === 'usps').state, 'planned', 'USPS is a reserved slot');
+  // Encompass + USPS are now real key-ready connectors (not planned slots): with no keys set,
+  // Encompass reads 'framework' (built, awaiting keys) and USPS 'not_configured' (optional add-on).
+  assert.strictEqual(list.find((r) => r.key === 'encompass').state, 'framework', 'Encompass is a built connector awaiting keys');
+  assert.strictEqual(list.find((r) => r.key === 'usps').state, 'not_configured', 'USPS is a built connector, not yet keyed');
+  assert.ok(require('../src/lib/integrations/usps').configured() === false, 'USPS configured() is false with no keys (no throw)');
+  assert.ok(require('../src/lib/integrations/encompass').configured() === false, 'Encompass configured() is false with no keys (no throw)');
 
   // probeOne returns one resolved integration; an unknown key returns null (a 404 upstream).
   const one = await health.probeOne('clickup');

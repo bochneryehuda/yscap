@@ -25,6 +25,7 @@ const pricing = require('../lib/pricing');
 const { persistProductRegistration } = require('../lib/product-registration');
 const manualProgram = require('../lib/manual-program');
 const workflow = require('../lib/workflow');
+const workflowAuto = require('../lib/workflow-automation');
 const { syncExperienceChecklistForApplication, RECENT_EXIT_SQL, EXIT_DATE_SQL } = require('../lib/experience');
 const { enqueueClickupPush, enqueueChecklistStatusPush } = require('../clickup/enqueue');
 const statusMap = require('../clickup/status');
@@ -3888,6 +3889,14 @@ router.patch('/checklist/:itemId', async (req, res) => {
       }
     } catch (_) { /* best-effort */ }
   }
+  // The Workflow, phase two: a sign-off / waive may have made the file ready for
+  // its next step — nudge the loan officer (throttled, best-effort).
+  if (b.signedOff === true || b.waived === true) {
+    try {
+      const ar = await db.query(`SELECT application_id FROM checklist_items WHERE id=$1`, [req.params.itemId]);
+      if (ar.rows[0] && ar.rows[0].application_id) await suggestNextStep(ar.rows[0].application_id, req.actor.id);
+    } catch (_) { /* best-effort */ }
+  }
   res.json({ ok: true });
 });
 
@@ -5817,7 +5826,12 @@ async function applyInternalStatus(appId, internalStatus, opts = {}) {
   await db.query(
     `INSERT INTO application_status_history (application_id, from_status, to_status, changed_by, forced)
      VALUES ($1,$2,$3,$4,$5)`, [appId, cur.rows[0].status, external, opts.actorId || null, forced]);
-  if (external === 'funded') { try { await seedPostClosing(appId); } catch (_) {} }
+  if (external === 'funded') {
+    try { await seedPostClosing(appId); } catch (_) {}
+    // The Workflow, phase two: a freshly-funded file auto-hands off to the draw
+    // coordinator (best-effort — never breaks the status move).
+    try { await workflowAuto.onFunded(appId, opts.actorId); } catch (_) {}
+  }
   try { await conditionEngine.evaluateApplication(appId, { actor: opts.actorId ? { id: opts.actorId } : undefined, reason: 'status_change' }); } catch (_) {}
   // Announce only when the BORROWER-FACING bucket actually changed (many internal
   // statuses map to the same external bucket — re-announcing would be a wrong email).
@@ -5825,6 +5839,36 @@ async function applyInternalStatus(appId, internalStatus, opts = {}) {
     await notifyStatusTransition(appId, cur.rows[0].status, external, { forced, actorId: opts.actorId });
   }
   return { ok: true, internal_status: internalStatus, status: external, fromStatus: cur.rows[0].status, forced };
+}
+
+// The Workflow, phase two: after conditions move, gently nudge the loan officer
+// when the file has just become READY for its next step (condition-clearing
+// threshold reached, or clear-to-close ready). Throttled per file+step to at most
+// once / ~day so it never spams. Advisory only — it never moves the file itself.
+async function suggestNextStep(appId, actorId) {
+  try {
+    const app = (await db.query(`SELECT status, loan_officer_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0];
+    if (!app || !app.loan_officer_id) return;
+    const [cleared, ctc, hasCC, hasCtc] = await Promise.all([
+      workflow.conditionsClearedPct(appId),
+      advancementBlockers(appId, 'clear_to_close'),
+      workflowAuto.hasLiveItem(appId, 'condition_clearing'),
+      workflowAuto.hasLiveItem(appId, 'clear_to_close'),
+    ]);
+    const suggestions = workflowAuto.nextStepSuggestions({
+      status: app.status, clearedPct: cleared.pct,
+      ctcReady: !ctc.conditions.length && !ctc.gates.length,
+      hasLiveConditionClearing: hasCC, hasLiveClearToClose: hasCtc, threshold: 0.80,
+    });
+    for (const s of suggestions) {
+      const claimId = await claimOncePerPeriod({ action: `wf_ready_${s.type}`, entityId: appId, interval: '20 hours' });
+      if (!claimId) continue;   // already nudged for this step recently
+      await notify.notifyStaff(app.loan_officer_id, {
+        type: 'workflow_ready', title: 'This file is ready for its next step',
+        body: s.message, applicationId: appId, ctaLabel: 'Open the loan file', link: `/internal/app/${appId}`,
+      }).catch(() => {});
+    }
+  } catch (_) { /* best-effort — a suggestion must never break a sign-off */ }
 }
 
 router.patch('/applications/:id', async (req, res) => {
@@ -5857,8 +5901,12 @@ router.patch('/applications/:id', async (req, res) => {
     await db.query(
       `INSERT INTO application_status_history (application_id, from_status, to_status, changed_by, forced)
        VALUES ($1,$2,$3,$4,$5)`, [req.params.id, cur.rows[0].status, status, req.actor.id, forced]);
-    // Funding seeds the post-closing trailing-doc checklist.
-    if (status === 'funded') { try { await seedPostClosing(req.params.id); } catch (_) {} }
+    // Funding seeds the post-closing trailing-doc checklist + auto-hands off to
+    // the draw coordinator (best-effort).
+    if (status === 'funded') {
+      try { await seedPostClosing(req.params.id); } catch (_) {}
+      try { await workflowAuto.onFunded(req.params.id, req.actor.id); } catch (_) {}
+    }
     await audit(req, 'status_change', 'application', req.params.id, { from: cur.rows[0].status, to: status, forced: forced || undefined });
     // Status is a rule-engine field (e.g. "when the file reaches underwriting").
     try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'status_change' }); } catch (_) {}
@@ -6136,8 +6184,20 @@ router.post('/workflow/:itemId/return', async (req, res) => {
         applicationId: it.application_id, ctaLabel: 'Open the loan file', link: `/internal/app/${it.application_id}`,
       }).catch(() => {});
     }
-    await audit(req, 'workflow_return', 'application', it.application_id, { itemId: req.params.itemId, outcomeLabel });
-    res.json({ ok: true, item });
+    // The Workflow, phase two: the outcome can DRIVE the status forward (e.g.
+    // "Finished CTC" → clear-to-close). Best-effort — the hand-off already
+    // returned, so a status hiccup never fails the send-back.
+    let statusApplied;
+    const action = workflowAuto.outcomeAction(outcomeLabel);
+    if (action && action.internalStatus) {
+      try {
+        const r = await applyInternalStatus(it.application_id, action.internalStatus,
+          { actorId: req.actor.id, canDecide: true, force: isAdmin(req), allowForce: isAdmin(req) });
+        if (r && r.ok) statusApplied = r.status;
+      } catch (_) { /* status is best-effort */ }
+    }
+    await audit(req, 'workflow_return', 'application', it.application_id, { itemId: req.params.itemId, outcomeLabel, statusApplied });
+    res.json({ ok: true, item, status: statusApplied });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 

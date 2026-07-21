@@ -526,6 +526,11 @@ if (require.main === module) {
     // sends at most once per period; timed to the morning/business-hours window in
     // the team's timezone. Kill-switch NOTIFY_DIGESTS_ENABLED=0.
     try { require('./lib/notification-digests').start(); } catch (e) { console.warn('notification digests not started:', e.message); }
+    // API Health down-alerts (owner-directed 2026-07-21): probe every integration on a
+    // schedule and email the admins when one that was reachable goes DOWN (and when it
+    // recovers). Alerts only on a real transition, never on intentional states. OFF by
+    // default — set INTEGRATIONS_MONITOR_ENABLED=1 to turn on.
+    try { require('./lib/integrations/monitor').start(); } catch (e) { console.warn('integrations monitor not started:', e.message); }
   });
 }
 module.exports = app;
