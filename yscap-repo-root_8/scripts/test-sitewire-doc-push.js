@@ -28,7 +28,10 @@ const web = require('../src/sitewire/web-client');
 
   const html = '<meta name="csrf-token" content="TOK-123">';
   ok('csrf: scrapes meta token', web._internal.scrapeCsrf(html) === 'TOK-123');
+  ok('csrf: content-first meta order', web._internal.scrapeCsrf('<meta content="TOK-9" name="csrf-token">') === 'TOK-9');
+  ok('csrf: hidden authenticity_token field', web._internal.scrapeCsrf('<input type="hidden" name="authenticity_token" value="TOK-7">') === 'TOK-7');
   ok('csrf: null when absent', web._internal.scrapeCsrf('<html></html>') === null);
+  ok('primeCsrf exported', typeof web.primeCsrf === 'function');
   ok('signedout: detects sign-in page', web._internal.looksSignedOut('<input name="user[password]"> /users/sign_in') === true);
   ok('signedout: false when logged in', web._internal.looksSignedOut('<a href="/users/sign_out">Log out</a>') === false);
 
@@ -56,6 +59,7 @@ const docPush = require('../src/sitewire/doc-push');
 // ---- stub the website robot (never a real network call) ----
 let uploadCalls = [], attachCalls = [], sessionErr = null;
 web.getSession = async () => (sessionErr ? { error: sessionErr, message: 'stub' } : { jar: {}, csrf: 'TOK' });
+web.primeCsrf = async (s) => { if (s) s.csrf = 'TOK'; return { ok: true }; };
 web.uploadBlob = async (_s, f) => { uploadCalls.push(f.filename); return { signed_id: 'sig_' + f.filename, checksum: 'c', byte_size: (f.bytes || Buffer.alloc(0)).length }; };
 web.attachDocument = async (_s, propId, sig) => { attachCalls.push({ propId, sig }); return { status: 302 }; };
 // ---- stub storage read (return deterministic bytes per ref) ----

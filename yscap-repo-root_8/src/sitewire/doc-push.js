@@ -227,6 +227,14 @@ async function pushDocuments(appId, opts = {}) {
       await orch.park({ appId, reason: `sitewire_doc_web_session:${session.error}`, dedupe: 'web_session', current: session.message || session.error });
       return { ok: false, error: session.error, message: session.message || 'Could not open a Sitewire website session.' };
     }
+    // Get the CSRF security token from THIS property's page (always server-rendered with it) — this also
+    // confirms the session is genuinely authenticated for this property. Reliable regardless of how the
+    // sign-in screen is built.
+    const primed = await web.primeCsrf(session, propertyId);
+    if (primed.error) {
+      await orch.park({ appId, reason: `sitewire_doc_web_session:${primed.error}`, dedupe: 'web_session', current: primed.message || primed.error });
+      return { ok: false, error: primed.error, message: primed.message || 'Could not confirm the Sitewire session for this property.' };
+    }
   }
 
   for (const p of plan) {
