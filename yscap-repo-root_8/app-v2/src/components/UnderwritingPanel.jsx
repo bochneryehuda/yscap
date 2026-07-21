@@ -31,9 +31,12 @@ const SEV = {
 function btn(primary, danger) {
   return {
     fontSize: 12.5, fontWeight: 600, borderRadius: 8, padding: '7px 13px', cursor: 'pointer',
-    border: '1px solid ' + (primary ? 'var(--teal,#2F7F86)' : danger ? 'color-mix(in srgb,var(--crit,#B4483C) 35%,var(--line,#E7E1D3))' : 'var(--line,#E7E1D3)'),
-    background: primary ? 'var(--teal,#2F7F86)' : 'transparent',
-    color: primary ? '#fff' : danger ? 'var(--crit,#B4483C)' : 'var(--ink,#141B22)',
+    border: '1px solid ' + (primary ? 'var(--teal,#2F7F86)' : danger ? 'color-mix(in srgb,var(--crit,#B4483C) 45%,var(--line,#D9D4C8))' : 'var(--line,#D9D4C8)'),
+    // A plain (non-primary, non-danger) action gets a subtle solid fill + dark text so it clearly
+    // reads as a clickable button (transparent-on-white read as faint/disabled). Primary stays teal,
+    // danger stays an outline in crit red.
+    background: primary ? 'var(--teal,#2F7F86)' : danger ? 'transparent' : 'var(--ink-2,#F4F1EA)',
+    color: primary ? '#fff' : danger ? 'var(--crit,#B4483C)' : 'var(--ivory,#141B22)',
   };
 }
 
@@ -157,8 +160,8 @@ const CELL = {
   agree: { bg: 'rgba(63,122,91,.12)', fg: 'var(--good,#3F7A5B)', mark: '✓' },
   disagree: { bg: 'var(--crit-bg,#F6E7E4)', fg: 'var(--crit,#B4483C)', mark: '✕' },
   missing: { bg: 'var(--amber-bg,#F6EEDD)', fg: 'var(--amber,#B7791F)', mark: '–' },
-  source: { bg: 'var(--paper,#F6F3EC)', fg: 'var(--ink,#141B22)', mark: '' },
-  na: { bg: 'transparent', fg: 'var(--line,#C9CDCE)', mark: '·' },
+  source: { bg: 'var(--paper,#F6F3EC)', fg: 'var(--ivory,#141B22)', mark: '' },
+  na: { bg: 'transparent', fg: 'var(--muted,#4B585C)', mark: '·' },
   noref: { bg: 'transparent', fg: 'var(--muted,#4B585C)', mark: '' },
   unknown: { bg: 'transparent', fg: 'var(--muted,#4B585C)', mark: '?' },
 };
@@ -177,7 +180,7 @@ function TieOutMatrix({ tieout }) {
       <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px' }}>Data comparison — every fact, every document</h4>
       <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginBottom: 10 }}>
         {summary ? `${summary.matched} of ${summary.facts} facts tie out · ` : ''}
-        <span style={{ color: 'var(--good,#3F7A5B)' }}>✓ agrees</span> · <span style={{ color: 'var(--crit,#B4483C)' }}>✕ differs</span> · <span style={{ color: 'var(--amber,#B7791F)' }}>– missing</span> · <span style={{ color: 'var(--line,#9aa0a1)' }}>· not on this document</span>
+        <span style={{ color: 'var(--good,#3F7A5B)' }}>✓ agrees</span> · <span style={{ color: 'var(--crit,#B4483C)' }}>✕ differs</span> · <span style={{ color: 'var(--amber,#B7791F)' }}>– missing</span> · <span style={{ color: 'var(--muted,#4B585C)' }}>· not on this document</span>
       </div>
       <div style={{ overflowX: 'auto', border: '1px solid var(--line,#E7E1D3)', borderRadius: 12 }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 520 }}>
@@ -358,7 +361,7 @@ function Metrics({ metrics }) {
             {metrics.rows.map((r) => (
               <tr key={r.key} style={{ background: r.pass ? 'transparent' : 'var(--crit-bg,#F6E7E4)' }}>
                 <td style={{ padding: '7px 10px', fontWeight: 600 }}>{r.label}{metrics.binding === r.key && <span style={{ fontSize: 10, color: 'var(--gold,#AE8746)', marginLeft: 6 }}>binds</span>}</td>
-                <td style={{ padding: '7px 10px', textAlign: 'right', color: r.pass ? 'var(--ink,#141B22)' : 'var(--crit,#B4483C)', fontWeight: r.pass ? 400 : 700 }}>{pctOf(r.value)}</td>
+                <td style={{ padding: '7px 10px', textAlign: 'right', color: r.pass ? 'var(--ivory,#141B22)' : 'var(--crit,#B4483C)', fontWeight: r.pass ? 400 : 700 }}>{pctOf(r.value)}</td>
                 <td style={{ padding: '7px 10px', textAlign: 'right', color: 'var(--muted,#4B585C)' }}>{pctOf(r.cap)}</td>
                 <td style={{ padding: '7px 10px', textAlign: 'right' }}>{money(r.capAmount)}</td>
                 <td style={{ padding: '7px 10px', color: 'var(--crit,#B4483C)', fontSize: 11 }}>{r.over > 0 ? `${money(r.over)} over` : ''}</td>
@@ -572,7 +575,7 @@ function Experience({ experience, appId, onChange, readOnly }) {
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: findings.length ? 12 : 0 }}>
           {experience.anchors.map((a, i) => (
             <span key={i} style={{ fontSize: 11.5, border: '1px solid var(--line,#E7E1D3)', borderRadius: 999, padding: '3px 10px',
-              background: a.verified ? 'var(--good-bg,#E8F1EC)' : 'var(--card,#fff)', color: 'var(--ink,#141B22)' }}>
+              background: a.verified ? 'var(--good-bg,#E8F1EC)' : 'var(--card,#fff)', color: 'var(--ivory,#141B22)' }}>
               {a.label}{a.verified ? ' · verified' : ' · unverified'}
             </span>
           ))}
@@ -827,7 +830,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
         return (
           <div style={{ border: `1px solid ${V.fg}33`, borderLeft: `5px solid ${V.fg}`, background: V.bg, borderRadius: 12, padding: '12px 16px', marginBottom: 18 }}>
             <div style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', color: V.fg, marginBottom: 3 }}>PILOT verdict</div>
-            <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--ink,#141B22)' }}>{verdict.headline}</div>
+            <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--ivory,#141B22)' }}>{verdict.headline}</div>
           </div>
         );
       })()}
@@ -920,4 +923,4 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
   );
 }
 
-const sel = { padding: '7px 10px', border: '1px solid var(--line,#E7E1D3)', borderRadius: 8, fontSize: 13.5, background: 'var(--card,#fff)', color: 'var(--ink,#141B22)', maxWidth: 280 };
+const sel = { padding: '7px 10px', border: '1px solid var(--line,#E7E1D3)', borderRadius: 8, fontSize: 13.5, background: 'var(--card,#fff)', color: 'var(--ivory,#141B22)', maxWidth: 280 };
