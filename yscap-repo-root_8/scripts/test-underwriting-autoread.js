@@ -27,15 +27,21 @@ const readableAll = () => true;
   assert.strictEqual(q.find((x) => x.id === 'd1').conditionCode, 'rtl_cond_title', 'carries the condition it came from');
 }
 
-// ---- doc_kind is the fallback when the condition isn't mapped ----
+// ---- Flood reads via its OWN condition; settlement (no checklist condition) reads via doc_kind ----
+// doc_kind holds a document TYPE and is used directly — NOT looked up as a condition code (that always
+// missed, so a settlement statement never got read). The isReadable gate drops any kind with no checker.
 {
+  const readable = new Set(['settlement', 'flood', 'title']);
   const documents = [
-    { id: 'd1', condition_code: null, doc_kind: 'rtl_cond_title', filename: 'x.pdf' }, // via doc_kind -> title
-    { id: 'd2', condition_code: null, doc_kind: null, filename: 'y.pdf' },              // nothing -> skipped
+    { id: 'd1', condition_code: null, doc_kind: 'settlement', filename: 'hud.pdf' },        // via doc_kind -> settlement
+    { id: 'd2', condition_code: 'rtl_cond_flood', doc_kind: null, filename: 'flood.pdf' },   // via its own flood condition -> flood
+    { id: 'd3', condition_code: null, doc_kind: 'photo_id', filename: 'id.jpg' },            // not a readable type -> skipped
+    { id: 'd4', condition_code: null, doc_kind: null, filename: 'y.pdf' },                   // nothing -> skipped
   ];
-  const q = selectAutoReadQueue({ documents, isReadable: readableAll });
-  assert.deepStrictEqual(q.map((x) => x.id), ['d1'], 'doc_kind fallback maps; a document with no signal is left alone');
-  assert.strictEqual(q[0].expectedType, 'title');
+  const q = selectAutoReadQueue({ documents, isReadable: (t) => readable.has(t) });
+  assert.deepStrictEqual(q.map((x) => x.id), ['d1', 'd2'], 'settlement reads via its doc_kind; flood via its own condition; unreadable kind + no-signal skipped');
+  assert.strictEqual(q.find((x) => x.id === 'd1').expectedType, 'settlement', 'a settlement statement reads via its doc_kind (it has no checklist condition)');
+  assert.strictEqual(q.find((x) => x.id === 'd2').expectedType, 'flood', 'a flood determination reads via its own rtl_cond_flood condition, not the insurance condition');
 }
 
 // ---- A mapped type the reader has no checker for is skipped (never queued for a read that can't run) ----
