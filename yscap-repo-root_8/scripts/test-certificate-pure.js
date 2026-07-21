@@ -13,15 +13,18 @@ assert.ok(MILESTONES.includes('clear_to_close'));
 assert.ok(MILESTONES.includes('pre_funding'));
 assert.ok(MILESTONES.includes('post_closing_qc'));
 
-// Use the module's private canonicalize via a reflection helper — we re-derive
-// it here identically so the test constructs valid certs the module accepts.
+// Test-local canonicalize — MUST stay identical to the module's canonicalize
+// (including the Date branch — see audit finding [F]) so a test cert the
+// module accepts.
 function canonicalize(value) {
   if (value == null) return 'null';
   if (typeof value === 'string') return JSON.stringify(value);
   if (typeof value === 'number') { return isFinite(value) ? JSON.stringify(value) : 'null'; }
   if (typeof value === 'boolean') return JSON.stringify(value);
+  if (value instanceof Date) return JSON.stringify(value.toISOString());
   if (Array.isArray(value)) return '[' + value.map(canonicalize).join(',') + ']';
   if (typeof value === 'object') {
+    if (typeof value.toISOString === 'function') return JSON.stringify(value.toISOString());
     const keys = Object.keys(value).sort();
     return '{' + keys.map((k) => JSON.stringify(k) + ':' + canonicalize(value[k])).join(',') + '}';
   }
@@ -69,6 +72,33 @@ function sha(digest) { return crypto.createHash('sha256').update(canonicalize(di
 {
   const v = verifyDigestIntegrity({ digest_json: null, digest_sha256: null });
   assert.strictEqual(v.ok, false);
+}
+
+// ---- REGRESSION (audit finding [F], 2026-07-21): a digest containing a JS
+// Date object (from pg-native timestamptz columns like resolved_at /
+// granted_at) must hash IDENTICALLY on both sides of a Postgres jsonb
+// round-trip. Before the fix, buildDigest embedded raw Date objects; the
+// generic `typeof === 'object'` branch hashed them as "{}", but the jsonb
+// round-trip re-parsed them as ISO strings, producing "2024-…" on re-read →
+// SHA-256 mismatch → verifyDigestIntegrity(false) for every file with a
+// resolved finding or granted exception. Fix: canonicalize() treats Date as
+// its ISO string on both sides.
+{
+  const dateAtIssue = new Date('2026-07-21T14:33:07.000Z');
+  const digestAtIssue = {
+    application_id: 'app-x',
+    resolved_findings: [{ id: 'f1', code: 'ofac_confirmed_match', resolved_at: dateAtIssue }],
+    exceptions: [{ code: 'over_ltc', granted_at: dateAtIssue }],
+  };
+  const shaAtIssue = sha(digestAtIssue);
+  // Simulate the jsonb round-trip — Postgres jsonb re-parses timestamps as
+  // ISO strings, not Date objects.
+  const digestAfterRoundtrip = JSON.parse(JSON.stringify(digestAtIssue));
+  const shaAfterRoundtrip = sha(digestAfterRoundtrip);
+  assert.strictEqual(shaAtIssue, shaAfterRoundtrip, 'Date-bearing digests must hash identically after a Postgres jsonb round-trip');
+  const cert = { digest_json: digestAfterRoundtrip, digest_sha256: shaAtIssue };
+  const v = verifyDigestIntegrity(cert);
+  assert.strictEqual(v.ok, true, 'a stored cert with resolved-finding/exception dates re-verifies');
 }
 
 console.log('test-certificate-pure: milestone vocabulary + digest integrity pass');

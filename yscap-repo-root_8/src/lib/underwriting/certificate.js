@@ -89,13 +89,28 @@ async function buildDigest(client, appId) {
 // through Postgres jsonb (which does NOT preserve insertion order) round-trips
 // to the same byte string every time. This is what makes the sha256 stable
 // across write / read cycles + across processes.
+//
+// CRITICAL — Date handling (regression-fixed 2026-07-21 audit finding [F]):
+// pg-native Date objects hit the generic `typeof === 'object'` branch;
+// `Object.keys(dateObj)` returns `[]` so a raw Date serialized as `"{}"` —
+// but the SAME Date survives a Postgres jsonb round-trip as an ISO string,
+// producing `"2024-…"` on re-read. Different bytes → SHA-256 mismatch on
+// verify. Every file with a resolved finding or granted exception (which
+// carry `resolved_at`/`granted_at` Date columns) would fail verifyDigestIntegrity.
+// The fix: coerce Dates (and anything with a stable `.toISOString()` — dates
+// and Postgres timestamptz rows both satisfy this) to ISO strings BEFORE
+// hashing so the write side and the read side produce the same bytes.
 function canonicalize(value) {
   if (value == null) return 'null';
   if (typeof value === 'string') return JSON.stringify(value);
   if (typeof value === 'number') { return isFinite(value) ? JSON.stringify(value) : 'null'; }
   if (typeof value === 'boolean') return JSON.stringify(value);
+  if (value instanceof Date) return JSON.stringify(value.toISOString());
   if (Array.isArray(value)) return '[' + value.map(canonicalize).join(',') + ']';
   if (typeof value === 'object') {
+    // Anything else with a toISOString (defensive — no known cases today,
+    // but keeps a future custom time type from re-triggering this class).
+    if (typeof value.toISOString === 'function') return JSON.stringify(value.toISOString());
     const keys = Object.keys(value).sort();
     return '{' + keys.map((k) => JSON.stringify(k) + ':' + canonicalize(value[k])).join(',') + '}';
   }
