@@ -786,6 +786,38 @@ router.post('/:appId/auto-read', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ---- Counterfactual structuring (Sovereign, blueprint sec. 12) ------------
+// "What would make this deal work?" Runs a set of ALTERNATIVE structures
+// through the frozen pricing engine and reports which levers move a file from
+// MANUAL / INELIGIBLE to ELIGIBLE — reduce loan by 1-10%, swap program,
+// longer term, interest-only. Read-only; never registers anything.
+router.get('/:appId/structuring', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    // Load the file's current pricing basis + current registration.
+    const staffRoutes = require('./staff');
+    const loadFileForPricing = staffRoutes.loadFileForPricing;   // export path may vary; the direct call below covers absence
+    let f = null;
+    if (typeof loadFileForPricing === 'function') f = await loadFileForPricing(app.id);
+    if (!f) {
+      // Fallback direct SQL — mirrors the shape loadFileForPricing returns.
+      const rowQ = await db.query(`SELECT * FROM applications WHERE id=$1`, [app.id]);
+      f = { app: rowQ.rows[0], exp: null };
+    }
+    const regQ = await db.query(
+      `SELECT program, quote, inputs FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`,
+      [app.id]);
+    const reg = regQ.rows[0] || null;
+    const currentProgram = reg ? reg.program : 'standard';
+    const quote = reg && (typeof reg.quote === 'string' ? JSON.parse(reg.quote) : reg.quote);
+    const inputs = reg && (typeof reg.inputs === 'string' ? JSON.parse(reg.inputs) : reg.inputs);
+    if (!inputs || !quote) return res.json({ ok: false, reason: 'no registered scenario to explore counterfactuals from' });
+    const alternatives = require('../lib/underwriting/structuring').explore(inputs, currentProgram, quote);
+    res.json({ ok: true, currentProgram, currentQuote: { totalLoan: quote.totalLoan, noteRate: quote.noteRate, status: quote.status }, alternatives });
+  } catch (e) { next(e); }
+});
+
 // ---- Decision Certificates (Sovereign, blueprint sec. 18/19) --------------
 // Issue an immutable signed snapshot of the file at a material milestone
 // (clear_to_close, pre_funding, purchase_review, ...). The snapshot captures
