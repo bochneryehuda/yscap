@@ -214,8 +214,7 @@ function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
             To: <b style={{ color: 'var(--ink,#141B22)' }}>{order.vendor.name || order.vendor.email}</b>{order.vendor.email ? ` · ${order.vendor.email}` : ''}{order.vendor.phone ? ` · ${order.vendor.phone}` : ''}
           </div>
         : <div className="muted small" style={{ marginBottom: 6 }}>
-            No {CONTACT_ASK[kind]} on the file yet.{' '}
-            {!addingContact && <button className="btn link small" onClick={() => setAddingContact(true)}>Add {CONTACT_ASK[kind]}</button>}
+            No {CONTACT_ASK[kind]} on the file yet — add one below to order.
           </div>}
       {addingContact && <ContactForm appId={appId} kind={kind} onSaved={() => { setAddingContact(false); onChanged && onChanged(); }} onCancel={() => setAddingContact(false)} />}
 
@@ -239,13 +238,36 @@ function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
 
       {order.orderedAt && <div className="muted small" style={{ marginBottom: 6 }}>Ordered {when(order.orderedAt)}{order.lastFollowupAt ? ` · last follow-up ${when(order.lastFollowupAt)}` : ''}</div>}
 
+      {/* Before you can order: show EXACTLY what's still needed, each with a
+          visible action — never a silently greyed-out button (a loan officer read
+          the disabled "Order" as "I'm not allowed to order it"). */}
+      {!placed && (needsLoan || needsContact) && (
+        <div className="notice" style={{ marginTop: 6, marginBottom: 2, background: 'var(--surface-soft, #fbf7ee)', borderColor: 'var(--gold,#AE8746)' }}>
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>To send this {kind} order, first:</div>
+          <ul style={{ margin: '0 0 2px 18px', padding: 0 }}>
+            {needsContact && (
+              <li style={{ marginBottom: 4 }}>
+                Add the {CONTACT_ASK[kind]} (who to email).{' '}
+                {!addingContact && <button className="btn primary small" onClick={() => setAddingContact(true)}>Add {CONTACT_ASK[kind]}</button>}
+              </li>
+            )}
+            {needsLoan && (
+              <li>Add the file’s loan number — the box at the top of this section (it prints in the mortgage clause).</li>
+            )}
+          </ul>
+        </div>
+      )}
+
       {/* Actions */}
       <div className="row" style={{ gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
         {!placed && (
           <button className="btn primary small" disabled={!!busy || needsLoan || needsContact} onClick={() => place(false)}
-            title={needsLoan ? 'Add the loan number first' : needsContact ? `Add the ${CONTACT_ASK[kind]} first` : ''}>
+            title={needsLoan ? 'Add the loan number first' : needsContact ? `Add the ${CONTACT_ASK[kind]} first` : `Send the ${kind} order to the vendor`}>
             {busy === 'place' ? 'Sending…' : `Order ${kind}`}
           </button>
+        )}
+        {!placed && !needsLoan && !needsContact && (
+          <span className="muted small" style={{ alignSelf: 'center' }}>Emails the {CONTACT_ASK[kind]}, cc’ing the borrower, loan officer and processor.</span>
         )}
         {placed && (
           <>

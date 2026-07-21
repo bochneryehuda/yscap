@@ -67,4 +67,35 @@ async function fileFatalCount(client, appId) {
   return { stored, tieout, experience, total: stored + tieout + experience };
 }
 
-module.exports = { tieoutForFile, fileFatalCount };
+/**
+ * The DETAILS behind the fatal count — the actual finding titles + what disagrees, so a
+ * surface (e.g. the clear-to-close "what's left" list) can tell staff WHAT the dealbreaker
+ * is instead of just "N open dealbreaker finding". Same three sources as fileFatalCount
+ * (stored document_findings + derived tie-out + derived experience), normalized to
+ * { title, docValue, fileValue, howTo }. Best-effort per source; a compute error just
+ * yields fewer detail rows (the count gate still holds independently).
+ */
+async function fileFatalDetails(client, appId) {
+  const out = [];
+  try {
+    const stored = (await client.query(
+      `SELECT title, doc_value, file_value, how_to FROM document_findings
+        WHERE application_id=$1 AND status='open' AND severity='fatal' AND blocks_ctc=true
+        ORDER BY created_at`, [appId])).rows;
+    for (const f of stored) out.push({ title: f.title || 'Document finding', docValue: f.doc_value, fileValue: f.file_value, howTo: f.how_to });
+  } catch (_) { /* stored is best-effort here (the count query already gates) */ }
+  try {
+    const to = await tieoutForFile(client, appId);
+    for (const d of to.discrepancies.filter((f) => f.severity === 'fatal' && f.blocksCtc))
+      out.push({ title: d.title, docValue: d.docValue, fileValue: d.fileValue, howTo: d.howTo });
+  } catch (_) { /* tie-out is best-effort */ }
+  try {
+    const { assessExperienceForFile } = require('./experience');
+    const exp = await assessExperienceForFile(client, appId, { today: new Date().toISOString().slice(0, 10) });
+    for (const f of (exp ? exp.findings : []).filter((f) => f.severity === 'fatal' && f.blocksCtc))
+      out.push({ title: f.title, howTo: f.howTo });
+  } catch (_) { /* experience is best-effort */ }
+  return out;
+}
+
+module.exports = { tieoutForFile, fileFatalCount, fileFatalDetails };

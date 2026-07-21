@@ -619,7 +619,11 @@ function Amendments({ amendments }) {
 // balance) are advisory findings — they now surface in the single "Open findings" list at the top
 // of the panel rather than in their own section, so nothing is listed twice.
 
-export default function UnderwritingPanel({ appId, docs = [], readOnly = false, onSummary }) {
+// canResolve: whether THIS user may resolve a finding (clear it / request a doc / grant an
+// exception). Those actions require sign_off_conditions on the server, so a loan officer —
+// who can SEE every finding but not act on it — must not be shown dead resolve buttons that
+// 403 with a cryptic alert. Defaults true for back-compat (read-only callers already hide it).
+export default function UnderwritingPanel({ appId, docs = [], readOnly = false, canResolve = true, onSummary }) {
   const [data, setData] = useState(null);
   const [appr, setAppr] = useState(null); // appraisal findings folded into this ONE findings section
   const [loading, setLoading] = useState(true);
@@ -824,9 +828,15 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
           <p style={{ fontSize: 12, color: 'var(--muted,#4B585C)', margin: '0 0 12px' }}>
             Every open item across the whole file, in one list — the same items the counts above refer to.
           </p>
+          {!readOnly && !canResolve && (
+            <div className="notice" style={{ margin: '0 0 12px', fontSize: 12.5 }}>
+              You can see every finding and exactly what disagrees. Clearing a dealbreaker (fixing the file,
+              requesting a document, or granting an exception) is done by an underwriter or processor.
+            </div>
+          )}
           {allFindings.map((f, i) => (
             <Finding key={f.id || `${f.source || 'f'}-${f.code || 'x'}-${i}`} appId={appId} f={f}
-              onChange={load} resolvable={!readOnly && !!f.id} />
+              onChange={load} resolvable={!readOnly && canResolve && !!f.id} />
           ))}
         </div>
       )}
@@ -848,7 +858,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
               {apprSum.warning > 0 && <span style={{ fontWeight: 700, color: SEV.warning.fg, background: SEV.warning.bg, borderRadius: 999, padding: '3px 11px', fontSize: 12 }}>{apprSum.warning} warning</span>}
             </div>
           )}
-          {apprFindings.map((f) => <AppraisalFinding key={f.id} appId={appId} f={f} onChange={load} readOnly={readOnly} />)}
+          {apprFindings.map((f) => <AppraisalFinding key={f.id} appId={appId} f={f} onChange={load} readOnly={readOnly || !canResolve} />)}
         </div>
       )}
 
@@ -876,7 +886,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
       <SellerChain sellerChain={sellerChain} />
       <EntityChain entityChain={entityChain} />
       <BankLiquidity bankLiquidity={bankLiquidity} />
-      <Experience experience={experience} appId={appId} onChange={load} readOnly={readOnly} />
+      <Experience experience={experience} appId={appId} onChange={load} readOnly={readOnly || !canResolve} />
 
       {/* document freshness / staleness */}
       <StalenessBoard staleness={staleness} />
