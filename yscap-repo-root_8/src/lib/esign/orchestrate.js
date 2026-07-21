@@ -800,7 +800,9 @@ async function sendPackage(applicationId, purpose, actor, opts = {}) {
   if (purpose === 'draw_request') {
     await require('./draw-wire').ensureDrawRequestCondition(db, applicationId, actor && actor.id);
   }
-  const { row, terminal } = await createOrClaimEnvelope(db, app, purpose, spec, actor && actor.id, { reissue: !!opts.reissue });
+  // Forward the draw-send recipient choice ('borrower'|'co_borrower') so the SOLO package (the wire form) is
+  // SEEDED to the chosen signer — createOrClaimEnvelope reads opts.recipient to drive buildRoster.
+  const { row, terminal } = await createOrClaimEnvelope(db, app, purpose, spec, actor && actor.id, { reissue: !!opts.reissue, recipient: opts.recipient });
   // A plain send that found only a TERMINAL prior envelope did NOT mint a new one —
   // report that (never a false "Sent"), so the UI tells staff to use Re-issue rather
   // than piling up duplicate envelopes.
