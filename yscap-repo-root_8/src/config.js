@@ -279,6 +279,25 @@ module.exports = {
   // properties IT pushed to Sitewire from this date forward. Pre-existing Sitewire properties are never
   // adopted or followed. Informational (the born-on-push design already makes management go-forward-only).
   sitewireGoLiveDate:   process.env.SITEWIRE_GO_LIVE_DATE || '2026-07-20',
+  // --- Sitewire DOCUMENT push (website workaround — no API upload endpoint exists) ---
+  // Sitewire's API v2 has NO document-upload endpoint (confirmed against the official swagger).
+  // The only way to place a document in a property's Documents tab is the WEBSITE's Rails
+  // ActiveStorage direct-upload flow, which needs a logged-in browser SESSION + a CSRF token —
+  // things the API token cannot provide. src/sitewire/web-client.js acts as that browser (a
+  // "website robot"): it authenticates, does the confirmed 3-step upload, and attaches the blob.
+  // Staged like every other write: OFF by default, still gated by SITEWIRE_OUTBOUND_ENABLED +
+  // SITEWIRE_DRYRUN. Credentials live in Render env ONLY, never committed, never pasted in chat.
+  sitewireDocsEnabled:  process.env.SITEWIRE_DOCS_ENABLED === '1',   // master switch for the doc-push workaround (default off)
+  sitewireWebBaseUrl:   (process.env.SITEWIRE_WEB_BASE_URL || process.env.SITEWIRE_BASE_URL || 'https://app.sitewire.co').replace(/\/+$/, ''),
+  // Preferred (durable): PILOT logs itself in and refreshes its own session — a lender_owner web login.
+  sitewireWebEmail:     process.env.SITEWIRE_WEB_EMAIL || null,
+  sitewireWebPassword:  process.env.SITEWIRE_WEB_PASSWORD || null,
+  // Fallback (for when MFA/SSO blocks an automated login): a session cookie the owner copies from
+  // their browser's logged-in Sitewire tab. Expires — the automated login above is preferred.
+  sitewireWebCookie:    process.env.SITEWIRE_WEB_COOKIE || null,
+  // Devise sign-in shape — overridable in case Sitewire's login route/fields differ from the default.
+  sitewireWebSignInPath: process.env.SITEWIRE_WEB_SIGNIN_PATH || '/users/sign_in',
+  sitewireWebTimeoutMs: Math.max(5000, parseInt(process.env.SITEWIRE_WEB_TIMEOUT_MS || '45000', 10) || 45000),
   // --- Sitewire TEST-environment explorer (read-only field discovery) ---
   // A SEPARATE credential set so we can safely READ the Sitewire test system and
   // enumerate every field/button it exposes, WITHOUT ever touching the production

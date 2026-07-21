@@ -345,6 +345,39 @@ router.post('/files/:id/property-settings', requirePermission('manage_draws'), a
   } catch (e) { console.warn('[sitewire] property-settings error:', e && e.message); res.status(502).json({ error: 'Couldn’t reach Sitewire right now — please try again shortly.' }); }
 });
 
+// ==== Push property DOCUMENTS to Sitewire (the website workaround — no API upload endpoint) ====
+// Owner-directed 2026-07-21: push the appraisal PDF + Scope of Work Excel + Scope of Work PDF into the
+// Sitewire property's Documents tab so nobody has to log into Sitewire. Sitewire's API has no document
+// upload, so this uses the website "browser robot" (doc-push → web-client). It also runs automatically on
+// every property push; these routes are the manual "Push documents" + "Re-push" buttons for the desk.
+const docPush = require('../sitewire/doc-push');
+
+// GET the current push status of the 3 documents (available? pushed? verified in Sitewire?).
+router.get('/files/:id/documents-push', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try { res.json(await docPush.status(appId)); }
+  catch (e) { console.warn('[sitewire] documents-push status error:', e && e.message); res.status(502).json({ error: 'Couldn’t read the document status right now.' }); }
+});
+
+// POST push the documents. Body: { which? ('appraisal_pdf'|'sow_xlsx'|'sow_pdf'), force? } — omit `which`
+// to push all three; `force:true` re-uploads even if the same file was already pushed (the "Re-push" button).
+router.post('/files/:id/documents-push', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const b = req.body || {};
+  const which = b.which && docPush.SLOTS.includes(b.which) ? b.which : undefined;
+  try {
+    const r = await docPush.pushDocuments(appId, { which, force: !!b.force, staffId: req.actor && req.actor.id, source: 'desk' });
+    if (r.error === 'docs_disabled') return res.status(409).json({ error: 'Sending documents to Sitewire is turned off right now. It can be switched on once the Sitewire login is set up.' });
+    if (r.error === 'sitewire_disabled' || r.error === 'outbound_disabled') return res.status(409).json({ error: 'The Sitewire connection is currently turned off, so documents can’t be sent yet.' });
+    if (r.error === 'not_managed') return res.status(409).json({ error: 'This file isn’t managed by PILOT in Sitewire yet — start the draw process first.' });
+    if (r.error === 'web_creds_missing') return res.status(409).json({ error: 'Sitewire’s document login isn’t set up yet. Add the Sitewire website login in the app settings, then try again.', detail: r.message });
+    if (r.error) return res.status(502).json({ error: r.message || 'Couldn’t send the documents to Sitewire right now — a review was opened so nothing is lost.', code: r.error });
+    res.json(r);
+  } catch (e) { console.warn('[sitewire] documents-push error:', e && e.message); res.status(502).json({ error: 'Couldn’t reach Sitewire right now — please try again shortly.' }); }
+});
+
 // ==== Super-admin Scope-of-Work line-item editing (owner-directed 2026-07-21) ====
 // Editing a line's WORDING (label) + DESCRIPTION is NOT allowed by default. A SUPER-ADMIN must UNLOCK the
 // file's SOW editing first (mirrors the structural unlock). Each edit updates the REAL Scope of Work +

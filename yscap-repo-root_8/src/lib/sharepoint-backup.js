@@ -1578,8 +1578,17 @@ async function runOnce({ limit = DEFAULT_BATCH, seq = 0 } = {}) {
   // whole worker) as it did on 2026-07-20.
   try { await withTimeout(settleSupersededSnapshots(), DB_OP_TIMEOUT_MS, 'snapshot settle timed out (DB lock?)'); } catch (e) { console.warn('[sp-sync] snapshot settle error:', e.message); }
   try { await withTimeout(settleNeverMirror(), DB_OP_TIMEOUT_MS, 'never-mirror settle timed out (DB lock?)'); } catch (e) { console.warn('[sp-sync] never-mirror settle error:', e.message); }
+  // Phase-4 cutover: when SHAREPOINT_MIRROR_FSM=on the state machine OWNS the
+  // uploads (fsmPass → drainClaimed claims + mirrors + persists), so the legacy
+  // pendingBatch loop and stray sweep must NOT run here or the same document
+  // would be uploaded twice. The settle passes above still run (they stamp
+  // superseded/never-mirror rows the FSM claim excludes). Default off/shadow →
+  // this is false and the legacy path runs exactly as before.
+  const fsmOwnsUploads = (() => { try { return require('./sp-mirror-queue').fsmMode() === 'on'; } catch (_) { return false; } })();
   let rows;
-  try {
+  if (fsmOwnsUploads) {
+    rows = [];
+  } else try {
     rows = await withTimeout(pendingBatch(limit), DB_OP_TIMEOUT_MS, 'pendingBatch selection timed out (DB lock?)');
   } catch (e) {
     // A timed-out selection means the DB is wedged; treat this pass as empty so
@@ -1624,7 +1633,14 @@ async function runOnce({ limit = DEFAULT_BATCH, seq = 0 } = {}) {
   // swept at most once (next pass it no longer matches attempts=0).
   let strayForced = 0, strayMirrored = 0;
   try {
-    const strays = await neverAttemptedStrays(STRAY_BATCH);
+    // When the FSM owns uploads it claims every LOCAL pending doc (its claim +
+    // reaper + reconcile subsume the local stray net), but its claim carries the
+    // storage_provider='local' filter, so it can't reach NON-local docs. Keep the
+    // stray net for exactly that population in 'on' mode — those still get a forced
+    // attempt + review card and don't race the FSM claim (which never selects them).
+    const strays = fsmOwnsUploads
+      ? (await neverAttemptedStrays(STRAY_BATCH)).filter((s) => (s.storage_provider || 'local') !== 'local')
+      : await neverAttemptedStrays(STRAY_BATCH);
     for (const s of strays) {
       if (seq && seq !== _runSeq) break;   // superseded by a fresher pass — stop
       console.warn(`[sp-sync] never-attempted stray doc ${s.id} (${s.filename || '?'}) age ${s.age_hours}h — ${explainExclusion(s)}; forcing one attempt`);
@@ -1656,19 +1672,27 @@ async function runOnce({ limit = DEFAULT_BATCH, seq = 0 } = {}) {
   // set divergence from this legacy pass (the legacy path still did every upload
   // above); reclaims crashed leases. Best-effort — a FSM error never breaks the
   // mirror. Lazy require avoids any load-order cycle with sp-mirror-queue.
+  let fsmDrained = 0;
   try {
     const q = require('./sp-mirror-queue');
-    if (q.fsmMode() !== 'off') await withTimeout(q.fsmPass(), DB_OP_TIMEOUT_MS, 'fsm shadow pass timed out');
+    if (q.fsmMode() !== 'off') {
+      const fr = await withTimeout(q.fsmPass(), DB_OP_TIMEOUT_MS, 'fsm shadow pass timed out');
+      // In 'on' mode the FSM did the uploads — fold its counts in so this pass's
+      // scanned/mirrored/failed reflect real activity (health + the drain() loop
+      // that continues while a pass did work, instead of stalling at one batch).
+      if (fr && fr.drain) { mirrored += fr.drain.mirrored || 0; failed += fr.drain.failed || 0; fsmDrained = fr.drain.claimed || 0; }
+    }
   } catch (e) { console.warn('[sp-fsm] pass error:', e.message); }
-  _lastPass = { at: new Date().toISOString(), scanned: rows.length + strayForced, mirrored, failed, strays: strayForced };
+  const scannedTotal = rows.length + strayForced + fsmDrained;
+  _lastPass = { at: new Date().toISOString(), scanned: scannedTotal, mirrored, failed, strays: strayForced };
   // Liveness dead-man's switch: a COMPLETED pass (even an idle one) stamps the
   // persistent heartbeat, so "the worker last made progress at T" is always
   // knowable. A frozen worker never reaches here, so the heartbeat lapses and
   // the watchdog fires. Only the latest generation stamps it (a resumed zombie
   // must not refresh a healthy pass's liveness).
-  if (!seq || seq === _runSeq) recordHeartbeat({ scanned: rows.length + strayForced, mirrored, failed });
-  if (rows.length || strayForced) console.log(`[sp-sync] pass: scanned ${rows.length}, mirrored ${mirrored}, failed ${failed}` + (strayForced ? `, strays force-attempted ${strayForced} (${strayMirrored} mirrored)` : ''));
-  return { scanned: rows.length + strayForced, mirrored, failed, strays: strayForced };
+  if (!seq || seq === _runSeq) recordHeartbeat({ scanned: scannedTotal, mirrored, failed });
+  if (rows.length || strayForced || fsmDrained) console.log(`[sp-sync] pass: scanned ${scannedTotal}, mirrored ${mirrored}, failed ${failed}` + (strayForced ? `, strays force-attempted ${strayForced} (${strayMirrored} mirrored)` : '') + (fsmDrained ? `, fsm-claimed ${fsmDrained}` : ''));
+  return { scanned: scannedTotal, mirrored, failed, strays: strayForced };
 }
 
 /** Drain everything pending (the first-run backfill + burst catch-up). */
@@ -2372,7 +2396,7 @@ module.exports = {
   verifyOnce, drainVerify, settleSupersededSnapshots, isRegenKind,
   reconciliation, checkBacklogSlo, stuckDocuments, escalateStuckDocs,
   classifyMirrorError, forceAttemptDoc,
-  neverAttemptedStrays, pendingBatch, explainExclusion,
+  neverAttemptedStrays, pendingBatch, explainExclusion, enrichedRowById,
   sloSignature, claimSloAlert, clearSloAlert,
   claimAlert, clearAlert,
   withTimeout,

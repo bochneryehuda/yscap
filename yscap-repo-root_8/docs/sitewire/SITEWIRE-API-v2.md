@@ -49,12 +49,38 @@ CSRF). **The API v2 has NEITHER field.** The correct API mappings — now used b
 - **Block Draws / Draws Allowed → `budget.draw_eligible`** (PATCH `/budgets/{id}`, NOT the property). `draw_eligible:false` = blocked.
 - **Sitewire GC review ↔ In-house → `property.require_sitewire_inspector`** (PATCH `/properties/{id}`). `true` = Sitewire review.
 
-## Documents — NO API upload
+## Documents — NO API upload → PILOT's website workaround
 There is **no document-upload endpoint** in the API. Documents can only be READ (property `documents[].src`
 are `active_storage` blob-redirect links). Upload on the website is a Rails ActiveStorage direct-upload flow
-(`/rails/active_storage/direct_uploads` → S3 PUT → `/properties/{id}/property_documents`) that requires a
-browser session + CSRF token — the API token cannot do it. Pushing the appraisal/SOW documents into Sitewire
-therefore needs a non-API workaround (or Sitewire adding an API endpoint).
+that requires a browser session + CSRF token — the API token cannot do it.
+
+**PILOT ships the workaround** (`src/sitewire/web-client.js` + `src/sitewire/doc-push.js`): a server-side
+"browser robot" that logs into the website and does the confirmed 3-step upload, pushing three documents into
+the property's Documents tab — the **appraisal PDF** (`doc_kind='appraisal_pdf'`, never the XML), the
+**Scope of Work Excel** (`doc_kind='rehab_budget_export'`, .xlsx — regenerated from the saved SOW if none is
+stored) and the **Scope of Work PDF** (`doc_kind='rehab_budget_export'`, .pdf). It runs **automatically on
+every property push** and is also a manual **Send / Re-send** on the draw desk (DrawsPanel → "Documents &
+borrower invite"). Every upload is journaled, volume-circuit-broken, **read-after-write VERIFIED against the
+trusted API** (`property.documents[]` — never trusting the website flow's own response), sha256-deduped
+(identical bytes are never re-uploaded unless forced), and **parked on any failure** — never silently dropped.
+
+The confirmed website flow (captured from a real browser session — never guessed):
+1. `POST /rails/active_storage/direct_uploads` — body `{"blob":{filename,content_type,byte_size,checksum:<base64 MD5>}}` → `{signed_id, direct_upload:{url, headers}}`
+2. `PUT <direct_upload.url>` with `<direct_upload.headers>`, body = the raw bytes (S3)
+3. `POST /properties/{id}/property_documents` (multipart): `authenticity_token`, `file-selection`, `property[property_documents_attributes][0][document]=<signed_id>` + header `x-csrf-token`
+   - Delete (revoke / clean re-push): `POST /properties/{id}/property_documents/{docId}` body `_method=delete&authenticity_token=<token>`
+
+**Staged like every write** — OFF unless `SITEWIRE_DOCS_ENABLED=1`, and still gated by `SITEWIRE_OUTBOUND_ENABLED`
++ `SITEWIRE_DRYRUN`. **Secrets go in Render env only** (never committed, never pasted in chat):
+- `SITEWIRE_WEB_EMAIL` + `SITEWIRE_WEB_PASSWORD` — the preferred, durable path: PILOT logs itself in (a
+  `lender_owner` website login) and refreshes its own session.
+- `SITEWIRE_WEB_COOKIE` — fallback for when SSO/MFA blocks an automated login: a session cookie copied from a
+  logged-in Sitewire browser tab (expires — the login above is preferred).
+- Optional overrides: `SITEWIRE_WEB_BASE_URL`, `SITEWIRE_WEB_SIGNIN_PATH` (default `/users/sign_in`), `SITEWIRE_WEB_TIMEOUT_MS`.
+
+The document WRITE uses only the confirmed field names above; a wrong login shape simply fails to authenticate
+(fail-closed) and can never corrupt Sitewire property data. Every upload URL is https + host-allowlisted (the
+Sitewire host, or an AWS S3 host Sitewire's own response handed us) — no SSRF.
 
 ## Note on the job-item `description` write (Feature B)
 `pushJobItemDescription` PATCHes `budget.job_items[].description`. `description` is in the job_item GET
