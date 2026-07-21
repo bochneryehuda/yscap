@@ -791,7 +791,10 @@ async function recordLosFieldFacts(client, appId, appRow) {
     ['property_address',          FACT_KEYS.PROPERTY_ADDRESS,   'applications.property_address'],
     ['program',                   FACT_KEYS.LOAN_PROGRAM,       'applications.program'],
     ['loan_type',                 FACT_KEYS.LOAN_TYPE,          'applications.loan_type'],
-    ['fico',                      FACT_KEYS.BORROWER_FICO,      'applications.fico'],
+    // NOTE — borrower FICO lives on `borrowers`, NOT `applications`. It flows
+    // to the twin via document extractions (credit_report). A dedicated
+    // borrower-row wire (recordLosBorrowerFacts) is a follow-up when the
+    // borrower edit paths are twin-wired too.
   ];
   let recorded = 0;
   for (const [col, factKey, sourceId] of mapping) {
