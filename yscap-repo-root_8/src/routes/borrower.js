@@ -1031,6 +1031,34 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
   } catch (e) { console.error('[borrower pricing]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
+// Borrower requests an EXCEPTION to a guideline (e.g. finance more of an
+// assignment fee than the 15% cap → a bigger loan). Raises an escalation into the
+// super-admin Workflow + Escalations box; does NOT change the registered product
+// (owner-directed 2026-07-21). A super-admin reviews and, if granted, applies the
+// admin override and re-registers.
+router.post('/applications/:id/pricing/request-exception', async (req, res) => {
+  const appId = req.params.id;
+  try {
+    const f = await loadFileForPricing(appId, me(req));
+    if (!f) return res.status(404).json({ error: 'not found' });
+    const note = String((req.body && req.body.note) || '').slice(0, 1000).trim();
+    if (!note) return res.status(400).json({ error: 'Describe the exception you’re requesting.' });
+    const ctx = await notify.fileContext(appId);
+    await workflowAuto.onEscalationOpened(appId, { fromStaffId: null, note: `Borrower exception request: ${note}` });
+    try {
+      await notify.notifyAdmins({
+        type: 'manual_escalation',
+        title: 'Borrower requested an exception',
+        body: `The borrower requested an exception on ${ctx ? ctx.label : 'a file'}: ${note}`,
+        meta: (ctx && ctx.meta) || undefined, applicationId: appId,
+        link: '/internal/escalations', ctaLabel: 'Open the Escalations box',
+      });
+    } catch (_) { /* best-effort */ }
+    await audit(req, 'pricing_exception_requested', 'application', appId, { note });
+    res.json({ ok: true });
+  } catch (e) { console.error('[borrower pricing]', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
 // Borrower-safe file activity feed (never internal chat/notes/conditions).
 router.get('/applications/:id/activity', async (req, res) => {
   const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")}) AND deleted_at IS NULL`, [req.params.id, me(req)]);
