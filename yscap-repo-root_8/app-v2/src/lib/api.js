@@ -593,6 +593,7 @@ export const api = {
   // ---- Document-underwriting desk: read + understand each document, resolve findings ----
   underwritingGet:            (appId) => req('GET', `/api/underwriting/${appId}`),
   underwritingAnalyze:        (appId, docId, b) => req('POST', `/api/underwriting/${appId}/documents/${docId}/analyze`, b),
+  underwritingAutoRead:       (appId) => req('POST', `/api/underwriting/${appId}/auto-read`),
   underwritingClassify:       (appId, docId) => req('POST', `/api/underwriting/${appId}/documents/${docId}/classify`),
   underwritingResolveFinding: (appId, fid, b) => req('POST', `/api/underwriting/${appId}/findings/${fid}/resolve`, b),
   underwritingExperienceException: (appId, b) => req('POST', `/api/underwriting/${appId}/experience-exception`, b),
