@@ -21,6 +21,11 @@ const SWITCHES = [
   { key: 'CLICKUP_OUTBOUND_ENABLED', integration: 'clickup', label: 'ClickUp writing (push to ClickUp)', dangerous: true, envDefault: () => cfg.clickupOutboundEnabled },
   { key: 'CLICKUP_INBOUND_CREATE_FILES', integration: 'clickup', label: 'Create loan files from ClickUp tasks', dangerous: true, envDefault: () => cfg.clickupInboundCreateFiles },
   { key: 'SHAREPOINT_BACKUP_ENABLED', integration: 'sharepoint', label: 'Document mirroring to SharePoint', dangerous: false, envDefault: () => cfg.sharepointBackupEnabled },
+  // Staged cutover to the explicit state-machine mirror engine (instant, no redeploy).
+  // Turn WATCH-ONLY on first and confirm parity in the admin dashboard, THEN turn
+  // LIVE on. Rollback = turn LIVE (or both) off — takes effect within seconds.
+  { key: 'SHAREPOINT_MIRROR_FSM_SHADOW', integration: 'sharepoint', label: 'SharePoint mirror — new engine WATCH-ONLY (shadow)', dangerous: false, resume: true, envDefault: () => String(process.env.SHAREPOINT_MIRROR_FSM || '').toLowerCase().trim() === 'shadow' },
+  { key: 'SHAREPOINT_MIRROR_FSM_ON', integration: 'sharepoint', label: 'SharePoint mirror — new engine LIVE (cutover)', dangerous: true, resume: true, envDefault: () => String(process.env.SHAREPOINT_MIRROR_FSM || '').toLowerCase().trim() === 'on' },
   { key: 'DOCUSIGN_SEND_ENABLED', integration: 'docusign', label: 'E-signature sending', dangerous: true, envDefault: () => !!(cfg.docusign && cfg.docusign.sendEnabled) },
   { key: 'APPRAISAL_FLOOD_CHECK_ENABLED', integration: 'fema_flood', label: 'Flood-zone check', dangerous: false, envDefault: () => cfg.appraisalFloodCheckEnabled },
 ];

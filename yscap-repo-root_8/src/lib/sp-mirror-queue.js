@@ -34,8 +34,26 @@ const LEASE_MINUTES = (() => {
 })();
 const _holderId = `${process.pid}-fsm`;
 
-/** off | shadow | on — default off keeps the machine inert. */
+/**
+ * off | shadow | on — default off keeps the machine inert.
+ *
+ * Admin-toggleable: two DB-backed integration_flags (the same instant, no-redeploy
+ * override layer behind the API Health switches) drive the cutover — that IS the
+ * promised instant-rollback control. If EITHER flag has an explicit admin override,
+ * the flags are authoritative (so flipping LIVE off rolls back even if an env var
+ * says on): SHAREPOINT_MIRROR_FSM_ON → 'on', else SHAREPOINT_MIRROR_FSM_SHADOW →
+ * 'shadow', else 'off'. With NO override (the default), it falls through to the env
+ * var, which defaults to 'off' — byte-identical to before any flag is flipped.
+ */
 function fsmMode() {
+  try {
+    const flags = require('./flags');
+    if (flags.hasOverride('SHAREPOINT_MIRROR_FSM_ON') || flags.hasOverride('SHAREPOINT_MIRROR_FSM_SHADOW')) {
+      if (flags.enabled('SHAREPOINT_MIRROR_FSM_ON', false)) return 'on';
+      if (flags.enabled('SHAREPOINT_MIRROR_FSM_SHADOW', false)) return 'shadow';
+      return 'off';
+    }
+  } catch (_) { /* flags unavailable — fall back to env */ }
   const m = String(process.env.SHAREPOINT_MIRROR_FSM || 'off').toLowerCase().trim();
   return (m === 'shadow' || m === 'on') ? m : 'off';
 }
@@ -360,7 +378,10 @@ async function drainClaimed(limit = backup.DEFAULT_BATCH, { holder = _holderId }
 async function healthSnapshot() {
   const { rows } = await db.query(
     `SELECT
-       count(*) FILTER (WHERE sharepoint_mirror_status='PENDING')::int      AS pending,
+       -- "claimable" counts require storage_ref (real bytes to mirror): a bytes-
+       -- less row is PENDING by derivation but is excluded from every selector, so
+       -- counting it here would keep the age-WARN perpetually lit for no real work.
+       count(*) FILTER (WHERE sharepoint_mirror_status='PENDING' AND storage_ref IS NOT NULL)::int AS pending,
        count(*) FILTER (WHERE sharepoint_mirror_status='IN_PROGRESS')::int  AS in_progress,
        count(*) FILTER (WHERE sharepoint_mirror_status='FAILED')::int       AS failed,
        count(*) FILTER (WHERE sharepoint_mirror_status='DONE')::int         AS done,
@@ -370,7 +391,7 @@ async function healthSnapshot() {
        count(*) FILTER (WHERE sharepoint_mirror_status='IN_PROGRESS'
                           AND sharepoint_lease_expires_at < now())::int     AS orphaned_leases,
        COALESCE(EXTRACT(EPOCH FROM (now() - min(created_at)
-         FILTER (WHERE sharepoint_mirror_status IN ('PENDING','FAILED'))))::int, 0) AS oldest_claimable_secs,
+         FILTER (WHERE sharepoint_mirror_status IN ('PENDING','FAILED') AND storage_ref IS NOT NULL)))::int, 0) AS oldest_claimable_secs,
        COALESCE(max(sharepoint_backup_attempts)
          FILTER (WHERE sharepoint_mirror_status IN ('PENDING','FAILED','IN_PROGRESS')), 0)::int AS max_attempts,
        count(*) FILTER (WHERE sharepoint_mirror_status='DONE'
