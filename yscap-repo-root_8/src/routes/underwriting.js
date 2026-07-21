@@ -383,6 +383,13 @@ router.get('/:appId', async (req, res, next) => {
         hasAmendments: amendments.hasAmendments, unexecuted: amendments.unexecuted,
         findings: amendments.findings.map(decorate) },
       reasonability: { checks: reasonability.checks, findings: reasonability.findings.map(decorate) },
+      // ONE consolidated list of every open finding the summary counts — so "2 warnings" maps to a
+      // visible list of exactly 2 items (owner-reported: "it says 2 warnings and I can't see them").
+      // It's the same de-duplicated roll-up (openWithRisk) the counts come from, decorated so each is
+      // actionable; the desk shows it once at the top instead of scattering findings across sections.
+      // A persisted per-document finding (has an id) is resolvable; a derived advisory (tie-out /
+      // metric / staleness) is display-only and clears when its underlying data changes.
+      allFindings: openWithRisk.map(decorate),
       summary,
       docTypes: registry.docTypes(),
       analyzers: { reader: docint.configured(), ai: azureOpenai.available() },
