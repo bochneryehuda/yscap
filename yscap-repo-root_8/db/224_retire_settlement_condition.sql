@@ -36,3 +36,15 @@ DELETE FROM checklist_items ci
      SELECT 1 FROM documents d
       WHERE d.checklist_item_id = ci.id
    );
+
+-- (3) Human-touched rows survive step (2) — they carry uploaded settlement documents, staff
+--     notes, borrower interaction, or a non-'outstanding' status. Retiring the condition mapping
+--     leaves them REQUIRED but unsatisfiable (the doc-type→condition link is gone), which would
+--     block Clear-to-Close on any file that already has one. Mark them non-required so they
+--     stop blocking advancement; the row itself + attached documents + notes are preserved for
+--     the audit trail and for the post-closing module when it's built. Idempotent (only touches
+--     rows where is_required is still true).
+UPDATE checklist_items
+   SET is_required = false, updated_at = now()
+ WHERE template_id IN (SELECT id FROM checklist_templates WHERE code = 'rtl_cond_settlement')
+   AND is_required = true;
