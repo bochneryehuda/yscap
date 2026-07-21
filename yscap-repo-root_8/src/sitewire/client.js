@@ -86,9 +86,13 @@ function guardNoUnsafeWrite(path, body) {
 }
 const DRAW_TRANSITIONS = new Set(['approve', 'amend', 'reopen']); // reject is capital-partner-only; never ours
 
-async function call(path, { method = 'GET', body, noRetry = false } = {}) {
+async function call(path, { method = 'GET', body, noRetry = false, allowNulls = false } = {}) {
   const isWrite = method !== 'GET';
-  if (isWrite && body !== undefined) guardNoUnsafeWrite(path, body);
+  // Default: refuse a body containing null / undefined / NaN — a Sitewire field wiped with null
+  // is almost always a bug. Opt-in `allowNulls:true` skips the guard for a specific KNOWN-CLEARING
+  // call (e.g. quick_notify_status_id=null per the swagger PATCH /draws example). Never a blanket
+  // "trust me" — every caller that opts in owns the safety of that specific write.
+  if (isWrite && body !== undefined && !allowNulls) guardNoUnsafeWrite(path, body);
   // DRY-RUN: log the exact write and send nothing (reads still go through).
   if (isWrite && cfg.sitewireDryrun) {
     console.warn(`[sitewire][DRYRUN] would ${method} ${path} body=${body ? JSON.stringify(body) : '(none)'}`);
@@ -166,7 +170,7 @@ const updateBudget = (id, budget) => {
   return call(`/api/v2/budgets/${id}`, { method: 'PATCH', body: { budget }, noRetry: hasIdlessCreate });
 };
 const updateRequest = (id, request) => call(`/api/v2/requests/${id}`, { method: 'PATCH', body: { request } });
-const updateDraw = (id, draw) => call(`/api/v2/draws/${id}`, { method: 'PATCH', body: { draw } });
+const updateDraw = (id, draw, opts = {}) => call(`/api/v2/draws/${id}`, { method: 'PATCH', body: { draw }, allowNulls: !!opts.allowNulls });
 function drawTransition(id, action) {
   if (!DRAW_TRANSITIONS.has(action)) {
     const e = new Error(`BLOCKED: unsupported draw transition '${action}' (allowed: approve/amend/reopen).`);

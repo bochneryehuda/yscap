@@ -37,6 +37,13 @@ const storage = require('../lib/storage');
 const { setMediaHeaders } = require('../lib/media-headers');
 const { serveDocument } = require('../lib/serve-document');
 const { computeRelease, waiverGate } = require('../sitewire/money');
+const { keyedRateLimit } = require('../lib/rate-limit');
+// Coordinator-message spam throttle (audit finding B-7, 2026-07-21). Per-(file, actor) so a whole team
+// isn't rate-limited by one coordinator on a different file. 5/min is generous for a real conversation
+// (a coordinator typing one reply, then a follow-up) but tight enough that a malicious/compromised
+// admin token can't script a per-second borrower email flood.
+const drawMessageReplyThrottle = keyedRateLimit({ bucket: 'sw-draw-msg-reply', windowMs: 60000, max: 5,
+  keyOf: (req) => `${req.params.id}:${(req.actor && req.actor.id) || 'anon'}` });
 // The Draw Request & Wire Instructions form goes out through the existing DocuSign
 // e-sign integration (owner-directed 2026-07-20). orchestrate.sendPackage drives the
 // send; draw-wire owns the wire condition + capture.
@@ -262,10 +269,20 @@ router.post('/files/:id/lifecycle', requirePermission('manage_draws'), async (re
 // Owner-directed 2026-07-20 (a testing control): Sitewire has no delete API, so this deactivates the property
 // there and unlinks it here (tombstoning its id so the re-push skips only this copy), clearing the mirrored
 // draw rows so the "Start the draw process" card — with all push options — reappears. The money ledger is
-// KEPT. manage_draws + canSeeFile + go-forward-only (only a PILOT-created file can be reset).
+// KEPT. Owner-directed 2026-07-21 (audit finding B-3): this is a NUKE button — it deactivates the Sitewire
+// property, tombstones the link, and clears mirrored draws. Restrict to super_admin AND require a typed
+// confirmation of the file's loan number so a coordinator on the wrong file can't hit it by accident. Every
+// invocation is journaled (via resetDrawSetup's own audit trail).
 router.post('/files/:id/reset-draw', requirePermission('manage_draws'), async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  if (!isSuperAdmin(req)) return res.status(403).json({ error: 'Only a super admin can reset the Sitewire draw setup — ask an admin.' });
+  const confirm = req.body && req.body.confirm_loan_number ? String(req.body.confirm_loan_number).trim() : '';
+  if (!confirm) return res.status(400).json({ error: 'To reset, type the file\'s loan number in `confirm_loan_number`.' });
+  const a = (await db.query(`SELECT ys_loan_number FROM applications WHERE id=$1`, [appId])).rows[0] || {};
+  const expected = String(a.ys_loan_number || '').trim();
+  if (!expected) return res.status(409).json({ error: 'This file has no loan number to confirm against — reset refused.' });
+  if (confirm !== expected) return res.status(400).json({ error: `The loan number you typed doesn't match this file. Reset refused.` });
   try {
     const r = await orchestrator.resetDrawSetup(appId, req.actor && req.actor.id);
     if (r.error === 'not_managed') return res.status(409).json({ error: 'This file isn’t managed by PILOT in Sitewire — there’s nothing to reset.' });
@@ -426,6 +443,7 @@ router.post('/files/:id/sow-line-edit', requirePermission('manage_draws'), async
     if (r.error === 'nothing_to_change') return res.status(400).json({ error: 'Enter a wording or description to save.' });
     if (r.error === 'no_sow') return res.status(409).json({ error: 'This file has no saved Scope of Work to edit.' });
     if (r.error === 'line_not_found') return res.status(404).json({ error: 'That line item isn’t in the Scope of Work.' });
+    if (r.error === 'line_drawn_locked') return res.status(422).json({ error: r.message || 'This line has already been drawn against in Sitewire — its name is locked there. Edit the description instead, or reset the draw process first.' });
     res.json(r);
   } catch (e) { console.warn('[sitewire] sow-line-edit error:', e && e.message); res.status(500).json({ error: 'Couldn’t save the line-item change right now.' }); }
 });
@@ -509,7 +527,7 @@ router.get('/files/:id/messages/:notificationId/attachments/:idx', requirePermis
 // A direct borrower message from the draw desk: emails the borrower (borrower-safe scrub applies), logs the
 // notification, and captures the sent email so it appears right back in this thread. The borrower's reply
 // forwards to the team (file+<appId>@ reply-to) and lands in "Replies received". manage_draws + canSeeFile.
-router.post('/files/:id/messages/reply', requirePermission('manage_draws'), async (req, res) => {
+router.post('/files/:id/messages/reply', requirePermission('manage_draws'), drawMessageReplyThrottle, async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
   const body = String((req.body && req.body.body) || '').trim();
@@ -895,9 +913,23 @@ router.post('/requests/:reqId/approve', requirePermission('manage_draws'), async
   const own = (await db.query(
     `SELECT r.sitewire_request_id, r.requested_cents, d.application_id FROM sitewire_draw_requests r JOIN sitewire_draws d ON d.sitewire_draw_id=r.sitewire_draw_id WHERE r.sitewire_request_id=$1`, [reqId])).rows[0];
   if (!own || !(await canSeeFile(req, own.application_id))) return res.status(403).json({ error: 'forbidden' });
-  // G-APPRV: never exceed requested without an explicit override
-  if (approvedCents > own.requested_cents && !req.body.override) {
-    return res.status(422).json({ error: `approved ${T.usd(approvedCents)} exceeds requested ${T.usd(own.requested_cents)} — pass override:true to allow` });
+  // G-APPRV: never exceed requested without an explicit override. Owner-directed 2026-07-21:
+  // `override:true` is a MONEY escalation (approved > requested is the coordinator overriding the
+  // inspector's number), so restrict it to super_admin AND require a note documenting why. Journal
+  // every override so the audit trail explains any approved-over-requested figure on this line.
+  if (approvedCents > own.requested_cents) {
+    if (!req.body.override) {
+      return res.status(422).json({ error: `approved ${T.usd(approvedCents)} exceeds requested ${T.usd(own.requested_cents)} — pass override:true (super_admin only, with a note) to allow` });
+    }
+    if (!isSuperAdmin(req)) {
+      return res.status(403).json({ error: 'Only a super admin can approve more than the borrower requested. Ask an admin to override this line.' });
+    }
+    const overrideNote = req.body.override_note ? String(req.body.override_note).trim() : '';
+    if (!overrideNote || overrideNote.length < 8) {
+      return res.status(400).json({ error: 'An override note (at least 8 characters) is required to approve more than requested.' });
+    }
+    // Best-effort journal BEFORE the write so the intent is captured even if the Sitewire push then fails.
+    try { await orchestrator.journal({ appId: own.application_id, entity: 'request', entityId: Number(reqId), field: 'override_approve', oldValue: { requested_cents: own.requested_cents }, newValue: { approved_cents: approvedCents, note: overrideNote.slice(0, 500), actor: req.actor && req.actor.id }, source: 'money_override' }); } catch (_) {}
   }
   try {
     await orchestrator.circuitCheck(1);
@@ -936,11 +968,21 @@ router.post('/draws/:drawId/:action', requirePermission('manage_draws'), async (
   if (!client.DRAW_TRANSITIONS.has(action)) return res.status(400).json({ error: 'action must be approve, amend, or reopen' });
   const own = (await db.query(`SELECT application_id FROM sitewire_draws WHERE sitewire_draw_id=$1`, [drawId])).rows[0];
   if (!own || !(await canSeeFile(req, own.application_id))) return res.status(403).json({ error: 'forbidden' });
+  // Audit finding B-10 (2026-07-21): amend + reopen are destructive draw-state changes (they take a
+  // draw the lender already decided on and re-open it for another round of work) — the audit trail
+  // must record WHY. Require + persist a note ≥ 8 chars for those two actions; approve stays note-
+  // optional (the approval itself is self-explanatory). Journaled with the note below.
+  let note = null;
+  if (action === 'amend' || action === 'reopen') {
+    note = req.body && req.body.note ? String(req.body.note).trim() : '';
+    if (!note || note.length < 8) return res.status(400).json({ error: `Add a note (at least 8 characters) explaining why you are ${action === 'amend' ? 'amending' : 'reopening'} this draw.` });
+    note = note.slice(0, 500);
+  }
   try {
     await orchestrator.circuitCheck(1);
     const r = await client.drawTransition(drawId, action);
     if (!(r && r.__dryrun)) {
-      await orchestrator.journal({ appId: own.application_id, entity: 'draw', entityId: Number(drawId), field: action, newValue: r && r.status, source: 'push' });
+      await orchestrator.journal({ appId: own.application_id, entity: 'draw', entityId: Number(drawId), field: action, newValue: { status: r && r.status, note, actor: req.actor && req.actor.id }, source: 'push' });
       await reconcile.reconcileOne(own.application_id).catch(() => {});
     }
     res.json({ ok: true, status: r && r.status });
@@ -986,11 +1028,23 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
   const own = (await db.query(`SELECT total_approved_cents FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [sitewire_draw_id, application_id])).rows[0];
   if (!own) return res.status(400).json({ error: 'that draw is not on this file' });
   const drawId = sitewire_draw_id;
-  // M1: don't record a release larger than what the lender actually approved on this draw (unless overridden) —
-  // the ledger (and retainage) should never exceed the real approved figure.
+  // M1: don't record a release larger than what the lender actually approved on this draw. Owner-directed
+  // 2026-07-21: `override:true` on a disbursement is REAL MONEY going out — a bigger wire than the approval
+  // — so restrict to super_admin AND require a note. Every override is journaled so a future audit can
+  // reconstruct why any release exceeded the approval.
   const drawApproved = Number(own.total_approved_cents) || 0;
-  if (drawApproved > 0 && approved > drawApproved && !req.body.override) {
-    return res.status(422).json({ error: `${T.usd(approved)} is more than the ${T.usd(drawApproved)} approved on this draw — pass override:true to record it anyway.` });
+  if (drawApproved > 0 && approved > drawApproved) {
+    if (!req.body.override) {
+      return res.status(422).json({ error: `${T.usd(approved)} is more than the ${T.usd(drawApproved)} approved on this draw — pass override:true (super_admin only, with a note) to record it anyway.` });
+    }
+    if (!isSuperAdmin(req)) {
+      return res.status(403).json({ error: 'Only a super admin can record a release larger than the approved amount. Ask an admin to override.' });
+    }
+    const overrideNote = req.body.override_note ? String(req.body.override_note).trim() : '';
+    if (!overrideNote || overrideNote.length < 8) {
+      return res.status(400).json({ error: 'An override note (at least 8 characters) is required to release more than the approved amount.' });
+    }
+    try { await orchestrator.journal({ appId: application_id, entity: 'draw', entityId: Number(drawId), field: 'override_disbursement', oldValue: { approved_on_draw_cents: drawApproved }, newValue: { released_cents: approved, note: overrideNote.slice(0, 500), actor: req.actor && req.actor.id }, source: 'money_override' }); } catch (_) {}
   }
   // H1: a draw is released once — block a duplicate ledger row up front (the db/148 unique index is the
   // belt-and-suspenders). A duplicate would double-count into the retainage pool.
@@ -1228,6 +1282,15 @@ router.post('/rules', requirePermission('platform_setup'), async (req, res) => {
   if (handledExternally && !partnerLabel) {
     return res.status(400).json({ error: 'Pick a specific capital partner before marking a rule “handled externally” — the global default can’t be handled externally.' });
   }
+  // Audit finding B-9 (2026-07-21): a rule for a partner_label that DOESN'T map to a Sitewire
+  // capital_partner_id (either directory-exact or an owner-confirmed link) AND isn't marked
+  // handled_externally used to save cp_id=NULL. Every push for that label then paused at bind-time
+  // with `sitewire_capital_partner_unmatched` — a silent trap. Reject at POST time so the coordinator
+  // fixes it here: either pick a partner from the directory / confirm a link on the /partners page,
+  // or mark the rule handled externally. Global defaults (no partner_label) don't need a cp_id.
+  if (partnerLabel && !cpId && !handledExternally) {
+    return res.status(400).json({ error: `We couldn't find "${partnerLabel}" in the Sitewire capital-partner directory. Either link it to a Sitewire partner on the Partners page, or check "Handled externally" if this partner isn't in Sitewire.` });
+  }
   const method = b.inspection_method === 'traditional' ? 'traditional' : 'mobile';
   // allow_virtual / allow_physical say which methods this program MAY use (both = coordinator can switch).
   // Default each to true when absent. Never let a rule forbid its own default method — that would leave a
@@ -1409,6 +1472,30 @@ router.post('/reviews/:id/:action', requirePermission('manage_draws'), async (re
       `SELECT id FROM sync_review_queue WHERE application_id=$1 AND field_key='sitewire' AND status='open' AND id<>$2
          AND split_part(reason,':',1) = $3 LIMIT 1`, [row.application_id, id, SITEWIRE_DUPE])).rows[0];
     if (blocker) return res.status(409).json({ error: 'This loan is already on a property in Sitewire that PILOT didn’t create. Resolve that review first — either delete the property in Sitewire and push a fresh copy, or keep them separate — retrying now would just hit that block again.' });
+    // Audit finding C-1 (2026-07-21): a DOC-PUSH failure (sitewire_doc_push_failed / sitewire_doc_unverified
+    // / sitewire_doc_web_session) is fixed by re-running docPush.pushDocuments — NOT the regular push_file
+    // (which is property + budget + SOW only and never touches the 3 property documents). The old retry path
+    // re-queued push_file, the worker ran it, the review closed as "retried", and the document still wasn't
+    // in Sitewire — a silent no-op loop. Route doc-* reasons through docPush directly with force:true so the
+    // sha256 dedup doesn't short-circuit the retry. The 'which' slot comes from the park's `dedupe` (which
+    // pushDocuments set to g.which); a missing/unknown slot falls back to all three.
+    const DOC_REASONS = new Set(['sitewire_doc_push_failed', 'sitewire_doc_unverified', 'sitewire_doc_web_session']);
+    if (DOC_REASONS.has(reasonClass)) {
+      const docPush = require('../sitewire/doc-push');
+      const parked = (await db.query(`SELECT task_id FROM sync_review_queue WHERE id=$1`, [id])).rows[0];
+      const parts = parked && parked.task_id ? String(parked.task_id).split(':') : [];
+      const which = docPush.SLOTS.includes(parts[parts.length - 1]) ? parts[parts.length - 1] : null;
+      let result;
+      try { result = await docPush.pushDocuments(row.application_id, { which, force: true, staffId: req.actor && req.actor.id, source: 'review_retry' }); }
+      catch (e) { return res.status(502).json({ error: `Could not retry the document push — ${(e && e.message) || 'unknown error'}. Please try again.` }); }
+      // Success or partial-success closes the review; a hard error (docs_disabled / not_managed / …) leaves it open.
+      if (result && result.ok === false && !Array.isArray(result.results)) {
+        return res.status(409).json({ error: `Document push can\'t retry now (${result.error || 'unknown'}). Turn on the connection or contact an admin.` });
+      }
+      await db.query(`UPDATE sync_review_queue SET status='resolved', resolved_by=$2, resolved_at=now(), resolution_note=$3 WHERE id=$1`,
+        [id, req.actor.id, `retried document push (${which || 'all slots'})`]);
+      return res.json({ ok: true, retried_docs: true, result });
+    }
     const dead = await db.query(
       `UPDATE sync_queue SET status='queued', attempts=0, run_after=now(), updated_at=now()
         WHERE entity_type='application' AND entity_id=$1 AND target='sitewire' AND direction='push' AND status='dead' RETURNING id`, [row.application_id]);
@@ -1789,12 +1876,24 @@ router.post('/files/:id/advanced-settings', requirePermission('platform_setup'),
 });
 
 // ---- POST /files/:id/coordinator — set the per-file draw-coordinator (admin override) ----
+// Audit finding B-5 (2026-07-21): validated only UUID + is_active, so ANY active staff could be named
+// coordinator (a receptionist, an accountant). Now also require the target staff to actually hold the
+// manage_draws capability (the coordinator's job is to review/approve draws, so they need the perm).
+// Uses lib/permissions.effectivePermissions so a role default OR a staff-specific override BOTH count —
+// same source of truth `requirePermission('manage_draws')` uses.
 router.post('/files/:id/coordinator', requirePermission('platform_setup'), async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
   const staffId = req.body.coordinator_staff_id || null;
   if (staffId && !isUuid(staffId)) return res.status(400).json({ error: 'unknown staff user' });
-  if (staffId) { const ok = (await db.query(`SELECT 1 FROM staff_users WHERE id=$1 AND is_active`, [staffId])).rowCount; if (!ok) return res.status(400).json({ error: 'unknown staff user' }); }
+  if (staffId) {
+    const s = (await db.query(`SELECT role, permissions FROM staff_users WHERE id=$1 AND is_active`, [staffId])).rows[0];
+    if (!s) return res.status(400).json({ error: 'unknown staff user' });
+    const { effectivePermissions } = require('../lib/permissions');
+    if (!effectivePermissions(s.role, s.permissions).has('manage_draws')) {
+      return res.status(400).json({ error: 'That staffer isn\'t allowed to manage draws — grant them the “Manage construction draws” permission first (Team settings), or pick a draw coordinator / processor / admin.' });
+    }
+  }
   // upsert so a coordinator can be set before the file has a link row (a plain UPDATE would be a
   // silent 200 no-op otherwise).
   await db.query(
@@ -1820,9 +1919,28 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
   // Never re-deliver over a finding the borrower has already acted on — persisting would wipe
   // their acceptance / dispute evidence and leave a stale wire deadline (audit F2). Re-pulling
   // a still-'delivered' finding to refresh photos is fine.
+  // Owner-directed 2026-07-21 (audit finding B-2): force-redeliver is a destructive escalation —
+  // (a) restrict to super_admin (any manage_draws user could otherwise clobber the borrower's
+  // decision), (b) REFUSE outright when a draw_disbursements release row already exists for this
+  // draw (real money went out — a fresh delivery with a new wire deadline would double-count),
+  // and (c) journal the override so an audit can reconstruct why the finding was reset.
   const existing = (await db.query(`SELECT status FROM draw_findings WHERE sitewire_draw_id=$1`, [drawId])).rows[0];
-  if (existing && ['accepted', 'disputed', 'resolved'].includes(existing.status) && !req.body.force) {
-    return res.status(409).json({ error: `these findings were already ${existing.status} by the borrower — re-delivering would erase that. Pass force:true only if you intend to reset it.` });
+  if (existing && ['accepted', 'disputed', 'resolved'].includes(existing.status)) {
+    if (!req.body.force) {
+      return res.status(409).json({ error: `these findings were already ${existing.status} by the borrower — re-delivering would erase that. Pass force:true (super_admin only, with a note) to reset it.` });
+    }
+    if (!isSuperAdmin(req)) {
+      return res.status(403).json({ error: 'Only a super admin can force-redeliver findings the borrower already acted on.' });
+    }
+    const released = await db.query(`SELECT 1 FROM draw_disbursements WHERE application_id=$1 AND sitewire_draw_id=$2 AND kind='draw' LIMIT 1`, [appId, drawId]);
+    if (released.rowCount) {
+      return res.status(409).json({ error: 'A release is already recorded for this draw — force-redelivering would reset the wire deadline against money that already went out. Correct the release ledger first.' });
+    }
+    const forceNote = req.body.force_note ? String(req.body.force_note).trim() : '';
+    if (!forceNote || forceNote.length < 8) {
+      return res.status(400).json({ error: 'A force note (at least 8 characters) is required to redeliver a finding the borrower already acted on.' });
+    }
+    try { await orchestrator.journal({ appId, entity: 'draw', entityId: Number(drawId), field: 'force_redeliver', oldValue: { status: existing.status }, newValue: { note: forceNote.slice(0, 500), actor: req.actor && req.actor.id }, source: 'money_override' }); } catch (_) {}
   }
   try {
     const f = (await db.query(`SELECT a.property_address->>'oneLine' AS address, b.id AS borrower_id, b.email AS borrower_email FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [appId])).rows[0] || {};
@@ -1958,9 +2076,17 @@ router.post('/findings/:findingId/lines/:lineId/decide', requirePermission('mana
   });
 
   // Push the corrected approved amount back to Sitewire (guarded, read-after-write verified) — this is the
-  // OVERRIDE of Sitewire's approved figure. Falls back to a processor-confirm note if writes are off. Never guessed.
+  // OVERRIDE of Sitewire's approved figure. Audit finding B-4 (2026-07-21): a Sitewire push failure (or
+  // writes-off) previously updated the local `draw_finding_lines.approved_cents` anyway, silently
+  // diverging PILOT from Sitewire and `sitewire_draw_requests` with NO review row parked — a coordinator
+  // could then release money against a figure Sitewire never confirmed. Now: on APPROVE with a change,
+  // if the Sitewire push doesn't confirm (dry-run / writes-off / any failure), we DO NOT overwrite
+  // `approved_cents` locally and we PARK a `sitewire_dispute_push_failed` review with the intended
+  // figure so a human resolves it. The dispute STATUS still records ('approved'/'rejected') so the
+  // dispute closes as decided — only the numeric override waits for confirmation.
   let pushed = false, pushNote = null;
-  if (decision === 'approved' && target != null && line.sitewire_request_id) {
+  const wantsPush = decision === 'approved' && target != null && line.sitewire_request_id;
+  if (wantsPush) {
     if (switches.on('SITEWIRE_ENABLED') && switches.on('SITEWIRE_OUTBOUND_ENABLED')) {
       try {
         await orchestrator.circuitCheck(1);
@@ -1973,11 +2099,25 @@ router.post('/findings/:findingId/lines/:lineId/decide', requirePermission('mana
         } else pushNote = 'writes are in dry-run — Sitewire not changed';
       } catch (e) { pushNote = `Sitewire push failed (${e.message}); confirm the new amount by hand`; }
     } else pushNote = 'Sitewire writes are off — a processor must confirm the new amount by hand';
+    // Sitewire didn't confirm the change — park a review row so the numeric override doesn't apply
+    // silently and get lost. The dispute STATE still records below (borrower gets closure); only the
+    // dollar override waits. When the review is resolved the coordinator re-runs decide from the desk.
+    if (!pushed) {
+      try {
+        await orchestrator.park({ appId: f.application_id, dedupe: `disputepush:${line.sitewire_request_id}`,
+          reason: `sitewire_dispute_push_failed: could not push the negotiated approved amount ${T.usd(target)} for draw line ${line.sitewire_request_id} back to Sitewire (${pushNote || 'unknown'}). PILOT held the previous approved amount so nothing diverges — retry the decision when Sitewire is back or the push flag is on.`,
+          pilotValue: String(line.approved_cents || 0), sitewireValue: String(target) });
+      } catch (_) { /* best-effort park */ }
+    }
   }
-  // Record the corrected approved figure on the line (approved_cents=$5). $5 NULL leaves the amount as-is
-  // (a plain reject, or an approve with no desired/typed amount).
+  // Record the corrected approved figure on the line — BUT ONLY IF the Sitewire push CONFIRMED (or no
+  // push was attempted, e.g. a plain reject / an approve with no change). If wantsPush && !pushed, we
+  // record the DECISION (status/lender_comments) but LEAVE approved_cents at its prior value so PILOT
+  // and Sitewire don't diverge silently — the parked row above captures the intended figure. Bind $5
+  // to null when the push didn't confirm so the CASE-WHEN reverts to the prior amount.
+  const persistTarget = (wantsPush && !pushed) ? null : target;
   await db.query(`UPDATE draw_finding_lines SET dispute_status=$2, lender_comments=COALESCE($3,lender_comments), dispute_decided_by=$4, dispute_decided_at=now(), approved_cents=CASE WHEN $2='approved' AND $5::bigint IS NOT NULL THEN $5::bigint ELSE approved_cents END, not_approved_cents=CASE WHEN $2='approved' AND $5::bigint IS NOT NULL THEN GREATEST(0, requested_cents - $5::bigint) ELSE not_approved_cents END, updated_at=now() WHERE id=$1`,
-    [lineId, decision, req.body.note || null, req.actor.id, target]);
+    [lineId, decision, req.body.note || null, req.actor.id, persistTarget]);
   // if no more open disputes, mark the finding resolved AND close the loop back to the borrower
   const openLeft = (await db.query(`SELECT count(*)::int c FROM draw_finding_lines WHERE finding_id=$1 AND dispute_status='open'`, [findingId])).rows[0].c;
   if (openLeft === 0) {
@@ -2079,48 +2219,58 @@ router.post('/change-requests/:crId/capital-partner', requirePermission('manage_
 });
 
 // ---- POST /change-requests/:crId/apply — apply an approved reallocation ----
+// Audit finding B-6 (2026-07-21): two concurrent applies each SELECT status='pending', both bump
+// budget_version, both enqueue a push, and the "already applied" 409 was only a check-then-act (not
+// atomic). Serialize on a per-file advisory lock — the second apply either finds `status='approved'`
+// and 409s cleanly, or waits then observes the applied state.
 router.post('/change-requests/:crId/apply', requirePermission('manage_draws'), async (req, res) => {
   const crId = req.params.crId;
   if (!isUuid(crId)) return res.status(404).json({ error: 'not found' });
-  const cr = (await db.query(`SELECT cr.*, d.proposed_payload, d.net_zero, d.after_ctc, d.needs_capital_partner, d.capital_partner_status FROM change_requests cr JOIN sow_change_request_details d ON d.change_request_id=cr.id WHERE cr.id=$1 AND cr.field='sow_reallocation'`, [crId])).rows[0];
-  if (!cr || !(await canSeeFile(req, cr.application_id))) return res.status(403).json({ error: 'forbidden' });
-  if (cr.status === 'approved') return res.status(409).json({ error: 'already applied' });
-  const appId = cr.application_id;
-  const a = (await db.query(`SELECT status FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0];
-  if (!a) return res.status(404).json({ error: 'file not found' });
-  const phase = phaseFor(a.status);
-  const proposedPayload = cr.proposed_payload;
+  const crCheck = (await db.query(`SELECT application_id FROM change_requests WHERE id=$1 AND field='sow_reallocation'`, [crId])).rows[0];
+  if (!crCheck) return res.status(404).json({ error: 'not found' });
+  if (!(await canSeeFile(req, crCheck.application_id))) return res.status(403).json({ error: 'forbidden' });
+  const appId = crCheck.application_id;
+  const client_ = await db.getClient();
   try {
+    await client_.query('BEGIN');
+    await client_.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [`sw-crapply:${appId}`]);
+    // Post-lock re-read: after we own the lock, another concurrent apply may have already flipped
+    // status → 'approved'. Read under the same transaction.
+    const cr = (await client_.query(`SELECT cr.*, d.proposed_payload, d.net_zero, d.after_ctc, d.needs_capital_partner, d.capital_partner_status FROM change_requests cr JOIN sow_change_request_details d ON d.change_request_id=cr.id WHERE cr.id=$1 AND cr.field='sow_reallocation' FOR UPDATE`, [crId])).rows[0];
+    if (!cr) { await client_.query('ROLLBACK'); return res.status(404).json({ error: 'not found' }); }
+    if (cr.status === 'approved') { await client_.query('ROLLBACK'); return res.status(409).json({ error: 'already applied' }); }
+    const a = (await client_.query(`SELECT status FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0];
+    if (!a) { await client_.query('ROLLBACK'); return res.status(404).json({ error: 'file not found' }); }
+    const phase = phaseFor(a.status);
+    const proposedPayload = cr.proposed_payload;
     // re-validate against the CURRENT rollup (drawn amounts may have moved since creation)
     const rollup = await rollupMod.loadRollup(db, appId);
     const ex = reconciledExplode(rollup, proposedPayload.state);
     const cells = buildReallocationCells(rollup, ex.items);
     const plan = planReallocation(cells, { phase, variancePct: await variancePct() });
-    if (!plan.ok) return res.status(422).json({ error: 'reallocation is no longer valid', plan });
-    if (plan.needs_capital_partner && cr.capital_partner_status !== 'approved') return res.status(409).json({ error: 'capital-partner approval is required before applying' });
+    if (!plan.ok) { await client_.query('ROLLBACK'); return res.status(422).json({ error: 'reallocation is no longer valid', plan }); }
+    if (plan.needs_capital_partner && cr.capital_partner_status !== 'approved') { await client_.query('ROLLBACK'); return res.status(409).json({ error: 'capital-partner approval is required before applying' }); }
 
     // AFTER clear-to-close + net-zero: money moves between lines, total unchanged. Write the
     // new Scope of Work (gated by the exact-match budget check) and re-push the budget to
     // Sitewire (the crosswalk diff moves money between job items). rehab_budget never changes.
     if (phase === 'after_ctc' && plan.totals.net_zero) {
       const gate = await rehab.checkSowBudget(appId, proposedPayload);
-      if (!gate.ok) return res.status(422).json({ error: `new Scope of Work must still total the frozen budget to the cent — ${gate.message || 'mismatch'}` });
+      if (!gate.ok) { await client_.query('ROLLBACK'); return res.status(422).json({ error: `new Scope of Work must still total the frozen budget to the cent — ${gate.message || 'mismatch'}` }); }
       // Write the new Version-2 Scope of Work AND reopen its condition (→ 'issue', sign-off
       // cleared) so the borrower re-signs the revised budget — mirrors the budget-change reopen
       // pattern. A net-zero move keeps total == frozen budget, so it can be re-signed.
-      await db.query(`UPDATE checklist_items SET tool_payload=$2, status='issue', signed_off_at=NULL, signed_off_by=NULL,
+      await client_.query(`UPDATE checklist_items SET tool_payload=$2, status='issue', signed_off_at=NULL, signed_off_by=NULL,
         notes=COALESCE(notes,'') || CASE WHEN COALESCE(notes,'')='' THEN '' ELSE E'\n' END || '[auto] Scope of Work reallocated — please re-sign the revised budget.', updated_at=now()
         WHERE application_id=$1 AND tool_key='rehab_budget'`, [appId, JSON.stringify(proposedPayload)]);
-      await db.query(`UPDATE sitewire_property_links SET budget_version=budget_version+1, updated_at=now() WHERE application_id=$1`, [appId]);
+      await client_.query(`UPDATE sitewire_property_links SET budget_version=budget_version+1, updated_at=now() WHERE application_id=$1`, [appId]);
+      await client_.query(`UPDATE change_requests SET status='approved', decided_by=$2, decided_at=now(), updated_at=now() WHERE id=$1`, [crId, req.actor.id]);
+      await client_.query(`UPDATE sow_change_request_details SET updated_at=now() WHERE change_request_id=$1`, [crId]);
+      await client_.query('COMMIT');
       enqueueSitewirePush(appId, 'push_file').catch(() => {});
-      await db.query(`UPDATE change_requests SET status='approved', decided_by=$2, decided_at=now(), updated_at=now() WHERE id=$1`, [crId, req.actor.id]);
-      await db.query(`UPDATE sow_change_request_details SET updated_at=now() WHERE change_request_id=$1`, [crId]);
       // Only claim a Sitewire push when the integration is actually on — otherwise the enqueue
       // no-ops and the DB SOW would silently diverge from Sitewire (audit E-REALLOC-FALSEPUSH).
       const willPush = switches.on('SITEWIRE_ENABLED');
-      // In-app only (owner-directed 2026-07-20): a confirmation that a reallocation
-      // was APPLIED is a desk marker, not a whole-team email. (The "needs
-      // re-registration" variant below is Action-needed and still emails.)
       await notify.notifyAppStaff(appId, { type: 'sow_reallocation', title: 'Budget reallocation applied', badge: { text: 'Applied', tone: 'positive' }, inAppOnly: true,
         body: willPush ? 'A net-zero Scope-of-Work reallocation was applied and is being pushed to Sitewire.' : 'A net-zero Scope-of-Work reallocation was applied to the Scope of Work (Sitewire is currently off — it will sync when turned on).',
         applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
@@ -2130,11 +2280,18 @@ router.post('/change-requests/:crId/apply', requirePermission('manage_draws'), a
     // BEFORE clear-to-close OR a total change: the construction total is changing, which
     // re-sizes the loan. We never silently change the frozen budget — mark the request
     // approved and flag it for product re-registration (Products & Pricing re-opens).
-    await db.query(`UPDATE change_requests SET status='approved', decided_by=$2, decided_at=now(), decision_note=COALESCE($3,decision_note), updated_at=now() WHERE id=$1`, [crId, req.actor.id, 'Total changed — requires product re-registration on the new budget']);
+    await client_.query(`UPDATE change_requests SET status='approved', decided_by=$2, decided_at=now(), decision_note=COALESCE($3,decision_note), updated_at=now() WHERE id=$1`, [crId, req.actor.id, 'Total changed — requires product re-registration on the new budget']);
+    await client_.query('COMMIT');
     await notify.notifyAppStaff(appId, { type: 'sow_reallocation', title: 'Scope-of-Work change needs re-registration', badge: { text: 'Action needed', tone: 'action' },
       body: 'A Scope-of-Work change alters the construction total. Re-register the product on the new budget in Products & Pricing before it flows to draws.', applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
-    res.json({ ok: true, applied: false, requires_reregister: true, plan });
-  } catch (e) { console.warn('[sitewire] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
+    return res.json({ ok: true, applied: false, requires_reregister: true, plan });
+  } catch (e) {
+    try { await client_.query('ROLLBACK'); } catch (_) {}
+    console.warn('[sitewire] change-request apply error:', e && e.message);
+    return res.status(500).json({ error: 'server error' });
+  } finally {
+    client_.release();
+  }
 });
 
 // ---- GET /change-requests/:crId/export — Version 1 vs Version 2 as an Excel workbook ----

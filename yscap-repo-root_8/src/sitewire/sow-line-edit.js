@@ -119,6 +119,26 @@ async function editLine(appId, { sow_line_key, label, desc }, actorId) {
   const labelChanged = label != null && String(label).slice(0, MAX_LABEL) !== (applied.oldLabel || '');
   const descChanged = desc != null && String(desc).slice(0, MAX_DESC) !== (applied.oldDesc || '');
 
+  // Audit finding C-3 (2026-07-21): a label rename on a DRAWN line used to silently succeed on the
+  // PILOT side (SOW state + Excel regenerated with the new label, sitewire:'pushed' returned) — but
+  // orchestrator.pushBudget suppresses the Sitewire rename on drawn lines (Sitewire locks the name
+  // once a draw references it, and a rename in the same batch 422s the whole PATCH). Result: PILOT
+  // UI showed "Kitchen v2", Sitewire kept "Kitchen", the two drifted forever with no park. Pre-check
+  // the drawn-lock BEFORE mutating the SOW: refuse the label change (422) if the line is drawn, so
+  // PILOT and Sitewire stay in lock-step. A description-only edit is still allowed (Sitewire's
+  // `description` field isn't locked by a draw).
+  if (labelChanged) {
+    try {
+      const drawnCheck = (await db.query(
+        `SELECT 1 FROM sitewire_job_item_links jil
+           JOIN sitewire_draw_requests r ON r.sitewire_job_item_id = jil.sitewire_job_item_id
+           JOIN sitewire_draws d ON d.sitewire_draw_id = r.sitewire_draw_id
+          WHERE jil.application_id=$1 AND d.application_id=$1 AND jil.sow_line_key=$2 LIMIT 1`,
+        [appId, applied.key])).rowCount > 0;
+      if (drawnCheck) return { error: 'line_drawn_locked', message: 'This line has already been drawn against in Sitewire — its name is locked there. Edit the description instead, or reset the draw process first.' };
+    } catch (_) { /* fail open: if we can't check, proceed — the push-side rename-suppression is the safety net */ }
+  }
+
   // persist the updated real Scope of Work (tool_payload.state + the mirrored tool_state)
   const nextPayload = { ...sow.payload, state: sow.state };
   await db.query(

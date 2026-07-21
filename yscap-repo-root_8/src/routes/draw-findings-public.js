@@ -44,7 +44,13 @@ const scrub = (s) => (s == null ? null : borrowerSafe.scrubText(String(s)));
 // param BEFORE the async handler runs; a bad-shape token still 429s (cheap) and the handler still
 // returns its own 404 for real not-found — the throttle just prevents replay.
 const tokenThrottleMutation = keyedRateLimit({ bucket: 'draw-token-mutation', windowMs: 60000, max: 5, keyOf: (req) => req.params.token });
-const tokenThrottleReport = keyedRateLimit({ bucket: 'draw-token-report',   windowMs: 60000, max: 8, keyOf: (req) => req.params.token });
+const tokenThrottleReport   = keyedRateLimit({ bucket: 'draw-token-report',   windowMs: 60000, max: 8, keyOf: (req) => req.params.token });
+// Reads also need a per-token throttle (audit finding B-8, 2026-07-21): the per-IP bucket alone
+// leaves a leaked token behind rotating IPs free to enumerate the finding summary + all inspection
+// photos for the 30-day capability window. 30/min is generous for a real borrower loading the page
+// once and then scrolling media tiles, but tight enough to make bulk enumeration expensive.
+const tokenThrottleReadSummary = keyedRateLimit({ bucket: 'draw-token-read',  windowMs: 60000, max: 30, keyOf: (req) => req.params.token });
+const tokenThrottleReadMedia   = keyedRateLimit({ bucket: 'draw-token-media', windowMs: 60000, max: 60, keyOf: (req) => req.params.token });
 
 const isToken = (t) => typeof t === 'string' && /^[a-f0-9]{48}$/.test(t);
 // The one-click capability token is short-lived: a borrower should act within the wire SLA,
@@ -65,7 +71,7 @@ async function wireTurnaroundHours() {
 }
 
 // ---- GET /:token — the full borrower-safe findings summary for the accept/dispute landing page ----
-router.get('/:token', async (req, res) => {
+router.get('/:token', tokenThrottleReadSummary, async (req, res) => {
   const f = await findingByToken(req.params.token);
   if (!f) return res.status(404).json({ error: 'not found' });
   if (isExpired(f.delivered_at) && f.status !== 'accepted') return res.status(410).json({ error: 'This link has expired — please sign in to your portal to review these results.', expired: true });
@@ -74,7 +80,7 @@ router.get('/:token', async (req, res) => {
   const rawLines = (await db.query(
     `SELECT id, sitewire_request_id, name, requested_cents, approved_cents, not_approved_cents, inspector_comments,
             photo_count, video_count, dispute_status, dispute_desired_cents, dispute_note
-       FROM draw_finding_lines WHERE finding_id=$1 ORDER BY id`, [f.id])).rows;
+       FROM draw_finding_lines WHERE finding_id=$1 AND retired_at IS NULL ORDER BY id`, [f.id])).rows;
   const media = (await db.query(
     `SELECT id, sitewire_request_id, kind FROM draw_media WHERE sitewire_draw_id=$1 AND kind IN ('image','video') ORDER BY id`, [f.sitewire_draw_id])).rows;
   const byReq = new Map();
@@ -110,7 +116,7 @@ router.get('/:token', async (req, res) => {
 // ---- GET /:token/media/:mediaId — a durable inspection photo/video (borrower-safe) ----
 // Streams PILOT's OWN stored copy (GPS already stripped at archive), never an expiring Sitewire
 // URL. Scoped to the finding's draw so a token can only ever see its own draw's media.
-router.get('/:token/media/:mediaId', async (req, res) => {
+router.get('/:token/media/:mediaId', tokenThrottleReadMedia, async (req, res) => {
   const f = await findingByToken(req.params.token);
   if (!f) return res.status(404).end();
   if (isExpired(f.delivered_at) && f.status !== 'accepted') return res.status(410).end();
@@ -185,7 +191,7 @@ router.post('/:token/dispute', tokenThrottleMutation, async (req, res) => {
   const updates = [];
   for (const ln of lines) {
     if (!/^\d+$/.test(String(ln.line_id))) continue;
-    const owned = (await db.query(`SELECT id, requested_cents FROM draw_finding_lines WHERE id=$1 AND finding_id=$2`, [ln.line_id, f.id])).rows[0];
+    const owned = (await db.query(`SELECT id, requested_cents FROM draw_finding_lines WHERE id=$1 AND finding_id=$2 AND retired_at IS NULL`, [ln.line_id, f.id])).rows[0];
     if (!owned) continue;
     let desired = ln.desired_cents == null ? null : Math.round(Number(ln.desired_cents));
     if (desired != null && (!Number.isFinite(desired) || desired < 0 || desired > Number(owned.requested_cents))) desired = null; // never guess an out-of-range amount

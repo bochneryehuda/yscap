@@ -446,12 +446,52 @@ async function pushFile(appId, opts = {}) {
         return { parked: 'dupe_check_failed' };
       }
       if (existing) {
-        // GO-FORWARD ONLY (owner-directed 2026-07-20): this loan number is already on a property in Sitewire
-        // that PILOT did NOT create. PILOT never adopts or follows a pre-existing property — it manages only
-        // what it pushes. So don't duplicate and don't adopt: park for a human decision. To bring it under
-        // PILOT management, delete that property in Sitewire and push a fresh copy from this file.
-        await park({ appId, reason: `sitewire_loan_already_in_sitewire: loan ${a.ys_loan_number} is already on a Sitewire property (${existing.id}) that PILOT didn't create — PILOT won't duplicate or follow it. To manage the draw process here, delete it in Sitewire and push a fresh copy from this file, or keep them separate.`, current: String(existing.id) });
-        return { parked: 'dupe_property' };
+        // Audit finding A-7 (2026-07-21): a lost-response birth (Sitewire committed createProperty
+        // but the response didn't reach us) makes the queue re-drive, and the re-drive's collision
+        // check finds OUR OWN just-created property (its id isn't in reset_property_ids because we
+        // never learned it). Before parking as "pre-existing", check if the colliding property is
+        // very likely OUR OWN commit — created in the last 15 minutes AND its borrower_entity_name
+        // matches what we would have sent AND its property_address street matches. If so, adopt it
+        // (write the link) so the retry silently completes instead of forcing a human to delete + re-push.
+        // Strict fingerprint: three signals must all agree; a partial match still parks (never guess).
+        const LOOKBACK_MS = 15 * 60 * 1000;
+        const createdAt = existing.created_at ? Date.parse(existing.created_at) : NaN;
+        const recent = Number.isFinite(createdAt) && (Date.now() - createdAt) <= LOOKBACK_MS;
+        const nameMatch = existing.borrower_entity_name && propertyFields.borrower_entity_name
+          && String(existing.borrower_entity_name).trim().toLowerCase() === String(propertyFields.borrower_entity_name).trim().toLowerCase();
+        const wantStreet = (propertyFields.address && propertyFields.address.street) ? String(propertyFields.address.street).trim().toLowerCase() : '';
+        const gotStreet = (existing.address && (existing.address.street || existing.address.street_with_unit)) ? String(existing.address.street || existing.address.street_with_unit).trim().toLowerCase() : '';
+        const streetMatch = !!(wantStreet && gotStreet && wantStreet === gotStreet);
+        if (recent && nameMatch && streetMatch) {
+          // Fetch the full property to get its budget id — required to bind the crosswalk.
+          let full;
+          try { full = await client.getProperty(existing.id); }
+          catch (e) { if (e.retryable) throw e; full = null; }
+          const foundBudgetId = full && full.budget && full.budget.id;
+          if (foundBudgetId) {
+            await journal({ appId, propertyId: existing.id, budgetId: foundBudgetId, entity: 'property', entityId: existing.id, field: 'adopt_lost_response', newValue: { loan_number: a.ys_loan_number, created_at: existing.created_at, matched: { name: true, street: true, recent: true } }, source: 'birth_recovery' });
+            await db.query(
+              `INSERT INTO sitewire_property_links (application_id, sitewire_property_id, sitewire_budget_id, capital_partner_id, matched_by, state, pushed_at, raw, updated_at)
+               VALUES ($1,$2,$3,$4,'created','live',now(),$5,now())
+               ON CONFLICT (application_id) DO UPDATE SET sitewire_property_id=EXCLUDED.sitewire_property_id, sitewire_budget_id=EXCLUDED.sitewire_budget_id, capital_partner_id=EXCLUDED.capital_partner_id, state='live', pushed_at=now(),
+                 raw = (COALESCE(sitewire_property_links.raw,'{}'::jsonb) - 'setup_status') || EXCLUDED.raw, updated_at=now()`,
+              [appId, existing.id, foundBudgetId, cp.id, JSON.stringify({ inspectionMethod, feeCents, adopted_lost_response: true })]);
+            link = await getLink(appId);
+            // Fall through — the rest of pushFile treats it like a normal update path from here.
+            property = full; propertyId = existing.id; budgetId = foundBudgetId;
+          } else {
+            // Recent + name + street match but no budget id came back — safer to park than to bind a partial state.
+            await park({ appId, reason: `sitewire_loan_already_in_sitewire: loan ${a.ys_loan_number} is already on a Sitewire property (${existing.id}) that appears to be a recent PILOT create with a lost response — but we couldn't read its budget id to bind. Verify in Sitewire and retry.`, current: String(existing.id) });
+            return { parked: 'lost_response_no_budget' };
+          }
+        } else {
+          // GO-FORWARD ONLY (owner-directed 2026-07-20): this loan number is already on a property in Sitewire
+          // that PILOT did NOT create. PILOT never adopts or follows a pre-existing property — it manages only
+          // what it pushes. So don't duplicate and don't adopt: park for a human decision. To bring it under
+          // PILOT management, delete that property in Sitewire and push a fresh copy from this file.
+          await park({ appId, reason: `sitewire_loan_already_in_sitewire: loan ${a.ys_loan_number} is already on a Sitewire property (${existing.id}) that PILOT didn't create — PILOT won't duplicate or follow it. To manage the draw process here, delete it in Sitewire and push a fresh copy from this file, or keep them separate.`, current: String(existing.id) });
+          return { parked: 'dupe_property' };
+        }
       }
     }
 
@@ -580,6 +620,34 @@ async function pushBudgetInner(appId, budgetId, ex, budgetCents) {
   let liveItems = [];
   try { const live = await client.getBudget(budgetId); liveItems = (live && live.job_items) || []; }
   catch (e) { if (e.retryable) throw e; console.warn('[sitewire] adopt read-before-write skipped (non-retryable getBudget failure):', e && e.message); }
+  // Audit finding A-3 (2026-07-21): a NEW cell (a diff create) whose desired name equals a name
+  // Sitewire is CURRENTLY holding on a DRAWN line (whose rename we suppress) would slip through
+  // resolveCreatesAgainstLive's 1-match adopt branch and silently bind to the drawn line — or, if
+  // the name appears twice live, park the whole push as bind_ambiguous. Neither is right: the NEW
+  // cell is semantically a different line. Auto-qualify a create's name up front when it collides
+  // with a live name that WE don't already track (i.e. the live line has no crosswalk row for our
+  // cell's key). Preserves stability for the vast majority of pushes (no collision → no rename).
+  const liveNames = new Set(liveItems.map((ji) => ji && ji.name).filter(Boolean));
+  const trackedByJid = new Set(links.map((l) => Number(l.sitewire_job_item_id)).filter((n) => Number.isFinite(n)));
+  const liveByName = new Map();
+  for (const ji of liveItems) { if (!ji || ji.name == null) continue; if (!liveByName.has(ji.name)) liveByName.set(ji.name, []); liveByName.get(ji.name).push(ji); }
+  const isCollision = (name) => {
+    const jis = liveByName.get(name);
+    if (!jis || !jis.length) return false;
+    // A collision that PILOT already tracks the live copy of is safe — resolveCreatesAgainstLive
+    // will adopt into our own crosswalk. Only a live line PILOT does NOT track (a drawn line whose
+    // rename we suppressed, or a hand-added Sitewire line) forces a rename.
+    return jis.some((ji) => !trackedByJid.has(Number(ji.id)));
+  };
+  for (const c of diff.creates) {
+    if (c.is_media_item) continue;                    // media anchors intentionally reuse fixed names
+    if (!isCollision(c.name)) continue;
+    const q = M.catLabelOf(c.sow_line_key);
+    const base = q ? `${c.name} (${q})` : c.name;
+    let name = base, k = 2;
+    while (liveNames.has(name)) name = `${base} #${k++}`;
+    c.name = name; liveNames.add(name);
+  }
   // Pass the drawn-id set so a doubled $0 MEDIA anchor binds to an UN-DRAWN copy (harmless photo
   // requirement) instead of parking; a money line or an all-drawn collision still parks (never-guess).
   const resolved = M.resolveCreatesAgainstLive(diff.creates, liveItems, drawn);
@@ -1058,9 +1126,23 @@ async function resetDrawSetup(appId, staffId = null) {
     await c.query(`DELETE FROM sitewire_draw_requests WHERE sitewire_draw_id IN (SELECT sitewire_draw_id FROM sitewire_draws WHERE application_id=$1)`, [appId]);
     await c.query(`DELETE FROM sitewire_draws WHERE application_id=$1`, [appId]);
     await c.query(`DELETE FROM sitewire_job_item_links WHERE application_id=$1`, [appId]);
+    // Audit finding A-1 (2026-07-21): after reset + re-push, the NEW Sitewire property is a fresh
+    // start — every historic draw pulled during the first reconcile must silently baseline (not
+    // notify), AND the 3 property documents must re-upload (they belong to the new property, not the
+    // deactivated one). Clear:
+    //   • sitewire_document_links      — the sha256 dedup was skipping uploads because it thought the
+    //                                     bytes were already pushed to the OLD property
+    //   • last_reconciled_at            — forces reconcileOne to treat the next pass as firstReconcile,
+    //                                     so REACT_STATUS transitions silently baseline
+    //   • last_budget_verified_at       — the budget-drift check runs fresh against the new property
+    //   • lifecycle_synced=false        — the lifecycle backfill re-drives active-state on the new prop
+    // The tombstoned old property id stays in raw.reset_property_ids so the birth-collision check
+    // knows to skip its own reset copy.
+    await c.query(`DELETE FROM sitewire_document_links WHERE application_id=$1`, [appId]);
     await c.query(
       `UPDATE sitewire_property_links
           SET sitewire_property_id=NULL, sitewire_budget_id=NULL, state='pending', pushed_at=NULL,
+              last_reconciled_at=NULL, last_budget_verified_at=NULL, lifecycle_synced=false,
               lifecycle_state='active',
               raw = jsonb_set(COALESCE(raw,'{}'::jsonb) - 'setup_status', '{reset_property_ids}',
                               COALESCE(raw->'reset_property_ids','[]'::jsonb) || to_jsonb($2::text)),
@@ -1177,14 +1259,16 @@ async function setDrawQuickNotify(appId, drawId, statusId) {
   if (!(switches.on('SITEWIRE_ENABLED') && (switches.on('SITEWIRE_OUTBOUND_ENABLED') || cfg.sitewireDryrun))) return { error: 'writes_off' };
   const sid = (statusId == null || statusId === '') ? null : Number(statusId);
   if (sid != null && !Number.isFinite(sid)) return { error: 'bad_status' };
-  // A pipeline status can only be MOVED between real statuses, never CLEARED to null: the guarded client
-  // (guardNoUnsafeWrite) refuses any null-bearing body outright (a field-clearing null is never sent), so a
-  // "clear to none" write is impossible by design. Reject it cleanly here instead of letting it throw an
-  // opaque unsafe-write 502.
-  if (sid == null) return { error: 'clear_unsupported' };
+  // Audit finding A-8 (2026-07-21): CLEARING a quick-notify status IS supported by Sitewire — the
+  // PATCH /draws/:id swagger accepts `quick_notify_status_id: null` (same clearing convention the
+  // /properties/:id `capital_partner_id: null` example uses). The old code refused null outright
+  // because guardNoUnsafeWrite rejects any null-bearing body — but that policy was written for
+  // fields where null=wipe is a bug, not for this deliberately nullable field. Use the client's
+  // opt-in `allowNulls:true` escape hatch (a per-call bypass, not a blanket loosening) so a
+  // coordinator can move a draw OFF a pipeline label once set.
   await circuitCheck(1);
   try {
-    const res = await client.updateDraw(drawId, { quick_notify_status_id: sid });
+    const res = await client.updateDraw(drawId, { quick_notify_status_id: sid }, { allowNulls: sid == null });
     if (res && res.__dryrun) return { ok: true, sitewire: 'dryrun', quick_notify_status_id: sid };
     // read-after-write: re-GET the draw and confirm the status persisted.
     let confirmed = sid;
@@ -1213,7 +1297,10 @@ function safeSitewireDocUrl(u) {
   if (url.protocol !== 'https:' && url.protocol !== 'http:') return null; // never javascript:/data:/file:/…
   const h = url.host.toLowerCase();
   const okSitewire = h === SITEWIRE_DOC_HOST;
-  const okS3 = /(^|\.)s3[.-][a-z0-9-]*\.amazonaws\.com$/.test(h) || /(^|\.)s3\.amazonaws\.com$/.test(h) || h.endsWith('.amazonaws.com');
+  // Same tightened S3 pattern web-client.js:assertUploadUrl uses — the `endsWith('.amazonaws.com')`
+  // catch-all was dropped in the audit-C-5 fix to prevent SSRF to any AWS service host or a
+  // dangling-subdomain takeover. ONLY real S3 host shapes are honored.
+  const okS3 = /(^|\.)s3[.-][a-z0-9-]*\.amazonaws\.com$/.test(h) || /(^|\.)s3\.amazonaws\.com$/.test(h);
   return (okSitewire || okS3) ? url.href : null;
 }
 async function getSitewireDocuments(appId) {
@@ -1232,4 +1319,25 @@ async function getSitewireDocuments(appId) {
   } catch (e) { return { managed: true, available: false, documents: [], error: (e && e.message) || 'error' }; }
 }
 
-module.exports = { pushFile, pushBudget, setPropertyLifecycle, updatePropertyControls, getPropertyLive, pushJobItemDescription, resetDrawSetup, collisionProperty, getBorrowerInviteStatus, resendBorrowerInvite, setBorrowerInviteEmail, inviteEmailFor, listQuickNotifyStatuses, setDrawQuickNotify, getSitewireDocuments, park, journal, circuitCheck, resolveCapitalPartnerId, resolveRule, resolveInspection, resolveCoordinatorId, getLink, loadFile, isManaged, recordSetupStatus, SITEWIRE_BIRTH_REASONS, LIFECYCLE_STATES, INSPECTION_METHODS };
+/* Audit finding C-2 (2026-07-21): the coordinator-facing getSitewireDocuments drops URL-null docs
+   from its response (never render a null link in the UI). doc-push's verifyPresent needs to know
+   whether a document is PRESENT on the property regardless of whether its URL currently passes the
+   host allowlist — else a legitimate upload could look unverified forever and re-park on every
+   retry. This variant returns EVERY doc entry (name + kind + uploaded_at), URL-agnostic, for the
+   name-match check verifyPresent does. Never exposed to the browser. */
+async function listSitewireDocumentsForVerify(appId) {
+  const link = await getLink(appId);
+  if (!link || !link.sitewire_property_id || link.matched_by !== 'created') return { managed: false, documents: [] };
+  if (!switches.on('SITEWIRE_ENABLED')) return { managed: true, available: false, documents: [] };
+  try {
+    const p = await client.getProperty(link.sitewire_property_id);
+    const docs = (p && (p.documents || (p.property && p.property.documents))) || [];
+    return { managed: true, available: true, documents: (Array.isArray(docs) ? docs : []).map((d) => ({
+      name: d.name || d.filename || d.title || 'Document',
+      kind: d.kind || d.type || d.document_type || null,
+      uploaded_at: d.created_at || d.uploaded_at || d.inserted_at || null,
+    })) };
+  } catch (e) { return { managed: true, available: false, documents: [], error: (e && e.message) || 'error' }; }
+}
+
+module.exports = { pushFile, pushBudget, setPropertyLifecycle, updatePropertyControls, getPropertyLive, pushJobItemDescription, resetDrawSetup, collisionProperty, getBorrowerInviteStatus, resendBorrowerInvite, setBorrowerInviteEmail, inviteEmailFor, listQuickNotifyStatuses, setDrawQuickNotify, getSitewireDocuments, listSitewireDocumentsForVerify, park, journal, circuitCheck, resolveCapitalPartnerId, resolveRule, resolveInspection, resolveCoordinatorId, getLink, loadFile, isManaged, recordSetupStatus, SITEWIRE_BIRTH_REASONS, LIFECYCLE_STATES, INSPECTION_METHODS };

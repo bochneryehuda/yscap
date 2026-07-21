@@ -89,18 +89,30 @@ function lineName(state, key) {
 // user LABEL OVERRIDES or two CUSTOM lines sharing a label. Deterministic + stable: media anchors and
 // already-unique names keep their exact name; a collider is qualified by its category, then by a stable
 // counter if still colliding. Mutates + returns the items array.
-function uniquifyNames(items) {
+//
+// Audit finding A-3 (2026-07-21): the desired-only view was blind to a name Sitewire is already
+// holding on a DRAWN line (whose rename we suppress — Sitewire locks the name, orchestrator keeps
+// the old name in storedName). Adding a NEW cell in a different category whose desired name equals
+// that old locked name is a live collision we can't fix later: adopt-live would find one match, it's
+// all-drawn, and resolveCreatesAgainstLive would park `sitewire_bind_ambiguous` — even though the
+// two are semantically different lines. Pass `liveNames` (a set of Sitewire's current job-item names)
+// so the qualifier auto-qualifies the NEW cell up front instead of pushing it to a doomed bind step.
+function uniquifyNames(items, liveNames) {
+  const live = liveNames instanceof Set ? liveNames : new Set(Array.isArray(liveNames) ? liveNames : []);
   const counts = {};
   for (const it of items) counts[it.name] = (counts[it.name] || 0) + 1;
   const used = new Set();
-  // reserve canonical names first: anything already unique, plus media anchors (structural, never renamed)
-  for (const it of items) if (counts[it.name] === 1 || it.is_media_item) used.add(it.name);
+  // reserve canonical names first: anything already unique AND not colliding with a live name, plus
+  // media anchors (structural, never renamed). A desired name that already exists live but ISN'T in
+  // our desired set (e.g. a Sitewire-held locked name from a drawn-line rename we can't reproduce)
+  // must still count as "used" so a NEW desired cell that happens to match it gets qualified.
+  for (const it of items) if ((counts[it.name] === 1 && !live.has(it.name)) || it.is_media_item) used.add(it.name);
   for (const it of items) {
-    if (counts[it.name] === 1 || it.is_media_item) continue;
+    if ((counts[it.name] === 1 && !live.has(it.name)) || it.is_media_item) continue;
     const q = catLabelOf(it.sow_line_key);
     const base = q ? `${it.name} (${q})` : it.name;
     let name = base, k = 2;
-    while (used.has(name)) name = `${base} #${k++}`;
+    while (used.has(name) || live.has(name)) name = `${base} #${k++}`;
     it.name = name; used.add(name);
   }
   return items;
@@ -251,7 +263,10 @@ function explodeSow(state, opts = {}) {
   if (cont > 0) items.push({ sow_line_key: SENTINEL.CONTINGENCY, section_token: 'project', unit_index: null, name: 'Contingency', budgeted_cents: cont, is_media_item: false, mandatory: false, required_image_count: 0, required_video_count: 0 });
   if (gc > 0) items.push({ sow_line_key: SENTINEL.GC, section_token: 'project', unit_index: null, name: 'GC Fee', budgeted_cents: gc, is_media_item: false, mandatory: false, required_image_count: 0, required_video_count: 0 });
   for (const a of mediaAnchors(state, opts.media || {})) items.push(a);
-  uniquifyNames(items); // G-NAME: guarantee every Sitewire job-item name is unique (bindable)
+  // G-NAME: guarantee every Sitewire job-item name is unique (bindable). opts.liveNames (a Set/array
+  // of Sitewire's current job-item names) lets the qualifier auto-qualify a NEW cell whose desired
+  // name collides with a name Sitewire is already holding on a drawn line we can't rename (audit A-3).
+  uniquifyNames(items, opts.liveNames);
   const total = sub + cont + gc;
   return { items, subtotal_cents: sub, contingency_cents: cont, gc_cents: gc, total_cents: total };
 }

@@ -113,9 +113,21 @@ function planArchive({ lines = [], pdfSrc = null, archivedKeys = new Set() }) {
     const media = Array.isArray(l && l.media) ? l.media : [];
     for (const m of media) {
       if (!m || !m.src) continue;
+      // Audit finding C-6 (2026-07-21): the old classifier was `m.type==='video' ? 'video' : 'image'`,
+      // which stamped kind='image' on ANYTHING that wasn't 'video' — including Sitewire PDF/audio/
+      // document media entries. Downstream (draw-report / borrower gallery) tried addImage on a PDF
+      // buffer or served an "image" that couldn't render. Now the classifier is strict: exactly the
+      // known media_type values Sitewire emits map to our kinds; anything else is SKIPPED (rather
+      // than mis-labeled). New kinds arriving from Sitewire will just not archive until we add them,
+      // which is safer than silently coercing a mystery format to 'image'.
+      let kind = null;
+      const t = String(m.type || '').toLowerCase();
+      if (t === 'image') kind = 'image';
+      else if (t === 'video') kind = 'video';
+      else if (t === 'pdf' || t === 'document') kind = 'document';
+      if (!kind) continue; // unknown media_type — never guess
       add({
-        source_url: m.src,
-        kind: (m.type === 'video') ? 'video' : 'image',
+        source_url: m.src, kind,
         sitewire_request_id: l.sitewire_request_id != null ? Number(l.sitewire_request_id) : null,
         sow_line_key: l.sow_line_key || null,
         captured_at: m.captured_at || null,
