@@ -112,6 +112,10 @@ export default function StaffDraws() {
           </div>
         )}
 
+        {/* ACTIVE PROPERTIES — a clickable card per active draw project (activated, not finished/paid off),
+            so the coordinator jumps straight into any property's draw screen from here. */}
+        {portfolio && <ActiveProperties portfolio={portfolio} />}
+
         {/* Portfolio health — one-glance read of the active portfolio's condition */}
         {portfolio && portfolio.health && <HealthPanel health={portfolio.health} />}
 
@@ -213,6 +217,57 @@ function Icon({ name }) {
     pie: <><path d="M12 3v9l7 4" /><circle cx="12" cy="12" r="9" /></>,
   }[name] || null;
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{p}</svg>;
+}
+
+/* A card per ACTIVE draw project (activated, not finished/paid off) — the coordinator's "all my live
+   draws" home, each card linking straight into that property's draw screen. Built from /portfolio files. */
+function ActiveProperties({ portfolio }) {
+  const files = (portfolio && Array.isArray(portfolio.files) ? portfolio.files : [])
+    .filter((f) => (f.lifecycle_state || 'active') === 'active' && (Number(f.budget_cents) || 0) > 0)
+    .sort((a, b) => (Number(b.remaining_cents) || 0) - (Number(a.remaining_cents) || 0));
+  if (files.length === 0) return null;
+  return (
+    <div className="dd-card">
+      <div className="dd-card-h" style={{ justifyContent: 'space-between' }}>
+        <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+          <span className="dd-card-ic"><Icon name="folder" /></span>
+          <div><h3>Active draw properties</h3><div className="dd-sub" style={{ marginTop: 1 }}>Every project currently in the draw process — click any to open its draw screen.</div></div>
+        </div>
+        <span className="dd-sub">{files.length} active</span>
+      </div>
+      <div style={{ marginTop: 12, display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))' }}>
+        {files.map((f) => {
+          const budget = Number(f.budget_cents) || 0, drawn = Number(f.drawn_cents) || 0;
+          const rem = Number.isFinite(Number(f.remaining_cents)) ? Number(f.remaining_cents) : Math.max(0, budget - drawn);
+          const pct = Math.max(0, Math.min(100, Number(f.pct_complete) || (budget > 0 ? (drawn / budget) * 100 : 0)));
+          const nAlerts = Array.isArray(f.alerts) ? f.alerts.length : 0;
+          const nPending = Number(f.pending_count) || 0;
+          return (
+            <Link key={f.application_id} to={`/internal/app/${f.application_id}/draws`}
+              style={{ display: 'block', textDecoration: 'none', color: 'inherit', border: '1px solid var(--line)', borderRadius: 12, padding: 14, background: 'var(--card,#fff)' }}>
+              <div style={{ fontWeight: 700, color: 'var(--teal-br)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={f.address || ''}>
+                {f.address || f.ys_loan_number || 'Property'}
+              </div>
+              <div className="dd-sub" style={{ marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {[f.ys_loan_number, f.partner].filter(Boolean).join(' · ') || '—'}
+              </div>
+              <div className="dd-meter" style={{ height: 8, marginTop: 10 }}><i style={{ width: pct + '%' }} /></div>
+              <div className="row" style={{ justifyContent: 'space-between', marginTop: 6 }}>
+                <span className="dd-sub"><b style={{ color: 'var(--teal-br)' }}>{usd(drawn)}</b> drawn</span>
+                <span className="dd-sub">{usd(rem)} left · {Math.round(pct)}%</span>
+              </div>
+              {(nPending > 0 || nAlerts > 0) && (
+                <div className="row" style={{ gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+                  {nPending > 0 && <span className="pill sw-pending">{nPending} awaiting approval</span>}
+                  {nAlerts > 0 && <span className="pill sw-draft" style={{ borderColor: 'var(--danger)', color: 'var(--danger)' }}>{nAlerts} alert{nAlerts === 1 ? '' : 's'}</span>}
+                </div>
+              )}
+            </Link>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 /* A one-glance health read of the ACTIVE portfolio: on-track vs flagged, plus the counts that need a

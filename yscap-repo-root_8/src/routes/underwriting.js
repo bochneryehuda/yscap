@@ -600,17 +600,22 @@ router.post('/:appId/auto-read', async (req, res, next) => {
 
     const batch = queue.slice(0, AUTOREAD_MAX_PER_CALL);
     const results = [];
-    let read = 0, cached = 0;
+    let read = 0, cached = 0, unreadable = 0;
     for (const item of batch) {
       const doc = await fileDoc(app, item.id);
-      if (!doc) { results.push({ documentId: item.id, filename: item.filename, docType: item.expectedType, ok: false, error: 'not_found', findings: 0 }); continue; }
+      if (!doc) { results.push({ documentId: item.id, filename: item.filename, docType: item.expectedType, ok: false, error: 'not_found', unreadable: false, findings: 0 }); continue; }
       const r = await analyzeOneDocument(app, doc, item.expectedType, { actorId: req.actor.id });
+      // The read succeeded but the document's fields couldn't be extracted as THIS type — the document
+      // filed under this condition may be the WRONG document (e.g. not actually a title commitment) or
+      // a poor scan. The desk flags it for the underwriter to confirm the right document is here.
+      const notReadable = !!(r.ok && r.confidence === 'unreadable');
       if (r.ok && r.cached) cached++;
       else if (r.ok) read++;
-      results.push({ documentId: item.id, filename: item.filename, docType: item.expectedType, conditionCode: item.conditionCode, ok: !!r.ok, cached: !!r.cached, error: r.error || null, findings: (r.findings || []).length });
+      if (notReadable) unreadable++;
+      results.push({ documentId: item.id, filename: item.filename, docType: item.expectedType, conditionCode: item.conditionCode, ok: !!r.ok, cached: !!r.cached, unreadable: notReadable, error: r.error || null, findings: (r.findings || []).length });
     }
-    await audit(req.actor.id, 'underwriting_auto_read', app.id, { total: queue.length, read, cached, failed: results.filter((x) => !x.ok).length });
-    return res.json({ readerOn: true, read, cached, pending: Math.max(0, queue.length - batch.length), total: queue.length, results });
+    await audit(req.actor.id, 'underwriting_auto_read', app.id, { total: queue.length, read, cached, unreadable, failed: results.filter((x) => !x.ok).length });
+    return res.json({ readerOn: true, read, cached, unreadable, pending: Math.max(0, queue.length - batch.length), total: queue.length, results });
   } catch (e) { next(e); }
 });
 
