@@ -28,6 +28,7 @@ const KICKER_OF = {
   condition_added: 'Your conditions', tool_submitted: 'Ready for review',
   product_registered: 'Product registered', term_sheet: 'Your loan terms', pricing_update: 'Pricing update',
   manual_escalation: 'Manual product', manual_escalation_decided: 'Manual product',
+  manual_escalation_countered: 'Counter-offer',
   message: 'New message', mention: 'You were mentioned', reminder: 'Reminder',
   llc_verified: 'Your entity', llc_unverified: 'Your entity',
   track_record_unverified: 'Track record',
