@@ -259,6 +259,21 @@ async function uploadBlob(session, file) {
   return { signed_id: blob.signed_id, checksum, byte_size: bytes.length };
 }
 
+// Sitewire's property_documents form is a Turbo (Hotwire) form — it responds with a turbo-stream, NOT JSON.
+// Sending `Accept: application/json` gets a 406 Not Acceptable (the controller can't render JSON). These are
+// the exact headers the website sends (confirmed from a live capture): turbo-stream Accept + the turbo-frame
+// target + Origin/Referer for Rails' forgery check. Never send X-Requested-With here.
+function turboHeaders(session, propertyId) {
+  return {
+    Accept: 'text/vnd.turbo-stream.html, text/html, application/xhtml+xml',
+    Cookie: cookieHeader(session.jar),
+    'X-CSRF-Token': session.csrf,
+    'Turbo-Frame': 'property-documents',
+    Origin: webBase(),
+    Referer: `${webBase()}/properties/${encodeURIComponent(propertyId)}`,
+  };
+}
+
 /**
  * Attach an uploaded blob to a property's Documents tab. Returns the raw response text (best-effort);
  * the CALLER verifies the document actually landed via the trusted API (property.documents[]).
@@ -268,9 +283,10 @@ async function attachDocument(session, propertyId, signedId, opts = {}) {
   form.set('authenticity_token', session.csrf);
   form.set('file-selection', String(opts.filename || ''));
   form.set('property[property_documents_attributes][0][document]', signedId);
-  const res = await fetchWithTimeout(`${webBase()}/properties/${encodeURIComponent(propertyId)}/property_documents`, {
+  // ?paginate=true + turbo headers = the exact CREATE request the website makes (returns a 200 turbo-stream).
+  const res = await fetchWithTimeout(`${webBase()}/properties/${encodeURIComponent(propertyId)}/property_documents?paginate=true`, {
     method: 'POST',
-    headers: { Accept: 'application/json, text/html', Cookie: cookieHeader(session.jar), 'X-CSRF-Token': session.csrf, 'X-Requested-With': 'XMLHttpRequest' },
+    headers: turboHeaders(session, propertyId),
     body: form,
   });
   mergeSetCookie(session.jar, res);
@@ -291,9 +307,9 @@ async function deleteDocument(session, propertyId, docId) {
   const form = new URLSearchParams();
   form.set('_method', 'delete');
   form.set('authenticity_token', session.csrf);
-  const res = await fetchWithTimeout(`${webBase()}/properties/${encodeURIComponent(propertyId)}/property_documents/${encodeURIComponent(docId)}`, {
+  const res = await fetchWithTimeout(`${webBase()}/properties/${encodeURIComponent(propertyId)}/property_documents/${encodeURIComponent(docId)}?paginate=true`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json, text/html', Cookie: cookieHeader(session.jar), 'X-CSRF-Token': session.csrf, 'X-Requested-With': 'XMLHttpRequest' },
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...turboHeaders(session, propertyId) },
     body: form.toString(),
   });
   mergeSetCookie(session.jar, res);

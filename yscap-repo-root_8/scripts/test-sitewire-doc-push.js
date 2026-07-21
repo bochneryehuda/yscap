@@ -9,6 +9,7 @@
  * Run: DATABASE_URL=... node scripts/test-sitewire-doc-push.js
  */
 process.env.SITEWIRE_DOCS_ENABLED = process.env.SITEWIRE_DOCS_ENABLED || '1';
+process.env.SITEWIRE_DOC_VERIFY_DELAY_MS = '0'; // no read-lag delay in tests
 
 let pass = 0, fail = 0;
 const ok = (name, cond) => { if (cond) pass++; else { fail++; console.log(`FAIL ${name}`); } };
@@ -62,7 +63,8 @@ const realGetSession = web.getSession; // captured before stubbing — the cooki
 web.getSession = async () => (sessionErr ? { error: sessionErr, message: 'stub' } : { jar: {}, csrf: 'TOK' });
 web.primeCsrf = async (s) => { if (s) s.csrf = 'TOK'; return { ok: true }; };
 web.uploadBlob = async (_s, f) => { uploadCalls.push(f.filename); return { signed_id: 'sig_' + f.filename, checksum: 'c', byte_size: (f.bytes || Buffer.alloc(0)).length }; };
-web.attachDocument = async (_s, propId, sig) => { attachCalls.push({ propId, sig }); return { status: 302 }; };
+let attachThrow = null; // set to an Error to simulate a non-2xx attach response
+web.attachDocument = async (_s, propId, sig) => { attachCalls.push({ propId, sig }); if (attachThrow) throw attachThrow; return { status: 302 }; };
 // ---- stub storage read (return deterministic bytes per ref) ----
 storage.read = async (ref) => Buffer.from('BYTES:' + ref);
 // ---- stub the trusted-API read-after-write (what documents Sitewire reports) ----
@@ -149,6 +151,27 @@ const parkCount = async (app) => (await db.query(`SELECT count(*)::int c FROM sy
     ok('7 park opened', (await parkCount(app)) >= 1);
     ok('7 result verified=false', r.results.find((x) => x.which === 'appraisal_pdf').verified === false);
     await cleanup(app, bor); }
+
+  // 7b) 406-BUT-SAVED — attach throws a non-retryable 406, but the document IS in Sitewire (API) → SUCCESS.
+  { uploadCalls = []; attachThrow = Object.assign(new Error('sitewire_attach_document_406'), { status: 406, retryable: false });
+    apiDocs = [{ name: 'Appraisal.pdf' }];
+    const { app, bor } = await seed({ xlsx: false, pdf: false });
+    const r = await docPush.pushDocuments(app, {});
+    const l = await links(app);
+    ok('7b 406-but-saved → verified', l.length === 1 && l[0].status === 'verified');
+    ok('7b 406-but-saved → no park', (await parkCount(app)) === 0);
+    ok('7b 406-but-saved → result verified', r.results.find((x) => x.which === 'appraisal_pdf').verified === true);
+    await cleanup(app, bor); attachThrow = null; }
+
+  // 7c) 406 AND NOT in Sitewire → a real failure, parked.
+  { attachThrow = Object.assign(new Error('sitewire_attach_document_406'), { status: 406, retryable: false }); apiDocs = [];
+    const { app, bor } = await seed({ xlsx: false, pdf: false });
+    const r = await docPush.pushDocuments(app, {});
+    const l = await links(app);
+    ok('7c 406-not-saved → failed', l.length === 1 && l[0].status === 'failed');
+    ok('7c 406-not-saved → parked', (await parkCount(app)) >= 1);
+    ok('7c 406-not-saved → result error', !!r.results.find((x) => x.which === 'appraisal_pdf').error);
+    await cleanup(app, bor); attachThrow = null; }
 
   // 8) web session missing → parks + returns the creds-missing error, no upload attempted
   { uploadCalls = []; sessionErr = 'web_creds_missing'; apiDocs = [];
