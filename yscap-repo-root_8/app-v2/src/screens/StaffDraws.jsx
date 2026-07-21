@@ -276,10 +276,10 @@ function NeedsApprovalQueue({ draws }) {
           return (
             <div key={d.sitewire_draw_id} className="row" style={{ justifyContent: 'space-between', gap: 10, alignItems: 'center', padding: '10px 0', borderTop: '1px solid var(--line)' }}>
               <div style={{ minWidth: 0 }}>
-                <Link to={`/internal/app/${d.application_id}/draws`} style={{ fontWeight: 600, color: 'var(--teal-br)', textDecoration: 'none' }}>
-                  {d.ys_loan_number || 'Loan # pending'} · Draw #{d.number ?? '—'}
+                <Link to={`/internal/app/${d.application_id}/draws`} style={{ fontWeight: 600, color: 'var(--teal-br)', textDecoration: 'none', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block' }} title={d.address || ''}>
+                  {d.address || d.ys_loan_number || 'Property'}
                 </Link>
-                <div className="dd-sub" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={d.address || ''}>{d.address || '—'}</div>
+                <div className="dd-sub" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{[d.ys_loan_number, `Draw #${d.number ?? '—'}`].filter(Boolean).join(' · ')}</div>
               </div>
               <div className="row" style={{ gap: 10, alignItems: 'center', flex: '0 0 auto' }}>
                 {age != null && <span className="dd-sub" style={{ color: age >= 3 ? 'var(--danger)' : 'var(--text-muted)', fontWeight: age >= 3 ? 700 : 500 }}>{age === 0 ? 'today' : `${age}d waiting`}</span>}

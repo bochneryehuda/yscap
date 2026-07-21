@@ -245,19 +245,31 @@ function diffBudget(desiredItems, links) {
  * Returns { create:[...unchanged desired cells...], adopt:[{...cell, sitewire_job_item_id, live_budgeted_cents}],
  *           ambiguous:[name,...] }.
  */
-function resolveCreatesAgainstLive(creates, liveJobItems) {
-  const byName = new Map();
+function resolveCreatesAgainstLive(creates, liveJobItems, drawnIds) {
+  const drawn = drawnIds instanceof Set ? drawnIds : new Set();
+  // Group ALL live lines by name (not just first/null) so a doubled name can be inspected.
+  const liveByName = new Map();
   for (const ji of (liveJobItems || [])) {
     if (!ji || ji.name == null) continue;
-    if (!byName.has(ji.name)) byName.set(ji.name, ji);
-    else byName.set(ji.name, null); // duplicate live name -> ambiguous
+    if (!liveByName.has(ji.name)) liveByName.set(ji.name, []);
+    liveByName.get(ji.name).push(ji);
   }
   const create = [], adopt = [], ambiguous = [];
   for (const c of (creates || [])) {
-    if (!byName.size || !byName.has(c.name)) { create.push(c); continue; }
-    const ji = byName.get(c.name);
-    if (ji === null) { ambiguous.push(c.name); continue; }
-    adopt.push({ ...c, sitewire_job_item_id: ji.id, live_budgeted_cents: ji.budgeted_cents });
+    const lives = liveByName.get(c.name);
+    if (!lives || !lives.length) { create.push(c); continue; }
+    if (lives.length === 1) { adopt.push({ ...c, sitewire_job_item_id: lives[0].id, live_budgeted_cents: lives[0].budgeted_cents }); continue; }
+    // DOUBLED live name. A $0 MEDIA anchor (a photo/video requirement, not money) duplicated by a
+    // Sitewire-seeded default or an old buggy push is HARMLESS — bind to ONE un-drawn copy instead of
+    // parking (the owner-reported "Exterior of House Photos appears twice — cannot bind id"). We never
+    // delete the extra: it's a $0 photo checklist item Sitewire re-seeds, and deleting live Sitewire
+    // data is out of scope for a bind. A MONEY line, or a media line whose copies are ALL drawn, stays a
+    // genuine ambiguity a human must resolve.
+    const bindable = lives.find((ji) => !drawn.has(Number(ji.id)));
+    const allZeroMedia = !!c.is_media_item && Number(c.budgeted_cents || 0) === 0
+      && lives.every((ji) => Number(ji.budgeted_cents || 0) === 0);
+    if (allZeroMedia && bindable) { adopt.push({ ...c, sitewire_job_item_id: bindable.id, live_budgeted_cents: bindable.budgeted_cents }); continue; }
+    ambiguous.push(c.name);
   }
   return { create, adopt, ambiguous };
 }
