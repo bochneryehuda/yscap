@@ -430,15 +430,41 @@ const clientUserIdFor = (envelopeRowId, role) => `${envelopeRowId}:${role}`;
  * routingOrder 1, then the admin counter-signer at routingOrder 2 for the
  * term-sheet package. recipientId is the DocuSign per-envelope id ("1","2","3").
  */
-function buildRoster(app, spec, envelopeRowId) {
+// Re-resolve a seeded recipient's CURRENT email/name from the file record at SEND time (a corrected email
+// since seeding must reach the actual send). Keyed on the stored borrower_id, NOT the role string — the SOLO
+// package's single 'borrower' recipient may be the PRIMARY borrower OR the CHOSEN co-borrower (the draw-send
+// recipient choice, owner-directed 2026-07-21). A role-only re-resolve would silently revert a co-borrower
+// choice to the primary borrower (release-blocker caught pre-merge 2026-07-21). Returns {email,name} — both
+// null for admin/other (keep the seeded config). Pure — unit-tested with no DB.
+function resolveRecipientIdentity(r, app) {
+  if (r.role === 'borrower') {
+    if (r.borrower_id && app.co_borrower_id && String(r.borrower_id) === String(app.co_borrower_id)) {
+      return { email: app.cb_email, name: `${app.cb_first || ''} ${app.cb_last || ''}`.trim() };
+    }
+    return { email: app.b_email, name: `${app.b_first || ''} ${app.b_last || ''}`.trim() };
+  }
+  if (r.role === 'co_borrower') return { email: app.cb_email, name: `${app.cb_first || ''} ${app.cb_last || ''}`.trim() };
+  return { email: null, name: null };
+}
+
+function buildRoster(app, spec, envelopeRowId, opts = {}) {
   const roster = [];
+  // Draw-send recipient choice (owner-directed 2026-07-21): the SOLO package (the draw request / wire form)
+  // may be sent to the PRIMARY borrower (default) OR the CO-BORROWER. Only applies to a soloBorrower package
+  // and only when a co-borrower actually exists — so multi-signer packages (the term sheet) are unchanged,
+  // and the default (no choice) is byte-identical to before. The single signer's identity is swapped; the
+  // envelope structure (one 'borrower' recipient, b1 anchors) is unchanged.
+  const soloToCo = spec.soloBorrower && opts.recipient === 'co_borrower' && app.co_borrower_id;
+  const primary = soloToCo
+    ? { borrowerId: app.cb_id, name: `${app.cb_first} ${app.cb_last}`.trim(), email: app.cb_email }
+    : { borrowerId: app.b_id, name: `${app.b_first} ${app.b_last}`.trim(), email: app.b_email };
   roster.push({
     role: 'borrower', routingOrder: 1, recipientId: '1', isCountersigner: false,
-    borrowerId: app.b_id, name: `${app.b_first} ${app.b_last}`.trim(), email: app.b_email,
+    borrowerId: primary.borrowerId, name: primary.name, email: primary.email,
     clientUserId: clientUserIdFor(envelopeRowId, 'borrower'),
   });
-  // A soloBorrower package (the draw request) is signed by the PRIMARY borrower ONLY
-  // — never a co-borrower, never the admin counter-signer.
+  // A soloBorrower package (the draw request) is signed by ONE borrower (chosen above) — never the admin
+  // counter-signer, and never a SECOND signer.
   if (!spec.soloBorrower && app.co_borrower_id) {
     roster.push({
       role: 'co_borrower', routingOrder: 1, recipientId: '2', isCountersigner: false,
@@ -547,8 +573,9 @@ async function createOrClaimEnvelope(db, app, purpose, spec, actorId, opts = {})
       [row.id, i + 1, d.signedKind, conditionItemId]);
   }
 
-  // Seed the recipient roster (all embedded + email hybrid).
-  const roster = buildRoster(app, spec, row.id);
+  // Seed the recipient roster (all embedded + email hybrid). opts.recipient ('borrower'|'co_borrower')
+  // chooses who signs a SOLO package (the draw request); ignored for multi-signer packages.
+  const roster = buildRoster(app, spec, row.id, { recipient: opts.recipient });
   for (const r of roster) {
     await db.query(
       `INSERT INTO esign_recipients
@@ -643,7 +670,7 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
   // Build signers from the SEEDED roster so recipientId/clientUserId/routingOrder
   // stay consistent with what the cockpit already shows.
   const recips = (await db.query(
-    `SELECT role, routing_order, recipient_id_ds, name, email, client_user_id, is_countersigner
+    `SELECT role, routing_order, recipient_id_ds, name, email, client_user_id, is_countersigner, borrower_id
        FROM esign_recipients WHERE envelope_row_id = $1 ORDER BY routing_order, role`, [row.id])).rows;
   // Re-resolve the borrower / co-borrower identity from the CURRENT file record (a
   // corrected email/name since row-creation must reach the ACTUAL send — with test
@@ -656,9 +683,7 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
       await db.query(`DELETE FROM esign_recipients WHERE envelope_row_id=$1 AND recipient_id_ds=$2`, [row.id, r.recipient_id_ds]);
       continue;   // removed co-borrower → drop from the send AND the roster
     }
-    let email, name;
-    if (r.role === 'borrower') { email = app.b_email; name = `${app.b_first || ''} ${app.b_last || ''}`.trim(); }
-    else if (r.role === 'co_borrower') { email = app.cb_email; name = `${app.cb_first || ''} ${app.cb_last || ''}`.trim(); }
+    const { email, name } = resolveRecipientIdentity(r, app);
     if ((email && email !== r.email) || (name && name !== r.name)) {
       r.email = email || r.email; r.name = name || r.name;
       await db.query(`UPDATE esign_recipients SET email=$2, name=$3, updated_at=now() WHERE envelope_row_id=$1 AND recipient_id_ds=$4`,
@@ -801,6 +826,6 @@ async function sendPackage(applicationId, purpose, actor, opts = {}) {
 
 module.exports = {
   PACKAGES, packageSpec, buildDefinition, sendPackage,
-  createOrClaimEnvelope, buildRoster, tabsFor, resolveConditionItem, latestDocument, loadApplication,
+  createOrClaimEnvelope, buildRoster, resolveRecipientIdentity, tabsFor, resolveConditionItem, latestDocument, loadApplication,
   loadDocGenData, validateGenerated,
 };

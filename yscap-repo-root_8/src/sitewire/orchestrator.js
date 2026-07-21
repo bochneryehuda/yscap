@@ -1073,9 +1073,12 @@ async function getBorrowerInviteStatus(appId) {
   // the stored override itself (so the UI can show "invited to <someone else>"). Available before + after push.
   const overrideEmail = link && typeof link.invite_email === 'string' && link.invite_email.trim() ? link.invite_email.trim() : null;
   const prefill = inviteEmailFor(link, a);
+  // Borrower + co-borrower so the invite UI can quick-pick who to invite (owner-directed 2026-07-21).
+  const people = await require('../lib/draw-recipients').drawRecipients(appId).catch(() => ({ borrower: null, coBorrower: null }));
   const base = {
     managed: !!(link && link.sitewire_property_id && link.matched_by === 'created'),
     override_email: overrideEmail, invite_email: prefill, borrower_email: (a && a.borrower_email) || null,
+    recipients: people,
   };
   if (!base.managed) return base;
   if (!switches.on('SITEWIRE_ENABLED')) return { ...base, available: false, reason: 'sitewire_off' };

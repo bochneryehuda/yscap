@@ -819,6 +819,8 @@ router.get('/files/:id/draw-request', requirePermission('manage_draws'), async (
         terminal: ['completed', 'declined', 'voided'].includes(String(env.status || '')),
       } : null,
       recipients: recipients.map((r) => ({ role: r.role, name: r.name, status: r.status, signed_at: r.signed_at, viewed_at: r.delivered_at })),
+      // Who the wire form CAN be sent to (borrower / co-borrower) so the UI can offer the choice.
+      recipient_options: await require('../lib/draw-recipients').drawRecipients(appId).catch(() => ({ borrower: null, coBorrower: null })),
       wire,
       operating_agreement: oaCondition,
       signed_document: signed ? { id: signed.id, filename: signed.filename, created_at: signed.created_at } : null,
@@ -846,10 +848,20 @@ router.post('/files/:id/draw-request/send', requirePermission('manage_draws'), a
     if (!switches.on('DOCUSIGN_SEND_ENABLED')) {
       return res.status(422).json({ error: 'DocuSign sending is turned off (DOCUSIGN_SEND_ENABLED). Turn it on to send the draw request form.' });
     }
+    // Recipient choice (owner-directed 2026-07-21): send the wire form to the borrower (default) or the
+    // co-borrower. Validated: 'co_borrower' is only allowed when the file actually has a co-borrower WITH an email.
+    let recipient = (req.body && String(req.body.recipient || '').trim()) || 'borrower';
+    if (recipient !== 'co_borrower') recipient = 'borrower';
+    if (recipient === 'co_borrower') {
+      const cob = (await db.query(
+        `SELECT cb.id, cb.email FROM applications a JOIN borrowers cb ON cb.id=a.co_borrower_id WHERE a.id=$1`, [appId])).rows[0];
+      if (!cob) return res.status(400).json({ error: 'This file has no co-borrower to send the wire form to.' });
+      if (!cob.email) return res.status(400).json({ error: 'The co-borrower has no email on file — add one before sending the wire form to them.' });
+    }
     // Ensure the draw condition exists FIRST so the signed PDF has somewhere to file back to.
     await drawWire.ensureDrawRequestCondition(db, appId, req.actor && req.actor.id);
     const reissue = !!(req.body && req.body.reissue);
-    const out = await esignOrchestrate.sendPackage(appId, 'draw_request', req.actor, { reissue });
+    const out = await esignOrchestrate.sendPackage(appId, 'draw_request', req.actor, { reissue, recipient });
     if (out && out.terminal) {
       return res.status(409).json({ error: 'A draw request was already sent for this file. Use "Re-send" to issue a fresh one.', terminal: true, latestStatus: out.latestStatus });
     }
