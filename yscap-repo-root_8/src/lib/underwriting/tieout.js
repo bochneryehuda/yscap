@@ -18,7 +18,7 @@ const { FACTS, factMatch, display, present, claimsFor, carries } = require('./fa
 
 const LABEL = {
   government_id: 'ID', purchase_contract: 'Purchase contract', title: 'Title report', appraisal: 'Appraisal',
-  bank_statement: 'Bank statement', assignment: 'Assignment of contract', insurance: 'Insurance',
+  bank_statement: 'Bank statement', assignment: 'Assignment of contract', insurance: 'Insurance', insurance_invoice: 'Insurance invoice',
   operating_agreement: 'Operating agreement', ein_letter: 'EIN letter', good_standing: 'Good standing',
   llc_formation: 'Formation docs', credit_report: 'Credit report', settlement: 'Settlement statement',
   flood: 'Flood cert', payoff_statement: 'Payoff statement', scope_of_work: 'Scope of work',

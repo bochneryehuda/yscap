@@ -139,6 +139,31 @@ assert.strictEqual(claimsFor('bank_statement', { accountHolderName: 'John Smith'
   assert.strictEqual(insEntCell.status, 'agree', 'insurance named-insured ties to the vesting entity');
 }
 
+// ===== 6b. Binder <-> INVOICE tie-out: the paid invoice must reference the SAME policy =====
+{
+  // Matching policy numbers (formatting-insensitive) agree; the loan file doesn't carry a policy
+  // number, so its cell is n/a — this is a doc-vs-doc tie-out between the two insurance documents.
+  const ok = buildTieout(ctx, [
+    { id: 'ins', docType: 'insurance', fields: { namedInsured: 'Maple Grove Holdings LLC', propertyAddress: ADDR, policyNumber: 'POL-123-A' } },
+    { id: 'inv', docType: 'insurance_invoice', fields: { namedInsured: 'Maple Grove Holdings LLC', propertyAddress: ADDR, policyNumber: 'pol123a', paidInFull: true } },
+  ]);
+  const polRow = ok.matrix.find((m) => m.key === 'policy_number');
+  assert.ok(polRow, 'the policy-number fact appears when the insurance documents carry it');
+  assert.strictEqual(polRow.status, 'ok', 'binder + invoice on the same policy tie out');
+  const invPol = polRow.cells.find((c) => c.label === 'Insurance invoice' || /invoice/i.test(c.label));
+  assert.ok(invPol && invPol.status === 'agree', 'the invoice policy number agrees with the binder (formatting-insensitive)');
+  // A DIFFERENT policy on the invoice than the binder → a discrepancy the desk surfaces.
+  const bad = buildTieout(ctx, [
+    { id: 'ins', docType: 'insurance', fields: { namedInsured: 'Maple Grove Holdings LLC', propertyAddress: ADDR, policyNumber: 'POL-123' } },
+    { id: 'inv', docType: 'insurance_invoice', fields: { namedInsured: 'Maple Grove Holdings LLC', propertyAddress: ADDR, policyNumber: 'POL-999' } },
+  ]);
+  const badRow = bad.matrix.find((m) => m.key === 'policy_number');
+  assert.strictEqual(badRow.status, 'mismatch', 'a binder/invoice policy mismatch is flagged');
+  assert.ok(bad.discrepancies.some((d) => d.field === 'policy_number'), 'the policy mismatch is a discrepancy');
+  // The policy number is NOT PII → shown in full (never masked like an EIN).
+  assert.ok(badRow.cells.some((c) => c.value === 'POL-999'), 'the policy number is shown in full, not masked');
+}
+
 // ===== 7. A document that SHOULD carry a fact but is missing it → 'missing' cell =====
 {
   const r = buildTieout(ctx, [
