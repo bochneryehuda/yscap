@@ -938,6 +938,19 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK'); throw e; }
     finally { client.release(); }
+    // Vesting LLC on register (owner-directed 2026-07-21): a typed entity name
+    // on the studio should be persisted as the subject-property LLC on the file.
+    // Only fills a file that has no vesting LLC yet — never renames an existing
+    // one. Best-effort.
+    try {
+      const b2 = req.body || {};
+      const typed = String((b2.overrides && b2.overrides.entityName) || b2.entityName || '').trim();
+      const cur = (await db.query(`SELECT llc_id, borrower_id FROM applications WHERE id=$1`, [appId])).rows[0] || {};
+      if (typed && !cur.llc_id && cur.borrower_id) {
+        const vestLlcId = await resolveEntityByName(cur.borrower_id, typed);
+        if (vestLlcId) await require('../lib/vesting').setVestingLlc(appId, vestLlcId, { source: 'borrower', actor: null });
+      }
+    } catch (e) { console.error('[borrower-register] vesting from studio failed:', db.describeError(e)); }
     // Registration rewrites loan amount / rate / program — re-run condition rules.
     try { await conditionEngine.evaluateApplication(appId, { reason: 'product_registered' }); } catch (_) {}
     // Replace the generic bank-statement condition with the detailed liquidity

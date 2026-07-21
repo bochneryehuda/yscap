@@ -1269,8 +1269,12 @@
         doc.text(pdfSafe("Because this scenario is not eligible as entered" + (inelWhy.length ? " (" + shortMsg(inelWhy[0]) + ")" : "") + ", there is no acceptance or signature block. Adjust the inputs above to see whether an eligible structure is available, or submit it to our team for a manual review."), M, y + 15, { maxWidth: W - 2 * M });
         y += 44; footer();
       } else {
-        para("5.  Validity & acceptance.  This term sheet is valid through " + fmtD(exp) + (d.inp.state ? (" for a property located in " + d.inp.state) : "") + ". It is not binding unless and until it is accepted in writing by the borrower" + (coBorrowerName ? " and co-borrower" : "") + " below and countersigned by an authorized representative of " + LENDER.name + ".", 7.5);
-        brk(coBorrowerName ? 200 : 110); band("Acceptance & signatures"); brk(86);
+        // Pre-check LO context so the acceptance paragraph + reserve height account for it.
+        var _tsLoBrandPre = (typeof window !== "undefined" && window.YSBRAND) ? window.YSBRAND : null;
+        var _tsHasLoPre = !!(_tsLoBrandPre && String(_tsLoBrandPre.name || "").trim());
+        para("5.  Validity & acceptance.  This term sheet is valid through " + fmtD(exp) + (d.inp.state ? (" for a property located in " + d.inp.state) : "") + ". It is not binding unless and until it is accepted in writing by the borrower" + (coBorrowerName ? " and co-borrower" : "") + (_tsHasLoPre ? ", acknowledged by the originating loan officer," : "") + " below and countersigned by an authorized representative of " + LENDER.name + ".", 7.5);
+        var _sigRowsPre = 1 + (coBorrowerName ? 1 : 0) + (_tsHasLoPre ? 1 : 0);
+        brk(_sigRowsPre >= 3 ? 292 : (_sigRowsPre === 2 ? 200 : 110)); band("Acceptance & signatures"); brk(86);
         // #104: when a borrowing entity is named, the entity is the borrower of
         // record and the individual signs as its authorized signatory / guarantor.
         var _tsEntity = (val("entityName") || "").trim(), _tsIndiv = (val("borrowerName") || "").trim();
@@ -1282,8 +1286,25 @@
         // When the file has TWO borrowers, the term sheet carries a second
         // signature line for the co-borrower (owner-directed #137) side-by-side
         // with the borrower; the lender line drops to the next row.
+        // Loan officer signature block (owner-directed 2026-07-21): the assigned
+        // loan officer signs the term sheet FIRST alongside the borrower(s); the
+        // super_admin lender counter-signs LAST. Only added when window.YSBRAND
+        // carries a name \u2014 an unbranded PDF stays byte-identical.
+        var _tsLoBrand = (typeof window !== "undefined" && window.YSBRAND) ? window.YSBRAND : null;
+        var _tsLoName = _tsLoBrand ? String(_tsLoBrand.name || "").trim() : "";
+        var _tsHasLo = !!_tsLoName;
+        var _loSub = _tsHasLo ? ("Loan officer \u2014 " + LENDER.name + (_tsLoBrand && _tsLoBrand.nmls ? (" \u00b7 NMLS " + _tsLoBrand.nmls) : "")) : "";
         if (coBorrowerName) {
           sigBlock(sx2, coBorrowerName, "Co-borrower / authorized signatory", "/ts_b2_sig/", "/ts_b2_dt/");
+          y += 92; brk(_tsHasLo ? 178 : 86);
+          if (_tsHasLo) {
+            sigBlock(sx1, _tsLoName, _loSub, "/ts_lo_sig/", "/ts_lo_dt/");
+            sigBlock(sx2, LENDER.name, "Authorized representative \u2014 required to validate", "/ts_admin_sig/", "/ts_admin_dt/");
+          } else {
+            sigBlock(sx1, LENDER.name, "Authorized representative \u2014 required to validate", "/ts_admin_sig/", "/ts_admin_dt/");
+          }
+        } else if (_tsHasLo) {
+          sigBlock(sx2, _tsLoName, _loSub, "/ts_lo_sig/", "/ts_lo_dt/");
           y += 92; brk(86);
           sigBlock(sx1, LENDER.name, "Authorized representative \u2014 required to validate", "/ts_admin_sig/", "/ts_admin_dt/");
         } else {

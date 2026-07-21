@@ -5,17 +5,25 @@ import { useAuth } from '../lib/auth.jsx';
 
 const BRAND = import.meta.env.BASE_URL + 'brand/';
 
-export function Brand({ console: consoleLabel = 'Borrower console', to = '/dashboard', ariaLabel = 'YS Capital Group' }) {
-  return (
-    <Link to={to} className="brand" aria-label={ariaLabel} style={{ textDecoration: 'none' }}>
-      {/* OWNER DECISION (2026-07-07): header uses the real full logo image too
-          (matching the redesigned login), not the small mark + typed wordmark.
-          WHITE-FIRST REDESIGN (2026-07-08): the header is now white, so use the
-          light-background lockup (dark mark) — lockup-dark (light mark) would be
-          invisible on white. */}
+export function Brand({ console: consoleLabel = 'Borrower console', to = '/dashboard', ariaLabel = 'YS Capital Group', external = false }) {
+  // OWNER DECISION (2026-07-07): header uses the real full logo image too
+  // (matching the redesigned login), not the small mark + typed wordmark.
+  // WHITE-FIRST REDESIGN (2026-07-08): the header is now white, so use the
+  // light-background lockup (dark mark) — lockup-dark (light mark) would be
+  // invisible on white.
+  const inner = (
+    <>
       <img className="brand-logo" src={BRAND + 'lockup-light.png'} alt="YS Capital Group" />
       {consoleLabel && <span className="sub">{consoleLabel}</span>}
-    </Link>
+    </>
+  );
+  if (external) {
+    return (
+      <a href={to} className="brand" aria-label={ariaLabel} style={{ textDecoration: 'none' }}>{inner}</a>
+    );
+  }
+  return (
+    <Link to={to} className="brand" aria-label={ariaLabel} style={{ textDecoration: 'none' }}>{inner}</Link>
   );
 }
 
@@ -51,7 +59,7 @@ export default function Layout({ children }) {
     <div className="shell">
       <header className="header">
         <div className="wrap">
-          <Brand />
+          <Brand to="/" external />
           <button className="nav-toggle" aria-label={menuOpen ? 'Close menu' : 'Open menu'}
             aria-expanded={menuOpen} onClick={() => setMenuOpen(o => !o)}>{menuOpen ? '✕' : '☰'}</button>
           {menuOpen && <div className="nav-scrim" onClick={() => setMenuOpen(false)} aria-hidden="true" />}

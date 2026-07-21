@@ -601,6 +601,9 @@ export const api = {
   staffAddVendor:    (b) => req('POST', '/api/staff/vendors', b),
   staffUpdateVendor: (id, b) => req('PATCH', `/api/staff/vendors/${id}`, b),
   staffDeleteVendor: (id) => req('DELETE', `/api/staff/vendors/${id}`),
+  // Manual vendor merge (owner-directed 2026-07-21). Body: { survivorId, mergedId,
+  // picks:{...}, emails:[...], phones:[...] }.
+  staffMergeVendors: (body) => req('POST', '/api/staff/vendors/merge', body),
   // general file contacts (#144) — staff side + a borrower's whole vendor list
   staffFileContacts:   (appId) => req('GET', `/api/staff/applications/${appId}/file-contacts`),
   staffAddFileContact: (appId, b) => req('POST', `/api/staff/applications/${appId}/file-contacts`, b),

@@ -169,6 +169,16 @@ export default function StaffBorrowers() {
                         {b.has_account ? (last || <span className="muted">never</span>) : <span className="muted">—</span>}
                       </td>
                       <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                        {/* Create a new mortgage (application) directly for this borrower
+                            (owner-directed 2026-07-21): the new-file screen takes an
+                            initial borrower via ?borrowerId so this row's borrower is
+                            preselected — one click to start their next deal without
+                            re-searching from the pipeline. */}
+                        <Link className="btn ghost small" style={{ marginRight: 6 }}
+                          to={`/internal/new?borrowerId=${b.id}`}
+                          title={`Start a new mortgage for ${name}`}>
+                          + New mortgage
+                        </Link>
                         {!b.has_account && (
                           <button className="btn primary small" disabled={busy === 'invite:' + b.id || !b.email}
                             title={b.email ? 'Email a set-password invite for their latest file' : 'No email on file'}
