@@ -470,7 +470,7 @@ function SellerChain({ sellerChain }) {
 // Bank liquidity — sum every account's ending balance and show it against the cash this deal needs.
 // The per-account table makes clear WHAT was counted (and what was excluded because it sits in an
 // account that isn't the borrower's / a verified entity's).
-function BankLiquidity({ bankLiquidity, appId, onChange }) {
+function BankLiquidity({ bankLiquidity }) {
   if (!bankLiquidity || !(bankLiquidity.accounts || []).length) return null;
   const money = (n) => n == null ? '—' : `$${Math.round(n).toLocaleString('en-US')}`;
   const req = bankLiquidity.requiredLiquidity;
@@ -518,7 +518,6 @@ function BankLiquidity({ bankLiquidity, appId, onChange }) {
           </tbody>
         </table>
       </div>
-      {(bankLiquidity.findings || []).map((f, i) => <Finding key={f.id || `bl${i}`} appId={appId} f={f} onChange={onChange} resolvable={false} />)}
     </div>
   );
 }
@@ -569,7 +568,6 @@ function Experience({ experience, appId, onChange, readOnly }) {
           ))}
         </div>
       )}
-      {findings.map((f, i) => <Finding key={f.id || `xp${i}`} appId={appId} f={f} onChange={onChange} resolvable={false} />)}
       {!readOnly && blocking && (
         <div style={{ marginTop: 4 }}>
           <button disabled={busy} onClick={grantException} style={btn(false)}>{busy ? 'Working…' : 'Grant experience exception'}</button>
@@ -587,7 +585,7 @@ function Experience({ experience, appId, onChange, readOnly }) {
 }
 
 // Amendments — the GOVERNING contract terms (base overlaid by executed amendments) + their source.
-function Amendments({ amendments, appId, onChange }) {
+function Amendments({ amendments }) {
   if (!amendments || !amendments.hasAmendments) return null;
   const eff = amendments.effective || {};
   const prov = amendments.provenance || {};
@@ -603,7 +601,7 @@ function Amendments({ amendments, appId, onChange }) {
       <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginBottom: 10 }}>
         The terms that actually govern after amendments{amendments.unexecuted > 0 ? ` · ${amendments.unexecuted} unexecuted amendment(s) do not yet govern` : ''}.
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(200px,1fr))', gap: 8, marginBottom: (amendments.findings || []).length ? 12 : 0 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(200px,1fr))', gap: 8 }}>
         {rows.map((r, i) => (
           <div key={i} style={{ border: '1px solid var(--line,#E7E1D3)', borderRadius: 10, background: 'var(--card,#fff)', padding: '8px 12px' }}>
             <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)' }}>{r[0]}</div>
@@ -612,27 +610,14 @@ function Amendments({ amendments, appId, onChange }) {
           </div>
         ))}
       </div>
-      {(amendments.findings || []).map((f, i) => <Finding key={f.id || `am${i}`} appId={appId} f={f} onChange={onChange} resolvable={false} />)}
     </div>
   );
 }
 
-// Reasonability — value-level data-integrity flags (a negative price, a loan bigger than the
-// purchase, an ID that expired before it was issued, a credit report dated in the future, a
-// settlement that doesn't balance). Advisory only; shown only when something actually fired.
-function Reasonability({ reasonability, appId, onChange }) {
-  const findings = (reasonability && reasonability.findings) || [];
-  if (!findings.length) return null;
-  return (
-    <div style={{ marginBottom: 22 }}>
-      <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px' }}>Data-integrity checks</h4>
-      <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginBottom: 10 }}>
-        Values that don’t look right on their own — usually a typo or a misread, occasionally a doctored document. These never block closing on their own, but each one should be confirmed.
-      </div>
-      {findings.map((f, i) => <Finding key={f.id || `rz${i}`} appId={appId} f={f} onChange={onChange} resolvable={false} />)}
-    </div>
-  );
-}
+// Value-level data-integrity flags (a negative price, a loan bigger than the purchase, an ID that
+// expired before it was issued, a credit report dated in the future, a settlement that doesn't
+// balance) are advisory findings — they now surface in the single "Open findings" list at the top
+// of the panel rather than in their own section, so nothing is listed twice.
 
 export default function UnderwritingPanel({ appId, docs = [], readOnly = false, onSummary }) {
   const [data, setData] = useState(null);
@@ -723,8 +708,6 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
   if (loading) return <p style={{ color: 'var(--muted,#4B585C)' }}>Loading the underwriting review…</p>;
 
   const sum = (data && data.summary) || { fatal: 0, warning: 0, info: 0, blocksCtc: false };
-  const findings = (data && data.findings) || [];
-  const cross = (data && data.crossDocument) || [];
   const tieout = data && data.tieout;
   const coverage = (data && data.conditionCoverage) || [];
   const staleness = data && data.staleness;
@@ -736,9 +719,12 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
   const completeness = data && data.completeness;
   const risk = data && data.risk;
   const amendments = data && data.amendments;
-  const reasonability = data && data.reasonability;
   const verdict = data && data.verdict;
   const documentsOnFile = (data && data.documentsOnFile) || [];
+  // Every open finding across the WHOLE file in one list — the exact set the summary counts, so the
+  // "2 warnings" chip maps to two visible items (owner-reported: "it says 2 warnings and I can't see
+  // them"). Shown once, at the top; the per-section finding lists below were removed so nothing repeats.
+  const allFindings = (data && data.allFindings) || [];
   const apprFindings = (appr && appr.findings) || [];
   const apprSum = (appr && appr.summary) || { fatal: 0, warning: 0, info: 0 };
   const exts = (data && data.extractions) || [];
@@ -747,7 +733,6 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
   const autoReadPending = (data && data.autoReadPending) || 0;
   const readerOn = !!(analyzers.reader && analyzers.ai);
   const currentDocs = (docs || []).filter((d) => d.is_current && d.id && d.source_type !== 'chat_attachment');
-  const resolvable = !readOnly;
 
   return (
     <div>
@@ -828,49 +813,29 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
         );
       })()}
 
-      {/* fraud / red-flag score — the top-of-file risk read */}
-      <RiskScore risk={risk} />
-
-      {/* file completeness — what's still needed to close */}
-      <Completeness completeness={completeness} documentsOnFile={documentsOnFile} />
-
-      {/* conditions coverage — ties every document back to the checklist */}
-      <ConditionCoverage coverage={coverage} />
-
-      {/* governing contract terms after amendments */}
-      <Amendments amendments={amendments} appId={appId} onChange={load} />
-
-      {/* data-integrity / reasonability flags — values that don't look right on their own */}
-      <Reasonability reasonability={reasonability} appId={appId} onChange={load} />
-
-      {/* loan metrics — LTP/LTV/LTC/ARV vs caps */}
-      <Metrics metrics={metrics} />
-
-      {/* entity-resolution chain */}
-      <SellerChain sellerChain={sellerChain} />
-      <EntityChain entityChain={entityChain} />
-      <BankLiquidity bankLiquidity={bankLiquidity} appId={appId} onChange={load} />
-      <Experience experience={experience} appId={appId} onChange={load} readOnly={readOnly} />
-
-      {/* document freshness / staleness */}
-      <StalenessBoard staleness={staleness} />
-
-      {/* the data-comparison matrix — the full stare-and-compare across the file */}
-      <TieOutMatrix tieout={tieout} />
-
-      {/* tie-out discrepancies — the facts that don't agree, called out for resolution */}
-      {cross.length > 0 && (
-        <div style={{ marginBottom: 20 }}>
-          <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 12px' }}>Discrepancies — facts that don’t tie out</h4>
-          {cross.map((f, i) => <Finding key={f.id || `x${i}`} appId={appId} f={f} onChange={load} resolvable={false} />)}
+      {/* ALL open findings, in ONE place — exactly the set the roll-up counts, so the "2 warnings"
+          chip maps to two visible, actionable items. A persisted per-document finding (has an id) is
+          resolvable here; a derived advisory (tie-out / metric / staleness / liquidity / experience /
+          entity chain) shows read-only and clears when its underlying data changes. Each finding
+          appears once — the old per-section finding lists were removed so nothing is repeated. */}
+      {allFindings.length > 0 && (
+        <div style={{ marginBottom: 22 }}>
+          <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px' }}>Open findings ({allFindings.length}) — everything that needs a look</h4>
+          <p style={{ fontSize: 12, color: 'var(--muted,#4B585C)', margin: '0 0 12px' }}>
+            Every open item across the whole file, in one list — the same items the counts above refer to.
+          </p>
+          {allFindings.map((f, i) => (
+            <Finding key={f.id || `${f.source || 'f'}-${f.code || 'x'}-${i}`} appId={appId} f={f}
+              onChange={load} resolvable={!readOnly && !!f.id} />
+          ))}
         </div>
       )}
 
-      {/* Appraisal findings — folded into this ONE findings section (owner-directed 2026-07-20).
-          Only the FINDINGS (appraisal value vs the loan file), never the full property-profile
-          report — that stays in the Appraisal section. Reuses the appraisal desk's own Finding
-          component + resolve path, so resolving here updates the appraisal review too (and its
-          re-price preview / replace-with-appraisal actions come along unchanged). */}
+      {/* Appraisal findings — a SEPARATE source (the appraisal desk), so they live in their own list
+          right beside the open-findings list. Only the FINDINGS (appraisal value vs the loan file),
+          never the full property-profile report — that stays in the Appraisal section. Reuses the
+          appraisal desk's own Finding component + resolve path, so resolving here updates the
+          appraisal review too (and its re-price / replace-with-appraisal actions come along). */}
       {apprFindings.length > 0 && (
         <div style={{ marginBottom: 22 }}>
           <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px' }}>Appraisal findings — appraisal vs the loan file</h4>
@@ -887,15 +852,37 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
         </div>
       )}
 
-      {/* per-document findings */}
-      {findings.length > 0 ? (
-        <div style={{ marginBottom: 22 }}>
-          <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 12px' }}>Document findings</h4>
-          {findings.map((f) => <Finding key={f.id} appId={appId} f={f} onChange={load} resolvable={resolvable} />)}
-        </div>
-      ) : (
-        cross.length === 0 && apprFindings.length === 0 && <p style={{ color: 'var(--good,#3F7A5B)', fontSize: 13, marginBottom: 20 }}>✓ No open findings{exts.length ? ' — every analyzed document matches the file.' : ' yet — analyze a document to start the review.'}</p>
+      {/* nothing open anywhere — the all-clear */}
+      {allFindings.length === 0 && apprFindings.length === 0 && (
+        <p style={{ color: 'var(--good,#3F7A5B)', fontSize: 13, marginBottom: 20 }}>✓ No open findings{exts.length ? ' — every analyzed document matches the file.' : ' yet — analyze a document to start the review.'}</p>
       )}
+
+      {/* fraud / red-flag score — the top-of-file risk read */}
+      <RiskScore risk={risk} />
+
+      {/* file completeness — what's still needed to close */}
+      <Completeness completeness={completeness} documentsOnFile={documentsOnFile} />
+
+      {/* conditions coverage — ties every document back to the checklist */}
+      <ConditionCoverage coverage={coverage} />
+
+      {/* governing contract terms after amendments */}
+      <Amendments amendments={amendments} />
+
+      {/* loan metrics — LTP/LTV/LTC/ARV vs caps */}
+      <Metrics metrics={metrics} />
+
+      {/* entity-resolution chain */}
+      <SellerChain sellerChain={sellerChain} />
+      <EntityChain entityChain={entityChain} />
+      <BankLiquidity bankLiquidity={bankLiquidity} />
+      <Experience experience={experience} appId={appId} onChange={load} readOnly={readOnly} />
+
+      {/* document freshness / staleness */}
+      <StalenessBoard staleness={staleness} />
+
+      {/* the data-comparison matrix — the full stare-and-compare across the file */}
+      <TieOutMatrix tieout={tieout} />
 
       {/* what was read */}
       {exts.length > 0 && (
