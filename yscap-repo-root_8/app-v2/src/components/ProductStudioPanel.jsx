@@ -791,7 +791,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
             </div>
             {cur && <span className="ts-badge ok" style={{ marginRight: 4 }}>Registered · {money(cur.total_loan)} @ {pct(cur.note_rate)}</span>}
             <button className="btn primary toolsheet-done" disabled={busy}
-              onClick={() => register(submitExceptionMode ? { submitException: true } : {})}>
+              onClick={() => register((submitExceptionMode || exceptionInfo) ? { submitException: true } : {})}>
               {busy ? (submitExceptionMode ? 'Submitting…' : 'Registering…')
                 : submitExceptionMode ? 'Submit exception request'
                 : cur ? 'Re-register this product' : 'Register this product'}
@@ -840,7 +840,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
               )}
               <div className="toolsheet-actions">
                 <button className="btn primary" disabled={busy}
-                  onClick={() => register(submitExceptionMode ? { submitException: true } : {})}>
+                  onClick={() => register((submitExceptionMode || exceptionInfo) ? { submitException: true } : {})}>
                   {busy ? (submitExceptionMode ? 'Submitting…' : 'Registering…')
                     : submitExceptionMode ? 'Submit exception request'
                     : cur ? 'Re-register this product' : 'Register this product'}

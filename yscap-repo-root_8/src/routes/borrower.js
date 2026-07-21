@@ -807,9 +807,22 @@ router.get('/applications/:id/pricing', async (req, res) => {
     let quote = null;
     // The live what-if quote embeds adminPricing too — strip it before it leaves.
     if (pricing.enginesReady()) { try { quote = borrowerSafeQuoteBundle(pricing.quoteAll(f.app, f.exp)); quote.experience = f.exp; } catch (_) {} }
+    // If the borrower's registration is a manual-review exception waiting on a
+    // super-admin, surface that state so the studio shows "registered but NOT
+    // confirmed — waiting for approval" on reload (not just the transient submit
+    // toast). Mirror the staff GET: pending row first, else the latest decided.
+    let manualEscalation = null;
+    try {
+      // Borrower-safe: status only — never the internal summary/leverage/asset
+      // months or a super-admin's decision note.
+      const d = await db.query(
+        `SELECT status FROM manual_program_escalations
+          WHERE application_id=$1 ORDER BY (status='pending') DESC, created_at DESC LIMIT 1`, [req.params.id]);
+      manualEscalation = d.rows[0] || null;
+    } catch (_) {}
     // Echoed back on register — a mismatch means the file's economics moved
     // underneath the open studio (409, never a silent stale re-register).
-    res.json({ current, history, quote, enginesReady: pricing.enginesReady(), econVersion: pricing.econVersionFor(f.app) });
+    res.json({ current, history, quote, enginesReady: pricing.enginesReady(), econVersion: pricing.econVersionFor(f.app), manualEscalation });
   } catch (e) { console.error('[borrower pricing]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
