@@ -386,7 +386,7 @@ router.get('/:appId', async (req, res, next) => {
       loanAmount: a.loan_amount, initialAdvance: reg ? reg.initialAdvance : null,
       purchasePrice: a.purchase_price,
       asIsValue: a.as_is_value, arv: a.arv, rehabBudget: a.rehab_budget,
-    }, capsFromRegistration(reg ? reg.caps : null));
+    }, capsFromRegistration(reg ? reg.caps : null, reg ? reg.program : null));
 
     // Entity-resolution chain: only meaningful for an entity (LLC) borrower — an individual file
     // would show every entity edge as "missing" (noise). Compose the signing-authority / ownership
