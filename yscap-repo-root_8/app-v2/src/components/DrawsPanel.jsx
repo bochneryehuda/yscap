@@ -750,6 +750,7 @@ function SdIcon({ name }) {
     mail: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M3 7l9 6 9-6" /></>,
     reply: <><path d="M9 17l-5-5 5-5" /><path d="M4 12h11a5 5 0 015 5v1" /></>,
     folder: <><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v7a2 2 0 01-2 2H5a2 2 0 01-2-2z" /></>,
+    dollar: <><path d="M12 2v20" /><path d="M17 6.5C17 4.6 14.8 3.5 12 3.5S7 4.6 7 6.5 9.2 9.5 12 10s5 1.6 5 3.5-2.2 3-5 3-5-1.1-5-3" /></>,
   }[name] || null;
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{p}</svg>;
 }
@@ -1170,59 +1171,87 @@ function LedgerPanel({ appId, ledger, draws, retainage, onSaved, act, busy: pare
       onSaved();
     } catch (e) { setErr(e?.data?.error || e.message || 'Could not save.'); } finally { setBusy(false); }
   }
+  // Summary tiles across the top — released / our fees / net wired / (retainage held).
+  const sum = (k, only) => ledger.reduce((s, d) => s + ((!only || d.funded_status === only) ? (Number(d[k]) || 0) : 0), 0);
+  const totApproved = sum('approved_cents');
+  const totFee = sum('fee_cents');
+  const totNet = sum('net_release_cents', 'released');
+  const LEDGER_STATUS = { released: { label: 'Released', cls: 'sw-approved' }, held: { label: 'Held', cls: 'sw-pending' }, pending: { label: 'Pending', cls: 'sw-draft' } };
   return (
-    <div className="panel" style={{ marginTop: 18 }}>
-      <div className="row between" style={{ alignItems: 'center' }}>
-        <h3 style={{ margin: 0 }}>Money ledger</h3>
+    <div className="dd-card">
+      <div className="dd-card-h" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+        <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+          <span className="dd-card-ic"><SdIcon name="dollar" /></span>
+          <div>
+            <h3>Money ledger</h3>
+            <div className="dd-sub" style={{ marginTop: 1 }}>Our fee comes off the approved amount{pct > 0 ? `, ${pct}% is held as retainage,` : ''} and the borrower nets the rest.</div>
+          </div>
+        </div>
         <button className="btn btn-sm ghost" onClick={() => api.sitewireExportGl(appId).catch(() => {})}>GL export</button>
       </div>
-      <div className="muted small" style={{ margin: '4px 0 8px' }}>Our fee comes off the approved amount{pct > 0 ? `, ${pct}% is held as retainage,` : ''} and the borrower nets the rest.</div>
-      {showRetainage && (
-        <div className="row" style={{ gap: 12, marginBottom: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          <span className="small">Retainage held: <b>{usd2(retainage.holding_cents)}</b>{retainage.released_cents > 0 ? <span className="muted"> · released {usd2(retainage.released_cents)}</span> : null}</span>
-          {retainage.holding_cents > 0 && (
-            <button className="btn btn-sm ghost" disabled={parentBusy === 'retrel'}
-              onClick={() => act('retrel', async () => { const r = await api.post(`/api/sitewire/files/${appId}/retainage-release`, {}); return { msg: `Retainage released: ${usd2(r.released_cents)}.` }; })}>Release retainage</button>
-          )}
+
+      {/* summary tiles */}
+      <div style={{ marginTop: 12, display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gridAutoRows: '1fr' }}>
+        <KpiTile label="Approved to date" value={usd(totApproved)} />
+        <KpiTile label="Our fees" value={usd(totFee)} tone="gold" />
+        <KpiTile label="Net wired to borrower" value={usd(totNet)} tone="teal" sub="released" />
+        {showRetainage && <KpiTile label="Retainage held" value={usd(retainage.holding_cents)} sub={retainage.released_cents > 0 ? `released ${usd2(retainage.released_cents)}` : 'held back'} />}
+      </div>
+
+      {showRetainage && retainage.holding_cents > 0 && (
+        <div className="row" style={{ gap: 12, marginTop: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+          <button className="btn btn-sm ghost" disabled={parentBusy === 'retrel'}
+            onClick={() => act('retrel', async () => { const r = await api.post(`/api/sitewire/files/${appId}/retainage-release`, {}); return { msg: `Retainage released: ${usd2(r.released_cents)}.` }; })}>Release retainage ({usd2(retainage.holding_cents)})</button>
         </div>
       )}
+
       {ledger.length > 0 && (
-        <div style={{ overflowX: 'auto' }}>
-          <table className="table" style={{ width: '100%', minWidth: 620 }}>
-            <thead><tr><th>Draw</th><th style={{ textAlign: 'right' }}>Approved</th><th style={{ textAlign: 'right' }}>Fee</th>{showRetainage && <th style={{ textAlign: 'right' }}>Retainage</th>}<th style={{ textAlign: 'right' }}>Net release</th><th>Date</th><th>Status</th></tr></thead>
+        <div className="dd-tablecard" style={{ overflowX: 'auto', marginTop: 12 }}>
+          <table className="dd-table" style={{ minWidth: 640 }}>
+            <thead><tr><th>Draw</th><th className="num">Approved</th><th className="num">Fee</th>{showRetainage && <th className="num">Retainage</th>}<th className="num">Net release</th><th>Date</th><th>Status</th></tr></thead>
             <tbody>
-              {ledger.map((d) => (
-                <tr key={d.id}>
-                  <td>{d.kind === 'retainage_release' ? 'Retainage' : (d.sitewire_draw_id ? 'Draw #' + (numByDraw[String(d.sitewire_draw_id)] ?? d.sitewire_draw_id) : '—')}</td>
-                  <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{usd2(d.approved_cents)}</td>
-                  <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{usd2(d.fee_cents)}</td>
-                  {showRetainage && <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{usd2(d.retainage_held_cents)}</td>}
-                  <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{usd2(d.net_release_cents)}</td>
-                  <td className="muted">{fmtDay(d.release_date)}</td>
-                  <td><span className="pill sw-approved">{d.funded_status}</span></td>
-                </tr>
-              ))}
+              {ledger.map((d) => {
+                const st = LEDGER_STATUS[d.funded_status] || { label: d.funded_status, cls: 'sw-draft' };
+                return (
+                  <tr key={d.id}>
+                    <td style={{ fontWeight: 600 }}>{d.kind === 'retainage_release' ? 'Retainage' : (d.sitewire_draw_id ? 'Draw #' + (numByDraw[String(d.sitewire_draw_id)] ?? d.sitewire_draw_id) : '—')}</td>
+                    <td className="num" style={{ fontVariantNumeric: 'tabular-nums' }}>{usd2(d.approved_cents)}</td>
+                    <td className="num" style={{ fontVariantNumeric: 'tabular-nums' }}>{usd2(d.fee_cents)}</td>
+                    {showRetainage && <td className="num" style={{ fontVariantNumeric: 'tabular-nums' }}>{usd2(d.retainage_held_cents)}</td>}
+                    <td className="num" style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 700, color: 'var(--teal-br)' }}>{usd2(d.net_release_cents)}</td>
+                    <td className="muted" style={{ whiteSpace: 'nowrap' }}>{fmtDay(d.release_date)}</td>
+                    <td><span className={'pill ' + st.cls}>{st.label}</span></td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
       )}
-      <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-        <label className="small">Draw <span style={{ color: 'var(--bad,#b04a3f)' }}>*</span>
-          <select className="input" value={f.sitewire_draw_id} onChange={(e) => setF({ ...f, sitewire_draw_id: e.target.value })}>
-            <option value="">Select a draw…</option>
-            {draws.map((d) => <option key={d.sitewire_draw_id} value={d.sitewire_draw_id}>#{d.number}</option>)}
-          </select>
-        </label>
-        <label className="small">Approved $<input className="input" style={{ width: 110 }} value={f.approved} onChange={(e) => setF({ ...f, approved: e.target.value })} /></label>
-        <label className="small">Our fee $<input className="input" style={{ width: 90 }} value={f.fee} onChange={(e) => setF({ ...f, fee: e.target.value })} /></label>
-        <label className="small">Kind
-          <select className="input" value={f.fee_kind} onChange={(e) => setF({ ...f, fee_kind: e.target.value })}><option value="virtual">Virtual</option><option value="physical">Physical</option></select>
-        </label>
-        <label className="small">Release date<input type="date" className="input" value={f.release_date} onChange={(e) => setF({ ...f, release_date: e.target.value })} /></label>
-        <div className="small" style={{ alignSelf: 'center' }}>{pct > 0 ? <>Retainage: <b>{usd2(retC)}</b> · </> : null}Net: <b>{usd2(net)}</b></div>
-        <button className="btn btn-sm primary" disabled={busy || !f.sitewire_draw_id || approvedC == null || approvedC <= 0 || net < 0} onClick={save}>Record release</button>
+
+      {/* record a release — a clean inline form with a prominent net preview */}
+      <div className="dd-card" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)' }}>
+        <div className="dd-field-l" style={{ fontWeight: 700, marginBottom: 8 }}>Record a release</div>
+        <div className="row" style={{ gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+          <label className="small">Draw <span style={{ color: 'var(--bad,#b04a3f)' }}>*</span>
+            <select className="input" value={f.sitewire_draw_id} onChange={(e) => setF({ ...f, sitewire_draw_id: e.target.value })}>
+              <option value="">Select a draw…</option>
+              {draws.map((d) => <option key={d.sitewire_draw_id} value={d.sitewire_draw_id}>#{d.number}</option>)}
+            </select>
+          </label>
+          <label className="small">Approved $<input className="input" style={{ width: 110 }} value={f.approved} onChange={(e) => setF({ ...f, approved: e.target.value })} /></label>
+          <label className="small">Our fee $<input className="input" style={{ width: 90 }} value={f.fee} onChange={(e) => setF({ ...f, fee: e.target.value })} /></label>
+          <label className="small">Kind
+            <select className="input" value={f.fee_kind} onChange={(e) => setF({ ...f, fee_kind: e.target.value })}><option value="virtual">Virtual</option><option value="physical">Physical</option></select>
+          </label>
+          <label className="small">Release date<input type="date" className="input" value={f.release_date} onChange={(e) => setF({ ...f, release_date: e.target.value })} /></label>
+        </div>
+        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginTop: 12, flexWrap: 'wrap', gap: 10 }}>
+          <div className="small">{pct > 0 ? <>Retainage held: <b>{usd2(retC)}</b> · </> : null}Borrower nets: <b style={{ fontSize: 16, color: 'var(--teal-br)' }}>{usd2(net)}</b></div>
+          <button className="btn btn-sm primary" disabled={busy || !f.sitewire_draw_id || approvedC == null || approvedC <= 0 || net < 0} onClick={save}>Record release</button>
+        </div>
+        {err && <div className="small" style={{ color: 'var(--bad,#b04a3f)', marginTop: 6 }}>{err}</div>}
       </div>
-      {err && <div className="small" style={{ color: 'var(--bad,#b04a3f)', marginTop: 6 }}>{err}</div>}
     </div>
   );
 }
