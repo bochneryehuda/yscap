@@ -646,6 +646,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
   const [detected, setDetected] = useState(''); // confidence note for the suggested type
   const [autoReading, setAutoReading] = useState(false);
   const [autoReadMsg, setAutoReadMsg] = useState('');
+  const [autoReadUnreadable, setAutoReadUnreadable] = useState([]); // filenames the reader couldn't read as expected
   const didAutoRead = useRef(false); // auto-run the reader at most once per mount (idempotent server-side anyway)
 
   // Auto-detect the document type when a document is chosen (the underwriter confirms it).
@@ -683,11 +684,20 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
   // idempotent (an unchanged document is never re-read) and dormant-safe (does nothing but count
   // when the reader is off), so this is safe to call on open and to re-run.
   const runAutoRead = useCallback(async () => {
-    setAutoReading(true); setAutoReadMsg('');
+    setAutoReading(true); setAutoReadMsg(''); setAutoReadUnreadable([]);
     try {
       const r = await api.underwritingAutoRead(appId);
-      if (r && r.readerOn === false) setAutoReadMsg('');
-      else if (r) setAutoReadMsg(r.read ? `Read ${r.read} document${r.read === 1 ? '' : 's'}${r.pending ? ` · ${r.pending} more to go` : ''}.` : '');
+      if (r && r.readerOn !== false) {
+        const parts = [];
+        if (r.read) parts.push(`Read ${r.read} document${r.read === 1 ? '' : 's'}`);
+        if (r.pending) parts.push(`${r.pending} more to go`);
+        setAutoReadMsg(parts.join(' · '));
+        // Documents the reader couldn't read AS the type their condition expects — they may be the
+        // wrong document filed there (e.g. not actually a title commitment) or a poor scan.
+        setAutoReadUnreadable((r.results || [])
+          .filter((x) => x.unreadable || (!x.ok && x.error && x.error !== 'cooldown'))
+          .map((x) => x.filename).filter(Boolean));
+      }
       await load();
     } catch (_) { /* best-effort; the desk still works and the manual read stays available */ }
     finally { setAutoReading(false); }
@@ -764,6 +774,14 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
           ) : autoReadMsg ? (
             <span style={{ color: 'var(--good,#3F7A5B)' }}>✓ {autoReadMsg}</span>
           ) : null}
+        </div>
+      )}
+
+      {/* Documents the reader couldn't read AS the type their condition expects — likely the wrong
+          document filed there (not really a title commitment, etc.) or a poor scan. Confirm + re-request. */}
+      {!readOnly && !autoReading && autoReadUnreadable.length > 0 && (
+        <div style={{ background: 'var(--amber-bg,#F6EEDD)', color: 'var(--amber,#B7791F)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 10, padding: '9px 14px', marginBottom: 14, fontSize: 12.5 }}>
+          ⚠ {autoReadUnreadable.length} document{autoReadUnreadable.length === 1 ? '' : 's'} couldn’t be read as expected — please confirm the right document is filed (or ask for a clearer copy): <b>{autoReadUnreadable.join(', ')}</b>
         </div>
       )}
 
