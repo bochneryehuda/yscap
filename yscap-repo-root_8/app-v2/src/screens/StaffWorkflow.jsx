@@ -25,6 +25,13 @@ function ageClass(seconds) {
   const days = (Number(seconds) || 0) / 86400;
   return days >= 2 ? 'over' : days >= 1 ? 'today' : '';
 }
+// Prefer the server's SLA read (against each hand-off's due date) over raw age.
+function slaClass(it) {
+  if (it.sla_state === 'overdue') return 'over';
+  if (it.sla_state === 'at_risk') return 'today';
+  if (it.sla_state === 'ok') return '';
+  return ageClass(it.age_seconds);   // no SLA on this type → fall back to age
+}
 const fmtWhen = (ts) => { try { return new Date(ts).toLocaleString(); } catch { return ts; } };
 
 export default function StaffWorkflow() {
@@ -70,8 +77,11 @@ export default function StaffWorkflow() {
     if (!rows || tab !== 'next') return null;
     const open = rows.filter(r => r.status === 'open').length;
     const inProg = rows.filter(r => r.status === 'in_progress').length;
-    const aging = rows.filter(r => (Number(r.age_seconds) || 0) >= 86400).length;
-    return { total: rows.length, open, inProg, aging };
+    // Overdue = past its target time (SLA). Falls back to 1+ day old for the few
+    // types without an SLA, so the tile always means "needs attention now."
+    const overdue = rows.filter(r => r.sla_state === 'overdue'
+      || (!r.sla_state && (Number(r.age_seconds) || 0) >= 86400)).length;
+    return { total: rows.length, open, inProg, overdue };
   }, [rows, tab]);
 
   if (err && !rows) return <div role="alert" className="notice err">{err}</div>;
@@ -102,7 +112,7 @@ export default function StaffWorkflow() {
               <div className="kpi"><div className="v">{kpis.total}</div><div className="k">On your list</div><div className="d">Files waiting for you</div></div>
               <div className="kpi"><div className="v">{kpis.open}</div><div className="k">Not started</div><div className="d">Waiting to be picked up</div></div>
               <div className="kpi"><div className="v">{kpis.inProg}</div><div className="k">In progress</div><div className="d">You’re working on these</div></div>
-              <div className="kpi"><div className="v">{kpis.aging}</div><div className="k">Waiting 1+ day</div><div className="d">Oldest first — start here</div></div>
+              <div className="kpi"><div className="v">{kpis.overdue}</div><div className="k">Overdue</div><div className="d">Past their target time — start here</div></div>
             </div>
           )}
 
@@ -124,12 +134,14 @@ export default function StaffWorkflow() {
                           </span>
                         </Link>
                         <span><span className="pill">{TYPE_LABEL[it.submission_type] || it.submission_type}</span>
+                          {it.auto && <span className="pill" style={{ marginLeft: 6 }} title="Created automatically by PILOT">Auto</span>}
                           {it.status === 'in_progress' && <span className="muted small" style={{ marginLeft: 6 }}>· started</span>}
                           {it.est_closing_date && <span className="muted small" style={{ display: 'block' }}>Est. close {it.est_closing_date}</span>}
                           {it.note && <span className="muted small" style={{ display: 'block' }}>“{it.note}”</span>}
                         </span>
                         <span className="muted small">{it.from_name || '—'}</span>
-                        <span className={`due ${ageClass(it.age_seconds)}`}>{ageText(it.age_seconds)}</span>
+                        <span className={`due ${slaClass(it)}`} title={it.due_at ? `Target: ${fmtWhen(it.due_at)}` : ''}>
+                          {it.sla_state === 'overdue' ? 'Overdue' : ageText(it.age_seconds)}</span>
                         <span className="wf-acts">
                           {it.status === 'open' && <button className="btn ghost small" disabled={busy === it.id} onClick={() => pickup(it.id)}>Pick up</button>}
                           <button className="btn primary small" disabled={busy === it.id} onClick={() => { setReturning(returning === it.id ? null : it.id); setOutcome(''); setNote(''); }}>Send back</button>

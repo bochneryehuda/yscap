@@ -36,6 +36,19 @@ export default function SubmitFilePanel({ appId, onChange }) {
   const liveByType = {};
   for (const it of (opts.live || [])) liveByType[it.submission_type] = it;
 
+  // The Workflow, phase two: work out the ONE step this file looks ready for, so
+  // we can highlight the recommended button (mirrors the server's suggestion).
+  const hasLive = (t) => !!liveByType[t];
+  let recommended = null;
+  if (!opts.funded) {
+    if (opts.appStatus === 'processing' && opts.conditionsCleared
+        && opts.conditionsCleared.pct >= (opts.conditionsThreshold || 0.8) && !hasLive('condition_clearing')) {
+      recommended = 'condition_clearing';
+    } else if (opts.ctcReady && opts.appStatus !== 'clear_to_close' && !hasLive('clear_to_close')) {
+      recommended = 'clear_to_close';
+    }
+  }
+
   // For a type, work out who it goes to + whether we need the person picker.
   function destination(type) {
     const cfg = T[type] || {};
@@ -115,10 +128,12 @@ export default function SubmitFilePanel({ appId, onChange }) {
     const live = liveByType[type];
     const d = destination(type);
     const noTarget = !d.assigned && (!d.candidates || d.candidates.length === 0);
+    const isRec = recommended === type;
     return (
-      <div className={`wf-submit-card${reason ? ' is-blocked' : ''}`}>
+      <div className={`wf-submit-card${reason ? ' is-blocked' : ''}${isRec ? ' is-recommended' : ''}`}>
         <div className="wf-submit-main">
-          <div className="wf-submit-title">{cfg.label}</div>
+          <div className="wf-submit-title">{cfg.label}
+            {isRec && <span className="wf-rec-chip">Recommended</span>}</div>
           <div className="wf-submit-help muted small">{cfg.helper}</div>
           <div className="wf-submit-goes muted small">{reason ? <span className="wf-blockmsg">{reason}</span> : goesTo(type)}</div>
           {live && <div className="muted small">Already in {live.to_name || 'someone'}’s workflow{live.status === 'in_progress' ? ' (in progress)' : ''}.</div>}
@@ -162,6 +177,9 @@ export default function SubmitFilePanel({ appId, onChange }) {
       <div className="panel-b">
         {flash && <div className="notice ok" style={{ marginBottom: 10 }}>{flash}</div>}
         {err && <div role="alert" className="notice err" style={{ marginBottom: 10 }}>{err}<button className="btn link small" onClick={() => setErr('')}>Dismiss</button></div>}
+        {recommended && !flash && (
+          <div className="wf-rec-banner">This file looks ready for <b>{(T[recommended] || {}).label}</b> — it’s highlighted below.</div>
+        )}
 
         <div className="wf-submit-grid">
           {MAIN.map(t => <Button key={t} type={t} />)}
