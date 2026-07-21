@@ -38,6 +38,7 @@ const { underwriterActions } = require('../lib/underwriting/actions');
 const { falseAlarmReport } = require('../lib/underwriting/feedback');
 const { classify } = require('../lib/underwriting/classify');
 const { conditionsForDoc, purposeForDoc, docReadiness, fileConditionCoverage, docTypesForCode, expectedDocTypeForCode } = require('../lib/underwriting/condition-map');
+const { selectAutoReadQueue } = require('../lib/underwriting/auto-read');
 const { ANALYZER_VERSION, subjectHash } = require('../lib/underwriting/fingerprint');
 const { assessFile: assessStaleness } = require('../lib/underwriting/staleness');
 const { computeMetrics } = require('../lib/underwriting/metrics');
@@ -216,8 +217,12 @@ router.get('/:appId', async (req, res, next) => {
       const row = { documentId: d.id, filename: d.filename, conditionCode: d.condition_code || null,
         conditionLabel: d.condition_label || null, docKind: d.doc_kind || null, expectedType, analyzed };
       documentsOnFile.push(row);
-      // Anything present but not yet read (and that maps to a readable type) is the auto-read queue.
-      if (!analyzed && expectedType) autoReadQueue.push(row);
+      // Anything present, not yet read, AND that maps to a type the reader can actually read is the
+      // auto-read queue. The registry.get gate MUST match the /auto-read endpoint's selectAutoReadQueue
+      // (isReadable), or the count here would include a type the reader skips (e.g. a document under
+      // the appraisal-documents condition → 'appraisal', which the appraisal desk owns, not this
+      // reader) and the desk's "read them all" button would never clear a stuck count.
+      if (!analyzed && expectedType && registry.get(expectedType)) autoReadQueue.push(row);
     }
 
     // Data-comparison / tie-out over the file's current extractions + the appraisal.
@@ -401,6 +406,83 @@ async function fileDoc(app, documentId) {
     [documentId, app.id, app.borrower_id])).rows[0] || null;
 }
 
+// Read + check ONE document — the SHARED core of the manual /analyze endpoint AND the auto-reader.
+// Reuses the analyze-once idempotency cache (db/203) so an unchanged document is never re-read for a
+// paid Azure call, the per-(user,document) cost cooldown, and the size guard. Returns a RESULT object
+// (never throws for an expected per-document failure) so a batch (auto-read) can never die on one bad
+// document — heavy per-document error handling. `opts.actorId` audits + arms the cooldown; omit it in
+// contexts that shouldn't (a system pass). The manual endpoint maps the result's `error` to HTTP.
+async function analyzeOneDocument(app, doc, docType, opts = {}) {
+  const actorId = opts.actorId || null;
+  const force = !!opts.force;
+  const base = { documentId: doc.id, filename: doc.filename, docType };
+  try {
+    if (!doc.storage_ref) return { ...base, ok: false, error: 'no_stored_file' };
+
+    const ctx = await fileView.loadContext(db, app.id);
+    const subject = fileView.subjectFor(docType, ctx);
+    const subjHash = subjectHash({ subject, today: todayISO() });
+
+    if (!force && doc.sha256) {
+      const cached = await store.findReusableExtraction(db, {
+        documentId: doc.id, applicationId: app.id, docType, analyzedSha256: doc.sha256,
+        analyzerVersion: ANALYZER_VERSION, subjectHash: subjHash,
+      });
+      if (cached) {
+        const findings = await store.findingsForExtraction(db, cached.id);
+        if (actorId) await audit(actorId, 'underwriting_analyze', app.id, { documentId: doc.id, docType, ok: true, cached: true });
+        return { ...base, ok: true, cached: true, extractionId: cached.id, status: cached.status, confidence: cached.confidence, findings };
+      }
+    }
+
+    // Past the cache — this makes a paid Azure read. Cost cooldown (armed only when we have an actor).
+    const cool = actorId ? paidCooldownRemaining(actorId, doc.id, 'analyze') : 0;
+    if (cool) return { ...base, ok: false, error: 'cooldown', retryAfterSeconds: cool };
+
+    let buffer;
+    try { buffer = await storage.read(doc.storage_ref); }
+    catch (_) { return { ...base, ok: false, error: 'storage_read_failed' }; }
+    if (!buffer) return { ...base, ok: false, error: 'storage_read_failed' };
+    if (buffer.length > MAX_ANALYZE_BYTES) return { ...base, ok: false, error: 'too_large' };
+    const base64 = buffer.toString('base64');
+
+    const result = await engine.analyzeDocument({
+      docType, buffer, base64, mimeType: doc.content_type || 'application/octet-stream',
+      subject, today: todayISO(),
+    });
+
+    const client = await db.pool.connect();
+    let saved;
+    try {
+      await client.query('BEGIN');
+      saved = await store.saveAnalysis(client, {
+        documentId: doc.id, applicationId: app.id, borrowerId: doc.borrower_id || app.borrower_id,
+        docType, extraction: result.extraction, findings: result.findings,
+        analyzedSha256: doc.sha256 || null, analyzerVersion: ANALYZER_VERSION, subjectHash: subjHash,
+      });
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+
+    if (actorId) await audit(actorId, 'underwriting_analyze', app.id, { documentId: doc.id, docType, ok: result.ok, findings: (result.findings || []).map((f) => f.code), reason: result.reason || null });
+    // Materialize the CTC gate condition when analysis produced a blocking fatal (mirrors the manual path).
+    if ((result.findings || []).some((f) => f.severity === 'fatal' && f.blocksCtc)) {
+      await ensureUnderwritingCondition(app.id).catch(() => {});
+    }
+    return {
+      ...base, ok: result.ok, cached: false, extractionId: saved.extractionId,
+      status: result.extraction && result.extraction.status,
+      confidence: result.extraction && result.extraction.confidence,
+      findings: result.findings || [], reason: result.reason || null,
+    };
+  } catch (e) {
+    // Keep the ORIGINAL error object (with .code/.status) so the manual endpoint can propagate it to
+    // the global handler unchanged — a DB outage mid-persist must still surface as 503, a 22P02 as
+    // 400, not a bare 500. The auto-read batch ignores `cause` and just records the failure.
+    return { ...base, ok: false, error: 'analyze_failed', message: e && e.message, cause: e };
+  }
+}
+
 // ---- POST /documents/:documentId/classify: auto-detect the document's type -----
 // "Know the purpose of every document" — read the document, guess its type from the text +
 // filename, and return the suggestion + confidence so the desk can pre-select it (a human always
@@ -448,98 +530,87 @@ router.post('/:appId/documents/:documentId/analyze', async (req, res, next) => {
     if (!doc) return res.status(404).json({ error: 'document not found on this file' });
     if (!doc.storage_ref) return res.status(422).json({ error: 'this document has no stored file to read' });
 
-    // Build the subject this document type compares against, from the loan file.
-    const ctx = await fileView.loadContext(db, app.id);
-    const subject = fileView.subjectFor(docType, ctx);
-    // Fingerprint EVERYTHING the checks compare against — the file subject AND `today` (several
-    // checks are date-relative: an insurance/ID expiry or a staleness window turns on the
-    // calendar day, not the document). Folding `today` in means the cache only reuses a result
-    // computed on the SAME day, so an expired-since-analysis fatal can never be served stale.
-    const subjHash = subjectHash({ subject, today: todayISO() });
-
-    // IDEMPOTENCY (db/203): if this exact document (same content hash) was already analyzed as
-    // THIS type, by THIS analyzer version, against THIS same file state, re-reading it would
-    // spend a paid Azure call for a result we already have. Return the stored extraction + its
-    // open findings instead. Never triggers for a legacy doc with no content hash (re-runs), and
-    // an explicit `force:true` always re-reads. This is safe because the subject hash is part of
-    // the key — any change to the loan file the check compares against re-analyzes.
+    // The analyze-once idempotency cache, cost cooldown, read+check, persist, audit, and gate
+    // materialization all live in the shared analyzeOneDocument (reused by the auto-reader). Map its
+    // result `error` back to the manual endpoint's exact HTTP codes.
     const force = !!(req.body && req.body.force);
-    if (!force && doc.sha256) {
-      const cached = await store.findReusableExtraction(db, {
-        documentId: doc.id, applicationId: app.id, docType, analyzedSha256: doc.sha256,
-        analyzerVersion: ANALYZER_VERSION, subjectHash: subjHash,
-      });
-      if (cached) {
-        const findings = await store.findingsForExtraction(db, cached.id);
-        await audit(req.actor.id, 'underwriting_analyze', app.id,
-          { documentId: doc.id, docType, ok: true, cached: true });
-        return res.json({
-          ok: true, docType, cached: true, extractionId: cached.id,
-          status: cached.status, confidence: cached.confidence,
-          findings: findings.map(decorate), reason: null,
-        });
-      }
-    }
-
-    // Past the cache — this WILL make a paid Azure read+GPT call. Throttle one paid analyze per
-    // (user, document) per cooldown so a force:true loop can't run up unbounded spend (cost-DoS).
-    const cool = paidCooldownRemaining(req.actor.id, doc.id, 'analyze');
-    if (cool) return res.status(429).json({ error: `this document was just analyzed — try again in ${cool}s`, retryAfterSeconds: cool });
-
-    // Read the bytes (best-effort; a storage miss is a clear 422, never a crash).
-    let buffer;
-    try { buffer = await storage.read(doc.storage_ref); }
-    catch (e) { return res.status(422).json({ error: 'could not read the stored document' }); }
-    // Guard against an oversized stored document (memory / base64 amplification before Azure).
-    if (buffer.length > MAX_ANALYZE_BYTES) {
-      return res.status(413).json({ error: `this document is too large to analyze (limit ${Math.round(MAX_ANALYZE_BYTES / (1024 * 1024))} MB)` });
-    }
-    const base64 = buffer.toString('base64');
-
-    const result = await engine.analyzeDocument({
-      docType, buffer, base64, mimeType: doc.content_type || 'application/octet-stream',
-      subject, today: todayISO(),
-    });
-
-    // Persist (supersede prior read of this document + insert the new one) in a transaction.
-    const client = await db.pool.connect();
-    let saved;
-    try {
-      await client.query('BEGIN');
-      saved = await store.saveAnalysis(client, {
-        documentId: doc.id, applicationId: app.id, borrowerId: doc.borrower_id || app.borrower_id,
-        docType, extraction: result.extraction, findings: result.findings,
-        analyzedSha256: doc.sha256 || null, analyzerVersion: ANALYZER_VERSION, subjectHash: subjHash,
-      });
-      await client.query('COMMIT');
-    } catch (e) {
-      await client.query('ROLLBACK').catch(() => {});
-      throw e;
-    } finally {
-      client.release();
-    }
-
-    await audit(req.actor.id, 'underwriting_analyze', app.id, {
-      documentId: doc.id, docType, ok: result.ok,
-      findings: (result.findings || []).map((f) => f.code), reason: result.reason || null,
-    });
-
-    // Materialize the clear-to-close gate condition when analysis produced a blocking fatal, so
-    // there IS a condition for signOffGate (+ the db/202 trigger) to hold until it's resolved —
-    // mirrors how the appraisal desk ensures appraisal_review_cleared on import. Best-effort.
-    if ((result.findings || []).some((f) => f.severity === 'fatal' && f.blocksCtc)) {
-      await ensureUnderwritingCondition(app.id).catch(() => {});
-    }
-
+    const r = await analyzeOneDocument(app, doc, docType, { actorId: req.actor.id, force });
+    if (r.error === 'cooldown') return res.status(429).json({ error: `this document was just analyzed — try again in ${r.retryAfterSeconds}s`, retryAfterSeconds: r.retryAfterSeconds });
+    if (r.error === 'too_large') return res.status(413).json({ error: `this document is too large to analyze (limit ${Math.round(MAX_ANALYZE_BYTES / (1024 * 1024))} MB)` });
+    if (r.error === 'storage_read_failed' || r.error === 'no_stored_file') return res.status(422).json({ error: 'could not read the stored document' });
+    if (r.error === 'analyze_failed') return next(r.cause || new Error(r.message || 'analyze failed'));
     res.json({
-      ok: result.ok,
-      docType,
-      extractionId: saved.extractionId,
-      status: result.extraction && result.extraction.status,
-      confidence: result.extraction && result.extraction.confidence,
-      findings: (result.findings || []).map(decorate),
-      reason: result.reason || null,
+      ok: r.ok, docType, cached: !!r.cached, extractionId: r.extractionId,
+      status: r.status, confidence: r.confidence,
+      findings: (r.findings || []).map(decorate), reason: r.reason || null,
     });
+  } catch (e) { next(e); }
+});
+
+// ---- POST /auto-read: read + check EVERY on-file document that hasn't been read yet -------------
+// The heart of "read and check automatically" (owner-directed 2026-07-20): walk the documents the
+// file already has (each filed under a condition — title commitment under the title condition,
+// insurance under insurance, …) and read+check each AS the type that condition expects, posting the
+// findings — with NO per-document click. Idempotent: the analyze-once cache makes an unchanged
+// re-read free, so the desk can call this every time it opens. Dormant-safe: when the Azure reader/AI
+// aren't configured it does NOTHING but report how many are waiting (never fakes a result). Bounded:
+// a kill-switch env + a per-call cap so one file can't run away. Per-document errors are contained
+// (analyzeOneDocument returns them) so one bad document never stops the batch.
+const AUTOREAD_ENABLED = process.env.UNDERWRITING_AUTOREAD_ENABLED !== '0';
+const AUTOREAD_MAX_PER_CALL = Math.max(1, parseInt(process.env.UNDERWRITING_AUTOREAD_MAX || '25', 10) || 25);
+
+// Build the on-file-but-unread queue (shared shape with the GET): each current, non-rejected
+// document filed under a condition mapped to a readable document type, that has no current
+// extraction yet. Pulls this file's own docs, its entity's LLC docs, and anything under its
+// conditions (mirrors the GET's documentsOnFile query).
+async function buildAutoReadQueue(app) {
+  const a0 = (await db.query(`SELECT llc_id FROM applications WHERE id=$1`, [app.id])).rows[0] || {};
+  const [docs, exts] = await Promise.all([
+    db.query(
+      `SELECT d.id, d.filename, d.doc_kind, t.code AS condition_code
+         FROM documents d
+         LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
+         LEFT JOIN checklist_templates t ON t.id = ci.template_id
+        WHERE d.is_current = true
+          AND COALESCE(d.review_status, '') <> 'rejected'
+          AND COALESCE(d.source_type, '') <> 'chat_attachment'
+          AND ( d.application_id = $1 OR ci.application_id = $1 OR (d.llc_id IS NOT NULL AND d.llc_id = $2) )
+        ORDER BY d.created_at`, [app.id, a0.llc_id || null]),
+    db.query(`SELECT document_id FROM document_extractions WHERE application_id=$1 AND is_current AND document_id IS NOT NULL`, [app.id]),
+  ]);
+  return selectAutoReadQueue({
+    documents: docs.rows,
+    analyzedIds: new Set(exts.rows.map((r) => r.document_id)),
+    isReadable: (t) => !!registry.get(t),
+  });
+}
+
+router.post('/:appId/auto-read', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    if (!AUTOREAD_ENABLED) return res.json({ readerOn: false, disabled: true, read: 0, cached: 0, pending: 0, total: 0, results: [] });
+
+    const readerOn = docint.configured() && azureOpenai.available();
+    const queue = await buildAutoReadQueue(app);
+
+    // Reader not configured → report the waiting queue, read nothing (the desk shows "on file — will
+    // read automatically once the reader is switched on"). Never make a paid call we can't fulfill.
+    if (!readerOn) return res.json({ readerOn: false, read: 0, cached: 0, pending: queue.length, total: queue.length, results: [] });
+
+    const batch = queue.slice(0, AUTOREAD_MAX_PER_CALL);
+    const results = [];
+    let read = 0, cached = 0;
+    for (const item of batch) {
+      const doc = await fileDoc(app, item.id);
+      if (!doc) { results.push({ documentId: item.id, filename: item.filename, docType: item.expectedType, ok: false, error: 'not_found', findings: 0 }); continue; }
+      const r = await analyzeOneDocument(app, doc, item.expectedType, { actorId: req.actor.id });
+      if (r.ok && r.cached) cached++;
+      else if (r.ok) read++;
+      results.push({ documentId: item.id, filename: item.filename, docType: item.expectedType, conditionCode: item.conditionCode, ok: !!r.ok, cached: !!r.cached, error: r.error || null, findings: (r.findings || []).length });
+    }
+    await audit(req.actor.id, 'underwriting_auto_read', app.id, { total: queue.length, read, cached, failed: results.filter((x) => !x.ok).length });
+    return res.json({ readerOn: true, read, cached, pending: Math.max(0, queue.length - batch.length), total: queue.length, results });
   } catch (e) { next(e); }
 });
 
