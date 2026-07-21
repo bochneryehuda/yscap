@@ -294,6 +294,11 @@ router.get('/files/:id/sitewire-property', requirePermission('manage_draws'), as
         inspection = {
           method: insp.method, allow_virtual: insp.allowVirtual, allow_physical: insp.allowPhysical,
           can_switch: insp.allowVirtual && insp.allowPhysical, default_method: (rule && rule.inspection_method) || 'mobile',
+          // Current draw processing fee (cents) + whether it's a per-file override or the rule default,
+          // so the desk can show it and offer "Change fee". The LIVE property's processing_fee_cents is the
+          // source of truth for what Sitewire is charging; insp.feeCents is what PILOT would push.
+          fee_cents: (live && live.property && Number.isFinite(Number(live.property.processing_fee_cents))) ? Number(live.property.processing_fee_cents) : Number(insp.feeCents),
+          rule_fee_cents: Number(insp.ruleFeeCents), fee_overridden: !!insp.overridden,
         };
       }
     } catch (_) { /* inspection is advisory context — never fail the read on it */ }
@@ -319,11 +324,13 @@ router.post('/files/:id/property-settings', requirePermission('manage_draws'), a
     if (Object.prototype.hasOwnProperty.call(b, f)) changes[f] = !!b[f];
   }
   if (b.inspection_method != null && b.inspection_method !== '') changes.inspection_method = String(b.inspection_method);
+  if (b.fee_cents != null && b.fee_cents !== '') changes.processing_fee_cents = b.fee_cents; // integer cents; orchestrator validates $0..$100k
   if (Object.keys(changes).length === 0) return res.status(400).json({ error: 'Nothing to change.' });
   try {
     const r = await orchestrator.updatePropertyControls(appId, changes, req.actor && req.actor.id);
     if (r.error === 'not_managed') return res.status(409).json({ error: 'This file isn’t managed by PILOT in Sitewire yet — start the draw process first.' });
     if (r.error === 'invalid_method') return res.status(400).json({ error: 'Pick Virtual or On-site.' });
+    if (r.error === 'invalid_fee') return res.status(400).json({ error: 'The draw fee must be a dollar amount between $0 and $100,000.' });
     if (r.error === 'method_forbidden') return res.status(422).json({ error: 'The capital partner doesn’t allow that inspection type for this file.' });
     if (r.error === 'writes_off') return res.status(409).json({ error: 'The Sitewire connection is currently turned off, so this change can’t be sent yet.' });
     if (r.error === 'nothing_to_change') return res.status(400).json({ error: 'Nothing to change.' });
