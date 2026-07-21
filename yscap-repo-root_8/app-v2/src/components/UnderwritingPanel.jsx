@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
+import { useLocation } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { AppraisalFinding } from './AppraisalPanel.jsx';
 
@@ -54,7 +55,7 @@ const ESCALATE_TARGETS = [
   { key: 'processor', label: 'Processor' },
   { key: 'underwriter', label: 'Underwriter' },
 ];
-function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate = false, escalated = null }) {
+function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate = false, escalated = null, highlighted = false, cardRef = null }) {
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState(null); // the action awaiting its note/value
   const [text, setText] = useState('');
@@ -62,6 +63,12 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
   const [escRole, setEscRole] = useState('super_admin');
   const [escNote, setEscNote] = useState('');
   const s = SEV[f.severity] || SEV.info;
+  // The document this finding was raised from — used for the "open the source document" link and
+  // the (optional) page-number hint. `page_number` starts flowing once db/226 + the docint.js
+  // prebuilt-layout switch land and a document is re-analyzed; existing rows are NULL and the link
+  // just says "Open source document" without the page hint.
+  const docId = f.document_id || f.documentId || null;
+  const pageNumber = f.page_number != null ? f.page_number : (f.pageNumber != null ? f.pageNumber : null);
   const allActions = Array.isArray(f.availableActions) ? f.availableActions : [];
   const isFatalBlocking = f.severity === 'fatal' && (f.blocks_ctc != null ? f.blocks_ctc : (f.blocksCtc != null ? f.blocksCtc : false));
   const actions = allActions.filter((a) => !(isFatalBlocking && !canWaive && GATE_CLEARING_ACTIONS.has(a.key)));
@@ -104,8 +111,31 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
     finally { setBusy(false); }
   };
 
+  // Open the source document (the one the finding was raised from) in a new tab. The download
+  // endpoint uses Bearer auth, so it goes through the existing authenticated downloader — same
+  // pattern the file's Documents section uses.
+  const openSourceDoc = async (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    if (!docId) return;
+    try {
+      const res = await api.staffDownloadDoc(docId);
+      const blob = res && res.blob;
+      const filename = res && res.filename;
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const w = window.open(url, '_blank');
+      if (!w) { const a = document.createElement('a'); a.href = url; a.download = filename || 'document'; document.body.appendChild(a); a.click(); a.remove(); }
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (err) { alert(err.message || 'Could not open the source document'); }
+  };
   return (
-    <div style={{ border: '1px solid var(--line,#E7E1D3)', borderLeft: `4px solid ${s.fg}`, borderRadius: 12, background: 'var(--card,#fff)', padding: '14px 16px', marginBottom: 12 }}>
+    <div ref={cardRef} style={{
+      border: '1px solid var(--line,#E7E1D3)', borderLeft: `4px solid ${s.fg}`, borderRadius: 12,
+      background: 'var(--card,#fff)', padding: '14px 16px', marginBottom: 12,
+      transition: 'box-shadow 0.4s ease, border-color 0.4s ease',
+      boxShadow: highlighted ? '0 0 0 3px #AE8746' : 'none',
+      borderLeftColor: highlighted ? '#AE8746' : s.fg,
+    }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: s.fg, background: s.bg, padding: '3px 8px', borderRadius: 6 }}>{s.label}</span>
         <strong style={{ fontSize: 14 }}>{f.title}</strong>
@@ -115,6 +145,13 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
         <div style={{ display: 'flex', gap: 24, fontSize: 13, margin: '6px 0', flexWrap: 'wrap' }}>
           {docVal != null && <span>Document: <b style={{ color: 'var(--teal-deep,#256168)' }}>{String(docVal)}</b></span>}
           {fileVal != null && <span>Our file: <b>{String(fileVal)}</b></span>}
+        </div>
+      )}
+      {docId && (
+        <div style={{ fontSize: 12, margin: '4px 0 6px' }}>
+          <a href="#" onClick={openSourceDoc} style={{ color: 'var(--teal-deep,#256168)', textDecoration: 'underline' }}>
+            Open the source document{pageNumber ? ` (page ${pageNumber})` : ''}
+          </a>
         </div>
       )}
       {howTo && <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', marginBottom: resolvable ? 10 : 0 }}>{howTo}</div>}
@@ -740,6 +777,22 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
   const [autoReadMsg, setAutoReadMsg] = useState('');
   const [autoReadUnreadable, setAutoReadUnreadable] = useState([]); // filenames the reader couldn't read as expected
   const didAutoRead = useRef(false); // auto-run the reader at most once per mount (idempotent server-side anyway)
+  // Deep-link support (owner-directed 2026-07-21): arriving here with ?finding=<id> in the URL
+  // scrolls the panel to that specific finding and pulses its border gold for a few seconds so a
+  // reviewer coming from the "Findings to review" queue sees exactly which finding to act on. The
+  // ?finding= reader supports both the browser query and the HashRouter query-in-hash form.
+  const location = useLocation();
+  const focusFindingId = (() => {
+    const q = new URLSearchParams(location.search).get('finding');
+    if (q) return q;
+    // HashRouter puts query params AFTER the # (e.g. /portal/#/internal/app/X?finding=Y).
+    const h = String(location.hash || '');
+    const qIdx = h.indexOf('?');
+    if (qIdx >= 0) { try { return new URLSearchParams(h.slice(qIdx + 1)).get('finding') || ''; } catch (_) {} }
+    return '';
+  })();
+  const findingRefs = useRef({});
+  const [highlightPulse, setHighlightPulse] = useState(false);
 
   // Auto-detect the document type when a document is chosen (the underwriter confirms it).
   const onPickDoc = useCallback(async (id) => {
@@ -811,6 +864,22 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
     catch (e) { setErr(e.message || 'Could not analyze the document'); }
     finally { setAnalyzing(false); }
   };
+
+  // Deep-link scroll (Rules of Hooks — must run every render, so it stays ABOVE the early return).
+  // When we arrive with ?finding=<id> AND the findings have loaded, scroll the matching card into
+  // view and pulse it for ~3s. Re-runs after each load so a resolve → re-load lands on the right card.
+  const _allFindingsForFocus = (data && data.allFindings) || [];
+  useEffect(() => {
+    if (!focusFindingId || !_allFindingsForFocus.length) return;
+    const el = findingRefs.current[focusFindingId];
+    if (el && typeof el.scrollIntoView === 'function') {
+      try { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_) {}
+    }
+    setHighlightPulse(true);
+    const t = setTimeout(() => setHighlightPulse(false), 3200);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusFindingId, _allFindingsForFocus.length]);
 
   if (loading) return <p style={{ color: 'var(--muted,#4B585C)' }}>Loading the underwriting review…</p>;
 
@@ -937,11 +1006,17 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
               requesting a document, or granting an exception) is done by an underwriter or processor.
             </div>
           )}
-          {allFindings.map((f, i) => (
-            <Finding key={f.id || `${f.source || 'f'}-${f.code || 'x'}-${i}`} appId={appId} f={f}
-              onChange={load} resolvable={!readOnly && canResolve && !!f.id} canWaive={canWaive}
-              canEscalate={!readOnly} escalated={f.id ? (data && data.escalatedFindings && data.escalatedFindings[f.id]) : null} />
-          ))}
+          {allFindings.map((f, i) => {
+            const key = f.id || `${f.source || 'f'}-${f.code || 'x'}-${i}`;
+            const isFocused = focusFindingId && f.id === focusFindingId;
+            return (
+              <Finding key={key} appId={appId} f={f}
+                cardRef={(el) => { if (f.id) findingRefs.current[f.id] = el; }}
+                highlighted={isFocused && highlightPulse}
+                onChange={load} resolvable={!readOnly && canResolve && !!f.id} canWaive={canWaive}
+                canEscalate={!readOnly} escalated={f.id ? (data && data.escalatedFindings && data.escalatedFindings[f.id]) : null} />
+            );
+          })}
         </div>
       )}
 

@@ -18,7 +18,11 @@
  * Env (Render only, never source):
  *   AZURE_DOCINT_ENDPOINT     e.g. https://<resource>.cognitiveservices.azure.com
  *   AZURE_DOCINT_KEY          the resource key (Ocp-Apim-Subscription-Key)
- *   AZURE_DOCINT_MODEL        prebuilt model id (default 'prebuilt-read' — pure OCR)
+ *   AZURE_DOCINT_MODEL        prebuilt model id (default 'prebuilt-layout' — OCR + pages + tables +
+ *                             selection marks + polygons so a finding can point at the exact page
+ *                             it was raised from; owner-directed 2026-07-21. Set 'prebuilt-read'
+ *                             to fall back to text-only reads if a specific document type doesn't
+ *                             need the extra data.)
  *   AZURE_DOCINT_API_VERSION  API version (default '2024-11-30')
  */
 const cfg = require('../../config');
@@ -40,7 +44,10 @@ function configured() {
 
 function analyzeUrl() {
   const base = String(cfg.docint.endpoint || '').replace(/\/+$/, '');
-  const model = cfg.docint.model || 'prebuilt-read';
+  // Owner-directed 2026-07-21: default to prebuilt-layout so pages / words / polygons flow into
+  // the extraction. Content is still returned as a string (backward compat with all callers that
+  // read only .text) — the new .pages array is additive.
+  const model = cfg.docint.model || 'prebuilt-layout';
   const ver = cfg.docint.apiVersion || '2024-11-30';
   return `${base}/documentintelligence/documentModels/${model}:analyze?_overload=analyzeDocument&api-version=${ver}`;
 }
@@ -151,9 +158,27 @@ async function read({ buffer, base64 } = {}) {
   if (!poll.ok) return { ok: false, reason: poll.reason };
 
   const text = typeof poll.result.content === 'string' ? poll.result.content : '';
-  const pageCount = Array.isArray(poll.result.pages) ? poll.result.pages.length : null;
+  const rawPages = Array.isArray(poll.result.pages) ? poll.result.pages : [];
+  const pageCount = rawPages.length || null;
   if (!text.trim()) return { ok: false, reason: 'the reader found no text in this document' };
-  return { ok: true, text, pageCount };
+  // Per-page slice so a finding can point at the EXACT page it was raised from. Layout returns
+  // words[]/lines[]/spans[] on each page; we surface a compact per-page snippet (joined line text)
+  // plus dimensions so a UI can render "open document, page 3" and, later, a bounded snippet
+  // rectangle. The `.text` string above stays the whole-document join for text-only consumers.
+  const pages = rawPages.map((p, i) => {
+    const pageNumber = Number.isFinite(p && p.pageNumber) ? p.pageNumber : (i + 1);
+    const lines = Array.isArray(p && p.lines) ? p.lines : [];
+    const lineText = lines.map((ln) => (ln && typeof ln.content === 'string') ? ln.content : '').filter(Boolean).join('\n');
+    return {
+      pageNumber,
+      width: p && Number.isFinite(p.width) ? p.width : null,
+      height: p && Number.isFinite(p.height) ? p.height : null,
+      unit: p && typeof p.unit === 'string' ? p.unit : null,
+      angle: p && Number.isFinite(p.angle) ? p.angle : null,
+      text: lineText,
+    };
+  });
+  return { ok: true, text, pageCount, pages };
 }
 
 /**
