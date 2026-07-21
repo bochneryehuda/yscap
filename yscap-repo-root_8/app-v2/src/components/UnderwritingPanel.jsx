@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { api } from '../lib/api.js';
 import { AppraisalFinding } from './AppraisalPanel.jsx';
 
@@ -644,6 +644,9 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
   const [analyzing, setAnalyzing] = useState(false);
   const [detecting, setDetecting] = useState(false);
   const [detected, setDetected] = useState(''); // confidence note for the suggested type
+  const [autoReading, setAutoReading] = useState(false);
+  const [autoReadMsg, setAutoReadMsg] = useState('');
+  const didAutoRead = useRef(false); // auto-run the reader at most once per mount (idempotent server-side anyway)
 
   // Auto-detect the document type when a document is chosen (the underwriter confirms it).
   const onPickDoc = useCallback(async (id) => {
@@ -675,6 +678,27 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
   }, [appId, onSummary, readOnly]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Read + check every on-file-but-unread document automatically, then refresh. Server-side it's
+  // idempotent (an unchanged document is never re-read) and dormant-safe (does nothing but count
+  // when the reader is off), so this is safe to call on open and to re-run.
+  const runAutoRead = useCallback(async () => {
+    setAutoReading(true); setAutoReadMsg('');
+    try {
+      const r = await api.underwritingAutoRead(appId);
+      if (r && r.readerOn === false) setAutoReadMsg('');
+      else if (r) setAutoReadMsg(r.read ? `Read ${r.read} document${r.read === 1 ? '' : 's'}${r.pending ? ` · ${r.pending} more to go` : ''}.` : '');
+      await load();
+    } catch (_) { /* best-effort; the desk still works and the manual read stays available */ }
+    finally { setAutoReading(false); }
+  }, [appId, load]);
+
+  // Auto-run the reader ONCE per mount when documents are on file, unread, and the Azure reader is on.
+  useEffect(() => {
+    if (readOnly || didAutoRead.current || !data) return;
+    const on = data.analyzers && data.analyzers.reader && data.analyzers.ai;
+    if (on && (data.autoReadPending || 0) > 0) { didAutoRead.current = true; runAutoRead(); }
+  }, [data, readOnly, runAutoRead]);
 
   const analyze = async () => {
     if (!pick || !pickType) return;
@@ -708,6 +732,8 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
   const exts = (data && data.extractions) || [];
   const docTypes = (data && data.docTypes) || [];
   const analyzers = (data && data.analyzers) || {};
+  const autoReadPending = (data && data.autoReadPending) || 0;
+  const readerOn = !!(analyzers.reader && analyzers.ai);
   const currentDocs = (docs || []).filter((d) => d.is_current && d.id && d.source_type !== 'chat_attachment');
   const resolvable = !readOnly;
 
@@ -720,6 +746,24 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
         <div style={{ background: 'var(--amber-bg,#F6EEDD)', color: 'var(--amber,#B7791F)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 10, padding: '9px 14px', marginBottom: 14, fontSize: 12.5 }}>
           The automatic document reader is not fully switched on yet{analyzers.reader ? '' : ' (OCR reader)'}{analyzers.ai ? '' : ' (AI analyzer)'}.
           Add the Azure keys in the site settings to turn it on. Until then, documents can be reviewed by hand and findings still recorded.
+        </div>
+      )}
+
+      {/* Auto-reader — the desk reads the on-file documents itself (no per-document click). */}
+      {!readOnly && (autoReading || autoReadPending > 0 || autoReadMsg) && (
+        <div style={{ background: 'var(--paper,#F6F3EC)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 10, padding: '9px 14px', marginBottom: 14, fontSize: 12.5, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          {autoReading ? (
+            <span style={{ color: 'var(--teal-deep,#256168)', fontWeight: 600 }}>Reading your documents…</span>
+          ) : (!readerOn && autoReadPending > 0) ? (
+            <span style={{ color: 'var(--muted,#4B585C)' }}>{autoReadPending} document{autoReadPending === 1 ? '' : 's'} on file — they’ll be read automatically the moment the reader is switched on.</span>
+          ) : autoReadPending > 0 ? (
+            <>
+              <span style={{ color: 'var(--muted,#4B585C)' }}>{autoReadPending} document{autoReadPending === 1 ? '' : 's'} on file not read yet.</span>
+              <button onClick={runAutoRead} style={btn(true)}>Read them all now</button>
+            </>
+          ) : autoReadMsg ? (
+            <span style={{ color: 'var(--good,#3F7A5B)' }}>✓ {autoReadMsg}</span>
+          ) : null}
         </div>
       )}
 
