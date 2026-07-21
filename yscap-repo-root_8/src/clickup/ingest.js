@@ -1564,6 +1564,11 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
               deleted_at = CASE WHEN sync_state='descoped' THEN NULL ELSE deleted_at END,
               clickup_last_synced_at=now(), updated_at=now() WHERE id=$1`,
       [targetId, ...vals, task.id]);
+    // If ClickUp supplied a NEW loan officer for this file, drop the LO-
+    // notification-gate's cached officer pointer so the very next borrower/
+    // staff notification routes to the new LO's prefs + drafts (mirrors the
+    // /assign path in staff.js — same class of cache invalidation).
+    try { require('../lib/lo-notification-gate').invalidateFile(targetId); } catch (_) { /* best-effort */ }
     // Two-field PROCESSOR conflict → the ClickUp processor signal is untrustworthy
     // (the stale-duplicate case). Clear any portal processor so the file returns to
     // "no processor" per the agreement rule (owner-directed 2026-07-19). The COALESCE
