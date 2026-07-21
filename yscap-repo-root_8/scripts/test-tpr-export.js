@@ -22,7 +22,33 @@ const ok = (c, m) => { if (c) { pass++; console.log('  ✓', m); } else { fail++
 async function main() {
   await require(REPO + '/src/migrate-boot').ensureSchema();
   const storage = require(REPO + '/src/lib/storage');
+  const { unzip } = require(REPO + '/src/lib/zip');
   const tpr = require(REPO + '/src/lib/tpr-export');
+
+  // --- pure-function unit checks (no DB) — the category map + integrity guard.
+  const cat = tpr.categoryFor;
+  ok(cat({ doc_kind: 'photo_id' }) === 'ID', 'categoryFor: photo_id → ID');
+  ok(cat({ doc_kind: 'term_sheet_signed' }) === 'Term Sheet', 'categoryFor: signed term sheet → Term Sheet');
+  ok(cat({ doc_kind: 'appraisal_pdf' }) === 'Appraisal', 'categoryFor: appraisal_pdf → Appraisal');
+  ok(cat({ template_code: 'rtl_cond_fraud', slot_label: 'criminal' }) === 'Criminal Check', 'categoryFor: fraud criminal slot → Criminal Check');
+  ok(cat({ template_code: 'rtl_cond_fraud', slot_label: 'background' }) === 'Background Check', 'categoryFor: fraud background slot → Background Check');
+  ok(cat({ template_code: 'rtl_cond_title' }) === 'TITLE', 'categoryFor: title condition → TITLE');
+  ok(cat({ template_code: 'rtl_cond_insurance' }) === 'Insurance', 'categoryFor: insurance → Insurance');
+  ok(cat({ template_code: 'rtl_cond_flood' }) === 'Flood Cert', 'categoryFor: flood → Flood Cert');
+  ok(cat({ template_code: 'rtl_cond_credit' }) === 'Credit Report', 'categoryFor: credit → Credit Report');
+  ok(cat({ template_code: 'rtl_p3_assets' }) === 'Bank Statements', 'categoryFor: assets → Bank Statements');
+  ok(cat({ template_code: 'rtl_p1_contract' }) === 'Contract & Assignment', 'categoryFor: contract → Contract & Assignment');
+  ok(cat({ template_code: 'cond_emd_corrfirst' }) === 'Contract & Assignment', 'categoryFor: EMD → Contract & Assignment');
+  ok(cat({ template_code: 'rtl_p3_sow1' }) === 'Scope of Work', 'categoryFor: SOW → Scope of Work');
+  ok(cat({ template_code: 'rtl_p1_llc' }) === 'LLC', 'categoryFor: LLC condition → LLC');
+  ok(cat({ llc_id: 'x' }) === 'LLC', 'categoryFor: any entity doc → LLC');
+  ok(cat({ template_code: 'rtl_cond_signed_app' }) === 'Application', 'categoryFor: signed app → Application');
+  ok(cat({ filename: 'Title Insurance Policy.pdf' }) === 'TITLE', 'categoryFor: loose "title insurance" → TITLE (not Insurance)');
+  ok(cat({ filename: 'Hazard Insurance.pdf' }) === 'Insurance', 'categoryFor: loose hazard insurance → Insurance');
+  ok(cat({ filename: 'mystery-doc.pdf' }) === 'Other Documents', 'categoryFor: unknown → Other Documents');
+  ok(/PDF/.test(tpr.integrityIssue({ filename: 'x.pdf' }, Buffer.from('<html>nope')) || ''), 'integrity: HTML masquerading as .pdf is flagged');
+  ok(tpr.integrityIssue({ filename: 'x.pdf' }, Buffer.from('%PDF-1.7 ok')) === null, 'integrity: real %PDF header passes');
+  ok(/size mismatch/.test(tpr.integrityIssue({ filename: 'x.bin', size_bytes: 999 }, Buffer.from('abc')) || ''), 'integrity: recorded-vs-packed size mismatch flagged');
 
   const B = uuid(), CB = uuid(), APP = uuid(), LLC = uuid(), OWNER_LLC = uuid(), TR = uuid();
   const ids = [];
@@ -72,6 +98,14 @@ async function main() {
     const dTrSnap = await doc('tr-snapshot.html', { borrower_id: B, review_status: 'pending', is_current: true, source_type: 'system', doc_kind: 'track_record_html' });
     const dTrDoc = await doc('hud-closing.pdf', { borrower_id: B, track_record_id: TR, review_status: 'pending', is_current: true, source_type: 'staff_upload', visibility: 'internal' });
 
+    // ISKA HARD FREEZE — three independent guards. None of these may ship.
+    const dIskaSigned = await doc('signed-document.pdf', { application_id: APP, borrower_id: B, review_status: 'pending', is_current: true, source_type: 'staff_upload', doc_kind: 'heter_iska_signed' });
+    const dIskaGen = await doc('Heter Iska.pdf', { application_id: APP, borrower_id: B, review_status: 'pending', is_current: true, source_type: 'staff_upload', doc_kind: 'heter_iska' });
+    const dEsignCert = await doc('completion-certificate.pdf', { application_id: APP, borrower_id: B, review_status: 'pending', is_current: true, source_type: 'staff_upload', doc_kind: 'esign_certificate' });
+    const dLooseIska = await doc('iska copy.pdf', { application_id: APP, borrower_id: B, review_status: 'pending', is_current: true, source_type: 'staff_upload' });
+    // Word-boundary guard must NOT over-exclude: "Mariska" contains "iska" mid-word.
+    const dMariska = await doc('Mariska Bank Statement.pdf', { application_id: APP, borrower_id: B, review_status: 'pending', is_current: true, source_type: 'staff_upload' });
+
     // A >30-day-old loose doc and profile doc must STILL ship — the CoGS
     // 30-day exclusion has a NULL template_id (audit finding: it dropped every
     // old loose/profile doc). Age these two rows past the window.
@@ -96,6 +130,11 @@ async function main() {
     ok(!got.has(dPriorZip), 'excluded: prior TPR export zip (no recursion)');
     ok(!got.has(dTrSnap), 'excluded: autosaved track-record snapshot artifact');
     ok(!got.has(dTrDoc), 'excluded from subject set: track-record doc (ships via track section)');
+    ok(!got.has(dIskaSigned), 'FREEZE: signed Heter Iska excluded (doc_kind heter_iska_signed)');
+    ok(!got.has(dIskaGen), 'FREEZE: generated Heter Iska excluded (doc_kind + filename)');
+    ok(!got.has(dEsignCert), 'FREEZE: DocuSign completion certificate excluded (may be the Iska envelope)');
+    ok(!got.has(dLooseIska), 'FREEZE: loose file named "iska" excluded (filename word-boundary guard)');
+    ok(got.has(dMariska), 'NOT over-excluded: "Mariska…" contains "iska" mid-word but ships');
 
     const trGot = (await tpr.selectTrackRecordDocs([TR])).map(d => d.id);
     ok(trGot.includes(dTrDoc), 'track section INCLUDES the line-item doc (even internal visibility)');
@@ -106,6 +145,17 @@ async function main() {
     // manifest = subject-set docs + track-record verification docs (got already
     // includes the two aged docs, so this stays consistent).
     ok(includedCount === got.size + trGot.length, `manifest count (${includedCount}) === subject (${got.size}) + track (${trGot.length})`);
+
+    // The package is ONE clean folder, foldered by category, no NN_ prefixes.
+    const names = unzip(zip).map(e => e.name);
+    const roots = new Set(names.map(n => n.split('/')[0]));
+    ok(roots.size === 1, `exactly ONE top folder in the ZIP (got: ${[...roots].join(' | ')})`);
+    ok(names.some(n => /\/REO\/Track Record\.xlsx$/.test(n)), 'REO/Track Record.xlsx is present');
+    ok(names.some(n => /\/REO\/9 Prior Rd[^/]*\/hud-closing\.pdf$/.test(n)), 'REO has a per-property folder with the line-item doc');
+    ok(!names.some(n => /\/\d\d?_/.test(n.split('/').pop())), 'no NN_ numbered prefixes on file names');
+    ok(names.some(n => /\/(Background Check|Criminal Check)\//.test(n)), 'fraud report filed under Background/Criminal Check');
+    ok(names.some(n => n.endsWith('/_Manifest.json')) && names.some(n => n.endsWith('/_Package Index.txt')), 'manifest + index filed inside the folder');
+    ok(names.every(n => !/\b(iska|heter)\b/i.test(n)), 'no Iska/Heter file anywhere in the package');
   } catch (e) { fail++; console.log('  ✗ EXCEPTION', e && e.stack ? e.stack : e); }
   finally {
     await db.query(`DELETE FROM documents WHERE id=ANY($1::uuid[])`, [ids]).catch(() => {});
