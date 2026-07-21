@@ -38,7 +38,9 @@ const REQUIREMENTS = [
   { docType: 'credit_report',      label: 'Credit report',                 required: 'always',        owner: 'internal',  gating: 'PTD' },
   { docType: 'background_report',  label: 'Background / OFAC screen',       required: 'always',        owner: 'internal',  gating: 'PTD' },
   { docType: 'title',              label: 'Title commitment',              required: 'always',        owner: 'title',     gating: 'PTF' },
-  { docType: 'insurance',          label: 'Evidence of insurance',         required: 'always',        owner: 'borrower',  gating: 'PTF' },
+  // The insurance CONDITION takes TWO documents: the binder/evidence AND proof the premium is paid.
+  { docType: 'insurance',          label: 'Evidence of insurance (binder)', required: 'always',       owner: 'borrower',  gating: 'PTF' },
+  { docType: 'insurance_invoice',  label: 'Insurance invoice (paid premium)', required: 'always',     owner: 'borrower',  gating: 'PTF' },
   { docType: 'flood',              label: 'Flood determination',           required: 'always',        owner: 'title',     gating: 'PTF' },
   // Entity (LLC) borrower stack.
   { docType: 'llc_formation',      label: 'Articles of Organization',      required: 'if_entity',     owner: 'borrower',  gating: 'PTD' },

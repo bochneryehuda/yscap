@@ -1,10 +1,22 @@
 'use strict';
 /** Unit tests for the document↔condition mapping (condition-map.js). Pure — no DB. */
 const assert = require('assert');
-const { conditionsForDoc, purposeForDoc, docReadiness, fileConditionCoverage } = require('../src/lib/underwriting/condition-map');
+const { conditionsForDoc, purposeForDoc, docReadiness, fileConditionCoverage, docTypesForCode, expectedDocTypeForCode } = require('../src/lib/underwriting/condition-map');
 
 // Each document points at the real checklist condition code(s) it supports (RTL + legacy).
 assert.ok(conditionsForDoc('government_id').includes('rtl_p1_id') && conditionsForDoc('government_id').includes('gov_id'));
+
+// The insurance condition is backed by TWO document types: the binder AND the paid invoice.
+assert.ok(conditionsForDoc('insurance').includes('rtl_cond_insurance'), 'the binder backs the insurance condition');
+assert.ok(conditionsForDoc('insurance_invoice').includes('rtl_cond_insurance'), 'the paid invoice also backs the insurance condition');
+assert.ok(/paid|invoice/i.test(purposeForDoc('insurance_invoice')), 'the invoice purpose names the paid receipt');
+{
+  const types = docTypesForCode('rtl_cond_insurance');
+  assert.ok(types.includes('insurance') && types.includes('insurance_invoice'), 'the insurance condition maps to both the binder and the invoice');
+  // The auto-reader reads a document filed under the insurance condition as the BINDER (the primary),
+  // so adding the invoice type must not change which type the reader expects there.
+  assert.strictEqual(expectedDocTypeForCode('rtl_cond_insurance'), 'insurance', 'the binder stays the primary/expected type for the insurance condition');
+}
 assert.ok(conditionsForDoc('operating_agreement').includes('rtl_llc_opagmt') && conditionsForDoc('operating_agreement').includes('rtl_p1_llc'));
 assert.ok(conditionsForDoc('bank_statement').includes('rtl_p3_assets'));
 assert.ok(conditionsForDoc('background_report').includes('rtl_cond_fraud'));

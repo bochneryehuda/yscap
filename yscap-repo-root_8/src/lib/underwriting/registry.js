@@ -11,7 +11,7 @@
 const {
   GOVERNMENT_ID, PURCHASE_CONTRACT, TITLE, BANK_STATEMENT,
   ASSIGNMENT, OPERATING_AGREEMENT, EIN_LETTER, GOOD_STANDING, LLC_FORMATION,
-  INSURANCE, FLOOD, SETTLEMENT, CREDIT_REPORT, BACKGROUND_REPORT, CONTRACT_AMENDMENT, SCOPE_OF_WORK,
+  INSURANCE, INSURANCE_INVOICE, FLOOD, SETTLEMENT, CREDIT_REPORT, BACKGROUND_REPORT, CONTRACT_AMENDMENT, SCOPE_OF_WORK,
   PAYOFF_STATEMENT, VOIDED_CHECK, PLANS_PERMITS, SIGNED_TERM_SHEET, SIGNED_APPLICATION, INVESTOR_STRUCTURE,
 } = require('./schemas');
 const { computeIdFindings } = require('./id-checks');
@@ -20,7 +20,7 @@ const { computeTitleFindings } = require('./title-checks');
 const { computeBankFindings } = require('./bank-statement-checks');
 const {
   computeAssignmentFindings, computeOperatingAgreementFindings, computeEinFindings,
-  computeGoodStandingFindings, computeFormationFindings, computeInsuranceFindings,
+  computeGoodStandingFindings, computeFormationFindings, computeInsuranceFindings, computeInsuranceInvoiceFindings,
   computeFloodFindings, computeSettlementFindings, computeCreditFindings, computeBackgroundFindings,
   computeAmendmentFindings, computeScopeOfWorkFindings, computePayoffFindings, computeVoidedCheckFindings,
   computePlansPermitsFindings, computeSignedTermSheetFindings, computeSignedApplicationFindings,
@@ -83,6 +83,10 @@ const REGISTRY = {
   insurance: {
     docType: 'insurance', schema: INSURANCE.schema, instructions: INSURANCE.instructions,
     subject: 'application', image: false, check: computeInsuranceFindings,
+  },
+  insurance_invoice: {
+    docType: 'insurance_invoice', schema: INSURANCE_INVOICE.schema, instructions: INSURANCE_INVOICE.instructions,
+    subject: 'application', image: false, check: computeInsuranceInvoiceFindings,
   },
   flood: {
     docType: 'flood', schema: FLOOD.schema, instructions: FLOOD.instructions,

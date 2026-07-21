@@ -338,6 +338,43 @@ function computeInsuranceFindings(ins, subject, opts = {}) {
   return out;
 }
 
+// ---- Insurance INVOICE / paid receipt ----
+// The insurance condition needs TWO documents: the binder (above) AND proof the premium is PAID.
+// This check owns the "is it actually paid?" question. Paid-in-full is the good state; a remaining
+// balance is a warning (coverage can lapse for non-payment, so it must clear before funding), and a
+// loan-number mismatch is surfaced so the receipt is tied to THIS loan. The binder↔invoice tie-out
+// (same policy / property / named insured across both) is produced by the tie-out engine from the
+// two extractions, so this module only covers what the invoice asserts about itself.
+function computeInsuranceInvoiceFindings(inv, subject, opts = {}) {
+  const out = []; if (!inv) return out;
+  if (unreadable('insurance_invoice', inv, ['namedInsured', 'premium', 'amountPaid', 'paidInFull', 'balanceDue'])) {
+    return [verify('insurance_invoice', 'insurance invoice')];
+  }
+  // Is the premium actually paid? A remaining balance (explicitly, or paidInFull===false) is a
+  // warning — insurance can be cancelled for non-payment, so proof of payment must clear before
+  // funding. paidInFull===true with no balance is the clean, ready state.
+  const bal = num(inv.balanceDue);
+  const unpaid = inv.paidInFull === false || (bal != null && bal > 0);
+  if (unpaid) {
+    const detail = bal != null && bal > 0 ? `a balance of ${money(bal)} is still due` : 'it is not marked paid in full';
+    out.push(mk('insurance_invoice', { code: 'insurance_invoice_unpaid', severity: 'warning', field: 'paid',
+      docValue: bal != null && bal > 0 ? money(bal) : 'balance due', fileValue: 'paid in full',
+      title: 'The insurance premium is not paid in full',
+      howTo: `The insurance invoice shows ${detail}. Insurance can lapse for non-payment, so obtain proof the premium is paid in full (a paid receipt / zero-balance invoice) before funding.`,
+      actions: ['request_document', 'post_condition', 'dismiss'] }));
+  }
+  // The receipt must be for THIS loan when it carries a loan number.
+  const fileLoanNo = subject && subject.loan_number;
+  if (fileLoanNo && inv.loanNumber && insLoanKey(fileLoanNo) !== insLoanKey(inv.loanNumber)) {
+    out.push(mk('insurance_invoice', { code: 'insurance_invoice_loan_number_mismatch', severity: 'warning', field: 'loan_number',
+      docValue: inv.loanNumber, fileValue: fileLoanNo,
+      title: 'Loan number on the insurance invoice does not match the file',
+      howTo: `The invoice shows loan number "${inv.loanNumber}" but the file's loan number is "${fileLoanNo}". Confirm the receipt is for this loan.`,
+      actions: ['request_document', 'fix_file', 'post_condition', 'dismiss'] }));
+  }
+  return out;
+}
+
 // ---- Flood ----
 function computeFloodFindings(fl, subject, opts = {}) {
   const out = []; if (!fl) return out;
@@ -768,7 +805,7 @@ function computeInvestorStructureFindings(is, subject, opts = {}) {
 
 module.exports = {
   computeAssignmentFindings, computeOperatingAgreementFindings, computeEinFindings,
-  computeGoodStandingFindings, computeFormationFindings, computeInsuranceFindings,
+  computeGoodStandingFindings, computeFormationFindings, computeInsuranceFindings, computeInsuranceInvoiceFindings,
   computeFloodFindings, computeSettlementFindings, computeCreditFindings, computeBackgroundFindings,
   computeAmendmentFindings, computeScopeOfWorkFindings, computePayoffFindings, computeVoidedCheckFindings,
   computePlansPermitsFindings, computeSignedTermSheetFindings, computeSignedApplicationFindings,

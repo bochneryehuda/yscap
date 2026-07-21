@@ -60,6 +60,30 @@ const exts = (arr) => arr.map(([doc_type, status = 'analyzed', confidence = 'ana
   assert.ok(!noTitle.docsComplete);
 }
 
+// ---- The insurance CONDITION requires TWO documents: the binder AND the paid invoice ----
+{
+  const r = assessCompleteness({ isEntity: false, isAssignment: false }, [], []);
+  const ins = r.stipulations.filter((s) => s.docType === 'insurance' || s.docType === 'insurance_invoice');
+  assert.strictEqual(ins.length, 2, 'insurance is two required documents (binder + invoice)');
+  assert.ok(ins.every((s) => s.gating === 'PTF'), 'both insurance documents gate prior-to-funding');
+  assert.ok(r.stipulations.some((s) => s.docType === 'insurance_invoice'), 'the paid-premium invoice is its own required item');
+
+  // Binder in and clean, but the invoice not provided → the invoice is a distinct PTF blocker, and the
+  // file is not doc-complete just because the binder is in. (This is the whole point: one insurance
+  // document is no longer enough.)
+  const binderOnly = assessCompleteness({ isEntity: false, isAssignment: false },
+    exts([['insurance']]), []);
+  assert.strictEqual(binderOnly.stipulations.find((s) => s.docType === 'insurance').status, 'cleared', 'the binder alone clears its own row');
+  assert.strictEqual(binderOnly.stipulations.find((s) => s.docType === 'insurance_invoice').status, 'missing', 'the invoice is still missing');
+  assert.ok(binderOnly.ctcBlockers.some((b) => b.docType === 'insurance_invoice'), 'the missing invoice blocks clear-to-close');
+  assert.ok(!binderOnly.docsComplete, 'binder-in-invoice-out is not doc-complete');
+
+  // Both in and clean → insurance is fully satisfied.
+  const both = assessCompleteness({ isEntity: false, isAssignment: false },
+    exts([['insurance'], ['insurance_invoice']]), []);
+  assert.ok(!both.ctcBlockers.some((b) => b.docType === 'insurance' || b.docType === 'insurance_invoice'), 'binder + invoice cleared → insurance no longer blocks');
+}
+
 // ---- REGRESSION (audit): a finding whose source isn't a docType (a PDF tampering scan filed
 //      under 'fraud_scan') but carries the document_id must still count against that document ----
 {

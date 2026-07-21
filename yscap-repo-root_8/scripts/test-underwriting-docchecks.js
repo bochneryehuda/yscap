@@ -156,6 +156,26 @@ assert.ok(C.computeInsuranceFindings({ ...insGood, policyExpiration: '2026-01-01
   assert.ok(!C.computeInsuranceFindings({ ...insGood, mortgageeClause: null }, sub, { today: TODAY }).some((f) => /mortgagee/.test(f.code)));
 }
 
+// ---- Insurance INVOICE (paid premium — the second required insurance document) ----
+{
+  // Paid in full, zero balance, matching loan number → clean.
+  const paid = { namedInsured: 'Maple LLC', premium: 2400, amountPaid: 2400, balanceDue: 0, paidInFull: true, loanNumber: 'YS-2026-0345', readable: true };
+  assert.deepStrictEqual(codes(C.computeInsuranceInvoiceFindings(paid, { loan_number: 'YS-2026-0345' }, { today: TODAY })), [], 'paid-in-full invoice ties out clean');
+  // A remaining balance → warning (insurance can lapse for non-payment).
+  const bal = C.computeInsuranceInvoiceFindings({ ...paid, amountPaid: 1000, balanceDue: 1400, paidInFull: false }, { loan_number: 'YS-2026-0345' }, { today: TODAY });
+  assert.ok(bal.some((f) => f.code === 'insurance_invoice_unpaid' && f.severity === 'warning' && f.blocksCtc === false), 'a balance due is a warning, never a hard block');
+  // paidInFull=false alone (no explicit balance) still flags.
+  assert.ok(C.computeInsuranceInvoiceFindings({ namedInsured: 'Maple LLC', premium: 2400, paidInFull: false, readable: true }, {}, { today: TODAY }).some((f) => f.code === 'insurance_invoice_unpaid'), 'not-paid-in-full flags even without a balance figure');
+  // Loan number on the receipt must match the file.
+  assert.ok(C.computeInsuranceInvoiceFindings({ ...paid, loanNumber: 'ZZ-9' }, { loan_number: 'YS-2026-0345' }, { today: TODAY }).some((f) => f.code === 'insurance_invoice_loan_number_mismatch'), 'a wrong loan number on the invoice is flagged');
+  // Formatting-insensitive loan match → no false mismatch.
+  assert.ok(!C.computeInsuranceInvoiceFindings({ ...paid, loanNumber: 'YS 2026 0345' }, { loan_number: 'YS-2026-0345' }, { today: TODAY }).some((f) => /loan_number/.test(f.code)), 'loan number match is formatting-insensitive');
+  // Unreadable → manual review, never a false unpaid.
+  assert.deepStrictEqual(codes(C.computeInsuranceInvoiceFindings({ readable: false }, {}, { today: TODAY })), ['insurance_invoice_unreadable'], 'unreadable invoice routes to manual review');
+  // Nothing extracted at all → treated as unreadable, never a guess.
+  assert.deepStrictEqual(codes(C.computeInsuranceInvoiceFindings({ readable: true }, {}, { today: TODAY })), ['insurance_invoice_unreadable'], 'an empty read never fabricates an unpaid finding');
+}
+
 // ---- Flood ----
 assert.deepStrictEqual(codes(C.computeFloodFindings({ floodZone: 'X', inSfha: false, readable: true }, {})), []);
 assert.strictEqual(C.computeFloodFindings({ floodZone: 'AE', inSfha: true, policyPresent: false, readable: true }, {}).find((f) => f.code === 'flood_insurance_required').severity, 'fatal');
@@ -288,4 +308,4 @@ assert.deepStrictEqual(codes(C.computeBackgroundFindings({ subjectName: 'John Sm
   assert.deepStrictEqual(codes(C.computeScopeOfWorkFindings({ readable: false }, { rehab_budget: 60000 })), ['scope_of_work_unreadable']);
 }
 
-console.log('✓ test-underwriting-docchecks: assignment, entity chain, insurance, flood, settlement, credit, OFAC, scope-of-work pass');
+console.log('✓ test-underwriting-docchecks: assignment, entity chain, insurance, insurance invoice, flood, settlement, credit, OFAC, scope-of-work pass');

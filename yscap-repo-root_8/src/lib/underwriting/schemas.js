@@ -349,6 +349,39 @@ const INSURANCE = {
   }),
 };
 
+// ---- Insurance INVOICE / paid receipt ----
+// The insurance CONDITION takes two documents: the binder/evidence (above) AND proof the premium is
+// PAID so coverage is actually in force at funding. This is that second document — an invoice or
+// paid receipt from the carrier/agency. We read whether it is paid in full (and any balance still
+// due), plus the identifying fields so it can be tied to the same policy/property/loan as the binder.
+const INSURANCE_INVOICE = {
+  docType: 'insurance_invoice',
+  instructions:
+    "You are reviewing an INSURANCE INVOICE or PAID RECEIPT for a loan file — the proof that the " +
+    "property-insurance premium has been paid (or what is still owed). Extract the named insured/policy " +
+    "holder EXACTLY as printed, the carrier/agency, the policy number, the property address, the total " +
+    "premium billed, the amount PAID, the balance/amount still due, and whether it is PAID IN FULL. Also " +
+    "capture the invoice date, the due date, and the LOAN NUMBER if shown. Set paidInFull=true only if " +
+    "the document clearly shows a zero balance / paid-in-full / receipt of full payment; set it false if " +
+    "a balance remains; use null if it cannot be determined. Use null for anything absent or unreadable — " +
+    "do NOT guess. Amounts as plain numbers, dates YYYY-MM-DD. readable=false if poor.",
+  schema: obj({
+    namedInsured: { type: ['string', 'null'] },
+    carrier: { type: ['string', 'null'] },
+    policyNumber: { type: ['string', 'null'] },
+    propertyAddress: addr(),
+    premium: { type: ['number', 'null'] },
+    amountPaid: { type: ['number', 'null'] },
+    balanceDue: { type: ['number', 'null'] },
+    paidInFull: { type: ['boolean', 'null'] },
+    invoiceDate: { type: ['string', 'null'] },
+    dueDate: { type: ['string', 'null'] },
+    loanNumber: { type: ['string', 'null'] },
+    readable: { type: 'boolean' },
+    notes: { type: ['string', 'null'] },
+  }),
+};
+
 // ---- Flood determination / flood insurance ----
 const FLOOD = {
   docType: 'flood',
@@ -632,6 +665,6 @@ const INVESTOR_STRUCTURE = {
 module.exports = {
   GOVERNMENT_ID, PURCHASE_CONTRACT, TITLE, BANK_STATEMENT,
   ASSIGNMENT, OPERATING_AGREEMENT, EIN_LETTER, GOOD_STANDING, LLC_FORMATION,
-  INSURANCE, FLOOD, SETTLEMENT, CREDIT_REPORT, BACKGROUND_REPORT, CONTRACT_AMENDMENT, SCOPE_OF_WORK,
+  INSURANCE, INSURANCE_INVOICE, FLOOD, SETTLEMENT, CREDIT_REPORT, BACKGROUND_REPORT, CONTRACT_AMENDMENT, SCOPE_OF_WORK,
   PAYOFF_STATEMENT, VOIDED_CHECK, PLANS_PERMITS, SIGNED_TERM_SHEET, SIGNED_APPLICATION, INVESTOR_STRUCTURE,
 };

@@ -22,6 +22,9 @@ const SIGNALS = [
   ['title', ['title commitment', 'preliminary report', 'commitment for title insurance', 'proposed insured', 'schedule b'], ['schedule a', 'vested', 'exceptions', 'legal description', 'title company']],
   ['appraisal', ['uniform residential appraisal', 'appraisal report', 'small residential income', 'sales comparison approach', 'after repair value', 'opinion of value'], ['as-is', 'arv', 'comparable', 'gross living area', 'appraiser', '1004', '1025', '1073']],
   ['insurance', ['evidence of property insurance', 'evidence of commercial property', 'acord', 'declarations page', 'mortgagee clause', 'named insured', "builder's risk"], ['dwelling', 'coverage', 'policy number', 'hazard', 'premium', 'isaoa']],
+  // The paid-premium invoice/receipt — anchored on distinctly-invoice phrases so it isn't confused
+  // with the binder (which carries coverage/mortgagee-clause language an invoice does not).
+  ['insurance_invoice', ['insurance invoice', 'premium invoice', 'installment premium', 'insurance premium due', 'premium due', 'paid in full', 'amount paid', 'invoice number'], ['invoice', 'amount due', 'balance due', 'please remit', 'due date', 'premium', 'payment received']],
   ['flood', ['standard flood hazard determination', 'special flood hazard area', 'flood zone', 'firm panel', 'national flood insurance'], ['fema', 'sfha', 'flood']],
   ['operating_agreement', ['operating agreement', 'limited liability company agreement', 'managing member', 'membership interest', 'member-managed', 'manager-managed'], ['members', 'ownership', 'capital contribution']],
   ['ein_letter', ['employer identification number', 'cp 575', 'cp575', '147c', 'ein assignment'], ['internal revenue service', 'ein', 'tax id']],
@@ -50,6 +53,7 @@ const FILENAME_HINTS = [
   [/assign/i, 'assignment'],
   [/title|commitment|prelim/i, 'title'],
   [/apprais|1004|1025|1073/i, 'appraisal'],
+  [/insur\w*\s*(invoice|receipt|paid|premium)|(invoice|receipt|premium).*insur|premium.*(invoice|receipt|paid)/i, 'insurance_invoice'], // before 'insurance' — "Insurance Invoice.pdf" is the receipt, not the binder
   [/acord|insur|dec.?page|binder|hazard/i, 'insurance'],
   [/flood/i, 'flood'],
   [/settle|closing.?disc|hud|alta/i, 'settlement'],
