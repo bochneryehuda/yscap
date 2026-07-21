@@ -25,6 +25,7 @@ const REASON_COPY = {
   file_not_materialized_ambiguous: 'This ClickUp task could not be matched to a PILOT file — its identity signals (loan number / address / stamp) point at more than one existing file or at another borrower’s loan. Fix the conflicting value in ClickUp (usually a loan number copied by the duplicate-a-task workflow) and this row closes itself on a later sync — or resolve it right here: create it as its own new file, or link it to one of the candidate files below.',
   file_not_materialized_duplicate_pending: 'This task looks like a fresh ClickUp duplicate that still shows another ACTIVE deal’s address, so PILOT is deliberately waiting rather than creating a twin file. Update the task’s address in ClickUp and the file appears on the next sync — or, if this genuinely is a second deal at the same address, create it now. (When the earlier deal at this address is already funded or cancelled, the file is created automatically — no action needed.)',
   copied_loan_number_needs_assignment: 'Two of this borrower’s tasks carried the SAME YS loan number (the duplicate-a-task workflow copies it), and this file is the one holding a copy — a loan number belongs to exactly one loan, so it was not kept here. Fix it in ClickUp: enter this deal’s correct number on this task (it syncs in and this row closes itself), or clear the number on whichever task is the duplicate — the system automatically gives a contested number to the task that rightfully owns it (the older task, or the only one still carrying it).',
+  loan_number_duplicate_entered: 'Someone tried to put a loan number on this file that is already used somewhere else — either on another of our files or on a different file in ClickUp (even a data-only file we don’t build a loan from, like a DSCR file). A loan number belongs to exactly one file, so it was NOT saved. Enter a unique number for this file, or clear the number off whichever other file is the duplicate — then dismiss this row.',
   task_deleted_needs_decision: 'This file’s ClickUp task was DELETED and no live task for the same deal exists. Decide what the file should do: archive it (reversible, ClickUp untouched), or keep it in PILOT without a task.',
   push_dead_lettered: 'An update from PILOT could not reach ClickUp after every retry (the fields and the last error are shown above). Nothing was lost in PILOT. Retry the push once the cause is fixed — this row also closes itself when any later push for the file succeeds.',
   file_unlinked_no_task: 'This PILOT file has NO ClickUp task, so it does not sync at all (it is older than the automatic recovery window). Link it to the correct existing ClickUp card, create a fresh ClickUp task, or dismiss if this file intentionally lives outside ClickUp.',
@@ -172,6 +173,12 @@ const FIELD_LABELS = {
 // force-create) and the row closes itself on the next sync.
 const RESOLVABLE = new Set(['date_of_birth', 'expected_closing', 'actual_closing', 'acquisition_date', 'ssn', 'status',
   'email', 'cell_phone', 'first_name', 'current_address']);
+// Advisory rows that are DISMISS-ONLY: there is nothing to "approve" — the value
+// was already rejected at entry and never saved, so the only action is to fix the
+// value on the file and close this reminder. A duplicate loan number a staffer
+// tried to type is one of these (it shows an Approve that would be a confusing
+// no-op otherwise).
+const DISMISS_ONLY = new Set(['loan_number_duplicate_entered']);
 const showVal = (v) => (v && /^\d{4}-\d{2}-\d{2}$/.test(String(v)) ? fmtDay(v) : (v == null || v === '' ? '—' : String(v)));
 
 // Per-reason resolution actions for a Sitewire draw review (mirror of the server's map in
@@ -499,9 +506,11 @@ export default function SyncReviews() {
             )}
             {status === 'open' && !isSitewire && !canResolve && !fileActions && (
               <div className="row" style={{ gap: 8 }}>
-                <button className="btn primary btn-sm" disabled={busyId === r.id || !r.proposed_value}
-                  title={r.proposed_value ? 'Apply the proposed value (audited)' : 'No valid proposal to apply — dismiss or fix manually'}
-                  onClick={() => act(r.id, 'approve')}>{busyId === r.id ? '…' : 'Approve'}</button>
+                {!DISMISS_ONLY.has(r.reason) && (
+                  <button className="btn primary btn-sm" disabled={busyId === r.id || !r.proposed_value}
+                    title={r.proposed_value ? 'Apply the proposed value (audited)' : 'No valid proposal to apply — dismiss or fix manually'}
+                    onClick={() => act(r.id, 'approve')}>{busyId === r.id ? '…' : 'Approve'}</button>
+                )}
                 <button className="btn ghost btn-sm" disabled={busyId === r.id} onClick={() => act(r.id, 'reject')}>Dismiss</button>
               </div>
             )}

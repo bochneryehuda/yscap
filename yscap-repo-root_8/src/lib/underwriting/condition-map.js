@@ -43,6 +43,27 @@ const DOC_CONDITIONS = {
 function conditionsForDoc(docType) { return (DOC_CONDITIONS[docType] && DOC_CONDITIONS[docType].satisfies) || []; }
 function purposeForDoc(docType) { return (DOC_CONDITIONS[docType] && DOC_CONDITIONS[docType].purpose) || null; }
 
+// INVERSE map: a checklist condition CODE → the document type(s) that condition holds. This is the
+// "where to find each document" bridge the auto-reader walks — a document uploaded under, say, the
+// title condition (`rtl_cond_title`) is EXPECTED to be a title commitment, so the reader knows what
+// type to read it as and can confirm the AI's classification agrees with where it was filed. Built
+// once from DOC_CONDITIONS so the two directions can never drift.
+const CODE_TO_DOCTYPES = (() => {
+  const m = {};
+  for (const [docType, meta] of Object.entries(DOC_CONDITIONS)) {
+    for (const code of meta.satisfies) {
+      if (!m[code]) m[code] = [];
+      if (m[code].indexOf(docType) === -1) m[code].push(docType);
+    }
+  }
+  return m;
+})();
+// The document type(s) a condition code is expected to hold. When a code maps to more than one type
+// (e.g. rtl_p1_llc → several entity docs), the caller uses the AI classification / doc_kind to pick
+// the specific one; the FIRST entry is the primary/most-likely type for that condition.
+function docTypesForCode(code) { return CODE_TO_DOCTYPES[code] ? CODE_TO_DOCTYPES[code].slice() : []; }
+function expectedDocTypeForCode(code) { const list = CODE_TO_DOCTYPES[code]; return list && list.length ? list[0] : null; }
+
 // Readiness of ONE analyzed document from its (open) findings:
 //   'blocked' — an open fatal finding (must resolve before the condition can clear)
 //   'issues'  — open warnings only (review, but not a hard block)
@@ -95,4 +116,5 @@ function fileConditionCoverage({ conditions = [], extractions = [], findings = [
   return out;
 }
 
-module.exports = { DOC_CONDITIONS, conditionsForDoc, purposeForDoc, docReadiness, fileConditionCoverage };
+module.exports = { DOC_CONDITIONS, conditionsForDoc, purposeForDoc, docReadiness, fileConditionCoverage,
+  CODE_TO_DOCTYPES, docTypesForCode, expectedDocTypeForCode };

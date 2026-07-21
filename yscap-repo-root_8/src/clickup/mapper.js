@@ -73,7 +73,14 @@ const FIELD_MAP = [
   { cu: F.PIPELINE.occupancy, t: 'a', col: 'occupancy', type: 'dropdown', enumKey: 'occupancy', dir: 'pull' }, // backend-only
   { cu: F.PIPELINE.term, t: 'a', col: 'term', type: 'dropdown', enumKey: 'term', dir: 'both' },
   { cu: F.PIPELINE.units, t: 'a', col: 'units', type: 'number', dir: 'both' },
-  { cu: F.PIPELINE.lender, t: 'a', col: 'lender', type: 'dropdown', dir: 'pull' },   // note buyer; free label; staff-only display
+  // Note buyer / capital partner. BIDIRECTIONAL (owner-directed 2026-07-20): the
+  // team picks it in EITHER place, so a note buyer set in PILOT now pushes UP to
+  // the ClickUp file list (it was pull-only, which stranded a note buyer entered
+  // here while ClickUp was blank). Free label → resolved to the live dropdown
+  // OPTION id by writeValue/dropdownLabelToId; a label with no matching ClickUp
+  // option no-ops safely (we never invent ClickUp dropdown options). Still
+  // staff-only display; the PII/no-clear/no-op guards apply unchanged.
+  { cu: F.PIPELINE.lender, t: 'a', col: 'lender', type: 'dropdown', dir: 'both' },   // note buyer; free label; staff-only display
   { cu: F.PIPELINE.channel, t: 'a', col: 'channel', type: 'dropdown', dir: 'pull' }, // backend-only
   { cu: F.PIPELINE.pppType, t: 'a', col: 'ppp', type: 'text', dir: 'both' },
   // --- application: economics ---

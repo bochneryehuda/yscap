@@ -67,6 +67,10 @@ function recipStatus(s) {
   return { tone: 'muted', label: 'Pending' };
 }
 function StatusPill({ row }) {
+  if (row.kind === 'event') {
+    // A folded-in activity row (Sitewire's own events, or the DocuSign form lifecycle).
+    return <span className={`ec-pill ec-pill-${row.source === 'docusign' ? 'ok' : 'muted'}`}>{row.source === 'docusign' ? 'DocuSign' : 'Sitewire'}</span>;
+  }
   if (row.direction === 'inbound') {
     const map = {
       forwarded: ['Forwarded to the team', 'ok'], chat_posted: ['Posted to chat', 'ok'], received: ['Received', 'ok'],
@@ -88,6 +92,7 @@ function recipientsOf(row) {
   return [];
 }
 function partyList(row) {
+  if (row.kind === 'event') return row.from_name || (row.source === 'docusign' ? 'DocuSign' : 'Sitewire');
   if (row.direction === 'inbound') return row.from_name || row.from_email || 'Unknown sender';
   const recips = recipientsOf(row);
   const names = recips.map((r) => r.name || r.email).filter(Boolean);
@@ -125,9 +130,12 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) 
   const frameRef = useRef(null);
   const wrapRef = useRef(null);
   const loadedFor = useRef(null);
+  // A folded-in ACTIVITY row (Sitewire event / DocuSign lifecycle) carries its own text and has no
+  // stored email body to fetch — never call the message endpoint for it (its synthetic id would 404).
+  const isEvent = row.kind === 'event';
 
   useEffect(() => {
-    if (!expanded || loadedFor.current === row.id) return;
+    if (isEvent || !expanded || loadedFor.current === row.id) return;
     loadedFor.current = row.id;
     let alive = true;
     setLoading(true); setErr('');
@@ -182,8 +190,8 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) 
   };
 
   const inbound = row.direction === 'inbound';
-  const senderName = inbound ? (row.from_name || row.from_email) : 'YS Capital';
-  const canResend = !globalMode && row.direction === 'outbound' && (row.status === 'error' || row.status === 'skipped');
+  const senderName = isEvent ? (row.from_name || 'Activity') : (inbound ? (row.from_name || row.from_email) : 'YS Capital');
+  const canResend = !globalMode && !isEvent && row.direction === 'outbound' && (row.status === 'error' || row.status === 'skipped');
 
   return (
     <div className={`ec-msg${expanded ? ' open' : ''}`}>
@@ -195,7 +203,7 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) 
             <span className="ec-msg-when">{when(row.occurred_at, true)}</span>
           </div>
           <div className="ec-msg-headsub">
-            <span className={`ec-dir ec-dir-${row.direction}`}>{inbound ? 'Received' : 'Sent'}</span>
+            <span className={`ec-dir ec-dir-${row.direction}`}>{isEvent ? 'Activity' : (inbound ? 'Received' : 'Sent')}</span>
             <StatusPill row={row} />
             {!inbound && recipientsOf(row).some((r) => r.opened_at)
               ? <span className="ec-opened" title="At least one recipient opened this email">👁 opened</span> : null}
@@ -208,7 +216,9 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) 
         {expanded ? (
           <div className="ec-msg-open">
             <div className="ec-msg-meta">
-              {inbound
+              {isEvent
+                ? <div className="ec-metarow"><span className="ec-metalabel">Source</span> <span>{row.from_name}{row.recipient_name ? ` → ${row.recipient_name}` : ''}</span></div>
+                : inbound
                 ? <div className="ec-metarow"><span className="ec-metalabel">From</span> <span>{row.from_name ? `${row.from_name} · ` : ''}{row.from_email || 'unknown'}</span></div>
                 : <div className="ec-metarow"><span className="ec-metalabel">To</span> <RecipientRoster row={row} /></div>}
               {!inbound && full && Array.isArray(full.cc) && full.cc.length
@@ -229,7 +239,8 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) 
                 : null}
             </div>
             <div className="ec-msg-body">
-              {loading ? <div className="ec-skel" />
+              {isEvent ? <div className="ec-plain" style={{ padding: 16, whiteSpace: 'pre-wrap' }}>{row.body || row.preview || '(activity update)'}</div>
+              : loading ? <div className="ec-skel" />
                 : err ? <div className="notice err" style={{ margin: 12 }}>{err}</div>
                 : html
                   ? <div className="ec-frame-wrap" ref={wrapRef}><iframe ref={frameRef} title="email" className="ec-frame" sandbox="allow-same-origin" srcDoc={html} onLoad={fit} /></div>

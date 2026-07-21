@@ -142,6 +142,66 @@ function NoteBuyerInline({ appId, value, onSaved }) {
   );
 }
 
+/* Inline entry rendered directly ON the "note buyer missing" internal condition
+   so staff can set the note buyer right from the condition (owner-directed
+   2026-07-20). Saving posts the note buyer, which re-runs the condition engine
+   server-side and retracts the condition. STAFF-ONLY — the name never reaches a
+   borrower. */
+function CondNoteBuyerEntry({ appId, onSaved }) {
+  const [draft, setDraft] = useState('');
+  const [opts, setOpts] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const listId = useMemo(() => 'nbc-' + Math.random().toString(36).slice(2), []);
+  useEffect(() => {
+    let live = true;
+    api.get('/api/staff/note-buyers').then((r) => { if (live) setOpts((r && r.noteBuyers) || []); }).catch(() => {});
+    return () => { live = false; };
+  }, []);
+  async function save() {
+    const v = draft.trim(); if (!v) return;
+    setBusy(true); setErr('');
+    try { await api.post(`/api/staff/applications/${appId}/complete-fields`, { lender: v }); if (onSaved) await onSaved(); }
+    catch (e) { setErr(e.message || 'Could not save'); } finally { setBusy(false); }
+  }
+  return (
+    <div className="row" style={{ gap: 6, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+      <input className="input small" style={{ maxWidth: 220 }} list={listId} placeholder="Pick or type a note buyer…"
+        value={draft} disabled={busy} onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Enter') save(); }} />
+      <datalist id={listId}>{opts.map((o) => <option key={o.value || o.label} value={o.label} />)}</datalist>
+      <button className="btn primary small" onClick={save} disabled={busy || !draft.trim()}>{busy ? '…' : 'Set note buyer'}</button>
+      {err && <span className="small" style={{ color: 'var(--danger)' }}>{err}</span>}
+    </div>
+  );
+}
+
+/* Inline entry ON the "loan number missing" internal condition. Posts to the
+   dedicated /loan-number endpoint, which enforces the YSCAP format and
+   cross-file/ClickUp uniqueness (a duplicate is rejected here and parked to
+   manual review). Filling it retracts the condition. STAFF-ONLY. */
+function CondLoanNumberEntry({ appId, onSaved }) {
+  const [draft, setDraft] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  async function save() {
+    const v = draft.trim(); if (!v) return;
+    setBusy(true); setErr('');
+    try { await api.post(`/api/staff/applications/${appId}/loan-number`, { loanNumber: v }); if (onSaved) await onSaved(); }
+    catch (e) { setErr(e.message || 'Could not save'); } finally { setBusy(false); }
+  }
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div className="row" style={{ gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+        <input className="input small" style={{ maxWidth: 220 }} placeholder="YSCAP…" value={draft} disabled={busy}
+          onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') save(); }} />
+        <button className="btn primary small" onClick={save} disabled={busy || !draft.trim()}>{busy ? '…' : 'Set loan number'}</button>
+      </div>
+      {err && <div className="small" style={{ color: 'var(--danger)', marginTop: 4 }}>{err}</div>}
+    </div>
+  );
+}
+
 // Small inline eye toggle for the SSN reveal (revealing is server-audited).
 const Eye = (
   <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -176,6 +236,14 @@ const COMPLETENESS_FIELDS = (app, borrower) => [
   // in ClickUp. STAFF-ONLY — this whole panel is staff; it's never on the borrower
   // completeness panel and the note-buyer name never reaches a borrower.
   { key: 'lender', label: 'Note buyer', ok: !!app.lender, type: 'notebuyer' },
+  // Loan number (applications.ys_loan_number) — part of application completeness
+  // (owner-directed 2026-07-20). Saved through the dedicated /loan-number entry so
+  // it enforces the YSCAP format + cross-file/ClickUp uniqueness (a duplicate is
+  // rejected inline and parked to manual review). STAFF-ONLY.
+  { key: 'ys_loan_number', label: 'Loan number', ok: !!app.ys_loan_number, type: 'text',
+    placeholder: 'YSCAP…',
+    postEndpoint: (base) => base.replace(/\/complete-fields$/, '/loan-number'),
+    postBody: (v) => ({ loanNumber: v }) },
 ];
 
 // #30 / #60 — the co-borrower's own required identity fields, shown in a SEPARATE
@@ -226,7 +294,11 @@ function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Applic
     // #90: a FICO must be a real 3-digit score in range — never save junk.
     if (f.type === 'fico' && !ficoValid(val)) { setErr('FICO must be a 3-digit score between 300 and 850.'); return; }
     setBusy(true); setErr('');
-    try { await api.post(endpoint, { [f.key]: val }); setEditing(null); setVal(''); await onSaved(); }
+    // A field may post to its OWN endpoint/body (e.g. the loan number goes to the
+    // dedicated /loan-number entry that enforces format + cross-file uniqueness).
+    const ep = f.postEndpoint ? f.postEndpoint(endpoint) : endpoint;
+    const body = f.postBody ? f.postBody(val) : { [f.key]: val };
+    try { await api.post(ep, body); setEditing(null); setVal(''); await onSaved(); }
     catch (e) { setErr(e.message || 'Could not save'); }
     finally { setBusy(false); }
   }
@@ -258,7 +330,7 @@ function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Applic
                       type={f.type === 'date' ? 'date' : f.type === 'number' || f.type === 'money' ? 'number' : f.type === 'tel' ? 'tel' : 'text'}
                       inputMode={f.type === 'money' || f.type === 'number' || f.type === 'fico' ? 'numeric' : undefined}
                       maxLength={f.type === 'fico' ? 3 : undefined}
-                      placeholder={f.type === 'fico' ? '300–850' : f.label} value={val}
+                      placeholder={f.placeholder || (f.type === 'fico' ? '300–850' : f.label)} value={val}
                       onChange={(e) => setVal(f.type === 'fico' ? cleanFICO(e.target.value) : e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && save(f)} />}
                 <button className="btn primary small" disabled={busy || val === '' || (f.type === 'fico' && !ficoValid(val))} onClick={() => save(f)}>{busy ? '…' : 'Save'}</button>
@@ -1932,22 +2004,32 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                     : it.tool_key === 'rehab_budget' ? `Scope of Work builder${app.rehab_budget != null ? ` · total ${money(app.rehab_budget)}` : ''}`
                     : it.tool_key === 'track_record' ? (() => {
                         // live counts stamped on the condition by the server on
-                        // every track-record change — no need to open the panel
+                        // every track-record change — no need to open the panel.
+                        // ENTERED (on record) vs VERIFIED are shown side by side;
+                        // the condition can only be signed off on VERIFIED
+                        // experience (owner-directed 2026-07-20).
                         const p = it.tool_payload || {};
-                        const c = p.counts, r = p.required;
+                        // Shortfall is measured against what must actually be VERIFIED
+                        // to sign off — the REGISTERED product's experience (gateNeed),
+                        // matching the sign-off gate. Falls back to the claim on older
+                        // payloads that predate gateNeed.
+                        const c = p.counts, v = p.verifiedCounts || {}, r = p.gateNeed || p.required;
                         // No experience priced/claimed on this file → nothing to
                         // verify. It reactivates the moment experience is entered
                         // on the application or in Products & Pricing.
                         if (p.notApplicable) return 'No experience required on this file — reactivates if experience is entered on the application or in Products & Pricing';
                         if (!c) return 'Verified from the borrower\'s general track record (panel below)';
-                        const have = `On record: ${c.flips || 0} flip${c.flips === 1 ? '' : 's'} · ${c.holds || 0} hold${c.holds === 1 ? '' : 's'}${c.ground ? ` · ${c.ground} ground-up` : ''}`;
+                        const fmt = (x) => `${x.flips || 0} flip${x.flips === 1 ? '' : 's'} · ${x.holds || 0} hold${x.holds === 1 ? '' : 's'}${x.ground ? ` · ${x.ground} ground-up` : ''}`;
+                        const have = `Entered: ${fmt(c)} · Verified: ${fmt(v)}`;
                         const needsAny = r && (r.flips + r.holds + r.ground > 0);
+                        // Shortfall is judged on VERIFIED — entering deals is not
+                        // enough; they must be verified before sign-off.
                         const short = needsAny ? [
-                          r.flips > (c.flips || 0) ? `${r.flips - (c.flips || 0)} flip${r.flips - c.flips === 1 ? '' : 's'}` : null,
-                          r.holds > (c.holds || 0) ? `${r.holds - (c.holds || 0)} hold${r.holds - c.holds === 1 ? '' : 's'}` : null,
-                          r.ground > (c.ground || 0) ? `${r.ground - (c.ground || 0)} ground-up` : null,
+                          r.flips > (v.flips || 0) ? `${r.flips - (v.flips || 0)} flip${r.flips - (v.flips || 0) === 1 ? '' : 's'}` : null,
+                          r.holds > (v.holds || 0) ? `${r.holds - (v.holds || 0)} hold${r.holds - (v.holds || 0) === 1 ? '' : 's'}` : null,
+                          r.ground > (v.ground || 0) ? `${r.ground - (v.ground || 0)} ground-up` : null,
                         ].filter(Boolean) : [];
-                        return `${have}${needsAny ? (short.length ? ` — still needs ${short.join(', ')}` : ' — requirement met ✓') : ''}`;
+                        return `${have}${needsAny ? (short.length ? ` — still needs ${short.join(', ')} verified` : ' — requirement met ✓ (verified)') : ''}`;
                       })()
                     : it.tool_key === 'product_pricing' ? (app.registered_program ? `Registered · ${app.registered_program === 'gold' ? 'Gold Standard' : 'Standard'} · ${money(app.registered_total_loan)}` : 'No product registered yet')
                     : it.tool_key === 'appraisal_card' ? 'Card for ordering the appraisal (reveal is audited)'
@@ -1982,6 +2064,8 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                   {` · ${it.status}`}
                   {signed && ` · signed off by ${it.signed_off_name || 'the internal team'}`}
                 </div>
+                {it.template_code === 'cond_note_buyer_missing' && <CondNoteBuyerEntry appId={appId} onSaved={onChanged} />}
+                {it.template_code === 'cond_loan_number_missing' && <CondLoanNumberEntry appId={appId} onSaved={onChanged} />}
                 {it.template_code === 'rtl_p3_assets' && it.hint && (
                   <div className="muted small" style={{ whiteSpace: 'pre-line', marginTop: 6, padding: '8px 10px', border: '1px solid rgba(127,169,176,.3)', borderRadius: 8 }}>
                     {it.hint}
@@ -1993,10 +2077,11 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                   // combined total shown in the summary line above.
                   <div className="small" style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 2 }}>
                     {it.tool_payload.perBorrower.map(p => {
-                      const c = p.counts || {};
+                      const c = p.counts || {}, v = p.verifiedCounts || {};
+                      const one = (x) => `${x.flips || 0} flip${x.flips === 1 ? '' : 's'} · ${x.holds || 0} hold${x.holds === 1 ? '' : 's'}${x.ground ? ` · ${x.ground} ground-up` : ''}`;
                       return (
                         <div key={p.borrowerId} className="muted">
-                          <b style={{ color: 'var(--ink-9,inherit)' }}>{p.name}</b>{p.isPrimary ? ' (borrower)' : ' (co-borrower)'} — {c.flips || 0} flip{c.flips === 1 ? '' : 's'} · {c.holds || 0} hold{c.holds === 1 ? '' : 's'}{c.ground ? ` · ${c.ground} ground-up` : ''}
+                          <b style={{ color: 'var(--ink-9,inherit)' }}>{p.name}</b>{p.isPrimary ? ' (borrower)' : ' (co-borrower)'} — entered {one(c)} · verified {one(v)}
                         </div>
                       );
                     })}
@@ -2419,10 +2504,11 @@ export default function StaffApplication() {
   const [previewDoc, setPreviewDoc] = useState(null);
   const [chatOpen, setChatOpen] = useState(false);   // #94 — Message opens a popup, not a scroll
   const [remindOpen, setRemindOpen] = useState(false);   // #93 — Remind opens the reminder/task manager
-  // The ClickUp/pipeline plumbing (sync panel, the 38-status dropdown, the read-only
-  // pipeline dump) is needed only occasionally, so it hides behind one toggle in the
-  // overview instead of competing for attention with the everyday controls.
-  const [showPipeline, setShowPipeline] = useState(false);
+  // The ClickUp/pipeline plumbing — the sync panel (super-admin push/pull/refresh,
+  // link/unlink) and the 38-status internal-status dropdown — is shown by default so
+  // staff can change/maneuver the ClickUp status and re-sync right from the file. The
+  // toggle stays so it can be collapsed when someone wants a quieter overview.
+  const [showPipeline, setShowPipeline] = useState(true);
   const openPreview = useCallback((doc) => setPreviewDoc(doc), []);
 
   async function revealSsn() {
@@ -2715,7 +2801,9 @@ export default function StaffApplication() {
     { id: 'sec-track', label: 'Track record', group: 'Signing & documents' },
     { id: 'sec-messages', label: 'Communication & history', group: 'Communication' },
     // Construction draws is the LAST phase (post-funding), so it's the LAST section.
-    ...(can('manage_draws') && app.status === 'funded' ? [{ id: 'sec-draws', label: 'Construction draws', group: 'Construction draws' }] : []),
+    // Shown for anyone who manages draws — funded or not — so the Draw Center is
+    // always findable here (it just says "opens after funding" before funding).
+    ...(can('manage_draws') ? [{ id: 'sec-draws', label: 'Construction draws', group: 'Construction draws', badge: app.status === 'funded' ? '' : 'soon' }] : []),
   ];
 
   return (
@@ -3184,11 +3272,11 @@ export default function StaffApplication() {
           section with tabs — they're all the file's talk + trail, so they share a
           home instead of three separate sections. */}
       <Section id="sec-messages" title="Communication & history" defaultOpen={false}
-        info="Everything said and logged on this file — chats, the email history, and the full activity trail. Switch with the tabs.">
-      <div className="cond-tabs" role="tablist" aria-label="Communication">
-        {[{ k: 'messages', label: 'Conversations' }, { k: 'emails', label: 'Emails' }, { k: 'activity', label: 'Activity' }].map(t => (
+        info="Everything said and logged on this file — chats, the email history, and the full activity trail. Switch with the tabs below.">
+      <div className="comm-tabs" role="tablist" aria-label="Communication">
+        {[{ k: 'messages', label: '💬 Chats' }, { k: 'emails', label: '✉️ Email' }, { k: 'activity', label: '🕓 Activity' }].map(t => (
           <button key={t.k} type="button" role="tab" aria-selected={commTab === t.k}
-            className={`cond-tab${commTab === t.k ? ' active' : ''}`} onClick={() => setCommTab(t.k)}>{t.label}</button>
+            className={`comm-tab${commTab === t.k ? ' active' : ''}`} onClick={() => setCommTab(t.k)}>{t.label}</button>
         ))}
       </div>
       {commTab === 'messages' && <ChatPanel appId={id} onTaskCreated={load} />}
@@ -3200,22 +3288,40 @@ export default function StaffApplication() {
           window too (everything about the draw process lives there). */}
       {/* Construction draws is the post-funding PHASE — it lives in its own Draw Management workspace,
           not inside the file. The file just hands off to it. */}
-      {can('manage_draws') && app.status === 'funded' && (
+      {can('manage_draws') && (
         <Section id="sec-draws" title="Construction draws" collapsible={false}>
-          <div className="panel" style={{ background: 'var(--paper,#f6f3ec)' }}>
-            <b>This file is funded — its draws are managed in Draw Management.</b>
-            <div className="muted small" style={{ marginTop: 3, marginBottom: 10 }}>
-              The construction-draw process is its own phase after funding: each draw, approvals, the inspector’s
-              photos and reports, our fee &amp; net release, and the borrower’s accept/dispute — all live in the Draw
-              Management workspace, not on this file screen.
+          {app.status === 'funded' ? (
+            <div className="panel" style={{ background: 'var(--paper,#f6f3ec)' }}>
+              <b>This file is funded — its draws are managed in the Draw Center.</b>
+              <div className="muted small" style={{ marginTop: 3, marginBottom: 10 }}>
+                The construction-draw process is its own phase after funding: each draw, approvals, the inspector’s
+                photos and reports, our fee &amp; net release, and the borrower’s accept/dispute — all live in the Draw
+                Center workspace, not on this file screen.
+              </div>
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                <button className="btn primary btn-sm" onClick={() => nav(`/internal/app/${id}/draws`)}>Open this file’s Draw Center →</button>
+                <button className="btn ghost btn-sm" onClick={() => nav('/internal/draws')}>All draws</button>
+                <button className="btn ghost btn-sm" title="Open the full Draw Center in its own window"
+                  onClick={() => window.open(`${window.location.pathname}#/internal/app/${id}/draws`, '_blank', 'noopener')}>Open in a new window ↗</button>
+              </div>
             </div>
-            <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-              <button className="btn primary btn-sm" onClick={() => nav(`/internal/app/${id}/draws`)}>Open this file’s draws →</button>
-              <button className="btn ghost btn-sm" onClick={() => nav('/internal/draws')}>All draws</button>
-              <button className="btn ghost btn-sm" title="Open the full draw desk in its own window"
-                onClick={() => window.open(`${window.location.pathname}#/internal/app/${id}/draws`, '_blank', 'noopener')}>Open in a new window ↗</button>
+          ) : (
+            // NOT funded — the Draw Center is locked. Construction draws are the last
+            // phase and can't start until the file reaches Funded, so nothing here is
+            // actionable yet: the buttons are disabled and we say what unlocks them.
+            <div className="notice warn" role="status" aria-label="Draw Center locked until the file is funded">
+              <b>🔒 Waiting on funding — the construction-draw process hasn’t started.</b>
+              <div className="small" style={{ marginTop: 4, marginBottom: 10, opacity: .92 }}>
+                Construction draws are the last phase and open only once this file’s status is <b>Funded</b>.
+                Until then nothing can be requested, approved, inspected, or released here — advance the file to
+                Funded to unlock the Draw Center.
+              </div>
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                <button className="btn primary btn-sm" disabled aria-disabled="true"
+                  title="The Draw Center opens once this file is funded">Draw Center — locked until funded</button>
+              </div>
             </div>
-          </div>
+          )}
         </Section>
       )}
 

@@ -554,7 +554,9 @@ async function pushBudgetInner(appId, budgetId, ex, budgetCents) {
   let liveItems = [];
   try { const live = await client.getBudget(budgetId); liveItems = (live && live.job_items) || []; }
   catch (e) { if (e.retryable) throw e; console.warn('[sitewire] adopt read-before-write skipped (non-retryable getBudget failure):', e && e.message); }
-  const resolved = M.resolveCreatesAgainstLive(diff.creates, liveItems);
+  // Pass the drawn-id set so a doubled $0 MEDIA anchor binds to an UN-DRAWN copy (harmless photo
+  // requirement) instead of parking; a money line or an all-drawn collision still parks (never-guess).
+  const resolved = M.resolveCreatesAgainstLive(diff.creates, liveItems, drawn);
   for (const name of resolved.ambiguous) {
     await park({ appId, reason: `sitewire_bind_ambiguous: line name "${name}" already appears more than once in the Sitewire budget — cannot bind id`, dedupe: name });
   }
