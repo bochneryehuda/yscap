@@ -430,15 +430,24 @@ const clientUserIdFor = (envelopeRowId, role) => `${envelopeRowId}:${role}`;
  * routingOrder 1, then the admin counter-signer at routingOrder 2 for the
  * term-sheet package. recipientId is the DocuSign per-envelope id ("1","2","3").
  */
-function buildRoster(app, spec, envelopeRowId) {
+function buildRoster(app, spec, envelopeRowId, opts = {}) {
   const roster = [];
+  // Draw-send recipient choice (owner-directed 2026-07-21): the SOLO package (the draw request / wire form)
+  // may be sent to the PRIMARY borrower (default) OR the CO-BORROWER. Only applies to a soloBorrower package
+  // and only when a co-borrower actually exists — so multi-signer packages (the term sheet) are unchanged,
+  // and the default (no choice) is byte-identical to before. The single signer's identity is swapped; the
+  // envelope structure (one 'borrower' recipient, b1 anchors) is unchanged.
+  const soloToCo = spec.soloBorrower && opts.recipient === 'co_borrower' && app.co_borrower_id;
+  const primary = soloToCo
+    ? { borrowerId: app.cb_id, name: `${app.cb_first} ${app.cb_last}`.trim(), email: app.cb_email }
+    : { borrowerId: app.b_id, name: `${app.b_first} ${app.b_last}`.trim(), email: app.b_email };
   roster.push({
     role: 'borrower', routingOrder: 1, recipientId: '1', isCountersigner: false,
-    borrowerId: app.b_id, name: `${app.b_first} ${app.b_last}`.trim(), email: app.b_email,
+    borrowerId: primary.borrowerId, name: primary.name, email: primary.email,
     clientUserId: clientUserIdFor(envelopeRowId, 'borrower'),
   });
-  // A soloBorrower package (the draw request) is signed by the PRIMARY borrower ONLY
-  // — never a co-borrower, never the admin counter-signer.
+  // A soloBorrower package (the draw request) is signed by ONE borrower (chosen above) — never the admin
+  // counter-signer, and never a SECOND signer.
   if (!spec.soloBorrower && app.co_borrower_id) {
     roster.push({
       role: 'co_borrower', routingOrder: 1, recipientId: '2', isCountersigner: false,
@@ -547,8 +556,9 @@ async function createOrClaimEnvelope(db, app, purpose, spec, actorId, opts = {})
       [row.id, i + 1, d.signedKind, conditionItemId]);
   }
 
-  // Seed the recipient roster (all embedded + email hybrid).
-  const roster = buildRoster(app, spec, row.id);
+  // Seed the recipient roster (all embedded + email hybrid). opts.recipient ('borrower'|'co_borrower')
+  // chooses who signs a SOLO package (the draw request); ignored for multi-signer packages.
+  const roster = buildRoster(app, spec, row.id, { recipient: opts.recipient });
   for (const r of roster) {
     await db.query(
       `INSERT INTO esign_recipients

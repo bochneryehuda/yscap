@@ -286,12 +286,15 @@ function DrawRequestCard({ appId }) {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
+  const [recipient, setRecipient] = useState('borrower'); // who signs the wire form: borrower | co_borrower
   const reload = useCallback(() => {
     api.get(`/api/sitewire/files/${appId}/draw-request`)
       .then((r) => setD(r)).catch(() => setD(null)).finally(() => setLoading(false));
   }, [appId]);
   useEffect(() => { reload(); }, [reload]);
   if (loading || !d) return null;
+  const opts = d.recipient_options || {};
+  const coBorrower = opts.coBorrower && opts.coBorrower.email ? opts.coBorrower : null;
 
   const env = d.envelope, wire = d.wire, oa = d.operating_agreement, prereqs = d.prereqs || {};
   const terminal = env && env.terminal;
@@ -303,8 +306,10 @@ function DrawRequestCard({ appId }) {
   async function send(reissue) {
     setBusy(true); setMsg('');
     try {
-      const r = await api.post(`/api/sitewire/files/${appId}/draw-request/send`, reissue ? { reissue: true } : {});
-      setMsg(r && r.ok ? 'Sent to the borrower for signature. Their wire details will appear here once they sign.' : (r && r.note) || 'The draw request is queued to send.');
+      const who = coBorrower && recipient === 'co_borrower' ? 'co_borrower' : 'borrower';
+      const r = await api.post(`/api/sitewire/files/${appId}/draw-request/send`, { ...(reissue ? { reissue: true } : {}), recipient: who });
+      const toName = who === 'co_borrower' ? (coBorrower.name || 'the co-borrower') : 'the borrower';
+      setMsg(r && r.ok ? `Sent to ${toName} for signature. Their wire details will appear here once they sign.` : (r && r.note) || 'The draw request is queued to send.');
       reload();
     } catch (e) { setMsg((e && e.data && e.data.error) || e.message || 'Could not send the draw request.'); }
     finally { setBusy(false); }
@@ -383,6 +388,21 @@ function DrawRequestCard({ appId }) {
       {d.signed_document && (
         <div style={{ marginTop: 10 }}>
           <button className="btn btn-sm ghost" onClick={() => openSigned(d.signed_document.id)}>View the signed form (PDF)</button>
+        </div>
+      )}
+
+      {/* recipient chooser — only when there's a co-borrower to choose (owner-directed 2026-07-21) */}
+      {coBorrower && (!env || terminal) && (
+        <div className="row" style={{ gap: 8, marginTop: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span className="dd-sub">Send the form to:</span>
+          <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+            <button className={'btn btn-sm ' + (recipient === 'borrower' ? '' : 'ghost')} onClick={() => setRecipient('borrower')}>
+              {(opts.borrower && opts.borrower.name) || 'Borrower'}
+            </button>
+            <button className={'btn btn-sm ' + (recipient === 'co_borrower' ? '' : 'ghost')} onClick={() => setRecipient('co_borrower')}>
+              {coBorrower.name || 'Co-borrower'} <span className="dd-sub">(co-borrower)</span>
+            </button>
+          </div>
         </div>
       )}
 
@@ -763,11 +783,29 @@ function BorrowerInviteStatus({ appId, writesOff, readsOff }) {
         </div>
       </div>
       {editing && (
-        <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-          <input type="email" value={emailInput} onChange={(e) => setEmailInput(e.target.value)} placeholder="name@email.com"
-            style={{ flex: '1 1 220px', minWidth: 0, fontSize: 16, padding: '7px 10px', border: '1px solid var(--line)', borderRadius: 8 }} />
-          <button className="btn btn-sm" disabled={busy} onClick={saveEmail}>{busy ? 'Saving…' : 'Save & send invite'}</button>
-          <button className="btn btn-sm ghost" disabled={busy} onClick={() => { setEditing(false); setMsg(''); }}>Cancel</button>
+        <div style={{ marginTop: 10 }}>
+          {/* Quick-pick the borrower or co-borrower (fills the email) — or type any address (e.g. a GC/partner). */}
+          {st.recipients && (st.recipients.borrower || st.recipients.coBorrower) && (
+            <div className="row" style={{ gap: 6, marginBottom: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              <span className="dd-sub">Invite:</span>
+              {st.recipients.borrower && st.recipients.borrower.email && (
+                <button className="btn btn-sm ghost" disabled={busy} onClick={() => setEmailInput(st.recipients.borrower.email)}>
+                  {st.recipients.borrower.name || 'Borrower'}
+                </button>
+              )}
+              {st.recipients.coBorrower && st.recipients.coBorrower.email && (
+                <button className="btn btn-sm ghost" disabled={busy} onClick={() => setEmailInput(st.recipients.coBorrower.email)}>
+                  {st.recipients.coBorrower.name || 'Co-borrower'} <span className="dd-sub">(co-borrower)</span>
+                </button>
+              )}
+            </div>
+          )}
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <input type="email" value={emailInput} onChange={(e) => setEmailInput(e.target.value)} placeholder="name@email.com"
+              style={{ flex: '1 1 220px', minWidth: 0, fontSize: 16, padding: '7px 10px', border: '1px solid var(--line)', borderRadius: 8 }} />
+            <button className="btn btn-sm" disabled={busy} onClick={saveEmail}>{busy ? 'Saving…' : 'Save & send invite'}</button>
+            <button className="btn btn-sm ghost" disabled={busy} onClick={() => { setEditing(false); setMsg(''); }}>Cancel</button>
+          </div>
         </div>
       )}
       {msg && <div className="dd-sub" style={{ marginTop: 6 }}>{msg}</div>}
