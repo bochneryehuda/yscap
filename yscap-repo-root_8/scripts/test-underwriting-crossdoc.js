@@ -138,6 +138,11 @@ assert.deepStrictEqual(codes(computeBankFindings({ ...depStmt, largestDeposit: 9
   assert.deepStrictEqual(codes(f), ['bank_account_other_entity']);
   assert.strictEqual(f[0].severity, 'fatal');
   assert.strictEqual(f[0].requiresDocument, 'operating_agreement');
+  // The finding names the specific entity and frames the FULL entity-control document set so the
+  // underwriter can bring that entity onto the file (operating agreement + articles + EIN letter).
+  assert.strictEqual(f[0].entityName, 'BRRRR Capital LLC', 'the finding carries the specific other-entity name');
+  assert.ok(/operating agreement/i.test(f[0].howTo) && /articles/i.test(f[0].howTo) && /ein/i.test(f[0].howTo),
+    'the guidance names the full entity-control document set (OA + articles + EIN)');
 }
 // Personal account in a different name → FATAL.
 assert.deepStrictEqual(codes(computeBankFindings({ ...goodStmt, accountHolderName: 'Robert Jones' }, assets)), ['bank_account_not_borrower']);
