@@ -629,6 +629,11 @@ export const api = {
   underwritingClassify:       (appId, docId) => req('POST', `/api/underwriting/${appId}/documents/${docId}/classify`),
   underwritingResolveFinding: (appId, fid, b) => req('POST', `/api/underwriting/${appId}/findings/${fid}/resolve`, b),
   underwritingExperienceException: (appId, b) => req('POST', `/api/underwriting/${appId}/experience-exception`, b),
+  // Per-finding escalation to the super-admin / processor / underwriter workload (Items 7+12).
+  underwritingEscalateFinding: (appId, b) => req('POST', `/api/underwriting/${appId}/findings/escalate`, b),
+  findingEscalations:         (status) => req('GET', `/api/underwriting/escalations${status ? `?status=${status}` : ''}`),
+  findingEscalationsCount:    () => req('GET', '/api/underwriting/escalations/count'),
+  decideFindingEscalation:    (id, decision, note) => req('POST', `/api/underwriting/escalations/${id}/decide`, { decision, note }),
   // Portfolio-wide "training" report: which finding types turned out real vs false alarms.
   underwritingFeedback:       () => req('GET', '/api/underwriting/insights/feedback'),
 
