@@ -99,6 +99,38 @@ const cleanup = async (app, bor) => { await db.query(`DELETE FROM applications W
     await cleanup(app, bor);
   }
 
+  // ============ 5b. accepting_draws (Block Draws) — confirmed field, verified + journaled ============
+  {
+    updateCalls = []; updateImpl = async (id, body) => { updateCalls.push({ id, body }); return { id, ...body }; };
+    getImpl = async (id) => ({ id, inactive: false, accepting_draws: false });
+    const { app, bor } = await seedManaged();
+    const r = await orch.updatePropertyControls(app, { accepting_draws: false }, null);
+    ok('draws: client called with accepting_draws=false', updateCalls.length === 1 && updateCalls[0].body.accepting_draws === false);
+    ok('draws: synced + returned', r.ok === true && r.sitewire === 'synced' && r.accepting_draws === false);
+    const jr = await db.query(`SELECT 1 FROM sitewire_write_log WHERE application_id=$1 AND field='accepting_draws'`, [app]);
+    ok('draws: journaled', jr.rowCount >= 1);
+    await cleanup(app, bor);
+  }
+
+  // ============ 5c. sitewire_review (GC ↔ in-house) — confirmed field ============
+  {
+    updateCalls = []; getImpl = async (id) => ({ id, inactive: false, sitewire_review: false });
+    const { app, bor } = await seedManaged();
+    const r = await orch.updatePropertyControls(app, { sitewire_review: false }, null);
+    ok('review: client called with sitewire_review=false', updateCalls.length === 1 && updateCalls[0].body.sitewire_review === false);
+    ok('review: synced', r.ok === true && r.sitewire === 'synced' && r.sitewire_review === false);
+    await cleanup(app, bor);
+  }
+
+  // ============ 5d. accepting_draws verify MISMATCH parks (200 that didn't stick) ============
+  {
+    updateImpl = async (id, body) => ({ id, ...body }); getImpl = async (id) => ({ id, accepting_draws: true }); // asked false, still true
+    const { app, bor } = await seedManaged();
+    const r = await orch.updatePropertyControls(app, { accepting_draws: false }, null);
+    ok('draws verify-fail: parked', r.parked === 'verify_failed');
+    await cleanup(app, bor);
+  }
+
   // ============ 6. read-after-write MISMATCH parks (200 that didn't stick) — never persists ============
   {
     updateImpl = async (id, body) => ({ id, ...body }); getImpl = async (id) => ({ id, inactive: false, inspection_method: 'mobile' }); // asked inactive=true, Sitewire shows false

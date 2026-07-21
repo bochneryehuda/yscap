@@ -458,12 +458,30 @@ function LifecycleControl({ appId, link, writesOff, onChanged }) {
   );
 }
 
+/* One control row (label + live status line + action button) on the Sitewire controls card. */
+function ControlRow({ title, status, statusTone, sub, btnLabel, busy, disabled, onClick }) {
+  return (
+    <div className="row between" style={{ gap: 10, flexWrap: 'wrap', alignItems: 'center', padding: '8px 0', borderTop: '1px solid var(--hairline,#e7e0d4)' }}>
+      <div style={{ minWidth: 200, flex: '1 1 260px' }}>
+        <div><b>{title}</b>{status ? <> — <span style={{ color: statusTone || 'var(--text)' }}>{status}</span></> : null}</div>
+        {sub && <div className="dd-sub" style={{ marginTop: 1 }}>{sub}</div>}
+      </div>
+      {btnLabel && (
+        <button className="btn btn-sm ghost" style={{ flex: '0 0 auto' }} disabled={disabled} onClick={onClick}>
+          {busy ? 'Saving…' : btnLabel}
+        </button>
+      )}
+    </div>
+  );
+}
+
 /* Sitewire PROPERTY CONTROLS from the PILOT desk (owner-directed 2026-07-21 — "ALL features that we have in
-   Sitewire… control the entire process from our system"). Reads the LIVE Sitewire property and offers the two
-   controls whose Sitewire field name we've CONFIRMED — Active↔Inactive and Virtual↔On-site inspection — each a
-   real guarded write that reads back what it wrote (never a fake button). The two we haven't confirmed
-   (Block draws / who reviews the inspection) are shown as "coming" with the live raw settings exposed below so
-   the exact Sitewire field names can be confirmed and wired next — a guessed field name would silently no-op. */
+   Sitewire… control the entire process from our system"). Reads the LIVE Sitewire property and offers ALL FOUR
+   controls, each a real guarded write that reads back what it wrote (never a fake button). Field names are
+   CONFIRMED, not guessed: inactive + inspection_method from our own integration; accepting_draws (Block Draws)
+   + sitewire_review (GC↔in-house review) from Sitewire's OWN portal toggle endpoints in the owner-provided
+   capture. Mirrors Sitewire's screen: when the property is INACTIVE the other controls collapse (only
+   Reactivate shows), exactly as Sitewire does. */
 const INSP_LABEL = { mobile: 'Virtual (Sitewire mobile app)', traditional: 'On-site (in person)' };
 function SitewirePropertyControls({ appId, onChanged }) {
   const [d, setD] = useState(null);
@@ -482,17 +500,18 @@ function SitewirePropertyControls({ appId, onChanged }) {
     setBusy(key); setMsg('');
     try {
       const r = await api.post(`/api/sitewire/files/${appId}/property-settings`, changes);
-      const note = r.sitewire === 'synced' ? ' Saved in Sitewire.' : r.sitewire === 'dryrun' ? ' (dry-run — nothing sent to Sitewire.)' : ' Sent to Sitewire (not yet confirmed).';
+      const note = r.sitewire === 'synced' ? ' Saved in Sitewire.' : r.sitewire === 'dryrun' ? ' (dry-run — nothing sent to Sitewire.)' : ' Sent to Sitewire (confirming…).';
       setMsg((done || 'Updated.') + note);
       loadIt(); if (onChanged) onChanged();
     } catch (e) { setMsg(e?.data?.error || e.message || 'That didn’t work.'); }
     finally { setBusy(''); }
   }
+  const confirmApply = (question, changes, key, done) => { if (!window.confirm(question)) return; apply(changes, key, done); };
 
   if (loading) return <div className="dd-card" style={{ marginTop: 12 }}>Loading Sitewire settings…</div>;
   if (!d) return null;
   const sw = d.switches || {};
-  const writesOff = !(sw.enabled && sw.outbound);
+  const off = !(sw.enabled && sw.outbound); // Sitewire writing off → disable the buttons
 
   // Not a PILOT-managed property, or the connection is off — say so plainly, don't show dead buttons.
   if (!d.available) {
@@ -513,7 +532,9 @@ function SitewirePropertyControls({ appId, onChanged }) {
   }
 
   const prop = d.property || {};
-  const active = prop.inactive !== true; // Sitewire `inactive` boolean → active = not inactive
+  const active = prop.inactive !== true;                 // Sitewire `inactive` boolean → active = not inactive
+  const drawsAllowed = prop.accepting_draws !== false;   // default allowed (Sitewire default)
+  const sitewireReview = prop.sitewire_review !== false; // default Sitewire GC review (Sitewire default)
   const insp = d.inspection || {};
   const method = insp.method || prop.inspection_method || 'mobile';
   const canSwitch = insp.can_switch !== false;
@@ -525,52 +546,68 @@ function SitewirePropertyControls({ appId, onChanged }) {
         <span className="dd-card-ic"><SdIcon name="settings" /></span>
         <div>
           <b>Sitewire property controls</b>
-          <div className="dd-sub" style={{ marginTop: 1 }}>Change these here instead of logging into Sitewire — each one is sent straight to Sitewire.</div>
+          <div className="dd-sub" style={{ marginTop: 1 }}>Change these here instead of logging into Sitewire — each one is sent straight to Sitewire and read back to confirm it took.</div>
         </div>
       </div>
 
-      {/* Active / Inactive (Sitewire "Mark Inactive") */}
-      <div className="row between" style={{ gap: 10, flexWrap: 'wrap', alignItems: 'center', padding: '8px 0', borderTop: '1px solid var(--hairline,#e7e0d4)' }}>
-        <div style={{ minWidth: 200, flex: '1 1 260px' }}>
-          <div><b>Visibility</b> — <span style={{ color: active ? 'var(--success,#3f7a4a)' : 'var(--text-muted)' }}>{active ? 'Active (visible, accepting draws)' : 'Inactive (hidden — no new draws)'}</span></div>
-          <div className="dd-sub" style={{ marginTop: 1 }}>Inactive hides the property in Sitewire and stops new borrower draws.</div>
-        </div>
-        <button className="btn btn-sm ghost" style={{ flex: '0 0 auto' }} disabled={writesOff || busy === 'inactive'}
-          title={writesOff ? 'Sitewire writing is off' : ''}
-          onClick={() => { const next = active; if (!window.confirm(next ? 'Mark this property INACTIVE in Sitewire? It’s hidden and no new draws can be submitted.' : 'Make this property ACTIVE in Sitewire again?')) return; apply({ inactive: next }, 'inactive', next ? 'Marked inactive.' : 'Marked active.'); }}>
-          {busy === 'inactive' ? 'Saving…' : (active ? 'Mark inactive' : 'Make active')}
-        </button>
-      </div>
+      {/* VISIBILITY — Active ↔ Inactive (Sitewire "Mark Inactive" / "Reactivate") */}
+      <ControlRow
+        title={active ? 'Active' : 'Inactive'}
+        status={active ? 'Visible everywhere, appears in search results' : 'Hidden from web and mobile apps, blocks draws'}
+        statusTone={active ? 'var(--success,#3f7a4a)' : 'var(--text-muted)'}
+        btnLabel={active ? 'Mark Inactive' : 'Reactivate'}
+        busy={busy === 'inactive'} disabled={off || busy === 'inactive'}
+        onClick={() => confirmApply(
+          active ? 'Mark this property INACTIVE in Sitewire? It’s hidden and no new draws can be submitted.' : 'Reactivate this property in Sitewire so it’s visible and can accept draws again?',
+          { inactive: active }, 'inactive', active ? 'Marked property inactive.' : 'Property reactivated.')}
+      />
 
-      {/* Inspection method (Virtual/mobile ↔ On-site/traditional) */}
-      <div className="row between" style={{ gap: 10, flexWrap: 'wrap', alignItems: 'center', padding: '8px 0', borderTop: '1px solid var(--hairline,#e7e0d4)' }}>
-        <div style={{ minWidth: 200, flex: '1 1 260px' }}>
-          <div><b>Inspection type</b> — <span>{INSP_LABEL[method] || method}</span></div>
-          <div className="dd-sub" style={{ marginTop: 1 }}>
-            {canSwitch ? `Switch to ${INSP_LABEL[otherMethod]} for this property.` : 'The capital partner sets this — it can’t be switched for this file.'}
-          </div>
-        </div>
-        {canSwitch && (
-          <button className="btn btn-sm ghost" style={{ flex: '0 0 auto' }} disabled={writesOff || busy === 'method'}
-            title={writesOff ? 'Sitewire writing is off' : ''}
-            onClick={() => { if (!window.confirm(`Change the inspection type to ${INSP_LABEL[otherMethod]}?`)) return; apply({ inspection_method: otherMethod }, 'method', `Switched to ${INSP_LABEL[otherMethod]}.`); }}>
-            {busy === 'method' ? 'Saving…' : `Change to ${method === 'mobile' ? 'On-site' : 'Virtual'}`}
-          </button>
-        )}
-      </div>
+      {/* When INACTIVE the rest collapses — mirroring Sitewire's own screen (nothing else to control). */}
+      {!active ? (
+        <div className="dd-sub" style={{ marginTop: 8 }}>The other controls appear once the property is active again.</div>
+      ) : (
+        <>
+          {/* DRAWS — Allowed ↔ Blocked (accepting_draws) */}
+          <ControlRow
+            title={drawsAllowed ? 'Draws Allowed' : 'Draws Blocked'}
+            status={drawsAllowed ? 'Borrower can submit draws' : 'Borrower cannot submit draws'}
+            statusTone={drawsAllowed ? 'var(--success,#3f7a4a)' : 'var(--gold,#ae8746)'}
+            btnLabel={drawsAllowed ? 'Block Draws' : 'Allow Draws'}
+            busy={busy === 'draws'} disabled={off || busy === 'draws'}
+            onClick={() => confirmApply(
+              drawsAllowed ? 'Block draws on this property? The borrower won’t be able to submit any new draws.' : 'Allow draws on this property again?',
+              { accepting_draws: !drawsAllowed }, 'draws', drawsAllowed ? 'Blocked draws.' : 'Draws allowed.')}
+          />
 
-      {/* The two controls whose Sitewire field name isn't confirmed yet — honest, not a fake button. */}
-      <div className="dd-sub" style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--hairline,#e7e0d4)' }}>
-        Two more Sitewire switches — <b>Block draws</b> and <b>who reviews the inspection</b> (Sitewire’s GC partner vs. in-house) —
-        are coming here next. We’re confirming exactly how Sitewire names them so the button truly changes Sitewire and doesn’t just look like it did. Their live values are in the details below.
-      </div>
+          {/* INSPECTION — Virtual/mobile ↔ On-site/traditional */}
+          <ControlRow
+            title={method === 'mobile' ? 'Virtual Inspection' : 'Onsite Inspection'}
+            status={method === 'mobile' ? 'Capture using the Sitewire mobile app' : 'Use preferred field inspector'}
+            sub={canSwitch ? null : 'The capital partner sets this — it can’t be switched for this file.'}
+            btnLabel={canSwitch ? (method === 'mobile' ? 'Change to Onsite' : 'Change to Virtual') : null}
+            busy={busy === 'method'} disabled={off || busy === 'method'}
+            onClick={() => confirmApply(`Change the inspection type to ${INSP_LABEL[otherMethod]}?`, { inspection_method: otherMethod }, 'method', `Switched to ${INSP_LABEL[otherMethod]}.`)}
+          />
 
-      {writesOff && <div className="muted small" style={{ marginTop: 6 }}>Sitewire writing is currently off, so these buttons are disabled until it’s turned on.</div>}
+          {/* REVIEW — Sitewire GC review ↔ In-house review (sitewire_review) */}
+          <ControlRow
+            title={sitewireReview ? 'Sitewire Review' : 'In-house Review'}
+            status={sitewireReview ? 'A Sitewire GC partner will review each virtual inspection' : 'No review by Sitewire GC partner'}
+            btnLabel={sitewireReview ? 'Change to In-house' : 'Change to Sitewire'}
+            busy={busy === 'review'} disabled={off || busy === 'review'}
+            onClick={() => confirmApply(
+              sitewireReview ? 'Switch to IN-HOUSE review? A Sitewire GC partner will no longer review each inspection.' : 'Switch back to SITEWIRE review? A Sitewire GC partner will review each inspection.',
+              { sitewire_review: !sitewireReview }, 'review', sitewireReview ? 'Switched to in-house review.' : 'Switched to Sitewire review.')}
+          />
+        </>
+      )}
+
+      {off && <div className="muted small" style={{ marginTop: 6 }}>Sitewire writing is currently off, so these buttons are disabled until it’s turned on.</div>}
       {msg && <div className="dd-sub" style={{ marginTop: 6 }}>{msg}</div>}
 
-      {/* Discovery: the raw live property (reveals the real field names for the two not-yet-wired toggles). */}
+      {/* The full live property, straight from Sitewire — every current setting, for reference. */}
       <details style={{ marginTop: 8 }} open={showRaw} onToggle={(e) => setShowRaw(e.target.open)}>
-        <summary className="small" style={{ cursor: 'pointer', color: 'var(--text-muted)' }}>Advanced — live Sitewire settings for this property</summary>
+        <summary className="small" style={{ cursor: 'pointer', color: 'var(--text-muted)' }}>Advanced — all live Sitewire settings for this property</summary>
         <pre style={{ marginTop: 6, maxHeight: 320, overflow: 'auto', background: 'var(--paper,#f6f3ec)', padding: 10, borderRadius: 6, fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
           {JSON.stringify(prop, null, 2)}
         </pre>

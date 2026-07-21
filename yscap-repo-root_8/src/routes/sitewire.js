@@ -305,16 +305,19 @@ router.get('/files/:id/sitewire-property', requirePermission('manage_draws'), as
   } catch (e) { console.warn('[sitewire] sitewire-property error:', e && e.message); res.status(500).json({ error: 'Couldn’t read the Sitewire property right now — please try again shortly.' }); }
 });
 
-// ---- POST /files/:id/property-settings — flip a CONFIRMED Sitewire property control from the desk ----
-// Owner-directed 2026-07-21: control the process from PILOT. Only the two controls whose Sitewire field name
-// is confirmed are wired — inactive (Active↔Inactive) + inspection_method (Virtual↔On-site). The guarded
-// orchestrator write reads back what it wrote (never a silent 200-that-did-nothing). manage_draws + canSeeFile.
+// ---- POST /files/:id/property-settings — flip a Sitewire property control from the desk ----
+// Owner-directed 2026-07-21: control the process from PILOT. All four controls carry CONFIRMED Sitewire field
+// names — inactive (Active↔Inactive), accepting_draws (Block Draws), sitewire_review (GC↔in-house review),
+// inspection_method (Virtual↔On-site). The guarded orchestrator write reads back what it wrote (never a silent
+// 200-that-did-nothing). manage_draws + canSeeFile.
 router.post('/files/:id/property-settings', requirePermission('manage_draws'), async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
   const b = req.body || {};
   const changes = {};
-  if (Object.prototype.hasOwnProperty.call(b, 'inactive')) changes.inactive = !!b.inactive;
+  for (const f of ['inactive', 'accepting_draws', 'sitewire_review']) {
+    if (Object.prototype.hasOwnProperty.call(b, f)) changes[f] = !!b[f];
+  }
   if (b.inspection_method != null && b.inspection_method !== '') changes.inspection_method = String(b.inspection_method);
   if (Object.keys(changes).length === 0) return res.status(400).json({ error: 'Nothing to change.' });
   try {
