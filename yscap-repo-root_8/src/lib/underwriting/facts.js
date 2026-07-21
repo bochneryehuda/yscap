@@ -22,6 +22,9 @@ function borrowerName(b) {
   return n || null;
 }
 const dateStr = (v) => (v == null ? null : String(v).slice(0, 10));
+// Canonical form for an alphanumeric identifier (a policy number) — upper-case, strip separators —
+// so "POL-123 A" and "pol123a" compare equal. Not PII, so it is shown in full (unlike an EIN/SSN).
+const identKey = (v) => String(v == null ? '' : v).toUpperCase().replace(/[^A-Z0-9]/g, '');
 
 // The canonical facts. `kind` selects the match + display logic; `severity` is the finding
 // severity when this fact disagrees; `file(ctx)` reads the loan-file value (null when the file
@@ -33,6 +36,9 @@ const FACTS = [
   { key: 'entity_name', label: 'Vesting entity', category: 'entity', kind: 'entity', severity: 'fatal', file: (c) => c.vestingName || null },
   { key: 'ein', label: 'Entity EIN', category: 'entity', kind: 'digits', severity: 'warning', file: (c) => c.ein || null },
   { key: 'property_address', label: 'Property address', category: 'collateral', kind: 'address', severity: 'fatal', file: (c) => (c.app ? c.app.property_address : null) },
+  // Insurance policy number — a doc-vs-doc fact (the loan file doesn't store it): the paid invoice
+  // must reference the SAME policy as the binder, so they tie out on this. A warning when they differ.
+  { key: 'policy_number', label: 'Insurance policy number', category: 'collateral', kind: 'ident', severity: 'warning', file: () => null },
   { key: 'purchase_price', label: 'Purchase price', category: 'economics', kind: 'money', severity: 'fatal', file: (c) => (c.app ? c.app.purchase_price : null) },
   { key: 'seller_name', label: 'Seller', category: 'economics', kind: 'nameOrEntity', severity: 'fatal', file: () => null },
   { key: 'underlying_price', label: "Seller's original price", category: 'economics', kind: 'money', severity: 'fatal', file: (c) => (c.app ? c.app.underlying_contract_price : null) },
@@ -56,7 +62,8 @@ const DOC_CLAIMS = {
   bank_statement: (f) => (f.holderIsBusiness ? { entity_name: f.accountHolderName } : { borrower_name: f.accountHolderName }),
   // ---- expanded document types (Phase B) ----
   assignment: (f) => ({ entity_name: f.assigneeName, underlying_price: f.originalPurchasePrice, assignment_fee: f.assignmentFee, property_address: f.propertyAddress, seller_name: f.sellerName ? [f.sellerName] : null }),
-  insurance: (f) => ({ entity_name: f.namedInsured, property_address: f.propertyAddress }),
+  insurance: (f) => ({ entity_name: f.namedInsured, property_address: f.propertyAddress, policy_number: f.policyNumber }),
+  insurance_invoice: (f) => ({ entity_name: f.namedInsured, property_address: f.propertyAddress, policy_number: f.policyNumber }),
   operating_agreement: (f) => ({ entity_name: f.entityLegalName, borrower_name: f.managingMember }),
   ein_letter: (f) => ({ entity_name: f.entityLegalName, ein: f.ein }),
   good_standing: (f) => ({ entity_name: f.entityLegalName }),
@@ -80,7 +87,8 @@ const DOC_CARRIES = {
   appraisal: ['property_address', 'purchase_price', 'seller_name', 'as_is_value', 'arv'],
   bank_statement: ['entity_name', 'borrower_name'],
   assignment: ['entity_name', 'underlying_price', 'assignment_fee', 'property_address', 'seller_name'],
-  insurance: ['entity_name', 'property_address'],
+  insurance: ['entity_name', 'property_address', 'policy_number'],
+  insurance_invoice: ['entity_name', 'property_address', 'policy_number'],
   operating_agreement: ['entity_name', 'borrower_name'],
   ein_letter: ['entity_name', 'ein'],
   good_standing: ['entity_name'],
@@ -116,6 +124,7 @@ function matchScalar(kind, a, b) {
     // Compare identifiers (EIN) on the last 4 digits — the stored document value is PII-masked
     // to ***last4, so only the last 4 are ever available to compare (and to display).
     case 'digits': { const x = digitsOnly(a).slice(-4), y = digitsOnly(b).slice(-4); return x.length === 4 && y.length === 4 ? x === y : null; }
+    case 'ident': { const x = identKey(a), y = identKey(b); return x && y ? x === y : null; }
     case 'name': return namesMatchLoose(a, b);
     case 'entity': return entityMatch(a, b);
     case 'nameOrEntity': {
