@@ -217,8 +217,12 @@ router.get('/:appId', async (req, res, next) => {
       const row = { documentId: d.id, filename: d.filename, conditionCode: d.condition_code || null,
         conditionLabel: d.condition_label || null, docKind: d.doc_kind || null, expectedType, analyzed };
       documentsOnFile.push(row);
-      // Anything present but not yet read (and that maps to a readable type) is the auto-read queue.
-      if (!analyzed && expectedType) autoReadQueue.push(row);
+      // Anything present, not yet read, AND that maps to a type the reader can actually read is the
+      // auto-read queue. The registry.get gate MUST match the /auto-read endpoint's selectAutoReadQueue
+      // (isReadable), or the count here would include a type the reader skips (e.g. a document under
+      // the appraisal-documents condition → 'appraisal', which the appraisal desk owns, not this
+      // reader) and the desk's "read them all" button would never clear a stuck count.
+      if (!analyzed && expectedType && registry.get(expectedType)) autoReadQueue.push(row);
     }
 
     // Data-comparison / tie-out over the file's current extractions + the appraisal.
@@ -472,7 +476,10 @@ async function analyzeOneDocument(app, doc, docType, opts = {}) {
       findings: result.findings || [], reason: result.reason || null,
     };
   } catch (e) {
-    return { ...base, ok: false, error: 'analyze_failed', message: e && e.message };
+    // Keep the ORIGINAL error object (with .code/.status) so the manual endpoint can propagate it to
+    // the global handler unchanged — a DB outage mid-persist must still surface as 503, a 22P02 as
+    // 400, not a bare 500. The auto-read batch ignores `cause` and just records the failure.
+    return { ...base, ok: false, error: 'analyze_failed', message: e && e.message, cause: e };
   }
 }
 
@@ -531,7 +538,7 @@ router.post('/:appId/documents/:documentId/analyze', async (req, res, next) => {
     if (r.error === 'cooldown') return res.status(429).json({ error: `this document was just analyzed — try again in ${r.retryAfterSeconds}s`, retryAfterSeconds: r.retryAfterSeconds });
     if (r.error === 'too_large') return res.status(413).json({ error: `this document is too large to analyze (limit ${Math.round(MAX_ANALYZE_BYTES / (1024 * 1024))} MB)` });
     if (r.error === 'storage_read_failed' || r.error === 'no_stored_file') return res.status(422).json({ error: 'could not read the stored document' });
-    if (r.error === 'analyze_failed') return next(new Error(r.message || 'analyze failed'));
+    if (r.error === 'analyze_failed') return next(r.cause || new Error(r.message || 'analyze failed'));
     res.json({
       ok: r.ok, docType, cached: !!r.cached, extractionId: r.extractionId,
       status: r.status, confidence: r.confidence,
