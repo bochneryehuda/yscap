@@ -222,12 +222,22 @@ assert.strictEqual(Number(res.adopt.find((a) => a.name === 'Exterior of House Ph
 const resFresh = M.resolveCreatesAgainstLive(freshCreates, []);
 assert.strictEqual(resFresh.create.length, freshCreates.length, 'empty live budget → all creates (back-compat)');
 assert.strictEqual(resFresh.adopt.length, 0);
-// A name already DOUBLED on the live budget is ambiguous — park, NEVER create a third.
+// A name already DOUBLED on the live budget: a $0 MEDIA anchor (a photo requirement) BINDS to one
+// un-drawn copy instead of parking (the owner-reported "Exterior of House Photos appears twice"); it
+// never makes a third and never deletes the extra (a harmless $0 photo requirement Sitewire re-seeds).
 const dupedLive = [{ id: 900, name: 'Exterior of House Photos', budgeted_cents: 0 }, { id: 901, name: 'Exterior of House Photos', budgeted_cents: 0 }];
 const resDup = M.resolveCreatesAgainstLive(freshCreates, dupedLive);
-assert.ok(resDup.ambiguous.includes('Exterior of House Photos'), 'a doubled live line is flagged ambiguous, not created');
-assert.ok(!resDup.create.some((c) => c.name === 'Exterior of House Photos') && !resDup.adopt.some((a) => a.name === 'Exterior of House Photos'),
-  'an ambiguous line is neither created nor adopted (never makes a third)');
-ok('G-ADOPT: an existing live line is adopted (not duplicated); a doubled live line parks; empty live = create');
+assert.ok(resDup.adopt.some((a) => a.name === 'Exterior of House Photos' && [900, 901].includes(a.sitewire_job_item_id)),
+  'a doubled $0 MEDIA anchor binds to one un-drawn copy (unblocks the push, no third line)');
+assert.ok(!resDup.ambiguous.includes('Exterior of House Photos'), 'a doubled $0 media anchor no longer parks');
+assert.ok(!resDup.create.some((c) => c.name === 'Exterior of House Photos'), 'still never CREATES a third copy');
+// ...but if EVERY copy is already drawn against, it stays ambiguous (a human must resolve).
+const resDupDrawn = M.resolveCreatesAgainstLive(freshCreates, dupedLive, new Set([900, 901]));
+assert.ok(resDupDrawn.ambiguous.includes('Exterior of House Photos'), 'a doubled media anchor whose copies are ALL drawn still parks');
+// A doubled MONEY line always parks — never bind one automatically.
+const dupedMoney = [{ id: 800, name: 'Roof', budgeted_cents: 1000000 }, { id: 801, name: 'Roof', budgeted_cents: 1000000 }];
+const resDupMoney = M.resolveCreatesAgainstLive(freshCreates, dupedMoney);
+assert.ok(resDupMoney.ambiguous.includes('Roof'), 'a doubled MONEY line always parks (never bound automatically)');
+ok('G-ADOPT: unique live adopted; doubled $0 media binds to one copy; doubled money / all-drawn media parks; empty live = create');
 
 console.log(`\nAll ${n} explosion + total-reconciliation checks passed — the SOW→units→budget total holds in every mode.`);
