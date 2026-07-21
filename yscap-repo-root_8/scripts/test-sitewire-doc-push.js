@@ -170,6 +170,22 @@ const parkCount = async (app) => (await db.query(`SELECT count(*)::int c FROM sy
     ok('10 xlsx fallback generated', g && !g.missing && g.generated === true && g.filename === 'Scope of Work.xlsx');
     await cleanup(app, bor); sow.loadSow = realLoad; sow.buildSowExcel = realBuild; }
 
+  // 10b) APPRAISAL from the CONDITION PDF SLOT (doc_kind NULL) — must be found, same as the importer's kind.
+  { const tid = (await db.query(`SELECT id FROM checklist_templates WHERE code='rtl_cond_appraisaldocs' LIMIT 1`)).rows[0].id;
+    const { app, bor } = await seed({ appraisal: false, xlsx: false, pdf: false }); // no appraisal_pdf row at all
+    const ci = (await db.query(`INSERT INTO checklist_items(application_id,template_id,item_kind,status,scope,label) VALUES($1,$2,'document','received','application','Appraisal documents') RETURNING id`, [app, tid])).rows[0].id;
+    // the appraisal PDF on the condition's PDF slot + the appraisal XML on the XML slot (must pick the PDF, never the XML)
+    await db.query(`INSERT INTO documents(application_id,borrower_id,checklist_item_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label,is_current,visibility,source_type)
+      VALUES($1,$2,$3,'1053_appraisal.pdf','application/pdf',10,'local','ref/appr-pdf','staff',NULL,NULL,'PDF',true,'staff_only','staff_upload')`, [app, bor, ci]);
+    await db.query(`INSERT INTO documents(application_id,borrower_id,checklist_item_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label,is_current,visibility,source_type)
+      VALUES($1,$2,$3,'1053_appraisal.xml','application/xml',10,'local','ref/appr-xml','staff',NULL,NULL,'XML',true,'staff_only','staff_upload')`, [app, bor, ci]);
+    const g = await docPush._internal.gatherAppraisalPdf(app);
+    ok('10b appraisal found via PDF slot', g && !g.missing && g.filename === 'Appraisal.pdf');
+    ok('10b picked the PDF not the XML', g && g.sourceDocId && (await db.query(`SELECT content_type FROM documents WHERE id=$1`, [g.sourceDocId])).rows[0].content_type === 'application/pdf');
+    const st = await docPush.status(app);
+    ok('10b status shows appraisal available', st.slots.find((s) => s.which === 'appraisal_pdf').available === true);
+    await cleanup(app, bor); }
+
   // 11) status() — metadata-only availability (no bytes read), reflects managed + push state
   { storage.read = async () => { throw new Error('status() must NOT read bytes'); }; // prove no byte read
     const { app, bor } = await seed({ pdf: false }); // appraisal + xlsx available, sow_pdf missing

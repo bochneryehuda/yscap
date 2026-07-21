@@ -35,12 +35,25 @@ async function readDoc(row) {
   try { const buf = await storage.read(row.storage_ref); return buf && buf.length ? buf : null; } catch (_) { return null; }
 }
 
-// The appraisal PDF — doc_kind='appraisal_pdf', the current one, and it must actually be a PDF (never the XML).
+// The appraisal PDF lives in EITHER of two legitimate shapes (never the XML):
+//   (1) doc_kind='appraisal_pdf' — created by the MISMO importer when a PDF is embedded/uploaded in the import; OR
+//   (2) a plain PDF uploaded to the appraisal-documents condition's PDF slot (template code
+//       'rtl_cond_appraisaldocs', slot_label like "PDF", doc_kind NULL) — the common case when an officer
+//       just uploads the appraisal PDF to the condition. Matching only (1) wrongly reported "not available"
+//       for a file whose appraisal PDF sits on the condition slot. Prefer (1); exclude the XML slot + rejected.
+const APPRAISAL_PDF_WHERE = `d.application_id=$1 AND d.is_current=true AND COALESCE(d.review_status,'') <> 'rejected'
+    AND ( d.doc_kind='appraisal_pdf'
+       OR ( (d.content_type='application/pdf' OR lower(d.filename) LIKE '%.pdf')
+            AND lower(COALESCE(d.slot_label,'')) NOT LIKE '%xml%'
+            AND d.checklist_item_id IN (
+              SELECT ci.id FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
+               WHERE ci.application_id=$1 AND t.code='rtl_cond_appraisaldocs') ) )`;
+
 async function gatherAppraisalPdf(appId) {
   const row = (await db.query(
-    `SELECT id, filename, content_type, storage_ref FROM documents
-       WHERE application_id=$1 AND is_current=true AND doc_kind='appraisal_pdf'
-       ORDER BY created_at DESC LIMIT 1`, [appId])).rows[0];
+    `SELECT d.id, d.filename, d.content_type, d.storage_ref FROM documents d
+       WHERE ${APPRAISAL_PDF_WHERE}
+       ORDER BY (d.doc_kind='appraisal_pdf') DESC, d.created_at DESC LIMIT 1`, [appId])).rows[0];
   if (!row) return { which: 'appraisal_pdf', missing: 'no_appraisal_pdf' };
   const bytes = await readDoc(row);
   if (!bytes) return { which: 'appraisal_pdf', missing: 'appraisal_pdf_bytes_unreadable' };
@@ -98,10 +111,13 @@ async function slotAvailability(appId) {
   const rows = (await db.query(
     `SELECT doc_kind, content_type, lower(filename) AS fn FROM documents
        WHERE application_id=$1 AND is_current=true
-         AND doc_kind IN ('appraisal_pdf','rehab_budget_export')`, [appId])).rows;
-  const appraisal = rows.some((r) => r.doc_kind === 'appraisal_pdf');
-  const xlsx = rows.some((r) => r.doc_kind === 'rehab_budget_export' && (/spreadsheet/.test(r.content_type || '') || /\.xlsx$/.test(r.fn || '')));
-  const pdf = rows.some((r) => r.doc_kind === 'rehab_budget_export' && ((r.content_type === 'application/pdf') || /\.pdf$/.test(r.fn || '')));
+         AND doc_kind='rehab_budget_export'`, [appId])).rows;
+  // Appraisal PDF uses the SAME two-shape detection as gatherAppraisalPdf (importer kind OR the appraisal-docs
+  // condition PDF slot) so the panel's availability agrees with what actually gets pushed.
+  const appraisal = (await db.query(
+    `SELECT 1 FROM documents d WHERE ${APPRAISAL_PDF_WHERE} LIMIT 1`, [appId])).rowCount > 0;
+  const xlsx = rows.some((r) => /spreadsheet/.test(r.content_type || '') || /\.xlsx$/.test(r.fn || ''));
+  const pdf = rows.some((r) => (r.content_type === 'application/pdf') || /\.pdf$/.test(r.fn || ''));
   let xlsxFallback = false;
   if (!xlsx) { try { const s = await sow.loadSow(appId); xlsxFallback = !!(s && s.state); } catch (_) { xlsxFallback = false; } }
   return { appraisal_pdf: appraisal, sow_xlsx: xlsx || xlsxFallback, sow_pdf: pdf, sow_xlsx_generated: !xlsx && xlsxFallback };
