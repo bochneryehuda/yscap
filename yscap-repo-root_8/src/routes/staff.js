@@ -4025,6 +4025,9 @@ router.post('/applications/:id/assign', async (req, res) => {
         [req.params.id, loanOfficerId, off.rows[0].full_name]);
       if (u.rowCount === 0) return res.status(404).json({ error: 'application not found' });
       const officerChanged = String(cur.rows[0].loan_officer_id || '') !== String(loanOfficerId);
+      // Invalidate the LO-notification-gate's cache for this file so the very
+      // next notification routes to the NEW LO's prefs (not the previous holder's).
+      try { require('../lib/lo-notification-gate').invalidateFile(req.params.id); } catch (_) { /* best-effort */ }
       // Only email the officer on a REAL change — re-saving the assignment panel
       // with the same officer is a no-op and must not re-send "You are the loan
       // officer on a file" every time (round-2 audit N3).

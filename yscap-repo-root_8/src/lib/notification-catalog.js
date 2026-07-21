@@ -306,7 +306,10 @@ function entryForKey(key) {
 // security / account. Belt-and-suspenders against a new call site that fires
 // an esign type before the catalog gets an entry.
 const FORCED_KEYS = new Set(CATALOG.filter((e) => e.forced).map((e) => e.key));
-const FORCED_TYPE_PREFIXES = ['esign_', 'docusign_', 'account_', 'security'];
+// Prefixes for the belt-and-suspenders "type looks like an auth/legal event"
+// check. Bare 'security' / 'account' are matched exactly below (never a bare
+// startsWith('security') that would match a made-up 'security_test_hook').
+const FORCED_TYPE_PREFIXES = ['esign_', 'docusign_', 'account_', 'security_'];
 
 function isForced(key, type) {
   if (key && FORCED_KEYS.has(key)) return true;

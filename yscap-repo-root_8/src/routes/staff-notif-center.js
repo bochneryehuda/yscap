@@ -134,8 +134,17 @@ router.put('/notification-center/rules', async (req, res) => {
   if (!_isValidHHMM(b.quiet_hours_end))   return res.status(400).json({ error: 'quiet_hours_end must be HH:MM' });
   const tz = typeof b.timezone === 'string' && b.timezone ? b.timezone : 'America/New_York';
   const mask = Math.max(0, Math.min(127, parseInt(b.work_days_mask, 10) || 127));
-  const auto = b.auto_send_after_hours == null ? null
-    : Math.max(1, Math.min(24 * 30, parseInt(b.auto_send_after_hours, 10) || 48));
+  // 0 = "off" (drafts wait forever) — must survive the parseInt fallback,
+  // otherwise the UI's "Set to 0 to turn off" is a lie and safety-send keeps
+  // firing at the default 48h.
+  let auto;
+  if (b.auto_send_after_hours == null) auto = null;
+  else {
+    const raw = parseInt(b.auto_send_after_hours, 10);
+    if (!Number.isFinite(raw) || raw < 0) auto = 48;         // garbage → sensible default
+    else if (raw === 0) auto = null;                          // 0 = off
+    else auto = Math.min(24 * 30, raw);
+  }
   const undo = Math.max(0, Math.min(60, parseInt(b.undo_window_seconds, 10) || 8));
   const composeDefault = b.compose_default === 'draft' ? 'draft' : 'send';
   let learnUntil = null;
@@ -212,7 +221,17 @@ router.put('/notification-center/overrides', async (req, res) => {
 router.delete('/notification-center/overrides', async (req, res) => {
   const appId = req.query.applicationId || (req.body && req.body.applicationId);
   const key = req.query.key || (req.body && req.body.key);
-  if (!appId || !key) return res.status(400).json({ error: 'applicationId and key required' });
+  if (!appId) return res.status(400).json({ error: 'applicationId required' });
+  // key='__all__' clears every override on this file in one shot (the "Follow
+  // my defaults" preset). Explicit sentinel — never accept a missing key as
+  // "delete everything" (that would be a footgun for any typo in the client).
+  if (key === '__all__') {
+    const r = await db.query(
+      `DELETE FROM lo_notification_file_overrides WHERE staff_id=$1 AND application_id=$2`,
+      [req.actor.id, appId]);
+    return res.json({ ok: true, cleared: r.rowCount || 0 });
+  }
+  if (!key) return res.status(400).json({ error: 'key required' });
   await db.query(
     `DELETE FROM lo_notification_file_overrides WHERE staff_id=$1 AND application_id=$2 AND notif_key=$3`,
     [req.actor.id, appId, key]);
@@ -328,31 +347,43 @@ router.post('/notification-center/drafts/:id/send', async (req, res) => {
           typeof edits.body === 'string' ? edits.body : null,
           typeof edits.note === 'string' ? edits.note : null]);
   }
-  const opts = { ...(d.opts || {}), _bypassLoGate: true };
+  // ATOMIC CLAIM — flip 'pending' → 'sending' in a single UPDATE. Only one
+  // caller (this request OR the background worker) can win; the other 409s.
+  // This is the same trick the worker's drainScheduledSends uses (db/228).
+  const claim = await db.query(
+    `UPDATE lo_notification_drafts SET status='sending', claimed_at=now()
+      WHERE id=$1 AND status='pending' RETURNING *`, [d.id]);
+  if (!claim.rows[0]) return res.status(409).json({ error: 'This draft is already being sent.' });
+  const claimed = claim.rows[0];
+  const opts = { ...(claimed.opts || {}), _bypassLoGate: true };
   if (typeof edits.title === 'string' && edits.title.trim()) opts.title = edits.title.trim();
-  else if (d.edited_subject) opts.title = d.edited_subject;
+  else if (claimed.edited_subject) opts.title = claimed.edited_subject;
   if (typeof edits.body === 'string') opts.body = edits.body;
-  else if (d.edited_body) opts.body = d.edited_body;
+  else if (claimed.edited_body) opts.body = claimed.edited_body;
   if (typeof edits.note === 'string') opts.note = edits.note;
-  else if (d.edited_note) opts.note = d.edited_note;
-  opts.type = d.notif_type;
-  opts.applicationId = d.application_id;
+  else if (claimed.edited_note) opts.note = claimed.edited_note;
+  opts.type = claimed.notif_type;
+  opts.applicationId = claimed.application_id;
 
   let sentId = null;
   try {
-    if (d.recipient_kind === 'borrower' && d.recipient_id) {
-      sentId = await notify.notifyBorrower(d.recipient_id, opts);
-    } else if (d.recipient_kind === 'staff' && d.recipient_id) {
-      sentId = await notify.notifyStaff(d.recipient_id, opts);
+    if (claimed.recipient_kind === 'borrower' && claimed.recipient_id) {
+      sentId = await notify.notifyBorrower(claimed.recipient_id, opts);
+    } else if (claimed.recipient_kind === 'staff' && claimed.recipient_id) {
+      sentId = await notify.notifyStaff(claimed.recipient_id, opts);
     } else {
+      // Revert the claim — bad row.
+      await db.query(`UPDATE lo_notification_drafts SET status='pending', claimed_at=NULL WHERE id=$1 AND status='sending'`, [d.id]);
       return res.status(400).json({ error: 'Draft is missing a recipient.' });
     }
   } catch (e) {
+    // Revert the claim so the LO / worker can retry.
+    await db.query(`UPDATE lo_notification_drafts SET status='pending', claimed_at=NULL WHERE id=$1 AND status='sending'`, [d.id]);
     return res.status(500).json({ error: 'Could not send: ' + (e.message || 'unknown error') });
   }
   await db.query(
     `UPDATE lo_notification_drafts SET status='sent', sent_at=now(), sent_notification_id=$2
-      WHERE id=$1 AND status='pending'`, [d.id, sentId || null]);
+      WHERE id=$1 AND status='sending'`, [d.id, sentId || null]);
   res.json({ ok: true, notificationId: sentId });
 });
 
@@ -407,17 +438,27 @@ router.post('/notification-center/drafts/bulk', async (req, res) => {
       const d = await _loadPendingDraft(id, req.actor.id);
       if (!d || d.forbidden || d.alreadyResolved) { failed += 1; continue; }
       if (action === 'send') {
-        const opts = { ...(d.opts || {}), _bypassLoGate: true };
-        if (d.edited_subject) opts.title = d.edited_subject;
-        if (d.edited_body) opts.body = d.edited_body;
-        if (d.edited_note) opts.note = d.edited_note;
-        opts.type = d.notif_type;
-        opts.applicationId = d.application_id;
+        const claim = await db.query(
+          `UPDATE lo_notification_drafts SET status='sending', claimed_at=now()
+            WHERE id=$1 AND status='pending' RETURNING *`, [d.id]);
+        if (!claim.rows[0]) { failed += 1; continue; }
+        const c = claim.rows[0];
+        const opts = { ...(c.opts || {}), _bypassLoGate: true };
+        if (c.edited_subject) opts.title = c.edited_subject;
+        if (c.edited_body) opts.body = c.edited_body;
+        if (c.edited_note) opts.note = c.edited_note;
+        opts.type = c.notif_type;
+        opts.applicationId = c.application_id;
         let sentId = null;
-        if (d.recipient_kind === 'borrower' && d.recipient_id) sentId = await notify.notifyBorrower(d.recipient_id, opts);
-        else if (d.recipient_kind === 'staff' && d.recipient_id) sentId = await notify.notifyStaff(d.recipient_id, opts);
+        try {
+          if (c.recipient_kind === 'borrower' && c.recipient_id) sentId = await notify.notifyBorrower(c.recipient_id, opts);
+          else if (c.recipient_kind === 'staff' && c.recipient_id) sentId = await notify.notifyStaff(c.recipient_id, opts);
+        } catch (e) {
+          await db.query(`UPDATE lo_notification_drafts SET status='pending', claimed_at=NULL WHERE id=$1 AND status='sending'`, [d.id]);
+          failed += 1; continue;
+        }
         await db.query(
-          `UPDATE lo_notification_drafts SET status='sent', sent_at=now(), sent_notification_id=$2 WHERE id=$1 AND status='pending'`,
+          `UPDATE lo_notification_drafts SET status='sent', sent_at=now(), sent_notification_id=$2 WHERE id=$1 AND status='sending'`,
           [d.id, sentId || null]);
       } else if (action === 'discard') {
         await db.query(
@@ -431,7 +472,8 @@ router.post('/notification-center/drafts/bulk', async (req, res) => {
           [d.id, until]);
       } else if (action === 'schedule') {
         const when = new Date(b.at);
-        if (Number.isNaN(when.getTime())) { failed += 1; continue; }
+        // Mirror the single /schedule route: no past-times, no NaN dates.
+        if (Number.isNaN(when.getTime()) || when.getTime() <= Date.now() + 30_000) { failed += 1; continue; }
         await db.query(
           `UPDATE lo_notification_drafts SET scheduled_for=$2 WHERE id=$1 AND status='pending'`,
           [d.id, when]);
@@ -457,9 +499,27 @@ router.post('/notification-center/compose', async (req, res) => {
   if (!subject || !body) return res.status(400).json({ error: 'A subject and message are required.' });
   // Verify the LO owns the file.
   const owned = await db.query(
-    `SELECT loan_officer_id FROM applications WHERE id=$1`, [appId]);
+    `SELECT loan_officer_id, borrower_id, co_borrower_id FROM applications WHERE id=$1`, [appId]);
   if (!owned.rows[0] || String(owned.rows[0].loan_officer_id) !== String(req.actor.id)) {
     return res.status(403).json({ error: 'Only the file’s assigned loan officer can compose on it.' });
+  }
+  // IDOR guard: `recipientId` must actually belong to this file. Without this,
+  // any LO could POST an arbitrary borrower/staff UUID and PILOT would fire
+  // a branded email + in-app row to that stranger with the file context on it.
+  const app = owned.rows[0];
+  if (recipientKind === 'borrower') {
+    const validBorrower = [app.borrower_id, app.co_borrower_id].filter(Boolean).map(String);
+    if (!validBorrower.includes(String(recipientId))) {
+      return res.status(403).json({ error: 'That recipient is not on this file.' });
+    }
+  } else {
+    const chk = await db.query(
+      `SELECT 1 FROM application_assignees
+        WHERE application_id=$1 AND staff_id=$2 AND removed_at IS NULL LIMIT 1`,
+      [appId, recipientId]);
+    if (!chk.rows[0]) {
+      return res.status(403).json({ error: 'That team member is not assigned to this file.' });
+    }
   }
   // Which default? The LO can override on the request; else read their rules.
   let effectiveMode = mode;
@@ -514,18 +574,26 @@ router.get('/notification-center/analytics', async (req, res) => {
   // Actual sends: the notifications table (in-app rows). We can't filter these by "on
   // MY files" cheaply from notifications alone — LEFT JOIN applications and match
   // the LO. Includes email delivery + open counts.
-  const sends = await db.query(
-    `SELECT n.type AS notif_type,
-            count(*)::int AS fired,
-            count(*) FILTER (WHERE n.email_status='sent')::int AS emailed,
-            count(*) FILTER (WHERE n.email_status='error')::int AS email_failed,
-            count(*) FILTER (WHERE n.emailed_at IS NOT NULL AND EXISTS
-              (SELECT 1 FROM email_opens eo WHERE eo.notification_id=n.id)
-            )::int AS opened
-       FROM notifications n
-       JOIN applications a ON a.id = n.application_id
-      WHERE a.loan_officer_id=$1 AND n.created_at >= $2 AND n.application_id IS NOT NULL
-      GROUP BY n.type`, [staffId, since]).catch(() => ({ rows: [] }));
+  let sends;
+  let partial = false;
+  try {
+    sends = await db.query(
+      `SELECT n.type AS notif_type,
+              count(*)::int AS fired,
+              count(*) FILTER (WHERE n.email_status='sent')::int AS emailed,
+              count(*) FILTER (WHERE n.email_status='error')::int AS email_failed,
+              count(*) FILTER (WHERE n.emailed_at IS NOT NULL AND EXISTS
+                (SELECT 1 FROM email_opens eo WHERE eo.notification_id=n.id)
+              )::int AS opened
+         FROM notifications n
+         JOIN applications a ON a.id = n.application_id
+        WHERE a.loan_officer_id=$1 AND n.created_at >= $2 AND n.application_id IS NOT NULL
+        GROUP BY n.type`, [staffId, since]);
+  } catch (e) {
+    console.warn('[notif-analytics] send query failed:', e && e.message);
+    sends = { rows: [] };
+    partial = true;
+  }
   // Roll up to catalog keys.
   const byKey = {};
   for (const e of catalog.CATALOG) {
@@ -554,7 +622,7 @@ router.get('/notification-center/analytics', async (req, res) => {
     pending: a.pending + r.pending, sentFromDraft: a.sentFromDraft + r.sentFromDraft,
     discarded: a.discarded + r.discarded,
   }), { fired: 0, emailed: 0, emailFailed: 0, opened: 0, pending: 0, sentFromDraft: 0, discarded: 0 });
-  res.json({ days, since: since.toISOString(), byKey: Object.values(byKey), totals });
+  res.json({ days, since: since.toISOString(), byKey: Object.values(byKey), totals, partial });
 });
 
 module.exports = router;

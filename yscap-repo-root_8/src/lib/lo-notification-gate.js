@@ -108,6 +108,14 @@ function invalidateRules(officerId) {
   rulesCache.delete(String(officerId));
 }
 
+// Drop a file's cached loan-officer pointer. Call this after any /assign so
+// the very next notification for the file routes to the NEW LO's prefs +
+// drafts, not the previous holder's.
+function invalidateFile(appId) {
+  if (!appId) return;
+  officerCache.delete(String(appId));
+}
+
 // Return the ISO weekday + time (HH:MM) for `date` in the given IANA timezone.
 // Uses Intl parts — no third-party TZ library needed. Never throws.
 function _tzParts(tz, date) {
@@ -278,7 +286,7 @@ function _previewBody(opts) {
 }
 
 module.exports = {
-  decide, recordDraft, fileOfficerId, officerRules, invalidateRules,
+  decide, recordDraft, fileOfficerId, officerRules, invalidateRules, invalidateFile,
   // Exported for testing / the scheduler.
   _internal: { _tzParts, _inQuietWindow, _isWorkday, _hmToMin, _computeAutoSendAt },
 };

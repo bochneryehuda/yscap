@@ -2415,12 +2415,13 @@ export default function StaffApplication() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const { role, can, actor: authActor } = useAuth();
   const isAdmin = role === 'admin' || role === 'super_admin';
-  // For the per-file notification override panel — only surfaces when THIS
-  // user is the file's assigned loan officer.
-  const isMyFile = !!(authActor && app && app.loan_officer_id && String(authActor.id) === String(app.loan_officer_id));
   const completer = canComplete(role);   // may CLEAR (sign off) a condition; others only mark it reviewed
   const canDelete = can('delete_files');
   const [app, setApp] = useState(null);
+  // For the per-file notification override panel — only surfaces when THIS
+  // user is the file's assigned loan officer. Must be computed AFTER `app` is
+  // declared (const bindings are in the TDZ until initialised).
+  const isMyFile = !!(authActor && app && app.loan_officer_id && String(authActor.id) === String(app.loan_officer_id));
   // Deep-link to a section: a URL ending in "#sec-<name>" (e.g. the Orders queue's
   // "Open" button → #sec-orders) opens + scrolls to that collapsed section once the
   // file has rendered. Best-effort; a no-op when the fragment names no real section.

@@ -46,10 +46,16 @@ export default function FileNotificationOverrides({ applicationId, isMyFile }) {
     setBusy(true); setErr('');
     try {
       if (id === 'auto') {
-        // Clear all overrides — full defaults.
-        for (const o of (overrides || [])) {
-          await api.loNotifClearOverride(applicationId, o.notif_key);
+        // Clear all overrides — full defaults. Ask once before dropping any
+        // per-key overrides the LO built up; the wildcard-only case is silent.
+        const perKeyCount = (overrides || []).filter((o) => o.notif_key !== '*').length;
+        if (perKeyCount > 0 && !window.confirm(`Clear ${perKeyCount} per-notification override${perKeyCount > 1 ? 's' : ''} on this file? It will use your Notification Center defaults from now on.`)) {
+          setBusy(false);
+          return;
         }
+        // Server-side bulk clear (single round trip) — the __all__ sentinel
+        // removes every row for this (staff, file) pair.
+        await api.loNotifClearOverride(applicationId, '__all__');
       } else if (id === 'vip') {
         await api.loNotifSaveOverride({ applicationId, key: '*', enabled: true, mode: 'automatic', note: 'VIP mode' });
       } else if (id === 'quiet') {

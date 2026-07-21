@@ -278,18 +278,36 @@ function SchedulePicker({ open, onClose, onPick }) {
     const off = d.getTimezoneOffset() * 60000;
     return new Date(d.getTime() - off).toISOString().slice(0, 16);
   });
+  const [err, setErr] = useState('');
+  useEffect(() => {
+    if (!open) return undefined;
+    setErr('');
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
   if (!open) return null;
+  const confirm = () => {
+    const d = new Date(when);
+    if (Number.isNaN(d.getTime())) return setErr('Pick a valid date and time.');
+    if (d.getTime() < Date.now() + 60_000) return setErr('Pick a time at least a minute from now.');
+    onPick(d.toISOString());
+  };
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', display: 'flex',
       alignItems: 'center', justifyContent: 'center', zIndex: 500 }} onClick={onClose}>
-      <div className="panel" onClick={(e) => e.stopPropagation()} style={{ minWidth: 320, background: 'white' }}>
-        <h3 style={{ marginBottom: 8 }}>Schedule to send</h3>
+      <div className="panel" onClick={(e) => e.stopPropagation()}
+        role="dialog" aria-modal="true" aria-labelledby="sched-title"
+        style={{ minWidth: 320, background: 'white' }}>
+        <h3 id="sched-title" style={{ marginBottom: 8 }}>Schedule to send</h3>
         <p className="muted small">Pick when this notification should go out.</p>
         <input type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)}
+          autoFocus
           style={{ padding: '6px 10px', border: '1px solid var(--line)', borderRadius: 4, width: '100%' }} />
+        {err && <div className="notice err" style={{ marginTop: 8 }}>{err}</div>}
         <div className="row" style={{ gap: 8, marginTop: 14, justifyContent: 'flex-end' }}>
           <button className="btn ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-gold" onClick={() => onPick(new Date(when).toISOString())}>Schedule</button>
+          <button className="btn btn-gold" onClick={confirm}>Schedule</button>
         </div>
       </div>
     </div>
@@ -305,22 +323,61 @@ function ComposeModal({ open, onClose, onSent }) {
   const [recipientKind, setRecipientKind] = useState('borrower');
   const [mode, setMode] = useState('send');
   const [files, setFiles] = useState([]);
+  const [team, setTeam] = useState({ loanOfficer: null, processor: null });
+  const [borrower, setBorrower] = useState(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+  const dialogRef = useRef(null);
+  const firstFieldRef = useRef(null);
 
   useEffect(() => {
     if (!open) return;
     setErr(''); setBusy(false); setSubject(''); setBody(''); setRecipientId(''); setAppId(''); setMode('send');
-    api.staffApplications({ mine: 1 }).then((r) => setFiles((r && r.applications) || []))
+    // Endpoint returns a bare array; guard against either shape so a schema
+    // change never leaves the picker empty.
+    api.staffApplications({ mine: 1 })
+      .then((r) => setFiles(Array.isArray(r) ? r : (r && r.applications) || []))
       .catch(() => setFiles([]));
+    setTimeout(() => firstFieldRef.current && firstFieldRef.current.focus(), 30);
   }, [open]);
 
   useEffect(() => {
-    // When file changes, default recipient to the primary borrower.
-    if (!appId) return;
-    const f = files.find((x) => String(x.id) === String(appId));
-    if (f && f.borrower_id) setRecipientId(f.borrower_id);
-  }, [appId, files]);
+    // When file changes: fetch the full detail (borrower_id + team). The list
+    // endpoint doesn't return borrower_id, so the picker relies entirely on
+    // the detail call to know who the borrower is.
+    if (!appId) { setBorrower(null); setTeam({ loanOfficer: null, processor: null }); setRecipientId(''); return; }
+    api.staffApplication(appId).then((detail) => {
+      if (!detail) return;
+      const bName = [detail.first_name, detail.last_name].filter(Boolean).join(' ')
+        || detail.borrower_name || detail.email || 'borrower';
+      if (detail.borrower_id) {
+        setBorrower({ id: detail.borrower_id, name: bName });
+        if (recipientKind === 'borrower') setRecipientId(detail.borrower_id);
+      }
+      const loName = detail.loan_officer_name || detail.loan_officer || null;
+      const prName = detail.processor_name || detail.processor || null;
+      setTeam({
+        loanOfficer: detail.loan_officer_id ? { id: detail.loan_officer_id, name: loName || 'Loan officer' } : null,
+        processor:   detail.processor_id    ? { id: detail.processor_id,    name: prName || 'Processor' } : null,
+      });
+    }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appId]);
+
+  // When switching recipient kind, blank recipient so the LO picks intentionally.
+  useEffect(() => {
+    if (recipientKind === 'borrower' && borrower) setRecipientId(borrower.id);
+    else setRecipientId('');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recipientKind]);
+
+  // Escape closes; focus stays inside the dialog.
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
 
   if (!open) return null;
 
@@ -334,15 +391,18 @@ function ComposeModal({ open, onClose, onSent }) {
     finally { setBusy(false); }
   };
 
+  const staffOptions = [team.loanOfficer, team.processor].filter(Boolean);
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex',
       alignItems: 'center', justifyContent: 'center', zIndex: 500 }} onClick={onClose}>
-      <div className="panel" onClick={(e) => e.stopPropagation()} style={{ minWidth: 520, maxWidth: 620, background: 'white' }}>
-        <h3 style={{ marginBottom: 4 }}>Compose a notification</h3>
+      <div className="panel" onClick={(e) => e.stopPropagation()} ref={dialogRef}
+        role="dialog" aria-modal="true" aria-labelledby="compose-title"
+        style={{ minWidth: 520, maxWidth: 620, background: 'white' }}>
+        <h3 id="compose-title" style={{ marginBottom: 4 }}>Compose a notification</h3>
         <p className="muted small" style={{ marginTop: 0 }}>Write your own message to a borrower on one of your files. Delivered as a PILOT-branded email + in-app notification.</p>
         {err && <div className="notice err">{err}</div>}
-        <label className="muted small">File</label>
-        <select value={appId} onChange={(e) => setAppId(e.target.value)}
+        <label className="muted small" htmlFor="compose-file">File</label>
+        <select id="compose-file" ref={firstFieldRef} value={appId} onChange={(e) => setAppId(e.target.value)}
           style={{ padding: '6px 10px', border: '1px solid var(--line)', borderRadius: 4, width: '100%', marginBottom: 10 }}>
           <option value="">— Pick a file —</option>
           {files.map((f) => (
@@ -360,8 +420,19 @@ function ComposeModal({ open, onClose, onSent }) {
             <option value="borrower">Borrower</option>
             <option value="staff">Team member</option>
           </select>
-          <input value={recipientId} onChange={(e) => setRecipientId(e.target.value)} placeholder="Recipient id"
-            style={{ padding: '6px 10px', border: '1px solid var(--line)', borderRadius: 4, flex: 1 }} />
+          {recipientKind === 'borrower' ? (
+            <div style={{ padding: '6px 10px', border: '1px solid var(--line)', borderRadius: 4, flex: 1,
+              background: 'var(--paper)', color: borrower ? 'var(--ink)' : 'var(--muted)' }}>
+              {borrower ? borrower.name : (appId ? '(no borrower on this file)' : 'Pick a file first')}
+            </div>
+          ) : (
+            <select value={recipientId} onChange={(e) => setRecipientId(e.target.value)}
+              disabled={!staffOptions.length}
+              style={{ padding: '6px 10px', border: '1px solid var(--line)', borderRadius: 4, flex: 1 }}>
+              <option value="">{staffOptions.length ? '— Pick a team member —' : (appId ? 'No team on this file' : 'Pick a file first')}</option>
+              {staffOptions.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+          )}
         </div>
         <label className="muted small">Subject</label>
         <input value={subject} onChange={(e) => setSubject(e.target.value)}
@@ -483,6 +554,7 @@ function DraftsTab({ onCountChange, showToast }) {
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const [q, setQ] = useState('');
+  const [bulkScheduleOpen, setBulkScheduleOpen] = useState(false);
 
   const load = useCallback(async () => {
     setItems(null); setErr(''); setSelectedId(null); setChecked(new Set());
@@ -512,11 +584,11 @@ function DraftsTab({ onCountChange, showToast }) {
     try { await api.loNotifDraftDiscard(draft.id); await load(); } catch (e) { setErr(e.message || 'Discard failed'); } finally { setBusy(false); }
   };
   const handleSnooze = async (draft, minutes) => {
-    setBusy(true);
+    setBusy(true); setErr('');
     try { await api.loNotifDraftSnooze(draft.id, minutes); showToast && showToast('Snoozed.'); await load(); } catch (e) { setErr(e.message || 'Snooze failed'); } finally { setBusy(false); }
   };
   const handleSchedule = async (draft, iso) => {
-    setBusy(true);
+    setBusy(true); setErr('');
     try { await api.loNotifDraftSchedule(draft.id, iso); showToast && showToast('Scheduled.'); await load(); } catch (e) { setErr(e.message || 'Schedule failed'); } finally { setBusy(false); }
   };
 
@@ -556,10 +628,7 @@ function DraftsTab({ onCountChange, showToast }) {
           <button className="btn btn-gold small" disabled={busy} onClick={() => bulk('send')}>Send all</button>
           <button className="btn ghost small" disabled={busy} onClick={() => bulk('snooze', { minutes: 60 })}>Snooze 1h</button>
           <button className="btn ghost small" disabled={busy} onClick={() => bulk('snooze', { minutes: 60 * 24 })}>Snooze 1d</button>
-          <button className="btn ghost small" disabled={busy} onClick={() => {
-            const at = window.prompt('Send at (YYYY-MM-DD HH:MM in your local time):');
-            if (at) bulk('schedule', { at: new Date(at).toISOString() });
-          }}>Schedule…</button>
+          <button className="btn ghost small" disabled={busy} onClick={() => setBulkScheduleOpen(true)}>Schedule…</button>
           <button className="btn ghost small" disabled={busy} onClick={() => bulk('discard')}>Discard all</button>
           <button className="btn ghost small" onClick={clearChecks}>Clear</button>
         </div>
@@ -633,6 +702,8 @@ function DraftsTab({ onCountChange, showToast }) {
           </div>
         </div>
       )}
+      <SchedulePicker open={bulkScheduleOpen} onClose={() => setBulkScheduleOpen(false)}
+        onPick={(iso) => { setBulkScheduleOpen(false); bulk('schedule', { at: iso }); }} />
     </>
   );
 }
@@ -647,13 +718,14 @@ function RulesTab({ showToast }) {
   if (!r) return <div className="panel muted">Loading…</div>;
 
   const save = async (patch) => {
+    const prev = r;
     const next = { ...r, ...patch };
     setR(next);
-    setSaving(true);
+    setSaving(true); setErr('');
     try {
       await api.loNotifRulesPut(next);
       showToast && showToast('Saved.');
-    } catch (e) { setErr(e.message || 'Save failed'); }
+    } catch (e) { setR(prev); setErr(e.message || 'Save failed'); }
     finally { setSaving(false); }
   };
   const startLearning = async () => {
