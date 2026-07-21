@@ -202,8 +202,13 @@ async function submitItem(client, {
 // PICK UP — a recipient starts working an item (open → in_progress).
 async function pickItem(client, itemId, actorId) {
   const r = await client.query(
-    `UPDATE workflow_items SET status='in_progress', picked_up_at=COALESCE(picked_up_at, now()), updated_at=now()
-      WHERE id=$1 AND status='open' RETURNING *`, [itemId]);
+    // An unassigned ROLE item (to_staff_id IS NULL) is CLAIMED by whoever picks it
+    // up, so it leaves everyone else's role inbox; an already-assigned item keeps
+    // its owner (COALESCE preserves it).
+    `UPDATE workflow_items
+        SET status='in_progress', to_staff_id=COALESCE(to_staff_id, $2),
+            picked_up_at=COALESCE(picked_up_at, now()), updated_at=now()
+      WHERE id=$1 AND status='open' RETURNING *`, [itemId, actorId || null]);
   const item = r.rows[0];
   if (item) {
     await client.query(
@@ -289,7 +294,14 @@ async function listQueue(staffId, { tab = 'next', sort = 'received', type = null
        JOIN applications a ON a.id = w.application_id
        JOIN borrowers b ON b.id = a.borrower_id
        LEFT JOIN staff_users fr ON fr.id = w.from_staff_id
-      WHERE w.to_staff_id = $1
+      WHERE (w.to_staff_id = $1
+             -- Role INBOX: an UNASSIGNED hand-off addressed to my ROLE (nobody
+             -- picked it yet) shows for everyone in that role — this is how an
+             -- automated escalation to super_admin lands in every super-admin's
+             -- workflow (owner-directed 2026-07-21). An item WITH a to_staff_id
+             -- stays scoped to that person (the ` + '`' + `to_staff_id IS NULL` + '`' + ` guard),
+             -- so the personal-queue scoping is unchanged.
+             OR (w.to_staff_id IS NULL AND w.to_role = (SELECT role FROM staff_users WHERE id = $1)))
         AND w.status IN ('open','in_progress')
         AND a.deleted_at IS NULL
         ${typeClause}
@@ -319,12 +331,16 @@ async function queueCounts(staffId, client = db) {
         count(*)                                       AS total
        FROM workflow_items w
        JOIN applications a ON a.id = w.application_id
-      WHERE w.to_staff_id = $1 AND w.status IN ('open','in_progress') AND a.deleted_at IS NULL`, [staffId]);
+      WHERE (w.to_staff_id = $1
+             OR (w.to_staff_id IS NULL AND w.to_role = (SELECT role FROM staff_users WHERE id = $1)))
+        AND w.status IN ('open','in_progress') AND a.deleted_at IS NULL`, [staffId]);
   const byType = await client.query(
     `SELECT submission_type, count(*) AS n
        FROM workflow_items w
        JOIN applications a ON a.id = w.application_id
-      WHERE w.to_staff_id = $1 AND w.status IN ('open','in_progress') AND a.deleted_at IS NULL
+      WHERE (w.to_staff_id = $1
+             OR (w.to_staff_id IS NULL AND w.to_role = (SELECT role FROM staff_users WHERE id = $1)))
+        AND w.status IN ('open','in_progress') AND a.deleted_at IS NULL
       GROUP BY submission_type`, [staffId]);
   const counts = { open: Number(r.rows[0].open), inProgress: Number(r.rows[0].in_progress), total: Number(r.rows[0].total), byType: {} };
   for (const row of byType.rows) counts.byType[row.submission_type] = Number(row.n);

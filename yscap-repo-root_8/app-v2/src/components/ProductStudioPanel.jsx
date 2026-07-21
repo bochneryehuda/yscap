@@ -35,7 +35,7 @@ function shortReason(reasons, status) {
   if (m.length > 96) m = m.slice(0, 94).replace(/[\s,;:]+\S*$/, '') + '…';
   return m;
 }
-const statusWord = (st) => (st === 'MANUAL' ? 'manual review' : st === 'INELIGIBLE' ? 'not eligible' : String(st || '').toLowerCase());
+const statusWord = (st) => (st === 'MANUAL' ? 'manual-review exception' : st === 'INELIGIBLE' ? 'not eligible' : String(st || '').toLowerCase());
 
 function addrLine(a) {
   if (!a) return '';
@@ -271,6 +271,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   // manual registration or the admin default; required only when the scenario is
   // actually manual.
   const [assetMonths, setAssetMonths] = useState('');
+  const [exceptionInfo, setExceptionInfo] = useState(null);   // server exception_required payload (MANUAL scenario)
   const [adminKey, setAdminKey] = useState('');   // set after a correct admin-mode password (borrower)
   const [adminOpen, setAdminOpen] = useState(false); // is the admin zone VISIBLE right now
   const [savedStudio, setSavedStudio] = useState(undefined);   // undefined = still loading, null = none saved
@@ -567,7 +568,14 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   const canRegister = !!(snap && snap.ready && snap.program && d && d.status !== 'INELIGIBLE' && d.totalLoan > 0);
 
   const gate = useSubmitGate();
-  async function register() {
+  // opts.submitException — the user explicitly submits a manual-review EXCEPTION
+  // for a scenario the engine flags MANUAL (below the minimum, over the maximum,
+  // or any other guideline exception). Without it, the server BLOCKS the register
+  // (422 exception_required) and the studio surfaces the "Submit exception
+  // request" action. An exception registers as pending and goes to a super-admin;
+  // the borrower is not sent terms unless it's approved (owner-directed 2026-07-21).
+  async function register(opts = {}) {
+    const submitException = !!opts.submitException;
     const s = studioRef.current && studioRef.current.snapshot();
     if (!s) { setErr('The Term Sheet Studio is still loading.'); return; }
     if (!s.ready) { setErr('Complete the required pricing fields first: ' + s.missing.join(', ')); return; }
@@ -602,9 +610,16 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       // from — the server refuses (409) if the file's economics moved since,
       // so a stale sheet can never write old numbers back onto the file (#148).
       const econVersion = data && data.econVersion;
-      if (isStaff) await api.staffRegisterProduct(appId, s.program, overrides, econVersion, manual ? months : undefined);
-      else await api.borrowerRegisterProduct(appId, s.program, overrides, adminKey || undefined, econVersion);
-      let note = 'Product registered — the loan file now carries these terms, the liquidity requirement and the term sheet.';
+      const resp = isStaff
+        ? await api.staffRegisterProduct(appId, s.program, overrides, econVersion, manual ? months : undefined, submitException)
+        : await api.borrowerRegisterProduct(appId, s.program, overrides, adminKey || undefined, econVersion, submitException);
+      setExceptionInfo(null);
+      const pendingApproval = !!(resp && resp.pendingApproval);
+      let note = pendingApproval
+        ? (isStaff
+            ? 'Exception request submitted — it’s waiting for super-admin approval in the Escalations box. The borrower is NOT sent terms until it’s approved.'
+            : 'Exception request submitted — your loan team will review it. You won’t receive terms unless it’s approved.')
+        : 'Product registered — the loan file now carries these terms, the liquidity requirement and the term sheet.';
       if (pdf && pdf.blob) {
         try {
           const dataBase64 = await blobToBase64(pdf.blob);
@@ -634,6 +649,12 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       } else if (e.status === 422 && e.data && e.data.code === 'manual_asset_months_required') {
         if (e.data.suggestedAssetMonths != null && !assetMonths) setAssetMonths(String(e.data.suggestedAssetMonths));
         setErr(e.data.error || 'This is a manual product — enter how many months of assets/liquidity this file must show, then register.');
+      } else if (e.status === 422 && e.data && e.data.code === 'exception_required') {
+        // Not eligible as-is — the engine flagged it MANUAL (below the minimum,
+        // over the maximum, or another guideline exception). Surface WHY and offer
+        // the "Submit exception request" action (registers as pending → super-admin).
+        setExceptionInfo(e.data);
+        setErr(e.data.message || 'This scenario isn’t eligible as-is — it needs a manual-review exception. Submit an exception request below.');
       } else {
         const detail = e.data && e.data.reasons ? e.data.reasons.map((r) => r.msg).join(' ') : (e.message || 'Could not register');
         setErr(detail);
@@ -650,18 +671,28 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   // "does nothing" (owner-directed 2026-07-12: "it holds you back from
   // registering the product"). The Register button is always clickable (only
   // disabled while busy) so a click also surfaces the specific reason.
+  // Is the LIVE scenario a manual-review EXCEPTION (the engine flagged it MANUAL —
+  // below the minimum, over the maximum, or another guideline exception)? Such a
+  // scenario is NOT eligible as-is: it can't be plain-registered, only submitted as
+  // an exception for super-admin approval (owner-directed 2026-07-21).
+  const scenarioManual = !!(d && d.status === 'MANUAL' && d.totalLoan > 0);
   const blockReason = busy ? ''
     : !snap ? 'The Term Sheet Studio is still loading — give it a moment, then register.'
     : !snap.ready ? 'To register, add the required pricing fields: ' + ((snap.missing && snap.missing.join(', ')) || 'see the highlighted fields in the studio') + '.'
     : !snap.program ? 'Choose a product — tap the Standard or Gold Standard card in the studio.'
     : (d && d.status === 'INELIGIBLE') ? "This scenario isn't eligible as entered — adjust it in the studio, or contact your loan team for a manual review."
     : (d && !(d.totalLoan > 0)) ? "This scenario didn't size a loan yet — check the purchase price, ARV / as-is value and rehab budget in the studio."
+    : scenarioManual ? `This scenario isn’t eligible as-is on the ${snap.program === 'gold' ? 'Gold Standard' : 'Standard'} program — it needs a manual-review exception. Submit an exception request${isStaff ? ' — a super-admin reviews it and the borrower isn’t sent terms unless it’s approved.' : ' and your loan team will review it.'}`
     : '';
 
   // Is the LIVE studio scenario a manual product (LTV/LTC/ARV override)? Only
   // admin staff can enter those knobs, so only they ever see the manual UI.
   let manualLive = false;
   try { manualLive = staffAdmin && snap && overridesAreManual(overridesFromSnapshot(snap, 'staff')); } catch (_) { manualLive = false; }
+  // A plain MANUAL scenario (NOT a manual LTV/LTC/ARV product — that has its own
+  // asset-months flow) registers via the "Submit exception request" action, which
+  // opens a super-admin escalation and withholds borrower terms until approved.
+  const submitExceptionMode = scenarioManual && !manualLive;
   const esc = data && data.manualEscalation;
   const escPending = esc && esc.status === 'pending';
 
@@ -689,16 +720,18 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
             : 'A pricing input changed since this product was registered — re-register so the structure and loan amount match the new numbers.'}
         </div>
       )}
-      {/* Manual product escalation state — a registered manual file waits for a
-          super-admin approval (owner-directed 2026-07-20). */}
-      {cur && cur.program === 'manual' && esc && (
+      {/* Escalation state — a registered file that needs super-admin approval
+          (a Manual Program OR any Standard/Gold manual-review exception — below the
+          minimum, over the maximum, etc.). The borrower is NOT sent terms until it's
+          approved (owner-directed 2026-07-20 / 2026-07-21). */}
+      {cur && esc && (
         <div className={`notice ${escPending ? 'warn' : esc.status === 'approved' ? 'ok' : 'err'}`} style={{ marginTop: 10 }}>
-          <strong>Manual Program.</strong>{' '}
+          <strong>{cur.program === 'manual' ? 'Manual Program.' : 'Manual-review exception.'}</strong>{' '}
           {escPending
-            ? `This product is registered but waiting for super-admin approval in the Escalations box${esc.asset_months ? ` (${esc.asset_months} month${esc.asset_months === 1 ? '' : 's'} of liquidity required)` : ''}.`
+            ? `Registered but NOT confirmed — waiting for super-admin approval in the Escalations box${esc.asset_months ? ` (${esc.asset_months} month${esc.asset_months === 1 ? '' : 's'} of liquidity required)` : ''}. The borrower isn’t sent terms until it’s approved.`
             : esc.status === 'approved'
               ? `Approved by a super-admin${esc.asset_months ? ` · ${esc.asset_months} month${esc.asset_months === 1 ? '' : 's'} of liquidity required` : ''}.`
-              : `Declined by a super-admin${esc.decision_note ? ` — ${esc.decision_note}` : ''}. Re-register the product.`}
+              : `Declined by a super-admin${esc.decision_note ? ` — ${esc.decision_note}` : ''}. Adjust the scenario and re-register, or re-submit the exception.`}
         </div>
       )}
       {/* Manual product — the registrant must state months of liquidity before
@@ -757,8 +790,11 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
               <span className="muted small">Autosaves as you work — leaving saves your scenario to the file too.</span>
             </div>
             {cur && <span className="ts-badge ok" style={{ marginRight: 4 }}>Registered · {money(cur.total_loan)} @ {pct(cur.note_rate)}</span>}
-            <button className="btn primary toolsheet-done" disabled={busy} onClick={register}>
-              {busy ? 'Registering…' : cur ? 'Re-register this product' : 'Register this product'}
+            <button className="btn primary toolsheet-done" disabled={busy}
+              onClick={() => register((submitExceptionMode || exceptionInfo) ? { submitException: true } : {})}>
+              {busy ? (submitExceptionMode ? 'Submitting…' : 'Registering…')
+                : submitExceptionMode ? 'Submit exception request'
+                : cur ? 'Re-register this product' : 'Register this product'}
             </button>
           </header>
           {(err || msg || blockReason) && (
@@ -791,9 +827,23 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
                   </div>
                 </div>
               )}
+              {(submitExceptionMode || exceptionInfo) && (
+                <div className="notice warn" style={{ margin: '10px 0' }}>
+                  <strong>Not eligible as-is — manual-review exception.</strong>{' '}
+                  {(exceptionInfo && exceptionInfo.message) || blockReason || 'This scenario needs a manual-review exception.'}
+                  {exceptionInfo && Array.isArray(exceptionInfo.manualReasons) && exceptionInfo.manualReasons.length > 0 && (
+                    <ul style={{ margin: '6px 0 0 18px' }}>
+                      {exceptionInfo.manualReasons.map((m, i) => <li key={i}>{m}</li>)}
+                    </ul>
+                  )}
+                </div>
+              )}
               <div className="toolsheet-actions">
-                <button className="btn primary" disabled={busy} onClick={register}>
-                  {busy ? 'Registering…' : cur ? 'Re-register this product' : 'Register this product'}
+                <button className="btn primary" disabled={busy}
+                  onClick={() => register((submitExceptionMode || exceptionInfo) ? { submitException: true } : {})}>
+                  {busy ? (submitExceptionMode ? 'Submitting…' : 'Registering…')
+                    : submitExceptionMode ? 'Submit exception request'
+                    : cur ? 'Re-register this product' : 'Register this product'}
                 </button>
                 <button className="btn ghost" onClick={closeStudio}>Save &amp; exit</button>
                 {/* Borrower-side "admin pricing" was removed (S1-04): the server no

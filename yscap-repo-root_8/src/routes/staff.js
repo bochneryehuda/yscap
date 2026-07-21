@@ -1725,6 +1725,35 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const total = quote.sizing ? quote.sizing.totalLoan : 0;
     if (!(total > 0)) return refuse(422, { error: 'no loan sized', quote }, 'no_loan_sized', { program });
 
+    // Owner-directed 2026-07-21: a MANUAL result is NOT eligible as-is. Every
+    // manual-review scenario — below the $100,000 minimum, over the program
+    // maximum, a FICO waiver, a city/exit/heavy-budget/term exception, anything the
+    // frozen engine flags MANUAL — is a manual-review EXCEPTION that must be (1)
+    // explicitly SUBMITTED as an exception request and (2) APPROVED by a super-admin
+    // before any terms are confirmed. So a plain register of a MANUAL scenario is
+    // BLOCKED here (the studio then offers "Submit exception request"); a Manual
+    // Program (structural LTV/LTC/ARV override) is itself a deliberate exception and
+    // is not blocked — it always escalates below.
+    const submitException = !!b.submitException;
+    const manualReasons = (quote.reasons || [])
+      .filter((r) => r && r.level === 'MANUAL').map((r) => r.msg).filter(Boolean);
+    if (quote.status === 'MANUAL' && !isManual && !submitException) {
+      return refuse(422, {
+        error: 'exception_required',
+        code: 'exception_required',
+        message: `This scenario isn’t eligible as-is on the ${pricing.PROGRAM_LABEL[program]}. It needs a manual-review exception: ${manualReasons.join('; ') || 'a guideline exception'}. Submit an exception request — a super-admin reviews it, and the borrower is not sent terms unless it’s approved.`,
+        reasons: quote.reasons, quote,
+        exceptionRequired: true, manualReasons,
+      }, 'exception_required', { program, manualReasons });
+    }
+
+    // A registration that reaches here as MANUAL (exception submitted) OR a Manual
+    // Program must go through the super-admin escalation box and must NEVER confirm
+    // terms to the borrower until approved. A clean ELIGIBLE Standard/Gold
+    // registration is unaffected (confirms immediately, as before). Shared
+    // definition in manual-program.js.
+    const needsEscalation = manualProgram.needsSuperAdminApproval({ program, status: quote.status });
+
     // The superseded terms, captured before the new row lands — the audit trail
     // (and Activity feed) shows exactly what a reprice changed.
     const prevQ = await db.query(
@@ -1743,30 +1772,36 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       });
       regId = reg.id;
       economicsChanged = reg.economicsChanged;
-      // Manual product → open a super-admin escalation in the same transaction.
-      // The file registers now, but the product stays "pending super-admin
-      // approval" until the escalation is decided (db/207). Superseding any prior
-      // pending row is handled inside openEscalation.
-      if (isManual) {
-        // Escalation is REQUIRED for a manual product — if it can't open, the
-        // throw rolls back the whole registration (no un-escalated manual file).
+      // Needs manual review → open a super-admin escalation in the same
+      // transaction. The file registers now, but the product stays "pending
+      // super-admin approval" until the escalation is decided (db/207), and the
+      // borrower is NOT sent confirmed terms until then. Superseding any prior
+      // pending row is handled inside openEscalation. Covers both a Manual Program
+      // (structural override) AND a Standard/Gold registration the engine flagged
+      // MANUAL (below minimum, over maximum, or any other manual-review reason).
+      if (needsEscalation) {
+        // Escalation is REQUIRED — if it can't open, the throw rolls back the
+        // whole registration (never an un-escalated manual-review file).
         await manualProgram.openEscalation(client, {
           appId, registrationId: regId, assetMonths,
           overrides,
           summary: {
-            program: 'manual', productLabel: quote.productLabel || null,
+            kind: isManual ? 'manual_product' : 'manual_review',
+            program, productLabel: quote.productLabel || null,
+            status: quote.status,
             totalLoan: total, noteRate: quote.noteRate,
             acqLtvPct: quote.sizing ? quote.sizing.acqLtvPct : null,
             arvPct: quote.sizing ? quote.sizing.arvPct : null,
             ltcPct: quote.sizing ? quote.sizing.ltcPct : null,
             assetMonths,
+            manualReasons,
           },
           requestedBy: req.actor.id,
         });
       } else {
-        // Re-registered as a NON-manual product: close any stale pending manual
-        // escalation so the super-admin box doesn't keep showing an approval for
-        // a file that is no longer a manual product.
+        // Re-registered as a clean, auto-eligible product: close any stale pending
+        // escalation so the super-admin box doesn't keep showing an approval for a
+        // file that no longer needs one.
         await manualProgram.closePendingForApp(client, appId);
       }
       // #101: STICK an explicit per-file markup override to the file so it re-applies
@@ -1795,26 +1830,47 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         previous: prev ? { program: prev.program, totalLoan: Number(prev.total_loan), noteRate: Number(prev.note_rate), productLabel: prev.product_label } : undefined,
         isManual, assetMonths: assetMonths != null ? assetMonths : undefined });
 
-    // Manual product → tell the admins/super-admins it's waiting in the escalation
-    // box (they alone approve it). Audited separately so the escalation is
-    // diagnosable, and the team notification above already fired for the register.
-    if (isManual) {
-      try { await audit(req, 'manual_program_escalated', 'application', appId, { assetMonths, totalLoan: total, noteRate: quote.noteRate }); } catch (_) {}
+    // Needs manual review → tell the admins/super-admins it's waiting in the
+    // escalation box (they alone approve it). Audited separately so the escalation
+    // is diagnosable, and the team notification above already fired for the
+    // register. Covers a Manual Program AND a Standard/Gold MANUAL registration.
+    if (needsEscalation) {
+      try { await audit(req, 'manual_program_escalated', 'application', appId, { kind: isManual ? 'manual_product' : 'manual_review', status: quote.status, assetMonths, totalLoan: total, noteRate: quote.noteRate, manualReasons }); } catch (_) {}
       try {
         const dollars = '$' + Math.round(total).toLocaleString('en-US');
+        const productDesc = isManual ? 'Manual Program (custom LTV/LTC/ARV)'
+          : `${pricing.PROGRAM_LABEL[program]} — manual review`;
         const ectx = await notify.fileContext(appId, [
-          { label: 'Requested product', value: 'Manual Program (custom LTV/LTC/ARV)' },
+          { label: 'Requested product', value: productDesc },
           { label: 'Loan amount', value: dollars },
-          { label: 'Liquidity months stated', value: `${assetMonths} month${assetMonths === 1 ? '' : 's'}` },
-        ]);
+          isManual ? { label: 'Liquidity months stated', value: `${assetMonths} month${assetMonths === 1 ? '' : 's'}` } : null,
+          manualReasons.length ? { label: 'Why manual review', value: manualReasons.join(' · ') } : null,
+        ].filter(Boolean));
+        const why = isManual
+          ? `A Manual Program (custom LTV/LTC/ARV) was registered on ${ectx ? ectx.label : 'a file'} and is waiting for super-admin approval in the Escalations box. Loan amount ${dollars} · ${assetMonths} month${assetMonths === 1 ? '' : 's'} of liquidity required.`
+          : `A ${pricing.PROGRAM_LABEL[program]} registration on ${ectx ? ectx.label : 'a file'} needs manual review (${manualReasons.join('; ') || 'guideline exception'}) and is waiting for super-admin approval in the Escalations box. The borrower is NOT sent terms until it's approved. Loan amount ${dollars}.`;
         await notify.notifyAdmins({
           type: 'manual_escalation',
-          title: 'Manual product needs approval',
-          body: `A Manual Program (custom LTV/LTC/ARV) was registered on ${ectx ? ectx.label : 'a file'} and is waiting for super-admin approval in the Escalations box. Loan amount ${dollars} · ${assetMonths} month${assetMonths === 1 ? '' : 's'} of liquidity required.`,
+          title: isManual ? 'Manual product needs approval' : 'Registration needs super-admin approval',
+          body: why,
           meta: (ectx && ectx.meta) || undefined, applicationId: appId,
           link: '/internal/escalations', ctaLabel: 'Open the Escalations box',
         });
       } catch (_) { /* notification is best-effort */ }
+      // …and raise it DIRECTLY into the super-admin Workflow (with the file link,
+      // the reason, and a pointer to the Escalations box). Best-effort.
+      try {
+        const dollars = '$' + Math.round(total).toLocaleString('en-US');
+        const wfNote = (isManual
+          ? `Manual Program (custom LTV/LTC/ARV) — ${dollars}.`
+          : `${pricing.PROGRAM_LABEL[program]} — manual-review exception: ${manualReasons.join('; ') || 'guideline exception'}. ${dollars}.`)
+          + ' Review the exception and approve/decline it in the Escalations box.';
+        await workflowAuto.onEscalationOpened(appId, { fromStaffId: req.actor.id, note: wfNote });
+      } catch (_) { /* best-effort */ }
+    } else {
+      // Clean, auto-eligible (re-)registration → clear any lingering escalation
+      // hand-off from the super-admin Workflow.
+      workflowAuto.closeEscalationWorkflow(appId, 'Re-registered as eligible').catch(() => {});
     }
 
     // Registering (or RE-registering) the product REOPENS the "Products & pricing"
@@ -1875,28 +1931,20 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       // Borrower-safe copy only (program label + the borrower's own deal numbers);
       // type 'term_sheet' is in the borrower MAJOR-email allowlist (#88), and the
       // subject line auto-carries the file (loan # · property) via notify.js.
-      // Only send the borrower their "terms are ready" email when a headline
-      // number actually changed (owner-directed 2026-07-20): an internal
-      // re-register with the SAME loan amount / rate / cash-to-close / term /
-      // program must not nudge the borrower again. The team's own notice above
-      // still fires so staff always see the (re-)registration.
-      if (economicsChanged) try {
-        let officer = null;
-        if (row.loan_officer_id) {
-          const o = await db.query(`SELECT full_name, title, email, phone, cell, nmls FROM staff_users WHERE id=$1`, [row.loan_officer_id]);
-          if (o.rows[0]) officer = { name: o.rows[0].full_name, title: o.rows[0].title, email: o.rows[0].email, phone: o.rows[0].cell || o.rows[0].phone, nmls: o.rows[0].nmls };
-        }
-        await notify.notifyAppBorrowers(appId, {
-          ...require('../lib/product-registration').borrowerTermsEmail({ ctx, quote, total, termMonths: inputs && inputs.term, officer }),
-          applicationId: appId,
-          link: `/app/${appId}`,
-          from: officer ? require('../lib/email').fromWithName(officer.name) : null,
-          replyTo: officer ? officer.email : null,
-        });
-      } catch (_) { /* borrower terms email is best-effort */ }
+      // Send the borrower their "terms are ready" email ONLY when (a) a headline
+      // number actually changed (owner-directed 2026-07-20 — an internal
+      // re-register with the SAME numbers must not nudge them again) AND (b) the
+      // registration does NOT need super-admin approval (owner-directed
+      // 2026-07-21 — a manual-review / manual-program registration is confirmed to
+      // the borrower ONLY after a super-admin approves the escalation; see
+      // admin-manual-programs.js). The team's own notice above always fires.
+      if (economicsChanged && !needsEscalation) {
+        try { await require('../lib/terms-notify').sendBorrowerTerms(appId, { quote, total, termMonths: inputs && inputs.term }); }
+        catch (_) { /* borrower terms email is best-effort */ }
+      }
     } catch (_) { /* notification is best-effort */ }
 
-    res.status(201).json({ ok: true, registrationId: regId, quote });
+    res.status(201).json({ ok: true, registrationId: regId, quote, pendingApproval: needsEscalation });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 

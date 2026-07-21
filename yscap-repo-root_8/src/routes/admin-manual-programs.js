@@ -83,12 +83,35 @@ router.post('/escalations/:id/decide', requireRole('super_admin'), async (req, r
       ]);
       await notify.notifyAppStaff(row.application_id, {
         type: 'manual_escalation_decided',
-        title: decision === 'approved' ? 'Manual product approved' : 'Manual product declined',
-        body: `The Manual Program on ${ctx ? ctx.label : 'the file'} was ${decision === 'approved' ? 'approved' : 'declined'} by a super-admin${note ? ` — ${String(note).slice(0, 200)}` : ''}.`,
+        title: decision === 'approved' ? 'Exception approved' : 'Exception declined',
+        body: `The manual-review exception on ${ctx ? ctx.label : 'the file'} was ${decision === 'approved' ? 'approved' : 'declined'} by a super-admin${note ? ` — ${String(note).slice(0, 200)}` : ''}.`,
         meta: (ctx && ctx.meta) || undefined, applicationId: row.application_id,
         link: `/internal/app/${row.application_id}`, ctaLabel: 'Open the loan file',
       });
     } catch (_) { /* best-effort */ }
+
+    // On APPROVAL the terms are CONFIRMED — now (and only now) send the borrower
+    // their "your loan terms are ready" email, which was withheld at registration
+    // because the file needed super-admin sign-off (owner-directed 2026-07-21). A
+    // decline sends the borrower nothing. Best-effort; never breaks the decision.
+    if (decision === 'approved') {
+      try {
+        const rq = await db.query(
+          `SELECT quote, inputs, total_loan FROM product_registrations
+            WHERE id=$1 AND is_current`, [row.registration_id]);
+        const reg = rq.rows[0];
+        if (reg) {
+          const quote = typeof reg.quote === 'string' ? JSON.parse(reg.quote) : reg.quote;
+          const inputs = typeof reg.inputs === 'string' ? JSON.parse(reg.inputs) : (reg.inputs || {});
+          await require('../lib/terms-notify').sendBorrowerTerms(row.application_id, {
+            quote, total: Number(reg.total_loan), termMonths: inputs && inputs.term,
+          });
+        }
+      } catch (_) { /* borrower terms email is best-effort */ }
+    }
+    // Take the escalation hand-off off the super-admin Workflow now that it's
+    // decided (best-effort).
+    try { await require('../lib/workflow-automation').closeEscalationWorkflow(row.application_id, decision === 'approved' ? 'Approved' : 'Declined'); } catch (_) {}
     res.json({ ok: true, escalation: row });
   } catch (e) { res.status(500).json({ error: 'could not record the decision' }); }
 });

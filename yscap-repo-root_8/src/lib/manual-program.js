@@ -60,6 +60,25 @@ function isManualProduct(overrides) {
 }
 
 /**
+ * Does a registration require super-admin escalation before its terms may be
+ * CONFIRMED to the borrower? (owner-directed 2026-07-21.)
+ *
+ * TRUE for:
+ *   • every Manual Program (a structural LTV/LTC/ARV override — program 'manual'),
+ *     which is manual by definition and has no min/max but still must be approved; and
+ *   • ANY Standard/Gold registration the frozen engine returns as MANUAL — i.e.
+ *     below the $100,000 program minimum, over the program maximum, or any other
+ *     manual-review reason the guideline engine raises.
+ *
+ * A clean ELIGIBLE Standard/Gold registration needs no approval (it confirms to
+ * the borrower immediately, as before). Centralized here so both register routes
+ * and any future caller share ONE definition of "needs super-admin sign-off".
+ */
+function needsSuperAdminApproval({ program, status } = {}) {
+  return program === 'manual' || status === 'MANUAL';
+}
+
+/**
  * The program a registration should be recorded under. A structural override
  * ALWAYS resolves to 'manual', regardless of which card (Standard/Gold) the
  * studio was on — you can't register a structural override under Standard/Gold.
@@ -242,7 +261,7 @@ async function decideEscalation(id, decision, staffId, note, client = db) {
 }
 
 module.exports = {
-  STRUCTURAL_OVERRIDE_KEYS, engaged, structuralOverridesEngaged, isManualProduct, resolveProgram,
+  STRUCTURAL_OVERRIDE_KEYS, engaged, structuralOverridesEngaged, isManualProduct, needsSuperAdminApproval, resolveProgram,
   SETTINGS_DEFAULTS, loadSettings, saveSettings,
   openEscalation, closePendingForApp, pendingForApp, listEscalations, pendingCount, decideEscalation,
 };

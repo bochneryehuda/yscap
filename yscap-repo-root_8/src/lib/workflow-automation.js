@@ -132,4 +132,58 @@ async function hasLiveItem(appId, submissionType, client = db) {
   return !!r.rows[0];
 }
 
-module.exports = { OUTCOME_ACTIONS, outcomeAction, onFunded, nextStepSuggestions, hasLiveItem };
+// ---------------------------------------------------------------------------
+// Super-admin ESCALATION → workflow hand-off (owner-directed 2026-07-21). When a
+// registration needs super-admin approval (a Manual Program, or any Standard/Gold
+// manual-review EXCEPTION — below the minimum, over the maximum, etc.), raise an
+// `escalation` hand-off addressed to the super_admin ROLE so it lands directly in
+// every super-admin's Workflow — with the file link, the reason, and a pointer to
+// the Escalations box to approve/decline. Own transaction, best-effort; never
+// breaks the registration (the manual_program_escalations row is the source of
+// truth, this is the surfacing). submitItem supersedes any prior live escalation
+// hand-off for the file, so a re-register never stacks duplicates.
+// ---------------------------------------------------------------------------
+async function onEscalationOpened(appId, { fromStaffId, note } = {}) {
+  try {
+    const client = await db.getClient();
+    let item = null;
+    try {
+      await client.query('BEGIN');
+      item = await workflow.submitItem(client, {
+        appId, submissionType: 'escalation', fromStaffId: fromStaffId || null,
+        toStaffId: null, toRole: 'super_admin', priority: 1, auto: true,
+        note: note || 'A registration needs super-admin approval — review the exception in the Escalations box and approve or decline.',
+      });
+      await client.query('COMMIT');
+    } catch (e) { try { await client.query('ROLLBACK'); } catch (_) {} throw e; }
+    finally { client.release(); }
+    return item;
+  } catch (_) { return null; }   // best-effort — never break registration
+}
+
+// The escalation was decided (approved/declined in the Escalations box) OR the
+// file was re-registered as a clean product — take the escalation hand-off off the
+// super-admin Workflow so it doesn't linger after it's resolved. Best-effort.
+async function closeEscalationWorkflow(appId, outcomeLabel = 'Reviewed') {
+  try {
+    const client = await db.getClient();
+    try {
+      await client.query('BEGIN');
+      const live = await client.query(
+        `SELECT id, from_staff_id, submission_type FROM workflow_items
+          WHERE application_id=$1 AND submission_type='escalation' AND status IN ('open','in_progress')`, [appId]);
+      for (const row of live.rows) {
+        await client.query(
+          `UPDATE workflow_items SET status='cancelled', updated_at=now() WHERE id=$1`, [row.id]);
+        await client.query(
+          `INSERT INTO workflow_events (workflow_item_id, application_id, event_type, submission_type, note)
+           VALUES ($1,$2,'cancelled','escalation',$3)`,
+          [row.id, appId, outcomeLabel ? String(outcomeLabel).slice(0, 120) : null]);
+      }
+      await client.query('COMMIT');
+    } catch (e) { try { await client.query('ROLLBACK'); } catch (_) {} throw e; }
+    finally { client.release(); }
+  } catch (_) { /* best-effort */ }
+}
+
+module.exports = { OUTCOME_ACTIONS, outcomeAction, onFunded, nextStepSuggestions, hasLiveItem, onEscalationOpened, closeEscalationWorkflow };

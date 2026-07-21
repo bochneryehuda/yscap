@@ -390,7 +390,7 @@
 
   /* ---------------- render ---------------- */
   function statusClass(st) { return st === "ELIGIBLE" ? "good" : st === "MANUAL" ? "warn" : "bad"; }
-  function statusText(st) { return st === "ELIGIBLE" ? "Eligible" : st === "MANUAL" ? "Eligible — manual" : "Not eligible"; }
+  function statusText(st) { return st === "ELIGIBLE" ? "Eligible" : st === "MANUAL" ? "Not eligible as-is — manual-review exception" : "Not eligible"; }
 
   function firstReason(rs) { for (var i = 0; i < (rs || []).length; i++) if (rs[i].level !== "ELIGIBLE") return rs[i].msg; return ""; }
   // Shorten any reason string to a plain first-clause for the cards.
@@ -916,7 +916,7 @@
     var d = calc();
     var gd = calcGold();                                   // full Gold object: slider- + override-connected
     var EM = "\u2014", pct = function (x) { return x ? (x * 100).toFixed(2) + "%" : EM; };
-    var statusLabel = function (st) { return st === "ELIGIBLE" ? "Eligible" : st === "MANUAL" ? "Eligible (manual review)" : "Not eligible"; };
+    var statusLabel = function (st) { return st === "ELIGIBLE" ? "Eligible" : st === "MANUAL" ? "Not eligible as-is — manual-review exception" : "Not eligible"; };
     var deal = [
       ["Loan purpose", purpose()], ["Strategy / program", dealType()],
       ["Property state", val("propState") || EM],
