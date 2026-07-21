@@ -346,6 +346,25 @@ module.exports = {
     clientId: process.env.XACTUS_CLIENT_ID,
     endpoint: process.env.XACTUS_ENDPOINT,   // your assigned API base URL
   },
+  // USPS Addresses API v3 (OAuth2 client-credentials). Free with a USPS
+  // developer account (developer.usps.com) — add the two keys to activate real
+  // USPS address standardization + ZIP+4.
+  usps: {
+    clientId:     process.env.USPS_CLIENT_ID,
+    clientSecret: process.env.USPS_CLIENT_SECRET,
+    baseUrl:      (process.env.USPS_API_BASE || 'https://apis.usps.com').replace(/\/+$/, ''),
+  },
+  // Encompass (ICE Mortgage Technology / Ellie Mae) — the loan-origination
+  // system. OAuth2 via Developer Connect; access is per-instance, so the field
+  // mapping is finalized against YOUR Encompass instance once credentials exist.
+  encompass: {
+    clientId:     process.env.ENCOMPASS_CLIENT_ID,
+    clientSecret: process.env.ENCOMPASS_CLIENT_SECRET,
+    instanceId:   process.env.ENCOMPASS_INSTANCE_ID,     // your Encompass instance / smart-client id
+    username:     process.env.ENCOMPASS_USERNAME,        // some grants need a user login too
+    password:     process.env.ENCOMPASS_PASSWORD,
+    baseUrl:      (process.env.ENCOMPASS_API_BASE || 'https://api.elliemae.com').replace(/\/+$/, ''),
+  },
 
   // --- document underwriting: OCR reader + AI analyzer (add keys to activate) ---
   // Microsoft Azure AI Document Intelligence — the "reads even scanned/blurry

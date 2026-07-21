@@ -18,6 +18,7 @@ const { requireAuth, requireStaff, requirePermission } = require('../auth');
 const { can, assigneeExistsSql } = require('../lib/permissions');
 const client = require('../sitewire/client');
 const orchestrator = require('../sitewire/orchestrator');
+const sowLineEdit = require('../sitewire/sow-line-edit');
 const reconcile = require('../sitewire/reconcile');
 const rollupMod = require('../sitewire/rollup');
 const { planReallocation } = require('../sitewire/reallocation');
@@ -337,6 +338,58 @@ router.post('/files/:id/property-settings', requirePermission('manage_draws'), a
     if (r.parked) return res.status(502).json({ error: 'Couldn’t save the change to Sitewire — a review was opened so nothing is lost.', parked: r.parked });
     res.json(r);
   } catch (e) { console.warn('[sitewire] property-settings error:', e && e.message); res.status(502).json({ error: 'Couldn’t reach Sitewire right now — please try again shortly.' }); }
+});
+
+// ==== Super-admin Scope-of-Work line-item editing (owner-directed 2026-07-21) ====
+// Editing a line's WORDING (label) + DESCRIPTION is NOT allowed by default. A SUPER-ADMIN must UNLOCK the
+// file's SOW editing first (mirrors the structural unlock). Each edit updates the REAL Scope of Work +
+// regenerates its Excel + pushes the new wording to Sitewire. The description stays PILOT-side (Sitewire's
+// job-item description is read-only for us — never guessed).
+const isSuperAdmin = (req) => !!(req.actor && req.actor.role === 'super_admin');
+
+// GET the SOW lines for the editor: each line's wording/description/amount + whether it's drawn-locked in
+// Sitewire, plus the unlock state + whether the viewer is a super-admin. manage_draws + canSeeFile.
+router.get('/files/:id/sow-lines', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const data = await sowLineEdit.listLines(appId);
+    const u = (await db.query(`SELECT sow_edit_unlocked_at FROM applications WHERE id=$1`, [appId])).rows[0];
+    res.json({ ...data, unlocked: !!(u && u.sow_edit_unlocked_at), is_super_admin: isSuperAdmin(req) });
+  } catch (e) { console.warn('[sitewire] sow-lines error:', e && e.message); res.status(500).json({ error: 'Couldn’t read the Scope of Work right now.' }); }
+});
+
+// UNLOCK / re-lock SOW line editing — super-admin ONLY (the "click to unfreeze" gate). Audited.
+router.post('/files/:id/sow-edit-lock', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!isSuperAdmin(req)) return res.status(403).json({ error: 'Only a super-admin can unlock Scope-of-Work line editing.' });
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const unlock = !!(req.body && req.body.unlocked);
+  try {
+    if (unlock) await db.query(`UPDATE applications SET sow_edit_unlocked_at=now(), sow_edit_unlocked_by=$2, updated_at=now() WHERE id=$1`, [appId, req.actor.id]);
+    else await db.query(`UPDATE applications SET sow_edit_unlocked_at=NULL, sow_edit_unlocked_by=NULL, updated_at=now() WHERE id=$1`, [appId]);
+    res.json({ ok: true, unlocked: unlock });
+  } catch (e) { console.warn('[sitewire] sow-edit-lock error:', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+// EDIT a line's wording/description — super-admin ONLY + must be UNLOCKED. Updates the real SOW + Excel +
+// pushes the wording to Sitewire (a drawn line's name is locked there and is left as-is).
+router.post('/files/:id/sow-line-edit', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!isSuperAdmin(req)) return res.status(403).json({ error: 'Only a super-admin can edit Scope-of-Work line items.' });
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  // require an ACTIVE unlock — editing is never automatically allowed
+  const u = (await db.query(`SELECT sow_edit_unlocked_at FROM applications WHERE id=$1`, [appId])).rows[0];
+  if (!(u && u.sow_edit_unlocked_at)) return res.status(409).json({ error: 'Unlock Scope-of-Work editing first (the file is frozen).' });
+  const b = req.body || {};
+  try {
+    const r = await sowLineEdit.editLine(appId, { sow_line_key: b.sow_line_key, label: b.label, desc: b.desc }, req.actor.id);
+    if (r.error === 'missing_key') return res.status(400).json({ error: 'Which line item? (missing line key)' });
+    if (r.error === 'nothing_to_change') return res.status(400).json({ error: 'Enter a wording or description to save.' });
+    if (r.error === 'no_sow') return res.status(409).json({ error: 'This file has no saved Scope of Work to edit.' });
+    if (r.error === 'line_not_found') return res.status(404).json({ error: 'That line item isn’t in the Scope of Work.' });
+    res.json(r);
+  } catch (e) { console.warn('[sitewire] sow-line-edit error:', e && e.message); res.status(500).json({ error: 'Couldn’t save the line-item change right now.' }); }
 });
 
 // ---- GET /files/:id/notifications — the DRAW file's email/notification center (staff) ----

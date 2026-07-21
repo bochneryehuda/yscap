@@ -45,6 +45,8 @@ const KICKER_OF = {
   // personal work queue, or a file you submitted was finished + sent back.
   workflow_submitted: 'Workflow', workflow_returned: 'Workflow', workflow_ready: 'Workflow',
   order_docs_in: 'Order documents',
+  // API Health monitor (owner-directed 2026-07-21): an integration went down or came back.
+  integration_alert: 'System health',
 };
 
 /**

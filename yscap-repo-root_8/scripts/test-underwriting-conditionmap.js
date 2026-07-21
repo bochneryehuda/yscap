@@ -23,6 +23,11 @@ assert.ok(/paid|invoice/i.test(purposeForDoc('insurance_invoice')), 'the invoice
 assert.deepStrictEqual(conditionsForDoc('flood'), ['rtl_cond_flood'], 'flood maps to its own flood condition');
 assert.strictEqual(expectedDocTypeForCode('rtl_cond_flood'), 'flood', 'the flood condition expects a flood determination');
 assert.ok(!docTypesForCode('rtl_cond_insurance').includes('flood'), 'flood no longer rides the insurance condition');
+
+// The settlement statement now has its OWN condition (rtl_cond_settlement) — so it reads as a
+// settlement statement and its condition shows covered, instead of having nowhere to be filed.
+assert.deepStrictEqual(conditionsForDoc('settlement'), ['rtl_cond_settlement'], 'settlement maps to its own settlement condition');
+assert.strictEqual(expectedDocTypeForCode('rtl_cond_settlement'), 'settlement', 'the settlement condition expects a settlement statement');
 assert.ok(conditionsForDoc('operating_agreement').includes('rtl_llc_opagmt') && conditionsForDoc('operating_agreement').includes('rtl_p1_llc'));
 assert.ok(conditionsForDoc('bank_statement').includes('rtl_p3_assets'));
 assert.ok(conditionsForDoc('background_report').includes('rtl_cond_fraud'));
