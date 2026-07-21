@@ -448,4 +448,26 @@ module.exports = {
     endpoint: (process.env.MISTRAL_OCR_ENDPOINT || 'https://api.mistral.ai').trim().replace(/\/+$/, ''),
     model:    (process.env.MISTRAL_OCR_MODEL || 'mistral-ocr-latest').trim(),
   },
+  // Direct-source verification connectors (Sovereign, blueprint sec. 9) — each
+  // one, when configured, feeds the loan digital twin `api_verification`
+  // observations that OUTRANK document observations for the same facts. All
+  // three ship as stubs today; wiring real HTTP is a one-file change per
+  // connector when the vendor accounts are in place.
+  //   Plaid — bank account owner + ending balance (assets)
+  plaid: {
+    clientId: process.env.PLAID_CLIENT_ID || '',
+    secret:   process.env.PLAID_SECRET || '',
+    env:      (process.env.PLAID_ENV || 'sandbox').trim(),
+  },
+  //   Property data (CoreLogic / DataTree / ATTOM) — recorded address / units / year built / liens / AVM
+  propertyData: {
+    provider: (process.env.PROPERTY_DATA_PROVIDER || '').trim(),   // 'corelogic' | 'datatree' | 'attom'
+    key:      process.env.PROPERTY_DATA_KEY || '',
+  },
+  //   Xactus (formerly CreditPlus) — FICO + OFAC/background/fraud
+  xactus: {
+    account:  process.env.XACTUS_ACCOUNT || '',
+    user:     process.env.XACTUS_USER || '',
+    password: process.env.XACTUS_PASSWORD || '',
+  },
 };
