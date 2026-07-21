@@ -97,6 +97,29 @@ ok('resolve exported', typeof resolve === 'function');
     const signer = seeded.find((r) => r.role === 'borrower');
     ok('seed: default seeds primary borrower', !!signer && signer.borrower_id === 'B1' && signer.email === 'moshe@example.com'); }
 
+  // ===== The EXACT forward line: sendPackage MUST pass opts.recipient through to the seed. This drives
+  // sendPackage itself (stubbing the actual DocuSign send) so it FAILS if the one-line forward is reverted. =====
+  const cfg = require('../src/config');
+  cfg.docusign = { ...(cfg.docusign || {}), sendEnabled: true, testMode: false };
+  const appRow = { id: 'APP1', ys_loan_number: 'YS1', b_id: 'B1', b_first: 'Moshe', b_last: 'Spitzer', b_email: 'moshe@example.com', cb_id: 'C1', cb_first: 'Sarah', cb_last: 'Spitzer', cb_email: 'sarah@example.com', co_borrower_id: 'C1' };
+  function fullDb(seededOut) {
+    return { query: async (sql, params) => {
+      if (/count\(\*\)/i.test(sql)) return { rows: [{ n: 0 }] };
+      if (/FROM applications a\s+JOIN borrowers/i.test(sql)) return { rows: [appRow] };            // loadApplication
+      if (/INSERT INTO esign_envelopes/i.test(sql)) return { rows: [{ id: 'ENV1', status: 'not_sent' }] };
+      if (/FROM esign_envelopes\s+WHERE application_id/i.test(sql)) return { rows: [] };           // inflight/prior
+      if (/INSERT INTO esign_recipients/i.test(sql)) { seededOut.push({ role: params[1], borrower_id: params[5], email: params[7] }); return { rows: [] }; }
+      if (/RETURNING/i.test(sql)) return { rows: [{ id: 'X' }] };
+      return { rows: [{ id: 'X', status: 'outstanding' }] };                                       // ensureDrawRequestCondition + condition lookups
+    } };
+  }
+  const stopSend = { sendClaimedEnvelope: async () => { throw Object.assign(new Error('STOP_AFTER_SEED'), { __stop: true }); } };
+  { const seeded = [];
+    try { await orch.sendPackage('APP1', 'draw_request', { id: 'staff1' }, { recipient: 'co_borrower', db: fullDb(seeded), send: stopSend, docusign: {}, storage: {} }); }
+    catch (_) { /* expected: the stubbed send throws AFTER the recipient was seeded */ }
+    const signer = seeded.find((r) => r.role === 'borrower');
+    ok('sendPackage forwards recipient to the seed', !!signer && signer.borrower_id === 'C1' && signer.email === 'sarah@example.com'); }
+
   console.log(`\ntest-draw-recipient-choice: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });
