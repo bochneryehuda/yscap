@@ -526,6 +526,9 @@ export const api = {
   adminIntegrations:() => req('GET', '/api/admin/integrations'),
 
   // ---- ClickUp Control Center (admin / platform_setup) ----
+  // API Health — status of every external API / integration.
+  integrationsHealth: () => req('GET', '/api/admin/integrations/health'),
+  integrationTest:    (key) => req('POST', `/api/admin/integrations/${encodeURIComponent(key)}/test`),
   clickupHealth:    () => req('GET', '/api/admin/clickup/health'),
   clickupActivity:  () => req('GET', '/api/admin/clickup/activity'),
   clickupBackfill:  (mode, sample) => req('POST', '/api/admin/clickup/backfill', { mode, sample }),
