@@ -20,8 +20,9 @@ import LoanProgress from '../components/LoanProgress.jsx';
 import { PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
 import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
-import FileSections, { Section, InfoTip, subscribeConditionsTab } from '../components/FileSections.jsx';
+import FileSections, { Section, InfoTip, subscribeConditionsTab, goToSection } from '../components/FileSections.jsx';
 import EsignFileSection from '../components/EsignFileSection.jsx';
+import OrdersPanel from '../components/OrdersPanel.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
 import UnderwritingPanel from '../components/UnderwritingPanel.jsx';
 import StaticToolFrame from '../components/StaticToolFrame.jsx';
@@ -2399,6 +2400,16 @@ export default function StaffApplication() {
   const completer = canComplete(role);   // may CLEAR (sign off) a condition; others only mark it reviewed
   const canDelete = can('delete_files');
   const [app, setApp] = useState(null);
+  // Deep-link to a section: a URL ending in "#sec-<name>" (e.g. the Orders queue's
+  // "Open" button → #sec-orders) opens + scrolls to that collapsed section once the
+  // file has rendered. Best-effort; a no-op when the fragment names no real section.
+  useEffect(() => {
+    if (!app) return;
+    const m = String(window.location.hash || '').match(/#(sec-[a-z-]+)$/);
+    if (!m) return;
+    const t = setTimeout(() => goToSection(m[1]), 250);
+    return () => clearTimeout(t);
+  }, [app, id]);
   const [items, setItems] = useState([]);
   const [docs, setDocs] = useState([]);
   const [dlBusy, setDlBusy] = useState(null);
@@ -2794,6 +2805,8 @@ export default function StaffApplication() {
     { id: 'sec-underwriting', label: 'Document review', group: 'Application & pricing', badge: uwSummary && uwSummary.fatal ? `${uwSummary.fatal} ⚠` : '' },
     { id: 'sec-conditions', label: 'Conditions', group: 'Conditions', badge: nCondOpen || '' },
     { id: 'sec-esign', label: 'E-signatures', group: 'Signing & documents' },
+    { id: 'sec-orders', label: 'Orders (title & insurance)', group: 'Signing & documents',
+      badge: (() => { const n = docs.filter(d => ['title_order_return', 'insurance_order_return'].includes(d.doc_kind) && !d.slot_label && d.is_current !== false).length; return n ? `${n} to assign` : ''; })() },
     { id: 'sec-documents', label: 'Documents & exports', group: 'Signing & documents', badge: docs.length || '' },
     { id: 'sec-track', label: 'Track record', group: 'Signing & documents' },
     { id: 'sec-messages', label: 'Communication & history', group: 'Communication' },
@@ -3177,6 +3190,11 @@ export default function StaffApplication() {
       <Section id="sec-esign" title="E-signatures" defaultOpen={false}
         info="Send and track the term-sheet package and Heter Iska, with live per-signer status, resend, void, re-issue and downloads.">
       <EsignFileSection appId={id} role={role} />
+      </Section>
+
+      <Section id="sec-orders" title="Orders (title &amp; insurance)" defaultOpen={false}
+        info="Order title and insurance from the vendor on the file. Each order emails the vendor with the borrower, loan officer and processor copied, tracks its own thread, and files the documents the vendor sends back here for you to classify.">
+      <OrdersPanel appId={id} canAccept={canComplete(role)} />
       </Section>
 
       <Section id="sec-documents" title="Documents & exports" defaultOpen={false}

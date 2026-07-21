@@ -221,6 +221,9 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) 
                 : inbound
                 ? <div className="ec-metarow"><span className="ec-metalabel">From</span> <span>{row.from_name ? `${row.from_name} · ` : ''}{row.from_email || 'unknown'}</span></div>
                 : <div className="ec-metarow"><span className="ec-metalabel">To</span> <RecipientRoster row={row} /></div>}
+              {!inbound && full && Array.isArray(full.cc) && full.cc.length
+                ? <div className="ec-metarow"><span className="ec-metalabel">Cc</span> <span className="ec-recips">{full.cc.map((c, i) => <span className="ec-recip" key={i}>{c.name || c.email}</span>)}</span></div>
+                : null}
               {row.file_label && globalMode ? <div className="ec-metarow"><span className="ec-metalabel">File</span> <span className="ec-file-chip">{row.file_label}</span></div> : null}
               {row.error ? <div className="ec-reader-error">Delivery error: {row.error}</div> : null}
               {attachments.length

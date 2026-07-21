@@ -2420,6 +2420,7 @@ function emailRowShape(r) {
     from_email: r.from_email,
     from_name: r.from_name,
     to: Array.isArray(r.to_emails) ? r.to_emails : [],
+    cc: Array.isArray(r.cc_emails) ? r.cc_emails : [],
     reply_to: r.reply_to,
     recipient_kind: r.recipient_kind,
     recipient_name: r.recipient_name || null,
@@ -2577,14 +2578,25 @@ router.get('/applications/:id/emails', async (req, res) => {
     // coordinator follow-ups on a draw email stay attached), AND — folded in below — the
     // DocuSign draw-request form lifecycle + Sitewire's own activity events. The unscoped
     // call returns the file's whole email history (the regular file Email Center) — byte-identical.
-    const drawScope = String(req.query.scope || '') === 'draw';
-    const scopeSql = drawScope
-      ? `AND (em.msg_type LIKE 'draw%' OR em.msg_type LIKE 'sow_%'
+    // Order-scoped inbox (#orders): scope=title / scope=insurance shows just that order's
+    // emails (order + follow-ups + the vendor's replies), by msg_type prefix + same threads.
+    const rawScope = String(req.query.scope || '');
+    const drawScope = rawScope === 'draw';
+    const orderScope = (rawScope === 'title' || rawScope === 'insurance') ? rawScope : null;
+    let scopeSql = '';
+    if (drawScope) {
+      scopeSql = `AND (em.msg_type LIKE 'draw%' OR em.msg_type LIKE 'sow_%'
              OR (em.thread_key IS NOT NULL AND em.thread_key IN (
                    SELECT thread_key FROM email_messages
                     WHERE application_id = $1 AND thread_key IS NOT NULL
-                      AND (msg_type LIKE 'draw%' OR msg_type LIKE 'sow_%'))))`
-      : '';
+                      AND (msg_type LIKE 'draw%' OR msg_type LIKE 'sow_%'))))`;
+    } else if (orderScope) {
+      scopeSql = `AND (em.msg_type LIKE '${orderScope}\\_%'
+             OR (em.thread_key IS NOT NULL AND em.thread_key IN (
+                   SELECT thread_key FROM email_messages
+                    WHERE application_id = $1 AND thread_key IS NOT NULL
+                      AND msg_type LIKE '${orderScope}\\_%')))`;
+    }
     const r = await db.query(
       `SELECT em.id, em.direction, em.msg_type, em.category, em.subject, em.preview,
               em.from_email, em.from_name, em.to_emails, em.reply_to, em.recipient_kind,
@@ -2806,7 +2818,11 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
     // A reply/compose sent FROM the draw email center is tagged 'draw_message' so it
     // stays visible in that draw-scoped inbox (which filters on draw%/sow_% types);
     // a normal file reply keeps 'staff_reply'. Cosmetic tag only — same delivery.
-    const replyType = String((req.body && req.body.scope) || '') === 'draw' ? 'draw_message' : 'staff_reply';
+    const scopeIn = String((req.body && req.body.scope) || '');
+    const replyType = scopeIn === 'draw' ? 'draw_message'
+      : scopeIn === 'title' ? 'title_message'
+      : scopeIn === 'insurance' ? 'insurance_message'
+      : 'staff_reply';
     await email.sendMail({
       to: toEmails, subject: built.subject, html: built.html, text: built.text,
       replyTo: fileReplyTo(appId) || cfg.replyToDefault || null,
@@ -2816,6 +2832,267 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
     await audit(req, 'email_reply_sent', 'application', appId, { to: toEmails.length, subject });
     res.json({ ok: true, sent_to: toEmails });
   } catch (e) { res.status(500).json({ error: 'Could not send the reply.' }); }
+});
+
+/* ═══════════════════════════════ ORDERS DESK (#orders) ═══════════════════════
+   Title + insurance orders for a file. An order can only be placed once the file
+   has its LOAN NUMBER (the mortgagee clause needs it) and a vendor CONTACT (the
+   title company / insurance agent). The order emails the vendor with the
+   borrower, loan officer and processor CC'd and a unique per-order reply-to, so
+   the vendor's reply + any returned documents route back to the right order.
+   A follow-up is a separate message on the same thread; the order itself won't
+   re-send unless the caller forces it. Returned documents land as unassigned
+   documents for the team to classify. Uses the orders lib for all email building.
+   ═══════════════════════════════════════════════════════════════════════════ */
+const orders = require('../lib/orders');
+const { orderReplyTo } = require('../lib/file-address');
+const ORDER_RETURN_KIND = { title: 'title_order_return', insurance: 'insurance_order_return' };
+const ORDER_SLOTS = {
+  title: ['Title Commitment', 'CPL', 'Tax Certificate', 'Wiring Instructions', 'Preliminary Settlement Statement', 'Other'],
+  insurance: ['Binder', 'Invoice', 'Quote', 'Declaration Page', 'Other'],
+};
+
+function isOrderKind(k) { return k === 'title' || k === 'insurance'; }
+
+// The whole Orders section for a file: both orders' state, whether each can be
+// placed (blockers), the vendor on file, and the returned documents waiting to be
+// classified. One call powers the panel.
+router.get('/applications/:id/orders', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const data = await orders.getOrderData(req.params.id);
+    if (!data) return res.status(404).json({ error: 'not found' });
+    const rows = (await db.query(
+      `SELECT order_type, status, vendor_name, vendor_email, ordered_at, last_followup_at,
+              followup_count, send_count
+         FROM file_orders WHERE application_id=$1`, [req.params.id])).rows;
+    const orderOf = (k) => rows.find((r) => r.order_type === k) || null;
+    // Returned documents per order (unassigned = no slot_label yet).
+    const docs = (await db.query(
+      `SELECT id, doc_kind, filename, slot_label, review_status, is_current, size_bytes, created_at
+         FROM documents
+        WHERE application_id=$1 AND doc_kind = ANY($2::text[])
+        ORDER BY created_at DESC`,
+      [req.params.id, Object.values(ORDER_RETURN_KIND)])).rows;
+    const docsFor = (k) => docs.filter((d) => d.doc_kind === ORDER_RETURN_KIND[k] && d.is_current !== false);
+    // The real document condition each order files into (rtl_cond_title /
+    // rtl_cond_insurance) — so the panel can show where returned docs land + its
+    // current status.
+    const CONDITION_CODE = { title: 'rtl_cond_title', insurance: 'rtl_cond_insurance' };
+    const conds = (await db.query(
+      `SELECT ci.id, ci.status, t.code, t.label
+         FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
+        WHERE ci.application_id=$1 AND t.code = ANY($2::text[])`,
+      [req.params.id, Object.values(CONDITION_CODE)])).rows;
+    const condOf = (k) => conds.find((c) => c.code === CONDITION_CODE[k]) || null;
+
+    const shape = (k) => {
+      const row = orderOf(k);
+      const vendor = data.vendors[k];
+      const cond = condOf(k);
+      return {
+        orderType: k,
+        status: row ? row.status : 'not_ordered',
+        blockers: orders.blockers(k, data),
+        vendor: vendor ? { id: vendor.id, name: vendor.company_name || vendor.contact_name, email: vendor.email, phone: vendor.phone, contactName: vendor.contact_name } : null,
+        orderedAt: row ? row.ordered_at : null,
+        lastFollowupAt: row ? row.last_followup_at : null,
+        followupCount: row ? row.followup_count : 0,
+        sendCount: row ? row.send_count : 0,
+        slots: ORDER_SLOTS[k],
+        condition: cond ? { label: cond.label, status: cond.status } : null,
+        returnedDocs: docsFor(k),
+      };
+    };
+    // Who an order will reach, so the panel can show it before sending.
+    const recipientsPreview = (k) => {
+      const { to, cc } = orders.recipientsFor(k, data);
+      return { to, cc };
+    };
+    res.json({
+      file: {
+        loanNumber: data.loanNumber, hasLoanNumber: data.hasLoanNumber,
+        propertyLine: data.propertyLine, borrowerName: data.borrowerName,
+        borrowerEmail: data.borrowerEmail, coBorrowerEmail: data.coBorrowerEmail,
+        officer: data.officer, processor: data.processor,
+      },
+      orders: {
+        title: { ...shape('title'), recipients: recipientsPreview('title') },
+        insurance: { ...shape('insurance'), recipients: recipientsPreview('insurance') },
+      },
+    });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Place (send) an order. Gated on loan number + vendor contact. Re-sending an
+// already-placed order requires ?force / {force:true} so a stray double-click
+// never re-blasts the vendor + whole CC chain.
+router.post('/applications/:id/orders/:kind/place', async (req, res) => {
+  const appId = req.params.id;
+  const kind = req.params.kind;
+  if (!isOrderKind(kind)) return res.status(400).json({ error: 'unknown order type' });
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const data = await orders.getOrderData(appId);
+    if (!data) return res.status(404).json({ error: 'not found' });
+    const blk = orders.blockers(kind, data);
+    if (blk.includes('loan_number')) return res.status(400).json({ error: 'Add the file’s loan number first — it prints in the mortgage clause.', code: 'loan_number' });
+    if (blk.includes('contact')) return res.status(400).json({ error: `Add the ${kind === 'title' ? 'title company' : 'insurance agent'} contact first.`, code: 'contact' });
+
+    const existing = (await db.query(`SELECT status, send_count FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
+    const force = req.body && (req.body.force === true || req.body.force === 'true');
+    if (existing && existing.status !== 'not_ordered' && existing.status !== 'cancelled' && !force) {
+      return res.status(409).json({ error: `This ${kind} order was already sent. Use Follow-up, or force a re-send.`, code: 'already_ordered' });
+    }
+
+    const built = orders.buildOrderEmail(kind, data, {});
+    const { to, cc, replyTo } = orders.recipientsFor(kind, data);
+    const meRow = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
+    await email.sendMail({
+      to, cc,
+      subject: built.subject, html: built.html, text: built.text,
+      replyTo: replyTo || fileReplyTo(appId) || cfg.replyToDefault || null,
+      from: email.fromWithName ? email.fromWithName(meRow.full_name || meRow.email) : undefined,
+      _ctx: { applicationId: appId, type: `${kind}_order`, audience: 'staff' },
+    });
+    const vendor = data.vendors[kind];
+    await db.query(
+      `INSERT INTO file_orders (application_id, order_type, status, vendor_contact_id, vendor_email, vendor_name, subject, ordered_at, ordered_by, send_count)
+       VALUES ($1,$2,'ordered',$3,$4,$5,$6,now(),$7,1)
+       ON CONFLICT (application_id, order_type)
+       DO UPDATE SET status='ordered', vendor_contact_id=EXCLUDED.vendor_contact_id, vendor_email=EXCLUDED.vendor_email,
+                     vendor_name=EXCLUDED.vendor_name, subject=EXCLUDED.subject, ordered_at=now(),
+                     ordered_by=EXCLUDED.ordered_by, send_count=file_orders.send_count+1, updated_at=now()`,
+      [appId, kind, vendor ? vendor.id : null, (vendor && vendor.email) || null,
+       (vendor && (vendor.company_name || vendor.contact_name)) || null, built.subject, req.actor.id]);
+    await audit(req, 'order_placed', 'application', appId, { kind, to: to.length, cc: cc.length, force: !!force });
+    res.json({ ok: true, sent_to: to, cc });
+  } catch (e) { res.status(500).json({ error: 'Could not send the order.' }); }
+});
+
+// Send a follow-up on an existing order (same thread, to the vendor + CC chain).
+// Never the first contact — the order must already be placed.
+router.post('/applications/:id/orders/:kind/followup', async (req, res) => {
+  const appId = req.params.id;
+  const kind = req.params.kind;
+  if (!isOrderKind(kind)) return res.status(400).json({ error: 'unknown order type' });
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const row = (await db.query(`SELECT status FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
+    if (!row || row.status === 'not_ordered' || row.status === 'cancelled') {
+      return res.status(400).json({ error: 'Place the order before following up.', code: 'not_ordered' });
+    }
+    const data = await orders.getOrderData(appId);
+    if (!data) return res.status(404).json({ error: 'not found' });
+    if (!data.vendors[kind] || !data.vendors[kind].email) return res.status(400).json({ error: 'The vendor contact is missing.', code: 'contact' });
+    const note = String((req.body && req.body.message) || '').trim().slice(0, 4000);
+    const built = orders.buildOrderEmail(kind, data, { followup: true, note });
+    const { to, cc, replyTo } = orders.recipientsFor(kind, data);
+    const meRow = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
+    await email.sendMail({
+      to, cc,
+      subject: built.subject, html: built.html, text: built.text,
+      replyTo: replyTo || fileReplyTo(appId) || cfg.replyToDefault || null,
+      from: email.fromWithName ? email.fromWithName(meRow.full_name || meRow.email) : undefined,
+      _ctx: { applicationId: appId, type: `${kind}_followup`, audience: 'staff' },
+    });
+    await db.query(
+      `UPDATE file_orders SET followup_count=followup_count+1, last_followup_at=now(), updated_at=now()
+        WHERE application_id=$1 AND order_type=$2`, [appId, kind]);
+    await audit(req, 'order_followup', 'application', appId, { kind, to: to.length });
+    res.json({ ok: true, sent_to: to, cc });
+  } catch (e) { res.status(500).json({ error: 'Could not send the follow-up.' }); }
+});
+
+// Classify a returned document (assign it to a slot: binder / invoice / …) — the
+// "assign what came back" step. slot_label='' clears it back to unassigned.
+router.post('/applications/:id/orders/:kind/documents/:docId/classify', async (req, res) => {
+  const appId = req.params.id;
+  const kind = req.params.kind;
+  if (!isOrderKind(kind)) return res.status(400).json({ error: 'unknown order type' });
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  if (!UUID_RE.test(String(req.params.docId))) return res.status(404).json({ error: 'not found' });
+  try {
+    const slotRaw = String((req.body && req.body.slot) || '').trim().slice(0, 80);
+    const allowed = new Set(ORDER_SLOTS[kind]);
+    // Empty clears back to unassigned; anything else must be one of this order's
+    // known slots (Binder / Invoice / Title Commitment / …) — an unknown label is
+    // rejected rather than stored as free text.
+    if (slotRaw && !allowed.has(slotRaw)) return res.status(400).json({ error: 'Choose one of the listed document types.', code: 'bad_slot' });
+    const slot = slotRaw || null;
+    const upd = await db.query(
+      `UPDATE documents SET slot_label=$4
+        WHERE id=$1 AND application_id=$2 AND doc_kind=$3 RETURNING id`,
+      [req.params.docId, appId, ORDER_RETURN_KIND[kind], slot]);
+    if (!upd.rows[0]) return res.status(404).json({ error: 'not found' });
+    await audit(req, 'order_doc_classified', 'application', appId, { kind, slot: slot || 'unassigned' });
+    res.json({ ok: true, slot });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Cancel an order (or reopen a cancelled one). Cancelling frees it to be
+// re-ordered from scratch (the place gate treats 'cancelled' like 'not_ordered').
+router.post('/applications/:id/orders/:kind/cancel', async (req, res) => {
+  const appId = req.params.id;
+  const kind = req.params.kind;
+  if (!isOrderKind(kind)) return res.status(400).json({ error: 'unknown order type' });
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const reopen = req.body && (req.body.reopen === true || req.body.reopen === 'true');
+    const next = reopen ? 'ordered' : 'cancelled';
+    const upd = await db.query(
+      `UPDATE file_orders SET status=$3, updated_at=now()
+        WHERE application_id=$1 AND order_type=$2 RETURNING status`, [appId, kind, next]);
+    if (!upd.rows[0]) return res.status(404).json({ error: 'This order has not been created yet.' });
+    await audit(req, reopen ? 'order_reopened' : 'order_cancelled', 'application', appId, { kind });
+    res.json({ ok: true, status: upd.rows[0].status });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// GLOBAL ORDERS QUEUE — every title/insurance order across the files the viewer
+// can see, so a processor can track all orders (and what's waiting to be
+// classified) in one place. Scoped like every other cross-file view.
+router.get('/orders', async (req, res) => {
+  try {
+    const params = [];
+    let scopeSql = '';
+    if (!seesAll(req)) { params.push(req.actor.id); scopeSql = `AND ${VISIBLE_OFFICERS_SQL('a', '$1')}`; }
+    const r = await db.query(
+      `SELECT a.id AS application_id, a.ys_loan_number, a.property_address, a.status AS file_status,
+              b.first_name, b.last_name,
+              o.order_type, o.status, o.vendor_name, o.ordered_at, o.last_followup_at, o.followup_count,
+              COALESCE(dc.unassigned, 0)::int AS unassigned_docs, COALESCE(dc.total, 0)::int AS returned_docs
+         FROM file_orders o
+         JOIN applications a ON a.id = o.application_id AND a.deleted_at IS NULL
+         JOIN borrowers b ON b.id = a.borrower_id
+         LEFT JOIN LATERAL (
+           SELECT count(*) FILTER (WHERE slot_label IS NULL) AS unassigned, count(*) AS total
+             FROM documents d
+            WHERE d.application_id = o.application_id AND d.is_current = true
+              AND d.doc_kind = CASE o.order_type WHEN 'title' THEN 'title_order_return' ELSE 'insurance_order_return' END
+         ) dc ON true
+        WHERE o.status <> 'cancelled' ${scopeSql}
+        ORDER BY (COALESCE(dc.unassigned, 0) > 0) DESC, o.ordered_at DESC NULLS LAST`, params);
+    // Group into one row per file with a title + insurance sub-object.
+    const byFile = new Map();
+    for (const row of r.rows) {
+      if (!byFile.has(row.application_id)) {
+        byFile.set(row.application_id, {
+          applicationId: row.application_id, loanNumber: row.ys_loan_number,
+          propertyAddress: row.property_address, fileStatus: row.file_status,
+          borrowerName: [row.first_name, row.last_name].filter(Boolean).join(' '),
+          title: null, insurance: null,
+        });
+      }
+      const f = byFile.get(row.application_id);
+      f[row.order_type] = {
+        status: row.status, vendorName: row.vendor_name, orderedAt: row.ordered_at,
+        lastFollowupAt: row.last_followup_at, followupCount: row.followup_count,
+        unassignedDocs: row.unassigned_docs, returnedDocs: row.returned_docs,
+      };
+    }
+    res.json([...byFile.values()]);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
 // A short "which file" label for a mailbox row (loan# · street · borrower).

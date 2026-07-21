@@ -8,16 +8,22 @@ const cfg = require('../../config');
 
 module.exports = {
   name: 'resend',
-  async sendMail({ to, subject, text, html, attachments, replyTo, from, bcc }) {
+  async sendMail({ to, subject, text, html, attachments, replyTo, from, bcc, cc }) {
     if (!cfg.resendApiKey) {
       throw new Error('RESEND_API_KEY is not set — add it in the Render environment to send email.');
     }
     const recipients = (Array.isArray(to) ? to : [to]).filter(Boolean);
     if (!recipients.length) throw new Error('no recipient');
+    const toLower = new Set(recipients.map((a) => String(a).toLowerCase()));
+    // CC (visible carbon copy — the whole order chain sees each other, #orders).
+    // Never CC a To recipient (no self-duplicate).
+    const ccList = (Array.isArray(cc) ? cc : (cc ? [cc] : []))
+      .filter((a) => a && !toLower.has(String(a).toLowerCase()));
+    const ccLower = new Set(ccList.map((a) => String(a).toLowerCase()));
     // BCC (e.g. the assigned loan officer's monitoring copy). Never BCC someone
-    // who is already a To recipient (no self-duplicate).
+    // who is already a To or Cc recipient (no self-duplicate).
     const bccList = (Array.isArray(bcc) ? bcc : (bcc ? [bcc] : []))
-      .filter((a) => a && !recipients.includes(a));
+      .filter((a) => a && !toLower.has(String(a).toLowerCase()) && !ccLower.has(String(a).toLowerCase()));
     // Resend attachments: { filename, content (base64) }. Size-gating is the
     // caller's job (the doc-upload site only attaches ≤3 MB and always lists the
     // filename); here we just map whatever survived that gate.
@@ -47,6 +53,7 @@ module.exports = {
           text,
           html,
         }, atts.length ? { attachments: atts } : {},
+           ccList.length ? { cc: ccList } : {},
            bccList.length ? { bcc: bccList } : {},
            // #75: a unique reply-to lets an external chat guest reply by email and
            // have it land back in the conversation (routed via the inbound webhook).

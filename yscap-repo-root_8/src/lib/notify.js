@@ -41,6 +41,7 @@ const KICKER_OF = {
   sharepoint_backlog_slo: 'Document sync', inbound_reply: 'File reply',
   officer_assigned: 'Your loan officer', all_caught_up: 'You’re all set',
   milestone: 'Milestone', digest: 'Your loan file',
+  order_docs_in: 'Order documents',
 };
 
 /**
@@ -324,6 +325,8 @@ const CATEGORY_OF = {
   // New borrower touchpoints (owner-directed 2026-07-20)
   officer_assigned: 'status_updates', all_caught_up: 'status_updates',
   milestone: 'status_updates', digest: 'reminders',
+  // Orders desk — a staff-facing "documents came back" nudge.
+  order_docs_in: 'documents',
 };
 // These always reach the borrower in-app even if the category is muted — they
 // require action and can't be silently dropped (email can still be turned off).
