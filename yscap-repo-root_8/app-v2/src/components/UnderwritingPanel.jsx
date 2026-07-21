@@ -692,10 +692,12 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
         if (r.read) parts.push(`Read ${r.read} document${r.read === 1 ? '' : 's'}`);
         if (r.pending) parts.push(`${r.pending} more to go`);
         setAutoReadMsg(parts.join(' · '));
-        // Documents the reader couldn't read AS the type their condition expects — they may be the
-        // wrong document filed there (e.g. not actually a title commitment) or a poor scan.
+        // Documents the reader READ but couldn't read AS the type their condition expects — they may
+        // be the wrong document filed there (e.g. not actually a title commitment) or a poor scan.
+        // Only `unreadable` (a successful read whose content isn't this type), NOT a transient
+        // technical error (those aren't a wrong-document signal and self-retry on the next read).
         setAutoReadUnreadable((r.results || [])
-          .filter((x) => x.unreadable || (!x.ok && x.error && x.error !== 'cooldown'))
+          .filter((x) => x.unreadable)
           .map((x) => x.filename).filter(Boolean));
       }
       await load();
