@@ -21,6 +21,7 @@ const ROLE_LABEL = {
 const NAV_ICON = {
   pipeline: <><rect x="3" y="4" width="4" height="16" rx="1" /><rect x="10" y="4" width="4" height="11" rx="1" /><rect x="17" y="4" width="4" height="7" rx="1" /></>,
   tasks: <><rect x="4" y="4" width="16" height="16" rx="2.5" /><path d="m8.5 12 2.2 2.2 4.8-4.7" /></>,
+  workflow: <><circle cx="6" cy="7" r="2.2" /><circle cx="18" cy="7" r="2.2" /><circle cx="12" cy="17" r="2.2" /><path d="M8.2 7h7.6M6.6 9.1 11 14.8M17.4 9.1 13 14.8" /></>,
   chat: <path d="M5 4h14a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 19 15h-7l-4 4v-4H5a1.5 1.5 0 0 1-1.5-1.5v-8A1.5 1.5 0 0 1 5 4Z" />,
   leads: <><circle cx="9" cy="8" r="3.5" /><path d="M3.5 19a5.5 5.5 0 0 1 11 0" /><path d="M18.5 7.5v5M21 10h-5" /></>,
   borrowers: <><circle cx="12" cy="8" r="4" /><path d="M5 20a7 7 0 0 1 14 0" /></>,
@@ -273,6 +274,16 @@ export default function StaffLayout({ children }) {
   const [reviewCount, setReviewCount] = useState(0);
   // Pending manual-product escalations (super-admin approval queue).
   const [escCount, setEscCount] = useState(0);
+  // How many files are in MY personal Workflow right now (everyone has one).
+  const [wfCount, setWfCount] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    const poll = () => api.workflowCount()
+      .then(r => { if (alive) setWfCount((r && r.total) || 0); }).catch(() => {});
+    poll();
+    const t = setInterval(poll, 120000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
   useEffect(() => {
     let alive = true;
     const poll = () => api.get('/api/staff/sync-reviews/count')
@@ -352,6 +363,9 @@ export default function StaffLayout({ children }) {
         <div className="sb-sec">Main</div>
         <NavLink className="sb-link" to="/internal" end><NavIcon name="pipeline" />Pipeline</NavLink>
         <NavLink className="sb-link" to="/internal/tasks"><NavIcon name="tasks" />My tasks</NavLink>
+        <NavLink className="sb-link" to="/internal/workflow" title="My Workflow — every file submitted to you, in the order it arrived. Pick it up, do your part, then send it back.">
+          <NavIcon name="workflow" />Workflow
+          {wfCount > 0 && <span className="sb-badge">{wfCount > 99 ? '99+' : wfCount}</span>}</NavLink>
         <NavLink className="sb-link" to="/internal/chat">
           <NavIcon name="chat" />Chat
           {unread > 0 && <span className="sb-badge">{unread > 99 ? '99+' : unread}</span>}
