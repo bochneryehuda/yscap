@@ -1,5 +1,5 @@
 -- ============================================================================
--- 208 — Internal (staff-only) conditions for a MISSING note buyer and a MISSING
+-- 210 — Internal (staff-only) conditions for a MISSING note buyer and a MISSING
 --       YS loan number (owner-directed 2026-07-20).
 --
 -- "If the note buyer is missing that should automatically come up as an internal
@@ -93,7 +93,7 @@ SELECT t.id, t.scope, t.label, t.audience, t.item_kind,
        COALESCE(t.tpr_exclude, true), 'system',
        COALESCE(t.is_required, true), t.category,
        'auto',
-       jsonb_build_object('rule', 'Note buyer is missing', 'reason', 'backfill_208'),
+       jsonb_build_object('rule', 'Note buyer is missing', 'reason', 'backfill_210'),
        a.id
   FROM applications a
  CROSS JOIN checklist_templates t
@@ -118,7 +118,7 @@ SELECT t.id, t.scope, t.label, t.audience, t.item_kind,
        COALESCE(t.tpr_exclude, true), 'system',
        COALESCE(t.is_required, true), t.category,
        'auto',
-       jsonb_build_object('rule', 'Loan number is missing', 'reason', 'backfill_208'),
+       jsonb_build_object('rule', 'Loan number is missing', 'reason', 'backfill_210'),
        a.id
   FROM applications a
  CROSS JOIN checklist_templates t
