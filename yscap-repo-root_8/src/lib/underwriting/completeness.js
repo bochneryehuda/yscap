@@ -17,7 +17,11 @@
  * no AI, no DB.
  *
  * Per-item status:
- *   missing      — no document of this type analyzed on the file
+ *   missing      — nothing uploaded for this document anywhere on the file (truly not provided)
+ *   on_file      — a document IS uploaded/attached to this document's condition but hasn't been read
+ *                  yet (the reader will pick it up automatically). This is the critical distinction:
+ *                  a file that HAS the document must never read as "missing" just because the AI
+ *                  hasn't analyzed it yet.
  *   insufficient — analyzed but unusable (an open FATAL finding, or an error/unreadable read)
  *   received     — analyzed, present, but with open warnings (under review)
  *   cleared      — analyzed and clean (ties out, ready to clear its condition)
@@ -57,10 +61,12 @@ function applies(req, flags) {
   }
 }
 
-// Status of one required doc from its extraction + that doc's open findings.
-function statusFor(docType, byType, findingsByType) {
+// Status of one required doc from its extraction + that doc's open findings. `attached` is the set
+// of docTypes that have a real document UPLOADED to their condition (even if not yet read), so an
+// un-analyzed-but-present document reads as 'on_file', never a false 'missing'.
+function statusFor(docType, byType, findingsByType, attached) {
   const ext = byType.get(docType);
-  if (!ext) return 'missing';
+  if (!ext) return (attached && attached.has(docType)) ? 'on_file' : 'missing';
   const st = ext.status || 'analyzed';
   const conf = ext.confidence || null;
   const open = (findingsByType.get(docType) || []).filter((f) => (f.status || 'open') === 'open');
@@ -75,7 +81,8 @@ function statusFor(docType, byType, findingsByType) {
  * @param {Array<{source,severity,status}>} findings          open findings
  * @returns {{ stipulations, counts, completenessPct, outstanding, ctcBlockers, docsComplete }}
  */
-function assessCompleteness(flags = {}, extractions = [], findings = []) {
+function assessCompleteness(flags = {}, extractions = [], findings = [], attached = new Set()) {
+  const attachedSet = attached instanceof Set ? attached : new Set(attached || []);
   const byType = new Map();
   const typeByDocId = new Map();   // which document a finding was raised on -> its doc type
   for (const e of extractions) {
@@ -96,19 +103,24 @@ function assessCompleteness(flags = {}, extractions = [], findings = []) {
   const stipulations = [];
   for (const req of REQUIREMENTS) {
     if (!applies(req, flags)) continue;
-    const status = statusFor(req.docType, byType, findingsByType);
+    const status = statusFor(req.docType, byType, findingsByType, attachedSet);
     stipulations.push({ docType: req.docType, label: req.label, owner: req.owner, gating: req.gating, status });
   }
 
-  const counts = { total: stipulations.length, cleared: 0, received: 0, insufficient: 0, missing: 0 };
+  const counts = { total: stipulations.length, cleared: 0, received: 0, insufficient: 0, on_file: 0, missing: 0 };
   for (const s of stipulations) counts[s.status] += 1;
   const completenessPct = counts.total ? Math.round((counts.cleared / counts.total) * 100) : 100;
   const outstanding = stipulations.filter((s) => s.status !== 'cleared');
-  // Prior-to-funding items that are not cleared block clear-to-close.
+  // Prior-to-funding items that are not cleared block clear-to-close. (An on_file-but-unread PTF
+  // document is still not cleared, so it stays a blocker until it's read and ties out — but the
+  // stipulation now says "on file, being read", not the false "missing".)
   const ctcBlockers = stipulations.filter((s) => s.gating === 'PTF' && s.status !== 'cleared');
   const docsComplete = outstanding.length === 0;
+  // TRULY missing = nothing uploaded at all (the real "go get this document" list, distinct from
+  // "uploaded, just not read yet"). Surfaced separately so the desk can show an honest ask.
+  const trulyMissing = stipulations.filter((s) => s.status === 'missing');
 
-  return { stipulations, counts, completenessPct, outstanding, ctcBlockers, docsComplete };
+  return { stipulations, counts, completenessPct, outstanding, ctcBlockers, docsComplete, trulyMissing };
 }
 
 module.exports = { assessCompleteness, REQUIREMENTS, _internals: { applies, statusFor } };

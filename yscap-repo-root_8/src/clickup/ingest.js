@@ -1438,7 +1438,14 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
               taskId: holder.clickup_pipeline_task_id, direction: 'inbound',
               fieldKey: 'ys_loan_number', reason: 'copied_loan_number_needs_assignment',
               suppressIfRejected: true, clickupValue: cols.ys_loan_number, portalValue: null,
-              rawValue: JSON.stringify({ copiedFrom: task.id, reassignedToApplication: targetId || null }).slice(0, 300) });
+              // Emit the SAME parseable shape the primary producer uses ({number, ofApplication,
+              // boundToTask}) so the review UI can show the other file AND the "keep it on the other
+              // deal" action can record its durable loan_number_owner_decided stamp on the rightful
+              // owner (= targetId, the current task's file, which just took the number). Without this
+              // the holder-flag rows carried only {copiedFrom, reassignedToApplication}, which the
+              // parsers don't read — so keeping the number on the owner wasn't durably protected and a
+              // later ClickUp ingest could auto-reassign it again (the loop the guard exists to stop).
+              rawValue: JSON.stringify({ number: cols.ys_loan_number, ofApplication: targetId || null, boundToTask: task.id, reassignedToApplication: targetId || null }).slice(0, 300) });
           } catch (_) { /* best-effort */ }
         }
         // cols.ys_loan_number stays SET → imports onto the rightful file.

@@ -277,17 +277,31 @@ const STIP = {
   cleared: { fg: 'var(--good,#3F7A5B)', bg: 'rgba(63,122,91,.12)', label: 'In & clear' },
   received: { fg: 'var(--amber,#B7791F)', bg: 'var(--amber-bg,#F6EEDD)', label: 'In — review' },
   insufficient: { fg: 'var(--crit,#B4483C)', bg: 'var(--crit-bg,#F6E7E4)', label: 'Not usable' },
-  missing: { fg: 'var(--muted,#4B585C)', bg: 'var(--paper,#F6F3EC)', label: 'Missing' },
+  // On file but not yet read — a real document IS uploaded to this condition; the reader picks it
+  // up automatically. Distinct (teal, "On file") from the muted, true "Missing — not uploaded".
+  on_file: { fg: 'var(--teal-deep,#256168)', bg: 'rgba(47,127,134,.12)', label: 'On file — reading' },
+  missing: { fg: 'var(--muted,#4B585C)', bg: 'var(--paper,#F6F3EC)', label: 'Not uploaded' },
 };
 const OWNER_LABEL = { borrower: 'Borrower', title: 'Title co.', appraiser: 'Appraiser', internal: 'Internal' };
-function Completeness({ completeness }) {
+function Completeness({ completeness, documentsOnFile = [] }) {
   if (!completeness || !completeness.stipulations || !completeness.stipulations.length) return null;
   const c = completeness;
+  // docType -> the on-file document filename(s), so a stipulation that's "on file" names the actual
+  // document linked to its condition (proof the desk found it), not just a status chip.
+  const filesByType = {};
+  for (const d of documentsOnFile) {
+    if (!d || !d.expectedType) continue;
+    (filesByType[d.expectedType] = filesByType[d.expectedType] || []).push(d.filename);
+  }
   return (
     <div style={{ marginBottom: 22 }}>
       <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px' }}>File completeness — what’s still needed</h4>
       <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginBottom: 10 }}>
-        {c.completenessPct}% of the required documents are in and clear · {c.counts.missing} missing · {c.counts.insufficient} not usable · {c.counts.received} in review
+        {c.completenessPct}% of the required documents are in and clear
+        {c.counts.on_file ? <span style={{ color: 'var(--teal-deep,#256168)' }}> · {c.counts.on_file} on file, being read</span> : null}
+        {c.counts.received ? <span> · {c.counts.received} in review</span> : null}
+        {c.counts.insufficient ? <span> · {c.counts.insufficient} not usable</span> : null}
+        {c.counts.missing ? <span> · {c.counts.missing} not uploaded</span> : null}
         {c.ctcBlockers && c.ctcBlockers.length ? <span style={{ color: 'var(--crit,#B4483C)' }}> · {c.ctcBlockers.length} block clear-to-close</span> : null}
       </div>
       <div style={{ height: 7, borderRadius: 999, background: 'var(--paper,#F6F3EC)', overflow: 'hidden', marginBottom: 12 }}>
@@ -303,6 +317,11 @@ function Completeness({ completeness }) {
                 <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: st.fg, background: st.bg, padding: '2px 7px', borderRadius: 6 }}>{st.label}</span>
                 <span style={{ fontSize: 10.5, color: 'var(--muted,#4B585C)' }}>{OWNER_LABEL[s.owner] || s.owner} · {s.gating}</span>
               </div>
+              {(filesByType[s.docType] || []).length > 0 && s.status !== 'missing' && (
+                <div style={{ fontSize: 10.5, color: 'var(--muted,#4B585C)', marginTop: 4, overflowWrap: 'anywhere' }} title={filesByType[s.docType].join(', ')}>
+                  📎 {filesByType[s.docType][0]}{filesByType[s.docType].length > 1 ? ` +${filesByType[s.docType].length - 1}` : ''}
+                </div>
+              )}
             </div>
           );
         })}
@@ -683,6 +702,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
   const amendments = data && data.amendments;
   const reasonability = data && data.reasonability;
   const verdict = data && data.verdict;
+  const documentsOnFile = (data && data.documentsOnFile) || [];
   const apprFindings = (appr && appr.findings) || [];
   const apprSum = (appr && appr.summary) || { fatal: 0, warning: 0, info: 0 };
   const exts = (data && data.extractions) || [];
@@ -748,7 +768,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
       <RiskScore risk={risk} />
 
       {/* file completeness — what's still needed to close */}
-      <Completeness completeness={completeness} />
+      <Completeness completeness={completeness} documentsOnFile={documentsOnFile} />
 
       {/* conditions coverage — ties every document back to the checklist */}
       <ConditionCoverage coverage={coverage} />
