@@ -51,7 +51,7 @@ async function queueReview({ applicationId, borrowerId, taskId, direction, field
         `SELECT 1 FROM sync_review_queue
           WHERE coalesce(task_id,'') = coalesce($1,'') AND field_key=$2 AND reason=$3
             AND status='rejected' LIMIT 1`, [taskId || null, fieldKey, reason]);
-      if (rej.rows[0]) return;
+      if (rej.rows[0]) return false;   // previously dismissed — nothing queued
     }
     // A DOB is a BORROWER-level fact: one open review per borrower + proposal,
     // not one per linked task (a borrower with three tasks was queueing three
@@ -63,7 +63,7 @@ async function queueReview({ applicationId, borrowerId, taskId, direction, field
           WHERE status='open' AND field_key='date_of_birth' AND borrower_id=$1
             AND coalesce(proposed_value,'') = coalesce($2,'') LIMIT 1`,
         [borrowerId, proposedValue == null ? null : String(proposedValue)]);
-      if (dup.rows[0]) return;
+      if (dup.rows[0]) return false;   // an identical open DOB review already exists
     }
     // Two-sided values: prefer explicit clickupValue/portalValue from the
     // caller; otherwise derive from direction (inbound: source=ClickUp is the
@@ -84,7 +84,11 @@ async function queueReview({ applicationId, borrowerId, taskId, direction, field
        rawValue == null ? null : String(rawValue), reason,
        cuV == null ? null : String(cuV), pV == null ? null : String(pV)]);
     if (ins.rows[0]) notifyLoanOfficer(ins.rows[0].id).catch(() => {});
-  } catch (e) { console.warn('[sync-review] queue insert skipped:', e.message); }
+    // Reached the insert without throwing → a row IS in the queue (freshly
+    // inserted, or an equal open row already there via ON CONFLICT). Callers that
+    // tell the user "flagged for review" rely on this to not over-promise.
+    return true;
+  } catch (e) { console.warn('[sync-review] queue insert skipped:', e.message); return false; }
 }
 
 /**

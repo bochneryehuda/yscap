@@ -173,6 +173,12 @@ const FIELD_LABELS = {
 // force-create) and the row closes itself on the next sync.
 const RESOLVABLE = new Set(['date_of_birth', 'expected_closing', 'actual_closing', 'acquisition_date', 'ssn', 'status',
   'email', 'cell_phone', 'first_name', 'current_address']);
+// Advisory rows that are DISMISS-ONLY: there is nothing to "approve" — the value
+// was already rejected at entry and never saved, so the only action is to fix the
+// value on the file and close this reminder. A duplicate loan number a staffer
+// tried to type is one of these (it shows an Approve that would be a confusing
+// no-op otherwise).
+const DISMISS_ONLY = new Set(['loan_number_duplicate_entered']);
 const showVal = (v) => (v && /^\d{4}-\d{2}-\d{2}$/.test(String(v)) ? fmtDay(v) : (v == null || v === '' ? '—' : String(v)));
 
 // Per-reason resolution actions for a Sitewire draw review (mirror of the server's map in
@@ -500,9 +506,11 @@ export default function SyncReviews() {
             )}
             {status === 'open' && !isSitewire && !canResolve && !fileActions && (
               <div className="row" style={{ gap: 8 }}>
-                <button className="btn primary btn-sm" disabled={busyId === r.id || !r.proposed_value}
-                  title={r.proposed_value ? 'Apply the proposed value (audited)' : 'No valid proposal to apply — dismiss or fix manually'}
-                  onClick={() => act(r.id, 'approve')}>{busyId === r.id ? '…' : 'Approve'}</button>
+                {!DISMISS_ONLY.has(r.reason) && (
+                  <button className="btn primary btn-sm" disabled={busyId === r.id || !r.proposed_value}
+                    title={r.proposed_value ? 'Apply the proposed value (audited)' : 'No valid proposal to apply — dismiss or fix manually'}
+                    onClick={() => act(r.id, 'approve')}>{busyId === r.id ? '…' : 'Approve'}</button>
+                )}
                 <button className="btn ghost btn-sm" disabled={busyId === r.id} onClick={() => act(r.id, 'reject')}>Dismiss</button>
               </div>
             )}

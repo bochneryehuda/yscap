@@ -88,8 +88,11 @@ function collisionMessage(collision, number) {
     return `Loan number ${collision.value || n} is already used on another file here — loan numbers must be unique.`;
   }
   // ClickUp-only (possibly a DSCR/data-only file we don't create loans from).
+  // NOTE: the "flagged for manual review" sentence is appended by the caller ONLY
+  // when the review row was actually queued — never asserted here (a queue hiccup
+  // must not make us claim a review that does not exist).
   const where = collision.taskName ? ` ("${collision.taskName}")` : '';
-  return `Loan number ${n} is already used on a different file in ClickUp${where} — even a data-only (e.g. DSCR) file. It must be unique to this file. This has been sent to manual review.`;
+  return `Loan number ${n} is already used on a different file in ClickUp${where} — even a data-only (e.g. DSCR) file. It must be unique to this file.`;
 }
 
 module.exports = { findLoanNumberCollision, collisionMessage };

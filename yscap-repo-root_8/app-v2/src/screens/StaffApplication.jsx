@@ -2008,7 +2008,11 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                         // the condition can only be signed off on VERIFIED
                         // experience (owner-directed 2026-07-20).
                         const p = it.tool_payload || {};
-                        const c = p.counts, v = p.verifiedCounts || {}, r = p.required;
+                        // Shortfall is measured against what must actually be VERIFIED
+                        // to sign off — the REGISTERED product's experience (gateNeed),
+                        // matching the sign-off gate. Falls back to the claim on older
+                        // payloads that predate gateNeed.
+                        const c = p.counts, v = p.verifiedCounts || {}, r = p.gateNeed || p.required;
                         // No experience priced/claimed on this file → nothing to
                         // verify. It reactivates the moment experience is entered
                         // on the application or in Products & Pricing.

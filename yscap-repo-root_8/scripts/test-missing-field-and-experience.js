@@ -86,8 +86,14 @@ const condCount = async (appId, code) => (await db.query(
       [tid, JSON.stringify({ app: { ys_loan_number: cuNum } })]);
     const c2 = await loanNumber.findLoanNumberCollision(cuNum);
     assert(c2 && c2.where === 'clickup_file', 'a loan number on a ClickUp-only (DSCR/data-only) file is caught');
-    assert(typeof loanNumber.collisionMessage(c2, cuNum) === 'string' && /manual review/i.test(loanNumber.collisionMessage(c2, cuNum)),
-      'a ClickUp-file collision message mentions manual review');
+    // collisionMessage states the FACTUAL rejection (ClickUp + must be unique); the
+    // "flagged for manual review" line is appended by the endpoint ONLY when the
+    // review row was actually queued (never over-promised by the message itself).
+    const c2msg = loanNumber.collisionMessage(c2, cuNum);
+    assert(typeof c2msg === 'string' && /ClickUp/i.test(c2msg) && /unique/i.test(c2msg),
+      'a ClickUp-file collision message names ClickUp and the uniqueness rule');
+    assert(!/manual review/i.test(c2msg),
+      'collisionMessage no longer hard-asserts manual review (the endpoint appends it only when truly queued)');
     assert((await loanNumber.findLoanNumberCollision(`YSCAP${sfx.replace(/[^0-9]/g,'').slice(0,8)}Z`)) === null,
       'a fresh, unused loan number has no collision');
 
@@ -120,6 +126,25 @@ const condCount = async (appId, code) => (await db.query(
     assert(pay.tool_payload && pay.tool_payload.verifiedCounts.flips === 1, 'VERIFIED count rises after the line is verified');
     assert(pay.tool_payload && pay.tool_payload.verifiedMet === true, 'the condition reads met once the flip is VERIFIED');
     assert(pay.status === 'received', 'the condition flips to received (ready to sign off) only on VERIFIED experience');
+
+    // ---- (5) reopen threshold matches the sign-off GATE (no reopen loop) ----
+    // Raise the CLAIM to 2 flips but register the product on only 1. The gate signs
+    // off on the REGISTERED need (1), so a signed-off condition whose VERIFIED count
+    // meets that need (1) must NOT reopen just because the claim (2) is higher —
+    // otherwise it would reopen on every recompute and re-sign forever.
+    await db.query(`UPDATE applications SET requested_exp_flips=2 WHERE id=$1`, [a4]);
+    await db.query(
+      `INSERT INTO product_registrations (application_id,program,inputs,quote,is_current)
+       VALUES ($1,'Standard','{"expFlips":1}'::jsonb,'{}'::jsonb,true)`, [a4]);
+    await db.query(
+      `UPDATE checklist_items SET status='satisfied', signed_off_at=now()
+        WHERE application_id=$1 AND tool_key='track_record'`, [a4]);
+    r = await experience.syncExperienceChecklistForApplication(a4);
+    pay = (await db.query(`SELECT tool_payload,status,signed_off_at FROM checklist_items WHERE application_id=$1 AND tool_key='track_record' LIMIT 1`, [a4])).rows[0];
+    assert(pay.tool_payload && pay.tool_payload.gateNeed && pay.tool_payload.gateNeed.flips === 1,
+      'gateNeed reflects the REGISTERED experience (1), not the higher app claim (2)');
+    assert(pay.signed_off_at != null && pay.status === 'satisfied' && !(r && r.reopened),
+      'a signed-off condition does NOT reopen when verified meets the registered need (no reopen loop)');
 
     console.log(failures ? `\n${failures} assertion(s) failed` : '\nALL missing-field / uniqueness / experience assertions passed');
   } catch (e) {

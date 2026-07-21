@@ -5196,15 +5196,27 @@ router.post('/applications/:id/loan-number', async (req, res) => {
     const loanNumber = require('../lib/loan-number');
     const collision = await loanNumber.findLoanNumberCollision(ln, { excludeAppId: req.params.id });
     if (collision) {
+      let queued = false;
       try {
-        await require('../lib/sync-review').queueReview({
+        // Show WHICH side already carries the number — never both. The number was
+        // REJECTED here (never saved to this file), so "In PILOT"/"In ClickUp"
+        // must reflect the OTHER file that owns it, not this rejected entry. The
+        // collision detail (other file / task) rides raw_value for the reviewer.
+        queued = await require('../lib/sync-review').queueReview({
           applicationId: req.params.id, direction: 'outbound', fieldKey: 'ys_loan_number',
-          reason: 'loan_number_duplicate_entered', proposedValue: ln, portalValue: ln,
+          reason: 'loan_number_duplicate_entered', proposedValue: ln,
+          portalValue: collision.where === 'our_file' ? ln : null,
           clickupValue: collision.where === 'clickup_file' ? ln : null,
+          rawValue: JSON.stringify({
+            number: ln, where: collision.where,
+            ofApplication: collision.applicationId || null, taskName: collision.taskName || null,
+          }),
           suppressIfRejected: true,
         });
       } catch (_) { /* review is best-effort; the reject below is the hard stop */ }
-      return res.status(409).json({ error: loanNumber.collisionMessage(collision, ln), duplicate: true });
+      const msg = loanNumber.collisionMessage(collision, ln)
+        + (queued ? ' It’s been flagged for manual review.' : '');
+      return res.status(409).json({ error: msg, duplicate: true });
     }
     let upd;
     try {
