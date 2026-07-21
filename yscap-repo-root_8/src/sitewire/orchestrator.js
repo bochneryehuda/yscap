@@ -766,27 +766,40 @@ const INSPECTION_METHODS = new Set(['mobile', 'traditional']);
 /**
  * Update the live Sitewire PROPERTY controls the coordinator should own from the PILOT desk instead of
  * logging into Sitewire (owner-directed 2026-07-21 — "ALL features that we have in Sitewire… control the
- * entire process from our system"). ONLY the two controls whose Sitewire field name we have CONFIRMED are
- * wired here (never-guess rule — a wrong field name is a silent 200-that-did-nothing):
+ * entire process from our system"). All four controls have CONFIRMED Sitewire field names (never-guess rule):
  *   • inactive          → Active ↔ Inactive (Sitewire "Mark Inactive": hide/pause the property)
+ *   • accepting_draws   → Draws Allowed ↔ Block Draws (borrower can/can't submit draws)
+ *   • sitewire_review   → Sitewire GC review ↔ In-house review
  *   • inspection_method → Virtual/mobile ↔ On-site/traditional (validated against the capital-partner rule)
- * The "Block Draws" and "Sitewire-GC ↔ In-house review" toggles are intentionally NOT here: their Sitewire
- * field names are not established anywhere in the integration, so shipping a guessed key would silently no-op.
+ * The two booleans `accepting_draws` + `sitewire_review` were confirmed from Sitewire's OWN portal toggle
+ * endpoints (toggle_accepting_draws / toggle_sitewire_review) in the owner-provided HAR capture — not guessed.
+ * Our integration writes them via the API (updateProperty), so a read-after-write verify FAILS CLOSED if the
+ * API ignores a field (parks a review or marks unverified) — a silent 200-that-did-nothing is impossible.
  * Same guarded path as every other write: managed-only (only-ours) → circuit breaker → updateProperty →
  * read-after-write verify (fail closed, park on mismatch) → journal → persist PILOT-side. Returns a result
- * object; a route maps the codes to HTTP. `changes` may carry either/both of { inactive, inspection_method }.
+ * object; a route maps the codes to HTTP. `changes` may carry any of
+ * { inactive, accepting_draws, sitewire_review, inspection_method }.
  */
 async function updatePropertyControls(appId, changes = {}, staffId = null) {
   const link = await getLink(appId);
   // only-ours / go-forward: only a PILOT-created live property can be controlled.
   if (!link || !link.sitewire_property_id || link.matched_by !== 'created') return { error: 'not_managed' };
 
-  const wantInactive = Object.prototype.hasOwnProperty.call(changes, 'inactive');
-  const wantMethod = changes.inspection_method != null && changes.inspection_method !== '';
   const patch = {};
-  let newInactive = null;
   let newMethod = null;
+  // The three BOOLEAN property controls whose real Sitewire field names are confirmed. `inactive` +
+  // `inspection_method` came from our own integration; `accepting_draws` (Block Draws) and `sitewire_review`
+  // (Sitewire GC review ↔ in-house) were confirmed from Sitewire's OWN portal toggle endpoints
+  // (POST /properties/:id/toggle_accepting_draws and toggle_sitewire_review) in the owner-provided capture
+  // 2026-07-21 — NOT guessed. Each is read back after the write (fail-closed verify) so a field Sitewire's
+  // API ignores can never look like a success.
+  const BOOL_FIELDS = ['inactive', 'accepting_draws', 'sitewire_review'];
+  const newBools = {}; // field -> boolean we set (for verify + journal)
+  for (const f of BOOL_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(changes, f)) { newBools[f] = !!changes[f]; patch[f] = newBools[f]; }
+  }
 
+  const wantMethod = changes.inspection_method != null && changes.inspection_method !== '';
   if (wantMethod) {
     const m = String(changes.inspection_method);
     if (!INSPECTION_METHODS.has(m)) return { error: 'invalid_method' };
@@ -802,7 +815,6 @@ async function updatePropertyControls(appId, changes = {}, staffId = null) {
     patch.inspection_method = m;
     newMethod = m;
   }
-  if (wantInactive) { newInactive = !!changes.inactive; patch.inactive = newInactive; }
   if (Object.keys(patch).length === 0) return { error: 'nothing_to_change' };
 
   // These are LIVE Sitewire settings (unlike lifecycle, PILOT keeps no shadow "inactive" to backfill), so
@@ -828,10 +840,10 @@ async function updatePropertyControls(appId, changes = {}, staffId = null) {
     try {
       const fresh = await client.getProperty(link.sitewire_property_id);
       if (fresh) {
-        if (newInactive != null) {
-          if (typeof fresh.inactive === 'boolean') {
-            if (fresh.inactive !== newInactive) { await park({ appId, reason: `sitewire_property_verify_failed: Sitewire property ${link.sitewire_property_id} did not persist inactive=${newInactive}` }); return { parked: 'verify_failed' }; }
-          } else verified = false;
+        for (const [f, want] of Object.entries(newBools)) {
+          if (typeof fresh[f] === 'boolean') {
+            if (fresh[f] !== want) { await park({ appId, reason: `sitewire_property_verify_failed: Sitewire property ${link.sitewire_property_id} did not persist ${f}=${want}` }); return { parked: 'verify_failed' }; }
+          } else verified = false; // field not echoed back by getProperty → can't confirm (fail closed)
         }
         if (newMethod != null) {
           if (fresh.inspection_method != null) {
@@ -840,21 +852,21 @@ async function updatePropertyControls(appId, changes = {}, staffId = null) {
         }
       } else verified = false;
     } catch (e) { console.warn('[sitewire] property-settings verify GET failed (unverified):', e && e.message); verified = false; }
-    if (newInactive != null) await journal({ appId, propertyId: link.sitewire_property_id, entity: 'property', entityId: link.sitewire_property_id, field: 'inactive', oldValue: null, newValue: newInactive, source: 'property_settings' });
+    for (const [f, want] of Object.entries(newBools)) await journal({ appId, propertyId: link.sitewire_property_id, entity: 'property', entityId: link.sitewire_property_id, field: f, oldValue: null, newValue: want, source: 'property_settings' });
     if (newMethod != null) await journal({ appId, propertyId: link.sitewire_property_id, entity: 'property', entityId: link.sitewire_property_id, field: 'inspection_method', oldValue: link.inspection_method || null, newValue: newMethod, source: 'property_settings' });
     sitewire = verified ? 'synced' : 'unverified';
   }
   // Persist the coordinator's inspection choice PILOT-side so resolveInspection + the next push agree.
-  // `inactive` has no shadow column (the desk reads it live from Sitewire), so nothing to persist for it.
+  // The boolean fields have no shadow column (the desk reads them live from Sitewire), so nothing to persist.
   if (newMethod != null) await db.query(`UPDATE sitewire_property_links SET inspection_method=$2, updated_at=now() WHERE application_id=$1`, [appId, newMethod]);
-  return { ok: true, inactive: newInactive, inspection_method: newMethod, sitewire };
+  return { ok: true, ...newBools, inspection_method: newMethod, sitewire };
 }
 
 /**
  * Read the LIVE Sitewire property (managed-only) so the desk can show its real current settings and offer the
- * controls above. Also the honest discovery surface for the two not-yet-wired toggles (Block Draws / review
- * type): the raw property object reveals the exact field names Sitewire uses, so they can be wired with no
- * guessing. Never throws — returns { available:false, reason } when unmanaged / off / unreachable.
+ * controls above (inactive / accepting_draws / sitewire_review / inspection_method are read straight off the
+ * returned property). The raw property object is also surfaced in the UI's advanced view. Never throws —
+ * returns { available:false, reason } when unmanaged / off / unreachable.
  */
 async function getPropertyLive(appId) {
   const link = await getLink(appId);
