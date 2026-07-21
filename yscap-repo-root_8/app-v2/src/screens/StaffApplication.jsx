@@ -3548,10 +3548,10 @@ function TprExport({ appId }) {
       {!prev ? <p className="muted small">Checking readiness…</p> : (
         <>
           <p className="muted small">
-            Packaged by subject property: the accepted loan documents (by category), the signed term sheet on its own,
-            and the borrower’s operating track record as HTML + Excel with each project’s verification documents in an
-            address-named folder. {prev.includedCount} accepted loan document{prev.includedCount === 1 ? '' : 's'}
-            {prev.trackDocs > 0 ? ` plus ${prev.trackDocs} track-record verification file${prev.trackDocs === 1 ? '' : 's'}` : ''} will be included (rejected & superseded files are excluded).
+            One folder named for the property, with a clean subfolder per document type (ID, LLC, Insurance, TITLE,
+            Appraisal, Term Sheet, Contract &amp; Assignment…). REO holds the track-record Excel plus a folder per prior
+            property. {prev.includedCount} document{prev.includedCount === 1 ? '' : 's'}
+            {prev.trackDocs > 0 ? ` plus ${prev.trackDocs} track-record file${prev.trackDocs === 1 ? '' : 's'}` : ''} will be included (the Heter Iska, rejected &amp; superseded files are excluded).
           </p>
           {prev.missing.length > 0 && (
             <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
