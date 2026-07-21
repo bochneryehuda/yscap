@@ -40,11 +40,35 @@ const cfg = require('../../config');
 // Each package is an ORDERED list of documents (order fixes the numeric
 // documentId 1..N and the anchor scoping) + the condition each signed copy
 // clears + whether the admin counter-signature is required.
+// A property-address one-liner for the SUBJECT line (owner-directed 2026-07-21: the
+// term-sheet e-sign email subject was just "Loan #NNN" — impossible to tell which
+// property when you're admin-signing several a day). Prefer a stored oneLine /
+// formatted_address; otherwise assemble from parts. Never adds punctuation for a
+// blank part, never throws.
+function subjectAddress(app) {
+  if (!app) return '';
+  const one = String(app.addr_oneline || app.addr_formatted || app.addr_scalar || '').trim();
+  if (one) return one;
+  const street = [app.addr_line1 || app.addr_street, app.addr_unit].filter(Boolean).join(' ').trim();
+  const csz = [app.addr_city, [app.addr_state, app.addr_zip].filter(Boolean).join(' ').trim()].filter(Boolean).join(', ');
+  return [street, csz].filter(Boolean).join(', ').trim();
+}
+function subjectSuffix(loan, address) {
+  const parts = [];
+  if (loan) parts.push(`Loan #${loan}`);
+  if (address) parts.push(address);
+  return parts.length ? ` — ${parts.join(' · ')}` : '';
+}
 const PACKAGES = {
   term_sheet_package: {
     label: 'Term-sheet package',
     countersignRequired: true,
-    subject: (loan) => `Your loan documents are ready to sign${loan ? ` — Loan #${loan}` : ''}`,
+    // The loan officer signs the term sheet FIRST alongside the borrower (owner-directed
+    // 2026-07-21). Order: borrower + loan officer at routingOrder 1, then admin (super_admin
+    // as lender) at routingOrder 2. The LO signature is ADDITIVE — an unassigned file falls
+    // back to the previous "borrower + admin" shape (see buildRoster).
+    loanOfficerRequired: true,
+    subject: (loan, addr) => `Your loan documents are ready to sign${subjectSuffix(loan, addr)}`,
     blurb: 'Please review and sign your term sheet, application, and business-purpose disclosure.',
     // doc_kind (unsigned source) -> anchor prefix + signed doc_kind + condition it clears.
     // `generate:true` docs are BUILT on our server from a stored Word template
@@ -65,7 +89,7 @@ const PACKAGES = {
   heter_iska: {
     label: 'Heter Iska',
     countersignRequired: false,
-    subject: (loan) => `Heter Iska ready to sign${loan ? ` — Loan #${loan}` : ''}`,
+    subject: (loan, addr) => `Heter Iska ready to sign${subjectSuffix(loan, addr)}`,
     blurb: 'Please review and sign the Heter Iska.',
     docs: [
       // BUILT on our server as a real PDF (iska-pdf.js) and uploaded AS PDF (genExt) —
@@ -88,7 +112,7 @@ const PACKAGES = {
     // gate (term-sheet origination) does not apply. Its own prerequisites (funded +
     // loan number + property) are enforced by the route + validateGenerated.
     skipAppraisalGate: true,
-    subject: (loan) => `Your draw request & wire instructions${loan ? ` — Loan #${loan}` : ''}`,
+    subject: (loan, addr) => `Your draw request & wire instructions${subjectSuffix(loan, addr)}`,
     blurb: 'Please review your draw request, enter your bank wire instructions, and sign.',
     docs: [
       { kind: 'draw_request', prefix: 'dr', signedKind: 'draw_request_signed', condition: 'draw_cond_signed_request', name: 'Draw Request & Wire Instructions', generate: true, genExt: 'pdf', wireForm: true },
@@ -108,10 +132,23 @@ async function loadApplication(db, applicationId) {
     `SELECT a.id, a.ys_loan_number,
             b.id AS b_id, b.first_name AS b_first, b.last_name AS b_last, b.email AS b_email,
             cb.id AS cb_id, cb.first_name AS cb_first, cb.last_name AS cb_last, cb.email AS cb_email,
-            a.co_borrower_id
+            a.co_borrower_id,
+            a.property_address->>'line1'  AS addr_line1,
+            a.property_address->>'street' AS addr_street,
+            a.property_address->>'unit'   AS addr_unit,
+            a.property_address->>'city'   AS addr_city,
+            a.property_address->>'state'  AS addr_state,
+            a.property_address->>'zip'    AS addr_zip,
+            a.property_address->>'oneLine'           AS addr_oneline,
+            a.property_address->>'formatted_address' AS addr_formatted,
+            CASE WHEN jsonb_typeof(a.property_address) = 'string'
+                 THEN a.property_address #>> '{}' END AS addr_scalar,
+            a.loan_officer_id, COALESCE(lo.full_name, a.loan_officer_name) AS officer_name,
+            lo.email AS officer_email
        FROM applications a
        JOIN borrowers b  ON b.id  = a.borrower_id
        LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id
+       LEFT JOIN staff_users lo ON lo.id = a.loan_officer_id
       WHERE a.id = $1 AND a.deleted_at IS NULL`, [applicationId]);
   if (!r.rows.length) { const e = new Error('Application not found'); e.retryable = false; throw e; }
   return r.rows[0];
@@ -444,6 +481,13 @@ function resolveRecipientIdentity(r, app) {
     return { email: app.b_email, name: `${app.b_first || ''} ${app.b_last || ''}`.trim() };
   }
   if (r.role === 'co_borrower') return { email: app.cb_email, name: `${app.cb_first || ''} ${app.cb_last || ''}`.trim() };
+  // Loan officer (owner-directed 2026-07-21) — re-resolve the LO email/name at
+  // SEND time so a reassignment or a corrected officer email between seeding and
+  // send reaches the actual envelope. A file that lost its officer between seed
+  // and send keeps the seeded identity (email/name null → falls through below).
+  if (r.role === 'loan_officer' && app.officer_email) {
+    return { email: app.officer_email, name: app.officer_name || app.officer_email };
+  }
   return { email: null, name: null };
 }
 
@@ -467,9 +511,21 @@ function buildRoster(app, spec, envelopeRowId, opts = {}) {
   // counter-signer, and never a SECOND signer.
   if (!spec.soloBorrower && app.co_borrower_id) {
     roster.push({
-      role: 'co_borrower', routingOrder: 1, recipientId: '2', isCountersigner: false,
+      role: 'co_borrower', routingOrder: 1, recipientId: String(roster.length + 1), isCountersigner: false,
       borrowerId: app.cb_id, name: `${app.cb_first} ${app.cb_last}`.trim(), email: app.cb_email,
       clientUserId: clientUserIdFor(envelopeRowId, 'co_borrower'),
+    });
+  }
+  // Loan officer signs the term-sheet package at routingOrder 1 alongside the
+  // borrower(s) — the super_admin lender at routingOrder 2 only signs after both
+  // the borrower AND the loan officer have signed (owner-directed 2026-07-21). Only
+  // added when the file has an ASSIGNED loan officer with an email — an unassigned
+  // file falls back to the previous roster shape so the send never blocks.
+  if (!spec.soloBorrower && spec.loanOfficerRequired && app.loan_officer_id && app.officer_email) {
+    roster.push({
+      role: 'loan_officer', routingOrder: 1, recipientId: String(roster.length + 1), isCountersigner: false,
+      borrowerId: null, name: app.officer_name || app.officer_email, email: app.officer_email,
+      clientUserId: clientUserIdFor(envelopeRowId, 'loan_officer'),
     });
   }
   if (!spec.soloBorrower && spec.countersignRequired) {
@@ -487,12 +543,16 @@ function buildRoster(app, spec, envelopeRowId, opts = {}) {
 // TERM SHEET ONLY (/ts_admin_sig/). documentIdByKind maps a doc_kind to the
 // numeric documentId assigned at assembly time.
 function tabsFor(role, spec, documentIdByKind) {
-  const suffix = role === 'borrower' ? 'b1' : role === 'co_borrower' ? 'b2' : 'admin';
+  const suffix = role === 'borrower' ? 'b1'
+    : role === 'co_borrower' ? 'b2'
+    : role === 'loan_officer' ? 'lo'
+    : 'admin';
   const tabsByDoc = {};
   for (const d of spec.docs) {
     const documentId = documentIdByKind[d.kind];
     if (!documentId) continue;   // that document isn't in this envelope
     if (role === 'admin' && d.prefix !== 'ts') continue;   // admin counter-signs the term sheet only
+    if (role === 'loan_officer' && d.prefix !== 'ts') continue;   // LO signs the term sheet only
     const entry = {
       sign: [`/${d.prefix}_${suffix}_sig/`],
       date: [`/${d.prefix}_${suffix}_dt/`],
@@ -683,6 +743,12 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
       await db.query(`DELETE FROM esign_recipients WHERE envelope_row_id=$1 AND recipient_id_ds=$2`, [row.id, r.recipient_id_ds]);
       continue;   // removed co-borrower → drop from the send AND the roster
     }
+    if (r.role === 'loan_officer' && (!app.loan_officer_id || !app.officer_email)) {
+      // LO unassigned or missing an email between seed and send → drop from the
+      // send instead of blocking (a re-assignment before send is honored below).
+      await db.query(`DELETE FROM esign_recipients WHERE envelope_row_id=$1 AND recipient_id_ds=$2`, [row.id, r.recipient_id_ds]);
+      continue;
+    }
     const { email, name } = resolveRecipientIdentity(r, app);
     if ((email && email !== r.email) || (name && name !== r.name)) {
       r.email = email || r.email; r.name = name || r.name;
@@ -690,6 +756,28 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
         [row.id, r.email, r.name, r.recipient_id_ds]);
     }
     roster.push(r);
+  }
+  // If an LO was ASSIGNED between seeding and send (or the package spec now requires
+  // one and the seeded roster missed it), splice one in at routingOrder 1 so the file
+  // benefits from the new signer without a re-issue. Skip if the LO seat already exists.
+  if (!spec.soloBorrower && spec.loanOfficerRequired && app.loan_officer_id && app.officer_email
+      && !roster.some((r) => r.role === 'loan_officer')) {
+    const nextRid = String(Math.max(0, ...roster.map((r) => Number(r.recipient_id_ds) || 0)) + 1);
+    const clientUserId = clientUserIdFor(row.id, 'loan_officer');
+    try {
+      const ins = await db.query(
+        `INSERT INTO esign_recipients
+           (envelope_row_id, role, routing_order, is_countersigner, recipient_id_ds,
+            borrower_id, name, email, embedded, client_user_id, status)
+         VALUES ($1,'loan_officer',1,false,$2,NULL,$3,$4,true,$5,'created')
+         RETURNING role, routing_order, recipient_id_ds, name, email, client_user_id, is_countersigner, borrower_id`,
+        [row.id, nextRid, app.officer_name || app.officer_email, app.officer_email, clientUserId]);
+      roster.push(ins.rows[0]);
+    } catch (e) {
+      // Best-effort — if the insert races or fails we still send with the existing
+      // roster; the completeness check below can retry the send with LO on the next tick.
+      console.warn('[esign] loan_officer splice failed:', e.message);
+    }
   }
   const signers = roster.map((r) => ({
     recipientId: r.recipient_id_ds,
@@ -710,6 +798,7 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
   const have = new Set(roster.map((r) => r.role));
   const need = ['borrower',
     ...(!spec.soloBorrower && app.co_borrower_id ? ['co_borrower'] : []),
+    ...(!spec.soloBorrower && spec.loanOfficerRequired && app.loan_officer_id && app.officer_email ? ['loan_officer'] : []),
     ...(!spec.soloBorrower && spec.countersignRequired ? ['admin'] : [])];
   if (!need.every((role) => have.has(role))) {
     const e = new Error('Recipient roster not fully seeded yet — will retry.'); e.retryable = true; throw e;
@@ -740,7 +829,7 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
     documents,
     signers,
     carbonCopies,
-    subject: spec.subject(app.ys_loan_number),
+    subject: spec.subject(app.ys_loan_number, subjectAddress(app)),
     emailBlurb: spec.blurb,
     brandId: cfg.docusign.brandId || undefined,
     customFields: {

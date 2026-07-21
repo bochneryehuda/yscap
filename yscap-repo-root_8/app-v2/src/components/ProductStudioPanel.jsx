@@ -862,7 +862,10 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
               </p>
               {prefill
                 ? <TermSheetStudio ref={studioRef} prefill={prefill} lockedIds={lockedIds}
-                    showAdmin={staffAdmin} onState={onStudioState} />
+                    showAdmin={staffAdmin} onState={onStudioState}
+                    officer={isStaff && app && (app.loan_officer_name || app.loan_officer_email)
+                      ? { name: app.loan_officer_name || '', email: app.loan_officer_email || '', nmls: app.loan_officer_nmls || '', role: 'Loan officer' }
+                      : null} />
                 : <p className="muted small">Loading your scenario…</p>}
               {manualLive && (
                 <div className="notice" style={{ margin: '10px 0' }}>
