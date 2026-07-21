@@ -780,34 +780,32 @@ const INSPECTION_METHODS = new Set(['mobile', 'traditional']);
 /**
  * Update the live Sitewire PROPERTY controls the coordinator should own from the PILOT desk instead of
  * logging into Sitewire (owner-directed 2026-07-21 — "ALL features that we have in Sitewire… control the
- * entire process from our system"). All four controls have CONFIRMED Sitewire field names (never-guess rule):
- *   • inactive          → Active ↔ Inactive (Sitewire "Mark Inactive": hide/pause the property)
- *   • accepting_draws   → Draws Allowed ↔ Block Draws (borrower can/can't submit draws)
- *   • sitewire_review   → Sitewire GC review ↔ In-house review
- *   • inspection_method → Virtual/mobile ↔ On-site/traditional (validated against the capital-partner rule)
- * The two booleans `accepting_draws` + `sitewire_review` were confirmed from Sitewire's OWN portal toggle
- * endpoints (toggle_accepting_draws / toggle_sitewire_review) in the owner-provided HAR capture — not guessed.
- * Our integration writes them via the API (updateProperty), so a read-after-write verify FAILS CLOSED if the
- * API ignores a field (parks a review or marks unverified) — a silent 200-that-did-nothing is impossible.
- * Same guarded path as every other write: managed-only (only-ours) → circuit breaker → updateProperty →
- * read-after-write verify (fail closed, park on mismatch) → journal → persist PILOT-side. Returns a result
- * object; a route maps the codes to HTTP. `changes` may carry any of
- * { inactive, accepting_draws, sitewire_review, inspection_method }.
+ * entire process from our system"). All controls use the OFFICIAL Sitewire API v2 field names (verified
+ * against docs/sitewire/sitewire-api-v2-swagger.json — never-guess):
+ *   • inactive                 → property.inactive          (Active ↔ Inactive)
+ *   • require_sitewire_inspector→ property.require_sitewire_inspector (Sitewire GC review ↔ In-house review)
+ *   • inspection_method        → property.inspection_method (Virtual/mobile ↔ On-site/traditional; rule-validated)
+ *   • processing_fee_cents     → property.processing_fee_cents (the per-draw fee)
+ *   • draw_eligible            → BUDGET.draw_eligible        (Draws Allowed ↔ Block Draws) — this lives on the
+ *                                budget, NOT the property, so it PATCHes /budgets/:id.
+ * IMPORTANT (corrected 2026-07-21 from the official spec): the website toggle names `accepting_draws` /
+ * `sitewire_review` are NOT API fields — the API ignores them. Draws-allowed is `budget.draw_eligible`;
+ * Sitewire-vs-in-house review is `property.require_sitewire_inspector`. Every write is read-after-write
+ * verified (FAIL CLOSED: a field the API doesn't echo leaves sitewire='unverified', a mismatch parks) so a
+ * silent 200-that-did-nothing is impossible. Same guarded path as every write: managed-only → circuit breaker
+ * → update → verify → journal → persist. `changes` may carry any of
+ * { inactive, require_sitewire_inspector, inspection_method, processing_fee_cents, draw_eligible }.
  */
 async function updatePropertyControls(appId, changes = {}, staffId = null) {
   const link = await getLink(appId);
   // only-ours / go-forward: only a PILOT-created live property can be controlled.
   if (!link || !link.sitewire_property_id || link.matched_by !== 'created') return { error: 'not_managed' };
 
-  const patch = {};
+  const patch = {};                 // PROPERTY patch (PATCH /properties/:id)
   let newMethod = null;
-  // The three BOOLEAN property controls whose real Sitewire field names are confirmed. `inactive` +
-  // `inspection_method` came from our own integration; `accepting_draws` (Block Draws) and `sitewire_review`
-  // (Sitewire GC review ↔ in-house) were confirmed from Sitewire's OWN portal toggle endpoints
-  // (POST /properties/:id/toggle_accepting_draws and toggle_sitewire_review) in the owner-provided capture
-  // 2026-07-21 — NOT guessed. Each is read back after the write (fail-closed verify) so a field Sitewire's
-  // API ignores can never look like a success.
-  const BOOL_FIELDS = ['inactive', 'accepting_draws', 'sitewire_review'];
+  // BOOLEAN PROPERTY controls (real API fields). `draw_eligible` is handled separately below — it lives on
+  // the BUDGET, not the property.
+  const BOOL_FIELDS = ['inactive', 'require_sitewire_inspector'];
   const newBools = {}; // field -> boolean we set (for verify + journal)
   for (const f of BOOL_FIELDS) {
     if (Object.prototype.hasOwnProperty.call(changes, f)) { newBools[f] = !!changes[f]; patch[f] = newBools[f]; }
@@ -830,10 +828,8 @@ async function updatePropertyControls(appId, changes = {}, staffId = null) {
     newMethod = m;
   }
 
-  // Draw FEE change after the property is pushed (owner-directed 2026-07-21 — "change the fee during the
-  // process… that should sync directly to Sitewire"). `processing_fee_cents` is a CONFIRMED property field
-  // (we already push it on create, propertyFields.processing_fee_cents). Integer cents, $0..$100k. The change
-  // PATCHes it live AND is persisted as the per-file fee_cents_override so resolveInspection + any re-push agree.
+  // Draw FEE change after the property is pushed. `processing_fee_cents` is a CONFIRMED property field (API
+  // spec + we push it on create). Integer cents, $0..$100k. PATCHed live AND persisted as fee_cents_override.
   let newFee = null;
   if (changes.processing_fee_cents != null && changes.processing_fee_cents !== '') {
     const fc = Math.round(Number(changes.processing_fee_cents));
@@ -841,59 +837,99 @@ async function updatePropertyControls(appId, changes = {}, staffId = null) {
     patch.processing_fee_cents = fc;
     newFee = fc;
   }
-  if (Object.keys(patch).length === 0) return { error: 'nothing_to_change' };
 
-  // These are LIVE Sitewire settings (unlike lifecycle, PILOT keeps no shadow "inactive" to backfill), so
-  // with writes off there is nothing to record — tell the caller the connection is off rather than pretend.
+  // Block Draws ↔ Draws Allowed is `draw_eligible` on the BUDGET (PATCH /budgets/:id) — a separate write.
+  let newDrawEligible = null;
+  if (Object.prototype.hasOwnProperty.call(changes, 'draw_eligible')) {
+    newDrawEligible = !!changes.draw_eligible;
+  }
+
+  if (Object.keys(patch).length === 0 && newDrawEligible === null) return { error: 'nothing_to_change' };
+
+  // These are LIVE Sitewire settings (unlike lifecycle, PILOT keeps no shadow to backfill), so with writes
+  // off there is nothing to record — tell the caller the connection is off rather than pretend.
   const canSync = switches.on('SITEWIRE_ENABLED') && (switches.on('SITEWIRE_OUTBOUND_ENABLED') || cfg.sitewireDryrun);
   if (!canSync) return { error: 'writes_off' };
 
-  await circuitCheck(1);
-  let property;
-  try {
-    property = await client.updateProperty(link.sitewire_property_id, patch);
-  } catch (e) {
-    if (e.retryable) throw e;   // transient → caller/queue retries; nothing changed
-    await park({ appId, reason: `sitewire_property_settings_failed: could not update property ${link.sitewire_property_id} (${Object.keys(patch).join(', ')}) in Sitewire (${e.status || 'error'})` });
-    return { parked: 'settings_' + (e.status || 'error') };
-  }
   let sitewire = 'unverified';
-  if (property && property.__dryrun) { sitewire = 'dryrun'; }
-  else {
-    // read-after-write verify, FAIL CLOSED (mirrors setPropertyLifecycle): a mismatch on a field we KNOW
-    // came back parks; a throwing/absent field is not proof it stuck → leaves sitewire='unverified'.
-    let verified = true;
+  let dryrun = false;
+
+  // ---- PROPERTY write (only if there's a property-level change) ----
+  if (Object.keys(patch).length > 0) {
+    await circuitCheck(1);
+    let property;
     try {
-      const fresh = await client.getProperty(link.sitewire_property_id);
-      if (fresh) {
-        for (const [f, want] of Object.entries(newBools)) {
-          if (typeof fresh[f] === 'boolean') {
-            if (fresh[f] !== want) { await park({ appId, reason: `sitewire_property_verify_failed: Sitewire property ${link.sitewire_property_id} did not persist ${f}=${want}` }); return { parked: 'verify_failed' }; }
-          } else verified = false; // field not echoed back by getProperty → can't confirm (fail closed)
-        }
-        if (newMethod != null) {
-          if (fresh.inspection_method != null) {
-            if (String(fresh.inspection_method) !== newMethod) { await park({ appId, reason: `sitewire_property_verify_failed: Sitewire property ${link.sitewire_property_id} did not persist inspection_method=${newMethod}` }); return { parked: 'verify_failed' }; }
-          } else verified = false;
-        }
-        if (newFee != null) {
-          const gotFee = Number(fresh.processing_fee_cents);
-          if (fresh.processing_fee_cents != null && Number.isFinite(gotFee)) {
-            if (gotFee !== newFee) { await park({ appId, reason: `sitewire_property_verify_failed: Sitewire property ${link.sitewire_property_id} did not persist processing_fee_cents=${newFee}` }); return { parked: 'verify_failed' }; }
-          } else verified = false;
-        }
-      } else verified = false;
-    } catch (e) { console.warn('[sitewire] property-settings verify GET failed (unverified):', e && e.message); verified = false; }
-    for (const [f, want] of Object.entries(newBools)) await journal({ appId, propertyId: link.sitewire_property_id, entity: 'property', entityId: link.sitewire_property_id, field: f, oldValue: null, newValue: want, source: 'property_settings' });
-    if (newMethod != null) await journal({ appId, propertyId: link.sitewire_property_id, entity: 'property', entityId: link.sitewire_property_id, field: 'inspection_method', oldValue: link.inspection_method || null, newValue: newMethod, source: 'property_settings' });
-    if (newFee != null) await journal({ appId, propertyId: link.sitewire_property_id, entity: 'property', entityId: link.sitewire_property_id, field: 'processing_fee_cents', oldValue: link.fee_cents_override != null ? Number(link.fee_cents_override) : null, newValue: newFee, source: 'property_settings' });
-    sitewire = verified ? 'synced' : 'unverified';
+      property = await client.updateProperty(link.sitewire_property_id, patch);
+    } catch (e) {
+      if (e.retryable) throw e;   // transient → caller/queue retries; nothing changed
+      await park({ appId, reason: `sitewire_property_settings_failed: could not update property ${link.sitewire_property_id} (${Object.keys(patch).join(', ')}) in Sitewire (${e.status || 'error'})` });
+      return { parked: 'settings_' + (e.status || 'error') };
+    }
+    if (property && property.__dryrun) { dryrun = true; }
+    else {
+      let verified = true;
+      try {
+        const fresh = await client.getProperty(link.sitewire_property_id);
+        if (fresh) {
+          for (const [f, want] of Object.entries(newBools)) {
+            if (typeof fresh[f] === 'boolean') {
+              if (fresh[f] !== want) { await park({ appId, reason: `sitewire_property_verify_failed: Sitewire property ${link.sitewire_property_id} did not persist ${f}=${want}` }); return { parked: 'verify_failed' }; }
+            } else verified = false; // field not echoed back → can't confirm (fail closed)
+          }
+          if (newMethod != null) {
+            if (fresh.inspection_method != null) {
+              if (String(fresh.inspection_method) !== newMethod) { await park({ appId, reason: `sitewire_property_verify_failed: Sitewire property ${link.sitewire_property_id} did not persist inspection_method=${newMethod}` }); return { parked: 'verify_failed' }; }
+            } else verified = false;
+          }
+          if (newFee != null) {
+            const gotFee = Number(fresh.processing_fee_cents);
+            if (fresh.processing_fee_cents != null && Number.isFinite(gotFee)) {
+              if (gotFee !== newFee) { await park({ appId, reason: `sitewire_property_verify_failed: Sitewire property ${link.sitewire_property_id} did not persist processing_fee_cents=${newFee}` }); return { parked: 'verify_failed' }; }
+            } else verified = false;
+          }
+        } else verified = false;
+      } catch (e) { console.warn('[sitewire] property-settings verify GET failed (unverified):', e && e.message); verified = false; }
+      for (const [f, want] of Object.entries(newBools)) await journal({ appId, propertyId: link.sitewire_property_id, entity: 'property', entityId: link.sitewire_property_id, field: f, oldValue: null, newValue: want, source: 'property_settings' });
+      if (newMethod != null) await journal({ appId, propertyId: link.sitewire_property_id, entity: 'property', entityId: link.sitewire_property_id, field: 'inspection_method', oldValue: link.inspection_method || null, newValue: newMethod, source: 'property_settings' });
+      if (newFee != null) await journal({ appId, propertyId: link.sitewire_property_id, entity: 'property', entityId: link.sitewire_property_id, field: 'processing_fee_cents', oldValue: link.fee_cents_override != null ? Number(link.fee_cents_override) : null, newValue: newFee, source: 'property_settings' });
+      sitewire = verified ? 'synced' : 'unverified';
+    }
   }
+
+  // ---- BUDGET write for draw_eligible (Block Draws) — PATCH /budgets/:id ----
+  if (newDrawEligible !== null) {
+    const budgetId = (link && link.sitewire_budget_id) || null;
+    if (!budgetId) return { error: 'no_budget' };
+    await circuitCheck(1);
+    let budget;
+    try {
+      budget = await client.updateBudget(budgetId, { draw_eligible: newDrawEligible });
+    } catch (e) {
+      if (e.retryable) throw e;
+      await park({ appId, reason: `sitewire_budget_settings_failed: could not set draw_eligible=${newDrawEligible} on budget ${budgetId} in Sitewire (${e.status || 'error'})` });
+      return { parked: 'settings_' + (e.status || 'error') };
+    }
+    if (budget && budget.__dryrun) { dryrun = true; }
+    else {
+      let ok = true;
+      try {
+        const fresh = await client.getBudget(budgetId);
+        if (fresh && typeof fresh.draw_eligible === 'boolean') {
+          if (fresh.draw_eligible !== newDrawEligible) { await park({ appId, reason: `sitewire_budget_verify_failed: Sitewire budget ${budgetId} did not persist draw_eligible=${newDrawEligible}` }); return { parked: 'verify_failed' }; }
+        } else ok = false;
+      } catch (e) { console.warn('[sitewire] draw_eligible verify GET failed (unverified):', e && e.message); ok = false; }
+      await journal({ appId, propertyId: link.sitewire_property_id, budgetId, entity: 'budget', entityId: budgetId, field: 'draw_eligible', oldValue: null, newValue: newDrawEligible, source: 'property_settings' });
+      // combine with any property-write verification: 'synced' only if BOTH verified.
+      sitewire = (sitewire === 'unverified') ? 'unverified' : (ok ? sitewire : 'unverified');
+      if (Object.keys(patch).length === 0) sitewire = ok ? 'synced' : 'unverified';
+    }
+  }
+  if (dryrun) sitewire = 'dryrun';
+
   // Persist the coordinator's inspection choice + fee PILOT-side so resolveInspection + the next push agree.
-  // The boolean fields have no shadow column (the desk reads them live from Sitewire), so nothing to persist.
   if (newMethod != null) await db.query(`UPDATE sitewire_property_links SET inspection_method=$2, updated_at=now() WHERE application_id=$1`, [appId, newMethod]);
   if (newFee != null) await db.query(`UPDATE sitewire_property_links SET fee_cents_override=$2, updated_at=now() WHERE application_id=$1`, [appId, newFee]);
-  return { ok: true, ...newBools, inspection_method: newMethod, processing_fee_cents: newFee, sitewire };
+  return { ok: true, ...newBools, inspection_method: newMethod, processing_fee_cents: newFee, draw_eligible: newDrawEligible, sitewire };
 }
 
 /**

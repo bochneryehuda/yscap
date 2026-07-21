@@ -24,6 +24,13 @@ let updateImpl = async (id, body) => { updateCalls.push({ id, body }); return { 
 let getImpl = async (id) => ({ id, inactive: false, inspection_method: 'mobile' });
 client.updateProperty = (id, body) => updateImpl(id, body);
 client.getProperty = (id) => getImpl(id);
+// Budget stubs (draw_eligible lives on the BUDGET). Default: echoes what it was asked.
+let budgetCalls = [];
+let updateBudgetImpl = async (id, body) => { budgetCalls.push({ id, body }); return { id, ...body }; };
+let getBudgetImpl = async (id) => ({ id, draw_eligible: true });
+client.updateBudget = (id, body) => updateBudgetImpl(id, body);
+client.getBudget = (id) => getBudgetImpl(id);
+const BUDGET_ID = 880000 + crypto.randomBytes(2).readUInt16BE(0);
 
 async function seedManaged({ propertyId = 970000 + crypto.randomBytes(2).readUInt16BE(0), created = true, withProperty = true, method = null } = {}) {
   const email = 'pc' + crypto.randomBytes(5).toString('hex') + '@example.com';
@@ -31,9 +38,9 @@ async function seedManaged({ propertyId = 970000 + crypto.randomBytes(2).readUIn
   const loan = 'PC' + crypto.randomBytes(3).toString('hex');
   const app = (await db.query(`INSERT INTO applications(borrower_id,status,ys_loan_number) VALUES($1,'funded',$2) RETURNING id`, [bor, loan])).rows[0].id;
   await db.query(
-    `INSERT INTO sitewire_property_links(application_id,sitewire_property_id,matched_by,state,pushed_at,lifecycle_state,inspection_method)
-     VALUES($1,$2,$3,'live',now(),'active',$4)`,
-    [app, withProperty ? propertyId : null, created ? 'created' : 'manual', method]);
+    `INSERT INTO sitewire_property_links(application_id,sitewire_property_id,sitewire_budget_id,matched_by,state,pushed_at,lifecycle_state,inspection_method)
+     VALUES($1,$2,$3,$4,'live',now(),'active',$5)`,
+    [app, withProperty ? propertyId : null, withProperty ? BUDGET_ID : null, created ? 'created' : 'manual', method]);
   return { app, bor, propertyId };
 }
 const methodOf = async (app) => (await db.query(`SELECT inspection_method FROM sitewire_property_links WHERE application_id=$1`, [app])).rows[0].inspection_method;
@@ -99,34 +106,38 @@ const cleanup = async (app, bor) => { await db.query(`DELETE FROM applications W
     await cleanup(app, bor);
   }
 
-  // ============ 5b. accepting_draws (Block Draws) — confirmed field, verified + journaled ============
+  // ============ 5b. draw_eligible (Block Draws) — real API field on the BUDGET, verified + journaled ============
   {
-    updateCalls = []; updateImpl = async (id, body) => { updateCalls.push({ id, body }); return { id, ...body }; };
-    getImpl = async (id) => ({ id, inactive: false, accepting_draws: false });
+    updateCalls = []; budgetCalls = [];
+    updateImpl = async (id, body) => { updateCalls.push({ id, body }); return { id, ...body }; };
+    updateBudgetImpl = async (id, body) => { budgetCalls.push({ id, body }); return { id, ...body }; };
+    getBudgetImpl = async (id) => ({ id, draw_eligible: false }); // echoes back the blocked state
     const { app, bor } = await seedManaged();
-    const r = await orch.updatePropertyControls(app, { accepting_draws: false }, null);
-    ok('draws: client called with accepting_draws=false', updateCalls.length === 1 && updateCalls[0].body.accepting_draws === false);
-    ok('draws: synced + returned', r.ok === true && r.sitewire === 'synced' && r.accepting_draws === false);
-    const jr = await db.query(`SELECT 1 FROM sitewire_write_log WHERE application_id=$1 AND field='accepting_draws'`, [app]);
+    const r = await orch.updatePropertyControls(app, { draw_eligible: false }, null);
+    ok('draws: BUDGET called with draw_eligible=false (not the property)', budgetCalls.length === 1 && budgetCalls[0].body.draw_eligible === false && Number(budgetCalls[0].id) === BUDGET_ID);
+    ok('draws: property NOT called (draw_eligible is budget-only)', updateCalls.length === 0);
+    ok('draws: synced + returned', r.ok === true && r.sitewire === 'synced' && r.draw_eligible === false);
+    const jr = await db.query(`SELECT 1 FROM sitewire_write_log WHERE application_id=$1 AND field='draw_eligible'`, [app]);
     ok('draws: journaled', jr.rowCount >= 1);
     await cleanup(app, bor);
   }
 
-  // ============ 5c. sitewire_review (GC ↔ in-house) — confirmed field ============
+  // ============ 5c. require_sitewire_inspector (Sitewire GC ↔ in-house) — real API property field ============
   {
-    updateCalls = []; getImpl = async (id) => ({ id, inactive: false, sitewire_review: false });
+    updateCalls = []; updateImpl = async (id, body) => { updateCalls.push({ id, body }); return { id, ...body }; };
+    getImpl = async (id) => ({ id, inactive: false, require_sitewire_inspector: false });
     const { app, bor } = await seedManaged();
-    const r = await orch.updatePropertyControls(app, { sitewire_review: false }, null);
-    ok('review: client called with sitewire_review=false', updateCalls.length === 1 && updateCalls[0].body.sitewire_review === false);
-    ok('review: synced', r.ok === true && r.sitewire === 'synced' && r.sitewire_review === false);
+    const r = await orch.updatePropertyControls(app, { require_sitewire_inspector: false }, null);
+    ok('review: PROPERTY called with require_sitewire_inspector=false', updateCalls.length === 1 && updateCalls[0].body.require_sitewire_inspector === false);
+    ok('review: synced', r.ok === true && r.sitewire === 'synced' && r.require_sitewire_inspector === false);
     await cleanup(app, bor);
   }
 
-  // ============ 5d. accepting_draws verify MISMATCH parks (200 that didn't stick) ============
+  // ============ 5d. draw_eligible verify MISMATCH parks (200 on the BUDGET that didn't stick) ============
   {
-    updateImpl = async (id, body) => ({ id, ...body }); getImpl = async (id) => ({ id, accepting_draws: true }); // asked false, still true
+    updateBudgetImpl = async (id, body) => ({ id, ...body }); getBudgetImpl = async (id) => ({ id, draw_eligible: true }); // asked false, still true
     const { app, bor } = await seedManaged();
-    const r = await orch.updatePropertyControls(app, { accepting_draws: false }, null);
+    const r = await orch.updatePropertyControls(app, { draw_eligible: false }, null);
     ok('draws verify-fail: parked', r.parked === 'verify_failed');
     await cleanup(app, bor);
   }

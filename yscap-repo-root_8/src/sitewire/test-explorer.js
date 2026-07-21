@@ -71,7 +71,7 @@ const INTEGRATED = new Set([
   'loan_number', 'capital_partner_id', 'address', 'total_units', 'development_type', 'construction_type',
   'borrower_entity_name', 'inspection_method', 'require_sitewire_inspector', 'require_capital_partner_approval',
   'allow_reallocation', 'processing_fee_cents', 'default_draw_coordinator_id', 'draw_checklist_template_id',
-  'inactive', 'accepting_draws', 'sitewire_review',
+  'inactive', 'draw_eligible', 'require_sitewire_inspector',
   // budget / job item
   'name', 'budgeted_cents', 'required_image_count', 'required_video_count', 'mandatory', 'description',
   'draw_eligible', 'funding_ratio', 'funding_threshold_cents', 'id',
