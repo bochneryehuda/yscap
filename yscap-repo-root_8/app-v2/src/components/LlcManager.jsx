@@ -238,6 +238,47 @@ export default function LlcManager({ llcId, onChanged, compactHeader, staff = fa
       </div>
       {!locked && <button className="btn primary small" style={{ marginTop: 8 }} disabled={busy === 'details'} onClick={saveDetails}>{busy === 'details' ? 'Saving…' : 'Save details'}</button>}
 
+      {/* Co-borrower quick-split (owner-directed 2026-07-21): when the file has
+          a CO-BORROWER and this LLC doesn't already list them, offer a one-
+          click 50/50 split. Rendered OUTSIDE the showOwnership gate so a FRESH
+          LLC (borrower hasn't typed their own % yet) still surfaces the prompt
+          — the whole point is to avoid the manual add. Clicking sets the
+          borrower to 50%, adds the co-borrower as a 50% member, and OPENS the
+          Ownership structure section (by seeding ownershipPct). User can then
+          edit either % or click "Save ownership" as usual. */}
+      {(() => {
+        if (locked || !coBorrower || !String(coBorrower.fullName || '').trim()) return null;
+        const already = (members || []).some((m) =>
+          m.memberKind !== 'entity'
+          && String(m.fullName || '').trim().toLowerCase() === String(coBorrower.fullName).trim().toLowerCase());
+        if (already) return null;
+        const currentOwn = ownSet ? own : null;
+        const applySplit = () => {
+          setF((s) => ({ ...s, ownershipPct: '50' }));
+          setMembers((ms) => [
+            ...(ms || []),
+            { fullName: coBorrower.fullName, ownershipPct: '50',
+              email: coBorrower.email || '', memberKind: 'person', ownerLlcId: null },
+          ]);
+        };
+        return (
+          <div className="notice" style={{ marginTop: 10, marginBottom: 4, background: 'rgba(47,127,134,.06)' }}>
+            <span className="small">
+              This file has a co-borrower ({coBorrower.fullName}). Split the LLC 50/50 to start —
+              you can adjust either percentage after adding.
+            </span>
+            <div className="row" style={{ gap: 8, marginTop: 6 }}>
+              <button className="btn primary small" onClick={applySplit}>
+                Split 50/50 with {coBorrower.fullName.split(' ')[0]}
+              </button>
+              <span className="muted small" title="Sets the borrower to 50% and adds the co-borrower as a 50% member.">
+                {currentOwn == null ? '(you haven\'t set your % yet)' : `(currently ${currentOwn}% you)`}
+              </span>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* ---- ownership structure (incl. layered entities): who owns the rest? ---- */}
       {showOwnership && (
         <div style={{ marginTop: 14 }}>
@@ -247,49 +288,7 @@ export default function LlcManager({ llcId, onChanged, compactHeader, staff = fa
               ? <>You own {own}% — tell us who owns the remaining {Math.max(0, Math.round((100 - own) * 100) / 100)}%. Every member and their percentage, until the total is 100%.</>
               : <>You own 100%. If this entity is actually owned by <strong>another LLC</strong> (a layered entity), lower your % and add that LLC below as an entity owner — it gets its own section, details and three documents.</>}
           </p>
-          {/* Co-borrower quick-split (owner-directed 2026-07-21): when the file
-              has a CO-BORROWER and this LLC doesn't already list them, offer
-              one-click 50/50 split (or 50/50 of whatever the borrower hasn't
-              already claimed for themselves) so staff don't have to hand-add
-              them. The user can then edit either % — the auto-add is a
-              starting point, not a rule. */}
-          {(() => {
-            if (locked || !coBorrower || !String(coBorrower.fullName || '').trim()) return null;
-            const already = (members || []).some((m) =>
-              m.memberKind !== 'entity'
-              && String(m.fullName || '').trim().toLowerCase() === String(coBorrower.fullName).trim().toLowerCase());
-            if (already) return null;
-            const currentOwn = ownSet ? own : 100;
-            // Split whatever share is unallocated to non-co-borrower members: default
-            // to a clean 50/50 of the file (borrower 50, co 50) if nothing is set yet;
-            // otherwise split the remaining % between borrower + co equally.
-            const applySplit = () => {
-              const halfBorrower = 50;
-              const halfCo = 50;
-              setF((s) => ({ ...s, ownershipPct: String(halfBorrower) }));
-              setMembers((ms) => [
-                ...(ms || []),
-                { fullName: coBorrower.fullName, ownershipPct: String(halfCo),
-                  email: coBorrower.email || '', memberKind: 'person', ownerLlcId: null },
-              ]);
-            };
-            return (
-              <div className="notice" style={{ marginBottom: 8, background: 'rgba(47,127,134,.06)' }}>
-                <span className="small">
-                  This file has a co-borrower ({coBorrower.fullName}). Split the LLC 50/50 to start —
-                  you can adjust either percentage after adding.
-                </span>
-                <div className="row" style={{ gap: 8, marginTop: 6 }}>
-                  <button className="btn primary small" onClick={applySplit}>
-                    Split 50/50 with {coBorrower.fullName.split(' ')[0]}
-                  </button>
-                  <span className="muted small" title="Sets the borrower to 50% and adds the co-borrower as a 50% member.">
-                    (currently {currentOwn}% you)
-                  </span>
-                </div>
-              </div>
-            );
-          })()}
+          {/* (Co-borrower quick-split moved above the ownership gate so a fresh LLC still surfaces it.) */}
           {(members || []).map((m, i) => (
             <div className="row" key={i} style={{ gap: 8, flexWrap: 'wrap', marginBottom: 6, alignItems: 'center' }}>
               <input className="input" style={{ flex: 2, minWidth: 160 }}

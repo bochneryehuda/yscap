@@ -326,6 +326,15 @@ export default function StaffVendors() {
                       Merge
                     </button>
                   )}
+                  {grp.length > 2 && (
+                    // 3+ vendors in the same cluster (post-merge-review 2026-07-21):
+                    // resolve pairwise — the user picks two at a time via the row
+                    // Merge action; running merge once collapses two, the next
+                    // reconcile pass surfaces the remaining 2-vendor cluster if any.
+                    <span className="muted small" style={{ marginLeft: 8 }}>
+                      ({grp.length} vendors — merge pairwise using the row "Merge" action)
+                    </span>
+                  )}
                 </li>
               ))}
             </ul>

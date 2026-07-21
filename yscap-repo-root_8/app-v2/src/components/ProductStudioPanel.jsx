@@ -105,6 +105,12 @@ export function overridesFromSnapshot(snap, mode) {
       term: f.tsTerm,
       fico: f.fico,
       expFlips: f.expFlips, expHolds: f.expBrrrr, expGround: f.expGround,
+      // Vesting LLC typed on the studio (owner-directed 2026-07-21): the
+      // subject-property LLC name flows to the register endpoints, which
+      // resolve-or-create it as the file's vesting LLC when none is linked
+      // yet. Whitespace-only is dropped by compact() so a blank studio input
+      // never accidentally creates a bogus llcs row.
+      entityName: f.entityName && String(f.entityName).trim() ? String(f.entityName).trim() : null,
     }),
     // A blanked months field actively CLEARS the requested reserve on
     // re-register (root-caused 2026-07-16: compact() omitted it, so the server
