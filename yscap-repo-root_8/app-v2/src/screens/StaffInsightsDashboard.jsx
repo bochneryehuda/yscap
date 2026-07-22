@@ -94,6 +94,7 @@ export default function StaffInsightsDashboard() {
           <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)' }}>
             across {((d.aiSpend30d && d.aiSpend30d.n) || 0)} AI calls
           </div>
+          <AiCostSpark />
         </Card>
 
         {/* Training proposals */}
@@ -149,6 +150,36 @@ function Row({ label, count, color }) {
     </div>
   );
 }
+// R3.36 — 7-day mini-sparkline. Pure inline SVG, no chart lib.
+function AiCostSpark() {
+  const [rows, setRows] = React.useState([]);
+  React.useEffect(() => {
+    api.insightsAiCostTrend().then((r) => setRows((r && r.days) || [])).catch(() => setRows([]));
+  }, []);
+  const days = [];
+  const now = new Date();
+  for (let i = 6; i >= 0; i -= 1) {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+    const iso = d.toISOString().slice(0, 10);
+    const hit = rows.find((r) => String(r.d).slice(0, 10) === iso);
+    days.push({ iso, cents: (hit && hit.cents) || 0 });
+  }
+  const max = Math.max(1, ...days.map((d) => d.cents));
+  return (
+    <svg width="100%" height="28" viewBox="0 0 140 28" preserveAspectRatio="none" style={{ marginTop: 6 }}>
+      {days.map((d, i) => {
+        const bh = Math.max(1, Math.round((d.cents / max) * 24));
+        return (
+          <rect key={d.iso} x={i * 20 + 2} y={28 - bh} width="14" height={bh}
+            fill="var(--teal-deep,#256168)" opacity={d.cents ? 0.8 : 0.25}>
+            <title>{d.iso}: ${(d.cents / 100).toFixed(2)}</title>
+          </rect>
+        );
+      })}
+    </svg>
+  );
+}
+
 function Empty({ children }) {
   return <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', fontStyle: 'italic' }}>{children}</div>;
 }

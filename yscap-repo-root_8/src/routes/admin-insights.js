@@ -89,6 +89,20 @@ router.get('/', requireRole('admin'), async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message || 'insights load failed' }); }
 });
 
+// R3.36 — 7-day AI cost trend (per-day $ + call count). admin+ only.
+router.get('/ai-cost-trend', requireRole('admin'), async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT date_trunc('day', created_at)::date AS d,
+              COALESCE(SUM(cost_cents),0)::int AS cents,
+              COUNT(*)::int AS n
+         FROM ai_cost_events
+        WHERE created_at > now() - interval '7 days'
+        GROUP BY d ORDER BY d`);
+    res.json({ ok: true, days: r.rows });
+  } catch (e) { res.status(500).json({ error: e.message || 'trend load failed' }); }
+});
+
 // R3.30 — Portfolio search: files with a given AI suggestion open.
 //   GET /files-with-suggestion?source=assignment_fraud&severity=fatal&limit=50
 // admin+ only. Returns application_id + address + last-modified so the insights

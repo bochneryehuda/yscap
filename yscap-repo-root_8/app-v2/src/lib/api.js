@@ -482,6 +482,7 @@ export const api = {
   fraudBannerSnooze:      (appId, hours = 24, note) => req('POST', `/api/underwriting/${appId}/fraud-banner/snooze`, { hours, note }),
   fileKnowledgeGraph:     (appId) => req('GET', `/api/underwriting/${appId}/knowledge-graph`),
   insightsDashboard:      () => req('GET', '/api/admin/insights'),
+  insightsAiCostTrend:    () => req('GET', '/api/admin/insights/ai-cost-trend'),
   insightsFilesWithSuggestion: (params = {}) => {
     const qs = new URLSearchParams(params).toString();
     return req('GET', `/api/admin/insights/files-with-suggestion${qs ? '?' + qs : ''}`);
