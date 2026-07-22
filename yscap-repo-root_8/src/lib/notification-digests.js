@@ -278,6 +278,72 @@ async function weeklyTopRiskyFilesOnce() {
   return admins.rows.length;
 }
 
+/* R4.17 — Weekly per-LO AI digest. Each active loan officer (or processor)
+   gets ONE email listing the files THEY own that have open AI findings,
+   ordered by weighted risk score (same fatal=25/warn=8/info=2/other=4 math
+   as R4.1/R4.13). Silent for an LO with no findings. Once per week per LO,
+   audit_log-gated (entity_id = staff uuid). LO is the assignee we mirror to
+   application_assignees — matches how staff scope everything else. */
+async function weeklyLoAiDigestOnce() {
+  let officers;
+  try {
+    officers = await db.query(
+      `SELECT DISTINCT u.id, u.email, u.full_name
+         FROM staff_users u
+         JOIN applications a ON a.loan_officer_id = u.id
+         JOIN ai_suggestions s ON s.application_id = a.id
+        WHERE u.is_active = true
+          AND u.role IN ('loan_officer','processor','admin','super_admin')
+          AND a.deleted_at IS NULL
+          AND a.status NOT IN ('withdrawn','cancelled','declined','funded')
+          AND s.status IN ('open','marked_important','escalated','asked_admin')`);
+  } catch (_) { return 0; }
+  let sent = 0;
+  for (const lo of officers.rows) {
+    if (!(await _gate('lo_weekly_ai_digest', lo.id, '6 days'))) continue;
+    let files;
+    try {
+      files = await db.query(
+        `SELECT a.id, a.property_address,
+                LEAST(100, COALESCE(SUM(CASE severity WHEN 'fatal' THEN 25 WHEN 'warning' THEN 8 WHEN 'info' THEN 2 ELSE 4 END),0))::int AS score,
+                COUNT(*)::int AS open_findings,
+                COUNT(*) FILTER (WHERE severity='fatal')::int AS fatals,
+                b.first_name, b.last_name
+           FROM applications a
+           JOIN ai_suggestions s ON s.application_id = a.id
+           LEFT JOIN borrowers b ON b.id = a.borrower_id
+          WHERE a.loan_officer_id = $1
+            AND a.deleted_at IS NULL
+            AND a.status NOT IN ('withdrawn','cancelled','declined','funded')
+            AND s.status IN ('open','marked_important','escalated','asked_admin')
+          GROUP BY a.id, a.property_address, b.first_name, b.last_name
+          ORDER BY score DESC
+          LIMIT 10`, [lo.id]);
+    } catch (_) { continue; }
+    if (!files.rows.length) { await _stamp('lo_weekly_ai_digest', lo.id, { files: 0 }); continue; }
+    const totalFatals = files.rows.reduce((n, r) => n + (r.fatals || 0), 0);
+    const lines = files.rows.map((r) => {
+      const addr = (r.property_address && (r.property_address.line1 || r.property_address.address || r.property_address.oneLine)) || String(r.id).slice(0, 8);
+      const bucket = r.score >= 80 ? 'CRITICAL' : r.score >= 50 ? 'ELEVATED' : 'moderate';
+      const who = `${r.first_name || ''} ${r.last_name || ''}`.trim();
+      return `• ${addr}${who ? ` — ${who}` : ''} · score ${r.score} (${bucket}) · ${r.open_findings} open${r.fatals ? ` · ${r.fatals} fatal` : ''}`;
+    });
+    try {
+      await notify.notifyStaff(lo.id, {
+        type: 'digest',
+        title: `Your files with open AI findings (${files.rows.length})`,
+        badge: { text: 'Weekly', tone: totalFatals ? 'crit' : 'gold' },
+        hero: { label: 'Highest risk', value: String(files.rows[0].score), sub: `${files.rows.length} file${files.rows.length === 1 ? '' : 's'} · ${totalFatals} fatal`, tone: totalFatals ? 'crit' : 'gold' },
+        body: 'PILOT found things worth a look on the files below. Each item is a suggestion — nothing has been changed. Open the file, review the AI Findings panel, then decide.',
+        lines,
+        link: '/internal/staff', ctaLabel: 'Open your pipeline', emailTo: lo.email });
+      sent++;
+    } catch (e) { console.error('[digest] lo-weekly-ai', lo.id, e && e.message); }
+    await _stamp('lo_weekly_ai_digest', lo.id, { files: files.rows.length, totalFatals });
+  }
+  return sent;
+}
+
 /* R3.43 — Weekly super-admin digest of pending AI questions. Every super-admin
    with is_active=true gets ONE email per week listing every ai_admin_questions
    row still waiting for their answer, oldest first. Silent when no pending
@@ -784,6 +850,7 @@ async function runDue() {
     if (weekday === 'Mon') await weeklyAdminSummaryOnce().catch((e) => console.error('[digests] admin', e && e.message));
     if (weekday === 'Mon') await weeklyAdminAiQuestionsOnce().catch((e) => console.error('[digests] admin-ai-questions', e && e.message));
     if (weekday === 'Mon') await weeklyTopRiskyFilesOnce().catch((e) => console.error('[digests] admin-top-risky', e && e.message));
+    if (weekday === 'Mon') await weeklyLoAiDigestOnce().catch((e) => console.error('[digests] lo-weekly-ai', e && e.message));
   }
   if (hour >= 8 && hour < 18) {
     await weeklyBorrowerOutstandingOnce().catch((e) => console.error('[digests] borrower', e && e.message));
@@ -808,5 +875,5 @@ module.exports = {
   weeklyBorrowerOutstandingOnce, dailyPipelineDigestOnce, staleFileAlertsOnce, weeklyAdminSummaryOnce,
   drawFindingsAwaitingBorrowerOnce, drawReleaseOverdueOnce, workflowAgingOnce,
   trainingRunOnce, certificateSurveyOnce, autoCommitteeReviewOnce, directSourceSweepOnce, autoReadSweepOnce, section1071SweepOnce,
-  aiCrossdocSweepOnce, weeklyAdminAiQuestionsOnce, weeklyTopRiskyFilesOnce,
+  aiCrossdocSweepOnce, weeklyAdminAiQuestionsOnce, weeklyTopRiskyFilesOnce, weeklyLoAiDigestOnce,
 };
