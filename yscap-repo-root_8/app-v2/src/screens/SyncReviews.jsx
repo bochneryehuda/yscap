@@ -294,13 +294,23 @@ export default function SyncReviews() {
       if (out.outcome === 'closed') {
         // 'adopt' means PILOT applied the proven correction to both systems;
         // 'agree' means the two sides already matched. Say which — never claim
-        // "already fixed" when PILOT itself wrote the value.
-        setBulkMsg(out.reason === 'adopt'
-          ? '✓ Re-checked — PILOT confirmed the correct value and cleared this review (applied to both systems).'
-          : '✓ Re-checked — the two sides already match, so PILOT cleared this review on its own.');
+        // "already fixed" when PILOT itself wrote the value. The loan-number
+        // duplicate reasons ('file_removed' / 'no_longer_duplicated') get their
+        // own plain-language line — "the two sides match" doesn't describe a
+        // duplicate-loan-number clash that is now gone.
+        setBulkMsg(
+          out.reason === 'adopt'
+            ? '✓ Re-checked — PILOT confirmed the correct value and cleared this review (applied to both systems).'
+            : out.reason === 'file_removed'
+              ? '✓ Re-checked — the duplicate file was removed from the portal (it’s now a data-only DSCR), so nothing is clashing. Cleared.'
+              : out.reason === 'no_longer_duplicated'
+                ? '✓ Re-checked — that loan number is no longer on any other file, so PILOT cleared this on its own.'
+                : '✓ Re-checked — the two sides already match, so PILOT cleared this review on its own.');
         await load();
       } else if (out.outcome === 'still_open') {
-        setRecheckMsg((m) => ({ ...m, [id]: 'Checked just now — the two sides still don’t match, so this still needs you.' }));
+        setRecheckMsg((m) => ({ ...m, [id]: out.reason === 'still_duplicated'
+          ? 'Checked just now — that loan number is still on another file too, so this still needs you.'
+          : 'Checked just now — the two sides still don’t match, so this still needs you.' }));
         await load();
       } else if (out.outcome === 'error') {
         setRecheckMsg((m) => ({ ...m, [id]: 'Couldn’t reach ClickUp to re-check just now — try again in a moment.' }));

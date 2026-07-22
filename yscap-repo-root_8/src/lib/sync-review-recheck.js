@@ -56,6 +56,17 @@ function canonAddr(v) {
 }
 const canonSsn = (v) => { const d = String(v == null ? '' : v).replace(/\D/g, ''); return d.length === 9 ? d : ''; };
 const canonDay = (v) => sanitizeDateOnly(v) || '';
+const canonLoan = (v) => String(v == null ? '' : v).trim().toUpperCase();
+
+// The contested YS loan number for a loan-number finding, read out of the row.
+// The ingest producer stores it in raw_value.number (and clickup_value); the
+// staff front-door producer stores it in proposed_value (and clickup/portal).
+function loanNumberOf(row) {
+  let raw = null;
+  try { raw = row && row.raw_value ? JSON.parse(row.raw_value) : null; } catch (_) { raw = null; }
+  const n = (raw && raw.number) || (row && (row.clickup_value || row.proposed_value || row.portal_value)) || null;
+  return n ? String(n).trim() : null;
+}
 
 /**
  * Pure: do the two live values for `fieldKey` AGREE now (disagreement gone)?
@@ -168,6 +179,61 @@ async function computeRecheck(row, opts) {
       return { outcome: 'closed', reason: 'adopt', value: d.value };
     }
     return { outcome: 'still_open', reason: 'differs' };
+  }
+
+  // ---- YS loan-number DUPLICATE finding — the "two files claim ONE number" class
+  // (ingest's copied_loan_number_needs_assignment, or the staff front-door
+  // loan_number_duplicate_entered). This is NOT a two-sided value disagreement, so
+  // it fell through to 'unsupported' before — Re-check could never clear it, which
+  // is exactly the dead-end the owner hit after turning the duplicate into a DSCR
+  // and clearing its number (2026-07-22, Libby Baum / 1600 Mildred Ave). Re-derive
+  // the collision LIVE and close the row iff the clash is genuinely gone; a number
+  // still owned by another live file/task keeps the row open (never a blind close).
+  if (fieldKey === 'ys_loan_number') {
+    const number = loanNumberOf(row);
+    if (!number) return { outcome: 'unsupported', reason: 'no_number' };
+
+    // (a) THIS file was removed from the portal (descoped to a data-only DSCR, or
+    // soft-deleted). The "this file holds a copy" clash is moot — nothing on a file
+    // that no longer exists can clash with anything.
+    if (appId) {
+      const a = (await db.query(`SELECT deleted_at FROM applications WHERE id=$1`, [appId])).rows[0];
+      if (a && a.deleted_at) {
+        const closed = await syncReview.closeStaleReviews({
+          applicationId: appId, taskId: taskId || undefined, fieldKey: 'ys_loan_number',
+          note: 'auto-closed by re-check — this file was removed from the portal (its ClickUp task is no longer a loan file), so the loan number no longer clashes here.' });
+        return { outcome: 'closed', reason: 'file_removed', closed };
+      }
+    }
+
+    // (b) Re-derive the LIVE collision from THIS file's perspective. No collision →
+    // the number is unique now (the duplicate was cleared or renumbered) → close.
+    let collision;
+    try {
+      collision = await require('./loan-number').findLoanNumberCollision(number, { excludeAppId: appId || undefined });
+    } catch (e) { return { outcome: 'error', reason: 'loan_number_check_failed', message: e.message }; }
+
+    // (c) A ClickUp-only collision may be a STALE cache row (the duplicate's number
+    // was cleared in ClickUp but that task hasn't been re-pulled into the index
+    // yet). Confirm it LIVE before keeping the row open — read the specific task and
+    // see whether it still carries the number. A read hiccup is conservative (keep
+    // the collision); a 404 means the other task is gone, so its claim is gone.
+    if (collision && collision.where === 'clickup_file' && collision.taskId) {
+      try {
+        const task = await clickup.getTask(collision.taskId);
+        const cf = ((task && task.custom_fields) || []).find((c) => c.id === F.PIPELINE.ysLoanNumber);
+        const live = cf && cf.value != null ? canonLoan(cf.value) : '';
+        if (live !== canonLoan(number)) collision = null;   // stale cache — cleared at the source
+      } catch (e) { if (e && e.status === 404) collision = null; }
+    }
+
+    if (!collision) {
+      const closed = await syncReview.closeStaleReviews({
+        applicationId: appId || undefined, taskId: taskId || undefined, fieldKey: 'ys_loan_number',
+        note: `auto-closed by re-check — loan number ${number} is no longer used on any other file (the duplicate was cleared or renumbered).` });
+      return { outcome: 'closed', reason: 'no_longer_duplicated', closed };
+    }
+    return { outcome: 'still_open', reason: 'still_duplicated' };
   }
 
   // ---- Value fields we can prove by a two-sided re-read.
