@@ -19,6 +19,12 @@ const encompass = require('../lib/integrations/encompass');
 
 // ── Loan reads ─────────────────────────────────────────────────────────────
 
+// Passthrough to the low-level guarded pipeline-search POST. The bulk-pull
+// job uses this directly to page through the whole tenant with a custom
+// {filter, fields, limit}; the convenience wrapper `findLoanByLoanNumber`
+// below is for the common by-loan-number lookup.
+const pipelineSearch = encompass.pipelineSearch;
+
 // Full raw loan by opaque Encompass GUID. The GUID is the join key we cache in
 // applications.encompass_loan_guid so subsequent pulls skip the pipeline search.
 async function getLoan(guid, { entities } = {}) {
@@ -75,8 +81,9 @@ module.exports = {
   configured,
   ping,
   // Loan reads
+  pipelineSearch,        // the raw guarded pipeline-search POST (used by the bulk-pull job)
   getLoan,
-  findLoanByLoanNumber,
+  findLoanByLoanNumber,  // convenience: pipeline-search by loan number
   getMilestones,
   getMilestoneLog,
   // Settings / field catalog reads

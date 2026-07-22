@@ -248,7 +248,37 @@ async function main() {
   assert.ok(runFinal, 'bulk pull run row finalized');
   assert.strictEqual(runFinal.params[6], 'completed', 'run finalized to completed');
 
-  console.log('OK — Encompass reader unit tests pass (includes super-dump + bulk-pull).');
+  // (10) Contract check — the REAL client at src/encompass/client.js must
+  // export EVERY method the reader calls. This catches the "mock has it but
+  // real client doesn't" bug class (root cause of the 2026-07-22 bulk-pull
+  // crash "client.pipelineSearch is not a function"). No network — just
+  // module inspection with the OAuth env unset so nothing runs.
+  {
+    const savedEnv = { ...process.env };
+    delete process.env.ENCOMPASS_CLIENT_ID;
+    delete process.env.ENCOMPASS_CLIENT_SECRET;
+    delete process.env.ENCOMPASS_INSTANCE_ID;
+    delete require.cache[require.resolve('../src/config')];
+    delete require.cache[require.resolve('../src/lib/integrations/encompass')];
+    // Bypass the cache we planted at the top of the file so we load the REAL client here.
+    const realClientPath = require.resolve('../src/encompass/client');
+    const cachedMock = require.cache[realClientPath];
+    delete require.cache[realClientPath];
+    const realClient = require('../src/encompass/client');
+    const readerSrc = require('fs').readFileSync(require.resolve('../src/encompass/reader'), 'utf8');
+    // Every `client.<method>(` call in reader.js must resolve on the real client.
+    const usedMethods = [...new Set([...readerSrc.matchAll(/\bclient\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g)].map((m) => m[1]))];
+    assert.ok(usedMethods.length > 0, 'reader.js references at least one client method');
+    for (const name of usedMethods) {
+      assert.strictEqual(typeof realClient[name], 'function',
+        `reader.js calls client.${name}(...) but the REAL src/encompass/client.js does not export a function of that name`);
+    }
+    // Restore the mock so subsequent test runs are unaffected.
+    if (cachedMock) require.cache[realClientPath] = cachedMock;
+    Object.assign(process.env, savedEnv);
+  }
+
+  console.log('OK — Encompass reader unit tests pass (includes super-dump + bulk-pull + client-contract check).');
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });
