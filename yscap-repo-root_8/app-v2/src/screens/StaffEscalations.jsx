@@ -257,6 +257,19 @@ export default function StaffEscalations() {
                       : `Leverage: acq LTV ${pctOf(s.acqLtvPct)} · ARV ${pctOf(s.arvPct)} · LTC ${pctOf(s.ltcPct)}`}
                     {r.requested_by_name ? ` · requested by ${r.requested_by_name}` : (s.requestedByBorrower ? ' · requested by the borrower' : '')}
                   </div>
+                  {/* Owner-directed 2026-07-22: the approval must state whether the
+                      3-month minimum earned interest is still on (its default for a
+                      manual product) or was turned off, plus the accrual type. */}
+                  {(s.minInterest != null || s.accrual) && (
+                    <div className="muted small" style={{ marginTop: 2 }}>
+                      {s.minInterest != null && (
+                        <>3-month minimum interest: <strong>{s.minInterest ? 'ON' : 'OFF'}</strong>
+                          {s.minInterestDefault != null ? (s.minInterest === s.minInterestDefault ? ' (left at the default)' : ' (changed from the default)') : ''}
+                        </>
+                      )}
+                      {s.accrual ? `${s.minInterest != null ? ' · ' : ''}Accrual: ${s.accrual === 'dutch' ? 'Dutch / Full-Boat' : 'Non-Dutch / As-Drawn'}` : ''}
+                    </div>
+                  )}
                 </div>
                 <span className={`ts-badge ${badgeCls}`}>{r.status}</span>
               </div>

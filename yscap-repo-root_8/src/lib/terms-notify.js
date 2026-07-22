@@ -25,12 +25,31 @@ async function sendBorrowerTerms(appId, { quote, total, termMonths } = {}) {
   const email = require('./email');
   const { borrowerTermsEmail } = require('./product-registration');
 
+  // Term-sheet options (owner-directed 2026-07-22) live on the file after
+  // registration — load them so the confirm email shows the accrual + key dates
+  // and includes the 3-month minimum-interest line ONLY when it's on. A legacy
+  // file (registered before this change, min_interest_enabled NULL) falls back to
+  // the program default (manual ON, Standard/Gold OFF).
+  let termOptions = null;
   // Brand the email to (and From) the assigned loan officer, matching the
   // register routes so recurring business stays with the officer's name.
   let officer = null;
   try {
-    const t = await db.query(`SELECT loan_officer_id FROM applications WHERE id=$1`, [appId]);
-    const loId = t.rows[0] && t.rows[0].loan_officer_id;
+    const t = await db.query(
+      `SELECT loan_officer_id, accrual_type, min_interest_enabled, deferred_orig_pct,
+              first_payment_date, maturity_date
+         FROM applications WHERE id=$1`, [appId]);
+    const row = t.rows[0] || {};
+    termOptions = {
+      accrualType: row.accrual_type || 'non_dutch',
+      minInterestEnabled: row.min_interest_enabled != null
+        ? row.min_interest_enabled === true
+        : (quote && quote.program === 'manual'),
+      deferredOrigPct: row.deferred_orig_pct != null ? Number(row.deferred_orig_pct) : 0,
+      firstPayment: row.first_payment_date || null,
+      maturity: row.maturity_date || null,
+    };
+    const loId = row.loan_officer_id;
     if (loId) {
       const o = await db.query(
         `SELECT full_name, title, email, phone, cell, nmls FROM staff_users WHERE id=$1`, [loId]);
@@ -47,7 +66,7 @@ async function sendBorrowerTerms(appId, { quote, total, termMonths } = {}) {
   try { ctx = await notify.fileContext(appId); } catch (_) {}
 
   await notify.notifyAppBorrowers(appId, {
-    ...borrowerTermsEmail({ ctx, quote, total, termMonths, officer }),
+    ...borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOptions }),
     applicationId: appId,
     link: `/app/${appId}`,
     from: officer ? email.fromWithName(officer.name) : null,

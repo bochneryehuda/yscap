@@ -487,6 +487,7 @@
                     <option value="18">18 months</option>
                     <option value="24">24 months</option>
                 </select></div></div>
+                <div class="field"><label for="estClosingDate">Estimated closing date<span class="tip" tabindex="0" role="note" aria-label="Sets the estimated first payment date (the 1st of the second month after closing) and the maturity date. These recalculate if the closing date changes.">i<span class="tip-bub">Sets the estimated first payment date (the 1st of the second month after closing) and the maturity date on the term sheet. These recalculate if the closing date changes.</span></span></label><div class="input"><input id="estClosingDate" type="date"></div></div>
             </div>
             <p class="rate-hint" style="margin-top:.2rem">Your rate is set automatically from experience, credit, leverage and the program — it appears on the term sheet on the right. No rate to enter.</p>
         </div>
@@ -560,6 +561,26 @@
                     <div class="field"><label for="tsMIr">Interest reserve (months)</label><div class="input"><input id="tsMIr" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="from form"></div></div>
                 </div>
                 <p class="ts-admin-mnote" id="tsManualHint" hidden>Blank fields fall back to the program's computed value. Overrides may exceed program limits — the term sheet prices and exports on your basis and is marked <em>manually underwritten</em>.</p>
+
+                <div class="ts-admin-group">Term-sheet options <span class="ts-admin-note">— accrual &amp; deferred fee</span></div>
+                <div class="ts-admin-grid2">
+                    <div class="field"><label for="tsAccrual">Interest accrual</label><div class="input select"><select id="tsAccrual" data-noshare>
+                        <option value="non_dutch">Non-Dutch / Drawn (default)</option>
+                        <option value="dutch">Dutch / Full-Boat</option>
+                    </select></div></div>
+                    <div class="field"><label for="tsDeferredOrig">Deferred origination fee (%)</label><div class="input"><input id="tsDeferredOrig" data-noshare type="number" inputmode="decimal" step="0.25" min="0" max="100" placeholder="0"></div></div>
+                </div>
+                <p class="ts-admin-mnote">Accrual defaults to <strong>Non-Dutch / As-Drawn</strong> (interest on funds drawn). A deferred origination fee is paid at payoff as an exit fee — <strong>not</strong> part of cash to close or liquidity. Default 0.</p>
+
+                <div class="ts-admin-group">3-month minimum earned interest <span class="ts-admin-note">— off by default on Standard &amp; Gold</span></div>
+                <div id="tsMinIntProgRow">
+                    <label class="ts-admin-check"><input type="checkbox" id="tsMinIntStd" data-noshare> Add the 3-month minimum earned interest to the <strong>Standard</strong> program</label>
+                    <label class="ts-admin-check"><input type="checkbox" id="tsMinIntGold" data-noshare> Add the 3-month minimum earned interest to the <strong>Gold</strong> program</label>
+                </div>
+                <div id="tsMinIntManualRow" hidden>
+                    <label class="ts-admin-check"><input type="checkbox" id="tsMinIntManual" data-noshare checked> Include the 3-month minimum earned interest (<strong>on by default</strong> for a manual product — uncheck to remove)</label>
+                </div>
+                <p class="ts-admin-mnote">A minimum earned-interest (interest floor) provision — never a prepayment penalty. Off by default on Standard &amp; Gold; on by default on a manual scenario. The wording populates on the term sheet only when it is on.</p>
 
                 <button type="button" class="ts-admin-lockbtn" id="tsAdminHide">Lock admin mode &amp; reset to defaults</button>
             </div>
@@ -696,6 +717,23 @@
                 <div class="ts-line"><span class="k">Estimated FICO</span><span class="v" id="rFico">—</span></div>
             </div>
 
+            <div id="rKeyDates" style="display:none">
+                <div class="ts-sub">Key dates <em style="font-style:normal;color:var(--muted-2);text-transform:none;letter-spacing:0">— estimated, from the closing date</em></div>
+                <div class="ts-grid2">
+                    <div class="ts-line"><span class="k">Estimated closing</span><span class="v" id="rEstClosing">—</span></div>
+                    <div class="ts-line"><span class="k">First payment</span><span class="v" id="rFirstPayment">—</span></div>
+                    <div class="ts-line"><span class="k">Maturity</span><span class="v" id="rMaturity">—</span></div>
+                </div>
+            </div>
+
+            <div class="ts-sub">Additional terms</div>
+            <div class="ts-grid2">
+                <div class="ts-line"><span class="k">Interest accrual</span><span class="v" id="rAccrual">Non-Dutch / Drawn</span></div>
+                <div class="ts-line"><span class="k">Minimum interest</span><span class="v" id="rMinInt">Not included</span></div>
+                <div class="ts-line" id="rDeferredWrap" style="display:none"><span class="k">Deferred origination (exit)</span><span class="v" id="rDeferred">—</span></div>
+                <div class="ts-line" id="rDrawFeeRow"><span class="k">Draw fee</span><span class="v" id="rDrawFee">—</span></div>
+            </div>
+
             <div class="tier-nudge" id="tierNudge" style="display:none"></div>
             <div class="ts-cta">
                 <button class="btn btn-solid btn-lg" type="button" id="tsPdf">Download Term Sheet (PDF) ⤓</button>
@@ -746,7 +784,7 @@
 <script src="gold-standard.js?v=asgseller19"></script>
 <script src="title-cost.js?v=admin8"></script>
 <script src="address-autocomplete.js?v=admin9"></script>
-<script src="termsheet.js?v=pilotirlink20-esign-exc"></script>
+<script src="termsheet.js?v=termopts1-pilotirlink20-esign-exc"></script>
 <script src="../float-actions.js?v=admin8"></script>
 <script>
 /* Property-address autocomplete (owner-directed 2026-07-17): same shared YSAddr

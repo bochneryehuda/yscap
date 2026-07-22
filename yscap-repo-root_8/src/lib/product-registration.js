@@ -96,9 +96,14 @@ function borrowerTermsKey({ program, productLabel, noteRate, totalLoan, quote, i
   ]);
 }
 
-async function persistProductRegistration(client, { appId, program, inputs, quote, registeredByStaffId, isManual, assetMonths }) {
+async function persistProductRegistration(client, { appId, program, inputs, quote, registeredByStaffId, isManual, assetMonths, termOptions }) {
   const s = quote.sizing || {};
   const total = num(s.totalLoan);
+  // Term-sheet options (owner-directed 2026-07-22) — DISPLAY / record only,
+  // resolved by the caller (min-interest default by program, accrual, deferred
+  // fee, and the key dates derived from the estimated closing date). Never
+  // affects any sized number. Absent => leave the file's existing values as-is.
+  const to = termOptions && typeof termOptions === 'object' ? termOptions : null;
   // Snapshot the PREVIOUS current registration BEFORE we supersede it, so we can
   // tell the borrower email whether their deal actually changed.
   const prev = (await client.query(
@@ -112,8 +117,8 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
   await client.query(`UPDATE product_registrations SET is_current=false WHERE application_id=$1 AND is_current`, [appId]);
   const ins = await client.query(
     `INSERT INTO product_registrations
-       (application_id, program, product_label, status, note_rate, total_loan, target_ltc, inputs, quote, is_current, registered_by, is_manual, asset_months)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,$10,$11,$12) RETURNING id`,
+       (application_id, program, product_label, status, note_rate, total_loan, target_ltc, inputs, quote, is_current, registered_by, is_manual, asset_months, term_options)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,$10,$11,$12,$13) RETURNING id`,
     [
       appId,
       program,
@@ -127,6 +132,7 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
       registeredByStaffId || null,
       !!isManual || program === 'manual',
       (assetMonths != null && isFinite(Number(assetMonths))) ? Math.round(Number(assetMonths)) : null,
+      to ? JSON.stringify(to) : null,
     ]);
   const registrationId = ins.rows[0].id;
   // Registration COMMITS the priced scenario onto the file. Beyond loan amount /
@@ -193,6 +199,32 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
       ratePct != null ? ratePct.toFixed(3) : null,   // desired_rate is TEXT; mirror the registered rate
       num(inputs.irAmount) || null,                   // $16 — exact interest-reserve amount (null = months path)
     ]);
+  // Term-sheet options onto the file (owner-directed 2026-07-22) — only when the
+  // caller supplied them, so a path that doesn't touch them leaves the file's
+  // existing values alone. min_interest_enabled stores the RESOLVED boolean (the
+  // route already applied the program default). The key dates are DERIVED from
+  // the estimated closing date + term; an empty closing date clears all three.
+  if (to) {
+    await client.query(
+      `UPDATE applications
+          SET accrual_type = COALESCE($2, accrual_type),
+              min_interest_enabled = $3,
+              deferred_orig_pct = COALESCE($4, deferred_orig_pct),
+              est_closing_date = $5,
+              first_payment_date = $6,
+              maturity_date = $7,
+              updated_at = now()
+        WHERE id=$1`,
+      [
+        appId,
+        to.accrualType || null,
+        (to.minInterestEnabled === true || to.minInterestEnabled === false) ? to.minInterestEnabled : null,
+        (to.deferredOrigPct != null && to.deferredOrigPct !== '') ? Number(to.deferredOrigPct) : null,
+        to.estClosing || null,
+        to.firstPayment || null,
+        to.maturity || null,
+      ]);
+  }
   await replaceProductConditions(client, { appId, registrationId, quote, registeredByStaffId });
   await syncExperienceChecklistForApplication(appId, client);
   // The applications write-back above trips the db/096 economics trigger, which
@@ -223,12 +255,21 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
  * @param {number} [p.termMonths] loan term in months (from inputs.term)
  * @param {object} [p.officer]  { name, title, email, phone, nmls } assigned LO — for From/branding
  */
-function borrowerTermsEmail({ ctx, quote, total, termMonths, officer } = {}) {
+function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOptions } = {}) {
   quote = quote || {};
   const s = quote.sizing || {};
   const cc = quote.closingCosts || {};
   const rate = quote.noteRate != null ? (quote.noteRate * 100).toFixed(2) + '%' : null;
   const programLabel = quote.programLabel || 'your program';
+  // Term-sheet options (owner-directed 2026-07-22): only surface what applies.
+  const to = termOptions && typeof termOptions === 'object' ? termOptions : {};
+  const minInterestOn = to.minInterestEnabled === true;
+  const accrualNice = to.accrualType === 'dutch' ? 'Dutch / Full-Boat' : 'Non-Dutch / As-Drawn';
+  const prettyDate = (ymd) => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(ymd || ''));
+    if (!m) return null;
+    return new Date(+m[1], +m[2] - 1, +m[3]).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  };
   const officerLine = officer && officer.name
     ? `${officer.name}${officer.title ? ' · ' + officer.title : ''}${officer.nmls ? ' · NMLS #' + officer.nmls : ''}`
       + (officer.phone || officer.email ? ' · ' + [officer.phone, officer.email].filter(Boolean).join(' · ') : '')
@@ -247,12 +288,17 @@ function borrowerTermsEmail({ ctx, quote, total, termMonths, officer } = {}) {
     num(s.financedReserve) > 0 ? { label: 'Financed interest reserve', value: money(s.financedReserve) } : null,
     quote.cashToClose != null ? { label: 'Estimated cash to close', value: money(quote.cashToClose) } : null,
     (quote.liquidityRequired ?? quote.liquidity) != null ? { label: 'Reserves to verify', value: money(quote.liquidityRequired ?? quote.liquidity) } : null,
+    { label: 'Interest accrual', value: accrualNice },
+    to.firstPayment && prettyDate(to.firstPayment) ? { label: 'First payment date (estimated)', value: prettyDate(to.firstPayment) } : null,
+    to.maturity && prettyDate(to.maturity) ? { label: 'Maturity date (estimated)', value: prettyDate(to.maturity) } : null,
+    Number(to.deferredOrigPct) > 0 ? { label: 'Deferred origination fee (paid at payoff)', value: Number(to.deferredOrigPct) + '%' } : null,
     officerLine ? { label: 'Your loan officer', value: officerLine } : null,
   ].filter(Boolean);
   const lines = [
     'This reflects the structure your loan team registered. Open your portal to review the full term sheet, including all estimated closing costs.',
-    'Minimum earned interest: 3 months. If the loan pays off before three full months, the remainder of the three-month minimum interest is still due — this is a minimum earned-interest provision, not a prepayment penalty.',
   ];
+  if (minInterestOn) lines.push('Minimum earned interest: 3 months. If the loan pays off before three full months, the remainder of the three-month minimum interest is still due — this is a minimum earned-interest provision, not a prepayment penalty.');
+  if (to.firstPayment && to.maturity && prettyDate(to.firstPayment)) lines.push('The first payment and maturity dates shown are estimates based on the estimated closing date and will be confirmed on your loan documents.');
   if (officer && officer.name) lines.push(`Questions? Reach out to ${officer.name} directly — you can also just reply to this email.`);
   return {
     type: 'term_sheet',

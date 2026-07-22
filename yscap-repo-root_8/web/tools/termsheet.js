@@ -16,7 +16,7 @@
   // it is a minimum-interest (interest floor) provision, NOT a prepayment
   // penalty, and the wording must always say so.
   var MIN_INTEREST_ROW = "3 months (minimum earned interest \u2014 not a prepayment penalty)";
-  var MIN_INTEREST_DETAIL = "All programs carry a 3-month minimum earned interest provision: if the loan pays off before three full months of interest have accrued, the remainder of that minimum is due at payoff. This is an interest floor, not a prepayment penalty.";
+  var MIN_INTEREST_DETAIL = "This loan carries a 3-month minimum earned interest provision: if the loan pays off before three full months of interest have accrued, the remainder of that minimum is due at payoff. This is an interest floor, not a prepayment penalty.";
 
 
   var LENDER = { name: "YS Capital Group", nmls: "2609746", email: "sales@yscapgroup.com", phone: "718-831-2168" };
@@ -640,6 +640,57 @@
     if (CO.title != null) s("tsFeeTitle", String(CO.title));
   }
   function manualOn() { var e = el("tsManualOn"); return !!(e && e.checked); }
+
+  /* ---- Term-sheet options (owner-directed 2026-07-22) ----
+     DISPLAY / record-only attributes layered ON TOP of the frozen engine — none
+     of these change any sized number, rate, cap, fee, cash-to-close or the
+     liquidity to show. gather() still feeds the engine accrual:"Non-Dutch"
+     unchanged (byte-identical pricing); the values below only drive what the
+     term sheet PRINTS and what the register snapshot saves. */
+  // 3-month minimum earned interest: OFF by default on Standard & Gold (an admin
+  // adds it per program); ON by default on a MANUAL / custom scenario (an admin
+  // may turn it off). prog = "standard" | "gold"; a manual scenario overrides.
+  function minInterestOn(prog) {
+    if (manualOn()) { var e = el("tsMinIntManual"); return e ? !!e.checked : true; }
+    return (prog === "gold") ? chk("tsMinIntGold") : chk("tsMinIntStd");
+  }
+  // Accrual type — Non-Dutch / As-Drawn by default; admin may switch to Dutch /
+  // Full-Boat. Label + saved field only (the engine input stays Non-Dutch).
+  function accrualType() { var e = el("tsAccrual"); var v = e ? String(e.value || "").toLowerCase() : ""; return v.indexOf("dutch") === 0 ? "dutch" : "non_dutch"; }
+  function accrualLabel(t) { t = t || accrualType(); return t === "dutch" ? "Dutch / Full-Boat" : "Non-Dutch / Drawn"; }
+  function accrualDetail(t) { t = t || accrualType(); return t === "dutch"
+    ? "Dutch / Full-Boat interest: interest accrues on the entire committed loan amount from closing, including construction funds not yet drawn."
+    : "Non-Dutch / As-Drawn interest: interest accrues only on the amount actually advanced and outstanding; the interest-bearing balance increases with each construction draw."; }
+  // Deferred origination fee — a % of the loan paid at EXIT (payoff). NEVER part
+  // of cash-to-close or the liquidity to show. Default 0.
+  function deferredOrigPct() { var e = el("tsDeferredOrig"); if (!e) return 0; var v = parseFloat(String(e.value).replace(/,/g, "")); return (isFinite(v) && v > 0) ? Math.min(100, v) : 0; }   // percent, 1 = 1%
+  // Draw fee by program (owner-directed 2026-07-22). Gold: physical only, $250.
+  // Standard: hybrid $299 / physical $499. Display only.
+  function drawFeeLines(prog) {
+    return (prog === "gold")
+      ? ["$250 per draw — physical inspection only (no virtual inspections)"]
+      : ["$299 per draw — hybrid inspection", "$499 per draw — physical inspection"];
+  }
+  // Full-precision percent (owner-directed 2026-07-22): the EXACT figure, up to 2
+  // decimals with trailing zeros trimmed (87.5 stays 87.5, 70 stays 70, 83.33
+  // keeps both places) — never rounded to a whole number. Display only.
+  function pcFull(x) { var v = Math.round((x || 0) * 100 * 100) / 100; var s = v.toFixed(2).replace(/\.?0+$/, ""); return s + "%"; }
+
+  /* ---- estimated key dates (interest-only fix & flip convention) ----
+     First payment = the 1st of the SECOND month after closing (close anytime in
+     July -> first payment Sept 1; the stub/per-diem interest from closing to
+     month-end is collected at closing). Maturity = the Nth scheduled payment
+     counted FROM the first payment = first payment + (term - 1) months, so a
+     12-payment loan matures on its 12th payment, never a 13th. Dates are kept as
+     calendar Y/M/D triples (never a parsed date string) to avoid any tz drift. */
+  function parseYMD(s) { var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(s || "").trim()); if (!m) return null; var y = +m[1], mo = +m[2], d = +m[3]; if (mo < 1 || mo > 12 || d < 1 || d > 31) return null; return { y: y, mo: mo, d: d }; }
+  function daysInMonth(y, mo) { return new Date(y, mo, 0).getDate(); }   // mo 1-12
+  function addMonthsYMD(o, add) { var t = (o.y * 12 + (o.mo - 1)) + add; var ny = Math.floor(t / 12), nm = (t % 12) + 1; return { y: ny, mo: nm, d: Math.min(o.d, daysInMonth(ny, nm)) }; }
+  function estClosingYMD() { return parseYMD(val("estClosingDate")); }
+  function firstPaymentYMD(close) { close = close || estClosingYMD(); if (!close) return null; return addMonthsYMD({ y: close.y, mo: close.mo, d: 1 }, 2); }
+  function maturityYMD(fp, term) { if (!fp) return null; var t = (term || 12); return addMonthsYMD(fp, t - 1); }
+  function fmtDateLong(o) { if (!o) return ""; return new Date(o.y, o.mo - 1, o.d).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }); }
+
   function wireAdmin() {
     var trig = el("tsAdminTrigger"), lock = el("tsAdminLock"), panel = el("tsAdminPanel"),
         pw = el("tsAdminPw"), go = el("tsAdminGo"), err = el("tsAdminErr"), hide = el("tsAdminHide");
@@ -651,13 +702,26 @@
       else { if (err) err.hidden = false; if (pw.select) pw.select(); }
     }
     function setVal(id, v) { var e = el(id); if (e) e.value = v; }
-    function manualVis() { var on = manualOn(); var mf = el("tsManualFields"), mh = el("tsManualHint"); if (mf) mf.hidden = !on; if (mh) mh.hidden = !on; }
+    function manualVis() {
+      var on = manualOn();
+      var mf = el("tsManualFields"), mh = el("tsManualHint"); if (mf) mf.hidden = !on; if (mh) mh.hidden = !on;
+      // The "3-month minimum interest" choice differs by scenario: manual shows the
+      // ON-by-default toggle you can turn OFF; Standard/Gold show the OFF-by-default
+      // add-it checkboxes.
+      var mm = el("tsMinIntManualRow"), pp = el("tsMinIntProgRow"); if (mm) mm.hidden = !on; if (pp) pp.hidden = on;
+    }
     function lockDown() {
       if (panel) panel.hidden = true; if (lock) lock.hidden = true; trig.hidden = false; trig.setAttribute("aria-expanded", "false");
       setVal("tsYspStd", String(CO.markupStd)); setVal("tsYspGold", String(CO.markupGold)); setVal("tsOrigStd", String(CO.origStd)); setVal("tsOrigGold", String(CO.origGold));
       setVal("tsFeeUW", String(CO.lender)); setVal("tsFeeCredit", String(CO.credit)); setVal("tsFeeAppr", String(CO.appraisal)); setVal("tsFeeTitle", CO.title != null ? String(CO.title) : "");
       var mo = el("tsManualOn"); if (mo) mo.checked = false;
       setVal("tsMLtv", ""); setVal("tsMArv", ""); setVal("tsMLtc", ""); setVal("tsMRate", ""); setVal("tsMIr", "");
+      // Reset the term-sheet options to their defaults: Non-Dutch accrual, no
+      // deferred fee, min-interest OFF for Standard/Gold and ON for manual.
+      setVal("tsAccrual", "non_dutch"); setVal("tsDeferredOrig", "");
+      var mis = el("tsMinIntStd"); if (mis) mis.checked = false;
+      var mig = el("tsMinIntGold"); if (mig) mig.checked = false;
+      var mim = el("tsMinIntManual"); if (mim) mim.checked = true;
       manualVis();
       recompute();
     }
@@ -704,7 +768,7 @@
     YS.put("rIR", d.financedIR > 0 ? YS.fmtUSD(d.financedIR) : EM);
     YS.put("rCost", YS.fmtUSD(d.totalCost));
     YS.put("rAdvance", sized ? YS.fmtUSD(d.initialAdvance) : EM);
-    var advLtvEl = el("rAdvanceLtv"); if (advLtvEl) advLtvEl.textContent = (sized && d.pricingReady && d.ltvPct > 0 && d.initialAdvance > 0) ? (YS.fmtPct(d.ltvPct, 1) + " LTV") : "";
+    var advLtvEl = el("rAdvanceLtv"); if (advLtvEl) advLtvEl.textContent = (sized && d.pricingReady && d.ltvPct > 0 && d.initialAdvance > 0) ? (pcFull(d.ltvPct) + " LTV") : "";
     YS.put("rHoldback", sized ? YS.fmtUSD(d.rehabHoldback) : EM);
     var hbTag = el("rHoldbackTag"); if (hbTag) hbTag.textContent = (d.R && d.R.sizing && d.R.sizing.rehabOverCap) ? "(capped \u2014 see eligibility)" : "(= rehab, in draws)";
     YS.put("rRate", (sized && d.rate > 0) ? d.rate.toFixed(2) + "%" : EM);
@@ -712,9 +776,9 @@
     YS.put("rPmtInit", (sized && d.initialPayment > 0) ? YS.fmtUSD(d.initialPayment) + "/mo" : EM);
     YS.put("rPmtFull", (sized && d.fullPayment > 0) ? YS.fmtUSD(d.fullPayment) + "/mo" : EM);
     YS.put("rTerm", d.term + " mo");
-    YS.put("rLtc", (sized && d.ltcPct) ? YS.fmtPct(d.ltcPct, 1) : EM);
-    YS.put("rArv", (sized && d.arvPct) ? YS.fmtPct(d.arvPct, 1) : EM);
-    YS.put("rLtv", (sized && d.ltvPct) ? YS.fmtPct(d.ltvPct, 1) : EM);
+    YS.put("rLtc", (sized && d.ltcPct) ? pcFull(d.ltcPct) : EM);
+    YS.put("rArv", (sized && d.arvPct) ? pcFull(d.arvPct) : EM);
+    YS.put("rLtv", (sized && d.ltvPct) ? pcFull(d.ltvPct) : EM);
     YS.put("rDown", sized ? YS.fmtUSD(d.downPayment) : EM);
     YS.put("rOrigLbl", "Origination (" + origPctStr((d.origPct != null ? d.origPct : 0.0125)) + ")");
     YS.put("rOrig", sized ? YS.fmtUSD2(d.origFee) : EM);
@@ -732,10 +796,34 @@
 
     // program max leverage (from FICO + experience) — only once a FICO is in
     var c = d.caps;
-    YS.put("rMaxLtc", (ready && c) ? YS.fmtPct(c.maxLTC, c.maxLTC * 100 % 1 ? 1 : 0) : EM);
-    YS.put("rMaxLtv", (ready && c) ? YS.fmtPct(c.maxAcqLTV, c.maxAcqLTV * 100 % 1 ? 1 : 0) : EM);
-    YS.put("rMaxArv", (ready && c) ? YS.fmtPct(c.maxARLTV, c.maxARLTV * 100 % 1 ? 1 : 0) : EM);
+    YS.put("rMaxLtc", (ready && c) ? pcFull(c.maxLTC) : EM);
+    YS.put("rMaxLtv", (ready && c) ? pcFull(c.maxAcqLTV) : EM);
+    YS.put("rMaxArv", (ready && c) ? pcFull(c.maxARLTV) : EM);
     YS.put("rMaxLoan", (ready && c) ? YS.fmtUSD(c.maxLoan) : EM);
+
+    // ---- term-sheet options: live key dates, accrual, min-interest, deferred
+    // origination fee, draw fee (owner-directed 2026-07-22). Display/record only. ----
+    var _prog = d.gold ? "gold" : "standard";
+    var _close = estClosingYMD(), _fp = firstPaymentYMD(_close), _mat = maturityYMD(_fp, d.term);
+    var kdWrap = el("rKeyDates");
+    if (kdWrap) {
+      if (_close) {
+        kdWrap.style.display = "";
+        YS.put("rEstClosing", fmtDateLong(_close));
+        YS.put("rFirstPayment", _fp ? fmtDateLong(_fp) : EM);
+        YS.put("rMaturity", _mat ? fmtDateLong(_mat) : EM);
+      } else { kdWrap.style.display = "none"; }
+    }
+    YS.put("rAccrual", accrualLabel());
+    var _mi = minInterestOn(_prog);
+    YS.put("rMinInt", _mi ? "3 months (minimum earned interest — not a prepayment penalty)" : "Not included");
+    var _def = deferredOrigPct();
+    var defWrap = el("rDeferredWrap");
+    if (defWrap) { if (_def > 0) { defWrap.style.display = ""; YS.put("rDeferred", pcFull(_def / 100) + " of the loan, paid at payoff (exit fee)"); } else { defWrap.style.display = "none"; } }
+    var _isBridge = YSP.normStrategy(d.inp && d.inp.strategy) === "BR";
+    var dfRow = el("rDrawFeeRow");
+    if (dfRow) dfRow.style.display = _isBridge ? "none" : "";   // a bridge / as-is loan has no construction draws
+    if (!_isBridge) YS.put("rDrawFee", drawFeeLines(_prog).join(" · "));
 
     // assignment note (financeable vs out-of-pocket)
     var an = el("rAssignNote");
@@ -934,7 +1022,11 @@
         ? ["Interest reserve (amount)", money(num("irAmount"))]
         : ["Interest reserve (months)", String((d.inp && d.inp.irMonths) || num("irMonths") || 0)],
       ["Estimated FICO", num("fico") ? String(num("fico")) : EM],
-      ["Experience (flips / holds / ground-up)", num("expFlips") + " / " + num("expBrrrr") + " / " + num("expGround")]
+      ["Experience (flips / holds / ground-up)", num("expFlips") + " / " + num("expBrrrr") + " / " + num("expGround")],
+      (function () { var c = estClosingYMD(); return ["Estimated closing date", c ? fmtDateLong(c) : EM]; })(),
+      (function () { var c = estClosingYMD(), fp = firstPaymentYMD(c); return ["First payment date (estimated)", fp ? fmtDateLong(fp) : EM]; })(),
+      (function () { var c = estClosingYMD(), fp = firstPaymentYMD(c), mt = maturityYMD(fp, num("tsTerm") || 12); return ["Maturity date (estimated)", mt ? fmtDateLong(mt) : EM]; })(),
+      deferredOrigPct() > 0 ? ["Deferred origination fee (paid at payoff)", pcFull(deferredOrigPct() / 100)] : null
     ];
     if (d.asg && (d.asg.overLimit || d.asg.overridden)) {
       costs.splice(1, 0,
@@ -947,7 +1039,9 @@
       ["Status", statusLabel(d.status)],
       ["Loan amount", (stdExit || stdCity) ? "Manual review" : (stdOk && d.totalLoan ? money(d.totalLoan) : EM)],
       ["Note rate", (stdOk && d.rate > 0) ? d.rate.toFixed(2) + "%" : EM],
-      ["Minimum interest", MIN_INTEREST_ROW],
+      minInterestOn("standard") ? ["Minimum interest", MIN_INTEREST_ROW] : null,
+      ["Interest accrual", accrualLabel()],
+      (YSP.normStrategy(dealType()) === "BR") ? null : ["Draw fee", drawFeeLines("standard").join("; ")],
       ["Initial advance", stdOk ? money(d.initialAdvance) : EM],
       ["Rehab / construction holdback", stdOk ? money(d.rehabHoldback) : EM],
       ["Down payment (equity)", stdOk ? money(d.downPayment) : EM],
@@ -969,7 +1063,9 @@
         ["Product", (gd.productLabel || EM) + (gd.tierLabel ? " \u00b7 " + gd.tierLabel : "")],
         ["Loan amount", gExit ? "Manual review" : (gOk && gd.totalLoan ? money(gd.totalLoan) : EM)],
         ["Note rate", (gOk && gd.rate > 0) ? gd.rate.toFixed(2) + "%" : EM],
-        ["Minimum interest", MIN_INTEREST_ROW],
+        minInterestOn("gold") ? ["Minimum interest", MIN_INTEREST_ROW] : null,
+        ["Interest accrual", accrualLabel()],
+        (YSP.normStrategy(dealType()) === "BR") ? null : ["Draw fee", drawFeeLines("gold").join("; ")],
         ["Initial advance", gOk ? money(gd.initialAdvance) : EM],
         ["Rehab / construction holdback", gOk ? money(gd.rehabHoldback) : EM],
         ["Down payment (equity)", gOk ? money(gd.downPayment) : EM],
@@ -995,8 +1091,10 @@
       var gi = gold.findIndex(function (r) { return r[0] === "Estimated cash to close"; });
       if (gi > -1) Array.prototype.splice.apply(gold, [gi, 0].concat(gd.extraFees.map(function (f) { return [f.name, money2(f.amount)]; })));
     }
-    return [{ title: "Deal & property", items: deal }, { title: "Purchase & project costs", items: costs },
-            { title: "Standard Program", items: std }, { title: "Gold Standard Program", items: gold }];
+    // Some rows are conditional (min-interest, deferred fee) and come through as
+    // null — drop them so the Excel writer never dereferences a null pair.
+    return [{ title: "Deal & property", items: deal.filter(Boolean) }, { title: "Purchase & project costs", items: costs.filter(Boolean) },
+            { title: "Standard Program", items: std.filter(Boolean) }, { title: "Gold Standard Program", items: gold.filter(Boolean) }];
   }
   async function exportXlsx(btn) {
     var o = btn ? btn.textContent : ""; if (btn) { btn.textContent = "Exporting\u2026"; btn.disabled = true; }
@@ -1067,7 +1165,7 @@
       await ensurePDF();
       syncAdminMarkup();
       var d = (chosenProgram === "gold") ? (calcGold() || calc()) : calc();
-      var progName = (chosenProgram === "gold") ? "Gold Standard Program" : "Standard Program";
+      var progName = (chosenProgram === "gold") ? "Gold Standard Program" : (manualOn() ? "Manual Program" : "Standard Program");
       var isBridge = d.inp && YSP.normStrategy(d.inp.strategy) === "BR";   // bridge: as-is only, no rehab/ARV/reserve
       var jsPDF = window.jspdf.jsPDF;
       var doc = new jsPDF({ unit: "pt", format: "letter", orientation: "portrait" });
@@ -1076,7 +1174,7 @@
       var today = new Date(), exp = new Date(today.getTime() + 14 * 864e5);
       var fmtD = function (dt) { return dt.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }); };
       var money = function (n) { return YS.fmtUSD(n); }; var money2 = function (n) { return YS.fmtUSD2(n); };
-      var pc = function (x) { return (Math.round(x * 1000) / 10) + "%"; };
+      var pc = function (x) { var v = Math.round((x || 0) * 100 * 100) / 100; return v.toFixed(2).replace(/\.?0+$/, "") + "%"; };   // exact figure, up to 2 decimals, trailing zeros trimmed (owner-directed 2026-07-22 — never round to a whole number)
       var sized = d.pricingReady && d.totalLoan > 0 && d.status !== "INELIGIBLE";
       var stTxt = d.status === "ELIGIBLE" ? "Eligible" : d.status === "MANUAL" ? "Eligible \u2014 manual underwrite" : "Not eligible as entered";
       var pillC = d.status === "ELIGIBLE" ? [120, 168, 132] : d.status === "MANUAL" ? [176, 140, 70] : [184, 96, 74];
@@ -1118,14 +1216,63 @@
       function rowFull(k, v, opts) { opts = opts || {}; brk(16); doc.setFont("helvetica", opts.bold ? "bold" : "normal"); doc.setFontSize(8.4); doc.setTextColor.apply(doc, GRAY); doc.text(pdfSafe(k), M + 3, y + 8); doc.setFont("helvetica", "bold"); doc.setFontSize(8.6); doc.setTextColor.apply(doc, opts.accent ? GOLD : DARK); doc.text(pdfSafe(String(v)), W - M - 3, y + 8, { align: "right" }); y += 15; doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.4); doc.line(M + 3, y - 3.5, W - M - 3, y - 3.5); }
       function para(t, size, lead) { var ls = doc.splitTextToSize(pdfSafe(t), W - 2 * M - 6); var lh = lead || (size === 7 ? 9 : 10.5); brk(ls.length * lh + 4); doc.setFont("helvetica", "normal"); doc.setFontSize(size || 8); doc.setTextColor(70, 78, 82); doc.text(ls, M + 3, y + 8); y += ls.length * lh + 6; }
 
+      // A dedicated, high-end DISCLOSURES page placed BEFORE the signature page
+      // (owner-directed 2026-07-22). Everything a term sheet needs for our
+      // attorneys/legal to analyze the structure — business-purpose,
+      // due diligence, title, legal fees, insurance, the accrual definition, the
+      // (conditional) minimum-interest + deferred-fee items, the general
+      // disclaimer and the indemnification. Same warm ink/gold system as the
+      // rest of the document. Called only on a signable (eligible) sheet.
+      function disclosuresPage() {
+        footer();   // footer the page we're leaving (T&C paras) — every page carries the disclaimer line
+        doc.addPage(); header(); y = 92;
+        doc.setFont("helvetica", "bold"); doc.setFontSize(13); doc.setTextColor.apply(doc, DARK);
+        doc.text("Disclosures & conditions", M, y);
+        doc.setDrawColor.apply(doc, GOLD); doc.setLineWidth(1.3); doc.line(M, y + 5.5, M + 42, y + 5.5);
+        y += 18;
+        para("The following supplements the terms above and forms part of this term sheet.", 8);
+        y += 2;
+        function item(h, body) {
+          brk(38);
+          doc.setFont("helvetica", "bold"); doc.setFontSize(8.7); doc.setTextColor.apply(doc, TEAL);
+          doc.text(pdfSafe(h), M + 3, y + 8); y += 15;
+          para(body, 8, 11);
+          y += 3;
+        }
+        item("Business purpose only", "This loan is made solely for business, commercial or investment purposes and is NOT for personal, family, or household (consumer) use. It is secured by non-owner-occupied real property, is not subject to consumer-mortgage (TILA / RESPA) disclosures, and requires a personal guaranty and a first-lien position.");
+        item("Interest accrual", accrualDetail());
+        item("Due diligence", "Borrower will provide all necessary due diligence to Lender.");
+        item("Title", "Borrower shall provide a Title Report and Title Insurance to the satisfaction of the Lender. Lender's title coverage must be approved.");
+        item("Legal fees and expenses", "The Borrower shall be required to pay for all legal fees and services related to the loan transaction. Additionally, the Borrower shall pay the Lender underwriting / processing fee and all other applicable Lender fees.");
+        item("Insurance", "Borrower shall provide insurance certificates satisfactory to Lender.");
+        if (minInterestOn(d.gold ? "gold" : "standard")) item("Minimum interest", "This loan carries a 3-month minimum earned interest provision: if the loan pays off before three full months of interest have accrued, the remainder of that minimum is due at payoff. This is an interest floor / minimum earned-interest provision, not a prepayment penalty.");
+        if (deferredOrigPct() > 0) item("Deferred origination fee", "A deferred origination fee of " + pc(deferredOrigPct() / 100) + " of the loan amount is payable at payoff as an exit fee. It is not collected at closing and is not part of the cash to close or the liquidity to show.");
+        item("Disclaimer", "This term sheet does not set forth all of the terms of the loan contemplated hereunder. Additional terms and conditions may be set by the Lender prior to closing. This term sheet is not a commitment to lend money and is subject to, among other things, the Lender's sole discretion regarding Borrower's status, the Property, the Loan, title, and due diligence.");
+        item("Acknowledgement & indemnification", "By accepting these terms you confirm that you will not hold YS Capital Group and/or the Lender liable for any damages related to their decision not to make the loan for any reason. You also confirm that you will indemnify and hold harmless YS Capital Group and the Lender from any claims or liabilities related to this transaction.");
+        footer();
+      }
+
       header();
       var y = 92;
-      var who = borrowerOfRecord() || "Prospective Borrower";
-      var prog = dealType() + " \u00b7 " + d.inp.loanType + (d.inp.cashOut ? " (cash-out)" : "");
+      // Recipient block (owner-directed 2026-07-22): so the attorneys can read the
+      // structure, show ALL parties \u2014 the vesting entity (loan is to the entity),
+      // the individual borrower/guarantor, and the co-borrower \u2014 plus the loan
+      // purpose (Purchase / Refinance) and the program.
+      var _tsEntity0 = (val("entityName") || "").trim(), _tsIndiv0 = (val("borrowerName") || "").trim(), _tsCo0 = (val("coBorrowerName") || "").trim();
+      var _guar = [_tsIndiv0, _tsCo0].filter(Boolean).join(" & ");
+      var primaryName = _tsEntity0 || _tsIndiv0 || "Prospective Borrower";
+      var partiesSub = _tsEntity0
+        ? ("Vesting entity" + (_guar ? "  \u00b7  Guarantor" + (_tsIndiv0 && _tsCo0 ? "s" : "") + ": " + _guar : ""))
+        : (_tsCo0 ? ("Borrower & co-borrower: " + _guar) : "Individual borrower");
+      var purposeLabel = isRefi() ? (isCashOut() ? "Cash-out refinance" : "Rate & term refinance") : "Purchase";
       var where = chk("addrTBD") ? "Property: To be determined" : ("Property: " + (val("propAddr") || "\u2014") + (val("propState") ? ", " + val("propState") : ""));
-      doc.setFont("helvetica", "bold"); doc.setFontSize(10.5); doc.setTextColor.apply(doc, DARK); doc.text(pdfSafe(who), M, y);
-      doc.setFont("helvetica", "normal"); doc.setFontSize(8.3); doc.setTextColor.apply(doc, GRAY); doc.text(pdfSafe(prog), W - M, y, { align: "right" });
-      y += 13; doc.text(pdfSafe(where + "   \u00b7   Valid through " + fmtD(exp)), M, y); y += 14;
+      doc.setFont("helvetica", "bold"); doc.setFontSize(11); doc.setTextColor.apply(doc, DARK); doc.text(pdfSafe(primaryName), M, y);
+      doc.setFont("helvetica", "bold"); doc.setFontSize(8.3); doc.setTextColor.apply(doc, GOLD); doc.text(pdfSafe(progName), W - M, y, { align: "right" });
+      y += 12.5;
+      doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor.apply(doc, GRAY); doc.text(pdfSafe(partiesSub), M, y);
+      doc.text(pdfSafe(purposeLabel + "  \u00b7  " + prettyStrategy(d.inp.strategy)), W - M, y, { align: "right" });
+      y += 12.5;
+      doc.text(pdfSafe(where + "   \u00b7   Valid through " + fmtD(exp)), M, y); y += 14;
 
       if (needsManualStamp(d)) {
         // Say WHY manual review is needed, right in the banner \u2014 the engine's own MANUAL
@@ -1229,8 +1376,30 @@
       band("Eligibility snapshot");
       rowFull("Experience tier (as entered)", d.tierLabel || "\u2014");
       rowFull("Estimated FICO", d.fico ? String(d.fico) : "Not provided");
+      (function () { var sc = YSP.normStrategy(d.inp.strategy); var tot = YSP.projectCount(sc, { flips: num("expFlips"), holds: num("expBrrrr"), ground: num("expGround") }); rowFull("Experience claimed (last 36 months)", tot + (tot === 1 ? " project" : " projects")); })();
       if (d.pricingReady) d.reasons.forEach(function (r) { para((r.level === "INELIGIBLE" ? "\u2022 Not eligible: " : r.level === "MANUAL" ? "\u2022 Manual underwrite: " : "\u2022 ") + r.msg, 7); });
       else para("\u2022 Add a representative FICO score to finalize pricing, leverage and your loan amount.", 7);
+
+      // ---- Key dates (owner-directed 2026-07-22): estimated, driven by the
+      // estimated closing date; recalculate whenever it moves. ----
+      var _close = estClosingYMD(), _fp = firstPaymentYMD(_close), _mat = maturityYMD(_fp, d.term);
+      band("Key dates");
+      rowFull("Loan term", d.term + " months");
+      rowFull("Estimated closing date", _close ? fmtD(new Date(_close.y, _close.mo - 1, _close.d)) : "To be set before issuing");
+      rowFull("First payment date (estimated)", _fp ? fmtD(new Date(_fp.y, _fp.mo - 1, _fp.d)) : "\u2014");
+      rowFull("Maturity date (estimated)", _mat ? fmtD(new Date(_mat.y, _mat.mo - 1, _mat.d)) : "\u2014");
+      para("First payment and maturity are ESTIMATES based on the estimated closing date and recalculate if it moves. The first payment is generally the first day of the second month after closing (the partial/stub interest from closing through the end of the closing month is collected at closing); maturity is the " + d.term + "th scheduled payment counted from the first payment \u2014 a full term is not added to the first payment.", 7);
+
+      // ---- Additional loan terms (owner-directed 2026-07-22) ----
+      band("Additional loan terms");
+      rowFull("Interest accrual", accrualLabel() + (accrualType() === "dutch" ? " \u2014 interest on the full committed amount" : " \u2014 interest on funds drawn"));
+      if (minInterestOn(d.gold ? "gold" : "standard")) rowFull("Minimum interest", "3 months (minimum earned interest \u2014 not a prepayment penalty)");
+      var _def = deferredOrigPct();
+      if (_def > 0) rowFull("Deferred origination fee \u2014 paid at payoff (exit fee)", pc(_def / 100) + " of the loan; not part of cash to close");
+      if (!isBridge) {   // a bridge / as-is loan has no construction draws
+        rowFull("Construction draw fee", d.gold ? "$250 per draw" : "$299 (hybrid) / $499 (physical)");
+        para(d.gold ? "Gold Standard construction draws require a physical inspection (no virtual inspections) at $250 per draw." : "Standard construction draws are $299 per draw with a hybrid inspection, or $499 per draw with a physical inspection.", 7);
+      }
 
       band("Terms, conditions & disclosures");
       para("1.  Nature of this document.  This Preliminary Term Sheet is an indicative summary of potential financing terms only. It is NOT a loan commitment, approval, pre-approval, rate lock or guarantee to lend, and it creates no obligation on the part of " + LENDER.name + " or the prospective borrower.", 7.5);
@@ -1264,8 +1433,10 @@
         doc.text(pdfSafe("Because this scenario is not eligible as entered" + (inelWhy.length ? " (" + shortMsg(inelWhy[0]) + ")" : "") + ", there is no acceptance or signature block. Adjust the inputs above to see whether an eligible structure is available, or submit it to our team for a manual review."), M, y + 15, { maxWidth: W - 2 * M });
         y += 44; footer();
       } else {
-        // Pre-check LO context so both the acceptance paragraph and the block-reserve
-        // account for the added loan-officer row.
+        // A full DISCLOSURES page prints right before the signature page
+        // (owner-directed 2026-07-22) — signable sheets only.
+        disclosuresPage();
+        // Pre-check LO context so the acceptance paragraph + reserve height account for it.
         var _tsLoBrandPre = (typeof window !== "undefined" && window.YSBRAND) ? window.YSBRAND : null;
         var _tsHasLoPre = !!(_tsLoBrandPre && String(_tsLoBrandPre.name || "").trim());
         para("5.  Validity & acceptance.  This term sheet is valid through " + fmtD(exp) + (d.inp.state ? (" for a property located in " + d.inp.state) : "") + ". It is not binding unless and until it is accepted in writing by the borrower" + (coBorrowerName ? " and co-borrower" : "") + (_tsHasLoPre ? ", acknowledged by the originating loan officer," : "") + " below and countersigned by an authorized representative of " + LENDER.name + ".", 7.5);
@@ -1519,7 +1690,7 @@
       // ---- footer ----
       doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.8); doc.line(M, H - 48, W - M, H - 48);
       doc.setFont("helvetica", "normal"); doc.setFontSize(6.8); doc.setTextColor(150, 158, 162);
-      doc.text(pdfSafe(MIN_INTEREST_DETAIL + " " + LENDER.name + " \u00b7 NMLS " + LENDER.nmls + " \u00b7 Business-purpose lending only. This document is proof of funds / pre-qualification and is not a commitment to lend or an offer to extend consumer credit. Figures are indicative and subject to full underwriting, appraisal, title and final credit approval."), M, H - 36, { maxWidth: W - 2 * M });
+      doc.text(pdfSafe((minInterestOn(chosenProgram === "gold" ? "gold" : "standard") ? MIN_INTEREST_DETAIL + " " : "") + LENDER.name + " \u00b7 NMLS " + LENDER.nmls + " \u00b7 Business-purpose lending only. This document is proof of funds / pre-qualification and is not a commitment to lend or an offer to extend consumer credit. Figures are indicative and subject to full underwriting, appraisal, title and final credit approval."), M, H - 36, { maxWidth: W - 2 * M });
 
       drawDerivationPage(doc, d, "Basis for This Proof of Funds", "The figures in the preceding letter were generated from the inputs below, provided by the applicant through the YS Capital Term Sheet Studio. This page shows what was entered and how the financing amount was determined.");
       doc.save("YS-Capital-Proof-of-Funds-" + borrower.replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "") + ".pdf");
@@ -1607,9 +1778,11 @@
     var W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 56;
     var INK = [11, 16, 20], TEAL = [31, 58, 64], GOLD = [150, 123, 68], GRAY = [95, 103, 110], DARK = [19, 32, 28], LINE = [223, 219, 209], BODY = [40, 46, 52];
     var money = function (n) { return YS.fmtUSD(Math.round(n || 0)); }; var money2 = function (n) { return YS.fmtUSD2(n || 0); };
-    var pc = function (x) { return (Math.round((x || 0) * 1000) / 10) + "%"; };
+    var pc = function (x) { var v = Math.round((x || 0) * 100 * 100) / 100; return v.toFixed(2).replace(/\.?0+$/, "") + "%"; };   // exact figure, up to 2 decimals trimmed
     var inp = d.inp || {}, isRefi = inp.loanType === "Refinance";
     var sc = YSP.normStrategy(inp.strategy), isBridge = sc === "BR", hasRehab = num("construction") > 0 || sc === "NC" || sc === "FF";
+    var _dpProg = d.gold ? "gold" : "standard";
+    var _dpClose = estClosingYMD(), _dpFp = firstPaymentYMD(_dpClose), _dpMat = maturityYMD(_dpFp, inp.term || 12);
 
     // header
     doc.setFillColor.apply(doc, INK); doc.rect(0, 0, W, 66, "F");
@@ -1705,14 +1878,24 @@
       ["Initial / as-is LTV", pc(d.ltvPct)],
       (d.arvPct > 0) ? ["Loan-to-ARV", pc(d.arvPct)] : null,
       ["Note rate (interest-only)", (d.rate > 0 ? d.rate.toFixed(2) + "%" : "\u2014")],
-      ["Minimum interest", MIN_INTEREST_ROW],
-      ["Origination", origPctStr(d.origPct != null ? d.origPct : 0.0125) + " of loan"]
+      ["Interest accrual", accrualLabel()],
+      minInterestOn(_dpProg) ? ["Minimum interest", MIN_INTEREST_ROW] : null,
+      deferredOrigPct() > 0 ? ["Deferred origination fee (paid at payoff)", pcFull(deferredOrigPct() / 100) + " of loan"] : null,
+      ["Origination", origPctStr(d.origPct != null ? d.origPct : 0.0125) + " of loan"],
+      isBridge ? null : ["Construction draw fee", drawFeeLines(_dpProg).join("; ")]
+    ]);
+
+    section("Key dates (estimated \u2014 from the estimated closing date)", [
+      ["Loan term", (inp.term || 12) + " months"],
+      ["Estimated closing date", _dpClose ? fmtDateLong(_dpClose) : "Not set"],
+      ["First payment date", _dpFp ? fmtDateLong(_dpFp) : "\u2014"],
+      ["Maturity date", _dpMat ? fmtDateLong(_dpMat) : "\u2014"]
     ]);
 
     // footer
     doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.8); doc.line(M, H - 46, W - M, H - 46);
     doc.setFont("helvetica", "normal"); doc.setFontSize(6.8); doc.setTextColor(150, 158, 162);
-    doc.text(pdfSafe(MIN_INTEREST_DETAIL + " Figures are indicative, derived from the inputs above, and subject to full underwriting, appraisal/valuation, title and final credit approval. " + LENDER.name + " \u00b7 NMLS " + LENDER.nmls + "."), M, H - 34, { maxWidth: W - 2 * M });
+    doc.text(pdfSafe((minInterestOn(_dpProg) ? MIN_INTEREST_DETAIL + " " : "") + "Figures are indicative, derived from the inputs above, and subject to full underwriting, appraisal/valuation, title and final credit approval. " + LENDER.name + " \u00b7 NMLS " + LENDER.nmls + "."), M, H - 34, { maxWidth: W - 2 * M });
   }
 
   /* ===================== wiring ===================== */
