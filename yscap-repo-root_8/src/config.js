@@ -470,4 +470,20 @@ module.exports = {
     user:     process.env.XACTUS_USER || '',
     password: process.env.XACTUS_PASSWORD || '',
   },
+  //   HouseCanary — AVM + Rent AVM (independent value + rent triangulation)
+  houseCanary: {
+    key:      process.env.HOUSECANARY_KEY || '',
+    secret:   process.env.HOUSECANARY_SECRET || '',
+    endpoint: (process.env.HOUSECANARY_ENDPOINT || 'https://api.housecanary.com').trim().replace(/\/+$/, ''),
+  },
+  //   Clear Capital ClearAVM — second AVM source
+  clearCapital: {
+    key:      process.env.CLEARCAPITAL_KEY || '',
+    endpoint: (process.env.CLEARCAPITAL_ENDPOINT || 'https://api.clearcapital.com').trim().replace(/\/+$/, ''),
+  },
+  //   ATTOM Data Solutions — third AVM source + property intelligence
+  attom: {
+    key:      process.env.ATTOM_API_KEY || '',
+    endpoint: (process.env.ATTOM_ENDPOINT || 'https://api.gateway.attomdata.com').trim().replace(/\/+$/, ''),
+  },
 };

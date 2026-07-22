@@ -786,6 +786,41 @@ router.post('/:appId/auto-read', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ---- AVM Consensus (Sovereign, API landscape Tier 1) ---------------------
+// Cross-check the appraisal ARV against every configured AVM source
+// (HouseCanary / Clear Capital / ATTOM). GET returns the current consensus
+// report from the twin's observations; POST /verify calls every AVM
+// connector to feed fresh api_verification observations, then re-reports.
+router.get('/:appId/avm-consensus', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const report = await require('../lib/underwriting/avm-consensus').analyzeFileARV(app.id, db);
+    res.json({ ok: true, report });
+  } catch (e) { next(e); }
+});
+router.post('/:appId/avm-consensus/verify', requirePermission('sign_off_conditions'), async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const hub = require('../lib/integrations/direct-source-hub');
+    const avm = require('../lib/underwriting/avm-consensus');
+    const client = await db.pool.connect();
+    let hubResults; let report; let finding;
+    try {
+      await client.query('BEGIN');
+      hubResults = await hub.verifyFile(client, app.id, { kind: 'avm' });
+      report = await avm.analyzeFileARV(app.id, client);
+      finding = report && report.comparison && report.comparison.disagrees
+        ? await avm.persistFindingIfDisagreement(client, app.id, report)
+        : null;
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+    res.json({ ok: true, hubResults: hubResults && hubResults.results || [], report, finding });
+  } catch (e) { next(e); }
+});
+
 // ---- Twin fact history (Sovereign 1/4 drilldown) --------------------------
 // Every observation of a fact + every state event, so the file view can show
 // the reconciliation trail behind a canonical value (WHY this value is

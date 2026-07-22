@@ -26,9 +26,13 @@ const twin = require('../underwriting/twin');
 const plaid = require('./direct-source-connectors/plaid');
 const propertyData = require('./direct-source-connectors/property-data');
 const xactus = require('./direct-source-connectors/xactus');
+const houseCanary = require('./direct-source-connectors/housecanary');
+const clearCapital = require('./direct-source-connectors/clearcapital');
+const attom = require('./direct-source-connectors/attom');
 
 const CONNECTORS = Object.freeze({
   plaid, property_data: propertyData, xactus,
+  housecanary: houseCanary, clearcapital: clearCapital, attom,
 });
 
 /**
@@ -41,7 +45,9 @@ const CONNECTORS = Object.freeze({
 async function verifyFile(client, appId, ctx = {}) {
   if (!appId) throw new Error('verifyFile: appId required');
   const results = [];
+  const kindFilter = ctx && ctx.kind ? String(ctx.kind) : null;
   for (const [name, conn] of Object.entries(CONNECTORS)) {
+    if (kindFilter && conn.kind !== kindFilter) continue;
     if (!conn.configured()) { results.push({ connector: name, ok: false, skipped: true, reason: 'not configured' }); continue; }
     try {
       const r = await conn.fetch(appId, ctx);

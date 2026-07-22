@@ -91,6 +91,45 @@ const INTEGRATIONS = [
     },
   },
   {
+    key: 'housecanary', name: 'HouseCanary AVM (independent value)', group: 'workflow',
+    purpose: 'Independent automated valuation for every property — median of three AVMs (HouseCanary + Clear Capital + ATTOM) checked against the appraisal so an inflated or stale ARV is flagged before closing.',
+    direction: 'Outbound', auth: 'API key + secret',
+    env: [{ name: 'HOUSECANARY_KEY', required: true }, { name: 'HOUSECANARY_SECRET', required: true }, { name: 'HOUSECANARY_ENDPOINT', required: false }],
+    switches: [], liveProbe: true,
+    async probe() {
+      const m = require('../ai/../integrations/direct-source-connectors/housecanary');
+      if (!m.configured()) return { configured: false, live: null, detail: 'HOUSECANARY_KEY + HOUSECANARY_SECRET not set.' };
+      try { const p = await timebox(m.ping()); return { configured: true, live: !!p.ok, detail: p.ok ? 'Reached HouseCanary.' : (p.reason || 'Not reachable.') }; }
+      catch (e) { return { configured: true, live: false, detail: e.message || 'Not reachable.' }; }
+    },
+  },
+  {
+    key: 'clearcapital', name: 'Clear Capital ClearAVM (second AVM)', group: 'workflow',
+    purpose: 'Second independent AVM — pairs with HouseCanary + ATTOM for a real three-source triangulation of the appraisal ARV.',
+    direction: 'Outbound', auth: 'API key',
+    env: [{ name: 'CLEARCAPITAL_KEY', required: true }, { name: 'CLEARCAPITAL_ENDPOINT', required: false }],
+    switches: [], liveProbe: true,
+    async probe() {
+      const m = require('../integrations/direct-source-connectors/clearcapital');
+      if (!m.configured()) return { configured: false, live: null, detail: 'CLEARCAPITAL_KEY not set.' };
+      try { const p = await timebox(m.ping()); return { configured: true, live: !!p.ok, detail: p.ok ? 'Reached Clear Capital.' : (p.reason || 'Not reachable.') }; }
+      catch (e) { return { configured: true, live: false, detail: e.message || 'Not reachable.' }; }
+    },
+  },
+  {
+    key: 'attom', name: 'ATTOM property data (AVM + records)', group: 'workflow',
+    purpose: 'Third AVM source PLUS property records (units, year built, zoning, last sale, liens). Corroborates the appraisal AND the title report.',
+    direction: 'Outbound', auth: 'API key',
+    env: [{ name: 'ATTOM_API_KEY', required: true }, { name: 'ATTOM_ENDPOINT', required: false }],
+    switches: [], liveProbe: true,
+    async probe() {
+      const m = require('../integrations/direct-source-connectors/attom');
+      if (!m.configured()) return { configured: false, live: null, detail: 'ATTOM_API_KEY not set.' };
+      try { const p = await timebox(m.ping()); return { configured: true, live: !!p.ok, detail: p.ok ? 'Reached ATTOM.' : (p.reason || 'Not reachable.') }; }
+      catch (e) { return { configured: true, live: false, detail: e.message || 'Not reachable.' }; }
+    },
+  },
+  {
     key: 'mistral_ocr', name: 'Mistral OCR (third-look reader)', group: 'core',
     purpose: 'Third independent OCR engine — runs only when Azure AND Google both fail on a document. Different failure modes than either, so it catches dense-table / signature / multi-column layouts the other two miss.',
     direction: 'Outbound', auth: 'API key',
