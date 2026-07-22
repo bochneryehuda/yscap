@@ -390,6 +390,11 @@
             <div class="field">
                 <label for="coBorrowerName">Co-borrower name <em>(optional — adds a second signature line)</em></label>
                 <div class="input"><input id="coBorrowerName" type="text" placeholder="e.g. Sarah Klein"></div>
+                <!-- Co-borrower personal-guaranty waiver (owner-directed 2026-07-22): a READ-ONLY
+                     flag set by an approved super-admin exception (never edited here). When "true",
+                     the term sheet lists the co-borrower as a non-guarantor member of the entity. The
+                     studio sets this from applications.co_borrower_pg_waived. -->
+                <input id="coBorrowerPgWaived" type="hidden" value="">
             </div>
             <div class="field cond" data-cond="addr">
                 <label for="propAddr">Subject property address</label>
@@ -784,7 +789,7 @@
 <script src="gold-standard.js?v=asgseller19"></script>
 <script src="title-cost.js?v=admin8"></script>
 <script src="address-autocomplete.js?v=admin9"></script>
-<script src="termsheet.js?v=termopts2-pilotirlink20-esign-exc"></script>
+<script src="termsheet.js?v=termopts2-pilotirlink20-esign-exc-pgwaiver"></script>
 <script src="../float-actions.js?v=admin8"></script>
 <script>
 /* Property-address autocomplete (owner-directed 2026-07-17): same shared YSAddr

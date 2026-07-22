@@ -275,6 +275,7 @@ export default function StaffLayout({ children }) {
   const [reviewCount, setReviewCount] = useState(0);
   // Pending manual-product escalations (super-admin approval queue).
   const [escCount, setEscCount] = useState(0);
+  const [excCount, setExcCount] = useState(0);
   // How many files are in MY personal Workflow right now (everyone has one).
   const [wfCount, setWfCount] = useState(0);
   // Open finding-escalations routed to me (my role / assigned / raised) — the workload badge.
@@ -324,8 +325,10 @@ export default function StaffLayout({ children }) {
     // they poll its count — a file-scoped LO/processor never hits the endpoint.
     if (!(can('manage_pricing') || role === 'super_admin')) return undefined;
     let alive = true;
-    const poll = () => api.manualEscalationsCount()
-      .then(r => { if (alive) setEscCount(r.pendingCount || 0); }).catch(() => {});
+    const poll = () => {
+      api.manualEscalationsCount().then(r => { if (alive) setEscCount(r.pendingCount || 0); }).catch(() => {});
+      api.loanExceptionsCount().then(r => { if (alive) setExcCount((r && r.pendingCount) || 0); }).catch(() => {});
+    };
     poll();
     const t = setInterval(poll, 120000);
     return () => { alive = false; clearInterval(t); };
@@ -421,6 +424,8 @@ export default function StaffLayout({ children }) {
         {canManagePricing && <NavLink className="sb-link" to="/internal/pricing" title="Pricing Admin Center — company-wide markup, origination & fee defaults"><NavIcon name="pricing" />Pricing</NavLink>}
         {(canManagePricing || role === 'super_admin') && <NavLink className="sb-link" to="/internal/escalations" title="Manual programs & escalations — approve manual products (custom LTV/LTC/ARV) and set the manual-program defaults"><NavIcon name="pricing" />Manual / Escalations
           {escCount > 0 && <span className="sb-badge">{escCount > 99 ? '99+' : escCount}</span>}</NavLink>}
+        {(canManagePricing || role === 'super_admin') && <NavLink className="sb-link" to="/internal/exceptions" title="Exceptions — approve or deny requests to make an exception to a loan policy (today: waiving a co-borrower's personal guarantee)"><NavIcon name="conditions" />Exceptions
+          {excCount > 0 && <span className="sb-badge">{excCount > 99 ? '99+' : excCount}</span>}</NavLink>}
         {(canManagePricing || role === 'super_admin') && <NavLink className="sb-link" to="/internal/training" title="Training proposals — candidate improvements PILOT learned from underwriter corrections; approve, shadow-test, or reject each one"><NavIcon name="conditions" />Training</NavLink>}
         {role === 'super_admin' && <NavLink className="sb-link" to="/internal/labeling" title="AI labeling console — tag past documents to train the classifier and per-type field readers"><NavIcon name="conditions" />AI labeling</NavLink>}
         {role === 'super_admin' && <NavLink className="sb-link" to="/internal/ai-inbox" title="AI questions inbox — the AI asks here when it's unsure; your answer feeds its learning"><NavIcon name="conditions" />AI inbox</NavLink>}

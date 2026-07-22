@@ -24,6 +24,7 @@ const { requireAuth, requireRole, issueEmailToken } = require('../auth');
 const pricing = require('../lib/pricing');
 const { persistProductRegistration } = require('../lib/product-registration');
 const manualProgram = require('../lib/manual-program');
+const loanExceptions = require('../lib/loan-exceptions');
 const termOpts = require('../lib/term-options');
 const workflow = require('../lib/workflow');
 const workflowAuto = require('../lib/workflow-automation');
@@ -1718,6 +1719,9 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       minInterestEnabled: termOpts.resolveMinInterest(program, rawTermOptions.minInterestEnabled),
       deferredOrigPct: termOpts.resolveDeferredOrigPct(rawTermOptions.deferredOrigPct),
       estClosing: kd.estClosing, firstPayment: kd.firstPayment, maturity: kd.maturity,
+      // The co-borrower guaranty waiver is a super-admin-APPROVED file flag, never a
+      // studio input — snapshot the file's REAL value (ignore any client-sent value).
+      coBorrowerPgWaived: !!f.app.co_borrower_pg_waived,
     };
     // A manual product overrides the guidelines by design — always force-price it
     // so a leverage override that lands "ineligible" against the Standard caps is
@@ -2025,6 +2029,94 @@ router.post('/applications/:id/pricing/request-exception', async (req, res) => {
     } catch (_) { /* best-effort */ }
     await audit(req, 'pricing_exception_requested', 'application', appId, { note });
     res.json({ ok: true });
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// ---- Co-borrower GUARANTY WAIVER exception (owner-directed 2026-07-22) ----
+// By default a term sheet is full recourse and BOTH borrowers personally
+// guarantee it. Any staff member may REQUEST that the co-borrower's personal
+// guaranty be waived (they stay a member of the borrowing entity but are not a
+// guarantor); a SUPER-ADMIN approves it in the Exceptions box, which flips
+// applications.co_borrower_pg_waived so the term sheet reflects it. These three
+// routes (state / request / withdraw) are file-scoped; the decide lives in
+// /api/admin/exceptions (super-admin only).
+
+// The file's current guaranty-waiver state — for the studio + file view.
+router.get('/applications/:id/exceptions', async (req, res) => {
+  const appId = req.params.id;
+  try {
+    const a = (await db.query(
+      `SELECT a.co_borrower_id, a.co_borrower_pg_waived,
+              cb.first_name AS cb_first, cb.last_name AS cb_last
+         FROM applications a
+         LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id
+        WHERE a.id=$1`, [appId])).rows[0] || {};
+    const latest = await loanExceptions.latestForApp(appId, 'guaranty_waiver');
+    res.json({
+      hasCoBorrower: !!a.co_borrower_id,
+      coBorrowerName: [a.cb_first, a.cb_last].filter(Boolean).join(' ') || null,
+      coBorrowerPgWaived: !!a.co_borrower_pg_waived,
+      guarantyWaiver: latest || null,
+      reasonCodes: loanExceptions.REASON_CODES,
+    });
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// Request a co-borrower guaranty waiver.
+router.post('/applications/:id/exceptions/guaranty-waiver', async (req, res) => {
+  const appId = req.params.id;
+  try {
+    const a = (await db.query(
+      `SELECT a.co_borrower_id, a.co_borrower_pg_waived,
+              cb.first_name AS cb_first, cb.last_name AS cb_last
+         FROM applications a
+         LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id
+        WHERE a.id=$1`, [appId])).rows[0];
+    if (!a) return res.status(404).json({ error: 'file not found' });
+    if (!a.co_borrower_id) return res.status(400).json({ error: 'This file has no co-borrower, so there is no co-borrower guaranty to waive.' });
+    if (a.co_borrower_pg_waived) return res.status(409).json({ error: 'The co-borrower’s personal guaranty is already waived on this file.' });
+    const reasonCode = req.body && req.body.reasonCode;
+    const reasonNote = String((req.body && req.body.reasonNote) || '').slice(0, 2000).trim();
+    if (!reasonNote) return res.status(400).json({ error: 'Add a short note explaining why the co-borrower’s guaranty should be waived.' });
+
+    const client = await db.getClient();
+    let row;
+    try {
+      await client.query('BEGIN');
+      row = await loanExceptions.requestGuarantyWaiver(client, {
+        appId, subjectBorrowerId: a.co_borrower_id, reasonCode, reasonNote, requestedBy: req.actor.id,
+      });
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+
+    const coName = [a.cb_first, a.cb_last].filter(Boolean).join(' ') || 'the co-borrower';
+    try {
+      const ctx = await notify.fileContext(appId);
+      await notify.notifyAdmins({
+        type: 'guaranty_exception',
+        title: 'Guaranty-waiver exception needs super-admin review',
+        body: `${req.actor.name || 'A team member'} requested waiving ${coName}'s personal guaranty on ${ctx ? ctx.label : 'a file'}: ${reasonNote}`,
+        meta: (ctx && ctx.meta) || undefined, applicationId: appId,
+        link: '/internal/exceptions', ctaLabel: 'Open the Exceptions box',
+      });
+    } catch (_) { /* best-effort */ }
+    await audit(req, 'guaranty_exception_requested', 'application', appId, { exceptionId: row.id, reasonCode: row.reason_code });
+    res.json({ ok: true, exception: row });
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// Withdraw an OPEN guaranty-waiver request (the requester or an admin, file-scoped).
+router.post('/applications/:id/exceptions/:eid/withdraw', async (req, res) => {
+  const appId = req.params.id;
+  try {
+    const exc = await loanExceptions.getById(req.params.eid);
+    if (!exc || exc.application_id !== appId) return res.status(404).json({ error: 'That exception was not found on this file.' });
+    if (exc.status !== 'requested') return res.status(409).json({ error: 'That exception is not open, so it can’t be withdrawn.' });
+    const row = await loanExceptions.withdrawException(req.params.eid, req.actor.id);
+    if (!row) return res.status(409).json({ error: 'That exception is no longer open.' });
+    await audit(req, 'guaranty_exception_withdrawn', 'application', appId, { exceptionId: row.id });
+    res.json({ ok: true, exception: row });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 

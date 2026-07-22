@@ -37,7 +37,7 @@ async function sendBorrowerTerms(appId, { quote, total, termMonths } = {}) {
   try {
     const t = await db.query(
       `SELECT loan_officer_id, accrual_type, min_interest_enabled, deferred_orig_pct,
-              first_payment_date, maturity_date
+              first_payment_date, maturity_date, co_borrower_pg_waived
          FROM applications WHERE id=$1`, [appId]);
     const row = t.rows[0] || {};
     termOptions = {
@@ -48,6 +48,7 @@ async function sendBorrowerTerms(appId, { quote, total, termMonths } = {}) {
       deferredOrigPct: row.deferred_orig_pct != null ? Number(row.deferred_orig_pct) : 0,
       firstPayment: row.first_payment_date || null,
       maturity: row.maturity_date || null,
+      coBorrowerPgWaived: !!row.co_borrower_pg_waived,
     };
     const loId = row.loan_officer_id;
     if (loId) {
