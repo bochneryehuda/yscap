@@ -116,14 +116,33 @@ router.post('/pull-all', async (req, res) => {
     )).rows[0];
     if (existing) return res.status(409).json({ error: 'a bulk pull is already running', runId: existing.id, startedAt: existing.started_at });
 
-    // Fire and forget — response returns as soon as the run row is created.
+    // Fire and forget the actual work — the response returns as soon as the
+    // run row is durably created (so callers get a real runId, not null).
+    // If bulkPullAllLoans throws SYNCHRONOUSLY (e.g. Encompass not configured
+    // mid-request), forward that as a 400 instead of pretending we started.
     const startedByStaffId = (req.actor && req.actor.id) || null;
-    reader.bulkPullAllLoans({ startedByStaffId }).catch((e) => console.warn('[admin-encompass] bulk pull crashed:', e.message));
-    // Give it a moment to create the row, then read the id.
-    setTimeout(async () => {}, 100);
-    const row = (await db.query(
-      `SELECT id FROM encompass_bulk_pull_runs WHERE status='running' ORDER BY started_at DESC LIMIT 1`,
-    )).rows[0];
+    let bulkPromise;
+    try {
+      bulkPromise = reader.bulkPullAllLoans({ startedByStaffId });
+    } catch (e) {
+      return res.status(400).json({ error: 'bulk pull could not start', detail: e.message });
+    }
+    bulkPromise.catch((e) => console.warn('[admin-encompass] bulk pull crashed:', e.message));
+
+    // POLL for the run row bulkPullAllLoans inserts on entry (its very first
+    // await is that INSERT). We poll instead of guessing a timeout so slow
+    // Postgres never leaves the caller with runId=null.
+    const started = Date.now();
+    let row = null;
+    /* eslint-disable no-await-in-loop */
+    while (Date.now() - started < 3000) {
+      row = (await db.query(
+        `SELECT id FROM encompass_bulk_pull_runs WHERE status='running' ORDER BY started_at DESC LIMIT 1`,
+      )).rows[0];
+      if (row) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    /* eslint-enable no-await-in-loop */
     res.json({ started: true, runId: row ? row.id : null });
   } catch (e) { return fail(res, 500, e, 'could not start bulk pull'); }
 });

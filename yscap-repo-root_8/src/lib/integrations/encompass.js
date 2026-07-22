@@ -137,20 +137,40 @@ async function apiGet(path) {
 
 // Pipeline SEARCH — the ONE other read-shaped POST. Returns a loan list.
 // This endpoint is the only way to find loans by fields like `Loan.LoanNumber`
-// without knowing the opaque Encompass GUID up front. The `filter` shape is
-// Encompass's `{terms:[{canonicalName,value,matchType}], sortOrder:[…]}`;
-// `fields` is an array of canonical names (e.g. `["Loan.LoanNumber","Loan.LoanAmount"]`)
-// requesting exactly those in the response. See docs/ENCOMPASS-DATA-MAPPING.md.
-// The body is a QUERY, not a mutation — the endpoint returns loan rows, never
-// modifies Encompass state.
-async function pipelineSearch(filter, fields, { limit } = {}) {
+// without knowing the opaque Encompass GUID up front. It is READ-SHAPED — it
+// returns loan rows, mutates nothing.
+//
+// Request shape (Encompass Developer Connect):
+//   {
+//     "filter":    { "operator":"and", "terms":[{canonicalName,value,matchType},...] },
+//     "sortOrder": [ { "canonicalName":"Loan.LastModified", "order":"desc" } ],
+//     "fields":    [ "Loan.LoanNumber", ... ]
+//   }
+// `filter` is OPTIONAL — omitting it returns all loans (the tenant permits
+// what the OAuth token can see). `sortOrder` MUST be at the TOP LEVEL of the
+// request body — Encompass 400s with "queryContract.filter.sortOrder Invalid
+// field name or value" if it sits inside `filter` (2026-07-22 live diag).
+// Pagination via `?limit=N&start=M` query params.
+async function pipelineSearch(request, { limit, start } = {}) {
   ensure();
-  if (!filter || typeof filter !== 'object') throw new Error('pipelineSearch: filter object is required.');
+  if (request == null || typeof request !== 'object') throw new Error('pipelineSearch: request object is required.');
   const token = await getToken();
-  const g = withTimeout(20000);
+  const g = withTimeout(30000);
   try {
-    const url = `${cfg.baseUrl}${PIPELINE_SEARCH_PATH}${limit ? `?limit=${encodeURIComponent(limit)}` : ''}`;
-    const body = { filter, fields: Array.isArray(fields) && fields.length ? fields : undefined };
+    const qs = new URLSearchParams();
+    if (limit != null) qs.set('limit', String(limit));
+    if (start != null) qs.set('start', String(start));
+    const url = `${cfg.baseUrl}${PIPELINE_SEARCH_PATH}${qs.toString() ? '?' + qs.toString() : ''}`;
+    // Build the body with sortOrder / fields at the TOP LEVEL and filter (if
+    // any) as-is. An empty filter is omitted entirely — Encompass treats a
+    // missing `filter` as "all loans" (what we want for the initial page).
+    const body = {};
+    if (request.filter && typeof request.filter === 'object'
+        && Array.isArray(request.filter.terms) && request.filter.terms.length > 0) {
+      body.filter = request.filter;
+    }
+    if (Array.isArray(request.sortOrder) && request.sortOrder.length) body.sortOrder = request.sortOrder;
+    if (Array.isArray(request.fields) && request.fields.length) body.fields = request.fields;
     const r = await _fetchGuarded(url, {
       method: 'POST',
       headers: {
@@ -162,7 +182,7 @@ async function pipelineSearch(filter, fields, { limit } = {}) {
       signal: g.signal,
     });
     const text = await r.text();
-    if (!r.ok) throw new Error(`Encompass pipeline ${r.status}: ${text.slice(0, 200)}`);
+    if (!r.ok) throw new Error(`Encompass pipeline ${r.status}: ${text.slice(0, 400)}`);
     try { return JSON.parse(text); } catch { return { raw: text }; }
   } finally { g.done(); }
 }

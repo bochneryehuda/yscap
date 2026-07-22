@@ -37,13 +37,15 @@ async function getLoan(guid, { entities } = {}) {
 // The one and only way to find a loan without knowing its GUID up front.
 async function findLoanByLoanNumber(loanNumber, { extraFields } = {}) {
   if (!loanNumber) throw new Error('findLoanByLoanNumber: loanNumber is required.');
-  const filter = {
-    terms: [
-      { canonicalName: 'Loan.LoanNumber', value: String(loanNumber), matchType: 'exact' },
-    ],
-  };
-  const fields = ['Loan.Guid', 'Loan.LoanNumber', 'Loan.LoanFolder', 'Loan.LastModified', ...(extraFields || [])];
-  const rows = await encompass.pipelineSearch(filter, fields, { limit: 5 });
+  const rows = await encompass.pipelineSearch({
+    filter: {
+      operator: 'and',
+      terms: [
+        { canonicalName: 'Loan.LoanNumber', value: String(loanNumber), matchType: 'exact' },
+      ],
+    },
+    fields: ['Loan.Guid', 'Loan.LoanNumber', 'Loan.LoanFolder', 'Loan.LastModified', ...(extraFields || [])],
+  }, { limit: 5 });
   return Array.isArray(rows) ? rows : [];
 }
 
