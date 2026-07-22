@@ -1565,6 +1565,17 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true }) {
     finally { setBusy(false); }
   }, [appId, showDismissed]);
   React.useEffect(() => { load(); }, [load]);
+  // R3.29 — background workers (upload classifier + file-view auto-sync) drop
+  // new suggestions here without a manual reload. Gentle 60s poll + on window
+  // focus so the panel picks them up on its own. No SSE (would need an auth
+  // shim on the SSE endpoint); a 60s tick per open file is fine.
+  React.useEffect(() => {
+    if (!appId) return;
+    const onFocus = () => load();
+    const t = setInterval(load, 60000);
+    window.addEventListener('focus', onFocus);
+    return () => { clearInterval(t); window.removeEventListener('focus', onFocus); };
+  }, [appId, load]);
 
   if (rows == null && !err) return null;
   const openRows = (rows || []).filter((r) => r.status !== 'dismissed');

@@ -1407,6 +1407,18 @@ router.post('/:appId/experience-exception', requirePermission('waive_conditions'
 });
 
 // -------------------------------------------------------------------------
+// Investor Knowledge Graph (R3.28) — per-file slice of the portfolio graph.
+// -------------------------------------------------------------------------
+router.get('/:appId/knowledge-graph', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const graph = await require('../lib/underwriting/knowledge-graph').fileGraph(app.id, db);
+    res.json({ ok: true, graph });
+  } catch (e) { next(e); }
+});
+
+// -------------------------------------------------------------------------
 // AI cost telemetry (R2.11, owner-directed 2026-07-22) — per-file rollup.
 // -------------------------------------------------------------------------
 router.get('/:appId/ai-cost', async (req, res, next) => {
