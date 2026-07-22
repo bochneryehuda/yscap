@@ -99,12 +99,18 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
   // from persisting. Uses the ORIGINAL unmasked fields (safeFields is masked
   // for storage; the twin records the real values behind its own audit trail).
   try {
+    // R5.3 — resolve the source page of each field from the OCR page text, so
+    // fact_observations record page_number (was always null). Heuristic text
+    // match; a miss stays null (never a wrong page).
+    const { makeFieldPager } = require('./evidence-page');
+    const pageNumberFor = makeFieldPager(ext.fields || {}, ext.ocrPages || null);
     await require('./twin').recordFactsFromExtraction(client, {
       appId, documentId, docType, extractionId,
       fields: ext.fields || {},
       ocrEngine: ext.ocrEngine || null,
       aiModel: ext.aiModel || null,
       confidence: ext.confidence || null,
+      pageNumberFor,
     });
   } catch (_) { /* twin is additive — never blocks the extraction */ }
 
@@ -116,16 +122,25 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
   const rulesRes = await require('./promoted-rules').applyPromotedRules(client, findings || []);
   const effectiveFindings = rulesRes.findings;
   const suppressedByRules = rulesRes.suppressed;
+  // R5.3 — resolve a source page for each finding: prefer a page the check
+  // already set (f.page / f.pageNumber), else locate the finding's doc-side
+  // value in the OCR page text. Only ever ADDS a page pointer; a miss is null.
+  const { pageNumberForValue } = require('./evidence-page');
   const findingIds = [];
   for (const f of (effectiveFindings || [])) {
     const actions = Array.isArray(f.actions) && f.actions.length ? JSON.stringify(f.actions) : null;
+    let pageNumber = Number.isFinite(f.page) ? f.page : (Number.isFinite(f.pageNumber) ? f.pageNumber : null);
+    if (pageNumber == null && ext.ocrPages && f.docValue != null) {
+      pageNumber = pageNumberForValue(f.docValue, ext.ocrPages);
+    }
     const { rows: fr } = await client.query(
       `INSERT INTO document_findings
-         (application_id, borrower_id, document_id, extraction_id, source, code, severity, field, doc_value, file_value, title, how_to, blocks_ctc, suggested_actions, opens_condition)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
+         (application_id, borrower_id, document_id, extraction_id, source, code, severity, field, doc_value, file_value, title, how_to, blocks_ctc, suggested_actions, opens_condition, page_number)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`,
       [appId, borId, documentId, extractionId, f.source || docType, f.code,
        f.severity || 'warning', f.field || null, str(f.docValue), str(f.fileValue),
-       f.title || null, f.howTo || null, !!f.blocksCtc, actions, f.opensCondition || null]);
+       f.title || null, f.howTo || null, !!f.blocksCtc, actions, f.opensCondition || null,
+       pageNumber != null ? pageNumber : null]);
     findingIds.push(fr[0].id);
   }
   // Audit-log the suppressed set so a reviewer can inspect exactly what a
