@@ -497,6 +497,11 @@ router.get('/:appId', async (req, res, next) => {
             // (the first per-doc source we can identify) — sync bridges accept a documentId.
             await syncBankBridge.syncBankFindingsToSuggestions(c, app.id, app.id, bankFindingsFlat);
           }
+          // R3.18 — Bad-clearance scan: for every satisfied condition on the file,
+          // run the classifier on its attached doc and post a "may have been cleared
+          // with the wrong document" suggestion when the type doesn't match.
+          // Dormant when the classifier isn't configured; capped per run.
+          try { await require('../lib/underwriting/bad-clearance').scanFile(c, app.id, { maxConditions: 15 }); } catch (_) { /* additive */ }
           await c.query('COMMIT');
         } catch (_) { await c.query('ROLLBACK').catch(() => {}); }
         finally { c.release(); }
