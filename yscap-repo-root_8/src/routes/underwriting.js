@@ -1450,6 +1450,48 @@ router.get('/:appId/knowledge-graph', async (req, res, next) => {
 // -------------------------------------------------------------------------
 // AI cost telemetry (R2.11, owner-directed 2026-07-22) — per-file rollup.
 // -------------------------------------------------------------------------
+/**
+ * R4.1 — File-level AI risk score. Single 0–100 number that aggregates every
+ * open ai_suggestion on the file:
+ *   fatal   = 25 points each
+ *   warning = 8
+ *   info    = 2
+ * capped at 100. Bucketed as low(<20), moderate(20-49), elevated(50-79),
+ * critical(80+). Zero when the AI hasn't found anything. Pure count — no cost.
+ * Composes with R3.40's pipeline chip: the chip signals COUNT, this signals
+ * SEVERITY-WEIGHTED risk.
+ */
+router.get('/:appId/ai-risk-score', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const r = await db.query(
+      `SELECT
+         COUNT(*) FILTER (WHERE severity='fatal')::int   AS fatal,
+         COUNT(*) FILTER (WHERE severity='warning')::int AS warning,
+         COUNT(*) FILTER (WHERE severity='info')::int    AS info,
+         COUNT(*) FILTER (WHERE severity NOT IN ('fatal','warning','info') OR severity IS NULL)::int AS other,
+         EXTRACT(EPOCH FROM (now() - MIN(created_at) FILTER (WHERE severity='fatal')))/86400 AS oldest_fatal_days
+        FROM ai_suggestions
+       WHERE application_id=$1
+         AND status IN ('open','marked_important','escalated','asked_admin')`,
+      [app.id]);
+    const c = r.rows[0] || { fatal: 0, warning: 0, info: 0, other: 0 };
+    const raw = (c.fatal * 25) + (c.warning * 8) + (c.info * 2) + (c.other * 4);
+    const score = Math.min(100, raw);
+    let bucket;
+    if (score >= 80) bucket = 'critical';
+    else if (score >= 50) bucket = 'elevated';
+    else if (score >= 20) bucket = 'moderate';
+    else bucket = 'low';
+    res.json({
+      ok: true, score, bucket,
+      breakdown: { fatal: c.fatal || 0, warning: c.warning || 0, info: c.info || 0, other: c.other || 0 },
+      oldestFatalDays: c.oldest_fatal_days != null ? Number(c.oldest_fatal_days) : null,
+    });
+  } catch (e) { next(e); }
+});
+
 router.get('/:appId/ai-cost', async (req, res, next) => {
   try {
     const app = await fileFor(req, req.params.appId);

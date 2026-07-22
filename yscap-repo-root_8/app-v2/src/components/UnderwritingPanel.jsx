@@ -1136,6 +1136,7 @@ function SovereignCockpit({ twinFacts, cureProofs, appId, canIssueCerts, canConf
       {appId && <SovereignAVMSection appId={appId} canRefresh={canIssueCerts} />}
       {appId && <SovereignCertificatesSection appId={appId} canIssue={canIssueCerts} />}
       {appId && <SovereignStructuringSection appId={appId} />}
+      {appId && <SovereignAiRiskSection appId={appId} />}
       {appId && <SovereignAiCostSection appId={appId} />}
       {appId && <SovereignKnowledgeGraphSection appId={appId} />}
       {appId && <SovereignAskAdminSection appId={appId} />}
@@ -1430,6 +1431,47 @@ function SovereignStructuringSection({ appId }) {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// AI Risk score tile (R4.1). One 0–100 number summarizing every open AI
+// suggestion on the file weighted by severity. Silent when the score is 0.
+// ---------------------------------------------------------------------------
+function SovereignAiRiskSection({ appId }) {
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    if (!appId) return;
+    let live = true;
+    api.aiRiskScore(appId).then((r) => { if (live) setData(r || null); }).catch(() => setData(null));
+    return () => { live = false; };
+  }, [appId]);
+  if (!data || !data.ok || !(data.score > 0)) return null;
+  const tint = data.bucket === 'critical' ? 'var(--crit,#B4483C)'
+    : data.bucket === 'elevated' ? 'var(--amber-strong,#A05F0A)'
+    : data.bucket === 'moderate' ? 'var(--amber,#B7791F)'
+    : 'var(--teal-deep,#256168)';
+  const bd = data.breakdown || {};
+  return (
+    <div style={{ marginTop: 12, border: `1px solid ${tint}`, borderRadius: 10, background: 'var(--card,#fff)', padding: '10px 12px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted,#4B585C)', fontWeight: 700 }}>File AI risk score</div>
+          <div style={{ fontSize: 13, color: 'var(--ivory,#141B22)', marginTop: 2 }}>
+            {bd.fatal > 0 ? `${bd.fatal} fatal` : ''}
+            {bd.fatal > 0 && (bd.warning > 0 || bd.info > 0) ? ' · ' : ''}
+            {bd.warning > 0 ? `${bd.warning} warning` : ''}
+            {bd.warning > 0 && bd.info > 0 ? ' · ' : ''}
+            {bd.info > 0 ? `${bd.info} info` : ''}
+            {data.oldestFatalDays >= 1 ? ` · oldest fatal ${Math.floor(data.oldestFatalDays)}d` : ''}
+          </div>
+        </div>
+        <div style={{ textAlign: 'right', flexShrink: 0 }}>
+          <div style={{ fontSize: 26, fontWeight: 800, color: tint, lineHeight: 1 }}>{data.score}</div>
+          <div style={{ fontSize: 10, color: tint, textTransform: 'uppercase', letterSpacing: '.06em', fontWeight: 700 }}>{data.bucket}</div>
+        </div>
+      </div>
     </div>
   );
 }
