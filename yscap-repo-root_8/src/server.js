@@ -531,6 +531,10 @@ if (require.main === module) {
     // periodically. Gates fall back to their env default until this loads, so it's safe if it lags.
     try { require('./lib/flags').start(); } catch (e) { console.warn('flags cache not started:', e.message); }
     try { require('./lib/notification-digests').start(); } catch (e) { console.warn('notification digests not started:', e.message); }
+    // Loan-officer Notification Center drainer — schedules parked drafts,
+    // auto-sends the untouched ones past the SLA, wakes snoozed rows. Kill-switch
+    // NOTIFY_WORKER_ENABLED=0.
+    try { require('./lib/lo-notification-worker').start(); } catch (e) { console.warn('lo notification worker not started:', e.message); }
     // API Health down-alerts (owner-directed 2026-07-21): probe every integration on a
     // schedule and email the admins when one that was reachable goes DOWN (and when it
     // recovers). Alerts only on a real transition, never on intentional states. OFF by

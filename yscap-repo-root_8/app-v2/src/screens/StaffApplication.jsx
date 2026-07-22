@@ -18,6 +18,7 @@ import DealSnapshot from '../components/DealSnapshot.jsx';
 import ClearToClosePanel from '../components/ClearToClosePanel.jsx';
 import LoanProgress from '../components/LoanProgress.jsx';
 import SubmitFilePanel from '../components/SubmitFilePanel.jsx';
+import FileNotificationOverrides from '../components/FileNotificationOverrides.jsx';
 import { PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
 import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
@@ -220,6 +221,11 @@ const EyeOff = (
 // false = filled elsewhere (address picker / secure SSN flow) so we only hint.
 const COMPLETENESS_FIELDS = (app, borrower) => [
   { key: 'property_address', label: 'Property address', ok: !!(app.property_address && (app.property_address.oneLine || app.property_address.street)), edit: false, hint: 'Set from the property address field on the file.' },
+  // Subject-property LLC / vesting entity (owner-directed 2026-07-21): required
+  // for application completeness. Filled from the Vesting entity (LLC) section
+  // above OR from the Term Sheet Studio's entity-name field on register.
+  { key: 'entity_name', label: 'Subject-property LLC', ok: !!(app.entity_name || app.llc_name || app.llc_id),
+    edit: false, hint: 'Link or create the vesting LLC in the "Vesting entity (LLC)" section, or type it on Products & Pricing.' },
   { key: 'property_type', label: 'Property type', ok: !!app.property_type, type: 'select', options: ['SFR', 'Multi 2-4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed Use'] },
   { key: 'program', label: 'Program', ok: !!app.program, type: 'select', options: ['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction'] },
   { key: 'loan_type', label: 'Loan type', ok: !!app.loan_type, type: 'select', options: ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out'] },
@@ -227,6 +233,14 @@ const COMPLETENESS_FIELDS = (app, borrower) => [
   { key: 'arv', label: 'ARV', ok: app.arv != null, type: 'money' },
   { key: 'rehab_budget', label: 'Rehab budget', ok: app.rehab_budget != null, type: 'money' },
   { key: 'cell_phone', label: 'Borrower phone', ok: !!(borrower && borrower.cell_phone), type: 'tel' },
+  // Borrower's PRIMARY (home) residence address — required for application
+  // completeness (owner-directed 2026-07-21). Filled via the PrimaryAddressPanel
+  // below; the panel writes borrowers.current_address through
+  // staffUpdateBorrower({currentAddress}), so completeness only checks it here.
+  { key: 'current_address', label: 'Borrower primary home address',
+    ok: !!(borrower && borrower.current_address
+      && ['line1', 'city', 'state', 'zip'].some((k) => String(borrower.current_address[k] || '').trim())),
+    edit: false, hint: 'Set with the borrower primary address panel below.' },
   { key: 'date_of_birth', label: 'Date of birth', ok: !!(borrower && borrower.date_of_birth), type: 'date' },
   { key: 'ssn', label: 'SSN on file', ok: !!(borrower && borrower.ssn_last4), edit: false, hint: 'Enter via the secure SSN field on the borrower profile.' },
   { key: 'fico', label: 'FICO', ok: !!(borrower && borrower.fico), type: 'fico' },
@@ -1949,7 +1963,10 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
               </div>
               <div className="muted small">Condition to close — the borrower fills this too. Verifying the entity (below or here) satisfies and signs it off.</div>
               {app.llc_id
-                ? <LlcManager llcId={app.llc_id} staff compactHeader />
+                ? <LlcManager llcId={app.llc_id} staff compactHeader
+                    coBorrower={app.co_borrower_id
+                      ? { fullName: `${app.co_first_name || ''} ${app.co_last_name || ''}`.trim(), email: app.co_email || '' }
+                      : null} />
                 : <p className="muted small" style={{ margin: 0 }}>No vesting entity linked yet — link or create one in the “Vesting entity (LLC)” section above.</p>}
             </div>
           )
@@ -2396,11 +2413,15 @@ export default function StaffApplication() {
     sp.delete('esign');
     nav({ pathname, search: sp.toString() ? `?${sp.toString()}` : '' }, { replace: true });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  const { role, can } = useAuth();
+  const { role, can, actor: authActor } = useAuth();
   const isAdmin = role === 'admin' || role === 'super_admin';
   const completer = canComplete(role);   // may CLEAR (sign off) a condition; others only mark it reviewed
   const canDelete = can('delete_files');
   const [app, setApp] = useState(null);
+  // For the per-file notification override panel — only surfaces when THIS
+  // user is the file's assigned loan officer. Must be computed AFTER `app` is
+  // declared (const bindings are in the TDZ until initialised).
+  const isMyFile = !!(authActor && app && app.loan_officer_id && String(authActor.id) === String(app.loan_officer_id));
   // Deep-link to a section: a URL ending in "#sec-<name>" (e.g. the Orders queue's
   // "Open" button → #sec-orders) opens + scrolls to that collapsed section once the
   // file has rendered. Best-effort; a no-op when the fragment names no real section.
@@ -2855,6 +2876,9 @@ export default function StaffApplication() {
       {/* Where the loan is up to — visible INSIDE the loan, not just on the
           pipeline (owner-directed 2026-07-20). */}
       <LoanProgress status={app.status} />
+      {/* Only the file's assigned LO sees this — presets to VIP / Quiet /
+          Silent + per-notification override rows for JUST this file. */}
+      <FileNotificationOverrides applicationId={id} isMyFile={isMyFile} />
       <DealSnapshot app={app} gating={gating} />
       <ClearToClosePanel gating={gating} />
       {/* THE WORKFLOW (owner-directed 2026-07-21) — the primary way a file moves.

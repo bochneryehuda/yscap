@@ -267,6 +267,36 @@ export default function StaffNewFile() {
 
   useEffect(() => { api.staffTeam().then(setTeam).catch(() => {}); }, []);
 
+  // Prefill from ?borrowerId=<uuid> (owner-directed 2026-07-21) — the "+ New
+  // mortgage" action on the borrowers page passes the borrower so we can start
+  // their next deal without re-searching. Read the id from the HashRouter's
+  // querystring (hash: "#/internal/new?borrowerId=..."), look up the borrower's
+  // contact, and pre-link the file to them. Runs ONCE, only when no borrower is
+  // already linked (never clobbers an in-progress draft), and only when the
+  // form's name fields are empty (again — don't overwrite live typing). Best-
+  // effort: a missing/invalid id just leaves the form blank.
+  useEffect(() => {
+    if (borrowerId) return;
+    if ((f.firstName || '').trim() || (f.lastName || '').trim() || (f.email || '').trim()) return;
+    let bid = '';
+    try {
+      const hash = String((typeof window !== 'undefined' && window.location && window.location.hash) || '');
+      const q = hash.indexOf('?');
+      if (q >= 0) {
+        const sp = new URLSearchParams(hash.slice(q + 1));
+        bid = sp.get('borrowerId') || '';
+      }
+    } catch (_) { /* ignore */ }
+    if (!bid) return;
+    let live = true;
+    api.staffBorrower(bid).then((bo) => {
+      if (!live || !bo) return;
+      pickBorrower({ id: bo.id, first_name: bo.first_name, last_name: bo.last_name, email: bo.email, cell_phone: bo.cell_phone });
+    }).catch(() => {});
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Auto-save the in-progress form to localStorage on every change (no Save
   // button). Restored on mount via the lazy initializers above.
   useEffect(() => {

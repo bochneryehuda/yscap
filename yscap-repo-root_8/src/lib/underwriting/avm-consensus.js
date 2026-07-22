@@ -169,7 +169,7 @@ async function persistFindingIfDisagreement(client, appId, report) {
   const fileValue = `Appraisal ARV $${Math.round(report.appraisal.value).toLocaleString('en-US')}`;
   if (cur.rowCount) {
     // document_findings has no `updated_at` column (checked db/schema.sql +
-    // every ALTER through db/229 + 232) — writing it would throw and poison
+    // every ALTER through db/234 + 237) — writing it would throw and poison
     // the caller's transaction (audit finding [A], 2026-07-22).
     await client.query(
       `UPDATE document_findings

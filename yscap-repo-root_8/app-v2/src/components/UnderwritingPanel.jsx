@@ -800,7 +800,7 @@ function Amendments({ amendments }) {
 // (processor / coordinator / closer) sees the non-senior actions but not the gate-clearing
 // ones, so no button 403s. Defaults true for back-compat.
 // The Sovereign cockpit — collapsible summary of canonical facts (from the
-// loan digital twin, db/227) and per-condition cure proofs (db/228).
+// loan digital twin, db/232) and per-condition cure proofs (db/233).
 // Read-only presentation of what the underlying Sovereign engines produced.
 // Both sections start collapsed so the classic findings list stays the
 // default view; a reviewer opens them when they want the evidence trail.

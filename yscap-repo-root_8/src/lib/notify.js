@@ -15,6 +15,10 @@ const { link: portalLink } = require('./email/catalog');
 const cfg = require('../config');
 const { scrubText, scrubTextExcept } = require('./borrower-safe');
 const { fileReplyTo } = require('./file-address');   // #68 per-file shared reply-to
+// Loan-officer per-notification gate: the LO can toggle any borrower-facing
+// notification OFF, or park it as a draft for hand-review, EXCEPT DocuSign /
+// security / account traffic (always sends). See notification-catalog.js.
+const loGate = require('./lo-notification-gate');
 
 // A small upper-case eyebrow rendered above each email's headline so the reader
 // can classify it before reading the title. Keyed by notification `type`;
@@ -278,8 +282,36 @@ async function _mark(id, status) {
 // which has its own BORROWER_MAJOR_EMAIL policy and is untouched by this set.
 const STAFF_INAPP_TYPES = new Set(['tool_submitted', 'doc_uploaded', 'condition_added']);
 
+// Escape hatch (used by the Notification Center's Send-now action) — bypasses
+// the LO gate for this single call so a hand-reviewed draft actually goes out.
+// The caller passes opts._bypassLoGate=true.
+function _bypassLoGate(opts) { return !!(opts && opts._bypassLoGate); }
+
 /** Notify one staff user. opts: {type,title,body,applicationId,link,emailTo,meta,lines,ctaLabel,greeting,note} */
 async function notifyStaff(staffId, opts) {
+  // LO notification gate — for STAFF-facing file notifications, only intercept
+  // when this recipient IS the file's assigned loan officer (so a processor or
+  // assistant getting the same event isn't overridden by the LO's personal
+  // preference). Borrower-facing sends flow through the borrower gate below.
+  if (!_bypassLoGate(opts) && opts.applicationId && staffId) {
+    try {
+      const officerId = await loGate.fileOfficerId(opts.applicationId);
+      if (officerId && String(officerId) === String(staffId)) {
+        const decision = await loGate.decide({
+          type: opts.type, applicationId: opts.applicationId, audience: 'staff',
+          recipientKind: 'staff', recipientId: staffId, notifKey: opts.notifKey,
+        });
+        if (decision.action === 'drop') return null;
+        if (decision.action === 'draft') {
+          await loGate.recordDraft({ officerId: staffId, key: decision.key, audience: 'staff',
+            recipientKind: 'staff', recipientId: staffId, applicationId: opts.applicationId,
+            type: opts.type, opts, recipientLabel: null,
+            autoSendAt: decision.autoSendAt || null });
+          return null;
+        }
+      }
+    } catch (_) { /* fall through and send */ }
+  }
   // S1-01 control center: a manager can switch a member's notifications OFF. When
   // off, we still write the in-app row (so their in-app queue keeps working and
   // nothing is lost) but skip the EMAIL. On by default; unknown column / missing
@@ -396,6 +428,33 @@ const BORROWER_MAJOR_EMAIL = new Set([
 
 /** Notify a borrower, respecting their per-category preferences. */
 async function notifyBorrower(borrowerId, opts) {
+  // LO notification gate — the file's loan officer decides what reaches
+  // "his own clients" (owner-directed). Forced notifications (DocuSign,
+  // security, account) bypass the gate automatically.
+  if (!_bypassLoGate(opts) && opts.applicationId) {
+    try {
+      const decision = await loGate.decide({
+        type: opts.type, applicationId: opts.applicationId, audience: 'borrower',
+        recipientKind: 'borrower', recipientId: borrowerId, notifKey: opts.notifKey,
+      });
+      if (decision.action === 'drop') return null;
+      if (decision.action === 'draft') {
+        // Look up a friendly name for the draft list — helps the LO see WHICH
+        // borrower this queued notification would go to.
+        let label = null;
+        try {
+          const r = await db.query(`SELECT first_name, last_name, email FROM borrowers WHERE id=$1`, [borrowerId]);
+          const b = r.rows[0];
+          if (b) label = [b.first_name, b.last_name].filter(Boolean).join(' ') || b.email || null;
+        } catch (_) { /* label is optional */ }
+        await loGate.recordDraft({ officerId: decision.officerId, key: decision.key, audience: 'borrower',
+          recipientKind: 'borrower', recipientId: borrowerId, applicationId: opts.applicationId,
+          type: opts.type, opts, recipientLabel: label,
+          autoSendAt: decision.autoSendAt || null });
+        return null;
+      }
+    } catch (_) { /* fall through and send */ }
+  }
   const cat = categoryOf(opts.type);
   // #88: email defaults ON only for major moments (or when a caller passes
   // opts.major=true); everything else is in-app only by default. An explicit

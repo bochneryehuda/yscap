@@ -938,6 +938,19 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK'); throw e; }
     finally { client.release(); }
+    // Vesting LLC on register (owner-directed 2026-07-21): a typed entity name
+    // on the studio should be persisted as the subject-property LLC on the file.
+    // Only fills a file that has no vesting LLC yet — never renames an existing
+    // one. Best-effort.
+    try {
+      const b2 = req.body || {};
+      const typed = String((b2.overrides && b2.overrides.entityName) || b2.entityName || '').trim();
+      const cur = (await db.query(`SELECT llc_id, borrower_id FROM applications WHERE id=$1`, [appId])).rows[0] || {};
+      if (typed && !cur.llc_id && cur.borrower_id) {
+        const vestLlcId = await resolveEntityByName(cur.borrower_id, typed);
+        if (vestLlcId) await require('../lib/vesting').setVestingLlc(appId, vestLlcId, { source: 'borrower', actor: null });
+      }
+    } catch (e) { console.error('[borrower-register] vesting from studio failed:', db.describeError(e)); }
     // Registration rewrites loan amount / rate / program — re-run condition rules.
     try { await conditionEngine.evaluateApplication(appId, { reason: 'product_registered' }); } catch (_) {}
     // Replace the generic bank-statement condition with the detailed liquidity
@@ -1942,9 +1955,14 @@ router.get('/applications/:id/change-requests', async (req, res) => {
 const CONTACT_TYPES = ['title_company', 'insurance_agent', 'attorney', 'contractor', 'other'];
 router.get('/contacts', async (req, res) => {
   const type = CONTACT_TYPES.includes(req.query.type) ? req.query.type : null;
+  // merged_into_id is set when an admin merged this contact into another
+  // vendor (db/224). Hide it from the borrower's autocomplete so they never
+  // pick a soft-deleted duplicate — the survivor already carries the data.
   const r = await db.query(
     `SELECT id,contact_type,company_name,contact_name,email,phone,last_used_at
-       FROM service_contacts WHERE borrower_id=$1 AND ($2::text IS NULL OR contact_type=$2)
+       FROM service_contacts
+      WHERE borrower_id=$1 AND merged_into_id IS NULL
+        AND ($2::text IS NULL OR contact_type=$2)
       ORDER BY last_used_at DESC NULLS LAST, updated_at DESC`, [me(req), type]);
   res.json(r.rows);
 });
@@ -2065,13 +2083,14 @@ router.delete('/file-contacts/:linkId', async (req, res) => {
   res.json({ ok: true });
 });
 // Borrower profile: every vendor this borrower is dealing with, across all files.
+// Hides merged rows (db/224) so a soft-deleted duplicate never shows as its own entry.
 router.get('/my-contacts', async (req, res) => {
   const r = await db.query(
     `SELECT sc.id, sc.contact_type, sc.custom_type, sc.company_name, sc.contact_name, sc.email, sc.phone, sc.notes,
             count(l.application_id)::int AS files_used
        FROM service_contacts sc
        LEFT JOIN application_service_contacts l ON l.service_contact_id = sc.id
-      WHERE sc.borrower_id=$1
+      WHERE sc.borrower_id=$1 AND sc.merged_into_id IS NULL
       GROUP BY sc.id
       ORDER BY sc.contact_type, lower(coalesce(sc.company_name, sc.contact_name, sc.email, ''))`, [me(req)]);
   res.json(r.rows);

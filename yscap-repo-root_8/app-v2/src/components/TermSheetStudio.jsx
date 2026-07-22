@@ -281,7 +281,7 @@ function loadPdfEngine(doc) {
   });
 }
 
-const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds = [], onState, showAdmin = false }, ref) {
+const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds = [], onState, showAdmin = false, officer = null }, ref) {
   const frameRef = useRef(null);
   const winRef = useRef(null);
   const adminStyleRef = useRef(null);   // the injected style hiding the admin zone
@@ -463,6 +463,18 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
         // pricing controls open; everyone else gets them hidden — togglable
         // later through the ref WITHOUT remounting (values persist hidden).
         applyAdminVisible(!!showAdmin);
+        // Loan-officer branding (owner-directed 2026-07-21): when this studio is
+        // opened on a file with an ASSIGNED loan officer, publish the officer to
+        // the tool's window.YSBRAND so the exported term-sheet PDF renders the LO
+        // signature block with the /ts_lo_sig/ + /ts_lo_dt/ anchors DocuSign uses
+        // to place the LO signer's tabs. No-op when no officer prop is given.
+        try {
+          if (officer && officer.name) {
+            win.YSBRAND = Object.assign({}, officer, {
+              code: officer.code || String(officer.email || officer.name || '').split('@')[0].toLowerCase(),
+            });
+          }
+        } catch (_) { /* cosmetic — falls back to no LO block */ }
         try { if (prefillRef.current) win.YS.applyState(prefillRef.current); } catch (_) { /* keep defaults */ }
         for (const id of lockedIds) {
           const e = doc.getElementById(id);

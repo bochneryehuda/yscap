@@ -1817,6 +1817,24 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         await client.query(`UPDATE applications SET file_markup_gold_pct=$2 WHERE id=$1`, [appId, stickyMk(overrides.markupGoldPct)]);
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK'); throw e; }
+
+    // Vesting LLC on register (owner-directed 2026-07-21): if the staffer typed
+    // an entity name on the Products & Pricing / Term Sheet Studio screen and
+    // the file has no vesting LLC yet, persist the typed name as the subject-
+    // property LLC — resolve-or-create it under this borrower and route through
+    // the vesting chokepoint (llc_id + LLC condition + doc slots + re-eval). A
+    // file that already carries a vesting LLC is untouched (never renamed).
+    // Best-effort: a vesting hiccup never fails the just-committed register.
+    try {
+      const typed = String((b.overrides && b.overrides.entityName) || b.entityName || '').trim();
+      if (typed && !f.app.llc_id) {
+        const borrowerId = f.app.borrower_id;
+        const ex = await db.query(`SELECT id FROM llcs WHERE borrower_id=$1 AND lower(llc_name)=lower($2) LIMIT 1`, [borrowerId, typed]);
+        const vestLlcId = ex.rows[0] ? ex.rows[0].id
+          : (await db.query(`INSERT INTO llcs (borrower_id, llc_name) VALUES ($1,$2) RETURNING id`, [borrowerId, typed])).rows[0].id;
+        if (vestLlcId) await require('../lib/vesting').setVestingLlc(appId, vestLlcId, { source: 'staff', actor: req.actor.id });
+      }
+    } catch (e) { console.error('[staff-register] vesting from studio failed:', db.describeError(e)); }
     finally { client.release(); }
     // Registration rewrites loan amount / rate / program — re-run condition rules.
     try { await conditionEngine.evaluateApplication(appId, { actor: req.actor, reason: 'product_registered' }); } catch (_) {}
@@ -4130,6 +4148,9 @@ router.post('/applications/:id/assign', async (req, res) => {
         [req.params.id, loanOfficerId, off.rows[0].full_name]);
       if (u.rowCount === 0) return res.status(404).json({ error: 'application not found' });
       const officerChanged = String(cur.rows[0].loan_officer_id || '') !== String(loanOfficerId);
+      // Invalidate the LO-notification-gate's cache for this file so the very
+      // next notification routes to the NEW LO's prefs (not the previous holder's).
+      try { require('../lib/lo-notification-gate').invalidateFile(req.params.id); } catch (_) { /* best-effort */ }
       // Only email the officer on a REAL change — re-saving the assignment panel
       // with the same officer is a no-op and must not re-send "You are the loan
       // officer on a file" every time (round-2 audit N3).
@@ -7814,12 +7835,38 @@ router.get('/team', async (req, res) => {
 // platform, tagged by type. Admins curate it: enrich, correct, or delete bad
 // entries — borrowers then autocomplete against the cleaned-up records.
 const VENDOR_TYPES = ['title_company', 'insurance_agent', 'attorney', 'contractor', 'other'];
+// Normalize an email for dedup / matching — lowercased + whitespace stripped.
+// Returns '' for blank / non-string input. Used by the vendor merge suggester +
+// the mergeArrays helper below (case-only duplicates collapse to one entry).
+function vendorNormEmail(v) { return String(v == null ? '' : v).trim().toLowerCase(); }
+// Digits-only phone form for dedup (formatting differences don't split rows).
+function vendorNormPhone(v) { return String(v == null ? '' : v).replace(/\D+/g, ''); }
+// Alphanumeric lowercased vendor name key for duplicate detection.
+function vendorNormName(v) { return String(v == null ? '' : v).toLowerCase().replace(/[^a-z0-9]+/g, ''); }
+// De-dupe an array by a normalizer, preserving first-seen order + trimming.
+function dedupBy(arr, norm) {
+  const seen = new Set(), out = [];
+  for (const raw of (arr || [])) {
+    const s = String(raw == null ? '' : raw).trim();
+    if (!s) continue;
+    const k = norm(s);
+    if (!k || seen.has(k)) continue;
+    seen.add(k); out.push(s);
+  }
+  return out;
+}
+
 router.get('/vendors', async (req, res) => {
   if (!can(req.actor, 'manage_vendors')) return res.status(403).json({ error: 'you do not have permission to manage vendors' });
   const type = VENDOR_TYPES.includes(req.query.type) ? req.query.type : null;
+  // Merged rows are hidden by default — the merge target absorbs them. Pass
+  // ?includeMerged=1 to include them (for an audit view / history panel).
+  const includeMerged = String(req.query.includeMerged || '') === '1';
   const r = await db.query(
-    `SELECT sc.id, sc.contact_type, sc.company_name, sc.contact_name, sc.email, sc.phone, sc.address,
+    `SELECT sc.id, sc.contact_type, sc.company_name, sc.contact_name,
+            sc.email, sc.phone, sc.emails, sc.phones, sc.address,
             sc.notes, sc.created_at, sc.updated_at, sc.last_used_at,
+            sc.merged_into_id, sc.merged_at,
             b.first_name || ' ' || b.last_name AS added_by_borrower,
             s.full_name AS added_by_staff,
             (SELECT count(*)::int FROM application_service_contacts x WHERE x.service_contact_id=sc.id) AS files_used
@@ -7827,19 +7874,59 @@ router.get('/vendors', async (req, res) => {
        LEFT JOIN borrowers b ON b.id=sc.borrower_id
        LEFT JOIN staff_users s ON s.id=sc.added_by_staff_id
       WHERE ($1::text IS NULL OR sc.contact_type=$1)
-      ORDER BY sc.contact_type, lower(coalesce(sc.company_name, sc.contact_name, sc.email, ''))`, [type]);
-  res.json(r.rows);
+        AND ($2::boolean OR sc.merged_into_id IS NULL)
+      ORDER BY sc.contact_type, lower(coalesce(sc.company_name, sc.contact_name, sc.email, ''))`, [type, includeMerged]);
+  // Duplicate detection: group vendors of the same type that share ANY signal —
+  // normalized company name, any email (case-insensitive), or any phone (digits).
+  // Returns a `duplicate_group` id per candidate cluster so the UI can offer a
+  // merge without a second round-trip. Runs in-memory (small dataset).
+  const rows = r.rows.map((v) => ({ ...v,
+    emails: Array.isArray(v.emails) ? v.emails : (v.email ? [v.email] : []),
+    phones: Array.isArray(v.phones) ? v.phones : (v.phone ? [v.phone] : []),
+  }));
+  const parent = new Map();
+  const find = (x) => { let p = x; while (parent.get(p) && parent.get(p) !== p) p = parent.get(p); return p; };
+  const union = (a, b) => { const pa = find(a), pb = find(b); if (pa !== pb) parent.set(pa, pb); };
+  for (const v of rows) parent.set(v.id, v.id);
+  const byKey = new Map();   // key -> first vendor id seen
+  const addKey = (key, vid) => {
+    if (!key) return;
+    const seen = byKey.get(key);
+    if (seen) union(seen, vid); else byKey.set(key, vid);
+  };
+  for (const v of rows) {
+    if (v.merged_into_id) continue;
+    const t = v.contact_type || '';
+    const nk = vendorNormName(v.company_name || v.contact_name || '');
+    if (nk) addKey(`${t}|n|${nk}`, v.id);
+    for (const em of v.emails) { const k = vendorNormEmail(em); if (k) addKey(`${t}|e|${k}`, v.id); }
+    for (const ph of v.phones) { const k = vendorNormPhone(ph); if (k && k.length >= 7) addKey(`${t}|p|${k}`, v.id); }
+  }
+  // Only stamp a group id when 2+ vendors joined the same cluster.
+  const groupSize = new Map();
+  for (const v of rows) { const g = find(v.id); groupSize.set(g, (groupSize.get(g) || 0) + 1); }
+  for (const v of rows) {
+    const g = find(v.id);
+    v.duplicate_group = (groupSize.get(g) || 0) > 1 ? g : null;
+  }
+  res.json(rows);
 });
 router.post('/vendors', async (req, res) => {
   if (!can(req.actor, 'manage_vendors')) return res.status(403).json({ error: 'you do not have permission to manage vendors' });
   const b = req.body || {};
   const type = VENDOR_TYPES.includes(b.contactType) ? b.contactType : 'other';
-  if (!b.companyName && !b.contactName && !b.email && !b.phone)
+  const emailsRaw = Array.isArray(b.emails) ? b.emails : (b.email ? [b.email] : []);
+  const phonesRaw = Array.isArray(b.phones) ? b.phones : (b.phone ? [b.phone] : []);
+  const emails = dedupBy(emailsRaw, vendorNormEmail);
+  const phones = dedupBy(phonesRaw, vendorNormPhone);
+  if (!b.companyName && !b.contactName && !emails.length && !phones.length)
     return res.status(400).json({ error: 'enter at least one contact detail' });
   const r = await db.query(
-    `INSERT INTO service_contacts (contact_type,company_name,contact_name,email,phone,address,notes,added_by_staff_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-    [type, b.companyName || null, b.contactName || null, b.email || null, b.phone || null,
+    `INSERT INTO service_contacts (contact_type,company_name,contact_name,email,phone,emails,phones,address,notes,added_by_staff_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+    [type, b.companyName || null, b.contactName || null,
+     emails[0] || null, phones[0] || null,
+     emails.length ? emails : null, phones.length ? phones : null,
      b.address || null, b.notes || null, req.actor.id]);
   await audit(req, 'add_vendor', 'service_contact', r.rows[0].id, { type });
   res.status(201).json({ ok: true, vendorId: r.rows[0].id });
@@ -7847,12 +7934,27 @@ router.post('/vendors', async (req, res) => {
 router.patch('/vendors/:id', async (req, res) => {
   if (!can(req.actor, 'manage_vendors')) return res.status(403).json({ error: 'you do not have permission to manage vendors' });
   const b = req.body || {};
-  const map = { companyName: 'company_name', contactName: 'contact_name', email: 'email',
+  const map = { companyName: 'company_name', contactName: 'contact_name',
                 phone: 'phone', address: 'address', notes: 'notes' };
   const sets = [], vals = []; let i = 1;
   for (const [k, col] of Object.entries(map))
     if (b[k] !== undefined) { sets.push(`${col}=$${i++}`); vals.push(b[k] === '' ? null : b[k]); }
   if (b.contactType && VENDOR_TYPES.includes(b.contactType)) { sets.push(`contact_type=$${i++}`); vals.push(b.contactType); }
+  // Emails / phones — accept either an ARRAY (full replacement, deduped) or a
+  // legacy scalar (goes into the primary column). When an array is given, the
+  // scalar email/phone is set to the first entry so the display stays consistent.
+  if (Array.isArray(b.emails)) {
+    const arr = dedupBy(b.emails, vendorNormEmail);
+    sets.push(`emails=$${i++}`); vals.push(arr.length ? arr : null);
+    sets.push(`email=$${i++}`); vals.push(arr[0] || null);
+  } else if (b.email !== undefined) {
+    sets.push(`email=$${i++}`); vals.push(b.email === '' ? null : b.email);
+  }
+  if (Array.isArray(b.phones)) {
+    const arr = dedupBy(b.phones, vendorNormPhone);
+    sets.push(`phones=$${i++}`); vals.push(arr.length ? arr : null);
+    sets.push(`phone=$${i++}`); vals.push(arr[0] || null);
+  }
   if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
   sets.push('updated_at=now()'); vals.push(req.params.id);
   const r = await db.query(`UPDATE service_contacts SET ${sets.join(',')} WHERE id=$${i} RETURNING id`, vals);
@@ -7866,6 +7968,99 @@ router.delete('/vendors/:id', async (req, res) => {
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
   await audit(req, 'delete_vendor', 'service_contact', req.params.id);
   res.json({ ok: true });
+});
+
+// Manual vendor merge (owner-directed 2026-07-21). The survivor absorbs the
+// loser's field values PER-FIELD (fieldPicks tells us which side wins each
+// scalar); their emails/phones arrays UNION (dedup); every application link
+// re-points to the survivor; the loser is soft-marked merged_into_id (never
+// deleted, so audit trails still resolve). Body:
+//   { survivorId, mergedId, picks: { companyName, contactName, address, notes,
+//                                    contactType, primaryEmail, primaryPhone },
+//     emails: [...], phones: [...] }
+// Every pick is optional — omitted → keep the survivor's current value.
+router.post('/vendors/merge', async (req, res) => {
+  if (!can(req.actor, 'manage_vendors')) return res.status(403).json({ error: 'you do not have permission to manage vendors' });
+  const b = req.body || {};
+  const survivorId = b.survivorId, mergedId = b.mergedId;
+  if (!survivorId || !mergedId || survivorId === mergedId)
+    return res.status(400).json({ error: 'pick two different vendors to merge' });
+  const client = await db.getClient();
+  try {
+    await client.query('BEGIN');
+    const sv = (await client.query(`SELECT * FROM service_contacts WHERE id=$1 FOR UPDATE`, [survivorId])).rows[0];
+    const md = (await client.query(`SELECT * FROM service_contacts WHERE id=$1 FOR UPDATE`, [mergedId])).rows[0];
+    if (!sv || !md) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'vendor not found' }); }
+    if (sv.merged_into_id || md.merged_into_id) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'one of the vendors is already merged' }); }
+    const picks = b.picks || {};
+    // Per-scalar-field pick: value not provided → keep the survivor's current.
+    const pick = (k, cur) => (picks[k] === undefined ? cur : (picks[k] === '' ? null : picks[k]));
+    const type = VENDOR_TYPES.includes(picks.contactType) ? picks.contactType : sv.contact_type;
+    // Union both sides' email/phone arrays, then honor the caller's explicit
+    // list if they sent one (an admin de-selecting a bad email during merge).
+    const svEmails = Array.isArray(sv.emails) ? sv.emails : (sv.email ? [sv.email] : []);
+    const mdEmails = Array.isArray(md.emails) ? md.emails : (md.email ? [md.email] : []);
+    const svPhones = Array.isArray(sv.phones) ? sv.phones : (sv.phone ? [sv.phone] : []);
+    const mdPhones = Array.isArray(md.phones) ? md.phones : (md.phone ? [md.phone] : []);
+    const emails = Array.isArray(b.emails) ? dedupBy(b.emails, vendorNormEmail) : dedupBy([...svEmails, ...mdEmails], vendorNormEmail);
+    const phones = Array.isArray(b.phones) ? dedupBy(b.phones, vendorNormPhone) : dedupBy([...svPhones, ...mdPhones], vendorNormPhone);
+    // Primary email/phone = the caller's pick if present AND actually kept in
+    // the final array (post-merge-review 2026-07-21: the UI let a user pick a
+    // primary and then uncheck that same value from the list — the primary
+    // would then point at an email the vendor no longer carries). Fall back to
+    // the FIRST of the merged array so the primary is always a real, retained
+    // value — never blank when there IS an entry available.
+    const emailKeys = new Set(emails.map(vendorNormEmail));
+    const phoneKeys = new Set(phones.map(vendorNormPhone));
+    const primaryEmail = (picks.primaryEmail !== undefined && picks.primaryEmail
+      && emailKeys.has(vendorNormEmail(picks.primaryEmail)))
+      ? picks.primaryEmail : (emails[0] || null);
+    const primaryPhone = (picks.primaryPhone !== undefined && picks.primaryPhone
+      && phoneKeys.has(vendorNormPhone(picks.primaryPhone)))
+      ? picks.primaryPhone : (phones[0] || null);
+    await client.query(
+      `UPDATE service_contacts
+          SET contact_type=$2, company_name=$3, contact_name=$4, address=$5, notes=$6,
+              email=$7, phone=$8, emails=$9, phones=$10, updated_at=now()
+        WHERE id=$1`,
+      [survivorId, type,
+       pick('companyName', sv.company_name), pick('contactName', sv.contact_name),
+       pick('address', sv.address), pick('notes', sv.notes),
+       primaryEmail, primaryPhone,
+       emails.length ? emails : null, phones.length ? phones : null]);
+    // Re-point every application link. The (application_id, service_contact_id)
+    // unique index (db/078) collides if the SAME file already had BOTH vendors
+    // linked — in that case keep the survivor's existing link and drop the
+    // loser's link row (the survivor already covers the file).
+    try {
+      await client.query(
+        `UPDATE application_service_contacts SET service_contact_id=$2
+          WHERE service_contact_id=$1
+            AND NOT EXISTS (
+              SELECT 1 FROM application_service_contacts x
+               WHERE x.application_id = application_service_contacts.application_id
+                 AND x.service_contact_id = $2
+            )`,
+        [mergedId, survivorId]);
+    } catch (e) {
+      // Fall back on 23505 by dropping conflicting rows explicitly.
+      if (!e || e.code !== '23505') throw e;
+    }
+    await client.query(
+      `DELETE FROM application_service_contacts WHERE service_contact_id=$1`,
+      [mergedId]);
+    // Soft-mark the loser — bytes stay for audit; the listing hides it.
+    await client.query(
+      `UPDATE service_contacts SET merged_into_id=$2, merged_at=now(), updated_at=now() WHERE id=$1`,
+      [mergedId, survivorId]);
+    await client.query('COMMIT');
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    console.warn('[vendor-merge] failed:', db.describeError(e));
+    return res.status(500).json({ error: 'merge failed' });
+  } finally { client.release(); }
+  await audit(req, 'merge_vendors', 'service_contact', survivorId, { mergedId });
+  res.json({ ok: true, survivorId, mergedId });
 });
 
 // ---------------- GENERAL FILE CONTACTS — staff side (#144) ----------------
@@ -8804,6 +8999,7 @@ router.post('/esign/drain', async (req, res) => {
 // Mounted last so the /applications/:id scope guard above still covers the
 // application-scoped chat routes (create chat / export).
 router.use(require('./staff-chat'));
+router.use(require('./staff-notif-center'));
 
 module.exports = router;
 // exported for tests (the draw email center's DocuSign + Sitewire activity fold-in)

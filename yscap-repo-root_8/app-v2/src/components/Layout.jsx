@@ -5,12 +5,12 @@ import { useAuth } from '../lib/auth.jsx';
 import ChatBubble from './ChatBubble.jsx';
 import { useStaleBuild, StaleBuildBanner } from '../lib/useStaleBuild.jsx';
 
-export function Brand({ console: consoleLabel = 'Borrower console', to = '/dashboard', ariaLabel = 'PILOT by YS Capital' }) {
-  return (
-    <Link to={to} className="brand" aria-label={ariaLabel} style={{ textDecoration: 'none' }}>
-      {/* PILOT co-brand lockup: gold navigation-chevron mark (CSS clip-path) +
-          "PILOT" wordmark (Fraunces, tracked, ink) + quiet "by YS Capital"
-          endorsement (muted, Hanken). White-first header, so ink-on-white. */}
+export function Brand({ console: consoleLabel = 'Borrower console', to = '/dashboard', ariaLabel = 'PILOT by YS Capital', external = false }) {
+  // PILOT co-brand lockup: gold navigation-chevron mark (CSS clip-path) +
+  // "PILOT" wordmark (Fraunces, tracked, ink) + quiet "by YS Capital"
+  // endorsement (muted, Hanken). White-first header, so ink-on-white.
+  const inner = (
+    <>
       <span className="pilot-lockup" aria-hidden="true">
         <span className="pilot-mark" />
         <span className="pilot-stack">
@@ -19,7 +19,17 @@ export function Brand({ console: consoleLabel = 'Borrower console', to = '/dashb
         </span>
       </span>
       {consoleLabel && <span className="sub">{consoleLabel}</span>}
-    </Link>
+    </>
+  );
+  // external=true renders a plain <a> so the browser leaves the /portal/
+  // HashRouter and lands on the marketing site (root "/").
+  if (external) {
+    return (
+      <a href={to} className="brand" aria-label={ariaLabel} style={{ textDecoration: 'none' }}>{inner}</a>
+    );
+  }
+  return (
+    <Link to={to} className="brand" aria-label={ariaLabel} style={{ textDecoration: 'none' }}>{inner}</Link>
   );
 }
 
@@ -62,7 +72,7 @@ export default function Layout({ children }) {
       <StaleBuildBanner stale={staleBuild} />
       <header className="header">
         <div className="wrap">
-          <Brand />
+          <Brand to="/" external />
           <button className="nav-toggle" aria-label={menuOpen ? 'Close menu' : 'Open menu'}
             aria-expanded={menuOpen} onClick={() => setMenuOpen(o => !o)}>{menuOpen ? '✕' : '☰'}</button>
           {menuOpen && <div className="nav-scrim" onClick={() => setMenuOpen(false)} aria-hidden="true" />}

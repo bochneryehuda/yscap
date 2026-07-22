@@ -5,7 +5,7 @@
  * EMAILS / PHONES / ID NUMBERS beyond what the schema-driven field extractor
  * already captured. Purely pattern-based — no NER model. Designed so an
  * upgrade to a real NER model / specialist LLM prompt is a swap of this
- * module, no schema change (see db/233_semantic_entities.sql).
+ * module, no schema change (see db/238_semantic_entities.sql).
  *
  * The value: (1) a guarantor named on page 8 of an operating agreement,
  * (2) an assignment fee referenced in a purchase-contract addendum, or
@@ -201,7 +201,7 @@ function extract(text, opts = {}) {
   return deduped;
 }
 
-// The db/233 CHECK on entity_type. Enforced here so a bad type is REJECTED
+// The db/238 CHECK on entity_type. Enforced here so a bad type is REJECTED
 // before it reaches Postgres — one rejected row would otherwise poison the
 // caller's transaction (see the SAVEPOINT belt-and-suspenders below).
 const VALID_ENTITY_TYPES = new Set([

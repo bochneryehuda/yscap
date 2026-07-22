@@ -470,6 +470,12 @@ function BorrowerCompleteness({ app, profile, appId, onSaved }) {
     { key: 'arv', label: 'ARV (estimate)', ok: app.arv != null, type: 'money' },
     { key: 'rehab_budget', label: 'Rehab budget', ok: app.rehab_budget != null, type: 'money' },
     { key: 'cell_phone', label: 'Your phone', ok: !!b.cell_phone, type: 'tel' },
+    // Primary home address — required for completeness (owner-directed 2026-07-21).
+    // The borrower fills their profile address on the Profile screen; here we just
+    // hint if it's missing (no inline picker — the address is a structured object).
+    { key: 'current_address', label: 'Your primary home address',
+      ok: !!(b.current_address && ['line1', 'city', 'state', 'zip'].some((k) => String(b.current_address[k] || '').trim())),
+      edit: false },
     { key: 'date_of_birth', label: 'Date of birth', ok: !!b.date_of_birth, type: 'date' },
     { key: 'fico', label: 'Estimated FICO', ok: b.fico != null, type: 'fico' },
     { key: 'citizenship', label: 'Citizenship', ok: !!b.citizenship, type: 'select', options: ['US Citizen', 'Permanent Resident', 'Foreign National'] },
