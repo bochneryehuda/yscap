@@ -1872,6 +1872,34 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
         </div>
       )}
 
+      {/* Major-fraud alert banner (R3.14, owner-directed 2026-07-22).
+          When the AI has surfaced a high-confidence fraud/authenticity signal
+          on this file, PILOT pins a red banner + admins are silently emailed
+          once per signal. This banner is a NOTICE — the AI never blocks the
+          file or changes anything on it (HARD RULE). Human decides. */}
+      {data && data.fraudBanner && (() => {
+        const b = data.fraudBanner;
+        const fg = 'var(--crit,#B4483C)';
+        const bg = 'var(--crit-bg,#F6E7E4)';
+        return (
+          <div style={{ border: `2px solid ${fg}`, background: bg, borderRadius: 12, padding: '12px 16px', marginBottom: 18 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+              <span style={{ fontSize: 20 }}>⚠</span>
+              <span style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.08em', color: fg }}>Major-fraud alert</span>
+            </div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--ivory,#141B22)', marginBottom: 4 }}>{b.headline}</div>
+            {b.signals && b.signals.length > 1 && (
+              <ul style={{ margin: '4px 0 0 16px', padding: 0, fontSize: 12, color: 'var(--ivory,#141B22)' }}>
+                {b.signals.map((s) => <li key={s.id}>{s.title}</li>)}
+              </ul>
+            )}
+            <div style={{ fontSize: 11, color: 'var(--muted,#4B585C)', marginTop: 6 }}>
+              PILOT did NOT change anything on the file. Open the AI Findings panel below to review or dismiss.
+            </div>
+          </div>
+        );
+      })()}
+
       {/* the one-line verdict — the owner's at-a-glance read */}
       {verdict && verdict.headline && (() => {
         const V = {

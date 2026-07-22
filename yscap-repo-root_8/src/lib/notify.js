@@ -378,6 +378,9 @@ const CATEGORY_OF = {
   // Finding escalation (owner-directed 2026-07-21) — action-bearing staff events, so
   // NOT added to STAFF_INAPP_TYPES: the reviewer/escalator is emailed (unless muted).
   finding_escalation: 'conditions', finding_escalation_decided: 'conditions',
+  // Major-fraud / authenticity alert (R3.14, owner-directed 2026-07-22).
+  // Action-bearing — admins ARE emailed (owner explicitly asked).
+  workflow_alert: 'conditions',
 };
 // These always reach the borrower in-app even if the category is muted — they
 // require action and can't be silently dropped (email can still be turned off).

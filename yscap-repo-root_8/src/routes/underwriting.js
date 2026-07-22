@@ -527,8 +527,27 @@ router.get('/:appId', async (req, res, next) => {
       for (const e of escRows) if (e.finding_id) escalatedByFinding[e.finding_id] = { id: e.id, targetRole: e.target_role, status: e.status };
     } catch (_) { escalatedByFinding = {}; }
 
+    // Major fraud/authenticity banner (R3.14) — cheap read of open ai_suggestions.
+    // Best-effort, never blocks the file view.
+    let fraudBanner = null;
+    try {
+      fraudBanner = await require('../lib/underwriting/fraud-alert').fileBanner(app.id, db);
+    } catch (_) { fraudBanner = null; }
+    // Best-effort admin alert for any NEW signal (dedupe stamp inside the helper).
+    if (fraudBanner && Array.isArray(fraudBanner.signals)) {
+      setImmediate(() => {
+        (async () => {
+          const fa = require('../lib/underwriting/fraud-alert');
+          for (const s of fraudBanner.signals) {
+            await fa.alertAdminsOncePerSignal(app.id, s, { link: `/staff/applications/${app.id}` }).catch(() => {});
+          }
+        })().catch(() => {});
+      });
+    }
+
     res.json({
       escalatedFindings: escalatedByFinding,
+      fraudBanner,
       verdict,
       // AUS: which program this file is underwritten against + that program's governing thresholds.
       programGuidelines,
