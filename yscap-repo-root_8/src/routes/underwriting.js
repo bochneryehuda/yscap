@@ -288,7 +288,8 @@ router.get('/:appId', async (req, res, next) => {
     // any doc whose denormalized owner differs), OR one of this file's ENTITY's documents (llc_id).
     const docsOnFile = await db.query(
       `SELECT d.id, d.filename, d.doc_kind, d.checklist_item_id, t.code AS condition_code,
-              COALESCE(t.label, t.code) AS condition_label
+              COALESCE(t.label, t.code) AS condition_label,
+              d.authenticity_score, d.authenticity_level, d.authenticity_signals
          FROM documents d
          LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
          LEFT JOIN checklist_templates t ON t.id = ci.template_id
@@ -318,7 +319,12 @@ router.get('/:appId', async (req, res, next) => {
       const analyzed = analyzedDocIds.has(d.id);
       if (expectedType) attached.add(expectedType);
       const row = { documentId: d.id, filename: d.filename, conditionCode: d.condition_code || null,
-        conditionLabel: d.condition_label || null, docKind: d.doc_kind || null, expectedType, analyzed };
+        conditionLabel: d.condition_label || null, docKind: d.doc_kind || null, expectedType, analyzed,
+        // Sovereign authenticity — surfaced as a chip on the document row (R2.5, 2026-07-22).
+        authenticityScore: d.authenticity_score != null ? Number(d.authenticity_score) : null,
+        authenticityLevel: d.authenticity_level || null,
+        authenticitySignals: Array.isArray(d.authenticity_signals) ? d.authenticity_signals
+          : (typeof d.authenticity_signals === 'string' ? (function() { try { return JSON.parse(d.authenticity_signals); } catch { return null; } }()) : d.authenticity_signals) };
       documentsOnFile.push(row);
       // Anything present, not yet read, AND that maps to a type the reader can actually read is the
       // auto-read queue. The registry.get gate MUST match the /auto-read endpoint's selectAutoReadQueue

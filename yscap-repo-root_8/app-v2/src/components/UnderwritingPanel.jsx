@@ -454,16 +454,28 @@ const STIP = {
   missing: { fg: 'var(--muted,#4B585C)', bg: 'var(--paper,#F6F3EC)', label: 'Not uploaded' },
 };
 const OWNER_LABEL = { borrower: 'Borrower', title: 'Title co.', appraiser: 'Appraiser', internal: 'Internal' };
+// R2.5 — Sovereign authenticity chip styles per level. Chip shows only when
+// the score is present AND the score is meaningfully low (medium/low/unreadable).
+// A "high" score adds no visual noise — the absence of a chip means the doc
+// is clean.
+const AUTH_STYLES = {
+  high:        null,   // no chip — clean
+  medium:      { color: 'var(--amber,#B7791F)', bg: 'var(--amber-bg,#F6EEDD)', label: 'Some tampering signals' },
+  low:         { color: 'var(--crit,#B4483C)', bg: 'var(--crit-bg,#F6E7E4)', label: 'Likely tampered' },
+  unreadable:  { color: 'var(--muted,#4B585C)', bg: 'var(--paper,#F6F3EC)', label: 'Not readable as PDF' },
+};
+
 function Completeness({ completeness, documentsOnFile = [] }) {
   if (!completeness || !completeness.stipulations || !completeness.stipulations.length) return null;
   const c = completeness;
-  // docType -> the on-file document filename(s), so a stipulation that's "on file" names the actual
-  // document linked to its condition (proof the desk found it), not just a status chip.
-  const filesByType = {};
+  // docType -> full doc rows on file, so a stipulation that's "on file" can
+  // both name the linked document AND show its authenticity chip.
+  const docsByType = {};
   for (const d of documentsOnFile) {
     if (!d || !d.expectedType) continue;
-    (filesByType[d.expectedType] = filesByType[d.expectedType] || []).push(d.filename);
+    (docsByType[d.expectedType] = docsByType[d.expectedType] || []).push(d);
   }
+  const filesByType = Object.fromEntries(Object.entries(docsByType).map(([t, arr]) => [t, arr.map((d) => d.filename)]));
   return (
     <div style={{ marginBottom: 22 }}>
       <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px' }}>File completeness — what’s still needed</h4>
@@ -493,6 +505,22 @@ function Completeness({ completeness, documentsOnFile = [] }) {
                   📎 {filesByType[s.docType][0]}{filesByType[s.docType].length > 1 ? ` +${filesByType[s.docType].length - 1}` : ''}
                 </div>
               )}
+              {(docsByType[s.docType] || []).map((d) => {
+                const style = AUTH_STYLES[d.authenticityLevel];
+                if (!style) return null;
+                const firedSignals = Array.isArray(d.authenticitySignals)
+                  ? d.authenticitySignals.filter((sig) => sig && sig.present && sig.weight > 0).map((sig) => sig.name.replace(/_/g, ' ')).slice(0, 4).join(', ')
+                  : '';
+                const scorePct = d.authenticityScore != null ? Math.round(d.authenticityScore * 100) : null;
+                return (
+                  <div key={d.documentId} style={{ fontSize: 10.5, marginTop: 4 }}
+                    title={firedSignals ? `Signals: ${firedSignals}${scorePct != null ? ` · score ${scorePct}/100` : ''}` : (scorePct != null ? `Authenticity score ${scorePct}/100` : '')}>
+                    <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: style.color, background: style.bg, padding: '2px 6px', borderRadius: 6 }}>
+                      ⚠ {style.label}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
           );
         })}
