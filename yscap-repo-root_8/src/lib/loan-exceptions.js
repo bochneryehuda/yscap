@@ -90,6 +90,100 @@ async function withdrawException(id, staffId, client = db) {
   return r.rows[0] || null;
 }
 
+/**
+ * Clear (archive / close out) an exception — housekeeping only. Moves any
+ * non-cleared row to 'cleared'; does NOT change co_borrower_pg_waived (an approved
+ * waiver stays in effect). Guarded so a cleared row can't be re-cleared. Returns
+ * the row or null.
+ */
+async function clearException(id, staffId, note, client = db) {
+  const r = await client.query(
+    `UPDATE loan_exceptions
+        SET status='cleared', cleared_by=$2, cleared_at=now(),
+            clear_note=$3, updated_at=now()
+      WHERE id=$1 AND status <> 'cleared'
+      RETURNING *`,
+    [id, staffId || null, note ? String(note).slice(0, 1000) : null]);
+  return r.rows[0] || null;
+}
+
+/**
+ * A staffer's OWN exceptions (the loan-officer's personal queue, outside any one
+ * file). status: 'open' (requested) | 'all-active' (not cleared) | any specific status.
+ */
+async function listForRequester(staffId, { status = 'open', limit = 100 } = {}, client = db) {
+  let where = 'WHERE e.requested_by = $1';
+  const params = [staffId];
+  if (status === 'open') where += ` AND e.status = 'requested'`;
+  else if (status === 'all-active') where += ` AND e.status <> 'cleared'`;
+  else if (status && status !== 'all') { where += ` AND e.status = $2`; params.push(status); }
+  const r = await client.query(
+    `SELECT e.*, e.exception_type AS type,
+            a.ys_loan_number, a.property_address, a.loan_amount, a.status AS file_status,
+            a.co_borrower_id, a.co_borrower_pg_waived,
+            b.first_name, b.last_name,
+            sb.first_name AS subject_first, sb.last_name AS subject_last,
+            dc.full_name AS decided_by_name
+       FROM loan_exceptions e
+       JOIN applications a ON a.id = e.application_id
+       JOIN borrowers b ON b.id = a.borrower_id
+       LEFT JOIN borrowers sb ON sb.id = e.subject_borrower_id
+       LEFT JOIN staff_users dc ON dc.id = e.decided_by
+       ${where}
+      ORDER BY e.created_at DESC
+      LIMIT ${Math.min(500, Math.max(1, Number(limit) || 100))}`, params);
+  return r.rows;
+}
+
+/* ---------------- comments (staff-only thread on an exception) ---------------- */
+
+/** Post a comment on an exception. Returns the row (with author name), or throws. */
+async function addComment(exceptionId, staffId, body, client = db) {
+  const text = String(body || '').trim();
+  if (!text) { const e = new Error('empty comment'); e.status = 400; throw e; }
+  const ins = await client.query(
+    `INSERT INTO loan_exception_comments (loan_exception_id, author_staff_id, body)
+     VALUES ($1,$2,$3) RETURNING *`,
+    [exceptionId, staffId || null, text.slice(0, 4000)]);
+  const row = ins.rows[0];
+  const name = staffId ? (await client.query(`SELECT full_name FROM staff_users WHERE id=$1`, [staffId])).rows[0] : null;
+  row.author_name = name ? name.full_name : null;
+  return row;
+}
+
+/** All comments on an exception, oldest first, with author names. */
+async function listComments(exceptionId, client = db) {
+  const r = await client.query(
+    `SELECT c.*, su.full_name AS author_name
+       FROM loan_exception_comments c
+       LEFT JOIN staff_users su ON su.id = c.author_staff_id
+      WHERE c.loan_exception_id = $1
+      ORDER BY c.created_at ASC`, [exceptionId]);
+  return r.rows;
+}
+
+/** The distinct staff who should hear about activity on an exception — the
+ *  requester, the decider, and everyone who has commented. Used to notify the
+ *  OTHER participants when a new comment lands. */
+async function commentParticipants(exceptionId, client = db) {
+  const r = await client.query(
+    `SELECT DISTINCT sid FROM (
+       SELECT requested_by AS sid FROM loan_exceptions WHERE id=$1
+       UNION SELECT decided_by FROM loan_exceptions WHERE id=$1
+       UNION SELECT author_staff_id FROM loan_exception_comments WHERE loan_exception_id=$1
+     ) s WHERE sid IS NOT NULL`, [exceptionId]);
+  return r.rows.map((x) => x.sid);
+}
+
+/** Count of a staffer's OWN still-open (requested) exceptions — for the nav badge. */
+async function requesterOpenCount(staffId, client = db) {
+  try {
+    const r = await client.query(
+      `SELECT count(*)::int AS n FROM loan_exceptions WHERE requested_by=$1 AND status='requested'`, [staffId]);
+    return r.rows[0] ? r.rows[0].n : 0;
+  } catch (_) { return 0; }
+}
+
 /** The current OPEN (requested) exception for a file+type, or null. */
 async function openForApp(appId, type = 'guaranty_waiver', client = db) {
   const r = await client.query(
@@ -165,6 +259,8 @@ async function pendingCount(client = db) {
 
 module.exports = {
   REASON_CODES, isReasonCode,
-  requestGuarantyWaiver, decideException, withdrawException,
+  requestGuarantyWaiver, decideException, withdrawException, clearException,
   openForApp, latestForApp, getById, listExceptions, pendingCount,
+  listForRequester, requesterOpenCount,
+  addComment, listComments, commentParticipants,
 };

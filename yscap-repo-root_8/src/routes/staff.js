@@ -6665,6 +6665,26 @@ router.get('/workflow/count', async (req, res) => {
   catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
+// The staffer's OWN exceptions (owner-directed 2026-07-22) — a loan officer's
+// personal queue of exception requests they raised, across ALL their files (not
+// file-scoped). Lets them track/comment/withdraw a pending exception without
+// digging into each file. `status`: open (default) | all-active | approved | denied | cleared | all.
+router.get('/my-exceptions', async (req, res) => {
+  try {
+    const status = ['open', 'all-active', 'approved', 'denied', 'withdrawn', 'cleared', 'all'].includes(req.query.status) ? req.query.status : 'open';
+    const [rows, openCount] = await Promise.all([
+      loanExceptions.listForRequester(req.actor.id, { status }),
+      loanExceptions.requesterOpenCount(req.actor.id),
+    ]);
+    res.json({ exceptions: rows, openCount, reasonCodes: loanExceptions.REASON_CODES });
+  } catch (e) { console.warn('[my-exceptions] list error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+router.get('/my-exceptions/count', async (req, res) => {
+  try { res.json({ openCount: await loanExceptions.requesterOpenCount(req.actor.id) }); }
+  catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // PICK UP an item (start working it). Only the person it's routed to (or an admin).
 router.post('/workflow/:itemId/pickup', async (req, res) => {
   try {

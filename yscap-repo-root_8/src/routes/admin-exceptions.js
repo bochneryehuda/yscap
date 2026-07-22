@@ -35,7 +35,7 @@ function auditSafe(actorId, action, entityType, entityId, detail) {
 // to show; `reasonCodes` labels the structured reasons.
 router.get('/', requirePermission('manage_pricing'), async (req, res) => {
   try {
-    const status = ['open', 'approved', 'denied', 'withdrawn', 'all'].includes(req.query.status) ? req.query.status : 'open';
+    const status = ['open', 'approved', 'denied', 'withdrawn', 'cleared', 'all'].includes(req.query.status) ? req.query.status : 'open';
     const [rows, pending] = await Promise.all([
       loanExceptions.listExceptions({ status }),
       loanExceptions.pendingCount(),
@@ -110,6 +110,82 @@ router.post('/:id/decide', requireRole('super_admin'), async (req, res) => {
 
     res.json({ ok: true, exception: row });
   } catch (e) { res.status(500).json({ error: 'could not record the decision' }); }
+});
+
+// Clear (archive / close out) an exception. A super-admin can clear any; the person
+// who REQUESTED it can clear their own (housekeeping — it does NOT change the
+// waiver flag). Mounted behind requireStaff so a requesting loan officer reaches it.
+router.post('/:id/clear', async (req, res) => {
+  try {
+    const exc = await loanExceptions.getById(req.params.id);
+    if (!exc) return res.status(404).json({ error: 'That exception no longer exists.' });
+    if (exc.status === 'cleared') return res.status(409).json({ error: 'That exception is already cleared.' });
+    const isSuper = req.actor.role === 'super_admin';
+    const isRequester = exc.requested_by && exc.requested_by === req.actor.id;
+    if (!isSuper && !isRequester) {
+      return res.status(403).json({ error: 'Only a super-admin or the person who requested it can clear an exception.' });
+    }
+    const note = req.body && req.body.note;
+    const row = await loanExceptions.clearException(req.params.id, req.actor.id, note);
+    if (!row) return res.status(409).json({ error: 'That exception is already cleared.' });
+    auditSafe(req.actor.id, 'guaranty_exception_cleared', 'application', row.application_id,
+      { exceptionId: row.id, note: note ? String(note).slice(0, 200) : null });
+    res.json({ ok: true, exception: row });
+  } catch (e) { res.status(500).json({ error: 'could not clear the exception' }); }
+});
+
+// Comments on an exception (staff-only back-and-forth). Reachable by the two
+// parties + admins: a super-admin, an admin (manage_pricing — they see the box),
+// the person who REQUESTED it, or the person who DECIDED it.
+function canParticipate(exc, actor) {
+  return actor.role === 'super_admin' || actor.role === 'admin' ||
+    (exc.requested_by && exc.requested_by === actor.id) ||
+    (exc.decided_by && exc.decided_by === actor.id);
+}
+
+router.get('/:id/comments', async (req, res) => {
+  try {
+    const exc = await loanExceptions.getById(req.params.id);
+    if (!exc) return res.status(404).json({ error: 'That exception no longer exists.' });
+    if (!canParticipate(exc, req.actor)) return res.status(403).json({ error: 'You don’t have access to this exception.' });
+    res.json({ comments: await loanExceptions.listComments(req.params.id), actorId: req.actor.id });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/:id/comments', async (req, res) => {
+  try {
+    const exc = await loanExceptions.getById(req.params.id);
+    if (!exc) return res.status(404).json({ error: 'That exception no longer exists.' });
+    if (!canParticipate(exc, req.actor)) return res.status(403).json({ error: 'You don’t have access to this exception.' });
+    const body = String((req.body && req.body.body) || '').trim();
+    if (!body) return res.status(400).json({ error: 'Write a comment first.' });
+    const row = await loanExceptions.addComment(req.params.id, req.actor.id, body);
+    auditSafe(req.actor.id, 'guaranty_exception_comment', 'application', exc.application_id, { exceptionId: exc.id });
+    // Notify the OTHER participants (requester + decider + prior commenters) so the
+    // conversation reaches whoever isn't the author — the requester hears about a
+    // super-admin's comment, and vice-versa.
+    try {
+      const participants = (await loanExceptions.commentParticipants(req.params.id))
+        .filter((sid) => sid && sid !== req.actor.id);
+      const subject = [exc.subject_first, exc.subject_last].filter(Boolean).join(' ') || 'the co-borrower';
+      const ctx = await notify.fileContext(exc.application_id);
+      for (const sid of participants) {
+        // The requester reads their queue; a reviewer reads the box.
+        const link = exc.requested_by && sid === exc.requested_by ? '/internal/my-exceptions' : '/internal/exceptions';
+        await notify.notifyStaff(sid, {
+          type: 'guaranty_exception_comment',
+          title: 'New comment on a guaranty-waiver exception',
+          body: `${req.actor.name || 'A team member'} commented on the request to waive ${subject}'s personal guaranty on ${ctx ? ctx.label : 'a file'}:\n\n${body.slice(0, 600)}`,
+          meta: (ctx && ctx.meta) || undefined, applicationId: exc.application_id,
+          link, ctaLabel: 'Open the exception',
+        });
+      }
+    } catch (_) { /* best-effort */ }
+    res.json({ ok: true, comment: row });
+  } catch (e) {
+    if (e && e.status === 400) return res.status(400).json({ error: e.message });
+    res.status(500).json({ error: 'could not post the comment' });
+  }
 });
 
 module.exports = router;

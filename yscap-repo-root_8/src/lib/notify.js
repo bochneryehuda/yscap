@@ -36,6 +36,7 @@ const KICKER_OF = {
   // Guaranty-waiver exception (owner-directed 2026-07-22): a request for a super-admin
   // to review, and the decision sent back to the file's team.
   guaranty_exception: 'Guaranty exception', guaranty_exception_decided: 'Guaranty exception',
+  guaranty_exception_comment: 'Exception comment',
   message: 'New message', mention: 'You were mentioned', reminder: 'Reminder',
   llc_verified: 'Your entity', llc_unverified: 'Your entity',
   track_record_unverified: 'Track record',
@@ -388,6 +389,7 @@ const CATEGORY_OF = {
   // Guaranty-waiver exception (owner-directed 2026-07-22) — action-bearing staff
   // events (super-admin review request + decision), so they email the recipient.
   guaranty_exception: 'conditions', guaranty_exception_decided: 'conditions',
+  guaranty_exception_comment: 'conditions',
   // Major-fraud / authenticity alert (R3.14, owner-directed 2026-07-22).
   // Action-bearing — admins ARE emailed (owner explicitly asked).
   workflow_alert: 'conditions',

@@ -459,6 +459,12 @@ export const api = {
   loanExceptions:            (status) => req('GET', `/api/admin/exceptions${status ? `?status=${status}` : ''}`),
   loanExceptionsCount:       () => req('GET', '/api/admin/exceptions/count'),
   decideLoanException:       (id, decision, note) => req('POST', `/api/admin/exceptions/${id}/decide`, { decision, note }),
+  clearLoanException:        (id, note) => req('POST', `/api/admin/exceptions/${id}/clear`, { note }),
+  exceptionComments:         (id) => req('GET', `/api/admin/exceptions/${id}/comments`),
+  addExceptionComment:       (id, body) => req('POST', `/api/admin/exceptions/${id}/comments`, { body }),
+  // The loan officer's own cross-file exception queue.
+  myExceptions:              (status) => req('GET', `/api/staff/my-exceptions${status ? `?status=${status}` : ''}`),
+  myExceptionsCount:         () => req('GET', '/api/staff/my-exceptions/count'),
   runCommitteeReview:        (appId, findingId, all = false) => req('POST', `/api/underwriting/${appId}/findings/${findingId}/committee-review`, { all: !!all }),
   trainingProposals:         (status = 'pending') => req('GET', `/api/admin/training/proposals${status ? `?status=${status}` : ''}`),
   trainingProposalsRun:      () => req('POST', '/api/admin/training/run', {}),
