@@ -2532,11 +2532,20 @@ router.post('/applications/:id/conditions/custom', async (req, res) => {
   if ((type === 'internal_task' || type === 'internal_condition') && audience !== 'staff') {
     return res.status(400).json({ error: 'internal items must have an internal audience' });
   }
+  // Optionally TAG this condition to a loan exception (owner-directed 2026-07-22) —
+  // the condition still lives on the file's checklist; the tag lets the exception
+  // detail show its conditions + documents. Validate it belongs to THIS file.
+  let loanExceptionId = null;
+  if (b.loanExceptionId) {
+    const le = await db.query(`SELECT 1 FROM loan_exceptions WHERE id=$1 AND application_id=$2`, [b.loanExceptionId, req.params.id]);
+    if (!le.rows[0]) return res.status(400).json({ error: 'that exception is not on this file' });
+    loanExceptionId = b.loanExceptionId;
+  }
   const r = await db.query(
     `INSERT INTO checklist_items
        (scope,application_id,label,borrower_label,hint,borrower_hint,audience,item_kind,tool_key,field_key,
-        esign_doc,category,is_required,due_date,notes,created_by_kind,created_by_id,origin_kind)
-     VALUES ('application',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'staff',$15,'manual_custom')
+        esign_doc,category,is_required,due_date,notes,created_by_kind,created_by_id,origin_kind,loan_exception_id)
+     VALUES ('application',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'staff',$15,$16,$17)
      RETURNING id`,
     [req.params.id, label.slice(0, 300),
      scrubText(String(b.borrowerLabel || '').trim().slice(0, 300)) || null,
@@ -2545,8 +2554,9 @@ router.post('/applications/:id/conditions/custom', async (req, res) => {
      audience, CONDITION_TYPES[type].itemKind, toolKey || null, fieldKey,
      type === 'esign' ? (String(b.esignDoc || '').trim().slice(0, 300) || null) : null,
      category, b.isRequired !== false, require('../lib/fields').normalizeTypedDate(b.dueDate),  // WO-6 (F-M11): year-0026-proof due date
-     String(b.notes || '').trim().slice(0, 2000) || null, req.actor.id]);
-  await audit(req, 'add_condition_custom', 'application', req.params.id, { label, type, audience });
+     String(b.notes || '').trim().slice(0, 2000) || null, req.actor.id,
+     loanExceptionId ? 'exception' : 'manual_custom', loanExceptionId]);
+  await audit(req, 'add_condition_custom', 'application', req.params.id, { label, type, audience, loanExceptionId });
   if (audience !== 'staff') {
     try {
       const ctx = await notify.fileContext(req.params.id);

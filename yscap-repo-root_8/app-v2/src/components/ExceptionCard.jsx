@@ -1,6 +1,7 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import ExceptionComments from './ExceptionComments.jsx';
+import ExceptionConditions from './ExceptionConditions.jsx';
 
 /* One exception row, shared by the super-admin Exceptions box (StaffExceptions)
    and the loan-officer "My exceptions" queue (StaffMyExceptions). Renders the
@@ -77,6 +78,9 @@ export default function ExceptionCard({ r, reasonCodes = {}, highlight = false, 
       {r.status !== 'requested' && r.decision_note && <div className="muted small" style={{ marginTop: 4 }}>Decision note: {r.decision_note}</div>}
 
       {children}
+
+      {/* Documents + conditions attached to the exception (request + track paperwork). */}
+      <ExceptionConditions exceptionId={r.id} appId={appId} />
 
       {/* Staff-only back-and-forth on the exception (requester ↔ reviewer). */}
       <ExceptionComments exceptionId={r.id} />

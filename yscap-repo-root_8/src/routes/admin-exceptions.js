@@ -188,4 +188,18 @@ router.post('/:id/comments', async (req, res) => {
   }
 });
 
+// The conditions / document-requests tagged to this exception, each with the
+// documents uploaded against it. Same participant gate as comments — a
+// super-admin, an admin, the requester, or the decider. The documents are
+// listed by identity only (id/filename); bytes stream through the normal
+// authorized document-download path, never from here.
+router.get('/:id/conditions', async (req, res) => {
+  try {
+    const exc = await loanExceptions.getById(req.params.id);
+    if (!exc) return res.status(404).json({ error: 'That exception no longer exists.' });
+    if (!canParticipate(exc, req.actor)) return res.status(403).json({ error: 'You don’t have access to this exception.' });
+    res.json({ conditions: await loanExceptions.listConditions(req.params.id), applicationId: exc.application_id });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 module.exports = router;
