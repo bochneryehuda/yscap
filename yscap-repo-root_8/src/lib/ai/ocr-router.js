@@ -245,7 +245,11 @@ async function readRouted(args, bytesHint) {
       || (plan.fallbacks || []).find((e) => isOcr(e) && e !== winnerEngine);
     if (challenger && challenger !== winnerEngine && !sequence.includes(challenger)) {
       sequence.push(challenger);
-      const chRes = await engineRead(challenger, args);
+      // Defensive: the reconciliation is a nice-to-have — a challenger that
+      // throws (a never-throw contract violation) must NEVER lose the winning
+      // read we already have. Swallow any error and return the winner as-is.
+      let chRes = null;
+      try { chRes = await engineRead(challenger, args); } catch (_) { chRes = null; }
       if (chRes && chRes.ok && String(chRes.text || '').trim()) {
         result.reconciliation = {
           ...matrix.reconcileNumbers(winner.text, chRes.text),
