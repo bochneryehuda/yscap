@@ -197,6 +197,66 @@ async function verifyPresent(appId, filename, tries = VERIFY_TRIES_DEFAULT) {
 }
 
 /**
+ * SELF-HEAL every `pushed` doc slot: re-verify against the trusted API and, when Sitewire now
+ * shows the doc, upgrade the DB row from 'pushed' → 'verified' AND auto-close the parked
+ * `sitewire_doc_unverified:<slot>` review row (owner-directed 2026-07-22 root-cause fix).
+ *
+ * Sitewire's document read can lag by minutes after an upload. The old code parked the review
+ * once, and the sha256 dedup then permanently skipped the re-upload — so the review stayed open
+ * for weeks even though the doc IS on the property. This runs on EVERY pushDocuments call AND
+ * on EVERY reconcile pass (see reconcile.reconcileOne), so the "stuck in unverified" class
+ * silently resolves the moment Sitewire's read catches up. Never uploads, never modifies
+ * Sitewire — read-only self-heal + housekeeping.
+ *
+ * @param whichSlots  optional list of slots to check (default: all 'pushed' slots for the file)
+ * @param cachedExisting  optional {which: row} map from a caller that already read the DB
+ * @returns { healed: [{which, name}], checked: n }
+ */
+async function verifyPushedDocsOnce(appId, propertyId, whichSlots = null, { existing: cachedExisting } = {}) {
+  if (!appId) return { healed: [], checked: 0 };
+  const existing = cachedExisting || Object.fromEntries((await db.query(
+    `SELECT which, sha256, status, filename, sitewire_document_name FROM sitewire_document_links WHERE application_id=$1 AND status='pushed'`, [appId])).rows.map((r) => [r.which, r]));
+  const slots = Array.isArray(whichSlots) && whichSlots.length ? whichSlots : Object.keys(existing);
+  const healed = [];
+  let checked = 0;
+  for (const which of slots) {
+    const prev = existing[which];
+    if (!prev || prev.status !== 'pushed') continue;
+    // Prefer the stored filename over any live gather (gather is heavy: builds SOW xlsx / pdf).
+    const filename = prev.filename || null;
+    if (!filename) continue;
+    checked++;
+    let confirmedName = null;
+    try { confirmedName = await verifyPresent(appId, filename, 2); } catch (_) { confirmedName = null; }
+    if (!confirmedName) continue;
+    try {
+      await db.query(
+        `UPDATE sitewire_document_links SET status='verified',
+            sitewire_document_name = COALESCE(sitewire_document_name, $2), updated_at=now()
+          WHERE application_id=$1 AND which=$3`,
+        [appId, confirmedName, which]);
+      await db.query(
+        `UPDATE sync_review_queue
+            SET status='resolved', auto_resolved=true, resolved_at=now(),
+                resolution_note=$2
+          WHERE status='open' AND application_id=$1 AND field_key='sitewire'
+            AND task_id = $3`,
+        [appId,
+         `auto-closed — Sitewire now shows the document as "${String(confirmedName).slice(0, 120)}"; verified on a later pass after the initial read lag.`,
+         `sitewire:${appId}:sitewire_doc_unverified:${which}`]);
+      try { await orch.journal({ appId, propertyId: propertyId || null, entity: 'document', field: which,
+        newValue: { verified: true, self_heal: true, name: confirmedName }, source: 'self_heal_verify' }); } catch (_) {}
+      if (cachedExisting && cachedExisting[which]) {
+        cachedExisting[which].status = 'verified';
+        cachedExisting[which].sitewire_document_name = cachedExisting[which].sitewire_document_name || confirmedName;
+      }
+      healed.push({ which, name: confirmedName });
+    } catch (_) { /* best-effort — the plan below still runs regardless */ }
+  }
+  return { healed, checked };
+}
+
+/**
  * Push the property documents to Sitewire.
  * @param appId
  * @param opts { which?: 'appraisal_pdf'|'sow_xlsx'|'sow_pdf' (default all), staffId?, force?, source? }
@@ -245,7 +305,11 @@ async function _pushDocumentsLocked(appId, opts, which, source, link, propertyId
 
   // Existing push records (for sha256 dedup — never re-upload identical bytes unless forced).
   const existing = Object.fromEntries((await db.query(
-    `SELECT which, sha256, status FROM sitewire_document_links WHERE application_id=$1`, [appId])).rows.map((r) => [r.which, r]));
+    `SELECT which, sha256, status, sitewire_document_name FROM sitewire_document_links WHERE application_id=$1`, [appId])).rows.map((r) => [r.which, r]));
+
+  // Self-heal every 'pushed' slot BEFORE the plan step so a now-verified slot flips to
+  // `verified:true` in the response and never re-triggers the park. See verifyPushedDocsOnce below.
+  await verifyPushedDocsOnce(appId, propertyId, toPush.map((g) => g.which), { existing });
 
   // Decide what actually needs uploading BEFORE opening a website session — so an unchanged re-push (all 3
   // already pushed with the same bytes) never triggers a needless Sitewire LOGIN (which could look like
@@ -341,4 +405,4 @@ async function _pushDocumentsLocked(appId, opts, which, source, link, propertyId
   return { ok: true, managed: true, dryrun: !!cfg.sitewireDryrun, results, anyPushed };
 }
 
-module.exports = { pushDocuments, status, gatherAll, SLOTS, _internal: { gatherAppraisalPdf, gatherSowExcel, gatherSowPdf, verifyPresent } };
+module.exports = { pushDocuments, status, gatherAll, SLOTS, verifyPushedDocsOnce, _internal: { gatherAppraisalPdf, gatherSowExcel, gatherSowPdf, verifyPresent } };

@@ -342,6 +342,18 @@ async function pushFile(appId, opts = {}) {
     // discrepancy (Scope-of-Work unit count vs the file's unit count), NOT file-vs-physical (which are
     // often equal and read as a confusing "expected 2 · found 2"). Owner-directed 2026-07-20.
     await park({ appId, dedupe: 'units', notify: false, reason: `sitewire_units_note: the file lists ${fileUnits} unit(s) but the Scope of Work is built for ${sowUnits} — pushing the physical building count of ${physicalUnits} unit(s) (units with no work carry no budget lines). Update the file's unit count in the application if ${physicalUnits} is wrong.`, current: String(fileUnits), proposed: String(sowUnits) });
+  } else {
+    // Owner-directed 2026-07-22: the units_note is ADVISORY (the push proceeds past it), so once
+    // the file and SOW agree it should quietly self-close instead of sitting on the desk forever.
+    // Runs on every pushFile so a coordinator's "update the file's unit count" fix visibly resolves.
+    try {
+      await db.query(
+        `UPDATE sync_review_queue
+            SET status='resolved', auto_resolved=true, resolved_at=now(),
+                resolution_note='auto-closed — the file''s unit count and Scope-of-Work unit count now agree'
+          WHERE status='open' AND application_id=$1 AND field_key='sitewire'
+            AND task_id LIKE 'sitewire:%:sitewire_units_note%'`, [appId]);
+    } catch (_) { /* best-effort */ }
   }
 
   // explode + G-RECON (must tie to the frozen budget to the cent BEFORE any write)
@@ -551,7 +563,15 @@ async function pushFile(appId, opts = {}) {
       // Any NON-retryable failure (422/400/403/404/409/…) must PARK, never be silently swallowed —
       // Sitewire owns borrower draw submission, so an unassigned borrower can't submit and someone
       // must be told (never-silently-drop).
-      await park({ appId, reason: `sitewire_borrower_assign_failed: could not assign borrower ${inviteEmail} (Sitewire ${e.status || 'error'})` });
+      // Owner-directed 2026-07-22: surface the actual reason on 422 so the coordinator sees WHY
+      // Sitewire rejected the email (bad format / duplicate contact / not accepted) instead of a
+      // bare status code. Sitewire's body typically carries a plain-English message; slice it in.
+      const status = e && e.status;
+      const sitewireMsg = e && e.body ? String(typeof e.body === 'string' ? e.body : JSON.stringify(e.body)).slice(0, 220) : '';
+      const advice = status === 422
+        ? ` — the email may be malformed, already in use by another borrower on this Sitewire property, or the domain is not accepted. Try setting a different invite email on this file (Draw desk → "Invite to PILOT").`
+        : '';
+      await park({ appId, reason: `sitewire_borrower_assign_failed: could not assign borrower ${inviteEmail} (Sitewire ${status || 'error'})${sitewireMsg ? `: ${sitewireMsg}` : ''}${advice}` });
     }
   }
 

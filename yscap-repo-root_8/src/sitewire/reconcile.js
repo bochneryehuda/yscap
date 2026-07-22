@@ -398,6 +398,12 @@ async function reconcileOne(appId) {
   } catch (_) {}
   // refresh the advisory draw-risk snapshot (best-effort — never fail the reconcile on it)
   try { await assessAndStoreRisk(appId); } catch (_) {}
+  // Owner-directed 2026-07-22: self-heal any doc slots stuck at 'pushed' — Sitewire's document
+  // read can lag by minutes after an upload, so verifyPresent on the push itself may return null
+  // even though the doc IS there. Without this sweep, the parked `sitewire_doc_unverified` row
+  // stays open forever because dedup skips the re-upload path. Runs on every reconcile;
+  // read-only (never uploads, never modifies Sitewire) and best-effort.
+  try { await require('./doc-push').verifyPushedDocsOnce(appId, link.sitewire_property_id); } catch (_) {}
   return { draws: n };
 }
 
