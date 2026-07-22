@@ -618,6 +618,54 @@ async function autoCommitteeReviewOnce() {
   } catch (e) { console.error('[digests] auto-committee', e && e.message); return reviewed; }
 }
 
+/* R3.35 — Nightly AI cross-doc consistency sweep (opt-in). Runs the GPT-5
+   cross-doc consistency check on every active file at most once/monthly.
+   Gated behind AI_CROSSDOC_SWEEP_ENABLED=1 (default OFF — this is a paid
+   AI call per file, so nothing runs until the owner opts in). */
+async function aiCrossdocSweepOnce() {
+  if (process.env.AI_CROSSDOC_SWEEP_ENABLED !== '1') return 0;
+  if (!(await _gate('ai_crossdoc_sweep', null, '24 hours'))) return 0;
+  const BATCH = Number(process.env.AI_CROSSDOC_SWEEP_BATCH || 5);
+  let ran = 0;
+  try {
+    // Pick oldest files that haven't been crossdoc-scanned in the last 30 days.
+    const q = await db.query(
+      `SELECT a.id FROM applications a
+        WHERE a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','cancelled','funded','declined')
+          AND NOT EXISTS (SELECT 1 FROM audit_log al
+                            WHERE al.entity_type='application' AND al.entity_id=a.id
+                              AND al.action='ai_crossdoc_sweep_ran'
+                              AND al.created_at > now() - interval '30 days')
+        ORDER BY a.updated_at DESC
+        LIMIT $1`, [BATCH]);
+    for (const row of q.rows) {
+      const c = await db.getClient();
+      try {
+        await c.query('BEGIN');
+        const exts = await c.query(
+          `SELECT doc_type, document_id, fields FROM document_extractions
+            WHERE application_id=$1 AND status='ok' ORDER BY created_at DESC LIMIT 40`, [row.id]);
+        if (exts.rows.length >= 2) {
+          await require('./underwriting/ai-cross-doc').analyzeFile(c, {
+            applicationId: row.id, extractions: exts.rows,
+            appMeta: { source: 'nightly_sweep' },
+          });
+          ran += 1;
+        }
+        // Stamp so we don't re-scan too soon.
+        await c.query(
+          `INSERT INTO audit_log (actor_kind, action, entity_type, entity_id, detail)
+           VALUES ('system','ai_crossdoc_sweep_ran','application',$1,$2::jsonb)`,
+          [row.id, JSON.stringify({ at: new Date().toISOString(), extractions: exts.rows.length })]);
+        await c.query('COMMIT');
+      } catch (e) { await c.query('ROLLBACK').catch(() => {}); console.error('[digests] ai-crossdoc-sweep', row.id, e && e.message); }
+      finally { c.release(); }
+    }
+    await _stamp('ai_crossdoc_sweep', null, { ran, batch: BATCH });
+    return ran;
+  } catch (e) { console.error('[digests] ai-crossdoc-sweep', e && e.message); return ran; }
+}
+
 /* Time-gated dispatcher — morning window for staff/admin, business hours for the
    borrower digest; each function's own audit-gate enforces the true frequency. */
 async function runDue() {
@@ -633,6 +681,7 @@ async function runDue() {
     await autoReadSweepOnce().catch((e) => console.error('[digests] auto-read-sweep', e && e.message));
     await section1071SweepOnce().catch((e) => console.error('[digests] section-1071', e && e.message));
     await autoCommitteeReviewOnce().catch((e) => console.error('[digests] auto-committee', e && e.message));
+    await aiCrossdocSweepOnce().catch((e) => console.error('[digests] ai-crossdoc-sweep', e && e.message));
     if (weekday === 'Mon') await weeklyAdminSummaryOnce().catch((e) => console.error('[digests] admin', e && e.message));
   }
   if (hour >= 8 && hour < 18) {
@@ -658,4 +707,5 @@ module.exports = {
   weeklyBorrowerOutstandingOnce, dailyPipelineDigestOnce, staleFileAlertsOnce, weeklyAdminSummaryOnce,
   drawFindingsAwaitingBorrowerOnce, drawReleaseOverdueOnce, workflowAgingOnce,
   trainingRunOnce, certificateSurveyOnce, autoCommitteeReviewOnce, directSourceSweepOnce, autoReadSweepOnce, section1071SweepOnce,
+  aiCrossdocSweepOnce,
 };
