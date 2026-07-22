@@ -1744,6 +1744,17 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true }) {
           {err && <div className="error" style={{ marginBottom: 8 }}>{err}</div>}
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, fontSize: 12, flexWrap: 'wrap' }}>
             <button className="btn ghost" onClick={load} disabled={busy} style={{ padding: '3px 9px', fontSize: 11 }}>{busy ? '…' : '↻ Refresh'}</button>
+            {!readOnly && canResolve && (
+              <button className="btn ghost" style={{ padding: '3px 9px', fontSize: 11 }} title="Re-run every free AI check (entity chain, bank, bad-clearance, public records, identity chain) on the file's current extractions"
+                onClick={async () => {
+                  try {
+                    const r = await api.aiRerunChecks(appId);
+                    const total = Object.values(r.ran || {}).reduce((a, b) => a + (Number(b) || 0), 0);
+                    load();
+                    alert(total ? `Re-ran AI checks. ${total} new finding${total === 1 ? '' : 's'} posted.` : 'Re-ran AI checks. Nothing new to flag.');
+                  } catch (e) { alert(`Failed: ${(e && e.message) || 'error'}`); }
+                }}>▶ Re-run checks</button>
+            )}
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: 'var(--muted,#4B585C)' }}>
               <input type="checkbox" checked={showDismissed} onChange={(e) => setShowDismissed(e.target.checked)} />
               Show dismissed

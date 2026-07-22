@@ -1475,6 +1475,42 @@ router.get('/:appId/knowledge-graph', async (req, res, next) => {
  * ai-suggestions.decide() so the R3.42 auto-close-linked-admin-questions and
  * the ai_audit trail both fire per row. Body optional: { reason }.
  */
+/**
+ * R4.7 — Manual "Re-run AI checks" trigger. Runs every deterministic detector
+ * (entity chain / seller chain / bank / bad-clearance / public-records /
+ * identity chain) in one shot so an LO who just uploaded a doc can force a
+ * re-check without waiting for the next file view render. Zero paid AI cost —
+ * the crossdoc + committee AI calls stay behind their own explicit buttons.
+ */
+router.post('/:appId/ai-suggestions/rerun-checks', requirePermission('sign_off_conditions'), async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const client = await db.pool.connect();
+    const ran = { entity_chain: 0, bank: 0, bad_clearance: 0, public_records: 0, identity_chain: 0 };
+    try {
+      await client.query('BEGIN');
+      const exts = await client.query(
+        `SELECT doc_type, document_id, fields FROM document_extractions
+          WHERE application_id=$1 AND status='ok' ORDER BY created_at DESC LIMIT 60`, [app.id]);
+      const mctx = await fileView.loadContext(client, app.id).catch(() => ({}));
+      const bridges = [
+        ['entity_chain',    () => require('../lib/underwriting/entity-chain').analyzeAndRecord(client, { applicationId: app.id, fileCtx: mctx, extractions: exts.rows })],
+        ['bank',            () => require('../lib/underwriting/bank-statement-checks').analyzeAndRecord(client, { applicationId: app.id, extractions: exts.rows })],
+        ['bad_clearance',   () => require('../lib/underwriting/bad-clearance').scanFile(client, app.id, { maxConditions: 15 })],
+        ['public_records',  () => require('../lib/underwriting/public-records-crosscheck').analyzeAndRecord(client, { applicationId: app.id, fileCtx: { vestingName: mctx && mctx.vestingName }, extractions: exts.rows })],
+        ['identity_chain',  () => require('../lib/underwriting/identity-chain').analyzeAndRecord(client, { applicationId: app.id, extractions: exts.rows })],
+      ];
+      for (const [k, fn] of bridges) {
+        try { const r = await fn(); ran[k] = (r && r.recorded) || 0; } catch (_) { /* additive */ }
+      }
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+    res.json({ ok: true, ran });
+  } catch (e) { next(e); }
+});
+
 router.post('/:appId/ai-suggestions/dismiss-all', requirePermission('sign_off_conditions'), async (req, res, next) => {
   try {
     const app = await fileFor(req, req.params.appId);
