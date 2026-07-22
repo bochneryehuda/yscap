@@ -2912,6 +2912,7 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .crx-tri-chip { display:inline-flex; align-items:center; gap:6px; font-size:.78rem; font-weight:600; color:var(--text);
   padding:6px 11px; border-radius:999px; border:1px solid var(--border); background:var(--surface); }
 .crx-tri-dot { width:7px; height:7px; border-radius:50%; background:var(--success); box-shadow:0 0 0 3px var(--success-soft); }
+.crx-frozen { background:var(--surface-soft); color:var(--muted); cursor:default; gap:5px; }
 .crx-meta-ver { margin-left:auto; }
 
 /* Consent ---------------------------------------------------------------- */

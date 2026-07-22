@@ -73,7 +73,7 @@ const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failu
   // --- preview: shows the borrower info + defaults, ready to pull -------------
   const pv = await credit.preview(app.id);
   ok(pv.borrower.firstName === 'Dana' && pv.borrower.ssnMasked === '•••-••-6789', 'preview shows borrower + masked SSN');
-  ok(pv.defaults.pullType === 'soft' && pv.defaults.requestType === 'new' && pv.defaults.version === '3.4', 'first-pull defaults: soft · brand-new · v3.4 (no prior report → new, not reissue)');
+  ok(pv.defaults.pullType === 'soft' && pv.defaults.requestType === 'reissue' && pv.defaults.version === '3.4', 'defaults: soft · reissue · v3.4 (order always defaults to reissue, owner-directed)');
   ok(pv.defaults.bureaus.length === 3, 'preview defaults tri-merge');
   ok(pv.canPull === true && pv.missing.length === 0, 'canPull with full PII');
 

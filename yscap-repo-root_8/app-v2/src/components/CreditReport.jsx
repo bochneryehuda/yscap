@@ -133,7 +133,7 @@ function CreditImportModal({ appId, onClose, onDone }) {
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const [pullType, setPullType] = useState('soft');
-  const [requestType, setRequestType] = useState('new');
+  const [requestType, setRequestType] = useState('reissue');
   const [version, setVersion] = useState('3.4');
   const [reissueRef, setReissueRef] = useState('');
   const [consent, setConsent] = useState(false);
@@ -156,10 +156,18 @@ function CreditImportModal({ appId, onClose, onDone }) {
     return () => { alive = false; };
   }, [appId]);
 
+  // Lock the background page scroll while the modal is open (house pattern —
+  // matches ToolModal/ProductStudioPanel/TrackRecordScreen) so the page behind
+  // doesn't scroll under the box. Also close on Escape.
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prevOverflow;
+    };
   }, [onClose]);
 
   const providerReady = pre && pre.provider && pre.provider.configured;
@@ -265,7 +273,11 @@ function CreditImportModal({ appId, onClose, onDone }) {
                 </div>
                 <div className="crx-meta crx-meta-ver">
                   <label className="crx-opt-label">Version</label>
-                  <input className="crx-input" style={{ width: 84 }} value={version} onChange={(e) => setVersion(e.target.value)} />
+                  {/* Frozen — the report interface version is fixed (owner-directed);
+                      staff cannot change it. Set only via XACTUS_INTERFACE_VERSION. */}
+                  <span className="crx-tri-chip crx-frozen" title="Fixed report version — cannot be changed">
+                    MISMO {version} <span className="crx-lock" aria-hidden="true">🔒</span>
+                  </span>
                 </div>
               </div>
             </section>
