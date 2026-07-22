@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { AppraisalFinding } from './AppraisalPanel.jsx';
+import { useAuth } from '../lib/auth.jsx';
 
 /* The PILOT document-underwriting desk. For each uploaded document PILOT reads it (best-in-class
    OCR), understands it (AI, constrained to the document type's fields), and checks it against the
@@ -1813,6 +1814,10 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true }) {
 }
 
 function AISuggestionCard({ appId, suggestion, onChanged, disabled }) {
+  // R4.14 — read role via a light dynamic hook so we don't disrupt the file's
+  // existing prop chain. Only super_admin sees the 'Silence code' action.
+  const { role } = useAuth();
+  const isSuperAdmin = role === 'super_admin';
   const [busy, setBusy] = React.useState(false);
   const [noteOpen, setNoteOpen] = React.useState(false);
   const [noteText, setNoteText] = React.useState('');
@@ -1919,6 +1924,18 @@ function AISuggestionCard({ appId, suggestion, onChanged, disabled }) {
           <button className="btn ghost" onClick={() => doAction(suggestion.important ? 'unmark_important' : 'mark_important')} disabled={busy} style={{ fontSize: 11 }}>{suggestion.important ? 'Unmark important' : 'Mark important'}</button>
           <button className="btn ghost" onClick={() => setDismissOpen(true)} disabled={busy} style={{ fontSize: 11 }}>Dismiss</button>
           <button className="btn ghost" onClick={askAdmin} disabled={busy} style={{ fontSize: 11 }}>Ask super-admin</button>
+          {isSuperAdmin && (suggestion.evidence && suggestion.evidence.code) && (
+            <button className="btn ghost" style={{ fontSize: 11, color: 'var(--crit,#B4483C)', borderColor: 'var(--crit,#B4483C)' }}
+              onClick={async () => {
+                const code = suggestion.evidence.code;
+                const reason = window.prompt(`Silence '${code}' portfolio-wide? Every future finding with this code will be dropped before it reaches any file. Type a reason (audited).`, '');
+                if (reason == null || !reason.trim()) return;
+                try {
+                  await api.aiSilencedCodesAdd(code, reason.trim());
+                  alert(`Silenced '${code}'. Manage the mute list at /internal/ai-silenced-codes.`);
+                } catch (e) { alert(`Failed: ${(e && e.message) || 'error'}`); }
+              }}>🔇 Silence code</button>
+          )}
         </div>
       )}
       {noteOpen && (
