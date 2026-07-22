@@ -64,6 +64,38 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
   const [escNote, setEscNote] = useState('');
   const [committeeBusy, setCommitteeBusy] = useState(false);
   const [committeeOpinion, setCommitteeOpinion] = useState(null);
+  const [simOpen, setSimOpen] = useState(false);
+  const [simBusy, setSimBusy] = useState(false);
+  const [simRows, setSimRows] = useState(null);
+  const [simPicked, setSimPicked] = useState({});
+  const [simAction, setSimAction] = useState('dismiss');
+  const [simNote, setSimNote] = useState('');
+  const loadSimilar = async () => {
+    if (!f.id) return;
+    setSimBusy(true); setSimOpen(true);
+    try {
+      const r = await api.similarOpenFindings(appId, f.id);
+      const rows = (r && r.similar) || [];
+      setSimRows(rows);
+      const p = {}; for (const s of rows) p[s.id] = true;
+      setSimPicked(p);
+    } catch (e) { alert('Could not load similar findings: ' + (e && e.message || 'error')); setSimOpen(false); }
+    finally { setSimBusy(false); }
+  };
+  const runBulk = async () => {
+    const ids = Object.keys(simPicked).filter(id => simPicked[id]);
+    if (!ids.length) { alert('No findings selected.'); return; }
+    if (simAction === 'dismiss' && !simNote.trim()) { alert('Please add a dismissal reason.'); return; }
+    if (!window.confirm(`${simAction} ${ids.length} finding${ids.length === 1 ? '' : 's'} across other files?`)) return;
+    setSimBusy(true);
+    try {
+      const r = await api.bulkResolveFindings(appId, ids, simAction, simNote);
+      alert(`Bulk ${simAction} complete: ${r.resolved || 0} of ${r.allowed || 0} resolved${r.blocked ? ` (${r.blocked} blocked)` : ''}.`);
+      setSimOpen(false); setSimRows(null); setSimNote('');
+      onChange && onChange();
+    } catch (e) { alert(`Could not bulk ${simAction}: ` + (e && e.message || 'error')); }
+    finally { setSimBusy(false); }
+  };
   const runCommittee = async () => {
     if (!f.id) return;
     setCommitteeBusy(true);
@@ -206,6 +238,55 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
               style={{ ...btn(), fontSize: 12, padding: '5px 10px' }}>
               {committeeBusy ? 'Panel reviewing…' : (committeeOpinion ? '↻ Re-run panel review' : '👥 Ask the panel')}
             </button>
+          )}
+          {resolvable && f.id && (
+            <button disabled={busy || simBusy} onClick={loadSimilar}
+              title="Find every OTHER open finding with the same code across the pipeline and bulk-dismiss or bulk-resolve them"
+              style={{ ...btn(), fontSize: 12, padding: '5px 10px' }}>
+              🗂 Similar on other files
+            </button>
+          )}
+        </div>
+      )}
+      {simOpen && (
+        <div style={{ marginTop: 10, padding: 10, border: '1px solid var(--paper,#E9E4D3)', borderRadius: 8, background: 'var(--paper,#F6F3EC)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+            <b style={{ fontSize: 12 }}>Same finding on other files</b>
+            <button onClick={() => { setSimOpen(false); setSimRows(null); }} style={{ ...btn(), fontSize: 11, padding: '2px 8px', marginLeft: 'auto' }}>Close</button>
+          </div>
+          {simBusy && !simRows && <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)' }}>Searching…</div>}
+          {simRows && simRows.length === 0 && (
+            <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)' }}>Nothing similar found on the visible files.</div>
+          )}
+          {simRows && simRows.length > 0 && (
+            <>
+              <div style={{ fontSize: 11, color: 'var(--muted,#4B585C)', marginBottom: 6 }}>Select the findings to act on:</div>
+              <div style={{ maxHeight: 220, overflowY: 'auto' }}>
+                {simRows.map((r) => (
+                  <label key={r.id} style={{ display: 'flex', gap: 6, alignItems: 'flex-start', padding: '3px 0', fontSize: 12, cursor: 'pointer' }}>
+                    <input type="checkbox" checked={!!simPicked[r.id]} onChange={(e) => setSimPicked({ ...simPicked, [r.id]: e.target.checked })} />
+                    <span style={{ flex: 1 }}>
+                      <span style={{ color: 'var(--muted,#4B585C)' }}>{(r.property_address && (r.property_address.line1 || r.property_address.address)) || r.application_id.slice(0, 8)}</span>
+                      {' · '}<b>{r.title || r.code}</b>
+                      {r.severity && <span style={{ color: (SEV[r.severity] || {}).fg, marginLeft: 4 }}>({(SEV[r.severity] || {}).label})</span>}
+                    </span>
+                  </label>
+                ))}
+              </div>
+              <div style={{ display: 'flex', gap: 6, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <select value={simAction} onChange={(e) => setSimAction(e.target.value)} style={{ fontSize: 12, padding: '3px 6px' }}>
+                  <option value="dismiss">Dismiss</option>
+                  <option value="acknowledge">Acknowledge</option>
+                  <option value="post_condition">Post condition</option>
+                  <option value="request_document">Request document</option>
+                  <option value="clear">Clear</option>
+                </select>
+                <input type="text" placeholder="Note (required for Dismiss)" value={simNote}
+                  onChange={(e) => setSimNote(e.target.value)}
+                  style={{ flex: 1, minWidth: 200, fontSize: 12, padding: '4px 6px', border: '1px solid var(--paper,#E9E4D3)', borderRadius: 6 }} />
+                <button className="btn primary" disabled={simBusy} onClick={runBulk} style={{ fontSize: 11 }}>Apply to {Object.values(simPicked).filter(Boolean).length}</button>
+              </div>
+            </>
           )}
         </div>
       )}
