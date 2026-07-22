@@ -81,10 +81,10 @@ function missingForPull(b) {
 async function preview(appId) {
   const row = await loadForPull(appId);
   const b = borrowerToSend(row, { includeSsn: false });
-  // Prior report reference (pre-fills a Reissue). On a file's FIRST pull there is
-  // none — so default the order to "brand-new" (a reissue with no reference would
-  // otherwise 422 on the very first click). Once a report exists, default to the
-  // faster Reissue.
+  // The order ALWAYS defaults to Reissue (owner-directed). On a file's first pull
+  // there is no prior reference to pre-fill — the reference field is then empty and
+  // the screen guides the user to type it or switch to brand-new (a reissue with no
+  // reference is rejected with a clear message, never a silent failure).
   const prior = await priorReportId(appId);
   return {
     borrower: {
@@ -93,7 +93,7 @@ async function preview(appId) {
       ssnMasked: row.ssn_last4 ? `•••-••-${row.ssn_last4}` : null,
       address: b.address,
     },
-    defaults: { pullType: 'soft', requestType: prior ? 'reissue' : 'new', bureaus: provider.ALL_BUREAUS, version: provider.version() },
+    defaults: { pullType: 'soft', requestType: 'reissue', bureaus: provider.ALL_BUREAUS, version: provider.version() },
     options: {
       pullTypes: [
         { value: 'soft', label: 'Soft pull — pre-application', hint: 'A soft inquiry that does not affect the borrower’s score.' },
