@@ -56,14 +56,16 @@ async function slicePdfPages(buf, pages) {
   try { ({ PDFDocument } = await import('pdf-lib')); }
   catch (e) { return { ok: false, reason: `pdf slicer unavailable (${e.message})` }; }
 
-  let src;
+  let src, total;
   try {
     // ignoreEncryption lets us still copy pages out of a permission-flagged (not
     // password-locked) PDF; a truly encrypted doc throws and we fall back.
     src = await PDFDocument.load(new Uint8Array(buf), { ignoreEncryption: true });
+    // getPageCount() must be inside the try: a malformed-but-loadable PDF (broken
+    // /Pages tree) loads OK then throws HERE — keep the no-throw contract intact.
+    total = src.getPageCount();
   } catch (e) { return { ok: false, reason: `could not open source PDF (${e.message})` }; }
 
-  const total = src.getPageCount();
   const inRange = want.filter((p) => p <= total);
   if (!inRange.length) return { ok: false, reason: `requested pages out of range (source has ${total})`, sourcePageCount: total };
 

@@ -652,7 +652,7 @@ router.get('/:appId', async (req, res, next) => {
 // the borrower is matched, not the file's LLC — the staff document picker is scoped the same way.
 async function fileDoc(app, documentId) {
   return (await db.query(
-    `SELECT id, application_id, borrower_id, filename, content_type, storage_provider, storage_ref, sha256
+    `SELECT id, application_id, borrower_id, filename, content_type, storage_provider, storage_ref, sha256, page_bounded
        FROM documents
       WHERE id=$1 AND is_current
         AND (application_id=$2 OR (application_id IS NULL AND borrower_id IS NOT NULL AND borrower_id=$3))`,
@@ -671,6 +671,11 @@ async function analyzeOneDocument(app, doc, docType, opts = {}) {
   const base = { documentId: doc.id, filename: doc.filename, docType };
   try {
     if (!doc.storage_ref) return { ...base, ok: false, error: 'no_stored_file' };
+    // R5.1 — a split child whose physical slice FAILED (page_bounded=false) still
+    // references the WHOLE source package. Refuse to analyze it as one logical
+    // document here too (the auto paths already skip it) — analyzing it would
+    // reproduce the packet contamination this fix prevents. Re-split or re-upload.
+    if (doc.page_bounded === false) return { ...base, ok: false, error: 'unbounded_split_child' };
 
     const ctx = await fileView.loadContext(db, app.id);
     const subject = fileView.subjectFor(docType, ctx);
@@ -813,6 +818,7 @@ router.post('/:appId/documents/:documentId/analyze', async (req, res, next) => {
     if (r.error === 'cooldown') return res.status(429).json({ error: `this document was just analyzed — try again in ${r.retryAfterSeconds}s`, retryAfterSeconds: r.retryAfterSeconds });
     if (r.error === 'too_large') return res.status(413).json({ error: `this document is too large to analyze (limit ${Math.round(MAX_ANALYZE_BYTES / (1024 * 1024))} MB)` });
     if (r.error === 'storage_read_failed' || r.error === 'no_stored_file') return res.status(422).json({ error: 'could not read the stored document' });
+    if (r.error === 'unbounded_split_child') return res.status(422).json({ error: 'this split part could not be page-bounded to its own pages — re-split or re-upload it before analyzing' });
     if (r.error === 'analyze_failed') return next(r.cause || new Error(r.message || 'analyze failed'));
     res.json({
       ok: r.ok, docType, cached: !!r.cached, extractionId: r.extractionId,
@@ -1742,7 +1748,10 @@ router.post('/:appId/ai-suggestions/:id/split-and-file', requirePermission('sign
 
       const created = [];
       for (const seg of segments) {
-        const pages = Array.isArray(seg.pages) ? seg.pages.filter(Number.isFinite).sort((a, b) => a - b) : [];
+        // Number.isInteger (not isFinite): a fractional page like 2.5 would pass
+        // isFinite and then break the `page_range int[]` bind (Postgres rejects
+        // '{2.5}'::int[]) → 500. The slicer re-normalizes anyway; keep parity here.
+        const pages = Array.isArray(seg.pages) ? seg.pages.filter(Number.isInteger).sort((a, b) => a - b) : [];
         if (!pages.length || !seg.checklistItemId) continue;
         const slotLabel = String(seg.slotLabel || `${prettyType(seg.docType)} (pp ${pages.join(', ')} of ${src.filename})`).slice(0, 80);
         // Confirm the target checklist_item belongs to this file.
@@ -1754,7 +1763,8 @@ router.post('/:appId/ai-suggestions/:id/split-and-file', requirePermission('sign
         // child there. A page-bounded child is safe to analyze in isolation; the
         // old behavior (child references the whole package) contaminated the read.
         let childRef = src.storage_ref, childProvider = src.storage_provider,
-            childBytes = src.size_bytes, childSha = null, pageBounded = false;
+            childBytes = src.size_bytes, childSha = null, pageBounded = false,
+            recordedPages = pages;
         if (srcBytes) {
           const sliced = await slicePdfPages(srcBytes, pages);
           if (sliced.ok && sliced.buf) {
@@ -1763,6 +1773,8 @@ router.post('/:appId/ai-suggestions/:id/split-and-file', requirePermission('sign
               childRef = saved.ref; childProvider = saved.provider; childBytes = saved.bytes;
               childSha = crypto.createHash('sha256').update(sliced.buf).digest('hex');
               pageBounded = true;
+              // Record the pages ACTUALLY in the slice (out-of-range requests dropped).
+              if (Array.isArray(sliced.pages) && sliced.pages.length) recordedPages = sliced.pages;
             } catch (_) { /* fall back to source ref below */ }
           }
         }
@@ -1775,7 +1787,7 @@ router.post('/:appId/ai-suggestions/:id/split-and-file', requirePermission('sign
            RETURNING id`,
           [app.id, seg.checklistItemId, src.borrower_id, `${(seg.docType || 'part')}—${src.filename}`,
            (pageBounded ? 'application/pdf' : src.content_type), childBytes, childProvider, childRef,
-           req.actor.staffId, slotLabel, src.id, pages, pageBounded, childSha]);
+           req.actor.staffId, slotLabel, src.id, recordedPages, pageBounded, childSha]);
         created.push({ id: ins.rows[0].id, checklistItemId: seg.checklistItemId, pages, pageBounded });
       }
 
