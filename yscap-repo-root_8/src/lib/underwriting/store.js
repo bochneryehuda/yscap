@@ -122,6 +122,7 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
   const rulesRes = await require('./promoted-rules').applyPromotedRules(client, findings || []);
   const effectiveFindings = rulesRes.findings;
   const suppressedByRules = rulesRes.suppressed;
+  const protectedFatalByRules = rulesRes.protectedFatal || [];
   // R5.3 — resolve a source page for each finding: prefer a page the check
   // already set (f.page / f.pageNumber), else locate the finding's doc-side
   // value in the OCR page text. Only ever ADDS a page pointer; a miss is null.
@@ -151,6 +152,18 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
         `INSERT INTO audit_log (actor_kind, action, entity_type, entity_id, detail)
          VALUES ('system','pilot_suppressed_findings','application',$1,$2::jsonb)`,
         [appId, JSON.stringify({ documentId, extractionId, suppressed: suppressedByRules })]);
+    } catch (_) { /* audit best-effort */ }
+  }
+  // R5.4 — a learned rule that TRIED to suppress/downgrade a FATAL finding was
+  // refused (the finding stays fatal). Audit the attempt so a super-admin can
+  // see a promoted rule is over-reaching into fatal territory — a signal it
+  // needs the full evaluation gate, not silent global application.
+  if (protectedFatalByRules && protectedFatalByRules.length) {
+    try {
+      await client.query(
+        `INSERT INTO audit_log (actor_kind, action, entity_type, entity_id, detail)
+         VALUES ('system','pilot_protected_fatal_findings','application',$1,$2::jsonb)`,
+        [appId, JSON.stringify({ documentId, extractionId, protectedFatal: protectedFatalByRules })]);
     } catch (_) { /* audit best-effort */ }
   }
 

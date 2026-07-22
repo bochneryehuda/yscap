@@ -39,26 +39,49 @@ let _cache = { at: 0, rules: null };
 const TTL_MS = 60 * 1000;
 
 // The pure applier — takes an array of findings + a shape { suppress: Set,
-// downgrade: Set, upgrade: Set } and returns { findings, suppressed:[...] }.
+// downgrade: Set, upgrade: Set } and returns { findings, suppressed:[...],
+// protectedFatal:[...] }.
+//
+// R5.4 SAFETY GATE (owner-directed 2026-07-22 review): a LEARNED rule may
+// never remove a FATAL finding from a file. Until the full offline evaluation
+// gate (replay + shadow + release approval) exists, a promoted suppress_finding
+// or downgrade_severity rule is INERT on a fatal finding — the finding is KEPT
+// at fatal and recorded in `protectedFatal` so a reviewer sees the rule tried
+// to hide a fatal. This preserves fatal recall (the single most important
+// mortgage-safety invariant) no matter what a learned rule says. Non-fatal
+// suppress/downgrade behavior is unchanged.
 function applyRules(findings, rules) {
-  if (!Array.isArray(findings) || !findings.length || !rules) return { findings: findings || [], suppressed: [] };
+  if (!Array.isArray(findings) || !findings.length || !rules) {
+    return { findings: findings || [], suppressed: [], protectedFatal: [] };
+  }
   const out = [];
   const suppressed = [];
+  const protectedFatal = [];
   for (const f of findings) {
     const code = String(f && f.code || '');
     if (!code) { out.push(f); continue; }
-    if (rules.suppress && rules.suppress.has(code)) {
+    const isFatal = (f.severity || 'warning') === 'fatal';
+    const wantsSuppress = rules.suppress && rules.suppress.has(code);
+    const wantsDowngrade = rules.downgrade && rules.downgrade.has(code);
+    // A learned rule that would suppress OR downgrade a FATAL finding is refused.
+    if (isFatal && (wantsSuppress || wantsDowngrade)) {
+      protectedFatal.push({ code, severity: 'fatal', title: f.title, wouldHave: wantsSuppress ? 'suppress' : 'downgrade' });
+      out.push(f);
+      continue;
+    }
+    if (wantsSuppress) {
       suppressed.push({ code, severity: f.severity, title: f.title });
       continue;
     }
     let sev = f.severity || 'warning';
-    if (rules.downgrade && rules.downgrade.has(code)) sev = stepDown(sev);
+    if (wantsDowngrade) sev = stepDown(sev);
     else if (rules.upgrade && rules.upgrade.has(code)) sev = stepUp(sev);
     // If a downgrade lands at 'dismiss', treat it like a suppress (still record).
+    // (Only reachable for a NON-fatal finding — a fatal never gets here.)
     if (sev === 'dismiss') { suppressed.push({ code, severity: f.severity, title: f.title }); continue; }
     out.push({ ...f, severity: sev });
   }
-  return { findings: out, suppressed };
+  return { findings: out, suppressed, protectedFatal };
 }
 
 function stepDown(sev) {
@@ -111,7 +134,7 @@ async function applyPromotedRules(client, findings) {
   try {
     const rules = await effectiveRules(client);
     return applyRules(findings, rules);
-  } catch (_) { return { findings: findings || [], suppressed: [] }; }
+  } catch (_) { return { findings: findings || [], suppressed: [], protectedFatal: [] }; }
 }
 
 // Force cache invalidation — called by the admin decide route when a
