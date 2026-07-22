@@ -230,6 +230,27 @@ async function decide(client, id, decision = {}) {
        important=$5, linked_condition_id=$6, linked_task_id=$7, notes=$8::jsonb
      WHERE id=$1 RETURNING *`,
     [id, newStatus, statusReason, staffId, important, linkedCondition, linkedTask, JSON.stringify(notes)]);
+
+  // R3.42 — a suggestion the human dismissed / converted / noted / signed off in
+  // ANY terminal way no longer needs the super-admin's answer. Auto-close every
+  // still-open ai_admin_questions row that references this suggestion, marking
+  // the answer text with a machine note so the super-admin's inbox stops
+  // showing questions whose underlying finding has been decided by the LO. The
+  // ONLY status where we keep the question OPEN is 'asked_admin' itself (the
+  // question was just posted; obviously don't close it in the same breath).
+  // Best-effort — a failure never rolls back the suggestion decision.
+  if (newStatus !== 'asked_admin') {
+    try {
+      await c.query(
+        `UPDATE ai_admin_questions
+            SET answered_at = COALESCE(answered_at, now()),
+                answer      = COALESCE(answer, $2),
+                answered_by_staff_id = COALESCE(answered_by_staff_id, $3)
+          WHERE suggestion_id = $1 AND answered_at IS NULL`,
+        [id, `[auto-closed] suggestion decided (${newStatus})`, staffId]);
+    } catch (_) { /* additive */ }
+  }
+
   return { ok: true, row: upd.rows[0] };
 }
 
