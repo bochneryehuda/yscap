@@ -45,11 +45,21 @@ function tierOf(rule) {
 }
 
 // Two outcomes are "equivalent" if their JSON canonicalizes identically.
+// Deep-canonicalize (recursively sort object keys) so two semantically-equal
+// outcomes that differ only in nested key ORDER are seen as equal — otherwise a
+// trivial key-order difference would trigger a spurious abstain. Array order is
+// still significant (an ordered list is meaningful).
+function canon(v) {
+  if (v == null || typeof v !== 'object') return v;
+  if (Array.isArray(v)) return v.map(canon);
+  const out = {};
+  for (const k of Object.keys(v).sort()) out[k] = canon(v[k]);
+  return out;
+}
 function outcomeKey(outcome) {
   if (outcome == null) return 'null';
   if (typeof outcome !== 'object') return JSON.stringify(outcome);
-  const keys = Object.keys(outcome).sort();
-  return JSON.stringify(keys.map((k) => [k, outcome[k]]));
+  return JSON.stringify(canon(outcome));
 }
 
 /**
