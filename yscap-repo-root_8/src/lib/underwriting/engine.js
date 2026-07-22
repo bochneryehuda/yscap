@@ -103,10 +103,26 @@ async function analyzeDocument({ docType, buffer, base64, mimeType, subject, tod
   // The router tries Azure first and falls back to Google Document AI when Azure
   // returns nothing. ocr.engine names the WINNER; ocr.engineSequence lists every
   // engine actually tried, so the extraction records both.
-  const ocr = await reader.read({ buffer, base64, mimeType });
+  //
+  // P1 (owner-directed 2026-07-22): when OCR_ROUTING_ENABLED, pass the known
+  // document family so the router uses the DOCUMENT-AWARE routing matrix — the
+  // right primary reader, and a MANDATORY challenger (a second independent read,
+  // reconciled) for numeric-critical documents (bank statements, appraisals,
+  // settlements, payoffs, title, insurance, credit, SOW). This costs a second
+  // OCR pass on those documents, so it is opt-in via env (default off keeps the
+  // flat fallback chain, byte-identical). The reconciliation is ADVISORY —
+  // surfaced on the extraction for a human, it never changes a decision.
+  const routeArgs = { buffer, base64, mimeType };
+  if (process.env.OCR_ROUTING_ENABLED === '1' && docType) routeArgs.docType = docType;
+  const ocr = await reader.read(routeArgs);
   baseExtraction.ocrEngine = ocr.ok ? (ocr.engine || 'document_intelligence') : null;
   baseExtraction.ocrEngineSequence = Array.isArray(ocr.engineSequence) ? ocr.engineSequence.slice() : null;
   baseExtraction.pageCount = ocr.ok ? (ocr.pageCount || null) : null;
+  // Advisory routing telemetry — recorded on the extraction when the router ran
+  // document-aware; consumers may show "read twice, numbers agree/disagree".
+  if (ocr.routePlan) baseExtraction.ocrRoutePlan = { primary: ocr.routePlan.primary, materiality: ocr.routePlan.materiality, numericCritical: ocr.routePlan.numericCritical };
+  if (ocr.reconciliation) baseExtraction.ocrReconciliation = ocr.reconciliation;
+  if (Array.isArray(ocr.weakPages) && ocr.weakPages.length) baseExtraction.ocrWeakPages = ocr.weakPages;
   // Owner-directed 2026-07-22 (semantic-entity layer): pass a truncated OCR
   // text + page slices back to the caller so the persist path can extract
   // supplementary entity mentions (parties, money, dates, addresses) beyond
