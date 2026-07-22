@@ -52,7 +52,7 @@ function Recipient({ r }) {
   );
 }
 
-export default function EsignFileSection({ appId, role }) {
+export default function EsignFileSection({ appId, role, onChanged }) {
   const isAdmin = role === 'admin' || role === 'super_admin';
   const [data, setData] = useState(null);   // { gate, packages, envelopes, loanNumber }
   const [err, setErr] = useState('');
@@ -78,12 +78,17 @@ export default function EsignFileSection({ appId, role }) {
   }, [load]);
 
   const msgT = useRef(null);
-  async function act(key, fn, okMsg) {
+  // `after` runs only on SUCCESS, after the local esign refetch — used by actions
+  // that also change data OUTSIDE this section (clearing a package reopens the
+  // file's conditions), so the parent can refetch its conditions panel and it
+  // doesn't sit showing a just-reopened condition as still "signed off".
+  async function act(key, fn, okMsg, after) {
     setBusy(key); setErr(''); setMsg('');
     if (msgT.current) { clearTimeout(msgT.current); msgT.current = null; }
     try {
       await fn(); if (okMsg) { setMsg(okMsg); msgT.current = setTimeout(() => setMsg(''), 6000); }   // auto-dismiss so a stale "Sent" banner never sits above a failed card
       await load(true);
+      if (after) { try { await after(); } catch (_) { /* the parent refresh is best-effort */ } }
     } catch (e) { setErr(e.message || 'Action failed'); }
     finally { setBusy(''); }
   }
@@ -110,6 +115,23 @@ export default function EsignFileSection({ appId, role }) {
     const reason = window.prompt('Void this envelope — reason (required):');
     if (!reason || !reason.trim()) return;
     return act(`void:${rowId}`, () => api.post(`/api/staff/esign/${rowId}/void`, { reason }), 'Envelope voided.');
+  };
+  // Clear a package: void it (if still out for signature) OR clear a completed
+  // one, remove its signed document from the file, and reopen its conditions so a
+  // fresh package can be sent. Warns first — this cannot be undone.
+  const clearPkg = (e) => {
+    const label = PURPOSE[e.purpose] || e.purpose;
+    const ok = window.confirm(
+      `Clear the ${label} package?\n\n`
+      + `This permanently clears and DELETES this package from the file:\n`
+      + `  • the signed document is removed (from its condition and from Documents)\n`
+      + `  • the package’s conditions reopen\n`
+      + `  • the structure unfreezes and you can send a fresh package with updated details\n\n`
+      + `This CANNOT be undone. Continue?`);
+    if (!ok) return;
+    // Pass onChanged as the success callback so the parent refetches its
+    // conditions panel — clearing reopened this package's condition(s).
+    return act(`clear:${e.id}`, () => api.post(`/api/staff/esign/${e.id}/clear`, {}), `${label} package cleared — send a fresh one when you’re ready.`, onChanged);
   };
   const countersign = (rowId) => act(`cs:${rowId}`, async () => {
     const { url } = await api.post(`/api/staff/esign/${rowId}/countersign-view`);
@@ -153,6 +175,10 @@ export default function EsignFileSection({ appId, role }) {
     const h = agingHours(e);
     const lvl = agingLevel(h);
     const terminal = TERMINAL.includes(e.phase);   // shared vocabulary (esign.js) — no drift
+    // A package can be CLEARED while it is LIVE — out for signature (awaiting_borrower/
+    // awaiting_countersign) OR already fully signed (completed). Void alone can't undo a
+    // completed one; Clear can (it clears our side, reopens the conditions, unfreezes the file).
+    const clearable = !!e.envelopeId && ['awaiting_borrower', 'awaiting_countersign', 'completed'].includes(e.phase);
     const recips = (e.recipients || []).slice().sort((a, b) => Number(a.routingOrder) - Number(b.routingOrder) || String(a.role).localeCompare(String(b.role)));
     // Each envelope collapses to a one-line summary (owner-directed: "the
     // e-signature of each and every package is very big — that should all be
@@ -224,6 +250,12 @@ export default function EsignFileSection({ appId, role }) {
               disabled={busy === `send:${e.purpose}` || (e.purpose === 'term_sheet_package' && !hasLoanNumber)}
               title={e.purpose === 'term_sheet_package' && !hasLoanNumber ? 'Enter the YS loan number above first' : 'Send a fresh envelope for this package'}
               onClick={() => send(e.purpose, true)}>{busy === `send:${e.purpose}` ? '…' : (e.phase === 'error' ? 'Retry send' : 'Re-issue')}</button>
+          )}
+          {clearable && (
+            <button className="btn ghost btn-sm" style={{ color: 'var(--bad, #b04a3f)', borderColor: 'var(--bad, #b04a3f)' }}
+              disabled={busy === `clear:${e.id}`}
+              title="Clear this package — removes the signed document and reopens its conditions so you can send a fresh one. This cannot be undone."
+              onClick={() => clearPkg(e)}>{busy === `clear:${e.id}` ? '…' : 'Clear & delete package'}</button>
           )}
           {(e.documents || []).map((d) => (
             <button key={d.documentId} className="btn ghost btn-sm" disabled={busy === `dl:${d.documentId}`} onClick={() => download(d)}

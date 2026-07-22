@@ -9466,6 +9466,27 @@ router.post('/esign/:rowId/void', async (req, res) => {
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
+// CLEAR a package (owner-directed 2026-07-22): void it (if still out for
+// signature), supersede the signed document(s), and reopen exactly the
+// condition(s) this package satisfied — so a fresh package can be sent with
+// updated details. Handles a COMPLETED (signed) package too, which Void cannot.
+// The UI warns first that this can't be undone. Reuses loadEsignEnvelope's
+// file-visibility check.
+router.post('/esign/:rowId/clear', async (req, res) => {
+  try {
+    const { row, status, error } = await loadEsignEnvelope(req, req.params.rowId);
+    if (!row) return res.status(status).json({ error });
+    const reason = String((req.body && req.body.reason) || '').trim() || undefined;
+    const out = await require('../lib/esign/clear').clearPackage({ rowId: row.id, actorId: req.actor.id, reason, db, docusign: docusignLib });
+    await audit(req, 'esign_clear', 'application', row.application_id,
+      { purpose: row.purpose, voided: out.voided, docsCleared: out.docsCleared, conditionsReopened: (out.conditionsReopened || []).length });
+    res.json({ ok: true, ...out });
+  } catch (e) {
+    if (e && e.status && e.expose) return res.status(e.status).json({ error: e.message });
+    console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
+  }
+});
+
 // Mint an embedded signing URL for the ADMIN counter-signer to sign from the
 // cockpit ("Sign now"). Admin-only; DocuSign errors if it isn't the admin's turn.
 router.post('/esign/:rowId/countersign-view', async (req, res) => {
