@@ -1407,6 +1407,35 @@ router.post('/:appId/experience-exception', requirePermission('waive_conditions'
 });
 
 // -------------------------------------------------------------------------
+// GPT-5 cross-doc consistency check (R3.27, owner-directed 2026-07-22).
+// Manual trigger — costs money per run. Requires sign_off_conditions.
+// -------------------------------------------------------------------------
+router.post('/:appId/ai-crossdoc', requirePermission('sign_off_conditions'), async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    // Pull current extractions on the file.
+    const exts = await db.query(
+      `SELECT doc_type, document_id, fields
+         FROM document_extractions
+        WHERE application_id=$1 AND status='ok'
+        ORDER BY created_at DESC LIMIT 40`, [app.id]);
+    const client = await db.pool.connect();
+    let result;
+    try {
+      await client.query('BEGIN');
+      result = await require('../lib/underwriting/ai-cross-doc').analyzeFile(client, {
+        applicationId: app.id, extractions: exts.rows,
+        appMeta: { app_id: app.id, source: 'staff-triggered' },
+      });
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+    res.json(result);
+  } catch (e) { next(e); }
+});
+
+// -------------------------------------------------------------------------
 // Investor Knowledge Graph (R3.28) — per-file slice of the portfolio graph.
 // -------------------------------------------------------------------------
 router.get('/:appId/knowledge-graph', async (req, res, next) => {
