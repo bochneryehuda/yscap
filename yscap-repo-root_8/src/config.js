@@ -470,6 +470,32 @@ module.exports = {
     user:     process.env.XACTUS_USER || '',
     password: process.env.XACTUS_PASSWORD || '',
   },
+  // Xactus — SHARED PRODUCTION credit login (owner-directed 2026-07-22). The
+  // "Import credit" button (internal Credit report condition) pulls/reissues a
+  // tri-merge report using ONE company login stored HERE (Render env) — NOT a
+  // per-user credential. This block is deliberately SEPARATE from the two legacy
+  // `xactus` blocks above (the per-user framework), which are left in place and
+  // dormant in case we return to that model. Consumed by src/lib/credit/provider.js.
+  //   XACTUS_API_URL          your assigned Xactus PRODUCTION base URL
+  //   XACTUS_API_USERNAME     the one shared login user
+  //   XACTUS_API_PASSWORD     the one shared login password
+  //   XACTUS_API_ACCOUNT      optional account / subscriber id (if Xactus needs it)
+  //   XACTUS_API_CLIENT_ID    optional client id (if Xactus needs it)
+  //   XACTUS_INTERFACE_VERSION default report interface version (default '3.4')
+  xactusProd: {
+    endpoint: (process.env.XACTUS_API_URL || '').trim().replace(/\/+$/, ''),
+    username: process.env.XACTUS_API_USERNAME || '',   // Xactus Operator ID / login
+    password: process.env.XACTUS_API_PASSWORD || '',   // Xactus login password
+    account:  process.env.XACTUS_API_ACCOUNT || '',
+    clientId: process.env.XACTUS_API_CLIENT_ID || '',
+    version:  (process.env.XACTUS_INTERFACE_VERSION || '3.4').trim(),
+    // RequestingParty name printed in the MISMO request (informational).
+    requestingParty: (process.env.XACTUS_REQUESTING_PARTY || 'YS Capital Group').trim(),
+    // Auth: 'basic' (HTTP Basic header, the documented default) or 'query'
+    // (LoginAccountIdentifier/LoginAccountPassword query params, the Postman-
+    // collection style). Flip to 'query' only if your Xactus endpoint needs it.
+    authMode: /^query$/i.test((process.env.XACTUS_AUTH_MODE || 'basic').trim()) ? 'query' : 'basic',
+  },
   //   HouseCanary — AVM + Rent AVM (independent value + rent triangulation)
   houseCanary: {
     key:      process.env.HOUSECANARY_KEY || '',
