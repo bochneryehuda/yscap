@@ -42,7 +42,7 @@ const DECISION_VERDICTS = new Set([
   'clear', 'cleared', 'clear_to_close', 'ctc', 'pass', 'passed', 'satisfied', 'approve', 'approved', 'accept', 'accepted',
   'decline', 'declined', 'deny', 'denied', 'reject', 'rejected', 'fail', 'failed', 'adverse',
   'eligible', 'ineligible', 'manual', 'suspend', 'suspended', 'withdraw', 'withdrawn', 'counter', 'countered',
-  'refer', 'referred', 'conditional', 'conditioned', 'waive', 'waived',
+  'refer', 'referred', 'conditional', 'conditioned', 'conditionally_approved', 'approved_with_conditions', 'waive', 'waived',
 ]);
 
 function str(v) { return v == null ? null : String(v); }
