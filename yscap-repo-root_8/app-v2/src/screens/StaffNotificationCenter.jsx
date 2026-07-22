@@ -72,14 +72,14 @@ function Avatar({ name, size = 32, kind }) {
 
 /* ---- icon-only button with tooltip (accessible) ---- */
 function IconBtn({ name, title, onClick, disabled, tone, size = 30 }) {
-  const color = tone === 'danger' ? 'var(--danger)' : tone === 'gold' ? 'var(--gold)' : 'var(--ink)';
+  const color = tone === 'danger' ? 'var(--danger)' : tone === 'gold' ? 'var(--gold)' : 'var(--ivory)';
   return (
     <button onClick={onClick} disabled={disabled} title={title} aria-label={title}
       style={{ width: size, height: size, borderRadius: 6, border: '1px solid var(--line)',
         background: 'transparent', color, cursor: disabled ? 'default' : 'pointer',
         display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
         opacity: disabled ? 0.4 : 1, transition: 'background .12s ease' }}
-      onMouseEnter={(e) => { if (!disabled) e.currentTarget.style.background = 'var(--paper)'; }}
+      onMouseEnter={(e) => { if (!disabled) e.currentTarget.style.background = 'var(--ink-2)'; }}
       onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}>
       <Icon name={name} size={16} />
     </button>
@@ -114,7 +114,7 @@ function InfoDot({ text }) {
   return (
     <span className="nc-info" title={text} aria-label={text}
       style={{ display: 'inline-flex', width: 16, height: 16, borderRadius: '50%',
-        background: 'var(--paper)', color: 'var(--ink)', border: '1px solid var(--line)',
+        background: 'var(--ink-2)', color: 'var(--ivory)', border: '1px solid var(--line)',
         alignItems: 'center', justifyContent: 'center', fontSize: 11, marginLeft: 6,
         cursor: 'help', flexShrink: 0 }}>i</span>
   );
@@ -122,7 +122,7 @@ function InfoDot({ text }) {
 function Tab({ active, onClick, children, badge }) {
   return (
     <button onClick={onClick} className="btn"
-      style={{ background: active ? 'var(--ink)' : 'transparent', color: active ? 'white' : 'var(--ink)',
+      style={{ background: active ? 'var(--ivory)' : 'transparent', color: active ? 'white' : 'var(--ivory)',
         border: '1px solid var(--line)', padding: '6px 14px', marginRight: 6, position: 'relative' }}>
       {children}
       {badge ? <span className="sb-badge" style={{ marginLeft: 8 }}>{badge > 99 ? '99+' : badge}</span> : null}
@@ -143,8 +143,8 @@ function ModeSwitch({ enabled, mode, forced, onChange, size = 'md' }) {
       {opts.map((o) => (
         <button key={o.id} onClick={() => pick(o.id)} title={o.hint}
           style={{ padding: `4px ${padX}px`, border: 'none', fontSize: 12,
-            background: o.state ? 'var(--ink)' : 'transparent',
-            color: o.state ? 'white' : 'var(--ink)', cursor: 'pointer',
+            background: o.state ? 'var(--ivory)' : 'transparent',
+            color: o.state ? 'white' : 'var(--ivory)', cursor: 'pointer',
             borderRight: '1px solid var(--line)' }}>
           {o.label}
         </button>
@@ -156,7 +156,7 @@ function Toast({ show, children, onDismiss }) {
   if (!show) return null;
   return (
     <div style={{ position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)',
-      background: 'var(--ink)', color: 'white', padding: '10px 16px', borderRadius: 6,
+      background: 'var(--ivory)', color: 'white', padding: '10px 16px', borderRadius: 6,
       display: 'flex', alignItems: 'center', gap: 12, zIndex: 999, boxShadow: '0 4px 20px rgba(0,0,0,0.2)' }}>
       {children}
       {onDismiss && (
@@ -488,7 +488,7 @@ function ComposeModal({ open, onClose, onSent }) {
           </select>
           {recipientKind === 'borrower' ? (
             <div style={{ padding: '6px 10px', border: '1px solid var(--line)', borderRadius: 4, flex: 1,
-              background: 'var(--paper)', color: borrower ? 'var(--ink)' : 'var(--muted)' }}>
+              background: 'var(--ink-2)', color: borrower ? 'var(--ivory)' : 'var(--muted)' }}>
               {borrower ? borrower.name : (appId ? '(no borrower on this file)' : 'Pick a file first')}
             </div>
           ) : (
@@ -606,7 +606,7 @@ function DraftPreview({ draft, subject, body, note, setSubject, setBody, setNote
           <button key={t.id} onClick={() => setTab(t.id)}
             style={{ padding: '10px 16px', border: 'none', background: tab === t.id ? 'var(--ink-1)' : 'transparent',
               borderRight: '1px solid var(--line)', cursor: 'pointer', fontSize: 13,
-              color: tab === t.id ? 'var(--ink)' : 'var(--muted)', fontWeight: tab === t.id ? 600 : 400,
+              color: tab === t.id ? 'var(--ivory)' : 'var(--muted)', fontWeight: tab === t.id ? 600 : 400,
               display: 'inline-flex', gap: 6, alignItems: 'center' }}>
             <Icon name={t.icon} size={14} /> {t.label}
           </button>
@@ -910,8 +910,8 @@ function DraftsTab({ onCountChange, showToast }) {
             { id: 'discarded', label: 'Discarded', icon: 'discard' }].map((t) => (
             <button key={t.id} onClick={() => setTab(t.id)}
               style={{ padding: '8px 14px', border: 'none', borderRight: '1px solid var(--line)',
-                background: tab === t.id ? 'var(--ink)' : 'transparent',
-                color: tab === t.id ? 'white' : 'var(--ink)', cursor: 'pointer',
+                background: tab === t.id ? 'var(--ivory)' : 'transparent',
+                color: tab === t.id ? 'white' : 'var(--ivory)', cursor: 'pointer',
                 display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
               <Icon name={t.icon} size={14} /> {t.label}
               {tab === t.id && items && ` (${items.length})`}
@@ -1110,8 +1110,8 @@ function RulesTab({ showToast }) {
             <button key={d}
               onClick={() => save({ work_days_mask: toggleDay(workMask, i) })}
               style={{ padding: '6px 12px', border: '1px solid var(--line)', borderRadius: 4,
-                background: maskDay(workMask, i) ? 'var(--ink)' : 'transparent',
-                color: maskDay(workMask, i) ? 'white' : 'var(--ink)', cursor: 'pointer' }}>{d}</button>
+                background: maskDay(workMask, i) ? 'var(--ivory)' : 'transparent',
+                color: maskDay(workMask, i) ? 'white' : 'var(--ivory)', cursor: 'pointer' }}>{d}</button>
           ))}
         </div>
       </div>
@@ -1223,7 +1223,7 @@ function AnalyticsTab() {
   );
 }
 function Stat({ label, value, sub, tone }) {
-  const color = tone === 'danger' ? 'var(--danger, #b3261e)' : 'var(--ink)';
+  const color = tone === 'danger' ? 'var(--danger, #b3261e)' : 'var(--ivory)';
   return (
     <div style={{ padding: 10 }}>
       <div className="muted small" style={{ textTransform: 'uppercase', letterSpacing: '.06em' }}>{label}</div>
