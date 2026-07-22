@@ -40,7 +40,10 @@ function readCase(c) {
     pass: g.pass === true,
   };
 }
-function numOrNull(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
+// An explicit null/undefined is "not measured" → null (never a coerced 0). Check
+// == null BEFORE Number(), since Number(null) === 0 would fabricate a measured
+// zero — the same discipline release-gate.js uses for a SQL-NULL metric.
+function numOrNull(v) { if (v == null) return null; const n = Number(v); return Number.isFinite(n) ? n : null; }
 function arr(v) { return Array.isArray(v) ? v.filter((x) => x != null).map(String) : []; }
 function mean(nums) { const f = nums.filter((n) => Number.isFinite(n)); return f.length ? +(f.reduce((s, n) => s + n, 0) / f.length).toFixed(4) : null; }
 function diff(a, b) { return (a == null || b == null) ? null : +(a - b).toFixed(4); }
@@ -72,6 +75,11 @@ function compareRuns(baseline, candidate, opts = {}) {
   const cList = (Array.isArray(candidate) ? candidate : []).map(readCase);
   const bById = new Map(bList.filter((c) => c.fileId != null).map((c) => [c.fileId, c]));
   const cById = new Map(cList.filter((c) => c.fileId != null).map((c) => [c.fileId, c]));
+  // A corpus should have one row per file. Surface a repeated fileId rather than
+  // silently keeping only the last (Map-collision) — a caller can't trust a diff
+  // built on a corpus with duplicate rows.
+  const dupIds = (l) => { const seen = new Set(), dup = new Set(); for (const c of l) { if (c.fileId == null) continue; if (seen.has(c.fileId)) dup.add(c.fileId); else seen.add(c.fileId); } return [...dup]; };
+  const duplicateIds = { baseline: dupIds(bList), candidate: dupIds(cList) };
 
   const onlyBaseline = [...bById.keys()].filter((id) => !cById.has(id));
   const onlyCandidate = [...cById.keys()].filter((id) => !bById.has(id));
@@ -123,6 +131,7 @@ function compareRuns(baseline, candidate, opts = {}) {
   return {
     matched: matchedIds.length,
     onlyBaseline, onlyCandidate,
+    duplicateIds, // repeated fileIds within a corpus (only the last row was kept)
     cases,
     summary: {
       matched: matchedIds.length,

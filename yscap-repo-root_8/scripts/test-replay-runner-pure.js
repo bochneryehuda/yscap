@@ -88,6 +88,23 @@ assert.strictEqual(r.cases[0].deltas.boundaryF1, null, 'an absent metric is null
 assert.strictEqual(r.summary.meanDeltas.boundaryF1, null, 'the mean excludes the unmeasured metric');
 ok('a missing metric is null (not a fabricated 0) and is excluded from the mean');
 
+// --- an EXPLICIT null metric (e.g. a SQL NULL) stays "not measured", never a fabricated 0 ---
+base = [{ fileId: 'F1', boundaries: { f1: null }, findings: { recall: 1, falseClears: [] }, pass: true }];
+cand = [{ fileId: 'F1', boundaries: { f1: 0.5 }, findings: { recall: 1, falseClears: [] }, pass: true }];
+r = rr.compareRuns(base, cand);
+assert.strictEqual(r.cases[0].deltas.boundaryF1, null, 'a null baseline metric yields a null delta, not a fabricated regression');
+assert.strictEqual(r.summary.meanDeltas.boundaryF1, null, 'the mean excludes the unmeasured (null) metric');
+// but a real 0 is a measured value, not "missing"
+r = rr.compareRuns([sc('F1', { f1: 0 })], [sc('F1', { f1: 0.5 })]);
+assert.strictEqual(r.cases[0].deltas.boundaryF1, 0.5, 'a real 0 baseline is measured — the delta is computed');
+ok('an explicit null metric is not measured (null delta); a real 0 is measured');
+
+// --- a duplicate fileId within a corpus is surfaced, not silently collapsed ---
+r = rr.compareRuns([sc('F1'), sc('F1'), sc('F2')], [sc('F1'), sc('F2')]);
+assert.deepStrictEqual(r.duplicateIds.baseline, ['F1'], 'the repeated baseline fileId is reported');
+assert.deepStrictEqual(r.duplicateIds.candidate, [], 'no duplicates on the candidate side');
+ok('a duplicate fileId within a corpus is surfaced in duplicateIds (not silently collapsed)');
+
 // --- toGateMetrics bridges straight into the R5.46 release gate ---
 base = [sc('F1', { recall: 1, fc: [], pass: true })];
 cand = [sc('F1', { recall: 0, fc: ['x'], pass: false })];
