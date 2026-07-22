@@ -386,9 +386,65 @@ async function intentsAll(client) {
   return r.rows;
 }
 
+// -------------------------------------------------------------------------
+// R5.2 — Cure CONTEXT loader. Several assertions (FICO minimum, required
+// statement months, closing-date freshness, loan amount, entity name,
+// borrower name) can only be checked with the file's own facts. Before this,
+// the persist path called analyze() with empty subject/expected, so every
+// such requirement returned "unable_to_determine". This builds the real
+// context from the application + borrower + entity + registered program so
+// those assertions actually run.
+//
+// `programMinFico` is intentionally left null: the program minimum FICO is
+// tier-specific and lives in the FROZEN leverage matrix, not cheaply readable
+// here — and the FICO assertion already returns unable_to_determine on a null
+// minimum (an honest "couldn't check", never a false pass). Wire it later from
+// the registered product's persisted caps if/when that's exposed.
+async function loadCureContext(appId, client) {
+  client = client || db();
+  if (!appId) return { subject: {}, expected: {} };
+  let row = {};
+  try {
+    const r = await client.query(
+      `SELECT a.loan_amount, a.expected_closing, a.program AS app_program,
+              b.first_name, b.last_name,
+              l.llc_name,
+              reg.program AS registered_program
+         FROM applications a
+         LEFT JOIN borrowers b ON b.id = a.borrower_id
+         LEFT JOIN llcs l ON l.id = a.llc_id
+         LEFT JOIN product_registrations reg ON reg.application_id = a.id AND reg.is_current = true
+        WHERE a.id = $1`, [appId]);
+    row = r.rows[0] || {};
+  } catch (_) { return { subject: {}, expected: {} }; }
+  const program = row.registered_program || row.app_program || null;
+  // Lazy-require liquidity here (NOT at module top): liquidity.js eagerly
+  // requires the db layer, and cure.js must stay load-pure so the pure cure
+  // test runs with no DB. bankStatementMonths is the canonical Gold=2/Standard=1
+  // helper — never a second copy of that number (CLAUDE.md).
+  const { bankStatementMonths } = require('../liquidity');
+  const requiredMonths = program ? bankStatementMonths(program) : null;
+  const borrowerName = [row.first_name, row.last_name].filter(Boolean).join(' ').trim() || null;
+  const entityName = row.llc_name || null;
+  const expected = {
+    programMinFico: null,
+    requiredMonths: requiredMonths != null ? requiredMonths : undefined,
+    closingDate: row.expected_closing || undefined,
+    loanAmount: row.loan_amount != null ? Number(row.loan_amount) : undefined,
+    entityName: entityName || undefined,
+    borrowerName: borrowerName || undefined,
+    program: program || undefined,
+  };
+  const subject = {
+    entity_name: entityName || undefined,
+    borrower_name: borrowerName || undefined,
+  };
+  return { subject, expected };
+}
+
 module.exports = {
   ASSERTIONS,
-  analyze, persistProof,
+  analyze, persistProof, loadCureContext,
   proofsForItem, latestProofForItem, intentForCode, intentsAll,
   _internals: { summarize },
 };

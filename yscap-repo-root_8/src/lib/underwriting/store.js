@@ -180,12 +180,18 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
         if (intent) {
           const twinRows = await twin.factsForFile(appId, client);
           const twinFacts = Object.fromEntries(twinRows.map((r) => [r.fact_key, r]));
+          // R5.2 — build the real subject/expected context (loan amount, closing
+          // date, required statement months, entity + borrower name) so the
+          // FICO/months/closing/amount/name assertions actually run instead of
+          // returning "unable_to_determine". loadCureContext is best-effort and
+          // falls back to {} on any error, so a context failure never blocks the proof.
+          const { subject, expected } = await cure.loadCureContext(appId, client);
           const analysis = cure.analyze({
             intent,
             extractionFields: ext.fields || {},
             twinFacts,
-            subject: {},                 // caller can pass richer subject via extraction context
-            expected: {},                // program min FICO / required months etc. wired later
+            subject,
+            expected,
           });
           await cure.persistProof(client, {
             appId,
