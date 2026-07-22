@@ -265,6 +265,23 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
   const appCoNone = (await db.query('INSERT INTO applications(borrower_id,clickup_pipeline_task_id) VALUES($1,$2) RETURNING id', [bLn, tCoNone])).rows[0].id;
   const idCoNone = await openRow({ appId: appCoNone, taskId: tCoNone, fieldKey: 'co_cell_phone', clickupValue: 'x', portalValue: 'y' });
   ok((await R2.recheckReview(await rowById(idCoNone), { clickup })).reason === 'no_co_borrower', 'co_cell_phone: file has no co-borrower → recheck closes as moot');
+  // SUBTASK-DIVERGENCE GUARD (pre-merge audit MEDIUM): the main task agrees with the
+  // portal, but the co-borrower SUBTASK (the snapshot value the producer flags on)
+  // diverges → recheck must NOT close.
+  const coJohn = (await db.query("INSERT INTO borrowers(first_name,last_name,email,origin) VALUES('John','Doe',$1,'self') RETURNING id", [rnd()])).rows[0].id;
+  const tCoSub = tk('coSub');
+  const appCoSub = (await db.query('INSERT INTO applications(borrower_id,co_borrower_id,clickup_pipeline_task_id) VALUES($1,$2,$3) RETURNING id', [bLn, coJohn, tCoSub])).rows[0].id;
+  setTaskFields(tCoSub, [[F.PIPELINE.coBorrowerName, 'John Smith']]);   // main-task first token 'John' agrees with portal 'John'
+  await db.query("INSERT INTO clickup_task_index(task_id,kind,snapshot,task_name) VALUES($1,'rtl_file',$2,'co sub') ON CONFLICT (task_id) DO UPDATE SET snapshot=EXCLUDED.snapshot", [tCoSub, JSON.stringify({ coBorrower: { first_name: 'Jonathan', last_name: '' } })]);
+  const idCoSub = await openRow({ appId: appCoSub, borrowerId: coJohn, taskId: tCoSub, fieldKey: 'co_first_name', clickupValue: 'John Smith', portalValue: 'x' });
+  ok((await R2.recheckReview(await rowById(idCoSub), { clickup })).outcome === 'still_open', 'co_first_name: main task agrees but the co-borrower subtask (snapshot) diverges → stays open');
+  // once the snapshot ALSO agrees (a separate task) → closes
+  const tCoSub2 = tk('coSub2');
+  const appCoSub2 = (await db.query('INSERT INTO applications(borrower_id,co_borrower_id,clickup_pipeline_task_id) VALUES($1,$2,$3) RETURNING id', [bLn, coJohn, tCoSub2])).rows[0].id;
+  setTaskFields(tCoSub2, [[F.PIPELINE.coBorrowerName, 'John Smith']]);
+  await db.query("INSERT INTO clickup_task_index(task_id,kind,snapshot,task_name) VALUES($1,'rtl_file',$2,'co sub2') ON CONFLICT (task_id) DO UPDATE SET snapshot=EXCLUDED.snapshot", [tCoSub2, JSON.stringify({ coBorrower: { first_name: 'John', last_name: '' } })]);
+  const idCoSub2 = await openRow({ appId: appCoSub2, borrowerId: coJohn, taskId: tCoSub2, fieldKey: 'co_first_name', clickupValue: 'John Smith', portalValue: 'x' });
+  ok((await R2.recheckReview(await rowById(idCoSub2), { clickup })).reason === 'agree', 'co_first_name: main task AND subtask snapshot both agree → recheck closes');
 
   // ---- file status (maps ClickUp status → external bucket, compares to PILOT) ----
   const tStOk = tk('stOk');
@@ -295,6 +312,20 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
   const docBad = (await db.query("INSERT INTO documents(filename,sharepoint_backed_up_at,sharepoint_backup_error) VALUES('b.pdf',NULL,'permanent error') RETURNING id")).rows[0].id;
   const idSpBad = await openRow({ taskId: `spdoc:${docBad}`, fieldKey: 'sharepoint_doc', clickupValue: null, portalValue: 'b.pdf' });
   ok((await R2.recheckReview(await rowById(idSpBad), { clickup })).outcome === 'still_open', 'sharepoint_doc: still not mirrored → stays open');
+  // REGRESSION GUARD (pre-merge audit HIGH): a previously-mirrored doc the integrity
+  // audit later flagged KEEPS backed_up_at + NULL error but carries a BAD verdict —
+  // it must NOT close (the old `!== 'corrupt'` denylist wrongly closed these).
+  for (const verdict of ['item-missing', 'local-missing', 'source-suspect: looks like text/html', 'malware-flagged (Defender blocked)', 'mismatch-superseded']) {
+    const dv = (await db.query("INSERT INTO documents(filename,sharepoint_backed_up_at,sharepoint_backup_error,sharepoint_integrity) VALUES('m.pdf',now(),NULL,$1) RETURNING id", [verdict])).rows[0].id;
+    const idv = await openRow({ taskId: `spdoc:${dv}`, fieldKey: 'sharepoint_doc', clickupValue: null, portalValue: 'm.pdf' });
+    ok((await R2.recheckReview(await rowById(idv), { clickup })).outcome === 'still_open', `sharepoint_doc: integrity='${verdict}' (bad) → stays open (never wrongly closes)`);
+  }
+  // a genuinely-good verdict ('ok' or the office-format 'ok (…)') → closes
+  for (const good of ['ok', 'ok (office format — verified at upload; post-upload byte comparison not meaningful)']) {
+    const dg = (await db.query("INSERT INTO documents(filename,sharepoint_backed_up_at,sharepoint_backup_error,sharepoint_integrity) VALUES('g.pdf',now(),NULL,$1) RETURNING id", [good])).rows[0].id;
+    const idg = await openRow({ taskId: `spdoc:${dg}`, fieldKey: 'sharepoint_doc', clickupValue: null, portalValue: 'g.pdf' });
+    ok((await R2.recheckReview(await rowById(idg), { clickup })).reason === 'mirrored', `sharepoint_doc: integrity='${good.slice(0, 6)}…' (good) → closes`);
+  }
 
   // ---- shared_email (two profiles, one email) ----
   const shReal = `sara.${RUN}@x.com`;
@@ -343,7 +374,7 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
   ok((await R2.recheckReview(await rowById(idSpf), { clickup })).reason === 'sharepoint_folder_use_actions', 'sharepoint_folder: recheck points to Re-match (not the generic dead-end)');
 
   // clean up the test rows
-  await db.query(`DELETE FROM clickup_task_index WHERE task_id = ANY($1)`, [[tStaleOther, tStaleOther2]]).catch(() => {});
+  await db.query(`DELETE FROM clickup_task_index WHERE task_id = ANY($1) OR task_id LIKE $2`, [[tStaleOther, tStaleOther2], `tk_${RUN}_%`]).catch(() => {});
   await db.query(`DELETE FROM sync_review_queue WHERE reason='test_recheck'`);
   await db.query(`DELETE FROM sync_queue WHERE entity_id=$1`, [appPush2]).catch(() => {});
   await db.pool.end();

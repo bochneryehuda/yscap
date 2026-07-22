@@ -236,17 +236,19 @@ async function computeRecheck(row, opts) {
     return { outcome: 'still_open', reason: 'still_duplicated' };
   }
 
-  // ---- Co-borrower value disagreement (co_first_name / co_cell_phone) — the exact
-  // mirror of the borrower name/cell re-read, on the co-borrower slot. Reads the
-  // co-borrower fields off the MAIN task (the parent carries name + 2nd cell).
+  // ---- Co-borrower value disagreement (co_first_name / co_cell_phone) — the mirror
+  // of the borrower name/cell re-read, on the co-borrower slot. Reads the live MAIN
+  // task AND cross-checks the last-ingested subtask-wins snapshot (the producer's
+  // source) so a divergent co-borrower subtask can never be closed out prematurely.
   if (fieldKey === 'co_first_name' || fieldKey === 'co_cell_phone') {
     if (!taskId) return { outcome: 'unsupported', reason: 'no_task' };
     if (!appId) return { outcome: 'unsupported', reason: 'no_application' };
     const arow = (await db.query(`SELECT co_borrower_id FROM applications WHERE id=$1`, [appId])).rows[0];
     const coId = arow && arow.co_borrower_id;
     if (!coId) {
-      const closed = await syncReview.closeStaleReviews({ taskId, fieldKey,
-        note: 'auto-closed by re-check — this file no longer has a co-borrower.' });
+      // No co-borrower on the file at all → BOTH co-borrower cards are moot; close them.
+      const closed = (await syncReview.closeStaleReviews({ taskId, fieldKey: 'co_first_name', note: 'auto-closed by re-check — this file no longer has a co-borrower.' }))
+        + (await syncReview.closeStaleReviews({ taskId, fieldKey: 'co_cell_phone', note: 'auto-closed by re-check — this file no longer has a co-borrower.' }));
       return { outcome: 'closed', reason: 'no_co_borrower', closed };
     }
     const fieldId = fieldKey === 'co_first_name' ? F.PIPELINE.coBorrowerName : F.PIPELINE.secondBorrowerCell;
@@ -254,13 +256,25 @@ async function computeRecheck(row, opts) {
     try { const task = await clickup.getTask(taskId); clickupVal = readTaskField(task, fieldId); }
     catch (e) { return { outcome: 'error', reason: 'clickup_read_failed', message: e.message }; }
     const b = (await db.query(`SELECT first_name, cell_phone FROM borrowers WHERE id=$1`, [coId])).rows[0] || {};
+    // The producer flags the co-borrower off the ingest SNAPSHOT's coBorrower block,
+    // which is SUBTASK-wins (a co-borrower subtask carries the richer name/cell). The
+    // live main task alone can miss a divergent subtask, so require the last-ingested
+    // snapshot value to ALSO agree before closing — a divergent subtask keeps the row
+    // open until the next ingest refreshes the snapshot (which self-closes it anyway).
+    let snapCo = null;
+    try { const s = (await db.query(`SELECT snapshot->'coBorrower' AS co FROM clickup_task_index WHERE task_id=$1`, [taskId])).rows[0]; snapCo = s && s.co; } catch (_) {}
     let agree;
     if (fieldKey === 'co_first_name') {
       // The producer flags on the FIRST-name token; the ClickUp field is a full name.
       const cuFirst = String(clickupVal == null ? '' : clickupVal).trim().split(/\s+/)[0] || '';
-      agree = valuesAgree('first_name', cuFirst, b.first_name);
+      const liveAgree = valuesAgree('first_name', cuFirst, b.first_name);
+      const snapAgree = !snapCo || !snapCo.first_name || valuesAgree('first_name', snapCo.first_name, b.first_name);
+      agree = liveAgree && snapAgree;
     } else {
-      agree = valuesAgree('cell_phone', clickupVal, b.cell_phone);
+      const liveAgree = valuesAgree('cell_phone', clickupVal, b.cell_phone);
+      const portalLast4 = String(b.cell_phone == null ? '' : b.cell_phone).replace(/\D/g, '').slice(-4);
+      const snapAgree = !snapCo || !snapCo.phone_last4 || (portalLast4.length === 4 && String(snapCo.phone_last4) === portalLast4);
+      agree = liveAgree && snapAgree;
     }
     if (agree) {
       const closed = await syncReview.closeStaleReviews({ taskId, fieldKey,
@@ -335,8 +349,18 @@ async function computeRecheck(row, opts) {
         note: 'auto-closed by re-check — the document no longer exists.' });
       return { outcome: 'closed', reason: 'doc_gone', closed };
     }
-    const mirrored = d.sharepoint_backed_up_at != null && d.sharepoint_backup_error == null
-      && d.sharepoint_integrity !== 'corrupt';
+    // Close ONLY on a genuinely-good integrity verdict — an ALLOWLIST, never a
+    // denylist. The audit stamps 'ok' / 'ok (office format…)' for a healthy mirror;
+    // a previously-mirrored doc that the 6-hourly integrity audit later flags gets a
+    // BAD verdict ('item-missing' / 'local-missing' / 'source-suspect…' /
+    // 'malware-flagged…' / 'mismatch…' / 'verify-error…') but KEEPS its old
+    // sharepoint_backed_up_at + NULL backup_error — so a `!== 'corrupt'` denylist (a
+    // sentinel that never exists here) would wrongly close those cards, including the
+    // "the mirror may be the only surviving copy — do not delete it" one. `NULL` =
+    // mirrored + size-verified at upload, not yet re-audited → safe to close.
+    const integ = d.sharepoint_integrity;
+    const integrityGood = integ == null || integ === 'ok' || /^ok /.test(String(integ));
+    const mirrored = d.sharepoint_backed_up_at != null && d.sharepoint_backup_error == null && integrityGood;
     if (mirrored) {
       const closed = await syncReview.closeStaleReviews({ taskId: `spdoc:${docId}`, fieldKey: 'sharepoint_doc',
         note: 'auto-closed by re-check — the document is now saved to SharePoint.' });
