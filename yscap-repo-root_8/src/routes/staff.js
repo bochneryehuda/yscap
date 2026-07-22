@@ -2746,6 +2746,53 @@ router.post('/mismo/create', async (req, res) => {
   }
 });
 
+// ════════════════════════════════════════════════════════════════════════════
+// CREDIT REPORT — Xactus import (owner-directed 2026-07-22). The internal Credit
+// report condition (rtl_cond_credit) gets an "Import credit" button that opens a
+// review screen (the borrower info that will be sent + soft/hard, reissue/new,
+// always tri-merge, interface v3.4) and then pulls/reissues via ONE shared
+// company login — files the PDF + the source XML on the condition, parses the
+// XML into a full credit-details section, and writes the middle score back to
+// the borrower (FICO → Products & Pricing via the db/126 trigger). These sit
+// under the /applications/:id path scope, so file authorization is automatic.
+// ════════════════════════════════════════════════════════════════════════════
+
+// The stored credit-details section for a file (latest report + history).
+router.get('/applications/:id/credit', async (req, res) => {
+  try { res.json(await require('../lib/credit').fileCredit(req.params.id)); }
+  catch (e) { res.status(e.status || 500).json({ error: e.userMessage || 'server error' }); }
+});
+
+// The review screen data: exactly what will be sent + the defaults + provider readiness.
+router.get('/applications/:id/credit/preview', async (req, res) => {
+  try { res.json(await require('../lib/credit').preview(req.params.id)); }
+  catch (e) { res.status(e.status || 500).json({ error: e.userMessage || 'server error' }); }
+});
+
+// Pull / reissue (or import a downloaded XML+PDF). Gated on sign_off_conditions:
+// pulling a live credit report is a regulated, billable action (processor /
+// underwriter / admin). Every field is re-read server-side — the client is never trusted.
+router.post('/applications/:id/credit/import', async (req, res) => {
+  if (!can(req.actor, 'sign_off_conditions')) return res.status(403).json({ error: 'You don’t have permission to pull credit on this file.' });
+  const b = req.body || {};
+  try {
+    const out = await require('../lib/credit').importCredit(req.params.id, {
+      pullType: b.pullType, requestType: b.requestType, version: b.version,
+      xml: typeof b.xml === 'string' ? b.xml : undefined,
+      pdfBase64: typeof b.pdfBase64 === 'string' ? b.pdfBase64 : undefined,
+      actorId: req.actor.id,
+    });
+    await audit(req, 'credit_import', 'application', req.params.id, {
+      source: out.source, middleScore: out.middleScore, ficoWritten: out.ficoWritten,
+      ficoMismatch: out.ficoMismatch, bureaus: out.bureausReturned, parseError: out.parseError || undefined,
+    });
+    res.json(out);
+  } catch (e) {
+    console.error('[credit] import failed:', db.describeError ? db.describeError(e) : (e && e.message));
+    res.status(e.status || 422).json({ error: e.userMessage || 'Could not import the credit report.' });
+  }
+});
+
 // Full file activity feed (staff sees everything, including internal).
 router.get('/applications/:id/activity', async (req, res) => {
   try { res.json(await require('../lib/activity').fileActivity(req.params.id, false)); }

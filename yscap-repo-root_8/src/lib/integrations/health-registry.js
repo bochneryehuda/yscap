@@ -331,6 +331,14 @@ const INTEGRATIONS = [
     async probe() { const m = require('./xactus'); return m.configured() ? { configured: true, live: null, detail: 'Credentials set — the request/response mapping is still a placeholder pending the vendor packet.' } : { configured: false, live: null, detail: 'Not connected — awaiting the Xactus onboarding packet + credentials.' }; },
   },
   {
+    key: 'xactus_credit', name: 'Xactus — credit report import (shared login)', group: 'framework',
+    purpose: 'The "Import credit" button on the internal Credit report condition — pull/reissue a tri-merge report using ONE shared company login (not per-user), file the PDF + data file, and build the credit-details section.',
+    direction: 'Outbound', auth: 'Shared username + password',
+    env: [{ name: 'XACTUS_API_URL', required: true }, { name: 'XACTUS_API_USERNAME', required: true }, { name: 'XACTUS_API_PASSWORD', required: true }],
+    switches: [], liveProbe: false,
+    async probe() { const m = require('../credit/provider'); return m.configured() ? { configured: true, live: null, detail: 'Shared Xactus login is set — the Import credit button can pull. The exact request/response format is finalized against the Xactus setup guide.' } : { configured: false, live: null, detail: 'Not connected — add the shared Xactus web address, username and password (XACTUS_API_URL / XACTUS_API_USERNAME / XACTUS_API_PASSWORD) to turn on live pulls. Reports downloaded from Xactus can still be imported.' }; },
+  },
+  {
     key: 'usps', name: 'USPS (address validation)', group: 'data',
     purpose: 'Official USPS address standardization + ZIP+4 (free with a USPS developer account).',
     direction: 'Outbound', auth: 'OAuth2 client credentials',

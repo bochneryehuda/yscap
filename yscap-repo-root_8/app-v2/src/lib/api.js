@@ -315,6 +315,10 @@ export const api = {
   staffVestingLlcOwners: (id) => req('GET', `/api/staff/applications/${id}/vesting-llc-owners`),
   staffSetVestingLlcOwners: (id, owners) => req('POST', `/api/staff/applications/${id}/vesting-llc-owners`, { owners }),
   staffChecklist:   (id) => req('GET', `/api/staff/applications/${id}/checklist`),
+  // Credit report (Xactus import) — the internal Credit report condition.
+  staffCredit:        (id) => req('GET', `/api/staff/applications/${id}/credit`),
+  staffCreditPreview: (id) => req('GET', `/api/staff/applications/${id}/credit/preview`),
+  staffCreditImport:  (id, b) => req('POST', `/api/staff/applications/${id}/credit/import`, b),
   // #147 — the cross-system observability timeline for a file (portal + ClickUp +
   // SharePoint + sync-review events, time-ordered). Scoped by the file's access.
   staffObservability: (id, opts = {}) => req('GET', `/api/staff/applications/${id}/observability`

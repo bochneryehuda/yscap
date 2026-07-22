@@ -17,6 +17,7 @@ import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
 import DealSnapshot from '../components/DealSnapshot.jsx';
 import ClearToClosePanel from '../components/ClearToClosePanel.jsx';
 import LoanProgress from '../components/LoanProgress.jsx';
+import { CreditCondition } from '../components/CreditReport.jsx';
 import SubmitFilePanel from '../components/SubmitFilePanel.jsx';
 import FileNotificationOverrides from '../components/FileNotificationOverrides.jsx';
 import { PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
@@ -602,7 +603,7 @@ function useStickyFilter(key, fallback) {
   return [v, set];
 }
 
-function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview }) {
+function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview, appId, onChanged }) {
   const [open, setOpen] = useState(false);
   const [notes, setNotes] = useState(it.notes || '');
   // Collapse-when-complete: once YOUR role-action is done the row renders as a
@@ -671,6 +672,10 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
           )}
         </div>
       </div>
+
+      {it.template_code === 'rtl_cond_credit' && (
+        <CreditCondition appId={appId} canPull={completer} onChanged={onChanged} />
+      )}
 
       {isDoc && (onUploadTo || itemDocs.length > 0) && (
         <div style={{ width: '100%', paddingLeft: 20 }}
@@ -3199,7 +3204,7 @@ export default function StaffApplication() {
                   : vis.map(it => (
                     <Item key={it.id} it={it} team={team} onPatch={patch} role={role}
                       docs={docs} onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
-                      dlBusy={dlBusy} onPreview={openPreview} />))}
+                      dlBusy={dlBusy} onPreview={openPreview} appId={id} onChanged={load} />))}
             </>);
           })()}
         </div>
@@ -3229,7 +3234,7 @@ export default function StaffApplication() {
                 <div className="muted small" style={{ textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>{phaseName(k)}</div>
                 {arr.map(it => <Item key={it.id} it={it} team={team} onPatch={patch} role={role}
                   docs={docs} onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
-                  dlBusy={dlBusy} onPreview={openPreview} />)}
+                  dlBusy={dlBusy} onPreview={openPreview} appId={id} onChanged={load} />)}
               </div>
             ))}
         </div>

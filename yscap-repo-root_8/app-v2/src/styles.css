@@ -2809,3 +2809,48 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   70%  { box-shadow: 0 0 0 6px rgba(46,122,94,0); }
   100% { box-shadow: 0 0 0 0 rgba(46,122,94,0); }
 }
+
+/* ── Credit report (Xactus import) — the internal Credit report condition ──── */
+.seg { display:inline-flex; border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; margin:2px 0 6px; }
+.seg-btn { background:var(--surface); color:var(--text-muted); border:0; border-right:1px solid var(--border);
+  padding:6px 12px; font:inherit; font-size:.85rem; cursor:pointer; }
+.seg-btn:last-child { border-right:0; }
+.seg-btn.on { background:var(--primary); color:var(--on-accent); font-weight:600; }
+.cr-wrap { margin-top:6px; }
+.cr-alert { border-radius:var(--radius); padding:8px 10px; font-size:.85rem; }
+.cr-alert.danger { background:var(--danger-soft); color:var(--danger); border:1px solid var(--danger); }
+.cr-alert.warn   { background:var(--warning-soft); color:var(--warning); border:1px solid var(--warning); }
+.cr-alert.ok     { background:var(--success-soft); color:var(--ok); border:1px solid var(--ok); }
+.cr-card { border:1px solid var(--border); border-radius:var(--radius); background:var(--surface-soft); padding:10px 12px; margin:8px 0; }
+.cr-card-title { font-weight:700; font-size:.82rem; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin-bottom:6px; }
+.cr-kv { display:flex; gap:10px; align-items:baseline; padding:2px 0; font-size:.9rem; flex-wrap:wrap; }
+.cr-kv > span { min-width:130px; color:var(--muted); font-size:.82rem; }
+.cr-kv > b { flex:1; min-width:0; }
+.cr-opts { margin:8px 0; }
+.cr-opt-label { font-size:.78rem; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin-top:6px; display:block; }
+.cr-consent { display:flex; gap:8px; align-items:flex-start; margin:10px 0; font-size:.88rem; cursor:pointer; }
+.cr-consent input { margin-top:3px; }
+.cr-report { border:1px solid var(--border); border-radius:var(--radius); padding:12px; background:var(--surface); }
+.cr-head { display:flex; gap:16px; align-items:center; flex-wrap:wrap; }
+.cr-mid { text-align:center; padding:6px 14px; border-right:1px solid var(--border); }
+.cr-mid-num { font-size:2rem; font-weight:800; line-height:1; color:var(--gold); }
+.cr-mid-lbl { font-size:.72rem; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin-top:3px; }
+.cr-scores { display:flex; gap:8px; flex-wrap:wrap; }
+.cr-score { border:1px solid var(--border); border-radius:var(--radius); padding:6px 10px; min-width:88px; text-align:center; background:var(--surface-soft); }
+.cr-score-bureau { font-size:.72rem; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+.cr-score-val { font-size:1.3rem; font-weight:700; color:var(--text); }
+.cr-score-model { font-size:.66rem; color:var(--text-soft); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:110px; }
+.cr-summary-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(96px,1fr)); gap:8px; margin:10px 0; }
+.cr-stat { border:1px solid var(--border); border-radius:var(--radius); padding:8px; text-align:center; background:var(--surface-soft); }
+.cr-stat-num { font-size:1.05rem; font-weight:700; color:var(--text); }
+.cr-stat-lbl { font-size:.7rem; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin-top:2px; }
+.cr-details { margin-top:8px; }
+.cr-sec { border:1px solid var(--border); border-radius:var(--radius); margin:6px 0; background:var(--surface); }
+.cr-sec > summary { cursor:pointer; padding:8px 10px; font-weight:600; font-size:.9rem; }
+.cr-table-wrap { overflow-x:auto; }
+.cr-table { width:100%; border-collapse:collapse; font-size:.82rem; }
+.cr-table th, .cr-table td { text-align:left; padding:5px 8px; border-top:1px solid var(--border); white-space:nowrap; }
+.cr-table th { color:var(--muted); font-weight:600; font-size:.74rem; text-transform:uppercase; letter-spacing:.03em; }
+.cr-table td.r, .cr-table th.r { text-align:right; }
+.cr-table tr.cr-bad td { background:var(--danger-soft); }
+.cr-table tr.cr-warn td { background:var(--warning-soft); }
