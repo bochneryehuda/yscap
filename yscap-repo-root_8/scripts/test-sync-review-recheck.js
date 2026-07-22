@@ -160,7 +160,90 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
   ok((await rowById(id6a)).status === 'resolved', 'blast-radius: file A row is resolved');
   ok((await rowById(id6b)).status === 'open', 'blast-radius: the still-differing row on file B is NOT over-closed');
 
+  // ---- YS LOAN-NUMBER duplicate finding (the RTL -> duplicate -> DSCR class).
+  // Before this fix Re-check returned 'unsupported' for a ys_loan_number finding
+  // ("can't auto-clear it here") and the descope path never closed it, so the card
+  // was stuck forever (Libby Baum / 1600 Mildred Ave, 2026-07-22).
+  const ingest = require(R + '/src/clickup/ingest');
+
+  // Case A — the finding is on a file that was DESCOPED (flipped to DSCR, soft-
+  // deleted). Re-check closes it: nothing on a removed file can clash.
+  const bLn = (await db.query("INSERT INTO borrowers(first_name,last_name,email,origin) VALUES('Libby','Baum',$1,'self') RETURNING id", [rnd()])).rows[0].id;
+  const tGone = tk('lnGone');
+  const appGone = (await db.query(
+    "INSERT INTO applications(borrower_id,clickup_pipeline_task_id,deleted_at,sync_state) VALUES($1,$2,now(),'descoped') RETURNING id",
+    [bLn, tGone])).rows[0].id;
+  const numGone = `YSCAP${RUN}A`;
+  const idGone = await openRow({ appId: appGone, borrowerId: bLn, taskId: tGone, fieldKey: 'ys_loan_number', clickupValue: numGone, portalValue: null });
+  const outGone = await R2.recheckReview(await rowById(idGone), { clickup });
+  ok(outGone.outcome === 'closed' && outGone.reason === 'file_removed', 'loan#: finding on a descoped (removed) file → recheck closes it (file_removed)');
+  ok((await rowById(idGone)).status === 'resolved', 'loan#: descoped-file finding is marked resolved');
+
+  // Case B — the number is no longer used on ANY other live file or ClickUp task
+  // (the duplicate was cleared). Re-check closes it (no_longer_duplicated).
+  const numFree = `YSCAP${RUN}B`;
+  const tFree = tk('lnFree');
+  const appFree = (await db.query('INSERT INTO applications(borrower_id,clickup_pipeline_task_id) VALUES($1,$2) RETURNING id', [bLn, tFree])).rows[0].id;
+  setTaskField(tFree, F.PIPELINE.ysLoanNumber, null);   // this file's own task no longer carries it either
+  const idFree = await openRow({ appId: appFree, borrowerId: bLn, taskId: tFree, fieldKey: 'ys_loan_number', clickupValue: numFree, portalValue: null });
+  const outFree = await R2.recheckReview(await rowById(idFree), { clickup });
+  ok(outFree.outcome === 'closed' && outFree.reason === 'no_longer_duplicated', 'loan#: number free everywhere → recheck closes it (no_longer_duplicated)');
+
+  // Case C — the number is STILL owned by another LIVE file. Re-check keeps it open
+  // (never a blind close — the clash is real until a human or the source clears it).
+  const numOwned = `YSCAP${RUN}C`;
+  const tOwner = tk('lnOwner'), tCopy = tk('lnCopy');
+  await db.query('INSERT INTO applications(borrower_id,clickup_pipeline_task_id,ys_loan_number) VALUES($1,$2,$3)', [bLn, tOwner, numOwned]);   // the rightful owner holds it
+  const appCopy = (await db.query('INSERT INTO applications(borrower_id,clickup_pipeline_task_id) VALUES($1,$2) RETURNING id', [bLn, tCopy])).rows[0].id;
+  const idCopy = await openRow({ appId: appCopy, borrowerId: bLn, taskId: tCopy, fieldKey: 'ys_loan_number', clickupValue: numOwned, portalValue: null });
+  const outCopy = await R2.recheckReview(await rowById(idCopy), { clickup });
+  ok(outCopy.outcome === 'still_open' && outCopy.reason === 'still_duplicated', 'loan#: number still owned by another live file → stays open (still_duplicated)');
+  ok((await rowById(idCopy)).status === 'open', 'loan#: the still-clashing row is left open');
+
+  // Case D — STALE clickup_task_index cache: universe-2 still shows a data-only task
+  // carrying the number, but a LIVE re-read of that task shows it was cleared. The
+  // re-check must confirm live and close (a stale cache never keeps a finding open).
+  const numStale = `YSCAP${RUN}D`;
+  const tStaleOther = tk('lnStaleOther');   // a data-only DSCR task, no PILOT file
+  await db.query(
+    `INSERT INTO clickup_task_index (task_id, kind, snapshot, task_name)
+     VALUES ($1,'data_only',$2,'stale dscr') ON CONFLICT (task_id) DO UPDATE SET snapshot=EXCLUDED.snapshot`,
+    [tStaleOther, JSON.stringify({ app: { ys_loan_number: numStale } })]);
+  setTaskField(tStaleOther, F.PIPELINE.ysLoanNumber, null);   // LIVE ClickUp: the number was cleared
+  const tStaleFile = tk('lnStaleFile');
+  const appStale = (await db.query('INSERT INTO applications(borrower_id,clickup_pipeline_task_id) VALUES($1,$2) RETURNING id', [bLn, tStaleFile])).rows[0].id;
+  const idStale = await openRow({ appId: appStale, borrowerId: bLn, taskId: tStaleFile, fieldKey: 'ys_loan_number', clickupValue: numStale, portalValue: null });
+  const outStale = await R2.recheckReview(await rowById(idStale), { clickup });
+  ok(outStale.outcome === 'closed' && outStale.reason === 'no_longer_duplicated', 'loan#: stale cache but live task cleared → recheck confirms live and closes');
+  // and if the cached task STILL carries it live, the row stays open
+  const numStale2 = `YSCAP${RUN}E`;
+  const tStaleOther2 = tk('lnStaleOther2');
+  await db.query(
+    `INSERT INTO clickup_task_index (task_id, kind, snapshot, task_name)
+     VALUES ($1,'data_only',$2,'live dscr') ON CONFLICT (task_id) DO UPDATE SET snapshot=EXCLUDED.snapshot`,
+    [tStaleOther2, JSON.stringify({ app: { ys_loan_number: numStale2 } })]);
+  setTaskField(tStaleOther2, F.PIPELINE.ysLoanNumber, numStale2);   // LIVE ClickUp: still carries it
+  const tStaleFile2 = tk('lnStaleFile2');
+  const appStale2 = (await db.query('INSERT INTO applications(borrower_id,clickup_pipeline_task_id) VALUES($1,$2) RETURNING id', [bLn, tStaleFile2])).rows[0].id;
+  const idStale2 = await openRow({ appId: appStale2, borrowerId: bLn, taskId: tStaleFile2, fieldKey: 'ys_loan_number', clickupValue: numStale2, portalValue: null });
+  const outStale2 = await R2.recheckReview(await rowById(idStale2), { clickup });
+  ok(outStale2.outcome === 'still_open', 'loan#: cache AND live task both still carry it → stays open');
+
+  // ---- descopeFlipped() closes a descoped file's open FILE-LEVEL findings (Fix 2:
+  // the RTL->DSCR flip now auto-heals the finding, no Re-check click needed).
+  const tDesc = tk('descope');
+  const appDesc = (await db.query(
+    "INSERT INTO applications(borrower_id,clickup_pipeline_task_id,program,sync_state) VALUES($1,$2,'Fix & Flip w/ Construction','linked') RETURNING id",
+    [bLn, tDesc])).rows[0].id;
+  const idDescLoan = await openRow({ appId: appDesc, borrowerId: bLn, taskId: tDesc, fieldKey: 'ys_loan_number', clickupValue: `YSCAP${RUN}F`, portalValue: null });
+  const idDescLink = await openRow({ appId: appDesc, borrowerId: bLn, taskId: tDesc, fieldKey: 'file_link', clickupValue: 'x', portalValue: null });
+  const descRes = await ingest.descopeFlipped(tDesc);
+  ok(descRes && String(descRes.id) === String(appDesc), 'descope: the flipped file was soft-deleted');
+  ok((await rowById(idDescLoan)).status === 'resolved', 'descope: the copied-loan-number finding auto-closes');
+  ok((await rowById(idDescLink)).status === 'resolved', 'descope: the file_link finding auto-closes');
+
   // clean up the test rows
+  await db.query(`DELETE FROM clickup_task_index WHERE task_id = ANY($1)`, [[tStaleOther, tStaleOther2]]).catch(() => {});
   await db.query(`DELETE FROM sync_review_queue WHERE reason='test_recheck'`);
   await db.pool.end();
 })().then(() => {
