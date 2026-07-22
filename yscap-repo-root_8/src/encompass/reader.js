@@ -178,9 +178,234 @@ async function _stampError(appId, reason) {
   return { ok: false, reason: short };
 }
 
+// ── Super-dump (single-response snapshot for Claude / staff review) ────────
+
+// One HTTP call that returns everything an off-platform reviewer needs to
+// design PILOT-side mappings against this tenant's Encompass:
+//   - The FULL cached field catalog (all customField / standardField / enum /
+//     milestone / folder / loanTemplate rows we've pulled).
+//   - N representative loan JSONs (default 20), sampled by a pipeline search
+//     that returns the most-recently-modified loans across the whole tenant.
+//     Each loan is passed through `_scrubForStorage` (SSNs out) — everything
+//     else is verbatim so field shapes are visible.
+//   - The count of total available loans (from the pipeline count) so the
+//     reviewer knows the sample size vs. the population.
+// Not for routine use — a single super-dump can be several MB. The `sampleN`
+// cap keeps it in the pasteable/downloadable range (default 20 → ~2-5 MB).
+async function superDump({ sampleN = 20 } = {}) {
+  if (!client.configured()) throw new Error('Encompass not configured');
+  const n = Math.max(1, Math.min(100, Number(sampleN) || 20));
+
+  const catalog = (await db.query(
+    `SELECT kind, key, label, data_type, options, pulled_at
+       FROM encompass_field_catalog ORDER BY kind, key`,
+  )).rows;
+  const catalogCounts = (await db.query(
+    `SELECT kind, count(*)::int AS n, max(pulled_at) AS last_pulled
+       FROM encompass_field_catalog GROUP BY kind`,
+  )).rows;
+
+  // Pipeline-search the tenant for the most-recent N loans across ALL folders.
+  // We fetch a broad field set for the search projection so the response has
+  // more than just the GUID (helps a reviewer see loan-level variety).
+  let recent = [];
+  let searchError = null;
+  try {
+    recent = await client.pipelineSearch({
+      terms: [],  // no filter — everything
+      sortOrder: [{ canonicalName: 'Loan.LastModified', order: 'desc' }],
+    }, ['Loan.Guid', 'Loan.LoanNumber', 'Loan.LoanFolder', 'Loan.LoanAmount', 'Loan.LoanProgram', 'Loan.LoanPurpose', 'Loan.BorrowerLastName', 'Loan.LastModified'], { limit: n });
+    if (!Array.isArray(recent)) recent = [];
+  } catch (e) { searchError = e.message; }
+
+  // Full-fat loan pulls for the sample (raw JSON, PII-scrubbed).
+  const loans = [];
+  for (const hit of recent.slice(0, n)) {
+    const guid = hit.loanGuid || hit.guid;
+    if (!guid) continue;
+    try {
+      const raw = await client.getLoan(guid);
+      loans.push({ guid, hit, loan: _scrubForStorage(raw) });
+    } catch (e) {
+      loans.push({ guid, hit, error: e.message });
+    }
+  }
+
+  return {
+    tenantConfigured: true,
+    generatedAt: new Date().toISOString(),
+    catalog: { counts: catalogCounts, rows: catalog },
+    sample: { requested: n, returned: loans.length, totalMatchedBySearch: recent.length, searchError, loans },
+  };
+}
+
+// ── Bulk pull — mirror every Encompass loan into PILOT storage ─────────────
+
+// Kick off a full-tenant pull. Runs sequentially with a small per-request
+// delay to stay under Encompass's ~200 req/min limit. Idempotent — running
+// again just refreshes rows.
+// Steps per loan:
+//   1) pipeline-search finds the GUID + basic projection.
+//   2) getLoan pulls the raw JSON (PII-scrubbed via _scrubForStorage).
+//   3) upsert into encompass_loan_snapshot (source of truth for "everything
+//      Encompass says").
+//   4) if a PILOT application has ys_loan_number == loan_number, ALSO stash
+//      the raw JSON in that application's encompass_extra + adopt the GUID.
+// Records progress + a per-run summary in encompass_bulk_pull_runs so admin
+// can watch a live "342 / 1147" gauge.
+async function bulkPullAllLoans({ perRequestDelayMs = 350, startedByStaffId = null, pageSize = 200 } = {}) {
+  if (!client.configured()) throw new Error('Encompass not configured');
+  const runId = (await db.query(
+    `INSERT INTO encompass_bulk_pull_runs (started_by, status) VALUES ($1, 'running') RETURNING id`,
+    [startedByStaffId],
+  )).rows[0].id;
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const counts = { pulled: 0, matched: 0, unmatched: 0, failed: 0 };
+  let lastError = null;
+
+  try {
+    // Paginate the pipeline. Encompass returns up to ~200 rows per POST; we
+    // use a `start` cursor via the `?limit=` + `?cursor=` pattern. If the
+    // tenant returns fewer than pageSize, we're done.
+    let cursor = 0;
+    let totalReported = null;
+    /* eslint-disable no-await-in-loop */
+    while (true) {
+      let page;
+      try {
+        page = await client.findLoanByLoanNumber ? null : null;  // placeholder — see next call
+      } catch (_) { /* fall through */ }
+      try {
+        // The pipelineSearch client already supports `{limit}`. Encompass's
+        // paging convention here is `?start=<cursor>&limit=<pageSize>`; we
+        // approximate that by paginating via `LastModified` cursors so we
+        // always advance. First call: no cursor. Later calls: use the
+        // oldest LastModified from the previous page as the upper bound.
+        page = await client.pipelineSearch({
+          terms: cursor === 0 ? [] : [{ canonicalName: 'Loan.LastModified', matchType: 'lessThan', value: cursor }],
+          sortOrder: [{ canonicalName: 'Loan.LastModified', order: 'desc' }],
+        }, ['Loan.Guid', 'Loan.LoanNumber', 'Loan.LoanFolder', 'Loan.LoanAmount', 'Loan.BorrowerLastName', 'Loan.LastModified'], { limit: pageSize });
+      } catch (e) {
+        lastError = `pipeline page: ${e.message}`;
+        break;
+      }
+      if (!Array.isArray(page) || page.length === 0) break;
+
+      if (totalReported === null) totalReported = page.length;  // no better estimate available
+
+      let oldest = null;
+      for (const hit of page) {
+        const guid = hit.loanGuid || hit.guid;
+        const loanNumber = hit['Loan.LoanNumber'] || hit.loanNumber || null;
+        const folder = hit['Loan.LoanFolder'] || null;
+        const borrowerLast = hit['Loan.BorrowerLastName'] || null;
+        const loanAmount = Number(hit['Loan.LoanAmount']) || null;
+        const lastMod = hit['Loan.LastModified'] || null;
+        if (!guid) continue;
+        try {
+          const raw = await client.getLoan(guid);
+          const scrubbed = _scrubForStorage(raw);
+          const jsonText = JSON.stringify(scrubbed);
+
+          // Upsert into snapshot table.
+          await db.query(
+            `INSERT INTO encompass_loan_snapshot
+               (encompass_loan_guid, loan_number, loan_folder, borrower_last_name, loan_amount,
+                last_modified, raw, pulled_at, last_error)
+             VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb, now(), NULL)
+             ON CONFLICT (encompass_loan_guid) DO UPDATE
+               SET loan_number=EXCLUDED.loan_number,
+                   loan_folder=EXCLUDED.loan_folder,
+                   borrower_last_name=EXCLUDED.borrower_last_name,
+                   loan_amount=EXCLUDED.loan_amount,
+                   last_modified=EXCLUDED.last_modified,
+                   raw=EXCLUDED.raw,
+                   pulled_at=now(),
+                   last_error=NULL`,
+            [guid, loanNumber, folder, borrowerLast, loanAmount, lastMod, jsonText],
+          );
+          counts.pulled++;
+
+          // Attach to PILOT application by loan number, if we can.
+          const matched = loanNumber ? (await db.query(
+            `UPDATE applications
+                SET encompass_loan_guid = COALESCE(encompass_loan_guid, $1),
+                    encompass_extra = $2::jsonb,
+                    encompass_last_pulled_at = now(),
+                    encompass_last_error = NULL,
+                    updated_at = now()
+              WHERE ys_loan_number = $3
+              RETURNING id`,
+            [guid, jsonText, loanNumber],
+          )).rows[0] : null;
+          if (matched) {
+            counts.matched++;
+            await db.query(
+              `UPDATE encompass_loan_snapshot SET application_id = $1 WHERE encompass_loan_guid = $2`,
+              [matched.id, guid],
+            );
+          } else {
+            counts.unmatched++;
+          }
+
+          // Update the run's live counters every 25 loans (cheap enough).
+          if ((counts.pulled % 25) === 0) {
+            await db.query(
+              `UPDATE encompass_bulk_pull_runs
+                  SET pulled = $1, matched = $2, unmatched = $3, failed = $4
+                WHERE id = $5`,
+              [counts.pulled, counts.matched, counts.unmatched, counts.failed, runId],
+            );
+          }
+        } catch (e) {
+          counts.failed++;
+          lastError = `guid ${guid}: ${e.message}`;
+          await db.query(
+            `INSERT INTO encompass_loan_snapshot (encompass_loan_guid, loan_number, pulled_at, last_error)
+             VALUES ($1, $2, now(), $3)
+             ON CONFLICT (encompass_loan_guid) DO UPDATE SET last_error = EXCLUDED.last_error, pulled_at = now()`,
+            [guid, loanNumber, e.message.slice(0, 300)],
+          );
+        }
+
+        if (lastMod && (!oldest || lastMod < oldest)) oldest = lastMod;
+        await sleep(perRequestDelayMs);
+      }
+
+      // If a page came back short OR we didn't advance the cursor, we're done.
+      if (page.length < pageSize || !oldest || oldest === cursor) break;
+      cursor = oldest;
+    }
+    /* eslint-enable no-await-in-loop */
+
+    await db.query(
+      `UPDATE encompass_bulk_pull_runs
+          SET pulled=$1, matched=$2, unmatched=$3, failed=$4,
+              total_loans=$5, last_error=$6,
+              status = $7, finished_at = now()
+        WHERE id = $8`,
+      [counts.pulled, counts.matched, counts.unmatched, counts.failed,
+       counts.pulled, lastError, lastError ? 'failed' : 'completed', runId],
+    );
+    return { runId, ...counts, lastError };
+  } catch (e) {
+    await db.query(
+      `UPDATE encompass_bulk_pull_runs
+          SET pulled=$1, matched=$2, unmatched=$3, failed=$4,
+              last_error=$5, status='failed', finished_at=now()
+        WHERE id=$6`,
+      [counts.pulled, counts.matched, counts.unmatched, counts.failed, e.message, runId],
+    ).catch(() => {});
+    throw e;
+  }
+}
+
 module.exports = {
   refreshFieldCatalog,
   pullLoanForApplication,
+  superDump,
+  bulkPullAllLoans,
   // exported for unit tests
   _scrubForStorage,
   PIPELINE_SEARCH_FIELDS,

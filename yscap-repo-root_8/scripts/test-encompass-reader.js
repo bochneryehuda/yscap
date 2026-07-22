@@ -30,9 +30,28 @@ const mockDb = {
     if (/SELECT id, ys_loan_number, encompass_loan_guid FROM applications/.test(sql)) {
       return { rows: mockDb._appRows.length ? [mockDb._appRows.shift()] : [] };
     }
+    if (/SELECT kind, key, label, data_type, options, pulled_at\s+FROM encompass_field_catalog/.test(sql)) {
+      return { rows: mockDb._catalogRows.slice() };
+    }
+    if (/SELECT kind, count\(\*\)::int/.test(sql)) {
+      const byKind = {};
+      for (const r of mockDb._catalogRows) byKind[r.kind] = (byKind[r.kind] || 0) + 1;
+      return { rows: Object.entries(byKind).map(([kind, n]) => ({ kind, n, last_pulled: '2026-07-22T00:00:00Z' })) };
+    }
+    if (/INSERT INTO encompass_bulk_pull_runs/.test(sql)) {
+      return { rows: [{ id: 'run-1' }] };
+    }
+    if (/UPDATE applications\s+SET encompass_loan_guid = COALESCE/.test(sql)) {
+      // Simulate: params[2] is the loan number. Match against fixture app map.
+      const ln = params[2];
+      const app = mockDb._appsByLoanNumber[ln];
+      return { rows: app ? [{ id: app.id }] : [] };
+    }
     return { rows: [] };
   },
   _appRows: [],
+  _catalogRows: [],
+  _appsByLoanNumber: {},
 };
 
 let mockClient;
@@ -55,9 +74,18 @@ require.cache[clientPath] = {
     listLoanFolders: async () => [{ folderName: 'Active Loans' }],
     listLoanTemplates: async () => [],
     findLoanByLoanNumber: async () => [{ loanGuid: 'guid-abc-123', 'Loan.LoanNumber': 'YS-999' }],
-    getLoan: async () => ({
-      guid: 'guid-abc-123',
-      loanNumber: 'YS-999',
+    pipelineSearch: async (filter, fields, opts) => {
+      // Used by superDump + bulkPullAllLoans. Return the fixture pipeline set.
+      const limit = (opts && opts.limit) || 10;
+      return mockClient._pipelineHits.slice(0, limit);
+    },
+    _pipelineHits: [
+      { loanGuid: 'guid-abc-123', 'Loan.LoanNumber': 'YS-999', 'Loan.LoanFolder': 'Active', 'Loan.LoanAmount': 500000, 'Loan.BorrowerLastName': 'Doe', 'Loan.LastModified': '2026-07-20T10:00:00Z' },
+      { loanGuid: 'guid-xyz-456', 'Loan.LoanNumber': 'YS-888', 'Loan.LoanFolder': 'Active', 'Loan.LoanAmount': 300000, 'Loan.BorrowerLastName': 'Roe', 'Loan.LastModified': '2026-07-19T10:00:00Z' },
+    ],
+    getLoan: async (guid) => ({
+      guid,
+      loanNumber: guid === 'guid-abc-123' ? 'YS-999' : 'YS-888',
       applications: [{
         borrower: { firstName: 'Jane', lastName: 'Doe', taxIdentificationIdentifier: '111-22-3333' },
         coBorrower: { firstName: 'John', lastName: 'Doe', taxIdentificationIdentifier: '444-55-6666' },
@@ -175,7 +203,52 @@ async function main() {
   // Original untouched (JSON copy semantics).
   assert.strictEqual(before.applications[0].borrower.taxIdentificationIdentifier, '1', 'source object not mutated');
 
-  console.log('OK — Encompass reader unit tests pass.');
+  // (8) superDump returns { catalog, sample } in one shot; sample is capped at
+  // sampleN; PII is scrubbed inside each loan.
+  mockDb._catalogRows = [
+    { kind: 'customField', key: 'CX.ARV', label: 'ARV', data_type: 'currency', options: null, pulled_at: '2026-07-22T00:00:00Z' },
+    { kind: 'enum', key: 'Loan.LoanPurpose', label: 'Loan Purpose', data_type: 'enum', options: [{ value: 'Purchase' }, { value: 'Refinance' }], pulled_at: '2026-07-22T00:00:00Z' },
+    { kind: 'milestone', key: 'Approval', label: 'Cond. Approval', data_type: 'milestone', options: null, pulled_at: '2026-07-22T00:00:00Z' },
+  ];
+  const dump = await reader.superDump({ sampleN: 5 });
+  assert.strictEqual(dump.catalog.rows.length, 3, 'catalog rows returned');
+  assert.deepStrictEqual(dump.catalog.counts.map((c) => c.kind).sort(), ['customField', 'enum', 'milestone']);
+  assert.ok(dump.sample.loans.length > 0, 'sample loans returned');
+  assert.ok(dump.sample.loans.every((l) => !l.loan || l.loan.applications[0].borrower.taxIdentificationIdentifier === undefined), 'SSN scrubbed in every sample loan');
+  assert.strictEqual(dump.sample.requested, 5);
+  assert.ok(dump.generatedAt, 'generatedAt stamp present');
+
+  // Bounds check on sampleN — max 100.
+  const capped = await reader.superDump({ sampleN: 500 });
+  assert.ok(capped.sample.requested <= 100, 'sampleN clamped to 100');
+
+  // (9) bulkPullAllLoans upserts every pipeline hit into encompass_loan_snapshot
+  // and matches to PILOT applications by loan number when possible.
+  mockClient._pipelineHits = [
+    { loanGuid: 'guid-A', 'Loan.LoanNumber': 'YS-A', 'Loan.LoanFolder': 'Active', 'Loan.LoanAmount': 100, 'Loan.BorrowerLastName': 'A', 'Loan.LastModified': '2026-07-20T10:00:00Z' },
+    { loanGuid: 'guid-B', 'Loan.LoanNumber': 'YS-B', 'Loan.LoanFolder': 'Active', 'Loan.LoanAmount': 200, 'Loan.BorrowerLastName': 'B', 'Loan.LastModified': '2026-07-19T10:00:00Z' },
+  ];
+  mockDb._appsByLoanNumber = { 'YS-A': { id: 'app-A' } };  // only YS-A has a PILOT match
+  queries.length = 0;
+  // pageSize > fixture size so the loop exits after one page (page.length < pageSize).
+  const bulkResult = await reader.bulkPullAllLoans({ perRequestDelayMs: 0, pageSize: 100 });
+  assert.strictEqual(bulkResult.pulled, 2, 'both loans pulled');
+  assert.strictEqual(bulkResult.matched, 1, 'YS-A matched to app-A');
+  assert.strictEqual(bulkResult.unmatched, 1, 'YS-B recorded as unmatched');
+  assert.strictEqual(bulkResult.failed, 0);
+  const snapshotUpserts = queries.filter((q) => /INSERT INTO encompass_loan_snapshot\s+\(encompass_loan_guid/.test(q.sql));
+  assert.strictEqual(snapshotUpserts.length, 2, 'both loans upserted into snapshot');
+  const stashedRaw = JSON.parse(snapshotUpserts[0].params[6]);
+  assert.strictEqual(stashedRaw.applications[0].borrower.taxIdentificationIdentifier, undefined, 'snapshot rows scrubbed too');
+  const appUpdates = queries.filter((q) => /UPDATE applications\s+SET encompass_loan_guid = COALESCE/.test(q.sql));
+  assert.strictEqual(appUpdates.length, 2, 'application UPDATE fired for both attempts');
+  const runCreate = queries.find((q) => /INSERT INTO encompass_bulk_pull_runs/.test(q.sql));
+  assert.ok(runCreate, 'bulk pull run row created');
+  const runFinal = queries.reverse().find((q) => /UPDATE encompass_bulk_pull_runs\s+SET pulled=\$1, matched=\$2/.test(q.sql));
+  assert.ok(runFinal, 'bulk pull run row finalized');
+  assert.strictEqual(runFinal.params[6], 'completed', 'run finalized to completed');
+
+  console.log('OK — Encompass reader unit tests pass (includes super-dump + bulk-pull).');
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

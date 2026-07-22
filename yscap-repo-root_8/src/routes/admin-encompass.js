@@ -90,6 +90,56 @@ router.post('/loan/:appId/pull', async (req, res) => {
   } catch (e) { return fail(res, 500, e, 'could not pull encompass loan'); }
 });
 
+// GET /api/admin/encompass/super-dump — everything a reviewer needs to design
+// PILOT-side mappings against this tenant, in ONE response. Field catalog +
+// N representative loan JSONs (PII-scrubbed). ?loans=N caps the sample (default
+// 20, max 100). This response can be several MB — use for reviews, not routine
+// UI polling.
+router.get('/super-dump', async (req, res) => {
+  if (!client.configured()) return res.status(400).json({ error: 'Encompass not configured' });
+  try {
+    const sampleN = Number(req.query.loans) || 20;
+    const dump = await reader.superDump({ sampleN });
+    res.json(dump);
+  } catch (e) { return fail(res, 500, e, 'super-dump failed'); }
+});
+
+// POST /api/admin/encompass/pull-all — kick off the bulk pull of every loan
+// in the tenant. Runs in the BACKGROUND (this response returns immediately
+// with the run id); watch progress via GET /pull-all/runs.
+router.post('/pull-all', async (req, res) => {
+  if (!client.configured()) return res.status(400).json({ error: 'Encompass not configured' });
+  try {
+    // Check if an existing run is still going — never stack.
+    const existing = (await db.query(
+      `SELECT id, started_at FROM encompass_bulk_pull_runs WHERE status='running' LIMIT 1`,
+    )).rows[0];
+    if (existing) return res.status(409).json({ error: 'a bulk pull is already running', runId: existing.id, startedAt: existing.started_at });
+
+    // Fire and forget — response returns as soon as the run row is created.
+    const startedByStaffId = (req.actor && req.actor.id) || null;
+    reader.bulkPullAllLoans({ startedByStaffId }).catch((e) => console.warn('[admin-encompass] bulk pull crashed:', e.message));
+    // Give it a moment to create the row, then read the id.
+    setTimeout(async () => {}, 100);
+    const row = (await db.query(
+      `SELECT id FROM encompass_bulk_pull_runs WHERE status='running' ORDER BY started_at DESC LIMIT 1`,
+    )).rows[0];
+    res.json({ started: true, runId: row ? row.id : null });
+  } catch (e) { return fail(res, 500, e, 'could not start bulk pull'); }
+});
+
+// GET /api/admin/encompass/pull-all/runs — last N pull runs + their live progress.
+router.get('/pull-all/runs', async (req, res) => {
+  try {
+    const rows = (await db.query(
+      `SELECT id, started_at, finished_at, status, total_loans, pulled, matched, unmatched, failed, last_error, started_by
+         FROM encompass_bulk_pull_runs
+        ORDER BY started_at DESC LIMIT 20`,
+    )).rows;
+    res.json({ runs: rows });
+  } catch (e) { return fail(res, 500, e, 'could not read pull-all runs'); }
+});
+
 // GET /api/admin/encompass/loans/status — pipeline-wide freshness view (staff dashboard).
 router.get('/loans/status', async (req, res) => {
   try {
