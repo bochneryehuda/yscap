@@ -37,20 +37,26 @@ export default function ClearToClosePanel({ gating }) {
         Each item below is blocking clear-to-close. Click <strong>Go fix →</strong> to jump straight to the section that clears it.
       </p>
       <div className="ctc-list">
-        {items.map((it) => (
-          <div className="ctc-item" key={`${it.kind}-${it.id}`}>
-            <span className="dot outstanding" style={{ marginTop: 5, flex: 'none' }} />
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div className="ctc-item-title">
-                {it.title}
-                {it.kind === 'gate' && <span className="pill" style={{ marginLeft: 8, borderColor: 'var(--gold)', color: 'var(--gold)' }}>gate</span>}
+        {items.map((it) => {
+          const isAiAdvisory = it.source === 'ai_suggestion';
+          return (
+            <div className="ctc-item" key={`${it.kind}-${it.id}`} style={isAiAdvisory ? { background: 'var(--amber-bg,#F6EEDD)' } : undefined}>
+              <span className="dot outstanding" style={{ marginTop: 5, flex: 'none', color: isAiAdvisory ? 'var(--amber,#B7791F)' : undefined }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div className="ctc-item-title">
+                  {it.title}
+                  {it.kind === 'gate' && <span className="pill" style={{ marginLeft: 8, borderColor: 'var(--gold)', color: 'var(--gold)' }}>gate</span>}
+                  {isAiAdvisory && <span className="pill" style={{ marginLeft: 8, borderColor: 'var(--amber,#B7791F)', color: 'var(--amber,#B7791F)' }}>AI advisory</span>}
+                </div>
+                <div className="muted small">{it.reason}</div>
               </div>
-              <div className="muted small">{it.reason}</div>
+              <button className="btn ghost small" style={{ flex: 'none' }} onClick={() => goToSection(it.section, it.condTab)}
+                title={isAiAdvisory ? 'Open the AI Findings panel to review or dismiss' : 'Open the section that clears this item'}>
+                {isAiAdvisory ? 'Review →' : 'Go fix →'}
+              </button>
             </div>
-            <button className="btn ghost small" style={{ flex: 'none' }} onClick={() => goToSection(it.section, it.condTab)}
-              title="Open the section that clears this item">Go fix →</button>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
