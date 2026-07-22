@@ -49,8 +49,10 @@ const REQUIREMENTS = [
   { docType: 'good_standing',      label: 'Certificate of good standing',  required: 'if_entity',     owner: 'borrower',  gating: 'PTF' },
   // Wholesale / assignment deals.
   { docType: 'assignment',         label: 'Assignment of contract',        required: 'if_assignment', owner: 'borrower',  gating: 'PTD' },
-  // Closing.
-  { docType: 'settlement',         label: 'Settlement statement',          required: 'always',        owner: 'title',     gating: 'PTF' },
+  // The settlement statement is a POST-CLOSING document only (owner-directed 2026-07-21) and is
+  // NOT in the pre-close required-document matrix. When the post-closing module is built, add its
+  // row back here as required:'always', owner:'title', gating:'PTF'. The reader/classifier/schema
+  // are still registered so an uploaded settlement statement still reads for reference.
 ];
 
 function applies(req, flags) {

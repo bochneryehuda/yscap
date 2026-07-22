@@ -64,7 +64,7 @@ const INTEGRATIONS = [
   },
   {
     key: 'azure_docint', name: 'Azure Document Intelligence (OCR)', group: 'core',
-    purpose: 'Turns scanned or blurry document pages into clean text for the analyzer to read.',
+    purpose: 'Turns scanned or blurry document pages into clean text for the analyzer to read (primary OCR engine).',
     direction: 'Outbound', auth: 'Azure resource key',
     env: [{ name: 'AZURE_DOCINT_ENDPOINT', required: true }, { name: 'AZURE_DOCINT_KEY', required: true },
       { name: 'AZURE_DOCINT_MODEL', required: false }, { name: 'AZURE_DOCINT_API_VERSION', required: false }],
@@ -74,6 +74,72 @@ const INTEGRATIONS = [
       if (!m.configured()) return { configured: false, live: null, detail: 'Endpoint or key not set.' };
       try { const p = await timebox(m.ping()); return { configured: true, live: !!p.ok, detail: p.ok ? 'Reached the OCR reader.' : (p.reason || 'Not reachable.') }; }
       catch (e) { return { configured: true, live: false, detail: e.message === 'timed out' ? 'Timed out reaching the OCR reader.' : (e.message || 'Not reachable.') }; }
+    },
+  },
+  {
+    key: 'google_docai', name: 'Google Document AI (backup OCR)', group: 'core',
+    purpose: 'Independent second OCR engine — runs automatically when Azure returns nothing on a scanned or rotated document, so a hard-to-read file has a second chance before an underwriter has to key it by hand.',
+    direction: 'Outbound', auth: 'Google service-account JSON',
+    env: [{ name: 'GOOGLE_DOCAI_KEY_JSON', required: true }, { name: 'GOOGLE_DOCAI_PROJECT_ID', required: true },
+      { name: 'GOOGLE_DOCAI_LOCATION', required: true }, { name: 'GOOGLE_DOCAI_PROCESSOR_ID', required: true }],
+    switches: [], liveProbe: true,
+    async probe() {
+      const m = require('../ai/docai-google');
+      if (!m.configured()) return { configured: false, live: null, detail: 'One of the four Google Document AI values is not set.' };
+      try { const p = await timebox(m.ping()); return { configured: true, live: !!p.ok, detail: p.ok ? 'Reached the backup OCR reader.' : (p.reason || 'Not reachable.') }; }
+      catch (e) { return { configured: true, live: false, detail: e.message === 'timed out' ? 'Timed out reaching the backup OCR reader.' : (e.message || 'Not reachable.') }; }
+    },
+  },
+  {
+    key: 'housecanary', name: 'HouseCanary AVM (independent value)', group: 'workflow',
+    purpose: 'Independent automated valuation for every property — median of three AVMs (HouseCanary + Clear Capital + ATTOM) checked against the appraisal so an inflated or stale ARV is flagged before closing.',
+    direction: 'Outbound', auth: 'API key + secret',
+    env: [{ name: 'HOUSECANARY_KEY', required: true }, { name: 'HOUSECANARY_SECRET', required: true }, { name: 'HOUSECANARY_ENDPOINT', required: false }],
+    switches: [], liveProbe: true,
+    async probe() {
+      const m = require('../ai/../integrations/direct-source-connectors/housecanary');
+      if (!m.configured()) return { configured: false, live: null, detail: 'HOUSECANARY_KEY + HOUSECANARY_SECRET not set.' };
+      try { const p = await timebox(m.ping()); return { configured: true, live: !!p.ok, detail: p.ok ? 'Reached HouseCanary.' : (p.reason || 'Not reachable.') }; }
+      catch (e) { return { configured: true, live: false, detail: e.message || 'Not reachable.' }; }
+    },
+  },
+  {
+    key: 'clearcapital', name: 'Clear Capital ClearAVM (second AVM)', group: 'workflow',
+    purpose: 'Second independent AVM — pairs with HouseCanary + ATTOM for a real three-source triangulation of the appraisal ARV.',
+    direction: 'Outbound', auth: 'API key',
+    env: [{ name: 'CLEARCAPITAL_KEY', required: true }, { name: 'CLEARCAPITAL_ENDPOINT', required: false }],
+    switches: [], liveProbe: true,
+    async probe() {
+      const m = require('../integrations/direct-source-connectors/clearcapital');
+      if (!m.configured()) return { configured: false, live: null, detail: 'CLEARCAPITAL_KEY not set.' };
+      try { const p = await timebox(m.ping()); return { configured: true, live: !!p.ok, detail: p.ok ? 'Reached Clear Capital.' : (p.reason || 'Not reachable.') }; }
+      catch (e) { return { configured: true, live: false, detail: e.message || 'Not reachable.' }; }
+    },
+  },
+  {
+    key: 'attom', name: 'ATTOM property data (AVM + records)', group: 'workflow',
+    purpose: 'Third AVM source PLUS property records (units, year built, zoning, last sale, liens). Corroborates the appraisal AND the title report.',
+    direction: 'Outbound', auth: 'API key',
+    env: [{ name: 'ATTOM_API_KEY', required: true }, { name: 'ATTOM_ENDPOINT', required: false }],
+    switches: [], liveProbe: true,
+    async probe() {
+      const m = require('../integrations/direct-source-connectors/attom');
+      if (!m.configured()) return { configured: false, live: null, detail: 'ATTOM_API_KEY not set.' };
+      try { const p = await timebox(m.ping()); return { configured: true, live: !!p.ok, detail: p.ok ? 'Reached ATTOM.' : (p.reason || 'Not reachable.') }; }
+      catch (e) { return { configured: true, live: false, detail: e.message || 'Not reachable.' }; }
+    },
+  },
+  {
+    key: 'mistral_ocr', name: 'Mistral OCR (third-look reader)', group: 'core',
+    purpose: 'Third independent OCR engine — runs only when Azure AND Google both fail on a document. Different failure modes than either, so it catches dense-table / signature / multi-column layouts the other two miss.',
+    direction: 'Outbound', auth: 'API key',
+    env: [{ name: 'MISTRAL_API_KEY', required: true }, { name: 'MISTRAL_OCR_ENDPOINT', required: false }, { name: 'MISTRAL_OCR_MODEL', required: false }],
+    switches: [], liveProbe: true,
+    async probe() {
+      const m = require('../ai/docai-mistral');
+      if (!m.configured()) return { configured: false, live: null, detail: 'MISTRAL_API_KEY not set.' };
+      try { const p = await timebox(m.ping()); return { configured: true, live: !!p.ok, detail: p.ok ? 'Reached Mistral OCR.' : (p.reason || 'Not reachable.') }; }
+      catch (e) { return { configured: true, live: false, detail: e.message === 'timed out' ? 'Timed out reaching Mistral OCR.' : (e.message || 'Not reachable.') }; }
     },
   },
   {

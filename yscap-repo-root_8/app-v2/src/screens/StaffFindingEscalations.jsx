@@ -69,6 +69,72 @@ export default function StaffFindingEscalations() {
     finally { setBusy(false); }
   }
 
+  // Take one of the FRAMED underwriting actions (Post condition / Grant exception / Request document /
+  // Fix file / Dismiss / Clear / Decline) directly from the escalation — the same actions available
+  // on the file's own finding card. On success we ALSO mark the escalation resolved so it clears
+  // from the queue. Falls back to the file view when the finding has no stored id (a derived / cross-
+  // document advisory) — those aren't resolvable via the resolve endpoint.
+  async function resolveFinding(row, action) {
+    if (!row.finding_id) {
+      // Derived finding — cannot be resolved directly. Take the reviewer to the file view instead.
+      window.location.hash = `#/internal/app/${row.application_id}?finding=${row.finding_id || ''}`;
+      return;
+    }
+    setBusy(true);
+    try {
+      const note = notes[row.id] || '';
+      const extra = { action };
+      // Post-condition / request-document need a note; others accept the reviewer note as advisory.
+      if (note) extra.note = note;
+      // Two-call sequence, made RETRY-SAFE (owner-directed fix after pre-merge audit 2026-07-21):
+      // if a previous attempt already resolved the finding OR closed the escalation, don't error
+      // out and leave the queue row stranded — treat those "already done" cases as success and
+      // move on to whatever step remains. The endpoints return 404 (finding: not found / already
+      // resolved) and 409 (escalation: already decided).
+      let alreadyResolved = false;
+      try {
+        await api.underwritingResolveFinding(row.application_id, row.finding_id, extra);
+      } catch (err) {
+        const msg = String((err && err.message) || '').toLowerCase();
+        const status = err && (err.status || err.statusCode);
+        if (status === 404 || /not found|already/i.test(msg)) { alreadyResolved = true; }
+        else { throw err; }
+      }
+      let alreadyDecided = false;
+      try {
+        await api.decideFindingEscalation(row.id, 'resolved', note || `Applied "${action}" from the queue${alreadyResolved ? ' (finding was already resolved)' : ''}`);
+      } catch (err) {
+        const msg = String((err && err.message) || '').toLowerCase();
+        const status = err && (err.status || err.statusCode);
+        if (status === 409 || /already/i.test(msg)) { alreadyDecided = true; }
+        else { throw err; }
+      }
+      flash(true, alreadyResolved
+        ? 'The finding was already resolved — queue item closed.'
+        : (alreadyDecided
+          ? `Applied ${action.replace(/_/g, ' ')} — queue item was already closed.`
+          : `Applied ${action.replace(/_/g, ' ')} — the finding is resolved and the person who raised it was notified.`));
+      await load();
+    } catch (e) { flash(false, e.message || 'could not apply the action'); }
+    finally { setBusy(false); }
+  }
+
+  // Open the source document (the one the finding was raised from) in a new tab — same
+  // authenticated downloader the file view uses.
+  async function openSourceDoc(row) {
+    if (!row.document_id) return;
+    try {
+      const res = await api.staffDownloadDoc(row.document_id);
+      const blob = res && res.blob;
+      const filename = res && res.filename;
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const w = window.open(url, '_blank');
+      if (!w) { const a = document.createElement('a'); a.href = url; a.download = filename || 'document'; document.body.appendChild(a); a.click(); a.remove(); }
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (e) { flash(false, e.message || 'could not open the source document'); }
+  }
+
   // May THIS user decide THIS row? A super-admin always; otherwise the person it was routed to
   // (their role or assigned to them) — but NEVER the person who raised it (mirrors the server).
   const canDecide = (r) => canDecideAll || ((r.target_role === role || r.assigned_to === myId) && r.requested_by !== myId);
@@ -99,12 +165,19 @@ export default function StaffFindingEscalations() {
         {rows.map((r) => {
           const sev = SEV[r.severity] || SEV.info;
           const actions = Array.isArray(r.suggested_actions) ? r.suggested_actions : [];
+          // Deep-link straight to the finding on the file view: the file page reads ?finding=<id>
+          // and scrolls / highlights it. Without a finding_id (derived finding) we fall back to
+          // linking to the file overview.
+          const fileDeepLink = r.finding_id
+            ? `#/internal/app/${r.application_id}?finding=${r.finding_id}`
+            : `#/internal/app/${r.application_id}`;
+          const pageHint = r.page_number != null ? ` (page ${r.page_number})` : '';
           return (
             <div key={r.id} className="card" style={{ border: '1px solid var(--hairline,#e5e0d5)', borderRadius: 10, padding: 12, marginTop: 12 }}>
               <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
                 <div style={{ minWidth: 0 }}>
                   <div>
-                    <a href={`#/internal/app/${r.application_id}`}><strong>{r.ys_loan_number || 'File'}</strong></a>
+                    <a href={fileDeepLink}><strong>{r.ys_loan_number || 'File'}</strong></a>
                     {' · '}{[r.first_name, r.last_name].filter(Boolean).join(' ')}
                     {r.property_address ? ` · ${fmtAddr(r.property_address)}` : ''}
                   </div>
@@ -118,15 +191,22 @@ export default function StaffFindingEscalations() {
                       {r.file_value != null && <span>Our file: <b>{String(r.file_value)}</b></span>}
                     </div>
                   )}
+                  {r.document_id && (
+                    <div style={{ fontSize: 12, margin: '4px 0' }}>
+                      <a href="#" onClick={(e) => { e.preventDefault(); openSourceDoc(r); }}
+                         style={{ color: 'var(--teal-deep,#256168)', textDecoration: 'underline' }}>
+                        Open the source document{pageHint}
+                      </a>
+                      {' · '}
+                      <a href={fileDeepLink} style={{ color: 'var(--teal-deep,#256168)', textDecoration: 'underline' }}>
+                        Open the finding on the file
+                      </a>
+                    </div>
+                  )}
                   {r.how_to && <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', marginTop: 4 }}>{r.how_to}</div>}
                   {r.question && (
                     <div style={{ fontSize: 12.5, marginTop: 6, padding: '7px 10px', background: 'var(--ink-2,#F4F1EA)', borderRadius: 8, color: 'var(--ivory,#141B22)' }}>
                       <b>What they need:</b> {r.question}
-                    </div>
-                  )}
-                  {actions.length > 0 && (
-                    <div className="muted small" style={{ marginTop: 6 }}>
-                      Options on the desk: {actions.map((a) => actionLabel(a)).filter(Boolean).join(' · ')}
                     </div>
                   )}
                   <div className="muted small" style={{ marginTop: 6 }}>
@@ -140,12 +220,41 @@ export default function StaffFindingEscalations() {
               </div>
 
               {r.status === 'open' && canDecide(r) && (
-                <div className="row" style={{ gap: 8, alignItems: 'center', marginTop: 10, flexWrap: 'wrap' }}>
-                  <input className="input" style={{ flex: 1, minWidth: 200 }} placeholder="How to proceed / your advice (optional)"
-                    value={notes[r.id] || ''} onChange={(e) => setNotes((n) => ({ ...n, [r.id]: e.target.value }))} />
-                  <button className="btn primary small" disabled={busy} onClick={() => decide(r, 'resolved')}>Mark resolved</button>
-                  <button className="btn ghost small" disabled={busy} onClick={() => decide(r, 'dismissed')}>No action needed</button>
-                </div>
+                <>
+                  <div className="row" style={{ gap: 8, alignItems: 'center', marginTop: 10, flexWrap: 'wrap' }}>
+                    <input className="input" style={{ flex: 1, minWidth: 200 }} placeholder="How to proceed / your advice (optional)"
+                      value={notes[r.id] || ''} onChange={(e) => setNotes((n) => ({ ...n, [r.id]: e.target.value }))} />
+                    <button className="btn primary small" disabled={busy} onClick={() => decide(r, 'resolved')}>Mark resolved</button>
+                    <button className="btn ghost small" disabled={busy} onClick={() => decide(r, 'dismissed')}>No action needed</button>
+                  </div>
+                  {actions.length > 0 && r.finding_id && (
+                    <div style={{ marginTop: 10, padding: 10, background: 'var(--paper,#F6F3EC)', borderRadius: 8 }}>
+                      <div className="small" style={{ fontWeight: 600, marginBottom: 6 }}>Or take the action directly:</div>
+                      <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                        {actions.map((a) => {
+                          const key = typeof a === 'string' ? a : (a.key || a.label);
+                          const isPrimary = key === 'post_condition' || key === 'request_document' || key === 'open_condition' || key === 'request_revision';
+                          const isDanger = key === 'decline';
+                          return (
+                            <button key={key} className={`btn small ${isPrimary ? 'primary' : (isDanger ? 'ghost' : 'ghost')}`}
+                              disabled={busy} onClick={() => {
+                                if (isDanger && !window.confirm('Decline this file on this finding?')) return;
+                                resolveFinding(r, key);
+                              }}>{actionLabel(a)}</button>
+                          );
+                        })}
+                      </div>
+                      <div className="muted small" style={{ marginTop: 6 }}>
+                        Applying an action here resolves the finding on the file AND closes this queue item — your advice note above is recorded as the decision.
+                      </div>
+                    </div>
+                  )}
+                  {actions.length > 0 && !r.finding_id && (
+                    <div className="muted small" style={{ marginTop: 8 }}>
+                      Options on the desk: {actions.map((a) => actionLabel(a)).filter(Boolean).join(' · ')} — open the file to take one (derived finding, no direct resolve here).
+                    </div>
+                  )}
+                </>
               )}
               {r.status === 'open' && !canDecide(r) && (
                 <div className="muted small" style={{ marginTop: 8 }}>Waiting on the {TARGET_LABEL[r.target_role] || r.target_role} to review.</div>

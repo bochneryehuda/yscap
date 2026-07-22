@@ -52,7 +52,7 @@ router.put('/settings', requirePermission('manage_pricing'), async (req, res) =>
 // super-admin only (below).
 router.get('/escalations', requirePermission('manage_pricing'), async (req, res) => {
   try {
-    const status = ['pending', 'approved', 'declined', 'all'].includes(req.query.status) ? req.query.status : 'pending';
+    const status = ['open', 'pending', 'countered', 'approved', 'declined', 'all'].includes(req.query.status) ? req.query.status : 'open';
     const [rows, pending] = await Promise.all([
       manualProgram.listEscalations({ status }),
       manualProgram.pendingCount(),
@@ -114,6 +114,39 @@ router.post('/escalations/:id/decide', requireRole('super_admin'), async (req, r
     try { await require('../lib/workflow-automation').closeEscalationWorkflow(row.application_id, decision === 'approved' ? 'Approved' : 'Declined'); } catch (_) {}
     res.json({ ok: true, escalation: row });
   } catch (e) { res.status(500).json({ error: 'could not record the decision' }); }
+});
+
+// Counter-offer an escalation (owner-directed 2026-07-21). Super-admin only —
+// records the proposed terms + a plain-language note, moves the escalation to
+// `countered` (still on the queue, awaiting the loan officer's action), and
+// notifies the loan team with the exact counter-offer.
+router.post('/escalations/:id/counter', requireRole('super_admin'), async (req, res) => {
+  try {
+    const counterTerms = req.body && typeof req.body.counterTerms === 'object' && req.body.counterTerms ? req.body.counterTerms : {};
+    const counterNote  = req.body && req.body.counterNote;
+    if (!counterNote || !String(counterNote).trim()) {
+      return res.status(400).json({ error: 'Add a plain-language note explaining the counter-offer so the loan officer knows what you would accept.' });
+    }
+    const row = await manualProgram.counterEscalation(req.params.id, req.actor.id, { counterTerms, counterNote });
+    if (!row) return res.status(409).json({ error: 'This escalation was already decided or no longer exists.' });
+    auditSafe(req.actor.id, 'manual_program_escalation_countered', 'application', row.application_id,
+      { escalationId: row.id, counterTerms, counterNote: String(counterNote).slice(0, 400) });
+    // Notify the file's team. The counter-note reaches them verbatim in the
+    // email body so they know exactly what would be approved.
+    try {
+      const ctx = await notify.fileContext(row.application_id, [
+        { label: 'Counter-offer', value: 'Awaiting your action' },
+      ]);
+      await notify.notifyAppStaff(row.application_id, {
+        type: 'manual_escalation_countered',
+        title: 'A super-admin countered your exception',
+        body: `The exception on ${ctx ? ctx.label : 'the file'} was COUNTER-OFFERED — the super-admin proposed different terms they would accept:\n\n${String(counterNote).slice(0, 800)}\n\nReview the counter and either re-register with the countered terms (which accepts it) or request an exception with different numbers.`,
+        meta: (ctx && ctx.meta) || undefined, applicationId: row.application_id,
+        link: `/internal/app/${row.application_id}`, ctaLabel: 'Open the loan file',
+      });
+    } catch (_) { /* best-effort */ }
+    res.json({ ok: true, escalation: row });
+  } catch (e) { res.status(500).json({ error: 'could not record the counter-offer' }); }
 });
 
 module.exports = router;

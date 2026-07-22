@@ -24,10 +24,12 @@ assert.deepStrictEqual(conditionsForDoc('flood'), ['rtl_cond_flood'], 'flood map
 assert.strictEqual(expectedDocTypeForCode('rtl_cond_flood'), 'flood', 'the flood condition expects a flood determination');
 assert.ok(!docTypesForCode('rtl_cond_insurance').includes('flood'), 'flood no longer rides the insurance condition');
 
-// The settlement statement now has its OWN condition (rtl_cond_settlement) — so it reads as a
-// settlement statement and its condition shows covered, instead of having nowhere to be filed.
-assert.deepStrictEqual(conditionsForDoc('settlement'), ['rtl_cond_settlement'], 'settlement maps to its own settlement condition');
-assert.strictEqual(expectedDocTypeForCode('rtl_cond_settlement'), 'settlement', 'the settlement condition expects a settlement statement');
+// The settlement statement is post-closing only (owner-directed 2026-07-21) — it has NO live
+// pre-close condition. The reader / classifier / schema are kept so an uploaded settlement still
+// reads for reference; only the condition mapping is retired. When the post-closing module is
+// built, restore both the DOC_CONDITIONS mapping and this test.
+assert.deepStrictEqual(conditionsForDoc('settlement'), [], 'settlement has no live pre-close condition (post-closing only)');
+assert.strictEqual(expectedDocTypeForCode('rtl_cond_settlement'), null, 'the retired settlement condition maps to no expected doc type');
 assert.ok(conditionsForDoc('operating_agreement').includes('rtl_llc_opagmt') && conditionsForDoc('operating_agreement').includes('rtl_p1_llc'));
 assert.ok(conditionsForDoc('bank_statement').includes('rtl_p3_assets'));
 assert.ok(conditionsForDoc('background_report').includes('rtl_cond_fraud'));

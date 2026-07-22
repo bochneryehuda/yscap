@@ -720,6 +720,20 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   const submitExceptionMode = scenarioManual && !manualLive;
   const esc = data && data.manualEscalation;
   const escPending = esc && esc.status === 'pending';
+  const escCountered = esc && esc.status === 'countered';
+  const counterTerms = escCountered ? (esc.counter_terms || {}) : null;
+  const acceptCounter = async () => {
+    if (!escCountered) return;
+    if (!window.confirm('Accept the super-admin’s counter-offer and re-register the file with those terms?')) return;
+    setBusy(true); setErr('');
+    try {
+      await api.acceptCounterOffer(appId);
+      setMsg('Counter-offer accepted — the file has been re-registered with the countered terms.');
+      // Reload the studio's snapshot so the new (approved) registration + updated escalation state show up.
+      try { const dNew = await loadPricing(); setData(dNew); } catch (_) { /* keep old */ }
+    } catch (e) { setErr(e.message || 'Could not accept the counter-offer'); }
+    finally { setBusy(false); }
+  };
 
   return (
     <div className="panel" style={{ marginTop: 18 }}>
@@ -748,15 +762,43 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       {/* Escalation state — a registered file that needs super-admin approval
           (a Manual Program OR any Standard/Gold manual-review exception — below the
           minimum, over the maximum, etc.). The borrower is NOT sent terms until it's
-          approved (owner-directed 2026-07-20 / 2026-07-21). */}
+          approved (owner-directed 2026-07-20 / 2026-07-21). A COUNTER-OFFER state
+          (2026-07-21) surfaces the super-admin's proposed terms with a one-click
+          Accept button that re-registers the file at those terms. */}
       {cur && esc && (
-        <div className={`notice ${escPending ? 'warn' : esc.status === 'approved' ? 'ok' : 'err'}`} style={{ marginTop: 10 }}>
-          <strong>{cur.program === 'manual' ? 'Manual Program.' : 'Manual-review exception.'}</strong>{' '}
-          {escPending
-            ? `Registered but NOT confirmed — waiting for super-admin approval in the Escalations box${esc.asset_months ? ` (${esc.asset_months} month${esc.asset_months === 1 ? '' : 's'} of liquidity required)` : ''}. The borrower isn’t sent terms until it’s approved.`
-            : esc.status === 'approved'
-              ? `Approved by a super-admin${esc.asset_months ? ` · ${esc.asset_months} month${esc.asset_months === 1 ? '' : 's'} of liquidity required` : ''}.`
-              : `Declined by a super-admin${esc.decision_note ? ` — ${esc.decision_note}` : ''}. Adjust the scenario and re-register, or re-submit the exception.`}
+        <div className={`notice ${escCountered ? 'warn' : escPending ? 'warn' : esc.status === 'approved' ? 'ok' : 'err'}`} style={{ marginTop: 10 }}>
+          <strong>{escCountered ? 'Counter-offer from a super-admin.' : (cur.program === 'manual' ? 'Manual Program.' : 'Manual-review exception.')}</strong>{' '}
+          {escCountered
+            ? 'A super-admin proposed different terms they would accept. Review the terms below and accept them to re-register at the countered numbers, or open the studio and adjust the scenario for a fresh exception.'
+            : escPending
+              ? `Registered but NOT confirmed — waiting for super-admin approval in the Escalations box${esc.asset_months ? ` (${esc.asset_months} month${esc.asset_months === 1 ? '' : 's'} of liquidity required)` : ''}. The borrower isn’t sent terms until it’s approved.`
+              : esc.status === 'approved'
+                ? `Approved by a super-admin${esc.asset_months ? ` · ${esc.asset_months} month${esc.asset_months === 1 ? '' : 's'} of liquidity required` : ''}.`
+                : `Declined by a super-admin${esc.decision_note ? ` — ${esc.decision_note}` : ''}. Adjust the scenario and re-register, or re-submit the exception.`}
+          {escCountered && (
+            <div style={{ marginTop: 8, padding: 10, background: 'rgba(174,135,70,0.10)', border: '1px solid #AE8746', borderRadius: 8 }}>
+              {esc.counter_note && <div style={{ fontSize: 13, whiteSpace: 'pre-wrap', marginBottom: 8, color: 'var(--ivory,#141B22)' }}>{esc.counter_note}</div>}
+              {counterTerms && Object.keys(counterTerms).length > 0 && (
+                <div className="muted small" style={{ marginBottom: 8 }}>
+                  Super-admin would accept:{' '}
+                  {counterTerms.maxAcqLtv != null && <span>as-is LTV {(counterTerms.maxAcqLtv * 100).toFixed(2)}% · </span>}
+                  {counterTerms.maxArvLtv != null && <span>ARV LTV {(counterTerms.maxArvLtv * 100).toFixed(2)}% · </span>}
+                  {counterTerms.maxLtc    != null && <span>LTC {(counterTerms.maxLtc * 100).toFixed(2)}% · </span>}
+                  {counterTerms.noteRate  != null && <span>rate {(counterTerms.noteRate * 100).toFixed(2)}% · </span>}
+                  {counterTerms.origPct   != null && <span>origination {(counterTerms.origPct * 100).toFixed(2)}% · </span>}
+                  {counterTerms.loanAmount != null && <span>loan {money(counterTerms.loanAmount)} · </span>}
+                </div>
+              )}
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                <button className="btn primary small" disabled={busy} onClick={acceptCounter}>
+                  {busy ? 'Accepting…' : 'Accept the counter-offer'}
+                </button>
+                <button className="btn ghost small" disabled={busy} onClick={() => setOpenStudio(true)}>
+                  Open the studio and adjust
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
       {/* Manual product — the registrant must state months of liquidity before

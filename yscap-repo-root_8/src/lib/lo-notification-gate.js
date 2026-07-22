@@ -228,9 +228,17 @@ function _applyQuietHours(base, rules) {
   return base;
 }
 
+// Default safety-fallback SLA for LOs who never visited the Rules tab —
+// mirrors the migration default (48h). Without this, a fresh LO's draft has
+// auto_send_at=NULL, so the worker never rescues an untouched draft. Once the
+// LO saves rules once, that stored value takes over. `auto_send_after_hours=0`
+// is the explicit "never auto-send" opt-out and stays null.
+const DEFAULT_AUTO_SEND_HOURS = 48;
 function _computeAutoSendAt(rules) {
-  const h = rules && rules.auto_send_after_hours;
-  if (!h || h <= 0) return null;
+  if (rules == null) return new Date(Date.now() + DEFAULT_AUTO_SEND_HOURS * 3600 * 1000);
+  const h = rules.auto_send_after_hours;
+  if (h == null) return null;                         // LO explicitly opted out (0 → NULL)
+  if (!Number.isFinite(h) || h <= 0) return null;
   return new Date(Date.now() + h * 3600 * 1000);
 }
 

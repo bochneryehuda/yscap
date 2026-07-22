@@ -177,11 +177,14 @@ async function saveSettings(patch, by, client = db) {
  * transaction client. Returns the new escalation id.
  */
 async function openEscalation(client, { appId, registrationId, assetMonths, overrides, summary, requestedBy }) {
+  // Supersede any OPEN escalation on the file — a plain pending row OR a
+  // countered row awaiting the loan officer's action. The re-register replaces
+  // both; the queue never shows a stale prior counter.
   await client.query(
     `UPDATE manual_program_escalations
         SET status='declined', decided_at=now(), updated_at=now(),
             decision_note=COALESCE(decision_note,'Superseded by a newer manual registration')
-      WHERE application_id=$1 AND status='pending'`, [appId]);
+      WHERE application_id=$1 AND status IN ('pending','countered')`, [appId]);
   const structural = structuralOverridesEngaged(overrides);
   const slim = {};
   for (const k of structural) slim[k] = overrides[k];
@@ -202,27 +205,39 @@ async function openEscalation(client, { appId, registrationId, assetMonths, over
  * number of rows closed.
  */
 async function closePendingForApp(client, appId, note) {
+  // Close any OPEN escalation (plain pending OR a countered one waiting on the
+  // loan officer) — the file was re-registered as a non-manual product, so
+  // neither state is relevant anymore.
   const r = await client.query(
     `UPDATE manual_program_escalations
         SET status='declined', decided_at=now(), updated_at=now(),
             decision_note=COALESCE(decision_note,$2)
-      WHERE application_id=$1 AND status='pending'`,
+      WHERE application_id=$1 AND status IN ('pending','countered')`,
     [appId, note || 'Superseded — the file was re-registered as a non-manual product']);
   return r.rowCount || 0;
 }
 
-/** The current PENDING escalation for a file (or null). */
+/** The current OPEN escalation for a file (pending or countered), or null. */
 async function pendingForApp(appId, client = db) {
   const r = await client.query(
-    `SELECT * FROM manual_program_escalations WHERE application_id=$1 AND status='pending'
+    `SELECT * FROM manual_program_escalations WHERE application_id=$1 AND status IN ('pending','countered')
       ORDER BY created_at DESC LIMIT 1`, [appId]);
   return r.rows[0] || null;
 }
 
-/** List escalations for the super-admin box. status: 'pending'|'approved'|'declined'|'all'. */
-async function listEscalations({ status = 'pending', limit = 100 } = {}, client = db) {
-  const where = status && status !== 'all' ? `WHERE e.status = $1` : '';
-  const params = status && status !== 'all' ? [status] : [];
+/**
+ * List escalations for the super-admin box. status filters:
+ *   'open'      — pending + countered (the default queue view: everything still needing action)
+ *   'pending'   — just plain pending (no counter proposed)
+ *   'countered' — just countered (waiting on the loan officer to act on a counter)
+ *   'approved' | 'declined' — terminal states
+ *   'all'       — everything
+ */
+async function listEscalations({ status = 'open', limit = 100 } = {}, client = db) {
+  let where = '';
+  let params = [];
+  if (status === 'open') { where = `WHERE e.status IN ('pending','countered')`; }
+  else if (status && status !== 'all') { where = `WHERE e.status = $1`; params = [status]; }
   const r = await client.query(
     `SELECT e.*,
             a.ys_loan_number, a.property_address, a.loan_amount, a.status AS file_status,
@@ -239,29 +254,66 @@ async function listEscalations({ status = 'pending', limit = 100 } = {}, client 
   return r.rows;
 }
 
-/** Count of open (pending) escalations — for the nav badge. */
+/** Count of OPEN escalations (pending + countered) — for the nav badge. A
+ *  countered escalation is still open work: the loan officer still has to act on
+ *  the counter (accept the countered terms or re-request with different numbers).
+ */
 async function pendingCount(client = db) {
   try {
-    const r = await client.query(`SELECT count(*)::int AS n FROM manual_program_escalations WHERE status='pending'`);
+    const r = await client.query(
+      `SELECT count(*)::int AS n FROM manual_program_escalations WHERE status IN ('pending','countered')`);
     return r.rows[0] ? r.rows[0].n : 0;
   } catch (_) { return 0; }
 }
 
-/** Approve/decline an escalation. decision: 'approved'|'declined'. Returns the row. */
+/** Approve/decline an escalation. decision: 'approved'|'declined'. A countered
+ *  escalation may also be approved/declined outright by the super-admin (they
+ *  can decide without waiting for the loan officer to act on the counter).
+ *  Returns the row, or null if it was already decided / no longer exists.
+ */
 async function decideEscalation(id, decision, staffId, note, client = db) {
   const status = decision === 'approved' ? 'approved' : 'declined';
   const r = await client.query(
     `UPDATE manual_program_escalations
         SET status=$2, decided_by=$3, decided_at=now(),
             decision_note=$4, updated_at=now()
-      WHERE id=$1 AND status='pending'
+      WHERE id=$1 AND status IN ('pending','countered')
       RETURNING *`,
     [id, status, staffId || null, note ? String(note).slice(0, 500) : null]);
+  return r.rows[0] || null;
+}
+
+/** Counter-offer an escalation (owner-directed 2026-07-21). Instead of a plain
+ *  approve/decline, the super-admin proposes the terms they WOULD accept. The
+ *  escalation stays open (status='countered'), the loan team is notified with
+ *  the counter, and the file waits for the loan officer to re-register with
+ *  the countered terms — which supersedes this row via openEscalation() —
+ *  or to re-request the exception with different numbers.
+ *
+ *  counterTerms — small JSON blob of the modified overrides the super-admin
+ *                 would approve (e.g. { maxLtc:0.92, noteRatePts:0.5 }).
+ *  counterNote  — plain-language explanation the loan officer + borrower read.
+ *
+ *  Returns the updated row, or null if it was already decided / no longer OPEN.
+ */
+async function counterEscalation(id, staffId, { counterTerms, counterNote }, client = db) {
+  const terms = counterTerms && typeof counterTerms === 'object' ? counterTerms : {};
+  const r = await client.query(
+    `UPDATE manual_program_escalations
+        SET status='countered',
+            counter_terms=$2::jsonb,
+            counter_note=$3,
+            countered_by=$4,
+            countered_at=now(),
+            updated_at=now()
+      WHERE id=$1 AND status IN ('pending','countered')
+      RETURNING *`,
+    [id, JSON.stringify(terms), counterNote ? String(counterNote).slice(0, 1000) : null, staffId || null]);
   return r.rows[0] || null;
 }
 
 module.exports = {
   STRUCTURAL_OVERRIDE_KEYS, engaged, structuralOverridesEngaged, isManualProduct, needsSuperAdminApproval, resolveProgram,
   SETTINGS_DEFAULTS, loadSettings, saveSettings,
-  openEscalation, closePendingForApp, pendingForApp, listEscalations, pendingCount, decideEscalation,
+  openEscalation, closePendingForApp, pendingForApp, listEscalations, pendingCount, decideEscalation, counterEscalation,
 };

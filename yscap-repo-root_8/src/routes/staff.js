@@ -1994,6 +1994,129 @@ router.post('/applications/:id/pricing/request-exception', async (req, res) => {
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
+// Loan officer's ONE-CLICK accept of a super-admin's counter-offer (owner-directed
+// 2026-07-21, Task #6). The counter's numeric terms were AUTHORED by a super-admin
+// on the escalations page (manual_program_escalations.counter_terms). Accepting
+// them re-registers the file at those terms — no need for the LO to retype them.
+// The route runs the same guarded pricing + persist path a normal register uses,
+// then marks the escalation APPROVED (the LO's accept IS the approval) and
+// notifies the super-admin who authored the counter. Because the counter came
+// from a super-admin, the admin-only override keys are already authorized — they
+// bypass sanitizeOverrides which would strip them for a non-admin LO.
+router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
+  const appId = req.params.id;
+  try {
+    if (!pricing.enginesReady()) return res.status(503).json({ error: 'pricing engines unavailable', detail: pricing.loadErr() });
+    // The file's currently OPEN escalation (pending or countered). We only accept
+    // when it's actually a counter — plain pending has nothing to accept.
+    const esc = await manualProgram.pendingForApp(appId);
+    if (!esc) return res.status(409).json({ error: 'No open escalation on this file.' });
+    if (esc.status !== 'countered') return res.status(409).json({ error: 'This escalation is not in counter-offer state — nothing to accept.' });
+    const f = await loadFileForPricing(appId);
+    if (!f) return res.status(404).json({ error: 'not found' });
+
+    // Build overrides: start with the ORIGINAL manual-review overrides (stored
+    // structural keys on the escalation), then overlay the super-admin's counter
+    // terms. counter_terms holds fractions (0.925 = 92.5%) so they feed the engine's
+    // ovr* keys directly.
+    const rawCt = esc.counter_terms || {};
+    const ct = typeof rawCt === 'string' ? JSON.parse(rawCt) : rawCt;
+    const rawOv = esc.overrides || {};
+    const overrides = { ...(typeof rawOv === 'string' ? JSON.parse(rawOv) : rawOv) };
+    if (ct.maxAcqLtv != null) overrides.ovrAcqLTV = Number(ct.maxAcqLtv);
+    if (ct.maxArvLtv != null) overrides.ovrARLTV = Number(ct.maxArvLtv);
+    if (ct.maxLtc    != null) overrides.ovrLTC   = Number(ct.maxLtc);
+    if (ct.noteRate  != null) overrides.ovrRate  = Number(ct.noteRate);
+    if (ct.origPct   != null) {
+      const pctVal = Number(ct.origPct) * 100;
+      overrides.origStdPct = pctVal;
+      overrides.origGoldPct = pctVal;
+    }
+    // Force-price so a scenario ineligible under the standard caps still sizes
+    // and registers as MANUAL (the counter TERMS are the approval — we don't want
+    // an under-cap engine bounce). A super-admin authored these terms, so the
+    // authorization is already in place.
+    overrides.forcePrice = true;
+
+    const inputs = pricing.buildInputs(f.app, f.exp, overrides);
+    inputs.forcePrice = true;
+    const requestedProgram = (esc.summary && esc.summary.program) === 'gold' ? 'gold' : 'standard';
+    const program = manualProgram.resolveProgram(requestedProgram, overrides);
+    const quote = pricing.quoteProgram(program, inputs);
+    const total = Number(quote && quote.totalLoan) || 0;
+
+    // Persist + mark the escalation approved in ONE transaction so an accept
+    // never half-lands (registered without the escalation closing, or vice versa).
+    const client = await db.getClient();
+    let regId;
+    try {
+      await client.query('BEGIN');
+      const reg = await persistProductRegistration(client, {
+        appId, program, inputs, quote, registeredByStaffId: req.actor.id,
+        isManual: program === 'manual', assetMonths: esc.asset_months,
+      });
+      regId = reg.id;
+      // The LO's accept IS the approval. Mark THIS row 'approved' (persistProductRegistration
+      // may have opened a NEW escalation for the re-register — that's a separate row and stays
+      // pending only if the new scenario is itself manual-review, which is fine). The status
+      // guard makes the UPDATE strict — a parallel super-admin decide/counter that landed a
+      // millisecond earlier won't get clobbered here.
+      await client.query(
+        `UPDATE manual_program_escalations
+            SET status='approved', decided_by=$2, decided_at=now(),
+                decision_note=COALESCE(decision_note,'Loan officer accepted the counter-offer'),
+                updated_at=now()
+          WHERE id=$1 AND status='countered'`,
+        [esc.id, req.actor.id]);
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK'); throw e; }
+    finally { client.release(); }
+
+    // Post-register rule re-evaluation — the accept-counter path RE-REGISTERS the file with
+    // new economics, so the same downstream re-evaluations the normal /register endpoint runs
+    // (rule-driven conditions like liquidity months, the EMD condition on note-buyer changes,
+    // the Blue Lake 5% SOW contingency) must run here too. Otherwise a countered file lands
+    // with stale conditions. All best-effort (they never break the accept).
+    try { await conditionEngine.evaluateApplication(appId, { actor: req.actor, reason: 'counter_accepted' }); } catch (_) {}
+    try { await require('../lib/liquidity').syncLiquidityCondition(appId, quote, db, program === 'manual' ? { program, assetMonths: esc.asset_months } : {}); } catch (_) {}
+    try { await require('../lib/rehab-budget').enforceGoldSowContingency(appId); } catch (_) {}
+    // Push the new economics to ClickUp so the task mirrors the accepted terms.
+    try { require('../clickup/orchestrator').pushApplication(appId).catch(() => {}); } catch (_) {}
+
+    await audit(req, 'manual_program_counter_accepted', 'application', appId,
+      { escalationId: esc.id, registrationId: regId, counterTerms: ct, totalLoan: total });
+
+    // Notify the super-admin who authored the counter — their proposal went through.
+    try {
+      if (esc.countered_by) {
+        const ctx = await notify.fileContext(appId, [{ label: 'Counter-offer', value: 'Accepted by the loan officer' }]);
+        await notify.notifyStaff(esc.countered_by, {
+          type: 'manual_escalation_decided',
+          title: 'Your counter-offer was accepted',
+          body: `The loan officer accepted your counter-offer on ${ctx ? ctx.label : 'the file'} and the file has been re-registered with the countered terms. The borrower will be sent their confirmed terms.`,
+          meta: (ctx && ctx.meta) || undefined, applicationId: appId,
+          link: `/internal/app/${appId}`, ctaLabel: 'Open the loan file',
+        });
+      }
+    } catch (_) { /* best-effort */ }
+
+    // Take the escalation hand-off off the super-admin Workflow (mirrors decide).
+    try { await require('../lib/workflow-automation').closeEscalationWorkflow(appId, 'Counter accepted'); } catch (_) {}
+
+    // Send the borrower their confirmed terms — same email the plain-approval path sends.
+    try {
+      await require('../lib/terms-notify').sendBorrowerTerms(appId, {
+        quote, total, termMonths: inputs && inputs.term,
+      });
+    } catch (_) { /* best-effort */ }
+
+    res.json({ ok: true, registrationId: regId, totalLoan: total });
+  } catch (e) {
+    console.warn('[staff] accept-counter error:', db.describeError(e));
+    res.status(500).json({ error: 'could not accept the counter-offer' });
+  }
+});
+
 // Staff build/adjust a file's rehab budget (scope of work) — for staff-run
 // files where the borrower isn't filling it in. Upserts the rehab_budget tool
 // item's payload and syncs applications.rehab_budget (feeds pricing).
@@ -5585,6 +5708,24 @@ router.patch('/applications/:id/details', async (req, res) => {
     if (Object.keys(changes).length) {
       try { conditions = await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'details_edited' }); }
       catch (_) { /* best-effort */ }
+      // Loan Digital Twin (Sovereign 1/4): the same-write also feeds the twin so
+      // the LOS-side value shows up as an observation next to any document-sourced
+      // observations for the same fact. Best-effort.
+      try {
+        const row = (await db.query(
+          `SELECT loan_amount, purchase_price, as_is_value, arv, rehab_budget, assignment_fee,
+                  underlying_contract_price, property_type, units, property_address, program, loan_type
+             FROM applications WHERE id=$1`, [req.params.id])).rows[0];
+        if (row) {
+          const client = await db.getClient();
+          try {
+            await client.query('BEGIN');
+            await require('../lib/underwriting/twin').recordLosFieldFacts(client, req.params.id, row);
+            await client.query('COMMIT');
+          } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+          finally { client.release(); }
+        }
+      } catch (_) { /* twin capture is additive */ }
     }
     res.json({ ok: true, changed: Object.keys(changes), conditions });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
@@ -5856,6 +5997,26 @@ async function completeFields(req, res, borrowerScoped) {
       // details edit path does. Best-effort — never blocks the save.
       try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'completeness_edited' }); } catch (_) {}
       try { await require('../lib/rehab-budget').enforceSowContingency(req.params.id); } catch (_) {}
+      // Loan Digital Twin (Sovereign 1/4, owner-directed 2026-07-21): every LOS
+      // field write is a fresh observation of the underlying canonical facts
+      // (loan.amount, property.address, etc.). Feeds the twin so the completeness
+      // edit shows up in the "canonical facts" cockpit alongside every document-
+      // sourced observation. Best-effort — never blocks the save.
+      try {
+        const row = (await db.query(
+          `SELECT loan_amount, purchase_price, as_is_value, arv, rehab_budget, assignment_fee,
+                  underlying_contract_price, property_type, units, property_address, program, loan_type
+             FROM applications WHERE id=$1`, [req.params.id])).rows[0];
+        if (row) {
+          const client = await db.getClient();
+          try {
+            await client.query('BEGIN');
+            await require('../lib/underwriting/twin').recordLosFieldFacts(client, req.params.id, row);
+            await client.query('COMMIT');
+          } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+          finally { client.release(); }
+        }
+      } catch (_) { /* twin capture is additive */ }
     }
     const brVals = [bid]; const brSets = []; const brKeys = [];
     for (const [k, t] of Object.entries(COMPLETE_BORROWER_FIELDS)) {

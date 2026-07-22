@@ -336,6 +336,125 @@ async function workflowAgingOnce() {
   return sent;
 }
 
+/* Sovereign 4/4 nightly training-loop aggregation (owner-directed 2026-07-21).
+   Runs learning.runTraining once per day inside the morning window so any new
+   correction patterns from the prior 24 hours become CANDIDATE improvements
+   in the training queue (super-admin still has to promote — nothing auto-
+   promotes to production). Self-gated to at most one run per day via _gate. */
+async function trainingRunOnce() {
+  if (!(await _gate('training_run_daily', null, '20 hours'))) return 0;
+  try {
+    const client = await db.getClient();
+    let result;
+    try {
+      await client.query('BEGIN');
+      result = await require('./underwriting/learning').runTraining(client);
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+    await _stamp('training_run_daily', null, result || {});
+    return (result && result.inserted) || 0;
+  } catch (e) { console.error('[digests] training-run', e && e.message); return 0; }
+}
+
+/* Sovereign continuous CTC surveillance (owner-directed 2026-07-21). Walks
+   every file with a VALID decision certificate; any canonical fact change
+   since issue flips the certificate to 'validation_required' so a coordinator
+   re-verifies before the file advances. Self-gated to at most once per day. */
+async function certificateSurveyOnce() {
+  if (!(await _gate('cert_survey_daily', null, '20 hours'))) return 0;
+  try {
+    const client = await db.getClient();
+    let result;
+    try {
+      await client.query('BEGIN');
+      result = await require('./underwriting/certificate').surveyAllValidCertificates(client);
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+    await _stamp('cert_survey_daily', null, result || {});
+    return (result && result.flagged) || 0;
+  } catch (e) { console.error('[digests] cert-survey', e && e.message); return 0; }
+}
+
+/* Sovereign 3/4 — auto-run the multi-model committee on every OPEN FATAL
+   finding that hasn't been panel-reviewed yet (owner-directed 2026-07-21).
+   Fatals block clear-to-close; giving them an independent adversarial review
+   automatically means the reviewer sees the panel's opinion the moment they
+   open the file. Bounded batch (BATCH_LIMIT, default 20) so an outage burst
+   never runs away. Best-effort per finding — a specialist error is recorded
+   as a failed vote, never thrown. Self-gated to at most every 6 hours (the
+   committee call costs a paid model round-trip per specialist per finding). */
+async function autoCommitteeReviewOnce() {
+  if (!(await _gate('auto_committee_fatal', null, '6 hours'))) return 0;
+  const BATCH_LIMIT = Number(process.env.AUTO_COMMITTEE_BATCH || 20);
+  let reviewed = 0;
+  try {
+    // Pick open fatal findings on active files that haven't been reviewed.
+    const q = await db.query(
+      `SELECT df.id, df.code, df.severity, df.title, df.field, df.doc_value, df.file_value, df.how_to,
+              df.application_id AS app_id,
+              a.property_address, a.program, a.loan_amount,
+              b.first_name, b.last_name,
+              l.llc_name AS entity_name
+         FROM document_findings df
+         JOIN applications a ON a.id = df.application_id
+         LEFT JOIN borrowers b ON b.id = a.borrower_id
+         LEFT JOIN llcs l ON l.id = a.llc_id
+        WHERE df.status='open' AND df.severity='fatal'
+          AND df.committee_reviewed_at IS NULL
+          AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','cancelled','funded')
+        ORDER BY df.created_at DESC
+        LIMIT $1`, [BATCH_LIMIT]);
+    for (const f of q.rows) {
+      try {
+        const context = {
+          borrowerName: [f.first_name, f.last_name].filter(Boolean).join(' ') || null,
+          entityName:   f.entity_name || null,
+          propertyAddress: f.property_address && (f.property_address.line1 || f.property_address.address) || null,
+          program:      f.program || null,
+          loanAmount:   f.loan_amount || null,
+        };
+        const opinion = await require('./ai/committee').review({
+          id: f.id, code: f.code, severity: f.severity, title: f.title,
+          docValue: f.doc_value, fileValue: f.file_value, field: f.field, howTo: f.how_to,
+        }, context);
+        // Persist the review + snapshot the committee's action back onto the finding.
+        const c = await db.getClient();
+        try {
+          await c.query('BEGIN');
+          await c.query(
+            `INSERT INTO finding_committee_reviews
+               (application_id, finding_id, committee_version, action, original_severity,
+                adjudicated_severity, confidence, reasoning, votes_json, dissents_json,
+                abstained_json, failed_json, requested_by)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11::jsonb,$12::jsonb,$13)`,
+            [f.app_id, f.id, opinion.committee_version || 'v1',
+             opinion.committee.action, opinion.committee.original_severity,
+             opinion.committee.adjudicated_severity, opinion.committee.confidence,
+             opinion.committee.reasoning, JSON.stringify(opinion.committee.votes || []),
+             JSON.stringify(opinion.committee.dissents || []),
+             JSON.stringify(opinion.committee.abstained || []),
+             JSON.stringify(opinion.committee.failed || []),
+             null]);
+          await c.query(
+            `UPDATE document_findings
+                SET committee_action=$2, committee_severity=$3, committee_confidence=$4,
+                    committee_reviewed_at=now()
+              WHERE id=$1`,
+            [f.id, opinion.committee.action, opinion.committee.adjudicated_severity,
+             opinion.committee.confidence]);
+          await c.query('COMMIT');
+          reviewed += 1;
+        } catch (e) { await c.query('ROLLBACK').catch(() => {}); throw e; }
+        finally { c.release(); }
+      } catch (e) { console.error('[digests] auto-committee', f.id, e && e.message); }
+    }
+    await _stamp('auto_committee_fatal', null, { reviewed, batchLimit: BATCH_LIMIT });
+    return reviewed;
+  } catch (e) { console.error('[digests] auto-committee', e && e.message); return reviewed; }
+}
+
 /* Time-gated dispatcher — morning window for staff/admin, business hours for the
    borrower digest; each function's own audit-gate enforces the true frequency. */
 async function runDue() {
@@ -345,6 +464,9 @@ async function runDue() {
     await staleFileAlertsOnce().catch((e) => console.error('[digests] stale', e && e.message));
     await workflowAgingOnce().catch((e) => console.error('[digests] workflow-aging', e && e.message));
     await drawReleaseOverdueOnce().catch((e) => console.error('[digests] draw-release', e && e.message));
+    await trainingRunOnce().catch((e) => console.error('[digests] training-run', e && e.message));
+    await certificateSurveyOnce().catch((e) => console.error('[digests] cert-survey', e && e.message));
+    await autoCommitteeReviewOnce().catch((e) => console.error('[digests] auto-committee', e && e.message));
     if (weekday === 'Mon') await weeklyAdminSummaryOnce().catch((e) => console.error('[digests] admin', e && e.message));
   }
   if (hour >= 8 && hour < 18) {
@@ -369,4 +491,5 @@ module.exports = {
   start, runDue, nyParts,
   weeklyBorrowerOutstandingOnce, dailyPipelineDigestOnce, staleFileAlertsOnce, weeklyAdminSummaryOnce,
   drawFindingsAwaitingBorrowerOnce, drawReleaseOverdueOnce, workflowAgingOnce,
+  trainingRunOnce, certificateSurveyOnce, autoCommitteeReviewOnce,
 };
