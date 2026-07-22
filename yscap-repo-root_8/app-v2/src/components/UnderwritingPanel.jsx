@@ -1482,6 +1482,13 @@ function SovereignAiRiskSection({ appId }) {
             {bd.info > 0 ? `${bd.info} info` : ''}
             {data.oldestFatalDays >= 1 ? ` · oldest fatal ${Math.floor(data.oldestFatalDays)}d` : ''}
           </div>
+          {/* R4.19 — one-line triage: the single worst open finding. */}
+          {data.topFinding && data.topFinding.title && (
+            <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+              title={data.topFinding.title}>
+              <span style={{ fontWeight: 700, color: tint }}>Worst:</span> {data.topFinding.title}
+            </div>
+          )}
         </div>
         <div style={{ textAlign: 'right', flexShrink: 0 }}>
           <div style={{ fontSize: 26, fontWeight: 800, color: tint, lineHeight: 1 }}>{data.score}</div>

@@ -1569,10 +1569,25 @@ router.get('/:appId/ai-risk-score', async (req, res, next) => {
     else if (score >= 50) bucket = 'elevated';
     else if (score >= 20) bucket = 'moderate';
     else bucket = 'low';
+    // R4.19 — the single worst open finding, so the file view can print a
+    // one-line triage summary. Worst = highest severity, then most recent.
+    let topFinding = null;
+    try {
+      const t = await db.query(
+        `SELECT title, severity, source
+           FROM ai_suggestions
+          WHERE application_id=$1
+            AND status IN ('open','marked_important','escalated','asked_admin')
+          ORDER BY CASE severity WHEN 'fatal' THEN 0 WHEN 'warning' THEN 1 WHEN 'info' THEN 2 ELSE 3 END,
+                   created_at DESC
+          LIMIT 1`, [app.id]);
+      if (t.rows[0]) topFinding = { title: t.rows[0].title, severity: t.rows[0].severity, source: t.rows[0].source };
+    } catch (_) { /* additive */ }
     res.json({
       ok: true, score, bucket,
       breakdown: { fatal: c.fatal || 0, warning: c.warning || 0, info: c.info || 0, other: c.other || 0 },
       oldestFatalDays: c.oldest_fatal_days != null ? Number(c.oldest_fatal_days) : null,
+      topFinding,
     });
   } catch (e) { next(e); }
 });
