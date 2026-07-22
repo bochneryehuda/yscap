@@ -59,8 +59,8 @@ function toRuns(pages) {
  * planSlices(documents, opts?) → {
  *   ok,                                        // true iff every plan is valid AND no overlaps
  *   plans: [{ id, pages, runs, start, end, pageCount, contiguous, mode, valid, reason }],
- *   coverage: { totalPages, assignedPages, gaps:[page], overlaps:[{ page, docs:[id] }],
- *               outOfBounds:[{ id, pages:[page] }] },
+ *   coverage: { totalPages, assignedPages, gaps:[page], trailingUnassigned:{from,to,count}|null,
+ *               overlaps:[{ page, docs:[id] }], outOfBounds:[{ id, pages:[page] }] },
  * }
  *   documents: [{ id, pages:[n] | start,end, mode?, needsPhysical? }]
  *   opts: { totalPages?, defaultMode?:'virtual'|'physical' }
@@ -120,9 +120,18 @@ function planSlices(documents, opts = {}) {
   for (const [page, ids] of owners) if (ids.length > 1) overlaps.push({ page, docs: [...new Set(ids)] });
   overlaps.sort((a, b) => a.page - b.page);
 
-  // Gaps: an in-bounds page owned by nobody.
+  // Gaps: an in-bounds page owned by nobody. Enumerate only up to the last page
+  // any document actually references (interior gaps between documents) — a real
+  // packet's totalPages ≈ that, so this is identical for legitimate input. If a
+  // caller passes an absurd totalPages far above any referenced page (bad/hostile
+  // input), the trailing unassigned pages are SUMMARIZED, never enumerated, so
+  // the scan can never run an unbounded O(totalPages) loop.
+  const gapScanTo = Math.min(totalPages, maxSeen);
   const gaps = [];
-  for (let p = 1; p <= totalPages; p++) if (!owners.has(p)) gaps.push(p);
+  for (let p = 1; p <= gapScanTo; p++) if (!owners.has(p)) gaps.push(p);
+  const trailingUnassigned = totalPages > maxSeen
+    ? { from: maxSeen + 1, to: totalPages, count: totalPages - maxSeen }
+    : null;
 
   const assignedPages = owners.size;
   const ok = plans.every((p) => p.valid) && overlaps.length === 0;
@@ -130,7 +139,7 @@ function planSlices(documents, opts = {}) {
   return {
     ok,
     plans,
-    coverage: { totalPages, assignedPages, gaps, overlaps, outOfBounds },
+    coverage: { totalPages, assignedPages, gaps, trailingUnassigned, overlaps, outOfBounds },
   };
 }
 

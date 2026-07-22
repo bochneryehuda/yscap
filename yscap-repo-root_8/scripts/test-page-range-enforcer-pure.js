@@ -81,6 +81,21 @@ assert.strictEqual(r.coverage.totalPages, 3, 'total inferred from the highest re
 assert.strictEqual(r.ok, true);
 ok('totalPages is inferred from the highest referenced page when not supplied');
 
+// --- an absurd totalPages never causes a pathological gap scan; the tail is summarized ---
+let t0 = Date.now();
+r = pe.planSlices([{ id: 'a', pages: [1, 2] }], { totalPages: 1e9 }); // 1 billion pages, only 2 assigned
+assert.ok(Date.now() - t0 < 500, 'the gap scan is bounded (no O(totalPages) hang on absurd input)');
+assert.deepStrictEqual(r.coverage.gaps, [], 'no interior gaps up to the last referenced page');
+assert.ok(r.coverage.trailingUnassigned, 'the huge unassigned tail is summarized, not enumerated');
+assert.strictEqual(r.coverage.trailingUnassigned.from, 3);
+assert.strictEqual(r.coverage.trailingUnassigned.count, 1e9 - 2);
+ok('an absurd totalPages summarizes the trailing tail instead of enumerating a billion gap pages');
+
+// a normal trailing gap (a few unassigned pages at the end) is still summarized cleanly
+r = pe.planSlices([{ id: 'a', pages: [1, 2] }], { totalPages: 5 });
+assert.deepStrictEqual(r.coverage.trailingUnassigned, { from: 3, to: 5, count: 3 }, 'pages 3-5 are the unassigned tail');
+ok('a small trailing tail of unassigned pages is summarized (from/to/count)');
+
 // --- empty / junk input is safe ---
 assert.doesNotThrow(() => pe.planSlices(null));
 assert.strictEqual(pe.planSlices(null).ok, true, 'nothing to slice is trivially ok');
