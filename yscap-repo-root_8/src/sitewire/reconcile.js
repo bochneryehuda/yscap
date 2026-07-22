@@ -417,6 +417,46 @@ async function reconcileOne(appId) {
     // item 1180824 sitting nameless on the crosswalk: it was never bound at all.
     if (budgetJobItems.length) await adoptSeededMediaItems(appId, prop.budget && prop.budget.id, budgetJobItems);
   } catch (_) { /* best-effort */ }
+  // Owner-directed 2026-07-22 self-heals — a review row that has been RESOLVED by reality (Sitewire
+  // now shows the fix) auto-closes on the next reconcile, instead of sitting on the desk forever.
+  // Both are best-effort — a failure never breaks the reconcile.
+  //
+  // 1) sitewire_borrower_assign_failed: the push parks this when Sitewire 422s a borrower assignment
+  //    (bad email, not-yet-accepted contact, duplicate). If Sitewire now shows the borrower as
+  //    `assigned` or `invited`, the situation is resolved (the coordinator fixed the email, or the
+  //    borrower accepted the invite Sitewire sent). Per the swagger, GET /properties/:id returns
+  //    prop.borrower.status ∈ {assigned, invited, unassigned}. Auto-close on the first two.
+  try {
+    const bStatus = prop.borrower && prop.borrower.status;
+    if (bStatus === 'assigned' || bStatus === 'invited') {
+      await db.query(
+        `UPDATE sync_review_queue
+            SET status='resolved', auto_resolved=true, resolved_at=now(),
+                resolution_note='auto-closed — Sitewire now shows the borrower as ' || $2
+          WHERE status='open' AND application_id=$1 AND field_key='sitewire'
+            AND task_id LIKE 'sitewire:%:sitewire_borrower_assign_failed%'`,
+        [appId, bStatus]);
+    }
+  } catch (_) { /* best-effort */ }
+  // 2) sitewire_units_note: the push parks this when the file's unit count and the SOW's unit count
+  //    disagree (advisory — the push still proceeds with `Math.max(1, fileUnits, sowUnits)` per the
+  //    2026-07-20 physical-units rule). If Sitewire NOW carries the physical count AND the file's
+  //    units column has since been updated to match, the two-sided disagreement is resolved from
+  //    both directions. We only close when BOTH sides agree — never when only Sitewire changed
+  //    (the review is a two-sided pointer at the file column that still needs fixing).
+  try {
+    const swUnits = Number(prop.total_units || 0);
+    const fileUnits = Number((await db.query(`SELECT units FROM applications WHERE id=$1`, [appId])).rows[0]?.units || 0);
+    if (swUnits > 0 && fileUnits > 0 && swUnits === fileUnits) {
+      await db.query(
+        `UPDATE sync_review_queue
+            SET status='resolved', auto_resolved=true, resolved_at=now(),
+                resolution_note='auto-closed — the file and Sitewire now agree on ' || $2 || ' unit(s)'
+          WHERE status='open' AND application_id=$1 AND field_key='sitewire'
+            AND task_id LIKE 'sitewire:%:sitewire_units_note%'`,
+        [appId, String(swUnits)]);
+    }
+  } catch (_) { /* best-effort */ }
   await db.query(`UPDATE sitewire_property_links SET last_reconciled_at=now() WHERE application_id=$1`, [appId]);
   // Bidirectional Phase 2: re-verify the managed budget against what PILOT pushed, at most HOURLY per
   // file (the extra getBudget read stays cheap), and never on a file's first reconcile (nothing to
