@@ -27,6 +27,7 @@ const azure = require('./docint');
 const google = require('./docai-google');
 const mistral = require('./docai-mistral');
 const matrix = require('./routing-matrix');
+const weakReread = require('./weak-page-reread');
 
 // Map a routing-matrix engine name → the per-engine module + the winner label
 // the router reports. 'native_pdf' / 'appraisal_xml' are UPSTREAM deterministic
@@ -226,13 +227,39 @@ async function readRouted(args, bytesHint) {
 
   const result = { ...winner, engineSequence: sequence, routePlan: plan };
 
-  // Weak-page identification — which pages read below the plan's confidence floor
-  // and are worth a targeted re-read by the challenger. Attached advisorily; the
-  // full re-OCR-and-splice of just these pages is a follow-up. Only meaningful
-  // when the engine surfaced per-page confidence (Azure prebuilt-layout does).
+  // Weak-page identification + TARGETED re-read. Which pages read below the
+  // plan's confidence floor, and — best-effort — re-OCR ONLY those pages with a
+  // different engine and splice the better text back (never re-read the whole
+  // document because one page is weak). Only meaningful when the engine surfaced
+  // per-page confidence (Azure prebuilt-layout does).
   if (plan.reread && plan.reread.enabled && Array.isArray(winner.pages)) {
     const weak = matrix.weakPages(winner.pages, plan.reread.confidenceFloor);
-    if (weak.length) result.weakPages = weak;
+    if (weak.length) {
+      result.weakPages = weak;
+      // Pick a different OCR engine to re-read the weak pages with.
+      const winnerEngine = Object.keys(ENGINE_LABEL).find((k) => ENGINE_LABEL[k] === winner.engine);
+      const rereadEngine = (plan.challenger && isOcr(plan.challenger) && plan.challenger !== winnerEngine)
+        ? plan.challenger
+        : (plan.fallbacks || []).find((e) => isOcr(e) && e !== winnerEngine);
+      if (rereadEngine) {
+        const rr = await weakReread.rereadWeakPages({
+          buffer: args.buffer,
+          base64: args.base64,
+          originalPages: winner.pages,
+          weakPages: weak,
+          engine: rereadEngine,
+          read: (eng, a) => engineRead(eng, a),
+        }).catch(() => ({ ok: false, replaced: [] }));
+        if (rr && rr.ok && rr.replaced && rr.replaced.length) {
+          // Splice the improved text in; report which pages were re-read + by whom.
+          result.pages = rr.pages;
+          result.text = rr.text;
+          result.rereadPages = rr.replaced;
+          result.rereadEngine = ENGINE_LABEL[rereadEngine] || rereadEngine;
+          if (!sequence.includes(rereadEngine)) sequence.push(rereadEngine);
+        }
+      }
+    }
   }
 
   // Mandatory challenger for numeric-critical documents — a SECOND independent
