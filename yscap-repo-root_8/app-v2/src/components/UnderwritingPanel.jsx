@@ -1683,7 +1683,7 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true }) {
   const total = openRows.length;
 
   return (
-    <div style={{ marginBottom: 22, border: '1px solid var(--paper,#E9E4D3)', borderRadius: 12, background: 'var(--card,#fff)' }}>
+    <div id="ai-findings" style={{ marginBottom: 22, border: '1px solid var(--paper,#E9E4D3)', borderRadius: 12, background: 'var(--card,#fff)', scrollMarginTop: 80 }}>
       <div onClick={() => setExpanded(!expanded)} style={{ cursor: 'pointer', padding: '10px 14px', borderBottom: expanded ? '1px solid var(--paper,#E9E4D3)' : 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div>
           <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: 0, fontSize: 15 }}>

@@ -126,12 +126,17 @@ export default function StaffInsightsDashboard() {
         const tint = days >= 3 ? 'var(--crit,#B4483C)' : days >= 1 ? 'var(--amber-strong,#A05F0A)' : 'var(--amber,#B7791F)';
         const addr = (r.property_address && (r.property_address.line1 || r.property_address.address || r.property_address.oneLine)) || r.application_id.slice(0, 8);
         return (
-          <div key={r.application_id} style={{ display: 'flex', gap: 10, padding: '4px 0', borderBottom: '1px dashed var(--paper,#E9E4D3)', fontSize: 12 }}>
+          <div key={r.application_id} style={{ display: 'flex', gap: 10, padding: '4px 0', borderBottom: '1px dashed var(--paper,#E9E4D3)', fontSize: 12, alignItems: 'center' }}>
             <span style={{ minWidth: 70, color: tint, fontWeight: 700 }}>{days >= 1 ? `${days}d old` : '<1d'}</span>
-            <span style={{ flex: 1 }}>
+            <span style={{ flex: 1, minWidth: 0 }}>
               <Link to={`/staff/applications/${r.application_id}`} style={{ color: 'var(--teal-deep,#256168)' }}>{addr}</Link>
               {' — '}<span style={{ color: 'var(--muted,#4B585C)' }}>{r.first_name} {r.last_name} · {r.program || 'no program'} · {r.app_status}</span>
             </span>
+            <Link to={`/staff/applications/${r.application_id}?focus=ai-findings`}
+              title="Jump to the AI Findings panel on this file"
+              style={{ fontSize: 10.5, padding: '2px 6px', borderRadius: 8, border: `1px solid ${tint}`, color: tint, textDecoration: 'none', fontWeight: 700, whiteSpace: 'nowrap' }}>
+              Review AI →
+            </Link>
             <span style={{ color: tint, fontWeight: 700, minWidth: 24, textAlign: 'right' }}>{r.open_fatal}</span>
           </div>
         );
