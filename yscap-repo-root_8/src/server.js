@@ -19,6 +19,19 @@ const app = express();
 app.set('trust proxy', 1);
 // Baseline security headers on every response (nosniff, anti-clickjacking, HSTS…).
 app.use(require('./lib/security').securityHeaders);
+// Automatic request-level audit log — writes ONE row per HTTP request into
+// `request_audit_log` (see db/248_*.sql + src/lib/request-audit.js), captured
+// asynchronously so the request itself is never delayed. Complements the
+// semantic audit_log (business actions) with a full request firehose:
+// who called what, when, from where, with which status, in how many ms.
+// Mounted here so it wraps EVERY route below — webhooks, /auth, /api, /link,
+// the pixel, and SPA shell requests — with the redactor stripping tokens /
+// passwords / SSNs from query + body summaries.
+{
+  const ra = require('./lib/request-audit');
+  app.use(ra.middleware);
+  app.use(ra.attachAuditError);
+}
 // Body limit must comfortably exceed a max-size upload AFTER base64 inflation:
 // a MAX_UPLOAD_MB-byte file becomes ~1.37x that as base64 inside the JSON body,
 // plus envelope. A flat 25mb limit silently 413'd legitimate ~19-20MB uploads.
