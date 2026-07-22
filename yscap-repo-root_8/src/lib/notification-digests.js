@@ -542,6 +542,13 @@ async function certificateSurveyOnce() {
    as a failed vote, never thrown. Self-gated to at most every 6 hours (the
    committee call costs a paid model round-trip per specialist per finding). */
 async function autoCommitteeReviewOnce() {
+  // Owner hard rule (2026-07-22): the AI does NOT act on its own. The scheduled
+  // committee sweep is gated OFF by default — super-admins still run the panel
+  // on demand from the file view, and the panel's verdict becomes an AI
+  // SUGGESTION (kind='finding') that a human decides on. Set AI_AUTO_COMMITTEE=1
+  // if the owner explicitly opts back in.
+  const cfg = require('../config');
+  if (!cfg.aiAutoCommittee) return 0;
   if (!(await _gate('auto_committee_fatal', null, '6 hours'))) return 0;
   const BATCH_LIMIT = Number(process.env.AUTO_COMMITTEE_BATCH || 20);
   let reviewed = 0;

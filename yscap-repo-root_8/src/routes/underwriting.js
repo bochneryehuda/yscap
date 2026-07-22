@@ -1347,6 +1347,133 @@ router.post('/:appId/experience-exception', requirePermission('waive_conditions'
   } catch (e) { next(e); }
 });
 
+// -------------------------------------------------------------------------
+// AI SUGGESTIONS — the file's non-autonomous "AI panel" backend (R3.5/R3.6).
+// Owner hard rule (2026-07-22): the AI writes suggestions here — a human
+// clicks Escalate / Add note / Convert to condition / Convert to task /
+// Mark important / Dismiss / Ask super-admin.
+// -------------------------------------------------------------------------
+router.get('/:appId/ai-suggestions', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const aiSug = require('../lib/underwriting/ai-suggestions');
+    const suggestions = await aiSug.listForFile(app.id, {
+      status: req.query.status || undefined,
+      source: req.query.source || undefined,
+      includeDismissed: req.query.include_dismissed === '1',
+      limit: Number(req.query.limit) || undefined,
+    }, db);
+    res.json({ ok: true, suggestions });
+  } catch (e) { next(e); }
+});
+
+// Human decides on ONE suggestion. Action semantics live in ai-suggestions.decide().
+// convert_to_condition takes an OPTIONAL templateCode: when provided the route also
+// creates the checklist_items row + links it — a true "click to create the condition
+// I proposed" one-shot. Otherwise the caller passes an already-created conditionId.
+router.post('/:appId/ai-suggestions/:id/decide', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const aiSug = require('../lib/underwriting/ai-suggestions');
+    const body = req.body || {};
+    const action = String(body.action || '').toLowerCase();
+    if (!action) return res.status(400).json({ error: 'action required' });
+    const client = await db.pool.connect();
+    try {
+      await client.query('BEGIN');
+      // Refuse to decide on someone else's file — the fileFor gate above already
+      // scoped to a visible file, but the suggestion also has to belong to that app.
+      const sc = await client.query(`SELECT application_id FROM ai_suggestions WHERE id=$1`, [req.params.id]);
+      if (!sc.rows[0] || sc.rows[0].application_id !== app.id) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'suggestion not found on this file' }); }
+
+      // Special path — "convert to condition" from a proposedAction can create
+      // the checklist_items row in the same tx and link it back on the suggestion.
+      let opts = { action, staffId: req.actor.staffId, reason: body.reason, note: body.note };
+      if (action === 'convert_to_condition' && !body.conditionId) {
+        const sug = (await client.query(`SELECT * FROM ai_suggestions WHERE id=$1`, [req.params.id])).rows[0];
+        const pa = sug && sug.proposed_action || {};
+        const tplCode = body.templateCode || pa.templateCode || pa.fields && pa.fields.opensCondition || null;
+        if (!tplCode) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'templateCode required for convert_to_condition' }); }
+        // Look up the template and create a checklist_items row on this file — mirrors the
+        // pattern in src/lib/appraisal/desk.js / src/lib/vesting.js: pull every template
+        // column, insert as a scope='application' row against this file.
+        const tplQ = await client.query(
+          `INSERT INTO checklist_items
+             (template_id, scope, label, borrower_label, audience, item_kind, role_scope,
+              phase, hint, borrower_hint, is_gate, is_milestone, sort_order, tool_key,
+              clickup_field_id, tpr_exclude, created_by_kind, is_required, application_id,
+              status, notes)
+           SELECT t.id, t.scope, t.label, t.borrower_label, t.audience, t.item_kind,
+                  COALESCE(t.role_scope,'any'), t.phase, t.hint, t.borrower_hint,
+                  COALESCE(t.is_gate,false), COALESCE(t.is_milestone,false),
+                  COALESCE(t.sort_order,900), t.tool_key, t.clickup_field_id,
+                  COALESCE(t.tpr_exclude,false), 'system', COALESCE(t.is_required,true), $1,
+                  'issue', $3
+             FROM checklist_templates t
+            WHERE t.code = $2 AND t.scope = 'application'
+            RETURNING id`,
+          [app.id, tplCode, `[from AI suggestion] ${sug.title}`]);
+        if (!tplQ.rows[0]) { await client.query('ROLLBACK'); return res.status(400).json({ error: `unknown template ${tplCode}` }); }
+        opts.conditionId = tplQ.rows[0].id;
+      }
+      if (action === 'convert_to_task' && !body.taskId) {
+        // Task id is the caller's responsibility (ClickUp id or internal); require it.
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'taskId required for convert_to_task' });
+      }
+      const r = await aiSug.decide(client, req.params.id, opts);
+      await client.query('COMMIT');
+      res.json({ ok: true, suggestion: r.row });
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+  } catch (e) { next(e); }
+});
+
+router.post('/:appId/ai-suggestions/:id/note', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const aiSug = require('../lib/underwriting/ai-suggestions');
+    // Same scope guard as decide.
+    const sc = await db.query(`SELECT application_id FROM ai_suggestions WHERE id=$1`, [req.params.id]);
+    if (!sc.rows[0] || sc.rows[0].application_id !== app.id) return res.status(404).json({ error: 'not found on this file' });
+    await aiSug.addNote(db, req.params.id, { staffId: req.actor.staffId, text: String(req.body && req.body.text || '') });
+    res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
+// -------------------------------------------------------------------------
+// AI-to-super-admin questions (R3.7). AI agents call ai-suggestions.askAdmin(...)
+// which creates a suggestion (kind='question') AND an ai_admin_questions row.
+// The super-admin answers here — the answer feeds learning + closes the suggestion.
+// -------------------------------------------------------------------------
+router.get('/ai-admin/questions', requirePermission('promote_training'), async (req, res, next) => {
+  try {
+    const aiSug = require('../lib/underwriting/ai-suggestions');
+    const rows = await aiSug.listOpenAdminQuestions({ appId: req.query.appId || undefined,
+      limit: Number(req.query.limit) || undefined }, db);
+    res.json({ ok: true, questions: rows });
+  } catch (e) { next(e); }
+});
+router.post('/ai-admin/questions/:id/answer', requirePermission('promote_training'), async (req, res, next) => {
+  try {
+    const aiSug = require('../lib/underwriting/ai-suggestions');
+    const client = await db.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await aiSug.answerAdminQuestion(client, req.params.id, {
+        staffId: req.actor.staffId,
+        answer: String((req.body && req.body.answer) || ''),
+      });
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+    res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
 // R2.9 — Expose the auto-read machinery so the scheduled sweep (notification-
 // digests.autoReadSweepOnce) can drive the same pipeline the /:appId/auto-read
 // button drives. Read-only exports: analyzeOneDocument, fileFor, buildAutoReadQueue.

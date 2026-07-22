@@ -487,6 +487,21 @@ module.exports = {
     endpoint: (process.env.ATTOM_ENDPOINT || 'https://api.gateway.attomdata.com').trim().replace(/\/+$/, ''),
   },
 
+  // --- AI autonomy master switch (owner-directed 2026-07-22, HARD RULE):
+  // FALSE by default. When false, every AI agent (cure, committee, twin,
+  // promoted-rules, entity chain, assignment fraud, wrong-condition, etc.)
+  // routes its output to the ai_suggestions store — a human clicks to
+  // escalate / add a note / convert to condition / convert to task /
+  // mark important / dismiss / ask super-admin. The AI never writes
+  // conditions, never changes file status, never overrides anything.
+  // Set AI_AUTONOMOUS_MODE=1 ONLY if the owner explicitly re-opts in.
+  aiAutonomousMode: process.env.AI_AUTONOMOUS_MODE === '1',
+  // Gate the periodic auto-committee sweep (a scheduled digest run of the
+  // multi-model panel over unreviewed findings). Even when the master
+  // switch is off, super-admins can still run the committee on demand
+  // from the file view. Default OFF (2026-07-22).
+  aiAutoCommittee: process.env.AI_AUTO_COMMITTEE === '1',
+
   // --- Langfuse (owner-directed 2026-07-22): AI observability, free hobby tier.
   // Every AI call in PILOT (Azure OpenAI extraction, committee, docint OCR, azure-custom
   // classification/extraction) is TRACED — prompt + input + output + confidence + cost + latency —
