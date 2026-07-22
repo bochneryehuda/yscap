@@ -5599,8 +5599,23 @@ async function advancementBlockers(appId, target) {
       }];
     }
   } catch (_) { /* never break advancement gating on a tie-out compute error */ }
+  // R3.17 — AI fraud/authenticity fatal suggestions surface here as ADVISORY
+  // blockers so a reviewer sees them on the readiness widget before moving to
+  // clear-to-close. Per HARD RULE the AI never blocks the transition itself
+  // — the client's "Advance" action may still confirm past them. Best-effort:
+  // a load failure never breaks the readiness view.
+  let aiAdvisories = [];
+  try {
+    const fa = require('../lib/underwriting/fraud-alert');
+    const signals = await fa.openMajorSignals(appId, db);
+    aiAdvisories = signals.map(s => ({
+      id: `ai:${s.id}`, title: `AI advisory: ${s.title}`, source: 'ai_suggestion',
+      section: 'sec-underwriting',
+      reason: `A ${s.source.replace(/_/g, ' ')} signal is open on the AI Findings panel. Review or dismiss before moving to clear-to-close.`,
+    }));
+  } catch (_) { aiAdvisories = []; }
   return {
-    conditions: [...underwriting, ...checklistConds.rows, ...underwritingFatals].map(r => decorateBlocker(r, 'condition')),
+    conditions: [...underwriting, ...checklistConds.rows, ...underwritingFatals, ...aiAdvisories].map(r => decorateBlocker(r, 'condition')),
     gates: gates.rows.map(r => decorateBlocker(r, 'gate')),
   };
 }
