@@ -10,6 +10,7 @@
  */
 const db = require('../db');
 const cfg = require('../config');
+const switches = require('../lib/integrations/switches');
 const client = require('./client');
 const T = require('./transforms');
 const rollupMod = require('./rollup');
@@ -427,15 +428,47 @@ async function reconcileOne(appId) {
   //    borrower accepted the invite Sitewire sent). Per the swagger, GET /properties/:id returns
   //    prop.borrower.status ∈ {assigned, invited, unassigned}. Auto-close on the first two.
   try {
-    const bStatus = prop.borrower && prop.borrower.status;
-    if (bStatus === 'assigned' || bStatus === 'invited') {
+    const bStatus = prop.borrower && String(prop.borrower.status || '').toLowerCase();
+    const bEmail = prop.borrower && String(prop.borrower.contact_email || '').toLowerCase();
+    // Load the file's expected invite email so we can heal on email match too (Sitewire may show
+    // a status we don't recognize but the email still lines up — that means the assign succeeded).
+    let inviteEmail = '';
+    try {
+      const orch = require('./orchestrator');
+      const a = await orch.loadFile(appId);
+      inviteEmail = String(orch.inviteEmailFor(link, a) || '').toLowerCase();
+    } catch (_) {}
+    const emailMatches = !!(inviteEmail && bEmail && inviteEmail === bEmail);
+    if (bStatus === 'assigned' || bStatus === 'invited' || emailMatches) {
       await db.query(
         `UPDATE sync_review_queue
             SET status='resolved', auto_resolved=true, resolved_at=now(),
-                resolution_note='auto-closed — Sitewire now shows the borrower as ' || $2
+                resolution_note='auto-closed — Sitewire ' || $2
           WHERE status='open' AND application_id=$1 AND field_key='sitewire'
             AND task_id LIKE 'sitewire:%:sitewire_borrower_assign_failed%'`,
-        [appId, bStatus]);
+        [appId, bStatus ? ('now shows the borrower as ' + bStatus) : 'has the borrower email on file']);
+    } else if (inviteEmail && (!bStatus || bStatus === 'unassigned')) {
+      // Owner-directed 2026-07-22 auto-retry: the row is stuck AND Sitewire has no borrower.
+      // Retry the assign automatically — the improved 422→live-check path will heal on any
+      // "not really a failure" 422/409. Rate-limited via audit_log so a genuinely-rejected email
+      // doesn't hammer Sitewire on every reconcile (once per hour per file).
+      let recentlyRetried = false;
+      try {
+        const r = await db.query(
+          `SELECT 1 FROM audit_log
+            WHERE entity_type='application' AND entity_id=$1 AND action='sitewire_borrower_auto_retry'
+              AND created_at > now() - interval '1 hour' LIMIT 1`, [appId]);
+        recentlyRetried = r.rowCount > 0;
+      } catch (_) {}
+      if (!recentlyRetried && switches.on('SITEWIRE_ENABLED') && (switches.on('SITEWIRE_OUTBOUND_ENABLED') || cfg.sitewireDryrun)) {
+        try {
+          await db.query(
+            `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+             VALUES ('system', NULL, 'sitewire_borrower_auto_retry', 'application', $1, $2)`,
+            [appId, JSON.stringify({ email: inviteEmail, note: 'reconcile auto-retry of stuck sitewire_borrower_assign_failed' })]);
+        } catch (_) {}
+        try { await require('./orchestrator').resendBorrowerInvite(appId); } catch (_) {}
+      }
     }
   } catch (_) { /* best-effort */ }
   // 2) sitewire_units_note: the push parks this when the file's unit count and the SOW's unit count
