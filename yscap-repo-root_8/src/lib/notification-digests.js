@@ -361,6 +361,52 @@ async function trainingRunOnce() {
    every file with a VALID decision certificate; any canonical fact change
    since issue flips the certificate to 'validation_required' so a coordinator
    re-verifies before the file advances. Self-gated to at most once per day. */
+/* R2.8 — Nightly direct-source verification sweep (Sovereign extension,
+   owner-directed 2026-07-22). Walks every active file whose PILOT status is
+   past 'file_intake' and calls direct-source-hub.verifyFile per file — the
+   hub, in turn, calls every CONFIGURED connector (Plaid, Xactus,
+   property_data, HouseCanary, Clear Capital, ATTOM) and feeds
+   api_verification observations to the twin. Unconfigured connectors are
+   cleanly skipped (no HTTP), so this is a safe no-op until the first vendor
+   key lands in Render — at which point the sweep automatically starts
+   producing verified twin facts.
+   Bounded: DIRECT_SOURCE_SWEEP_BATCH (default 40 files/run) so an outage
+   burst never runs away. Self-gated to at most once per 20 hours. */
+async function directSourceSweepOnce() {
+  if (!(await _gate('direct_source_sweep_daily', null, '20 hours'))) return 0;
+  const BATCH = Number(process.env.DIRECT_SOURCE_SWEEP_BATCH || 40);
+  let files = 0, calls = 0;
+  try {
+    // Any live vendor connector configured? If not, skip entirely — no HTTP,
+    // no notify, no work. Cheap early-return so a keyless environment stays
+    // silent.
+    const hub = require('./integrations/direct-source-hub');
+    const configuredCount = Object.values(hub.CONNECTORS || {}).filter((c) => { try { return c.configured(); } catch { return false; } }).length;
+    if (configuredCount === 0) { await _stamp('direct_source_sweep_daily', null, { skipped: 'no vendor keys configured' }); return 0; }
+    const targets = await db.query(
+      `SELECT id FROM applications
+        WHERE deleted_at IS NULL AND status NOT IN ('withdrawn','cancelled','funded','declined')
+          AND status IS DISTINCT FROM 'file_intake'
+        ORDER BY updated_at DESC
+        LIMIT $1`, [BATCH]);
+    for (const row of targets.rows) {
+      try {
+        const client = await db.getClient();
+        try {
+          await client.query('BEGIN');
+          const r = await hub.verifyFile(client, row.id, {});
+          await client.query('COMMIT');
+          files += 1;
+          calls += (r && r.results ? r.results.filter((x) => x.ok || x.reason).length : 0);
+        } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+        finally { client.release(); }
+      } catch (e) { console.error('[digests] direct-source-sweep', row.id, e && e.message); }
+    }
+    await _stamp('direct_source_sweep_daily', null, { files, calls, configuredCount });
+    return files;
+  } catch (e) { console.error('[digests] direct-source-sweep', e && e.message); return files; }
+}
+
 async function certificateSurveyOnce() {
   if (!(await _gate('cert_survey_daily', null, '20 hours'))) return 0;
   try {
@@ -482,6 +528,7 @@ async function runDue() {
     await drawReleaseOverdueOnce().catch((e) => console.error('[digests] draw-release', e && e.message));
     await trainingRunOnce().catch((e) => console.error('[digests] training-run', e && e.message));
     await certificateSurveyOnce().catch((e) => console.error('[digests] cert-survey', e && e.message));
+    await directSourceSweepOnce().catch((e) => console.error('[digests] direct-source-sweep', e && e.message));
     await autoCommitteeReviewOnce().catch((e) => console.error('[digests] auto-committee', e && e.message));
     if (weekday === 'Mon') await weeklyAdminSummaryOnce().catch((e) => console.error('[digests] admin', e && e.message));
   }
@@ -507,5 +554,5 @@ module.exports = {
   start, runDue, nyParts,
   weeklyBorrowerOutstandingOnce, dailyPipelineDigestOnce, staleFileAlertsOnce, weeklyAdminSummaryOnce,
   drawFindingsAwaitingBorrowerOnce, drawReleaseOverdueOnce, workflowAgingOnce,
-  trainingRunOnce, certificateSurveyOnce, autoCommitteeReviewOnce,
+  trainingRunOnce, certificateSurveyOnce, autoCommitteeReviewOnce, directSourceSweepOnce,
 };
