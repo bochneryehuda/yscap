@@ -44,7 +44,18 @@ function assessDraw({ draw = {}, requests = [], links = [], rollup = null, opts 
   for (const r of requests) {
     const req = N(r.requested_cents), appr = N(r.approved_cents);
     const l = byJid.get(N(r.sitewire_job_item_id));
-    if (!l) { if (req > 0 || r.sitewire_job_item_id != null) add('unknown_line', 'high', `A draw line (Sitewire item ${r.sitewire_job_item_id}) has no Scope-of-Work match — it must be reviewed by hand, never auto-reconciled.`); continue; }
+    if (!l) {
+      // Owner-directed 2026-07-22: a request with $0 requested AND $0 approved is a Sitewire
+      // PHOTO/VIDEO GATE placeholder — an "inspection required" checkbox, not a money line the
+      // coordinator needs to review. Sitewire seeds a whole template of these on every property
+      // (Video Walkthrough, Exterior Photos, per-line photo requirements). Reconcile's
+      // adoptSeededMediaItems binds them into the crosswalk on the next pass, but until it does
+      // (first reconcile after deploy, or a brand-new item Sitewire just seeded), silently skip
+      // the risk flag — a photo-gate placeholder cannot be over-drawn and has no money to review.
+      // A request with ANY dollar amount still flags high (real money against an unknown line).
+      if (req > 0 || appr > 0) add('unknown_line', 'high', `A draw line (Sitewire item ${r.sitewire_job_item_id}) has no Scope-of-Work match — it must be reviewed by hand, never auto-reconciled.`);
+      continue;
+    }
     const isMedia = !!l.is_media_item || String(l.sow_line_key).indexOf('__media__') === 0;
     if (isMedia) { if (req > 0) add('money_on_media_line', 'medium', `Money (${fmt(req)}) was requested against a photo/media line ("${l.name}"), which carries no budget.`, l.sow_line_key); continue; }
     if (appr > req) add('approved_exceeds_requested', 'high', `"${l.name}" was approved for ${fmt(appr)} but only ${fmt(req)} was requested.`, l.sow_line_key);

@@ -43,19 +43,25 @@ async function adoptSeededMediaItems(appId, budgetId, jobItems) {
     const jid = Number(ji.id);
     if (bound.has(jid)) continue;
     if (Number(ji.budgeted_cents || 0) !== 0) continue;
-    // Audit finding A-5 (2026-07-21): adopt on EITHER the name matching a known media anchor
-    // OR Sitewire's own `mandatory:true` flag — so a coordinator who renamed "Video Walkthrough"
-    // to "Front Elevation Photos" (or any other custom label) still gets auto-adopted, instead of
-    // parking `sitewire_unknown_draw_line` on every reconcile forever. Both signals mean the same
-    // thing: this is a structural inspection gate, not a real budget line to reconcile.
-    const isMandatory = ji.mandatory === true;
-    if (!isMandatory && !M.isMandatoryMediaName(ji.name)) continue;
+    // Owner-directed 2026-07-22 (file 1053 Ella T Grasso Blvd, draw #1): Sitewire seeds a
+    // WHOLE TEMPLATE of $0 items on every property (Video Walkthrough, Exterior Photos, per-line
+    // photo requirements, and more) — some carry `mandatory:true`, some don't, and their names
+    // vary by Sitewire template. The prior "media-name OR mandatory:true" rule left a chunk of
+    // legitimately-empty items unbound, showing on the draw desk as generic "Line 1180837" and
+    // triggering risk.js unknown_line high-risk warnings on every reconcile.
+    //
+    // Root-cause enhancement: adopt EVERY $0 item Sitewire holds, regardless of name or the
+    // mandatory flag. A $0 item has NO financial risk — it can't be over-drawn, it can't shift a
+    // budget, and its only role is a photo/video/inspection gate on draws. The `is_media_item`
+    // flag stays true so the rollup keeps excluding it from budget math (matching PILOT's own
+    // media anchors). Uses Sitewire's authoritative name so the draw desk shows the friendly
+    // label ("Interior Video Tour") instead of the generic id fallback.
     try {
       await db.query(
         `INSERT INTO sitewire_job_item_links (application_id, sitewire_budget_id, sow_line_key, section_token, unit_index, sitewire_job_item_id, name, budgeted_cents, is_media_item, state, last_pushed_at, updated_at)
          VALUES ($1,$2,$3,'media',NULL,$4,$5,0,true,'live',NULL,now())
          ON CONFLICT (application_id, sow_line_key, section_token) DO NOTHING`,
-        [appId, budgetId, `__media__:sw_${jid}`, jid, String(ji.name)]);
+        [appId, budgetId, `__media__:sw_${jid}`, jid, String(ji.name || `Sitewire item ${jid}`)]);
       adopted++;
     } catch (_) { /* best-effort — a bad row must not stop the reconcile */ }
   }
@@ -312,14 +318,31 @@ async function reconcileOne(appId) {
        full.quick_notify_status_id || d.quick_notify_status_id || null, full.pdf_src || null,
        times.submitted || null, times.approved || null, link.budget_version || null,
        full.draw_events ? JSON.stringify(full.draw_events) : null, d.updated_at || null]);
+    // Owner-directed 2026-07-22 (file 1053 Ella T Grasso Blvd): Sitewire's GET /draws/:id can
+    // return each request with `job_item.name === null` while the property's authoritative
+    // budget.job_items list DOES carry the friendly name. The prior code stored the null and the
+    // draw desk fell back to "Line 1180837" everywhere. Build a job_item_id → name map from the
+    // property's live budget (already in memory as `prop.budget.job_items`) and hydrate the
+    // request name from it when the request itself omits it. On UPSERT the ON CONFLICT clause
+    // now also refreshes job_item_name (only when it lands non-null) so a later reconcile that
+    // finally sees the friendly name upgrades the earlier row instead of leaving the fallback in.
+    const propJobNames = new Map();
+    if (prop.budget && Array.isArray(prop.budget.job_items)) {
+      for (const ji of prop.budget.job_items) { if (ji && ji.id != null && ji.name) propJobNames.set(Number(ji.id), String(ji.name)); }
+    }
     // mirror requests — per-row guarded so one poison row can't strand the whole file's mirror
     for (const r of (full.requests || [])) {
       try {
+        const jiId = (r.job_item && r.job_item.id) || null;
+        const hydratedName = (r.job_item && r.job_item.name)
+          || (jiId != null ? propJobNames.get(Number(jiId)) : null)
+          || null;
         await db.query(
           `INSERT INTO sitewire_draw_requests (sitewire_draw_id, sitewire_request_id, sitewire_job_item_id, job_item_name, requested_cents, approved_cents, lender_comments, inspector_comments, inspection_count, updated_at)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,now())
-           ON CONFLICT (sitewire_request_id) DO UPDATE SET requested_cents=EXCLUDED.requested_cents, approved_cents=EXCLUDED.approved_cents, lender_comments=EXCLUDED.lender_comments, inspector_comments=EXCLUDED.inspector_comments, updated_at=now()`,
-          [d.id, r.id, (r.job_item && r.job_item.id) || null, (r.job_item && r.job_item.name) || null,
+           ON CONFLICT (sitewire_request_id) DO UPDATE SET requested_cents=EXCLUDED.requested_cents, approved_cents=EXCLUDED.approved_cents, lender_comments=EXCLUDED.lender_comments, inspector_comments=EXCLUDED.inspector_comments,
+             job_item_name=COALESCE(EXCLUDED.job_item_name, sitewire_draw_requests.job_item_name), updated_at=now()`,
+          [d.id, r.id, jiId, hydratedName,
            r.requested_cents || 0, r.approved_cents == null ? null : r.approved_cents, r.lender_comments || null, r.inspector_comments || null,
            Array.isArray(r.inspections) ? r.inspections.length : 0]);
       } catch (rowErr) {
@@ -415,7 +438,13 @@ async function assessAndStoreRisk(appId) {
           GROUP BY r.sitewire_job_item_id`, [appId, unknownIds])).rows;
       const dropIf = new Set();
       for (const m of meta) {
-        if (Number(m.req) === 0 && Number(m.appr) === 0 && M.isMandatoryMediaName(m.name)) dropIf.add(Number(m.jid));
+        // Owner-directed 2026-07-22 (file 1053 Ella T Grasso Blvd): a $0 request/approved is a
+        // Sitewire photo/video gate placeholder, not a money line — drop it from the park queue
+        // regardless of name. adoptSeededMediaItems already binds these into the crosswalk on the
+        // NEXT reconcile (widened to adopt every $0 item, not just media-named ones), but this
+        // filter is the immediate-turn belt-and-suspenders so a first-time reconcile after deploy
+        // doesn't leave a spurious "reconcile by hand" park visible to a coordinator.
+        if (Number(m.req) === 0 && Number(m.appr) === 0) dropIf.add(Number(m.jid));
       }
       if (dropIf.size) unknownIds = unknownIds.filter((id) => !dropIf.has(Number(id)));
     } catch (_) { /* best-effort — fall through to the original park behavior */ }
@@ -524,9 +553,11 @@ async function fetchDrawFindings(sitewireDrawId) {
 async function persistDrawFindings(appId, sitewireDrawId, deliveredTo = null) {
   const crypto = require('crypto');
   const detail = await fetchDrawFindings(sitewireDrawId);
-  // crosswalk map: job_item_id -> {sow_line_key, unit_index}
+  // crosswalk map: job_item_id -> {sow_line_key, unit_index, name} — `name` used to hydrate the
+  // finding line label when Sitewire's request returned it null (owner-directed 2026-07-22 so the
+  // borrower + coordinator + branded report show "Interior Video Tour" instead of a blank name).
   const links = (await db.query(
-    `SELECT sitewire_job_item_id, sow_line_key, unit_index FROM sitewire_job_item_links WHERE application_id=$1 AND sitewire_job_item_id IS NOT NULL`, [appId])).rows;
+    `SELECT sitewire_job_item_id, sow_line_key, unit_index, name FROM sitewire_job_item_links WHERE application_id=$1 AND sitewire_job_item_id IS NOT NULL`, [appId])).rows;
   const byJid = new Map(links.map((l) => [Number(l.sitewire_job_item_id), l]));
 
   // Read the PRIOR finding state so a re-deliver preserves borrower dispute evidence (audit finding
@@ -607,7 +638,7 @@ async function persistDrawFindings(appId, sitewireDrawId, deliveredTo = null) {
                 retired_at=NULL, updated_at=now()
           WHERE id=$1`,
         [cur.id, ln.request_id || null, ln.job_item_id || null, x.sow_line_key || null, x.unit_index || null,
-         ln.name || null, ln.requested_cents || 0, approvedCents, notApprovedCents,
+         ln.name || x.name || null, ln.requested_cents || 0, approvedCents, notApprovedCents,
          ln.inspector_comments || null, ln.lender_comments || null, ln.photo_count || 0, ln.video_count || 0,
          ln.media ? JSON.stringify(ln.media) : null]);
     } else {
@@ -615,7 +646,7 @@ async function persistDrawFindings(appId, sitewireDrawId, deliveredTo = null) {
         `INSERT INTO draw_finding_lines (finding_id, sitewire_request_id, sitewire_job_item_id, sow_line_key, unit_index, name, requested_cents, approved_cents, not_approved_cents, inspector_comments, lender_comments, photo_count, video_count, media, created_at, updated_at)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,now(),now())`,
         [finding.id, ln.request_id || null, ln.job_item_id || null, x.sow_line_key || null, x.unit_index || null,
-         ln.name || null, ln.requested_cents || 0, approvedCents, notApprovedCents,
+         ln.name || x.name || null, ln.requested_cents || 0, approvedCents, notApprovedCents,
          ln.inspector_comments || null, ln.lender_comments || null, ln.photo_count || 0, ln.video_count || 0,
          ln.media ? JSON.stringify(ln.media) : null]);
     }

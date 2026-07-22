@@ -1539,9 +1539,19 @@ router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, r
     const setupStatus = (link && link.raw && link.raw.setup_status) ? link.raw.setup_status : null;
     const preexisting = !!(setupStatus && setupStatus.preexisting_property_id);
     const draws = (await db.query(`SELECT sitewire_draw_id, number, name, status, risk_level, risk_flags, submitted_at, approved_at, pdf_src, quick_notify_status_id, coordinator_id FROM sitewire_draws WHERE application_id=$1 ORDER BY number DESC NULLS LAST`, [appId])).rows;
+    // Owner-directed 2026-07-22 (file 1053 Ella T Grasso Blvd): the request's own job_item_name
+    // can arrive null from Sitewire (drafting-state draws often omit it); fall back FIRST to the
+    // crosswalk name (which reconcile hydrates from prop.budget.job_items on adopt), so the desk
+    // shows "Interior Video Tour" instead of "Line 1180837". LEFT JOIN so an un-adopted item
+    // still returns null and the UI's final fallback ("Line <id>") kicks in.
     const requests = (await db.query(
-      `SELECT r.sitewire_request_id, r.sitewire_draw_id, r.sitewire_job_item_id, r.job_item_name, r.requested_cents, r.approved_cents, r.inspection_count, r.lender_comments
-         FROM sitewire_draw_requests r JOIN sitewire_draws d ON d.sitewire_draw_id=r.sitewire_draw_id WHERE d.application_id=$1 ORDER BY r.sitewire_request_id`, [appId])).rows;
+      `SELECT r.sitewire_request_id, r.sitewire_draw_id, r.sitewire_job_item_id,
+              COALESCE(NULLIF(r.job_item_name, ''), jil.name) AS job_item_name,
+              r.requested_cents, r.approved_cents, r.inspection_count, r.lender_comments
+         FROM sitewire_draw_requests r
+         JOIN sitewire_draws d ON d.sitewire_draw_id=r.sitewire_draw_id
+         LEFT JOIN sitewire_job_item_links jil ON jil.application_id=d.application_id AND jil.sitewire_job_item_id=r.sitewire_job_item_id
+        WHERE d.application_id=$1 ORDER BY r.sitewire_request_id`, [appId])).rows;
     const ledger = (await db.query(`SELECT * FROM draw_disbursements WHERE application_id=$1 ORDER BY created_at DESC`, [appId])).rows;
     const findings = (await db.query(`SELECT id, sitewire_draw_id, status, total_requested_cents, total_approved_cents, delivered_at, accepted_at, accepted_via, disputed_at, resolved_at, wire_due_at FROM draw_findings WHERE application_id=$1 ORDER BY delivered_at DESC`, [appId])).rows;
     const changeRequests = (await db.query(
