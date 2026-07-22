@@ -159,7 +159,7 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText) {
     return;
   }
 
-  // status_synced is NULL — two cases distinguished by first_seen_at (db/227):
+  // status_synced is NULL — two cases distinguished by first_seen_at (db/232):
   //   (a) LEGACY row (first_seen_at IS NULL): pre-migration, we didn't know about the row when
   //       whatever transition happened. Silent baseline — never notify for history (go-forward
   //       cutover, unchanged from before).
@@ -580,7 +580,7 @@ async function persistDrawFindings(appId, sitewireDrawId, deliveredTo = null) {
   }
 
   // Merge lines: UPDATE by key when present (keeps dispute_*), INSERT when new. A prior line that
-  // is NO LONGER in the new detail (Sitewire removed the request) is SOFT-RETIRED (db/230) — kept as
+  // is NO LONGER in the new detail (Sitewire removed the request) is SOFT-RETIRED (db/235) — kept as
   // history but hidden from live per-line reads so per-line sums match the parent total and the
   // borrower doesn't see / dispute a phantom line. Exception: a line whose dispute was already
   // decided (approved / rejected) is NEVER retired — the coordinator's decision is authoritative
