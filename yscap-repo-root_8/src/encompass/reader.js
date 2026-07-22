@@ -38,6 +38,23 @@ const PIPELINE_SEARCH_FIELDS = [
   'Loan.LastModified',
 ];
 
+// Encompass requires the pipeline search body to name WHICH loans (via
+// loanIds / loanFolders / filter / fieldFilters — a body with none of those
+// is refused). To pull "all loans" for a tenant, fetch every folder name and
+// pass them as `loanFolders`. Excludes system trash-like folders by default.
+// Cached across a bulk-pull run so we don't hit /settings/loan/folders once
+// per page.
+async function _fetchAllFolderNames() {
+  const resp = await client.listLoanFolders();
+  const arr = Array.isArray(resp) ? resp : (resp && Array.isArray(resp.items) ? resp.items : []);
+  const names = arr.map((f) => (f && (f.folderName || f.name)) || (typeof f === 'string' ? f : null)).filter(Boolean);
+  // Keep everything by default — some tenants may include Trash / Archive
+  // folders in the response. We include them so nothing is silently missed;
+  // the caller can filter downstream if a folder is undesired.
+  return [...new Set(names)];
+}
+_fetchAllFolderNames._exportedForTest = true;
+
 // Sensitive top-level sections we don't want lingering as duplicates inside
 // `applications.encompass_extra`. Borrower PII already lives in the `borrowers`
 // table (source of record) — we don't need another copy of the SSN sitting in
@@ -206,12 +223,16 @@ async function superDump({ sampleN = 20 } = {}) {
   )).rows;
 
   // Pipeline-search the tenant for the most-recent N loans across ALL folders.
-  // No filter → all loans; sortOrder at the TOP LEVEL of the request; a broad
-  // fields projection so a reviewer sees loan-level variety.
+  // Encompass requires loanFolders (or loanIds / filter / fieldFilters) — a
+  // body with none of them is refused. Fetch the folder list first, then
+  // include every folder name in the search.
   let recent = [];
   let searchError = null;
+  let folders = [];
   try {
+    folders = await _fetchAllFolderNames();
     recent = await client.pipelineSearch({
+      loanFolders: folders,
       sortOrder: [{ canonicalName: 'Loan.LastModified', order: 'Descending' }],
       fields: ['Loan.Guid', 'Loan.LoanNumber', 'Loan.LoanFolder', 'Loan.LoanAmount', 'Loan.LoanProgram', 'Loan.LoanPurpose', 'Loan.BorrowerLastName', 'Loan.LastModified'],
     }, { limit: n });
@@ -265,6 +286,20 @@ async function bulkPullAllLoans({ perRequestDelayMs = 350, startedByStaffId = nu
   let lastError = null;
 
   try {
+    // Fetch the tenant's folder list ONCE — Encompass requires loanFolders
+    // (or loanIds / filter / fieldFilters) in every pipeline body; omitting
+    // is refused. Cached for every page.
+    let folders;
+    try { folders = await _fetchAllFolderNames(); }
+    catch (e) { lastError = `folder list: ${e.message}`; folders = []; }
+    if (!folders.length) {
+      // Can't safely bulk-pull without at least one folder name to scope the
+      // request. Record + exit; the folder-catalog refresh will populate the
+      // metadata table separately for the reviewer.
+      lastError = lastError || 'no loan folders returned from /settings/loan/folders';
+      throw new Error(lastError);
+    }
+
     // Paginate the pipeline via ?limit=N&start=M — offset-based, so it
     // never depends on the LastModified field being filterable and never
     // skips or double-counts loans that share the same modified timestamp.
@@ -276,6 +311,7 @@ async function bulkPullAllLoans({ perRequestDelayMs = 350, startedByStaffId = nu
       let page;
       try {
         page = await client.pipelineSearch({
+          loanFolders: folders,
           sortOrder: [{ canonicalName: 'Loan.LastModified', order: 'Descending' }],
           fields: ['Loan.Guid', 'Loan.LoanNumber', 'Loan.LoanFolder', 'Loan.LoanAmount', 'Loan.BorrowerLastName', 'Loan.LastModified'],
         }, { limit: pageSize, start: offset });

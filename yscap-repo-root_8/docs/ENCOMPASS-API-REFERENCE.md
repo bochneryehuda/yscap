@@ -89,9 +89,14 @@ guard allows this POST as one of exactly two allowlisted read-shaped endpoints
 
 **`sortOrder` MUST be at the TOP LEVEL** of the body — nesting it inside
 `filter` returns HTTP 400 with `queryContract.filter.sortOrder Invalid field
-name or value`. Empty `filter` should be OMITTED entirely (Encompass returns
-all loans visible to the token). `fields` is optional — omitting returns just
-the loan GUIDs.
+name or value`. `fields` is optional — omitting returns just the loan GUIDs.
+
+**`loanFolders` (top-level array) is REQUIRED — or one of `loanIds`,
+`filter`, `fieldFilters`.** A body with none of them is refused with:
+`"Either 'LoanIds' or filter properties like 'LoanFolders', 'Filter' or
+'FieldFilters' must be supplied."` (2026-07-22 live diag). To pull "all
+loans" for the tenant, first `GET /encompass/v3/settings/loan/folders`,
+then pass `loanFolders: [<every folder name>]` on every page.
 
 **`order` values are CASE-SENSITIVE PascalCase: `"Ascending"` / `"Descending"`.**
 Lowercase `"desc"` / `"asc"` fails as "Invalid field name or value" (learned
