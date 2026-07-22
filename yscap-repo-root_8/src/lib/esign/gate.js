@@ -108,13 +108,13 @@ async function esignSendGate(applicationId, { db = dbDefault } = {}) {
     outstanding.push({ code: PRODUCT_PRICING, label: 'Product & pricing re-registered after appraisal', reason: 'Product & pricing was signed off before the appraisal (or the timing cannot be confirmed). Re-register on the appraised value and sign off again.' });
   }
 
-  // R6.4 — MANUAL/stale registration is a hard stop for ISSUANCE (not just the
-  // borrower email). Appended after the appraisal/P&P checks so the staff UI
-  // shows every blocker at once.
-  const regBlockers = await registrationIssuabilityBlockers(applicationId, db);
-  for (const b of regBlockers) outstanding.push(b);
-
-  return { ready: apprOk && reviewOk && ppOk && regBlockers.length === 0, outstanding };
+  // NOTE (owner-directed 2026-07-22): the whole-loan underwriter is ADVISORY
+  // ONLY for now — it must not change or block any existing feature. The
+  // registration-issuability check (`registrationIssuabilityBlockers`) is kept
+  // as an exported ADVISORY helper the AI underwriter surfaces as a finding for a
+  // human to review; it is deliberately NOT wired into this gate's `ready`, so
+  // the e-sign send gate behaves EXACTLY as it did before the whole-loan work.
+  return { ready: apprOk && reviewOk && ppOk, outstanding };
 }
 
 /**

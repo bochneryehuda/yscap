@@ -104,9 +104,14 @@ function reconcileClickup(context, clickupValues) {
   return reconcileSystem({ system: 'clickup', context, systemValues: clickupValues });
 }
 function reconcileEncompass(context, encompassValues) {
-  // Encompass is the reconciled LOS copy — the same money/rate fields matter.
+  // Encompass is the reconciled LOS copy. NOTE (rate deliberately excluded): the
+  // frozen PILOT engines are authoritative on rate and PILOT stores note_rate as
+  // a FRACTION (0.1099) while Encompass field 3 is a PERCENT (10.99) — comparing
+  // them would false-mismatch every loan, and per docs/ENCOMPASS-DATA-MAPPING.md
+  // we do not consume Encompass rate sheets. Reconcile the structure money/enum
+  // fields only.
   return reconcileSystem({ system: 'encompass', context, systemValues: encompassValues,
-    fields: ['loan_amount', 'note_rate', 'program', 'property_type', 'units', 'purchase_price', 'arv', 'rehab_budget'] });
+    fields: ['loan_amount', 'program', 'property_type', 'units', 'purchase_price', 'arv', 'rehab_budget'] });
 }
 
 module.exports = { reconcileSystem, reconcileClickup, reconcileEncompass, MATERIAL_FIELDS, _internals: { agree } };

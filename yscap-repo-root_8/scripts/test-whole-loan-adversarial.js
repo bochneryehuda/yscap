@@ -80,10 +80,13 @@ scn(7, 'Manual Program pending approval → MANUAL_PENDING, not issuable', () =>
   assert.strictEqual(r.status, 'MANUAL_PENDING');
   assert.ok(!r.termSheetEligible);
 });
-scn(8, 'Manual Program approved → MANUAL_APPROVED, issuable', () => {
+scn(8, 'Manual Program approved → MANUAL_APPROVED status; a manual-review scenario still keeps the term sheet gated (owner-directed: super-admin review is required before issuance)', () => {
   const r = mkRun({}, { is_manual: true, status: 'MANUAL', quote: QUOTE({ status: 'MANUAL', reasons: [{ level: 'MANUAL', msg: 'manual product' }] }) }, { manualApproved: true });
-  assert.strictEqual(r.status, 'MANUAL_APPROVED');
-  assert.ok(r.termSheetEligible);
+  assert.strictEqual(r.status, 'MANUAL_APPROVED', 'the super-admin approval is recognized in the status');
+  // A MANUAL reason ALWAYS blocks the term-sheet issuance finding — a manual
+  // scenario never auto-issues a term sheet.
+  assert.strictEqual(r.termSheetEligible, false, 'the manual-review reason keeps the term sheet gated');
+  assert.ok(r.findings.some((f) => f.code === 'program_manual_reason' && f.blocks_term_sheet));
 });
 scn(9, 'Structural override mislabeled Standard → program discrepancy', () => {
   // application says standard, registration says gold → context flags a discrepancy
