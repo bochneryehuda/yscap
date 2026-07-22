@@ -59,4 +59,13 @@ m = align('Seller Financing Addendum', lines, { minConfidence: 0.7 });
 assert.strictEqual(m, null, 'a weak match below the floor is rejected');
 ok('the confidence floor is honored');
 
+// SHORT-VALUE false alignment is blocked (audit regression guard): a "5" must
+// NOT match "5000", and "500" must NOT match inside "1500000".
+assert.strictEqual(align('5', [{ text: 'Purchase Price 5000' }]), null, '"5" does not match inside "5000"');
+assert.strictEqual(align('500', [{ text: 'Total 1500000' }]), null, '"500" does not match inside "1500000"');
+// …but a short value that IS a whole token still matches (e.g. a $500 fee line).
+const fee = align('$500', [{ text: 'Application Fee: $500' }]);
+assert.ok(fee && fee.confidence === 1, 'a whole-token short value still matches');
+ok('short values only match as whole tokens (no embedded false alignment)');
+
 console.log(`\nR5.16 field-aligner pure — ${passed} checks passed`);

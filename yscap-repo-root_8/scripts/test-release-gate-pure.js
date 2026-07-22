@@ -68,6 +68,15 @@ assert.ok(r.blockers.some((b) => b.startsWith('gate1')));
 assert.ok(r.blockers.some((b) => b.startsWith('gate2')));
 ok('missing safety metrics FAIL (no assumed pass)');
 
+// An EXPLICIT null (a SQL NULL read from the DB) must FAIL gate 1 — it is "not
+// measured", never a measured zero. (Regression guard for the audit blocker.)
+r = evaluate({ ...clean, dangerousFalseClears: null });
+assert.strictEqual(r.pass, false, 'an explicit null dangerousFalseClears cannot pass');
+assert.ok(r.blockers.some((b) => b.startsWith('gate1')), 'gate1 blocks on an explicit null');
+r = evaluate({ ...clean, dangerousFalseClears: 'NaN' });
+assert.strictEqual(r.pass, false, 'a non-numeric dangerousFalseClears cannot pass');
+ok('an explicit null / non-numeric safety metric fails its gate');
+
 assert.strictEqual(BOUNDARY_F1_MIN, 0.90);
 ok('boundary F1 threshold is 0.90');
 

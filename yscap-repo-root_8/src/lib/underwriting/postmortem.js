@@ -48,7 +48,9 @@ const CAUSE_TO_ARTIFACT = {
 function build(input) {
   const i = input || {};
   const primary = taxonomy.earliest(i.taggedCauses || []);
-  const artifact = primary ? (CAUSE_TO_ARTIFACT[primary] || null) : null;
+  // A file-specific exception is not a general defect → NO artifact changes, so
+  // the machine-readable artifactToChange is null (matches the recommendation).
+  const artifact = (i.isException || !primary) ? null : (CAUSE_TO_ARTIFACT[primary] || null);
   return {
     symptom: i.symptom || null,
     expected: i.expected ?? null,

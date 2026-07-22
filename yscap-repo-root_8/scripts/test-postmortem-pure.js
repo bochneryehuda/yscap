@@ -26,6 +26,7 @@ p = PM.build({ symptom: 'x', taggedCauses: ['deterministic_rule'], isException: 
 assert.strictEqual(p.isException, true);
 assert.ok(/exception/i.test(p.recommendation));
 assert.ok(!/Propose a change/.test(p.recommendation), 'no artifact change for an exception');
+assert.strictEqual(p.artifactToChange, null, 'artifactToChange is null for an exception (machine-readable matches the text)');
 ok('a file-specific exception proposes no artifact change');
 
 // insufficient tagging → request instrumentation, do not guess.

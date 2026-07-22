@@ -49,10 +49,14 @@ function evaluate(metrics) {
   const blockers = [];
   const warnings = [];
 
-  // Gate 1 — zero dangerous false clears.
-  const dfc = num(m.dangerousFalseClears, null);
-  if (dfc === null) blockers.push('gate1: dangerousFalseClears not measured');
-  else if (dfc > 0) blockers.push(`gate1: ${dfc} dangerous false clear(s) in the high-risk set`);
+  // Gate 1 — zero dangerous false clears. A MISSING metric fails: an explicit
+  // null/undefined (e.g. a SQL NULL read from the DB) is "not measured", NOT a
+  // measured zero — check == null BEFORE num() (num(null) would coerce to 0).
+  if (m.dangerousFalseClears == null || !Number.isFinite(Number(m.dangerousFalseClears))) {
+    blockers.push('gate1: dangerousFalseClears not measured');
+  } else if (Number(m.dangerousFalseClears) > 0) {
+    blockers.push(`gate1: ${m.dangerousFalseClears} dangerous false clear(s) in the high-risk set`);
+  }
 
   // Gate 2 — no fatal-recall reduction.
   if (!m.fatalRecall || m.fatalRecall.candidate == null || m.fatalRecall.baseline == null) {

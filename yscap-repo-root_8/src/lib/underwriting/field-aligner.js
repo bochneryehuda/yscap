@@ -46,18 +46,34 @@ function tokenOverlap(a, b) {
   return inter / (A.size + B.size - inter);
 }
 
+// Is `needle` a WHOLE token (or whole multi-word phrase) within `haystack`,
+// bounded by string start/end or spaces — so "500" matches "fee 500" but NOT
+// "1500000", and "5" never matches "5000". Both args already stripPunct'd.
+function wholeToken(haystack, needle) {
+  if (!needle) return false;
+  return haystack === needle
+    || haystack.startsWith(needle + ' ')
+    || haystack.endsWith(' ' + needle)
+    || haystack.includes(' ' + needle + ' ');
+}
+
 // Score how well `value` matches a `line` of OCR text (0..1).
 function scoreLine(value, lineText) {
   const nv = stripPunct(value);
   const nl = stripPunct(lineText);
   if (!nv || !nl) return 0;
 
-  // 1) exact normalized substring — strongest signal.
-  if (nl.includes(nv)) return 1;
+  // 1) exact normalized substring — strongest signal. Guard against a SHORT
+  // value falsely matching inside a larger token ("5" inside "5000"): a short
+  // value (<4 chars) only counts as an exact match when it is a WHOLE token.
+  if (nl.includes(nv) && (nv.length >= 4 || wholeToken(nl, nv))) return 1;
 
-  // 2) money/number: the value's digits appear in the line's digits.
+  // 2) money/number: the value's digits appear in the line's digits. Require
+  // >=4 digits (real amounts are $1,000+) so a 3-digit value can't false-match
+  // inside a larger number ("500" inside "1500000"); a shorter number still has
+  // the whole-token path above.
   const dv = digits(value);
-  if (dv && dv.length >= 3) {
+  if (dv && dv.length >= 4) {
     const dl = digits(lineText);
     if (dl.includes(dv)) return 0.95;
   }
