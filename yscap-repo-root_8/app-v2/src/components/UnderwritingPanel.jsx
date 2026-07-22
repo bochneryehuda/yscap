@@ -1024,8 +1024,116 @@ function SovereignCockpit({ twinFacts, cureProofs, appId, canIssueCerts, canConf
           )}
         </div>
       )}
+      {appId && <SovereignAVMSection appId={appId} canRefresh={canIssueCerts} />}
       {appId && <SovereignCertificatesSection appId={appId} canIssue={canIssueCerts} />}
       {appId && <SovereignStructuringSection appId={appId} />}
+    </div>
+  );
+}
+
+// R2.2 — AVM Consensus panel. Reads /avm-consensus (which pulls every live
+// appraisal.arv observation on the twin, splits AVMs vs the document
+// appraisal, computes consensus). Underwriter can trigger a fresh call to
+// every configured AVM provider via /verify (fires the hub with kind='avm'
+// → feeds api_verification observations → re-analyzes). Empty when no AVMs
+// are configured (all three today are stubs).
+function SovereignAVMSection({ appId, canRefresh }) {
+  const [open, setOpen] = useState(false);
+  const [rpt, setRpt] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const load = () => { setLoading(true); return api.fileAvmConsensus(appId).then((d) => setRpt(d)).catch(() => setRpt({ ok: false })).finally(() => setLoading(false)); };
+  useEffect(() => { if (open && appId) load(); /* eslint-disable-next-line */ }, [open, appId]);
+  const dollars = (n) => n == null ? '—' : `$${Math.round(Number(n) || 0).toLocaleString('en-US')}`;
+  const pct = (r) => r == null ? '' : `${Math.round(Number(r) * 1000) / 10}%`;
+  async function verify() {
+    setBusy(true); setMsg(null);
+    try {
+      const r = await api.fileAvmConsensusVerify(appId);
+      const okCount = (r.hubResults || []).filter((x) => x.ok).length;
+      const skipCount = (r.hubResults || []).filter((x) => x.skipped).length;
+      setMsg({ ok: true, text: okCount > 0 ? `${okCount} AVM(s) reported${r.finding ? ' — ' + (r.finding.message || 'disagreement flagged') : '.'}` : (skipCount === (r.hubResults || []).length ? 'No AVM providers configured yet — set at least one vendor key in Render to start getting AVM opinions.' : 'AVM providers unreachable.') });
+      await load();
+    } catch (e) { setMsg({ ok: false, text: e.message || 'Could not re-check the AVMs.' }); }
+    finally { setBusy(false); setTimeout(() => setMsg(null), 8000); }
+  }
+  const report = rpt && rpt.report;
+  const consensus = report && report.consensus;
+  const comparison = report && report.comparison;
+  const appraisal = report && report.appraisal;
+  return (
+    <div style={{ padding: '10px 14px', borderTop: '1px solid var(--line,#E7E1D3)' }}>
+      <button onClick={() => setOpen((v) => !v)} style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'none', border: 'none', cursor: 'pointer', padding: 0, textAlign: 'left', width: '100%' }}>
+        <span style={{ fontSize: 14, fontWeight: 700 }}>Second opinion — Automated valuations vs. the appraisal</span>
+        <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--muted,#4B585C)' }}>{open ? 'hide' : 'show'}</span>
+      </button>
+      {open && (
+        <div style={{ marginTop: 10 }}>
+          <p style={{ fontSize: 12, color: 'var(--muted,#4B585C)', margin: '0 0 10px' }}>
+            Independent property-value estimates from HouseCanary, Clear Capital, and ATTOM checked against the file's appraisal. When two or three of them meaningfully disagree with the appraised ARV, a "Panel review" finding is raised so the underwriter sees it before closing. The check runs only if at least one vendor key is set up in the site settings.
+          </p>
+          {msg && <div className={`notice ${msg.ok ? 'ok' : 'err'}`} style={{ marginBottom: 8, fontSize: 12.5 }}>{msg.text}</div>}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+            <button disabled={busy || !canRefresh} onClick={verify} style={{ fontSize: 12, padding: '5px 10px', border: '1px solid #AE8746', borderRadius: 6, background: '#AE8746', color: '#fff', cursor: 'pointer' }}>
+              {busy ? 'Checking…' : 'Get fresh opinions now'}
+            </button>
+          </div>
+          {loading && <div className="muted" style={{ fontSize: 12 }}>Loading…</div>}
+          {!loading && !report && <div className="muted" style={{ fontSize: 12 }}>No data yet — this file has no appraisal ARV recorded on the twin.</div>}
+          {!loading && report && (
+            <>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, marginBottom: 12 }}>
+                <div style={{ padding: '8px 10px', border: '1px solid var(--line,#E7E1D3)', borderRadius: 8 }}>
+                  <div style={{ fontSize: 10.5, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted,#4B585C)' }}>Appraisal ARV</div>
+                  <div style={{ fontSize: 15, fontWeight: 600 }}>{appraisal ? dollars(appraisal.value) : '—'}</div>
+                </div>
+                <div style={{ padding: '8px 10px', border: '1px solid var(--line,#E7E1D3)', borderRadius: 8 }}>
+                  <div style={{ fontSize: 10.5, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted,#4B585C)' }}>AVM median ({consensus ? consensus.count : 0})</div>
+                  <div style={{ fontSize: 15, fontWeight: 600 }}>{consensus ? dollars(consensus.median) : '—'}</div>
+                </div>
+                <div style={{ padding: '8px 10px', border: `1px solid ${comparison && comparison.disagrees ? 'var(--crit,#B4483C)' : 'var(--line,#E7E1D3)'}`, borderRadius: 8 }}>
+                  <div style={{ fontSize: 10.5, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted,#4B585C)' }}>Delta vs appraisal</div>
+                  <div style={{ fontSize: 15, fontWeight: 600, color: comparison && comparison.disagrees ? 'var(--crit,#B4483C)' : 'var(--ivory,#141B22)' }}>
+                    {comparison && comparison.diff != null ? (comparison.diff >= 0 ? '+' : '') + dollars(comparison.diff) : '—'}
+                    {comparison && comparison.diffPct != null && <span className="muted" style={{ fontSize: 12 }}> · {(comparison.diff >= 0 ? '+' : '')}{pct(comparison.diffPct)}</span>}
+                  </div>
+                </div>
+              </div>
+              {comparison && comparison.message && (
+                <div style={{ fontSize: 12.5, marginBottom: 10, color: comparison.disagrees ? 'var(--crit,#B4483C)' : 'var(--muted,#4B585C)' }}>{comparison.message}</div>
+              )}
+              {consensus && consensus.sources && consensus.sources.length > 0 && (
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+                  <thead>
+                    <tr style={{ textAlign: 'left', color: 'var(--muted,#4B585C)' }}>
+                      <th style={{ padding: '4px 6px' }}>AVM provider</th>
+                      <th style={{ padding: '4px 6px' }}>Their value</th>
+                      <th style={{ padding: '4px 6px' }}>Delta vs appraisal</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {consensus.sources.map((s, i) => {
+                      const d = appraisal && appraisal.value ? s.value - appraisal.value : null;
+                      const p = appraisal && appraisal.value ? d / appraisal.value : null;
+                      return (
+                        <tr key={i} style={{ borderTop: '1px solid var(--line,#E7E1D3)' }}>
+                          <td style={{ padding: '5px 6px' }}>{String(s.source_id || '').replace(/_/g, ' ')}</td>
+                          <td style={{ padding: '5px 6px' }}>{dollars(s.value)}</td>
+                          <td style={{ padding: '5px 6px', color: 'var(--muted,#4B585C)' }}>
+                            {d != null ? (d >= 0 ? '+' : '') + dollars(d) : '—'}
+                            {p != null && <span> · {(d >= 0 ? '+' : '')}{pct(p)}</span>}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
