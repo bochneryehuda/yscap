@@ -45,11 +45,22 @@ ok('a question with <2 options is rejected');
 assert.strictEqual(validate({ ...good, blockedComponent: '' }).ok, false);
 ok('a question not tied to a blocked decision is rejected');
 
-// an option that creates a permanent rule directly → invalid.
-v = validate({ ...good, options: [...good.options, { key: 'rule', label: 'Always', effect: 'create a permanent global rule' }] });
-assert.strictEqual(v.ok, false);
-assert.ok(v.errors.some((e) => /permanent rule/.test(e)));
-ok('an option that creates a permanent rule directly is rejected');
+// an option that creates a permanent rule directly → invalid. Cover every
+// phrasing the audit flagged (broadened content lint).
+for (const effect of [
+  'create a permanent global rule',
+  'make this a permanent global rule for all cases',
+  'establish a permanent rule going forward',
+  'always apply this rule to every future file',
+  'auto-apply this rule',
+]) {
+  const vv = validate({ ...good, options: [...good.options, { key: 'rule', label: 'Always', effect }] });
+  assert.strictEqual(vv.ok, false, `must reject effect: "${effect}"`);
+  assert.ok(vv.errors.some((e) => /permanent rule/.test(e)));
+}
+// …but a case-scoped effect that merely says "apply for this case only" is fine.
+assert.strictEqual(validate({ ...good, options: [...good.options, { key: 'x', label: 'Once', effect: 'apply to this file only' }] }).ok, true);
+ok('every permanent/global-rule phrasing is rejected; a case-only effect is allowed');
 
 // recommendedOption must be a real option.
 assert.strictEqual(validate({ ...good, recommendedOption: 'nope' }).ok, false);

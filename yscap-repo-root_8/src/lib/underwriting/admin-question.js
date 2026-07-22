@@ -49,9 +49,15 @@ function validate(q) {
   if (isNonEmpty(q.recommendedOption) && !keys.has(q.recommendedOption)) {
     errors.push('recommendedOption must be one of the option keys');
   }
-  // No option may claim to create a permanent rule directly.
+  // No option may claim to create a permanent/global rule directly. Match any
+  // effect that pairs "rule" with a permanence/scope-widening qualifier — the
+  // strongest an option may do is REQUEST a rule proposal (propose_rule scope),
+  // which still passes evaluation gates.
   for (const o of opts) {
-    if (o && o.effect && /create.*(permanent|global).*rule|auto.?apply.*rule/i.test(String(o.effect))) {
+    if (!o || !o.effect) continue;
+    const eff = String(o.effect).toLowerCase();
+    if (/\brules?\b/.test(eff) &&
+        /(permanent|global|always|every\s+(future|file|case)|going\s+forward|all\s+(cases|files|future)|auto.?apply)/.test(eff)) {
       errors.push(`option "${o.key}" must not create a permanent rule directly (use propose_rule scope)`);
     }
   }
