@@ -65,13 +65,15 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
   const clickup = { getTask: async (id) => ({ id, custom_fields: taskStore[id] || [] }) };
   const setTaskField = (taskId, fieldId, value) => { taskStore[taskId] = [{ id: fieldId, value }]; };
 
-  async function openRow({ appId, borrowerId, taskId, fieldKey, clickupValue, portalValue }) {
+  async function openRow({ appId, borrowerId, taskId, fieldKey, clickupValue, portalValue, rawValue }) {
     const r = await db.query(
-      `INSERT INTO sync_review_queue (application_id, borrower_id, task_id, direction, field_key, reason, clickup_value, portal_value)
-       VALUES ($1,$2,$3,'inbound',$4,'test_recheck',$5,$6) RETURNING id`,
-      [appId || null, borrowerId || null, taskId || null, fieldKey, clickupValue || null, portalValue || null]);
+      `INSERT INTO sync_review_queue (application_id, borrower_id, task_id, direction, field_key, reason, clickup_value, portal_value, raw_value)
+       VALUES ($1,$2,$3,'inbound',$4,'test_recheck',$5,$6,$7) RETURNING id`,
+      [appId || null, borrowerId || null, taskId || null, fieldKey, clickupValue || null, portalValue || null, rawValue || null]);
     return r.rows[0].id;
   }
+  // Set MULTIPLE custom fields on a stubbed task (setTaskField replaces the whole array).
+  const setTaskFields = (taskId, pairs) => { taskStore[taskId] = pairs.map(([fid, value]) => ({ id: fid, value })); };
   const rowById = async (id) => (await db.query(`SELECT * FROM sync_review_queue WHERE id=$1`, [id])).rows[0];
 
   // ---- DOB: reviewer already made both sides match → recheck CLOSES it.
@@ -242,9 +244,108 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
   ok((await rowById(idDescLoan)).status === 'resolved', 'descope: the copied-loan-number finding auto-closes');
   ok((await rowById(idDescLink)).status === 'resolved', 'descope: the file_link finding auto-closes');
 
+  // ================= COMPREHENSIVE Re-check coverage (owner-directed 2026-07-22) =====
+  // Every manual-review row type now re-derives live — not just value fields + loan#.
+
+  // ---- co-borrower value fields (co_first_name / co_cell_phone) ----
+  const coB = (await db.query("INSERT INTO borrowers(first_name,last_name,email,cell_phone,origin) VALUES('Malka','Klein',$1,'3471112222','self') RETURNING id", [rnd()])).rows[0].id;
+  const tCoOk = tk('coOk');
+  const appCoOk = (await db.query('INSERT INTO applications(borrower_id,co_borrower_id,clickup_pipeline_task_id) VALUES($1,$2,$3) RETURNING id', [bLn, coB, tCoOk])).rows[0].id;
+  setTaskFields(tCoOk, [[F.PIPELINE.coBorrowerName, 'Malka Klein'], [F.PIPELINE.secondBorrowerCell, '(347) 111-2222']]);
+  const idCoName = await openRow({ appId: appCoOk, borrowerId: coB, taskId: tCoOk, fieldKey: 'co_first_name', clickupValue: 'Malka Klein', portalValue: 'x' });
+  ok((await R2.recheckReview(await rowById(idCoName), { clickup })).reason === 'agree', 'co_first_name: co-borrower names now agree → recheck closes');
+  const idCoCell = await openRow({ appId: appCoOk, borrowerId: coB, taskId: tCoOk, fieldKey: 'co_cell_phone', clickupValue: 'y', portalValue: 'z' });
+  ok((await R2.recheckReview(await rowById(idCoCell), { clickup })).reason === 'agree', 'co_cell_phone: same last-10 digits → recheck closes');
+  const tCoBad = tk('coBad');
+  const appCoBad = (await db.query('INSERT INTO applications(borrower_id,co_borrower_id,clickup_pipeline_task_id) VALUES($1,$2,$3) RETURNING id', [bLn, coB, tCoBad])).rows[0].id;
+  setTaskFields(tCoBad, [[F.PIPELINE.coBorrowerName, 'Someone Else']]);
+  const idCoDiff = await openRow({ appId: appCoBad, borrowerId: coB, taskId: tCoBad, fieldKey: 'co_first_name', clickupValue: 'Someone Else', portalValue: 'x' });
+  ok((await R2.recheckReview(await rowById(idCoDiff), { clickup })).outcome === 'still_open', 'co_first_name: genuinely different co-borrower → stays open');
+  const tCoNone = tk('coNone');
+  const appCoNone = (await db.query('INSERT INTO applications(borrower_id,clickup_pipeline_task_id) VALUES($1,$2) RETURNING id', [bLn, tCoNone])).rows[0].id;
+  const idCoNone = await openRow({ appId: appCoNone, taskId: tCoNone, fieldKey: 'co_cell_phone', clickupValue: 'x', portalValue: 'y' });
+  ok((await R2.recheckReview(await rowById(idCoNone), { clickup })).reason === 'no_co_borrower', 'co_cell_phone: file has no co-borrower → recheck closes as moot');
+
+  // ---- file status (maps ClickUp status → external bucket, compares to PILOT) ----
+  const tStOk = tk('stOk');
+  const appStOk = (await db.query("INSERT INTO applications(borrower_id,clickup_pipeline_task_id,status) VALUES($1,$2,'processing') RETURNING id", [bLn, tStOk])).rows[0].id;
+  const idStOk = await openRow({ appId: appStOk, taskId: tStOk, fieldKey: 'status', clickupValue: 'in_review', portalValue: 'processing' });
+  const stStub = { getTask: async () => ({ status: { status: 'zzz custom status' } }) };   // unknown → externalFor fallback 'processing'
+  ok((await R2.recheckReview(await rowById(idStOk), { clickup: stStub })).reason === 'agree', 'status: ClickUp status maps to the same bucket → recheck closes');
+  const tStBad = tk('stBad');
+  const appStBad = (await db.query("INSERT INTO applications(borrower_id,clickup_pipeline_task_id,status) VALUES($1,$2,'funded') RETURNING id", [bLn, tStBad])).rows[0].id;
+  const idStBad = await openRow({ appId: appStBad, taskId: tStBad, fieldKey: 'status', clickupValue: 'x', portalValue: 'funded' });
+  ok((await R2.recheckReview(await rowById(idStBad), { clickup: stStub })).outcome === 'still_open', 'status: buckets still differ → stays open');
+
+  // ---- push_job (dead-lettered outbound ClickUp push) ----
+  const tPush = tk('push');
+  const appPush = (await db.query('INSERT INTO applications(borrower_id,clickup_pipeline_task_id) VALUES($1,$2) RETURNING id', [bLn, tPush])).rows[0].id;
+  const idPushOk = await openRow({ appId: appPush, taskId: tPush, fieldKey: 'push_job', clickupValue: null, portalValue: 'status' });
+  ok((await R2.recheckReview(await rowById(idPushOk), { clickup })).reason === 'push_healthy', 'push_job: no failed/pending pushes remain → recheck closes');
+  const tPush2 = tk('push2');
+  const appPush2 = (await db.query('INSERT INTO applications(borrower_id,clickup_pipeline_task_id) VALUES($1,$2) RETURNING id', [bLn, tPush2])).rows[0].id;
+  await db.query("INSERT INTO sync_queue(entity_type,entity_id,target,direction,op,status) VALUES('application',$1,'clickup','push','field','dead')", [appPush2]);
+  const idPushBad = await openRow({ appId: appPush2, taskId: tPush2, fieldKey: 'push_job', clickupValue: null, portalValue: 'status' });
+  ok((await R2.recheckReview(await rowById(idPushBad), { clickup })).outcome === 'still_open', 'push_job: a dead push remains → stays open');
+
+  // ---- sharepoint_doc (mirror failure) ----
+  const docOk = (await db.query("INSERT INTO documents(filename,sharepoint_backed_up_at,sharepoint_backup_error) VALUES('a.pdf',now(),NULL) RETURNING id")).rows[0].id;
+  const idSpOk = await openRow({ taskId: `spdoc:${docOk}`, fieldKey: 'sharepoint_doc', clickupValue: null, portalValue: 'a.pdf' });
+  ok((await R2.recheckReview(await rowById(idSpOk), { clickup })).reason === 'mirrored', 'sharepoint_doc: now mirrored (backed up, no error) → recheck closes');
+  const docBad = (await db.query("INSERT INTO documents(filename,sharepoint_backed_up_at,sharepoint_backup_error) VALUES('b.pdf',NULL,'permanent error') RETURNING id")).rows[0].id;
+  const idSpBad = await openRow({ taskId: `spdoc:${docBad}`, fieldKey: 'sharepoint_doc', clickupValue: null, portalValue: 'b.pdf' });
+  ok((await R2.recheckReview(await rowById(idSpBad), { clickup })).outcome === 'still_open', 'sharepoint_doc: still not mirrored → stays open');
+
+  // ---- shared_email (two profiles, one email) ----
+  const shReal = `sara.${RUN}@x.com`;
+  const s1 = (await db.query("INSERT INTO borrowers(first_name,last_name,email,origin) VALUES('Sara','G',$1,'self') RETURNING id", [shReal])).rows[0].id;
+  const s2 = (await db.query("INSERT INTO borrowers(first_name,last_name,email,origin) VALUES('Dovid','G',$1,'self') RETURNING id", [`noemail+t${RUN}@clickup.local`])).rows[0].id;
+  const dedupKey = `dedup:${[s1, s2].sort().join(':')}`;
+  const idShOpen = await openRow({ taskId: dedupKey, fieldKey: 'shared_email', clickupValue: shReal, portalValue: 'Sara G AND Dovid G', rawValue: JSON.stringify({ b1: s1, b2: s2 }) });
+  ok((await R2.recheckReview(await rowById(idShOpen), { clickup })).outcome === 'still_open', 'shared_email: one profile still on a placeholder email, not linked → stays open');
+  // give the 2nd profile its own real email → both real + distinct → closes
+  await db.query('UPDATE borrowers SET email=$2 WHERE id=$1', [s2, `dovid.${RUN}@x.com`]);
+  const idShSep = await openRow({ taskId: `${dedupKey}:sep`, fieldKey: 'shared_email', clickupValue: shReal, portalValue: 'Sara G AND Dovid G', rawValue: JSON.stringify({ b1: s1, b2: s2 }) });
+  ok((await R2.recheckReview(await rowById(idShSep), { clickup })).reason === 'separate_emails', 'shared_email: both profiles now have their own real emails → recheck closes');
+  // linked pair → closes as linked
+  const l1 = (await db.query("INSERT INTO borrowers(first_name,last_name,email,origin) VALUES('Link','A',$1,'self') RETURNING id", [rnd()])).rows[0].id;
+  const l2 = (await db.query("INSERT INTO borrowers(first_name,last_name,email,origin) VALUES('Link','B',$1,'self') RETURNING id", [`noemail+l${RUN}@clickup.local`])).rows[0].id;
+  await db.query("INSERT INTO borrower_profile_links(borrower_id,linked_borrower_id,reason) VALUES($1,$2,'shared_email_allowed'),($2,$1,'shared_email_allowed') ON CONFLICT DO NOTHING", [l1, l2]);
+  const idShLink = await openRow({ taskId: `dedup:${[l1, l2].sort().join(':')}`, fieldKey: 'shared_email', clickupValue: 'x', portalValue: 'y', rawValue: JSON.stringify({ b1: l1, b2: l2 }) });
+  ok((await R2.recheckReview(await rowById(idShLink), { clickup })).reason === 'linked', 'shared_email: the pair is now linked → recheck closes');
+
+  // ---- borrower_identity (two people on one profile) ----
+  const bMerged = (await db.query("INSERT INTO borrowers(first_name,last_name,email,origin) VALUES('Merged','Person',$1,'clickup_backfill') RETURNING id", [rnd()])).rows[0].id;
+  const tBiOpen = tk('biOpen');
+  const appBiOpen = (await db.query('INSERT INTO applications(borrower_id,clickup_pipeline_task_id) VALUES($1,$2) RETURNING id', [bMerged, tBiOpen])).rows[0].id;
+  const idBiOpen = await openRow({ appId: appBiOpen, borrowerId: bMerged, taskId: tBiOpen, fieldKey: 'borrower_identity', clickupValue: 'x', portalValue: 'y' });
+  ok((await R2.recheckReview(await rowById(idBiOpen), { clickup })).outcome === 'still_open', 'borrower_identity: file still points at the merged profile → stays open');
+  const tBiSplit = tk('biSplit');
+  const appBiSplit = (await db.query('INSERT INTO applications(borrower_id,clickup_pipeline_task_id) VALUES($1,$2) RETURNING id', [bMerged, tBiSplit])).rows[0].id;
+  const idBiSplit = await openRow({ appId: appBiSplit, borrowerId: bMerged, taskId: tBiSplit, fieldKey: 'borrower_identity', clickupValue: 'x', portalValue: 'y' });
+  const bSplit = (await db.query("INSERT INTO borrowers(first_name,last_name,email,origin) VALUES('Split','Person',$1,'clickup_backfill') RETURNING id", [rnd()])).rows[0].id;
+  await db.query('UPDATE applications SET borrower_id=$2 WHERE id=$1', [appBiSplit, bSplit]);   // the split re-pointed the file
+  ok((await R2.recheckReview(await rowById(idBiSplit), { clickup })).reason === 'split_done', 'borrower_identity: split re-pointed the file to a separate profile → recheck closes');
+
+  // ---- pii_overwrite_blocked rides an identity field_key → already covered by the value re-read ----
+  const bPii = (await db.query("INSERT INTO borrowers(first_name,last_name,email,origin) VALUES('Pii','Test',$1,'self') RETURNING id", [`pii.${RUN}@x.com`])).rows[0].id;
+  const tPii = tk('pii');
+  const appPii = (await db.query('INSERT INTO applications(borrower_id,clickup_pipeline_task_id) VALUES($1,$2) RETURNING id', [bPii, tPii])).rows[0].id;
+  setTaskFields(tPii, [[F.SHARED.borrowerEmail, `PII.${RUN}@X.com`]]);   // same email, only case differs
+  const idPii = await openRow({ appId: appPii, borrowerId: bPii, taskId: tPii, fieldKey: 'email', clickupValue: `PII.${RUN}@X.com`, portalValue: `pii.${RUN}@x.com` });
+  ok((await R2.recheckReview(await rowById(idPii), { clickup })).outcome === 'closed', 'pii_overwrite_blocked (email field): value re-read closes on case-only agreement');
+
+  // ---- Sitewire + sharepoint_folder → specific "use this card's actions" (not a dead-end) ----
+  const idSw = await openRow({ appId: appPii, taskId: `sitewire:${appPii}:sitewire_no_budget`, fieldKey: 'sitewire', clickupValue: null, portalValue: null });
+  const outSw = await R2.recheckReview(await rowById(idSw), { clickup });
+  ok(outSw.outcome === 'unsupported' && outSw.reason === 'sitewire_use_actions', 'sitewire: recheck points to the card actions (not the generic dead-end)');
+  const idSpf = await openRow({ appId: appPii, taskId: `sp:app:${appPii}`, fieldKey: 'sharepoint_folder', clickupValue: null, portalValue: 'x' });
+  ok((await R2.recheckReview(await rowById(idSpf), { clickup })).reason === 'sharepoint_folder_use_actions', 'sharepoint_folder: recheck points to Re-match (not the generic dead-end)');
+
   // clean up the test rows
   await db.query(`DELETE FROM clickup_task_index WHERE task_id = ANY($1)`, [[tStaleOther, tStaleOther2]]).catch(() => {});
   await db.query(`DELETE FROM sync_review_queue WHERE reason='test_recheck'`);
+  await db.query(`DELETE FROM sync_queue WHERE entity_id=$1`, [appPush2]).catch(() => {});
   await db.pool.end();
 })().then(() => {
   console.log(`\n${pass} passed, ${fail} failed`);
