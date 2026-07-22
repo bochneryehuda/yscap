@@ -31,20 +31,35 @@ function MultiInput({ label, kind, values, onChange }) {
   const add = () => onChange([...(values || []), '']);
   const rm = (i) => onChange(values.filter((_, j) => j !== i));
   const Comp = kind === 'email' ? EmailInput : kind === 'phone' ? PhoneInput : null;
+  const arr = values.length ? values : [''];
   return (
     <div className="field" style={{ gridColumn: '1 / -1' }}>
-      <label>{label}{values.length > 1 && <span className="muted small" style={{ marginLeft: 6 }}>({values.length})</span>}</label>
-      {(values.length ? values : ['']).map((v, i) => (
-        <div key={i} className="row" style={{ gap: 6, marginTop: i ? 6 : 0, alignItems: 'center' }}>
+      <label className="row" style={{ alignItems: 'baseline', gap: 8 }}>
+        <span>{label}</span>
+        {values.filter((v) => String(v || '').trim()).length > 1 && (
+          <span className="pill mut small" title={`Multiple ${kind}s on this vendor`}>
+            {values.filter((v) => String(v || '').trim()).length}
+          </span>
+        )}
+      </label>
+      {arr.map((v, i) => (
+        <div key={i} className="row" style={{ gap: 8, marginTop: i ? 6 : 0, alignItems: 'center' }}>
           {Comp
             ? <Comp value={v} onChange={(nv) => set(i, nv)} />
             : <input className="input" value={v} onChange={(e) => set(i, e.target.value)} />}
-          {values.length > 1 && (
-            <button className="btn link small" onClick={() => rm(i)} title={`Remove this ${kind}`}>Remove</button>
+          {arr.length > 1 && (
+            <button className="btn link small" onClick={() => rm(i)}
+              aria-label={`Remove this ${kind}`}
+              title={`Remove this ${kind}`}>
+              <span aria-hidden="true">×</span>
+            </button>
           )}
         </div>
       ))}
-      <button className="btn link small" style={{ marginTop: 6 }} onClick={add}>+ Add another {kind}</button>
+      <button className="btn link small" style={{ marginTop: 8 }} onClick={add}
+        aria-label={`Add another ${kind}`}>
+        <span aria-hidden="true" style={{ marginRight: 4 }}>+</span>Add another {kind}
+      </button>
     </div>
   );
 }
@@ -147,19 +162,48 @@ function MergeVendorPanel({ survivor, merged, onCancel, onMerged, busy }) {
       emails, phones,
     });
   }
+  const svTitle = survivor.company_name || survivor.contact_name || survivor.email || 'Vendor A';
+  const mdTitle = merged.company_name || merged.contact_name || merged.email || 'Vendor B';
+  const finalEmailsCount = emailsChecked.filter(Boolean).length;
+  const finalPhonesCount = phonesChecked.filter(Boolean).length;
   return (
-    <div className="panel" style={{ background: 'var(--ink-2)', marginTop: 8 }}>
-      <div className="row" style={{ marginBottom: 8, gap: 8, alignItems: 'center' }}>
+    <div className="panel" role="region" aria-label="Merge vendors"
+      style={{ background: 'var(--surface, #FFFFFF)', marginTop: 10,
+        borderLeft: '3px solid var(--gold, #AE8746)' }}>
+      <div className="row" style={{ marginBottom: 10, gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
         <h3 style={{ margin: 0 }}>Merge vendors</h3>
-        <span className="muted small">Pick which value to keep for each field. Emails and phones combine — uncheck any you don't want to keep.</span>
+        <span className="pill mut" title="This action is not automatically reversible">Careful — combines files</span>
+        <div className="spacer" style={{ flex: 1 }} />
+        <span className="muted small">
+          Pick the value to keep for each field. Emails and phones combine —
+          uncheck any you don't want to keep.
+        </span>
+      </div>
+      {/* Vendor identity chips so the person is always oriented on which two
+          vendors are being merged (the table headers repeat these, but a chip
+          row at the top is easier to scan). */}
+      <div className="row" style={{ gap: 10, marginBottom: 12, flexWrap: 'wrap', alignItems: 'stretch' }}>
+        <div style={{ flex: 1, minWidth: 220, background: 'var(--surface-soft)',
+          border: '1px solid var(--line)', borderRadius: 10, padding: '8px 12px' }}>
+          <div className="small muted">Survivor (keeps the row)</div>
+          <div style={{ fontWeight: 600, marginTop: 2 }}>{svTitle}</div>
+          <div className="small muted">{TYPE_LABEL[survivor.contact_type] || survivor.contact_type}</div>
+        </div>
+        <div style={{ alignSelf: 'center', color: 'var(--muted)', fontSize: 20 }} aria-hidden="true">＋</div>
+        <div style={{ flex: 1, minWidth: 220, background: 'var(--surface-soft)',
+          border: '1px solid var(--line)', borderRadius: 10, padding: '8px 12px' }}>
+          <div className="small muted">Folded in (soft-deleted)</div>
+          <div style={{ fontWeight: 600, marginTop: 2 }}>{mdTitle}</div>
+          <div className="small muted">{TYPE_LABEL[merged.contact_type] || merged.contact_type}</div>
+        </div>
       </div>
       <div style={{ overflowX: 'auto' }}>
         <table className="tbl" style={{ width: '100%' }}>
           <thead>
             <tr>
-              <th></th>
-              <th style={{ textAlign: 'left' }}>Keep from: <em>{survivor.company_name || survivor.contact_name || survivor.email || '(vendor A)'}</em></th>
-              <th style={{ textAlign: 'left' }}>Keep from: <em>{merged.company_name || merged.contact_name || merged.email || '(vendor B)'}</em></th>
+              <th style={{ textAlign: 'left', minWidth: 120 }}>Field</th>
+              <th style={{ textAlign: 'left' }}>From: <em>{svTitle}</em></th>
+              <th style={{ textAlign: 'left' }}>From: <em>{mdTitle}</em></th>
             </tr>
           </thead>
           <tbody>
@@ -173,33 +217,57 @@ function MergeVendorPanel({ survivor, merged, onCancel, onMerged, busy }) {
           </tbody>
         </table>
       </div>
-      {uniqEmails.length > 0 && (
-        <div style={{ marginTop: 12 }}>
-          <div style={{ fontWeight: 600, marginBottom: 4 }}>Emails to keep</div>
-          {uniqEmails.map((em, i) => (
-            <label key={em} className="row" style={{ gap: 6, alignItems: 'center' }}>
-              <input type="checkbox" checked={emailsChecked[i]}
-                onChange={() => setEmailsChecked((s) => s.map((v, j) => j === i ? !v : v))} />
-              <span>{em}</span>
-            </label>
-          ))}
+      {(uniqEmails.length > 0 || uniqPhones.length > 0) && (
+        <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+          gap: 12, marginTop: 14 }}>
+          {uniqEmails.length > 0 && (
+            <div style={{ background: 'var(--surface-soft)', border: '1px solid var(--line)',
+              borderRadius: 10, padding: '10px 12px' }}>
+              <div className="row" style={{ marginBottom: 6 }}>
+                <div style={{ fontWeight: 600 }}>Emails</div>
+                <div className="spacer" style={{ flex: 1 }} />
+                <span className="pill mut small">{finalEmailsCount} keeping</span>
+              </div>
+              {uniqEmails.map((em, i) => (
+                <label key={em} className="row" style={{ gap: 8, alignItems: 'center', padding: '3px 0' }}>
+                  <input type="checkbox" checked={emailsChecked[i]}
+                    onChange={() => setEmailsChecked((s) => s.map((v, j) => j === i ? !v : v))} />
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{em}</span>
+                </label>
+              ))}
+            </div>
+          )}
+          {uniqPhones.length > 0 && (
+            <div style={{ background: 'var(--surface-soft)', border: '1px solid var(--line)',
+              borderRadius: 10, padding: '10px 12px' }}>
+              <div className="row" style={{ marginBottom: 6 }}>
+                <div style={{ fontWeight: 600 }}>Phones</div>
+                <div className="spacer" style={{ flex: 1 }} />
+                <span className="pill mut small">{finalPhonesCount} keeping</span>
+              </div>
+              {uniqPhones.map((ph, i) => (
+                <label key={ph} className="row" style={{ gap: 8, alignItems: 'center', padding: '3px 0' }}>
+                  <input type="checkbox" checked={phonesChecked[i]}
+                    onChange={() => setPhonesChecked((s) => s.map((v, j) => j === i ? !v : v))} />
+                  <span>{ph}</span>
+                </label>
+              ))}
+            </div>
+          )}
         </div>
       )}
-      {uniqPhones.length > 0 && (
-        <div style={{ marginTop: 12 }}>
-          <div style={{ fontWeight: 600, marginBottom: 4 }}>Phones to keep</div>
-          {uniqPhones.map((ph, i) => (
-            <label key={ph} className="row" style={{ gap: 6, alignItems: 'center' }}>
-              <input type="checkbox" checked={phonesChecked[i]}
-                onChange={() => setPhonesChecked((s) => s.map((v, j) => j === i ? !v : v))} />
-              <span>{ph}</span>
-            </label>
-          ))}
-        </div>
-      )}
-      <div className="row" style={{ gap: 8, marginTop: 14 }}>
-        <button className="btn primary" disabled={busy} onClick={doMerge}>{busy ? 'Merging…' : 'Merge into first vendor'}</button>
-        <button className="btn link" onClick={onCancel}>Cancel</button>
+      <div className="row" style={{ gap: 8, marginTop: 16, alignItems: 'center' }}>
+        <button className="btn primary" disabled={busy} onClick={doMerge}
+          aria-label={`Merge ${mdTitle} into ${svTitle}`}>
+          {busy ? 'Merging…' : `Merge ${mdTitle} → ${svTitle}`}
+        </button>
+        <button className="btn link" onClick={onCancel} disabled={busy}>Cancel</button>
+        <div className="spacer" style={{ flex: 1 }} />
+        <span className="muted small">
+          {finalEmailsCount + finalPhonesCount === 0
+            ? 'No emails or phones will be kept.'
+            : `${finalEmailsCount} email${finalEmailsCount === 1 ? '' : 's'} · ${finalPhonesCount} phone${finalPhonesCount === 1 ? '' : 's'}`}
+        </span>
       </div>
     </div>
   );
@@ -311,30 +379,43 @@ export default function StaffVendors() {
         }
         if (!groups.size) return null;
         return (
-          <div className="notice" style={{ margin: '0 0 10px', background: 'rgba(174,135,70,.08)' }}>
-            <strong>Possible duplicates found ({groups.size} group{groups.size === 1 ? '' : 's'}).</strong>
-            <div className="muted small" style={{ marginBottom: 6 }}>
-              These vendors share a name, email or phone with another vendor of the same type. Merge to combine their emails, phones, and files onto one row.
+          <div className="notice" role="region" aria-label="Duplicate vendor suggestions"
+            style={{ margin: '0 0 12px', background: 'var(--gold-soft, rgba(174,135,70,.08))',
+              borderLeft: '3px solid var(--gold, #AE8746)', padding: '12px 14px', borderRadius: 10 }}>
+            <div className="row" style={{ alignItems: 'baseline', gap: 8, marginBottom: 4 }}>
+              <span aria-hidden="true" style={{ fontSize: 16 }}>⚠</span>
+              <strong>Possible duplicates ({groups.size} group{groups.size === 1 ? '' : 's'})</strong>
+              <div className="spacer" style={{ flex: 1 }} />
+              <span className="muted small">Sharing a name, email or phone</span>
             </div>
-            <ul style={{ margin: '4px 0 0 18px' }}>
+            <div className="muted small" style={{ marginBottom: 8 }}>
+              Merge combines emails, phones, and files onto one row — the "loser" is soft-deleted (never truly gone).
+            </div>
+            <ul style={{ margin: '0', paddingLeft: 18, listStyle: 'square' }}>
               {[...groups.values()].map((grp) => (
-                <li key={grp[0].id} style={{ marginBottom: 4 }}>
-                  {grp.map((v) => v.company_name || v.contact_name || v.email || v.id).join(' · ')}
-                  {grp.length === 2 && (
-                    <button className="btn link small" style={{ marginLeft: 8 }}
-                      onClick={() => setMergePick({ survivorId: grp[0].id, mergedId: grp[1].id })}>
-                      Merge
-                    </button>
-                  )}
-                  {grp.length > 2 && (
-                    // 3+ vendors in the same cluster (post-merge-review 2026-07-21):
-                    // resolve pairwise — the user picks two at a time via the row
-                    // Merge action; running merge once collapses two, the next
-                    // reconcile pass surfaces the remaining 2-vendor cluster if any.
-                    <span className="muted small" style={{ marginLeft: 8 }}>
-                      ({grp.length} vendors — merge pairwise using the row "Merge" action)
+                <li key={grp[0].id} style={{ marginBottom: 6 }}>
+                  <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                    <span style={{ flex: 1, minWidth: 200 }}>
+                      {grp.map((v, i) => (
+                        <React.Fragment key={v.id}>
+                          {i > 0 && <span className="muted" style={{ margin: '0 6px' }}>·</span>}
+                          <strong>{v.company_name || v.contact_name || v.email || v.id}</strong>
+                        </React.Fragment>
+                      ))}
                     </span>
-                  )}
+                    {grp.length === 2 && (
+                      <button className="btn primary small"
+                        onClick={() => setMergePick({ survivorId: grp[0].id, mergedId: grp[1].id })}
+                        aria-label={`Merge ${grp[1].company_name || grp[1].contact_name || grp[1].email} into ${grp[0].company_name || grp[0].contact_name || grp[0].email}`}>
+                        Review & merge
+                      </button>
+                    )}
+                    {grp.length > 2 && (
+                      <span className="muted small">
+                        {grp.length} vendors · use the row <strong>Merge</strong> action pairwise
+                      </span>
+                    )}
+                  </div>
                 </li>
               ))}
             </ul>
@@ -423,33 +504,71 @@ export default function StaffVendors() {
                           </td>
                         </tr>
                       )}
-                      {mergePickChoice === v.id && (
-                        <tr className="editrow">
-                          <td colSpan={7} data-label="">
-                            <div className="panel" style={{ background: 'var(--ink-2)' }}>
-                              <div className="row" style={{ marginBottom: 6, gap: 8, alignItems: 'center' }}>
-                                <strong>Merge <em>{v.company_name || v.contact_name || v.email}</em> into…</strong>
-                                <span className="muted small">The vendor you pick becomes the survivor — this one's emails, phones, and files fold into it.</span>
-                              </div>
-                              <div style={{ maxHeight: 260, overflowY: 'auto', border: '1px solid var(--line)', borderRadius: 6 }}>
-                                {(rows || []).filter((x) => x.id !== v.id && x.contact_type === v.contact_type && !x.merged_into_id).map((x) => (
-                                  <div key={x.id} className="row" style={{ padding: '6px 10px', gap: 8, alignItems: 'center', borderBottom: '1px solid var(--line)' }}>
-                                    <div style={{ flex: 1 }}>
-                                      <div><strong>{x.company_name || x.contact_name || x.email || '—'}</strong></div>
-                                      <div className="muted small">{[x.contact_name, x.email, x.phone].filter(Boolean).join(' · ') || '—'}</div>
-                                    </div>
-                                    <button className="btn primary small"
-                                      onClick={() => { setMergePickChoice(null); setMergePick({ survivorId: x.id, mergedId: v.id }); }}>
-                                      Merge into this
-                                    </button>
+                      {mergePickChoice === v.id && (() => {
+                        const candidates = (rows || []).filter((x) =>
+                          x.id !== v.id && x.contact_type === v.contact_type && !x.merged_into_id);
+                        return (
+                          <tr className="editrow">
+                            <td colSpan={7} data-label="">
+                              <div className="panel" style={{ background: 'var(--surface-soft)',
+                                borderLeft: '3px solid var(--gold, #AE8746)' }} role="dialog"
+                                aria-label={`Pick a vendor to merge ${v.company_name || v.contact_name || v.email} into`}>
+                                <div className="row" style={{ marginBottom: 10, gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
+                                  <strong>Merge <em>{v.company_name || v.contact_name || v.email}</em> into…</strong>
+                                  <div className="spacer" style={{ flex: 1 }} />
+                                  <span className="muted small">
+                                    The one you pick keeps its row; this vendor's emails, phones and files fold in.
+                                  </span>
+                                </div>
+                                {candidates.length === 0 ? (
+                                  <div className="empty-state" style={{ padding: '10px 12px' }}>
+                                    <p className="muted small" style={{ margin: 0 }}>
+                                      No other {TYPE_LABEL[v.contact_type] || 'vendor'}s to merge into.
+                                    </p>
                                   </div>
-                                ))}
+                                ) : (
+                                  <div style={{ maxHeight: 320, overflowY: 'auto',
+                                    border: '1px solid var(--line)', borderRadius: 10, background: 'var(--surface)' }}>
+                                    {candidates.map((x, i) => (
+                                      <div key={x.id} className="row"
+                                        style={{ padding: '10px 14px', gap: 10, alignItems: 'center',
+                                          borderBottom: i < candidates.length - 1 ? '1px solid var(--line)' : 'none' }}>
+                                        <span className="mono" style={{ width: 30, height: 30, borderRadius: 999,
+                                          background: 'var(--surface-soft)', border: '1px solid var(--line)',
+                                          display: 'grid', placeItems: 'center', fontSize: 11, fontWeight: 600,
+                                          color: 'var(--muted)' }}>
+                                          {initials(x.company_name || x.contact_name || x.email)}
+                                        </span>
+                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                          <div style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                            {x.company_name || x.contact_name || x.email || '—'}
+                                          </div>
+                                          <div className="muted small" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                            {[x.contact_name, x.email, x.phone].filter(Boolean).join(' · ') || '—'}
+                                          </div>
+                                        </div>
+                                        {x.files_used > 0 && (
+                                          <span className="pill mut small" title="Files this vendor is attached to">
+                                            {x.files_used} file{x.files_used === 1 ? '' : 's'}
+                                          </span>
+                                        )}
+                                        <button className="btn primary small"
+                                          onClick={() => { setMergePickChoice(null); setMergePick({ survivorId: x.id, mergedId: v.id }); }}
+                                          aria-label={`Merge ${v.company_name || v.contact_name || v.email} into ${x.company_name || x.contact_name || x.email}`}>
+                                          Merge into this
+                                        </button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                                <div className="row" style={{ gap: 8, marginTop: 10 }}>
+                                  <button className="btn link small" onClick={() => setMergePickChoice(null)}>Cancel</button>
+                                </div>
                               </div>
-                              <button className="btn link small" style={{ marginTop: 6 }} onClick={() => setMergePickChoice(null)}>Cancel</button>
-                            </div>
-                          </td>
-                        </tr>
-                      )}
+                            </td>
+                          </tr>
+                        );
+                      })()}
                     </React.Fragment>
                   ))}
                 </tbody>
