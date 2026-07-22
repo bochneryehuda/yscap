@@ -114,6 +114,7 @@ export default function StaffInsightsDashboard() {
         <div key={r.bucket} style={{ display: 'flex', gap: 10, padding: '4px 0', borderBottom: '1px dashed var(--paper,#E9E4D3)', fontSize: 13 }}>
           <span style={{ flex: 1 }}>{r.bucket}</span>
           <span style={{ fontWeight: 700 }}>{r.n}</span>
+          <FilesLink bucket={r.bucket} />
         </div>
       ))}
 
@@ -150,4 +151,54 @@ function Row({ label, count, color }) {
 }
 function Empty({ children }) {
   return <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', fontStyle: 'italic' }}>{children}</div>;
+}
+
+// R3.30 — Given a top-code bucket (either a `code` string from the finding
+// evidence or a source name), fetch the list of files with matching open
+// suggestions and render them inline as an expandable panel.
+function FilesLink({ bucket }) {
+  const [open, setOpen] = React.useState(false);
+  const [rows, setRows] = React.useState(null);
+  const [busy, setBusy] = React.useState(false);
+  const load = async () => {
+    setBusy(true);
+    try {
+      // Bucket may be a source (e.g. 'assignment_fraud') OR a finding code
+      // (from evidence.code). We try 'code' first, fall back to 'source'.
+      const byCode = await api.insightsFilesWithSuggestion({ code: bucket, limit: 50 }).catch(() => null);
+      let files = (byCode && byCode.files) || [];
+      if (!files.length) {
+        const bySrc = await api.insightsFilesWithSuggestion({ source: bucket, limit: 50 }).catch(() => null);
+        files = (bySrc && bySrc.files) || [];
+      }
+      setRows(files);
+    } catch (_) { setRows([]); }
+    finally { setBusy(false); }
+  };
+  const toggle = () => {
+    setOpen(!open);
+    if (!open && !rows) load();
+  };
+  return (
+    <>
+      <button className="btn ghost" onClick={toggle} disabled={busy} style={{ fontSize: 10, padding: '2px 6px' }}>
+        {open ? 'hide' : (busy ? '…' : 'files →')}
+      </button>
+      {open && rows && (
+        <div style={{ flexBasis: '100%', paddingLeft: 20, marginTop: 4 }}>
+          {rows.length === 0 && <div style={{ fontSize: 11, color: 'var(--muted,#4B585C)' }}>No open files match.</div>}
+          {rows.map((f) => (
+            <div key={f.application_id + '|' + f.created_at} style={{ fontSize: 11, padding: '2px 0' }}>
+              <Link to={`/staff/applications/${f.application_id}`} style={{ color: 'var(--teal-deep,#256168)' }}>
+                {(f.property_address && (f.property_address.line1 || f.property_address.address)) || f.application_id.slice(0, 8)}
+              </Link>
+              {' — '}{f.first_name} {f.last_name}
+              {' · '}<span style={{ color: 'var(--muted,#4B585C)' }}>{f.app_status}</span>
+              {' · '}<span style={{ color: 'var(--muted,#4B585C)' }}>{new Date(f.created_at).toLocaleDateString()}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  );
 }

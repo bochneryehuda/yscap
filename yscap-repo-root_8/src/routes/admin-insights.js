@@ -89,4 +89,33 @@ router.get('/', requireRole('admin'), async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message || 'insights load failed' }); }
 });
 
+// R3.30 — Portfolio search: files with a given AI suggestion open.
+//   GET /files-with-suggestion?source=assignment_fraud&severity=fatal&limit=50
+// admin+ only. Returns application_id + address + last-modified so the insights
+// dashboard's top-code table can link "N files".
+router.get('/files-with-suggestion', requireRole('admin'), async (req, res) => {
+  try {
+    const source = req.query.source ? String(req.query.source) : null;
+    const severity = req.query.severity ? String(req.query.severity) : null;
+    const code = req.query.code ? String(req.query.code) : null;
+    const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
+    const params = [];
+    const conds = [`s.status IN ('open','marked_important','escalated','asked_admin')`];
+    if (source) { params.push(source); conds.push(`s.source=$${params.length}`); }
+    if (severity) { params.push(severity); conds.push(`s.severity=$${params.length}`); }
+    if (code) { params.push(code); conds.push(`s.evidence->>'code'=$${params.length}`); }
+    const r = await db.query(
+      `SELECT s.application_id, s.title, s.source, s.severity, s.created_at,
+              a.property_address, a.status AS app_status, a.program,
+              b.first_name, b.last_name
+         FROM ai_suggestions s
+         JOIN applications a ON a.id = s.application_id AND a.deleted_at IS NULL
+         LEFT JOIN borrowers b ON b.id = a.borrower_id
+        WHERE ${conds.join(' AND ')}
+        ORDER BY s.created_at DESC
+        LIMIT ${limit}`, params);
+    res.json({ ok: true, files: r.rows, filter: { source, severity, code } });
+  } catch (e) { res.status(500).json({ error: e.message || 'search failed' }); }
+});
+
 module.exports = router;
