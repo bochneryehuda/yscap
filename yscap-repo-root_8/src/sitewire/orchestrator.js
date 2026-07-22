@@ -648,6 +648,20 @@ async function pushBudgetInner(appId, budgetId, ex, budgetCents) {
     while (liveNames.has(name)) name = `${base} #${k++}`;
     c.name = name; liveNames.add(name);
   }
+  // Post-audit fix (2026-07-21): the qualified name we chose above is stored in the crosswalk, but
+  // explodeSow rebuilds ex.items from the SOW on EVERY push with the un-qualified name — so push 2's
+  // diff sees `link.name="Foo (Kitchen)"` vs desired `"Foo"` and emits a rename UPDATE back to "Foo"
+  // — which then collides with the still-untracked live line we qualified around, either 422'ing the
+  // whole batch or creating a duplicate. Mirror the same isCollision check on diff.updates: when the
+  // desired rename would collide with an untracked live line, KEEP the previously-qualified name (the
+  // cents portion of the update still flows). Media items intentionally skipped (fixed names).
+  for (const u of diff.updates) {
+    if (u.is_media_item) continue;
+    const prev = u.prev_name || '';
+    if (prev === (u.name || '')) continue;              // nothing to rename in the first place
+    if (!isCollision(u.name)) continue;                 // a rename that doesn't collide is fine
+    u.name = prev;                                      // keep the stored (qualified) name; cents still update
+  }
   // Pass the drawn-id set so a doubled $0 MEDIA anchor binds to an UN-DRAWN copy (harmless photo
   // requirement) instead of parking; a money line or an all-drawn collision still parks (never-guess).
   const resolved = M.resolveCreatesAgainstLive(diff.creates, liveItems, drawn);

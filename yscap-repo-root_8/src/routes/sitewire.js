@@ -2015,7 +2015,7 @@ router.get('/findings/:findingId', requirePermission('manage_draws'), async (req
   if (!/^\d+$/.test(req.params.findingId)) return res.status(404).json({ error: 'not found' });
   const f = (await db.query(`SELECT * FROM draw_findings WHERE id=$1`, [req.params.findingId])).rows[0];
   if (!f || !(await canSeeFile(req, f.application_id))) return res.status(403).json({ error: 'forbidden' });
-  const lines = (await db.query(`SELECT * FROM draw_finding_lines WHERE finding_id=$1 ORDER BY id`, [f.id])).rows
+  const allRows = (await db.query(`SELECT * FROM draw_finding_lines WHERE finding_id=$1 ORDER BY id`, [f.id])).rows
     // Never leak internal storage refs to the client: replace the raw dispute_media (which holds
     // storage_ref) with a safe descriptor the UI turns into a serving URL. Borrower dispute evidence
     // is fetched byte-by-byte through the guarded /dispute-media/:idx route below.
@@ -2025,10 +2025,17 @@ router.get('/findings/:findingId', requirePermission('manage_draws'), async (req
       const { dispute_media, ...rest } = l;
       return { ...rest, dispute_evidence };
     });
+  // Post-audit fix (2026-07-21): split live vs retired so the coordinator UI's default per-line sum
+  // matches the parent totals (which mirror Sitewire's current sum, excluding retired lines).
+  // A retired line — one Sitewire dropped from a fresh read on re-deliver, db/235 retired_at — stays
+  // available as history under `retired_lines` (a decided dispute is NEVER retired, so this only ever
+  // contains lines the borrower hadn't acted on).
+  const lines = allRows.filter((l) => l.retired_at == null);
+  const retired_lines = allRows.filter((l) => l.retired_at != null);
   // Never hand the borrower's no-login reply_token to a staff client — it is the borrower's own
   // accept/dispute capability, and a staffer must act as staff, not impersonate the borrower (audit L1).
   const { reply_token, ...findingSafe } = f;
-  res.json({ finding: findingSafe, lines });
+  res.json({ finding: findingSafe, lines, retired_lines });
 });
 
 // ---- GET /findings/lines/:lineId/dispute-media/:idx — serve one borrower dispute-evidence file (staff) ----
