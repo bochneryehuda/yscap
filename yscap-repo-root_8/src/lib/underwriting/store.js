@@ -122,6 +122,24 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
     findingIds.push(fr[0].id);
   }
 
+  // 3b. Semantic-entity layer (Sovereign, owner-directed 2026-07-22): pattern-
+  // based scan of the OCR text for party mentions, money, dates, addresses,
+  // emails, phones, licenses. Best-effort — a failure never blocks the
+  // extraction. The ocrText is threaded from engine.baseExtraction (truncated
+  // at 200 KB); we don't persist the raw text itself, only the entities.
+  try {
+    if (ext.ocrText) {
+      const entities = require('./semantic-entities').extract(ext.ocrText, {
+        docType, pages: ext.ocrPages || null,
+      });
+      if (entities.length) {
+        await require('./semantic-entities').persistFromExtraction(client, {
+          appId, documentId, extractionId, entities,
+        });
+      }
+    }
+  } catch (_) { /* semantic entities are additive */ }
+
   // 4. Cure analysis (Sovereign 2/4, owner-directed 2026-07-21). If this
   // document is FILED under a specific checklist_item, and that item's
   // condition code carries a structured intent, produce a CURE PROOF:

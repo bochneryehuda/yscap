@@ -107,6 +107,18 @@ async function analyzeDocument({ docType, buffer, base64, mimeType, subject, tod
   baseExtraction.ocrEngine = ocr.ok ? (ocr.engine || 'document_intelligence') : null;
   baseExtraction.ocrEngineSequence = Array.isArray(ocr.engineSequence) ? ocr.engineSequence.slice() : null;
   baseExtraction.pageCount = ocr.ok ? (ocr.pageCount || null) : null;
+  // Owner-directed 2026-07-22 (semantic-entity layer): pass a truncated OCR
+  // text + page slices back to the caller so the persist path can extract
+  // supplementary entity mentions (parties, money, dates, addresses) beyond
+  // the schema-driven field extractor. Truncated at 200 KB to bound persist
+  // cost; the semantic module doesn't need the full text to find mentions.
+  if (ocr.ok && ocr.text) {
+    baseExtraction.ocrText = String(ocr.text).slice(0, 200 * 1024);
+    baseExtraction.ocrPages = Array.isArray(ocr.pages) ? ocr.pages.map((p) => ({
+      pageNumber: p.pageNumber || null,
+      text: p.text ? String(p.text).slice(0, 20 * 1024) : '',
+    })) : null;
+  }
 
   // 2. UNDERSTAND (extract fields to the type's schema).
   let ext = await analyzer.extract({
