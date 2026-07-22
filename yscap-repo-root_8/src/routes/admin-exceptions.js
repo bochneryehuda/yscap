@@ -35,7 +35,7 @@ function auditSafe(actorId, action, entityType, entityId, detail) {
 // to show; `reasonCodes` labels the structured reasons.
 router.get('/', requirePermission('manage_pricing'), async (req, res) => {
   try {
-    const status = ['open', 'approved', 'denied', 'withdrawn', 'all'].includes(req.query.status) ? req.query.status : 'open';
+    const status = ['open', 'approved', 'denied', 'withdrawn', 'cleared', 'all'].includes(req.query.status) ? req.query.status : 'open';
     const [rows, pending] = await Promise.all([
       loanExceptions.listExceptions({ status }),
       loanExceptions.pendingCount(),
@@ -110,6 +110,28 @@ router.post('/:id/decide', requireRole('super_admin'), async (req, res) => {
 
     res.json({ ok: true, exception: row });
   } catch (e) { res.status(500).json({ error: 'could not record the decision' }); }
+});
+
+// Clear (archive / close out) an exception. A super-admin can clear any; the person
+// who REQUESTED it can clear their own (housekeeping — it does NOT change the
+// waiver flag). Mounted behind requireStaff so a requesting loan officer reaches it.
+router.post('/:id/clear', async (req, res) => {
+  try {
+    const exc = await loanExceptions.getById(req.params.id);
+    if (!exc) return res.status(404).json({ error: 'That exception no longer exists.' });
+    if (exc.status === 'cleared') return res.status(409).json({ error: 'That exception is already cleared.' });
+    const isSuper = req.actor.role === 'super_admin';
+    const isRequester = exc.requested_by && exc.requested_by === req.actor.id;
+    if (!isSuper && !isRequester) {
+      return res.status(403).json({ error: 'Only a super-admin or the person who requested it can clear an exception.' });
+    }
+    const note = req.body && req.body.note;
+    const row = await loanExceptions.clearException(req.params.id, req.actor.id, note);
+    if (!row) return res.status(409).json({ error: 'That exception is already cleared.' });
+    auditSafe(req.actor.id, 'guaranty_exception_cleared', 'application', row.application_id,
+      { exceptionId: row.id, note: note ? String(note).slice(0, 200) : null });
+    res.json({ ok: true, exception: row });
+  } catch (e) { res.status(500).json({ error: 'could not clear the exception' }); }
 });
 
 module.exports = router;
