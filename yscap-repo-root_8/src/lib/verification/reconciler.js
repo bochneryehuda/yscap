@@ -27,7 +27,7 @@ function normName(v) {
     .replace(/\b(l\.?l\.?c\.?|inc\.?|corp\.?|co\.?|ltd\.?|l\.?p\.?)\b/g, (m) => m.replace(/\./g, ''))
     .replace(/[^a-z0-9]+/g, ' ').trim();
 }
-function num(v) { const n = Number(String(v == null ? '' : v).replace(/[$,\s]/g, '')); return Number.isFinite(n) ? n : null; }
+function num(v) { const s = String(v == null ? '' : v).replace(/[$,\s]/g, ''); if (s === '') return null; const n = Number(s); return Number.isFinite(n) ? n : null; }
 function normStatus(v) { return String(v == null ? '' : v).toLowerCase().replace(/[^a-z]+/g, ''); }
 
 // Entity statuses that mean "in good standing / can transact".
@@ -54,9 +54,12 @@ const COMPARATORS = {
     return { match: within, detail: `document $${a} vs source $${b} (Δ $${+diff.toFixed(2)})` };
   },
   // Entity status — the source's registry status must be a "good standing" value.
+  // A blank/absent status is UNVERIFIABLE (the registry gave no answer), never a
+  // conflict — only a status that is present AND not good-standing conflicts.
   entity_status(docV, srcV) {
     const s = normStatus(srcV);
-    return { match: GOOD_ENTITY.has(s), detail: `registry status "${srcV}"`, hardFail: s && !GOOD_ENTITY.has(s) };
+    if (!s) return { match: false, detail: 'registry status not provided', unverifiable: true };
+    return { match: GOOD_ENTITY.has(s), detail: `registry status "${srcV}"` };
   },
   // Property value — the independent AVM within a variance band of the claimed
   // (appraisal) value. Default ±10% (a normal AVM confidence band); outside that
@@ -100,6 +103,11 @@ function reconcile(claim, source, opts = {}) {
   const base = { type, provider, field: (claim && claim.field) || null };
 
   if (!cmp) return { ...base, status: STATUS.UNVERIFIABLE, detail: `no comparator for verification type "${type}"` };
+  // A claim with no document-stated value is UNVERIFIABLE — a field the document
+  // never asserted is not a disagreement (mirrors the source-side guard below).
+  if (!claim || claim.value == null || (typeof claim.value === 'string' && claim.value.trim() === '')) {
+    return { ...base, status: STATUS.UNVERIFIABLE, detail: 'no document-claimed value to reconcile' };
+  }
   if (!source || source.available === false || source.value == null || source.value === '') {
     return { ...base, status: STATUS.UNVERIFIABLE, detail: 'no independent source value available' };
   }

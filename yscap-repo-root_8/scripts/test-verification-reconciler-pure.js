@@ -109,6 +109,21 @@ ok('an unavailable / empty / missing source is UNVERIFIABLE, never a conflict');
 assert.strictEqual(rc.reconcile({ type: 'mystery', value: 'x' }, { value: 'y', provider: 'p' }).status, STATUS.UNVERIFIABLE);
 ok('an unknown verification type is unverifiable (never throws)');
 
+// --- a MISSING / blank CLAIM (document) value is unverifiable, never a (false) conflict ---
+assert.strictEqual(rc.reconcile({ type: 'name', value: null }, { value: 'ABC LLC', provider: 'plaid' }).status, STATUS.UNVERIFIABLE, 'a null claimed name is not a fatal mismatch');
+assert.strictEqual(rc.reconcile({ type: 'name', value: '   ' }, { value: 'ABC LLC', provider: 'plaid' }).status, STATUS.UNVERIFIABLE, 'a blank claimed name is unverifiable');
+assert.strictEqual(rc.reconcile({ type: 'amount', value: '' }, { value: '5000', provider: 'plaid' }).status, STATUS.UNVERIFIABLE, 'an empty claimed amount is not a $0 conflict');
+assert.ok(!rc.reconcile({ type: 'name', value: null }, { value: 'ABC LLC', provider: 'plaid' }).finding, 'no finding on a missing claim');
+// a legitimate ZERO claimed amount is still a real value (not treated as missing)
+assert.strictEqual(rc.reconcile({ type: 'amount', value: 0 }, { value: '0', provider: 'plaid' }).status, STATUS.CONFIRMED, 'a real $0 claim vs $0 source confirms');
+ok('a missing / blank CLAIM value is unverifiable (a real $0 is still reconciled)');
+
+// --- a blank-ish SOURCE value (whitespace) is unverifiable, never a false conflict ---
+assert.strictEqual(rc.reconcile({ type: 'amount', value: '5000' }, { value: '   ', provider: 'plaid' }).status, STATUS.UNVERIFIABLE, 'a whitespace source amount is not a conflict');
+assert.strictEqual(rc.reconcile({ type: 'entity_status', value: 'ABC LLC' }, { value: '  ', provider: 'middesk' }).status, STATUS.UNVERIFIABLE, 'a blank registry status is unverifiable, not a fatal not-active');
+assert.strictEqual(rc.reconcile({ type: 'property_value', value: '500000' }, { value: '  ', provider: 'attom' }).status, STATUS.UNVERIFIABLE, 'a blank AVM is unverifiable');
+ok('a blank-ish SOURCE value (whitespace amount / status / AVM) is unverifiable, never a false conflict');
+
 // --- reconcileAll: rollup, findings, coverage ---
 const batch = rc.reconcileAll([
   { claim: { type: 'name', value: 'ABC LLC', field: 'owner' }, source: { value: 'ABC LLC', provider: 'plaid' } },          // confirmed
