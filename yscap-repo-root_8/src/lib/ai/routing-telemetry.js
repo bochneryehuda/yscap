@@ -100,21 +100,29 @@ function engineShort(label) {
 }
 
 /**
- * recommendPrimary(byFamily, { minReads }) → { [docFamily]: { engine, basis } }.
+ * recommendPrimary(byFamily, { minReads, byEngine }) → { [docFamily]: { engine, basis } }.
  * For each family with enough reads, SUGGESTS the engine that won the most reads
- * with the LOWEST correction rate as the family's primary reader — the seed for
- * measured routing self-improvement. Advisory only; a human/config adopts it.
+ * as the family's primary reader — the seed for measured routing self-improvement.
+ * Ties are broken by the engine's own correction rate ASC (lower is more
+ * accurate) when `byEngine` is supplied, else by engine name for determinism.
+ * Advisory only; a human/config adopts it.
  */
 function recommendPrimary(byFamily, opts = {}) {
   const minReads = opts.minReads != null ? opts.minReads : 20;
+  const byEngine = opts.byEngine || {};
+  const corr = (eng) => (byEngine[eng] && Number.isFinite(byEngine[eng].correctionRate)) ? byEngine[eng].correctionRate : 0;
   const out = {};
   for (const fam of Object.keys(byFamily || {})) {
     const f = byFamily[fam];
     if (!f || f.reads < minReads) continue;
     const engines = Object.keys(f.winnerEngineCounts || {});
     if (!engines.length) continue;
-    // Rank by win count desc; the top engine is the empirical primary.
-    engines.sort((a, b) => f.winnerEngineCounts[b] - f.winnerEngineCounts[a]);
+    // Rank by win count DESC, then by the engine's own correction rate ASC (a
+    // real per-engine accuracy signal), then by engine name for determinism.
+    engines.sort((a, b) =>
+      (f.winnerEngineCounts[b] - f.winnerEngineCounts[a])
+      || (corr(a) - corr(b))
+      || (a < b ? -1 : a > b ? 1 : 0));
     const engine = engines[0];
     out[fam] = {
       engine,

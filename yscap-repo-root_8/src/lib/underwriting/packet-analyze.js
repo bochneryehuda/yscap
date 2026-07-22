@@ -31,16 +31,22 @@ function normText(s) {
   return String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
-// A cheap similarity: shared-token Jaccard over the normalized text. Enough to
-// catch a duplicate scan / re-upload without an embedding model.
-function similarity(a, b) {
-  const ta = new Set(normText(a).split(' ').filter(Boolean));
-  const tb = new Set(normText(b).split(' ').filter(Boolean));
+// Token set of a normalized text block (computed ONCE per document, reused
+// across the O(n²) pairwise comparison so a large packet doesn't re-tokenize).
+function tokenSet(s) { return new Set(normText(s).split(' ').filter(Boolean)); }
+
+// Jaccard over two precomputed token sets.
+function jaccard(ta, tb) {
   if (!ta.size || !tb.size) return 0;
   let inter = 0;
   for (const t of ta) if (tb.has(t)) inter++;
   return inter / (ta.size + tb.size - inter);
 }
+
+// A cheap similarity: shared-token Jaccard over the normalized text. Enough to
+// catch a duplicate scan / re-upload without an embedding model. (Public helper;
+// the packet loop uses precomputed token sets via jaccard() for speed.)
+function similarity(a, b) { return jaccard(tokenSet(a), tokenSet(b)); }
 
 const DUP_SIMILARITY = 0.85; // ≥ this shared-token overlap → a likely duplicate
 
@@ -94,15 +100,15 @@ function analyzePacket(pages) {
   });
 
   // 4. Duplicate detection — non-blank logical docs whose text is ~identical.
+  // Token sets are computed ONCE per document, then compared pairwise (so a large
+  // packet of many small docs doesn't re-tokenize each text on every comparison).
   const duplicates = [];
   const nonBlank = logicalDocuments.filter((d) => !d.blank);
+  const tokens = nonBlank.map((d) => tokenSet(d.pages.map((n) => textByPage[n] || '').join('\n')));
   for (let i = 0; i < nonBlank.length; i++) {
     for (let j = i + 1; j < nonBlank.length; j++) {
-      const a = nonBlank[i], b = nonBlank[j];
-      const ta = a.pages.map((n) => textByPage[n] || '').join('\n');
-      const tb = b.pages.map((n) => textByPage[n] || '').join('\n');
-      const sim = similarity(ta, tb);
-      if (sim >= DUP_SIMILARITY) duplicates.push({ a: a.index, b: b.index, similarity: +sim.toFixed(3) });
+      const sim = jaccard(tokens[i], tokens[j]);
+      if (sim >= DUP_SIMILARITY) duplicates.push({ a: nonBlank[i].index, b: nonBlank[j].index, similarity: +sim.toFixed(3) });
     }
   }
 

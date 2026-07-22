@@ -57,6 +57,16 @@ assert.strictEqual(rec.bank_statement.engine, 'azure-docint', 'azure won the mos
 assert.strictEqual(rec.government_id.engine, 'google-docai', 'google won every government_id read');
 ok('recommendPrimary suggests the measured best engine per family');
 
+// --- a tie on win count is broken by the engine's own correction rate (lower wins) ---
+const tie = rt.aggregateRoutingOutcomes([
+  { docFamily: 'title', winnerEngine: 'azure-docint', engineSequence: ['azure'], humanCorrected: true },
+  { docFamily: 'title', winnerEngine: 'google-docai', engineSequence: ['azure', 'google'] },
+]);
+// both engines have 1 win for 'title'; azure was corrected once (rate 1), google 0 → google wins the tie
+const tieRec = rt.recommendPrimary(tie.byFamily, { minReads: 2, byEngine: tie.byEngine });
+assert.strictEqual(tieRec.title.engine, 'google-docai', 'a win-count tie is broken by lower correction rate');
+ok('a win-count tie is broken by the engine with the lower correction rate');
+
 // --- below the min-reads threshold, no recommendation (not enough evidence) ---
 rec = rt.recommendPrimary(agg.byFamily, { minReads: 100 });
 assert.deepStrictEqual(rec, {}, 'not enough reads → no recommendation');
