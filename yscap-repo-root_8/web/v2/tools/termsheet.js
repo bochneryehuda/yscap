@@ -16,7 +16,7 @@
   // it is a minimum-interest (interest floor) provision, NOT a prepayment
   // penalty, and the wording must always say so.
   var MIN_INTEREST_ROW = "3 months (minimum earned interest \u2014 not a prepayment penalty)";
-  var MIN_INTEREST_DETAIL = "All programs carry a 3-month minimum earned interest provision: if the loan pays off before three full months of interest have accrued, the remainder of that minimum is due at payoff. This is an interest floor, not a prepayment penalty.";
+  var MIN_INTEREST_DETAIL = "This loan carries a 3-month minimum earned interest provision: if the loan pays off before three full months of interest have accrued, the remainder of that minimum is due at payoff. This is an interest floor, not a prepayment penalty.";
 
 
   var LENDER = { name: "YS Capital Group", nmls: "2609746", email: "sales@yscapgroup.com", phone: "718-831-2168" };
@@ -820,7 +820,10 @@
     var _def = deferredOrigPct();
     var defWrap = el("rDeferredWrap");
     if (defWrap) { if (_def > 0) { defWrap.style.display = ""; YS.put("rDeferred", pcFull(_def / 100) + " of the loan, paid at payoff (exit fee)"); } else { defWrap.style.display = "none"; } }
-    YS.put("rDrawFee", drawFeeLines(_prog).join(" · "));
+    var _isBridge = YSP.normStrategy(d.inp && d.inp.strategy) === "BR";
+    var dfRow = el("rDrawFeeRow");
+    if (dfRow) dfRow.style.display = _isBridge ? "none" : "";   // a bridge / as-is loan has no construction draws
+    if (!_isBridge) YS.put("rDrawFee", drawFeeLines(_prog).join(" · "));
 
     // assignment note (financeable vs out-of-pocket)
     var an = el("rAssignNote");
@@ -1038,7 +1041,7 @@
       ["Note rate", (stdOk && d.rate > 0) ? d.rate.toFixed(2) + "%" : EM],
       minInterestOn("standard") ? ["Minimum interest", MIN_INTEREST_ROW] : null,
       ["Interest accrual", accrualLabel()],
-      ["Draw fee", drawFeeLines("standard").join("; ")],
+      (YSP.normStrategy(dealType()) === "BR") ? null : ["Draw fee", drawFeeLines("standard").join("; ")],
       ["Initial advance", stdOk ? money(d.initialAdvance) : EM],
       ["Rehab / construction holdback", stdOk ? money(d.rehabHoldback) : EM],
       ["Down payment (equity)", stdOk ? money(d.downPayment) : EM],
@@ -1062,7 +1065,7 @@
         ["Note rate", (gOk && gd.rate > 0) ? gd.rate.toFixed(2) + "%" : EM],
         minInterestOn("gold") ? ["Minimum interest", MIN_INTEREST_ROW] : null,
         ["Interest accrual", accrualLabel()],
-        ["Draw fee", drawFeeLines("gold").join("; ")],
+        (YSP.normStrategy(dealType()) === "BR") ? null : ["Draw fee", drawFeeLines("gold").join("; ")],
         ["Initial advance", gOk ? money(gd.initialAdvance) : EM],
         ["Rehab / construction holdback", gOk ? money(gd.rehabHoldback) : EM],
         ["Down payment (equity)", gOk ? money(gd.downPayment) : EM],
@@ -1224,6 +1227,7 @@
       // disclaimer and the indemnification. Same warm ink/gold system as the
       // rest of the document. Called only on a signable (eligible) sheet.
       function disclosuresPage() {
+        footer();   // footer the page we're leaving (T&C paras) — every page carries the disclaimer line
         doc.addPage(); header(); y = 92;
         doc.setFont("helvetica", "bold"); doc.setFontSize(13); doc.setTextColor.apply(doc, DARK);
         doc.text("Disclosures & conditions", M, y);
@@ -1397,8 +1401,10 @@
       if (minInterestOn(d.gold ? "gold" : "standard")) rowFull("Minimum interest", "3 months (minimum earned interest \u2014 not a prepayment penalty)");
       var _def = deferredOrigPct();
       if (_def > 0) rowFull("Deferred origination fee \u2014 paid at payoff (exit fee)", pc(_def / 100) + " of the loan; not part of cash to close");
-      rowFull("Construction draw fee", d.gold ? "$250 per draw" : "$299 (hybrid) / $499 (physical)");
-      para(d.gold ? "Gold Standard construction draws require a physical inspection (no virtual inspections) at $250 per draw." : "Standard construction draws are $299 per draw with a hybrid inspection, or $499 per draw with a physical inspection.", 7);
+      if (!isBridge) {   // a bridge / as-is loan has no construction draws
+        rowFull("Construction draw fee", d.gold ? "$250 per draw" : "$299 (hybrid) / $499 (physical)");
+        para(d.gold ? "Gold Standard construction draws require a physical inspection (no virtual inspections) at $250 per draw." : "Standard construction draws are $299 per draw with a hybrid inspection, or $499 per draw with a physical inspection.", 7);
+      }
 
       band("Terms, conditions & disclosures");
       para("1.  Nature of this document.  This Preliminary Term Sheet is an indicative summary of potential financing terms only. It is NOT a loan commitment, approval, pre-approval, rate lock or guarantee to lend, and it creates no obligation on the part of " + LENDER.name + " or the prospective borrower.", 7.5);
@@ -1887,7 +1893,7 @@
       minInterestOn(_dpProg) ? ["Minimum interest", MIN_INTEREST_ROW] : null,
       deferredOrigPct() > 0 ? ["Deferred origination fee (paid at payoff)", pcFull(deferredOrigPct() / 100) + " of loan"] : null,
       ["Origination", origPctStr(d.origPct != null ? d.origPct : 0.0125) + " of loan"],
-      ["Construction draw fee", drawFeeLines(_dpProg).join("; ")]
+      isBridge ? null : ["Construction draw fee", drawFeeLines(_dpProg).join("; ")]
     ]);
 
     section("Key dates (estimated \u2014 from the estimated closing date)", [
