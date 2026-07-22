@@ -502,6 +502,13 @@ router.get('/:appId', async (req, res, next) => {
           // with the wrong document" suggestion when the type doesn't match.
           // Dormant when the classifier isn't configured; capped per run.
           try { await require('../lib/underwriting/bad-clearance').scanFile(c, app.id, { maxConditions: 15 }); } catch (_) { /* additive */ }
+          // R4.2 — Identity chain deep check: SSN/DOB/name mismatches across
+          // every borrower-carrying doc → ai_suggestions. Best-effort.
+          try {
+            await require('../lib/underwriting/identity-chain').analyzeAndRecord(c, {
+              applicationId: app.id, extractions: exts.rows,
+            });
+          } catch (_) { /* additive */ }
           // R3.23 — Public-records cross-check (advisory): seller/grantor/appraisal
           // owner + vesting/buyer chain mismatches → ai_suggestions. Best-effort.
           try {
