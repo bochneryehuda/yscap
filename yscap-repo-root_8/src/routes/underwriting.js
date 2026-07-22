@@ -1575,6 +1575,34 @@ router.post('/:appId/ai-suggestions/:id/note', async (req, res, next) => {
 });
 
 // -------------------------------------------------------------------------
+// File-wide "Ask super-admin" — a human on the file can hand the whole file
+// (not a specific finding) to the super-admin as a question. Creates an
+// ai_admin_question tied to this application; the super-admin's answer lands
+// in the /internal/ai-inbox screen (R3.7). R3.25.
+// -------------------------------------------------------------------------
+router.post('/:appId/ask-admin', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const question = String((req.body && req.body.question) || '').trim();
+    if (!question) return res.status(400).json({ error: 'question required' });
+    const aiSug = require('../lib/underwriting/ai-suggestions');
+    const client = await db.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const r = await aiSug.askAdmin(client, {
+        applicationId: app.id, agent: 'staff_request',
+        question,
+        context: { asked_by_staff_id: req.actor.staffId, at: new Date().toISOString() },
+      });
+      await client.query('COMMIT');
+      res.json({ ok: true, ...r });
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+  } catch (e) { next(e); }
+});
+
+// -------------------------------------------------------------------------
 // AI-to-super-admin questions (R3.7). AI agents call ai-suggestions.askAdmin(...)
 // which creates a suggestion (kind='question') AND an ai_admin_questions row.
 // The super-admin answers here — the answer feeds learning + closes the suggestion.

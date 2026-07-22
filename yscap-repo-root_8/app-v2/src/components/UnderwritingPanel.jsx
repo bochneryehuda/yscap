@@ -1489,27 +1489,15 @@ function SovereignAiCostSection({ appId }) {
 // ---------------------------------------------------------------------------
 function SovereignAskAdminSection({ appId }) {
   const [busy, setBusy] = useState(false);
-  const [ok, setOk] = useState(false);
+  const [sent, setSent] = useState(false);
   const ask = async () => {
     const q = window.prompt('What do you want the super-admin to decide about this file?');
     if (!q || !q.trim()) return;
-    setBusy(true); setOk(false);
+    setBusy(true); setSent(false);
     try {
-      // We piggy-back on the AI Suggestions layer — the "ask_admin" agent is a
-      // valid source, and askAdmin() dedupes per (agent + question hash).
-      await api.aiSuggestionsList(appId, {}).catch(() => {});
-      // Fire-and-forget: create a question via the underlying ai-admin endpoint.
-      // There is no dedicated staff-ask route yet — surface a suggestion instead
-      // so the audit trail is one shape (a suggestion with kind='question').
-      await fetch(`/api/underwriting/${appId}/ai-suggestions`, {
-        method: 'GET', headers: { Authorization: 'Bearer ' + (localStorage.getItem('token') || '') },
-      }).catch(() => {});
-      // Actually the shortest path: reuse the existing suggestions POST +
-      // decide('ask_admin') pattern. But the panel already exposes 'Ask super-
-      // admin' per row — this section is the DIRECT entry when there's no
-      // specific finding to attach to. For now, hint at the panel action.
-      alert('Your question will be sent through the AI Findings panel — pick "Ask super-admin" on the specific finding you want reviewed. Direct file-wide asks land in v2.');
-      setOk(true);
+      await api.askAdminAboutFile(appId, q.trim());
+      setSent(true);
+      alert('Sent to the super-admin. Their answer will show on this file (AI Findings panel) and in /internal/ai-inbox.');
     } catch (e) { alert(`Could not send: ${(e && e.message) || 'error'}`); }
     finally { setBusy(false); }
   };
@@ -1517,7 +1505,9 @@ function SovereignAskAdminSection({ appId }) {
     <div style={{ marginTop: 12, border: '1px dashed var(--paper,#E9E4D3)', borderRadius: 10, background: 'var(--paper,#F6F3EC)', padding: '8px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
       <div>
         <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted,#4B585C)', fontWeight: 700 }}>Not sure about this file?</div>
-        <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginTop: 2 }}>Ask the super-admin. Their answer becomes a training signal.</div>
+        <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginTop: 2 }}>
+          Ask the super-admin. Their answer becomes a training signal. {sent && <span style={{ color: 'var(--good,#3F7A5B)' }}>· Sent</span>}
+        </div>
       </div>
       <button className="btn ghost" onClick={ask} disabled={busy} style={{ fontSize: 11 }}>{busy ? 'Sending…' : 'Ask super-admin'}</button>
     </div>
