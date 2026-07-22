@@ -883,6 +883,9 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       minInterestEnabled: termOpts.resolveMinInterest(program, rawTermOptions.minInterestEnabled),
       deferredOrigPct: termOpts.resolveDeferredOrigPct(rawTermOptions.deferredOrigPct),
       estClosing: kd.estClosing, firstPayment: kd.firstPayment, maturity: kd.maturity,
+      // The co-borrower guaranty waiver is a super-admin-APPROVED file flag, never a
+      // studio input — snapshot the file's REAL value (ignore any client-sent value).
+      coBorrowerPgWaived: !!f.app.co_borrower_pg_waived,
     };
     const quote = pricing.quoteProgram(program, inputs);
     // Gold Standard renovation cannot finance an interest reserve — never persist a

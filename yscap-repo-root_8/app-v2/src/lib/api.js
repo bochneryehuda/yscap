@@ -447,6 +447,14 @@ export const api = {
   decideManualEscalation:    (id, decision, note) => req('POST', `/api/admin/manual-programs/escalations/${id}/decide`, { decision, note }),
   counterManualEscalation:   (id, counterTerms, counterNote) => req('POST', `/api/admin/manual-programs/escalations/${id}/counter`, { counterTerms, counterNote }),
   acceptCounterOffer:        (appId) => req('POST', `/api/staff/applications/${appId}/pricing/accept-counter`, {}),
+  // Co-borrower guaranty-waiver exceptions (owner-directed 2026-07-22). File-scoped
+  // request/withdraw/state (any staff) + the super-admin review box (decide = super-admin).
+  fileExceptions:            (appId) => req('GET', `/api/staff/applications/${appId}/exceptions`),
+  requestGuarantyWaiver:     (appId, body) => req('POST', `/api/staff/applications/${appId}/exceptions/guaranty-waiver`, body || {}),
+  withdrawException:         (appId, eid) => req('POST', `/api/staff/applications/${appId}/exceptions/${eid}/withdraw`, {}),
+  loanExceptions:            (status) => req('GET', `/api/admin/exceptions${status ? `?status=${status}` : ''}`),
+  loanExceptionsCount:       () => req('GET', '/api/admin/exceptions/count'),
+  decideLoanException:       (id, decision, note) => req('POST', `/api/admin/exceptions/${id}/decide`, { decision, note }),
   runCommitteeReview:        (appId, findingId, all = false) => req('POST', `/api/underwriting/${appId}/findings/${findingId}/committee-review`, { all: !!all }),
   trainingProposals:         (status = 'pending') => req('GET', `/api/admin/training/proposals${status ? `?status=${status}` : ''}`),
   trainingProposalsRun:      () => req('POST', '/api/admin/training/run', {}),

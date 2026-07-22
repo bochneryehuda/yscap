@@ -33,6 +33,9 @@ const KICKER_OF = {
   product_registered: 'Product registered', term_sheet: 'Your loan terms', pricing_update: 'Pricing update',
   manual_escalation: 'Manual product', manual_escalation_decided: 'Manual product',
   manual_escalation_countered: 'Counter-offer',
+  // Guaranty-waiver exception (owner-directed 2026-07-22): a request for a super-admin
+  // to review, and the decision sent back to the file's team.
+  guaranty_exception: 'Guaranty exception', guaranty_exception_decided: 'Guaranty exception',
   message: 'New message', mention: 'You were mentioned', reminder: 'Reminder',
   llc_verified: 'Your entity', llc_unverified: 'Your entity',
   track_record_unverified: 'Track record',
@@ -382,6 +385,9 @@ const CATEGORY_OF = {
   // Finding escalation (owner-directed 2026-07-21) — action-bearing staff events, so
   // NOT added to STAFF_INAPP_TYPES: the reviewer/escalator is emailed (unless muted).
   finding_escalation: 'conditions', finding_escalation_decided: 'conditions',
+  // Guaranty-waiver exception (owner-directed 2026-07-22) — action-bearing staff
+  // events (super-admin review request + decision), so they email the recipient.
+  guaranty_exception: 'conditions', guaranty_exception_decided: 'conditions',
   // Major-fraud / authenticity alert (R3.14, owner-directed 2026-07-22).
   // Action-bearing — admins ARE emailed (owner explicitly asked).
   workflow_alert: 'conditions',

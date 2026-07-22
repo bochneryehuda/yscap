@@ -65,6 +65,52 @@ function resolveDeferredOrigPct(v) {
   return Number.isFinite(n) && n > 0 ? Math.min(100, n) : 0;
 }
 
+/* ---------------- personal guaranty / recourse (owner-directed 2026-07-22) ----------------
+   By DEFAULT the loan is FULL RECOURSE and BOTH the borrower and the co-borrower
+   personally guarantee it (jointly & severally). A rare, super-admin APPROVED
+   exception waives the co-borrower's personal guaranty: they stay a member of the
+   borrowing entity but are NOT a personal guarantor. This is DISPLAY / record only
+   — it never changes a sized number, and it never changes who SIGNS the term sheet
+   (a waived co-borrower still signs as an authorized member of the entity). The
+   `pgWaived` flag is meaningful only when the file actually has a co-borrower. */
+const GUARANTY_ROW_LABEL = 'Guaranty / recourse';
+
+// Compose the guaranty wording for a file. Kept here (server side) for the
+// borrower "terms are ready" email + the escalation summary; the client term
+// sheet (termsheet.js) carries a mirrored copy the same way min-interest does.
+function guarantySummary({ borrowerName, coBorrowerName, pgWaived } = {}) {
+  const b = String(borrowerName || '').trim();
+  const co = String(coBorrowerName || '').trim();
+  const hasCo = !!co;
+  const waived = !!pgWaived && hasCo;   // a waiver only means something with a co-borrower
+  const guarantors = waived ? [b].filter(Boolean) : [b, co].filter(Boolean);
+  const nonGuarantors = waived ? [co] : [];
+  const guarantorList = guarantors.join(' & ');
+  const jointly = guarantors.length > 1 ? ', jointly and severally,' : '';
+  let recourseLine;
+  if (waived) {
+    recourseLine = guarantorList
+      ? `Full recourse. Personally guaranteed by ${guarantorList} only. ${co} is a member of the borrowing entity but is not a personal guarantor (approved exception).`
+      : `Full recourse. ${co} is a member of the borrowing entity but is not a personal guarantor (approved exception).`;
+  } else {
+    recourseLine = guarantorList
+      ? `Full recourse. Personally guaranteed${jointly} by ${guarantorList}.`
+      : 'Full recourse. A personal guaranty is required.';
+  }
+  const disclosureDetail = waived
+    ? `This is a full-recourse loan. ${guarantorList || 'The primary borrower'} shall execute an unconditional, continuing personal guaranty of the Loan. ${co}, although a member of the borrowing entity, is not required to execute a personal guaranty and shall be a non-guarantor member (this guaranty waiver was granted by an approved lender exception).`
+    : (guarantors.length > 1
+        ? `This is a full-recourse loan. Repayment and performance of all obligations shall be personally guaranteed, jointly and severally, by ${guarantorList} under an unconditional and continuing guaranty. Each guarantor may be pursued for the entire balance, not only a pro-rata share.`
+        : `This is a full-recourse loan. Repayment and performance of all obligations shall be personally guaranteed by ${guarantorList || 'the borrower'} under an unconditional and continuing guaranty.`);
+  return {
+    hasCo, waived, guarantors, nonGuarantors, guarantorList,
+    nonGuarantorList: nonGuarantors.join(' & '),
+    recourseLine, disclosureDetail,
+    // the co-borrower's role sub-line on the signature page
+    coSignerRole: waived ? 'Co-borrower / member (non-guarantor)' : 'Co-borrower / guarantor',
+  };
+}
+
 /* ---------------- draw fee (program default) ---------------- */
 function drawFeeLines(program) {
   return String(program || '').toLowerCase() === 'gold'
@@ -129,6 +175,7 @@ module.exports = {
   defaultMinInterest, resolveMinInterest,
   ACCRUAL_DEFAULT, resolveAccrual, accrualLabel, accrualDetail,
   resolveDeferredOrigPct,
+  GUARANTY_ROW_LABEL, guarantySummary,
   drawFeeLines,
   parseYMD, fmtYMD, firstPaymentDate, maturityDate, keyDates,
 };
