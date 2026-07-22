@@ -67,16 +67,57 @@ function fnv1a64(str) {
   return h;
 }
 
+// Coerce any text-ish value to a string WITHOUT ever throwing — a hostile/broken
+// value whose toString() throws must not break the module's "never throws"
+// contract. A string is used as-is; anything else is String()'d in a guard.
+function asString(text) {
+  if (text == null) return '';
+  if (typeof text === 'string') return text;
+  try { return String(text); } catch (_e) { return ''; }
+}
+
 // Normalize page text for hashing: lowercase, strip accents, collapse all runs of
 // non-alphanumerics to a single space, trim. Deterministic and locale-free so the
 // same page always hashes the same regardless of whitespace/punctuation noise.
 function normText(text) {
-  if (text == null) return '';
-  return String(text)
+  return asString(text)
     .normalize('NFD').replace(/[̀-ͯ]/g, '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
+}
+
+// Extract the SALIENT dollar amounts / balances from a page's RAW text (before
+// normalization strips the separators): money with commas/decimals, and bare
+// integers of 4+ digits — the figures a bank statement's balances live in. Bare
+// 4-digit plausible years (1900-2099) are excluded (a "printed 2026" footer is not
+// an amount). This set is the corroboration signal behind near-duplicate detection:
+// two pages that are the "same page" (a re-export, a footer stamp) carry the SAME
+// amounts, while two different months carry DIFFERENT balances — so a near-simhash
+// match whose amount sets DIFFER is not a duplicate, it is different data.
+function salientNumbers(text) {
+  const s = asString(text);
+  const re = /\$?\d{1,3}(?:,\d{3})+(?:\.\d+)?|\$?\d+\.\d{2}|\$?\d{4,}/g;
+  const out = new Set();
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    const tok = m[0].replace(/[$,]/g, '');
+    const num = Number(tok);
+    if (!Number.isFinite(num)) continue;
+    // a bare 4-digit year is not a balance
+    if (!tok.includes('.') && tok.length === 4 && num >= 1900 && num <= 2099) continue;
+    out.add(String(num));
+  }
+  return out;
+}
+
+// Do two salient-amount sets carry DIFFERENT figures? (symmetric difference is
+// non-empty). Only meaningful when BOTH pages actually have amounts.
+function amountsDiffer(a, b) {
+  if (!a || !b || a.size === 0 || b.size === 0) return false;
+  if (a.size !== b.size) return true;
+  for (const x of a) if (!b.has(x)) return true;
+  return false;
 }
 
 // SHA-256 hex of the normalized text — the EXACT-duplicate key.
@@ -171,6 +212,7 @@ function fingerprintPage(page) {
     charCount,
     textHash: textHash(rawText),
     simhash: simHash(rawText),
+    amounts: salientNumbers(rawText),   // salient dollar figures — the corroboration signal
     imageHash,
     bitLen: 64,
   };
@@ -203,15 +245,22 @@ function compare(a, b, opts = {}) {
   const textHamming = bothTextReal ? hamming(fa.simhash, fb.simhash) : null;
   const imageHamming = (fa.imageHash && fb.imageHash) ? hamming(fa.imageHash, fb.imageHash) : null;
 
+  // Corroboration veto: a NEAR (non-identical) text match between two pages that
+  // carry DIFFERENT salient dollar amounts is NOT a duplicate — it is different
+  // data (two months of the same statement template) that simhash alone can't
+  // separate on a boilerplate-heavy page. Identical text (same hash) has identical
+  // amounts by construction, so the veto never blocks a true exact duplicate.
+  const amtsDiffer = amountsDiffer(fa.amounts, fb.amounts);
+
   let relation = 'distinct';
   let similarity = 0;
   if (textIdentical) {
     relation = 'identical';
     similarity = 1;
-  } else if (textHamming != null && textHamming <= nearText) {
+  } else if (textHamming != null && textHamming <= nearText && !amtsDiffer) {
     relation = 'near_duplicate';
     similarity = 1 - textHamming / 64;
-  } else if (imageHamming != null && imageHamming <= nearImage) {
+  } else if (imageHamming != null && imageHamming <= nearImage && !amtsDiffer) {
     relation = 'near_duplicate';
     similarity = 1 - imageHamming / (fa.imageHash.length * 4);
   } else {
@@ -247,13 +296,20 @@ function groupDuplicates(pages, opts = {}) {
   const parent = Array.from({ length: n }, (_, i) => i);
   const find = (x) => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
   const union = (x, y) => { const rx = find(x), ry = find(y); if (rx !== ry) parent[Math.max(rx, ry)] = Math.min(rx, ry); };
-  const exactPair = new Set();
+  // A SEPARATE union-find over ONLY the byte-identical (textIdentical) pairs.
+  // Identical-text is a true equivalence relation, so an exact-component is a set
+  // of pages that are all identical to each other — a cluster is only truly `exact`
+  // when every member shares one exact-root (never when a NEAR link bridged two
+  // distinct exact pairs, e.g. Jan==Jan' ~ Feb==Feb').
+  const eparent = Array.from({ length: n }, (_, i) => i);
+  const efind = (x) => { while (eparent[x] !== x) { eparent[x] = eparent[eparent[x]]; x = eparent[x]; } return x; };
+  const eunion = (x, y) => { const rx = efind(x), ry = efind(y); if (rx !== ry) eparent[Math.max(rx, ry)] = Math.min(rx, ry); };
   for (let i = 0; i < n; i++) {
     for (let j = i + 1; j < n; j++) {
       const c = compare(fps[i], fps[j], opts);
       if (c.relation !== 'distinct') {
         union(i, j);
-        if (c.textIdentical) { exactPair.add(i); exactPair.add(j); }
+        if (c.textIdentical) eunion(i, j);
       }
     }
   }
@@ -269,10 +325,12 @@ function groupDuplicates(pages, opts = {}) {
   for (const members of groups.values()) {
     if (members.length < 2) continue;
     duplicatePageCount += members.length;
+    const eroot = efind(members[0]);
     clusters.push({
       pages: members.map(idOf),
       size: members.length,
-      exact: members.every((i) => exactPair.has(i)),
+      // exact only when EVERY member is in the same exact (identical-text) component
+      exact: members.every((i) => efind(i) === eroot),
     });
   }
   clusters.sort((a, b) => (b.size - a.size) || (a.pages[0] - b.pages[0]));
@@ -287,7 +345,7 @@ module.exports = {
   hamming,
   compare,
   groupDuplicates,
-  _internals: { normText, shingles, fnv1a64, popcount, isHex },
+  _internals: { normText, shingles, fnv1a64, popcount, isHex, salientNumbers, amountsDiffer, asString },
   EMPTY_TEXT_CHARS,
   NEAR_TEXT_HAMMING,
   NEAR_IMAGE_HAMMING,

@@ -53,6 +53,25 @@ assert.strictEqual(c.relation, 'distinct', 'two different months of the same tem
 assert.ok(c.textHamming > fp.NEAR_TEXT_HAMMING, `different-month hamming ${c.textHamming} is safely above the near threshold`);
 ok('two different months of the same statement template are reported DISTINCT (never collapsed)');
 
+// --- CRITICAL (audit HIGH): the amount veto keeps two different months DISTINCT
+//     even when their simhash IS near — the liquidity double-count guard. ---
+// On a boilerplate-heavy statement summary page two different months can drift into
+// simhash range (a real risk the auditor measured at Hamming 6). We force that
+// "simhash is near" condition here with a wide nearTextHamming so the test targets
+// the VETO directly (independent of any fragile boilerplate distance): differing
+// balances must still veto the near-duplicate call.
+const marHeavy = 'bank of america member fdic account 4821 statement period march beginning balance 84210 ending balance 91355 total deposits 21000 total withdrawals 13855 acme holdings llc';
+const aprHeavy = 'bank of america member fdic account 4821 statement period april beginning balance 91355 ending balance 78200 total deposits 9000 total withdrawals 22155 acme holdings llc';
+c = fp.compare({ text: marHeavy }, { text: aprHeavy }, { nearTextHamming: 64 }); // force "simhash near"
+assert.strictEqual(c.relation, 'distinct', 'different dollar amounts VETO a near-duplicate call even when simhash is (forced) near');
+ok('AUDIT HIGH: different dollar amounts VETO a near-duplicate even when the simhash is within threshold (liquidity double-count guard)');
+
+// but the SAME page with a footer stamp (identical amounts) is NOT vetoed — when
+// simhash is near and the amounts match, it stays a near-duplicate.
+c = fp.compare({ text: marHeavy }, { text: marHeavy + ' page 1 of 3 confidential printed 2026' }, { nearTextHamming: 64 });
+assert.strictEqual(c.relation, 'near_duplicate', 'identical amounts + a footer stamp is still a near-duplicate (the veto does not over-fire)');
+ok('the amount veto does not over-fire: identical amounts keep a near simhash a near-duplicate');
+
 // --- genuinely different pages are distinct ---
 c = fp.compare(
   { text: 'appraisal report subject property 12 oak street market value 450000 comparable sales approach' },
@@ -121,6 +140,37 @@ assert.strictEqual(apprCluster.exact, false, 'the appraisal cluster is a NEAR (n
 assert.strictEqual(g.duplicatePageCount, 4, 'four pages belong to a cluster');
 assert.strictEqual(g.uniquePageCount, 3, 'note(4) + one representative of each cluster = 3 unique');
 ok('groupDuplicates clusters exact and near-duplicate pages and counts unique vs duplicate pages');
+
+// --- AUDIT MEDIUM: a cluster bridged by a NEAR link is not flagged `exact` ---
+// two exact pairs (1==2, 4==5) bridged by a near link (2~4) form one cluster, but
+// pages 1 and 5 are NOT identical — the cluster must NOT claim exact:true.
+const bBody = 'chase bank statement business checking account number ending 5555 statement period january 2026 beginning balance 40000 ending balance 40000 no activity this period thank you for banking with chase page one of one';
+const bridged = [
+  { text: bBody, page_number: 1 },
+  { text: bBody.toUpperCase().replace('5555', '5555,'), page_number: 2 }, // == 1 after normalization
+  { text: bBody + ' reference code xyz', page_number: 4 }, // near 1/2 (Hamming 6), not exact, SAME amounts
+  { text: bBody + ' reference code xyz', page_number: 5 }, // == 4
+];
+let gg = fp.groupDuplicates(bridged);
+const bigCluster = gg.clusters.find((cl) => cl.pages.includes(1));
+assert.ok(bigCluster && bigCluster.size >= 3, 'the near link bridges the two exact pairs into one cluster');
+assert.strictEqual(bigCluster.exact, false, 'a cluster containing non-identical members is NOT flagged exact');
+// a cluster of purely identical pages IS exact
+gg = fp.groupDuplicates([
+  { text: 'wells fargo statement balance 12000 page 1', page_number: 1 },
+  { text: 'WELLS FARGO Statement — balance 12000 (page 1)', page_number: 2 },
+]);
+assert.strictEqual(gg.clusters[0].exact, true, 'a cluster of byte-identical (normalized) pages IS exact');
+ok('AUDIT MEDIUM: exact is true only when every cluster member is identical, never when a near link bridged two exact pairs');
+
+// --- AUDIT LOW: a text value whose toString throws never breaks the never-throws contract ---
+const evil = { toString() { throw new Error('boom'); } };
+assert.doesNotThrow(() => fp.fingerprintPage({ text: evil }), 'a throwing toString must not escape fingerprintPage');
+assert.doesNotThrow(() => fp.textHash(evil));
+assert.doesNotThrow(() => fp.simHash(evil));
+assert.doesNotThrow(() => fp.compare({ text: evil }, { text: 'x' }));
+assert.strictEqual(fp.fingerprintPage({ text: evil }).empty, true, 'an unstringifiable text is treated as empty, not a crash');
+ok('AUDIT LOW: a text value whose toString throws is handled safely (never-throws contract holds)');
 
 // --- simhash of empty / whitespace is all zeros; a real page is not ---
 assert.strictEqual(fp.simHash(''), '0000000000000000');
