@@ -486,4 +486,48 @@ module.exports = {
     key:      process.env.ATTOM_API_KEY || '',
     endpoint: (process.env.ATTOM_ENDPOINT || 'https://api.gateway.attomdata.com').trim().replace(/\/+$/, ''),
   },
+
+  // --- Langfuse (owner-directed 2026-07-22): AI observability, free hobby tier.
+  // Every AI call in PILOT (Azure OpenAI extraction, committee, docint OCR, azure-custom
+  // classification/extraction) is TRACED — prompt + input + output + confidence + cost + latency —
+  // and viewable in the Langfuse cloud UI so staff can audit every finding's reasoning.
+  // Dormant until the two keys are set. Everything is best-effort + fire-and-forget: a Langfuse
+  // outage never blocks a request, never adds latency (batched flush), and never throws.
+  //   LANGFUSE_PUBLIC_KEY  starts with pk-lf-
+  //   LANGFUSE_SECRET_KEY  starts with sk-lf-
+  //   LANGFUSE_HOST        the cloud region base (us or eu). Default US.
+  langfuse: {
+    publicKey: (process.env.LANGFUSE_PUBLIC_KEY || '').trim(),
+    secretKey: (process.env.LANGFUSE_SECRET_KEY || '').trim(),
+    host:      (process.env.LANGFUSE_HOST || 'https://us.cloud.langfuse.com').trim().replace(/\/+$/, ''),
+    project:   (process.env.LANGFUSE_PROJECT || 'pilot-underwriting').trim(),
+  },
+
+  // --- Azure Document Intelligence Custom models (owner-directed 2026-07-22).
+  // Uses the SAME endpoint + key as `docint` above (single resource, single bill). Custom
+  // Classification IDENTIFIES which of PILOT's document types each page-range of a combined
+  // PDF is (bank_statement / insurance_dec / operating_agreement / drivers_license /
+  // settlement / purchase_contract), and Custom Neural pulls STRUCTURED FIELDS from each
+  // document type (holder name, coverage $, LLC members, etc.) with bounding boxes + confidence
+  // per field for the "highlight the page section" finding UI. Dormant until a classifier and/or
+  // per-type extractor id is set — each model id is the project name in Doc Intelligence Studio.
+  //   AZURE_DOCINT_CLASSIFIER_ID     model id of the trained classifier (e.g. 'pilot-doc-splitter')
+  //   AZURE_DOCINT_EXTRACT_*         per-type extractor ids
+  azureCustom: {
+    classifierId:            (process.env.AZURE_DOCINT_CLASSIFIER_ID || '').trim(),
+    extractorBankStatement:  (process.env.AZURE_DOCINT_EXTRACT_BANK_STATEMENT || '').trim(),
+    extractorInsurance:      (process.env.AZURE_DOCINT_EXTRACT_INSURANCE || '').trim(),
+    extractorOperatingAgmt:  (process.env.AZURE_DOCINT_EXTRACT_OPERATING_AGREEMENT || '').trim(),
+    extractorDriversLicense: (process.env.AZURE_DOCINT_EXTRACT_DRIVERS_LICENSE || '').trim(),
+    extractorSettlement:     (process.env.AZURE_DOCINT_EXTRACT_SETTLEMENT || '').trim(),
+    extractorPurchaseContract:(process.env.AZURE_DOCINT_EXTRACT_PURCHASE_CONTRACT || '').trim(),
+    // Blob storage container that Doc Intelligence trains from + reads labeled data out of.
+    // Created 2026-07-22 as pilotdocailabels / pilot-doc-ai-labels in East US.
+    labelStorageAccount:     (process.env.AZURE_DOCAI_LABEL_STORAGE_ACCOUNT || 'pilotdocailabels').trim(),
+    labelContainer:          (process.env.AZURE_DOCAI_LABEL_CONTAINER || 'pilot-doc-ai-labels').trim(),
+    // Azure Blob SAS token OR account key so the labeling console can PUT bytes into the container.
+    // Prefer a SAS token scoped to the container (least privilege); the account key works too.
+    labelStorageSasToken:    (process.env.AZURE_DOCAI_LABEL_SAS_TOKEN || '').trim(),
+    labelStorageAccountKey:  (process.env.AZURE_DOCAI_LABEL_ACCOUNT_KEY || '').trim(),
+  },
 };

@@ -26,6 +26,7 @@
  * Best-effort — a specialist that fails is a null vote, never a throw.
  */
 const azureOpenai = require('./azure-openai');
+const langfuse = require('./langfuse');
 
 // -------------------------------------------------------------------------
 // SPECIALISTS — narrow-prompt reviewers, each with an adversarial bias.
@@ -140,7 +141,7 @@ const VERDICT_SCHEMA = {
   },
 };
 
-async function askSpecialist(key, finding, context) {
+async function askSpecialist(key, finding, context, trace) {
   const spec = SPECIALISTS[key];
   if (!spec) return { key, ok: false, reason: 'unknown specialist' };
   if (!azureOpenai.available()) return { key, ok: false, reason: 'analyzer not configured' };
@@ -154,6 +155,8 @@ async function askSpecialist(key, finding, context) {
     maxTokens: 600,
     responseFormat,
     timeoutMs: 45000,
+    trace,
+    traceMeta: { opName: `reviewer:${spec.lens}`, specialist: key, findingCode: finding && finding.code },
   });
   if (!r.ok) return { key, ok: false, reason: r.reason || 'no response' };
   let verdict;
@@ -260,16 +263,27 @@ async function review(finding, context = {}, opts = {}) {
     ? specialistsToRun.map(([k]) => k)
     : ['fraud','identity','credit'];
   const results = [];
+  // ONE Langfuse trace per committee review — every specialist call nests under it.
+  const trace = langfuse.trace({
+    name: 'committee-review',
+    appId: context.applicationId || context.appId,
+    documentId: context.documentId,
+    staffId: opts.staffId,
+    tags: ['committee', finding && finding.code].filter(Boolean),
+    input: { finding: { code: finding.code, title: finding.title, severity: finding.severity }, specialists: keys },
+  });
   // Parallel — each specialist is an independent HTTP call.
-  const promises = keys.map((k) => askSpecialist(k, finding, context).catch((e) => ({ key: k, ok: false, reason: (e && e.message) || 'error' })));
+  const promises = keys.map((k) => askSpecialist(k, finding, context, trace).catch((e) => ({ key: k, ok: false, reason: (e && e.message) || 'error' })));
   const settled = await Promise.all(promises);
   results.push(...settled);
   const opinion = adjudicate(finding, results);
+  trace.end({ output: { action: opinion.action, adjudicated_severity: opinion.adjudicated_severity, confidence: opinion.confidence } });
   return {
     finding: { code: finding.code, id: finding.id, severity: finding.severity, title: finding.title },
     committee: opinion,
     generated_at: new Date().toISOString(),
     committee_version: 'v1',
+    trace_url: trace.url ? trace.url() : null,
   };
 }
 
