@@ -89,18 +89,30 @@ function lineName(state, key) {
 // user LABEL OVERRIDES or two CUSTOM lines sharing a label. Deterministic + stable: media anchors and
 // already-unique names keep their exact name; a collider is qualified by its category, then by a stable
 // counter if still colliding. Mutates + returns the items array.
-function uniquifyNames(items) {
+//
+// Audit finding A-3 (2026-07-21): the desired-only view was blind to a name Sitewire is already
+// holding on a DRAWN line (whose rename we suppress — Sitewire locks the name, orchestrator keeps
+// the old name in storedName). Adding a NEW cell in a different category whose desired name equals
+// that old locked name is a live collision we can't fix later: adopt-live would find one match, it's
+// all-drawn, and resolveCreatesAgainstLive would park `sitewire_bind_ambiguous` — even though the
+// two are semantically different lines. Pass `liveNames` (a set of Sitewire's current job-item names)
+// so the qualifier auto-qualifies the NEW cell up front instead of pushing it to a doomed bind step.
+function uniquifyNames(items, liveNames) {
+  const live = liveNames instanceof Set ? liveNames : new Set(Array.isArray(liveNames) ? liveNames : []);
   const counts = {};
   for (const it of items) counts[it.name] = (counts[it.name] || 0) + 1;
   const used = new Set();
-  // reserve canonical names first: anything already unique, plus media anchors (structural, never renamed)
-  for (const it of items) if (counts[it.name] === 1 || it.is_media_item) used.add(it.name);
+  // reserve canonical names first: anything already unique AND not colliding with a live name, plus
+  // media anchors (structural, never renamed). A desired name that already exists live but ISN'T in
+  // our desired set (e.g. a Sitewire-held locked name from a drawn-line rename we can't reproduce)
+  // must still count as "used" so a NEW desired cell that happens to match it gets qualified.
+  for (const it of items) if ((counts[it.name] === 1 && !live.has(it.name)) || it.is_media_item) used.add(it.name);
   for (const it of items) {
-    if (counts[it.name] === 1 || it.is_media_item) continue;
+    if ((counts[it.name] === 1 && !live.has(it.name)) || it.is_media_item) continue;
     const q = catLabelOf(it.sow_line_key);
     const base = q ? `${it.name} (${q})` : it.name;
     let name = base, k = 2;
-    while (used.has(name)) name = `${base} #${k++}`;
+    while (used.has(name) || live.has(name)) name = `${base} #${k++}`;
     it.name = name; used.add(name);
   }
   return items;
@@ -183,6 +195,27 @@ function gcCents(state, subCents) {
   return T.dollarsToCents(g.value);
 }
 
+/**
+ * Does a Sitewire job-item NAME look like a mandatory MEDIA anchor (a photo/video
+ * inspection gate, not a money line)? Owner-reported 2026-07-21: Sitewire seeds
+ * additional mandatory media items (e.g. "Video Walkthrough", "External Pictures")
+ * on top of the anchors PILOT pushes, so a draw referencing them arrives with a
+ * job_item_id PILOT has no crosswalk for — flagged as sitewire_unknown_draw_line
+ * and forced to reconcile by hand. Recognizing them by NAME lets reconcile
+ * silently auto-adopt them into the crosswalk (paired with a $0 budget check —
+ * media items carry no money, so we never adopt a real budget line by mistake).
+ * Matches PILOT's own mediaAnchors names + the common Sitewire-seeded variants,
+ * case- and punctuation-insensitive; whole-name match (a substring like
+ * "kitchen video" is NOT media).
+ */
+const MEDIA_NAME_RE = /^(?:(?:common\s+areas?|exterior|project|unit\s*\d+)(?:\s*-\s*|\s+))?(?:exterior\s+of\s+house\s+photos?|exterior\s+(?:photos?|pictures?)|external\s+(?:photos?|pictures?)|house\s+exterior\s+photos?|(?:interior\s+)?video\s+(?:tour|walkthrough|walk\s*through)|walkthrough\s+video|video\s+of\s+(?:interior|walkthrough)|inspection\s+(?:photos?|video)|inspection\s+media)$/i;
+function isMandatoryMediaName(name) {
+  if (name == null) return false;
+  const s = String(name).replace(/[.,#]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!s) return false;
+  return MEDIA_NAME_RE.test(s);
+}
+
 // Standard $0 mandatory media anchors (gate every draw). Per-unit video tour + one
 // exterior photo set — matching what YS enters by hand in Sitewire today.
 function mediaAnchors(state, defaults = {}) {
@@ -230,7 +263,10 @@ function explodeSow(state, opts = {}) {
   if (cont > 0) items.push({ sow_line_key: SENTINEL.CONTINGENCY, section_token: 'project', unit_index: null, name: 'Contingency', budgeted_cents: cont, is_media_item: false, mandatory: false, required_image_count: 0, required_video_count: 0 });
   if (gc > 0) items.push({ sow_line_key: SENTINEL.GC, section_token: 'project', unit_index: null, name: 'GC Fee', budgeted_cents: gc, is_media_item: false, mandatory: false, required_image_count: 0, required_video_count: 0 });
   for (const a of mediaAnchors(state, opts.media || {})) items.push(a);
-  uniquifyNames(items); // G-NAME: guarantee every Sitewire job-item name is unique (bindable)
+  // G-NAME: guarantee every Sitewire job-item name is unique (bindable). opts.liveNames (a Set/array
+  // of Sitewire's current job-item names) lets the qualifier auto-qualify a NEW cell whose desired
+  // name collides with a name Sitewire is already holding on a drawn line we can't rename (audit A-3).
+  uniquifyNames(items, opts.liveNames);
   const total = sub + cont + gc;
   return { items, subtotal_cents: sub, contingency_cents: cont, gc_cents: gc, total_cents: total };
 }
@@ -262,6 +298,16 @@ function diffBudget(desiredItems, links) {
   }
   for (const l of links) {
     if (l.sitewire_job_item_id == null) continue;
+    // A `__media__:sw_<jobitemid>` link is a Sitewire-SEEDED mandatory media item that reconcile
+    // auto-adopted into the crosswalk (owner-reported 2026-07-21). It will NEVER appear in the
+    // desired explosion (PILOT only emits its own __media__:exterior / __media__:video[_uN]
+    // anchors), so a plain "not in desired → delete" would push a `_destroy` on the anchor
+    // Sitewire itself seeded — either 422ing the whole PATCH or removing a mandatory item until
+    // Sitewire re-seeds it. Skip: these are structural inspection gates, not budget lines PILOT
+    // owns. A tombstoned `state='deleted'` link is likewise skipped so we don't re-`_destroy`
+    // an id Sitewire already deleted (which would 422 "unknown id").
+    if (String(l.sow_line_key || '').indexOf('__media__:sw_') === 0) continue;
+    if (l.state === 'deleted') continue;
     if (!seen.has(keyOf(l))) deletes.push(l);
   }
   return { creates, updates, deletes };
@@ -392,6 +438,6 @@ function reconcileToBudget(ex, budgetCents, tolCents = 100) {
 module.exports = {
   CATS, SENTINEL, CAT_LABELS, DUP_TAX_NAMES, catLabelOf, uniquifyNames,
   unitCount, isMulti, lineName, sowCells, sowLineSummary,
-  subtotalCents, contingencyCents, gcCents, mediaAnchors,
+  subtotalCents, contingencyCents, gcCents, mediaAnchors, isMandatoryMediaName,
   explodeSow, reconcileToBudget, diffBudget, resolveCreatesAgainstLive, reverseReconcile,
 };

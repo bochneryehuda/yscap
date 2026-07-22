@@ -168,16 +168,23 @@ async function upsertLink(appId, propertyId, g, patch) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, Math.max(0, ms)));
 const VERIFY_DELAY_MS = parseInt(process.env.SITEWIRE_DOC_VERIFY_DELAY_MS || '1500', 10);
+// Widened from 3 to a configurable count (audit finding C-2, 2026-07-21). Sitewire's document read
+// can lag several seconds behind an upload — the old ~4.5s window (3 × 1.5s) parked a lot of
+// legitimately-uploaded docs as `sitewire_doc_unverified`. 6 × 1.5s = ~9s covers the realistic lag.
+const VERIFY_TRIES_DEFAULT = parseInt(process.env.SITEWIRE_DOC_VERIFY_TRIES || '6', 10);
 
 // Read-after-write: confirm (via the TRUSTED API) that a document with our filename now exists on the
 // property. The API can lag a moment behind the upload, so retry a few times. Returns the confirmed
 // Sitewire document name, or null if it never shows up.
-async function verifyPresent(appId, filename, tries = 3) {
+// Uses listSitewireDocumentsForVerify (URL-AGNOSTIC) so a doc whose URL fails the host allowlist is
+// still recognized as PRESENT — the coordinator-facing getSitewireDocuments correctly hides those URLs,
+// but a name-match verify must still succeed (audit C-2).
+async function verifyPresent(appId, filename, tries = VERIFY_TRIES_DEFAULT) {
   const want = String(filename || '').toLowerCase();
   const stem = want.replace(/\.[a-z0-9]+$/, '');
   for (let i = 0; i < tries; i++) {
     try {
-      const res = await orch.getSitewireDocuments(appId);
+      const res = await orch.listSitewireDocumentsForVerify(appId);
       if (res && res.available && Array.isArray(res.documents)) {
         const hit = res.documents.find((d) => String(d.name || '').toLowerCase() === want)
           || res.documents.find((d) => String(d.name || '').toLowerCase().includes(stem));
@@ -207,6 +214,31 @@ async function pushDocuments(appId, opts = {}) {
   if (!link || !link.sitewire_property_id || link.matched_by !== 'created') return { ok: false, error: 'not_managed' };
   const propertyId = link.sitewire_property_id;
 
+  // Audit finding C-4 (2026-07-21): serialize doc-push per file so two concurrent operators (or a
+  // manual click + a worker retry) can't both open a website session, both dedup-fail against the
+  // same stale sha256, and both upload — creating a duplicate in Sitewire that verifyPresent then
+  // matches to the FIRST hit (possibly the old copy). Session-level advisory lock keyed on the app
+  // id; released in `finally`. If we can't acquire the lock (>30s wait), fail cleanly rather than
+  // sit; the caller/queue retries.
+  const lockKey = `sw-docpush:${appId}`;
+  const lockConn = await db.getClient();
+  let lockHeld = false;
+  try {
+    // A quick pg_try_advisory_lock with a short poll so we don't hang forever on a stuck operator.
+    for (let attempt = 0; attempt < 30 && !lockHeld; attempt++) {
+      const r = await lockConn.query('SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS ok', [lockKey]);
+      if (r.rows[0].ok) { lockHeld = true; break; }
+      await sleep(1000);
+    }
+    if (!lockHeld) return { ok: false, error: 'busy', message: 'Another Sitewire document push for this file is in flight — please try again in a moment.' };
+    return await _pushDocumentsLocked(appId, opts, which, source, link, propertyId);
+  } finally {
+    if (lockHeld) { try { await lockConn.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [lockKey]); } catch (_) {} }
+    lockConn.release();
+  }
+}
+
+async function _pushDocumentsLocked(appId, opts, which, source, link, propertyId) {
   const gathered = await gatherAll(appId);
   const toPush = which.map((w) => gathered[w]).filter(Boolean);
   const results = [];

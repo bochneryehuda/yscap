@@ -42,26 +42,54 @@ function webConfigured() {
 }
 
 // ---- SSRF guard: only the Sitewire host, or an AWS S3 host Sitewire itself returned for the PUT ----
+// Audit finding C-5 (2026-07-21): the previous `h.endsWith('.amazonaws.com')` blanket suffix let a
+// mis-served / compromised Sitewire response point PILOT's uploader at ANY AWS service host (ec2,
+// elasticbeanstalk, lambda function URLs, etc.) or a dangling-subdomain takeover. Restrict to the two
+// real S3 host shapes (regional `s3.us-east-1.amazonaws.com` / `bucket.s3-us-west-2.amazonaws.com`
+// AND global `s3.amazonaws.com` / `bucket.s3.amazonaws.com`) and drop the suffix catch-all.
 function assertUploadUrl(u) {
   let url; try { url = new URL(u); } catch { throw new Error('sitewire_web_bad_upload_url'); }
   if (url.protocol !== 'https:') throw new Error('sitewire_web_insecure_upload_url');
   const h = url.host.toLowerCase();
-  const ok = h === webHost() || /(^|\.)s3[.-][a-z0-9-]*\.amazonaws\.com$/.test(h) || /(^|\.)s3\.amazonaws\.com$/.test(h)
-    || h.endsWith('.amazonaws.com');
+  const ok = h === webHost() || /(^|\.)s3[.-][a-z0-9-]*\.amazonaws\.com$/.test(h) || /(^|\.)s3\.amazonaws\.com$/.test(h);
   if (!ok) throw new Error(`sitewire_web_upload_host_not_allowed:${h}`);
   return url;
 }
 
 // ---- cookie jar (fetch does not persist cookies) ----
+// Audit finding C-8 (2026-07-21): a server-issued `Set-Cookie: foo=; Max-Age=0` (or an already-
+// expired Expires) MUST delete the cookie from our jar, not store a blank value that then gets
+// sent back. Same for a "delete" via Max-Age=-1 or an Expires date in the past. Single-host jar
+// today so this was largely cosmetic, but the fix is defensive against Sitewire ever adding a
+// deliberate cookie-revocation on logout / session-rotate.
 function mergeSetCookie(jar, res) {
   let list = [];
   try { list = typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie() : []; } catch { list = []; }
   if (!list.length) { const one = res.headers.get('set-cookie'); if (one) list = [one]; }
   for (const c of list) {
-    const pair = String(c).split(';')[0];
+    const parts = String(c).split(';');
+    const pair = parts[0];
     const eq = pair.indexOf('=');
     if (eq <= 0) continue;
-    jar[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim();
+    const name = pair.slice(0, eq).trim();
+    const value = pair.slice(eq + 1).trim();
+    // Parse the cookie attributes for Max-Age / Expires and honor deletion signals.
+    let deleteCookie = false;
+    for (let i = 1; i < parts.length; i++) {
+      const attr = parts[i].trim();
+      const aeq = attr.indexOf('=');
+      const k = (aeq >= 0 ? attr.slice(0, aeq) : attr).toLowerCase();
+      const v = aeq >= 0 ? attr.slice(aeq + 1).trim() : '';
+      if (k === 'max-age') {
+        const n = Number(v);
+        if (Number.isFinite(n) && n <= 0) { deleteCookie = true; break; }
+      } else if (k === 'expires' && v) {
+        const t = Date.parse(v);
+        if (Number.isFinite(t) && t <= Date.now()) { deleteCookie = true; break; }
+      }
+    }
+    if (deleteCookie) { delete jar[name]; continue; }
+    jar[name] = value;
   }
   return jar;
 }
@@ -153,13 +181,23 @@ async function loginWithPassword() {
     });
     mergeSetCookie(jar, resp);
     // Success = a 302 redirect (to / then /draws). A 200 back on /login = bad credentials / rejected.
+    // Audit finding C-7 (2026-07-21): only 200 was screened, so a 401/403/500/5xx from the login
+    // POST silently returned `viaLogin:true` and errored downstream in primeCsrf with a generic
+    // `web_session_invalid` — confusing "our session broke" instead of the actionable "the login
+    // itself was rejected/broken". Explicitly accept ONLY 302 (Devise's success signal) or a 200
+    // that doesn't look signed-out; anything else is an authentication failure with a clear message.
+    if (resp.status === 302) {
+      return { jar, csrf: null, viaLogin: true };
+    }
     if (resp.status === 200) {
       const body = await resp.text();
       if (looksSignedOut(body)) return { error: 'web_login_failed', message: 'Sitewire rejected the login — double-check SITEWIRE_WEB_EMAIL and SITEWIRE_WEB_PASSWORD in Render.' };
+      // A 200 without sign-in markers is a rare but valid "signed in but no redirect" — accept it.
+      return { jar, csrf: null, viaLogin: true };
     }
-    // We have an authenticated session cookie; the definitive CSRF token + auth confirmation happen
-    // per-property in primeCsrf (never touch the site root here — it would rotate/clobber the session).
-    return { jar, csrf: null, viaLogin: true };
+    // Any other status (401/403/500/502/…): the login itself failed. Surface a message that says
+    // WHY rather than deferring to a downstream "session invalid" catch-all.
+    return { error: 'web_login_failed', message: `Sitewire login endpoint returned ${resp.status} — the login itself failed. Check SITEWIRE_WEB_EMAIL / SITEWIRE_WEB_PASSWORD, or Sitewire is having an outage.` };
   } catch (e) {
     return { error: 'web_login_error', message: `Sitewire login failed: ${e.message}` };
   }

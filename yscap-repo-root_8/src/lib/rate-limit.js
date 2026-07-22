@@ -56,4 +56,37 @@ function rateLimit({ windowMs = 60000, max = 30, bucket = 'default' } = {}) {
   };
 }
 
-module.exports = { rateLimit };
+/**
+ * PER-CAPABILITY throttle (audit finding 2026-07-21). The per-IP bucket above is a network-shape
+ * defense — a leaked one-time capability token (an email link forwarded, an inbox archive scraped)
+ * behind a fresh IP still gets its full quota, which for a 30-day token is effectively unlimited.
+ * This middleware throttles by a `keyOf(req)`-derived subject INSIDE the app — pass a function that
+ * pulls the token from `req.params` (or the borrower id, or any per-capability identifier). Same
+ * in-memory sliding-window discipline; keys live in a separate `hits` slice keyed by bucket so a
+ * per-token bucket can never evict the per-IP bucket's counters. `max` should be tight (mutation
+ * endpoints: single-digit / minute) — accept + dispute are single events, not steady traffic.
+ */
+function keyedRateLimit({ windowMs = 60000, max = 5, bucket = 'keyed', keyOf }) {
+  return function (req, res, next) {
+    const now = Date.now();
+    sweep(now);
+    const subject = (typeof keyOf === 'function' && keyOf(req)) || '';
+    if (!subject) return next(); // no key → skip (defer to per-IP bucket); NEVER fail open with a 500
+    const key = `${bucket}:${String(subject).slice(0, 96)}`;
+    let e = hits.get(key);
+    if (!e || e.resetAt <= now) { e = { count: 0, resetAt: now + windowMs }; hits.set(key, e); }
+    e.count++;
+    const remaining = Math.max(0, max - e.count);
+    res.setHeader('RateLimit-Limit', String(max));
+    res.setHeader('RateLimit-Remaining', String(remaining));
+    res.setHeader('RateLimit-Reset', String(Math.ceil((e.resetAt - now) / 1000)));
+    if (e.count > max) {
+      const retry = Math.ceil((e.resetAt - now) / 1000);
+      res.setHeader('Retry-After', String(retry));
+      return res.status(429).json({ error: 'Too many requests on this link — please wait a moment and try again.' });
+    }
+    next();
+  };
+}
+
+module.exports = { rateLimit, keyedRateLimit };

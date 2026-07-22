@@ -359,7 +359,7 @@ async function loadReportMeta(appId, { sitewireDrawId = null, mode = 'staff' } =
     if (f) {
       const rows = (await lazy.db.query(
         `SELECT id, sitewire_request_id, sitewire_job_item_id, name, requested_cents, approved_cents, not_approved_cents, inspector_comments
-           FROM draw_finding_lines WHERE finding_id=$1 ORDER BY id`, [f.id])).rows;
+           FROM draw_finding_lines WHERE finding_id=$1 AND retired_at IS NULL ORDER BY id`, [f.id])).rows;
       // durable archived photos for this draw, grouped by request id (kind='image' only)
       const media = (await lazy.db.query(
         `SELECT sitewire_request_id, storage_ref, content_type, note, lat, lng, captured_at

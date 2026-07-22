@@ -33,14 +33,14 @@ async function sendDrawSetupWelcome(appId) {
   try {
     // Only ever for a property that is genuinely live in Sitewire (managed, go-forward-only).
     if (!(await orchestrator.isManaged(appId))) return { sent: false, reason: 'not_managed' };
-    // Atomically claim the single send so a re-push / a second caller can't re-email.
-    const claim = await db.query(
-      `UPDATE sitewire_property_links SET setup_email_sent_at = now()
-        WHERE application_id = $1 AND setup_email_sent_at IS NULL RETURNING application_id`, [appId]);
-    if (!claim.rows[0]) return { sent: false, reason: 'already_sent' };
 
-    // Resolve the effective inspection method (virtual vs on-site) the same way the push does.
-    let method = 'mobile';
+    // Audit finding C-9 (2026-07-21): resolve the effective inspection method BEFORE claiming the
+    // atomic single-send stamp. The old order — claim first, resolve second, default 'mobile' on
+    // error — meant a TRANSIENT loadFile/resolve failure on a physical-inspection file sent the
+    // VIRTUAL instructions once, and the stamp then permanently prevented the correct email from
+    // ever going out. Now: if resolution fails, RETURN early without claiming; the next call
+    // retries. Only after resolution succeeds do we claim + send.
+    let method;
     try {
       const a = await orchestrator.loadFile(appId);
       const link = await orchestrator.getLink(appId);
@@ -49,11 +49,24 @@ async function sendDrawSetupWelcome(appId) {
         const cp = await orchestrator.resolveCapitalPartnerId(a.lender);
         const rule = await orchestrator.resolveRule(a.lender, cp && cp.id, program);
         const insp = orchestrator.resolveInspection(link, rule);
-        method = (insp && insp.method) || (link && link.inspection_method) || 'mobile';
+        method = (insp && insp.method) || (link && link.inspection_method) || null;
       } else if (link && link.inspection_method) {
         method = link.inspection_method;
       }
-    } catch (_) { /* method resolution is best-effort — default to virtual */ }
+    } catch (e) {
+      // Do NOT claim on a resolution error — retry next time (the caller/backfill re-drives).
+      console.warn('[sitewire] draw-setup welcome: inspection-method resolution failed; will retry:', e && e.message);
+      return { sent: false, reason: 'inspection_resolution_failed' };
+    }
+    // A null method means neither the rule nor the link knew — that's also a "come back later"
+    // signal, not a "default to virtual" (which was the exact wrong-instructions bug). Retry.
+    if (!method) return { sent: false, reason: 'inspection_method_unknown' };
+
+    // Atomically claim the single send so a re-push / a second caller can't re-email.
+    const claim = await db.query(
+      `UPDATE sitewire_property_links SET setup_email_sent_at = now()
+        WHERE application_id = $1 AND setup_email_sent_at IS NULL RETURNING application_id`, [appId]);
+    if (!claim.rows[0]) return { sent: false, reason: 'already_sent' };
 
     const dollars = await rehab.requiredRehabBudget(appId).catch(() => null);
     const row = (await db.query(`SELECT ${addrExpr('a')} AS addr FROM applications a WHERE a.id = $1`, [appId])).rows[0];

@@ -188,7 +188,7 @@ router.get('/draws/:appId/findings', async (req, res) => {
     for (const m of durable) { const k = String(m.sitewire_request_id); if (!durByReq.has(k)) durByReq.set(k, []); durByReq.get(k).push({ url: f.reply_token ? `/api/public/draw-findings/${f.reply_token}/media/${m.id}` : null, kind: m.kind }); }
     const lines = (await db.query(
       `SELECT id, sitewire_request_id, sow_line_key, unit_index, name, requested_cents, approved_cents, not_approved_cents, inspector_comments, photo_count, video_count, media, dispute_status, dispute_desired_cents, dispute_note
-         FROM draw_finding_lines WHERE finding_id=$1 ORDER BY id`, [f.id])).rows
+         FROM draw_finding_lines WHERE finding_id=$1 AND retired_at IS NULL ORDER BY id`, [f.id])).rows
       // scrub every free-text field a capital-partner name could hide in — including each inspection
       // media NOTE (was leaking unscrubbed to the borrower). Keep the photo/video src (inspection
       // evidence) but drop the media GPS lat/lng. lender_comments is a staff-leaning field the borrower
@@ -244,7 +244,7 @@ router.post('/findings/:findingId/dispute', async (req, res) => {
   const updates = [];
   for (const ln of lines) {
     if (!/^\d+$/.test(String(ln.line_id))) continue;
-    const owned = (await db.query(`SELECT id, requested_cents FROM draw_finding_lines WHERE id=$1 AND finding_id=$2`, [ln.line_id, f.id])).rows[0];
+    const owned = (await db.query(`SELECT id, requested_cents FROM draw_finding_lines WHERE id=$1 AND finding_id=$2 AND retired_at IS NULL`, [ln.line_id, f.id])).rows[0];
     if (!owned) continue;
     let desired = ln.desired_cents == null ? null : Math.round(Number(ln.desired_cents));
     if (desired != null && (!Number.isFinite(desired) || desired < 0 || desired > Number(owned.requested_cents))) desired = null; // never guess an out-of-range amount
