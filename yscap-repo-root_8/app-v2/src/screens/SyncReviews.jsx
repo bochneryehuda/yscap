@@ -179,6 +179,27 @@ const RESOLVABLE = new Set(['date_of_birth', 'expected_closing', 'actual_closing
 // tried to type is one of these (it shows an Approve that would be a confusing
 // no-op otherwise).
 const DISMISS_ONLY = new Set(['loan_number_duplicate_entered']);
+// Which file SECTION each review is about — so the reviewer can jump straight to
+// where the value is edited (owner-directed 2026-07-22: "a button to open the
+// exact file section the review is about"). Borrower/co-borrower identity lives in
+// Application details; dates/status/loan-number on the Overview; draws in Draws;
+// SharePoint filing in Documents. A field not listed (a stuck-file row) shows no
+// jump button — its fix isn't at a single section.
+const FIELD_SECTION = {
+  // Primary-borrower identity is shown + inline-edited in the Overview "Borrower"
+  // panel (name / email / SSN / DOB), as are file status + the closing dates.
+  first_name: 'sec-overview', email: 'sec-overview', ssn: 'sec-overview', date_of_birth: 'sec-overview',
+  borrower_identity: 'sec-overview', shared_email: 'sec-overview',
+  status: 'sec-overview', expected_closing: 'sec-overview', actual_closing: 'sec-overview',
+  // Address, phone, the acquisition date, the loan number, and the whole
+  // co-borrower live in Application details (address panel / Completeness /
+  // co-borrower completeness / EditFileDetails).
+  current_address: 'sec-application', cell_phone: 'sec-application',
+  acquisition_date: 'sec-application', ys_loan_number: 'sec-application',
+  co_first_name: 'sec-application', co_cell_phone: 'sec-application', co_borrower_identity: 'sec-application',
+  sitewire: 'sec-draws',
+  sharepoint_folder: 'sec-documents', sharepoint_doc: 'sec-documents',
+};
 const showVal = (v) => (v && /^\d{4}-\d{2}-\d{2}$/.test(String(v)) ? fmtDay(v) : (v == null || v === '' ? '—' : String(v)));
 
 // Per-reason resolution actions for a Sitewire draw review (mirror of the server's map in
@@ -205,7 +226,7 @@ function sides(r) {
 }
 
 export default function SyncReviews() {
-  const { role } = useAuth();
+  const { role, can } = useAuth();
   // relink_task (moving a ClickUp card between files) is admin-only — hide it
   // from processors/LOs/underwriters (the server also enforces this).
   const isAdmin = role === 'admin' || role === 'super_admin';
@@ -385,6 +406,13 @@ export default function SyncReviews() {
                   onClick={() => recheck(r.id)}>{busyId === r.id ? '…' : '↻ Re-check'}</button>
               )}
               {r.application_id && <Link className="btn ghost btn-sm" to={`/internal/app/${r.application_id}`}>Open file</Link>}
+              {r.application_id && FIELD_SECTION[r.field_key]
+                // The Draws section only renders for staff with manage_draws, so a
+                // sitewire jump would silently no-op for anyone else — hide it there.
+                && (r.field_key !== 'sitewire' || can('manage_draws')) && (
+                <Link className="btn ghost btn-sm" to={`/internal/app/${r.application_id}#${FIELD_SECTION[r.field_key]}`}
+                  title="Open the file at the exact section this review is about">Jump to the section</Link>
+              )}
             </div>
             {status === 'open' && (recheckMsg[r.id] || r.last_checked_at) && (
               <p className="muted small" style={{ margin: '2px 0 0' }}>
