@@ -142,15 +142,21 @@ async function apiGet(path) {
 //
 // Request shape (Encompass Developer Connect):
 //   {
-//     "filter":    { "operator":"and", "terms":[{canonicalName,value,matchType},...] },
-//     "sortOrder": [ { "canonicalName":"Loan.LastModified", "order":"desc" } ],
-//     "fields":    [ "Loan.LoanNumber", ... ]
+//     "loanIds":   [ "guid1", "guid2", ... ],           // OR
+//     "loanFolders": [ "My Pipeline", "Prospects" ],     // OR
+//     "filter":    { "operator":"and", "terms":[...] }, // OR (simple form)
+//                  { "canonicalName":"...", "value":"...", "matchType":"exact" }
+//     "sortOrder": [ { "canonicalName":"Loan.LastModified", "order":"Descending" } ],
+//     "fields":    [ "Loan.LoanNumber", ... ],
+//     "orgType": "Internal", "loanOwnership": "AllLoans"  // optional
 //   }
-// `filter` is OPTIONAL — omitting it returns all loans (the tenant permits
-// what the OAuth token can see). `sortOrder` MUST be at the TOP LEVEL of the
-// request body — Encompass 400s with "queryContract.filter.sortOrder Invalid
-// field name or value" if it sits inside `filter` (2026-07-22 live diag).
-// Pagination via `?limit=N&start=M` query params.
+// Encompass REQUIRES one of loanIds / loanFolders / filter / fieldFilters —
+// a body with none of those is refused ("Either 'LoanIds' or filter properties
+// like 'LoanFolders', 'Filter' or 'FieldFilters' must be supplied.", 2026-07-22
+// live diag). To pull "all loans" the caller passes `loanFolders` = every
+// folder name in the tenant (fetched from GET /settings/loan/folders).
+// `sortOrder` MUST be at the TOP LEVEL and `order` values are PascalCase
+// "Ascending"/"Descending". Pagination via `?limit=N&start=M`.
 async function pipelineSearch(request, { limit, start } = {}) {
   ensure();
   if (request == null || typeof request !== 'object') throw new Error('pipelineSearch: request object is required.');
@@ -161,16 +167,25 @@ async function pipelineSearch(request, { limit, start } = {}) {
     if (limit != null) qs.set('limit', String(limit));
     if (start != null) qs.set('start', String(start));
     const url = `${cfg.baseUrl}${PIPELINE_SEARCH_PATH}${qs.toString() ? '?' + qs.toString() : ''}`;
-    // Build the body with sortOrder / fields at the TOP LEVEL and filter (if
-    // any) as-is. An empty filter is omitted entirely — Encompass treats a
-    // missing `filter` as "all loans" (what we want for the initial page).
+    // Every property below is placed at the TOP LEVEL of the body — that's
+    // the shape Encompass Developer Connect requires. `filter` accepts both
+    // the "simple" form ({canonicalName,value,matchType}) and the "complex"
+    // form ({operator,terms:[...]}) — passed through as-is.
     const body = {};
-    if (request.filter && typeof request.filter === 'object'
-        && Array.isArray(request.filter.terms) && request.filter.terms.length > 0) {
-      body.filter = request.filter;
+    if (Array.isArray(request.loanIds) && request.loanIds.length) body.loanIds = request.loanIds;
+    if (Array.isArray(request.loanFolders) && request.loanFolders.length) body.loanFolders = request.loanFolders;
+    if (request.filter && typeof request.filter === 'object') {
+      const f = request.filter;
+      // Accept both shapes; only include if it actually carries a term.
+      if ((Array.isArray(f.terms) && f.terms.length > 0) || f.canonicalName) {
+        body.filter = f;
+      }
     }
     if (Array.isArray(request.sortOrder) && request.sortOrder.length) body.sortOrder = request.sortOrder;
     if (Array.isArray(request.fields) && request.fields.length) body.fields = request.fields;
+    if (request.orgType) body.orgType = request.orgType;
+    if (request.loanOwnership) body.loanOwnership = request.loanOwnership;
+    if (request.includeArchivedLoans != null) body.includeArchivedLoans = String(request.includeArchivedLoans);
     const r = await _fetchGuarded(url, {
       method: 'POST',
       headers: {

@@ -263,6 +263,33 @@ async function main() {
     'at least one pipelineSearch call passes sortOrder at the top level',
   );
 
+  // (9c) Regression: every pipelineSearch call MUST supply one of loanIds /
+  // loanFolders / filter / fieldFilters — Encompass refuses a body with none
+  // of them ("Either 'LoanIds' or filter properties like 'LoanFolders'..."
+  // 2026-07-22 live diag). Since our reader uses loanFolders, assert every
+  // recorded call carries a non-empty loanFolders array.
+  const badScopeCall = mockClient._pipelineCalls.find((c) => {
+    const r = c.request || {};
+    const hasLoanIds = Array.isArray(r.loanIds) && r.loanIds.length > 0;
+    const hasFolders = Array.isArray(r.loanFolders) && r.loanFolders.length > 0;
+    const hasFilter = r.filter && ((Array.isArray(r.filter.terms) && r.filter.terms.length > 0) || r.filter.canonicalName);
+    return !(hasLoanIds || hasFolders || hasFilter);
+  });
+  assert.strictEqual(badScopeCall, undefined,
+    'no pipelineSearch call may omit loanIds / loanFolders / filter — Encompass 400s otherwise');
+
+  // (9d) Regression: sortOrder.order MUST be PascalCase "Descending"/"Ascending"
+  // — Encompass 400s "Invalid field name or value" on lowercase "desc"/"asc"
+  // (2026-07-22 live diag, confirmed against ICE's Postman collection).
+  for (const c of mockClient._pipelineCalls) {
+    for (const s of (c.request && c.request.sortOrder) || []) {
+      if (s && s.order != null) {
+        assert.ok(s.order === 'Ascending' || s.order === 'Descending',
+          `sortOrder.order must be "Ascending" or "Descending" (PascalCase); got ${JSON.stringify(s.order)}`);
+      }
+    }
+  }
+
   // (10) Contract check — the REAL client at src/encompass/client.js must
   // export EVERY method the reader calls. This catches the "mock has it but
   // real client doesn't" bug class (root cause of the 2026-07-22 bulk-pull
