@@ -21,7 +21,12 @@ const STATUS = Object.freeze({ CONFIRMED: 'confirmed', CONFLICT: 'conflict', UNV
 
 // -- normalizers --
 function normName(v) {
-  return String(v == null ? '' : v).toLowerCase()
+  return String(v == null ? '' : v)
+    // Fold accents/diacritics first so "Café LLC" == "Cafe LLC" and
+    // "Peña Holdings" == "Pena Holdings" (real names carry accents; the
+    // document and the source often spell the same name differently).
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
     // entity-suffix-tolerant: L.L.C. == LLC == "Limited Liability Company"
     .replace(/limited liability company/g, 'llc')
     .replace(/\b(l\.?l\.?c\.?|inc\.?|corp\.?|co\.?|ltd\.?|l\.?p\.?)\b/g, (m) => m.replace(/\./g, ''))

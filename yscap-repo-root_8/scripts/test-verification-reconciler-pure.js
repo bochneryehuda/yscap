@@ -35,6 +35,13 @@ r = rc.reconcile({ type: 'name', value: 'Maple Grove Limited Liability Company' 
 assert.strictEqual(r.status, STATUS.CONFIRMED, '"Limited Liability Company" == "LLC"');
 ok('spelled-out "Limited Liability Company" matches "LLC"');
 
+// accents/diacritics fold: the document and the source often spell the same name differently
+assert.strictEqual(rc.reconcile({ type: 'name', value: 'Café Holdings LLC' }, { value: 'Cafe Holdings LLC', provider: 'plaid' }).status, STATUS.CONFIRMED, 'Café == Cafe after diacritic fold');
+assert.strictEqual(rc.reconcile({ type: 'name', value: 'Peña Capital LLC' }, { value: 'Pena Capital LLC', provider: 'middesk' }).status, STATUS.CONFIRMED, 'Peña == Pena after diacritic fold');
+// but genuinely different names still conflict after folding
+assert.strictEqual(rc.reconcile({ type: 'name', value: 'Peña Capital LLC' }, { value: 'Perez Capital LLC', provider: 'middesk' }).status, STATUS.CONFLICT, 'accents fold, but a real different name still conflicts');
+ok('accented and unaccented spellings of the same name match; real different names still conflict');
+
 // --- AMOUNT: tolerance (a slightly different "as of" day should not false-conflict) ---
 r = rc.reconcile({ type: 'amount', value: '42318.55', field: 'ending_balance' }, { value: '42318.90', provider: 'plaid' });
 assert.strictEqual(r.status, STATUS.CONFIRMED, '$0.35 apart is within the 1% / $1 tolerance');
