@@ -33,16 +33,45 @@ const M = require('./mapper');
  * SOW cell. Best-effort per row; a failure never breaks the reconcile.
  */
 async function adoptSeededMediaItems(appId, budgetId, jobItems) {
-  if (!appId || !budgetId || !Array.isArray(jobItems) || !jobItems.length) return { adopted: 0 };
-  const bound = new Set((await db.query(
-    `SELECT sitewire_job_item_id FROM sitewire_job_item_links WHERE application_id=$1 AND sitewire_job_item_id IS NOT NULL`,
-    [appId])).rows.map((r) => Number(r.sitewire_job_item_id)));
-  let adopted = 0;
+  if (!appId || !budgetId || !Array.isArray(jobItems) || !jobItems.length) return { adopted: 0, hydrated: 0 };
+  // Owner-reported 2026-07-22 (file 1053 Ella T Grasso Blvd): a crosswalk row for item 1180824 was
+  // bound BEFORE PR #551's `ji.name || "Sitewire item <jid>"` fallback shipped, so its `name`
+  // column landed NULL. The old `ON CONFLICT DO NOTHING` never re-hydrated it, and the draw desk
+  // fell back to the generic "Line 1180824" label instead of Sitewire's "Interior Video Tour".
+  // Root fix: read the existing row's name too; UPSERT with `ON CONFLICT DO UPDATE SET name =
+  // COALESCE(existing.name, EXCLUDED.name)` — a null name is upgraded on the very next reconcile,
+  // and a legitimately-stored name is never overwritten. Also flips is_media_item true if the
+  // pre-fix row had it false (a $0 item ALWAYS is media by our semantics).
+  const existingRows = (await db.query(
+    `SELECT sitewire_job_item_id, name, is_media_item FROM sitewire_job_item_links WHERE application_id=$1 AND sitewire_job_item_id IS NOT NULL`,
+    [appId])).rows;
+  const existingByJid = new Map(existingRows.map((r) => [Number(r.sitewire_job_item_id), r]));
+  let adopted = 0, hydrated = 0;
   for (const ji of jobItems) {
     if (!ji || ji.id == null) continue;
     const jid = Number(ji.id);
-    if (bound.has(jid)) continue;
     if (Number(ji.budgeted_cents || 0) !== 0) continue;
+    const cur = existingByJid.get(jid);
+    if (cur) {
+      // Already bound. If Sitewire now has a real name AND our stored name is null/generic, upgrade
+      // it in place (also flag as media if it wasn't). This is the backfill path that unbreaks
+      // rows adopted before PR #551's name fallback shipped.
+      const sitewireName = ji.name ? String(ji.name) : null;
+      const stored = cur.name ? String(cur.name) : '';
+      const isGeneric = !stored || /^Sitewire item \d+$/.test(stored);
+      if (!sitewireName && !cur.is_media_item) continue; // nothing to upgrade
+      try {
+        await db.query(
+          `UPDATE sitewire_job_item_links
+              SET name = CASE WHEN $3::text IS NOT NULL AND $4::boolean THEN $3::text ELSE name END,
+                  is_media_item = true,
+                  updated_at = now()
+            WHERE application_id=$1 AND sitewire_job_item_id=$2`,
+          [appId, jid, sitewireName, isGeneric]);
+        hydrated++;
+      } catch (_) { /* best-effort */ }
+      continue;
+    }
     // Owner-directed 2026-07-22 (file 1053 Ella T Grasso Blvd, draw #1): Sitewire seeds a
     // WHOLE TEMPLATE of $0 items on every property (Video Walkthrough, Exterior Photos, per-line
     // photo requirements, and more) — some carry `mandatory:true`, some don't, and their names
@@ -60,12 +89,14 @@ async function adoptSeededMediaItems(appId, budgetId, jobItems) {
       await db.query(
         `INSERT INTO sitewire_job_item_links (application_id, sitewire_budget_id, sow_line_key, section_token, unit_index, sitewire_job_item_id, name, budgeted_cents, is_media_item, state, last_pushed_at, updated_at)
          VALUES ($1,$2,$3,'media',NULL,$4,$5,0,true,'live',NULL,now())
-         ON CONFLICT (application_id, sow_line_key, section_token) DO NOTHING`,
-        [appId, budgetId, `__media__:sw_${jid}`, jid, String(ji.name || `Sitewire item ${jid}`)]);
+         ON CONFLICT (application_id, sow_line_key, section_token) DO UPDATE SET
+           name = CASE WHEN EXCLUDED.name IS NOT NULL AND (sitewire_job_item_links.name IS NULL OR sitewire_job_item_links.name ~ '^Sitewire item [0-9]+$') THEN EXCLUDED.name ELSE sitewire_job_item_links.name END,
+           is_media_item = true, updated_at = now()`,
+        [appId, budgetId, `__media__:sw_${jid}`, jid, ji.name ? String(ji.name) : null]);
       adopted++;
     } catch (_) { /* best-effort — a bad row must not stop the reconcile */ }
   }
-  return { adopted };
+  return { adopted, hydrated };
 }
 
 // ---- capital-partner directory cache (+ which are on our lender) ----

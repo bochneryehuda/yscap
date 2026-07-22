@@ -909,10 +909,24 @@ router.post('/requests/:reqId/approve', requirePermission('manage_draws'), async
   const approvedCents = Math.round(Number(req.body.approved_cents));
   const lenderComments = req.body.lender_comments || undefined;
   if (!Number.isFinite(approvedCents) || approvedCents < 0) return res.status(400).json({ error: 'approved_cents must be a non-negative whole number of cents' });
-  // scope: the request must belong to a file the actor can see
+  // scope: the request must belong to a file the actor can see. Also LEFT JOIN the crosswalk so we
+  // know whether the job item is a media/inspection-gate row (is_media_item=true) — those carry no
+  // money and must never accept a non-zero approved amount even from a raw API call bypassing the UI.
   const own = (await db.query(
-    `SELECT r.sitewire_request_id, r.requested_cents, d.application_id FROM sitewire_draw_requests r JOIN sitewire_draws d ON d.sitewire_draw_id=r.sitewire_draw_id WHERE r.sitewire_request_id=$1`, [reqId])).rows[0];
+    `SELECT r.sitewire_request_id, r.requested_cents, d.application_id,
+            COALESCE(jil.is_media_item, false) AS is_media_item, jil.name AS crosswalk_name
+       FROM sitewire_draw_requests r
+       JOIN sitewire_draws d ON d.sitewire_draw_id=r.sitewire_draw_id
+       LEFT JOIN sitewire_job_item_links jil ON jil.application_id=d.application_id AND jil.sitewire_job_item_id=r.sitewire_job_item_id
+      WHERE r.sitewire_request_id=$1`, [reqId])).rows[0];
   if (!own || !(await canSeeFile(req, own.application_id))) return res.status(403).json({ error: 'forbidden' });
+  // Owner-directed 2026-07-22: refuse a non-zero approved amount on a media/inspection-gate line.
+  // Sitewire lists these as "Photo Required" / "Video Required" and never as money lines; the
+  // draw desk UI hides the money input, but a raw API call must be blocked too. approved=0 IS
+  // allowed (a coordinator could still hit Save with 0 to record an explicit zero).
+  if (own.is_media_item && approvedCents > 0) {
+    return res.status(422).json({ error: `"${own.crosswalk_name || 'This line'}" is a photo/video inspection gate — no money can be approved against it. Enter the amount on the real budget lines instead.` });
+  }
   // G-APPRV: never exceed requested without an explicit override. Owner-directed 2026-07-21:
   // `override:true` is a MONEY escalation (approved > requested is the coordinator overriding the
   // inspector's number), so restrict it to super_admin AND require a note documenting why. Journal
@@ -1544,9 +1558,15 @@ router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, r
     // crosswalk name (which reconcile hydrates from prop.budget.job_items on adopt), so the desk
     // shows "Interior Video Tour" instead of "Line 1180837". LEFT JOIN so an un-adopted item
     // still returns null and the UI's final fallback ("Line <id>") kicks in.
+    //
+    // Also expose `is_media_item` from the crosswalk so the UI can HIDE the "Set approved $ Save"
+    // input on media items (Photo/Video Required rows carry no money — Sitewire displays them as
+    // requirements, never as budget lines, and PILOT was mistakenly offering a money entry against
+    // them). Owner-directed 2026-07-22.
     const requests = (await db.query(
       `SELECT r.sitewire_request_id, r.sitewire_draw_id, r.sitewire_job_item_id,
               COALESCE(NULLIF(r.job_item_name, ''), jil.name) AS job_item_name,
+              COALESCE(jil.is_media_item, false) AS is_media_item,
               r.requested_cents, r.approved_cents, r.inspection_count, r.lender_comments
          FROM sitewire_draw_requests r
          JOIN sitewire_draws d ON d.sitewire_draw_id=r.sitewire_draw_id
