@@ -119,6 +119,26 @@ export default function StaffInsightsDashboard() {
         </div>
       ))}
 
+      <h3 style={{ marginTop: 22 }}>AI decisions this week</h3>
+      {(d.decisionsThisWeek || []).length === 0 && <Empty>No AI decisions logged in the last 7 days.</Empty>}
+      {(d.decisionsThisWeek || []).length > 0 && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+          {(d.decisionsThisWeek || []).map((r) => {
+            const label = String(r.status || '').replace(/_/g, ' ');
+            const tone = r.status === 'dismissed' ? 'var(--muted,#4B585C)'
+              : r.status === 'converted_to_condition' || r.status === 'converted_to_task' ? 'var(--good,#3F7A5B)'
+              : r.status === 'escalated' || r.status === 'marked_important' ? 'var(--amber,#B7791F)'
+              : r.status === 'asked_admin' || r.status === 'answered' ? 'var(--gold,#AE8746)'
+              : 'var(--teal-deep,#256168)';
+            return (
+              <span key={r.status} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 8px', borderRadius: 8, background: 'var(--card,#fff)', border: `1px solid ${tone}`, color: tone, fontSize: 12, fontWeight: 600 }}>
+                {label} <b style={{ fontSize: 13 }}>{r.n}</b>
+              </span>
+            );
+          })}
+        </div>
+      )}
+
       <h3 style={{ marginTop: 22 }}>Files with aging fatal AI findings</h3>
       {(d.agedFatalAiFiles || []).length === 0 && <Empty>None — no open fatal AI findings on any file.</Empty>}
       {(d.agedFatalAiFiles || []).map((r) => {

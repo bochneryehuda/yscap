@@ -24,6 +24,7 @@ router.get('/', requireRole('admin'), async (req, res) => {
       aiSpendMonth,
       topSuggestionCodes,
       agedFatalAiFiles,
+      decisionsThisWeek,
     ] = await Promise.all([
       db.query(
         `SELECT severity, COUNT(*)::int AS n
@@ -76,9 +77,15 @@ router.get('/', requireRole('admin'), async (req, res) => {
           GROUP BY a.id, a.property_address, a.status, a.program, b.first_name, b.last_name
           ORDER BY oldest_days DESC NULLS LAST
           LIMIT 20`),
+      // R4.4 — Weekly decision velocity per status.
+      db.query(
+        `SELECT status, COUNT(*)::int AS n
+           FROM ai_suggestions
+          WHERE decided_at > now() - interval '7 days'
+          GROUP BY status ORDER BY n DESC`),
     ]).catch(() => {
       // On any single-query failure, return an empty shape rather than 500 the whole dashboard.
-      return [ { rows: [] }, { rows: [] }, { rows: [] }, { rows: [] }, { rows: [{ cents: 0, n: 0 }] }, { rows: [] }, { rows: [] } ];
+      return [ { rows: [] }, { rows: [] }, { rows: [] }, { rows: [] }, { rows: [{ cents: 0, n: 0 }] }, { rows: [] }, { rows: [] }, { rows: [] } ];
     });
 
     // Recent AI-related audit trail (best-effort — table may not always exist on
@@ -102,6 +109,7 @@ router.get('/', requireRole('admin'), async (req, res) => {
       aiSpend30d: aiSpendMonth.rows[0] || { cents: 0, n: 0 },
       topSuggestionCodes: topSuggestionCodes.rows,
       agedFatalAiFiles: agedFatalAiFiles.rows,
+      decisionsThisWeek: decisionsThisWeek.rows,
       recentDecisions,
     });
   } catch (e) { res.status(500).json({ error: e.message || 'insights load failed' }); }
