@@ -31,6 +31,7 @@
 const cfg = require('../../config');
 const { runWithRetry, classifyStatus, retryAfterMs, breakerFor } = require('./resilience');
 const langfuse = require('./langfuse');
+const costMeter = require('./cost-meter');
 
 const DEFAULT_API_VERSION = '2025-04-01-preview';
 // GPT-5 spends hidden reasoning tokens out of this same budget, so keep it generous
@@ -169,6 +170,19 @@ async function complete({ system, userContent, maxTokens, responseFormat, timeou
     statusMessage: res.ok ? undefined : (res.reason || res.outcome),
   });
   if (ownTrace) ownTrace.end({ output: { ok: res.ok, reason: res.ok ? undefined : res.reason } });
+
+  // Cost meter — one row per completion. Best-effort, fire-and-forget so a DB
+  // hiccup never blocks the AI call. Provider/model come from the Azure OpenAI
+  // deployment name; tokens from Azure's usage.* fields.
+  const u = res.usage || {};
+  costMeter.record({
+    applicationId: traceMd.appId, documentId: traceMd.documentId,
+    opName: traceMd.opName || 'complete', provider: 'azure_openai',
+    model: cfg.azureOpenai.deployment,
+    tokensIn: Number(u.prompt_tokens ?? u.promptTokens ?? 0),
+    tokensOut: Number(u.completion_tokens ?? u.completionTokens ?? 0),
+    ok: !!res.ok, reason: res.ok ? null : (res.reason || res.outcome),
+  }).catch(() => {});
 
   return res;
 }

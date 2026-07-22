@@ -476,6 +476,7 @@ export const api = {
   aiSuggestionAddNote:    (appId, id, text) => req('POST', `/api/underwriting/${appId}/ai-suggestions/${id}/note`, { text }),
   aiAdminQuestions:       (appId) => req('GET', `/api/underwriting/ai-admin/questions${appId ? `?appId=${appId}` : ''}`),
   aiAdminAnswer:          (questionId, answer) => req('POST', `/api/underwriting/ai-admin/questions/${questionId}/answer`, { answer }),
+  aiCostForFile:          (appId) => req('GET', `/api/underwriting/${appId}/ai-cost`),
   staffUploadAppDoc: (appId, b) => coalesceUpload('appDoc:' + appId, b, () => req('POST', `/api/staff/applications/${appId}/documents`, normalizeUpload(b))),
   staffAddLoanCondition: (appId, b) => req('POST', `/api/staff/applications/${appId}/loan-conditions`, b),
   staffClearCondition:   (cid) => req('POST', `/api/staff/loan-conditions/${cid}/clear`),

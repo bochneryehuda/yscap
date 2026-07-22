@@ -1374,6 +1374,24 @@ router.post('/:appId/experience-exception', requirePermission('waive_conditions'
 });
 
 // -------------------------------------------------------------------------
+// AI cost telemetry (R2.11, owner-directed 2026-07-22) — per-file rollup.
+// -------------------------------------------------------------------------
+router.get('/:appId/ai-cost', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const costMeter = require('../lib/ai/cost-meter');
+    const summary = await costMeter.fileSummary(app.id, db);
+    // Also return the latest N events so the UI can render a mini-log.
+    const events = (await db.query(
+      `SELECT op_name, provider, model, tokens_total, cost_cents, duration_ms, ok, reason, created_at
+         FROM ai_cost_events WHERE application_id=$1
+         ORDER BY created_at DESC LIMIT 50`, [app.id])).rows;
+    res.json({ ok: true, summary, events });
+  } catch (e) { next(e); }
+});
+
+// -------------------------------------------------------------------------
 // AI SUGGESTIONS — the file's non-autonomous "AI panel" backend (R3.5/R3.6).
 // Owner hard rule (2026-07-22): the AI writes suggestions here — a human
 // clicks Escalate / Add note / Convert to condition / Convert to task /

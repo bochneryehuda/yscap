@@ -423,6 +423,7 @@ export default function StaffLayout({ children }) {
           {escCount > 0 && <span className="sb-badge">{escCount > 99 ? '99+' : escCount}</span>}</NavLink>}
         {(canManagePricing || role === 'super_admin') && <NavLink className="sb-link" to="/internal/training" title="Training proposals — candidate improvements PILOT learned from underwriter corrections; approve, shadow-test, or reject each one"><NavIcon name="conditions" />Training</NavLink>}
         {role === 'super_admin' && <NavLink className="sb-link" to="/internal/labeling" title="AI labeling console — tag past documents to train the classifier and per-type field readers"><NavIcon name="conditions" />AI labeling</NavLink>}
+        {role === 'super_admin' && <NavLink className="sb-link" to="/internal/ai-inbox" title="AI questions inbox — the AI asks here when it's unsure; your answer feeds its learning"><NavIcon name="conditions" />AI inbox</NavLink>}
         {canPlatformSetup && <NavLink className="sb-link" to="/internal/api-health" title="API Health — every integration & API: live or down, what it needs, and a one-click test"><NavIcon name="health" />API Health</NavLink>}
         {canPlatformSetup && <NavLink className="sb-link" to="/internal/clickup" title="ClickUp Control Center — sync health, dry-run, backfill"><NavIcon name="clickup" />ClickUp</NavLink>}
         {canPlatformSetup && <NavLink className="sb-link" to="/internal/draw-rules" title="Inspection & fee rules — virtual vs on-site and the per-partner fee schedule for draws"><NavIcon name="pipeline" />Draw rules</NavLink>}
