@@ -21,16 +21,30 @@
 
 const MODES = Object.freeze({ PHYSICAL: 'physical', VIRTUAL: 'virtual' });
 
+// Hard ceiling on any page number. No real combined document packet approaches
+// this (a few thousand pages at most); a page number above it is bad or hostile
+// input (a hallucinated page from the AI adjudicator, an oversized start/end).
+// Capping at the SOURCE bounds every downstream loop by page COUNT, never by page
+// MAGNITUDE — so the module can honor its "never throws" contract instead of
+// building a billion-element array and throwing RangeError.
+const MAX_PAGE = 100000;
+
 // Normalize a document's page range to a sorted, de-duplicated list of 1-based
-// integer page numbers, from either { pages:[n...] } or { start, end }.
+// integer page numbers (each in [1, MAX_PAGE]), from either { pages:[n...] } or
+// { start, end }. An out-of-range page is dropped; an oversized or inverted
+// start/end range yields [] (the document is then flagged invalid, never enumerated).
 function pagesOf(doc) {
   if (!doc) return [];
   if (Array.isArray(doc.pages) && doc.pages.length) {
-    return [...new Set(doc.pages.map(Number).filter((n) => Number.isInteger(n) && n >= 1))].sort((a, b) => a - b);
+    return [...new Set(doc.pages.map(Number).filter((n) => Number.isInteger(n) && n >= 1 && n <= MAX_PAGE))].sort((a, b) => a - b);
   }
   const s = Number(doc.start), e = Number(doc.end != null ? doc.end : doc.start);
-  if (!Number.isInteger(s) || s < 1) return [];
+  if (!Number.isInteger(s) || s < 1 || s > MAX_PAGE) return [];
+  // An explicit end below start is an inverted (invalid) range — flag it, don't
+  // silently collapse to a single page and mask a real upstream error.
+  if (doc.end != null && Number.isInteger(e) && e < s) return [];
   const end = Number.isInteger(e) && e >= s ? e : s;
+  if (end > MAX_PAGE) return []; // oversized span → invalid, never enumerate a giant array
   const out = [];
   for (let p = s; p <= end; p++) out.push(p);
   return out;

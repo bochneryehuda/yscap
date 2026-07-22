@@ -96,6 +96,25 @@ r = pe.planSlices([{ id: 'a', pages: [1, 2] }], { totalPages: 5 });
 assert.deepStrictEqual(r.coverage.trailingUnassigned, { from: 3, to: 5, count: 3 }, 'pages 3-5 are the unassigned tail');
 ok('a small trailing tail of unassigned pages is summarized (from/to/count)');
 
+// --- a document that REFERENCES a huge page never explodes/throws (bounded by page magnitude cap) ---
+t0 = Date.now();
+assert.doesNotThrow(() => pe.planSlices([{ id: 'a', pages: [1000000000] }]), 'a hallucinated billion page number must not throw RangeError');
+r = pe.planSlices([{ id: 'a', pages: [1000000000] }]);
+assert.ok(Date.now() - t0 < 500, 'no billion-iteration loop from a huge referenced page');
+assert.strictEqual(plan(r, 'a').valid, false, 'an out-of-range page leaves the doc with no valid pages → invalid');
+// an oversized start/end range likewise never builds a giant array
+t0 = Date.now();
+assert.doesNotThrow(() => pe.planSlices([{ id: 'b', start: 1, end: 1000000000 }], { totalPages: 5 }), 'an oversized start/end range must not throw');
+assert.ok(Date.now() - t0 < 500, 'an oversized start/end range returns instantly (never enumerated)');
+assert.strictEqual(pe.planSlices([{ id: 'b', start: 1, end: 1000000000 }]).plans[0].valid, false, 'an oversized span is invalid');
+ok('a document referencing a huge page or an oversized start/end range is invalid, never a RangeError/hang');
+
+// --- an inverted explicit range (end < start) is invalid, not silently collapsed to one page ---
+r = pe.planSlices([{ id: 'inv', start: 5, end: 2 }], { totalPages: 10 });
+assert.strictEqual(plan(r, 'inv').valid, false, 'end < start is flagged invalid, not reduced to page 5');
+assert.strictEqual(plan(r, 'inv').pageCount, 0);
+ok('an inverted explicit range (end < start) is flagged invalid rather than silently collapsed');
+
 // --- empty / junk input is safe ---
 assert.doesNotThrow(() => pe.planSlices(null));
 assert.strictEqual(pe.planSlices(null).ok, true, 'nothing to slice is trivially ok');
