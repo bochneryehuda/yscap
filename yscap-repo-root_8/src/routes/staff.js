@@ -9225,6 +9225,25 @@ router.post('/sync-reviews/:id/reject', async (req, res) => {
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
+// RE-CHECK — "look again" (owner-directed 2026-07-22). Re-runs the underlying
+// comparison in the backend and AUTO-CLOSES the row only if the current data
+// PROVES the disagreement is gone (someone already fixed it on either side) —
+// never a blind dismiss. A row that still genuinely differs stays open, stamped
+// "checked just now". Scoped like the other resolve endpoints (the file's LO can
+// re-check their own rows).
+router.post('/sync-reviews/:id/recheck', async (req, res) => {
+  try {
+    const row = await loadReviewFor(req, res);
+    if (!row) return;
+    const out = await require('../lib/sync-review-recheck').recheckReview(row);
+    if (out.outcome === 'closed') {
+      await audit(req, 'sync_review_recheck_closed', row.application_id ? 'application' : 'borrower',
+        row.application_id || row.borrower_id, { reviewId: row.id, field: row.field_key, reason: out.reason });
+    }
+    res.json({ ok: true, ...out });
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
 // ---------------- e-signature (DocuSign) tracking — read model --------------
 // The internal "our own DocuSign" dashboard + the per-file section. Read-only
 // monitoring; management actions (send/resend/void) are added with the send

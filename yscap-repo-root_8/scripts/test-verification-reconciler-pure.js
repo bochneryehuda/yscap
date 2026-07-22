@@ -35,6 +35,13 @@ r = rc.reconcile({ type: 'name', value: 'Maple Grove Limited Liability Company' 
 assert.strictEqual(r.status, STATUS.CONFIRMED, '"Limited Liability Company" == "LLC"');
 ok('spelled-out "Limited Liability Company" matches "LLC"');
 
+// accents/diacritics fold: the document and the source often spell the same name differently
+assert.strictEqual(rc.reconcile({ type: 'name', value: 'Café Holdings LLC' }, { value: 'Cafe Holdings LLC', provider: 'plaid' }).status, STATUS.CONFIRMED, 'Café == Cafe after diacritic fold');
+assert.strictEqual(rc.reconcile({ type: 'name', value: 'Peña Capital LLC' }, { value: 'Pena Capital LLC', provider: 'middesk' }).status, STATUS.CONFIRMED, 'Peña == Pena after diacritic fold');
+// but genuinely different names still conflict after folding
+assert.strictEqual(rc.reconcile({ type: 'name', value: 'Peña Capital LLC' }, { value: 'Perez Capital LLC', provider: 'middesk' }).status, STATUS.CONFLICT, 'accents fold, but a real different name still conflicts');
+ok('accented and unaccented spellings of the same name match; real different names still conflict');
+
 // --- AMOUNT: tolerance (a slightly different "as of" day should not false-conflict) ---
 r = rc.reconcile({ type: 'amount', value: '42318.55', field: 'ending_balance' }, { value: '42318.90', provider: 'plaid' });
 assert.strictEqual(r.status, STATUS.CONFIRMED, '$0.35 apart is within the 1% / $1 tolerance');
@@ -123,6 +130,28 @@ assert.strictEqual(rc.reconcile({ type: 'amount', value: '5000' }, { value: '   
 assert.strictEqual(rc.reconcile({ type: 'entity_status', value: 'ABC LLC' }, { value: '  ', provider: 'middesk' }).status, STATUS.UNVERIFIABLE, 'a blank registry status is unverifiable, not a fatal not-active');
 assert.strictEqual(rc.reconcile({ type: 'property_value', value: '500000' }, { value: '  ', provider: 'attom' }).status, STATUS.UNVERIFIABLE, 'a blank AVM is unverifiable');
 ok('a blank-ish SOURCE value (whitespace amount / status / AVM) is unverifiable, never a false conflict');
+
+// --- a blank / normalize-to-empty NAME on either side is unverifiable, never a FATAL false mismatch ---
+assert.strictEqual(rc.reconcile({ type: 'name', value: 'ABC LLC' }, { value: '   ', provider: 'plaid' }).status, STATUS.UNVERIFIABLE, 'a whitespace source name is not a fatal ownership mismatch');
+assert.strictEqual(rc.reconcile({ type: 'name', value: 'ABC LLC' }, { value: '\t\n', provider: 'plaid' }).status, STATUS.UNVERIFIABLE, 'a tab/newline source name is unverifiable');
+assert.strictEqual(rc.reconcile({ type: 'name', value: '.,' }, { value: 'ABC LLC', provider: 'plaid' }).status, STATUS.UNVERIFIABLE, 'a claim that normalizes to empty (punctuation only) is unverifiable, not a mismatch');
+assert.ok(!rc.reconcile({ type: 'name', value: 'ABC LLC' }, { value: '   ', provider: 'plaid' }).finding, 'no finding on a blank source name');
+// a bare entity SUFFIX ("LLC"/"Inc") carries no identifying core → unverifiable, not a fatal mismatch
+assert.strictEqual(rc.reconcile({ type: 'name', value: 'ABC LLC' }, { value: 'LLC', provider: 'plaid' }).status, STATUS.UNVERIFIABLE, 'a bare "LLC" source owner has no identifying core');
+assert.strictEqual(rc.reconcile({ type: 'name', value: 'Inc.' }, { value: 'ABC LLC', provider: 'plaid' }).status, STATUS.UNVERIFIABLE, 'a bare "Inc." claim has no identifying core');
+// but a real name that merely CONTAINS a suffix still compares normally
+assert.strictEqual(rc.reconcile({ type: 'name', value: 'ABC LLC' }, { value: 'XYZ LLC', provider: 'plaid' }).status, STATUS.CONFLICT, 'two real different names still conflict');
+ok('a blank / punctuation-only / bare-suffix NAME is unverifiable; two real different names still conflict');
+
+// --- exists with a whitespace source is unverifiable (not a false not-found); a real false still conflicts ---
+assert.strictEqual(rc.reconcile({ type: 'exists', value: 'lien' }, { value: '   ', provider: 'attom' }).status, STATUS.UNVERIFIABLE, 'a whitespace exists source is unverifiable');
+assert.strictEqual(rc.reconcile({ type: 'exists', value: 'lien' }, { value: false, provider: 'attom' }).status, STATUS.CONFLICT, 'a real boolean false still conflicts');
+ok('exists with a whitespace source is unverifiable; a genuine false still conflicts');
+
+// --- property_value with a non-positive claimed base is unverifiable (no self-conflict on $0) ---
+assert.strictEqual(rc.reconcile({ type: 'property_value', value: 0 }, { value: 0, provider: 'attom' }).status, STATUS.UNVERIFIABLE, 'a $0 claimed value has no base to compute variance');
+assert.strictEqual(rc.reconcile({ type: 'property_value', value: '0' }, { value: '500000', provider: 'attom' }).status, STATUS.UNVERIFIABLE, 'a $0 claim never conflicts against any AVM');
+ok('property_value with a non-positive claimed base is unverifiable (no degenerate $0 self-conflict)');
 
 // --- reconcileAll: rollup, findings, coverage ---
 const batch = rc.reconcileAll([

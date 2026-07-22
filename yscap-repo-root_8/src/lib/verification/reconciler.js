@@ -21,7 +21,12 @@ const STATUS = Object.freeze({ CONFIRMED: 'confirmed', CONFLICT: 'conflict', UNV
 
 // -- normalizers --
 function normName(v) {
-  return String(v == null ? '' : v).toLowerCase()
+  return String(v == null ? '' : v)
+    // Fold accents/diacritics first so "Café LLC" == "Cafe LLC" and
+    // "Peña Holdings" == "Pena Holdings" (real names carry accents; the
+    // document and the source often spell the same name differently).
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
     // entity-suffix-tolerant: L.L.C. == LLC == "Limited Liability Company"
     .replace(/limited liability company/g, 'llc')
     .replace(/\b(l\.?l\.?c\.?|inc\.?|corp\.?|co\.?|ltd\.?|l\.?p\.?)\b/g, (m) => m.replace(/\./g, ''))
@@ -30,16 +35,29 @@ function normName(v) {
 function num(v) { const s = String(v == null ? '' : v).replace(/[$,\s]/g, ''); if (s === '') return null; const n = Number(s); return Number.isFinite(n) ? n : null; }
 function normStatus(v) { return String(v == null ? '' : v).toLowerCase().replace(/[^a-z]+/g, ''); }
 
+// The entity-suffix tokens normName leaves behind. A normalized name that is
+// ONLY these carries no identifying core (a bare "LLC"/"Inc" owner) → treat as
+// having no name to compare, so it can't produce a fatal ownership mismatch.
+const ENTITY_SUFFIX_TOKENS = new Set(['llc', 'inc', 'corp', 'co', 'ltd', 'lp']);
+function nameCore(normalized) {
+  return String(normalized || '').split(' ').filter((t) => t && !ENTITY_SUFFIX_TOKENS.has(t)).join(' ').trim();
+}
+
 // Entity statuses that mean "in good standing / can transact".
 const GOOD_ENTITY = new Set(['active', 'goodstanding', 'ingoodstanding', 'existing', 'current', 'inexistence']);
 
 // -- per-type comparison --
 // Each returns { match, detail }.
 const COMPARATORS = {
-  // Names / ownership — entity-suffix tolerant equality.
+  // Names / ownership — entity-suffix tolerant equality. If either side
+  // normalizes to empty (blank, or only punctuation/suffix noise), there is no
+  // name to compare → UNVERIFIABLE, never a (fatal) ownership mismatch.
   name(docV, srcV) {
     const a = normName(docV), b = normName(srcV);
-    return { match: !!a && !!b && a === b, detail: `document "${docV}" vs source "${srcV}"` };
+    // No identifying core on either side (blank, punctuation-only, or a bare
+    // entity suffix like "LLC") → nothing to compare → UNVERIFIABLE.
+    if (!nameCore(a) || !nameCore(b)) return { match: false, detail: `document "${docV}" vs source "${srcV}"`, unverifiable: true };
+    return { match: a === b, detail: `document "${docV}" vs source "${srcV}"` };
   },
   // Amounts / balances — within a tolerance (absolute OR percent, whichever the
   // opts give; default 1% or $1 — a balance "as of" a slightly different day
@@ -67,8 +85,11 @@ const COMPARATORS = {
   property_value(docV, srcV, opts) {
     const a = num(docV), b = num(srcV);
     if (a == null || b == null) return { match: false, detail: 'a value was not numeric', unverifiable: true };
+    // Without a positive claimed value there is no base to compute a variance
+    // against → UNVERIFIABLE (never a self-conflict on a degenerate $0 claim).
+    if (a <= 0) return { match: false, detail: `claimed value is not positive ($${a})`, unverifiable: true };
     const band = opts && opts.varianceBand != null ? opts.varianceBand : 0.10;
-    const variance = a > 0 ? Math.abs(a - b) / a : 1;
+    const variance = Math.abs(a - b) / a;
     return { match: variance <= band, detail: `claimed $${a} vs AVM $${b} (${(variance * 100).toFixed(1)}% variance, band ±${(band * 100).toFixed(0)}%)` };
   },
   // Existence / boolean — the source confirms a thing exists / is true.
@@ -108,7 +129,8 @@ function reconcile(claim, source, opts = {}) {
   if (!claim || claim.value == null || (typeof claim.value === 'string' && claim.value.trim() === '')) {
     return { ...base, status: STATUS.UNVERIFIABLE, detail: 'no document-claimed value to reconcile' };
   }
-  if (!source || source.available === false || source.value == null || source.value === '') {
+  if (!source || source.available === false || source.value == null
+      || (typeof source.value === 'string' && source.value.trim() === '')) {
     return { ...base, status: STATUS.UNVERIFIABLE, detail: 'no independent source value available' };
   }
 
