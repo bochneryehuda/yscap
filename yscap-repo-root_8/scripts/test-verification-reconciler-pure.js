@@ -129,7 +129,12 @@ assert.strictEqual(rc.reconcile({ type: 'name', value: 'ABC LLC' }, { value: '  
 assert.strictEqual(rc.reconcile({ type: 'name', value: 'ABC LLC' }, { value: '\t\n', provider: 'plaid' }).status, STATUS.UNVERIFIABLE, 'a tab/newline source name is unverifiable');
 assert.strictEqual(rc.reconcile({ type: 'name', value: '.,' }, { value: 'ABC LLC', provider: 'plaid' }).status, STATUS.UNVERIFIABLE, 'a claim that normalizes to empty (punctuation only) is unverifiable, not a mismatch');
 assert.ok(!rc.reconcile({ type: 'name', value: 'ABC LLC' }, { value: '   ', provider: 'plaid' }).finding, 'no finding on a blank source name');
-ok('a blank / normalize-to-empty NAME (either side) is unverifiable, never a fatal false mismatch');
+// a bare entity SUFFIX ("LLC"/"Inc") carries no identifying core → unverifiable, not a fatal mismatch
+assert.strictEqual(rc.reconcile({ type: 'name', value: 'ABC LLC' }, { value: 'LLC', provider: 'plaid' }).status, STATUS.UNVERIFIABLE, 'a bare "LLC" source owner has no identifying core');
+assert.strictEqual(rc.reconcile({ type: 'name', value: 'Inc.' }, { value: 'ABC LLC', provider: 'plaid' }).status, STATUS.UNVERIFIABLE, 'a bare "Inc." claim has no identifying core');
+// but a real name that merely CONTAINS a suffix still compares normally
+assert.strictEqual(rc.reconcile({ type: 'name', value: 'ABC LLC' }, { value: 'XYZ LLC', provider: 'plaid' }).status, STATUS.CONFLICT, 'two real different names still conflict');
+ok('a blank / punctuation-only / bare-suffix NAME is unverifiable; two real different names still conflict');
 
 // --- exists with a whitespace source is unverifiable (not a false not-found); a real false still conflicts ---
 assert.strictEqual(rc.reconcile({ type: 'exists', value: 'lien' }, { value: '   ', provider: 'attom' }).status, STATUS.UNVERIFIABLE, 'a whitespace exists source is unverifiable');
