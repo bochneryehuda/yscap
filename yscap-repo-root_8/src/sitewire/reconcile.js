@@ -313,6 +313,25 @@ async function reconcileOne(appId) {
   let prop;
   try { prop = await client.getProperty(link.sitewire_property_id); } catch (e) { return { error: e.message }; }
   const draws = (prop.budget && prop.budget.draws) || [];
+  // Owner-directed 2026-07-22 (deep root cause investigation for file 1053 Ella T Grasso Blvd item
+  // 1180824 "Interior Video Tour"): per the Sitewire API v2 swagger, GET /properties/:id returns a
+  // `budget` sub-object with ONLY {id, draw_eligible, funding_ratio, funding_threshold_cents, draws}
+  // — it does NOT include `job_items`. The full job-item list is exposed by GET /budgets/:id (used
+  // by orchestrator.pushBudgetInner and verifyBudgetDrift below). Every prior reconcile that read
+  // `prop.budget.job_items` was receiving `undefined` → empty array — so:
+  //   • adoptSeededMediaItems has been silently no-op since PR #546 (never bound sw-seeded media).
+  //   • the propJobNames friendly-name hydration map was always empty.
+  // The 5 named items on file 1053 got their names bound at BIRTH via pushBudgetInner (which does
+  // fetch getBudget correctly), so they read fine. Item 1180824 ("Interior Video Tour" without a
+  // Unit prefix) is a Sitewire template item PILOT never pushed — it needed adoptSeededMediaItems
+  // to bind it. That code never ran because it always saw an empty list. Fix: fetch getBudget ONCE
+  // per reconcile and use its job_items in both places. One extra GET per file per poll cycle is
+  // fine (verifyBudgetDrift already makes the same call hourly on the same read path).
+  let budgetJobItems = [];
+  if (prop.budget && prop.budget.id) {
+    try { const b = await client.getBudget(prop.budget.id); if (Array.isArray(b.job_items)) budgetJobItems = b.job_items; }
+    catch (_) { /* best-effort — a transient getBudget failure just skips this pass's hydrate/adopt */ }
+  }
   // Bidirectional Phase 1: on the file's FIRST reconcile ever, baseline the draw watermarks silently
   // (no notification burst for draws that existed before PILOT started watching); react to changes after.
   const firstReconcile = !link.last_reconciled_at;
@@ -350,17 +369,15 @@ async function reconcileOne(appId) {
        times.submitted || null, times.approved || null, link.budget_version || null,
        full.draw_events ? JSON.stringify(full.draw_events) : null, d.updated_at || null]);
     // Owner-directed 2026-07-22 (file 1053 Ella T Grasso Blvd): Sitewire's GET /draws/:id can
-    // return each request with `job_item.name === null` while the property's authoritative
-    // budget.job_items list DOES carry the friendly name. The prior code stored the null and the
-    // draw desk fell back to "Line 1180837" everywhere. Build a job_item_id → name map from the
-    // property's live budget (already in memory as `prop.budget.job_items`) and hydrate the
-    // request name from it when the request itself omits it. On UPSERT the ON CONFLICT clause
-    // now also refreshes job_item_name (only when it lands non-null) so a later reconcile that
-    // finally sees the friendly name upgrades the earlier row instead of leaving the fallback in.
+    // return each request with `job_item.name === null` while the budget's authoritative job_items
+    // list DOES carry the friendly name. The prior code stored the null and the draw desk fell
+    // back to "Line 1180837" everywhere. Build a job_item_id → name map from the live budget
+    // (fetched above via getBudget — NOT from prop.budget, which per the swagger has no job_items)
+    // and hydrate the request name when the request itself omits it. On UPSERT the ON CONFLICT
+    // clause refreshes job_item_name only when it lands non-null so a later reconcile that finally
+    // sees the friendly name upgrades the earlier row instead of leaving the fallback in.
     const propJobNames = new Map();
-    if (prop.budget && Array.isArray(prop.budget.job_items)) {
-      for (const ji of prop.budget.job_items) { if (ji && ji.id != null && ji.name) propJobNames.set(Number(ji.id), String(ji.name)); }
-    }
+    for (const ji of budgetJobItems) { if (ji && ji.id != null && ji.name) propJobNames.set(Number(ji.id), String(ji.name)); }
     // mirror requests — per-row guarded so one poison row can't strand the whole file's mirror
     for (const r of (full.requests || [])) {
       try {
@@ -394,8 +411,11 @@ async function reconcileOne(appId) {
   // …) that PILOT never pushed, so a draw against them stops parking as unknown. Runs BEFORE
   // assessAndStoreRisk so rollup.unknown sees the newly-bound ids and never flags them.
   try {
-    const jobItems = (prop.budget && Array.isArray(prop.budget.job_items)) ? prop.budget.job_items : [];
-    if (jobItems.length) await adoptSeededMediaItems(appId, prop.budget && prop.budget.id, jobItems);
+    // Uses budgetJobItems from getBudget (the only endpoint that returns them per the swagger).
+    // Reading `prop.budget.job_items` here — as the prior code did — was always undefined/empty,
+    // so this call was silently no-op for every file since PR #546. That is the root cause of
+    // item 1180824 sitting nameless on the crosswalk: it was never bound at all.
+    if (budgetJobItems.length) await adoptSeededMediaItems(appId, prop.budget && prop.budget.id, budgetJobItems);
   } catch (_) { /* best-effort */ }
   await db.query(`UPDATE sitewire_property_links SET last_reconciled_at=now() WHERE application_id=$1`, [appId]);
   // Bidirectional Phase 2: re-verify the managed budget against what PILOT pushed, at most HOURLY per
