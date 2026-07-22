@@ -27,7 +27,10 @@ const db = require('../db');
 const { requireAuth, requireStaff, requirePermission } = require('../auth');
 const { can, assigneeExistsSql } = require('../lib/permissions');
 const storage = require('../lib/storage');
-const docint = require('../lib/ai/docint');
+// Route via the multi-engine OCR router (owner-directed 2026-07-21): Azure Doc
+// Intelligence stays the primary; Google Doc AI kicks in automatically when
+// Azure returns nothing on a scanned/rotated page. Same call shape as before.
+const docint = require('../lib/ai/ocr-router');
 const azureOpenai = require('../lib/ai/azure-openai');
 const engine = require('../lib/underwriting/engine');
 const store = require('../lib/underwriting/store');
@@ -69,6 +72,17 @@ const todayISO = () => new Date().toISOString().slice(0, 10);
 // In-process is enough to stop a runaway loop; it is NOT a security boundary (authz is elsewhere).
 const PAID_COOLDOWN_MS = 8000;
 const MAX_ANALYZE_BYTES = 50 * 1024 * 1024; // reject an oversized stored document before base64 amplification
+
+// Doc types where a LOW authenticity score (see src/lib/underwriting/authenticity.js)
+// warrants raising a "this document shows signs of tampering" finding. A photo ID
+// or screenshot is NOT here — those legitimately come from Photoshop / Preview and
+// the low-authenticity signal is expected.
+const MATERIAL_DOC_TYPES = new Set([
+  'bank_statement', 'credit_report', 'appraisal', 'insurance', 'insurance_invoice',
+  'title', 'settlement', 'purchase_contract', 'contract_amendment',
+  'signed_term_sheet', 'signed_application', 'ein_letter', 'good_standing',
+  'llc_formation', 'background_report', 'flood',
+]);
 const _lastPaidCall = new Map(); // `${actorId}:${documentId}:${kind}` -> ms of last paid call
 function paidCooldownRemaining(actorId, documentId, kind) {
   const key = `${actorId}:${documentId}:${kind}`;
@@ -386,7 +400,7 @@ router.get('/:appId', async (req, res, next) => {
       loanAmount: a.loan_amount, initialAdvance: reg ? reg.initialAdvance : null,
       purchasePrice: a.purchase_price,
       asIsValue: a.as_is_value, arv: a.arv, rehabBudget: a.rehab_budget,
-    }, capsFromRegistration(reg ? reg.caps : null));
+    }, capsFromRegistration(reg ? reg.caps : null, reg ? reg.program : null));
 
     // Entity-resolution chain: only meaningful for an entity (LLC) borrower — an individual file
     // would show every entity edge as "missing" (noise). Compose the signing-authority / ownership
@@ -531,6 +545,25 @@ router.get('/:appId', async (req, res, next) => {
       summary,
       docTypes: registry.docTypes(),
       analyzers: { reader: docint.configured(), ai: azureOpenai.available() },
+      // --- Sovereign additions (owner-directed 2026-07-21) ---
+      // Twin canonical facts + the file's condition clearance proofs. Both are
+      // additive read-only sections the file view renders below the classic
+      // findings list. Best-effort — a failure here degrades the panel
+      // gracefully (empty section) instead of breaking the whole load.
+      twinFacts: await (async () => {
+        try { return await require('../lib/underwriting/twin').factsForFile(app.id, db); }
+        catch (_) { return []; }
+      })(),
+      cureProofs: await (async () => {
+        try {
+          const rows = await db.query(
+            `SELECT DISTINCT ON (checklist_item_id) *
+               FROM condition_clearance_proofs
+              WHERE application_id = $1
+              ORDER BY checklist_item_id, created_at DESC`, [app.id]);
+          return rows.rows;
+        } catch (_) { return []; }
+      })(),
     });
   } catch (e) { next(e); }
 });
@@ -605,6 +638,28 @@ async function analyzeOneDocument(app, doc, docType, opts = {}) {
         docType, extraction: result.extraction, findings: result.findings,
         analyzedSha256: doc.sha256 || null, analyzerVersion: ANALYZER_VERSION, subjectHash: subjHash,
       });
+      // Authenticity scoring (Sovereign, blueprint 2026-07-22): score the PDF
+      // bytes for tampering signals + stash on the documents row. If the score
+      // is 'low' on a MATERIAL doc type (bank statement, appraisal, credit,
+      // insurance, ...), spawn a warning finding so the underwriter looks
+      // BEFORE trusting the extracted values. Best-effort — never blocks.
+      try {
+        const auth = require('../lib/underwriting/authenticity').analyzePdf(buffer, { docType });
+        await client.query(
+          `UPDATE documents SET authenticity_score=$2, authenticity_level=$3, authenticity_signals=$4::jsonb, authenticity_checked_at=now() WHERE id=$1`,
+          [doc.id, auth.score, auth.level, JSON.stringify(auth.signals || [])]);
+        if (auth.level === 'low' && MATERIAL_DOC_TYPES.has(docType)) {
+          const signalsFired = (auth.signals || []).filter((s) => s.present && s.weight > 0).map((s) => s.name.replace(/_/g, ' ')).slice(0, 4).join(', ');
+          await client.query(
+            `INSERT INTO document_findings
+               (application_id, borrower_id, document_id, extraction_id, source, code, severity,
+                title, how_to, blocks_ctc)
+             VALUES ($1,$2,$3,$4,'authenticity','doc_low_authenticity','warning',$5,$6,false)`,
+            [app.id, doc.borrower_id || app.borrower_id, doc.id, saved.extractionId,
+             'This document shows signs of tampering',
+             `Signals: ${signalsFired || 'metadata anomalies'}. Ask the borrower for a fresh copy sent DIRECTLY by the source (bank, insurance carrier, appraiser). Do not act on the extracted values until a clean copy is on file.`]);
+        }
+      } catch (_) { /* authenticity is additive */ }
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
     finally { client.release(); }
@@ -761,6 +816,280 @@ router.post('/:appId/auto-read', async (req, res, next) => {
     }
     await audit(req.actor.id, 'underwriting_auto_read', app.id, { total: queue.length, read, cached, unreadable, failed: results.filter((x) => !x.ok).length });
     return res.json({ readerOn: true, read, cached, unreadable, pending: Math.max(0, queue.length - batch.length), total: queue.length, results });
+  } catch (e) { next(e); }
+});
+
+// ---- AVM Consensus (Sovereign, API landscape Tier 1) ---------------------
+// Cross-check the appraisal ARV against every configured AVM source
+// (HouseCanary / Clear Capital / ATTOM). GET returns the current consensus
+// report from the twin's observations; POST /verify calls every AVM
+// connector to feed fresh api_verification observations, then re-reports.
+router.get('/:appId/avm-consensus', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const report = await require('../lib/underwriting/avm-consensus').analyzeFileARV(app.id, db);
+    res.json({ ok: true, report });
+  } catch (e) { next(e); }
+});
+router.post('/:appId/avm-consensus/verify', requirePermission('sign_off_conditions'), async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const hub = require('../lib/integrations/direct-source-hub');
+    const avm = require('../lib/underwriting/avm-consensus');
+    const client = await db.pool.connect();
+    let hubResults; let report; let finding;
+    try {
+      await client.query('BEGIN');
+      hubResults = await hub.verifyFile(client, app.id, { kind: 'avm' });
+      report = await avm.analyzeFileARV(app.id, client);
+      finding = report && report.comparison && report.comparison.disagrees
+        ? await avm.persistFindingIfDisagreement(client, app.id, report)
+        : null;
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+    res.json({ ok: true, hubResults: hubResults && hubResults.results || [], report, finding });
+  } catch (e) { next(e); }
+});
+
+// ---- Twin fact history (Sovereign 1/4 drilldown) --------------------------
+// Every observation of a fact + every state event, so the file view can show
+// the reconciliation trail behind a canonical value (WHY this value is
+// accepted, WHERE each source landed, WHEN each change was made).
+router.get('/:appId/twin/fact/:factKey', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const factKey = String(req.params.factKey || '').slice(0, 120);
+    if (!factKey) return res.status(400).json({ error: 'fact key required' });
+    const twin = require('../lib/underwriting/twin');
+    const history = await twin.factWithHistory(app.id, factKey, db);
+    res.json({ ok: true, factKey, ...history });
+  } catch (e) { next(e); }
+});
+
+// ---- Counterfactual structuring (Sovereign, blueprint sec. 12) ------------
+// "What would make this deal work?" Runs a set of ALTERNATIVE structures
+// through the frozen pricing engine and reports which levers move a file from
+// MANUAL / INELIGIBLE to ELIGIBLE — reduce loan by 1-10%, swap program,
+// longer term, interest-only. Read-only; never registers anything.
+router.get('/:appId/structuring', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    // Load the file's current pricing basis + current registration.
+    const staffRoutes = require('./staff');
+    const loadFileForPricing = staffRoutes.loadFileForPricing;   // export path may vary; the direct call below covers absence
+    let f = null;
+    if (typeof loadFileForPricing === 'function') f = await loadFileForPricing(app.id);
+    if (!f) {
+      // Fallback direct SQL — mirrors the shape loadFileForPricing returns.
+      const rowQ = await db.query(`SELECT * FROM applications WHERE id=$1`, [app.id]);
+      f = { app: rowQ.rows[0], exp: null };
+    }
+    const regQ = await db.query(
+      `SELECT program, quote, inputs FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`,
+      [app.id]);
+    const reg = regQ.rows[0] || null;
+    const currentProgram = reg ? reg.program : 'standard';
+    const quote = reg && (typeof reg.quote === 'string' ? JSON.parse(reg.quote) : reg.quote);
+    const inputs = reg && (typeof reg.inputs === 'string' ? JSON.parse(reg.inputs) : reg.inputs);
+    if (!inputs || !quote) return res.json({ ok: false, reason: 'no registered scenario to explore counterfactuals from' });
+    const alternatives = require('../lib/underwriting/structuring').explore(inputs, currentProgram, quote);
+    res.json({ ok: true, currentProgram, currentQuote: { totalLoan: quote.totalLoan, noteRate: quote.noteRate, status: quote.status }, alternatives });
+  } catch (e) { next(e); }
+});
+
+// ---- Decision Certificates (Sovereign, blueprint sec. 18/19) --------------
+// Issue an immutable signed snapshot of the file at a material milestone
+// (clear_to_close, pre_funding, purchase_review, ...). The snapshot captures
+// the canonical facts, open + resolved findings, exceptions granted, the
+// registered program, and the versions in play. Hashed sha256 so a later
+// audit can prove the file's state at the time of the decision. After issue,
+// continuous surveillance flags the certificate `validation_required` if any
+// canonical fact changes since.
+router.post('/:appId/certificate/issue', requirePermission('sign_off_conditions'), async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const cert = require('../lib/underwriting/certificate');
+    const milestone = String(req.body && req.body.milestone || '').trim();
+    if (!cert.MILESTONES.includes(milestone)) return res.status(400).json({ error: `milestone must be one of: ${cert.MILESTONES.join(', ')}` });
+    const client = await db.pool.connect();
+    let row;
+    try {
+      await client.query('BEGIN');
+      row = await cert.issueCertificate(client, {
+        appId: app.id, milestone, staffId: req.actor.id,
+        reason: req.body && req.body.reason,
+      });
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+    res.json({ ok: true, certificate: row });
+  } catch (e) { next(e); }
+});
+
+router.get('/:appId/certificate', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const cert = require('../lib/underwriting/certificate');
+    const all = await cert.allForFile(app.id, db);
+    const withIntegrity = all.map((c) => Object.assign({}, c, { integrity: cert.verifyDigestIntegrity(c) }));
+    res.json({ certificates: withIntegrity });
+  } catch (e) { next(e); }
+});
+
+router.post('/:appId/certificate/survey', requirePermission('sign_off_conditions'), async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const cert = require('../lib/underwriting/certificate');
+    const client = await db.pool.connect();
+    let results;
+    try {
+      await client.query('BEGIN');
+      results = await cert.surveillanceCheck(client, app.id);
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+    res.json({ ok: true, results });
+  } catch (e) { next(e); }
+});
+
+// ---- Real-time shadow training (Sovereign 4/4 extension) -----------------
+// Right after an underwriter decides a finding, look at every OTHER open
+// finding with the same code across the pipeline and surface them for
+// bulk-action — instead of waiting for the nightly aggregator to notice the
+// systemic false positive. Read-only lookup + a permissioned bulk-resolve.
+router.get('/:appId/findings/:fid/similar-open', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    if (!isUuid(req.params.fid)) return res.status(404).json({ error: 'finding not found' });
+    const f = (await db.query(
+      `SELECT id, code, severity, application_id FROM document_findings WHERE id=$1 AND application_id=$2`,
+      [req.params.fid, app.id])).rows[0];
+    if (!f) return res.status(404).json({ error: 'finding not found' });
+    const shadow = require('../lib/underwriting/shadow-training');
+    // Filter to files the caller is permitted to see. see_all_files gets
+    // everything the shadow returns; a scoped LO/processor only sees findings
+    // on their own files.
+    const rows = await shadow.findSimilarOpenFindings(db, f, { limit: 25 });
+    const filtered = seesAll(req) ? rows : rows.filter((r) => r.application_id && String(r.application_id) === String(app.id));
+    res.json({ ok: true, anchor: { id: f.id, code: f.code }, similar: filtered });
+  } catch (e) { next(e); }
+});
+
+router.post('/:appId/findings/similar/bulk-resolve', requirePermission('sign_off_conditions'), async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const b = req.body || {};
+    const findingIds = Array.isArray(b.findingIds) ? b.findingIds.filter(isUuid).slice(0, 100) : [];
+    const action = String(b.action || '');
+    if (!findingIds.length) return res.status(400).json({ error: 'no findingIds provided' });
+    if (!['dismiss', 'clear', 'post_condition', 'request_document', 'acknowledge'].includes(action)) {
+      return res.status(400).json({ error: 'action must be one of: dismiss | clear | post_condition | request_document | acknowledge (no grant_exception allowed in bulk — do that on the file individually)' });
+    }
+    // Refuse to bulk-touch findings on files the caller can't see. This is
+    // authorization enforcement — every bulk id gets a fresh scope check.
+    const scopeQ = await db.query(
+      `SELECT df.id, df.application_id FROM document_findings df WHERE df.id = ANY($1::uuid[])`, [findingIds]);
+    const seesAllFlag = seesAll(req);
+    const allowedIds = [];
+    for (const row of scopeQ.rows) {
+      if (seesAllFlag) { allowedIds.push(row.id); continue; }
+      const scoped = await fileFor(req, row.application_id).catch(() => null);
+      if (scoped) allowedIds.push(row.id);
+    }
+    const client = await db.pool.connect();
+    let out;
+    try {
+      await client.query('BEGIN');
+      const shadow = require('../lib/underwriting/shadow-training');
+      out = await shadow.bulkResolve(client, {
+        findingIds: allowedIds, action, note: b.note || null, value: b.value || null, by: req.actor.id,
+      });
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+    res.json({ ok: true, requested: findingIds.length, allowed: allowedIds.length, ...out });
+  } catch (e) { next(e); }
+});
+
+// ---- POST /findings/:fid/committee-review ---------------------------------
+// Run the multi-model reasoning committee on ONE finding (Sovereign 3/4,
+// owner-directed 2026-07-21). Specialist reviewers (identity, entity, credit,
+// fraud, appraisal, title, insurance) independently confirm or REFUTE the
+// finding via strict-JSON verdicts; a pure adjudicator combines them into a
+// committee opinion. The result is persisted on the finding (committee_action /
+// committee_severity / committee_confidence / committee_reviewed_at) and in a
+// dedicated finding_committee_reviews row so multiple review rounds don't
+// overwrite each other. Best-effort — a committee failure never blocks the
+// finding from being resolved via the normal /resolve route below.
+router.post('/:appId/findings/:fid/committee-review', requirePermission('sign_off_conditions'), async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    if (!isUuid(req.params.fid)) return res.status(404).json({ error: 'finding not found' });
+    const fnd = (await db.query(
+      `SELECT df.id, df.code, df.severity, df.title, df.field, df.doc_value, df.file_value, df.how_to,
+              a.property_address, a.program, a.loan_amount,
+              b.first_name, b.last_name,
+              l.llc_name AS entity_name
+         FROM document_findings df
+         JOIN applications a ON a.id = df.application_id
+         LEFT JOIN borrowers b ON b.id = a.borrower_id
+         LEFT JOIN llcs l ON l.id = a.llc_id
+        WHERE df.id=$1 AND df.application_id=$2 AND df.status='open'`,
+      [req.params.fid, app.id])).rows[0];
+    if (!fnd) return res.status(404).json({ error: 'finding not found or already resolved' });
+    const context = {
+      borrowerName: [fnd.first_name, fnd.last_name].filter(Boolean).join(' ') || null,
+      entityName:   fnd.entity_name || null,
+      propertyAddress: fnd.property_address && (fnd.property_address.line1 || fnd.property_address.address) || null,
+      program:      fnd.program || null,
+      loanAmount:   fnd.loan_amount || null,
+    };
+    const committee = require('../lib/ai/committee');
+    const opinion = await committee.review({
+      id: fnd.id, code: fnd.code, severity: fnd.severity, title: fnd.title,
+      docValue: fnd.doc_value, fileValue: fnd.file_value, field: fnd.field, howTo: fnd.how_to,
+    }, context, { all: !!(req.body && req.body.all) });
+
+    // Persist: one row per review round + snapshot columns on the finding.
+    const client = await db.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `INSERT INTO finding_committee_reviews
+           (application_id, finding_id, committee_version, action, original_severity,
+            adjudicated_severity, confidence, reasoning, votes_json, dissents_json,
+            abstained_json, failed_json, requested_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11::jsonb,$12::jsonb,$13)`,
+        [app.id, fnd.id, opinion.committee_version || 'v1',
+         opinion.committee.action, opinion.committee.original_severity,
+         opinion.committee.adjudicated_severity, opinion.committee.confidence,
+         opinion.committee.reasoning, JSON.stringify(opinion.committee.votes || []),
+         JSON.stringify(opinion.committee.dissents || []),
+         JSON.stringify(opinion.committee.abstained || []),
+         JSON.stringify(opinion.committee.failed || []),
+         req.actor.id]);
+      await client.query(
+        `UPDATE document_findings
+            SET committee_action=$2, committee_severity=$3, committee_confidence=$4,
+                committee_reviewed_at=now()
+          WHERE id=$1`,
+        [fnd.id, opinion.committee.action, opinion.committee.adjudicated_severity,
+         opinion.committee.confidence]);
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+    res.json({ ok: true, opinion });
   } catch (e) { next(e); }
 });
 

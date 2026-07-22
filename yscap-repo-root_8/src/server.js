@@ -225,6 +225,8 @@ app.use('/api/underwriting', require('./routes/underwriting'));
   // adds its own capability/role gate (manage_pricing for settings, super_admin
   // to decide an escalation).
   app.use('/api/admin/manual-programs', requireAuth, requireStaff, require('./routes/admin-manual-programs'));
+  // Sovereign 4/4 admin surface — training proposals queue (owner-directed 2026-07-21).
+  app.use('/api/admin/training', requireAuth, requireStaff, require('./routes/admin-training'));
   app.use('/api/admin', requireAuth, requireStaff, require('./routes/admin'));
 }
 // SSE stream (live chat/presence/receipts). Mounted OUTSIDE the authenticated

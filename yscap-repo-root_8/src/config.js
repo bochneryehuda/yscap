@@ -421,4 +421,69 @@ module.exports = {
     // hidden reasoning from consuming the output budget; raise only if accuracy needs it.
     reasoningEffort: (process.env.AZURE_OPENAI_REASONING_EFFORT || 'low').trim(),
   },
+  // Google Cloud Document AI — the INDEPENDENT SECOND OCR engine (owner-directed
+  // 2026-07-21). Runs as a fallback when Azure Document Intelligence returns no
+  // text / very short text / an error. Different failure modes than Azure, so it
+  // catches what Azure misses (rotated scans, faxes, low-quality PDFs).
+  // Authentication is a service-account JWT → OAuth2 access token (no SDK; pure
+  // fetch + Node's built-in crypto). Everything stays dormant until the four
+  // Render env vars are set.
+  //   GOOGLE_DOCAI_KEY_JSON      the full service-account JSON (the private key
+  //                              lives inside it — never commit, only Render env)
+  //   GOOGLE_DOCAI_PROJECT_ID    e.g. yscap-docai
+  //   GOOGLE_DOCAI_LOCATION      us | eu (matches the processor's region)
+  //   GOOGLE_DOCAI_PROCESSOR_ID  the alphanumeric ID of the "Enterprise Document OCR" processor
+  docai: {
+    keyJson:     process.env.GOOGLE_DOCAI_KEY_JSON || '',
+    projectId:   (process.env.GOOGLE_DOCAI_PROJECT_ID || '').trim(),
+    location:    (process.env.GOOGLE_DOCAI_LOCATION || 'us').trim(),
+    processorId: (process.env.GOOGLE_DOCAI_PROCESSOR_ID || '').trim(),
+  },
+  // Mistral OCR — the THIRD OCR engine (owner-directed 2026-07-21). Used only
+  // when Azure AND Google disagree or both fail on a hard document (dense
+  // tables, signatures, multi-column layouts). Single API key, pay-as-you-go.
+  //   MISTRAL_API_KEY  the key from console.mistral.ai
+  mistralOcr: {
+    key:      process.env.MISTRAL_API_KEY || '',
+    endpoint: (process.env.MISTRAL_OCR_ENDPOINT || 'https://api.mistral.ai').trim().replace(/\/+$/, ''),
+    model:    (process.env.MISTRAL_OCR_MODEL || 'mistral-ocr-latest').trim(),
+  },
+  // Direct-source verification connectors (Sovereign, blueprint sec. 9) — each
+  // one, when configured, feeds the loan digital twin `api_verification`
+  // observations that OUTRANK document observations for the same facts. All
+  // three ship as stubs today; wiring real HTTP is a one-file change per
+  // connector when the vendor accounts are in place.
+  //   Plaid — bank account owner + ending balance (assets)
+  plaid: {
+    clientId: process.env.PLAID_CLIENT_ID || '',
+    secret:   process.env.PLAID_SECRET || '',
+    env:      (process.env.PLAID_ENV || 'sandbox').trim(),
+  },
+  //   Property data (CoreLogic / DataTree / ATTOM) — recorded address / units / year built / liens / AVM
+  propertyData: {
+    provider: (process.env.PROPERTY_DATA_PROVIDER || '').trim(),   // 'corelogic' | 'datatree' | 'attom'
+    key:      process.env.PROPERTY_DATA_KEY || '',
+  },
+  //   Xactus (formerly CreditPlus) — FICO + OFAC/background/fraud
+  xactus: {
+    account:  process.env.XACTUS_ACCOUNT || '',
+    user:     process.env.XACTUS_USER || '',
+    password: process.env.XACTUS_PASSWORD || '',
+  },
+  //   HouseCanary — AVM + Rent AVM (independent value + rent triangulation)
+  houseCanary: {
+    key:      process.env.HOUSECANARY_KEY || '',
+    secret:   process.env.HOUSECANARY_SECRET || '',
+    endpoint: (process.env.HOUSECANARY_ENDPOINT || 'https://api.housecanary.com').trim().replace(/\/+$/, ''),
+  },
+  //   Clear Capital ClearAVM — second AVM source
+  clearCapital: {
+    key:      process.env.CLEARCAPITAL_KEY || '',
+    endpoint: (process.env.CLEARCAPITAL_ENDPOINT || 'https://api.clearcapital.com').trim().replace(/\/+$/, ''),
+  },
+  //   ATTOM Data Solutions — third AVM source + property intelligence
+  attom: {
+    key:      process.env.ATTOM_API_KEY || '',
+    endpoint: (process.env.ATTOM_ENDPOINT || 'https://api.gateway.attomdata.com').trim().replace(/\/+$/, ''),
+  },
 };

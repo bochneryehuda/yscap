@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
+import { useLocation } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { AppraisalFinding } from './AppraisalPanel.jsx';
 
@@ -54,14 +55,32 @@ const ESCALATE_TARGETS = [
   { key: 'processor', label: 'Processor' },
   { key: 'underwriter', label: 'Underwriter' },
 ];
-function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate = false, escalated = null }) {
+function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate = false, escalated = null, highlighted = false, cardRef = null }) {
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState(null); // the action awaiting its note/value
   const [text, setText] = useState('');
   const [escOpen, setEscOpen] = useState(false);
   const [escRole, setEscRole] = useState('super_admin');
   const [escNote, setEscNote] = useState('');
+  const [committeeBusy, setCommitteeBusy] = useState(false);
+  const [committeeOpinion, setCommitteeOpinion] = useState(null);
+  const runCommittee = async () => {
+    if (!f.id) return;
+    setCommitteeBusy(true);
+    try {
+      const r = await api.runCommitteeReview(appId, f.id, false);
+      setCommitteeOpinion(r.opinion || null);
+      onChange && onChange();
+    } catch (e) { alert(e.message || 'The panel could not be reached'); }
+    finally { setCommitteeBusy(false); }
+  };
   const s = SEV[f.severity] || SEV.info;
+  // The document this finding was raised from — used for the "open the source document" link and
+  // the (optional) page-number hint. `page_number` starts flowing once db/226 + the docint.js
+  // prebuilt-layout switch land and a document is re-analyzed; existing rows are NULL and the link
+  // just says "Open source document" without the page hint.
+  const docId = f.document_id || f.documentId || null;
+  const pageNumber = f.page_number != null ? f.page_number : (f.pageNumber != null ? f.pageNumber : null);
   const allActions = Array.isArray(f.availableActions) ? f.availableActions : [];
   const isFatalBlocking = f.severity === 'fatal' && (f.blocks_ctc != null ? f.blocks_ctc : (f.blocksCtc != null ? f.blocksCtc : false));
   const actions = allActions.filter((a) => !(isFatalBlocking && !canWaive && GATE_CLEARING_ACTIONS.has(a.key)));
@@ -104,8 +123,31 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
     finally { setBusy(false); }
   };
 
+  // Open the source document (the one the finding was raised from) in a new tab. The download
+  // endpoint uses Bearer auth, so it goes through the existing authenticated downloader — same
+  // pattern the file's Documents section uses.
+  const openSourceDoc = async (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    if (!docId) return;
+    try {
+      const res = await api.staffDownloadDoc(docId);
+      const blob = res && res.blob;
+      const filename = res && res.filename;
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const w = window.open(url, '_blank');
+      if (!w) { const a = document.createElement('a'); a.href = url; a.download = filename || 'document'; document.body.appendChild(a); a.click(); a.remove(); }
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (err) { alert(err.message || 'Could not open the source document'); }
+  };
   return (
-    <div style={{ border: '1px solid var(--line,#E7E1D3)', borderLeft: `4px solid ${s.fg}`, borderRadius: 12, background: 'var(--card,#fff)', padding: '14px 16px', marginBottom: 12 }}>
+    <div ref={cardRef} style={{
+      border: '1px solid var(--line,#E7E1D3)', borderLeft: `4px solid ${s.fg}`, borderRadius: 12,
+      background: 'var(--card,#fff)', padding: '14px 16px', marginBottom: 12,
+      transition: 'box-shadow 0.4s ease, border-color 0.4s ease',
+      boxShadow: highlighted ? '0 0 0 3px #AE8746' : 'none',
+      borderLeftColor: highlighted ? '#AE8746' : s.fg,
+    }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: s.fg, background: s.bg, padding: '3px 8px', borderRadius: 6 }}>{s.label}</span>
         <strong style={{ fontSize: 14 }}>{f.title}</strong>
@@ -115,6 +157,13 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
         <div style={{ display: 'flex', gap: 24, fontSize: 13, margin: '6px 0', flexWrap: 'wrap' }}>
           {docVal != null && <span>Document: <b style={{ color: 'var(--teal-deep,#256168)' }}>{String(docVal)}</b></span>}
           {fileVal != null && <span>Our file: <b>{String(fileVal)}</b></span>}
+        </div>
+      )}
+      {docId && (
+        <div style={{ fontSize: 12, margin: '4px 0 6px' }}>
+          <a href="#" onClick={openSourceDoc} style={{ color: 'var(--teal-deep,#256168)', textDecoration: 'underline' }}>
+            Open the source document{pageNumber ? ` (page ${pageNumber})` : ''}
+          </a>
         </div>
       )}
       {howTo && <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', marginBottom: resolvable ? 10 : 0 }}>{howTo}</div>}
@@ -148,9 +197,33 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
         </div>
       )}
       {canEscalate && !escalated && !escOpen && (
-        <div style={{ marginTop: 10 }}>
+        <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button disabled={busy} onClick={() => setEscOpen(true)} title="Send this finding to a super-admin, processor, or underwriter to decide"
             style={{ ...btn(), fontSize: 12, padding: '5px 10px' }}>↗ Escalate for review</button>
+          {resolvable && f.id && (
+            <button disabled={busy || committeeBusy} onClick={runCommittee}
+              title="Ask the multi-model reasoning committee (7 specialist reviewers) to independently confirm or REFUTE this finding"
+              style={{ ...btn(), fontSize: 12, padding: '5px 10px' }}>
+              {committeeBusy ? 'Panel reviewing…' : (committeeOpinion ? '↻ Re-run panel review' : '👥 Ask the panel')}
+            </button>
+          )}
+        </div>
+      )}
+      {committeeOpinion && committeeOpinion.committee && (
+        <div style={{ marginTop: 10, padding: 10, background: 'rgba(174,135,70,0.08)', border: '1px solid #AE8746', borderRadius: 8 }}>
+          <div style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: '#AE8746', marginBottom: 4 }}>Panel review</div>
+          <div style={{ fontSize: 13, color: 'var(--ivory,#141B22)', marginBottom: 6 }}>
+            <b>{String(committeeOpinion.committee.action).toUpperCase()}</b> at <b>{committeeOpinion.committee.adjudicated_severity}</b> — {committeeOpinion.committee.reasoning}
+          </div>
+          {Array.isArray(committeeOpinion.committee.votes) && committeeOpinion.committee.votes.length > 0 && (
+            <ul style={{ margin: 0, padding: 0, listStyle: 'none', fontSize: 12 }}>
+              {committeeOpinion.committee.votes.map((v, i) => (
+                <li key={i} style={{ color: 'var(--muted,#4B585C)' }}>
+                  {v.specialist}: {v.ok ? `${v.verdict.verdict} (${Math.round(Number(v.verdict.confidence || 0) * 100)}%) — ${v.verdict.reason}` : `failed (${v.reason})`}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
       {canEscalate && !escalated && escOpen && (
@@ -726,6 +799,383 @@ function Amendments({ amendments }) {
 // exception) — those need waive_conditions (underwriter/admin). A signer without it
 // (processor / coordinator / closer) sees the non-senior actions but not the gate-clearing
 // ones, so no button 403s. Defaults true for back-compat.
+// The Sovereign cockpit — collapsible summary of canonical facts (from the
+// loan digital twin, db/232) and per-condition cure proofs (db/233).
+// Read-only presentation of what the underlying Sovereign engines produced.
+// Both sections start collapsed so the classic findings list stays the
+// default view; a reviewer opens them when they want the evidence trail.
+function SovereignCockpit({ twinFacts, cureProofs, appId, canIssueCerts }) {
+  const [openTwin, setOpenTwin] = useState(false);
+  const [openCures, setOpenCures] = useState(false);
+  const [expandedFact, setExpandedFact] = useState(null);
+  const [factHistory, setFactHistory] = useState({});   // fact_key → { loading, canonical, observations, events }
+  const toggleFact = async (factKey) => {
+    if (expandedFact === factKey) { setExpandedFact(null); return; }
+    setExpandedFact(factKey);
+    if (factHistory[factKey]) return;   // cached
+    setFactHistory((h) => ({ ...h, [factKey]: { loading: true } }));
+    try {
+      const d = await api.factHistory(appId, factKey);
+      setFactHistory((h) => ({ ...h, [factKey]: { loading: false, ...d } }));
+    } catch (e) { setFactHistory((h) => ({ ...h, [factKey]: { loading: false, error: e.message || 'could not load' } })); }
+  };
+  const twinCount = (twinFacts || []).length;
+  const cureCount = (cureProofs || []).length;
+  if (twinCount === 0 && cureCount === 0) return null;
+  const STATUS_STYLES = {
+    verified:            { fg: 'var(--good,#3F7A5B)',      bg: 'rgba(63,122,91,.12)',    label: 'Verified' },
+    corroborated:        { fg: 'var(--good,#3F7A5B)',      bg: 'rgba(63,122,91,.10)',    label: 'Corroborated' },
+    observed:            { fg: 'var(--muted,#4B585C)',     bg: 'var(--paper,#F6F3EC)',   label: 'Observed' },
+    disputed:            { fg: 'var(--crit,#B4483C)',      bg: 'var(--crit-bg,#F6E7E4)', label: 'Disputed' },
+    human_confirmed:     { fg: 'var(--teal-deep,#256168)', bg: 'rgba(47,127,134,.12)',   label: 'Confirmed by staff' },
+    superseded:          { fg: 'var(--muted,#4B585C)',     bg: 'var(--paper,#F6F3EC)',   label: 'Superseded' },
+    unable_to_determine: { fg: 'var(--amber,#B7791F)',     bg: 'var(--amber-bg,#F6EEDD)',label: 'Unable to determine' },
+  };
+  const RESULT_STYLES = {
+    satisfied:           { fg: 'var(--good,#3F7A5B)',      bg: 'rgba(63,122,91,.12)',    label: 'Satisfied' },
+    partially_satisfied: { fg: 'var(--amber,#B7791F)',     bg: 'var(--amber-bg,#F6EEDD)',label: 'Partial' },
+    not_satisfied:       { fg: 'var(--crit,#B4483C)',      bg: 'var(--crit-bg,#F6E7E4)', label: 'Not satisfied' },
+    creates_new_finding: { fg: 'var(--crit,#B4483C)',      bg: 'var(--crit-bg,#F6E7E4)', label: 'New finding surfaced' },
+    unable_to_determine: { fg: 'var(--muted,#4B585C)',     bg: 'var(--paper,#F6F3EC)',   label: 'Unable to determine' },
+  };
+  const REQ_STYLES = {
+    satisfied:           { color: 'var(--good,#3F7A5B)',  mark: '✓' },
+    not_satisfied:       { color: 'var(--crit,#B4483C)',  mark: '✕' },
+    unable_to_determine: { color: 'var(--muted,#4B585C)', mark: '?' },
+  };
+  const stringifyValue = (v) => {
+    if (v == null) return '—';
+    if (typeof v === 'string') return v.length > 90 ? v.slice(0, 90) + '…' : v;
+    try { return JSON.stringify(v).slice(0, 90); } catch (_) { return '—'; }
+  };
+  return (
+    <div style={{ marginBottom: 22, border: '1px solid var(--line,#E7E1D3)', borderRadius: 12, background: 'var(--card,#fff)', overflow: 'hidden' }}>
+      <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--line,#E7E1D3)', background: 'rgba(174,135,70,0.05)' }}>
+        <div style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', color: '#AE8746', marginBottom: 2 }}>Sovereign evidence</div>
+        <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)' }}>
+          Canonical facts and per-condition cure proofs — the underlying evidence layer PILOT computes on.
+        </div>
+      </div>
+      {twinCount > 0 && (
+        <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--line,#E7E1D3)' }}>
+          <button onClick={() => setOpenTwin((v) => !v)} style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'none', border: 'none', cursor: 'pointer', padding: 0, textAlign: 'left', width: '100%' }}>
+            <span style={{ fontSize: 14, fontWeight: 700 }}>Canonical facts ({twinCount})</span>
+            <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--muted,#4B585C)' }}>{openTwin ? 'hide' : 'show'}</span>
+          </button>
+          {openTwin && (
+            <table style={{ width: '100%', marginTop: 10, borderCollapse: 'collapse', fontSize: 12.5 }}>
+              <thead>
+                <tr style={{ textAlign: 'left', color: 'var(--muted,#4B585C)' }}>
+                  <th style={{ padding: '4px 6px' }}>Fact</th>
+                  <th style={{ padding: '4px 6px' }}>Accepted value</th>
+                  <th style={{ padding: '4px 6px' }}>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {twinFacts.map((f) => {
+                  const st = STATUS_STYLES[f.status] || STATUS_STYLES.observed;
+                  const isOpen = expandedFact === f.fact_key;
+                  const hist = factHistory[f.fact_key];
+                  return (
+                    <React.Fragment key={f.fact_key}>
+                      <tr onClick={() => appId && toggleFact(f.fact_key)}
+                          style={{ borderTop: '1px solid var(--line,#E7E1D3)', cursor: appId ? 'pointer' : 'default', background: isOpen ? 'rgba(174,135,70,0.05)' : 'transparent' }}
+                          title={appId ? 'Click to see every source that reported this' : ''}>
+                        <td style={{ padding: '5px 6px', color: 'var(--muted,#4B585C)' }}>
+                          {appId && <span style={{ marginRight: 4, color: '#AE8746' }}>{isOpen ? '▾' : '▸'}</span>}
+                          {String(f.fact_key || '').replace(/_/g, ' ')}
+                        </td>
+                        <td style={{ padding: '5px 6px', overflowWrap: 'anywhere' }}>{stringifyValue(f.value_json && (f.value_json.value != null ? f.value_json.value : f.value_json))}</td>
+                        <td style={{ padding: '5px 6px' }}>
+                          <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: st.fg, background: st.bg, padding: '2px 7px', borderRadius: 6 }}>{st.label}</span>
+                        </td>
+                      </tr>
+                      {isOpen && (
+                        <tr style={{ background: 'rgba(174,135,70,0.03)' }}>
+                          <td colSpan={3} style={{ padding: '10px 14px' }}>
+                            {(!hist || hist.loading) && <div className="muted" style={{ fontSize: 12 }}>Loading…</div>}
+                            {hist && hist.error && <div style={{ fontSize: 12, color: 'var(--crit,#B4483C)' }}>{hist.error}</div>}
+                            {hist && !hist.loading && !hist.error && (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                                <div>
+                                  <div style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted,#4B585C)', marginBottom: 4 }}>
+                                    Every source that reported this ({(hist.observations || []).length})
+                                  </div>
+                                  {(hist.observations || []).length === 0 && <div className="muted" style={{ fontSize: 12 }}>No source has reported this yet.</div>}
+                                  <ul style={{ listStyle: 'none', margin: 0, padding: 0, fontSize: 12 }}>
+                                    {(hist.observations || []).map((o) => (
+                                      <li key={o.id} style={{ padding: '4px 0', borderTop: '1px dotted var(--line,#E7E1D3)' }}>
+                                        <span style={{ color: o.agrees_with_canonical === false ? 'var(--crit,#B4483C)' : 'var(--good,#3F7A5B)', fontWeight: 700, marginRight: 6 }}>
+                                          {o.agrees_with_canonical === false ? '✕' : '✓'}
+                                        </span>
+                                        <b>{o.source_type === 'document' ? String(o.source_id || 'document').replace(/_/g, ' ') : (o.source_type === 'los_field' ? 'the loan file (LOS)' : o.source_type === 'api_verification' ? `${o.source_id || 'an outside API'} (verified)` : String(o.source_type).replace(/_/g, ' '))}</b>
+                                        {' said '}
+                                        <span style={{ overflowWrap: 'anywhere' }}>{stringifyValue(o.value_json && (o.value_json.value != null ? o.value_json.value : o.value_json)) || o.raw_value || '—'}</span>
+                                        <span className="muted"> · {new Date(o.created_at).toLocaleString()}</span>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                                {(hist.events || []).length > 0 && (
+                                  <div>
+                                    <div style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted,#4B585C)', marginBottom: 4 }}>Recent changes</div>
+                                    <ul style={{ listStyle: 'none', margin: 0, padding: 0, fontSize: 12 }}>
+                                      {hist.events.slice(0, 8).map((ev) => (
+                                        <li key={ev.id} style={{ padding: '3px 0', color: 'var(--muted,#4B585C)' }}>
+                                          {String(ev.event_type).replace(/_/g, ' ')}
+                                          {ev.reason ? ` — ${ev.reason}` : ''}
+                                          <span className="muted"> · {new Date(ev.created_at).toLocaleString()}</span>
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+      {cureCount > 0 && (
+        <div style={{ padding: '10px 14px' }}>
+          <button onClick={() => setOpenCures((v) => !v)} style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'none', border: 'none', cursor: 'pointer', padding: 0, textAlign: 'left', width: '100%' }}>
+            <span style={{ fontSize: 14, fontWeight: 700 }}>Condition cure proofs ({cureCount})</span>
+            <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--muted,#4B585C)' }}>{openCures ? 'hide' : 'show'}</span>
+          </button>
+          {openCures && (
+            <div style={{ marginTop: 10 }}>
+              {cureProofs.map((p) => {
+                const rs = RESULT_STYLES[p.result] || RESULT_STYLES.unable_to_determine;
+                const reqs = Array.isArray(p.requirements_json) ? p.requirements_json : [];
+                return (
+                  <div key={p.id} style={{ border: '1px solid var(--line,#E7E1D3)', borderRadius: 8, padding: 10, marginBottom: 8 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+                      <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: rs.fg, background: rs.bg, padding: '2px 7px', borderRadius: 6 }}>{rs.label}</span>
+                      {p.recommended_action && (
+                        <span style={{ fontSize: 11.5, color: 'var(--muted,#4B585C)' }}>· recommended: {String(p.recommended_action).replace(/_/g, ' ')}</span>
+                      )}
+                    </div>
+                    {p.reviewer_summary && (
+                      <div style={{ fontSize: 12.5, color: 'var(--ivory,#141B22)', marginBottom: 6 }}>{p.reviewer_summary}</div>
+                    )}
+                    {reqs.length > 0 && (
+                      <ul style={{ margin: 0, padding: 0, listStyle: 'none' }}>
+                        {reqs.map((r, idx) => {
+                          const s = REQ_STYLES[r.status] || REQ_STYLES.unable_to_determine;
+                          return (
+                            <li key={idx} style={{ fontSize: 12.5, padding: '2px 0', color: 'var(--ivory,#141B22)' }}>
+                              <span style={{ color: s.color, fontWeight: 700, marginRight: 6 }}>{s.mark}</span>
+                              <span>{r.label || r.id}</span>
+                              {r.reason && <span style={{ color: 'var(--muted,#4B585C)' }}> — {r.reason}</span>}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+      {appId && <SovereignCertificatesSection appId={appId} canIssue={canIssueCerts} />}
+      {appId && <SovereignStructuringSection appId={appId} />}
+    </div>
+  );
+}
+
+// Decision Certificates section (Sovereign — blueprint sec. 18/19). Fetches on
+// mount; shows one row per milestone with the current signed snapshot's
+// surveillance state + an "Issue" button for the milestones that haven't been
+// stamped yet. Read-only for non-underwriters.
+const MILESTONES = [
+  { key: 'initial_review',        label: 'Initial review' },
+  { key: 'conditional_approval',  label: 'Conditional approval' },
+  { key: 'resubmission',          label: 'Resubmission review' },
+  { key: 'clear_to_close',        label: 'Clear to close' },
+  { key: 'pre_funding',           label: 'Pre-funding QC' },
+  { key: 'purchase_review',       label: 'Purchase review' },
+  { key: 'post_closing_qc',       label: 'Post-closing QC' },
+];
+const CERT_STATE_STYLES = {
+  valid:                { fg: 'var(--good,#3F7A5B)',  bg: 'rgba(63,122,91,.12)',   label: 'Valid' },
+  validation_required:  { fg: 'var(--crit,#B4483C)',  bg: 'var(--crit-bg,#F6E7E4)', label: 'Needs re-verification' },
+  suspended:            { fg: 'var(--amber,#B7791F)', bg: 'var(--amber-bg,#F6EEDD)',label: 'Suspended' },
+  revoked:              { fg: 'var(--crit,#B4483C)',  bg: 'var(--crit-bg,#F6E7E4)', label: 'Revoked' },
+  superseded:           { fg: 'var(--muted,#4B585C)', bg: 'var(--paper,#F6F3EC)',   label: 'Superseded' },
+};
+function SovereignCertificatesSection({ appId, canIssue }) {
+  const [open, setOpen] = useState(false);
+  const [certs, setCerts] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const load = () => api.fileCertificates(appId)
+    .then((d) => setCerts(d.certificates || []))
+    .catch(() => setCerts([]));
+  useEffect(() => { if (open && appId) load(); /* eslint-disable-next-line */ }, [open, appId]);
+  const latestFor = (mkey) => certs.filter((c) => c.milestone === mkey).sort((a, b) => new Date(b.issued_at) - new Date(a.issued_at))[0] || null;
+  async function issue(mkey) {
+    setBusy(true); setMsg(null);
+    try { await api.fileCertificateIssue(appId, mkey); setMsg({ ok: true, text: 'Signed snapshot recorded.' }); await load(); }
+    catch (e) { setMsg({ ok: false, text: e.message || 'Could not record the signed snapshot.' }); }
+    finally { setBusy(false); setTimeout(() => setMsg(null), 8000); }
+  }
+  async function survey() {
+    setBusy(true); setMsg(null);
+    try { const r = await api.fileCertificateSurvey(appId);
+      const flagged = (r.results || []).filter((x) => x.transitioned).length;
+      setMsg({ ok: true, text: flagged > 0 ? `${flagged} signed snapshot(s) need a re-verification.` : 'Every signed snapshot is still valid.' });
+      await load();
+    } catch (e) { setMsg({ ok: false, text: e.message || 'Could not re-check.' }); }
+    finally { setBusy(false); setTimeout(() => setMsg(null), 8000); }
+  }
+  return (
+    <div style={{ padding: '10px 14px', borderTop: '1px solid var(--line,#E7E1D3)' }}>
+      <button onClick={() => setOpen((v) => !v)} style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'none', border: 'none', cursor: 'pointer', padding: 0, textAlign: 'left', width: '100%' }}>
+        <span style={{ fontSize: 14, fontWeight: 700 }}>Signed snapshots at each milestone</span>
+        <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--muted,#4B585C)' }}>{open ? 'hide' : 'show'}</span>
+      </button>
+      {open && (
+        <div style={{ marginTop: 10 }}>
+          <p style={{ fontSize: 12, color: 'var(--muted,#4B585C)', margin: '0 0 10px' }}>
+            At every big step (initial review, clear-to-close, before funding, after closing), PILOT saves an unchangeable copy of what the file said at that moment — the numbers, the findings, the exceptions granted, and what version of the rules was in use. If anything on the file changes later, the snapshot flags itself so you know to re-verify.
+          </p>
+          {msg && <div className={`notice ${msg.ok ? 'ok' : 'err'}`} style={{ marginBottom: 8, fontSize: 12.5 }}>{msg.text}</div>}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+            <button disabled={busy || !canIssue} onClick={survey} style={{ fontSize: 12, padding: '5px 10px', border: '1px solid var(--line,#E7E1D3)', borderRadius: 6, background: 'var(--paper,#F6F3EC)', cursor: 'pointer' }}>
+              Re-check every snapshot on this file
+            </button>
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+            <thead>
+              <tr style={{ textAlign: 'left', color: 'var(--muted,#4B585C)' }}>
+                <th style={{ padding: '4px 6px' }}>Milestone</th>
+                <th style={{ padding: '4px 6px' }}>Stamped</th>
+                <th style={{ padding: '4px 6px' }}>State</th>
+                <th style={{ padding: '4px 6px' }}>Integrity</th>
+                {canIssue && <th style={{ padding: '4px 6px' }}></th>}
+              </tr>
+            </thead>
+            <tbody>
+              {MILESTONES.map((m) => {
+                const cur = latestFor(m.key);
+                const st = cur ? (CERT_STATE_STYLES[cur.surveillance_state] || CERT_STATE_STYLES.valid) : null;
+                return (
+                  <tr key={m.key} style={{ borderTop: '1px solid var(--line,#E7E1D3)' }}>
+                    <td style={{ padding: '5px 6px' }}>{m.label}</td>
+                    <td style={{ padding: '5px 6px', color: 'var(--muted,#4B585C)' }}>
+                      {cur ? new Date(cur.issued_at).toLocaleString() : '—'}
+                    </td>
+                    <td style={{ padding: '5px 6px' }}>
+                      {cur ? (
+                        <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: st.fg, background: st.bg, padding: '2px 7px', borderRadius: 6 }}>{st.label}</span>
+                      ) : <span style={{ color: 'var(--muted,#4B585C)' }}>not stamped yet</span>}
+                    </td>
+                    <td style={{ padding: '5px 6px', color: cur && cur.integrity && cur.integrity.ok === false ? 'var(--crit,#B4483C)' : 'var(--good,#3F7A5B)' }}>
+                      {cur ? (cur.integrity && cur.integrity.ok === false ? 'FAILED' : 'ok') : ''}
+                    </td>
+                    {canIssue && (
+                      <td style={{ padding: '5px 6px', textAlign: 'right' }}>
+                        <button disabled={busy} onClick={() => issue(m.key)} style={{ fontSize: 12, padding: '4px 10px', border: '1px solid #AE8746', borderRadius: 6, background: '#AE8746', color: '#fff', cursor: 'pointer' }}>
+                          {cur ? 'Stamp a fresh snapshot' : 'Stamp this milestone'}
+                        </button>
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Counterfactual structuring section (Sovereign — blueprint sec. 12). Shows
+// alternative structures that would move the file to ELIGIBLE — reduce loan
+// by 1/2/5/10%, switch program, longer term, interest-only. Read-only.
+function SovereignStructuringSection({ appId }) {
+  const [open, setOpen] = useState(false);
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  useEffect(() => {
+    if (!open || !appId) return;
+    setLoading(true);
+    api.fileStructuring(appId)
+      .then((d) => setData(d && d.ok !== false ? d : { ok: false, reason: (d && d.reason) || 'no data' }))
+      .catch(() => setData({ ok: false, reason: 'could not load alternatives' }))
+      .finally(() => setLoading(false));
+  }, [open, appId]);
+  const dollars = (n) => n == null ? '—' : `$${Math.round(Number(n) || 0).toLocaleString('en-US')}`;
+  const rate = (r) => r == null ? '—' : `${(Number(r) * 100).toFixed(3)}%`;
+  const STATUS_STYLES = {
+    ELIGIBLE:   { fg: 'var(--good,#3F7A5B)',  bg: 'rgba(63,122,91,.12)',    label: 'Would qualify' },
+    MANUAL:     { fg: 'var(--amber,#B7791F)', bg: 'var(--amber-bg,#F6EEDD)',label: 'Manual review' },
+    INELIGIBLE: { fg: 'var(--crit,#B4483C)',  bg: 'var(--crit-bg,#F6E7E4)', label: 'Would not qualify' },
+    ERROR:      { fg: 'var(--muted,#4B585C)', bg: 'var(--paper,#F6F3EC)',   label: 'Could not size' },
+  };
+  return (
+    <div style={{ padding: '10px 14px', borderTop: '1px solid var(--line,#E7E1D3)' }}>
+      <button onClick={() => setOpen((v) => !v)} style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'none', border: 'none', cursor: 'pointer', padding: 0, textAlign: 'left', width: '100%' }}>
+        <span style={{ fontSize: 14, fontWeight: 700 }}>What would make this deal work?</span>
+        <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--muted,#4B585C)' }}>{open ? 'hide' : 'show'}</span>
+      </button>
+      {open && (
+        <div style={{ marginTop: 10 }}>
+          <p style={{ fontSize: 12, color: 'var(--muted,#4B585C)', margin: '0 0 10px' }}>
+            Alternative structures for this file. Each row is the same deal with one thing changed — a smaller loan, the other program, a longer term. The math uses the same pricing engine the file was registered against; nothing here changes the file.
+          </p>
+          {loading && <div className="muted" style={{ fontSize: 12 }}>Working it out…</div>}
+          {!loading && data && data.ok === false && <div className="muted" style={{ fontSize: 12 }}>{data.reason || 'Nothing to show yet — register the file first, then come back.'}</div>}
+          {!loading && data && data.ok && Array.isArray(data.alternatives) && data.alternatives.length > 0 && (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+              <thead>
+                <tr style={{ textAlign: 'left', color: 'var(--muted,#4B585C)' }}>
+                  <th style={{ padding: '4px 6px' }}>Change</th>
+                  <th style={{ padding: '4px 6px' }}>Would qualify?</th>
+                  <th style={{ padding: '4px 6px' }}>Loan</th>
+                  <th style={{ padding: '4px 6px' }}>Rate</th>
+                  <th style={{ padding: '4px 6px' }}>vs current</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.alternatives.map((alt) => {
+                  const st = STATUS_STYLES[alt.status] || STATUS_STYLES.ERROR;
+                  const dTotal = alt.delta && Number.isFinite(alt.delta.totalLoan) ? alt.delta.totalLoan : null;
+                  const dBps = alt.delta && Number.isFinite(alt.delta.noteRateBps) ? alt.delta.noteRateBps : null;
+                  return (
+                    <tr key={alt.key} style={{ borderTop: '1px solid var(--line,#E7E1D3)' }}>
+                      <td style={{ padding: '5px 6px' }}>{alt.label}</td>
+                      <td style={{ padding: '5px 6px' }}>
+                        <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: st.fg, background: st.bg, padding: '2px 7px', borderRadius: 6 }}>{st.label}</span>
+                      </td>
+                      <td style={{ padding: '5px 6px' }}>{dollars(alt.quote && alt.quote.totalLoan)}</td>
+                      <td style={{ padding: '5px 6px' }}>{rate(alt.quote && alt.quote.noteRate)}</td>
+                      <td style={{ padding: '5px 6px', color: 'var(--muted,#4B585C)' }}>
+                        {dTotal != null ? `${dTotal >= 0 ? '+' : ''}${dollars(dTotal).replace('$', '$')}` : '—'}
+                        {dBps != null ? ` · ${dBps >= 0 ? '+' : ''}${dBps} bps` : ''}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function UnderwritingPanel({ appId, docs = [], readOnly = false, canResolve = true, canWaive = true, onSummary }) {
   const [data, setData] = useState(null);
   const [appr, setAppr] = useState(null); // appraisal findings folded into this ONE findings section
@@ -740,6 +1190,22 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
   const [autoReadMsg, setAutoReadMsg] = useState('');
   const [autoReadUnreadable, setAutoReadUnreadable] = useState([]); // filenames the reader couldn't read as expected
   const didAutoRead = useRef(false); // auto-run the reader at most once per mount (idempotent server-side anyway)
+  // Deep-link support (owner-directed 2026-07-21): arriving here with ?finding=<id> in the URL
+  // scrolls the panel to that specific finding and pulses its border gold for a few seconds so a
+  // reviewer coming from the "Findings to review" queue sees exactly which finding to act on. The
+  // ?finding= reader supports both the browser query and the HashRouter query-in-hash form.
+  const location = useLocation();
+  const focusFindingId = (() => {
+    const q = new URLSearchParams(location.search).get('finding');
+    if (q) return q;
+    // HashRouter puts query params AFTER the # (e.g. /portal/#/internal/app/X?finding=Y).
+    const h = String(location.hash || '');
+    const qIdx = h.indexOf('?');
+    if (qIdx >= 0) { try { return new URLSearchParams(h.slice(qIdx + 1)).get('finding') || ''; } catch (_) {} }
+    return '';
+  })();
+  const findingRefs = useRef({});
+  const [highlightPulse, setHighlightPulse] = useState(false);
 
   // Auto-detect the document type when a document is chosen (the underwriter confirms it).
   const onPickDoc = useCallback(async (id) => {
@@ -811,6 +1277,22 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
     catch (e) { setErr(e.message || 'Could not analyze the document'); }
     finally { setAnalyzing(false); }
   };
+
+  // Deep-link scroll (Rules of Hooks — must run every render, so it stays ABOVE the early return).
+  // When we arrive with ?finding=<id> AND the findings have loaded, scroll the matching card into
+  // view and pulse it for ~3s. Re-runs after each load so a resolve → re-load lands on the right card.
+  const _allFindingsForFocus = (data && data.allFindings) || [];
+  useEffect(() => {
+    if (!focusFindingId || !_allFindingsForFocus.length) return;
+    const el = findingRefs.current[focusFindingId];
+    if (el && typeof el.scrollIntoView === 'function') {
+      try { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_) {}
+    }
+    setHighlightPulse(true);
+    const t = setTimeout(() => setHighlightPulse(false), 3200);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusFindingId, _allFindingsForFocus.length]);
 
   if (loading) return <p style={{ color: 'var(--muted,#4B585C)' }}>Loading the underwriting review…</p>;
 
@@ -920,6 +1402,17 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
         );
       })()}
 
+      {/* Sovereign Cockpit — Canonical facts (twin) + Condition cure proofs
+          (Sovereign 1/4 + 2/4, owner-directed 2026-07-21). These two collapsible
+          sections surface the underlying evidence layer PILOT computes on:
+          canonical facts show WHICH source won on each underwriting value and
+          what the status is (verified / disputed / observed / human-confirmed);
+          cure proofs show, per condition, exactly which satisfaction
+          requirements a submitted document met and which it didn't. Both are
+          additive read-only — the classic findings list below still works. */}
+      <SovereignCockpit twinFacts={(data && data.twinFacts) || []} cureProofs={(data && data.cureProofs) || []}
+        appId={appId} canIssueCerts={canResolve} />
+
       {/* ALL open findings, in ONE place — exactly the set the roll-up counts, so the "2 warnings"
           chip maps to two visible, actionable items. A persisted per-document finding (has an id) is
           resolvable here; a derived advisory (tie-out / metric / staleness / liquidity / experience /
@@ -937,11 +1430,17 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
               requesting a document, or granting an exception) is done by an underwriter or processor.
             </div>
           )}
-          {allFindings.map((f, i) => (
-            <Finding key={f.id || `${f.source || 'f'}-${f.code || 'x'}-${i}`} appId={appId} f={f}
-              onChange={load} resolvable={!readOnly && canResolve && !!f.id} canWaive={canWaive}
-              canEscalate={!readOnly} escalated={f.id ? (data && data.escalatedFindings && data.escalatedFindings[f.id]) : null} />
-          ))}
+          {allFindings.map((f, i) => {
+            const key = f.id || `${f.source || 'f'}-${f.code || 'x'}-${i}`;
+            const isFocused = focusFindingId && f.id === focusFindingId;
+            return (
+              <Finding key={key} appId={appId} f={f}
+                cardRef={(el) => { if (f.id) findingRefs.current[f.id] = el; }}
+                highlighted={isFocused && highlightPulse}
+                onChange={load} resolvable={!readOnly && canResolve && !!f.id} canWaive={canWaive}
+                canEscalate={!readOnly} escalated={f.id ? (data && data.escalatedFindings && data.escalatedFindings[f.id]) : null} />
+            );
+          })}
         </div>
       )}
 

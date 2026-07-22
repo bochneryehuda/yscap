@@ -18,13 +18,48 @@ const { computeMetrics, capsFromRegistration, DEFAULT_CAPS } = require('../src/l
   const regCaps = capsFromRegistration({ maxAcqLtv: 0.90, maxArvLtv: 0.75, maxLtc: 0.905 });
   const real = computeMetrics({ loanAmount: 401250, initialAdvance: 391500, purchasePrice: 435000, rehabBudget: 9750 }, regCaps);
   assert.ok(!real.findings.some((f) => f.code === 'over_ltc'), 'the file’s real registered LTC cap clears the holdback deal — no spurious finding');
-  // Missing registered caps → falls back to the generic defaults unchanged.
+  // Missing registered caps AND no program hint → falls back to the generic defaults unchanged.
   assert.strictEqual(capsFromRegistration(null), DEFAULT_CAPS, 'no registered caps → generic defaults');
   // maxAcqLtv maps onto BOTH ltp and ltv; a missing sub-cap keeps the generic value.
   const partial = capsFromRegistration({ maxAcqLtv: 0.85 });
   assert.strictEqual(partial.ltp.cap, 0.85, 'maxAcqLtv → ltp cap');
   assert.strictEqual(partial.ltv.cap, 0.85, 'maxAcqLtv → ltv cap');
   assert.strictEqual(partial.ltc.cap, DEFAULT_CAPS.ltc.cap, 'missing maxLtc keeps the generic LTC cap');
+}
+
+// ---- Per-program CEILING fallback (owner-directed 2026-07-21): when the registration stored no
+//      caps (old file / rare engine path) BUT we know the registered program name, use the loosest
+//      per-tier cap the frozen engine ever applies for that program — never the generic 90% default
+//      that false-flags Standard FF T1/T2 (real cap 92.5%) and Gold LightReno T1 (real cap 93%). ----
+{
+  // Standard fallback: Shalom Elbaum's file — total loan 712,500 on purchase+rehab 784,528 = 90.82%.
+  // With NO registered caps but the file's program = 'standard', the fallback caps LTC at 92.5%
+  // (the highest tier's real cap), so this no longer false-flags as over-leverage.
+  const caps = capsFromRegistration(null, 'standard');
+  assert.strictEqual(caps.ltc.cap, 0.925, 'Standard program fallback LTC = 92.5% (highest tier)');
+  assert.strictEqual(caps.ltp.cap, 0.90, 'Standard program fallback acq LTV = 90%');
+  assert.strictEqual(caps.arv_ltv.cap, 0.75, 'Standard program fallback ARV LTV = 75%');
+  const r = computeMetrics({ loanAmount: 712500, initialAdvance: 706075, purchasePrice: 706075, rehabBudget: 78453 }, caps);
+  assert.ok(!r.findings.some((f) => f.code === 'over_ltc'),
+    'Shalom Elbaum-style file no longer false-flags LTC under the Standard fallback');
+
+  // Gold fallback: LightReno T1 caps LTC at 93%.
+  const goldCaps = capsFromRegistration(null, 'gold');
+  assert.strictEqual(goldCaps.ltc.cap, 0.93, 'Gold program fallback LTC = 93% (LightReno T1)');
+
+  // Manual prices on Standard → same fallback as Standard.
+  assert.strictEqual(capsFromRegistration(null, 'manual').ltc.cap, 0.925, 'Manual fallback LTC = 92.5% (Standard engine)');
+
+  // An UNKNOWN program name → no fallback applies, generic defaults hold.
+  const unknown = capsFromRegistration(null, 'nonesuch');
+  assert.strictEqual(unknown.ltc.cap, DEFAULT_CAPS.ltc.cap, 'unknown program keeps the generic default');
+
+  // A REGISTERED value ALWAYS wins over the program fallback — never override what the file was
+  // actually sized under. Registration says 0.85 LTC → the fallback's 0.925 does not clobber it.
+  const withReg = capsFromRegistration({ maxLtc: 0.85 }, 'standard');
+  assert.strictEqual(withReg.ltc.cap, 0.85, 'a registered cap always wins over the program fallback');
+  // Missing sub-caps on the registration ARE filled by the program fallback (belt-and-suspenders).
+  assert.strictEqual(withReg.arv_ltv.cap, 0.75, 'missing ARV LTV on the registration is filled by the Standard fallback');
 }
 
 // ---- REGRESSION (owner-directed 2026-07-21): a fix-&-flip whose TOTAL loan is >90% of purchase

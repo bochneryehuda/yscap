@@ -32,7 +32,12 @@ const DOC_CONDITIONS = {
   background_report: { satisfies: ['rtl_cond_fraud'], purpose: 'The background / OFAC / fraud screen — sanctions and integrity check.' },
   appraisal: { satisfies: ['rtl_cond_appraisaldocs'], purpose: 'The appraisal — the property valuation the loan is sized on (handled by the appraisal desk).' },
   scope_of_work: { satisfies: ['rtl_p1_contract'], purpose: 'The scope of work / rehab budget — the renovation plan the loan-to-cost and after-repair value are sized on.' },
-  settlement: { satisfies: ['rtl_cond_settlement'], purpose: 'The closing settlement statement — the final sources & uses (reviewed at closing); filed under its own settlement condition so it is read and checked.' },
+  // The settlement statement is a POST-CLOSING document only (owner-directed 2026-07-21) — it
+  // does not gate the pre-close file and has no live condition today. The reader/classifier/schema
+  // stay in the codebase so that when the post-closing module is built we just re-attach the
+  // condition; until then a settlement statement uploaded to the file still reads (the underwriting
+  // finding is still produced) but nothing on the pre-close checklist blocks on it.
+  settlement: { satisfies: [], purpose: 'The closing settlement statement — reviewed at post-closing only (no live pre-close condition today).' },
   payoff_statement: { satisfies: [], purpose: 'The payoff statement for the loan being refinanced — the exact amount and good-through date to clear the existing lien.' },
   voided_check: { satisfies: ['voided_check'], purpose: 'The voided check / wire instructions — the borrower\'s disbursement account for loan proceeds and draws.' },
   plans_permits: { satisfies: ['rtl_p1_plans'], purpose: 'Ground-up plans & the building permit — the approved scope construction is authorized to build.' },

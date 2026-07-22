@@ -36,21 +36,59 @@ const DEFAULT_CAPS = {
   arv_ltv: { cap: 0.75, base: 'arv',           numer: 'total',   label: 'Loan-to-ARV (after-repair)', baseLabel: 'after-repair value' },
 };
 
+// Per-registered-program CEILING caps — the loosest per-tier cap the frozen engine EVER applies
+// under that program. Used ONLY as a fallback when the file's own registration didn't persist its
+// per-tier caps (older registrations pre-caps-persist, or a rare engine path whose `.caps` didn't
+// serialize into the stored quote). Preferable to the generic DEFAULT_CAPS 0.90 LTC because on a
+// Standard fix-&-flip file that was actually sized under a 92.5% LTC tier, the DEFAULT would
+// FALSE-flag a legitimately-sized 91% total-loan-to-cost loan as "over the 90% cap" — the finding
+// the owner reported for Shalom Elbaum (163-165 County Rd) on 2026-07-21.
+//
+// These numbers MIRROR the frozen matrix (they don't set new guidelines): Standard NAT/CANY FF T1+T2
+// each carry maxLTC=0.925 (web/tools/standard-program.js matrix rows), Gold LightReno T1 carries
+// maxLTC=0.93 (web/tools/gold-standard.js), and the acq LTV / ARV LTV highs are 0.90 / 0.75 across
+// both program families. If the frozen matrix ever moves, this table stays a SAFE overestimate — a
+// looser fallback never TIGHTENS a validly-registered loan into a false over-leverage finding.
+// Program name is the value on product_registrations.program ('standard' | 'gold' | 'manual').
+const PROGRAM_HIGHEST_CAPS = {
+  standard: { maxAcqLtv: 0.90, maxArvLtv: 0.75, maxLtc: 0.925 },
+  manual:   { maxAcqLtv: 0.90, maxArvLtv: 0.75, maxLtc: 0.925 },   // Manual prices on the Standard engine.
+  gold:     { maxAcqLtv: 0.90, maxArvLtv: 0.75, maxLtc: 0.93  },
+};
+
 // Build a caps override from a file's REGISTERED engine caps (quote.caps fractions) so the leverage
 // metrics measure against the EXACT per-tier caps the loan was sized under — not a generic default.
 // A validly-sized registered loan then can never exceed its own caps (no spurious over-leverage
 // findings). `maxAcqLtv` is the single acquisition cap the engine applies against min(purchase,
-// as-is); it maps onto BOTH LTP (÷purchase) and LTV (÷as-is) here. A missing/invalid cap keeps the
-// generic DEFAULT_CAPS value. Returns DEFAULT_CAPS unchanged when no registered caps are supplied.
-function capsFromRegistration(regCaps) {
-  if (!regCaps) return DEFAULT_CAPS;
+// as-is); it maps onto BOTH LTP (÷purchase) and LTV (÷as-is) here.
+//
+// programHint — the registered program name ('standard' | 'gold' | 'manual'). When ANY cap on
+// regCaps is missing/invalid, the per-program CEILING (PROGRAM_HIGHEST_CAPS) fills it in — never
+// overrides a value regCaps supplied. Without a program hint the generic DEFAULT_CAPS values
+// remain the fallback (unchanged from before). Returns DEFAULT_CAPS unchanged when no registered
+// caps AND no program hint are supplied.
+function capsFromRegistration(regCaps, programHint) {
+  if (!regCaps && !programHint) return DEFAULT_CAPS;
   const merged = {};
   for (const [key, cfg] of Object.entries(DEFAULT_CAPS)) merged[key] = { ...cfg };
-  const set = (key, v) => { if (v != null && isFinite(Number(v)) && Number(v) > 0) merged[key].cap = Number(v); };
-  set('ltp', regCaps.maxAcqLtv);
-  set('ltv', regCaps.maxAcqLtv);
-  set('ltc', regCaps.maxLtc);
-  set('arv_ltv', regCaps.maxArvLtv);
+  const validNum = (v) => v != null && isFinite(Number(v)) && Number(v) > 0;
+  const set = (key, v) => { if (validNum(v)) merged[key].cap = Number(v); };
+  if (regCaps) {
+    set('ltp', regCaps.maxAcqLtv);
+    set('ltv', regCaps.maxAcqLtv);
+    set('ltc', regCaps.maxLtc);
+    set('arv_ltv', regCaps.maxArvLtv);
+  }
+  // Per-program fallback for any cap the registration didn't carry — protects
+  // older registrations (pre-caps-persist) from the generic 0.90 default that
+  // would false-flag a legitimately-sized loan on a 92.5%/93% LTC tier.
+  const hint = programHint ? PROGRAM_HIGHEST_CAPS[String(programHint).toLowerCase()] : null;
+  if (hint) {
+    const missing = (v) => !validNum(v);
+    if (missing(regCaps && regCaps.maxAcqLtv)) { set('ltp', hint.maxAcqLtv); set('ltv', hint.maxAcqLtv); }
+    if (missing(regCaps && regCaps.maxLtc))    { set('ltc',     hint.maxLtc); }
+    if (missing(regCaps && regCaps.maxArvLtv)) { set('arv_ltv', hint.maxArvLtv); }
+  }
   return merged;
 }
 

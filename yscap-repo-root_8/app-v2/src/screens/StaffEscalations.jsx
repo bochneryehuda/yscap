@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 
@@ -28,18 +29,30 @@ function fmtAddr(a) {
 
 export default function StaffEscalations() {
   const { can, role } = useAuth();
+  const location = useLocation();
   const canManage = can('manage_pricing');
   const isSuper = role === 'super_admin';
+
+  // Deep-link support: the workflow "Review exception" button links here with
+  // ?app=<application_id> so this page opens SCROLLED to (and briefly
+  // highlighting) the specific escalation. Without a match the page shows the
+  // normal queue.
+  const focusAppId = new URLSearchParams(location.search).get('app') || '';
 
   const [settings, setSettings] = useState(null);
   const [form, setForm] = useState({ assetMonths: '', maxAcqLtv: '', maxArvLtv: '', maxLtc: '', isActive: true });
   const [rows, setRows] = useState([]);
-  const [statusFilter, setStatusFilter] = useState('pending');
+  const [statusFilter, setStatusFilter] = useState('open');
   const [pendingCount, setPendingCount] = useState(0);
   const [canDecide, setCanDecide] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);       // { ok, text }
   const [notes, setNotes] = useState({});      // per-escalation decision note
+  const [countering, setCountering] = useState(null);   // escalation id whose counter form is open
+  const [counterNote, setCounterNote] = useState('');
+  const [counterTerms, setCounterTerms] = useState({ maxAcqLtv: '', maxArvLtv: '', maxLtc: '', noteRate: '', origPct: '', loanAmount: '' });
+  const [highlightId, setHighlightId] = useState('');   // deep-link visual pulse
+  const rowRefs = useRef({});
 
   const flash = (ok, text) => { setMsg({ ok, text }); setTimeout(() => setMsg(null), 7000); };
 
@@ -90,7 +103,53 @@ export default function StaffEscalations() {
     finally { setBusy(false); }
   }
 
+  function openCounter(id) {
+    setCountering(id);
+    setCounterNote('');
+    setCounterTerms({ maxAcqLtv: '', maxArvLtv: '', maxLtc: '', noteRate: '', origPct: '', loanAmount: '' });
+  }
+
+  async function submitCounter(id) {
+    if (!counterNote.trim()) { flash(false, 'Add a plain-language note explaining what you would accept.'); return; }
+    setBusy(true);
+    try {
+      // Only send the numeric fields the super-admin actually filled in — an
+      // empty string means "no change." The loan officer sees the note plus
+      // any specific numbers proposed.
+      const terms = {};
+      const asNum = (v) => { const n = Number(String(v).trim()); return Number.isFinite(n) && n > 0 ? n : null; };
+      const asRatio = (v) => { const n = asNum(v); if (n == null) return null; return n > 1 ? n / 100 : n; };
+      const acq = asRatio(counterTerms.maxAcqLtv); if (acq != null) terms.maxAcqLtv = acq;
+      const arv = asRatio(counterTerms.maxArvLtv); if (arv != null) terms.maxArvLtv = arv;
+      const ltc = asRatio(counterTerms.maxLtc);    if (ltc != null) terms.maxLtc    = ltc;
+      const rt  = asRatio(counterTerms.noteRate);  if (rt  != null) terms.noteRate  = rt;
+      const op  = asRatio(counterTerms.origPct);   if (op  != null) terms.origPct   = op;
+      const la  = asNum(counterTerms.loanAmount);  if (la  != null) terms.loanAmount = la;
+      await api.counterManualEscalation(id, terms, counterNote.trim());
+      flash(true, 'Counter-offer sent — the loan officer will see the proposed terms.');
+      setCountering(null); setCounterNote('');
+      await loadEscalations();
+    } catch (e) { flash(false, e.message || 'could not record the counter-offer'); }
+    finally { setBusy(false); }
+  }
+
+  // When the queue reloads and we arrived with ?app=<id>, scroll to the matching
+  // row and pulse it briefly so it's obvious which one to review.
+  useEffect(() => {
+    if (!focusAppId || !rows.length) return;
+    const match = rows.find((r) => r.application_id === focusAppId);
+    if (!match) return;
+    setHighlightId(match.id);
+    const el = rowRefs.current[match.id];
+    if (el && typeof el.scrollIntoView === 'function') {
+      try { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_) {}
+    }
+    const t = setTimeout(() => setHighlightId(''), 3200);
+    return () => clearTimeout(t);
+  }, [focusAppId, rows]);
+
   const setF = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  const setCT = (k, v) => setCounterTerms((t) => ({ ...t, [k]: v }));
 
   return (
     <div>
@@ -146,9 +205,9 @@ export default function StaffEscalations() {
       {/* --- Escalation box --- */}
       <div className="panel">
         <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-          <h3 style={{ margin: 0 }}>Escalations {pendingCount > 0 && <span className="ts-badge warn">{pendingCount} pending</span>}</h3>
+          <h3 style={{ margin: 0 }}>Escalations {pendingCount > 0 && <span className="ts-badge warn">{pendingCount} open</span>}</h3>
           <div className="row" style={{ gap: 6 }}>
-            {['pending', 'approved', 'declined', 'all'].map((s) => (
+            {['open', 'pending', 'countered', 'approved', 'declined', 'all'].map((s) => (
               <button key={s} className={`btn small ${statusFilter === s ? 'primary' : 'ghost'}`} onClick={() => setStatusFilter(s)}>
                 {s[0].toUpperCase() + s.slice(1)}
               </button>
@@ -156,13 +215,22 @@ export default function StaffEscalations() {
           </div>
         </div>
         {!isSuper && (
-          <p className="muted small">Only a super-admin can approve or decline a manual product. You can watch the queue here.</p>
+          <p className="muted small">Only a super-admin can approve, decline, or counter-offer an exception. You can watch the queue here.</p>
         )}
         {!rows.length && <p className="muted" style={{ marginTop: 12 }}>No {statusFilter === 'all' ? '' : statusFilter} escalations.</p>}
         {rows.map((r) => {
           const s = r.summary || {};
+          const ct = r.counter_terms || {};
+          const isOpen = r.status === 'pending' || r.status === 'countered';
+          const badgeCls = r.status === 'approved' ? 'ok' : (r.status === 'declined' ? 'err' : 'warn');
+          const rowStyle = {
+            border: '1px solid var(--hairline,#e5e0d5)', borderRadius: 10, padding: 12, marginTop: 12,
+            transition: 'box-shadow 0.4s ease, border-color 0.4s ease',
+            boxShadow: highlightId === r.id ? '0 0 0 3px #AE8746' : 'none',
+            borderColor: highlightId === r.id ? '#AE8746' : 'var(--hairline,#e5e0d5)',
+          };
           return (
-            <div key={r.id} className="card" style={{ border: '1px solid var(--hairline,#e5e0d5)', borderRadius: 10, padding: 12, marginTop: 12 }}>
+            <div key={r.id} ref={(el) => { rowRefs.current[r.id] = el; }} className="card" style={rowStyle}>
               <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
                 <div>
                   <div>
@@ -190,17 +258,73 @@ export default function StaffEscalations() {
                     {r.requested_by_name ? ` · requested by ${r.requested_by_name}` : (s.requestedByBorrower ? ' · requested by the borrower' : '')}
                   </div>
                 </div>
-                <span className={`ts-badge ${r.status === 'pending' ? 'warn' : r.status === 'approved' ? 'ok' : 'err'}`}>{r.status}</span>
+                <span className={`ts-badge ${badgeCls}`}>{r.status}</span>
               </div>
-              {r.status === 'pending' && isSuper && (
+
+              {/* If a counter has been proposed, show it — everyone (super-admin + admins watching) sees it. */}
+              {r.status === 'countered' && (
+                <div style={{ marginTop: 10, padding: 10, background: 'rgba(174,135,70,0.08)', border: '1px solid #AE8746', borderRadius: 8 }}>
+                  <div className="small" style={{ fontWeight: 600, color: '#141B22' }}>Counter-offer{r.countered_by ? ' — awaiting the loan officer' : ''}</div>
+                  {r.counter_note && <div className="small" style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}>{r.counter_note}</div>}
+                  {Object.keys(ct).length > 0 && (
+                    <div className="muted small" style={{ marginTop: 6 }}>
+                      Proposed:{' '}
+                      {ct.maxAcqLtv != null && <span>as-is LTV {(ct.maxAcqLtv * 100).toFixed(2)}% · </span>}
+                      {ct.maxArvLtv != null && <span>ARV LTV {(ct.maxArvLtv * 100).toFixed(2)}% · </span>}
+                      {ct.maxLtc    != null && <span>LTC {(ct.maxLtc * 100).toFixed(2)}% · </span>}
+                      {ct.noteRate  != null && <span>rate {(ct.noteRate * 100).toFixed(2)}% · </span>}
+                      {ct.origPct   != null && <span>origination {(ct.origPct * 100).toFixed(2)}% · </span>}
+                      {ct.loanAmount != null && <span>loan {money(ct.loanAmount)} · </span>}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {isOpen && isSuper && countering !== r.id && (
                 <div className="row" style={{ gap: 8, alignItems: 'center', marginTop: 10, flexWrap: 'wrap' }}>
                   <input className="input" style={{ flex: 1, minWidth: 180 }} placeholder="Decision note (optional)"
                     value={notes[r.id] || ''} onChange={(e) => setNotes((n) => ({ ...n, [r.id]: e.target.value }))} />
                   <button className="btn primary small" disabled={busy} onClick={() => decide(r.id, 'approved')}>Approve</button>
+                  <button className="btn ghost small" disabled={busy} onClick={() => openCounter(r.id)}>Counter-offer</button>
                   <button className="btn ghost small" disabled={busy} onClick={() => decide(r.id, 'declined')}>Decline</button>
                 </div>
               )}
-              {r.status !== 'pending' && (
+
+              {isOpen && isSuper && countering === r.id && (
+                <div style={{ marginTop: 10, padding: 10, background: 'var(--paper,#F6F3EC)', borderRadius: 8 }}>
+                  <div className="small" style={{ fontWeight: 600, marginBottom: 6 }}>Counter-offer — what would you accept?</div>
+                  <div className="muted small" style={{ marginBottom: 8 }}>
+                    Write the terms plainly in the note (the loan officer sees this verbatim). Optionally fill any of the numbers below — leave blank if the current registered value stands. Enter LTV / LTC / rate / origination as PERCENTS (e.g. 92.5, 11.25, 1.5). Loan amount is a dollar number.
+                  </div>
+                  <textarea className="input" rows={3} placeholder="e.g. I'll approve at 92.5% LTC (not 91%) if the rate goes up 0.25 to cover the extra risk. Everything else stays." value={counterNote} onChange={(e) => setCounterNote(e.target.value)} style={{ width: '100%' }} />
+                  <div className="grid2" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(140px,1fr))', gap: 8, marginTop: 8 }}>
+                    <div className="field"><label>As-is LTV %</label>
+                      <input className="input" inputMode="decimal" placeholder="—" value={counterTerms.maxAcqLtv}
+                        onChange={(e) => setCT('maxAcqLtv', e.target.value.replace(/[^0-9.]/g, ''))} /></div>
+                    <div className="field"><label>ARV LTV %</label>
+                      <input className="input" inputMode="decimal" placeholder="—" value={counterTerms.maxArvLtv}
+                        onChange={(e) => setCT('maxArvLtv', e.target.value.replace(/[^0-9.]/g, ''))} /></div>
+                    <div className="field"><label>LTC %</label>
+                      <input className="input" inputMode="decimal" placeholder="—" value={counterTerms.maxLtc}
+                        onChange={(e) => setCT('maxLtc', e.target.value.replace(/[^0-9.]/g, ''))} /></div>
+                    <div className="field"><label>Note rate %</label>
+                      <input className="input" inputMode="decimal" placeholder="—" value={counterTerms.noteRate}
+                        onChange={(e) => setCT('noteRate', e.target.value.replace(/[^0-9.]/g, ''))} /></div>
+                    <div className="field"><label>Origination %</label>
+                      <input className="input" inputMode="decimal" placeholder="—" value={counterTerms.origPct}
+                        onChange={(e) => setCT('origPct', e.target.value.replace(/[^0-9.]/g, ''))} /></div>
+                    <div className="field"><label>Total loan $</label>
+                      <input className="input" inputMode="numeric" placeholder="—" value={counterTerms.loanAmount}
+                        onChange={(e) => setCT('loanAmount', e.target.value.replace(/[^0-9]/g, ''))} /></div>
+                  </div>
+                  <div className="row" style={{ gap: 8, marginTop: 10 }}>
+                    <button className="btn primary small" disabled={busy || !counterNote.trim()} onClick={() => submitCounter(r.id)}>Send counter-offer</button>
+                    <button className="btn ghost small" onClick={() => { setCountering(null); setCounterNote(''); }}>Cancel</button>
+                  </div>
+                </div>
+              )}
+
+              {(r.status === 'approved' || r.status === 'declined') && (
                 <div className="muted small" style={{ marginTop: 8 }}>
                   {r.status === 'approved' ? 'Approved' : 'Declined'}{r.decided_by_name ? ` by ${r.decided_by_name}` : ''}
                   {r.decision_note ? ` — ${r.decision_note}` : ''}

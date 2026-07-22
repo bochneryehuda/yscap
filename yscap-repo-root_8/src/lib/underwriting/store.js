@@ -91,6 +91,23 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
      analyzedSha256 || null, analyzerVersion || null, subjectHash || null, !!ext.secondLook]);
   const extractionId = rows[0].id;
 
+  // 2b. Loan Digital Twin (owner-directed 2026-07-21, Sovereign 1/4): for every
+  // extracted field the twin's EXTRACTED_FIELD_MAP recognizes for this doc_type
+  // (borrower_name from a government_id, property_address from a title, arv
+  // from an appraisal, ...), record a fact observation and reconcile the
+  // canonical fact. Best-effort — twin recording never blocks an extraction
+  // from persisting. Uses the ORIGINAL unmasked fields (safeFields is masked
+  // for storage; the twin records the real values behind its own audit trail).
+  try {
+    await require('./twin').recordFactsFromExtraction(client, {
+      appId, documentId, docType, extractionId,
+      fields: ext.fields || {},
+      ocrEngine: ext.ocrEngine || null,
+      aiModel: ext.aiModel || null,
+      confidence: ext.confidence || null,
+    });
+  } catch (_) { /* twin is additive — never blocks the extraction */ }
+
   // 3. Insert findings.
   const findingIds = [];
   for (const f of (findings || [])) {
@@ -104,6 +121,66 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
        f.title || null, f.howTo || null, !!f.blocksCtc, actions, f.opensCondition || null]);
     findingIds.push(fr[0].id);
   }
+
+  // 3b. Semantic-entity layer (Sovereign, owner-directed 2026-07-22): pattern-
+  // based scan of the OCR text for party mentions, money, dates, addresses,
+  // emails, phones, licenses. Best-effort — a failure never blocks the
+  // extraction. The ocrText is threaded from engine.baseExtraction (truncated
+  // at 200 KB); we don't persist the raw text itself, only the entities.
+  try {
+    if (ext.ocrText) {
+      const entities = require('./semantic-entities').extract(ext.ocrText, {
+        docType, pages: ext.ocrPages || null,
+      });
+      if (entities.length) {
+        await require('./semantic-entities').persistFromExtraction(client, {
+          appId, documentId, extractionId, entities,
+        });
+      }
+    }
+  } catch (_) { /* semantic entities are additive */ }
+
+  // 4. Cure analysis (Sovereign 2/4, owner-directed 2026-07-21). If this
+  // document is FILED under a specific checklist_item, and that item's
+  // condition code carries a structured intent, produce a CURE PROOF:
+  // check each satisfaction requirement one-by-one against the extracted
+  // fields + the file's twin canonical facts, and spawn any new findings
+  // the cure surfaced. Best-effort — a cure analysis failure never blocks
+  // the extraction or its findings from persisting.
+  try {
+    if (appId && documentId) {
+      const linkQ = await client.query(
+        `SELECT d.checklist_item_id, ci.template_id, ct.code
+           FROM documents d
+           LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
+           LEFT JOIN checklist_templates ct ON ct.id = ci.template_id
+          WHERE d.id = $1`, [documentId]);
+      const link = linkQ.rows[0];
+      if (link && link.checklist_item_id && link.code) {
+        const cure = require('./cure');
+        const twin = require('./twin');
+        const intent = await cure.intentForCode(link.code, client);
+        if (intent) {
+          const twinRows = await twin.factsForFile(appId, client);
+          const twinFacts = Object.fromEntries(twinRows.map((r) => [r.fact_key, r]));
+          const analysis = cure.analyze({
+            intent,
+            extractionFields: ext.fields || {},
+            twinFacts,
+            subject: {},                 // caller can pass richer subject via extraction context
+            expected: {},                // program min FICO / required months etc. wired later
+          });
+          await cure.persistProof(client, {
+            appId,
+            checklistItemId: link.checklist_item_id,
+            intentId: intent.id,
+            documentId, extractionId,
+            analysis,
+          });
+        }
+      }
+    }
+  } catch (_) { /* cure is additive — never blocks the extraction */ }
 
   return { extractionId, findingIds };
 }
@@ -143,7 +220,21 @@ async function resolveFinding(client, { findingId, action, note, value, by } = {
       WHERE id = $1 AND status IN ('open')
       RETURNING *`,
     [findingId, status, v.action, note || null, value != null ? String(value) : null, terminal, by || null]);
-  return rows[0] || null;
+  const updated = rows[0] || null;
+  // Self-training capture (Sovereign 4/4, owner-directed 2026-07-21): every
+  // resolve is a labeled example — dismiss = false-positive candidate, grant/
+  // clear/decline = confirmed / condition / etc. Also compares the committee's
+  // action (if it ran) with the human's decision so a persistent disagreement
+  // pattern surfaces as a training_proposal. Best-effort — never blocks the
+  // resolve.
+  if (updated) {
+    try {
+      await require('./learning').captureFindingDecision(client, {
+        finding: updated, action: v.action, actorId: by, note,
+      });
+    } catch (_) { /* learning capture is additive */ }
+  }
+  return updated;
 }
 
 /**
