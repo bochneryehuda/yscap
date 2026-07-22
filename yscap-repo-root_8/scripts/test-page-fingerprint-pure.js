@@ -119,6 +119,7 @@ assert.strictEqual(f.imageHash, 'abcd1234', 'a valid hex image hash is lowercase
 f = fp.fingerprintPage({ text: 'hi', imageHash: 'not-hex!' });
 assert.strictEqual(f.empty, true, 'too-short text is marked empty');
 assert.strictEqual(f.imageHash, null, 'a non-hex image hash is dropped, not carried as garbage');
+assert.strictEqual(fp.fingerprintPage({ text: 'some page text here' }).pageNumber, null, 'an unnumbered page is pageNumber null, not 0 (Number(null) trap)');
 ok('fingerprintPage carries the page number, marks empty pages, and validates the image hash');
 
 // --- groupDuplicates clusters duplicate pages across a packet ---

@@ -207,7 +207,9 @@ function fingerprintPage(page) {
   const imageHash = isHex(imgRaw) ? String(imgRaw).toLowerCase() : null;
   const pn = p.pageNumber != null ? p.pageNumber : (p.page_number != null ? p.page_number : null);
   return {
-    pageNumber: Number.isInteger(Number(pn)) ? Number(pn) : null,
+    // guard pn==null BEFORE Number() — Number(null) is 0, which would mislabel an
+    // unnumbered page as page 0 (and cluster labels as [0,0,0]).
+    pageNumber: pn != null && Number.isInteger(Number(pn)) ? Number(pn) : null,
     empty: charCount < EMPTY_TEXT_CHARS,
     charCount,
     textHash: textHash(rawText),
