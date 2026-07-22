@@ -197,6 +197,22 @@ function CreditImportModal({ appId, onClose, onDone }) {
   const addrLine = [addr.line1, addr.line2, [addr.city, addr.state].filter(Boolean).join(', '), addr.zip].filter(Boolean).join(' · ');
   const name = b ? [b.firstName, b.lastName].filter(Boolean).join(' ') : '';
 
+  // The primary action lives in a STICKY FOOTER so it's always reachable — the
+  // body scrolls independently. The button adapts to the active mode (live pull
+  // vs an uploaded file); a hint explains any disabled state so it's never a
+  // dead, unexplained button.
+  const canLive = providerReady && consent && missing.length === 0;
+  const liveLabel = requestType === 'new' ? 'Order & import' : 'Reissue & import';
+  const primaryLabel = busy ? 'Working…' : (showUpload ? 'Import the file' : liveLabel);
+  const primaryDisabled = busy || (showUpload ? (!xmlFile && !pdfFile) : !canLive);
+  let footerHint = '';
+  if (!busy) {
+    if (showUpload) { if (!xmlFile && !pdfFile) footerHint = 'Choose the downloaded data file (XML) and/or the PDF.'; }
+    else if (!providerReady) footerHint = 'Live pull isn’t set up yet — use “Import a downloaded report”.';
+    else if (missing.length) footerHint = `Add the borrower’s ${missing.join(', ')} to pull.`;
+    else if (!consent) footerHint = 'Check the authorization box above to enable the pull.';
+  }
+
   return (
     <div className="cv-modal-back crx-back" onClick={onClose}>
       <div className="cv-modal crx-modal" onClick={(e) => e.stopPropagation()}>
@@ -208,11 +224,13 @@ function CreditImportModal({ appId, onClose, onDone }) {
           <button className="crx-x" onClick={onClose} aria-label="Close">✕</button>
         </div>
 
-        {!pre && !err && <div className="crx-loading">Loading the borrower’s information…</div>}
-        {err && <div className="crx-alert danger">{err}</div>}
+        <div className="crx-modal-body">
+          {!pre && !err && <div className="crx-loading">Loading the borrower’s information…</div>}
+          {/* Load-time failure shows here (the whole modal failed to load). An
+              IMPORT failure shows in the sticky footer so it's always visible. */}
+          {!pre && err && <div className="crx-alert danger">{err}</div>}
 
-        {pre && (
-          <div className="crx-modal-body">
+          {pre && (<>
             {/* Recipient / what we transmit */}
             <section className="crx-recipient">
               <div className="crx-recip-head">
@@ -294,16 +312,6 @@ function CreditImportModal({ appId, onClose, onDone }) {
               </div>
             )}
 
-            <div className="crx-actions">
-              <button className="crx-btn primary" disabled={busy || !providerReady || !consent || missing.length > 0}
-                onClick={() => runImport('live')}>
-                {busy ? 'Working…' : requestType === 'new' ? 'Order & import' : 'Reissue & import'}
-              </button>
-              <button className="crx-btn ghost" onClick={() => setShowUpload((v) => !v)}>
-                {showUpload ? 'Hide downloaded import' : 'Import a downloaded report'}
-              </button>
-            </div>
-
             {showUpload && (
               <section className="crx-upload">
                 <div className="crx-upload-title">Import a report you already downloaded from Xactus</div>
@@ -312,11 +320,24 @@ function CreditImportModal({ appId, onClose, onDone }) {
                 <div className="crx-upload-row"><span>Report (PDF)</span>
                   <input type="file" accept="application/pdf,.pdf" onChange={(e) => setPdfFile(e.target.files[0] || null)} /></div>
                 <p className="crx-upload-hint">The data file (XML) builds the credit-details section; the PDF is filed on the loan.</p>
-                <button className="crx-btn primary sm" disabled={busy || (!xmlFile && !pdfFile)} onClick={() => runImport('upload')}>
-                  {busy ? 'Working…' : 'Import the file'}
-                </button>
               </section>
             )}
+          </>)}
+        </div>
+
+        {/* Sticky footer — the primary action is ALWAYS visible + reachable,
+            regardless of how far the body has scrolled. */}
+        {pre && (
+          <div className="crx-modal-foot">
+            {err && <div className="crx-alert danger" style={{ margin: 0 }}>{err}</div>}
+            {footerHint && <div className="crx-foot-hint">{footerHint}</div>}
+            <div className="crx-foot-actions">
+              <button className="crx-btn primary" disabled={primaryDisabled}
+                onClick={() => runImport(showUpload ? 'upload' : 'live')}>{primaryLabel}</button>
+              <button className="crx-btn ghost" onClick={() => setShowUpload((v) => !v)}>
+                {showUpload ? 'Cancel downloaded import' : 'Import a downloaded report'}
+              </button>
+            </div>
           </div>
         )}
       </div>
