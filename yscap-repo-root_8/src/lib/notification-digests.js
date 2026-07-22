@@ -361,6 +361,65 @@ async function trainingRunOnce() {
    every file with a VALID decision certificate; any canonical fact change
    since issue flips the certificate to 'validation_required' so a coordinator
    re-verifies before the file advances. Self-gated to at most once per day. */
+/* R2.9 — Nightly auto-read sweep (owner-directed 2026-07-22). Walks every
+   active file with UNREAD document(s) uploaded in the last 24 hours and
+   drives them through the exact same auto-read pipeline the /:appId/auto-read
+   button drives — same paid cooldown, same idempotency cache, same per-doc
+   error containment. So a freshly-uploaded bank statement / appraisal /
+   title binder gets read WITHOUT waiting for someone to open the file and
+   click the button.
+   Bounded: AUTO_READ_SWEEP_BATCH_FILES (default 20 files/run) × the route's
+   own AUTOREAD_MAX_PER_CALL cap on documents/file. Skips entirely when the
+   reader/analyzer isn't configured OR the master kill-switch is off. Self-
+   gated to at most once per 4 hours (fresher than daily — an uploaded doc
+   should be read within hours, not a day). */
+async function autoReadSweepOnce() {
+  if (!(await _gate('auto_read_sweep_hourly', null, '4 hours'))) return 0;
+  const BATCH = Number(process.env.AUTO_READ_SWEEP_BATCH_FILES || 20);
+  let filesRead = 0, totalDocs = 0;
+  try {
+    const uw = require('../routes/underwriting');
+    if (!uw.AUTOREAD_ENABLED) { await _stamp('auto_read_sweep_hourly', null, { skipped: 'AUTOREAD disabled' }); return 0; }
+    // Target files with at least one CURRENT, non-rejected, non-chat-attachment
+    // document uploaded in the last 24h that has no current extraction and whose
+    // application is active. Cheap indexed query.
+    const targets = await db.query(
+      `SELECT DISTINCT a.id
+         FROM applications a
+         JOIN documents d ON (d.application_id = a.id
+                              OR EXISTS (SELECT 1 FROM checklist_items ci WHERE ci.id = d.checklist_item_id AND ci.application_id = a.id))
+        WHERE a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','cancelled','funded','declined','file_intake')
+          AND d.is_current = true
+          AND COALESCE(d.review_status, '') <> 'rejected'
+          AND COALESCE(d.source_type, '') <> 'chat_attachment'
+          AND d.created_at > now() - interval '24 hours'
+          AND NOT EXISTS (
+            SELECT 1 FROM document_extractions ex
+             WHERE ex.document_id = d.id AND ex.application_id = a.id AND ex.is_current
+          )
+        LIMIT $1`, [BATCH]);
+    for (const row of targets.rows) {
+      try {
+        const app = await uw.fileForById(row.id);
+        if (!app) continue;
+        const queue = await uw.buildAutoReadQueue(app);
+        const batch = queue.slice(0, uw.AUTOREAD_MAX_PER_CALL);
+        for (const item of batch) {
+          try {
+            const doc = await uw.fileDocById(app, item.id);
+            if (!doc) continue;
+            await uw.analyzeOneDocument(app, doc, item.expectedType, { actorId: null });
+            totalDocs += 1;
+          } catch (e) { console.error('[digests] auto-read-sweep doc', row.id, item.id, e && e.message); }
+        }
+        if (batch.length > 0) filesRead += 1;
+      } catch (e) { console.error('[digests] auto-read-sweep file', row.id, e && e.message); }
+    }
+    await _stamp('auto_read_sweep_hourly', null, { filesRead, totalDocs });
+    return filesRead;
+  } catch (e) { console.error('[digests] auto-read-sweep', e && e.message); return filesRead; }
+}
+
 /* R2.8 — Nightly direct-source verification sweep (Sovereign extension,
    owner-directed 2026-07-22). Walks every active file whose PILOT status is
    past 'file_intake' and calls direct-source-hub.verifyFile per file — the
@@ -529,6 +588,7 @@ async function runDue() {
     await trainingRunOnce().catch((e) => console.error('[digests] training-run', e && e.message));
     await certificateSurveyOnce().catch((e) => console.error('[digests] cert-survey', e && e.message));
     await directSourceSweepOnce().catch((e) => console.error('[digests] direct-source-sweep', e && e.message));
+    await autoReadSweepOnce().catch((e) => console.error('[digests] auto-read-sweep', e && e.message));
     await autoCommitteeReviewOnce().catch((e) => console.error('[digests] auto-committee', e && e.message));
     if (weekday === 'Mon') await weeklyAdminSummaryOnce().catch((e) => console.error('[digests] admin', e && e.message));
   }
@@ -554,5 +614,5 @@ module.exports = {
   start, runDue, nyParts,
   weeklyBorrowerOutstandingOnce, dailyPipelineDigestOnce, staleFileAlertsOnce, weeklyAdminSummaryOnce,
   drawFindingsAwaitingBorrowerOnce, drawReleaseOverdueOnce, workflowAgingOnce,
-  trainingRunOnce, certificateSurveyOnce, autoCommitteeReviewOnce, directSourceSweepOnce,
+  trainingRunOnce, certificateSurveyOnce, autoCommitteeReviewOnce, directSourceSweepOnce, autoReadSweepOnce,
 };

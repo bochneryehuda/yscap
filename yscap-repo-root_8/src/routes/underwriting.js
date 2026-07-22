@@ -1315,4 +1315,20 @@ router.post('/:appId/experience-exception', requirePermission('waive_conditions'
   } catch (e) { next(e); }
 });
 
+// R2.9 — Expose the auto-read machinery so the scheduled sweep (notification-
+// digests.autoReadSweepOnce) can drive the same pipeline the /:appId/auto-read
+// button drives. Read-only exports: analyzeOneDocument, fileFor, buildAutoReadQueue.
+// Reusing the exact same functions keeps the sweep from re-implementing (and
+// drifting from) the paid-cooldown / idempotency / audit logic the route
+// already gets right.
 module.exports = router;
+module.exports.analyzeOneDocument = analyzeOneDocument;
+module.exports.buildAutoReadQueue = buildAutoReadQueue;
+module.exports.fileForById = async function fileForById(appId) {
+  const r = await db.query(
+    `SELECT id, borrower_id, llc_id, status, deleted_at FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId]);
+  return r.rows[0] || null;
+};
+module.exports.fileDocById = fileDoc;
+module.exports.AUTOREAD_ENABLED = AUTOREAD_ENABLED;
+module.exports.AUTOREAD_MAX_PER_CALL = AUTOREAD_MAX_PER_CALL;
