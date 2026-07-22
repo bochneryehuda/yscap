@@ -86,6 +86,20 @@ assert.strictEqual(r.needsReview, false);
 assert.deepStrictEqual(r.orientPlan, []);
 ok('a clean packet reports no issues, no orient plan, and needs no review');
 
+// --- AUDIT: a large trailing-unassigned tail still surfaces as a gap issue ---
+r = pi.analyzePacket([{ page_number: 1, text: 'doc a lots of words here' }],
+  { documents: [{ id: 'a', pages: [1] }], totalPages: 200 }); // pages 2-200 unassigned (tail > 50)
+assert.ok(issueKinds(r).includes('gap'), 'a large unassigned tail surfaces as a gap issue (not silently dropped)');
+const gapIssue = r.issues.find((i) => i.kind === 'gap');
+assert.ok(gapIssue.trailingUnassigned && gapIssue.trailingUnassigned.count === 199, 'the tail is summarized (2-200, count 199), not enumerated');
+assert.ok(/2-200/.test(gapIssue.advice));
+ok('AUDIT: a large trailing-unassigned tail is summarized as a gap issue rather than dropped');
+
+// --- AUDIT: a page property backed by a throwing getter never escapes ---
+assert.doesNotThrow(() => pi.analyzePacket([{ text: 'ok page words', get imageHash() { throw new Error('boom'); } }]), 'a throwing imageHash getter must not escape');
+assert.doesNotThrow(() => pi.analyzePacket([{ get verdict() { throw new Error('boom'); }, text: 'x' }]), 'a throwing verdict getter must not escape');
+ok('AUDIT: a page property backed by a throwing getter degrades safely (never-throws holds)');
+
 // --- empty / junk input is safe ---
 assert.doesNotThrow(() => pi.analyzePacket(null));
 assert.strictEqual(pi.analyzePacket(null).totalPages, 0);

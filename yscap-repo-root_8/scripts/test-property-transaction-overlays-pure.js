@@ -51,6 +51,8 @@ assert.doesNotThrow(() => pto.selectOverlays(null));
 assert.deepStrictEqual(pto.selectOverlays(null), []);
 assert.deepStrictEqual(pto.selectOverlays({}), [], 'no property/transaction → nothing');
 assert.doesNotThrow(() => pto.selectOverlays({ propertyType: {}, transactionType: 42 }));
+assert.doesNotThrow(() => pto.selectOverlays({ get propertyType() { throw new Error("boom"); } }));
+assert.deepStrictEqual(pto.selectOverlays({ get transactionType() { throw new Error("boom"); } }), []);
 assert.doesNotThrow(() => pto.overlaysForProperty(null));
 ok('empty / null / junk input is safe (never throws)');
 

@@ -63,11 +63,20 @@ function analyzePacket(pages, opts = {}) {
 
   // 2. enrich each source page with its computed verdict so continuation-group can
   //    see blanks/rotations (it reads p.verdict) without the caller pre-computing it.
-  const enriched = list.map((p, i) => Object.assign({}, p, {
-    verdict: (p && p.verdict) || (qPages[i] && qPages[i].verdict) || 'ok',
-    rotation: p && p.rotation != null ? p.rotation : (qPages[i] && qPages[i].rotation),
-    page_number: p && p.page_number != null ? p.page_number : pageNumAt(i),
-  }));
+  //    Guarded PER PAGE: a page property backed by a throwing getter degrades that
+  //    one page to a minimal safe object rather than escaping the never-throws
+  //    contract (Object.assign copies own getters, so this can't live outside a try).
+  const enriched = list.map((p, i) => {
+    try {
+      return Object.assign({}, p, {
+        verdict: (p && p.verdict) || (qPages[i] && qPages[i].verdict) || 'ok',
+        rotation: p && p.rotation != null ? p.rotation : (qPages[i] && qPages[i].rotation),
+        page_number: p && p.page_number != null ? p.page_number : pageNumAt(i),
+      });
+    } catch (_e) {
+      return { verdict: (qPages[i] && qPages[i].verdict) || 'ok', page_number: pageNumAt(i) };
+    }
+  });
 
   // 3. STACKING + auto-orient.
   const grp = safe(() => continuation.groupPages(enriched), { groups: [], orientPlan: [] });
@@ -122,8 +131,14 @@ function analyzePacket(pages, opts = {}) {
     issues.push({ kind: 'duplicate', severity: 'advisory', pages: cl.pages || [], advice: cl.exact ? 'Exact duplicate pages — keep one, drop the rest.' : 'Near-duplicate pages — confirm which to keep.' });
     if (kept != null) recs.push(`${cl.exact ? 'Duplicate' : 'Near-duplicate'} pages ${(cl.pages || []).join(', ')} — keep page ${kept}.`);
   }
-  if (coverage && coverage.gaps && coverage.gaps.length) {
-    issues.push({ kind: 'gap', severity: 'advisory', pages: coverage.gaps, advice: 'Pages assigned to no document — a human should place them.' });
+  if (coverage && ((coverage.gaps && coverage.gaps.length) || coverage.trailingUnassigned)) {
+    const tail = coverage.trailingUnassigned;
+    // the interior gaps are enumerated; a LARGE trailing tail (not enumerated into
+    // `gaps`, to avoid a huge array) is summarized in the advice so the "one issue
+    // list" is still complete for a moderate/large unassigned tail.
+    let advice = 'Pages assigned to no document — a human should place them.';
+    if (tail && !(coverage.gaps || []).includes(tail.from)) advice += ` Pages ${tail.from}-${tail.to} (${tail.count}) are an unassigned tail.`;
+    issues.push({ kind: 'gap', severity: 'advisory', pages: coverage.gaps || [], trailingUnassigned: tail || null, advice });
   }
   if (coverage && coverage.overlaps && coverage.overlaps.length) {
     issues.push({ kind: 'overlap', severity: 'blocking', pages: coverage.overlaps.map((x) => x.page), advice: 'A page is claimed by two documents — the split is wrong.' });

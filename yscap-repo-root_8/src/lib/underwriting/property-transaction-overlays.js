@@ -108,9 +108,13 @@ function overlaysForTransaction(transactionType) {
  */
 function selectOverlays(context) {
   const c = context && typeof context === 'object' ? context : {};
-  const propType = c.propertyType != null ? c.propertyType : c.property_type;
-  const txnType = c.transactionType != null ? c.transactionType : c.transaction;
-  const all = overlaysForProperty(propType).concat(overlaysForTransaction(txnType));
+  // guard the selector-field reads (a throwing getter on any of these must not escape).
+  let all;
+  try {
+    const propType = c.propertyType != null ? c.propertyType : c.property_type;
+    const txnType = c.transactionType != null ? c.transactionType : c.transaction;
+    all = overlaysForProperty(propType).concat(overlaysForTransaction(txnType));
+  } catch (_e) { return []; }
   return all.filter((o) => {
     if (typeof o.appliesWhen !== 'function') return true;
     try { return !!o.appliesWhen(c); } catch (_e) { return false; }

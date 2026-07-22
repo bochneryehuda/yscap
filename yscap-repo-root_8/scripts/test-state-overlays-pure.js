@@ -58,6 +58,8 @@ assert.doesNotThrow(() => so.selectOverlays(null));
 assert.deepStrictEqual(so.selectOverlays(null), []);
 assert.doesNotThrow(() => so.selectOverlays({ state: 'NJ', get purchasePrice() { throw new Error('boom'); } }));
 assert.doesNotThrow(() => so.selectOverlays({ state: 'TX', transactionType: {} }));
+assert.doesNotThrow(() => so.selectOverlays({ get state() { throw new Error("boom"); } }));
+assert.deepStrictEqual(so.selectOverlays({ get state() { throw new Error("boom"); } }), []);
 assert.doesNotThrow(() => so.overlaysForState({}));
 ok('empty / null / hostile input is safe (a throwing predicate never crashes selection)');
 

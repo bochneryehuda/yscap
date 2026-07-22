@@ -92,7 +92,9 @@ function overlaysForState(state) {
  */
 function selectOverlays(context) {
   const c = context && typeof context === 'object' ? context : {};
-  const all = overlaysForState(c.state);
+  // guard the selector-field read too (a throwing getter on `state` must not escape).
+  let all;
+  try { all = overlaysForState(c.state); } catch (_e) { return []; }
   return all.filter((o) => {
     if (typeof o.appliesWhen !== 'function') return true;
     try { return !!o.appliesWhen(c); } catch (_e) { return false; }
