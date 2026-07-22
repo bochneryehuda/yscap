@@ -94,6 +94,41 @@ function computeBankFindings(statement, subject, opts = {}) {
     }
   }
 
+  // ---- 2b. Missing-page detection (owner-directed 2026-07-22, R3.11) ----
+  // The statement usually says "Page X of Y" on each page. If X<Y for the LAST readable
+  // page, pages are missing (a common straw-funds concealer — the missing pages hold the
+  // transactions that would expose the source). We accept THREE signal shapes from the
+  // extractor: (a) statement.declaredPageCount (Y from "Page X of Y"), (b) statement.pageNumbers
+  // (an array like [1,2,4,5,6] with a gap), or (c) statement.pageCount (the actual OCR'd page count)
+  // combined with declaredPageCount. Only fires when we can prove missing pages.
+  const declaredTotal = num(statement.declaredPageCount);
+  const actualCount = num(statement.pageCount);
+  const nums = Array.isArray(statement.pageNumbers) ? statement.pageNumbers.filter(Number.isFinite).sort((a, b) => a - b) : null;
+  let missing = null;
+  if (nums && nums.length && declaredTotal != null) {
+    const expected = Array.from({ length: declaredTotal }, (_, i) => i + 1);
+    const gaps = expected.filter((p) => !nums.includes(p));
+    if (gaps.length) missing = { gaps, total: declaredTotal, have: nums };
+  } else if (nums && nums.length > 1) {
+    // Gap inside the numbered set (e.g. [1,2,4,5]) even without declared total.
+    const min = nums[0], max = nums[nums.length - 1];
+    const gaps = [];
+    for (let p = min; p <= max; p += 1) if (!nums.includes(p)) gaps.push(p);
+    if (gaps.length) missing = { gaps, total: max, have: nums };
+  } else if (declaredTotal != null && actualCount != null && actualCount < declaredTotal) {
+    missing = { gaps: null, total: declaredTotal, have: actualCount };
+  }
+  if (missing) {
+    const label = missing.gaps
+      ? `missing page(s) ${missing.gaps.join(', ')} of ${missing.total}`
+      : `${missing.have} of ${missing.total} pages present`;
+    out.push(finding({ code: 'bank_missing_page', severity: 'fatal', field: 'pages',
+      docValue: label, fileValue: null,
+      title: 'Bank statement is missing pages',
+      howTo: `The statement is incomplete — ${label}. A missing page can hide a large transfer, a co-holder disclosure, or reversed activity. Request the FULL statement (every page, front and back) before this counts as proof of funds.`,
+      actions: ['request_revision', 'open_condition', 'dismiss'], opensCondition: 'underwriting_review_cleared' }));
+  }
+
   // ---- 3. Large deposit sourcing (Fannie B3-4.2-02) ----
   // A single deposit that dominates the period's inflows needs to be SOURCED — an unsourced large
   // deposit can't count toward funds and is a straw-buyer / gifted-funds signal. We don't have the
