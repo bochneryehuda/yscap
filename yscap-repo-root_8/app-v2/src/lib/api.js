@@ -461,6 +461,15 @@ export const api = {
   bulkResolveFindings:       (appId, findingIds, action, note) => req('POST', `/api/underwriting/${appId}/findings/similar/bulk-resolve`, { findingIds, action, note: note || undefined }),
   fileAvmConsensus:          (appId) => req('GET', `/api/underwriting/${appId}/avm-consensus`),
   fileAvmConsensusVerify:    (appId) => req('POST', `/api/underwriting/${appId}/avm-consensus/verify`, {}),
+  // AI Suggestions panel (R3.5/R3.6 — owner-directed 2026-07-22).
+  aiSuggestionsList:      (appId, params = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return req('GET', `/api/underwriting/${appId}/ai-suggestions${qs ? '?' + qs : ''}`);
+  },
+  aiSuggestionsDecide:    (appId, id, decision) => req('POST', `/api/underwriting/${appId}/ai-suggestions/${id}/decide`, decision),
+  aiSuggestionAddNote:    (appId, id, text) => req('POST', `/api/underwriting/${appId}/ai-suggestions/${id}/note`, { text }),
+  aiAdminQuestions:       (appId) => req('GET', `/api/underwriting/ai-admin/questions${appId ? `?appId=${appId}` : ''}`),
+  aiAdminAnswer:          (questionId, answer) => req('POST', `/api/underwriting/ai-admin/questions/${questionId}/answer`, { answer }),
   staffUploadAppDoc: (appId, b) => coalesceUpload('appDoc:' + appId, b, () => req('POST', `/api/staff/applications/${appId}/documents`, normalizeUpload(b))),
   staffAddLoanCondition: (appId, b) => req('POST', `/api/staff/applications/${appId}/loan-conditions`, b),
   staffClearCondition:   (cid) => req('POST', `/api/staff/loan-conditions/${cid}/clear`),
