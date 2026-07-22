@@ -82,12 +82,23 @@ export default function StaffFindingEscalations() {
       window.location.hash = `#/internal/app/${row.application_id}?finding=${row.finding_id || ''}`;
       return;
     }
+    const note = notes[row.id] || '';
+    const extra = { action };
+    // Post-condition / request-document need a note; others accept the reviewer note as advisory.
+    if (note) extra.note = note;
+    // "Fix the file" needs the CORRECTED VALUE. Prompt for it, pre-filled with
+    // what the document says (the suggested correction). If that value maps to an
+    // application field (price / as-is / ARV / rehab budget) the server applies it
+    // to the loan file; otherwise it's recorded on the finding.
+    if (action === 'fix_file') {
+      const suggested = row.doc_value != null ? String(row.doc_value) : (row.file_value != null ? String(row.file_value) : '');
+      const v = window.prompt(`Corrected value to write to the loan file${row.field ? ` (${String(row.field).replace(/_/g, ' ')})` : ''}:`, suggested);
+      if (v == null || String(v).trim() === '') return;   // cancelled
+      extra.value = String(v).trim();
+    }
     setBusy(true);
     try {
-      const note = notes[row.id] || '';
-      const extra = { action };
-      // Post-condition / request-document need a note; others accept the reviewer note as advisory.
-      if (note) extra.note = note;
+      let fileFix = null;
       // Two-call sequence, made RETRY-SAFE (owner-directed fix after pre-merge audit 2026-07-21):
       // if a previous attempt already resolved the finding OR closed the escalation, don't error
       // out and leave the queue row stranded — treat those "already done" cases as success and
@@ -95,7 +106,8 @@ export default function StaffFindingEscalations() {
       // resolved) and 409 (escalation: already decided).
       let alreadyResolved = false;
       try {
-        await api.underwritingResolveFinding(row.application_id, row.finding_id, extra);
+        const resp = await api.underwritingResolveFinding(row.application_id, row.finding_id, extra);
+        if (resp && resp.fileFix && resp.fileFix.applied) fileFix = resp.fileFix;
       } catch (err) {
         const msg = String((err && err.message) || '').toLowerCase();
         const status = err && (err.status || err.statusCode);
@@ -111,11 +123,12 @@ export default function StaffFindingEscalations() {
         if (status === 409 || /already/i.test(msg)) { alreadyDecided = true; }
         else { throw err; }
       }
-      flash(true, alreadyResolved
+      const fixMsg = fileFix ? ` The loan file's ${String(fileFix.field).replace(/_/g, ' ')} was updated to ${fileFix.value}.` : '';
+      flash(true, (alreadyResolved
         ? 'The finding was already resolved — queue item closed.'
         : (alreadyDecided
           ? `Applied ${action.replace(/_/g, ' ')} — queue item was already closed.`
-          : `Applied ${action.replace(/_/g, ' ')} — the finding is resolved and the person who raised it was notified.`));
+          : `Applied ${action.replace(/_/g, ' ')} — the finding is resolved and the person who raised it was notified.`)) + fixMsg);
       await load();
     } catch (e) { flash(false, e.message || 'could not apply the action'); }
     finally { setBusy(false); }
