@@ -16,10 +16,59 @@
  * See docs/DOCUSIGN-WORKFORCE-BUILD-SPEC.md §2.
  */
 const dbDefault = require('../../db');
+const manualProgram = require('../manual-program');
 
 const APPRAISAL_BACK = 'rtl_cond_appraisaldocs';
 const APPRAISAL_REVIEW = 'rtl_p3_apprreview';
 const PRODUCT_PRICING = 'rtl_p1_product';
+
+/**
+ * R6.4 — MANUAL is a STOP, not a clean approval. A binding DocuSign package may
+ * NOT issue while the current registration is MANUAL/Manual-Program and still
+ * awaiting a super-admin exception approval, or while it is STALE (priced on
+ * inputs that have since changed). The borrower "terms ready" email already
+ * withholds for MANUAL (needsSuperAdminApproval), but the ISSUANCE gate had
+ * diverged from it — this closes that gap (audit-flagged, the critical fix).
+ *
+ * Returns an array of outstanding blockers (empty when the registration is
+ * issuable). Fails CLOSED: if the registration can't be read, it is treated as
+ * not-issuable (never a silent pass).
+ */
+async function registrationIssuabilityBlockers(applicationId, db) {
+  const out = [];
+  let reg;
+  try {
+    reg = (await db.query(
+      `SELECT status, is_manual, stale, stale_reason
+         FROM product_registrations
+        WHERE application_id = $1 AND is_current
+        ORDER BY created_at DESC LIMIT 1`, [applicationId])).rows[0] || null;
+  } catch (_) {
+    return [{ code: 'registration', label: 'Product registration', reason: 'Could not confirm the registration status — cannot issue.' }];
+  }
+  // No current registration → the P&P condition check already covers this; don't
+  // duplicate a blocker here.
+  if (!reg) return out;
+
+  if (reg.stale) {
+    out.push({ code: 'registration_stale', label: 'Registration is current',
+      reason: reg.stale_reason || 'The registered terms were priced on inputs that have since changed — re-register on the current inputs and issue a new term sheet.' });
+  }
+
+  // MANUAL / Manual-Program requires a recorded super-admin approval. It is
+  // approved only when there is NO open/countered escalation for the file.
+  const isManual = manualProgram.needsSuperAdminApproval({ program: reg.is_manual ? 'manual' : undefined, status: reg.status });
+  if (isManual) {
+    let pending = null;
+    try { pending = await manualProgram.pendingForApp(applicationId, db); }
+    catch (_) { pending = { unknown: true }; }
+    if (pending) {
+      out.push({ code: 'manual_approval', label: 'Super-admin exception approval',
+        reason: 'This is a manual-review structure. A super-admin must approve the exception before a term sheet can be issued.' });
+    }
+  }
+  return out;
+}
 
 async function esignSendGate(applicationId, { db = dbDefault } = {}) {
   const r = await db.query(
@@ -59,7 +108,13 @@ async function esignSendGate(applicationId, { db = dbDefault } = {}) {
     outstanding.push({ code: PRODUCT_PRICING, label: 'Product & pricing re-registered after appraisal', reason: 'Product & pricing was signed off before the appraisal (or the timing cannot be confirmed). Re-register on the appraised value and sign off again.' });
   }
 
-  return { ready: apprOk && reviewOk && ppOk, outstanding };
+  // R6.4 — MANUAL/stale registration is a hard stop for ISSUANCE (not just the
+  // borrower email). Appended after the appraisal/P&P checks so the staff UI
+  // shows every blocker at once.
+  const regBlockers = await registrationIssuabilityBlockers(applicationId, db);
+  for (const b of regBlockers) outstanding.push(b);
+
+  return { ready: apprOk && reviewOk && ppOk && regBlockers.length === 0, outstanding };
 }
 
 /**
@@ -81,4 +136,4 @@ async function appraisalBackAt(applicationId, { db = dbDefault } = {}) {
   return at ? new Date(at) : null;
 }
 
-module.exports = { esignSendGate, appraisalBackAt, APPRAISAL_BACK, APPRAISAL_REVIEW, PRODUCT_PRICING };
+module.exports = { esignSendGate, registrationIssuabilityBlockers, appraisalBackAt, APPRAISAL_BACK, APPRAISAL_REVIEW, PRODUCT_PRICING };
