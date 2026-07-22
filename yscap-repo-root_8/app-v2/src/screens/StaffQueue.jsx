@@ -281,6 +281,23 @@ function FatalAiChip({ count, days }) {
   );
 }
 
+// R4.12 — Pipeline row risk-score chip. Silent for low (<50) risk; amber for
+// elevated (50-79); crit red for critical (80+).
+function RiskScoreChip({ score }) {
+  const n = Number(score) || 0;
+  if (n < 50) return null;
+  const critical = n >= 80;
+  const bg = critical ? 'var(--crit,#B4483C)' : 'var(--amber-strong,#A05F0A)';
+  const label = critical ? 'CRIT' : 'ELEV';
+  return (
+    <span title={`AI risk score ${n} on this file (${critical ? 'critical' : 'elevated'})`}
+      style={{ marginLeft: 6, display: 'inline-flex', alignItems: 'center', gap: 3, padding: '1px 6px', borderRadius: 8,
+        background: bg, color: '#fff', fontSize: 10, fontWeight: 700, letterSpacing: '.02em', verticalAlign: 'middle' }}>
+      RISK {n} · {label}
+    </span>
+  );
+}
+
 function Row({ a }) {
   const pct = a.total_items > 0 ? Math.round((a.done_items / a.total_items) * 100) : 0;
   const off = a.loan_officer_name;
@@ -305,6 +322,7 @@ function Row({ a }) {
       <div className="q-stat">
         <span className={`pill ${PILL[a.status] || 'mut'}`}>{LABEL[a.status] || a.status}</span>
         <FatalAiChip count={a.open_fatal_ai} days={a.open_fatal_ai_oldest_days} />
+        <RiskScoreChip score={a.ai_risk_score} />
       </div>
       <div className="prog-cell">
         {a.total_items > 0

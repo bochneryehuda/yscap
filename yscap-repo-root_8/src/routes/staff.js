@@ -570,7 +570,12 @@ router.get('/applications', async (req, res) => {
                              AND s.status IN ('open','marked_important','escalated','asked_admin')) AS open_fatal_ai,
                         (SELECT EXTRACT(EPOCH FROM (now() - MIN(s.created_at)))/86400 FROM ai_suggestions s
                            WHERE s.application_id=a.id AND s.severity='fatal'
-                             AND s.status IN ('open','marked_important','escalated','asked_admin')) AS open_fatal_ai_oldest_days
+                             AND s.status IN ('open','marked_important','escalated','asked_admin')) AS open_fatal_ai_oldest_days,
+                        LEAST(100, COALESCE((SELECT
+                            SUM(CASE severity WHEN 'fatal' THEN 25 WHEN 'warning' THEN 8 WHEN 'info' THEN 2 ELSE 4 END)::int
+                          FROM ai_suggestions s
+                          WHERE s.application_id=a.id
+                            AND s.status IN ('open','marked_important','escalated','asked_admin')),0)) AS ai_risk_score
                  FROM applications a JOIN borrowers b ON b.id=a.borrower_id
                  WHERE ${where.join(' AND ')} ORDER BY ${orderBy}
                  LIMIT ${add(limit)} OFFSET ${add(offset)}`;
