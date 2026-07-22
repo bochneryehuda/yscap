@@ -243,6 +243,9 @@ app.use('/api/underwriting', require('./routes/underwriting'));
   // adds its own capability/role gate (manage_pricing for settings, super_admin
   // to decide an escalation).
   app.use('/api/admin/manual-programs', requireAuth, requireStaff, require('./routes/admin-manual-programs'));
+  // Loan policy exceptions — the super-admin review box (owner-directed 2026-07-22).
+  // Today: co-borrower guaranty waivers. list/count = manage_pricing; decide = super_admin.
+  app.use('/api/admin/exceptions', requireAuth, requireStaff, require('./routes/admin-exceptions'));
   // Sovereign 4/4 admin surface — training proposals queue (owner-directed 2026-07-21).
   app.use('/api/admin/training', requireAuth, requireStaff, require('./routes/admin-training'));
   // Azure Custom labeling console — super-admins tag past documents to train

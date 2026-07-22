@@ -664,6 +664,37 @@
   // Deferred origination fee — a % of the loan paid at EXIT (payoff). NEVER part
   // of cash-to-close or the liquidity to show. Default 0.
   function deferredOrigPct() { var e = el("tsDeferredOrig"); if (!e) return 0; var v = parseFloat(String(e.value).replace(/,/g, "")); return (isFinite(v) && v > 0) ? Math.min(100, v) : 0; }   // percent, 1 = 1%
+  // Co-borrower personal-guaranty WAIVER (owner-directed 2026-07-22). By DEFAULT
+  // both the borrower and the co-borrower personally guarantee the loan (full
+  // recourse). A super-admin APPROVED exception waives the co-borrower's guaranty —
+  // they stay a member of the borrowing entity but are not a guarantor. This is a
+  // READ-ONLY flag set on the file (never a free studio toggle); it arrives as the
+  // coBorrowerPgWaived input value ("true"/"1"). Meaningful only with a co-borrower.
+  function pgWaived() { var e = el("coBorrowerPgWaived"); if (!e) return false; var v = String(e.value == null ? e.checked : e.value).toLowerCase(); return v === "true" || v === "1" || v === "on" || v === "yes"; }
+  // Compose the guaranty / recourse wording — mirrors src/lib/term-options.js
+  // guarantySummary() so the printed sheet and the server email agree.
+  function guarantyInfo() {
+    var b = (val("borrowerName") || "").trim();
+    var co = (val("coBorrowerName") || "").trim();
+    var hasCo = !!co;
+    var waived = pgWaived() && hasCo;
+    var guarantors = waived ? [b].filter(Boolean) : [b, co].filter(Boolean);
+    var list = guarantors.join(" & ");
+    var jointly = guarantors.length > 1 ? ", jointly and severally," : "";
+    var recourseLine, disclosure;
+    if (waived) {
+      recourseLine = list
+        ? ("Full recourse. Personally guaranteed by " + list + " only. " + co + " is a member of the borrowing entity but is not a personal guarantor (approved exception).")
+        : ("Full recourse. " + co + " is a member of the borrowing entity but is not a personal guarantor (approved exception).");
+      disclosure = "This is a full-recourse loan. " + (list || "The primary borrower") + " shall execute an unconditional, continuing personal guaranty of the Loan. " + co + ", although a member of the borrowing entity, is not required to execute a personal guaranty and shall be a non-guarantor member (this guaranty waiver was granted by an approved lender exception).";
+    } else {
+      recourseLine = list ? ("Full recourse. Personally guaranteed" + jointly + " by " + list + ".") : "Full recourse. A personal guaranty is required.";
+      disclosure = guarantors.length > 1
+        ? ("This is a full-recourse loan. Repayment and performance of all obligations shall be personally guaranteed, jointly and severally, by " + list + " under an unconditional and continuing guaranty. Each guarantor may be pursued for the entire balance, not only a pro-rata share.")
+        : ("This is a full-recourse loan. Repayment and performance of all obligations shall be personally guaranteed by " + (list || "the borrower") + " under an unconditional and continuing guaranty.");
+    }
+    return { hasCo: hasCo, waived: waived, guarantors: guarantors, list: list, coName: co, recourseLine: recourseLine, disclosure: disclosure, coSignerRole: waived ? "Co-borrower / member (non-guarantor)" : "Co-borrower / guarantor" };
+  }
   // Draw fee by program (owner-directed 2026-07-22). Gold: physical only, $250.
   // Standard: hybrid $299 / physical $499. Display only.
   function drawFeeLines(prog) {
@@ -1243,6 +1274,7 @@
           y += 3;
         }
         item("Business purpose only", "This loan is made solely for business, commercial or investment purposes and is NOT for personal, family, or household (consumer) use. It is secured by non-owner-occupied real property, is not subject to consumer-mortgage (TILA / RESPA) disclosures, and requires a personal guaranty and a first-lien position.");
+        item("Personal guaranty / recourse", guarantyInfo().disclosure);
         item("Interest accrual", accrualDetail());
         item("Due diligence", "Borrower will provide all necessary due diligence to Lender.");
         item("Title", "Borrower shall provide a Title Report and Title Insurance to the satisfaction of the Lender. Lender's title coverage must be approved.");
@@ -1262,11 +1294,18 @@
       // the individual borrower/guarantor, and the co-borrower \u2014 plus the loan
       // purpose (Purchase / Refinance) and the program.
       var _tsEntity0 = (val("entityName") || "").trim(), _tsIndiv0 = (val("borrowerName") || "").trim(), _tsCo0 = (val("coBorrowerName") || "").trim();
-      var _guar = [_tsIndiv0, _tsCo0].filter(Boolean).join(" & ");
+      // Guaranty set (owner-directed 2026-07-22): both individuals guarantee by
+      // default; an approved co-borrower waiver drops the co-borrower to a
+      // non-guarantor member. _gi.list is the guarantor list (both when not waived,
+      // so the default sub-line is unchanged).
+      var _gi = guarantyInfo();
+      var _guarLabel = _gi.guarantors.length > 1 ? "Guarantors: " : "Guarantor: ";
       var primaryName = _tsEntity0 || _tsIndiv0 || "Prospective Borrower";
       var partiesSub = _tsEntity0
-        ? ("Vesting entity" + (_guar ? "  \u00b7  Guarantor" + (_tsIndiv0 && _tsCo0 ? "s" : "") + ": " + _guar : ""))
-        : (_tsCo0 ? ("Borrower & co-borrower: " + _guar) : "Individual borrower");
+        ? ("Vesting entity" + (_gi.list ? ("  \u00b7  " + _guarLabel + _gi.list) : "") + (_gi.waived ? ("  \u00b7  Member (non-guarantor): " + _tsCo0) : ""))
+        : (_tsCo0
+            ? (_gi.waived ? ("Borrower: " + _tsIndiv0 + "  \u00b7  Co-borrower (non-guarantor member): " + _tsCo0) : ("Borrower & co-borrower: " + _gi.list))
+            : "Individual borrower");
       var purposeLabel = isRefi() ? (isCashOut() ? "Cash-out refinance" : "Rate & term refinance") : "Purchase";
       var where = chk("addrTBD") ? "Property: To be determined" : ("Property: " + (val("propAddr") || "\u2014") + (val("propState") ? ", " + val("propState") : ""));
       doc.setFont("helvetica", "bold"); doc.setFontSize(11.5); doc.setTextColor.apply(doc, DARK); doc.text(pdfSafe(primaryName), M, y);
@@ -1397,6 +1436,7 @@
 
       // ---- Additional loan terms (owner-directed 2026-07-22) ----
       band("Additional loan terms");
+      rowFull("Guaranty / recourse", guarantyInfo().recourseLine);
       rowFull("Interest accrual", accrualLabel() + (accrualType() === "dutch" ? " \u2014 interest on the full committed amount" : " \u2014 interest on funds drawn"));
       if (minInterestOn(d.gold ? "gold" : "standard")) rowFull("Minimum interest", "3 months (minimum earned interest \u2014 not a prepayment penalty)");
       var _def = deferredOrigPct();
@@ -1467,7 +1507,9 @@
         var _tsHasLo = !!_tsLoName;
         var _loSub = _tsHasLo ? ("Loan officer \u2014 " + LENDER.name + (_tsLoBrand && _tsLoBrand.nmls ? (" \u00b7 NMLS " + _tsLoBrand.nmls) : "")) : "";
         if (coBorrowerName) {
-          sigBlock(sx2, coBorrowerName, "Co-borrower / authorized signatory", "/ts_b2_sig/", "/ts_b2_dt/");
+          // A waived co-borrower still SIGNS (as an authorized member of the
+          // entity) — only their role sub-line changes to "non-guarantor".
+          sigBlock(sx2, coBorrowerName, guarantyInfo().coSignerRole, "/ts_b2_sig/", "/ts_b2_dt/");
           y += 92; brk(_tsHasLo ? 178 : 86);
           if (_tsHasLo) {
             sigBlock(sx1, _tsLoName, _loSub, "/ts_lo_sig/", "/ts_lo_dt/");

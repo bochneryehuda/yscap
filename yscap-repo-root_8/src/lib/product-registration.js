@@ -292,6 +292,9 @@ function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOption
     num(s.financedReserve) > 0 ? { label: 'Financed interest reserve', value: money(s.financedReserve) } : null,
     quote.cashToClose != null ? { label: 'Estimated cash to close', value: money(quote.cashToClose) } : null,
     (quote.liquidityRequired ?? quote.liquidity) != null ? { label: 'Reserves to verify', value: money(quote.liquidityRequired ?? quote.liquidity) } : null,
+    { label: 'Guaranty', value: to.coBorrowerPgWaived === true
+        ? 'Full recourse — co-borrower’s personal guarantee waived (approved exception)'
+        : 'Full recourse — personal guarantee required' },
     { label: 'Interest accrual', value: accrualNice },
     to.firstPayment && prettyDate(to.firstPayment) ? { label: 'First payment date (estimated)', value: prettyDate(to.firstPayment) } : null,
     to.maturity && prettyDate(to.maturity) ? { label: 'Maturity date (estimated)', value: prettyDate(to.maturity) } : null,

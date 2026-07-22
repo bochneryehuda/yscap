@@ -103,6 +103,12 @@ export function buildStudioState(x) {
     // Term-sheet options (owner-directed 2026-07-22): carry the file's estimated
     // closing date into the studio so it shows and re-registers without wiping.
     estClosingDate: (x.estClosingDate && /^\d{4}-\d{2}-\d{2}/.test(String(x.estClosingDate))) ? String(x.estClosingDate).slice(0, 10) : '',
+    // Co-borrower personal-guaranty waiver (owner-directed 2026-07-22): a READ-ONLY
+    // flag set by an approved super-admin exception (applications.co_borrower_pg_waived).
+    // It drives the term sheet's guaranty wording; it is never editable in the studio
+    // and the server ignores any client value (it reads the real flag from the file).
+    coBorrowerPgWaived: (x.coBorrowerPgWaived === true || x.coBorrowerPgWaived === 1 ||
+      String(x.coBorrowerPgWaived).toLowerCase() === 'true' || String(x.coBorrowerPgWaived) === '1') ? 'true' : '',
   };
   const c = {
     isAssign,

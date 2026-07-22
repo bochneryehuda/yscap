@@ -4,6 +4,7 @@ import { useSubmitGate } from '../lib/useSubmitGate.js';
 import TermSheetStudio, {
   buildStudioState, scenarioFromEngineInputs, adminStateFromEngineInputs, blobToBase64,
 } from './TermSheetStudio.jsx';
+import GuarantyWaiverCard from './GuarantyWaiverCard.jsx';
 
 /* Product registration on a loan file — borrower AND staff logins. The panel
    shows the registered product; "Reprice / re-register" opens the real static
@@ -273,6 +274,7 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
             return (
               <>
                 <p className="muted small" style={{ margin: '10px 0 4px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Term-sheet options</p>
+                <Row k="Guaranty / recourse" v={to.coBorrowerPgWaived === true ? 'Full recourse — co-borrower guaranty waived (approved exception)' : 'Full recourse — personal guaranty required'} />
                 <Row k="Interest accrual" v={to.accrualType === 'dutch' ? 'Dutch / Full-Boat' : 'Non-Dutch / As-Drawn'} />
                 <Row k="3-month minimum interest" v={to.minInterestEnabled === true ? 'Included' : 'Not included'} />
                 {def > 0 && <Row k="Deferred origination fee (at payoff)" v={`${def}%`} />}
@@ -533,7 +535,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       // the raise-block 403 for LOs. Scenario-only choices (strategy, loan
       // type, property/rehab type, fico) stay with the registered scenario.
       const inp = typeof cur.inputs === 'string' ? JSON.parse(cur.inputs) : cur.inputs;
-      st = buildStudioState(scenarioFromEngineInputs(inp, { entityName: entity, borrowerName: name, coBorrowerName: coName, address: inp.address || addrLine(app.property_address), estClosingDate: app.est_closing_date || app.expected_closing, ...econFallback(inp), ...fileEcon() }));
+      st = buildStudioState(scenarioFromEngineInputs(inp, { entityName: entity, borrowerName: name, coBorrowerName: coName, address: inp.address || addrLine(app.property_address), estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived, ...econFallback(inp), ...fileEcon() }));
       if (isStaff) {
         // Admin knobs restore ONLY for roles the server will honor. The zone is
         // already hidden for non-admin staff (Pinchus), but the RESTORE used to
@@ -561,7 +563,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         expHolds: app.requested_exp_holds ?? inp.expHolds,
         expGround: app.requested_exp_ground ?? inp.expGround,
         fico: inp.fico || (profile && profile.fico) || '',
-        estClosingDate: app.est_closing_date || app.expected_closing,
+        estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived,
         ...econFallback(inp),
       }));
     } else {
@@ -584,7 +586,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         fico: app.fico || (profile && profile.fico) || '',
         expFlips: app.requested_exp_flips, expHolds: app.requested_exp_holds, expGround: app.requested_exp_ground,
         termMonths: app.term, irMonths: app.requested_ir_months, irAmount: app.requested_ir_amount,
-        estClosingDate: app.est_closing_date || app.expected_closing,
+        estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived,
       });
     }
     return st;
@@ -864,6 +866,10 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       )}
       {err && !openStudio && <div role="alert" className="notice err" style={{ marginTop: 10 }}>{err}</div>}
       {msg && !openStudio && <div className="notice ok" style={{ marginTop: 10 }}>{msg}</div>}
+
+      {/* Personal guaranty + the co-borrower guaranty-waiver request (staff only,
+          owner-directed 2026-07-22). Self-hides when the file has no co-borrower. */}
+      {isStaff && app && app.id && !openStudio && <GuarantyWaiverCard appId={app.id} />}
 
       {/* Request an exception to a guideline the deal otherwise follows — e.g. to
           finance MORE of an assignment fee than the 15% cap (a bigger loan).
