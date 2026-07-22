@@ -124,6 +124,23 @@ assert.strictEqual(rc.reconcile({ type: 'entity_status', value: 'ABC LLC' }, { v
 assert.strictEqual(rc.reconcile({ type: 'property_value', value: '500000' }, { value: '  ', provider: 'attom' }).status, STATUS.UNVERIFIABLE, 'a blank AVM is unverifiable');
 ok('a blank-ish SOURCE value (whitespace amount / status / AVM) is unverifiable, never a false conflict');
 
+// --- a blank / normalize-to-empty NAME on either side is unverifiable, never a FATAL false mismatch ---
+assert.strictEqual(rc.reconcile({ type: 'name', value: 'ABC LLC' }, { value: '   ', provider: 'plaid' }).status, STATUS.UNVERIFIABLE, 'a whitespace source name is not a fatal ownership mismatch');
+assert.strictEqual(rc.reconcile({ type: 'name', value: 'ABC LLC' }, { value: '\t\n', provider: 'plaid' }).status, STATUS.UNVERIFIABLE, 'a tab/newline source name is unverifiable');
+assert.strictEqual(rc.reconcile({ type: 'name', value: '.,' }, { value: 'ABC LLC', provider: 'plaid' }).status, STATUS.UNVERIFIABLE, 'a claim that normalizes to empty (punctuation only) is unverifiable, not a mismatch');
+assert.ok(!rc.reconcile({ type: 'name', value: 'ABC LLC' }, { value: '   ', provider: 'plaid' }).finding, 'no finding on a blank source name');
+ok('a blank / normalize-to-empty NAME (either side) is unverifiable, never a fatal false mismatch');
+
+// --- exists with a whitespace source is unverifiable (not a false not-found); a real false still conflicts ---
+assert.strictEqual(rc.reconcile({ type: 'exists', value: 'lien' }, { value: '   ', provider: 'attom' }).status, STATUS.UNVERIFIABLE, 'a whitespace exists source is unverifiable');
+assert.strictEqual(rc.reconcile({ type: 'exists', value: 'lien' }, { value: false, provider: 'attom' }).status, STATUS.CONFLICT, 'a real boolean false still conflicts');
+ok('exists with a whitespace source is unverifiable; a genuine false still conflicts');
+
+// --- property_value with a non-positive claimed base is unverifiable (no self-conflict on $0) ---
+assert.strictEqual(rc.reconcile({ type: 'property_value', value: 0 }, { value: 0, provider: 'attom' }).status, STATUS.UNVERIFIABLE, 'a $0 claimed value has no base to compute variance');
+assert.strictEqual(rc.reconcile({ type: 'property_value', value: '0' }, { value: '500000', provider: 'attom' }).status, STATUS.UNVERIFIABLE, 'a $0 claim never conflicts against any AVM');
+ok('property_value with a non-positive claimed base is unverifiable (no degenerate $0 self-conflict)');
+
 // --- reconcileAll: rollup, findings, coverage ---
 const batch = rc.reconcileAll([
   { claim: { type: 'name', value: 'ABC LLC', field: 'owner' }, source: { value: 'ABC LLC', provider: 'plaid' } },          // confirmed
