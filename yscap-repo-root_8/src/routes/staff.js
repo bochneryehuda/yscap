@@ -1711,7 +1711,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // Derive the key dates from the effective closing date — the one the studio
     // sent, else the one already on the file — so a re-register that doesn't
     // re-enter the date never WIPES it, and the dates re-derive when the term moves.
-    const closingForDates = rawTermOptions.estClosingDate || f.app.est_closing_date || null;
+    const closingForDates = rawTermOptions.estClosingDate || f.app.est_closing_date || f.app.expected_closing || null;
     const kd = termOpts.keyDates(closingForDates, inputs.term);
     const resolvedTermOptions = {
       accrualType: termOpts.resolveAccrual(rawTermOptions.accrualType),
@@ -6000,6 +6000,21 @@ router.post('/applications/:id/closing-date', async (req, res) => {
     // Propagate the new expected closing to ClickUp right away (scoped push —
     // only this field). actual_closing is pull-only (ClickUp owns it).
     if ('expectedClosing' in b) enqueueClickupPush(req.params.id, ['expected_closing']).catch(() => {});
+    // Keep the term-sheet closing date + its derived first-payment/maturity dates
+    // in lock-step with the canonical closing date (owner-directed 2026-07-22): the
+    // final term sheet's dates must stay correct when the closing date is edited
+    // here, not only when a product is re-registered. Best-effort; a null clears them.
+    if ('expectedClosing' in b) {
+      try {
+        const termOpts = require('../lib/term-options');
+        const trow = (await db.query(`SELECT term FROM applications WHERE id=$1`, [req.params.id])).rows[0] || {};
+        const termMonths = require('../lib/pricing').parseTermMonths(trow.term);
+        const kd = termOpts.keyDates(normExpected, termMonths);
+        await db.query(
+          `UPDATE applications SET est_closing_date=$2, first_payment_date=$3, maturity_date=$4, updated_at=now() WHERE id=$1`,
+          [req.params.id, kd.estClosing, kd.firstPayment, kd.maturity]);
+      } catch (e) { console.error('[set-closing] term-sheet date mirror failed:', db.describeError(e)); }
+    }
     if (b.expectedClosing) {
       const a = await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [req.params.id]);
       if (a.rows[0] && a.rows[0].borrower_id) {

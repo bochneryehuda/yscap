@@ -533,7 +533,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       // the raise-block 403 for LOs. Scenario-only choices (strategy, loan
       // type, property/rehab type, fico) stay with the registered scenario.
       const inp = typeof cur.inputs === 'string' ? JSON.parse(cur.inputs) : cur.inputs;
-      st = buildStudioState(scenarioFromEngineInputs(inp, { entityName: entity, borrowerName: name, coBorrowerName: coName, address: inp.address || addrLine(app.property_address), estClosingDate: app.est_closing_date, ...econFallback(inp), ...fileEcon() }));
+      st = buildStudioState(scenarioFromEngineInputs(inp, { entityName: entity, borrowerName: name, coBorrowerName: coName, address: inp.address || addrLine(app.property_address), estClosingDate: app.est_closing_date || app.expected_closing, ...econFallback(inp), ...fileEcon() }));
       if (isStaff) {
         // Admin knobs restore ONLY for roles the server will honor. The zone is
         // already hidden for non-admin staff (Pinchus), but the RESTORE used to
@@ -561,7 +561,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         expHolds: app.requested_exp_holds ?? inp.expHolds,
         expGround: app.requested_exp_ground ?? inp.expGround,
         fico: inp.fico || (profile && profile.fico) || '',
-        estClosingDate: app.est_closing_date,
+        estClosingDate: app.est_closing_date || app.expected_closing,
         ...econFallback(inp),
       }));
     } else {
@@ -584,7 +584,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         fico: app.fico || (profile && profile.fico) || '',
         expFlips: app.requested_exp_flips, expHolds: app.requested_exp_holds, expGround: app.requested_exp_ground,
         termMonths: app.term, irMonths: app.requested_ir_months, irAmount: app.requested_ir_amount,
-        estClosingDate: app.est_closing_date,
+        estClosingDate: app.est_closing_date || app.expected_closing,
       });
     }
     return st;

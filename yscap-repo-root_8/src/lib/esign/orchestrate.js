@@ -47,9 +47,17 @@ const cfg = require('../../config');
 // blank part, never throws.
 function subjectAddress(app) {
   if (!app) return '';
-  const one = String(app.addr_oneline || app.addr_formatted || app.addr_scalar || '').trim();
+  // Prefer a stored one-liner. `oneLine`/`formatted_address` are the normalized keys,
+  // but ClickUp-location and some intake shapes store `formatted`; a scalar-string
+  // property_address is the raw one-liner itself.
+  const one = String(app.addr_oneline || app.addr_formatted || app.addr_formatted2 || app.addr_scalar || '').trim();
   if (one) return one;
-  const street = [app.addr_line1 || app.addr_street, app.addr_unit].filter(Boolean).join(' ').trim();
+  // Assemble from parts. The street can live under `line1`, `street`, OR a single
+  // `address` key (the `line1 || address` fallback other surfaces use, e.g.
+  // pricing.js / admin-insights.js); an `address` holding a full one-liner with no
+  // separate city/state/zip simply composes to itself. Never adds punctuation for a
+  // blank part, never throws.
+  const street = [app.addr_line1 || app.addr_street || app.addr_address, app.addr_unit].filter(Boolean).join(' ').trim();
   const csz = [app.addr_city, [app.addr_state, app.addr_zip].filter(Boolean).join(' ').trim()].filter(Boolean).join(', ');
   return [street, csz].filter(Boolean).join(', ').trim();
 }
@@ -141,6 +149,8 @@ async function loadApplication(db, applicationId) {
             a.property_address->>'zip'    AS addr_zip,
             a.property_address->>'oneLine'           AS addr_oneline,
             a.property_address->>'formatted_address' AS addr_formatted,
+            a.property_address->>'formatted'         AS addr_formatted2,
+            a.property_address->>'address'           AS addr_address,
             CASE WHEN jsonb_typeof(a.property_address) = 'string'
                  THEN a.property_address #>> '{}' END AS addr_scalar,
             a.loan_officer_id, COALESCE(lo.full_name, a.loan_officer_name) AS officer_name,
@@ -874,7 +884,7 @@ async function sendPackage(applicationId, purpose, actor, opts = {}) {
   // post-funding servicing package (the draw request) skips it — its own prerequisites
   // are enforced by the route + validateGenerated.
   if (!spec.skipAppraisalGate) {
-    const g = await gate.esignSendGate(applicationId, { db });
+    const g = await gate.esignSendGate(applicationId, { db, purpose });
     if (!g.ready) {
       const e = new Error(`Not ready to send: ${g.outstanding.map((o) => o.label).join('; ')}`);
       e.code = 'DOCUSIGN_GATE_NOT_READY'; e.retryable = false; e.outstanding = g.outstanding; throw e;
@@ -918,5 +928,5 @@ async function sendPackage(applicationId, purpose, actor, opts = {}) {
 module.exports = {
   PACKAGES, packageSpec, buildDefinition, sendPackage,
   createOrClaimEnvelope, buildRoster, resolveRecipientIdentity, tabsFor, resolveConditionItem, latestDocument, loadApplication,
-  loadDocGenData, validateGenerated,
+  loadDocGenData, validateGenerated, subjectAddress, subjectSuffix,
 };

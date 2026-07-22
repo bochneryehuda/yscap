@@ -40,7 +40,11 @@ async function notifyReadyToSign(envelopeRowId, opts = {}) {
               e.application_id, e.purpose, e.status, e.envelope_id,
               a.ys_loan_number, a.rehab_budget,
               COALESCE(a.property_address->>'oneLine',
-                       NULLIF(concat_ws(', ', a.property_address->>'line1', a.property_address->>'city',
+                       a.property_address->>'formatted_address',
+                       a.property_address->>'formatted',
+                       NULLIF(concat_ws(', ',
+                                        COALESCE(a.property_address->>'line1', a.property_address->>'street', a.property_address->>'address'),
+                                        a.property_address->>'city',
                                         a.property_address->>'state', a.property_address->>'zip'), ''),
                        CASE WHEN jsonb_typeof(a.property_address) = 'string'
                             THEN a.property_address #>> '{}' END) AS property_label,

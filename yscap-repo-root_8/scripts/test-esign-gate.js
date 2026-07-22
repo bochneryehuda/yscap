@@ -9,9 +9,14 @@ const db = require(R + '/src/db');
 const { esignSendGate } = require(R + '/src/lib/esign/gate');
 let pass=0, fail=0; const ok=(c,m)=>{ if(c){pass++;} else {fail++; console.log('  FAIL:',m);} };
 
-async function mkApp(){
+async function mkApp(withClosing=true){
   const b = await db.query(`INSERT INTO borrowers(first_name,last_name,email) VALUES('T','B',$1) RETURNING id`,[`g${Math.random()}@e.com`]);
-  const a = await db.query(`INSERT INTO applications(borrower_id) VALUES($1) RETURNING id`,[b.rows[0].id]);
+  // Default apps carry an estimated closing date so the closing-date gate
+  // (owner-directed 2026-07-22) is satisfied and the appraisal-gate assertions
+  // below stay about the appraisal/P&P; a scenario that tests the closing
+  // requirement itself passes withClosing=false.
+  const a = await db.query(
+    `INSERT INTO applications(borrower_id${withClosing?',expected_closing':''}) VALUES($1${withClosing?",'2026-09-01'":''}) RETURNING id`,[b.rows[0].id]);
   return a.rows[0].id;
 }
 async function tmpl(code){ return (await db.query(`SELECT id FROM checklist_templates WHERE code=$1`,[code])).rows[0].id; }
@@ -67,6 +72,33 @@ const T0='2026-07-01T00:00:00Z', T1='2026-07-10T00:00:00Z', T2='2026-07-15T00:00
   await cond(app,'rtl_p1_product','satisfied',T1);   // equal
   g = await esignSendGate(app,{db});
   ok(g.ready===true, 'P&P signed exactly at appraisal time (>=) -> ready');
+
+  // 6. Estimated closing date required for the TERM SHEET package (owner-directed
+  //    2026-07-22): all appraisal/P&P conditions satisfied but NO closing date -> not ready.
+  app = await mkApp(false);   // no closing date
+  await cond(app,'rtl_cond_appraisaldocs','satisfied',T1);
+  await cond(app,'rtl_p3_apprreview','satisfied',T1);
+  await cond(app,'rtl_p1_product','satisfied',T2);
+  g = await esignSendGate(app,{db});
+  ok(g.ready===false, 'no estimated closing date -> term-sheet package NOT ready');
+  ok(g.outstanding.length===1 && g.outstanding[0].code==='expected_closing', 'only the closing date is outstanding');
+  // Heter Iska package is exempt from the closing-date requirement.
+  g = await esignSendGate(app,{db,purpose:'heter_iska'});
+  ok(g.ready===true, 'heter_iska is exempt from the closing-date requirement');
+  // expected_closing set -> ready.
+  await db.query(`UPDATE applications SET expected_closing='2026-09-01' WHERE id=$1`,[app]);
+  g = await esignSendGate(app,{db});
+  ok(g.ready===true, 'expected_closing set -> term-sheet package ready');
+  ok(g.outstanding.length===0, 'closing date set -> nothing outstanding');
+
+  // 7. The term-sheet mirror column est_closing_date alone also satisfies the gate.
+  app = await mkApp(false);
+  await cond(app,'rtl_cond_appraisaldocs','satisfied',T1);
+  await cond(app,'rtl_p3_apprreview','satisfied',T1);
+  await cond(app,'rtl_p1_product','satisfied',T2);
+  await db.query(`UPDATE applications SET est_closing_date='2026-09-01' WHERE id=$1`,[app]);
+  g = await esignSendGate(app,{db});
+  ok(g.ready===true, 'est_closing_date alone also satisfies the closing gate');
 
   console.log(`\n${pass} passed, ${fail} failed`);
   await db.pool?.end?.();
