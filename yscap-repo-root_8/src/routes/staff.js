@@ -2796,11 +2796,14 @@ router.post('/applications/:id/credit/import', async (req, res) => {
       reissueReportId: typeof b.reissueReportId === 'string' ? b.reissueReportId : undefined,
       xml: typeof b.xml === 'string' ? b.xml : undefined,
       pdfBase64: typeof b.pdfBase64 === 'string' ? b.pdfBase64 : undefined,
+      consent: b.consent === true,
       actorId: req.actor.id,
     });
     await audit(req, 'credit_import', 'application', req.params.id, {
-      source: out.source, middleScore: out.middleScore, ficoWritten: out.ficoWritten,
-      ficoMismatch: out.ficoMismatch, bureaus: out.bureausReturned, parseError: out.parseError || undefined,
+      source: out.source, pullType: out.pullType, requestType: out.requestType,
+      consentAttested: out.consentAttested, middleScore: out.middleScore, ficoWritten: out.ficoWritten,
+      ficoMismatch: out.ficoMismatch, ficoUnverified: out.ficoUnverified || undefined,
+      bureaus: out.bureausReturned, parseError: out.parseError || undefined,
     });
     res.json(out);
   } catch (e) {

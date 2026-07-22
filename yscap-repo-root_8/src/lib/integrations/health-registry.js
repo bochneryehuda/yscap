@@ -336,7 +336,7 @@ const INTEGRATIONS = [
     direction: 'Outbound', auth: 'Shared username + password',
     env: [{ name: 'XACTUS_API_URL', required: true }, { name: 'XACTUS_API_USERNAME', required: true }, { name: 'XACTUS_API_PASSWORD', required: true }],
     switches: [], liveProbe: false,
-    async probe() { const m = require('../credit/provider'); return m.configured() ? { configured: true, live: null, detail: 'Shared Xactus login is set — the Import credit button can pull. The exact request/response format is finalized against the Xactus setup guide.' } : { configured: false, live: null, detail: 'Not connected — add the shared Xactus web address, username and password (XACTUS_API_URL / XACTUS_API_USERNAME / XACTUS_API_PASSWORD) to turn on live pulls. Reports downloaded from Xactus can still be imported.' }; },
+    async probe() { const m = require('../credit/provider'); return m.configured() ? { configured: true, live: null, detail: 'Shared Xactus login is set — the Import credit button can pull. XACTUS_API_URL must be the EXACT Credit ReportX request URL Xactus gave you (the full endpoint reports are POSTed to, not just a base host).' } : { configured: false, live: null, detail: 'Not connected — add the FULL Xactus Credit ReportX request URL, username and password (XACTUS_API_URL / XACTUS_API_USERNAME / XACTUS_API_PASSWORD) to turn on live pulls. Reports downloaded from Xactus can still be imported.' }; },
   },
   {
     key: 'usps', name: 'USPS (address validation)', group: 'data',

@@ -677,7 +677,11 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
         <CreditCondition appId={appId} canPull={completer} onChanged={onChanged} />
       )}
 
-      {isDoc && (onUploadTo || itemDocs.length > 0) && (
+      {/* The credit condition's PDF/XML are managed by <CreditCondition> above
+          (download there). Suppress the generic free-form doc block for it so the
+          same files don't render twice with destructive Delete/Reject/+Add
+          controls that would orphan credit_reports' document pointers. */}
+      {isDoc && it.template_code !== 'rtl_cond_credit' && (onUploadTo || itemDocs.length > 0) && (
         <div style={{ width: '100%', paddingLeft: 20 }}
           className={(!slots && onDropTo) ? 'cond-drop' : undefined}
           onDragOver={(!slots && onDropTo) ? (e) => { e.preventDefault(); e.currentTarget.classList.add('drop-over'); } : undefined}
