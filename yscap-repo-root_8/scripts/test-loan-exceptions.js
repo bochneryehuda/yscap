@@ -108,6 +108,37 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
   ok((await db.query('SELECT co_borrower_pg_waived FROM applications WHERE id=$1', [appId])).rows[0].co_borrower_pg_waived === true,
      'an update that does not change the co-borrower keeps the flag');
 
+  // db/270 clear + the requester queue (owner-directed 2026-07-22).
+  const lo = await db.query("INSERT INTO staff_users(email,full_name,role,is_active) VALUES($1,'LO','loan_officer',true) RETURNING id", [rnd()]);
+  const loId = lo.rows[0].id;
+  const cb3 = await db.query("INSERT INTO borrowers(first_name,last_name,email) VALUES('E','Three',$1) RETURNING id", [rnd()]);
+  const app2 = await db.query('INSERT INTO applications(borrower_id,co_borrower_id) VALUES($1,$2) RETURNING id', [b.rows[0].id, cb3.rows[0].id]);
+  const app2Id = app2.rows[0].id;
+  let cx = await db.getClient(); await cx.query('BEGIN');
+  const rq = await LE.requestGuarantyWaiver(cx, { appId: app2Id, subjectBorrowerId: cb3.rows[0].id, reasonCode: 'passive_member', reasonNote: 'q', requestedBy: loId });
+  await cx.query('COMMIT'); cx.release();
+  ok((await LE.requesterOpenCount(loId)) === 1, 'requesterOpenCount counts the LO’s open request');
+  const mine = await LE.listForRequester(loId, { status: 'open' });
+  ok(mine.length === 1 && mine[0].id === rq.id && 'ys_loan_number' in mine[0], 'listForRequester returns the LO’s open request with file join');
+  // approve then clear — the flag stays, clear is housekeeping only
+  await LE.decideException(rq.id, 'approved', null, 'ok');
+  await db.query('UPDATE applications SET co_borrower_pg_waived=true WHERE id=$1', [app2Id]);
+  const cleared = await LE.clearException(rq.id, loId, 'handled');
+  ok(cleared && cleared.status === 'cleared', 'clearException moves the row to cleared');
+  ok((await db.query('SELECT co_borrower_pg_waived FROM applications WHERE id=$1', [app2Id])).rows[0].co_borrower_pg_waived === true,
+     'clear does NOT un-waive an approved waiver');
+  ok((await LE.clearException(rq.id, loId, 'x')) === null, 'a cleared row cannot be re-cleared');
+  ok((await LE.requesterOpenCount(loId)) === 0, 'a cleared request drops out of the open count');
+  // clearing a still-OPEN request frees the file for a new one (one-open index preserved)
+  let cy = await db.getClient(); await cy.query('BEGIN');
+  const rq2 = await LE.requestGuarantyWaiver(cy, { appId: app2Id, subjectBorrowerId: cb3.rows[0].id, reasonCode: 'other', reasonNote: 'y', requestedBy: loId });
+  await cy.query('COMMIT'); cy.release();
+  await LE.clearException(rq2.id, loId, 'nvm');
+  let cz = await db.getClient(); await cz.query('BEGIN');
+  const rq3 = await LE.requestGuarantyWaiver(cz, { appId: app2Id, subjectBorrowerId: cb3.rows[0].id, reasonCode: 'other', reasonNote: 'z', requestedBy: loId });
+  await cz.query('COMMIT'); cz.release();
+  ok(rq3 && rq3.status === 'requested', 'clearing an open request frees the file for a new request');
+
   await db.pool.end();
 })().then(() => {
   console.log(`\n${pass} passed, ${fail} failed`);

@@ -282,10 +282,13 @@ export default function StaffLayout({ children }) {
   const [fescCount, setFescCount] = useState(0);
   // My Notification Center draft queue — how many parked notifications are waiting for me to Send.
   const [notifDraftCount, setNotifDraftCount] = useState(0);
+  const [myExcCount, setMyExcCount] = useState(0);
   useEffect(() => {
     let alive = true;
-    const poll = () => api.workflowCount()
-      .then(r => { if (alive) setWfCount((r && r.total) || 0); }).catch(() => {});
+    const poll = () => {
+      api.workflowCount().then(r => { if (alive) setWfCount((r && r.total) || 0); }).catch(() => {});
+      api.myExceptionsCount().then(r => { if (alive) setMyExcCount((r && r.openCount) || 0); }).catch(() => {});
+    };
     poll();
     const t = setInterval(poll, 120000);
     return () => { alive = false; clearInterval(t); };
@@ -396,6 +399,9 @@ export default function StaffLayout({ children }) {
         <NavLink className="sb-link" to="/internal/workflow" title="My Workflow — every file submitted to you, in the order it arrived. Pick it up, do your part, then send it back.">
           <NavIcon name="workflow" />Workflow
           {wfCount > 0 && <span className="sb-badge">{wfCount > 99 ? '99+' : wfCount}</span>}</NavLink>
+        {myExcCount > 0 && <NavLink className="sb-link" to="/internal/my-exceptions" title="My exceptions — the exception requests you’ve raised that are waiting on a super-admin.">
+          <NavIcon name="conditions" />My exceptions
+          <span className="sb-badge">{myExcCount > 99 ? '99+' : myExcCount}</span></NavLink>}
         <NavLink className="sb-link" to="/internal/findings-review" title="Findings to review — underwriting findings a colleague couldn’t decide and escalated to you (or your role) to advise on.">
           <NavIcon name="conditions" />Findings to review
           {fescCount > 0 && <span className="sb-badge">{fescCount > 99 ? '99+' : fescCount}</span>}</NavLink>

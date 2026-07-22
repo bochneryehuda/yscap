@@ -1,39 +1,21 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Link, useLocation } from 'react-router-dom';
+import { useLocation } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
+import ExceptionCard from '../components/ExceptionCard.jsx';
 
 /* Loan policy EXCEPTIONS — the super-admin review box (owner-directed 2026-07-22).
  *
- * Today the only exception type is a co-borrower GUARANTY WAIVER: a request to
- * waive the co-borrower's personal guarantee so they are a member of the
- * borrowing entity but not a personal guarantor. Any staff member requests it on
- * the file; a super-admin approves or denies it here (with a required note).
- *
- * Deliberately clean: one row per exception, a side-by-side of the DEFAULT policy
- * vs. the REQUESTED change, the reason + note, who asked, and a single Approve /
- * Deny control. The approver can't decide their own request (server-enforced;
- * the buttons are disabled here too). */
-
-const money = (v) => (v == null || v === '' || isNaN(Number(v))) ? '—' : '$' + Number(v).toLocaleString('en-US');
-
-function fmtAddr(a) {
-  if (!a) return '';
-  if (typeof a === 'string') return a;
-  return [a.line1 || a.address || a.oneLine, a.city, a.state].filter(Boolean).join(', ');
-}
-function fmtWhen(ts) {
-  if (!ts) return '';
-  try { return new Date(ts).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }); }
-  catch (_) { return ''; }
-}
-const STATUS_TONE = { requested: 'warn', approved: 'ok', denied: 'err', withdrawn: '' };
-const STATUS_LABEL = { requested: 'Awaiting review', approved: 'Approved', denied: 'Denied', withdrawn: 'Withdrawn' };
+ * Today the only exception type is a co-borrower GUARANTY WAIVER. Any staff member
+ * requests it on the file; a super-admin approves or denies it here (with a
+ * required note), and either party can CLEAR (archive) a handled one. Each row is
+ * the shared ExceptionCard — rich file detail + one-click deep-links into the file
+ * and its sections. The approver can't decide their own request (server-enforced;
+ * buttons disabled here too). */
 
 export default function StaffExceptions() {
-  const { can, role } = useAuth();
+  const { role } = useAuth();
   const location = useLocation();
-  const canManage = can('manage_pricing');
   const isSuper = role === 'super_admin';
   const focusAppId = new URLSearchParams(location.search).get('app') || '';
 
@@ -63,7 +45,6 @@ export default function StaffExceptions() {
 
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [statusFilter]);
 
-  // Deep-link pulse to the focused file's row.
   useEffect(() => {
     if (!focusAppId || !rows.length) return;
     const hit = rows.find((r) => r.application_id === focusAppId);
@@ -87,12 +68,18 @@ export default function StaffExceptions() {
     finally { setBusy(''); }
   }
 
-  if (!canManage) {
-    return <div className="wrap"><div className="notice">You don’t have access to the Exceptions box.</div></div>;
+  async function clear(row) {
+    setBusy(row.id);
+    try {
+      await api.clearLoanException(row.id, notes[row.id] || '');
+      flash(true, 'Exception cleared.');
+      await load();
+    } catch (e) { flash(false, (e && e.message) || 'could not clear the exception'); }
+    finally { setBusy(''); }
   }
 
-  const filters = ['open', 'approved', 'denied', 'withdrawn', 'all'];
-  const filterLabel = { open: 'Awaiting review', approved: 'Approved', denied: 'Denied', withdrawn: 'Withdrawn', all: 'All' };
+  const filters = ['open', 'approved', 'denied', 'withdrawn', 'cleared', 'all'];
+  const filterLabel = { open: 'Awaiting review', approved: 'Approved', denied: 'Denied', withdrawn: 'Withdrawn', cleared: 'Cleared', all: 'All' };
 
   return (
     <div className="wrap" style={{ maxWidth: 940 }}>
@@ -103,8 +90,8 @@ export default function StaffExceptions() {
       <p className="muted" style={{ marginTop: 6 }}>
         Requests to make an exception to a loan policy. Today: waiving a co-borrower’s personal guarantee (they
         stay a member of the borrowing entity but are not a personal guarantor). {isSuper
-          ? 'You can approve or deny each one — a short note is required.'
-          : 'Only a super-admin can approve or deny; you can review the queue.'}
+          ? 'Approve or deny each one — a short note is required — then clear it when it’s handled.'
+          : 'Only a super-admin can approve or deny; you can review the queue and clear a handled one.'}
       </p>
 
       {msg && <div className={`notice ${msg.ok ? 'ok' : 'err'}`} style={{ marginTop: 8 }}>{msg.text}</div>}
@@ -120,49 +107,18 @@ export default function StaffExceptions() {
       {rows.length === 0 && <div className="notice">No exceptions {statusFilter === 'all' ? '' : `(${filterLabel[statusFilter].toLowerCase()})`} right now.</div>}
 
       {rows.map((r) => {
-        const subject = [r.subject_first, r.subject_last].filter(Boolean).join(' ') || 'the co-borrower';
-        const borrower = [r.first_name, r.last_name].filter(Boolean).join(' ');
         const open = r.status === 'requested';
         const ownRequest = r.requested_by && actorId && r.requested_by === actorId;
-        const reasonLabel = reasonCodes[r.reason_code] || r.reason_code || '—';
+        const canClear = r.status !== 'cleared' && (isSuper || ownRequest);
         return (
-          <div key={r.id} ref={(el) => { rowRefs.current[r.id] = el; }}
-            className="panel" style={{ marginBottom: 12, outline: highlightId === r.id ? '2px solid #AE8746' : 'none', transition: 'outline .3s' }}>
-            <div className="row" style={{ alignItems: 'baseline', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
-              <div>
-                <Link to={`/internal/app/${r.application_id}`} style={{ fontWeight: 600 }}>
-                  {borrower || 'File'}{r.ys_loan_number ? ` · ${r.ys_loan_number}` : ''}
-                </Link>
-                <div className="muted small">{fmtAddr(r.property_address)}{r.loan_amount != null ? ` · ${money(r.loan_amount)}` : ''}</div>
-              </div>
-              <span className={`ts-badge ${STATUS_TONE[r.status] || ''}`}>{STATUS_LABEL[r.status] || r.status}</span>
-            </div>
-
-            {/* Default policy vs. requested change — the whole decision on one line. */}
-            <div className="row" style={{ gap: 12, flexWrap: 'wrap', marginTop: 10 }}>
-              <div style={{ flex: '1 1 220px' }}>
-                <div className="muted small" style={{ textTransform: 'uppercase', letterSpacing: '.06em' }}>Default policy</div>
-                <div>Full recourse — both borrowers personally guarantee.</div>
-              </div>
-              <div style={{ flex: '1 1 220px' }}>
-                <div className="muted small" style={{ textTransform: 'uppercase', letterSpacing: '.06em' }}>Requested change</div>
-                <div>Waive <b>{subject}</b>’s personal guarantee — {subject} becomes a non-guarantor member; the primary borrower remains sole guarantor.</div>
-              </div>
-            </div>
-
-            <div className="metrow" style={{ marginTop: 8 }}><span className="k">Reason</span><span className="v">{reasonLabel}</span></div>
-            {r.reason_note && <div className="notice" style={{ marginTop: 6, whiteSpace: 'pre-wrap' }}>{r.reason_note}</div>}
-            <div className="muted small" style={{ marginTop: 6 }}>
-              Requested by {r.requested_by_name || 'a team member'} · {fmtWhen(r.requested_at || r.created_at)}
-              {r.decided_at && <> · {r.status === 'approved' ? 'Approved' : r.status === 'denied' ? 'Denied' : 'Decided'} by {r.decided_by_name || 'a super-admin'} · {fmtWhen(r.decided_at)}</>}
-            </div>
-            {!open && r.decision_note && <div className="muted small" style={{ marginTop: 4 }}>Decision note: {r.decision_note}</div>}
-
-            {open && canDecide && (
+          <ExceptionCard key={r.id} r={r} reasonCodes={reasonCodes}
+            highlight={highlightId === r.id} forwardRef={(el) => { rowRefs.current[r.id] = el; }}>
+            {(open && canDecide) || canClear ? (
               <div style={{ marginTop: 10, borderTop: '1px solid var(--hair,#e7e2d6)', paddingTop: 10 }}>
-                {ownRequest ? (
-                  <div className="muted small">You requested this exception — another super-admin must approve or deny it.</div>
-                ) : (
+                {open && canDecide && ownRequest && (
+                  <div className="muted small" style={{ marginBottom: 6 }}>You requested this exception — another super-admin must approve or deny it.</div>
+                )}
+                {open && canDecide && !ownRequest && (
                   <>
                     <textarea className="input" rows={2} style={{ width: '100%' }}
                       placeholder="Decision note (required) — e.g. approved: strong primary guarantor; low LTV."
@@ -171,16 +127,20 @@ export default function StaffExceptions() {
                       <button className="btn primary small" disabled={busy === r.id || !(notes[r.id] || '').trim()} onClick={() => decide(r, 'approved')}>
                         {busy === r.id ? 'Saving…' : 'Approve waiver'}
                       </button>
-                      <button className="btn ghost small" disabled={busy === r.id || !(notes[r.id] || '').trim()} onClick={() => decide(r, 'denied')}>
-                        Deny
-                      </button>
+                      <button className="btn ghost small" disabled={busy === r.id || !(notes[r.id] || '').trim()} onClick={() => decide(r, 'denied')}>Deny</button>
                     </div>
                   </>
                 )}
+                {open && !canDecide && <div className="muted small">Only a super-admin can approve or deny this request.</div>}
+                {canClear && (
+                  <div className="row" style={{ gap: 8, marginTop: open && canDecide && !ownRequest ? 8 : 0, alignItems: 'center' }}>
+                    <button className="btn ghost small" disabled={busy === r.id} onClick={() => clear(r)}>Clear (archive)</button>
+                    <span className="muted small">Closes this out of the active queue. Doesn’t change the waiver.</span>
+                  </div>
+                )}
               </div>
-            )}
-            {open && !canDecide && <div className="muted small" style={{ marginTop: 8 }}>Only a super-admin can approve or deny this request.</div>}
-          </div>
+            ) : null}
+          </ExceptionCard>
         );
       })}
     </div>
