@@ -90,6 +90,24 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
   // list filters
   const openList = await LE.listExceptions({ status: 'open' });
   ok(Array.isArray(openList), 'listExceptions returns an array');
+
+  // db/269 trigger: a co-borrower CHANGE resets the waiver flag + withdraws any
+  // open request (the waiver named the OLD co-borrower and can't transfer).
+  const cb2 = await db.query("INSERT INTO borrowers(first_name,last_name,email) VALUES('C','Two',$1) RETURNING id", [rnd()]);
+  await db.query('UPDATE applications SET co_borrower_pg_waived=true WHERE id=$1', [appId]);
+  let c9 = await db.getClient(); await c9.query('BEGIN');
+  await LE.requestGuarantyWaiver(c9, { appId, subjectBorrowerId: cb.rows[0].id, reasonCode: 'other', reasonNote: 'x', requestedBy: null });
+  await c9.query('COMMIT'); c9.release();
+  await db.query('UPDATE applications SET co_borrower_id=$2 WHERE id=$1', [appId, cb2.rows[0].id]);   // swap co-borrower
+  const swap = (await db.query('SELECT co_borrower_pg_waived FROM applications WHERE id=$1', [appId])).rows[0];
+  ok(swap.co_borrower_pg_waived === false, 'co-borrower swap resets the waiver flag to false');
+  ok((await LE.openForApp(appId)) === null, 'co-borrower swap withdraws the open guaranty-waiver request');
+  // an unrelated applications update must NOT reset the flag
+  await db.query('UPDATE applications SET co_borrower_pg_waived=true WHERE id=$1', [appId]);
+  await db.query('UPDATE applications SET updated_at=now() WHERE id=$1', [appId]);
+  ok((await db.query('SELECT co_borrower_pg_waived FROM applications WHERE id=$1', [appId])).rows[0].co_borrower_pg_waived === true,
+     'an update that does not change the co-borrower keeps the flag');
+
   await db.pool.end();
 })().then(() => {
   console.log(`\n${pass} passed, ${fail} failed`);
