@@ -1499,6 +1499,68 @@ router.post('/:appId/ai-suggestions/:id/decide', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+/**
+ * Splitter action (R3.19). Turn a `splitter` suggestion into one child `documents`
+ * row per segment, filed under a human-picked target condition. Body:
+ *   { segments: [ { pages:[1,2,3], docType:'bank_statement', checklistItemId:'ci-uuid', slotLabel? } ] }
+ * Preserves the ORIGINAL document bytes (each child points at the same storage_ref with
+ * a slot_label naming the page range) — a follow-up will physically slice the PDF once
+ * pdf-lib lands as a dep. Per HARD RULE the AI never files anything on its own; this route
+ * only runs after a human clicks 'Split + File' on the AI Findings panel.
+ */
+router.post('/:appId/ai-suggestions/:id/split-and-file', requirePermission('sign_off_conditions'), async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const client = await db.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const sug = (await client.query(`SELECT * FROM ai_suggestions WHERE id=$1 AND application_id=$2`, [req.params.id, app.id])).rows[0];
+      if (!sug) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'suggestion not found on this file' }); }
+      if (sug.source !== 'splitter') { await client.query('ROLLBACK'); return res.status(400).json({ error: 'not a splitter suggestion' }); }
+      const src = sug.document_id ? (await client.query(`SELECT id, filename, content_type, storage_provider, storage_ref, size_bytes, borrower_id FROM documents WHERE id=$1`, [sug.document_id])).rows[0] : null;
+      if (!src) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'source document not found' }); }
+      const body = req.body || {};
+      const segments = Array.isArray(body.segments) ? body.segments : [];
+      if (!segments.length) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'segments[] required' }); }
+
+      const created = [];
+      for (const seg of segments) {
+        const pages = Array.isArray(seg.pages) ? seg.pages.filter(Number.isFinite).sort((a, b) => a - b) : [];
+        if (!pages.length || !seg.checklistItemId) continue;
+        const slotLabel = String(seg.slotLabel || `${prettyType(seg.docType)} (pp ${pages.join(', ')} of ${src.filename})`).slice(0, 80);
+        // Confirm the target checklist_item belongs to this file.
+        const target = (await client.query(`SELECT id FROM checklist_items WHERE id=$1 AND application_id=$2`, [seg.checklistItemId, app.id])).rows[0];
+        if (!target) continue;
+        const ins = await client.query(
+          `INSERT INTO documents (application_id, checklist_item_id, borrower_id, filename, content_type,
+                                  size_bytes, storage_provider, storage_ref,
+                                  uploaded_by_kind, uploaded_by_id, slot_label, visibility)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,$10,'staff_only')
+           RETURNING id`,
+          [app.id, seg.checklistItemId, src.borrower_id, `${(seg.docType || 'part')}—${src.filename}`,
+           src.content_type, src.size_bytes, src.storage_provider, src.storage_ref,
+           req.actor.staffId, slotLabel]);
+        created.push({ id: ins.rows[0].id, checklistItemId: seg.checklistItemId, pages });
+      }
+
+      // Close the suggestion — dismiss with a note that names the resulting child docs.
+      await require('../lib/underwriting/ai-suggestions').decide(client, req.params.id, {
+        action: 'dismiss',
+        reason: `Split into ${created.length} child document(s) via the splitter suggestion.`,
+        staffId: req.actor.staffId,
+      });
+      await client.query('COMMIT');
+      res.json({ ok: true, created });
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+  } catch (e) { next(e); }
+});
+function prettyType(t) {
+  return ({ bank_statement: 'Bank statement', insurance: 'Insurance dec', operating_agreement: 'Operating agreement',
+    drivers_license: 'ID', settlement: 'Settlement', purchase_contract: 'Purchase contract' }[t]) || String(t || 'Part');
+}
+
 router.post('/:appId/ai-suggestions/:id/note', async (req, res, next) => {
   try {
     const app = await fileFor(req, req.params.appId);
