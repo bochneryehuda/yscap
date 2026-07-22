@@ -168,9 +168,12 @@ async function persistFindingIfDisagreement(client, appId, report) {
   const docValue = `AVM median $${Math.round(report.consensus.median).toLocaleString('en-US')}`;
   const fileValue = `Appraisal ARV $${Math.round(report.appraisal.value).toLocaleString('en-US')}`;
   if (cur.rowCount) {
+    // document_findings has no `updated_at` column (checked db/schema.sql +
+    // every ALTER through db/229 + 232) — writing it would throw and poison
+    // the caller's transaction (audit finding [A], 2026-07-22).
     await client.query(
       `UPDATE document_findings
-          SET doc_value=$2, file_value=$3, how_to=$4, title=$5, updated_at=now()
+          SET doc_value=$2, file_value=$3, how_to=$4, title=$5
         WHERE id=$1`, [cur.rows[0].id, docValue, fileValue, howTo, title]);
     return { id: cur.rows[0].id, action: 'updated', message: c.message };
   }

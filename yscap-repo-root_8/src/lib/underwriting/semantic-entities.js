@@ -201,15 +201,36 @@ function extract(text, opts = {}) {
   return deduped;
 }
 
+// The db/233 CHECK on entity_type. Enforced here so a bad type is REJECTED
+// before it reaches Postgres — one rejected row would otherwise poison the
+// caller's transaction (see the SAVEPOINT belt-and-suspenders below).
+const VALID_ENTITY_TYPES = new Set([
+  'person', 'entity', 'money', 'date', 'address', 'license', 'email', 'phone', 'id_number',
+]);
+
 /**
- * Persist a batch of entities from an extraction. Best-effort — per-row
- * failures don't stop the batch. Runs on the caller's transaction.
+ * Persist a batch of entities from an extraction. Runs on the caller's
+ * transaction — per-row isolation via SAVEPOINT so a single bad row (a future
+ * entity_type not in the CHECK list, a malformed number) can't abort the
+ * outer BEGIN/COMMIT and silently rollback the extraction + findings + twin
+ * observations alongside (audit finding [H], 2026-07-22).
+ * @returns {{inserted:number, rejected:number}}
  */
 async function persistFromExtraction(client, { appId, documentId, extractionId, entities } = {}) {
-  if (!extractionId || !Array.isArray(entities) || !entities.length) return { inserted: 0 };
-  let inserted = 0;
+  if (!extractionId || !Array.isArray(entities) || !entities.length) return { inserted: 0, rejected: 0 };
+  let inserted = 0, rejected = 0;
   for (const e of entities) {
+    // Pre-flight: reject an entity_type the CHECK doesn't allow. Skipping in
+    // JS means we never send the offending row to Postgres — no SQLSTATE
+    // 23514 that would need a SAVEPOINT rollback.
+    if (!e || !VALID_ENTITY_TYPES.has(e.entity_type)) { rejected += 1; continue; }
+    if (e.entity_value == null || e.entity_value === '') { rejected += 1; continue; }
+    // SAVEPOINT-per-row so any UNEXPECTED Postgres error on a single INSERT
+    // (a runtime CHECK failure we didn't foresee, a numeric range issue) is
+    // ROLLBACK-TO-SAVEPOINTed cleanly instead of poisoning the outer tx.
+    // The BEGIN/COMMIT boundary is the caller's — we operate inside it.
     try {
+      await client.query('SAVEPOINT se_row');
       await client.query(
         `INSERT INTO document_entities
            (application_id, document_id, extraction_id, entity_type, entity_value,
@@ -222,10 +243,15 @@ async function persistFromExtraction(client, { appId, documentId, extractionId, 
          e.role_hint || null,
          Number.isFinite(e.page_number) ? e.page_number : null,
          e.confidence != null ? Number(e.confidence) : null]);
+      await client.query('RELEASE SAVEPOINT se_row');
       inserted += 1;
-    } catch (_) { /* per-row failure never stops the batch */ }
+    } catch (_) {
+      try { await client.query('ROLLBACK TO SAVEPOINT se_row'); } catch (_2) { /* the SAVEPOINT itself may have failed — safe to ignore */ }
+      try { await client.query('RELEASE SAVEPOINT se_row'); } catch (_3) { /* idempotent-ish cleanup */ }
+      rejected += 1;
+    }
   }
-  return { inserted };
+  return { inserted, rejected };
 }
 
 module.exports = { extract, persistFromExtraction, _internals: { MONEY_RE, DATE_RE, ENTITY_RE, ROLE_ANCHORS } };
