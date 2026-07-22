@@ -30,6 +30,7 @@ import AppraisalPanel from '../components/AppraisalPanel.jsx';
 import UnderwritingPanel from '../components/UnderwritingPanel.jsx';
 import StaticToolFrame from '../components/StaticToolFrame.jsx';
 import AddConditionPanel from '../components/AddConditionPanel.jsx';
+import { strayConditionReason, strayConfirmText } from '../lib/conditionLabel.js';
 import StaffChangeRequests from '../components/StaffChangeRequests.jsx';
 import FileContacts from '../components/FileContacts.jsx';
 import DocPreview from '../components/DocPreview.jsx';
@@ -2763,13 +2764,17 @@ export default function StaffApplication() {
     finally { setBusyAct(''); }
   }
   async function addLoanCondition() {
-    if (!cForm.title.trim() || busyAct) return;   // double-submit created the condition twice
+    const title = cForm.title.trim();
+    if (!title || busyAct) return;   // double-submit created the condition twice
+    const reason = strayConditionReason(title);
+    if (reason && !window.confirm(strayConfirmText(reason, title))) return;
     setBusyAct('addcond');
     try {
       await api.staffAddLoanCondition(id, {
-        title: cForm.title.trim(),
-        borrowerTitle: cForm.audience !== 'staff' ? cForm.title.trim() : undefined,
+        title,
+        borrowerTitle: cForm.audience !== 'staff' ? title : undefined,
         audience: cForm.audience, severity: cForm.severity,
+        confirmStrayLabel: reason ? true : undefined,
       });
       setCForm({ title: '', audience: 'staff', severity: 'standard' }); flash('Condition added ✓'); await load();
     } catch (e) { setErr(e.message || 'Could not add condition'); }
@@ -2779,8 +2784,11 @@ export default function StaffApplication() {
   async function waiveCond(cid) { if (busyAct) return; const r = window.prompt('Waive this condition — reason (required):'); if (!r) return; setBusyAct('cond:' + cid); try { await api.staffWaiveCondition(cid, r); flash('Waived ✓'); await load(); } catch (e) { setErr(e.message); } finally { setBusyAct(''); } }
   async function reviewCond(cid, reviewed) { if (busyAct) return; setBusyAct('cond:' + cid); try { await api.staffReviewCondition(cid, reviewed); flash(reviewed ? 'Marked reviewed ✓' : 'Review cleared'); await load(); } catch (e) { setErr(e.message); } finally { setBusyAct(''); } }
   async function addCondition() {
-    if (!newCond.trim()) return;
-    try { await api.staffAddCondition(id, { label: newCond.trim(), audience: 'staff' }); setNewCond(''); flash('Added ✓'); await load(); }
+    const label = newCond.trim();
+    if (!label) return;
+    const reason = strayConditionReason(label);
+    if (reason && !window.confirm(strayConfirmText(reason, label))) return;
+    try { await api.staffAddCondition(id, { label, audience: 'staff', confirmStrayLabel: reason ? true : undefined }); setNewCond(''); flash('Added ✓'); await load(); }
     catch (e) { setErr(e.message || 'Failed'); }
   }
 
