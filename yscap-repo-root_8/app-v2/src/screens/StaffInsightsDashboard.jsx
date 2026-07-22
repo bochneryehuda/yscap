@@ -119,6 +119,18 @@ export default function StaffInsightsDashboard() {
         </div>
       ))}
 
+      <h3 style={{ marginTop: 22 }}>AI spend by loan officer — last 30 days</h3>
+      {(d.aiCostByOfficer || []).length === 0 && <Empty>No per-officer AI spend recorded.</Empty>}
+      {(d.aiCostByOfficer || []).map((r) => (
+        <div key={r.officer_email} style={{ display: 'flex', gap: 10, padding: '3px 0', borderBottom: '1px dashed var(--paper,#E9E4D3)', fontSize: 12 }}>
+          <span style={{ flex: 1, minWidth: 0 }}>
+            <b>{r.officer_name}</b>
+            <span style={{ color: 'var(--muted,#4B585C)', marginLeft: 6 }}>· {r.files} file{r.files === 1 ? '' : 's'} · {r.calls} call{r.calls === 1 ? '' : 's'}</span>
+          </span>
+          <span style={{ fontWeight: 700, color: 'var(--ivory,#141B22)', minWidth: 70, textAlign: 'right' }}>${(r.cents / 100).toFixed(2)}</span>
+        </div>
+      ))}
+
       <h3 style={{ marginTop: 22 }}>AI decisions this week</h3>
       {(d.decisionsThisWeek || []).length === 0 && <Empty>No AI decisions logged in the last 7 days.</Empty>}
       {(d.decisionsThisWeek || []).length > 0 && (

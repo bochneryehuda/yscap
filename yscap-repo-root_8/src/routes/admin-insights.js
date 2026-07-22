@@ -25,6 +25,7 @@ router.get('/', requireRole('admin'), async (req, res) => {
       topSuggestionCodes,
       agedFatalAiFiles,
       decisionsThisWeek,
+      aiCostByOfficer,
     ] = await Promise.all([
       db.query(
         `SELECT severity, COUNT(*)::int AS n
@@ -83,9 +84,24 @@ router.get('/', requireRole('admin'), async (req, res) => {
            FROM ai_suggestions
           WHERE decided_at > now() - interval '7 days'
           GROUP BY status ORDER BY n DESC`),
+      // R4.9 — Top-10 loan officers by AI spend in the last 30 days.
+      db.query(
+        `SELECT COALESCE(u.email, 'unassigned') AS officer_email,
+                COALESCE(u.full_name, 'Unassigned') AS officer_name,
+                COALESCE(SUM(e.cost_cents),0)::int AS cents,
+                COUNT(*)::int AS calls,
+                COUNT(DISTINCT e.application_id)::int AS files
+           FROM ai_cost_events e
+           LEFT JOIN applications a ON a.id = e.application_id AND a.deleted_at IS NULL
+           LEFT JOIN staff_users u ON u.id = a.loan_officer_id
+          WHERE e.created_at > now() - interval '30 days'
+          GROUP BY u.email, u.full_name
+         HAVING COALESCE(SUM(e.cost_cents),0) > 0
+          ORDER BY cents DESC
+          LIMIT 10`),
     ]).catch(() => {
       // On any single-query failure, return an empty shape rather than 500 the whole dashboard.
-      return [ { rows: [] }, { rows: [] }, { rows: [] }, { rows: [] }, { rows: [{ cents: 0, n: 0 }] }, { rows: [] }, { rows: [] }, { rows: [] } ];
+      return [ { rows: [] }, { rows: [] }, { rows: [] }, { rows: [] }, { rows: [{ cents: 0, n: 0 }] }, { rows: [] }, { rows: [] }, { rows: [] }, { rows: [] } ];
     });
 
     // Recent AI-related audit trail (best-effort — table may not always exist on
@@ -110,6 +126,7 @@ router.get('/', requireRole('admin'), async (req, res) => {
       topSuggestionCodes: topSuggestionCodes.rows,
       agedFatalAiFiles: agedFatalAiFiles.rows,
       decisionsThisWeek: decisionsThisWeek.rows,
+      aiCostByOfficer: aiCostByOfficer.rows,
       recentDecisions,
     });
   } catch (e) { res.status(500).json({ error: e.message || 'insights load failed' }); }
