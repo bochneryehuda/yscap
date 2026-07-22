@@ -1283,9 +1283,46 @@ async function resendBorrowerInvite(appId) {
     const res = await client.assignBorrower(link.sitewire_property_id, email);
     if (res && res.__dryrun) return { ok: true, sitewire: 'dryrun', email };
     await journal({ appId, propertyId: link.sitewire_property_id, entity: 'borrower', field: 'contact_email', newValue: email, source: 'resend_invite' });
+    // A successful assign resolves any stuck borrower_assign_failed review on the file (matches
+    // the same auto-close the reconcile self-heal writes on the next pass — but here it happens
+    // instantly on the Retry-push click, so the coordinator sees the row clear on refresh).
+    try {
+      await db.query(
+        `UPDATE sync_review_queue
+            SET status='resolved', auto_resolved=true, resolved_at=now(),
+                resolution_note='auto-closed — borrower assign retried successfully'
+          WHERE status='open' AND application_id=$1 AND field_key='sitewire'
+            AND task_id LIKE 'sitewire:%:sitewire_borrower_assign_failed%'`,
+        [appId]);
+    } catch (_) {}
     return { ok: true, sitewire: 'synced', email };
   } catch (e) {
     if (e.retryable) return { error: 'transient' };
+    // Owner-directed 2026-07-22: on 422/409, RE-READ the property live before returning an
+    // error — Sitewire returns those statuses when the borrower is ALREADY assigned/invited
+    // with the same email (a "not actually a failure" case). If live shows the borrower
+    // present, that IS success — journal + close the stuck review + return ok.
+    const status = e && e.status;
+    if (status === 422 || status === 409) {
+      try {
+        const live = await client.getProperty(link.sitewire_property_id);
+        const bs = live && live.borrower && String(live.borrower.status || '').toLowerCase();
+        const be = live && live.borrower && String(live.borrower.contact_email || '').toLowerCase();
+        if ((bs === 'assigned' || bs === 'invited') && be === String(email).toLowerCase()) {
+          await journal({ appId, propertyId: link.sitewire_property_id, entity: 'borrower', field: 'contact_email', newValue: email, source: 'resend_reconciled_from_422', changed: false });
+          try {
+            await db.query(
+              `UPDATE sync_review_queue
+                  SET status='resolved', auto_resolved=true, resolved_at=now(),
+                      resolution_note='auto-closed — Sitewire already has the borrower assigned/invited with this email'
+                WHERE status='open' AND application_id=$1 AND field_key='sitewire'
+                  AND task_id LIKE 'sitewire:%:sitewire_borrower_assign_failed%'`,
+              [appId]);
+          } catch (_) {}
+          return { ok: true, sitewire: 'already_assigned', email };
+        }
+      } catch (_) { /* re-read failed — fall through */ }
+    }
     return { error: 'sitewire_' + ((e && e.status) || 'error') };
   }
 }
