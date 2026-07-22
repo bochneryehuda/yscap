@@ -81,6 +81,15 @@ assert.strictEqual(corpus.summary.passRate, 0.5);
 assert.strictEqual(corpus.summary.totalFalseClears, 1, 'the corpus reports the total false clears (the release-gate number)');
 ok('scoreCorpus rolls up pass rate, means, and total false clears for a release gate');
 
+// --- boundary matching is strictly one-to-one (a corrupt golden case can't inflate precision > 1) ---
+r = gs.scoreCase(
+  { documents: [{ docType: 'x', pages: [1, 2] }, { docType: 'y', pages: [1, 2] }] }, // two golden docs, same page set
+  { documents: [{ docType: 'x', pages: [1, 2] }] }, // one actual doc
+);
+assert.strictEqual(r.boundaries.matched, 1, 'one actual doc can match at most one golden doc');
+assert.ok(r.boundaries.precision <= 1, 'precision can never exceed 1.0');
+ok('boundary matching is one-to-one — a duplicate golden page-set cannot inflate precision above 1.0');
+
 // --- empty / junk input is safe ---
 assert.doesNotThrow(() => gs.scoreCase(null, null));
 assert.strictEqual(gs.scoreCorpus([]).summary.total, 0);

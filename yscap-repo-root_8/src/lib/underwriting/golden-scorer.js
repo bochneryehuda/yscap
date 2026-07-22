@@ -26,12 +26,17 @@ function pageKey(pages) { return (Array.isArray(pages) ? pages : []).map(Number)
 function scoreBoundaries(goldenDocs, actualDocs) {
   const g = (goldenDocs || []).map((d) => ({ key: pageKey(d.pages), docType: d.docType }));
   const a = (actualDocs || []).map((d) => ({ key: pageKey(d.pages), docType: d.docType }));
+  // Bucket actual docs by page-set key; matching CONSUMES an actual doc so it is
+  // strictly one-to-one — two golden docs with the same page set can't both match
+  // one actual doc (which would push matched > actual and precision above 1.0,
+  // masking a regression the release gate reads).
   const aByKey = new Map();
-  a.forEach((d) => { if (!aByKey.has(d.key)) aByKey.set(d.key, d); });
+  a.forEach((d) => { const arr = aByKey.get(d.key) || []; arr.push(d); aByKey.set(d.key, arr); });
   let matched = 0;
   const pairs = [];
   for (const gd of g) {
-    if (gd.key && aByKey.has(gd.key)) { matched++; pairs.push({ golden: gd, actual: aByKey.get(gd.key) }); }
+    const bucket = gd.key ? aByKey.get(gd.key) : null;
+    if (bucket && bucket.length) { matched++; pairs.push({ golden: gd, actual: bucket.shift() }); }
   }
   return {
     expected: g.length, actual: a.length, matched,
