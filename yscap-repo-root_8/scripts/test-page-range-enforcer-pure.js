@@ -109,6 +109,15 @@ assert.ok(Date.now() - t0 < 500, 'an oversized start/end range returns instantly
 assert.strictEqual(pe.planSlices([{ id: 'b', start: 1, end: 1000000000 }]).plans[0].valid, false, 'an oversized span is invalid');
 ok('a document referencing a huge page or an oversized start/end range is invalid, never a RangeError/hang');
 
+// --- an over-cap page in a { pages } LIST is SURFACED as out-of-bounds, not silently dropped ---
+// (parity with the start/end path: a scrubbed hallucinated page reference must leave a signal)
+r = pe.planSlices([{ id: 'mix', pages: [5, 100001] }]); // 100001 exceeds the magnitude cap
+assert.strictEqual(plan(r, 'mix').valid, false, 'a doc referencing an over-cap page is invalid');
+assert.ok(r.coverage.outOfBounds.some((o) => o.id === 'mix' && o.pages.includes(100001)), 'the over-cap page is reported in outOfBounds, not silently scrubbed');
+assert.deepStrictEqual(plan(r, 'mix').runs, [{ start: 5, end: 5 }], 'the in-bounds page stays sliceable');
+assert.strictEqual(r.ok, false, 'an over-cap reference fails the plan like any out-of-bounds page');
+ok('an over-cap page in a { pages } list is surfaced as out-of-bounds (consistent with the start/end path)');
+
 // --- an inverted explicit range (end < start) is invalid, not silently collapsed to one page ---
 r = pe.planSlices([{ id: 'inv', start: 5, end: 2 }], { totalPages: 10 });
 assert.strictEqual(plan(r, 'inv').valid, false, 'end < start is flagged invalid, not reduced to page 5');

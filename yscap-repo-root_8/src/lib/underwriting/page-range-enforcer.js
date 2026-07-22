@@ -102,8 +102,16 @@ function planSlices(documents, opts = {}) {
 
   for (const d of docs) {
     const allPages = pagesOf(d);
+    // A referenced page above the magnitude cap was scrubbed by pagesOf (so no
+    // loop enumerates a billion pages). SURFACE it as out-of-bounds rather than
+    // silently dropping a hallucinated page reference — this keeps the { pages }
+    // path consistent with the { start, end } path (which invalidates on an
+    // oversized end) and gives a reviewer the signal that a bad page was ignored.
+    const overCap = Array.isArray(d && d.pages)
+      ? [...new Set(d.pages.map(Number).filter((n) => Number.isInteger(n) && n > MAX_PAGE))].sort((a, b) => a - b)
+      : [];
     const inBounds = allPages.filter((p) => p >= 1 && p <= totalPages);
-    const oob = allPages.filter((p) => p < 1 || p > totalPages);
+    const oob = allPages.filter((p) => p < 1 || p > totalPages).concat(overCap);
     if (oob.length) outOfBounds.push({ id: d.id, pages: oob });
 
     for (const p of inBounds) { const arr = owners.get(p) || []; arr.push(d.id); owners.set(p, arr); }
