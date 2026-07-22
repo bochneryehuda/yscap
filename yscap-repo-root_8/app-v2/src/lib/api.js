@@ -490,6 +490,7 @@ export const api = {
   aiSilencedCodesList:    () => req('GET', '/api/admin/insights/silenced-codes'),
   aiSilencedCodesAdd:     (code, reason) => req('POST', '/api/admin/insights/silenced-codes', { code, reason }),
   aiSilencedCodesRemove:  (code) => req('DELETE', `/api/admin/insights/silenced-codes/${encodeURIComponent(code)}`),
+  aiSilencedCodesHistory: () => req('GET', '/api/admin/insights/silenced-codes/history'),
   insightsFilesWithSuggestion: (params = {}) => {
     const qs = new URLSearchParams(params).toString();
     return req('GET', `/api/admin/insights/files-with-suggestion${qs ? '?' + qs : ''}`);

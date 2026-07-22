@@ -209,14 +209,42 @@ router.post('/silenced-codes', requireRole('super_admin'), async (req, res) => {
        VALUES ($1,$2,$3)
        ON CONFLICT (code) DO UPDATE SET reason=EXCLUDED.reason, silenced_by=EXCLUDED.silenced_by, silenced_at=now()`,
       [code, reason, req.actor.staffId || null]);
+    // R4.20 — audit trail: who silenced what, when, why. Best-effort.
+    try {
+      await db.query(
+        `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+         VALUES ('staff',$1,'ai_code_silenced','ai_silenced_code',NULL,$2::jsonb)`,
+        [req.actor.staffId || null, JSON.stringify({ code, reason })]);
+    } catch (_) { /* additive */ }
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message || 'mute failed' }); }
 });
 router.delete('/silenced-codes/:code', requireRole('super_admin'), async (req, res) => {
   try {
-    await db.query(`DELETE FROM ai_silenced_codes WHERE code=$1`, [req.params.code]);
+    const code = String(req.params.code || '');
+    await db.query(`DELETE FROM ai_silenced_codes WHERE code=$1`, [code]);
+    // R4.20 — audit the un-mute too.
+    try {
+      await db.query(
+        `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+         VALUES ('staff',$1,'ai_code_unsilenced','ai_silenced_code',NULL,$2::jsonb)`,
+        [req.actor.staffId || null, JSON.stringify({ code })]);
+    } catch (_) { /* additive */ }
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message || 'unmute failed' }); }
+});
+// R4.20 — the silence/un-silence history rail. Reads audit_log, newest first.
+router.get('/silenced-codes/history', requireRole('super_admin'), async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT l.action, l.detail, l.created_at, u.email AS actor_email, u.full_name AS actor_name
+         FROM audit_log l
+         LEFT JOIN staff_users u ON u.id = l.actor_id
+        WHERE l.action IN ('ai_code_silenced','ai_code_unsilenced')
+        ORDER BY l.created_at DESC
+        LIMIT 100`);
+    res.json({ ok: true, history: r.rows });
+  } catch (e) { res.status(500).json({ error: e.message || 'history load failed' }); }
 });
 
 // R4.3 — Regulator-ready AI decision audit CSV export. Every ai_suggestion

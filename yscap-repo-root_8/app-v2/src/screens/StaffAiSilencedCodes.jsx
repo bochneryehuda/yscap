@@ -11,6 +11,7 @@ export default function StaffAiSilencedCodes() {
   const [err, setErr] = useState('');
   const [code, setCode] = useState('');
   const [reason, setReason] = useState('');
+  const [history, setHistory] = useState(null);
   const load = useCallback(async () => {
     setBusy(true); setErr('');
     try {
@@ -18,6 +19,11 @@ export default function StaffAiSilencedCodes() {
       setRows((r && r.codes) || []);
     } catch (e) { setErr((e && e.message) || 'Failed to load.'); }
     finally { setBusy(false); }
+    // R4.20 — the silence/un-silence history rail. Best-effort — never blocks the list.
+    try {
+      const h = await api.aiSilencedCodesHistory();
+      setHistory((h && h.history) || []);
+    } catch (_) { setHistory([]); }
   }, []);
   useEffect(() => { load(); }, [load]);
   const add = async () => {
@@ -78,6 +84,27 @@ export default function StaffAiSilencedCodes() {
               <button className="btn ghost small" onClick={() => remove(r.code)}>Un-mute</button>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* R4.20 — audit trail: every mute + un-mute, newest first. */}
+      {history && history.length > 0 && (
+        <div style={{ marginTop: 26 }}>
+          <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted,#4B585C)', fontWeight: 700, marginBottom: 8 }}>History</div>
+          <div style={{ border: '1px solid var(--paper,#E9E4D3)', borderRadius: 12, overflow: 'hidden' }}>
+            {history.map((h, i) => {
+              const d = h.detail || {};
+              const muted = h.action === 'ai_code_silenced';
+              return (
+                <div key={i} style={{ display: 'flex', gap: 10, padding: '7px 12px', borderTop: i ? '1px solid var(--paper,#E9E4D3)' : 'none', fontSize: 12, alignItems: 'baseline' }}>
+                  <span style={{ minWidth: 66, fontWeight: 700, color: muted ? 'var(--crit,#B4483C)' : 'var(--good,#3F7A5B)' }}>{muted ? 'Muted' : 'Un-muted'}</span>
+                  <span style={{ fontFamily: 'ui-monospace,monospace', minWidth: 0, flexShrink: 0 }}>{d.code || '—'}</span>
+                  <span style={{ flex: 1, minWidth: 0, color: 'var(--muted,#4B585C)' }}>{d.reason || ''}</span>
+                  <span className="muted small" style={{ whiteSpace: 'nowrap' }}>{h.actor_name || h.actor_email || 'staff'} · {h.created_at ? new Date(h.created_at).toLocaleDateString() : ''}</span>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>
