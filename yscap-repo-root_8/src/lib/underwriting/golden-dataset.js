@@ -37,6 +37,16 @@ const FATAL_WORDS = new Set(['fatal', 'critical', 'severe', 'blocker', 'material
 function normKey(v) { return String(v == null ? '' : v).toLowerCase().replace(/[^a-z0-9]+/g, ''); }
 function num(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
 
+// A stable string signature of an input value for the de-dupe key. Guards against a
+// circular / unserializable object (JSON.stringify would throw) so the module keeps
+// its never-throws contract — an unserializable input just contributes an empty
+// signature (the component + verdict pair still distinguishes it).
+function inputSig(input) {
+  if (input == null) return '';
+  if (typeof input === 'string') return input;
+  try { return JSON.stringify(input); } catch (_e) { return ''; }
+}
+
 /**
  * classifyCorrection(correction) → { tier, weight, direction, component, key } | null.
  *   correction: { id?, component?, aiVerdict|ai_decision, correctVerdict|humanVerdict|correct,
@@ -72,7 +82,7 @@ function classifyCorrection(correction) {
   // Stable de-dupe key: an explicit id wins; else component + the verdict pair +
   // a light input signature, so the same correction submitted twice collapses.
   const key = c.id != null ? `id:${String(c.id)}`
-    : `${normKey(component)}|${cmp.aiVerdict}|${cmp.humanVerdict}|${normKey(typeof c.input === 'string' ? c.input : JSON.stringify(c.input || ''))}`;
+    : `${normKey(component)}|${cmp.aiVerdict}|${cmp.humanVerdict}|${normKey(inputSig(c.input))}`;
 
   return { tier, weight, direction: cmp.class, component, key };
 }

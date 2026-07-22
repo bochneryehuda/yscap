@@ -86,6 +86,11 @@ assert.deepStrictEqual(gd.buildDataset([]).cases, []);
 assert.doesNotThrow(() => gd.buildDataset([null, 'junk', {}, { component: 'x' }]));
 assert.strictEqual(gd.buildDataset([null, 'junk', {}]).skipped, 3, 'null/junk/agree-less are skipped, not crashes');
 assert.strictEqual(gd.classifyCorrection(null), null);
+// a circular input (no id) must not throw when building the de-dupe key
+const circ = { component: 'title', aiVerdict: 'clear', correctVerdict: 'declined' };
+circ.input = circ; // circular
+assert.doesNotThrow(() => gd.buildDataset([circ]), 'a circular input never throws (JSON.stringify guarded)');
+assert.strictEqual(gd.buildDataset([circ]).selected, 1, 'a circular-input correction is still classified');
 ok('empty / null / junk input is safe (never throws)');
 
 console.log(`\nR5.44 golden-dataset pure — ${passed} checks passed`);
