@@ -23,6 +23,7 @@ router.get('/', requireRole('admin'), async (req, res) => {
       trainingProposals,
       aiSpendMonth,
       topSuggestionCodes,
+      agedFatalAiFiles,
     ] = await Promise.all([
       db.query(
         `SELECT severity, COUNT(*)::int AS n
@@ -59,9 +60,25 @@ router.get('/', requireRole('admin'), async (req, res) => {
           GROUP BY bucket
           ORDER BY n DESC
           LIMIT 15`),
+      // R3.41 — top-N files with open fatal AI findings, oldest-first.
+      db.query(
+        `SELECT a.id AS application_id, a.property_address, a.status AS app_status, a.program,
+                b.first_name, b.last_name,
+                COUNT(*)::int AS open_fatal,
+                EXTRACT(EPOCH FROM (now() - MIN(s.created_at)))/86400 AS oldest_days,
+                MAX(s.created_at) AS most_recent
+           FROM ai_suggestions s
+           JOIN applications a ON a.id = s.application_id AND a.deleted_at IS NULL
+           LEFT JOIN borrowers b ON b.id = a.borrower_id
+          WHERE s.severity='fatal'
+            AND s.status IN ('open','marked_important','escalated','asked_admin')
+            AND a.status NOT IN ('withdrawn','cancelled','declined')
+          GROUP BY a.id, a.property_address, a.status, a.program, b.first_name, b.last_name
+          ORDER BY oldest_days DESC NULLS LAST
+          LIMIT 20`),
     ]).catch(() => {
       // On any single-query failure, return an empty shape rather than 500 the whole dashboard.
-      return [ { rows: [] }, { rows: [] }, { rows: [] }, { rows: [] }, { rows: [{ cents: 0, n: 0 }] }, { rows: [] } ];
+      return [ { rows: [] }, { rows: [] }, { rows: [] }, { rows: [] }, { rows: [{ cents: 0, n: 0 }] }, { rows: [] }, { rows: [] } ];
     });
 
     // Recent AI-related audit trail (best-effort — table may not always exist on
@@ -84,6 +101,7 @@ router.get('/', requireRole('admin'), async (req, res) => {
       trainingProposals: trainingProposals.rows,
       aiSpend30d: aiSpendMonth.rows[0] || { cents: 0, n: 0 },
       topSuggestionCodes: topSuggestionCodes.rows,
+      agedFatalAiFiles: agedFatalAiFiles.rows,
       recentDecisions,
     });
   } catch (e) { res.status(500).json({ error: e.message || 'insights load failed' }); }

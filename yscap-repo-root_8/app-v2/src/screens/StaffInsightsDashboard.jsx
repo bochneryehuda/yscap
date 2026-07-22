@@ -119,6 +119,24 @@ export default function StaffInsightsDashboard() {
         </div>
       ))}
 
+      <h3 style={{ marginTop: 22 }}>Files with aging fatal AI findings</h3>
+      {(d.agedFatalAiFiles || []).length === 0 && <Empty>None — no open fatal AI findings on any file.</Empty>}
+      {(d.agedFatalAiFiles || []).map((r) => {
+        const days = Math.floor(Number(r.oldest_days) || 0);
+        const tint = days >= 3 ? 'var(--crit,#B4483C)' : days >= 1 ? 'var(--amber-strong,#A05F0A)' : 'var(--amber,#B7791F)';
+        const addr = (r.property_address && (r.property_address.line1 || r.property_address.address || r.property_address.oneLine)) || r.application_id.slice(0, 8);
+        return (
+          <div key={r.application_id} style={{ display: 'flex', gap: 10, padding: '4px 0', borderBottom: '1px dashed var(--paper,#E9E4D3)', fontSize: 12 }}>
+            <span style={{ minWidth: 70, color: tint, fontWeight: 700 }}>{days >= 1 ? `${days}d old` : '<1d'}</span>
+            <span style={{ flex: 1 }}>
+              <Link to={`/staff/applications/${r.application_id}`} style={{ color: 'var(--teal-deep,#256168)' }}>{addr}</Link>
+              {' — '}<span style={{ color: 'var(--muted,#4B585C)' }}>{r.first_name} {r.last_name} · {r.program || 'no program'} · {r.app_status}</span>
+            </span>
+            <span style={{ color: tint, fontWeight: 700, minWidth: 24, textAlign: 'right' }}>{r.open_fatal}</span>
+          </div>
+        );
+      })}
+
       <h3 style={{ marginTop: 22 }}>Recent human decisions on AI suggestions</h3>
       {(d.recentDecisions || []).length === 0 && <Empty>No recent decisions.</Empty>}
       {(d.recentDecisions || []).map((r) => (
