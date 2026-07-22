@@ -502,6 +502,15 @@ router.get('/:appId', async (req, res, next) => {
           // with the wrong document" suggestion when the type doesn't match.
           // Dormant when the classifier isn't configured; capped per run.
           try { await require('../lib/underwriting/bad-clearance').scanFile(c, app.id, { maxConditions: 15 }); } catch (_) { /* additive */ }
+          // R3.23 — Public-records cross-check (advisory): seller/grantor/appraisal
+          // owner + vesting/buyer chain mismatches → ai_suggestions. Best-effort.
+          try {
+            await require('../lib/underwriting/public-records-crosscheck').analyzeAndRecord(c, {
+              applicationId: app.id,
+              fileCtx: { vestingName: mctx && mctx.vestingName },
+              extractions: exts.rows,
+            });
+          } catch (_) { /* additive */ }
           await c.query('COMMIT');
         } catch (_) { await c.query('ROLLBACK').catch(() => {}); }
         finally { c.release(); }
