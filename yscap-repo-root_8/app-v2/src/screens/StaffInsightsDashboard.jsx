@@ -119,6 +119,74 @@ export default function StaffInsightsDashboard() {
         </div>
       ))}
 
+      <AiStackTile />
+      <SilencedCodesTicker />
+
+      <h3 style={{ marginTop: 22 }}>AI spend by loan officer — last 30 days</h3>
+      {(d.aiCostByOfficer || []).length === 0 && <Empty>No per-officer AI spend recorded.</Empty>}
+      {(d.aiCostByOfficer || []).map((r) => (
+        <div key={r.officer_email} style={{ display: 'flex', gap: 10, padding: '3px 0', borderBottom: '1px dashed var(--paper,#E9E4D3)', fontSize: 12 }}>
+          <span style={{ flex: 1, minWidth: 0 }}>
+            <b>{r.officer_name}</b>
+            <span style={{ color: 'var(--muted,#4B585C)', marginLeft: 6 }}>· {r.files} file{r.files === 1 ? '' : 's'} · {r.calls} call{r.calls === 1 ? '' : 's'}</span>
+          </span>
+          <span style={{ fontWeight: 700, color: 'var(--ivory,#141B22)', minWidth: 70, textAlign: 'right' }}>${(r.cents / 100).toFixed(2)}</span>
+        </div>
+      ))}
+
+      <h3 style={{ marginTop: 22 }}>AI decisions this week</h3>
+      {(d.decisionsThisWeek || []).length === 0 && <Empty>No AI decisions logged in the last 7 days.</Empty>}
+      {(d.decisionsThisWeek || []).length > 0 && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+          {(d.decisionsThisWeek || []).map((r) => {
+            const label = String(r.status || '').replace(/_/g, ' ');
+            const tone = r.status === 'dismissed' ? 'var(--muted,#4B585C)'
+              : r.status === 'converted_to_condition' || r.status === 'converted_to_task' ? 'var(--good,#3F7A5B)'
+              : r.status === 'escalated' || r.status === 'marked_important' ? 'var(--amber,#B7791F)'
+              : r.status === 'asked_admin' || r.status === 'answered' ? 'var(--gold,#AE8746)'
+              : 'var(--teal-deep,#256168)';
+            return (
+              <span key={r.status} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 8px', borderRadius: 8, background: 'var(--card,#fff)', border: `1px solid ${tone}`, color: tone, fontSize: 12, fontWeight: 600 }}>
+                {label} <b style={{ fontSize: 13 }}>{r.n}</b>
+              </span>
+            );
+          })}
+        </div>
+      )}
+
+      {/* R4.18 — AI acceptance rate: signal of AI usefulness. Team accepted
+          (converted / filed / escalated / marked-important) vs dismissed. */}
+      {(() => {
+        const a = d.acceptanceRate || {};
+        const dw = Number(a.decided_wk) || 0;
+        const xw = Number(a.dismissed_wk) || 0;
+        const dall = Number(a.decided_all) || 0;
+        const xall = Number(a.dismissed_all) || 0;
+        const pctWk = dw > 0 ? Math.round(((dw - xw) / dw) * 100) : null;
+        const pctAll = dall > 0 ? Math.round(((dall - xall) / dall) * 100) : null;
+        const tone = (p) => p == null ? 'var(--muted,#4B585C)' : p >= 70 ? 'var(--good,#3F7A5B)' : p >= 40 ? 'var(--amber,#B7791F)' : 'var(--crit,#B4483C)';
+        return (
+          <div style={{ marginTop: 22 }}>
+            <h3 style={{ margin: '0 0 8px 0' }}>AI acceptance rate</h3>
+            <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginBottom: 8 }}>
+              Share of decided AI suggestions the team KEPT (converted, filed, escalated, marked important) vs dismissed. Higher is better.
+            </div>
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 160, padding: 12, borderRadius: 10, border: '1px solid var(--paper,#E9E4D3)', background: 'var(--card,#fff)' }}>
+                <div style={{ fontSize: 11, color: 'var(--muted,#4B585C)', textTransform: 'uppercase', letterSpacing: 0.4 }}>This week</div>
+                <div style={{ fontSize: 28, fontWeight: 700, color: tone(pctWk), marginTop: 4 }}>{pctWk == null ? '—' : `${pctWk}%`}</div>
+                <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginTop: 2 }}>{dw} decided · {xw} dismissed</div>
+              </div>
+              <div style={{ flex: 1, minWidth: 160, padding: 12, borderRadius: 10, border: '1px solid var(--paper,#E9E4D3)', background: 'var(--card,#fff)' }}>
+                <div style={{ fontSize: 11, color: 'var(--muted,#4B585C)', textTransform: 'uppercase', letterSpacing: 0.4 }}>All time</div>
+                <div style={{ fontSize: 28, fontWeight: 700, color: tone(pctAll), marginTop: 4 }}>{pctAll == null ? '—' : `${pctAll}%`}</div>
+                <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginTop: 2 }}>{dall} decided · {xall} dismissed</div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       <h3 style={{ marginTop: 22 }}>Files with aging fatal AI findings</h3>
       {(d.agedFatalAiFiles || []).length === 0 && <Empty>None — no open fatal AI findings on any file.</Empty>}
       {(d.agedFatalAiFiles || []).map((r) => {
@@ -173,6 +241,89 @@ function Row({ label, count, color }) {
     </div>
   );
 }
+// R4.15 — Recently silenced codes ticker. Any admin+ sees the last 5 muted
+// codes so the team knows what the super-admin has silenced portfolio-wide.
+// Silent when no codes are muted.
+function SilencedCodesTicker() {
+  const [rows, setRows] = React.useState(null);
+  React.useEffect(() => { api.aiSilencedCodesList().then((r) => setRows((r && r.codes) || [])).catch(() => setRows([])); }, []);
+  if (!rows || rows.length === 0) return null;
+  return (
+    <div style={{ marginTop: 12, padding: '6px 10px', border: '1px dashed var(--muted,#4B585C)', borderRadius: 8, background: 'var(--paper,#F6F3EC)' }}>
+      <span style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.06em', fontWeight: 700, color: 'var(--muted,#4B585C)', marginRight: 8 }}>Silenced portfolio-wide</span>
+      {rows.slice(0, 5).map((r) => (
+        <span key={r.code} title={r.reason}
+          style={{ display: 'inline-block', margin: '2px 4px 2px 0', padding: '1px 6px', background: 'var(--card,#fff)', border: '1px solid var(--muted,#4B585C)', borderRadius: 6, fontSize: 11, fontFamily: 'ui-monospace,monospace', color: 'var(--muted,#4B585C)' }}>
+          🔇 {r.code}
+        </span>
+      ))}
+      <Link to="/internal/ai-silenced-codes" style={{ fontSize: 11, marginLeft: 6 }}>manage →</Link>
+    </div>
+  );
+}
+
+// R4.11 — AI stack status tile. Reads /api/admin/insights/ai-stack (super_admin
+// only). Silent for non-super_admins (403 returns null). Green pill per enabled
+// component; muted grey per disabled component.
+function AiStackTile() {
+  const [data, setData] = React.useState(null);
+  React.useEffect(() => { api.insightsAiStack().then((r) => setData((r && r.stack) ? r : null)).catch(() => setData(null)); }, []);
+  if (!data) return null;
+  const S = data.stack || {};
+  const av = data.artifactVersions || null;
+  const items = [
+    ['Langfuse tracer', S.langfuse],
+    ['Azure OpenAI (GPT)', S.azureOpenAI],
+    ['Azure Document AI', S.azureDocumentAI],
+    ['Azure Custom classifier', S.azureCustomClassifier],
+    ['Azure Neural extractor', S.azureNeuralExtractor],
+    ['Google Document AI', S.googleDocumentAI],
+    ['Mistral OCR', S.mistralOcr],
+    ['Per-file cost cap', S.perFileCostCap],
+    ['Nightly cross-doc sweep', S.nightlyCrossdocSweep],
+    ['Scheduled digests', S.notifyDigests],
+    ['Render auto-deploy hook', S.renderDeployHook],
+  ];
+  return (
+    <div style={{ marginTop: 22, border: '1px solid var(--paper,#E9E4D3)', borderRadius: 12, padding: 12, background: 'var(--card,#fff)' }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 6 }}>
+        <h3 style={{ margin: 0 }}>AI stack — what's live on this deploy</h3>
+        <span className="muted small">{Object.values(S).filter(v => v && v.enabled).length}/{items.length} configured</span>
+      </div>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {items.map(([label, v]) => {
+          const on = !!(v && v.enabled);
+          const tone = on ? 'var(--good,#3F7A5B)' : 'var(--muted,#4B585C)';
+          return (
+            <span key={label} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '3px 8px', borderRadius: 8, fontSize: 11, border: `1px solid ${tone}`, color: tone, background: on ? 'rgba(63,122,91,.08)' : 'transparent' }}>
+              <span aria-hidden="true">{on ? '●' : '○'}</span>
+              {label}
+              {on && v.capUsd ? ` · $${v.capUsd.toFixed(2)}` : ''}
+            </span>
+          );
+        })}
+      </div>
+      {/* R5.5 — independent artifact versions, so a super-admin can see which
+          part of the pipeline is at which revision (why a decision changed). */}
+      {av && av.versions && (
+        <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px dashed var(--paper,#E9E4D3)' }}>
+          <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted,#4B585C)', fontWeight: 700, marginBottom: 4 }}>
+            Artifact versions <span style={{ fontFamily: 'ui-monospace,monospace', fontWeight: 400 }}>· {av.composite}</span>
+          </div>
+          <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+            {Object.entries(av.versions).map(([k, val]) => (
+              <span key={k} title={`${k}: ${val}`}
+                style={{ padding: '1px 6px', borderRadius: 6, fontSize: 10.5, fontFamily: 'ui-monospace,monospace', border: '1px solid var(--paper,#E9E4D3)', color: 'var(--muted,#4B585C)' }}>
+                {k}:{val}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // R3.36 — 7-day mini-sparkline. Pure inline SVG, no chart lib.
 function AiCostSpark() {
   const [rows, setRows] = React.useState([]);

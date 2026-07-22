@@ -288,7 +288,7 @@ router.get('/:appId', async (req, res, next) => {
     // any doc whose denormalized owner differs), OR one of this file's ENTITY's documents (llc_id).
     const docsOnFile = await db.query(
       `SELECT d.id, d.filename, d.doc_kind, d.checklist_item_id, t.code AS condition_code,
-              COALESCE(t.label, t.code) AS condition_label,
+              COALESCE(t.label, t.code) AS condition_label, d.page_bounded,
               d.authenticity_score, d.authenticity_level, d.authenticity_signals
          FROM documents d
          LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
@@ -331,7 +331,10 @@ router.get('/:appId', async (req, res, next) => {
       // (isReadable), or the count here would include a type the reader skips (e.g. a document under
       // the appraisal-documents condition → 'appraisal', which the appraisal desk owns, not this
       // reader) and the desk's "read them all" button would never clear a stuck count.
-      if (!analyzed && expectedType && registry.get(expectedType)) autoReadQueue.push(row);
+      // R5.1 — a failed-slice split child (page_bounded=false) still references
+      // the whole package; keep it OUT of the auto-read queue so it's never read
+      // as if it were one logical document. Matches selectAutoReadQueue's guard.
+      if (!analyzed && expectedType && registry.get(expectedType) && d.page_bounded !== false) autoReadQueue.push(row);
     }
 
     // Data-comparison / tie-out over the file's current extractions + the appraisal.
@@ -502,6 +505,13 @@ router.get('/:appId', async (req, res, next) => {
           // with the wrong document" suggestion when the type doesn't match.
           // Dormant when the classifier isn't configured; capped per run.
           try { await require('../lib/underwriting/bad-clearance').scanFile(c, app.id, { maxConditions: 15 }); } catch (_) { /* additive */ }
+          // R4.2 — Identity chain deep check: SSN/DOB/name mismatches across
+          // every borrower-carrying doc → ai_suggestions. Best-effort.
+          try {
+            await require('../lib/underwriting/identity-chain').analyzeAndRecord(c, {
+              applicationId: app.id, extractions: exts.rows,
+            });
+          } catch (_) { /* additive */ }
           // R3.23 — Public-records cross-check (advisory): seller/grantor/appraisal
           // owner + vesting/buyer chain mismatches → ai_suggestions. Best-effort.
           try {
@@ -559,10 +569,23 @@ router.get('/:appId', async (req, res, next) => {
       });
     }
 
+    // R5.20/R5.24 — root-cause clustering: group the open findings into the
+    // smallest set of upstream causes, each with the single most likely fix and
+    // the symptoms it would clear. Deterministic + pure; organizes existing
+    // findings into a hypothesis, never clears anything.
+    let rootCauses = [];
+    try {
+      const { analyzeRootCauses } = require('../lib/underwriting/root-cause');
+      rootCauses = analyzeRootCauses(openAll.map((f) => ({
+        id: f.id || null, code: f.code, severity: f.severity, title: f.title,
+      }))).rootCauses;
+    } catch (_) { rootCauses = []; }
+
     res.json({
       escalatedFindings: escalatedByFinding,
       fraudBanner,
       verdict,
+      rootCauses,
       // AUS: which program this file is underwritten against + that program's governing thresholds.
       programGuidelines,
       extractions,
@@ -642,7 +665,7 @@ router.get('/:appId', async (req, res, next) => {
 // the borrower is matched, not the file's LLC — the staff document picker is scoped the same way.
 async function fileDoc(app, documentId) {
   return (await db.query(
-    `SELECT id, application_id, borrower_id, filename, content_type, storage_provider, storage_ref, sha256
+    `SELECT id, application_id, borrower_id, filename, content_type, storage_provider, storage_ref, sha256, page_bounded
        FROM documents
       WHERE id=$1 AND is_current
         AND (application_id=$2 OR (application_id IS NULL AND borrower_id IS NOT NULL AND borrower_id=$3))`,
@@ -661,6 +684,11 @@ async function analyzeOneDocument(app, doc, docType, opts = {}) {
   const base = { documentId: doc.id, filename: doc.filename, docType };
   try {
     if (!doc.storage_ref) return { ...base, ok: false, error: 'no_stored_file' };
+    // R5.1 — a split child whose physical slice FAILED (page_bounded=false) still
+    // references the WHOLE source package. Refuse to analyze it as one logical
+    // document here too (the auto paths already skip it) — analyzing it would
+    // reproduce the packet contamination this fix prevents. Re-split or re-upload.
+    if (doc.page_bounded === false) return { ...base, ok: false, error: 'unbounded_split_child' };
 
     const ctx = await fileView.loadContext(db, app.id);
     const subject = fileView.subjectFor(docType, ctx);
@@ -803,6 +831,7 @@ router.post('/:appId/documents/:documentId/analyze', async (req, res, next) => {
     if (r.error === 'cooldown') return res.status(429).json({ error: `this document was just analyzed — try again in ${r.retryAfterSeconds}s`, retryAfterSeconds: r.retryAfterSeconds });
     if (r.error === 'too_large') return res.status(413).json({ error: `this document is too large to analyze (limit ${Math.round(MAX_ANALYZE_BYTES / (1024 * 1024))} MB)` });
     if (r.error === 'storage_read_failed' || r.error === 'no_stored_file') return res.status(422).json({ error: 'could not read the stored document' });
+    if (r.error === 'unbounded_split_child') return res.status(422).json({ error: 'this split part could not be page-bounded to its own pages — re-split or re-upload it before analyzing' });
     if (r.error === 'analyze_failed') return next(r.cause || new Error(r.message || 'analyze failed'));
     res.json({
       ok: r.ok, docType, cached: !!r.cached, extractionId: r.extractionId,
@@ -832,7 +861,7 @@ async function buildAutoReadQueue(app) {
   const a0 = (await db.query(`SELECT llc_id FROM applications WHERE id=$1`, [app.id])).rows[0] || {};
   const [docs, exts] = await Promise.all([
     db.query(
-      `SELECT d.id, d.filename, d.doc_kind, t.code AS condition_code
+      `SELECT d.id, d.filename, d.doc_kind, d.page_bounded, t.code AS condition_code
          FROM documents d
          LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
          LEFT JOIN checklist_templates t ON t.id = ci.template_id
@@ -1450,6 +1479,141 @@ router.get('/:appId/knowledge-graph', async (req, res, next) => {
 // -------------------------------------------------------------------------
 // AI cost telemetry (R2.11, owner-directed 2026-07-22) — per-file rollup.
 // -------------------------------------------------------------------------
+/**
+ * R4.1 — File-level AI risk score. Single 0–100 number that aggregates every
+ * open ai_suggestion on the file:
+ *   fatal   = 25 points each
+ *   warning = 8
+ *   info    = 2
+ * capped at 100. Bucketed as low(<20), moderate(20-49), elevated(50-79),
+ * critical(80+). Zero when the AI hasn't found anything. Pure count — no cost.
+ * Composes with R3.40's pipeline chip: the chip signals COUNT, this signals
+ * SEVERITY-WEIGHTED risk.
+ */
+/**
+ * R4.6 — Bulk-dismiss every OPEN AI suggestion on this file. Admin-only.
+ * Useful for a test file, a closed file, or a file where the team has already
+ * eyeballed every suggestion outside the panel. Every dismissal goes through
+ * ai-suggestions.decide() so the R3.42 auto-close-linked-admin-questions and
+ * the ai_audit trail both fire per row. Body optional: { reason }.
+ */
+/**
+ * R4.7 — Manual "Re-run AI checks" trigger. Runs every deterministic detector
+ * (entity chain / seller chain / bank / bad-clearance / public-records /
+ * identity chain) in one shot so an LO who just uploaded a doc can force a
+ * re-check without waiting for the next file view render. Zero paid AI cost —
+ * the crossdoc + committee AI calls stay behind their own explicit buttons.
+ */
+router.post('/:appId/ai-suggestions/rerun-checks', requirePermission('sign_off_conditions'), async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const client = await db.pool.connect();
+    const ran = { entity_chain: 0, bank: 0, bad_clearance: 0, public_records: 0, identity_chain: 0 };
+    try {
+      await client.query('BEGIN');
+      const exts = await client.query(
+        `SELECT doc_type, document_id, fields FROM document_extractions
+          WHERE application_id=$1 AND status='ok' ORDER BY created_at DESC LIMIT 60`, [app.id]);
+      const mctx = await fileView.loadContext(client, app.id).catch(() => ({}));
+      const bridges = [
+        ['entity_chain',    () => require('../lib/underwriting/entity-chain').analyzeAndRecord(client, { applicationId: app.id, fileCtx: mctx, extractions: exts.rows })],
+        ['bank',            () => require('../lib/underwriting/bank-statement-checks').analyzeAndRecord(client, { applicationId: app.id, extractions: exts.rows })],
+        ['bad_clearance',   () => require('../lib/underwriting/bad-clearance').scanFile(client, app.id, { maxConditions: 15 })],
+        ['public_records',  () => require('../lib/underwriting/public-records-crosscheck').analyzeAndRecord(client, { applicationId: app.id, fileCtx: { vestingName: mctx && mctx.vestingName }, extractions: exts.rows })],
+        ['identity_chain',  () => require('../lib/underwriting/identity-chain').analyzeAndRecord(client, { applicationId: app.id, extractions: exts.rows })],
+      ];
+      for (const [k, fn] of bridges) {
+        try { const r = await fn(); ran[k] = (r && r.recorded) || 0; } catch (_) { /* additive */ }
+      }
+      // R4.16 — stamp the file so the AI Findings panel can show a 'Last re-run' time.
+      try {
+        await client.query(
+          `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+           VALUES ('staff',$1,'ai_checks_rerun','application',$2,$3::jsonb)`,
+          [req.actor.staffId, app.id, JSON.stringify({ ran, at: new Date().toISOString() })]);
+      } catch (_) { /* additive */ }
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+    res.json({ ok: true, ran });
+  } catch (e) { next(e); }
+});
+
+router.post('/:appId/ai-suggestions/dismiss-all', requirePermission('sign_off_conditions'), async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const reason = String((req.body && req.body.reason) || 'Bulk-dismissed from file view').slice(0, 200);
+    const client = await db.pool.connect();
+    let dismissed = 0;
+    try {
+      await client.query('BEGIN');
+      const open = await client.query(
+        `SELECT id FROM ai_suggestions
+          WHERE application_id=$1
+            AND status IN ('open','marked_important','escalated','asked_admin')
+          LIMIT 500`, [app.id]);
+      const aiSug = require('../lib/underwriting/ai-suggestions');
+      for (const row of open.rows) {
+        try {
+          await aiSug.decide(client, row.id, { action: 'dismiss', reason, staffId: req.actor.staffId });
+          dismissed += 1;
+        } catch (_) { /* one bad row doesn't stop the batch */ }
+      }
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+    res.json({ ok: true, dismissed });
+  } catch (e) { next(e); }
+});
+
+router.get('/:appId/ai-risk-score', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const r = await db.query(
+      `SELECT
+         COUNT(*) FILTER (WHERE severity='fatal')::int   AS fatal,
+         COUNT(*) FILTER (WHERE severity='warning')::int AS warning,
+         COUNT(*) FILTER (WHERE severity='info')::int    AS info,
+         COUNT(*) FILTER (WHERE severity NOT IN ('fatal','warning','info') OR severity IS NULL)::int AS other,
+         EXTRACT(EPOCH FROM (now() - MIN(created_at) FILTER (WHERE severity='fatal')))/86400 AS oldest_fatal_days
+        FROM ai_suggestions
+       WHERE application_id=$1
+         AND status IN ('open','marked_important','escalated','asked_admin')`,
+      [app.id]);
+    const c = r.rows[0] || { fatal: 0, warning: 0, info: 0, other: 0 };
+    const raw = (c.fatal * 25) + (c.warning * 8) + (c.info * 2) + (c.other * 4);
+    const score = Math.min(100, raw);
+    let bucket;
+    if (score >= 80) bucket = 'critical';
+    else if (score >= 50) bucket = 'elevated';
+    else if (score >= 20) bucket = 'moderate';
+    else bucket = 'low';
+    // R4.19 — the single worst open finding, so the file view can print a
+    // one-line triage summary. Worst = highest severity, then most recent.
+    let topFinding = null;
+    try {
+      const t = await db.query(
+        `SELECT title, severity, source
+           FROM ai_suggestions
+          WHERE application_id=$1
+            AND status IN ('open','marked_important','escalated','asked_admin')
+          ORDER BY CASE severity WHEN 'fatal' THEN 0 WHEN 'warning' THEN 1 WHEN 'info' THEN 2 ELSE 3 END,
+                   created_at DESC
+          LIMIT 1`, [app.id]);
+      if (t.rows[0]) topFinding = { title: t.rows[0].title, severity: t.rows[0].severity, source: t.rows[0].source };
+    } catch (_) { /* additive */ }
+    res.json({
+      ok: true, score, bucket,
+      breakdown: { fatal: c.fatal || 0, warning: c.warning || 0, info: c.info || 0, other: c.other || 0 },
+      oldestFatalDays: c.oldest_fatal_days != null ? Number(c.oldest_fatal_days) : null,
+      topFinding,
+    });
+  } catch (e) { next(e); }
+});
+
 router.get('/:appId/ai-cost', async (req, res, next) => {
   try {
     const app = await fileFor(req, req.params.appId);
@@ -1462,6 +1626,19 @@ router.get('/:appId/ai-cost', async (req, res, next) => {
          FROM ai_cost_events WHERE application_id=$1
          ORDER BY created_at DESC LIMIT 50`, [app.id])).rows;
     res.json({ ok: true, summary, events });
+  } catch (e) { next(e); }
+});
+
+// R5.55/R5.56 — Underwriting memory: funded loans similar to THIS file + their
+// aggregate stats (avg loan size, LTV, condition count, common investor). Read-
+// only, deterministic; empty until there are similar funded files on record.
+router.get('/:appId/similar-loans', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const memory = require('../lib/underwriting/underwriting-memory');
+    const result = await memory.findSimilarFunded(db, app.id, {});
+    res.json({ ok: true, memory: result });
   } catch (e) { next(e); }
 });
 
@@ -1482,7 +1659,19 @@ router.get('/:appId/ai-suggestions', async (req, res, next) => {
       includeDismissed: req.query.include_dismissed === '1',
       limit: Number(req.query.limit) || undefined,
     }, db);
-    res.json({ ok: true, suggestions });
+    // R4.16 — expose the most recent AI checks re-run time so the panel header can
+    // show "Last re-run: N minutes ago". Best-effort; absence is not an error.
+    let lastRerunAt = null;
+    try {
+      const r = await db.pool.query(
+        `SELECT max(created_at) AS at
+           FROM audit_log
+          WHERE action='ai_checks_rerun'
+            AND entity_type='application'
+            AND entity_id=$1`, [app.id]);
+      lastRerunAt = (r.rows[0] && r.rows[0].at) || null;
+    } catch (_) { /* additive */ }
+    res.json({ ok: true, suggestions, lastRerunAt });
   } catch (e) { next(e); }
 });
 
@@ -1574,24 +1763,58 @@ router.post('/:appId/ai-suggestions/:id/split-and-file', requirePermission('sign
       const segments = Array.isArray(body.segments) ? body.segments : [];
       if (!segments.length) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'segments[] required' }); }
 
+      // R5.1 — load the SOURCE bytes once so each child can be physically sliced
+      // to only its own pages. Best-effort: if the read fails we fall back to a
+      // page-range record (page_bounded=false) rather than blocking the split.
+      let srcBytes = null;
+      try { srcBytes = await storage.read(src.storage_ref); }
+      catch (_) { srcBytes = null; }
+      const { slicePdfPages } = require('../lib/underwriting/pdf-slice');
+      const crypto = require('crypto');
+
       const created = [];
       for (const seg of segments) {
-        const pages = Array.isArray(seg.pages) ? seg.pages.filter(Number.isFinite).sort((a, b) => a - b) : [];
+        // Number.isInteger (not isFinite): a fractional page like 2.5 would pass
+        // isFinite and then break the `page_range int[]` bind (Postgres rejects
+        // '{2.5}'::int[]) → 500. The slicer re-normalizes anyway; keep parity here.
+        const pages = Array.isArray(seg.pages) ? seg.pages.filter(Number.isInteger).sort((a, b) => a - b) : [];
         if (!pages.length || !seg.checklistItemId) continue;
         const slotLabel = String(seg.slotLabel || `${prettyType(seg.docType)} (pp ${pages.join(', ')} of ${src.filename})`).slice(0, 80);
         // Confirm the target checklist_item belongs to this file.
         const target = (await client.query(`SELECT id FROM checklist_items WHERE id=$1 AND application_id=$2`, [seg.checklistItemId, app.id])).rows[0];
         if (!target) continue;
+
+        // R5.1 — physically slice the source PDF to exactly this child's pages,
+        // store the sliced bytes as the child's OWN storage object, and point the
+        // child there. A page-bounded child is safe to analyze in isolation; the
+        // old behavior (child references the whole package) contaminated the read.
+        let childRef = src.storage_ref, childProvider = src.storage_provider,
+            childBytes = src.size_bytes, childSha = null, pageBounded = false,
+            recordedPages = pages;
+        if (srcBytes) {
+          const sliced = await slicePdfPages(srcBytes, pages);
+          if (sliced.ok && sliced.buf) {
+            try {
+              const saved = await storage.save(sliced.buf, { filename: `${(seg.docType || 'part')}.pdf` });
+              childRef = saved.ref; childProvider = saved.provider; childBytes = saved.bytes;
+              childSha = crypto.createHash('sha256').update(sliced.buf).digest('hex');
+              pageBounded = true;
+              // Record the pages ACTUALLY in the slice (out-of-range requests dropped).
+              if (Array.isArray(sliced.pages) && sliced.pages.length) recordedPages = sliced.pages;
+            } catch (_) { /* fall back to source ref below */ }
+          }
+        }
         const ins = await client.query(
           `INSERT INTO documents (application_id, checklist_item_id, borrower_id, filename, content_type,
                                   size_bytes, storage_provider, storage_ref,
-                                  uploaded_by_kind, uploaded_by_id, slot_label, visibility)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,$10,'staff_only')
+                                  uploaded_by_kind, uploaded_by_id, slot_label, visibility,
+                                  source_document_id, page_range, page_bounded, sha256)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,$10,'staff_only',$11,$12,$13,$14)
            RETURNING id`,
           [app.id, seg.checklistItemId, src.borrower_id, `${(seg.docType || 'part')}—${src.filename}`,
-           src.content_type, src.size_bytes, src.storage_provider, src.storage_ref,
-           req.actor.staffId, slotLabel]);
-        created.push({ id: ins.rows[0].id, checklistItemId: seg.checklistItemId, pages });
+           (pageBounded ? 'application/pdf' : src.content_type), childBytes, childProvider, childRef,
+           req.actor.staffId, slotLabel, src.id, recordedPages, pageBounded, childSha]);
+        created.push({ id: ins.rows[0].id, checklistItemId: seg.checklistItemId, pages, pageBounded });
       }
 
       // Close the suggestion — dismiss with a note that names the resulting child docs.

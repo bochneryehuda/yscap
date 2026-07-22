@@ -57,6 +57,18 @@ async function record(client, s) {
   if (!s || !s.applicationId || !s.source || !s.kind || !s.title) {
     throw new Error('ai-suggestions.record: applicationId, source, kind, title required');
   }
+  // R4.8 — Portfolio-wide code mute. If the finding's evidence.code (or the
+  // proposedAction.fields.code, when the evidence is empty) is in
+  // ai_silenced_codes, DROP the record silently. Belt-and-suspenders — the
+  // caller sees a normal success shape so the AI pipeline never branches on
+  // whether it fired or not.
+  try {
+    const code = (s.evidence && s.evidence.code) || (s.proposedAction && s.proposedAction.fields && s.proposedAction.fields.code) || null;
+    if (code) {
+      const mute = await c.query(`SELECT 1 FROM ai_silenced_codes WHERE code=$1 LIMIT 1`, [code]);
+      if (mute.rowCount > 0) return { id: null, deduped: false, silenced: true };
+    }
+  } catch (_) { /* if the mute table isn't migrated yet, fall through */ }
   // If a dedupe key is provided, look for an OPEN row and refresh it in place.
   if (s.dedupeKey) {
     const cur = await c.query(

@@ -39,6 +39,31 @@ const money = (n) => (num(n) == null ? '—' : `$${Math.round(num(n)).toLocaleSt
 // the dangerous direction). Keying on the number alone means a rare last-4 collision between two
 // different accounts collapses them instead — which UNDER-counts (a false shortfall a human clears),
 // the safe direction. Only when no usable number was read do we fall back to bank+holder.
+// R5.59 — the END of a statement's period, as a comparable timestamp, so that
+// when several months of ONE account are on file we count the LATEST month's
+// ending balance (the owner: "make sure you have the last statement and
+// calculate based on the last ending balance"). The schema stores a free-text
+// `statementPeriod` ("January 1 - January 31, 2026", "01/01/26 - 01/31/26",
+// "2026-01-01 to 2026-01-31"), so we take the LAST parseable date token in the
+// string as the period end. Returns null when nothing parses (then we fall back
+// to input order — the most recently analyzed month, the prior behavior).
+function periodEndOf(statementPeriod) {
+  const s = String(statementPeriod || '').trim();
+  if (!s) return null;
+  // Collect candidate date substrings: ISO (2026-01-31), US (01/31/2026 or
+  // 1/31/26), and "Month DD, YYYY". Take the maximum parseable one.
+  const cands = [];
+  const iso = s.match(/\d{4}-\d{1,2}-\d{1,2}/g); if (iso) cands.push(...iso);
+  const us = s.match(/\d{1,2}\/\d{1,2}\/\d{2,4}/g); if (us) cands.push(...us);
+  const named = s.match(/[A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{2,4}/g); if (named) cands.push(...named);
+  let best = null;
+  for (const c of cands) {
+    const t = Date.parse(c);
+    if (Number.isFinite(t) && (best == null || t > best)) best = t;
+  }
+  return best;
+}
+
 function accountKey(s) {
   const acct = String(s.accountNumber || '').replace(/\D/g, '');
   // Key on the LAST 4 digits — that's how account numbers are stored (masked to last-4), so a month
@@ -69,16 +94,29 @@ function assessBankLiquidity(ctx = {}, extractions = [], opts = {}) {
     .filter((e) => (e.doc_type || e.docType) === 'bank_statement')
     .map((e) => ({ document_id: e.document_id || null, f: e.fields || {} }));
 
-  // Collapse statements of the same account to one representative (last in input order — the
-  // extractions arrive in created_at order, so the most recently analyzed month wins), summing
-  // NOTHING yet; we just pick the row that will represent each distinct account.
+  // Collapse statements of the same account to ONE representative — the LATEST month
+  // (R5.59, owner: "make sure you have the last statement and calculate based on the last
+  // ending balance"). We pick by statement-period END date; only when neither month has a
+  // parseable period do we fall back to input order (created_at — the most recently analyzed
+  // month wins). Counting the latest month's ending balance — never summing two months of one
+  // account — is what stops the same account being double-counted (the dangerous inflate).
   const byAccount = new Map();
   for (const st of statements) {
     const f = st.f;
     if (f.readable === false || !f.accountHolderName) continue; // an unreadable statement is bank_unreadable's job
     const key = accountKey(f);
+    const end = periodEndOf(f.statementPeriod);
     const prev = byAccount.get(key);
-    byAccount.set(key, { rep: st, count: (prev ? prev.count : 0) + 1 });
+    if (!prev) { byAccount.set(key, { rep: st, repEnd: end, count: 1 }); continue; }
+    // Keep whichever month is LATER by period end. A row WITH a period beats one without;
+    // ties (or both undated) keep the later-analyzed row (input order) — the prior behavior.
+    const takeNew = (end != null && (prev.repEnd == null || end >= prev.repEnd)) ||
+                    (end == null && prev.repEnd == null);
+    byAccount.set(key, {
+      rep: takeNew ? st : prev.rep,
+      repEnd: takeNew ? end : prev.repEnd,
+      count: prev.count + 1,
+    });
   }
 
   const accounts = [];
@@ -93,6 +131,8 @@ function assessBankLiquidity(ctx = {}, extractions = [], opts = {}) {
     accounts.push({
       holder, bankName: f.bankName || null, tied, ending,
       holderIsBusiness: f.holderIsBusiness === true, statementCount: count,
+      // R5.59 — the month actually counted for this account (the latest of `count` months).
+      countedPeriod: f.statementPeriod || null,
       document_id: rep.document_id,
     });
     if (ending == null) { missingEnding.push(holder); continue; }
@@ -126,11 +166,21 @@ function assessBankLiquidity(ctx = {}, extractions = [], opts = {}) {
     const excludedNote = excludedTotal > 0
       ? ` A further ${money(excludedTotal)} sits in account(s) not tied to the borrower or a known entity — that money is NOT counted here (see the account-ownership findings; it counts only once the borrower's control of that entity is documented).`
       : '';
+    // R5.61 — show the exact per-account math the total came from: one line per
+    // TIED account, the latest month's ending balance, never two months of the
+    // same account summed. Makes the shortfall fully auditable.
+    const tiedLines = accounts
+      .filter((a) => a.tied && a.ending != null)
+      .map((a) => `  · ${a.holder}${a.bankName ? ` (${a.bankName})` : ''}: ${money(a.ending)}${a.statementCount > 1 ? ` — latest of ${a.statementCount} months on file${a.countedPeriod ? `, ${a.countedPeriod}` : ''}` : ''}`)
+      .join('\n');
+    const mathNote = tiedLines
+      ? ` Counted (latest statement per account, no month counted twice):\n${tiedLines}\n  = ${money(qualifyingTotal)} total.`
+      : '';
     findings.push({
       source: 'bank_statement', code: 'bank_liquidity_short', severity: 'warning', status: 'open',
       field: 'liquidity', docValue: `${money(qualifyingTotal)} on file`, fileValue: `${money(requiredLiquidity)} required`, blocksCtc: false,
       title: 'Bank statements on file are short of the required liquidity',
-      howTo: `The borrower's (and verified entity) accounts on file show ${money(qualifyingTotal)} in ending balances, but this deal requires ${money(requiredLiquidity)} in liquid assets (down payment + closing costs + reserves) — short by ${money(shortfall)}.${excludedNote} Collect additional statements, or confirm reserves, before clearing the assets condition.`,
+      howTo: `The borrower's (and verified entity) accounts on file show ${money(qualifyingTotal)} in ending balances, but this deal requires ${money(requiredLiquidity)} in liquid assets (down payment + closing costs + reserves) — short by ${money(shortfall)}.${mathNote}${excludedNote} Collect additional statements, or confirm reserves, before clearing the assets condition.`,
       actions: ['request_document', 'open_condition', 'acknowledge', 'dismiss'], opensCondition: 'underwriting_review_cleared',
     });
   }
@@ -164,4 +214,4 @@ async function readRequiredLiquidity(client, appId) {
   } catch (_) { return null; }
 }
 
-module.exports = { assessBankLiquidity, readRequiredLiquidity, _internals: { accountKey } };
+module.exports = { assessBankLiquidity, readRequiredLiquidity, _internals: { accountKey, periodEndOf } };

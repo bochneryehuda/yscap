@@ -99,12 +99,18 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
   // from persisting. Uses the ORIGINAL unmasked fields (safeFields is masked
   // for storage; the twin records the real values behind its own audit trail).
   try {
+    // R5.3 — resolve the source page of each field from the OCR page text, so
+    // fact_observations record page_number (was always null). Heuristic text
+    // match; a miss stays null (never a wrong page).
+    const { makeFieldPager } = require('./evidence-page');
+    const pageNumberFor = makeFieldPager(ext.fields || {}, ext.ocrPages || null);
     await require('./twin').recordFactsFromExtraction(client, {
       appId, documentId, docType, extractionId,
       fields: ext.fields || {},
       ocrEngine: ext.ocrEngine || null,
       aiModel: ext.aiModel || null,
       confidence: ext.confidence || null,
+      pageNumberFor,
     });
   } catch (_) { /* twin is additive — never blocks the extraction */ }
 
@@ -116,16 +122,26 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
   const rulesRes = await require('./promoted-rules').applyPromotedRules(client, findings || []);
   const effectiveFindings = rulesRes.findings;
   const suppressedByRules = rulesRes.suppressed;
+  const protectedFatalByRules = rulesRes.protectedFatal || [];
+  // R5.3 — resolve a source page for each finding: prefer a page the check
+  // already set (f.page / f.pageNumber), else locate the finding's doc-side
+  // value in the OCR page text. Only ever ADDS a page pointer; a miss is null.
+  const { pageNumberForValue } = require('./evidence-page');
   const findingIds = [];
   for (const f of (effectiveFindings || [])) {
     const actions = Array.isArray(f.actions) && f.actions.length ? JSON.stringify(f.actions) : null;
+    let pageNumber = Number.isFinite(f.page) ? f.page : (Number.isFinite(f.pageNumber) ? f.pageNumber : null);
+    if (pageNumber == null && ext.ocrPages && f.docValue != null) {
+      pageNumber = pageNumberForValue(f.docValue, ext.ocrPages);
+    }
     const { rows: fr } = await client.query(
       `INSERT INTO document_findings
-         (application_id, borrower_id, document_id, extraction_id, source, code, severity, field, doc_value, file_value, title, how_to, blocks_ctc, suggested_actions, opens_condition)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
+         (application_id, borrower_id, document_id, extraction_id, source, code, severity, field, doc_value, file_value, title, how_to, blocks_ctc, suggested_actions, opens_condition, page_number)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`,
       [appId, borId, documentId, extractionId, f.source || docType, f.code,
        f.severity || 'warning', f.field || null, str(f.docValue), str(f.fileValue),
-       f.title || null, f.howTo || null, !!f.blocksCtc, actions, f.opensCondition || null]);
+       f.title || null, f.howTo || null, !!f.blocksCtc, actions, f.opensCondition || null,
+       pageNumber != null ? pageNumber : null]);
     findingIds.push(fr[0].id);
   }
   // Audit-log the suppressed set so a reviewer can inspect exactly what a
@@ -136,6 +152,18 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
         `INSERT INTO audit_log (actor_kind, action, entity_type, entity_id, detail)
          VALUES ('system','pilot_suppressed_findings','application',$1,$2::jsonb)`,
         [appId, JSON.stringify({ documentId, extractionId, suppressed: suppressedByRules })]);
+    } catch (_) { /* audit best-effort */ }
+  }
+  // R5.4 — a learned rule that TRIED to suppress/downgrade a FATAL finding was
+  // refused (the finding stays fatal). Audit the attempt so a super-admin can
+  // see a promoted rule is over-reaching into fatal territory — a signal it
+  // needs the full evaluation gate, not silent global application.
+  if (protectedFatalByRules && protectedFatalByRules.length) {
+    try {
+      await client.query(
+        `INSERT INTO audit_log (actor_kind, action, entity_type, entity_id, detail)
+         VALUES ('system','pilot_protected_fatal_findings','application',$1,$2::jsonb)`,
+        [appId, JSON.stringify({ documentId, extractionId, protectedFatal: protectedFatalByRules })]);
     } catch (_) { /* audit best-effort */ }
   }
 
@@ -180,12 +208,18 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
         if (intent) {
           const twinRows = await twin.factsForFile(appId, client);
           const twinFacts = Object.fromEntries(twinRows.map((r) => [r.fact_key, r]));
+          // R5.2 — build the real subject/expected context (loan amount, closing
+          // date, required statement months, entity + borrower name) so the
+          // FICO/months/closing/amount/name assertions actually run instead of
+          // returning "unable_to_determine". loadCureContext is best-effort and
+          // falls back to {} on any error, so a context failure never blocks the proof.
+          const { subject, expected } = await cure.loadCureContext(appId, client);
           const analysis = cure.analyze({
             intent,
             extractionFields: ext.fields || {},
             twinFacts,
-            subject: {},                 // caller can pass richer subject via extraction context
-            expected: {},                // program min FICO / required months etc. wired later
+            subject,
+            expected,
           });
           await cure.persistProof(client, {
             appId,

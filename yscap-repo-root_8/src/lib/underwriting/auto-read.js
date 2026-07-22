@@ -27,6 +27,11 @@ function selectAutoReadQueue({ documents = [], analyzedIds = new Set(), isReadab
   const queue = [];
   for (const d of documents) {
     if (!d || !d.id) continue;
+    // R5.1 — a split child whose physical slice FAILED still references the whole
+    // source package (page_bounded=false). Never auto-read it as if it were the
+    // single logical document — that is exactly the contamination this fix
+    // prevents. A normal upload has page_bounded null/undefined and is unaffected.
+    if (d.page_bounded === false) continue;
     // The condition the document is filed under says what type it should be; fall back to the
     // document's OWN kind when the condition doesn't map (e.g. a settlement statement, which has no
     // checklist condition, still reads as 'settlement' when it's tagged that way). doc_kind holds a

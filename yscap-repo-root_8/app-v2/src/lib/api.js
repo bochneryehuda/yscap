@@ -477,12 +477,21 @@ export const api = {
   aiAdminQuestions:       (appId) => req('GET', `/api/underwriting/ai-admin/questions${appId ? `?appId=${appId}` : ''}`),
   aiAdminAnswer:          (questionId, answer) => req('POST', `/api/underwriting/ai-admin/questions/${questionId}/answer`, { answer }),
   aiCostForFile:          (appId) => req('GET', `/api/underwriting/${appId}/ai-cost`),
+  aiRiskScore:            (appId) => req('GET', `/api/underwriting/${appId}/ai-risk-score`),
+  similarLoans:           (appId) => req('GET', `/api/underwriting/${appId}/similar-loans`),
+  aiDismissAllOnFile:     (appId, reason) => req('POST', `/api/underwriting/${appId}/ai-suggestions/dismiss-all`, { reason }),
+  aiRerunChecks:          (appId) => req('POST', `/api/underwriting/${appId}/ai-suggestions/rerun-checks`, {}),
   askAdminAboutFile:      (appId, question) => req('POST', `/api/underwriting/${appId}/ask-admin`, { question }),
   aiCrossDocCheck:        (appId) => req('POST', `/api/underwriting/${appId}/ai-crossdoc`, {}),
   fraudBannerSnooze:      (appId, hours = 24, note) => req('POST', `/api/underwriting/${appId}/fraud-banner/snooze`, { hours, note }),
   fileKnowledgeGraph:     (appId) => req('GET', `/api/underwriting/${appId}/knowledge-graph`),
   insightsDashboard:      () => req('GET', '/api/admin/insights'),
   insightsAiCostTrend:    () => req('GET', '/api/admin/insights/ai-cost-trend'),
+  insightsAiStack:        () => req('GET', '/api/admin/insights/ai-stack'),
+  aiSilencedCodesList:    () => req('GET', '/api/admin/insights/silenced-codes'),
+  aiSilencedCodesAdd:     (code, reason) => req('POST', '/api/admin/insights/silenced-codes', { code, reason }),
+  aiSilencedCodesRemove:  (code) => req('DELETE', `/api/admin/insights/silenced-codes/${encodeURIComponent(code)}`),
+  aiSilencedCodesHistory: () => req('GET', '/api/admin/insights/silenced-codes/history'),
   insightsFilesWithSuggestion: (params = {}) => {
     const qs = new URLSearchParams(params).toString();
     return req('GET', `/api/admin/insights/files-with-suggestion${qs ? '?' + qs : ''}`);

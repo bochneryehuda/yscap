@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { AppraisalFinding } from './AppraisalPanel.jsx';
+import { useAuth } from '../lib/auth.jsx';
 
 /* The PILOT document-underwriting desk. For each uploaded document PILOT reads it (best-in-class
    OCR), understands it (AI, constrained to the document type's fields), and checks it against the
@@ -22,6 +23,21 @@ const DOC_LABEL = {
   signed_application: 'Signed application', investor_structure: 'Investor structure',
 };
 const label = (t) => DOC_LABEL[t] || String(t || '').replace(/_/g, ' ');
+
+// R4.16 — small local "N minutes ago" formatter (no dep on dayjs).
+function fmtAgo(iso) {
+  if (!iso) return '';
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return '';
+  const sec = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.round(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.round(min / 60);
+  if (hr < 48) return `${hr}h ago`;
+  const d = Math.round(hr / 24);
+  return `${d}d ago`;
+}
 
 const SEV = {
   fatal: { bg: 'var(--crit-bg,#F6E7E4)', fg: 'var(--crit,#B4483C)', label: 'Fatal' },
@@ -1136,6 +1152,8 @@ function SovereignCockpit({ twinFacts, cureProofs, appId, canIssueCerts, canConf
       {appId && <SovereignAVMSection appId={appId} canRefresh={canIssueCerts} />}
       {appId && <SovereignCertificatesSection appId={appId} canIssue={canIssueCerts} />}
       {appId && <SovereignStructuringSection appId={appId} />}
+      {appId && <SovereignAiRiskSection appId={appId} />}
+      {appId && <SimilarLoansSection appId={appId} />}
       {appId && <SovereignAiCostSection appId={appId} />}
       {appId && <SovereignKnowledgeGraphSection appId={appId} />}
       {appId && <SovereignAskAdminSection appId={appId} />}
@@ -1435,6 +1453,88 @@ function SovereignStructuringSection({ appId }) {
 }
 
 // ---------------------------------------------------------------------------
+// AI Risk score tile (R4.1). One 0–100 number summarizing every open AI
+// suggestion on the file weighted by severity. Silent when the score is 0.
+// ---------------------------------------------------------------------------
+function SovereignAiRiskSection({ appId }) {
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    if (!appId) return;
+    let live = true;
+    api.aiRiskScore(appId).then((r) => { if (live) setData(r || null); }).catch(() => setData(null));
+    return () => { live = false; };
+  }, [appId]);
+  if (!data || !data.ok || !(data.score > 0)) return null;
+  const tint = data.bucket === 'critical' ? 'var(--crit,#B4483C)'
+    : data.bucket === 'elevated' ? 'var(--amber-strong,#A05F0A)'
+    : data.bucket === 'moderate' ? 'var(--amber,#B7791F)'
+    : 'var(--teal-deep,#256168)';
+  const bd = data.breakdown || {};
+  return (
+    <div style={{ marginTop: 12, border: `1px solid ${tint}`, borderRadius: 10, background: 'var(--card,#fff)', padding: '10px 12px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted,#4B585C)', fontWeight: 700 }}>File AI risk score</div>
+          <div style={{ fontSize: 13, color: 'var(--ivory,#141B22)', marginTop: 2 }}>
+            {bd.fatal > 0 ? `${bd.fatal} fatal` : ''}
+            {bd.fatal > 0 && (bd.warning > 0 || bd.info > 0) ? ' · ' : ''}
+            {bd.warning > 0 ? `${bd.warning} warning` : ''}
+            {bd.warning > 0 && bd.info > 0 ? ' · ' : ''}
+            {bd.info > 0 ? `${bd.info} info` : ''}
+            {data.oldestFatalDays >= 1 ? ` · oldest fatal ${Math.floor(data.oldestFatalDays)}d` : ''}
+          </div>
+          {/* R4.19 — one-line triage: the single worst open finding. */}
+          {data.topFinding && data.topFinding.title && (
+            <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+              title={data.topFinding.title}>
+              <span style={{ fontWeight: 700, color: tint }}>Worst:</span> {data.topFinding.title}
+            </div>
+          )}
+        </div>
+        <div style={{ textAlign: 'right', flexShrink: 0 }}>
+          <div style={{ fontSize: 26, fontWeight: 800, color: tint, lineHeight: 1 }}>{data.score}</div>
+          <div style={{ fontSize: 10, color: tint, textTransform: 'uppercase', letterSpacing: '.06em', fontWeight: 700 }}>{data.bucket}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// R5.55/R5.56 — Underwriting Memory: how this file compares to similar FUNDED
+// loans. Silent until there are similar funded files on record. Read-only.
+// ---------------------------------------------------------------------------
+function SimilarLoansSection({ appId }) {
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    if (!appId) return;
+    let live = true;
+    api.similarLoans(appId).then((r) => { if (live) setData((r && r.memory) || null); }).catch(() => setData(null));
+    return () => { live = false; };
+  }, [appId]);
+  const m = data && data.summary;
+  if (!m || !(m.count > 0)) return null;
+  const money = (n) => (n == null ? '—' : '$' + Math.round(n).toLocaleString('en-US'));
+  return (
+    <div style={{ marginTop: 12, border: '1px solid var(--teal-deep,#256168)', borderRadius: 10, background: 'var(--card,#fff)', padding: '10px 12px' }}>
+      <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--teal-deep,#256168)', fontWeight: 700, marginBottom: 4 }}>
+        Underwriting memory
+      </div>
+      <div style={{ fontSize: 13, color: 'var(--ivory,#141B22)' }}>
+        This loan is <b>{m.bestMatchPct}%</b> similar to <b>{m.count}</b> previously funded file{m.count === 1 ? '' : 's'}
+        {data.totalFunded ? <span style={{ color: 'var(--muted,#4B585C)' }}> (of {data.totalFunded} funded)</span> : null}.
+      </div>
+      <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginTop: 4, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+        {m.avgConditions != null && <span>Avg conditions: <b style={{ color: 'var(--ivory,#141B22)' }}>{m.avgConditions}</b></span>}
+        {m.avgLtvPct != null && <span>Avg LTV: <b style={{ color: 'var(--ivory,#141B22)' }}>{m.avgLtvPct}%</b></span>}
+        {m.avgLoanAmount != null && <span>Avg loan: <b style={{ color: 'var(--ivory,#141B22)' }}>{money(m.avgLoanAmount)}</b></span>}
+        {m.topInvestor && <span>Most common investor: <b style={{ color: 'var(--ivory,#141B22)', textTransform: 'capitalize' }}>{m.topInvestor.label}</b> ({m.topInvestor.count})</span>}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // AI Cost widget (R3.21, owner-directed 2026-07-22).
 // Per-file AI spend + a near-cap warning when > 80% of the configured
 // per-file cap. Silent when the cap isn't set.
@@ -1654,6 +1754,7 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true }) {
   const [expanded, setExpanded] = React.useState(true);
   const [sourceFilter, setSourceFilter] = React.useState('all');
   const [sevFilter, setSevFilter] = React.useState('all');
+  const [lastRerunAt, setLastRerunAt] = React.useState(null);
 
   const load = React.useCallback(async () => {
     if (!appId) return;
@@ -1661,6 +1762,7 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true }) {
     try {
       const r = await api.aiSuggestionsList(appId, showDismissed ? { include_dismissed: '1' } : {});
       setRows(Array.isArray(r && r.suggestions) ? r.suggestions : []);
+      setLastRerunAt((r && r.lastRerunAt) || null);
     } catch (e) { setErr((e && e.message) || 'Could not load AI suggestions.'); }
     finally { setBusy(false); }
   }, [appId, showDismissed]);
@@ -1693,6 +1795,10 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true }) {
           </h4>
           <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginTop: 3 }}>
             {total === 0 ? 'Nothing to review right now.' : `${total} open${importantCount ? ` · ${importantCount} marked important` : ''}`}
+            {/* R4.16 — Last re-run stamp, so a re-audit trail is visible on the header. */}
+            {lastRerunAt && (
+              <span style={{ marginLeft: 8 }}>· Last re-run: {fmtAgo(lastRerunAt)}</span>
+            )}
           </div>
         </div>
         <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)' }}>{expanded ? '▾' : '▸'}</div>
@@ -1702,10 +1808,34 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true }) {
           {err && <div className="error" style={{ marginBottom: 8 }}>{err}</div>}
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, fontSize: 12, flexWrap: 'wrap' }}>
             <button className="btn ghost" onClick={load} disabled={busy} style={{ padding: '3px 9px', fontSize: 11 }}>{busy ? '…' : '↻ Refresh'}</button>
+            {!readOnly && canResolve && (
+              <button className="btn ghost" style={{ padding: '3px 9px', fontSize: 11 }} title="Re-run every free AI check (entity chain, bank, bad-clearance, public records, identity chain) on the file's current extractions"
+                onClick={async () => {
+                  try {
+                    const r = await api.aiRerunChecks(appId);
+                    const total = Object.values(r.ran || {}).reduce((a, b) => a + (Number(b) || 0), 0);
+                    load();
+                    alert(total ? `Re-ran AI checks. ${total} new finding${total === 1 ? '' : 's'} posted.` : 'Re-ran AI checks. Nothing new to flag.');
+                  } catch (e) { alert(`Failed: ${(e && e.message) || 'error'}`); }
+                }}>▶ Re-run checks</button>
+            )}
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: 'var(--muted,#4B585C)' }}>
               <input type="checkbox" checked={showDismissed} onChange={(e) => setShowDismissed(e.target.checked)} />
               Show dismissed
             </label>
+            {(rows || []).some(r => r.status !== 'dismissed') && !readOnly && canResolve && (
+              <button className="btn ghost" style={{ padding: '3px 9px', fontSize: 11, color: 'var(--crit,#B4483C)', borderColor: 'var(--crit,#B4483C)' }}
+                onClick={async () => {
+                  const n = (rows || []).filter(r => r.status !== 'dismissed').length;
+                  const reason = window.prompt(`Dismiss all ${n} open AI suggestion${n === 1 ? '' : 's'} on this file? Type a reason (e.g. "test file", "team already reviewed").`, '');
+                  if (reason == null) return;
+                  try {
+                    const r = await api.aiDismissAllOnFile(appId, reason || 'Bulk-dismissed from file view');
+                    load();
+                    alert(`Dismissed ${r.dismissed} suggestion${r.dismissed === 1 ? '' : 's'}.`);
+                  } catch (e) { alert(`Failed: ${(e && e.message) || 'error'}`); }
+                }}>Dismiss all</button>
+            )}
             {/* R3.37 — filter chips */}
             {(() => {
               const sources = Array.from(new Set((rows || []).map(r => r.source))).sort();
@@ -1747,6 +1877,10 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true }) {
 }
 
 function AISuggestionCard({ appId, suggestion, onChanged, disabled }) {
+  // R4.14 — read role via a light dynamic hook so we don't disrupt the file's
+  // existing prop chain. Only super_admin sees the 'Silence code' action.
+  const { role } = useAuth();
+  const isSuperAdmin = role === 'super_admin';
   const [busy, setBusy] = React.useState(false);
   const [noteOpen, setNoteOpen] = React.useState(false);
   const [noteText, setNoteText] = React.useState('');
@@ -1853,6 +1987,18 @@ function AISuggestionCard({ appId, suggestion, onChanged, disabled }) {
           <button className="btn ghost" onClick={() => doAction(suggestion.important ? 'unmark_important' : 'mark_important')} disabled={busy} style={{ fontSize: 11 }}>{suggestion.important ? 'Unmark important' : 'Mark important'}</button>
           <button className="btn ghost" onClick={() => setDismissOpen(true)} disabled={busy} style={{ fontSize: 11 }}>Dismiss</button>
           <button className="btn ghost" onClick={askAdmin} disabled={busy} style={{ fontSize: 11 }}>Ask super-admin</button>
+          {isSuperAdmin && (suggestion.evidence && suggestion.evidence.code) && (
+            <button className="btn ghost" style={{ fontSize: 11, color: 'var(--crit,#B4483C)', borderColor: 'var(--crit,#B4483C)' }}
+              onClick={async () => {
+                const code = suggestion.evidence.code;
+                const reason = window.prompt(`Silence '${code}' portfolio-wide? Every future finding with this code will be dropped before it reaches any file. Type a reason (audited).`, '');
+                if (reason == null || !reason.trim()) return;
+                try {
+                  await api.aiSilencedCodesAdd(code, reason.trim());
+                  alert(`Silenced '${code}'. Manage the mute list at /internal/ai-silenced-codes.`);
+                } catch (e) { alert(`Failed: ${(e && e.message) || 'error'}`); }
+              }}>🔇 Silence code</button>
+          )}
         </div>
       )}
       {noteOpen && (
@@ -2012,6 +2158,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
   const risk = data && data.risk;
   const amendments = data && data.amendments;
   const verdict = data && data.verdict;
+  const rootCauses = (data && data.rootCauses) || [];
   const documentsOnFile = (data && data.documentsOnFile) || [];
   // Every open finding across the WHOLE file in one list — the exact set the summary counts, so the
   // "2 warnings" chip maps to two visible items (owner-reported: "it says 2 warnings and I can't see
@@ -2127,6 +2274,42 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
           </div>
         );
       })()}
+
+      {/* R5.20/R5.24/R5.25 — Root cause: the smallest set of upstream causes
+          behind the open findings, each with ONE likely fix. A hypothesis for
+          the underwriter — PILOT organizes the findings, it doesn't clear them. */}
+      {rootCauses.length > 0 && (
+        <div style={{ border: '1px solid var(--gold,#AE8746)', borderRadius: 12, padding: '12px 16px', marginBottom: 18, background: 'rgba(174,135,70,.06)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <span style={{ fontSize: 16 }}>🎯</span>
+            <span style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--gold-deep,#8A6A30)' }}>
+              Likely root cause{rootCauses.length > 1 ? 's' : ''}
+            </span>
+            <span style={{ fontSize: 11, color: 'var(--muted,#4B585C)' }}>— one fix may clear several findings</span>
+          </div>
+          {rootCauses.map((rc, i) => {
+            const tone = rc.severity === 'fatal' ? 'var(--crit,#B4483C)' : rc.severity === 'warning' ? 'var(--amber,#B7791F)' : 'var(--teal-deep,#256168)';
+            return (
+              <div key={rc.type} style={{ padding: '8px 0', borderTop: i ? '1px dashed var(--paper,#E9E4D3)' : 'none' }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: tone, whiteSpace: 'nowrap' }}>
+                    {rc.symptomCount} finding{rc.symptomCount === 1 ? '' : 's'}
+                  </span>
+                  <span style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--ivory,#141B22)' }}>{rc.label}</span>
+                </div>
+                <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', marginTop: 3 }}>
+                  <b style={{ color: 'var(--gold-deep,#8A6A30)' }}>Likely fix:</b> {rc.fix}
+                </div>
+                {rc.symptoms && rc.symptoms.length > 0 && (
+                  <div style={{ fontSize: 11, color: 'var(--muted,#4B585C)', marginTop: 4 }}>
+                    Would address: {rc.symptoms.map((s) => s.title || s.code).filter(Boolean).slice(0, 6).join(' · ')}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* the one-line verdict — the owner's at-a-glance read */}
       {verdict && verdict.headline && (() => {

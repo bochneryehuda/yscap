@@ -52,8 +52,50 @@ async function record({
        String(provider || '').slice(0, 40), model ? String(model).slice(0, 80) : null,
        Number(tokensIn) || 0, Number(tokensOut) || 0, total, cost,
        durationMs != null ? Number(durationMs) : null, !!ok, reason ? String(reason).slice(0, 300) : null]);
+    // R4.5 — 50% AI cost cap early warning. Fire once per file when this call
+    // is the one that pushed the file past HALF of the cap. Best-effort;
+    // deduped via audit_log stamp so a busy file only pings the LO once.
+    if (applicationId && PER_FILE_CAP_USD > 0) {
+      setImmediate(() => { _maybeWarn50(applicationId).catch(() => {}); });
+    }
     return { cost_cents: cost };
   } catch (_) { return { cost_cents: 0 }; }
+}
+
+async function _maybeWarn50(appId) {
+  try {
+    const c = db();
+    const capCents = Math.round(PER_FILE_CAP_USD * 100);
+    const halfCents = Math.round(capCents / 2);
+    const cur = await c.query(
+      `SELECT COALESCE(SUM(cost_cents),0)::int AS cents FROM ai_cost_events WHERE application_id=$1`,
+      [appId]);
+    const spent = cur.rows[0].cents;
+    if (spent < halfCents) return;
+    // Dedupe: check for an audit_log stamp already fired for this file.
+    const stamp = await c.query(
+      `SELECT 1 FROM audit_log WHERE action='ai_cost_50pct_warn' AND entity_type='application' AND entity_id=$1 LIMIT 1`,
+      [appId]);
+    if (stamp.rowCount > 0) return;
+    // Record the stamp FIRST — belt-and-suspenders against a double-fire.
+    await c.query(
+      `INSERT INTO audit_log (actor_kind, action, entity_type, entity_id, detail)
+         VALUES ('system','ai_cost_50pct_warn','application',$1,$2::jsonb)`,
+      [appId, JSON.stringify({ spentCents: spent, capUsd: PER_FILE_CAP_USD, at: new Date().toISOString() })]);
+    // Then fire the in-app notification. Best-effort, notify layer handles fan-out.
+    const notify = require('../notify');
+    if (typeof notify.notifyAppStaff === 'function') {
+      await notify.notifyAppStaff(appId, {
+        type: 'digest',
+        title: `AI cost on this file passed 50% of the cap`,
+        body: `The file has spent $${(spent / 100).toFixed(2)} of the $${PER_FILE_CAP_USD.toFixed(2)} per-file AI cap. Review the AI Findings panel and dismiss anything the team no longer needs before further calls push toward the cap.`,
+        applicationId: appId,
+        link: `/internal/app/${appId}#ai-findings`,
+        ctaLabel: 'Open the file',
+        inAppOnly: true,   // don't email — routine spend, LO sees the amber cost widget already
+      });
+    }
+  } catch (_) { /* additive */ }
 }
 
 /** Per-file rollup — total spend + counts. */

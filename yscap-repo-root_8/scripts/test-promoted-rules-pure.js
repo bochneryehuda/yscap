@@ -43,13 +43,36 @@ assert.strictEqual(stepUp('fatal'), 'fatal');                  // ceils
   assert.strictEqual(r.suppressed[0].title, 'noise');
 }
 
-// ---- downgrade + upgrade ----
+// ---- downgrade (non-fatal) + upgrade ----
 {
   const r = applyRules(
-    [{ code: 'a', severity: 'fatal' }, { code: 'b', severity: 'info' }],
+    [{ code: 'a', severity: 'warning' }, { code: 'b', severity: 'info' }],
     { suppress: new Set(), downgrade: new Set(['a']), upgrade: new Set(['b']) });
-  assert.strictEqual(r.findings.find((f) => f.code === 'a').severity, 'warning');
+  assert.strictEqual(r.findings.find((f) => f.code === 'a').severity, 'info');
   assert.strictEqual(r.findings.find((f) => f.code === 'b').severity, 'warning');
+}
+
+// ---- R5.4 SAFETY: a learned rule may NEVER downgrade a FATAL finding ----
+{
+  const r = applyRules(
+    [{ code: 'a', severity: 'fatal', title: 'fraud' }],
+    { suppress: new Set(), downgrade: new Set(['a']), upgrade: new Set() });
+  assert.strictEqual(r.findings.length, 1, 'fatal finding kept');
+  assert.strictEqual(r.findings[0].severity, 'fatal', 'stays fatal — not downgraded');
+  assert.strictEqual(r.protectedFatal.length, 1, 'protectedFatal records the blocked attempt');
+  assert.strictEqual(r.protectedFatal[0].wouldHave, 'downgrade');
+}
+
+// ---- R5.4 SAFETY: a learned rule may NEVER suppress a FATAL finding ----
+{
+  const r = applyRules(
+    [{ code: 'z', severity: 'fatal', title: 'wire fraud' }],
+    { suppress: new Set(['z']), downgrade: new Set(), upgrade: new Set() });
+  assert.strictEqual(r.findings.length, 1, 'fatal finding kept');
+  assert.strictEqual(r.findings[0].severity, 'fatal');
+  assert.strictEqual(r.suppressed.length, 0, 'not moved to suppressed');
+  assert.strictEqual(r.protectedFatal.length, 1);
+  assert.strictEqual(r.protectedFatal[0].wouldHave, 'suppress');
 }
 
 // ---- downgrade to dismiss = suppress ----
@@ -70,10 +93,10 @@ assert.strictEqual(stepUp('fatal'), 'fatal');                  // ceils
   assert.strictEqual(r.findings[0].severity, 'fatal');
 }
 
-// ---- suppress wins over downgrade if BOTH are set for the same code ----
+// ---- suppress wins over downgrade if BOTH are set for the same NON-fatal code ----
 {
   const r = applyRules(
-    [{ code: 'x', severity: 'fatal' }],
+    [{ code: 'x', severity: 'warning' }],
     { suppress: new Set(['x']), downgrade: new Set(['x']), upgrade: new Set() });
   assert.strictEqual(r.findings.length, 0);
   assert.strictEqual(r.suppressed.length, 1);
