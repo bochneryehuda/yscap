@@ -1629,6 +1629,19 @@ router.get('/:appId/ai-cost', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// R5.55/R5.56 — Underwriting memory: funded loans similar to THIS file + their
+// aggregate stats (avg loan size, LTV, condition count, common investor). Read-
+// only, deterministic; empty until there are similar funded files on record.
+router.get('/:appId/similar-loans', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const memory = require('../lib/underwriting/underwriting-memory');
+    const result = await memory.findSimilarFunded(db, app.id, {});
+    res.json({ ok: true, memory: result });
+  } catch (e) { next(e); }
+});
+
 // -------------------------------------------------------------------------
 // AI SUGGESTIONS — the file's non-autonomous "AI panel" backend (R3.5/R3.6).
 // Owner hard rule (2026-07-22): the AI writes suggestions here — a human

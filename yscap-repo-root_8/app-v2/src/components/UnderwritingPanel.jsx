@@ -1153,6 +1153,7 @@ function SovereignCockpit({ twinFacts, cureProofs, appId, canIssueCerts, canConf
       {appId && <SovereignCertificatesSection appId={appId} canIssue={canIssueCerts} />}
       {appId && <SovereignStructuringSection appId={appId} />}
       {appId && <SovereignAiRiskSection appId={appId} />}
+      {appId && <SimilarLoansSection appId={appId} />}
       {appId && <SovereignAiCostSection appId={appId} />}
       {appId && <SovereignKnowledgeGraphSection appId={appId} />}
       {appId && <SovereignAskAdminSection appId={appId} />}
@@ -1494,6 +1495,40 @@ function SovereignAiRiskSection({ appId }) {
           <div style={{ fontSize: 26, fontWeight: 800, color: tint, lineHeight: 1 }}>{data.score}</div>
           <div style={{ fontSize: 10, color: tint, textTransform: 'uppercase', letterSpacing: '.06em', fontWeight: 700 }}>{data.bucket}</div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// R5.55/R5.56 — Underwriting Memory: how this file compares to similar FUNDED
+// loans. Silent until there are similar funded files on record. Read-only.
+// ---------------------------------------------------------------------------
+function SimilarLoansSection({ appId }) {
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    if (!appId) return;
+    let live = true;
+    api.similarLoans(appId).then((r) => { if (live) setData((r && r.memory) || null); }).catch(() => setData(null));
+    return () => { live = false; };
+  }, [appId]);
+  const m = data && data.summary;
+  if (!m || !(m.count > 0)) return null;
+  const money = (n) => (n == null ? '—' : '$' + Math.round(n).toLocaleString('en-US'));
+  return (
+    <div style={{ marginTop: 12, border: '1px solid var(--teal-deep,#256168)', borderRadius: 10, background: 'var(--card,#fff)', padding: '10px 12px' }}>
+      <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--teal-deep,#256168)', fontWeight: 700, marginBottom: 4 }}>
+        Underwriting memory
+      </div>
+      <div style={{ fontSize: 13, color: 'var(--ivory,#141B22)' }}>
+        This loan is <b>{m.bestMatchPct}%</b> similar to <b>{m.count}</b> previously funded file{m.count === 1 ? '' : 's'}
+        {data.totalFunded ? <span style={{ color: 'var(--muted,#4B585C)' }}> (of {data.totalFunded} funded)</span> : null}.
+      </div>
+      <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginTop: 4, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+        {m.avgConditions != null && <span>Avg conditions: <b style={{ color: 'var(--ivory,#141B22)' }}>{m.avgConditions}</b></span>}
+        {m.avgLtvPct != null && <span>Avg LTV: <b style={{ color: 'var(--ivory,#141B22)' }}>{m.avgLtvPct}%</b></span>}
+        {m.avgLoanAmount != null && <span>Avg loan: <b style={{ color: 'var(--ivory,#141B22)' }}>{money(m.avgLoanAmount)}</b></span>}
+        {m.topInvestor && <span>Most common investor: <b style={{ color: 'var(--ivory,#141B22)', textTransform: 'capitalize' }}>{m.topInvestor.label}</b> ({m.topInvestor.count})</span>}
       </div>
     </div>
   );

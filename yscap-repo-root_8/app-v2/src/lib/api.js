@@ -478,6 +478,7 @@ export const api = {
   aiAdminAnswer:          (questionId, answer) => req('POST', `/api/underwriting/ai-admin/questions/${questionId}/answer`, { answer }),
   aiCostForFile:          (appId) => req('GET', `/api/underwriting/${appId}/ai-cost`),
   aiRiskScore:            (appId) => req('GET', `/api/underwriting/${appId}/ai-risk-score`),
+  similarLoans:           (appId) => req('GET', `/api/underwriting/${appId}/similar-loans`),
   aiDismissAllOnFile:     (appId, reason) => req('POST', `/api/underwriting/${appId}/ai-suggestions/dismiss-all`, { reason }),
   aiRerunChecks:          (appId) => req('POST', `/api/underwriting/${appId}/ai-suggestions/rerun-checks`, {}),
   askAdminAboutFile:      (appId, question) => req('POST', `/api/underwriting/${appId}/ask-admin`, { question }),
