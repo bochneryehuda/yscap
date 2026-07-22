@@ -1490,6 +1490,8 @@ function SovereignAiCostSection({ appId }) {
 function SovereignAskAdminSection({ appId }) {
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
+  const [xdBusy, setXdBusy] = useState(false);
+  const [xdRes, setXdRes] = useState(null);
   const ask = async () => {
     const q = window.prompt('What do you want the super-admin to decide about this file?');
     if (!q || !q.trim()) return;
@@ -1501,15 +1503,40 @@ function SovereignAskAdminSection({ appId }) {
     } catch (e) { alert(`Could not send: ${(e && e.message) || 'error'}`); }
     finally { setBusy(false); }
   };
+  const runXd = async () => {
+    if (!window.confirm('Run the deep AI cross-document consistency check on this file? This costs a small amount per run (~$0.05–$0.20).')) return;
+    setXdBusy(true); setXdRes(null);
+    try {
+      const r = await api.aiCrossDocCheck(appId);
+      setXdRes(r);
+      if (r && r.findings && r.findings.length) {
+        alert(`Cross-doc AI check posted ${r.findings.length} finding${r.findings.length === 1 ? '' : 's'} to the AI Findings panel below.`);
+      } else if (r && r.ok) {
+        alert('Cross-doc AI check found no contradictions across the file.');
+      } else {
+        alert(`Cross-doc AI check could not run: ${(r && r.reason) || 'unknown'}`);
+      }
+    } catch (e) { alert(`Cross-doc AI check failed: ${(e && e.message) || 'error'}`); }
+    finally { setXdBusy(false); }
+  };
   return (
-    <div style={{ marginTop: 12, border: '1px dashed var(--paper,#E9E4D3)', borderRadius: 10, background: 'var(--paper,#F6F3EC)', padding: '8px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-      <div>
-        <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted,#4B585C)', fontWeight: 700 }}>Not sure about this file?</div>
-        <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginTop: 2 }}>
-          Ask the super-admin. Their answer becomes a training signal. {sent && <span style={{ color: 'var(--good,#3F7A5B)' }}>· Sent</span>}
+    <div style={{ marginTop: 12, border: '1px dashed var(--paper,#E9E4D3)', borderRadius: 10, background: 'var(--paper,#F6F3EC)', padding: '8px 12px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div>
+          <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted,#4B585C)', fontWeight: 700 }}>Deep AI checks</div>
+          <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginTop: 2 }}>
+            Ask the super-admin, or run the deep cross-doc consistency check with GPT-5.
+            {sent && <span style={{ color: 'var(--good,#3F7A5B)' }}> · Question sent</span>}
+            {xdRes && xdRes.ok && <span style={{ color: 'var(--good,#3F7A5B)' }}> · Cross-doc done ({(xdRes.findings || []).length} found)</span>}
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          <button className="btn ghost" onClick={ask} disabled={busy} style={{ fontSize: 11 }}>{busy ? 'Sending…' : 'Ask super-admin'}</button>
+          <button className="btn ghost" onClick={runXd} disabled={xdBusy} style={{ fontSize: 11 }} title="Run GPT-5 cross-document contradiction check">
+            {xdBusy ? 'Analyzing…' : '🔍 Deep cross-doc check'}
+          </button>
         </div>
       </div>
-      <button className="btn ghost" onClick={ask} disabled={busy} style={{ fontSize: 11 }}>{busy ? 'Sending…' : 'Ask super-admin'}</button>
     </div>
   );
 }
