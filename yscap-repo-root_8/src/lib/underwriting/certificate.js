@@ -177,20 +177,32 @@ async function surveillanceCheck(client, appId) {
 }
 
 // ---- SURVEY EVERY FILE with a valid certificate — batch call used by the
-// nightly dispatcher. Cheap because it does one query per file. ----
+// nightly dispatcher. Cheap because it does one query per file. Returns
+// { filesChecked, certsChecked, flagged, flaggedByFile:[{application_id,
+// milestones:[...] }] } so the caller (notification-digests) can fan out
+// a "signed snapshot needs re-verification" email per affected file.
 async function surveyAllValidCertificates(client) {
   client = client || db();
   const apps = await client.query(
     `SELECT DISTINCT application_id FROM decision_certificates WHERE surveillance_state='valid'`);
   let flagged = 0, checked = 0;
+  const flaggedByFile = [];
   for (const row of apps.rows) {
     try {
       const results = await surveillanceCheck(client, row.application_id);
       checked += results.length;
-      flagged += results.filter((r) => r.transitioned).length;
+      const trans = results.filter((r) => r.transitioned);
+      if (trans.length > 0) {
+        flagged += trans.length;
+        flaggedByFile.push({
+          application_id: row.application_id,
+          milestones: trans.map((r) => r.milestone),
+          totalChanges: trans.reduce((a, r) => a + (Number(r.changes) || 0), 0),
+        });
+      }
     } catch (_) { /* one file's error never stops the batch */ }
   }
-  return { filesChecked: apps.rowCount, certsChecked: checked, flagged };
+  return { filesChecked: apps.rowCount, certsChecked: checked, flagged, flaggedByFile };
 }
 
 // ---- VERIFY A CERTIFICATE'S DIGEST — recomputes SHA-256 over its stored

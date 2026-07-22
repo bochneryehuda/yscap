@@ -373,6 +373,22 @@ async function certificateSurveyOnce() {
     } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
     finally { client.release(); }
     await _stamp('cert_survey_daily', null, result || {});
+    // R2.4 — fan out a "signed snapshot needs re-verification" notification
+    // to the assigned team for every flagged file. Best-effort per file; a
+    // single notify failure never breaks the batch.
+    const flagged = (result && result.flaggedByFile) || [];
+    for (const f of flagged) {
+      try {
+        const milestones = (f.milestones || []).map((m) => String(m).replace(/_/g, ' ')).join(', ');
+        await notify.notifyAppStaff(f.application_id, {
+          type: 'sync_review',
+          title: 'A signed snapshot on this file needs re-verification',
+          body: `The daily surveillance sweep noticed ${f.totalChanges} canonical fact change(s) since the last snapshot was stamped for: ${milestones}. Re-verify the file's numbers, then stamp a fresh snapshot from the file's Sovereign panel.`,
+          applicationId: f.application_id,
+          link: `/internal/app/${f.application_id}#sec-underwriting`,
+        });
+      } catch (e) { console.error('[digests] cert-survey notify', f.application_id, e && e.message); }
+    }
     return (result && result.flagged) || 0;
   } catch (e) { console.error('[digests] cert-survey', e && e.message); return 0; }
 }

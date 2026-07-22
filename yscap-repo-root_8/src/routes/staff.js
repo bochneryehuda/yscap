@@ -5429,6 +5429,13 @@ const { STATUS_LABEL, MAJOR_STATUSES, borrowerStatusOpts } = require('../lib/sta
 // "your loan is now …" would be a wrong-time send). Best-effort; never throws.
 // (A status change made directly in ClickUp is handled by the inbound sync via
 // statusNotify.notifyInboundStatusChange, sharing borrowerStatusOpts below.)
+// Which internal statuses trigger an AUTO-ISSUE of a Sovereign signed
+// snapshot (owner-directed 2026-07-22, R2.4). Every material milestone
+// gets an immutable snapshot the moment the file reaches it — so a later
+// audit can prove the state PILOT made the decision on. Best-effort:
+// a snapshot failure never blocks the status change or its notifications.
+const CERT_MILESTONE_BY_STATUS = { clear_to_close: 'clear_to_close', funded: 'pre_funding' };
+
 async function notifyStatusTransition(appId, fromStatus, toStatus, opts = {}) {
   try {
     const live = await db.query(`SELECT deleted_at FROM applications WHERE id=$1`, [appId]);
@@ -5446,6 +5453,26 @@ async function notifyStatusTransition(appId, fromStatus, toStatus, opts = {}) {
       // Routine working moves (in review, processing, underwriting) post in-app
       // only — no inbox bombardment when a file advances a step.
       inAppOnly: !MAJOR_STATUSES.has(toStatus) });
+    // R2.4 — Sovereign signed-snapshot AUTO-ISSUE on milestone moves. Fires only
+    // when the transition is INTO a milestone that carries a certificate meaning
+    // (clear_to_close → 'clear_to_close' cert; funded → 'pre_funding' cert),
+    // never on a lateral / backward move. Best-effort per pattern.
+    const milestone = CERT_MILESTONE_BY_STATUS[toStatus];
+    if (milestone && toStatus !== fromStatus) {
+      try {
+        const cert = require('../lib/underwriting/certificate');
+        const client = await db.pool.connect();
+        try {
+          await client.query('BEGIN');
+          await cert.issueCertificate(client, {
+            appId, milestone, staffId: opts.actorId || null,
+            reason: `auto-issued on transition to ${label}`,
+          });
+          await client.query('COMMIT');
+        } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+        finally { client.release(); }
+      } catch (e) { console.error('[cert] auto-issue', appId, milestone, e && e.message); }
+    }
   } catch (_) { /* notify best-effort */ }
 }
 // Conditions-to-close gating. Reaching "clear to close" requires every open
