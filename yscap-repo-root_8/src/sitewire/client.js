@@ -160,7 +160,16 @@ const listQuickNotifyStatuses = () => call('/api/v2/quick_notify_statuses');
 // ---- writes (lender_owner) ----
 const createProperty = (property) => call('/api/v2/properties', { method: 'POST', body: { property } });
 const updateProperty = (id, property) => call(`/api/v2/properties/${id}`, { method: 'PATCH', body: { property } });
-const assignBorrower = (id, contactEmail) => call(`/api/v2/properties/${id}/borrower`, { method: 'PATCH', body: { borrower: { contact_email: contactEmail } } });
+const assignBorrower = (id, contactEmail) => {
+  // Owner-directed 2026-07-22 (file 1053 Ella T Grasso Blvd): Sitewire 422'd on
+  // "Sales@primephoneusa.com" (capital S + a trailing space in the file). Normalize the email
+  // shape at the ONLY door that talks to Sitewire — trim whitespace + lowercase + strip any
+  // surrounding <angle brackets> the user may have pasted. Sitewire treats these as validation
+  // errors even though every mail server today is case-insensitive on the local part.
+  const raw = String(contactEmail == null ? '' : contactEmail);
+  const clean = raw.trim().replace(/^<|>$/g, '').toLowerCase();
+  return call(`/api/v2/properties/${id}/borrower`, { method: 'PATCH', body: { borrower: { contact_email: clean } } });
+};
 const updateBudget = (id, budget) => {
   // A budget PATCH that carries any id-LESS create sub-item is NOT safe to retry in-call (a lost
   // response would re-send the create and duplicate the line). Disable the in-call retry for those;
