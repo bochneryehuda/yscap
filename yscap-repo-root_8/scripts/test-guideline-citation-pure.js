@@ -74,12 +74,15 @@ for (const [rule, where] of [
   [{ rule_id: 'ltv_gate', section: NAMES[0] }, 'section'],
   [{ rule_id: 'ltv_gate', citation: NAMES[1] }, 'rule.citation'],
   [{ rule_id: NAMES[2], source: 'investor_hard' }, 'rule_id'],
+  [{ rule_id: 'ltv_gate', materiality: 'BlueLake' }, 'materiality'],
 ]) {
   const cc = gc.formatCitation(rule, ev, { borrowerSafe: true });
   const blob = JSON.stringify(cc);
   assert.ok(!/bluelake|rcn capital|rcn|blue lake/i.test(blob), `no capital-partner name leaks via ${where}: ${blob}`);
 }
-ok('borrowerSafe leaks NO capital-partner name carried by section, rule.citation, or rule_id (every returned field checked)');
+// a legitimate neutral materiality is still shown to the borrower
+assert.strictEqual(gc.formatCitation({ rule_id: 'x', materiality: 'fatal' }, ev, { borrowerSafe: true }).materiality, 'fatal', 'a neutral severity still shows');
+ok('borrowerSafe leaks NO capital-partner name carried by section, rule.citation, rule_id, or materiality (every returned field checked)');
 
 // --- citeAll orders unmet before advisory before met ---
 const list = gc.citeAll([

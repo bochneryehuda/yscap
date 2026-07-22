@@ -66,6 +66,12 @@ function scrub(s) {
   try { return _scrubText && typeof s === 'string' ? _scrubText(s) : s; } catch (_e) { return s; }
 }
 
+// The neutral severity vocabulary materiality is allowed to be. On a borrower
+// surface anything OUTSIDE this set is dropped (a hand-crafted rule could stuff a
+// name into materiality — every other name-capable field is already nulled in
+// borrowerSafe, so this closes the last one).
+const NEUTRAL_MATERIALITY = new Set(['fatal', 'hard_stop', 'blocking', 'high', 'major', 'material', 'warning', 'medium', 'low', 'advisory', 'info']);
+
 function str(v) {
   try {
     if (v == null) return null;
@@ -163,7 +169,9 @@ function formatCitation(rule, evalResult, opts = {}) {
       verdict,
       reasons,
       citation: composeCitation({ sourceLabel, investor, guideline, version, section, ruleId }, borrowerSafe),
-      materiality,
+      // materiality is normally a neutral severity; on a borrower surface, clamp
+      // to the known-neutral vocabulary so a hand-crafted name can't ride through.
+      materiality: borrowerSafe ? (materiality && NEUTRAL_MATERIALITY.has(String(materiality).toLowerCase()) ? materiality : null) : materiality,
     };
   } catch (_e) {
     return { ruleId: null, sourceLabel: null, investor: null, guideline: null, version: null, section: null, verdict: 'unmet', reasons: [], citation: null, materiality: null };
