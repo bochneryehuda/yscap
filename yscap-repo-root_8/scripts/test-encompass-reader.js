@@ -74,11 +74,15 @@ require.cache[clientPath] = {
     listLoanFolders: async () => [{ folderName: 'Active Loans' }],
     listLoanTemplates: async () => [],
     findLoanByLoanNumber: async () => [{ loanGuid: 'guid-abc-123', 'Loan.LoanNumber': 'YS-999' }],
-    pipelineSearch: async (filter, fields, opts) => {
-      // Used by superDump + bulkPullAllLoans. Return the fixture pipeline set.
+    pipelineSearch: async (request, opts) => {
+      // Record every call so tests can assert the request shape (sortOrder MUST
+      // be top-level; body MUST NOT be `filter.sortOrder`, which Encompass 400s).
+      mockClient._pipelineCalls.push({ request, opts });
       const limit = (opts && opts.limit) || 10;
-      return mockClient._pipelineHits.slice(0, limit);
+      const start = (opts && opts.start) || 0;
+      return mockClient._pipelineHits.slice(start, start + limit);
     },
+    _pipelineCalls: [],
     _pipelineHits: [
       { loanGuid: 'guid-abc-123', 'Loan.LoanNumber': 'YS-999', 'Loan.LoanFolder': 'Active', 'Loan.LoanAmount': 500000, 'Loan.BorrowerLastName': 'Doe', 'Loan.LastModified': '2026-07-20T10:00:00Z' },
       { loanGuid: 'guid-xyz-456', 'Loan.LoanNumber': 'YS-888', 'Loan.LoanFolder': 'Active', 'Loan.LoanAmount': 300000, 'Loan.BorrowerLastName': 'Roe', 'Loan.LastModified': '2026-07-19T10:00:00Z' },
@@ -247,6 +251,17 @@ async function main() {
   const runFinal = queries.reverse().find((q) => /UPDATE encompass_bulk_pull_runs\s+SET pulled=\$1, matched=\$2/.test(q.sql));
   assert.ok(runFinal, 'bulk pull run row finalized');
   assert.strictEqual(runFinal.params[6], 'completed', 'run finalized to completed');
+
+  // (9b) Regression: pipelineSearch requests MUST have `sortOrder` at the TOP
+  // LEVEL of the request object (Encompass 400s "queryContract.filter.sortOrder
+  // Invalid field name or value" if it sits inside `filter`). Verified by
+  // inspecting the recorded pipeline calls from tests 8 + 9 above.
+  const badCall = mockClient._pipelineCalls.find((c) => c.request && c.request.filter && Array.isArray(c.request.filter.sortOrder));
+  assert.strictEqual(badCall, undefined, 'no pipelineSearch call may nest sortOrder inside filter');
+  assert.ok(
+    mockClient._pipelineCalls.some((c) => c.request && Array.isArray(c.request.sortOrder)),
+    'at least one pipelineSearch call passes sortOrder at the top level',
+  );
 
   // (10) Contract check — the REAL client at src/encompass/client.js must
   // export EVERY method the reader calls. This catches the "mock has it but

@@ -206,15 +206,15 @@ async function superDump({ sampleN = 20 } = {}) {
   )).rows;
 
   // Pipeline-search the tenant for the most-recent N loans across ALL folders.
-  // We fetch a broad field set for the search projection so the response has
-  // more than just the GUID (helps a reviewer see loan-level variety).
+  // No filter → all loans; sortOrder at the TOP LEVEL of the request; a broad
+  // fields projection so a reviewer sees loan-level variety.
   let recent = [];
   let searchError = null;
   try {
     recent = await client.pipelineSearch({
-      terms: [],  // no filter — everything
       sortOrder: [{ canonicalName: 'Loan.LastModified', order: 'desc' }],
-    }, ['Loan.Guid', 'Loan.LoanNumber', 'Loan.LoanFolder', 'Loan.LoanAmount', 'Loan.LoanProgram', 'Loan.LoanPurpose', 'Loan.BorrowerLastName', 'Loan.LastModified'], { limit: n });
+      fields: ['Loan.Guid', 'Loan.LoanNumber', 'Loan.LoanFolder', 'Loan.LoanAmount', 'Loan.LoanProgram', 'Loan.LoanPurpose', 'Loan.BorrowerLastName', 'Loan.LastModified'],
+    }, { limit: n });
     if (!Array.isArray(recent)) recent = [];
   } catch (e) { searchError = e.message; }
 
@@ -265,36 +265,28 @@ async function bulkPullAllLoans({ perRequestDelayMs = 350, startedByStaffId = nu
   let lastError = null;
 
   try {
-    // Paginate the pipeline. Encompass returns up to ~200 rows per POST; we
-    // use a `start` cursor via the `?limit=` + `?cursor=` pattern. If the
-    // tenant returns fewer than pageSize, we're done.
-    let cursor = 0;
+    // Paginate the pipeline via ?limit=N&start=M — offset-based, so it
+    // never depends on the LastModified field being filterable and never
+    // skips or double-counts loans that share the same modified timestamp.
+    // First call: start=0. Advance start by page.length after each page.
+    let offset = 0;
     let totalReported = null;
     /* eslint-disable no-await-in-loop */
     while (true) {
       let page;
       try {
-        page = await client.findLoanByLoanNumber ? null : null;  // placeholder — see next call
-      } catch (_) { /* fall through */ }
-      try {
-        // The pipelineSearch client already supports `{limit}`. Encompass's
-        // paging convention here is `?start=<cursor>&limit=<pageSize>`; we
-        // approximate that by paginating via `LastModified` cursors so we
-        // always advance. First call: no cursor. Later calls: use the
-        // oldest LastModified from the previous page as the upper bound.
         page = await client.pipelineSearch({
-          terms: cursor === 0 ? [] : [{ canonicalName: 'Loan.LastModified', matchType: 'lessThan', value: cursor }],
           sortOrder: [{ canonicalName: 'Loan.LastModified', order: 'desc' }],
-        }, ['Loan.Guid', 'Loan.LoanNumber', 'Loan.LoanFolder', 'Loan.LoanAmount', 'Loan.BorrowerLastName', 'Loan.LastModified'], { limit: pageSize });
+          fields: ['Loan.Guid', 'Loan.LoanNumber', 'Loan.LoanFolder', 'Loan.LoanAmount', 'Loan.BorrowerLastName', 'Loan.LastModified'],
+        }, { limit: pageSize, start: offset });
       } catch (e) {
         lastError = `pipeline page: ${e.message}`;
         break;
       }
       if (!Array.isArray(page) || page.length === 0) break;
 
-      if (totalReported === null) totalReported = page.length;  // no better estimate available
+      if (totalReported === null) totalReported = page.length;  // running estimate
 
-      let oldest = null;
       for (const hit of page) {
         const guid = hit.loanGuid || hit.guid;
         const loanNumber = hit['Loan.LoanNumber'] || hit.loanNumber || null;
@@ -369,13 +361,12 @@ async function bulkPullAllLoans({ perRequestDelayMs = 350, startedByStaffId = nu
           );
         }
 
-        if (lastMod && (!oldest || lastMod < oldest)) oldest = lastMod;
         await sleep(perRequestDelayMs);
       }
 
-      // If a page came back short OR we didn't advance the cursor, we're done.
-      if (page.length < pageSize || !oldest || oldest === cursor) break;
-      cursor = oldest;
+      // A short page means we've hit the end of the tenant.
+      if (page.length < pageSize) break;
+      offset += page.length;
     }
     /* eslint-enable no-await-in-loop */
 
