@@ -249,6 +249,33 @@ async function listExceptions({ status = 'open', limit = 100 } = {}, client = db
   return r.rows;
 }
 
+/**
+ * The conditions (most often DOCUMENT REQUESTS) tagged to an exception, each with
+ * the documents uploaded against it (owner-directed 2026-07-22). The conditions
+ * still live on the file's checklist; this just gathers the ones tagged to THIS
+ * exception so the exception detail can show the paperwork it depends on. Returns
+ * [] when nothing is attached (or the column isn't present yet — fails soft).
+ */
+async function listConditions(exceptionId, client = db) {
+  try {
+    const items = await client.query(
+      `SELECT id, label, borrower_label, status, item_kind, audience, is_required, signed_off_at, due_date, created_at
+         FROM checklist_items
+        WHERE loan_exception_id = $1
+        ORDER BY created_at`, [exceptionId]);
+    if (!items.rows.length) return [];
+    const ids = items.rows.map((r) => r.id);
+    const docs = await client.query(
+      `SELECT id, checklist_item_id, filename, content_type, created_at
+         FROM documents
+        WHERE checklist_item_id = ANY($1) AND COALESCE(is_current, true)
+        ORDER BY created_at DESC`, [ids]);
+    const byItem = {};
+    for (const d of docs.rows) { (byItem[d.checklist_item_id] = byItem[d.checklist_item_id] || []).push(d); }
+    return items.rows.map((r) => ({ ...r, documents: byItem[r.id] || [] }));
+  } catch (e) { console.warn('[loan-exceptions] listConditions skipped:', e.message); return []; }
+}
+
 /** Count of OPEN (requested) exceptions — for the nav badge. Fails soft. */
 async function pendingCount(client = db) {
   try {
@@ -263,4 +290,5 @@ module.exports = {
   openForApp, latestForApp, getById, listExceptions, pendingCount,
   listForRequester, requesterOpenCount,
   addComment, listComments, commentParticipants,
+  listConditions,
 };

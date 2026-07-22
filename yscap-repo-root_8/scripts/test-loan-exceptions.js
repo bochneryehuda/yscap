@@ -154,6 +154,27 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
   try { await LE.addComment(rq3.id, saId, '   '); } catch (_) { threw = true; }
   ok(threw, 'an empty comment is rejected');
 
+  // db/275 + db/276 — conditions / documents attached to an exception (owner-directed 2026-07-22).
+  // origin_kind='exception' is exactly what the conditions/custom route stamps for a tagged
+  // condition — inserting it here proves db/276 widened chk_items_origin_kind (else 23514).
+  const ciDoc = await db.query(
+    `INSERT INTO checklist_items (scope,application_id,label,borrower_label,audience,item_kind,status,loan_exception_id,origin_kind,created_by_kind)
+     VALUES ('application',$1,'Net worth statement','Net worth statement','borrower','document','received',$2,'exception','staff') RETURNING id`,
+    [app2Id, rq3.id]);
+  await db.query(
+    `INSERT INTO documents (checklist_item_id,application_id,filename,content_type,storage_provider)
+     VALUES ($1,$2,'networth.pdf','application/pdf','local')`, [ciDoc.rows[0].id, app2Id]);
+  const conds = await LE.listConditions(rq3.id);
+  ok(conds.length === 1 && conds[0].id === ciDoc.rows[0].id, 'listConditions returns the tagged condition');
+  ok(conds[0].documents.length === 1 && conds[0].documents[0].filename === 'networth.pdf', 'listConditions attaches the uploaded document to its condition');
+  ok((await LE.listConditions(rBad.id)).length === 0, 'an exception with no tagged conditions returns []');
+  // ON DELETE SET NULL: deleting the exception detaches the tag but keeps the condition + its document.
+  await db.query(`DELETE FROM loan_exceptions WHERE id=$1`, [rq3.id]);
+  ok((await db.query('SELECT loan_exception_id FROM checklist_items WHERE id=$1', [ciDoc.rows[0].id])).rows[0].loan_exception_id === null,
+     'deleting an exception detaches its conditions (SET NULL) — the condition + document survive');
+  ok((await db.query('SELECT 1 FROM documents WHERE checklist_item_id=$1', [ciDoc.rows[0].id])).rows.length === 1,
+     'the uploaded document is never destroyed by clearing an exception');
+
   await db.pool.end();
 })().then(() => {
   console.log(`\n${pass} passed, ${fail} failed`);
