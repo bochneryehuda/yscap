@@ -123,6 +123,54 @@ v = dc.verifyCertificate(cert);
 assert.strictEqual(v.valid, true, 'snake_case aliases are read the same as camelCase');
 ok('snake_case evidence_span_ids / guideline_version aliases are accepted');
 
+// --- AUDIT HIGH: adverse/engine-status verdicts ARE material (denied/eligible/etc) ---
+for (const verdict of ['denied', 'eligible', 'ineligible', 'suspended', 'withdrawn', 'countered', 'waived', 'manual']) {
+  const bare = dc.buildCertificate({ milestone: 'x', subject: 'y', decision: verdict, claims: [{ component: 'c', verdict }] });
+  const vv = dc.verifyCertificate(bare);
+  assert.strictEqual(vv.valid, false, `a '${verdict}' claim with no evidence/version must NOT certify as valid`);
+  assert.ok(bare.coverage.materialClaims === 1, `'${verdict}' is treated as a decision (material) claim`);
+}
+ok('AUDIT HIGH: adverse + engine-status verdicts (denied/eligible/ineligible/suspended/…) are material — an unlinked one is invalid');
+
+// --- AUDIT MEDIUM: falsy span ids are dropped, cannot game the evidence-linked invariant ---
+let junkSpans = dc.buildCertificate({
+  milestone: 'x', subject: 'y', decision: 'clear',
+  claims: [{ component: 'c', verdict: 'clear', evidenceSpanIds: [null, undefined, '', false, 's1'],
+    guideline: { investor: 'g', version: '1', ruleId: 'r' } }],
+});
+assert.deepStrictEqual(junkSpans.claims[0].evidenceSpanIds, ['s1'], 'null/undefined/empty/false span ids are dropped');
+let onlyJunk = dc.buildCertificate({
+  milestone: 'x', subject: 'y', decision: 'clear',
+  claims: [{ component: 'c', verdict: 'clear', evidenceSpanIds: [null, false],
+    guideline: { investor: 'g', version: '1', ruleId: 'r' } }],
+});
+assert.strictEqual(dc.verifyCertificate(onlyJunk).valid, false, 'a claim whose only "evidence" is junk placeholders is unlinked → invalid');
+assert.deepStrictEqual(dc.verifyCertificate(onlyJunk).unlinkedClaims, ['c']);
+ok('AUDIT MEDIUM: falsy span ids are dropped before counting — junk cannot satisfy the evidence-linked invariant');
+
+// --- AUDIT MEDIUM: a circular certificate never throws (hash → unhashable sentinel → invalid) ---
+const circ = dc.buildCertificate(goodInput());
+circ.claims[0].self = circ.claims[0]; // make it circular after build
+assert.doesNotThrow(() => dc.verifyCertificate(circ), 'a circular certificate must not throw');
+assert.strictEqual(dc.verifyCertificate(circ).hashMatches, false, 'a circular (unhashable) certificate fails verification instead of throwing');
+const circBuild = { milestone: 'x', subject: 'y', decision: 'clear', claims: [], guidelineVersions: {} };
+circBuild.guidelineVersions.self = circBuild.guidelineVersions;
+assert.doesNotThrow(() => dc.buildCertificate(circBuild), 'buildCertificate never throws on a circular nested object');
+ok('AUDIT MEDIUM: a circular certificate is handled safely (unhashable sentinel → invalid), never throws');
+
+// --- AUDIT LOW: diff catches a per-claim guideline-version drift under the SAME verdict ---
+const base = dc.buildCertificate(goodInput());
+const revd = goodInput();
+revd.claims[0].guideline.version = '4'; // vesting re-versioned, verdict unchanged
+const revCert = dc.buildCertificate(revd);
+const gdiff = dc.diffCertificates(base, revCert);
+assert.strictEqual(gdiff.changed, true, 'a guideline re-version under the same verdict is a change');
+const vc = gdiff.claimChanges.find((c) => c.component === 'vesting');
+assert.ok(vc && vc.versionChanged === true && vc.verdictChanged === false, 'the change is flagged as a version move, not a verdict move');
+assert.strictEqual(vc.fromVersion, '3');
+assert.strictEqual(vc.toVersion, '4');
+ok('AUDIT LOW: diffCertificates catches a per-claim guideline-version drift even when the verdict is unchanged');
+
 // --- empty / junk input is safe ---
 assert.doesNotThrow(() => dc.buildCertificate(null));
 let empty = dc.buildCertificate(null);

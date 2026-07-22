@@ -34,9 +34,28 @@ const SCHEMA_VERSION = 2;
 
 // A claim whose verdict is one of these actually DECIDED something and therefore
 // MUST be evidence-linked + guideline-versioned. An informational claim need not.
-const DECISION_VERDICTS = new Set(['clear', 'cleared', 'pass', 'satisfied', 'decline', 'declined', 'fail', 'refer', 'conditional', 'approve', 'approved', 'reject', 'rejected']);
+// Kept DELIBERATELY broad — over-requiring evidence/version on a borderline verdict
+// is safe (a caller can set material:false), but UNDER-requiring lets an unlinked
+// adverse decision certify as clean. Includes the pricing engine's own status
+// vocabulary (ELIGIBLE / INELIGIBLE / MANUAL) and every common adverse-action word.
+const DECISION_VERDICTS = new Set([
+  'clear', 'cleared', 'clear_to_close', 'ctc', 'pass', 'passed', 'satisfied', 'approve', 'approved', 'accept', 'accepted',
+  'decline', 'declined', 'deny', 'denied', 'reject', 'rejected', 'fail', 'failed', 'adverse',
+  'eligible', 'ineligible', 'manual', 'suspend', 'suspended', 'withdraw', 'withdrawn', 'counter', 'countered',
+  'refer', 'referred', 'conditional', 'conditioned', 'waive', 'waived',
+]);
 
 function str(v) { return v == null ? null : String(v); }
+
+// Normalize a list of evidence span ids: drop genuinely-empty values (null,
+// undefined, '', false) BEFORE stringifying — otherwise null→"null"/false→"false"
+// would survive as truthy strings and a junk placeholder could satisfy the
+// evidence-linked invariant (gaming coverage). A numeric 0 is a legitimate id and
+// is kept. De-dupes.
+function spanIds(list) {
+  if (!Array.isArray(list)) return [];
+  return [...new Set(list.filter((x) => x != null && x !== '' && x !== false).map(String))];
+}
 function normVerdict(v) { return String(v == null ? '' : v).trim().toLowerCase().replace(/[\s-]+/g, '_'); }
 function isDecisionVerdict(v) { return DECISION_VERDICTS.has(normVerdict(v)); }
 
@@ -64,7 +83,7 @@ function normClaim(c) {
   return {
     component: str(cc.component),
     verdict: str(verdict),
-    evidenceSpanIds: [...new Set(spans.map(String).filter(Boolean))],
+    evidenceSpanIds: spanIds(spans),
     guideline: normGuideline(cc.guideline),
     confidence: Number.isFinite(conf) ? Math.max(0, Math.min(1, conf)) : null,
     // a claim is MATERIAL (must be linked/versioned) when it decides something,
@@ -81,7 +100,7 @@ function normFinding(f) {
     code: str(ff.code),
     severity: str(ff.severity),
     status: str(ff.status),
-    evidenceSpanIds: [...new Set(spans.map(String).filter(Boolean))],
+    evidenceSpanIds: spanIds(spans),
   };
 }
 
@@ -93,8 +112,16 @@ function canonicalForHash(cert) {
   return fp.stableStringify(rest);
 }
 
+// A certificate is a JSON snapshot (JSON can't be circular), but verifyCertificate
+// accepts externally-supplied objects, so guard the "never throws" contract: if the
+// canonical serialization blows up (e.g. a hand-built circular object), return a
+// stable sentinel hash instead of throwing. A sentinel never equals a real 64-hex
+// hash, so a certificate that can't be canonicalized simply fails verification.
+const UNHASHABLE = 'unhashable';
 function hashCertificate(cert) {
-  return crypto.createHash('sha256').update(canonicalForHash(cert)).digest('hex');
+  let canon;
+  try { canon = canonicalForHash(cert); } catch (_e) { return UNHASHABLE; }
+  return crypto.createHash('sha256').update(canon).digest('hex');
 }
 
 /**
@@ -195,19 +222,43 @@ function diffCertificates(a, b) {
     return m;
   };
   const ma = byComp(ca), mb = byComp(cb);
+  const gvOf = (cl) => (cl && cl.guideline && cl.guideline.version != null ? String(cl.guideline.version) : null);
   const claimChanges = [];
   for (const comp of new Set([...ma.keys(), ...mb.keys()])) {
     const va = ma.get(comp), vb = mb.get(comp);
     const fromV = va ? normVerdict(va.verdict) : null;
     const toV = vb ? normVerdict(vb.verdict) : null;
-    if (fromV !== toV) claimChanges.push({ component: comp, from: va ? va.verdict : null, to: vb ? vb.verdict : null });
+    const verdictMoved = fromV !== toV;
+    // per-claim guideline-version drift is a material change even under the SAME
+    // verdict — the same "cleared" judged against a re-versioned rule must re-validate.
+    const versionMoved = gvOf(va) !== gvOf(vb);
+    if (verdictMoved || versionMoved) {
+      claimChanges.push({
+        component: comp,
+        from: va ? va.verdict : null,
+        to: vb ? vb.verdict : null,
+        fromVersion: gvOf(va),
+        toVersion: gvOf(vb),
+        verdictChanged: verdictMoved,
+        versionChanged: versionMoved,
+      });
+    }
   }
   const decisionChanged = normVerdict(ca.decision) !== normVerdict(cb.decision);
   const guidelineChanges = fp.stableStringify(ca.guidelineVersions || {}) !== fp.stableStringify(cb.guidelineVersions || {});
-  const findingCodes = (cert) => new Set((Array.isArray(cert.findings) ? cert.findings : []).map((f) => `${f.code}:${f.status}`));
-  const fa = findingCodes(ca), fb = findingCodes(cb);
+  // Compare findings as a MULTISET (count of each code:status) so adding a duplicate
+  // finding is a change, not silently equal.
+  const findingCounts = (cert) => {
+    const m = new Map();
+    for (const f of (Array.isArray(cert.findings) ? cert.findings : [])) {
+      const k = `${f && f.code}:${f && f.status}`;
+      m.set(k, (m.get(k) || 0) + 1);
+    }
+    return m;
+  };
+  const fa = findingCounts(ca), fb = findingCounts(cb);
   let findingChanges = fa.size !== fb.size;
-  if (!findingChanges) for (const x of fa) if (!fb.has(x)) { findingChanges = true; break; }
+  if (!findingChanges) for (const [k, n] of fa) if (fb.get(k) !== n) { findingChanges = true; break; }
 
   return {
     changed: decisionChanged || claimChanges.length > 0 || guidelineChanges || findingChanges,
