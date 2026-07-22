@@ -402,8 +402,13 @@ async function reconcileOne(appId) {
   // read can lag by minutes after an upload, so verifyPresent on the push itself may return null
   // even though the doc IS there. Without this sweep, the parked `sitewire_doc_unverified` row
   // stays open forever because dedup skips the re-upload path. Runs on every reconcile;
-  // read-only (never uploads, never modifies Sitewire) and best-effort.
-  try { await require('./doc-push').verifyPushedDocsOnce(appId, link.sitewire_property_id); } catch (_) {}
+  // read-only for verify, best-effort throughout.
+  // `escalate: true` — for any 'pushed' row stuck > 30 min without confirming, auto-force-retry
+  // the upload (routes through the standard pushDocuments flow with force:true). Handles the case
+  // where the ORIGINAL upload actually got lost, not just a read-lag. Reconcile is the safe caller
+  // for the escalate path — pushDocuments itself uses escalate:false to avoid recursing into its
+  // own retry.
+  try { await require('./doc-push').verifyPushedDocsOnce(appId, link.sitewire_property_id, null, { escalate: true }); } catch (_) {}
   return { draws: n };
 }
 

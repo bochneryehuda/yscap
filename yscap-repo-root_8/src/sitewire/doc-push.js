@@ -212,13 +212,21 @@ async function verifyPresent(appId, filename, tries = VERIFY_TRIES_DEFAULT) {
  * @param cachedExisting  optional {which: row} map from a caller that already read the DB
  * @returns { healed: [{which, name}], checked: n }
  */
-async function verifyPushedDocsOnce(appId, propertyId, whichSlots = null, { existing: cachedExisting } = {}) {
-  if (!appId) return { healed: [], checked: 0 };
+async function verifyPushedDocsOnce(appId, propertyId, whichSlots = null, { existing: cachedExisting, escalate = false } = {}) {
+  if (!appId) return { healed: [], checked: 0, escalated: [] };
+  // Also read pushed_at so escalation (below) can decide when to force-retry a stuck upload.
   const existing = cachedExisting || Object.fromEntries((await db.query(
-    `SELECT which, sha256, status, filename, sitewire_document_name FROM sitewire_document_links WHERE application_id=$1 AND status='pushed'`, [appId])).rows.map((r) => [r.which, r]));
+    `SELECT which, sha256, status, filename, sitewire_document_name, pushed_at FROM sitewire_document_links WHERE application_id=$1 AND status='pushed'`, [appId])).rows.map((r) => [r.which, r]));
   const slots = Array.isArray(whichSlots) && whichSlots.length ? whichSlots : Object.keys(existing);
   const healed = [];
+  const escalated = [];
   let checked = 0;
+  // Escalation threshold — a `pushed` row still un-verified after this long is treated as a genuine
+  // upload failure (Sitewire never confirmed), not just a read-lag. Auto-force-retry the upload so
+  // the coordinator doesn't have to click "Retry push" for every stuck row. 30 minutes gives Sitewire
+  // plenty of time to catch up on a normal upload before we assume the doc really isn't there.
+  const ESCALATE_AFTER_MS = 30 * 60 * 1000;
+  const now = Date.now();
   for (const which of slots) {
     const prev = existing[which];
     if (!prev || prev.status !== 'pushed') continue;
@@ -228,32 +236,49 @@ async function verifyPushedDocsOnce(appId, propertyId, whichSlots = null, { exis
     checked++;
     let confirmedName = null;
     try { confirmedName = await verifyPresent(appId, filename, 2); } catch (_) { confirmedName = null; }
-    if (!confirmedName) continue;
-    try {
-      await db.query(
-        `UPDATE sitewire_document_links SET status='verified',
-            sitewire_document_name = COALESCE(sitewire_document_name, $2), updated_at=now()
-          WHERE application_id=$1 AND which=$3`,
-        [appId, confirmedName, which]);
-      await db.query(
-        `UPDATE sync_review_queue
-            SET status='resolved', auto_resolved=true, resolved_at=now(),
-                resolution_note=$2
-          WHERE status='open' AND application_id=$1 AND field_key='sitewire'
-            AND task_id = $3`,
-        [appId,
-         `auto-closed — Sitewire now shows the document as "${String(confirmedName).slice(0, 120)}"; verified on a later pass after the initial read lag.`,
-         `sitewire:${appId}:sitewire_doc_unverified:${which}`]);
-      try { await orch.journal({ appId, propertyId: propertyId || null, entity: 'document', field: which,
-        newValue: { verified: true, self_heal: true, name: confirmedName }, source: 'self_heal_verify' }); } catch (_) {}
-      if (cachedExisting && cachedExisting[which]) {
-        cachedExisting[which].status = 'verified';
-        cachedExisting[which].sitewire_document_name = cachedExisting[which].sitewire_document_name || confirmedName;
-      }
-      healed.push({ which, name: confirmedName });
-    } catch (_) { /* best-effort — the plan below still runs regardless */ }
+    if (confirmedName) {
+      try {
+        await db.query(
+          `UPDATE sitewire_document_links SET status='verified',
+              sitewire_document_name = COALESCE(sitewire_document_name, $2), updated_at=now()
+            WHERE application_id=$1 AND which=$3`,
+          [appId, confirmedName, which]);
+        await db.query(
+          `UPDATE sync_review_queue
+              SET status='resolved', auto_resolved=true, resolved_at=now(),
+                  resolution_note=$2
+            WHERE status='open' AND application_id=$1 AND field_key='sitewire'
+              AND task_id = $3`,
+          [appId,
+           `auto-closed — Sitewire now shows the document as "${String(confirmedName).slice(0, 120)}"; verified on a later pass after the initial read lag.`,
+           `sitewire:${appId}:sitewire_doc_unverified:${which}`]);
+        try { await orch.journal({ appId, propertyId: propertyId || null, entity: 'document', field: which,
+          newValue: { verified: true, self_heal: true, name: confirmedName }, source: 'self_heal_verify' }); } catch (_) {}
+        if (cachedExisting && cachedExisting[which]) {
+          cachedExisting[which].status = 'verified';
+          cachedExisting[which].sitewire_document_name = cachedExisting[which].sitewire_document_name || confirmedName;
+        }
+        healed.push({ which, name: confirmedName });
+      } catch (_) { /* best-effort — the plan below still runs regardless */ }
+      continue;
+    }
+    // Verify still fails. If the row has been in `pushed` for longer than the escalation threshold,
+    // assume the original upload was genuinely lost (not a read-lag) and force-retry the upload —
+    // route through the standard docPush flow with force:true so sha256 dedup is bypassed and a
+    // fresh upload runs. Only when the caller asked to escalate (reconcile pass) — the intra-push
+    // callers (_pushDocumentsLocked) explicitly don't ask, so we don't recurse into pushDocuments
+    // from inside pushDocuments.
+    if (!escalate) continue;
+    const pushedAt = prev.pushed_at ? Date.parse(prev.pushed_at) : NaN;
+    if (!Number.isFinite(pushedAt) || (now - pushedAt) < ESCALATE_AFTER_MS) continue;
+    escalated.push({ which, pushed_at: prev.pushed_at });
+    // Fire-and-forget: the escalated push runs its own per-file lock + journals its own result.
+    // Any failure re-parks the same review row (still stuck) so no state is lost.
+    Promise.resolve()
+      .then(() => pushDocuments(appId, { which, force: true, source: 'auto_escalate_stuck_pushed' }))
+      .catch((e) => console.warn(`[sitewire] doc auto-escalate failed for ${appId}/${which}:`, e && e.message));
   }
-  return { healed, checked };
+  return { healed, checked, escalated };
 }
 
 /**
