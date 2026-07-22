@@ -212,7 +212,7 @@ async function superDump({ sampleN = 20 } = {}) {
   let searchError = null;
   try {
     recent = await client.pipelineSearch({
-      sortOrder: [{ canonicalName: 'Loan.LastModified', order: 'desc' }],
+      sortOrder: [{ canonicalName: 'Loan.LastModified', order: 'Descending' }],
       fields: ['Loan.Guid', 'Loan.LoanNumber', 'Loan.LoanFolder', 'Loan.LoanAmount', 'Loan.LoanProgram', 'Loan.LoanPurpose', 'Loan.BorrowerLastName', 'Loan.LastModified'],
     }, { limit: n });
     if (!Array.isArray(recent)) recent = [];
@@ -276,7 +276,7 @@ async function bulkPullAllLoans({ perRequestDelayMs = 350, startedByStaffId = nu
       let page;
       try {
         page = await client.pipelineSearch({
-          sortOrder: [{ canonicalName: 'Loan.LastModified', order: 'desc' }],
+          sortOrder: [{ canonicalName: 'Loan.LastModified', order: 'Descending' }],
           fields: ['Loan.Guid', 'Loan.LoanNumber', 'Loan.LoanFolder', 'Loan.LoanAmount', 'Loan.BorrowerLastName', 'Loan.LastModified'],
         }, { limit: pageSize, start: offset });
       } catch (e) {

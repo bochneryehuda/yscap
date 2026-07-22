@@ -93,6 +93,46 @@ name or value`. Empty `filter` should be OMITTED entirely (Encompass returns
 all loans visible to the token). `fields` is optional — omitting returns just
 the loan GUIDs.
 
+**`order` values are CASE-SENSITIVE PascalCase: `"Ascending"` / `"Descending"`.**
+Lowercase `"desc"` / `"asc"` fails as "Invalid field name or value" (learned
+from ICE's own Postman collection, 2026-07-22).
+
+**`matchType`** values (lowercase, from Postman): `exact`, `greaterThan`,
+`greaterThanOrEquals`, `lessThan`, `lessThanOrEquals`, `startsWith`, `contains`.
+Date-typed terms accept a `precision` field: `Day`.
+
+**Simple vs complex filter:** the filter object supports TWO shapes:
+
+Simple (single term, flat object):
+```json
+{ "filter": { "canonicalName": "Loan.LoanFolder", "value": "My Pipeline", "matchType": "exact" } }
+```
+
+Complex (multiple terms with `operator`):
+```json
+{ "filter": { "operator": "and", "terms": [ ... ] } }
+```
+
+**Retrieve by known GUIDs (no filter needed):** pass `loanIds` at top level
+instead of `filter`:
+```json
+{ "loanIds": ["guid-1", "guid-2"], "fields": [...], "sortOrder": [...] }
+```
+
+**Optional top-level filter modifiers:** `orgType: "Internal"`,
+`loanOwnership: "AllLoans"`, `includeArchivedLoans: "true"`, `include: "LockInfo"`.
+
+**Canonical field names index:** `GET /encompass/v3/loanPipeline/canonicalFields`
+returns every canonical name that can appear in `filter.canonicalName` /
+`sortOrder.canonicalName` / `fields`. Common ones we care about:
+- `Loan.Guid`, `Loan.LoanNumber`, `Loan.LoanFolder`, `Loan.LoanAmount`,
+  `Loan.LoanRate`, `Loan.LastModified`, `Loan.BorrowerName`,
+  `Loan.BorrowerLastName`, `Loan.LoanProgram`, `Loan.LoanPurpose`.
+- `Fields.4000` (Borrower First Name), `Fields.4002` (Borrower Last Name),
+  `Fields.1109` (Loan Amount), `Fields.136` (Purchase Price),
+  `Fields.356` (Appraised Value), `Fields.65` (Borrower SSN — never pull),
+  `Fields.1402` (Borrower DOB — never pull).
+
 ### Pagination
 
 Query params: `?limit=N&start=M` (offset-based). PILOT's bulk pull uses
