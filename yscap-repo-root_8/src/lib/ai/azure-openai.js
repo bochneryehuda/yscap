@@ -30,6 +30,8 @@
  */
 const cfg = require('../../config');
 const { runWithRetry, classifyStatus, retryAfterMs, breakerFor } = require('./resilience');
+const langfuse = require('./langfuse');
+const costMeter = require('./cost-meter');
 
 const DEFAULT_API_VERSION = '2025-04-01-preview';
 // GPT-5 spends hidden reasoning tokens out of this same budget, so keep it generous
@@ -111,7 +113,7 @@ async function attemptComplete(body, timeoutMs) {
   return { ok: true, text, usage: j.usage || null, finishReason: choice.finish_reason };
 }
 
-async function complete({ system, userContent, maxTokens, responseFormat, timeoutMs } = {}) {
+async function complete({ system, userContent, maxTokens, responseFormat, timeoutMs, trace, traceMeta } = {}) {
   if (!available()) return { ok: false, reason: 'the AI analyzer is not configured (add the Azure OpenAI endpoint, key, and deployment)' };
   if (!userContent || (Array.isArray(userContent) && !userContent.length)) {
     return { ok: false, reason: 'nothing was sent to the analyzer' };
@@ -131,6 +133,25 @@ async function complete({ system, userContent, maxTokens, responseFormat, timeou
   };
   if (responseFormat) body.response_format = responseFormat;
 
+  // Langfuse tracing — every completion is auto-recorded as a generation. If the caller
+  // passed `trace: t`, it attaches to that trace; otherwise a lightweight root trace is
+  // started for this one call so staff can still find it in the observability UI.
+  const traceMd = traceMeta || {};
+  const ownTrace = !trace && langfuse.enabled() ? langfuse.trace({
+    name: traceMd.name || 'azure-openai',
+    appId: traceMd.appId,
+    documentId: traceMd.documentId,
+    staffId: traceMd.staffId,
+    tags: traceMd.tags,
+    metadata: traceMd,
+  }) : null;
+  const gen = (trace || ownTrace || langfuse.trace({ name: 'noop' })).generation({
+    name: traceMd.opName || 'complete',
+    model: cfg.azureOpenai.deployment,
+    modelParameters: { max_completion_tokens: body.max_completion_tokens, reasoning_effort: body.reasoning_effort },
+    input: { system: system || null, messagePreview: previewMessages(messages), hasResponseFormat: !!responseFormat },
+  });
+
   // Bounded retry on transient 429/5xx/network, honoring Azure's Retry-After, behind a
   // per-endpoint circuit breaker. A missing config / content-filter / truncation is terminal
   // and returned on the first try. Never throws — a network drop becomes a classified result.
@@ -141,7 +162,44 @@ async function complete({ system, userContent, maxTokens, responseFormat, timeou
   });
   // A transient give-up (deadline / breaker-open) reads as a plain timeout to callers.
   if (!res.ok && res.retryable && !res.reason) res.reason = 'the analyzer timed out';
+
+  gen.end({
+    output: res.ok ? { text: res.text, finishReason: res.finishReason } : null,
+    usage: res.usage || undefined,
+    level: res.ok ? undefined : 'ERROR',
+    statusMessage: res.ok ? undefined : (res.reason || res.outcome),
+  });
+  if (ownTrace) ownTrace.end({ output: { ok: res.ok, reason: res.ok ? undefined : res.reason } });
+
+  // Cost meter — one row per completion. Best-effort, fire-and-forget so a DB
+  // hiccup never blocks the AI call. Provider/model come from the Azure OpenAI
+  // deployment name; tokens from Azure's usage.* fields.
+  const u = res.usage || {};
+  costMeter.record({
+    applicationId: traceMd.appId, documentId: traceMd.documentId,
+    opName: traceMd.opName || 'complete', provider: 'azure_openai',
+    model: cfg.azureOpenai.deployment,
+    tokensIn: Number(u.prompt_tokens ?? u.promptTokens ?? 0),
+    tokensOut: Number(u.completion_tokens ?? u.completionTokens ?? 0),
+    ok: !!res.ok, reason: res.ok ? null : (res.reason || res.outcome),
+  }).catch(() => {});
+
   return res;
+}
+
+// Compact preview of the outgoing messages for the trace input (avoid sending 100kB
+// prompts unmodified — the actual OCR text lives on the document and is already
+// referenced by application/document ids in the trace metadata).
+function previewMessages(messages) {
+  return (messages || []).map(m => {
+    if (typeof m.content === 'string') {
+      return { role: m.role, contentPreview: m.content.length > 800 ? m.content.slice(0, 800) + `…[+${m.content.length - 800} chars]` : m.content };
+    }
+    if (Array.isArray(m.content)) {
+      return { role: m.role, parts: m.content.map(p => p && p.type === 'text' ? { type: 'text', preview: (p.text || '').slice(0, 800) } : { type: p && p.type || 'unknown' }) };
+    }
+    return { role: m.role, content: null };
+  });
 }
 
 /**
@@ -170,14 +228,15 @@ function buildUserContent(a = {}) {
  * outputs are strict; NO min/max/length constraints). Returns the validated object.
  * @returns {Promise<{ ok:boolean, data?:object, raw?:string, usage?:object, reason?:string }>}
  */
-async function extract({ system, instructions, schema, ocrText, imageBase64, imageMime, maxTokens } = {}) {
+async function extract({ system, instructions, schema, ocrText, imageBase64, imageMime, maxTokens, trace, traceMeta } = {}) {
   if (!schema) return { ok: false, reason: 'no extraction shape (schema) was provided' };
   const userContent = buildUserContent({ instructions, ocrText, imageBase64, imageMime });
   const responseFormat = { type: 'json_schema', json_schema: { name: 'extraction', schema, strict: true } };
-  let res = await complete({ system, userContent, maxTokens, responseFormat });
+  const passMeta = { ...(traceMeta || {}), opName: (traceMeta && traceMeta.opName) || 'extract' };
+  let res = await complete({ system, userContent, maxTokens, responseFormat, trace, traceMeta: passMeta });
   // One retry with a bigger budget if the model was truncated mid-JSON.
   if (!res.ok && res.truncated) {
-    res = await complete({ system, userContent, maxTokens: (maxTokens || DEFAULT_MAX_TOKENS) * 2, responseFormat });
+    res = await complete({ system, userContent, maxTokens: (maxTokens || DEFAULT_MAX_TOKENS) * 2, responseFormat, trace, traceMeta: { ...passMeta, opName: passMeta.opName + ':retry-bigger-budget' } });
   }
   if (!res.ok) return res;
   let data;

@@ -227,6 +227,54 @@ async function weeklyAdminSummaryOnce() {
   return admins.rows.length;
 }
 
+/* R3.43 — Weekly super-admin digest of pending AI questions. Every super-admin
+   with is_active=true gets ONE email per week listing every ai_admin_questions
+   row still waiting for their answer, oldest first. Silent when no pending
+   questions. Self-gates via audit_log stamp so it fires at most once per week
+   across restarts / instances. The R3.7 inbox link is CTA. */
+async function weeklyAdminAiQuestionsOnce() {
+  if (!(await _gate('admin_weekly_ai_questions', null, '6 days'))) return 0;
+  let pending;
+  try {
+    pending = await db.query(
+      `SELECT q.id, q.agent, q.question, q.asked_at,
+              a.id AS application_id, a.property_address, a.status AS app_status,
+              b.first_name, b.last_name,
+              EXTRACT(EPOCH FROM (now() - q.asked_at))/86400 AS age_days
+         FROM ai_admin_questions q
+         JOIN applications a ON a.id = q.application_id AND a.deleted_at IS NULL
+         LEFT JOIN borrowers b ON b.id = a.borrower_id
+        WHERE q.answered_at IS NULL
+        ORDER BY q.asked_at ASC
+        LIMIT 50`);
+  } catch (_) { return 0; }   // schema not present yet on this deploy
+  if (!pending.rows.length) { await _stamp('admin_weekly_ai_questions', null, { pending: 0 }); return 0; }
+  const admins = await db.query(
+    `SELECT id, email FROM staff_users WHERE role='super_admin' AND is_active=true`);
+  if (!admins.rows.length) return 0;
+  const lines = pending.rows.slice(0, 20).map((q) => {
+    const addr = (q.property_address && (q.property_address.line1 || q.property_address.address || q.property_address.oneLine)) || String(q.application_id).slice(0, 8);
+    const days = Math.max(1, Math.floor(Number(q.age_days) || 0));
+    const snippet = String(q.question || '').replace(/\s+/g, ' ').slice(0, 120);
+    return `• ${addr} · ${q.first_name || ''} ${q.last_name || ''} · ${q.agent} (${days}d old): ${snippet}`;
+  });
+  const total = pending.rows.length;
+  for (const ad of admins.rows) {
+    try {
+      await notify.notifyStaff(ad.id, {
+        type: 'digest',
+        title: `${total} AI question${total === 1 ? '' : 's'} waiting for you`,
+        badge: { text: 'Weekly', tone: 'gold' },
+        hero: { label: 'Pending questions', value: String(total), sub: `Oldest ${Math.max(1, Math.floor(Number(pending.rows[0].age_days) || 0))}d ago`, tone: 'gold' },
+        body: `The AI has ${total} question${total === 1 ? '' : 's'} that need your answer. Open the AI Inbox to reply — each answer becomes training signal for the specific agent that asked it.`,
+        lines,
+        link: '/internal/ai-inbox', ctaLabel: 'Open the AI Inbox', emailTo: ad.email });
+    } catch (e) { console.error('[digest] admin-weekly-ai', ad.id, e && e.message); }
+  }
+  await _stamp('admin_weekly_ai_questions', null, { pending: total, admins: admins.rows.length });
+  return admins.rows.length;
+}
+
 /* 5) Draw result awaiting the borrower — a delivered inspection result the borrower hasn't accepted or
    disputed is HOLDING THEIR MONEY (the release clock only starts on accept), so nudge them if it's sat a
    few days. Borrower-safe (notifyAppBorrowers scrubs); per file, ≤ once / 2 days. draw_findings exist only
@@ -542,6 +590,13 @@ async function certificateSurveyOnce() {
    as a failed vote, never thrown. Self-gated to at most every 6 hours (the
    committee call costs a paid model round-trip per specialist per finding). */
 async function autoCommitteeReviewOnce() {
+  // Owner hard rule (2026-07-22): the AI does NOT act on its own. The scheduled
+  // committee sweep is gated OFF by default — super-admins still run the panel
+  // on demand from the file view, and the panel's verdict becomes an AI
+  // SUGGESTION (kind='finding') that a human decides on. Set AI_AUTO_COMMITTEE=1
+  // if the owner explicitly opts back in.
+  const cfg = require('../config');
+  if (!cfg.aiAutoCommittee) return 0;
   if (!(await _gate('auto_committee_fatal', null, '6 hours'))) return 0;
   const BATCH_LIMIT = Number(process.env.AUTO_COMMITTEE_BATCH || 20);
   let reviewed = 0;
@@ -611,6 +666,54 @@ async function autoCommitteeReviewOnce() {
   } catch (e) { console.error('[digests] auto-committee', e && e.message); return reviewed; }
 }
 
+/* R3.35 — Nightly AI cross-doc consistency sweep (opt-in). Runs the GPT-5
+   cross-doc consistency check on every active file at most once/monthly.
+   Gated behind AI_CROSSDOC_SWEEP_ENABLED=1 (default OFF — this is a paid
+   AI call per file, so nothing runs until the owner opts in). */
+async function aiCrossdocSweepOnce() {
+  if (process.env.AI_CROSSDOC_SWEEP_ENABLED !== '1') return 0;
+  if (!(await _gate('ai_crossdoc_sweep', null, '24 hours'))) return 0;
+  const BATCH = Number(process.env.AI_CROSSDOC_SWEEP_BATCH || 5);
+  let ran = 0;
+  try {
+    // Pick oldest files that haven't been crossdoc-scanned in the last 30 days.
+    const q = await db.query(
+      `SELECT a.id FROM applications a
+        WHERE a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','cancelled','funded','declined')
+          AND NOT EXISTS (SELECT 1 FROM audit_log al
+                            WHERE al.entity_type='application' AND al.entity_id=a.id
+                              AND al.action='ai_crossdoc_sweep_ran'
+                              AND al.created_at > now() - interval '30 days')
+        ORDER BY a.updated_at DESC
+        LIMIT $1`, [BATCH]);
+    for (const row of q.rows) {
+      const c = await db.getClient();
+      try {
+        await c.query('BEGIN');
+        const exts = await c.query(
+          `SELECT doc_type, document_id, fields FROM document_extractions
+            WHERE application_id=$1 AND status='ok' ORDER BY created_at DESC LIMIT 40`, [row.id]);
+        if (exts.rows.length >= 2) {
+          await require('./underwriting/ai-cross-doc').analyzeFile(c, {
+            applicationId: row.id, extractions: exts.rows,
+            appMeta: { source: 'nightly_sweep' },
+          });
+          ran += 1;
+        }
+        // Stamp so we don't re-scan too soon.
+        await c.query(
+          `INSERT INTO audit_log (actor_kind, action, entity_type, entity_id, detail)
+           VALUES ('system','ai_crossdoc_sweep_ran','application',$1,$2::jsonb)`,
+          [row.id, JSON.stringify({ at: new Date().toISOString(), extractions: exts.rows.length })]);
+        await c.query('COMMIT');
+      } catch (e) { await c.query('ROLLBACK').catch(() => {}); console.error('[digests] ai-crossdoc-sweep', row.id, e && e.message); }
+      finally { c.release(); }
+    }
+    await _stamp('ai_crossdoc_sweep', null, { ran, batch: BATCH });
+    return ran;
+  } catch (e) { console.error('[digests] ai-crossdoc-sweep', e && e.message); return ran; }
+}
+
 /* Time-gated dispatcher — morning window for staff/admin, business hours for the
    borrower digest; each function's own audit-gate enforces the true frequency. */
 async function runDue() {
@@ -626,7 +729,9 @@ async function runDue() {
     await autoReadSweepOnce().catch((e) => console.error('[digests] auto-read-sweep', e && e.message));
     await section1071SweepOnce().catch((e) => console.error('[digests] section-1071', e && e.message));
     await autoCommitteeReviewOnce().catch((e) => console.error('[digests] auto-committee', e && e.message));
+    await aiCrossdocSweepOnce().catch((e) => console.error('[digests] ai-crossdoc-sweep', e && e.message));
     if (weekday === 'Mon') await weeklyAdminSummaryOnce().catch((e) => console.error('[digests] admin', e && e.message));
+    if (weekday === 'Mon') await weeklyAdminAiQuestionsOnce().catch((e) => console.error('[digests] admin-ai-questions', e && e.message));
   }
   if (hour >= 8 && hour < 18) {
     await weeklyBorrowerOutstandingOnce().catch((e) => console.error('[digests] borrower', e && e.message));
@@ -651,4 +756,5 @@ module.exports = {
   weeklyBorrowerOutstandingOnce, dailyPipelineDigestOnce, staleFileAlertsOnce, weeklyAdminSummaryOnce,
   drawFindingsAwaitingBorrowerOnce, drawReleaseOverdueOnce, workflowAgingOnce,
   trainingRunOnce, certificateSurveyOnce, autoCommitteeReviewOnce, directSourceSweepOnce, autoReadSweepOnce, section1071SweepOnce,
+  aiCrossdocSweepOnce, weeklyAdminAiQuestionsOnce,
 };

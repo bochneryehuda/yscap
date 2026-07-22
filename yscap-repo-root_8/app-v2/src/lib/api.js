@@ -451,6 +451,12 @@ export const api = {
   trainingProposals:         (status = 'pending') => req('GET', `/api/admin/training/proposals${status ? `?status=${status}` : ''}`),
   trainingProposalsRun:      () => req('POST', '/api/admin/training/run', {}),
   trainingProposalsDecide:   (id, decision, note) => req('POST', `/api/admin/training/proposals/${id}/decide`, { decision, note }),
+  // Azure Custom labeling console (R3.3 — owner-directed 2026-07-22).
+  labelingExamples:          () => req('GET', '/api/admin/labeling/examples'),
+  labelingAddExample:        (b) => req('POST', '/api/admin/labeling/examples', normalizeUpload(b)),
+  labelingDeleteExample:     (id) => req('DELETE', `/api/admin/labeling/examples/${id}`),
+  labelingTrainingRuns:      () => req('GET', '/api/admin/labeling/training-runs'),
+  labelingRequestTraining:   (b) => req('POST', '/api/admin/labeling/training-runs', b),
   fileCertificates:          (appId) => req('GET', `/api/underwriting/${appId}/certificate`),
   fileCertificateIssue:      (appId, milestone, reason) => req('POST', `/api/underwriting/${appId}/certificate/issue`, { milestone, reason: reason || undefined }),
   fileCertificateSurvey:     (appId) => req('POST', `/api/underwriting/${appId}/certificate/survey`, {}),
@@ -461,6 +467,26 @@ export const api = {
   bulkResolveFindings:       (appId, findingIds, action, note) => req('POST', `/api/underwriting/${appId}/findings/similar/bulk-resolve`, { findingIds, action, note: note || undefined }),
   fileAvmConsensus:          (appId) => req('GET', `/api/underwriting/${appId}/avm-consensus`),
   fileAvmConsensusVerify:    (appId) => req('POST', `/api/underwriting/${appId}/avm-consensus/verify`, {}),
+  // AI Suggestions panel (R3.5/R3.6 — owner-directed 2026-07-22).
+  aiSuggestionsList:      (appId, params = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return req('GET', `/api/underwriting/${appId}/ai-suggestions${qs ? '?' + qs : ''}`);
+  },
+  aiSuggestionsDecide:    (appId, id, decision) => req('POST', `/api/underwriting/${appId}/ai-suggestions/${id}/decide`, decision),
+  aiSuggestionAddNote:    (appId, id, text) => req('POST', `/api/underwriting/${appId}/ai-suggestions/${id}/note`, { text }),
+  aiAdminQuestions:       (appId) => req('GET', `/api/underwriting/ai-admin/questions${appId ? `?appId=${appId}` : ''}`),
+  aiAdminAnswer:          (questionId, answer) => req('POST', `/api/underwriting/ai-admin/questions/${questionId}/answer`, { answer }),
+  aiCostForFile:          (appId) => req('GET', `/api/underwriting/${appId}/ai-cost`),
+  askAdminAboutFile:      (appId, question) => req('POST', `/api/underwriting/${appId}/ask-admin`, { question }),
+  aiCrossDocCheck:        (appId) => req('POST', `/api/underwriting/${appId}/ai-crossdoc`, {}),
+  fraudBannerSnooze:      (appId, hours = 24, note) => req('POST', `/api/underwriting/${appId}/fraud-banner/snooze`, { hours, note }),
+  fileKnowledgeGraph:     (appId) => req('GET', `/api/underwriting/${appId}/knowledge-graph`),
+  insightsDashboard:      () => req('GET', '/api/admin/insights'),
+  insightsAiCostTrend:    () => req('GET', '/api/admin/insights/ai-cost-trend'),
+  insightsFilesWithSuggestion: (params = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return req('GET', `/api/admin/insights/files-with-suggestion${qs ? '?' + qs : ''}`);
+  },
   staffUploadAppDoc: (appId, b) => coalesceUpload('appDoc:' + appId, b, () => req('POST', `/api/staff/applications/${appId}/documents`, normalizeUpload(b))),
   staffAddLoanCondition: (appId, b) => req('POST', `/api/staff/applications/${appId}/loan-conditions`, b),
   staffClearCondition:   (cid) => req('POST', `/api/staff/loan-conditions/${cid}/clear`),

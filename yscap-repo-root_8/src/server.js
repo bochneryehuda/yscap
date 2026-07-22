@@ -232,6 +232,11 @@ app.use('/api/underwriting', require('./routes/underwriting'));
   app.use('/api/admin/manual-programs', requireAuth, requireStaff, require('./routes/admin-manual-programs'));
   // Sovereign 4/4 admin surface — training proposals queue (owner-directed 2026-07-21).
   app.use('/api/admin/training', requireAuth, requireStaff, require('./routes/admin-training'));
+  // Azure Custom labeling console — super-admins tag past documents to train
+  // the classifier + neural extractors (owner-directed 2026-07-22, R3.3).
+  app.use('/api/admin/labeling', requireAuth, requireStaff, require('./routes/admin-labeling'));
+  // Sovereign Insights portfolio dashboard (owner-directed 2026-07-22, R2.6).
+  app.use('/api/admin/insights', requireAuth, requireStaff, require('./routes/admin-insights'));
   app.use('/api/admin', requireAuth, requireStaff, require('./routes/admin'));
 }
 // SSE stream (live chat/presence/receipts). Mounted OUTSIDE the authenticated
