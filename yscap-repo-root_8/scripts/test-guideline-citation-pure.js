@@ -63,9 +63,23 @@ assert.strictEqual(c.investor, null, 'no investor name in borrower-safe mode');
 assert.strictEqual(c.sourceLabel, null, 'no source label in borrower-safe mode');
 assert.strictEqual(c.guideline, null, 'no guideline name in borrower-safe mode');
 assert.ok(!/BlueLake|Note Buyer/i.test(c.citation), 'the capital-partner name never appears in a borrower-safe citation');
-assert.strictEqual(c.section, '4.2', 'a neutral section reference is still allowed');
+assert.strictEqual(c.section, null, 'the section reference is dropped in borrower-safe mode (it can embed a source name)');
+assert.strictEqual(c.ruleId, null, 'the rule id is dropped in borrower-safe mode (it can embed a program name)');
 assert.ok(c.reasons.length === 2, 'the requirement itself (LTV/FICO) still shows to the borrower');
 ok('borrowerSafe mode strips every investor/note-buyer/source name but keeps the neutral requirement');
+
+// --- borrowerSafe must NOT leak a name carried by section / rule.citation / rule_id ---
+const NAMES = ['BlueLake Capital Matrix 4.2', 'RCN Capital Guidelines 4.2', 'bluelake_ltv_max'];
+for (const [rule, where] of [
+  [{ rule_id: 'ltv_gate', section: NAMES[0] }, 'section'],
+  [{ rule_id: 'ltv_gate', citation: NAMES[1] }, 'rule.citation'],
+  [{ rule_id: NAMES[2], source: 'investor_hard' }, 'rule_id'],
+]) {
+  const cc = gc.formatCitation(rule, ev, { borrowerSafe: true });
+  const blob = JSON.stringify(cc);
+  assert.ok(!/bluelake|rcn capital|rcn|blue lake/i.test(blob), `no capital-partner name leaks via ${where}: ${blob}`);
+}
+ok('borrowerSafe leaks NO capital-partner name carried by section, rule.citation, or rule_id (every returned field checked)');
 
 // --- citeAll orders unmet before advisory before met ---
 const list = gc.citeAll([

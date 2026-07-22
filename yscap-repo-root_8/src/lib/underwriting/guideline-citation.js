@@ -55,6 +55,17 @@ const SOURCE_LABEL = Object.freeze({
   approved_exception: 'Approved exception',
 });
 
+// Defense-in-depth scrub of any known note-buyer / capital-partner name that
+// might slip into borrower-facing text. Pure (string ops only); guarded so it can
+// never throw. This is a SECOND line behind dropping the name-bearing fields
+// outright in borrowerSafe mode — scrubText only catches KNOWN partner names, so
+// the primary defense is not returning those fields at all.
+let _scrubText = null;
+try { _scrubText = require('../borrower-safe').scrubText; } catch (_e) { _scrubText = null; }
+function scrub(s) {
+  try { return _scrubText && typeof s === 'string' ? _scrubText(s) : s; } catch (_e) { return s; }
+}
+
 function str(v) {
   try {
     if (v == null) return null;
@@ -134,16 +145,21 @@ function formatCitation(rule, evalResult, opts = {}) {
     const advisory = r.advisory === true;
     const verdict = matched ? 'met' : (advisory ? 'advisory' : 'unmet');
 
-    // Reasons only make sense when the rule did NOT pass.
-    const reasons = matched ? [] : unmet.map(phraseForUnmet);
+    // Reasons only make sense when the rule did NOT pass. In borrowerSafe mode
+    // scrub each reason as defense-in-depth (a known partner name should never
+    // reach a borrower even if one somehow rode in on a field/value).
+    const reasons = matched ? [] : unmet.map((u) => (borrowerSafe ? scrub(phraseForUnmet(u)) : phraseForUnmet(u)));
 
     return {
-      ruleId,
+      // ruleId + section can BOTH embed a note-buyer/program name ("bluelake_ltv_max",
+      // "RCN Guidelines 4.2") — they are NOT neutral, so they are dropped entirely on
+      // a borrower surface (CLAUDE.md hard rule), like the other name-bearing fields.
+      ruleId: borrowerSafe ? null : ruleId,
       sourceLabel: borrowerSafe ? null : sourceLabel,
       investor: borrowerSafe ? null : (investor || null),
       guideline: borrowerSafe ? null : (guideline || null),
       version: borrowerSafe ? null : (version || null),
-      section: section || null, // a section reference is neutral — safe either way
+      section: borrowerSafe ? null : (section || null),
       verdict,
       reasons,
       citation: composeCitation({ sourceLabel, investor, guideline, version, section, ruleId }, borrowerSafe),
@@ -164,11 +180,14 @@ function composeCitation(parts, borrowerSafe) {
       const named = [parts.investor, parts.guideline].filter(Boolean).join(' ');
       if (named) bits.push(named);
       if (parts.version) bits.push(`v${String(parts.version).replace(/^v/i, '')}`);
+      // a section/citation reference can embed the source name ("RCN Guidelines
+      // 4.2") — only emit it on the STAFF surface, never borrower-facing.
+      if (parts.section) bits.push(`§${String(parts.section).replace(/^§/, '')}`);
+      if (parts.ruleId) bits.push(`(rule ${parts.ruleId})`);
     }
-    if (parts.section) bits.push(`§${String(parts.section).replace(/^§/, '')}`);
-    if (!borrowerSafe && parts.ruleId) bits.push(`(rule ${parts.ruleId})`);
-    const line = bits.join(borrowerSafe ? ' ' : ' — ').replace(' — §', ', §').replace(' — (rule', ' (rule');
-    return line || (borrowerSafe ? 'Program requirement' : 'Guideline rule');
+    const line = bits.join(' — ').replace(' — §', ', §').replace(' — (rule', ' (rule');
+    if (borrowerSafe) return 'Program requirement'; // no names, no section, no rule id
+    return line || 'Guideline rule';
   } catch (_e) { return null; }
 }
 
@@ -181,9 +200,15 @@ function citeAll(rules, opts = {}) {
   try {
     const list = Array.isArray(rules) ? rules : [];
     const out = list.map((x) => {
-      const rule = x && x.rule !== undefined ? x.rule : x;
-      const ev = x && x.eval !== undefined ? x.eval : (x && x.evalResult);
-      return formatCitation(rule, ev, (x && x.opts) || opts);
+      // guard PER ITEM so one hostile entry (e.g. a throwing .rule getter) can't
+      // drop every good sibling — it degrades to a safe empty citation instead.
+      try {
+        const rule = x && x.rule !== undefined ? x.rule : x;
+        const ev = x && x.eval !== undefined ? x.eval : (x && x.evalResult);
+        return formatCitation(rule, ev, (x && x.opts) || opts);
+      } catch (_e) {
+        return formatCitation(null, null, opts);
+      }
     });
     // unmet (0) before advisory (1) before met (2), preserving input order within a group.
     const rank = (v) => (v === 'unmet' ? 0 : v === 'advisory' ? 1 : 2);
