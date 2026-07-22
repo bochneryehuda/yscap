@@ -249,6 +249,16 @@ async function noteCompletionFailure(db, envelopeRow, err) {
 
 // ---- reconcile ONE tracked envelope to DocuSign truth -----------------------
 async function reconcileEnvelope(db, docusign, storage, envelopeRow) {
+  // A deliberately CLEARED package — or any locally-voided envelope — is TERMINAL
+  // on our side and must never be resurrected by a late/replayed DocuSign event.
+  // A cleared COMPLETED envelope is never voided at DocuSign (clear.js clears our
+  // side only), so DocuSign keeps reporting it 'completed' forever; without this
+  // guard an inbox event would re-run handleCompletion — re-linking the superseded
+  // signed doc, re-closing the reopened condition, and flipping status
+  // voided→completed (re-engaging the term-sheet freeze). Skip it: our clear/void
+  // is the final word. (The poller's stale scans are already status-gated to
+  // sent/delivered/completed, so this only ever fires on the inbox drain path.)
+  if (envelopeRow.cleared_at || envelopeRow.status === 'voided') return envelopeRow.status;
   const envelope = await docusign.getEnvelope(envelopeRow.envelope_id, { include: 'recipients' });
   const status = String((envelope && envelope.status) || '').toLowerCase();
   const map = ENV_STATUS[status];
