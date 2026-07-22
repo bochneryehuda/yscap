@@ -569,10 +569,23 @@ router.get('/:appId', async (req, res, next) => {
       });
     }
 
+    // R5.20/R5.24 — root-cause clustering: group the open findings into the
+    // smallest set of upstream causes, each with the single most likely fix and
+    // the symptoms it would clear. Deterministic + pure; organizes existing
+    // findings into a hypothesis, never clears anything.
+    let rootCauses = [];
+    try {
+      const { analyzeRootCauses } = require('../lib/underwriting/root-cause');
+      rootCauses = analyzeRootCauses(openAll.map((f) => ({
+        id: f.id || null, code: f.code, severity: f.severity, title: f.title,
+      }))).rootCauses;
+    } catch (_) { rootCauses = []; }
+
     res.json({
       escalatedFindings: escalatedByFinding,
       fraudBanner,
       verdict,
+      rootCauses,
       // AUS: which program this file is underwritten against + that program's governing thresholds.
       programGuidelines,
       extractions,

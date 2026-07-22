@@ -2123,6 +2123,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
   const risk = data && data.risk;
   const amendments = data && data.amendments;
   const verdict = data && data.verdict;
+  const rootCauses = (data && data.rootCauses) || [];
   const documentsOnFile = (data && data.documentsOnFile) || [];
   // Every open finding across the WHOLE file in one list — the exact set the summary counts, so the
   // "2 warnings" chip maps to two visible items (owner-reported: "it says 2 warnings and I can't see
@@ -2238,6 +2239,42 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
           </div>
         );
       })()}
+
+      {/* R5.20/R5.24/R5.25 — Root cause: the smallest set of upstream causes
+          behind the open findings, each with ONE likely fix. A hypothesis for
+          the underwriter — PILOT organizes the findings, it doesn't clear them. */}
+      {rootCauses.length > 0 && (
+        <div style={{ border: '1px solid var(--gold,#AE8746)', borderRadius: 12, padding: '12px 16px', marginBottom: 18, background: 'rgba(174,135,70,.06)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <span style={{ fontSize: 16 }}>🎯</span>
+            <span style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--gold-deep,#8A6A30)' }}>
+              Likely root cause{rootCauses.length > 1 ? 's' : ''}
+            </span>
+            <span style={{ fontSize: 11, color: 'var(--muted,#4B585C)' }}>— one fix may clear several findings</span>
+          </div>
+          {rootCauses.map((rc, i) => {
+            const tone = rc.severity === 'fatal' ? 'var(--crit,#B4483C)' : rc.severity === 'warning' ? 'var(--amber,#B7791F)' : 'var(--teal-deep,#256168)';
+            return (
+              <div key={rc.type} style={{ padding: '8px 0', borderTop: i ? '1px dashed var(--paper,#E9E4D3)' : 'none' }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: tone, whiteSpace: 'nowrap' }}>
+                    {rc.symptomCount} finding{rc.symptomCount === 1 ? '' : 's'}
+                  </span>
+                  <span style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--ivory,#141B22)' }}>{rc.label}</span>
+                </div>
+                <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', marginTop: 3 }}>
+                  <b style={{ color: 'var(--gold-deep,#8A6A30)' }}>Likely fix:</b> {rc.fix}
+                </div>
+                {rc.symptoms && rc.symptoms.length > 0 && (
+                  <div style={{ fontSize: 11, color: 'var(--muted,#4B585C)', marginTop: 4 }}>
+                    Would address: {rc.symptoms.map((s) => s.title || s.code).filter(Boolean).slice(0, 6).join(' · ')}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* the one-line verdict — the owner's at-a-glance read */}
       {verdict && verdict.headline && (() => {
