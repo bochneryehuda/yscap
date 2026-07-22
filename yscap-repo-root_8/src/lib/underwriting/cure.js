@@ -313,22 +313,19 @@ function summarize(result, requirements, newFindings) {
 // -------------------------------------------------------------------------
 async function persistProof(client, { appId, checklistItemId, intentId, documentId, extractionId, analysis } = {}) {
   if (!appId || !checklistItemId || !analysis) throw new Error('persistProof: appId, checklistItemId, analysis required');
-  const newFindingIds = [];
+  // Owner hard rule (2026-07-22): the AI does NOT create findings on its own. Every
+  // new-finding the cure analysis surfaces becomes an AI SUGGESTION on the file's AI
+  // panel — a human clicks "Convert to condition" / "Escalate" / etc. to act on it.
+  // The proof itself still records the AI's reasoning (that's a report, not an action).
+  const suggestionIds = [];
+  const aiSug = require('./ai-suggestions');
   for (const f of (analysis.newFindings || [])) {
     try {
-      const ins = await client.query(
-        `INSERT INTO document_findings
-           (application_id, document_id, extraction_id, source, code, severity, field,
-            doc_value, file_value, title, how_to, blocks_ctc, opens_condition)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
-        [appId, documentId || null, extractionId || null, 'cure_analysis',
-         f.code, f.severity || 'warning', f.field || null,
-         f.docValue != null ? String(f.docValue) : null,
-         f.fileValue != null ? String(f.fileValue) : null,
-         f.title || null, f.howTo || null,
-         !!f.blocksCtc, f.opens_condition || null]);
-      newFindingIds.push(ins.rows[0].id);
-    } catch (_) { /* one bad finding never stops the proof */ }
+      const r = await aiSug.record(client, aiSug.fromCureNewFinding({
+        applicationId: appId, documentId, checklistItemId, extractionId, finding: f,
+      }));
+      suggestionIds.push(r.id);
+    } catch (_) { /* one bad suggestion never stops the proof */ }
   }
   const ins = await client.query(
     `INSERT INTO condition_clearance_proofs
@@ -339,8 +336,27 @@ async function persistProof(client, { appId, checklistItemId, intentId, document
     [appId, checklistItemId, intentId || null, documentId || null, extractionId || null,
      analysis.result, JSON.stringify(analysis.requirements || []),
      analysis.recommended_action, analysis.summary,
-     JSON.stringify(analysis.newFindings || []), newFindingIds,
-     'cure.v1']);
+     JSON.stringify(analysis.newFindings || []),
+     // linked_finding_ids used to hold document_findings ids; now the AI panel's
+     // suggestion ids sit here (schema is uuid[] — same shape). The routes read
+     // the row as a report, not as a set of active findings.
+     suggestionIds, 'cure.v1']);
+
+  // R3.16 — Ambiguous case → ask super-admin. When the cure engine can't tell
+  // whether a document cures its condition (unable_to_determine) AND the
+  // AI didn't spawn any new findings that would clarify, pull the super-
+  // admin in. Best-effort — never blocks the proof.
+  try {
+    if (analysis.result === 'unable_to_determine' && (analysis.newFindings || []).length === 0) {
+      await aiSug.askAdmin(client, {
+        applicationId: appId, documentId, checklistItemId,
+        agent: 'cure',
+        question: `The cure engine could not verify whether this document satisfies its condition. Please review and decide: does it clear the condition, or does the borrower need to upload a different document?`,
+        context: { intentId: intentId || null, requirements: analysis.requirements || [], summary: analysis.summary },
+      });
+    }
+  } catch (_) { /* ask-admin is additive — never blocks the proof */ }
+
   return ins.rows[0];
 }
 

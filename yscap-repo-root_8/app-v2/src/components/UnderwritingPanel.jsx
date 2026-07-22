@@ -64,6 +64,38 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
   const [escNote, setEscNote] = useState('');
   const [committeeBusy, setCommitteeBusy] = useState(false);
   const [committeeOpinion, setCommitteeOpinion] = useState(null);
+  const [simOpen, setSimOpen] = useState(false);
+  const [simBusy, setSimBusy] = useState(false);
+  const [simRows, setSimRows] = useState(null);
+  const [simPicked, setSimPicked] = useState({});
+  const [simAction, setSimAction] = useState('dismiss');
+  const [simNote, setSimNote] = useState('');
+  const loadSimilar = async () => {
+    if (!f.id) return;
+    setSimBusy(true); setSimOpen(true);
+    try {
+      const r = await api.similarOpenFindings(appId, f.id);
+      const rows = (r && r.similar) || [];
+      setSimRows(rows);
+      const p = {}; for (const s of rows) p[s.id] = true;
+      setSimPicked(p);
+    } catch (e) { alert('Could not load similar findings: ' + (e && e.message || 'error')); setSimOpen(false); }
+    finally { setSimBusy(false); }
+  };
+  const runBulk = async () => {
+    const ids = Object.keys(simPicked).filter(id => simPicked[id]);
+    if (!ids.length) { alert('No findings selected.'); return; }
+    if (simAction === 'dismiss' && !simNote.trim()) { alert('Please add a dismissal reason.'); return; }
+    if (!window.confirm(`${simAction} ${ids.length} finding${ids.length === 1 ? '' : 's'} across other files?`)) return;
+    setSimBusy(true);
+    try {
+      const r = await api.bulkResolveFindings(appId, ids, simAction, simNote);
+      alert(`Bulk ${simAction} complete: ${r.resolved || 0} of ${r.allowed || 0} resolved${r.blocked ? ` (${r.blocked} blocked)` : ''}.`);
+      setSimOpen(false); setSimRows(null); setSimNote('');
+      onChange && onChange();
+    } catch (e) { alert(`Could not bulk ${simAction}: ` + (e && e.message || 'error')); }
+    finally { setSimBusy(false); }
+  };
   const runCommittee = async () => {
     if (!f.id) return;
     setCommitteeBusy(true);
@@ -206,6 +238,55 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
               style={{ ...btn(), fontSize: 12, padding: '5px 10px' }}>
               {committeeBusy ? 'Panel reviewing…' : (committeeOpinion ? '↻ Re-run panel review' : '👥 Ask the panel')}
             </button>
+          )}
+          {resolvable && f.id && (
+            <button disabled={busy || simBusy} onClick={loadSimilar}
+              title="Find every OTHER open finding with the same code across the pipeline and bulk-dismiss or bulk-resolve them"
+              style={{ ...btn(), fontSize: 12, padding: '5px 10px' }}>
+              🗂 Similar on other files
+            </button>
+          )}
+        </div>
+      )}
+      {simOpen && (
+        <div style={{ marginTop: 10, padding: 10, border: '1px solid var(--paper,#E9E4D3)', borderRadius: 8, background: 'var(--paper,#F6F3EC)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+            <b style={{ fontSize: 12 }}>Same finding on other files</b>
+            <button onClick={() => { setSimOpen(false); setSimRows(null); }} style={{ ...btn(), fontSize: 11, padding: '2px 8px', marginLeft: 'auto' }}>Close</button>
+          </div>
+          {simBusy && !simRows && <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)' }}>Searching…</div>}
+          {simRows && simRows.length === 0 && (
+            <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)' }}>Nothing similar found on the visible files.</div>
+          )}
+          {simRows && simRows.length > 0 && (
+            <>
+              <div style={{ fontSize: 11, color: 'var(--muted,#4B585C)', marginBottom: 6 }}>Select the findings to act on:</div>
+              <div style={{ maxHeight: 220, overflowY: 'auto' }}>
+                {simRows.map((r) => (
+                  <label key={r.id} style={{ display: 'flex', gap: 6, alignItems: 'flex-start', padding: '3px 0', fontSize: 12, cursor: 'pointer' }}>
+                    <input type="checkbox" checked={!!simPicked[r.id]} onChange={(e) => setSimPicked({ ...simPicked, [r.id]: e.target.checked })} />
+                    <span style={{ flex: 1 }}>
+                      <span style={{ color: 'var(--muted,#4B585C)' }}>{(r.property_address && (r.property_address.line1 || r.property_address.address)) || r.application_id.slice(0, 8)}</span>
+                      {' · '}<b>{r.title || r.code}</b>
+                      {r.severity && <span style={{ color: (SEV[r.severity] || {}).fg, marginLeft: 4 }}>({(SEV[r.severity] || {}).label})</span>}
+                    </span>
+                  </label>
+                ))}
+              </div>
+              <div style={{ display: 'flex', gap: 6, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <select value={simAction} onChange={(e) => setSimAction(e.target.value)} style={{ fontSize: 12, padding: '3px 6px' }}>
+                  <option value="dismiss">Dismiss</option>
+                  <option value="acknowledge">Acknowledge</option>
+                  <option value="post_condition">Post condition</option>
+                  <option value="request_document">Request document</option>
+                  <option value="clear">Clear</option>
+                </select>
+                <input type="text" placeholder="Note (required for Dismiss)" value={simNote}
+                  onChange={(e) => setSimNote(e.target.value)}
+                  style={{ flex: 1, minWidth: 200, fontSize: 12, padding: '4px 6px', border: '1px solid var(--paper,#E9E4D3)', borderRadius: 6 }} />
+                <button className="btn primary" disabled={simBusy} onClick={runBulk} style={{ fontSize: 11 }}>Apply to {Object.values(simPicked).filter(Boolean).length}</button>
+              </div>
+            </>
           )}
         </div>
       )}
@@ -1055,6 +1136,9 @@ function SovereignCockpit({ twinFacts, cureProofs, appId, canIssueCerts, canConf
       {appId && <SovereignAVMSection appId={appId} canRefresh={canIssueCerts} />}
       {appId && <SovereignCertificatesSection appId={appId} canIssue={canIssueCerts} />}
       {appId && <SovereignStructuringSection appId={appId} />}
+      {appId && <SovereignAiCostSection appId={appId} />}
+      {appId && <SovereignKnowledgeGraphSection appId={appId} />}
+      {appId && <SovereignAskAdminSection appId={appId} />}
     </div>
   );
 }
@@ -1350,6 +1434,451 @@ function SovereignStructuringSection({ appId }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// AI Cost widget (R3.21, owner-directed 2026-07-22).
+// Per-file AI spend + a near-cap warning when > 80% of the configured
+// per-file cap. Silent when the cap isn't set.
+// ---------------------------------------------------------------------------
+function SovereignAiCostSection({ appId }) {
+  const [data, setData] = useState(null);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open || !appId) return;
+    api.aiCostForFile(appId).then((r) => setData(r || null)).catch(() => setData(null));
+  }, [open, appId]);
+  const summary = (data && data.summary) || {};
+  const usd = summary.usd || '0.00';
+  const cap = summary.capUsd;
+  const remaining = summary.remainingCents != null ? (summary.remainingCents / 100).toFixed(2) : null;
+  const nearCap = cap != null && (Number(summary.cents || 0) / (cap * 100)) > 0.8;
+  return (
+    <div style={{ marginTop: 12, border: '1px solid var(--paper,#E9E4D3)', borderRadius: 10, background: 'var(--card,#fff)' }}>
+      <div onClick={() => setOpen(!open)} style={{ cursor: 'pointer', padding: '8px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div>
+          <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted,#4B585C)', fontWeight: 700 }}>AI spend on this file</div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: nearCap ? 'var(--crit,#B4483C)' : 'var(--ivory,#141B22)', marginTop: 2 }}>
+            ${usd}{cap != null ? ` / $${cap.toFixed(2)} cap` : ''}
+            {nearCap && ' — near the per-file cap'}
+          </div>
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)' }}>{open ? '▾' : '▸'}</div>
+      </div>
+      {open && data && (
+        <div style={{ padding: '8px 12px', borderTop: '1px solid var(--paper,#E9E4D3)' }}>
+          <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginBottom: 6 }}>
+            {summary.count || 0} AI calls · {summary.tokens || 0} tokens · last {summary.lastAt ? new Date(summary.lastAt).toLocaleString() : 'never'}
+          </div>
+          {Array.isArray(data.events) && data.events.length > 0 && (
+            <div style={{ maxHeight: 220, overflowY: 'auto' }}>
+              {data.events.slice(0, 20).map((e, i) => (
+                <div key={i} style={{ fontSize: 11, color: 'var(--muted,#4B585C)', padding: '2px 0', borderBottom: '1px dashed var(--paper,#E9E4D3)' }}>
+                  {new Date(e.created_at).toLocaleTimeString()} · <b>{e.op_name}</b> · {e.tokens_total} tok · ${(e.cost_cents / 100).toFixed(3)}{!e.ok ? ` · error: ${e.reason || 'unknown'}` : ''}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Knowledge Graph tile (R3.34) — collapsible portfolio-context tile showing
+// this borrower's file count, entities on the borrower, and other files on
+// the same borrower. Pure aggregate from the R3.28 knowledge-graph route.
+// ---------------------------------------------------------------------------
+function SovereignKnowledgeGraphSection({ appId }) {
+  const [open, setOpen] = useState(false);
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    if (!open || !appId) return;
+    api.fileKnowledgeGraph(appId).then((r) => setData((r && r.graph) || null)).catch(() => setData(null));
+  }, [open, appId]);
+  const b = data && data.borrower;
+  const entities = (data && data.entities) || [];
+  const siblings = (data && data.siblingFiles) || [];
+  const shared = (data && data.sharedSignals) || [];
+  return (
+    <div style={{ marginTop: 12, border: '1px solid var(--paper,#E9E4D3)', borderRadius: 10, background: 'var(--card,#fff)' }}>
+      <div onClick={() => setOpen(!open)} style={{ cursor: 'pointer', padding: '8px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div>
+          <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted,#4B585C)', fontWeight: 700 }}>Portfolio context for this borrower</div>
+          <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginTop: 2 }}>
+            {b ? `${b.files_total || 0} total files · ${b.files_12mo || 0} in the last 12 months · ${b.zips_touched || 0} distinct zips` : 'Loading…'}
+          </div>
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)' }}>{open ? '▾' : '▸'}</div>
+      </div>
+      {open && (
+        <div style={{ padding: '8px 12px', borderTop: '1px solid var(--paper,#E9E4D3)' }}>
+          {entities.length > 0 && (
+            <div style={{ marginBottom: 8 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--ivory,#141B22)', marginBottom: 4 }}>Entities on this borrower</div>
+              {entities.map((e) => (
+                <div key={e.id} style={{ fontSize: 12, padding: '2px 0' }}>
+                  <b>{e.name}</b>{e.state ? ` (${e.state})` : ''} — {e.files_on_entity} file{e.files_on_entity === 1 ? '' : 's'}
+                  {e.is_verified && <span style={{ color: 'var(--good,#3F7A5B)' }}> ✓ verified</span>}
+                </div>
+              ))}
+            </div>
+          )}
+          {siblings.length > 0 && (
+            <div style={{ marginBottom: 8 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--ivory,#141B22)', marginBottom: 4 }}>Other files on this borrower</div>
+              {siblings.slice(0, 8).map((s) => (
+                <div key={s.id} style={{ fontSize: 12, padding: '2px 0' }}>
+                  <a href={`#/staff/applications/${s.id}`} style={{ color: 'var(--teal-deep,#256168)' }}>
+                    {(s.property_address && (s.property_address.line1 || s.property_address.address)) || s.id.slice(0, 8)}
+                  </a>
+                  {' · '}<span style={{ color: 'var(--muted,#4B585C)' }}>{s.program || 'no program'} · {s.status}</span>
+                </div>
+              ))}
+              {siblings.length > 8 && <div style={{ fontSize: 11, color: 'var(--muted,#4B585C)' }}>+ {siblings.length - 8} more</div>}
+            </div>
+          )}
+          {shared.length > 0 && (
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--amber,#B7791F)', marginBottom: 4 }}>Shared signals</div>
+              {shared.map((s, i) => (
+                <div key={i} style={{ fontSize: 12, padding: '2px 0', color: 'var(--amber,#B7791F)' }}>
+                  {s.signal}: {s.files_on_llc} files on this LLC
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Direct "Ask my super-admin about this file" button (R3.22).
+// Creates an ai_admin_question tied to this file — the super-admin sees it
+// in /internal/ai-inbox and their answer routes back via the learning loop.
+// ---------------------------------------------------------------------------
+function SovereignAskAdminSection({ appId }) {
+  const [busy, setBusy] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [xdBusy, setXdBusy] = useState(false);
+  const [xdRes, setXdRes] = useState(null);
+  const ask = async () => {
+    const q = window.prompt('What do you want the super-admin to decide about this file?');
+    if (!q || !q.trim()) return;
+    setBusy(true); setSent(false);
+    try {
+      await api.askAdminAboutFile(appId, q.trim());
+      setSent(true);
+      alert('Sent to the super-admin. Their answer will show on this file (AI Findings panel) and in /internal/ai-inbox.');
+    } catch (e) { alert(`Could not send: ${(e && e.message) || 'error'}`); }
+    finally { setBusy(false); }
+  };
+  const runXd = async () => {
+    if (!window.confirm('Run the deep AI cross-document consistency check on this file? This costs a small amount per run (~$0.05–$0.20).')) return;
+    setXdBusy(true); setXdRes(null);
+    try {
+      const r = await api.aiCrossDocCheck(appId);
+      setXdRes(r);
+      if (r && r.findings && r.findings.length) {
+        alert(`Cross-doc AI check posted ${r.findings.length} finding${r.findings.length === 1 ? '' : 's'} to the AI Findings panel below.`);
+      } else if (r && r.ok) {
+        alert('Cross-doc AI check found no contradictions across the file.');
+      } else {
+        alert(`Cross-doc AI check could not run: ${(r && r.reason) || 'unknown'}`);
+      }
+    } catch (e) { alert(`Cross-doc AI check failed: ${(e && e.message) || 'error'}`); }
+    finally { setXdBusy(false); }
+  };
+  return (
+    <div style={{ marginTop: 12, border: '1px dashed var(--paper,#E9E4D3)', borderRadius: 10, background: 'var(--paper,#F6F3EC)', padding: '8px 12px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div>
+          <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted,#4B585C)', fontWeight: 700 }}>Deep AI checks</div>
+          <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginTop: 2 }}>
+            Ask the super-admin, or run the deep cross-doc consistency check with GPT-5.
+            {sent && <span style={{ color: 'var(--good,#3F7A5B)' }}> · Question sent</span>}
+            {xdRes && xdRes.ok && <span style={{ color: 'var(--good,#3F7A5B)' }}> · Cross-doc done ({(xdRes.findings || []).length} found)</span>}
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          <button className="btn ghost" onClick={ask} disabled={busy} style={{ fontSize: 11 }}>{busy ? 'Sending…' : 'Ask super-admin'}</button>
+          <button className="btn ghost" onClick={runXd} disabled={xdBusy} style={{ fontSize: 11 }} title="Run GPT-5 cross-document contradiction check">
+            {xdBusy ? 'Analyzing…' : '🔍 Deep cross-doc check'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// AI Suggestions Section (R3.5/R3.6, owner-directed 2026-07-22, HARD RULE).
+// The AI never writes on a file — every AI agent lands proposals here as
+// suggestion rows. A human clicks one of seven actions on each row:
+//   Escalate · Add note · Convert to condition · Convert to task ·
+//   Mark important · Dismiss (with reason) · Ask super-admin.
+// Non-autonomous by design; nothing on this panel changes the file itself
+// without a human click, and every action re-loads the panel.
+// ---------------------------------------------------------------------------
+
+const SOURCE_LABEL = {
+  cure_analysis: 'Condition cure',
+  promoted_rules: 'Promoted rule',
+  committee: 'Model committee',
+  section_1071: 'Section 1071',
+  twin_reconcile: 'Loan twin',
+  authenticity: 'Doc authenticity',
+  entity_chain: 'Entity chain',
+  assignment_fraud: 'Assignment fraud',
+  wrong_condition: 'Wrong condition',
+  ask_admin: 'Ask super-admin',
+  splitter: 'Document splitter',
+};
+const SOURCE_TINT = {
+  cure_analysis: { fg: 'var(--teal-deep,#256168)', bg: 'rgba(47,127,134,.12)' },
+  authenticity:  { fg: 'var(--crit,#B4483C)', bg: 'var(--crit-bg,#F6E7E4)' },
+  assignment_fraud: { fg: 'var(--crit,#B4483C)', bg: 'var(--crit-bg,#F6E7E4)' },
+  entity_chain:  { fg: 'var(--amber,#B7791F)', bg: 'var(--amber-bg,#F6EEDD)' },
+  wrong_condition: { fg: 'var(--amber,#B7791F)', bg: 'var(--amber-bg,#F6EEDD)' },
+  ask_admin:     { fg: 'var(--teal-deep,#256168)', bg: 'rgba(47,127,134,.12)' },
+  splitter:      { fg: 'var(--gold,#AE8746)', bg: 'rgba(174,135,70,.14)' },
+  committee:     { fg: 'var(--teal-deep,#256168)', bg: 'rgba(47,127,134,.12)' },
+};
+
+function AISuggestionsSection({ appId, readOnly = false, canResolve = true }) {
+  const [rows, setRows] = React.useState(null);
+  const [err, setErr] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+  const [showDismissed, setShowDismissed] = React.useState(false);
+  const [expanded, setExpanded] = React.useState(true);
+  const [sourceFilter, setSourceFilter] = React.useState('all');
+  const [sevFilter, setSevFilter] = React.useState('all');
+
+  const load = React.useCallback(async () => {
+    if (!appId) return;
+    setBusy(true); setErr('');
+    try {
+      const r = await api.aiSuggestionsList(appId, showDismissed ? { include_dismissed: '1' } : {});
+      setRows(Array.isArray(r && r.suggestions) ? r.suggestions : []);
+    } catch (e) { setErr((e && e.message) || 'Could not load AI suggestions.'); }
+    finally { setBusy(false); }
+  }, [appId, showDismissed]);
+  React.useEffect(() => { load(); }, [load]);
+  // R3.29 — background workers (upload classifier + file-view auto-sync) drop
+  // new suggestions here without a manual reload. Gentle 60s poll + on window
+  // focus so the panel picks them up on its own. No SSE (would need an auth
+  // shim on the SSE endpoint); a 60s tick per open file is fine.
+  React.useEffect(() => {
+    if (!appId) return;
+    const onFocus = () => load();
+    const t = setInterval(load, 60000);
+    window.addEventListener('focus', onFocus);
+    return () => { clearInterval(t); window.removeEventListener('focus', onFocus); };
+  }, [appId, load]);
+
+  if (rows == null && !err) return null;
+  const openRows = (rows || []).filter((r) => r.status !== 'dismissed');
+  const importantCount = openRows.filter((r) => r.important).length;
+  const total = openRows.length;
+
+  return (
+    <div id="ai-findings" style={{ marginBottom: 22, border: '1px solid var(--paper,#E9E4D3)', borderRadius: 12, background: 'var(--card,#fff)', scrollMarginTop: 80 }}>
+      <div onClick={() => setExpanded(!expanded)} style={{ cursor: 'pointer', padding: '10px 14px', borderBottom: expanded ? '1px solid var(--paper,#E9E4D3)' : 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div>
+          <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: 0, fontSize: 15 }}>
+            AI Findings <span style={{ fontSize: 11, color: 'var(--muted,#4B585C)', fontWeight: 400, marginLeft: 6 }}>
+              — suggestions only; the AI never changes the file itself
+            </span>
+          </h4>
+          <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginTop: 3 }}>
+            {total === 0 ? 'Nothing to review right now.' : `${total} open${importantCount ? ` · ${importantCount} marked important` : ''}`}
+          </div>
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)' }}>{expanded ? '▾' : '▸'}</div>
+      </div>
+      {expanded && (
+        <div style={{ padding: '10px 14px' }}>
+          {err && <div className="error" style={{ marginBottom: 8 }}>{err}</div>}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, fontSize: 12, flexWrap: 'wrap' }}>
+            <button className="btn ghost" onClick={load} disabled={busy} style={{ padding: '3px 9px', fontSize: 11 }}>{busy ? '…' : '↻ Refresh'}</button>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: 'var(--muted,#4B585C)' }}>
+              <input type="checkbox" checked={showDismissed} onChange={(e) => setShowDismissed(e.target.checked)} />
+              Show dismissed
+            </label>
+            {/* R3.37 — filter chips */}
+            {(() => {
+              const sources = Array.from(new Set((rows || []).map(r => r.source))).sort();
+              const sevs = Array.from(new Set((rows || []).map(r => r.severity).filter(Boolean))).sort();
+              if (!sources.length) return null;
+              return (
+                <>
+                  <span style={{ color: 'var(--muted,#4B585C)' }}>Filter:</span>
+                  <select value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)} style={{ fontSize: 11, padding: '2px 4px' }}>
+                    <option value="all">Any source</option>
+                    {sources.map((s) => <option key={s} value={s}>{SOURCE_LABEL[s] || s}</option>)}
+                  </select>
+                  <select value={sevFilter} onChange={(e) => setSevFilter(e.target.value)} style={{ fontSize: 11, padding: '2px 4px' }}>
+                    <option value="all">Any severity</option>
+                    {sevs.map((s) => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </>
+              );
+            })()}
+          </div>
+          {(() => {
+            const filtered = (rows || []).filter((r) => (sourceFilter === 'all' || r.source === sourceFilter) && (sevFilter === 'all' || r.severity === sevFilter));
+            if (filtered.length === 0 && !busy) {
+              return (
+                <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', padding: '10px 0' }}>
+                  {(rows || []).length ? 'No suggestions match the current filter.' : 'The AI has no suggestions on this file yet. When it reads a document or spots something odd, you\'ll see it here as a suggestion you can act on.'}
+                </div>
+              );
+            }
+            return filtered.map((s) => (
+              <AISuggestionCard key={s.id} appId={appId} suggestion={s} onChanged={load}
+                disabled={readOnly || !canResolve} />
+            ));
+          })()}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AISuggestionCard({ appId, suggestion, onChanged, disabled }) {
+  const [busy, setBusy] = React.useState(false);
+  const [noteOpen, setNoteOpen] = React.useState(false);
+  const [noteText, setNoteText] = React.useState('');
+  const [dismissOpen, setDismissOpen] = React.useState(false);
+  const [dismissReason, setDismissReason] = React.useState('');
+  const tint = SOURCE_TINT[suggestion.source] || { fg: 'var(--muted,#4B585C)', bg: 'var(--paper,#F6F3EC)' };
+  const sourceLabel = SOURCE_LABEL[suggestion.source] || suggestion.source;
+  const evidence = suggestion.evidence || {};
+  const pages = Array.isArray(evidence.pages) ? evidence.pages : null;
+  const isClosed = suggestion.status !== 'open' && suggestion.status !== 'asked_admin';
+
+  const doAction = React.useCallback(async (action, extra = {}) => {
+    if (disabled) return;
+    setBusy(true);
+    try {
+      await api.aiSuggestionsDecide(appId, suggestion.id, { action, ...extra });
+      if (onChanged) await onChanged();
+    } catch (e) {
+      alert(`Could not ${action.replace(/_/g, ' ')}: ${(e && e.message) || 'error'}`);
+    } finally { setBusy(false); }
+  }, [appId, suggestion.id, disabled, onChanged]);
+
+  const addNote = async () => {
+    if (!noteText.trim()) return;
+    setBusy(true);
+    try {
+      await api.aiSuggestionAddNote(appId, suggestion.id, noteText);
+      setNoteText(''); setNoteOpen(false);
+      if (onChanged) await onChanged();
+    } catch (e) { alert(`Could not add note: ${(e && e.message) || 'error'}`); }
+    finally { setBusy(false); }
+  };
+
+  const askAdmin = async () => {
+    const q = window.prompt('What should the super-admin decide?', suggestion.title);
+    if (!q || !q.trim()) return;
+    setBusy(true);
+    try {
+      // Ask-admin here just marks the suggestion status; the agent-created question row already
+      // exists when the AI itself asked. For a human-initiated ask, POST a note + mark asked.
+      await api.aiSuggestionAddNote(appId, suggestion.id, `[asked super-admin] ${q}`);
+      await api.aiSuggestionsDecide(appId, suggestion.id, { action: 'ask_admin', reason: q });
+      if (onChanged) await onChanged();
+    } catch (e) { alert(`Could not ask super-admin: ${(e && e.message) || 'error'}`); }
+    finally { setBusy(false); }
+  };
+
+  const convertToCondition = async () => {
+    const pa = suggestion.proposed_action || {};
+    const tplCode = (pa.fields && pa.fields.opensCondition) || pa.templateCode || null;
+    if (!tplCode) {
+      alert('This suggestion does not name a condition template — decide it another way or ask the super-admin.');
+      return;
+    }
+    if (!window.confirm(`Create the "${tplCode}" condition on this file from this AI suggestion?`)) return;
+    await doAction('convert_to_condition', { templateCode: tplCode });
+  };
+
+  const convertToTask = async () => {
+    const taskId = window.prompt('ClickUp task URL or id to link this suggestion to:');
+    if (!taskId || !taskId.trim()) return;
+    await doAction('convert_to_task', { taskId: taskId.trim() });
+  };
+
+  return (
+    <div style={{ border: `1px solid ${tint.fg}33`, borderLeft: `4px solid ${tint.fg}`, borderRadius: 10, padding: '10px 12px', marginBottom: 10, background: isClosed ? 'var(--paper,#F6F3EC)' : 'var(--card,#fff)', opacity: isClosed ? 0.75 : 1 }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 4 }}>
+        <span style={{ background: tint.bg, color: tint.fg, fontSize: 10, fontWeight: 800, padding: '2px 7px', borderRadius: 6, textTransform: 'uppercase', letterSpacing: '.05em' }}>{sourceLabel}</span>
+        {suggestion.severity && <span style={{ ...(SEV[suggestion.severity] || {}), fontSize: 10, fontWeight: 800, padding: '2px 7px', borderRadius: 6, background: SEV[suggestion.severity] && SEV[suggestion.severity].bg, color: SEV[suggestion.severity] && SEV[suggestion.severity].fg }}>{SEV[suggestion.severity] ? SEV[suggestion.severity].label : suggestion.severity}</span>}
+        {suggestion.important && <span style={{ color: 'var(--amber,#B7791F)' }} title="Marked important">★</span>}
+        {typeof suggestion.confidence === 'number' && <span style={{ fontSize: 11, color: 'var(--muted,#4B585C)' }}>{Math.round(suggestion.confidence * 100)}% confident</span>}
+        <span style={{ fontSize: 11, color: 'var(--muted,#4B585C)', marginLeft: 'auto' }}>{new Date(suggestion.created_at).toLocaleString()}</span>
+      </div>
+      <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 3 }}>{suggestion.title}</div>
+      {suggestion.body && <div style={{ fontSize: 12.5, color: 'var(--ivory,#141B22)', marginBottom: 6, whiteSpace: 'pre-wrap' }}>{suggestion.body}</div>}
+      {(pages || evidence.sourceDocumentId || suggestion.document_id || suggestion.trace_url) && (
+        <div style={{ fontSize: 11.5, color: 'var(--muted,#4B585C)', marginBottom: 6 }}>
+          {(suggestion.document_id || evidence.sourceDocumentId) && (
+            <span>Document: <a href={`#/staff/documents/${suggestion.document_id || evidence.sourceDocumentId}`} style={{ color: 'var(--teal-deep,#256168)' }}>open</a>{pages ? ` · page(s) ${pages.join(', ')}` : ''}</span>
+          )}
+          {suggestion.trace_url && (
+            <> · <a href={suggestion.trace_url} target="_blank" rel="noreferrer" style={{ color: 'var(--teal-deep,#256168)' }}>AI reasoning trace →</a></>
+          )}
+        </div>
+      )}
+      {Array.isArray(suggestion.notes) && suggestion.notes.length > 0 && (
+        <div style={{ borderTop: '1px dashed var(--paper,#E9E4D3)', marginTop: 6, paddingTop: 6, fontSize: 11.5, color: 'var(--muted,#4B585C)' }}>
+          {suggestion.notes.map((n, i) => (
+            <div key={i}><b>Note</b> {new Date(n.at).toLocaleString()}: {n.text}</div>
+          ))}
+        </div>
+      )}
+      {isClosed && (
+        <div style={{ fontSize: 11, color: 'var(--muted,#4B585C)', marginTop: 6, fontStyle: 'italic' }}>
+          Closed as {suggestion.status.replace(/_/g, ' ')}{suggestion.status_reason ? ` — ${suggestion.status_reason}` : ''}
+        </div>
+      )}
+      {!isClosed && !disabled && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+          <button className="btn ghost" onClick={() => doAction('escalate')} disabled={busy} style={{ fontSize: 11 }}>Escalate</button>
+          <button className="btn ghost" onClick={() => setNoteOpen(true)} disabled={busy} style={{ fontSize: 11 }}>Add note</button>
+          <button className="btn ghost" onClick={convertToCondition} disabled={busy} style={{ fontSize: 11 }}>Convert to condition</button>
+          <button className="btn ghost" onClick={convertToTask} disabled={busy} style={{ fontSize: 11 }}>Convert to task</button>
+          <button className="btn ghost" onClick={() => doAction(suggestion.important ? 'unmark_important' : 'mark_important')} disabled={busy} style={{ fontSize: 11 }}>{suggestion.important ? 'Unmark important' : 'Mark important'}</button>
+          <button className="btn ghost" onClick={() => setDismissOpen(true)} disabled={busy} style={{ fontSize: 11 }}>Dismiss</button>
+          <button className="btn ghost" onClick={askAdmin} disabled={busy} style={{ fontSize: 11 }}>Ask super-admin</button>
+        </div>
+      )}
+      {noteOpen && (
+        <div style={{ marginTop: 8 }}>
+          <textarea value={noteText} onChange={(e) => setNoteText(e.target.value)} placeholder="A quick note that stays on this suggestion…"
+            style={{ width: '100%', minHeight: 60, fontSize: 12, padding: 6, border: '1px solid var(--paper,#E9E4D3)', borderRadius: 6 }} />
+          <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+            <button className="btn primary" onClick={addNote} disabled={busy || !noteText.trim()} style={{ fontSize: 11 }}>Save note</button>
+            <button className="btn ghost" onClick={() => { setNoteOpen(false); setNoteText(''); }} style={{ fontSize: 11 }}>Cancel</button>
+          </div>
+        </div>
+      )}
+      {dismissOpen && (
+        <div style={{ marginTop: 8 }}>
+          <input type="text" value={dismissReason} onChange={(e) => setDismissReason(e.target.value)} placeholder="Why are you dismissing this?"
+            style={{ width: '100%', fontSize: 12, padding: 6, border: '1px solid var(--paper,#E9E4D3)', borderRadius: 6 }} />
+          <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+            <button className="btn primary" onClick={async () => { await doAction('dismiss', { reason: dismissReason || 'no reason given' }); setDismissOpen(false); setDismissReason(''); }} disabled={busy} style={{ fontSize: 11 }}>Dismiss</button>
+            <button className="btn ghost" onClick={() => { setDismissOpen(false); setDismissReason(''); }} style={{ fontSize: 11 }}>Cancel</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function UnderwritingPanel({ appId, docs = [], readOnly = false, canResolve = true, canWaive = true, onSummary }) {
   const [data, setData] = useState(null);
   const [appr, setAppr] = useState(null); // appraisal findings folded into this ONE findings section
@@ -1560,6 +2089,45 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
         </div>
       )}
 
+      {/* Major-fraud alert banner (R3.14, owner-directed 2026-07-22).
+          When the AI has surfaced a high-confidence fraud/authenticity signal
+          on this file, PILOT pins a red banner + admins are silently emailed
+          once per signal. This banner is a NOTICE — the AI never blocks the
+          file or changes anything on it (HARD RULE). Human decides. */}
+      {data && data.fraudBanner && (() => {
+        const b = data.fraudBanner;
+        const fg = 'var(--crit,#B4483C)';
+        const bg = 'var(--crit-bg,#F6E7E4)';
+        return (
+          <div style={{ border: `2px solid ${fg}`, background: bg, borderRadius: 12, padding: '12px 16px', marginBottom: 18 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+              <span style={{ fontSize: 20 }}>⚠</span>
+              <span style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.08em', color: fg }}>Major-fraud alert</span>
+            </div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--ivory,#141B22)', marginBottom: 4 }}>{b.headline}</div>
+            {b.signals && b.signals.length > 1 && (
+              <ul style={{ margin: '4px 0 0 16px', padding: 0, fontSize: 12, color: 'var(--ivory,#141B22)' }}>
+                {b.signals.map((s) => <li key={s.id}>{s.title}</li>)}
+              </ul>
+            )}
+            <div style={{ fontSize: 11, color: 'var(--muted,#4B585C)', marginTop: 6 }}>
+              PILOT did NOT change anything on the file. Open the AI Findings panel below to review or dismiss.
+            </div>
+            <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+              <button className="btn ghost" style={{ fontSize: 11 }} onClick={async () => {
+                const hours = parseInt(window.prompt('Snooze the fraud banner for how many hours? (1–168)', '24') || '', 10);
+                if (!(hours >= 1 && hours <= 168)) return;
+                try { await api.fraudBannerSnooze(appId, hours); load(); }
+                catch (e) { alert(`Snooze failed: ${(e && e.message) || 'error'}`); }
+              }}>Snooze banner</button>
+              <button className="btn ghost" style={{ fontSize: 11 }} onClick={() => {
+                document.querySelector('h4')?.scrollIntoView({ behavior: 'smooth' });
+              }}>Open AI Findings panel</button>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* the one-line verdict — the owner's at-a-glance read */}
       {verdict && verdict.headline && (() => {
         const V = {
@@ -1586,6 +2154,13 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
           additive read-only — the classic findings list below still works. */}
       <SovereignCockpit twinFacts={(data && data.twinFacts) || []} cureProofs={(data && data.cureProofs) || []}
         appId={appId} canIssueCerts={canResolve} canConfirmFacts={canResolve} />
+
+      {/* AI Findings panel (R3.5/R3.6, owner-directed 2026-07-22, HARD RULE). Every
+          AI agent posts here — the AI never writes on the file itself. A human
+          clicks Escalate / Add note / Convert to condition / Convert to task /
+          Mark important / Dismiss / Ask super-admin. */}
+      <AISuggestionsSection appId={appId} readOnly={readOnly} canResolve={canResolve} />
+
 
       {/* ALL open findings, in ONE place — exactly the set the roll-up counts, so the "2 warnings"
           chip maps to two visible, actionable items. A persisted per-document finding (has an id) is

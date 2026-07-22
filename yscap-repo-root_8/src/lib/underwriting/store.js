@@ -199,6 +199,38 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
     }
   } catch (_) { /* cure is additive — never blocks the extraction */ }
 
+  // 5. Assignment-fraud check (R3.15, owner-directed 2026-07-22). When THIS
+  // extraction is for an assignment doc, run the non-arm's-length detector.
+  // Enrich the assignee side (usually the borrower's LLC) with any address /
+  // EIN / registered agent pulled from the file's operating_agreement or
+  // ein_letter extractions so shared-EIN / shared-address signals can fire.
+  // Best-effort — never blocks the extraction.
+  try {
+    if (docType === 'assignment' && appId && ext.fields) {
+      const af = require('./assignment-fraud');
+      // Pull sibling extractions to enrich the parties.
+      const sib = await client.query(
+        `SELECT doc_type, fields FROM document_extractions
+          WHERE application_id=$1 AND status='ok' AND (doc_type='operating_agreement' OR doc_type='ein_letter')
+          ORDER BY created_at DESC LIMIT 4`, [appId]);
+      const oa = (sib.rows.find((r) => r.doc_type === 'operating_agreement') || {}).fields || {};
+      const ein = (sib.rows.find((r) => r.doc_type === 'ein_letter') || {}).fields || {};
+      const assignor = { name: ext.fields.assignorName };
+      const assignee = {
+        name: ext.fields.assigneeName,
+        ein: oa.ein || ein.ein || null,
+        address: oa.entityAddress || null,
+        registeredAgent: oa.registeredAgent || null,
+      };
+      await af.analyzeAndRecord(client, {
+        applicationId: appId, documentId,
+        assignor, assignee,
+        contractPrice: ext.fields.originalPurchasePrice,
+        assignmentFee: ext.fields.assignmentFee,
+      });
+    }
+  } catch (_) { /* assignment fraud is additive — never blocks the extraction */ }
+
   return { extractionId, findingIds };
 }
 

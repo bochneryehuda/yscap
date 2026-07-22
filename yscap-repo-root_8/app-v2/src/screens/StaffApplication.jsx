@@ -2413,6 +2413,18 @@ export default function StaffApplication() {
     sp.delete('esign');
     nav({ pathname, search: sp.toString() ? `?${sp.toString()}` : '' }, { replace: true });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // R3.44 — jump directly to the AI Findings panel when the URL carries
+  // ?focus=ai-findings (used by the Insights aged-fatal-file row's quick-jump
+  // button). Scrolls after the underwriting section has rendered.
+  useEffect(() => {
+    const focus = new URLSearchParams(search || '').get('focus');
+    if (focus !== 'ai-findings') return;
+    const tid = setTimeout(() => {
+      const el = document.getElementById('ai-findings');
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 600);
+    return () => clearTimeout(tid);
+  }, [search]);
   const { role, can, actor: authActor } = useAuth();
   const isAdmin = role === 'admin' || role === 'super_admin';
   const completer = canComplete(role);   // may CLEAR (sign off) a condition; others only mark it reviewed

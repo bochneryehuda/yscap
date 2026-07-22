@@ -477,6 +477,46 @@ router.get('/:appId', async (req, res, next) => {
       seenDup.add(f.code); return true;
     });
 
+    // Sync computed chain + bank findings → ai_suggestions (owner-directed 2026-07-22,
+    // HARD RULE). Best-effort, fired AFTER the response so file view stays fast; dedupe
+    // in ai-suggestions collapses re-fires to a single OPEN row per (source, dedupe_key).
+    // The AI panel picks up new suggestions on its next refresh.
+    const syncBankBridge = require('../lib/underwriting/bank-statement-suggestions');
+    const syncEntityChain = require('../lib/underwriting/entity-chain-suggestions');
+    const bankFindingsFlat = (bankLiquidity && bankLiquidity.findings || []);
+    setImmediate(() => {
+      (async () => {
+        const c = await db.pool.connect();
+        try {
+          await c.query('BEGIN');
+          if (entityChain || sellerChain) {
+            await syncEntityChain.syncChainsToSuggestions(c, app.id, { entityChain, sellerChain });
+          }
+          if (bankFindingsFlat.length) {
+            // Bank-statement findings live per-document; group them under a synthetic doc id
+            // (the first per-doc source we can identify) — sync bridges accept a documentId.
+            await syncBankBridge.syncBankFindingsToSuggestions(c, app.id, app.id, bankFindingsFlat);
+          }
+          // R3.18 — Bad-clearance scan: for every satisfied condition on the file,
+          // run the classifier on its attached doc and post a "may have been cleared
+          // with the wrong document" suggestion when the type doesn't match.
+          // Dormant when the classifier isn't configured; capped per run.
+          try { await require('../lib/underwriting/bad-clearance').scanFile(c, app.id, { maxConditions: 15 }); } catch (_) { /* additive */ }
+          // R3.23 — Public-records cross-check (advisory): seller/grantor/appraisal
+          // owner + vesting/buyer chain mismatches → ai_suggestions. Best-effort.
+          try {
+            await require('../lib/underwriting/public-records-crosscheck').analyzeAndRecord(c, {
+              applicationId: app.id,
+              fileCtx: { vestingName: mctx && mctx.vestingName },
+              extractions: exts.rows,
+            });
+          } catch (_) { /* additive */ }
+          await c.query('COMMIT');
+        } catch (_) { await c.query('ROLLBACK').catch(() => {}); }
+        finally { c.release(); }
+      })().catch(() => {});
+    });
+
     // Fraud / red-flag score: aggregate every open signal above + the economic red flags into one
     // explainable 0-100 score. Its HIGH-band advisory is a non-blocking warning (folded into the
     // roll-up); the score itself never re-decides the fatal gate.
@@ -501,8 +541,27 @@ router.get('/:appId', async (req, res, next) => {
       for (const e of escRows) if (e.finding_id) escalatedByFinding[e.finding_id] = { id: e.id, targetRole: e.target_role, status: e.status };
     } catch (_) { escalatedByFinding = {}; }
 
+    // Major fraud/authenticity banner (R3.14) — cheap read of open ai_suggestions.
+    // Best-effort, never blocks the file view.
+    let fraudBanner = null;
+    try {
+      fraudBanner = await require('../lib/underwriting/fraud-alert').fileBanner(app.id, db);
+    } catch (_) { fraudBanner = null; }
+    // Best-effort admin alert for any NEW signal (dedupe stamp inside the helper).
+    if (fraudBanner && Array.isArray(fraudBanner.signals)) {
+      setImmediate(() => {
+        (async () => {
+          const fa = require('../lib/underwriting/fraud-alert');
+          for (const s of fraudBanner.signals) {
+            await fa.alertAdminsOncePerSignal(app.id, s, { link: `/staff/applications/${app.id}` }).catch(() => {});
+          }
+        })().catch(() => {});
+      });
+    }
+
     res.json({
       escalatedFindings: escalatedByFinding,
+      fraudBanner,
       verdict,
       // AUS: which program this file is underwritten against + that program's governing thresholds.
       programGuidelines,
@@ -1344,6 +1403,303 @@ router.post('/:appId/experience-exception', requirePermission('waive_conditions'
       client.release();
     }
     res.json({ ok: true, granted: grant });
+  } catch (e) { next(e); }
+});
+
+// -------------------------------------------------------------------------
+// GPT-5 cross-doc consistency check (R3.27, owner-directed 2026-07-22).
+// Manual trigger — costs money per run. Requires sign_off_conditions.
+// -------------------------------------------------------------------------
+router.post('/:appId/ai-crossdoc', requirePermission('sign_off_conditions'), async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    // Pull current extractions on the file.
+    const exts = await db.query(
+      `SELECT doc_type, document_id, fields
+         FROM document_extractions
+        WHERE application_id=$1 AND status='ok'
+        ORDER BY created_at DESC LIMIT 40`, [app.id]);
+    const client = await db.pool.connect();
+    let result;
+    try {
+      await client.query('BEGIN');
+      result = await require('../lib/underwriting/ai-cross-doc').analyzeFile(client, {
+        applicationId: app.id, extractions: exts.rows,
+        appMeta: { app_id: app.id, source: 'staff-triggered' },
+      });
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+    res.json(result);
+  } catch (e) { next(e); }
+});
+
+// -------------------------------------------------------------------------
+// Investor Knowledge Graph (R3.28) — per-file slice of the portfolio graph.
+// -------------------------------------------------------------------------
+router.get('/:appId/knowledge-graph', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const graph = await require('../lib/underwriting/knowledge-graph').fileGraph(app.id, db);
+    res.json({ ok: true, graph });
+  } catch (e) { next(e); }
+});
+
+// -------------------------------------------------------------------------
+// AI cost telemetry (R2.11, owner-directed 2026-07-22) — per-file rollup.
+// -------------------------------------------------------------------------
+router.get('/:appId/ai-cost', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const costMeter = require('../lib/ai/cost-meter');
+    const summary = await costMeter.fileSummary(app.id, db);
+    // Also return the latest N events so the UI can render a mini-log.
+    const events = (await db.query(
+      `SELECT op_name, provider, model, tokens_total, cost_cents, duration_ms, ok, reason, created_at
+         FROM ai_cost_events WHERE application_id=$1
+         ORDER BY created_at DESC LIMIT 50`, [app.id])).rows;
+    res.json({ ok: true, summary, events });
+  } catch (e) { next(e); }
+});
+
+// -------------------------------------------------------------------------
+// AI SUGGESTIONS — the file's non-autonomous "AI panel" backend (R3.5/R3.6).
+// Owner hard rule (2026-07-22): the AI writes suggestions here — a human
+// clicks Escalate / Add note / Convert to condition / Convert to task /
+// Mark important / Dismiss / Ask super-admin.
+// -------------------------------------------------------------------------
+router.get('/:appId/ai-suggestions', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const aiSug = require('../lib/underwriting/ai-suggestions');
+    const suggestions = await aiSug.listForFile(app.id, {
+      status: req.query.status || undefined,
+      source: req.query.source || undefined,
+      includeDismissed: req.query.include_dismissed === '1',
+      limit: Number(req.query.limit) || undefined,
+    }, db);
+    res.json({ ok: true, suggestions });
+  } catch (e) { next(e); }
+});
+
+// Human decides on ONE suggestion. Action semantics live in ai-suggestions.decide().
+// convert_to_condition takes an OPTIONAL templateCode: when provided the route also
+// creates the checklist_items row + links it — a true "click to create the condition
+// I proposed" one-shot. Otherwise the caller passes an already-created conditionId.
+router.post('/:appId/ai-suggestions/:id/decide', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const aiSug = require('../lib/underwriting/ai-suggestions');
+    const body = req.body || {};
+    const action = String(body.action || '').toLowerCase();
+    if (!action) return res.status(400).json({ error: 'action required' });
+    const client = await db.pool.connect();
+    try {
+      await client.query('BEGIN');
+      // Refuse to decide on someone else's file — the fileFor gate above already
+      // scoped to a visible file, but the suggestion also has to belong to that app.
+      const sc = await client.query(`SELECT application_id FROM ai_suggestions WHERE id=$1`, [req.params.id]);
+      if (!sc.rows[0] || sc.rows[0].application_id !== app.id) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'suggestion not found on this file' }); }
+
+      // Special path — "convert to condition" from a proposedAction can create
+      // the checklist_items row in the same tx and link it back on the suggestion.
+      let opts = { action, staffId: req.actor.staffId, reason: body.reason, note: body.note };
+      if (action === 'convert_to_condition' && !body.conditionId) {
+        const sug = (await client.query(`SELECT * FROM ai_suggestions WHERE id=$1`, [req.params.id])).rows[0];
+        const pa = sug && sug.proposed_action || {};
+        const tplCode = body.templateCode || pa.templateCode || pa.fields && pa.fields.opensCondition || null;
+        if (!tplCode) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'templateCode required for convert_to_condition' }); }
+        // Look up the template and create a checklist_items row on this file — mirrors the
+        // pattern in src/lib/appraisal/desk.js / src/lib/vesting.js: pull every template
+        // column, insert as a scope='application' row against this file.
+        const tplQ = await client.query(
+          `INSERT INTO checklist_items
+             (template_id, scope, label, borrower_label, audience, item_kind, role_scope,
+              phase, hint, borrower_hint, is_gate, is_milestone, sort_order, tool_key,
+              clickup_field_id, tpr_exclude, created_by_kind, is_required, application_id,
+              status, notes)
+           SELECT t.id, t.scope, t.label, t.borrower_label, t.audience, t.item_kind,
+                  COALESCE(t.role_scope,'any'), t.phase, t.hint, t.borrower_hint,
+                  COALESCE(t.is_gate,false), COALESCE(t.is_milestone,false),
+                  COALESCE(t.sort_order,900), t.tool_key, t.clickup_field_id,
+                  COALESCE(t.tpr_exclude,false), 'system', COALESCE(t.is_required,true), $1,
+                  'issue', $3
+             FROM checklist_templates t
+            WHERE t.code = $2 AND t.scope = 'application'
+            RETURNING id`,
+          [app.id, tplCode, `[from AI suggestion] ${sug.title}`]);
+        if (!tplQ.rows[0]) { await client.query('ROLLBACK'); return res.status(400).json({ error: `unknown template ${tplCode}` }); }
+        opts.conditionId = tplQ.rows[0].id;
+      }
+      if (action === 'convert_to_task' && !body.taskId) {
+        // Task id is the caller's responsibility (ClickUp id or internal); require it.
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'taskId required for convert_to_task' });
+      }
+      const r = await aiSug.decide(client, req.params.id, opts);
+      await client.query('COMMIT');
+      res.json({ ok: true, suggestion: r.row });
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+  } catch (e) { next(e); }
+});
+
+/**
+ * Splitter action (R3.19). Turn a `splitter` suggestion into one child `documents`
+ * row per segment, filed under a human-picked target condition. Body:
+ *   { segments: [ { pages:[1,2,3], docType:'bank_statement', checklistItemId:'ci-uuid', slotLabel? } ] }
+ * Preserves the ORIGINAL document bytes (each child points at the same storage_ref with
+ * a slot_label naming the page range) — a follow-up will physically slice the PDF once
+ * pdf-lib lands as a dep. Per HARD RULE the AI never files anything on its own; this route
+ * only runs after a human clicks 'Split + File' on the AI Findings panel.
+ */
+router.post('/:appId/ai-suggestions/:id/split-and-file', requirePermission('sign_off_conditions'), async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const client = await db.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const sug = (await client.query(`SELECT * FROM ai_suggestions WHERE id=$1 AND application_id=$2`, [req.params.id, app.id])).rows[0];
+      if (!sug) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'suggestion not found on this file' }); }
+      if (sug.source !== 'splitter') { await client.query('ROLLBACK'); return res.status(400).json({ error: 'not a splitter suggestion' }); }
+      const src = sug.document_id ? (await client.query(`SELECT id, filename, content_type, storage_provider, storage_ref, size_bytes, borrower_id FROM documents WHERE id=$1`, [sug.document_id])).rows[0] : null;
+      if (!src) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'source document not found' }); }
+      const body = req.body || {};
+      const segments = Array.isArray(body.segments) ? body.segments : [];
+      if (!segments.length) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'segments[] required' }); }
+
+      const created = [];
+      for (const seg of segments) {
+        const pages = Array.isArray(seg.pages) ? seg.pages.filter(Number.isFinite).sort((a, b) => a - b) : [];
+        if (!pages.length || !seg.checklistItemId) continue;
+        const slotLabel = String(seg.slotLabel || `${prettyType(seg.docType)} (pp ${pages.join(', ')} of ${src.filename})`).slice(0, 80);
+        // Confirm the target checklist_item belongs to this file.
+        const target = (await client.query(`SELECT id FROM checklist_items WHERE id=$1 AND application_id=$2`, [seg.checklistItemId, app.id])).rows[0];
+        if (!target) continue;
+        const ins = await client.query(
+          `INSERT INTO documents (application_id, checklist_item_id, borrower_id, filename, content_type,
+                                  size_bytes, storage_provider, storage_ref,
+                                  uploaded_by_kind, uploaded_by_id, slot_label, visibility)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,$10,'staff_only')
+           RETURNING id`,
+          [app.id, seg.checklistItemId, src.borrower_id, `${(seg.docType || 'part')}—${src.filename}`,
+           src.content_type, src.size_bytes, src.storage_provider, src.storage_ref,
+           req.actor.staffId, slotLabel]);
+        created.push({ id: ins.rows[0].id, checklistItemId: seg.checklistItemId, pages });
+      }
+
+      // Close the suggestion — dismiss with a note that names the resulting child docs.
+      await require('../lib/underwriting/ai-suggestions').decide(client, req.params.id, {
+        action: 'dismiss',
+        reason: `Split into ${created.length} child document(s) via the splitter suggestion.`,
+        staffId: req.actor.staffId,
+      });
+      await client.query('COMMIT');
+      res.json({ ok: true, created });
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+  } catch (e) { next(e); }
+});
+function prettyType(t) {
+  return ({ bank_statement: 'Bank statement', insurance: 'Insurance dec', operating_agreement: 'Operating agreement',
+    drivers_license: 'ID', settlement: 'Settlement', purchase_contract: 'Purchase contract' }[t]) || String(t || 'Part');
+}
+
+router.post('/:appId/ai-suggestions/:id/note', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const aiSug = require('../lib/underwriting/ai-suggestions');
+    // Same scope guard as decide.
+    const sc = await db.query(`SELECT application_id FROM ai_suggestions WHERE id=$1`, [req.params.id]);
+    if (!sc.rows[0] || sc.rows[0].application_id !== app.id) return res.status(404).json({ error: 'not found on this file' });
+    await aiSug.addNote(db, req.params.id, { staffId: req.actor.staffId, text: String(req.body && req.body.text || '') });
+    res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
+// -------------------------------------------------------------------------
+// R3.32 — Snooze/dismiss the fraud alert banner on a file. Snooze records an
+// audit_log stamp with `until` (24h default); the /:appId view suppresses the
+// banner (still shows the underlying suggestions in the panel) until the stamp
+// expires. Dismiss is a permanent snooze the human can undo by dismissing the
+// underlying suggestions.
+// -------------------------------------------------------------------------
+router.post('/:appId/fraud-banner/snooze', requirePermission('sign_off_conditions'), async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const hours = Math.max(1, Math.min(168, Number((req.body && req.body.hours) || 24))); // 1h..7d
+    const until = new Date(Date.now() + hours * 3600000).toISOString();
+    await db.query(
+      `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+       VALUES ('staff',$1,'fraud_banner_snoozed','application',$2,$3::jsonb)`,
+      [req.actor.staffId, app.id, JSON.stringify({ until, hours, note: (req.body && req.body.note) || null })]);
+    res.json({ ok: true, until });
+  } catch (e) { next(e); }
+});
+
+// -------------------------------------------------------------------------
+// File-wide "Ask super-admin" — a human on the file can hand the whole file
+// (not a specific finding) to the super-admin as a question. Creates an
+// ai_admin_question tied to this application; the super-admin's answer lands
+// in the /internal/ai-inbox screen (R3.7). R3.25.
+// -------------------------------------------------------------------------
+router.post('/:appId/ask-admin', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const question = String((req.body && req.body.question) || '').trim();
+    if (!question) return res.status(400).json({ error: 'question required' });
+    const aiSug = require('../lib/underwriting/ai-suggestions');
+    const client = await db.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const r = await aiSug.askAdmin(client, {
+        applicationId: app.id, agent: 'staff_request',
+        question,
+        context: { asked_by_staff_id: req.actor.staffId, at: new Date().toISOString() },
+      });
+      await client.query('COMMIT');
+      res.json({ ok: true, ...r });
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+  } catch (e) { next(e); }
+});
+
+// -------------------------------------------------------------------------
+// AI-to-super-admin questions (R3.7). AI agents call ai-suggestions.askAdmin(...)
+// which creates a suggestion (kind='question') AND an ai_admin_questions row.
+// The super-admin answers here — the answer feeds learning + closes the suggestion.
+// -------------------------------------------------------------------------
+router.get('/ai-admin/questions', requirePermission('promote_training'), async (req, res, next) => {
+  try {
+    const aiSug = require('../lib/underwriting/ai-suggestions');
+    const rows = await aiSug.listOpenAdminQuestions({ appId: req.query.appId || undefined,
+      limit: Number(req.query.limit) || undefined }, db);
+    res.json({ ok: true, questions: rows });
+  } catch (e) { next(e); }
+});
+router.post('/ai-admin/questions/:id/answer', requirePermission('promote_training'), async (req, res, next) => {
+  try {
+    const aiSug = require('../lib/underwriting/ai-suggestions');
+    const client = await db.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await aiSug.answerAdminQuestion(client, req.params.id, {
+        staffId: req.actor.staffId,
+        answer: String((req.body && req.body.answer) || ''),
+      });
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+    res.json({ ok: true });
   } catch (e) { next(e); }
 });
 

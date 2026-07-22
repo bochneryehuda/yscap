@@ -1,4 +1,4 @@
--- 248_request_audit_log.sql — Automatic, comprehensive request-level audit
+-- 252_request_audit_log.sql — Automatic, comprehensive request-level audit
 -- log (owner-directed 2026-07-22). Every single HTTP request the server
 -- answers is written here — every /auth call, every /api call, every action
 -- a borrower or staffer takes through the portal, every automation call,

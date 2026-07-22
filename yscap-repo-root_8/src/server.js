@@ -20,7 +20,7 @@ app.set('trust proxy', 1);
 // Baseline security headers on every response (nosniff, anti-clickjacking, HSTS…).
 app.use(require('./lib/security').securityHeaders);
 // Automatic request-level audit log — writes ONE row per HTTP request into
-// `request_audit_log` (see db/248_*.sql + src/lib/request-audit.js), captured
+// `request_audit_log` (see db/252_*.sql + src/lib/request-audit.js), captured
 // asynchronously so the request itself is never delayed. Complements the
 // semantic audit_log (business actions) with a full request firehose:
 // who called what, when, from where, with which status, in how many ms.
@@ -245,6 +245,11 @@ app.use('/api/underwriting', require('./routes/underwriting'));
   app.use('/api/admin/manual-programs', requireAuth, requireStaff, require('./routes/admin-manual-programs'));
   // Sovereign 4/4 admin surface — training proposals queue (owner-directed 2026-07-21).
   app.use('/api/admin/training', requireAuth, requireStaff, require('./routes/admin-training'));
+  // Azure Custom labeling console — super-admins tag past documents to train
+  // the classifier + neural extractors (owner-directed 2026-07-22, R3.3).
+  app.use('/api/admin/labeling', requireAuth, requireStaff, require('./routes/admin-labeling'));
+  // Sovereign Insights portfolio dashboard (owner-directed 2026-07-22, R2.6).
+  app.use('/api/admin/insights', requireAuth, requireStaff, require('./routes/admin-insights'));
   app.use('/api/admin', requireAuth, requireStaff, require('./routes/admin'));
 }
 // SSE stream (live chat/presence/receipts). Mounted OUTSIDE the authenticated

@@ -564,7 +564,13 @@ router.get('/applications', async (req, res) => {
                         b.first_name,b.last_name,b.email,
                         (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id) AS total_items,
                         (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id
-                           AND (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')) AS done_items
+                           AND (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')) AS done_items,
+                        (SELECT count(*)::int FROM ai_suggestions s
+                           WHERE s.application_id=a.id AND s.severity='fatal'
+                             AND s.status IN ('open','marked_important','escalated','asked_admin')) AS open_fatal_ai,
+                        (SELECT EXTRACT(EPOCH FROM (now() - MIN(s.created_at)))/86400 FROM ai_suggestions s
+                           WHERE s.application_id=a.id AND s.severity='fatal'
+                             AND s.status IN ('open','marked_important','escalated','asked_admin')) AS open_fatal_ai_oldest_days
                  FROM applications a JOIN borrowers b ON b.id=a.borrower_id
                  WHERE ${where.join(' AND ')} ORDER BY ${orderBy}
                  LIMIT ${add(limit)} OFFSET ${add(offset)}`;
@@ -5599,8 +5605,23 @@ async function advancementBlockers(appId, target) {
       }];
     }
   } catch (_) { /* never break advancement gating on a tie-out compute error */ }
+  // R3.17 — AI fraud/authenticity fatal suggestions surface here as ADVISORY
+  // blockers so a reviewer sees them on the readiness widget before moving to
+  // clear-to-close. Per HARD RULE the AI never blocks the transition itself
+  // — the client's "Advance" action may still confirm past them. Best-effort:
+  // a load failure never breaks the readiness view.
+  let aiAdvisories = [];
+  try {
+    const fa = require('../lib/underwriting/fraud-alert');
+    const signals = await fa.openMajorSignals(appId, db);
+    aiAdvisories = signals.map(s => ({
+      id: `ai:${s.id}`, title: `AI advisory: ${s.title}`, source: 'ai_suggestion',
+      section: 'sec-underwriting',
+      reason: `A ${s.source.replace(/_/g, ' ')} signal is open on the AI Findings panel. Review or dismiss before moving to clear-to-close.`,
+    }));
+  } catch (_) { aiAdvisories = []; }
   return {
-    conditions: [...underwriting, ...checklistConds.rows, ...underwritingFatals].map(r => decorateBlocker(r, 'condition')),
+    conditions: [...underwriting, ...checklistConds.rows, ...underwritingFatals, ...aiAdvisories].map(r => decorateBlocker(r, 'condition')),
     gates: gates.rows.map(r => decorateBlocker(r, 'gate')),
   };
 }
@@ -7492,6 +7513,58 @@ router.post('/applications/:id/documents', async (req, res) => {
 
   await audit(req, 'upload_document', 'document', r.rows[0].id, { filename: b.filename, docKind, checklistItemId: b.checklistItemId || null, llcId });
   try { require('../lib/sharepoint-backup').kick(); } catch (_) {}
+
+  // AI classifier auto-hook (R3.13, owner-directed 2026-07-22, HARD RULE — never
+  // moves the document itself; never clears/reopens a condition). When the Azure
+  // Custom Classifier is trained, run it against the uploaded bytes and post AI
+  // suggestions to the file: (a) wrong-condition if the classifier says the doc
+  // belongs to a different condition than where it was filed, (b) splitter if the
+  // document looks like a combined package. Fires in setImmediate so upload stays
+  // fast; every step is best-effort and never blocks the response.
+  const uploadedDocId = r.rows[0].id;
+  const appIdForAi = llcId ? null : req.params.id;
+  if (appIdForAi && buf && buf.length) setImmediate(() => {
+    (async () => {
+      const azc = require('../lib/ai/azure-custom');
+      if (!azc.classifierConfigured()) return;   // dormant until classifier trained
+      const client = await db.pool.connect();
+      try {
+        // For classification we only need the bytes; classify+suggest are separate DB
+        // writes but share one connection so a rollback of one doesn't hurt the other.
+        const classifier = await azc.classify({ buffer: buf, appId: appIdForAi, documentId: uploadedDocId });
+        if (!classifier.ok || !classifier.segments || !classifier.segments.length) return;
+        await client.query('BEGIN');
+        // (a) Wrong-condition detector: only when filed under a specific checklist item.
+        if (b.checklistItemId) {
+          const wc = require('../lib/underwriting/wrong-condition');
+          const tc = (await client.query(
+            `SELECT t.code, COALESCE(t.borrower_label, t.label) AS label
+               FROM checklist_items ci JOIN checklist_templates t ON t.id = ci.template_id
+              WHERE ci.id = $1`, [b.checklistItemId])).rows[0];
+          if (tc && tc.code) {
+            // Pick the highest-confidence segment as the document's dominant type.
+            const dominant = classifier.segments.slice().sort((a, b2) => (b2.confidence || 0) - (a.confidence || 0))[0];
+            await wc.analyzeAndRecord(client, {
+              applicationId: appIdForAi, documentId: uploadedDocId, checklistItemId: b.checklistItemId,
+              conditionCode: tc.code, conditionLabel: tc.label,
+              classifier: { docType: dominant.docType, confidence: dominant.confidence, pages: dominant.pages },
+            });
+          }
+        }
+        // (b) Splitter suggest: only meaningful for PDFs with 2+ distinct doc types.
+        const ss = require('../lib/underwriting/splitter-suggest');
+        // pageCount from the classifier segments' max page number as a floor.
+        const maxPage = Math.max(...classifier.segments.flatMap(s => s.pages || [0]).map(Number).filter(Number.isFinite));
+        await ss.suggestSplit(client, {
+          applicationId: appIdForAi, documentId: uploadedDocId, buffer: buf, pageCount: maxPage,
+          staffId: req.actor.staffId,
+        });
+        await client.query('COMMIT');
+      } catch (_) { await client.query('ROLLBACK').catch(() => {}); }
+      finally { client.release(); }
+    })().catch(() => {});
+  });
+
   res.status(201).json({ ok: true, documentId: r.rows[0].id, ...(apprImport ? { appraisal: apprImport } : {}) });
 });
 

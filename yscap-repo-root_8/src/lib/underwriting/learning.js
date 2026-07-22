@@ -278,8 +278,55 @@ async function runTraining(client) {
   return { proposalsFound: proposals.length, inserted };
 }
 
+/**
+ * captureAdminAnswer — R3.7/R3.20. When the AI asks the super-admin via
+ * ai-suggestions.askAdmin() and the super-admin answers, this records the
+ * Q+A as a training_proposal (proposal_type='admin_answer'). Best-effort:
+ * a DB failure returns null; never throws.
+ *
+ * Scope shape: { agent, question, application_id, context } — enough for
+ * a future runTraining pass to spot patterns ("agent X keeps asking about
+ * bank statements missing pages — auto-suggest missing-page finding
+ * from now on").
+ */
+async function captureAdminAnswer(client, { applicationId, agent, question, answer, context } = {}) {
+  if (!agent || !question || !answer) return null;
+  const c = client || db();
+  try {
+    // Idempotent per (agent, hash(question) — same question re-asked doesn't
+    // stack). Uses a small SELECT-first + INSERT; no unique index needed.
+    const key = `admin_answer:${agent}:${Buffer.from(String(question)).toString('base64').slice(0, 40)}`;
+    const scope = { agent, question: String(question).slice(0, 4000), application_id: applicationId || null,
+      context: context || {}, key };
+    const exists = await c.query(
+      `SELECT id FROM training_proposals WHERE proposal_type='admin_answer' AND scope->>'key'=$1 LIMIT 1`, [key]);
+    let id;
+    if (exists.rows[0]) {
+      // Overlay the latest answer + timestamp so re-asks refresh the row instead of stacking.
+      await c.query(
+        `UPDATE training_proposals
+            SET scope = jsonb_set(jsonb_set(scope, '{answer}', to_jsonb($2::text), true),
+                                  '{answered_at}', to_jsonb($3::text), true),
+                proposed_at = now()
+          WHERE id=$1`,
+        [exists.rows[0].id, String(answer), new Date().toISOString()]);
+      id = exists.rows[0].id;
+    } else {
+      scope.answer = String(answer);
+      scope.answered_at = new Date().toISOString();
+      const ins = await c.query(
+        `INSERT INTO training_proposals (proposal_type, scope, status, evidence_json)
+         VALUES ('admin_answer', $1::jsonb, 'pending', $2::jsonb)
+         RETURNING id`,
+        [JSON.stringify(scope), JSON.stringify({ source: 'ask_admin' })]);
+      id = ins.rows[0].id;
+    }
+    return id;
+  } catch (_) { return null; }
+}
+
 module.exports = {
   DECISION_BY_ACTION, matchesDecision,
-  captureFindingDecision, captureFactCorrection,
+  captureFindingDecision, captureFactCorrection, captureAdminAnswer,
   proposeImprovements, persistProposals, runTraining,
 };
