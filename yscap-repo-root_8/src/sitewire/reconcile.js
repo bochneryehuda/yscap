@@ -10,6 +10,7 @@
  */
 const db = require('../db');
 const cfg = require('../config');
+const switches = require('../lib/integrations/switches');
 const client = require('./client');
 const T = require('./transforms');
 const rollupMod = require('./rollup');
@@ -33,16 +34,45 @@ const M = require('./mapper');
  * SOW cell. Best-effort per row; a failure never breaks the reconcile.
  */
 async function adoptSeededMediaItems(appId, budgetId, jobItems) {
-  if (!appId || !budgetId || !Array.isArray(jobItems) || !jobItems.length) return { adopted: 0 };
-  const bound = new Set((await db.query(
-    `SELECT sitewire_job_item_id FROM sitewire_job_item_links WHERE application_id=$1 AND sitewire_job_item_id IS NOT NULL`,
-    [appId])).rows.map((r) => Number(r.sitewire_job_item_id)));
-  let adopted = 0;
+  if (!appId || !budgetId || !Array.isArray(jobItems) || !jobItems.length) return { adopted: 0, hydrated: 0 };
+  // Owner-reported 2026-07-22 (file 1053 Ella T Grasso Blvd): a crosswalk row for item 1180824 was
+  // bound BEFORE PR #551's `ji.name || "Sitewire item <jid>"` fallback shipped, so its `name`
+  // column landed NULL. The old `ON CONFLICT DO NOTHING` never re-hydrated it, and the draw desk
+  // fell back to the generic "Line 1180824" label instead of Sitewire's "Interior Video Tour".
+  // Root fix: read the existing row's name too; UPSERT with `ON CONFLICT DO UPDATE SET name =
+  // COALESCE(existing.name, EXCLUDED.name)` — a null name is upgraded on the very next reconcile,
+  // and a legitimately-stored name is never overwritten. Also flips is_media_item true if the
+  // pre-fix row had it false (a $0 item ALWAYS is media by our semantics).
+  const existingRows = (await db.query(
+    `SELECT sitewire_job_item_id, name, is_media_item FROM sitewire_job_item_links WHERE application_id=$1 AND sitewire_job_item_id IS NOT NULL`,
+    [appId])).rows;
+  const existingByJid = new Map(existingRows.map((r) => [Number(r.sitewire_job_item_id), r]));
+  let adopted = 0, hydrated = 0;
   for (const ji of jobItems) {
     if (!ji || ji.id == null) continue;
     const jid = Number(ji.id);
-    if (bound.has(jid)) continue;
     if (Number(ji.budgeted_cents || 0) !== 0) continue;
+    const cur = existingByJid.get(jid);
+    if (cur) {
+      // Already bound. If Sitewire now has a real name AND our stored name is null/generic, upgrade
+      // it in place (also flag as media if it wasn't). This is the backfill path that unbreaks
+      // rows adopted before PR #551's name fallback shipped.
+      const sitewireName = ji.name ? String(ji.name) : null;
+      const stored = cur.name ? String(cur.name) : '';
+      const isGeneric = !stored || /^Sitewire item \d+$/.test(stored);
+      if (!sitewireName && !cur.is_media_item) continue; // nothing to upgrade
+      try {
+        await db.query(
+          `UPDATE sitewire_job_item_links
+              SET name = CASE WHEN $3::text IS NOT NULL AND $4::boolean THEN $3::text ELSE name END,
+                  is_media_item = true,
+                  updated_at = now()
+            WHERE application_id=$1 AND sitewire_job_item_id=$2`,
+          [appId, jid, sitewireName, isGeneric]);
+        hydrated++;
+      } catch (_) { /* best-effort */ }
+      continue;
+    }
     // Owner-directed 2026-07-22 (file 1053 Ella T Grasso Blvd, draw #1): Sitewire seeds a
     // WHOLE TEMPLATE of $0 items on every property (Video Walkthrough, Exterior Photos, per-line
     // photo requirements, and more) — some carry `mandatory:true`, some don't, and their names
@@ -60,12 +90,14 @@ async function adoptSeededMediaItems(appId, budgetId, jobItems) {
       await db.query(
         `INSERT INTO sitewire_job_item_links (application_id, sitewire_budget_id, sow_line_key, section_token, unit_index, sitewire_job_item_id, name, budgeted_cents, is_media_item, state, last_pushed_at, updated_at)
          VALUES ($1,$2,$3,'media',NULL,$4,$5,0,true,'live',NULL,now())
-         ON CONFLICT (application_id, sow_line_key, section_token) DO NOTHING`,
-        [appId, budgetId, `__media__:sw_${jid}`, jid, String(ji.name || `Sitewire item ${jid}`)]);
+         ON CONFLICT (application_id, sow_line_key, section_token) DO UPDATE SET
+           name = CASE WHEN EXCLUDED.name IS NOT NULL AND (sitewire_job_item_links.name IS NULL OR sitewire_job_item_links.name ~ '^Sitewire item [0-9]+$') THEN EXCLUDED.name ELSE sitewire_job_item_links.name END,
+           is_media_item = true, updated_at = now()`,
+        [appId, budgetId, `__media__:sw_${jid}`, jid, ji.name ? String(ji.name) : null]);
       adopted++;
     } catch (_) { /* best-effort — a bad row must not stop the reconcile */ }
   }
-  return { adopted };
+  return { adopted, hydrated };
 }
 
 // ---- capital-partner directory cache (+ which are on our lender) ----
@@ -282,6 +314,25 @@ async function reconcileOne(appId) {
   let prop;
   try { prop = await client.getProperty(link.sitewire_property_id); } catch (e) { return { error: e.message }; }
   const draws = (prop.budget && prop.budget.draws) || [];
+  // Owner-directed 2026-07-22 (deep root cause investigation for file 1053 Ella T Grasso Blvd item
+  // 1180824 "Interior Video Tour"): per the Sitewire API v2 swagger, GET /properties/:id returns a
+  // `budget` sub-object with ONLY {id, draw_eligible, funding_ratio, funding_threshold_cents, draws}
+  // — it does NOT include `job_items`. The full job-item list is exposed by GET /budgets/:id (used
+  // by orchestrator.pushBudgetInner and verifyBudgetDrift below). Every prior reconcile that read
+  // `prop.budget.job_items` was receiving `undefined` → empty array — so:
+  //   • adoptSeededMediaItems has been silently no-op since PR #546 (never bound sw-seeded media).
+  //   • the propJobNames friendly-name hydration map was always empty.
+  // The 5 named items on file 1053 got their names bound at BIRTH via pushBudgetInner (which does
+  // fetch getBudget correctly), so they read fine. Item 1180824 ("Interior Video Tour" without a
+  // Unit prefix) is a Sitewire template item PILOT never pushed — it needed adoptSeededMediaItems
+  // to bind it. That code never ran because it always saw an empty list. Fix: fetch getBudget ONCE
+  // per reconcile and use its job_items in both places. One extra GET per file per poll cycle is
+  // fine (verifyBudgetDrift already makes the same call hourly on the same read path).
+  let budgetJobItems = [];
+  if (prop.budget && prop.budget.id) {
+    try { const b = await client.getBudget(prop.budget.id); if (Array.isArray(b.job_items)) budgetJobItems = b.job_items; }
+    catch (_) { /* best-effort — a transient getBudget failure just skips this pass's hydrate/adopt */ }
+  }
   // Bidirectional Phase 1: on the file's FIRST reconcile ever, baseline the draw watermarks silently
   // (no notification burst for draws that existed before PILOT started watching); react to changes after.
   const firstReconcile = !link.last_reconciled_at;
@@ -319,17 +370,15 @@ async function reconcileOne(appId) {
        times.submitted || null, times.approved || null, link.budget_version || null,
        full.draw_events ? JSON.stringify(full.draw_events) : null, d.updated_at || null]);
     // Owner-directed 2026-07-22 (file 1053 Ella T Grasso Blvd): Sitewire's GET /draws/:id can
-    // return each request with `job_item.name === null` while the property's authoritative
-    // budget.job_items list DOES carry the friendly name. The prior code stored the null and the
-    // draw desk fell back to "Line 1180837" everywhere. Build a job_item_id → name map from the
-    // property's live budget (already in memory as `prop.budget.job_items`) and hydrate the
-    // request name from it when the request itself omits it. On UPSERT the ON CONFLICT clause
-    // now also refreshes job_item_name (only when it lands non-null) so a later reconcile that
-    // finally sees the friendly name upgrades the earlier row instead of leaving the fallback in.
+    // return each request with `job_item.name === null` while the budget's authoritative job_items
+    // list DOES carry the friendly name. The prior code stored the null and the draw desk fell
+    // back to "Line 1180837" everywhere. Build a job_item_id → name map from the live budget
+    // (fetched above via getBudget — NOT from prop.budget, which per the swagger has no job_items)
+    // and hydrate the request name when the request itself omits it. On UPSERT the ON CONFLICT
+    // clause refreshes job_item_name only when it lands non-null so a later reconcile that finally
+    // sees the friendly name upgrades the earlier row instead of leaving the fallback in.
     const propJobNames = new Map();
-    if (prop.budget && Array.isArray(prop.budget.job_items)) {
-      for (const ji of prop.budget.job_items) { if (ji && ji.id != null && ji.name) propJobNames.set(Number(ji.id), String(ji.name)); }
-    }
+    for (const ji of budgetJobItems) { if (ji && ji.id != null && ji.name) propJobNames.set(Number(ji.id), String(ji.name)); }
     // mirror requests — per-row guarded so one poison row can't strand the whole file's mirror
     for (const r of (full.requests || [])) {
       try {
@@ -363,8 +412,98 @@ async function reconcileOne(appId) {
   // …) that PILOT never pushed, so a draw against them stops parking as unknown. Runs BEFORE
   // assessAndStoreRisk so rollup.unknown sees the newly-bound ids and never flags them.
   try {
-    const jobItems = (prop.budget && Array.isArray(prop.budget.job_items)) ? prop.budget.job_items : [];
-    if (jobItems.length) await adoptSeededMediaItems(appId, prop.budget && prop.budget.id, jobItems);
+    // Uses budgetJobItems from getBudget (the only endpoint that returns them per the swagger).
+    // Reading `prop.budget.job_items` here — as the prior code did — was always undefined/empty,
+    // so this call was silently no-op for every file since PR #546. That is the root cause of
+    // item 1180824 sitting nameless on the crosswalk: it was never bound at all.
+    if (budgetJobItems.length) await adoptSeededMediaItems(appId, prop.budget && prop.budget.id, budgetJobItems);
+  } catch (_) { /* best-effort */ }
+  // Owner-directed 2026-07-22 self-heals — a review row that has been RESOLVED by reality (Sitewire
+  // now shows the fix) auto-closes on the next reconcile, instead of sitting on the desk forever.
+  // Both are best-effort — a failure never breaks the reconcile.
+  //
+  // 1) sitewire_borrower_assign_failed: the push parks this when Sitewire 422s a borrower assignment
+  //    (bad email, not-yet-accepted contact, duplicate). If Sitewire now shows the borrower as
+  //    `assigned` or `invited`, the situation is resolved (the coordinator fixed the email, or the
+  //    borrower accepted the invite Sitewire sent). Per the swagger, GET /properties/:id returns
+  //    prop.borrower.status ∈ {assigned, invited, unassigned}. Auto-close on the first two.
+  try {
+    const bStatus = prop.borrower && String(prop.borrower.status || '').toLowerCase();
+    const bEmail = prop.borrower && String(prop.borrower.contact_email || '').toLowerCase();
+    // Load the file's expected invite email so we can heal on email match too (Sitewire may show
+    // a status we don't recognize but the email still lines up — that means the assign succeeded).
+    let inviteEmail = '';
+    try {
+      const orch = require('./orchestrator');
+      const a = await orch.loadFile(appId);
+      inviteEmail = String(orch.inviteEmailFor(link, a) || '').toLowerCase();
+    } catch (_) {}
+    const emailMatches = !!(inviteEmail && bEmail && inviteEmail === bEmail);
+    if (bStatus === 'assigned' || bStatus === 'invited' || emailMatches) {
+      await db.query(
+        `UPDATE sync_review_queue
+            SET status='resolved', auto_resolved=true, resolved_at=now(),
+                resolution_note='auto-closed — Sitewire ' || $2
+          WHERE status='open' AND application_id=$1 AND field_key='sitewire'
+            AND task_id LIKE 'sitewire:%:sitewire_borrower_assign_failed%'`,
+        [appId, bStatus ? ('now shows the borrower as ' + bStatus) : 'has the borrower email on file']);
+    } else if (inviteEmail && (!bStatus || bStatus === 'unassigned')) {
+      // Owner-directed 2026-07-22 auto-retry: the row is stuck AND Sitewire has no borrower.
+      // Retry the assign automatically — the improved 422→live-check path will heal on any
+      // "not really a failure" 422/409. Rate-limited via audit_log so a genuinely-rejected email
+      // doesn't hammer Sitewire on every reconcile (once per hour per file).
+      let recentlyRetried = false;
+      try {
+        const r = await db.query(
+          `SELECT 1 FROM audit_log
+            WHERE entity_type='application' AND entity_id=$1 AND action='sitewire_borrower_auto_retry'
+              AND created_at > now() - interval '1 hour' LIMIT 1`, [appId]);
+        recentlyRetried = r.rowCount > 0;
+      } catch (_) {}
+      if (!recentlyRetried && switches.on('SITEWIRE_ENABLED') && (switches.on('SITEWIRE_OUTBOUND_ENABLED') || cfg.sitewireDryrun)) {
+        try {
+          await db.query(
+            `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+             VALUES ('system', NULL, 'sitewire_borrower_auto_retry', 'application', $1, $2)`,
+            [appId, JSON.stringify({ email: inviteEmail, note: 'reconcile auto-retry of stuck sitewire_borrower_assign_failed' })]);
+        } catch (_) {}
+        try { await require('./orchestrator').resendBorrowerInvite(appId); } catch (_) {}
+      }
+    }
+  } catch (_) { /* best-effort */ }
+  // 2) sitewire_units_note: the push parks this when the file's unit count and the SOW's unit count
+  //    disagree (advisory — the push still proceeds with `Math.max(1, fileUnits, sowUnits)` per the
+  //    2026-07-20 physical-units rule). Owner-directed 2026-07-22 (compare-and-adopt): if Sitewire
+  //    carries a physical count larger than the file's units column, both live external sources
+  //    (SOW + Sitewire, both re-read here) agree on the bigger number → the file column is the
+  //    outlier and gets ADOPTED to match, then the review closes. Only UPWARD (fileUnits < swUnits)
+  //    — a legitimate partial-scope renovation (file has more units than SOW) is left alone. Fully
+  //    audited + ClickUp-synced so the file column also becomes correct in ClickUp.
+  try {
+    const swUnits = Number(prop.total_units || 0);
+    const fileUnits = Number((await db.query(`SELECT units FROM applications WHERE id=$1`, [appId])).rows[0]?.units || 0);
+    if (swUnits > 0 && fileUnits > 0 && fileUnits < swUnits) {
+      await db.query(`UPDATE applications SET units=$2, updated_at=now() WHERE id=$1`, [appId, swUnits]);
+      try {
+        await db.query(
+          `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+           VALUES ('system', NULL, 'sitewire_units_adopt', 'application', $1, $2)`,
+          [appId, JSON.stringify({ before: { units: fileUnits }, after: { units: swUnits }, source: 'reconcile', note: `Sitewire's live property shows ${swUnits} unit(s); the file's ${fileUnits} was the outlier. Adopted ${swUnits} onto the file card.` })]);
+      } catch (_) {}
+      try { await require('../clickup/enqueue').enqueueClickupPush(appId, ['units'], { humanEditKeys: ['units'] }); } catch (_) {}
+    }
+    // Close the review when the file and Sitewire agree (either the adopt above just made it so,
+    // or a human fixed the file card since the row was parked).
+    const finalFileUnits = Number((await db.query(`SELECT units FROM applications WHERE id=$1`, [appId])).rows[0]?.units || 0);
+    if (swUnits > 0 && finalFileUnits > 0 && swUnits === finalFileUnits) {
+      await db.query(
+        `UPDATE sync_review_queue
+            SET status='resolved', auto_resolved=true, resolved_at=now(),
+                resolution_note='auto-closed — the file and Sitewire now agree on ' || $2 || ' unit(s)'
+          WHERE status='open' AND application_id=$1 AND field_key='sitewire'
+            AND task_id LIKE 'sitewire:%:sitewire_units_note%'`,
+        [appId, String(swUnits)]);
+    }
   } catch (_) { /* best-effort */ }
   await db.query(`UPDATE sitewire_property_links SET last_reconciled_at=now() WHERE application_id=$1`, [appId]);
   // Bidirectional Phase 2: re-verify the managed budget against what PILOT pushed, at most HOURLY per
