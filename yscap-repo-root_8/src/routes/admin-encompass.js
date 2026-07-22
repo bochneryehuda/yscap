@@ -130,20 +130,26 @@ router.post('/pull-all', async (req, res) => {
     bulkPromise.catch((e) => console.warn('[admin-encompass] bulk pull crashed:', e.message));
 
     // POLL for the run row bulkPullAllLoans inserts on entry (its very first
-    // await is that INSERT). We poll instead of guessing a timeout so slow
-    // Postgres never leaves the caller with runId=null.
-    const started = Date.now();
+    // await is that INSERT). Look for the MOST RECENT row started at-or-after
+    // our request began — not filtered by status, because a fast-failing
+    // pull may already be status='failed' by the time we look, and we still
+    // want the caller to get a real runId to inspect. Slow Postgres never
+    // leaves the caller with runId=null.
+    const startedTs = Date.now();
+    const requestStartedAt = new Date(startedTs).toISOString();
     let row = null;
     /* eslint-disable no-await-in-loop */
-    while (Date.now() - started < 3000) {
+    while (Date.now() - startedTs < 3000) {
       row = (await db.query(
-        `SELECT id FROM encompass_bulk_pull_runs WHERE status='running' ORDER BY started_at DESC LIMIT 1`,
+        `SELECT id, status, last_error FROM encompass_bulk_pull_runs
+          WHERE started_at >= $1 ORDER BY started_at DESC LIMIT 1`,
+        [requestStartedAt],
       )).rows[0];
       if (row) break;
       await new Promise((r) => setTimeout(r, 100));
     }
     /* eslint-enable no-await-in-loop */
-    res.json({ started: true, runId: row ? row.id : null });
+    res.json({ started: true, runId: row ? row.id : null, status: row ? row.status : null, lastError: row ? row.last_error : null });
   } catch (e) { return fail(res, 500, e, 'could not start bulk pull'); }
 });
 

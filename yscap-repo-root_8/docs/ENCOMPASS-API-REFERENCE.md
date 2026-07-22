@@ -94,9 +94,21 @@ name or value`. `fields` is optional — omitting returns just the loan GUIDs.
 **`loanFolders` (top-level array) is REQUIRED — or one of `loanIds`,
 `filter`, `fieldFilters`.** A body with none of them is refused with:
 `"Either 'LoanIds' or filter properties like 'LoanFolders', 'Filter' or
-'FieldFilters' must be supplied."` (2026-07-22 live diag). To pull "all
-loans" for the tenant, first `GET /encompass/v3/settings/loan/folders`,
-then pass `loanFolders: [<every folder name>]` on every page.
+'FieldFilters' must be supplied."` (2026-07-22 live diag).
+
+**Settings endpoints often require an admin persona.** A normal-user
+token can call the loan pipeline just fine, but `/settings/loan/folders`
+returns **HTTP 403** on non-admin personas (2026-07-22 live diag). So
+don't rely on being able to enumerate folders; instead, use a
+match-all filter:
+
+```json
+{ "filter": { "canonicalName": "Loan.LastModified", "value": "1900-01-01", "matchType": "GreaterThan", "precision": "Day" } }
+```
+
+Matches every loan ever modified. PILOT's `reader.js` uses this as the
+default and only tries the folders approach as an optional tighter scope
+when the token permits it.
 
 **`order` values are CASE-SENSITIVE PascalCase: `"Ascending"` / `"Descending"`.**
 Lowercase `"desc"` / `"asc"` fails as "Invalid field name or value" (learned
