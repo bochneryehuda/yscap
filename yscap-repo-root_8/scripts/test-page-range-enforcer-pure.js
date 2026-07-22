@@ -1,0 +1,92 @@
+'use strict';
+/**
+ * R5.10 — pure tests for storage-boundary page-range enforcement.
+ * Proves it validates each logical document's page range against the packet's
+ * true page count, REFUSES an out-of-bounds range (never slices past the last
+ * page), flags an OVERLAP (a page owned by two documents) as ok:false, reports
+ * GAPS (a page owned by none), collapses pages into the contiguous runs a slicer
+ * cuts, and resolves each document's physical/virtual slice mode. Advisory: it
+ * plans; pdf-slice does the cutting.
+ */
+const assert = require('assert');
+const pe = require('../src/lib/underwriting/page-range-enforcer');
+const { MODES } = pe;
+
+let passed = 0;
+const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
+const plan = (r, id) => r.plans.find((p) => p.id === id);
+
+// --- a clean, complete, non-overlapping split validates ---
+let r = pe.planSlices([
+  { id: 'bank', pages: [1, 2] },
+  { id: 'title', start: 3, end: 4 },
+], { totalPages: 4 });
+assert.strictEqual(r.ok, true, 'a clean split is ok');
+assert.strictEqual(plan(r, 'bank').valid, true);
+assert.deepStrictEqual(plan(r, 'bank').runs, [{ start: 1, end: 2 }], 'contiguous pages collapse to one run');
+assert.strictEqual(plan(r, 'title').start, 3);
+assert.strictEqual(plan(r, 'title').end, 4);
+assert.deepStrictEqual(r.coverage.gaps, [], 'every page is assigned');
+assert.deepStrictEqual(r.coverage.overlaps, []);
+ok('a clean, complete, non-overlapping split validates with full coverage');
+
+// --- an OUT-OF-BOUNDS range is invalid and never sliced ---
+r = pe.planSlices([{ id: 'x', start: 3, end: 7 }], { totalPages: 4 }); // page 5,6,7 don't exist
+assert.strictEqual(r.ok, false, 'a range past the last page fails');
+assert.strictEqual(plan(r, 'x').valid, false);
+assert.ok(/out of bounds/.test(plan(r, 'x').reason));
+assert.ok(r.coverage.outOfBounds.some((o) => o.id === 'x' && o.pages.includes(7)));
+assert.deepStrictEqual(plan(r, 'x').runs, [{ start: 3, end: 4 }], 'only the in-bounds pages are sliceable');
+ok('an out-of-bounds page range is invalid and only its in-bounds pages are sliceable');
+
+// --- an OVERLAP (two docs claim the same page) is a hard failure ---
+r = pe.planSlices([
+  { id: 'a', pages: [1, 2, 3] },
+  { id: 'b', pages: [3, 4] }, // page 3 claimed by both
+], { totalPages: 4 });
+assert.strictEqual(r.ok, false, 'a shared page fails the plan');
+assert.ok(r.coverage.overlaps.some((o) => o.page === 3 && o.docs.includes('a') && o.docs.includes('b')));
+ok('two documents claiming the same page is flagged as an overlap and fails the plan');
+
+// --- a GAP (a page owned by nobody) is reported (advisory, not a hard fail) ---
+r = pe.planSlices([
+  { id: 'a', pages: [1, 2] },
+  { id: 'b', pages: [4] }, // page 3 belongs to nobody
+], { totalPages: 4 });
+assert.deepStrictEqual(r.coverage.gaps, [3], 'the unassigned page is reported as a gap');
+assert.strictEqual(r.ok, true, 'a gap alone (no overlap, all valid) does not fail the plan — a human places the page');
+ok('an unassigned page is reported as a gap (advisory) without failing an otherwise-valid plan');
+
+// --- a NON-CONTIGUOUS document explodes into multiple physical runs ---
+r = pe.planSlices([{ id: 'multi', pages: [1, 2, 5, 6], needsPhysical: true }], { totalPages: 6 });
+assert.strictEqual(plan(r, 'multi').contiguous, false, 'pages 1,2,5,6 are non-contiguous');
+assert.deepStrictEqual(plan(r, 'multi').runs, [{ start: 1, end: 2 }, { start: 5, end: 6 }], 'it cuts as two runs');
+assert.strictEqual(plan(r, 'multi').mode, MODES.PHYSICAL, 'needsPhysical → physical slice');
+ok('a non-contiguous document is planned as multiple physical runs');
+
+// --- slice mode: explicit > needsPhysical > default (virtual) ---
+r = pe.planSlices([
+  { id: 'v' },
+  { id: 'p', pages: [1], needsPhysical: true },
+  { id: 'e', pages: [2], mode: 'virtual' }, // explicit overrides needsPhysical
+], { totalPages: 2 });
+assert.strictEqual(plan(r, 'v') && plan(r, 'v').mode, MODES.VIRTUAL, 'default is virtual (reference the original, no byte duplication)');
+assert.strictEqual(plan(r, 'p').mode, MODES.PHYSICAL);
+assert.strictEqual(plan(r, 'e').mode, MODES.VIRTUAL, 'an explicit mode wins over needsPhysical');
+ok('slice mode resolves explicit > needsPhysical > default(virtual)');
+
+// --- totalPages defaults to the max page referenced when not given ---
+r = pe.planSlices([{ id: 'a', pages: [1, 2, 3] }]); // no totalPages
+assert.strictEqual(r.coverage.totalPages, 3, 'total inferred from the highest referenced page');
+assert.strictEqual(r.ok, true);
+ok('totalPages is inferred from the highest referenced page when not supplied');
+
+// --- empty / junk input is safe ---
+assert.doesNotThrow(() => pe.planSlices(null));
+assert.strictEqual(pe.planSlices(null).ok, true, 'nothing to slice is trivially ok');
+assert.deepStrictEqual(pe.planSlices([]).plans, []);
+assert.doesNotThrow(() => pe.planSlices([{ id: 'a', pages: ['x', null, 0, -1] }], { totalPages: 3 }));
+assert.strictEqual(pe.planSlices([{ id: 'a', pages: ['x', null, 0, -1] }], { totalPages: 3 }).plans[0].valid, false, 'a doc with no valid pages is invalid, not a crash');
+ok('empty / null / junk input is safe (never throws)');
+
+console.log(`\nR5.10 page-range-enforcer pure — ${passed} checks passed`);
