@@ -456,6 +456,8 @@ export const api = {
   loanExceptionsCount:       () => req('GET', '/api/admin/exceptions/count'),
   decideLoanException:       (id, decision, note) => req('POST', `/api/admin/exceptions/${id}/decide`, { decision, note }),
   clearLoanException:        (id, note) => req('POST', `/api/admin/exceptions/${id}/clear`, { note }),
+  exceptionComments:         (id) => req('GET', `/api/admin/exceptions/${id}/comments`),
+  addExceptionComment:       (id, body) => req('POST', `/api/admin/exceptions/${id}/comments`, { body }),
   // The loan officer's own cross-file exception queue.
   myExceptions:              (status) => req('GET', `/api/staff/my-exceptions${status ? `?status=${status}` : ''}`),
   myExceptionsCount:         () => req('GET', '/api/staff/my-exceptions/count'),

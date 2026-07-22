@@ -135,6 +135,46 @@ async function listForRequester(staffId, { status = 'open', limit = 100 } = {}, 
   return r.rows;
 }
 
+/* ---------------- comments (staff-only thread on an exception) ---------------- */
+
+/** Post a comment on an exception. Returns the row (with author name), or throws. */
+async function addComment(exceptionId, staffId, body, client = db) {
+  const text = String(body || '').trim();
+  if (!text) { const e = new Error('empty comment'); e.status = 400; throw e; }
+  const ins = await client.query(
+    `INSERT INTO loan_exception_comments (loan_exception_id, author_staff_id, body)
+     VALUES ($1,$2,$3) RETURNING *`,
+    [exceptionId, staffId || null, text.slice(0, 4000)]);
+  const row = ins.rows[0];
+  const name = staffId ? (await client.query(`SELECT full_name FROM staff_users WHERE id=$1`, [staffId])).rows[0] : null;
+  row.author_name = name ? name.full_name : null;
+  return row;
+}
+
+/** All comments on an exception, oldest first, with author names. */
+async function listComments(exceptionId, client = db) {
+  const r = await client.query(
+    `SELECT c.*, su.full_name AS author_name
+       FROM loan_exception_comments c
+       LEFT JOIN staff_users su ON su.id = c.author_staff_id
+      WHERE c.loan_exception_id = $1
+      ORDER BY c.created_at ASC`, [exceptionId]);
+  return r.rows;
+}
+
+/** The distinct staff who should hear about activity on an exception — the
+ *  requester, the decider, and everyone who has commented. Used to notify the
+ *  OTHER participants when a new comment lands. */
+async function commentParticipants(exceptionId, client = db) {
+  const r = await client.query(
+    `SELECT DISTINCT sid FROM (
+       SELECT requested_by AS sid FROM loan_exceptions WHERE id=$1
+       UNION SELECT decided_by FROM loan_exceptions WHERE id=$1
+       UNION SELECT author_staff_id FROM loan_exception_comments WHERE loan_exception_id=$1
+     ) s WHERE sid IS NOT NULL`, [exceptionId]);
+  return r.rows.map((x) => x.sid);
+}
+
 /** Count of a staffer's OWN still-open (requested) exceptions — for the nav badge. */
 async function requesterOpenCount(staffId, client = db) {
   try {
@@ -222,4 +262,5 @@ module.exports = {
   requestGuarantyWaiver, decideException, withdrawException, clearException,
   openForApp, latestForApp, getById, listExceptions, pendingCount,
   listForRequester, requesterOpenCount,
+  addComment, listComments, commentParticipants,
 };

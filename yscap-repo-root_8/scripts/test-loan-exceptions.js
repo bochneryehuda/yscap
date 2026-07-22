@@ -139,6 +139,21 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
   await cz.query('COMMIT'); cz.release();
   ok(rq3 && rq3.status === 'requested', 'clearing an open request frees the file for a new request');
 
+  // db/271 comments — the staff-only back-and-forth on an exception.
+  const sa = await db.query("INSERT INTO staff_users(email,full_name,role,is_active) VALUES($1,'SA','super_admin',true) RETURNING id", [rnd()]);
+  const saId = sa.rows[0].id;
+  const cm1 = await LE.addComment(rq3.id, saId, 'Confirm primary net worth?');
+  ok(cm1 && cm1.author_name === 'SA', 'addComment stores + returns the author name');
+  await LE.addComment(rq3.id, loId, 'Statements show $2M liquid.');
+  const list = await LE.listComments(rq3.id);
+  ok(list.length === 2 && list[0].id === cm1.id, 'listComments returns oldest-first');
+  const parts = await LE.commentParticipants(rq3.id);
+  ok(parts.includes(saId) && parts.includes(loId), 'commentParticipants includes the requester + the commenting super-admin');
+  ok(parts.filter((s) => s !== saId).includes(loId), 'a super-admin comment notifies the requester (LO)');
+  let threw = false;
+  try { await LE.addComment(rq3.id, saId, '   '); } catch (_) { threw = true; }
+  ok(threw, 'an empty comment is rejected');
+
   await db.pool.end();
 })().then(() => {
   console.log(`\n${pass} passed, ${fail} failed`);
