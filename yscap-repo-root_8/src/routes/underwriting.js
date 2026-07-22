@@ -870,6 +870,39 @@ router.get('/:appId/twin/fact/:factKey', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Twin — HUMAN CONFIRM a canonical fact (Sovereign 1/4 write surface,
+// R2.1 owner-directed 2026-07-22). Lets an underwriter freeze a disputed
+// value: the twin's confirmByHuman writes a new canonical row at
+// status='human_confirmed' + records a fact_correction for the learning
+// loop. Subsequent reconciliations preserve the human confirmation.
+router.post('/:appId/twin/fact/:factKey/confirm', requirePermission('sign_off_conditions'), async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const factKey = String(req.params.factKey || '').slice(0, 120);
+    if (!factKey) return res.status(400).json({ error: 'fact key required' });
+    const b = req.body || {};
+    // Accept either a scalar `value` or a full `valueJson` object. A scalar becomes { value: <scalar> }.
+    let valueJson;
+    if (b.valueJson !== undefined) valueJson = b.valueJson;
+    else if (b.value !== undefined) valueJson = { value: b.value };
+    else return res.status(400).json({ error: 'value or valueJson required' });
+    const reason = b.reason ? String(b.reason).slice(0, 500) : null;
+    const twin = require('../lib/underwriting/twin');
+    const client = await db.pool.connect();
+    let row;
+    try {
+      await client.query('BEGIN');
+      row = await twin.confirmByHuman(client, {
+        appId: app.id, factKey, valueJson, staffId: req.actor.id, reason,
+      });
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+    res.json({ ok: true, fact: row });
+  } catch (e) { next(e); }
+});
+
 // ---- Counterfactual structuring (Sovereign, blueprint sec. 12) ------------
 // "What would make this deal work?" Runs a set of ALTERNATIVE structures
 // through the frozen pricing engine and reports which levers move a file from

@@ -456,6 +456,7 @@ export const api = {
   fileCertificateSurvey:     (appId) => req('POST', `/api/underwriting/${appId}/certificate/survey`, {}),
   fileStructuring:           (appId) => req('GET', `/api/underwriting/${appId}/structuring`),
   factHistory:               (appId, factKey) => req('GET', `/api/underwriting/${appId}/twin/fact/${encodeURIComponent(factKey)}`),
+  confirmFact:               (appId, factKey, value, reason) => req('POST', `/api/underwriting/${appId}/twin/fact/${encodeURIComponent(factKey)}/confirm`, { value, reason: reason || undefined }),
   similarOpenFindings:       (appId, findingId) => req('GET', `/api/underwriting/${appId}/findings/${findingId}/similar-open`),
   bulkResolveFindings:       (appId, findingIds, action, note) => req('POST', `/api/underwriting/${appId}/findings/similar/bulk-resolve`, { findingIds, action, note: note || undefined }),
   fileAvmConsensus:          (appId) => req('GET', `/api/underwriting/${appId}/avm-consensus`),

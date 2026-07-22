@@ -804,11 +804,13 @@ function Amendments({ amendments }) {
 // Read-only presentation of what the underlying Sovereign engines produced.
 // Both sections start collapsed so the classic findings list stays the
 // default view; a reviewer opens them when they want the evidence trail.
-function SovereignCockpit({ twinFacts, cureProofs, appId, canIssueCerts }) {
+function SovereignCockpit({ twinFacts, cureProofs, appId, canIssueCerts, canConfirmFacts }) {
   const [openTwin, setOpenTwin] = useState(false);
   const [openCures, setOpenCures] = useState(false);
   const [expandedFact, setExpandedFact] = useState(null);
   const [factHistory, setFactHistory] = useState({});   // fact_key → { loading, canonical, observations, events }
+  const [confirmInputs, setConfirmInputs] = useState({}); // fact_key → { value, reason }
+  const [confirmBusy, setConfirmBusy] = useState(null);
   const toggleFact = async (factKey) => {
     if (expandedFact === factKey) { setExpandedFact(null); return; }
     setExpandedFact(factKey);
@@ -818,6 +820,20 @@ function SovereignCockpit({ twinFacts, cureProofs, appId, canIssueCerts }) {
       const d = await api.factHistory(appId, factKey);
       setFactHistory((h) => ({ ...h, [factKey]: { loading: false, ...d } }));
     } catch (e) { setFactHistory((h) => ({ ...h, [factKey]: { loading: false, error: e.message || 'could not load' } })); }
+  };
+  const confirmFact = async (factKey) => {
+    const inp = confirmInputs[factKey] || {};
+    const value = (inp.value || '').trim();
+    if (!value) { alert('Enter the value you want to lock in.'); return; }
+    setConfirmBusy(factKey);
+    try {
+      await api.confirmFact(appId, factKey, value, inp.reason || '');
+      // Re-load the drilldown so the new event + status show up.
+      const d = await api.factHistory(appId, factKey);
+      setFactHistory((h) => ({ ...h, [factKey]: { loading: false, ...d } }));
+      setConfirmInputs((i) => ({ ...i, [factKey]: { value: '', reason: '' } }));
+    } catch (e) { alert(e.message || 'Could not confirm the value.'); }
+    finally { setConfirmBusy(null); }
   };
   const twinCount = (twinFacts || []).length;
   const cureCount = (cureProofs || []).length;
@@ -928,6 +944,28 @@ function SovereignCockpit({ twinFacts, cureProofs, appId, canIssueCerts }) {
                                         </li>
                                       ))}
                                     </ul>
+                                  </div>
+                                )}
+                                {canConfirmFacts && (
+                                  <div style={{ padding: '8px 10px', border: '1px dashed var(--line,#E7E1D3)', borderRadius: 8, background: 'var(--card,#fff)' }}>
+                                    <div style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: '#AE8746', marginBottom: 6 }}>
+                                      Lock in the accepted value
+                                    </div>
+                                    <div className="muted" style={{ fontSize: 11.5, marginBottom: 6 }}>
+                                      Overrides the automatic pick. Records your name + reason and stops the reconciler from flipping this value on new sources (until you retract). Best used when the sources disagree and you know which one is right.
+                                    </div>
+                                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                                      <input placeholder="the value to lock in" className="input" style={{ flex: '1 1 200px', minWidth: 160, fontSize: 12.5 }}
+                                        value={(confirmInputs[f.fact_key] || {}).value || ''}
+                                        onChange={(e) => setConfirmInputs((i) => ({ ...i, [f.fact_key]: { ...(i[f.fact_key] || {}), value: e.target.value } }))} />
+                                      <input placeholder="short reason (optional)" className="input" style={{ flex: '2 1 260px', minWidth: 200, fontSize: 12.5 }}
+                                        value={(confirmInputs[f.fact_key] || {}).reason || ''}
+                                        onChange={(e) => setConfirmInputs((i) => ({ ...i, [f.fact_key]: { ...(i[f.fact_key] || {}), reason: e.target.value } }))} />
+                                      <button disabled={confirmBusy === f.fact_key} onClick={() => confirmFact(f.fact_key)}
+                                        style={{ fontSize: 12, padding: '5px 12px', border: '1px solid #AE8746', borderRadius: 6, background: '#AE8746', color: '#fff', cursor: 'pointer' }}>
+                                        {confirmBusy === f.fact_key ? 'Locking…' : 'Lock in this value'}
+                                      </button>
+                                    </div>
                                   </div>
                                 )}
                               </div>
@@ -1411,7 +1449,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
           requirements a submitted document met and which it didn't. Both are
           additive read-only — the classic findings list below still works. */}
       <SovereignCockpit twinFacts={(data && data.twinFacts) || []} cureProofs={(data && data.cureProofs) || []}
-        appId={appId} canIssueCerts={canResolve} />
+        appId={appId} canIssueCerts={canResolve} canConfirmFacts={canResolve} />
 
       {/* ALL open findings, in ONE place — exactly the set the roll-up counts, so the "2 warnings"
           chip maps to two visible, actionable items. A persisted per-document finding (has an id) is
