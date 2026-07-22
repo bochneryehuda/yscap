@@ -477,6 +477,32 @@ router.get('/:appId', async (req, res, next) => {
       seenDup.add(f.code); return true;
     });
 
+    // Sync computed chain + bank findings → ai_suggestions (owner-directed 2026-07-22,
+    // HARD RULE). Best-effort, fired AFTER the response so file view stays fast; dedupe
+    // in ai-suggestions collapses re-fires to a single OPEN row per (source, dedupe_key).
+    // The AI panel picks up new suggestions on its next refresh.
+    const syncBankBridge = require('../lib/underwriting/bank-statement-suggestions');
+    const syncEntityChain = require('../lib/underwriting/entity-chain-suggestions');
+    const bankFindingsFlat = (bankLiquidity && bankLiquidity.findings || []);
+    setImmediate(() => {
+      (async () => {
+        const c = await db.pool.connect();
+        try {
+          await c.query('BEGIN');
+          if (entityChain || sellerChain) {
+            await syncEntityChain.syncChainsToSuggestions(c, app.id, { entityChain, sellerChain });
+          }
+          if (bankFindingsFlat.length) {
+            // Bank-statement findings live per-document; group them under a synthetic doc id
+            // (the first per-doc source we can identify) — sync bridges accept a documentId.
+            await syncBankBridge.syncBankFindingsToSuggestions(c, app.id, app.id, bankFindingsFlat);
+          }
+          await c.query('COMMIT');
+        } catch (_) { await c.query('ROLLBACK').catch(() => {}); }
+        finally { c.release(); }
+      })().catch(() => {});
+    });
+
     // Fraud / red-flag score: aggregate every open signal above + the economic red flags into one
     // explainable 0-100 score. Its HIGH-band advisory is a non-blocking warning (folded into the
     // roll-up); the score itself never re-decides the fatal gate.
