@@ -876,7 +876,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const rawTermOptions = (b.termOptions && typeof b.termOptions === 'object') ? b.termOptions : {};
     // Effective closing date = studio's, else the file's existing — so a re-register
     // never wipes the dates and they re-derive when the term moves.
-    const closingForDates = rawTermOptions.estClosingDate || f.app.est_closing_date || null;
+    const closingForDates = rawTermOptions.estClosingDate || f.app.est_closing_date || f.app.expected_closing || null;
     const kd = termOpts.keyDates(closingForDates, inputs.term);
     const resolvedTermOptions = {
       accrualType: termOpts.resolveAccrual(rawTermOptions.accrualType),

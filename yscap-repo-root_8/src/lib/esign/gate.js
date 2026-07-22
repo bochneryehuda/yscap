@@ -70,7 +70,7 @@ async function registrationIssuabilityBlockers(applicationId, db) {
   return out;
 }
 
-async function esignSendGate(applicationId, { db = dbDefault } = {}) {
+async function esignSendGate(applicationId, { db = dbDefault, purpose } = {}) {
   const r = await db.query(
     `SELECT t.code, ci.status, ci.signed_off_at
        FROM checklist_items ci
@@ -108,13 +108,35 @@ async function esignSendGate(applicationId, { db = dbDefault } = {}) {
     outstanding.push({ code: PRODUCT_PRICING, label: 'Product & pricing re-registered after appraisal', reason: 'Product & pricing was signed off before the appraisal (or the timing cannot be confirmed). Re-register on the appraised value and sign off again.' });
   }
 
+  // Estimated closing date required for the TERM SHEET package (owner-directed
+  // 2026-07-22): the final term sheet's first-payment + maturity dates are derived
+  // from the estimated closing date, so it must be on the file before the package
+  // is sent for signature — otherwise the signed term sheet is missing those dates.
+  // Applies to the term-sheet package AND the default/UI readiness view; the Heter
+  // Iska package (which carries no such dates) is exempt.
+  let closingOk = true;
+  if (purpose !== 'heter_iska') {
+    // The canonical closing date is applications.expected_closing (staff-editable,
+    // ClickUp-synced); est_closing_date is the term-sheet mirror. Accept EITHER so
+    // the gate is satisfied no matter which surface the date was entered on.
+    const cd = await db.query(`SELECT expected_closing, est_closing_date FROM applications WHERE id = $1`, [applicationId]);
+    const row = cd.rows[0] || {};
+    closingOk = !!(row.expected_closing || row.est_closing_date);
+    if (!closingOk) outstanding.push({
+      code: 'expected_closing',
+      label: 'Estimated closing date',
+      reason: 'Enter the estimated closing date so the term sheet’s first payment and maturity dates are built correctly before the package is sent for signature.',
+    });
+  }
+
   // NOTE (owner-directed 2026-07-22): the whole-loan underwriter is ADVISORY
   // ONLY for now — it must not change or block any existing feature. The
   // registration-issuability check (`registrationIssuabilityBlockers`) is kept
   // as an exported ADVISORY helper the AI underwriter surfaces as a finding for a
-  // human to review; it is deliberately NOT wired into this gate's `ready`, so
-  // the e-sign send gate behaves EXACTLY as it did before the whole-loan work.
-  return { ready: apprOk && reviewOk && ppOk, outstanding };
+  // human to review; it is deliberately NOT wired into this gate's `ready`, so the
+  // send gate behaves as it did before the whole-loan work. (The `closingOk` term
+  // above is a SEPARATE, owner-directed term-sheet-package requirement and stays.)
+  return { ready: apprOk && reviewOk && ppOk && closingOk, outstanding };
 }
 
 /**
