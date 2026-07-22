@@ -104,15 +104,21 @@ function buildRequestBody({ borrower, pullType, requestType, bureaus, version: v
             leaf('MiddleName', b.middleName),
           ])]),
           el('ROLES', {}, [el('ROLE', { 'xlink:label': 'Borrower01' }, [
-            el('BORROWER', {}, [el('RESIDENCES', {}, [el('RESIDENCE', { SequenceNumber: '1' }, [
-              el('ADDRESS', {}, [
-                leaf('AddressLineText', addr.line1),
-                leaf('CityName', addr.city),
-                leaf('PostalCode', addr.zip),
-                leaf('StateCode', addr.state),
-              ]),
-              el('RESIDENCE_DETAIL', {}, [leaf('BorrowerResidencyType', 'Current')]),
-            ])])]),
+            el('BORROWER', {}, [
+              // Date of birth (standard MISMO 3.4 location) — the bureaus resolve
+              // identity on name + SSN + DOB + address; the review screen also
+              // shows the DOB as "what we'll send", so it must actually be sent.
+              ...(b.dob ? [el('BORROWER_DETAIL', {}, [leaf('BorrowerBirthDate', b.dob)])] : []),
+              el('RESIDENCES', {}, [el('RESIDENCE', { SequenceNumber: '1' }, [
+                el('ADDRESS', {}, [
+                  leaf('AddressLineText', addr.line1),
+                  leaf('CityName', addr.city),
+                  leaf('PostalCode', addr.zip),
+                  leaf('StateCode', addr.state),
+                ]),
+                el('RESIDENCE_DETAIL', {}, [leaf('BorrowerResidencyType', 'Current')]),
+              ])]),
+            ]),
             el('ROLE_DETAIL', {}, [leaf('PartyRoleType', 'Borrower')]),
           ])]),
           el('TAXPAYER_IDENTIFIERS', {}, [el('TAXPAYER_IDENTIFIER', {}, [
@@ -220,10 +226,34 @@ async function pull({ borrower, pullType = 'soft', requestType = 'reissue', bure
     headers.Authorization = 'Basic ' + Buffer.from(`${cfg.username}:${cfg.password}`).toString('base64');
   }
 
-  const r = await fetch(url, { method: 'POST', headers, body: req.body });
-  const respText = await r.text();
+  // Reach Xactus with a hard timeout, and turn a network-level failure (bad web
+  // address, DNS/TLS error, unreachable host) into a CLEAR, actionable message —
+  // otherwise a thrown fetch surfaces to staff as the useless generic
+  // "Could not import the credit report."
+  let r, respText;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 90000);
+  try {
+    r = await fetch(url, { method: 'POST', headers, body: req.body, signal: controller.signal });
+    respText = await r.text();
+  } catch (err) {
+    const aborted = err && (err.name === 'AbortError' || String(err.message || '').includes('aborted'));
+    const e = new Error(`Xactus request failed: ${(err && err.message) || err}`);
+    e.status = aborted ? 504 : 502;
+    e.userMessage = aborted
+      ? 'Xactus didn’t respond in time. Please try again in a moment — if it keeps timing out, the shared login may not be activated yet.'
+      : 'PILOT couldn’t reach Xactus at the web address in the settings. Double-check the Xactus web address (XACTUS_API_URL) is the exact address Xactus gave you to send reports to, and that the shared login is activated.';
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
   if (!r.ok) {
-    const e = new Error(`Xactus ${r.status}: ${respText.slice(0, 300)}`);
+    // Never echo the borrower's identifiers into logs: the outbound request
+    // carried the full SSN, and a vendor validation error can reflect it back.
+    const safe = String(respText)
+      .replace(/\b\d{3}-?\d{2}-?\d{4}\b/g, '***-**-****')
+      .replace(/\b\d{9,}\b/g, '*********');
+    const e = new Error(`Xactus ${r.status}: ${safe.slice(0, 300)}`);
     e.status = 502;
     e.userMessage = `Xactus couldn’t complete the pull (error ${r.status}). ${r.status === 401 || r.status === 403 ? 'The shared login may be wrong or not yet activated.' : 'Please try again in a moment.'}`;
     throw e;

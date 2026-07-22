@@ -297,6 +297,11 @@ function _bypassLoGate(opts) { return !!(opts && opts._bypassLoGate); }
 
 /** Notify one staff user. opts: {type,title,body,applicationId,link,emailTo,meta,lines,ctaLabel,greeting,note} */
 async function notifyStaff(staffId, opts) {
+  // Enrich UP FRONT so the payload the LO gate stores in Drafts is the same
+  // fully-composed one the send path would render — the preview then shows the
+  // real PILOT-branded email (with file identity meta + CTA), not a bare shell.
+  // enrichFileOpts sets `_enriched=true`, so any later call is a no-op.
+  if (opts.applicationId) opts = await enrichFileOpts(opts, 'staff');
   // LO notification gate — for STAFF-facing file notifications, only intercept
   // when this recipient IS the file's assigned loan officer (so a processor or
   // assistant getting the same event isn't overridden by the LO's personal
@@ -444,8 +449,59 @@ const BORROWER_MAJOR_EMAIL = new Set([
   'officer_assigned', 'all_caught_up', 'milestone', 'digest',
 ]);
 
+/**
+ * Prepare a borrower opts payload the way the SEND path would: enrich the
+ * file identity (subject tag, borrower meta, officer contact card, CTA link/
+ * label) and scrub any partner names from staff-typed text. Extracted out of
+ * notifyBorrower so the LO-gate DRAFT path can store the SAME fully-composed
+ * payload — the Drafts preview then renders the exact PILOT-branded email the
+ * borrower would receive on Send. Without this, the draft stored a minimal
+ * unenriched opts and the preview looked bare.
+ */
+async function _prepareBorrowerOpts(opts) {
+  opts = await enrichFileOpts(opts, 'borrower');
+  const protect = Array.isArray(opts.meta) ? opts.meta.map((m) => m && m.value).filter((v) => typeof v === 'string') : [];
+  const scrubObj = (o, keys) => {
+    if (!o || typeof o !== 'object') return o;
+    const out = { ...o };
+    for (const k of keys) if (typeof out[k] === 'string') out[k] = scrubTextExcept(out[k], protect);
+    return out;
+  };
+  return {
+    ...opts,
+    title: scrubTextExcept(opts.title, protect),
+    body: scrubTextExcept(opts.body, protect),
+    note: scrubTextExcept(opts.note, protect),
+    greeting: scrubTextExcept(opts.greeting, protect),
+    ctaLabel: scrubText(opts.ctaLabel),
+    lines: Array.isArray(opts.lines) ? opts.lines.map((l) => scrubTextExcept(l, protect)) : opts.lines,
+    callout: scrubObj(opts.callout, ['title', 'body']),
+    hero: scrubObj(opts.hero, ['label', 'value', 'sub']),
+    badge: scrubObj(opts.badge, ['text']),
+    sections: Array.isArray(opts.sections) ? opts.sections.map((s) => {
+      if (!s || typeof s !== 'object') return s;
+      const body = Array.isArray(s.body) ? s.body.map((b) => scrubTextExcept(b, protect))
+        : (typeof s.body === 'string' ? scrubTextExcept(s.body, protect) : s.body);
+      return { ...s, title: typeof s.title === 'string' ? scrubTextExcept(s.title, protect) : s.title, body };
+    }) : opts.sections,
+    bcc: opts.bcc || (function () {
+      if (opts._skipOfficerBcc) return undefined;
+      const list = [];
+      if (cfg.ccLoanOfficerOnBorrowerEmail && opts.officer && opts.officer.email) list.push(opts.officer.email);
+      if (Array.isArray(opts.bccExtra)) for (const e of opts.bccExtra) if (e) list.push(e);
+      const uniq = [...new Set(list.map((e) => String(e).trim().toLowerCase()).filter(Boolean))];
+      return uniq.length ? uniq : undefined;
+    })(),
+  };
+}
+
 /** Notify a borrower, respecting their per-category preferences. */
 async function notifyBorrower(borrowerId, opts) {
+  // Enrich + scrub UP FRONT so the payload we hand to the LO-gate's draft path
+  // is the same fully-composed one the send path would render — the Drafts
+  // preview then shows the real PILOT-branded email the borrower would get.
+  // enrichFileOpts sets `_enriched=true` so it's a no-op on any later call.
+  if (opts.applicationId) opts = await _prepareBorrowerOpts(opts);
   // LO notification gate — the file's loan officer decides what reaches
   // "his own clients" (owner-directed). Forced notifications (DocuSign,
   // security, account) bypass the gate automatically.
@@ -486,10 +542,10 @@ async function notifyBorrower(borrowerId, opts) {
   // Muted in-app and not a must-see? Drop it entirely — this is the borrower
   // choosing to quiet a nervous-making category.
   if (!pref.in_app && !ALWAYS_IN_APP.has(opts.type)) return null;
-  // Auto-attach the file's identity (subject tag + borrower-safe detail block +
-  // default link/CTA) BEFORE scrubbing, so the borrower email always says WHICH
-  // property/loan and the trusted meta values are protected from the scrub below.
-  opts = await enrichFileOpts(opts, 'borrower');
+  // Enrichment + scrub already ran above — sopts is the already-prepared payload.
+  // The block below re-computes sopts as a full spread for the DB insert + email;
+  // we keep the same shape by aliasing so downstream code below is untouched.
+  const _prep = opts;  // already enriched + scrubbed
   // SECURITY (frozen rule): a capital-partner / note-buyer name must never reach
   // a borrower. Scrub every borrower-facing text field once here at the single
   // chokepoint, so BOTH the stored in-app row and the branded email are clean no

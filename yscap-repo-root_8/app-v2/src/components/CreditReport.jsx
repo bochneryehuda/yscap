@@ -1,21 +1,23 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { api } from '../lib/api.js';
+import { api, saveBlob } from '../lib/api.js';
 import { fileToBase64 } from '../lib/files.js';
 
 /**
- * Credit report (Xactus import) — the redesigned internal "Credit report"
- * condition (rtl_cond_credit). Renders inside the staff file's `Item` when
+ * Credit report (Xactus import) — the internal "Credit report" condition
+ * (rtl_cond_credit). Renders inside the staff file's `Item` when
  * it.template_code === 'rtl_cond_credit'.
  *
- *   • an "Import credit" button → a review screen that SHOWS the borrower info
- *     that will be sent, defaults to Soft pull (pre-application) + Reissue +
- *     tri-merge + interface v3.4, with manual toggles to Hard pull / Order-new;
+ *   • "Import credit" opens a review screen that SHOWS the exact borrower info
+ *     that will be transmitted, defaults to Soft pull + tri-merge + v3.4, with
+ *     manual toggles to Hard / brand-new, and requires a permissible-purpose
+ *     attestation (the server enforces it too).
  *   • pulls/reissues via ONE shared company login (no per-user credential),
  *     files the PDF + the source data file, and imports every detail into a
- *     full credit-details section for underwriting.
+ *     full credit-details section (hero score + KPIs + tradelines) for
+ *     underwriting.
  *
- * All identifiers here are imports, locals, props, or browser globals (no und
- * eslint no-undef traps in the JSX build).
+ * Every identifier here is an import, a local, a prop, or a browser global — no
+ * eslint no-undef traps in the esbuild JSX bundle.
  */
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -25,7 +27,10 @@ function fmtDay(s) {
   const m = String(s).match(/^(\d{4})-(\d{2})-(\d{2})/);
   return m ? `${MONTHS[+m[2] - 1]} ${+m[3]}, ${m[1]}` : String(s);
 }
-function fmtWhen(ts) { try { return new Date(ts).toLocaleString(); } catch { return String(ts || ''); } }
+function fmtWhen(ts) {
+  if (!ts) return '';
+  try { return new Date(ts).toLocaleString(); } catch { return String(ts || ''); }
+}
 function money(n) {
   if (n == null || n === '' || Number.isNaN(Number(n))) return '—';
   return '$' + Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 });
@@ -38,26 +43,86 @@ function readFileText(file) {
     r.readAsText(file);
   });
 }
+function initials(first, last) {
+  const a = (first || '').trim(), b = (last || '').trim();
+  const s = ((a[0] || '') + (b[0] || '')).toUpperCase();
+  return s || '—';
+}
+// FICO/score bands → a label + a tone key that drives the semantic color.
+function scoreBand(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return { label: 'No score', tone: 'none' };
+  if (n >= 800) return { label: 'Exceptional', tone: 'good' };
+  if (n >= 740) return { label: 'Very good', tone: 'good' };
+  if (n >= 670) return { label: 'Good', tone: 'ok' };
+  if (n >= 580) return { label: 'Fair', tone: 'fair' };
+  return { label: 'Poor', tone: 'poor' };
+}
+// Marker position on a 300–850 gauge, clamped to the track.
+function gaugePct(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(100, ((n - 300) / 550) * 100));
+}
 
+// Small line icons for the KPI badges (inline SVG, stroke = currentColor).
+function KIcon({ name }) {
+  const p = {
+    accounts: <><rect x="2.5" y="4" width="11" height="8" rx="1.5" /><path d="M2.5 6.8h11" /></>,
+    balance: <><rect x="2.5" y="4.5" width="11" height="7" rx="1.2" /><circle cx="8" cy="8" r="1.6" /></>,
+    payment: <><rect x="2.5" y="3.5" width="11" height="9.5" rx="1.5" /><path d="M2.5 6.4h11M5.5 2.4v2M10.5 2.4v2" /></>,
+    alert: <><path d="M8 2.6 14 12.5H2z" /><path d="M8 6.8v2.6M8 11h.01" /></>,
+    flag: <><path d="M4 2.6v11" /><path d="M4 3.4h7l-1.3 2.2L11 7.8H4z" /></>,
+    record: <><path d="M2.6 13h10.8M3.6 6.4h8.8M8 2.4 13 5.4H3z" /><path d="M4.8 6.6v5.4M11.2 6.6v5.4" /></>,
+    search: <><circle cx="7" cy="7" r="3.6" /><path d="m10 10 3 3" /></>,
+  }[name] || null;
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+      strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{p}</svg>
+  );
+}
+
+// A modern segmented control (namespaced .crx-seg so it never collides with the
+// global .seg used elsewhere). Each option can carry a helper line.
 function Seg({ value, onChange, options }) {
   return (
-    <div className="seg">
+    <div className="crx-seg" role="tablist">
       {options.map((o) => (
-        <button key={o.value} type="button" title={o.hint || ''}
-          className={'seg-btn' + (value === o.value ? ' on' : '')}
-          onClick={() => onChange(o.value)}>{o.label}</button>
+        <button key={o.value} type="button" role="tab" aria-selected={value === o.value}
+          className={'crx-seg-btn' + (value === o.value ? ' on' : '')}
+          onClick={() => onChange(o.value)}>
+          <span className="crx-seg-lbl">{o.label}</span>
+          {o.sub && <span className="crx-seg-sub">{o.sub}</span>}
+        </button>
       ))}
     </div>
   );
 }
 
-// One bureau's score chip.
-function ScoreChip({ s }) {
+// One bureau's score tile with a band-colored mini-bar.
+function BureauTile({ s }) {
+  const band = scoreBand(s && s.value);
   return (
-    <div className="cr-score">
-      <div className="cr-score-bureau">{s.bureau || 'Score'}</div>
-      <div className="cr-score-val">{s.value != null ? s.value : '—'}</div>
-      {s.model && <div className="cr-score-model" title={s.model}>{s.model}</div>}
+    <div className={'crx-bureau tone-' + band.tone}>
+      <div className="crx-bureau-top">
+        <span className="crx-bureau-name">{(s && s.bureau) || 'Score'}</span>
+        <span className="crx-bureau-val">{s && s.value != null ? s.value : '—'}</span>
+      </div>
+      <div className="crx-bureau-bar"><i style={{ width: gaugePct(s && s.value) + '%' }} /></div>
+      {s && s.model ? <div className="crx-bureau-model" title={s.model}>{s.model}</div> : null}
+    </div>
+  );
+}
+
+// A KPI tile: icon badge + number + label. `tone` tints the badge for attention.
+function KpiTile({ icon, tone, value, label }) {
+  return (
+    <div className="crx-kpi">
+      <span className={'crx-kpi-ic' + (tone ? ' ' + tone : '')}><KIcon name={icon} /></span>
+      <div className="crx-kpi-body">
+        <div className="crx-kpi-num">{value}</div>
+        <div className="crx-kpi-lbl">{label}</div>
+      </div>
     </div>
   );
 }
@@ -79,15 +144,30 @@ function CreditImportModal({ appId, onClose, onDone }) {
   useEffect(() => {
     let alive = true;
     api.staffCreditPreview(appId)
-      .then((d) => { if (alive) { setPre(d); if (d) { if (d.defaults) { setPullType(d.defaults.pullType); setRequestType(d.defaults.requestType); setVersion(d.defaults.version || '3.4'); } setReissueRef(d.reissueReportId || ''); } } })
+      .then((d) => {
+        if (!alive) return;
+        setPre(d);
+        if (d) {
+          if (d.defaults) { setPullType(d.defaults.pullType); setRequestType(d.defaults.requestType); setVersion(d.defaults.version || '3.4'); }
+          setReissueRef(d.reissueReportId || '');
+        }
+      })
       .catch((e) => alive && setErr(e.message || 'Could not load the borrower info.'));
     return () => { alive = false; };
   }, [appId]);
 
+  // Lock the background page scroll while the modal is open (house pattern —
+  // matches ToolModal/ProductStudioPanel/TrackRecordScreen) so the page behind
+  // doesn't scroll under the box. Also close on Escape.
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prevOverflow;
+    };
   }, [onClose]);
 
   const providerReady = pre && pre.provider && pre.provider.configured;
@@ -98,6 +178,7 @@ function CreditImportModal({ appId, onClose, onDone }) {
     try {
       const body = { pullType, requestType, version };
       if (requestType === 'reissue') body.reissueReportId = reissueRef;
+      if (kind === 'live') body.consent = consent;    // permissible-purpose attestation (server enforces too)
       if (kind === 'upload') {
         if (!xmlFile && !pdfFile) throw new Error('Choose the credit data file (XML) and/or the PDF to import.');
         if (xmlFile) body.xml = await readFileText(xmlFile);
@@ -114,100 +195,129 @@ function CreditImportModal({ appId, onClose, onDone }) {
   const b = pre && pre.borrower;
   const addr = (b && b.address) || {};
   const addrLine = [addr.line1, addr.line2, [addr.city, addr.state].filter(Boolean).join(', '), addr.zip].filter(Boolean).join(' · ');
+  const name = b ? [b.firstName, b.lastName].filter(Boolean).join(' ') : '';
 
   return (
-    <div className="cv-modal-back" onClick={onClose}>
-      <div className="cv-modal" style={{ maxWidth: 640 }} onClick={(e) => e.stopPropagation()}>
-        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-          <h3 style={{ margin: 0 }}>Import credit</h3>
-          <button className="btn ghost small" onClick={onClose}>Close ✕</button>
+    <div className="cv-modal-back crx-back" onClick={onClose}>
+      <div className="cv-modal crx-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="crx-modal-head">
+          <div>
+            <h3 className="crx-modal-title">Import credit</h3>
+            <p className="crx-modal-sub">Pull a tri-merge report through the shared Xactus login.</p>
+          </div>
+          <button className="crx-x" onClick={onClose} aria-label="Close">✕</button>
         </div>
 
-        {!pre && !err && <p className="muted small">Loading the borrower’s information…</p>}
-        {err && <div className="cr-alert danger" style={{ marginBottom: 10 }}>{err}</div>}
+        {!pre && !err && <div className="crx-loading">Loading the borrower’s information…</div>}
+        {err && <div className="crx-alert danger">{err}</div>}
 
         {pre && (
-          <>
-            {/* What will be sent */}
-            <div className="cr-card">
-              <div className="cr-card-title">This is what we’ll send to Xactus</div>
-              <div className="cr-kv"><span>Name</span><b>{[b.firstName, b.lastName].filter(Boolean).join(' ') || '—'}</b></div>
-              <div className="cr-kv"><span>Date of birth</span><b>{b.dob ? fmtDay(b.dob) : '—'}</b></div>
-              <div className="cr-kv"><span>Social Security #</span><b>{b.ssnMasked || (b.hasSsn ? 'on file' : '— not on file')}</b></div>
-              <div className="cr-kv"><span>Current address</span><b>{addrLine || '—'}</b></div>
-              {missing.length > 0 && (
-                <div className="cr-alert warn" style={{ marginTop: 8 }}>
-                  Add the borrower’s {missing.join(', ')} on the file before a live pull. You can still import a downloaded report below.
+          <div className="crx-modal-body">
+            {/* Recipient / what we transmit */}
+            <section className="crx-recipient">
+              <div className="crx-recip-head">
+                <span className="crx-mono" aria-hidden="true">{initials(b && b.firstName, b && b.lastName)}</span>
+                <div>
+                  <div className="crx-recip-name">{name || 'Borrower'}</div>
+                  <div className="crx-recip-eyebrow">Identity we’ll send to Xactus</div>
                 </div>
-              )}
-            </div>
+              </div>
+              <div className="crx-recip-grid">
+                <div className="crx-field"><span>Date of birth</span><b>{b && b.dob ? fmtDay(b.dob) : '—'}</b></div>
+                <div className="crx-field"><span>Social Security #</span><b>{(b && b.ssnMasked) || (b && b.hasSsn ? 'on file' : '— not on file')}</b></div>
+                <div className="crx-field crx-field-wide"><span>Current address</span><b>{addrLine || '—'}</b></div>
+              </div>
+              {missing.length > 0
+                ? <div className="crx-note warn">Add the borrower’s {missing.join(', ')} on the file before a live pull. You can still import a downloaded report below.</div>
+                : <div className="crx-note secure"><span className="crx-lock" aria-hidden="true">🔒</span> Sent securely over an encrypted connection — a tri-merge of all three bureaus.</div>}
+            </section>
 
             {/* Options */}
-            <div className="cr-opts">
-              <label className="cr-opt-label">Type of pull</label>
-              <Seg value={pullType} onChange={setPullType} options={[
-                { value: 'soft', label: 'Soft — pre-application', hint: 'A soft inquiry that does not affect the score.' },
-                { value: 'hard', label: 'Hard — full report', hint: 'A hard inquiry — a full credit report.' },
-              ]} />
-              <label className="cr-opt-label">Order</label>
-              <Seg value={requestType} onChange={setRequestType} options={[
-                { value: 'reissue', label: 'Reissue existing', hint: 'Re-pull a report already on file (faster).' },
-                { value: 'new', label: 'Order brand-new', hint: 'Order a fresh report.' },
-              ]} />
-              {requestType === 'reissue' && (
-                <div style={{ marginTop: 4 }}>
-                  <label className="cr-opt-label" style={{ display: 'block' }}>Reissue reference #</label>
-                  <input className="input" style={{ maxWidth: 260 }} value={reissueRef} onChange={(e) => setReissueRef(e.target.value)} placeholder="Xactus report reference" />
-                  <div className="muted small" style={{ marginTop: 2 }}>
-                    {pre.reissueReportId
+            <section className="crx-options">
+              <div className="crx-opt">
+                <label className="crx-opt-label">Type of pull</label>
+                <Seg value={pullType} onChange={setPullType} options={[
+                  { value: 'soft', label: 'Soft', sub: 'Pre-application' },
+                  { value: 'hard', label: 'Hard', sub: 'Full report' },
+                ]} />
+                <div className="crx-opt-hint">{pullType === 'hard'
+                  ? 'A hard inquiry — a full credit report that can affect the borrower’s score.'
+                  : 'A soft inquiry — a pre-application check that does not affect the score.'}</div>
+              </div>
+
+              <div className="crx-opt">
+                <label className="crx-opt-label">Order</label>
+                <Seg value={requestType} onChange={setRequestType} options={[
+                  { value: 'reissue', label: 'Reissue', sub: 'Existing report' },
+                  { value: 'new', label: 'Brand-new', sub: 'Fresh pull' },
+                ]} />
+                {requestType === 'reissue' && (
+                  <div className="crx-reissue">
+                    <label className="crx-opt-label">Reissue reference #</label>
+                    <input className="crx-input" value={reissueRef} onChange={(e) => setReissueRef(e.target.value)} placeholder="Xactus report reference" />
+                    <div className="crx-opt-hint">{pre.reissueReportId
                       ? 'Pre-filled from the last report on this file — change it to re-pull a different one.'
-                      : 'A reissue re-pulls an existing Xactus report by its reference. For a first pull, choose “Order brand-new”.'}
+                      : 'A reissue re-pulls an existing Xactus report by its reference. For a first pull, choose “Brand-new”.'}</div>
+                  </div>
+                )}
+              </div>
+
+              <div className="crx-meta-row">
+                <div className="crx-meta">
+                  <label className="crx-opt-label">Bureaus</label>
+                  <div className="crx-tri">
+                    {['Equifax', 'Experian', 'TransUnion'].map((x) => (
+                      <span key={x} className="crx-tri-chip"><span className="crx-tri-dot" aria-hidden="true" />{x}</span>
+                    ))}
                   </div>
                 </div>
-              )}
-              <div className="row" style={{ gap: 16, alignItems: 'center', marginTop: 6, flexWrap: 'wrap' }}>
-                <div><label className="cr-opt-label" style={{ display: 'block' }}>Bureaus</label><span className="pill">Tri-merge · all three</span></div>
-                <div><label className="cr-opt-label" style={{ display: 'block' }}>Version</label>
-                  <input className="input" style={{ width: 90 }} value={version} onChange={(e) => setVersion(e.target.value)} /></div>
+                <div className="crx-meta crx-meta-ver">
+                  <label className="crx-opt-label">Version</label>
+                  {/* Frozen — the report interface version is fixed (owner-directed);
+                      staff cannot change it. Set only via XACTUS_INTERFACE_VERSION. */}
+                  <span className="crx-tri-chip crx-frozen" title="Fixed report version — cannot be changed">
+                    MISMO {version} <span className="crx-lock" aria-hidden="true">🔒</span>
+                  </span>
+                </div>
               </div>
-            </div>
+            </section>
 
-            {/* Consent + live pull */}
-            <label className="cr-consent">
+            {/* Consent — arms the primary action */}
+            <label className={'crx-consent' + (consent ? ' on' : '')}>
               <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} />
-              <span>The borrower has authorized this credit pull (permissible purpose on file).</span>
+              <span><b>The borrower has authorized this credit pull.</b> Permissible purpose is on file (required to pull).</span>
             </label>
 
             {!providerReady && (
-              <div className="cr-alert warn" style={{ marginBottom: 8 }}>
-                The shared Xactus login isn’t set up yet, so a live pull isn’t available. Once the company login is added in the system settings this button turns on. You can import a downloaded report below in the meantime.
+              <div className="crx-alert warn">
+                The shared Xactus login isn’t set up yet, so a live pull isn’t available. Once the company login is added in the system settings this turns on — you can import a downloaded report below in the meantime.
               </div>
             )}
 
-            <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-              <button className="btn primary" disabled={busy || !providerReady || !consent || missing.length > 0}
+            <div className="crx-actions">
+              <button className="crx-btn primary" disabled={busy || !providerReady || !consent || missing.length > 0}
                 onClick={() => runImport('live')}>
                 {busy ? 'Working…' : requestType === 'new' ? 'Order & import' : 'Reissue & import'}
               </button>
-              <button className="btn ghost" onClick={() => setShowUpload((v) => !v)}>
-                {showUpload ? 'Hide' : 'Import a downloaded report instead'}
+              <button className="crx-btn ghost" onClick={() => setShowUpload((v) => !v)}>
+                {showUpload ? 'Hide downloaded import' : 'Import a downloaded report'}
               </button>
             </div>
 
             {showUpload && (
-              <div className="cr-card" style={{ marginTop: 10 }}>
-                <div className="cr-card-title">Import a report you already downloaded from Xactus</div>
-                <div className="cr-kv"><span>Data file (XML)</span>
+              <section className="crx-upload">
+                <div className="crx-upload-title">Import a report you already downloaded from Xactus</div>
+                <div className="crx-upload-row"><span>Data file (XML)</span>
                   <input type="file" accept=".xml,text/xml,application/xml" onChange={(e) => setXmlFile(e.target.files[0] || null)} /></div>
-                <div className="cr-kv"><span>Report (PDF)</span>
+                <div className="crx-upload-row"><span>Report (PDF)</span>
                   <input type="file" accept="application/pdf,.pdf" onChange={(e) => setPdfFile(e.target.files[0] || null)} /></div>
-                <p className="muted small" style={{ margin: '4px 0 8px' }}>The data file (XML) is what builds the credit-details section; the PDF is filed on the loan.</p>
-                <button className="btn primary" disabled={busy || (!xmlFile && !pdfFile)} onClick={() => runImport('upload')}>
+                <p className="crx-upload-hint">The data file (XML) builds the credit-details section; the PDF is filed on the loan.</p>
+                <button className="crx-btn primary sm" disabled={busy || (!xmlFile && !pdfFile)} onClick={() => runImport('upload')}>
                   {busy ? 'Working…' : 'Import the file'}
                 </button>
-              </div>
+              </section>
             )}
-          </>
+          </div>
         )}
       </div>
     </div>
@@ -218,29 +328,32 @@ function CreditImportModal({ appId, onClose, onDone }) {
 function CreditDetails({ report }) {
   const p = report;
   const s = p.summary || {};
+  const kpis = [
+    { icon: 'accounts', value: s.tradelineCount != null ? s.tradelineCount : '—', label: 'Accounts' },
+    { icon: 'balance', value: money(s.totalBalance), label: 'Total balances' },
+    { icon: 'payment', value: money(s.totalMonthlyPayments), label: 'Monthly' },
+    { icon: 'alert', value: s.delinquentCount != null ? s.delinquentCount : '—', label: 'Delinquent', tone: (s.delinquentCount || 0) > 0 ? 'danger' : '' },
+    { icon: 'flag', value: s.collectionCount != null ? s.collectionCount : '—', label: 'Collections', tone: (s.collectionCount || 0) > 0 ? 'danger' : '' },
+    { icon: 'record', value: s.publicRecordCount != null ? s.publicRecordCount : '—', label: 'Public records', tone: (s.publicRecordCount || 0) > 0 ? 'danger' : '' },
+    { icon: 'search', value: s.inquiryCount != null ? s.inquiryCount : '—', label: 'Inquiries' },
+  ];
   return (
-    <div className="cr-details">
-      {p.parseError && <div className="cr-alert warn">The data file was saved, but some details couldn’t be read automatically ({p.parseError}). The PDF is on the file.</div>}
+    <div className="crx-details">
+      {p.parseError && <div className="crx-alert warn">The data file was saved, but some details couldn’t be read automatically ({p.parseError}).{p.pdfDocumentId ? ' The PDF is on the file.' : ''}</div>}
 
-      <div className="cr-summary-grid">
-        <div className="cr-stat"><div className="cr-stat-num">{s.tradelineCount != null ? s.tradelineCount : '—'}</div><div className="cr-stat-lbl">Accounts</div></div>
-        <div className="cr-stat"><div className="cr-stat-num">{money(s.totalBalance)}</div><div className="cr-stat-lbl">Total balances</div></div>
-        <div className="cr-stat"><div className="cr-stat-num">{money(s.totalMonthlyPayments)}</div><div className="cr-stat-lbl">Monthly payments</div></div>
-        <div className="cr-stat"><div className="cr-stat-num">{s.delinquentCount != null ? s.delinquentCount : '—'}</div><div className="cr-stat-lbl">Delinquent</div></div>
-        <div className="cr-stat"><div className="cr-stat-num">{s.collectionCount != null ? s.collectionCount : '—'}</div><div className="cr-stat-lbl">Collections</div></div>
-        <div className="cr-stat"><div className="cr-stat-num">{s.publicRecordCount != null ? s.publicRecordCount : '—'}</div><div className="cr-stat-lbl">Public records</div></div>
-        <div className="cr-stat"><div className="cr-stat-num">{s.inquiryCount != null ? s.inquiryCount : '—'}</div><div className="cr-stat-lbl">Inquiries</div></div>
+      <div className="crx-kpis">
+        {kpis.map((k, i) => <KpiTile key={i} icon={k.icon} tone={k.tone} value={k.value} label={k.label} />)}
       </div>
 
       {Array.isArray(p.liabilities) && p.liabilities.length > 0 && (
-        <details className="cr-sec" open>
-          <summary>Accounts / tradelines ({p.liabilities.length})</summary>
-          <div className="cr-table-wrap">
-            <table className="cr-table">
+        <details className="crx-sec" open>
+          <summary>Accounts / tradelines <span className="crx-count">{p.liabilities.length}</span></summary>
+          <div className="crx-table-wrap">
+            <table className="crx-table">
               <thead><tr><th>Creditor</th><th>Type</th><th>Status</th><th className="r">Balance</th><th className="r">Limit / high</th><th className="r">Payment</th><th className="r">Past due</th><th>Opened</th><th>Late 30/60/90</th></tr></thead>
               <tbody>
-                {p.liabilities.map((l, i) => (
-                  <tr key={i} className={l.isCollection ? 'cr-bad' : ((l.pastDue || 0) > 0 ? 'cr-warn' : '')}>
+                {p.liabilities.filter(Boolean).map((l, i) => (
+                  <tr key={i} className={l.isCollection ? 'crx-bad' : ((l.pastDue || 0) > 0 ? 'crx-warn' : '')}>
                     <td>{l.creditor || '—'}</td>
                     <td>{l.accountType || '—'}</td>
                     <td>{l.status || (l.open === false ? 'Closed' : l.open ? 'Open' : '—')}</td>
@@ -259,23 +372,23 @@ function CreditDetails({ report }) {
       )}
 
       {Array.isArray(p.publicRecords) && p.publicRecords.length > 0 && (
-        <details className="cr-sec">
-          <summary>Public records ({p.publicRecords.length})</summary>
-          <div className="cr-table-wrap"><table className="cr-table">
+        <details className="crx-sec">
+          <summary>Public records <span className="crx-count">{p.publicRecords.length}</span></summary>
+          <div className="crx-table-wrap"><table className="crx-table">
             <thead><tr><th>Type</th><th>Filed</th><th className="r">Amount</th><th>Status</th><th>Court</th></tr></thead>
-            <tbody>{p.publicRecords.map((r, i) => (
-              <tr key={i} className="cr-bad"><td>{r.type || '—'}</td><td>{fmtDay(r.date)}</td><td className="r">{money(r.amount)}</td><td>{r.status || '—'}</td><td>{r.court || '—'}</td></tr>
+            <tbody>{p.publicRecords.filter(Boolean).map((r, i) => (
+              <tr key={i} className="crx-bad"><td>{r.type || '—'}</td><td>{fmtDay(r.date)}</td><td className="r">{money(r.amount)}</td><td>{r.status || '—'}</td><td>{r.court || '—'}</td></tr>
             ))}</tbody>
           </table></div>
         </details>
       )}
 
       {Array.isArray(p.inquiries) && p.inquiries.length > 0 && (
-        <details className="cr-sec">
-          <summary>Inquiries ({p.inquiries.length})</summary>
-          <div className="cr-table-wrap"><table className="cr-table">
+        <details className="crx-sec">
+          <summary>Inquiries <span className="crx-count">{p.inquiries.length}</span></summary>
+          <div className="crx-table-wrap"><table className="crx-table">
             <thead><tr><th>Who</th><th>Date</th><th>Bureau</th></tr></thead>
-            <tbody>{p.inquiries.map((q, i) => (
+            <tbody>{p.inquiries.filter(Boolean).map((q, i) => (
               <tr key={i}><td>{q.name || '—'}</td><td>{fmtDay(q.date)}</td><td>{q.bureau || '—'}</td></tr>
             ))}</tbody>
           </table></div>
@@ -283,16 +396,16 @@ function CreditDetails({ report }) {
       )}
 
       {p.borrower && (
-        <details className="cr-sec">
+        <details className="crx-sec">
           <summary>Identity on the report</summary>
-          <div style={{ padding: '6px 2px' }}>
-            <div className="cr-kv"><span>Name</span><b>{[p.borrower.firstName, p.borrower.middleName, p.borrower.lastName].filter(Boolean).join(' ') || '—'}</b></div>
-            {p.borrower.dob && <div className="cr-kv"><span>Date of birth</span><b>{fmtDay(p.borrower.dob)}</b></div>}
-            {p.borrower.ssnLast4 && <div className="cr-kv"><span>SSN</span><b>•••-••-{p.borrower.ssnLast4}</b></div>}
-            {(p.borrower.addresses || []).map((a, i) => (
-              <div className="cr-kv" key={i}><span>Address {i + 1}</span><b>{[a.street, a.city, a.state, a.zip].filter(Boolean).join(', ')}</b></div>
+          <div className="crx-id">
+            <div className="crx-field"><span>Name</span><b>{[p.borrower.firstName, p.borrower.middleName, p.borrower.lastName].filter(Boolean).join(' ') || '—'}</b></div>
+            {p.borrower.dob && <div className="crx-field"><span>Date of birth</span><b>{fmtDay(p.borrower.dob)}</b></div>}
+            {p.borrower.ssnLast4 && <div className="crx-field"><span>SSN</span><b>•••-••-{p.borrower.ssnLast4}</b></div>}
+            {(p.borrower.addresses || []).filter(Boolean).map((a, i) => (
+              <div className="crx-field crx-field-wide" key={i}><span>Address {i + 1}</span><b>{[a.street, a.city, a.state, a.zip].filter(Boolean).join(', ')}</b></div>
             ))}
-            {(p.borrower.employers || []).length > 0 && <div className="cr-kv"><span>Employers</span><b>{p.borrower.employers.join(' · ')}</b></div>}
+            {(p.borrower.employers || []).length > 0 && <div className="crx-field crx-field-wide"><span>Employers</span><b>{p.borrower.employers.join(' · ')}</b></div>}
           </div>
         </details>
       )}
@@ -306,6 +419,7 @@ export function CreditCondition({ appId, canPull, onChanged }) {
   const [showModal, setShowModal] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [flash, setFlash] = useState('');
+  const [flashTone, setFlashTone] = useState('ok');
 
   const loadCredit = useCallback(() => {
     return api.staffCredit(appId).then(setData).catch(() => setData({ hasReport: false, provider: {}, report: null, history: [] }));
@@ -319,6 +433,11 @@ export function CreditCondition({ appId, canPull, onChanged }) {
   // back to the role-based prop for the brief moment before the fetch returns.
   const canImport = data && typeof data.canImport === 'boolean' ? data.canImport : canPull;
 
+  const showFlash = (msg, tone) => {
+    setFlashTone(tone || 'ok'); setFlash(msg);
+    window.setTimeout(() => setFlash(''), 8000);
+  };
+
   const onImported = (out) => {
     setShowModal(false);
     setExpanded(true);
@@ -326,61 +445,82 @@ export function CreditCondition({ appId, canPull, onChanged }) {
     if (out && out.middleScore != null) bits.push(`middle score ${out.middleScore}`);
     if (out && out.ficoWritten != null) bits.push(`FICO set to ${out.ficoWritten}`);
     if (out && out.ficoMismatch) bits.push('FICO not auto-set — the report named a different person');
-    if (out && out.parseError) bits.push('data file saved, some details couldn’t be read');
-    setFlash('Imported ✓' + (bits.length ? ' — ' + bits.join(' · ') : ''));
+    if (out && out.ficoUnverified) bits.push('FICO not auto-set — no SSN on file to confirm identity');
+    if (out && out.pdfMissing) bits.push('no PDF in the response — data file saved');
+    if (out && out.parseError) bits.push('some details couldn’t be read');
+    const tone = out && (out.ficoMismatch || out.ficoUnverified || out.parseError || out.pdfMissing) ? 'warn' : 'ok';
+    showFlash('Imported ✓' + (bits.length ? ' — ' + bits.join(' · ') : ''), tone);
     loadCredit();
     if (onChanged) onChanged();
-    window.setTimeout(() => setFlash(''), 8000);
   };
 
+  const download = async (docId, fallback) => {
+    try { const { blob, filename } = await api.staffDownloadDoc(docId); saveBlob(blob, filename || fallback); }
+    catch (e) { showFlash('Download failed: ' + (e.message || 'please try again'), 'warn'); }
+  };
+
+  const band = report ? scoreBand(report.middleScore) : null;
+
   return (
-    <div className="cr-wrap" style={{ width: '100%', paddingLeft: 20 }}>
-      <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+    <div className="crx-wrap">
+      <div className="crx-bar">
         {canImport
-          ? <button className="btn primary small" onClick={() => setShowModal(true)}>{report ? 'Import credit again' : '⬇ Import credit'}</button>
-          : !report && <span className="muted small">A processor can import the credit report here.</span>}
-        {canImport && !provider.configured && <span className="pill" title="The shared Xactus login is not set yet">Live pull: not set up</span>}
+          ? <button className="crx-btn primary sm" onClick={() => setShowModal(true)}>{report ? '↻ Import again' : '⬇ Import credit'}</button>
+          : !report && <span className="crx-muted">A processor can import the credit report here.</span>}
+        {canImport && !provider.configured && <span className="crx-pill" title="The shared Xactus login is not set yet">Live pull: not set up</span>}
+        <span className="crx-bar-spacer" />
         {report && report.pdfDocumentId && (
-          <button className="btn ghost small" onClick={() => api.staffDownloadDoc(report.pdfDocumentId)}>Download PDF</button>
+          <button className="crx-btn ghost sm" onClick={() => download(report.pdfDocumentId, 'credit-report.pdf')}>Download PDF</button>
         )}
         {report && report.xmlDocumentId && (
-          <button className="btn ghost small" onClick={() => api.staffDownloadDoc(report.xmlDocumentId)}>Download data (XML)</button>
+          <button className="crx-btn ghost sm" onClick={() => download(report.xmlDocumentId, 'credit-report.xml')}>Download data (XML)</button>
         )}
       </div>
 
-      {flash && <div className="cr-alert ok" style={{ marginTop: 8 }}>{flash}</div>}
+      {flash && <div className={'crx-alert ' + (flashTone === 'warn' ? 'warn' : 'ok')}>{flash}</div>}
 
       {report ? (
-        <div className="cr-report" style={{ marginTop: 10 }}>
-          <div className="cr-head">
-            <div className="cr-mid">
-              <div className="cr-mid-num">{report.middleScore != null ? report.middleScore : '—'}</div>
-              <div className="cr-mid-lbl">Middle score</div>
+        <div className="crx-report">
+          {/* Hero: middle score + gauge + bureau tiles */}
+          <div className={'crx-hero tone-' + (band ? band.tone : 'none')}>
+            <div className="crx-hero-main">
+              <div className="crx-hero-score">{report.middleScore != null ? report.middleScore : '—'}</div>
+              <div className="crx-hero-meta">
+                <span className={'crx-band tone-' + (band ? band.tone : 'none')}>{band ? band.label : 'No score'}</span>
+                <div className="crx-hero-lbl">Middle score</div>
+                <div className="crx-gauge">
+                  <div className="crx-gauge-track"><i style={{ width: gaugePct(report.middleScore) + '%' }} />
+                    {report.middleScore != null && <span className="crx-gauge-mark" style={{ left: gaugePct(report.middleScore) + '%' }} />}
+                  </div>
+                  <div className="crx-gauge-scale"><span>300</span><span>850</span></div>
+                </div>
+              </div>
             </div>
-            <div className="cr-scores">
+            <div className="crx-hero-bureaus">
               {(report.scores || []).length
-                ? report.scores.map((s, i) => <ScoreChip key={i} s={s} />)
-                : <span className="muted small">No numeric scores were read from the data file.</span>}
+                ? report.scores.filter(Boolean).map((sc, i) => <BureauTile key={i} s={sc} />)
+                : <span className="crx-muted">No numeric scores were read from the data file.</span>}
             </div>
           </div>
-          <div className="muted small" style={{ marginTop: 6 }}>
+
+          <div className="crx-sub">
             {report.pullType === 'hard' ? 'Hard pull' : 'Soft pull'} · {report.requestType === 'new' ? 'new order' : 'reissue'}
             {report.reportDate ? ` · dated ${fmtDay(report.reportDate)}` : ''} · imported {fmtWhen(report.pulledAt)}
             {report.source === 'upload' ? ' · from an uploaded file' : ''}
             {report.vendorReportId ? ` · ref ${report.vendorReportId}` : ''}
           </div>
 
-          <button className="btn link small" style={{ marginTop: 6 }} onClick={() => setExpanded((v) => !v)}>
+          <button className="crx-link" onClick={() => setExpanded((v) => !v)}>
             {expanded ? 'Hide full credit details' : 'View full credit details'}
           </button>
           {expanded && <CreditDetails report={report} />}
 
           {data && data.history && data.history.length > 1 && (
-            <details className="cr-sec" style={{ marginTop: 8 }}>
-              <summary>Import history ({data.history.length})</summary>
-              <div className="cr-table-wrap"><table className="cr-table">
+            <details className="crx-sec" style={{ marginTop: 10 }}>
+              <summary>Import history <span className="crx-count">{data.history.length}</span></summary>
+              <div className="crx-table-wrap"><table className="crx-table">
                 <thead><tr><th>When</th><th>Type</th><th>Order</th><th className="r">Middle</th><th>Source</th></tr></thead>
-                <tbody>{data.history.map((h) => (
+                <tbody>{data.history.filter(Boolean).map((h) => (
                   <tr key={h.id}><td>{fmtWhen(h.pulledAt)}</td><td>{h.pullType === 'hard' ? 'Hard' : 'Soft'}</td><td>{h.requestType === 'new' ? 'New' : 'Reissue'}</td><td className="r">{h.middleScore != null ? h.middleScore : '—'}</td><td>{h.source === 'upload' ? 'uploaded' : 'pulled'}</td></tr>
                 ))}</tbody>
               </table></div>
@@ -388,7 +528,7 @@ export function CreditCondition({ appId, canPull, onChanged }) {
           )}
         </div>
       ) : (
-        <p className="muted small" style={{ marginTop: 6 }}>No credit report imported yet. Click <b>Import credit</b> to pull a tri-merge report or import one you downloaded.</p>
+        <div className="crx-empty">No credit report imported yet. Click <b>Import credit</b> to pull a tri-merge report or import one you downloaded.</div>
       )}
 
       {showModal && <CreditImportModal appId={appId} onClose={() => setShowModal(false)} onDone={onImported} />}

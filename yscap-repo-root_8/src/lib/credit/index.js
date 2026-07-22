@@ -81,6 +81,11 @@ function missingForPull(b) {
 async function preview(appId) {
   const row = await loadForPull(appId);
   const b = borrowerToSend(row, { includeSsn: false });
+  // The order ALWAYS defaults to Reissue (owner-directed). On a file's first pull
+  // there is no prior reference to pre-fill — the reference field is then empty and
+  // the screen guides the user to type it or switch to brand-new (a reissue with no
+  // reference is rejected with a clear message, never a silent failure).
+  const prior = await priorReportId(appId);
   return {
     borrower: {
       firstName: b.firstName, lastName: b.lastName, dob: b.dob,
@@ -102,9 +107,8 @@ async function preview(appId) {
     provider: provider.status(),
     missing: missingForPull(b),
     canPull: missingForPull(b).length === 0,
-    // Prior report reference (pre-fills a Reissue). Null on a file's first pull —
-    // then a Reissue needs the reference typed in, or use "Order brand-new".
-    reissueReportId: await priorReportId(appId),
+    // Prior report reference (pre-fills a Reissue). Null on a file's first pull.
+    reissueReportId: prior,
   };
 }
 
@@ -128,7 +132,14 @@ async function importCredit(appId, opts = {}) {
       throw userError('That looks like a PDF in the report-data box. Put the PDF in the PDF box and the XML data file in the data box.');
     }
   } else {
-    // Live pull/reissue via the shared login.
+    // Live pull/reissue via the shared login. A live pull OBTAINS a consumer
+    // report from the bureaus, so it REQUIRES an explicit permissible-purpose /
+    // borrower-consent attestation (FCRA). Enforced HERE server-side — not just by
+    // the UI checkbox — BEFORE we decrypt the SSN, and recorded on the report row
+    // + audit log. (An upload of an already-obtained report needs no attestation.)
+    if (opts.consent !== true) {
+      throw userError('Before pulling credit, confirm the borrower authorized it (permissible purpose). Check the authorization box and try again.');
+    }
     const b = borrowerToSend(row, { includeSsn: true });
     const miss = missingForPull(b);
     if (miss.length) throw userError(`Can’t pull credit yet — this file is missing the borrower’s ${miss.join(', ')}.`);
@@ -149,19 +160,33 @@ async function importCredit(appId, opts = {}) {
   };
   if (vendorReportId && !parsed.reportId) parsed.reportId = vendorReportId;
 
+  // A live pull that OBTAINED a data file yet yielded zero scores AND zero
+  // tradelines is almost certainly not a real credit report (an error/gateway page
+  // returned with HTTP 200, or an unexpected layout) — flag it rather than let it
+  // look like a clean success. An upload or a genuine thin/no-hit file is unaffected.
+  const emptyLivePull = source === 'api' && !parsed.parseError
+    && (!parsed.scores || parsed.scores.length === 0)
+    && (!parsed.liabilities || parsed.liabilities.length === 0);
+  if (emptyLivePull) parsed.parseError = parsed.parseError || 'no credit data recognized in the response';
+
   const stored = await store.storeImport({
     app: row, parsed, xml, pdfBase64,
     request: { pullType, requestType, bureaus, version }, actorId: opts.actorId, source,
+    consentAttested: opts.consent === true,
   });
 
   return {
     ok: true, source,
     creditReportId: stored.creditReportId,
+    pullType, requestType,
+    consentAttested: opts.consent === true,
     middleScore: parsed.middleScore,
     ficoWritten: stored.ficoWritten,
     ficoMismatch: stored.ficoMismatch,
+    ficoUnverified: stored.ficoUnverified,
     parseError: parsed.parseError || null,
     hasPdf: !!stored.pdfDocId, hasXml: !!stored.xmlDocId,
+    pdfMissing: source === 'api' && !stored.pdfDocId,
     summary: parsed.summary || null,
     bureausReturned: parsed.bureausReturned || [],
     scores: parsed.scores || [],
