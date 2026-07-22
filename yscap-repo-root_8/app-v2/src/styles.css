@@ -2788,3 +2788,24 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .app .wf-rec-banner{background:color-mix(in srgb,var(--teal,#2F7F86) 12%,transparent);
   border:1px solid color-mix(in srgb,var(--teal,#2F7F86) 30%,transparent);border-radius:10px;
   padding:10px 13px;margin-bottom:12px;font-size:14px}
+
+/* ── Notification Center — Drafts inbox ────────────────────────────────── */
+/* Hover-reveal quick-actions bar on a draft row. Guarded by
+   @media(hover:hover) so touch devices never stick with it visible. On
+   hover-capable devices it fades in on parent hover; the currently-selected
+   row is styled by the JSX (`is-selected` class) — the preview pane's own
+   action bar takes over for that row so we don't render two action buttons. */
+.lo-draft-actions { opacity: 0; transform: translateY(-2px); transition: opacity .12s ease, transform .12s ease; pointer-events: none; }
+@media (hover: hover) {
+  .lo-draft-row:hover               { background: var(--ink-2) !important; }
+  .lo-draft-row:hover .lo-draft-actions { opacity: 1; transform: translateY(0); pointer-events: auto; }
+}
+.lo-draft-row.is-selected .lo-draft-actions { display: none; }
+
+/* Live-pulse dot animation — moved out of an inline <style> tag inside the
+   React component so it isn't re-injected on every render (audit nit #6). */
+@keyframes lo-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(46,122,94,0.6); }
+  70%  { box-shadow: 0 0 0 6px rgba(46,122,94,0); }
+  100% { box-shadow: 0 0 0 0 rgba(46,122,94,0); }
+}

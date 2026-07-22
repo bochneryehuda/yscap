@@ -525,14 +525,22 @@ function ComposeModal({ open, onClose, onSent }) {
 }
 
 /* ---- DRAFT PREVIEW PANE ---- */
-function DraftPreview({ draft, onSend, onDiscard, onSnooze, onSchedule, busy }) {
-  const [subject, setSubject] = useState(draft.subject || '');
-  const [body, setBody] = useState(draft.body || '');
-  const [note, setNote] = useState('');
+function DraftPreview({ draft, subject, body, note, setSubject, setBody, setNote,
+                        onSend, onDiscard, onSnooze, onSchedule, busy }) {
   const [tab, setTab] = useState('preview');
   const [openSched, setOpenSched] = useState(false);
   const [snoozeOpen, setSnoozeOpen] = useState(false);
-  useEffect(() => { setSubject(draft.subject || ''); setBody(draft.body || ''); setNote(''); setTab('preview'); setSnoozeOpen(false); }, [draft.id]);
+  const snoozeRef = useRef(null);
+  useEffect(() => { setTab('preview'); setSnoozeOpen(false); }, [draft.id]);
+  // Close the snooze dropdown on outside click OR Escape (audit finding #4).
+  useEffect(() => {
+    if (!snoozeOpen) return undefined;
+    const onDown = (e) => { if (snoozeRef.current && !snoozeRef.current.contains(e.target)) setSnoozeOpen(false); };
+    const onKey = (e) => { if (e.key === 'Escape') setSnoozeOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDown); window.removeEventListener('keydown', onKey); };
+  }, [snoozeOpen]);
   const canEdit = draft.status === 'pending';
   const dirty = subject !== (draft.subject || '') || body !== (draft.body || '') || note.trim() !== '';
   const send = () => onSend(draft, { title: subject, body, note });
@@ -558,7 +566,7 @@ function DraftPreview({ draft, onSend, onDiscard, onSnooze, onSchedule, busy }) 
             <div style={{ display: 'inline-flex', gap: 4 }}>
               <IconBtn name="send"     title="Send now"         onClick={send}                     disabled={busy} tone="gold" size={34} />
               <IconBtn name="schedule" title="Schedule for later" onClick={() => setOpenSched(true)} disabled={busy} size={34} />
-              <div style={{ position: 'relative' }}>
+              <div style={{ position: 'relative' }} ref={snoozeRef}>
                 <IconBtn name="snooze" title="Snooze"           onClick={() => setSnoozeOpen((v) => !v)} disabled={busy} size={34} />
                 {snoozeOpen && (
                   <div className="panel" style={{ position: 'absolute', top: 40, right: 0, zIndex: 10, padding: 4, minWidth: 120 }}>
@@ -659,16 +667,14 @@ function DraftPreview({ draft, onSend, onDiscard, onSnooze, onSchedule, busy }) 
 
 /* ---- DRAFT CARD (row in the left rail) — modern card with hover actions ---- */
 function DraftCard({ draft, selected, showCheckbox, checked, onCheck, onSelect, onQuickSend, onQuickSnooze, onQuickDiscard, busy }) {
-  const [hover, setHover] = useState(false);
   const priorityStrip = draft.priority === 'high' ? 'var(--danger)' : draft.composeSource === 'compose' ? 'var(--gold)' : 'transparent';
   const who = draft.recipientLabel || (draft.recipientKind === 'borrower' ? 'Borrower' : 'Team');
   return (
     <div
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
+      className={`lo-draft-row${selected ? ' is-selected' : ''}`}
       onClick={onSelect}
       style={{ display: 'flex', gap: 8, padding: '12px 14px 12px 10px',
-        background: selected ? 'var(--gold-soft)' : hover ? 'var(--ink-2)' : 'transparent',
+        background: selected ? 'var(--gold-soft)' : 'transparent',
         borderLeft: `3px solid ${selected ? 'var(--gold)' : priorityStrip}`,
         borderBottom: '1px solid var(--line)', cursor: 'pointer', position: 'relative',
         transition: 'background .1s ease' }}>
@@ -700,9 +706,13 @@ function DraftCard({ draft, selected, showCheckbox, checked, onCheck, onSelect, 
           {draft.loanNumber && <span className="muted" style={{ fontSize: 11, marginLeft: 'auto' }}>{draft.loanNumber}</span>}
         </div>
       </div>
-      {/* Hover-reveal quick actions on Pending only */}
-      {hover && onQuickSend && (
-        <div onClick={(e) => e.stopPropagation()}
+      {/* Hover-reveal quick actions on Pending only. Rendered via CSS :hover
+          in a `@media (hover: hover)` block so touch devices don't get stuck
+          with the box permanently shown (audit finding #7). Also hidden on
+          the currently-selected row — the preview pane's action bar is
+          canonical there, avoids two ways to fire the same action. */}
+      {onQuickSend && !selected && (
+        <div className="lo-draft-actions" onClick={(e) => e.stopPropagation()}
           style={{ position: 'absolute', right: 6, top: 6, display: 'inline-flex', gap: 2,
             background: 'var(--ink-1)', border: '1px solid var(--line)', borderRadius: 6, padding: 2,
             boxShadow: '0 2px 6px rgba(0,0,0,0.06)' }}>
@@ -715,7 +725,8 @@ function DraftCard({ draft, selected, showCheckbox, checked, onCheck, onSelect, 
   );
 }
 
-/* ---- LIVE INDICATOR — pulses when the auto-refresh timer is running ---- */
+/* ---- LIVE INDICATOR — pulses when the auto-refresh timer is running ----
+   The @keyframes lo-pulse rule lives in app-v2/src/styles.css. */
 function LiveDot({ on, label }) {
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--muted)' }}>
@@ -724,7 +735,6 @@ function LiveDot({ on, label }) {
         boxShadow: on ? '0 0 0 0 rgba(46,122,94,0.6)' : 'none',
         animation: on ? 'lo-pulse 2s infinite' : 'none' }} />
       {label}
-      <style>{`@keyframes lo-pulse { 0%{box-shadow:0 0 0 0 rgba(46,122,94,0.6);} 70%{box-shadow:0 0 0 6px rgba(46,122,94,0);} 100%{box-shadow:0 0 0 0 rgba(46,122,94,0);} }`}</style>
     </span>
   );
 }
@@ -762,6 +772,38 @@ function DraftsTab({ onCountChange, showToast }) {
   const [lastRefreshed, setLastRefreshed] = useState(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
 
+  // Selection ref — the load() effect uses this to preserve selection across a
+  // soft refresh WITHOUT re-creating itself every time the LO j/k-navigates
+  // (audit finding #3: the 30s auto-refresh interval was being torn down and
+  // rebuilt on every arrow-key press, so a fast-scrolling LO never saw new
+  // drafts arrive).
+  const selectedIdRef = useRef(null);
+  useEffect(() => { selectedIdRef.current = selectedId; }, [selectedId]);
+
+  // EDIT STATE for the currently-selected draft — LIFTED here so both the
+  // keyboard-send (`e`) and the row hover-Send can use the LO's local edits
+  // instead of silently discarding them (audit findings #1 + #2). Reset when
+  // the selection moves.
+  const [editSubject, setEditSubject] = useState('');
+  const [editBody, setEditBody] = useState('');
+  const [editNote, setEditNote] = useState('');
+  const selected = items && items.find((i) => i.id === selectedId);
+  useEffect(() => {
+    setEditSubject((selected && selected.subject) || '');
+    setEditBody((selected && selected.body) || '');
+    setEditNote('');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId]);
+  // Effective edits — used by every send path (button, keyboard, hover) for
+  // the CURRENTLY-selected draft; a non-selected row's quick-send uses the row's
+  // own (server) copy (there's nothing to lose).
+  const hasEdits = !!selected && (
+    editSubject !== (selected.subject || '') || editBody !== (selected.body || '') || editNote.trim() !== ''
+  );
+  const effectiveEdits = (row) => (selected && row.id === selected.id)
+    ? { title: editSubject, body: editBody, note: editNote }
+    : { title: row.subject, body: row.body, note: '' };
+
   const load = useCallback(async (opts) => {
     const soft = opts && opts.soft;
     if (!soft) { setItems(null); setSelectedId(null); setChecked(new Set()); }
@@ -770,13 +812,13 @@ function DraftsTab({ onCountChange, showToast }) {
       const r = await api.loNotifDrafts({ status: tab, q });
       setItems(r.items || []);
       setLastRefreshed(new Date());
-      // Preserve the current selection if it still exists in the new list
+      const currentSel = selectedIdRef.current;
       if (soft) {
-        if (r.items && !r.items.some((i) => i.id === selectedId) && r.items[0]) setSelectedId(r.items[0].id);
+        if (r.items && !r.items.some((i) => i.id === currentSel) && r.items[0]) setSelectedId(r.items[0].id);
       } else if (r.items && r.items[0]) setSelectedId(r.items[0].id);
       if (tab === 'pending' && onCountChange) onCountChange((r.items || []).length);
     } catch (e) { setErr(e.message || 'Could not load drafts'); }
-  }, [tab, q, onCountChange, selectedId]);
+  }, [tab, q, onCountChange]);   // deliberately no selectedId — the ref carries it
 
   useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [tab, q]);
 
@@ -790,11 +832,13 @@ function DraftsTab({ onCountChange, showToast }) {
     return () => { clearInterval(iv); window.removeEventListener('focus', onFocus); };
   }, [autoRefresh, tab, load]);
 
-  // Countdown ticker — force a re-render every 30s so "in 2 min" stays truthy.
+  // Countdown ticker — only Pending has time-sensitive labels worth re-rendering.
   const [, setTick] = useState(0);
-  useEffect(() => { const t = setInterval(() => setTick((n) => n + 1), 30_000); return () => clearInterval(t); }, []);
-
-  const selected = items && items.find((i) => i.id === selectedId);
+  useEffect(() => {
+    if (tab !== 'pending') return undefined;
+    const t = setInterval(() => setTick((n) => n + 1), 30_000);
+    return () => clearInterval(t);
+  }, [tab]);
 
   const handleSend = async (draft, edits) => {
     setBusy(true); setErr('');
@@ -846,7 +890,9 @@ function DraftsTab({ onCountChange, showToast }) {
       const idx = items.findIndex((i) => i.id === selectedId);
       if (e.key === 'j' || e.key === 'ArrowDown') { e.preventDefault(); setSelectedId(items[Math.min(idx + 1, items.length - 1)].id); }
       else if (e.key === 'k' || e.key === 'ArrowUp') { e.preventDefault(); setSelectedId(items[Math.max(idx - 1, 0)].id); }
-      else if (selected && e.key === 'e') { e.preventDefault(); handleSend(selected, { title: selected.subject, body: selected.body, note: '' }); }
+      // Keyboard send/snooze/discard use effectiveEdits so unsaved edits are
+      // included, not silently discarded (audit finding #1).
+      else if (selected && e.key === 'e') { e.preventDefault(); handleSend(selected, effectiveEdits(selected)); }
       else if (selected && e.key === '#') { e.preventDefault(); handleDiscard(selected); }
       else if (selected && e.key === 's') { e.preventDefault(); handleSnooze(selected, 60); }
     };
@@ -943,7 +989,7 @@ function DraftsTab({ onCountChange, showToast }) {
                   checked={checked.has(it.id)}
                   onCheck={() => toggleChecked(it.id)}
                   onSelect={() => setSelectedId(it.id)}
-                  onQuickSend={tab === 'pending' ? () => handleSend(it, { title: it.subject, body: it.body, note: '' }) : null}
+                  onQuickSend={tab === 'pending' ? () => handleSend(it, effectiveEdits(it)) : null}
                   onQuickSnooze={tab === 'pending' ? () => handleSnooze(it, 60) : null}
                   onQuickDiscard={tab === 'pending' ? () => handleDiscard(it) : null}
                   busy={busy}
@@ -964,6 +1010,8 @@ function DraftsTab({ onCountChange, showToast }) {
           <div style={{ flex: 1, minWidth: 0 }}>
             {selected ? (
               <DraftPreview draft={selected}
+                subject={editSubject} body={editBody} note={editNote}
+                setSubject={setEditSubject} setBody={setEditBody} setNote={setEditNote}
                 onSend={handleSend} onDiscard={handleDiscard}
                 onSnooze={handleSnooze} onSchedule={handleSchedule} busy={busy} />
             ) : (
