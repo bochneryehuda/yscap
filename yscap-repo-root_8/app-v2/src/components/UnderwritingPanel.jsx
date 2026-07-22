@@ -1748,6 +1748,19 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true }) {
               <input type="checkbox" checked={showDismissed} onChange={(e) => setShowDismissed(e.target.checked)} />
               Show dismissed
             </label>
+            {(rows || []).some(r => r.status !== 'dismissed') && !readOnly && canResolve && (
+              <button className="btn ghost" style={{ padding: '3px 9px', fontSize: 11, color: 'var(--crit,#B4483C)', borderColor: 'var(--crit,#B4483C)' }}
+                onClick={async () => {
+                  const n = (rows || []).filter(r => r.status !== 'dismissed').length;
+                  const reason = window.prompt(`Dismiss all ${n} open AI suggestion${n === 1 ? '' : 's'} on this file? Type a reason (e.g. "test file", "team already reviewed").`, '');
+                  if (reason == null) return;
+                  try {
+                    const r = await api.aiDismissAllOnFile(appId, reason || 'Bulk-dismissed from file view');
+                    load();
+                    alert(`Dismissed ${r.dismissed} suggestion${r.dismissed === 1 ? '' : 's'}.`);
+                  } catch (e) { alert(`Failed: ${(e && e.message) || 'error'}`); }
+                }}>Dismiss all</button>
+            )}
             {/* R3.37 — filter chips */}
             {(() => {
               const sources = Array.from(new Set((rows || []).map(r => r.source))).sort();

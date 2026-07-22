@@ -1468,6 +1468,41 @@ router.get('/:appId/knowledge-graph', async (req, res, next) => {
  * Composes with R3.40's pipeline chip: the chip signals COUNT, this signals
  * SEVERITY-WEIGHTED risk.
  */
+/**
+ * R4.6 — Bulk-dismiss every OPEN AI suggestion on this file. Admin-only.
+ * Useful for a test file, a closed file, or a file where the team has already
+ * eyeballed every suggestion outside the panel. Every dismissal goes through
+ * ai-suggestions.decide() so the R3.42 auto-close-linked-admin-questions and
+ * the ai_audit trail both fire per row. Body optional: { reason }.
+ */
+router.post('/:appId/ai-suggestions/dismiss-all', requirePermission('sign_off_conditions'), async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const reason = String((req.body && req.body.reason) || 'Bulk-dismissed from file view').slice(0, 200);
+    const client = await db.pool.connect();
+    let dismissed = 0;
+    try {
+      await client.query('BEGIN');
+      const open = await client.query(
+        `SELECT id FROM ai_suggestions
+          WHERE application_id=$1
+            AND status IN ('open','marked_important','escalated','asked_admin')
+          LIMIT 500`, [app.id]);
+      const aiSug = require('../lib/underwriting/ai-suggestions');
+      for (const row of open.rows) {
+        try {
+          await aiSug.decide(client, row.id, { action: 'dismiss', reason, staffId: req.actor.staffId });
+          dismissed += 1;
+        } catch (_) { /* one bad row doesn't stop the batch */ }
+      }
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+    res.json({ ok: true, dismissed });
+  } catch (e) { next(e); }
+});
+
 router.get('/:appId/ai-risk-score', async (req, res, next) => {
   try {
     const app = await fileFor(req, req.params.appId);
