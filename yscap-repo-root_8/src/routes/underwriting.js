@@ -1504,6 +1504,13 @@ router.post('/:appId/ai-suggestions/rerun-checks', requirePermission('sign_off_c
       for (const [k, fn] of bridges) {
         try { const r = await fn(); ran[k] = (r && r.recorded) || 0; } catch (_) { /* additive */ }
       }
+      // R4.16 — stamp the file so the AI Findings panel can show a 'Last re-run' time.
+      try {
+        await client.query(
+          `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+           VALUES ('staff',$1,'ai_checks_rerun','application',$2,$3::jsonb)`,
+          [req.actor.staffId, app.id, JSON.stringify({ ran, at: new Date().toISOString() })]);
+      } catch (_) { /* additive */ }
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
     finally { client.release(); }
@@ -1602,7 +1609,19 @@ router.get('/:appId/ai-suggestions', async (req, res, next) => {
       includeDismissed: req.query.include_dismissed === '1',
       limit: Number(req.query.limit) || undefined,
     }, db);
-    res.json({ ok: true, suggestions });
+    // R4.16 — expose the most recent AI checks re-run time so the panel header can
+    // show "Last re-run: N minutes ago". Best-effort; absence is not an error.
+    let lastRerunAt = null;
+    try {
+      const r = await db.pool.query(
+        `SELECT max(created_at) AS at
+           FROM audit_log
+          WHERE action='ai_checks_rerun'
+            AND entity_type='application'
+            AND entity_id=$1`, [app.id]);
+      lastRerunAt = (r.rows[0] && r.rows[0].at) || null;
+    } catch (_) { /* additive */ }
+    res.json({ ok: true, suggestions, lastRerunAt });
   } catch (e) { next(e); }
 });
 

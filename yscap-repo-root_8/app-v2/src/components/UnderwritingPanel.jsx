@@ -24,6 +24,21 @@ const DOC_LABEL = {
 };
 const label = (t) => DOC_LABEL[t] || String(t || '').replace(/_/g, ' ');
 
+// R4.16 — small local "N minutes ago" formatter (no dep on dayjs).
+function fmtAgo(iso) {
+  if (!iso) return '';
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return '';
+  const sec = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.round(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.round(min / 60);
+  if (hr < 48) return `${hr}h ago`;
+  const d = Math.round(hr / 24);
+  return `${d}d ago`;
+}
+
 const SEV = {
   fatal: { bg: 'var(--crit-bg,#F6E7E4)', fg: 'var(--crit,#B4483C)', label: 'Fatal' },
   warning: { bg: 'var(--amber-bg,#F6EEDD)', fg: 'var(--amber,#B7791F)', label: 'Warning' },
@@ -1697,6 +1712,7 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true }) {
   const [expanded, setExpanded] = React.useState(true);
   const [sourceFilter, setSourceFilter] = React.useState('all');
   const [sevFilter, setSevFilter] = React.useState('all');
+  const [lastRerunAt, setLastRerunAt] = React.useState(null);
 
   const load = React.useCallback(async () => {
     if (!appId) return;
@@ -1704,6 +1720,7 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true }) {
     try {
       const r = await api.aiSuggestionsList(appId, showDismissed ? { include_dismissed: '1' } : {});
       setRows(Array.isArray(r && r.suggestions) ? r.suggestions : []);
+      setLastRerunAt((r && r.lastRerunAt) || null);
     } catch (e) { setErr((e && e.message) || 'Could not load AI suggestions.'); }
     finally { setBusy(false); }
   }, [appId, showDismissed]);
@@ -1736,6 +1753,10 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true }) {
           </h4>
           <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginTop: 3 }}>
             {total === 0 ? 'Nothing to review right now.' : `${total} open${importantCount ? ` · ${importantCount} marked important` : ''}`}
+            {/* R4.16 — Last re-run stamp, so a re-audit trail is visible on the header. */}
+            {lastRerunAt && (
+              <span style={{ marginLeft: 8 }}>· Last re-run: {fmtAgo(lastRerunAt)}</span>
+            )}
           </div>
         </div>
         <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)' }}>{expanded ? '▾' : '▸'}</div>
