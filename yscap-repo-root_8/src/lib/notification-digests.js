@@ -227,6 +227,57 @@ async function weeklyAdminSummaryOnce() {
   return admins.rows.length;
 }
 
+/* R4.13 — Weekly admin+ digest of the top-5 riskiest files by AI risk score.
+   Same weighted math as R4.1 (fatal=25, warning=8, info=2, other=4, capped at
+   100). Silent when no file has any open finding. Once per week, admin+ only,
+   audit-log gated. */
+async function weeklyTopRiskyFilesOnce() {
+  if (!(await _gate('admin_weekly_top_risky', null, '6 days'))) return 0;
+  let top;
+  try {
+    top = await db.query(
+      `SELECT a.id, a.ys_loan_number, a.property_address, a.status AS app_status,
+              a.program, u.full_name AS lo_name, u.email AS lo_email,
+              b.first_name, b.last_name,
+              LEAST(100, COALESCE(SUM(CASE severity WHEN 'fatal' THEN 25 WHEN 'warning' THEN 8 WHEN 'info' THEN 2 ELSE 4 END),0))::int AS score,
+              COUNT(*) FILTER (WHERE severity='fatal')::int AS fatals
+         FROM applications a
+         JOIN ai_suggestions s ON s.application_id = a.id
+         LEFT JOIN staff_users u ON u.id = a.loan_officer_id
+         LEFT JOIN borrowers b ON b.id = a.borrower_id
+        WHERE a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','cancelled','declined','funded')
+          AND s.status IN ('open','marked_important','escalated','asked_admin')
+        GROUP BY a.id, a.ys_loan_number, a.property_address, a.status, a.program,
+                 u.full_name, u.email, b.first_name, b.last_name
+       HAVING COUNT(*) > 0
+        ORDER BY score DESC
+        LIMIT 5`);
+  } catch (_) { return 0; }
+  if (!top.rows.length) { await _stamp('admin_weekly_top_risky', null, { none: true }); return 0; }
+  const admins = await db.query(
+    `SELECT id, email FROM staff_users WHERE role IN ('admin','super_admin') AND is_active=true`);
+  if (!admins.rows.length) return 0;
+  const lines = top.rows.map((r) => {
+    const addr = (r.property_address && (r.property_address.line1 || r.property_address.address || r.property_address.oneLine)) || String(r.id).slice(0, 8);
+    const bucket = r.score >= 80 ? 'CRITICAL' : r.score >= 50 ? 'ELEVATED' : r.score >= 20 ? 'moderate' : 'low';
+    return `• ${addr} — ${r.first_name || ''} ${r.last_name || ''} · ${r.program || 'no program'} · LO ${r.lo_name || 'unassigned'} · score ${r.score} (${bucket}) · ${r.fatals} fatal`;
+  });
+  for (const ad of admins.rows) {
+    try {
+      await notify.notifyStaff(ad.id, {
+        type: 'digest',
+        title: 'Riskiest files this week (AI aggregate)',
+        badge: { text: 'Weekly', tone: 'crit' },
+        hero: { label: 'Highest risk', value: String(top.rows[0].score), sub: `${top.rows.length} file${top.rows.length === 1 ? '' : 's'} above threshold`, tone: 'crit' },
+        body: 'Below are the files with the highest weighted AI risk score right now. Consider bulk-dismissing false positives, muting recurring codes, or asking the super-admin on any that require judgment.',
+        lines,
+        link: '/internal/insights', ctaLabel: 'Open Insights', emailTo: ad.email });
+    } catch (e) { console.error('[digest] admin-weekly-top-risky', ad.id, e && e.message); }
+  }
+  await _stamp('admin_weekly_top_risky', null, { admins: admins.rows.length, top: top.rows.map(r => ({ id: r.id, score: r.score })) });
+  return admins.rows.length;
+}
+
 /* R3.43 — Weekly super-admin digest of pending AI questions. Every super-admin
    with is_active=true gets ONE email per week listing every ai_admin_questions
    row still waiting for their answer, oldest first. Silent when no pending
@@ -732,6 +783,7 @@ async function runDue() {
     await aiCrossdocSweepOnce().catch((e) => console.error('[digests] ai-crossdoc-sweep', e && e.message));
     if (weekday === 'Mon') await weeklyAdminSummaryOnce().catch((e) => console.error('[digests] admin', e && e.message));
     if (weekday === 'Mon') await weeklyAdminAiQuestionsOnce().catch((e) => console.error('[digests] admin-ai-questions', e && e.message));
+    if (weekday === 'Mon') await weeklyTopRiskyFilesOnce().catch((e) => console.error('[digests] admin-top-risky', e && e.message));
   }
   if (hour >= 8 && hour < 18) {
     await weeklyBorrowerOutstandingOnce().catch((e) => console.error('[digests] borrower', e && e.message));
@@ -756,5 +808,5 @@ module.exports = {
   weeklyBorrowerOutstandingOnce, dailyPipelineDigestOnce, staleFileAlertsOnce, weeklyAdminSummaryOnce,
   drawFindingsAwaitingBorrowerOnce, drawReleaseOverdueOnce, workflowAgingOnce,
   trainingRunOnce, certificateSurveyOnce, autoCommitteeReviewOnce, directSourceSweepOnce, autoReadSweepOnce, section1071SweepOnce,
-  aiCrossdocSweepOnce, weeklyAdminAiQuestionsOnce,
+  aiCrossdocSweepOnce, weeklyAdminAiQuestionsOnce, weeklyTopRiskyFilesOnce,
 };
