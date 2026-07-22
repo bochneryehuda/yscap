@@ -278,6 +278,104 @@ async function weeklyTopRiskyFilesOnce() {
   return admins.rows.length;
 }
 
+/* R5.64 — AI QA Department: a nightly "did we miss anything?" desk audit.
+   Owner-directed (9.8/10): the QA layer reviews the underwriter, not the loan.
+   Runs deterministic quality checks over currently-active files and rolls the
+   results up to super-admins ONCE/day. Every check is a real quality signal
+   the desk should look at — never an autonomous action. Silent when clean.
+
+   Checks (all data-driven, no AI cost):
+     1. duplicate open conditions  — the SAME condition template open more than
+        once on a file (a data-cleanliness / double-ask problem).
+     2. cleared-without-evidence   — a DOCUMENT condition marked satisfied /
+        signed-off with NO current document attached (cleared with no proof).
+     3. advanced-with-open-fatal   — a file at approved/CTC/funded that still
+        has an OPEN fatal AI suggestion (a fatal that was never resolved).
+   Self-gates via audit_log ('qa_desk_audit', ~once/20h). */
+async function qaDeskAuditOnce() {
+  if (!(await _gate('qa_desk_audit', null, '20 hours'))) return 0;
+  let dupes = { rows: [] }, noEvidence = { rows: [] }, openFatal = { rows: [] };
+  try {
+    [dupes, noEvidence, openFatal] = await Promise.all([
+      // 1) same condition template open ≥2× on one active file.
+      db.query(
+        `SELECT a.id AS application_id, a.property_address, t.code, COUNT(*)::int AS n
+           FROM checklist_items ci
+           JOIN applications a ON a.id = ci.application_id AND a.deleted_at IS NULL
+           JOIN checklist_templates t ON t.id = ci.template_id
+          WHERE a.status NOT IN ('withdrawn','cancelled','declined','funded')
+            AND ci.status IN ('outstanding','requested','received','issue')
+          GROUP BY a.id, a.property_address, t.code
+         HAVING COUNT(*) > 1
+          ORDER BY n DESC
+          LIMIT 25`),
+      // 2) a document condition cleared with no current document attached.
+      db.query(
+        `SELECT a.id AS application_id, a.property_address, ci.label
+           FROM checklist_items ci
+           JOIN applications a ON a.id = ci.application_id AND a.deleted_at IS NULL
+          WHERE a.status NOT IN ('withdrawn','cancelled','declined')
+            AND COALESCE(ci.item_kind,'document') = 'document'
+            AND (ci.status = 'satisfied' OR ci.signed_off_at IS NOT NULL)
+            AND NOT EXISTS (
+              SELECT 1 FROM documents d
+               WHERE d.checklist_item_id = ci.id AND d.is_current = true
+                 AND COALESCE(d.review_status,'') <> 'rejected')
+          ORDER BY a.id
+          LIMIT 25`),
+      // 3) a file advanced to approved/CTC/funded with an OPEN fatal AI suggestion.
+      db.query(
+        `SELECT a.id AS application_id, a.property_address, a.status AS app_status,
+                COUNT(*)::int AS open_fatal
+           FROM ai_suggestions s
+           JOIN applications a ON a.id = s.application_id AND a.deleted_at IS NULL
+          WHERE s.severity = 'fatal'
+            AND s.status IN ('open','marked_important','escalated','asked_admin')
+            AND a.status IN ('approved','clear_to_close','funded')
+          GROUP BY a.id, a.property_address, a.status
+          ORDER BY open_fatal DESC
+          LIMIT 25`),
+    ]);
+  } catch (_) { await _stamp('qa_desk_audit', null, { error: true }); return 0; }
+
+  const total = dupes.rows.length + noEvidence.rows.length + openFatal.rows.length;
+  if (total === 0) { await _stamp('qa_desk_audit', null, { clean: true }); return 0; }
+
+  const admins = await db.query(
+    `SELECT id, email FROM staff_users WHERE role IN ('admin','super_admin') AND is_active=true`);
+  if (!admins.rows.length) return 0;
+
+  const addr = (pa, id) => (pa && (pa.line1 || pa.address || pa.oneLine)) || String(id).slice(0, 8);
+  const lines = [];
+  if (openFatal.rows.length) {
+    lines.push(`⛔ ${openFatal.rows.length} file(s) advanced with an OPEN fatal AI finding:`);
+    for (const r of openFatal.rows.slice(0, 8)) lines.push(`   • ${addr(r.property_address, r.application_id)} — ${r.app_status} · ${r.open_fatal} fatal`);
+  }
+  if (noEvidence.rows.length) {
+    lines.push(`📄 ${noEvidence.rows.length} condition(s) cleared with no document attached:`);
+    for (const r of noEvidence.rows.slice(0, 8)) lines.push(`   • ${addr(r.property_address, r.application_id)} — "${String(r.label || '').slice(0, 60)}"`);
+  }
+  if (dupes.rows.length) {
+    lines.push(`🔁 ${dupes.rows.length} duplicate open condition(s):`);
+    for (const r of dupes.rows.slice(0, 8)) lines.push(`   • ${addr(r.property_address, r.application_id)} — ${r.code} ×${r.n}`);
+  }
+
+  for (const ad of admins.rows) {
+    try {
+      await notify.notifyStaff(ad.id, {
+        type: 'digest',
+        title: `AI QA — ${total} quality item${total === 1 ? '' : 's'} to review`,
+        badge: { text: 'QA', tone: openFatal.rows.length ? 'crit' : 'gold' },
+        hero: { label: 'To review', value: String(total), sub: `${openFatal.rows.length} fatal-advanced · ${noEvidence.rows.length} no-evidence · ${dupes.rows.length} duplicate`, tone: openFatal.rows.length ? 'crit' : 'gold' },
+        body: 'PILOT reviewed the desk overnight and found the items below worth a look. These are quality signals, not automatic changes — open each file and decide.',
+        lines,
+        link: '/internal/insights', ctaLabel: 'Open Insights', emailTo: ad.email });
+    } catch (e) { console.error('[digest] qa-desk-audit', ad.id, e && e.message); }
+  }
+  await _stamp('qa_desk_audit', null, { total, dupes: dupes.rows.length, noEvidence: noEvidence.rows.length, openFatal: openFatal.rows.length });
+  return admins.rows.length;
+}
+
 /* R4.17 — Weekly per-LO AI digest. Each active loan officer (or processor)
    gets ONE email listing the files THEY own that have open AI findings,
    ordered by weighted risk score (same fatal=25/warn=8/info=2/other=4 math
@@ -847,6 +945,7 @@ async function runDue() {
     await section1071SweepOnce().catch((e) => console.error('[digests] section-1071', e && e.message));
     await autoCommitteeReviewOnce().catch((e) => console.error('[digests] auto-committee', e && e.message));
     await aiCrossdocSweepOnce().catch((e) => console.error('[digests] ai-crossdoc-sweep', e && e.message));
+    await qaDeskAuditOnce().catch((e) => console.error('[digests] qa-desk-audit', e && e.message));
     if (weekday === 'Mon') await weeklyAdminSummaryOnce().catch((e) => console.error('[digests] admin', e && e.message));
     if (weekday === 'Mon') await weeklyAdminAiQuestionsOnce().catch((e) => console.error('[digests] admin-ai-questions', e && e.message));
     if (weekday === 'Mon') await weeklyTopRiskyFilesOnce().catch((e) => console.error('[digests] admin-top-risky', e && e.message));
@@ -876,4 +975,5 @@ module.exports = {
   drawFindingsAwaitingBorrowerOnce, drawReleaseOverdueOnce, workflowAgingOnce,
   trainingRunOnce, certificateSurveyOnce, autoCommitteeReviewOnce, directSourceSweepOnce, autoReadSweepOnce, section1071SweepOnce,
   aiCrossdocSweepOnce, weeklyAdminAiQuestionsOnce, weeklyTopRiskyFilesOnce, weeklyLoAiDigestOnce,
+  qaDeskAuditOnce,
 };
