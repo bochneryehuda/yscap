@@ -28,6 +28,9 @@ async function cond(appId, code, status, signedOffAt){
 const T0='2026-07-01T00:00:00Z', T1='2026-07-10T00:00:00Z', T2='2026-07-15T00:00:00Z';
 
 (async()=>{
+  // DB-gated like every other *-db suite in the `npm test` chain: CI runs with
+  // no database, so skip cleanly there (a DB-enabled run exercises it fully).
+  if (!process.env.DATABASE_URL) { console.log('  ~~ SKIP esign send-gate DB test (no DATABASE_URL)'); return; }
   // 1. nothing satisfied -> not ready, all 3 outstanding
   let app = await mkApp();
   await cond(app,'rtl_cond_appraisaldocs','outstanding');
