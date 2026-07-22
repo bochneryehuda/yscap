@@ -79,11 +79,17 @@ let n = 0; const ok = (m) => { n++; console.log('  ok -', m); };
   assert.strictEqual(byLabel['Loan amount'], '$375,000', 'loan amount formatted');
   assert.strictEqual(byLabel['Note rate'], '11.49%', 'note rate formatted');
   assert.strictEqual(byLabel['Term'], '12 months', 'term formatted');
-  // the 3-month minimum-interest standing rule is present, and NOT called a prepayment penalty
-  const joined = opts.lines.join('\n');
-  assert.ok(/minimum earned interest/i.test(joined), 'min-interest provision stated');
-  assert.ok(/not a prepayment penalty/i.test(joined), 'explicitly not a prepayment penalty');
-  ok('borrower term-sheet builder: full borrower-safe breakdown + min-interest rule');
+  // 3-month minimum earned interest is now a TOGGLE (owner-directed 2026-07-22,
+  // supersedes the 2026-07-14 always-on rule): the line appears ONLY when
+  // termOptions.minInterestEnabled is on — Standard/Gold default OFF, so the plain
+  // call omits it — and it is NEVER worded as a prepayment penalty.
+  const joinedOff = opts.lines.join('\n');
+  assert.ok(!/minimum earned interest/i.test(joinedOff), 'min-interest line omitted by default (Standard/Gold default off)');
+  const onOpts = borrowerTermsEmail({ ctx, quote, total: 375000, termMonths: 12, officer, termOptions: { minInterestEnabled: true, accrualType: 'non_dutch' } });
+  const joinedOn = onOpts.lines.join('\n');
+  assert.ok(/minimum earned interest/i.test(joinedOn), 'min-interest provision stated when enabled');
+  assert.ok(/not a prepayment penalty/i.test(joinedOn), 'explicitly not a prepayment penalty when enabled');
+  ok('borrower term-sheet builder: full borrower-safe breakdown + conditional min-interest');
 }
 
 /* ---------------- borrower term-sheet builder NEVER leaks a note-buyer name ---------------- */

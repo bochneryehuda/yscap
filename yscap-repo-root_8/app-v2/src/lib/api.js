@@ -218,7 +218,7 @@ export const api = {
   requestDraw:  (id) => req('POST', `/api/borrower/applications/${id}/request-draw`),
   borrowerPricing:      (appId) => req('GET', `/api/borrower/applications/${appId}/pricing`),
   borrowerPricingQuote: (appId, overrides) => req('POST', `/api/borrower/applications/${appId}/pricing/quote`, { overrides }),
-  borrowerRegisterProduct: (appId, program, overrides, adminKey, econVersion, submitException) => req('POST', `/api/borrower/applications/${appId}/pricing/register`, { program, overrides, adminKey, econVersion, submitException }),
+  borrowerRegisterProduct: (appId, program, overrides, adminKey, econVersion, submitException, termOptions) => req('POST', `/api/borrower/applications/${appId}/pricing/register`, { program, overrides, adminKey, econVersion, submitException, termOptions }),
   borrowerRequestException: (appId, note) => req('POST', `/api/borrower/applications/${appId}/pricing/request-exception`, { note }),
   checklist:    (id) => req('GET', `/api/borrower/applications/${id}/checklist`),
   conditions:   (id) => req('GET', `/api/borrower/applications/${id}/conditions`),
@@ -437,7 +437,7 @@ export const api = {
   staffExportPipeline: (params) => download(`/api/staff/applications/export${qs(params)}`),
   staffPricing:      (appId) => req('GET', `/api/staff/applications/${appId}/pricing`),
   staffPricingQuote: (appId, overrides) => req('POST', `/api/staff/applications/${appId}/pricing/quote`, { overrides }),
-  staffRegisterProduct: (appId, program, overrides, econVersion, assetMonths, submitException) => req('POST', `/api/staff/applications/${appId}/pricing/register`, { program, overrides, econVersion, assetMonths, submitException }),
+  staffRegisterProduct: (appId, program, overrides, econVersion, assetMonths, submitException, termOptions) => req('POST', `/api/staff/applications/${appId}/pricing/register`, { program, overrides, econVersion, assetMonths, submitException, termOptions }),
   staffRequestException: (appId, note) => req('POST', `/api/staff/applications/${appId}/pricing/request-exception`, { note }),
   // Manual Program admin config + the super-admin escalation box.
   manualProgramSettings:     () => req('GET', '/api/admin/manual-programs/settings'),

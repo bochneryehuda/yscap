@@ -21,6 +21,7 @@ const { serveDocument } = require('../lib/serve-document');
 const { decodeUploadBase64, safeFilename } = require('../lib/upload-bytes');
 const pricing = require('../lib/pricing');
 const manualProgram = require('../lib/manual-program');
+const termOpts = require('../lib/term-options');
 const workflowAuto = require('../lib/workflow-automation');
 const { persistProductRegistration } = require('../lib/product-registration');
 const { syncExperienceChecklistForApplication, syncExperienceChecklistForBorrower, RECENT_EXIT_SQL } = require('../lib/experience');
@@ -793,7 +794,7 @@ router.get('/applications/:id/pricing', async (req, res) => {
     if (!f) return res.status(404).json({ error: 'not found' });
     const hist = await db.query(
       `SELECT r.id, r.program, r.product_label, r.status, r.note_rate, r.total_loan, r.target_ltc,
-              r.is_current, r.created_at, r.inputs, r.quote, s.full_name AS registered_by_name
+              r.is_current, r.created_at, r.inputs, r.quote, r.term_options, s.full_name AS registered_by_name
          FROM product_registrations r LEFT JOIN staff_users s ON s.id=r.registered_by
         WHERE r.application_id=$1 ORDER BY r.created_at DESC`, [req.params.id]);
     // Strip internal lender pricing (markup/spread) from anything sent to a
@@ -869,6 +870,20 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // path may keep them; the registered basis uses verified experience only.
     delete overrides.expFlips; delete overrides.expHolds; delete overrides.expGround;
     const inputs = pricing.buildInputs(f.app, f.exp, overrides);
+    // Term-sheet options (owner-directed 2026-07-22) — display/record only. A
+    // borrower self-registers Standard/Gold only (never manual), so min-interest
+    // defaults OFF here unless explicitly set.
+    const rawTermOptions = (b.termOptions && typeof b.termOptions === 'object') ? b.termOptions : {};
+    // Effective closing date = studio's, else the file's existing — so a re-register
+    // never wipes the dates and they re-derive when the term moves.
+    const closingForDates = rawTermOptions.estClosingDate || f.app.est_closing_date || null;
+    const kd = termOpts.keyDates(closingForDates, inputs.term);
+    const resolvedTermOptions = {
+      accrualType: termOpts.resolveAccrual(rawTermOptions.accrualType),
+      minInterestEnabled: termOpts.resolveMinInterest(program, rawTermOptions.minInterestEnabled),
+      deferredOrigPct: termOpts.resolveDeferredOrigPct(rawTermOptions.deferredOrigPct),
+      estClosing: kd.estClosing, firstPayment: kd.firstPayment, maturity: kd.maturity,
+    };
     const quote = pricing.quoteProgram(program, inputs);
     // Gold Standard renovation cannot finance an interest reserve — never persist a
     // requested reserve on the registered scenario for that program.
@@ -914,6 +929,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       await client.query('BEGIN');
       const reg = await persistProductRegistration(client, {
         appId, program, inputs, quote, registeredByStaffId: null,
+        termOptions: resolvedTermOptions,
       });
       regId = reg.id;
       economicsChanged = reg.economicsChanged;
@@ -929,6 +945,9 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
             arvPct: quote.sizing ? quote.sizing.arvPct : null,
             ltcPct: quote.sizing ? quote.sizing.ltcPct : null,
             manualReasons, requestedByBorrower: true,
+            minInterest: resolvedTermOptions.minInterestEnabled,
+            minInterestDefault: termOpts.defaultMinInterest(program),
+            accrual: resolvedTermOptions.accrualType,
           },
           requestedBy: null,
         });
