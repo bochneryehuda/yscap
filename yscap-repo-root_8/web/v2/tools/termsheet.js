@@ -1003,7 +1003,7 @@
   function xlsxSections() {
     var d = calc();
     var gd = calcGold();                                   // full Gold object: slider- + override-connected
-    var EM = "\u2014", pct = function (x) { return x ? (x * 100).toFixed(2) + "%" : EM; };
+    var EM = "\u2014", pct = function (x) { return x ? pcFull(x) : EM; };   // full-precision, trailing zeros trimmed \u2014 byte-identical to the on-screen / PDF leverage figures (owner-directed 2026-07-22)
     var statusLabel = function (st) { return st === "ELIGIBLE" ? "Eligible" : st === "MANUAL" ? "Not eligible as-is — manual-review exception" : "Not eligible"; };
     var deal = [
       ["Loan purpose", purpose()], ["Strategy / program", dealType()],
