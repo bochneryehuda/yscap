@@ -109,6 +109,11 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
   const prev = (await client.query(
     `SELECT program, product_label, note_rate, total_loan, quote, inputs
        FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`, [appId])).rows[0] || null;
+  // Capture the loan amount BEFORE this registration overwrites it — the caller
+  // auto-clears a signed Heter Iska when the loan amount actually moves (the ISKA
+  // is tied to the loan amount). owner-directed 2026-07-22.
+  const prevLoanRow = (await client.query(`SELECT loan_amount FROM applications WHERE id=$1`, [appId])).rows[0];
+  const prevLoanAmount = prevLoanRow ? Number(prevLoanRow.loan_amount) : null;
   const newKey = borrowerTermsKey({ program, productLabel: quote.productLabel, noteRate: quote.noteRate, totalLoan: total, quote, inputs });
   const prevKey = prev ? borrowerTermsKey({ program: prev.program, productLabel: prev.product_label, noteRate: prev.note_rate, totalLoan: prev.total_loan, quote: prev.quote, inputs: prev.inputs }) : null;
   // First registration (no prev) always notifies; a re-register notifies only
@@ -239,7 +244,10 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
   // fatality guard, which filters `is_current AND NOT stale` (audit #4/#9/#13).
   await client.query(
     `UPDATE product_registrations SET stale=false, stale_reason=NULL WHERE id=$1`, [registrationId]);
-  return { id: registrationId, economicsChanged };
+  // Did the loan amount actually move? (whole dollars — the loan is reported
+  // floored). The caller uses this to auto-clear a signed Heter Iska.
+  const loanAmountChanged = Math.round(Number(prevLoanAmount) || 0) !== Math.round(total);
+  return { id: registrationId, economicsChanged, loanAmountChanged };
 }
 
 /**
