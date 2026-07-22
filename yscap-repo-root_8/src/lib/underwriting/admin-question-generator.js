@@ -49,9 +49,12 @@ function dedupeKeyFor(ctx) {
 function pickRecommended(ctx) {
   const readings = Array.isArray(ctx.readings) ? ctx.readings : [];
   if (typeof ctx.recommendedOption === 'string' && ctx.recommendedOption.trim() !== '') return ctx.recommendedOption.trim();
-  const flagged = readings.find((r) => r && r.recommended === true);
-  if (flagged && flagged.key) return flagged.key;
-  const withConf = readings.filter((r) => r && r.key != null && Number.isFinite(Number(r.confidence)));
+  // Only a reading that will actually BECOME an option (has key AND label) may be
+  // recommended — otherwise the recommendedOption wouldn't match any option key
+  // and would sink the whole (otherwise valid) question at validation.
+  const flagged = readings.find((r) => r && r.recommended === true && r.key != null && r.label != null);
+  if (flagged) return flagged.key;
+  const withConf = readings.filter((r) => r && r.key != null && r.label != null && Number.isFinite(Number(r.confidence)));
   if (withConf.length < 1) return null;
   let best = withConf[0], tie = false;
   for (let i = 1; i < withConf.length; i++) {

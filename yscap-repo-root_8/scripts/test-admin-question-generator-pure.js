@@ -60,6 +60,21 @@ assert.strictEqual(g.ok, false, 'a question with no evidence is refused');
 assert.ok(g.errors.some((e) => /evidence/i.test(e)));
 ok('an unsafe context (too few options / no evidence) returns ok:false instead of throwing');
 
+// --- a label-less (non-option) reading never wins the recommendation and sinks the question ---
+ctx = {
+  blockedComponent: 'vesting_owner', subject: '12 Oak St', evidenceSpanIds: ['span-1'],
+  readings: [
+    { key: 'a', label: 'Reading A', confidence: 0.5 },
+    { key: 'b', label: 'Reading B', confidence: 0.6 },
+    { key: 'c', confidence: 0.9 }, // most confident but has NO label → not an option
+  ],
+};
+g = gen.generate(ctx);
+assert.strictEqual(g.ok, true, 'the a-vs-b question still generates despite a label-less higher-confidence reading');
+assert.strictEqual(g.question.option_schema.length, 2, 'only the two labelled readings become options');
+assert.strictEqual(g.question.recommended_option, 'b', 'the label-less reading is ignored; the best OPTION is recommended');
+ok('a label-less (non-option) reading never wins the recommendation and never sinks the question');
+
 // --- dedupe key is STABLE across wording + independent of reading order ---
 const k1 = gen.dedupeKeyFor(baseCtx());
 ctx = baseCtx(); ctx.questionText = 'totally different wording here';
