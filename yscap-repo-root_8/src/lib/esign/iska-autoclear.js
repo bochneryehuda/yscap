@@ -11,7 +11,7 @@
  * envelope + SUPERSEDES its signed document via the shared clearPackage() — the
  * DocuSign-side clear a DB trigger can't do.
  *
- * The condition itself is reopened by the db/278 trigger (from ANY loan-amount
+ * The condition itself is reopened by the db/280 trigger (from ANY loan-amount
  * writer, with the "reopened because the loan amount changed" note), so this
  * layer is specifically the package clear; clearPackage's own condition reopen
  * is a harmless no-op once the trigger has already reopened it.

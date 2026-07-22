@@ -244,9 +244,11 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
   // fatality guard, which filters `is_current AND NOT stale` (audit #4/#9/#13).
   await client.query(
     `UPDATE product_registrations SET stale=false, stale_reason=NULL WHERE id=$1`, [registrationId]);
-  // Did the loan amount actually move? (whole dollars — the loan is reported
-  // floored). The caller uses this to auto-clear a signed Heter Iska.
-  const loanAmountChanged = Math.round(Number(prevLoanAmount) || 0) !== Math.round(total);
+  // Did the loan amount actually move? Compare on the EXACT stored value vs the
+  // value we just wrote — the same basis as the db/280 trigger's IS DISTINCT
+  // FROM — so the app-layer auto-clear can never lag the trigger's condition
+  // reopen. In practice both are whole dollars (the engine floors the loan).
+  const loanAmountChanged = Number(prevLoanAmount || 0) !== Number(total);
   return { id: registrationId, economicsChanged, loanAmountChanged };
 }
 

@@ -1,6 +1,6 @@
 /**
  * ISKA auto-clear on a loan-amount change (owner-directed 2026-07-22). Two layers:
- *   1. db/278 trigger — reopens the rtl_cond_iska condition on ANY loan-amount
+ *   1. db/280 trigger — reopens the rtl_cond_iska condition on ANY loan-amount
  *      writer, labelled "reopened because the loan amount changed."
  *   2. app-layer autoClearIskaOnLoanChange — voids the live heter_iska DocuSign
  *      package + supersedes its signed doc (the DocuSign-side clear a trigger
@@ -63,7 +63,7 @@ async function cleanup(ids) {
     const tmpl = await iskaTemplateId();
     assert(!!tmpl, 'precondition: the rtl_cond_iska template exists');
 
-    // ---- (A) db/278 trigger reopens the ISKA condition on a loan-amount change ----
+    // ---- (A) db/280 trigger reopens the ISKA condition on a loan-amount change ----
     {
       const ids = await seed(`${sfx}a`, { loanAmount: 300000 }); created.push(ids);
       // Change the loan amount → the trigger should reopen the signed ISKA condition.
