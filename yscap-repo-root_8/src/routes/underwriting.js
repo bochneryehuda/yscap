@@ -288,7 +288,7 @@ router.get('/:appId', async (req, res, next) => {
     // any doc whose denormalized owner differs), OR one of this file's ENTITY's documents (llc_id).
     const docsOnFile = await db.query(
       `SELECT d.id, d.filename, d.doc_kind, d.checklist_item_id, t.code AS condition_code,
-              COALESCE(t.label, t.code) AS condition_label,
+              COALESCE(t.label, t.code) AS condition_label, d.page_bounded,
               d.authenticity_score, d.authenticity_level, d.authenticity_signals
          FROM documents d
          LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
@@ -331,7 +331,10 @@ router.get('/:appId', async (req, res, next) => {
       // (isReadable), or the count here would include a type the reader skips (e.g. a document under
       // the appraisal-documents condition → 'appraisal', which the appraisal desk owns, not this
       // reader) and the desk's "read them all" button would never clear a stuck count.
-      if (!analyzed && expectedType && registry.get(expectedType)) autoReadQueue.push(row);
+      // R5.1 — a failed-slice split child (page_bounded=false) still references
+      // the whole package; keep it OUT of the auto-read queue so it's never read
+      // as if it were one logical document. Matches selectAutoReadQueue's guard.
+      if (!analyzed && expectedType && registry.get(expectedType) && d.page_bounded !== false) autoReadQueue.push(row);
     }
 
     // Data-comparison / tie-out over the file's current extractions + the appraisal.
@@ -839,7 +842,7 @@ async function buildAutoReadQueue(app) {
   const a0 = (await db.query(`SELECT llc_id FROM applications WHERE id=$1`, [app.id])).rows[0] || {};
   const [docs, exts] = await Promise.all([
     db.query(
-      `SELECT d.id, d.filename, d.doc_kind, t.code AS condition_code
+      `SELECT d.id, d.filename, d.doc_kind, d.page_bounded, t.code AS condition_code
          FROM documents d
          LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
          LEFT JOIN checklist_templates t ON t.id = ci.template_id
@@ -1728,6 +1731,15 @@ router.post('/:appId/ai-suggestions/:id/split-and-file', requirePermission('sign
       const segments = Array.isArray(body.segments) ? body.segments : [];
       if (!segments.length) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'segments[] required' }); }
 
+      // R5.1 — load the SOURCE bytes once so each child can be physically sliced
+      // to only its own pages. Best-effort: if the read fails we fall back to a
+      // page-range record (page_bounded=false) rather than blocking the split.
+      let srcBytes = null;
+      try { srcBytes = await storage.read(src.storage_ref); }
+      catch (_) { srcBytes = null; }
+      const { slicePdfPages } = require('../lib/underwriting/pdf-slice');
+      const crypto = require('crypto');
+
       const created = [];
       for (const seg of segments) {
         const pages = Array.isArray(seg.pages) ? seg.pages.filter(Number.isFinite).sort((a, b) => a - b) : [];
@@ -1736,16 +1748,35 @@ router.post('/:appId/ai-suggestions/:id/split-and-file', requirePermission('sign
         // Confirm the target checklist_item belongs to this file.
         const target = (await client.query(`SELECT id FROM checklist_items WHERE id=$1 AND application_id=$2`, [seg.checklistItemId, app.id])).rows[0];
         if (!target) continue;
+
+        // R5.1 — physically slice the source PDF to exactly this child's pages,
+        // store the sliced bytes as the child's OWN storage object, and point the
+        // child there. A page-bounded child is safe to analyze in isolation; the
+        // old behavior (child references the whole package) contaminated the read.
+        let childRef = src.storage_ref, childProvider = src.storage_provider,
+            childBytes = src.size_bytes, childSha = null, pageBounded = false;
+        if (srcBytes) {
+          const sliced = await slicePdfPages(srcBytes, pages);
+          if (sliced.ok && sliced.buf) {
+            try {
+              const saved = await storage.save(sliced.buf, { filename: `${(seg.docType || 'part')}.pdf` });
+              childRef = saved.ref; childProvider = saved.provider; childBytes = saved.bytes;
+              childSha = crypto.createHash('sha256').update(sliced.buf).digest('hex');
+              pageBounded = true;
+            } catch (_) { /* fall back to source ref below */ }
+          }
+        }
         const ins = await client.query(
           `INSERT INTO documents (application_id, checklist_item_id, borrower_id, filename, content_type,
                                   size_bytes, storage_provider, storage_ref,
-                                  uploaded_by_kind, uploaded_by_id, slot_label, visibility)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,$10,'staff_only')
+                                  uploaded_by_kind, uploaded_by_id, slot_label, visibility,
+                                  source_document_id, page_range, page_bounded, sha256)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,$10,'staff_only',$11,$12,$13,$14)
            RETURNING id`,
           [app.id, seg.checklistItemId, src.borrower_id, `${(seg.docType || 'part')}—${src.filename}`,
-           src.content_type, src.size_bytes, src.storage_provider, src.storage_ref,
-           req.actor.staffId, slotLabel]);
-        created.push({ id: ins.rows[0].id, checklistItemId: seg.checklistItemId, pages });
+           (pageBounded ? 'application/pdf' : src.content_type), childBytes, childProvider, childRef,
+           req.actor.staffId, slotLabel, src.id, pages, pageBounded, childSha]);
+        created.push({ id: ins.rows[0].id, checklistItemId: seg.checklistItemId, pages, pageBounded });
       }
 
       // Close the suggestion — dismiss with a note that names the resulting child docs.

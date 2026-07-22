@@ -63,4 +63,18 @@ const readableAll = () => true;
   assert.deepStrictEqual(q, [], 'analyzedIds as an array works (already read -> skipped)');
 }
 
-console.log('test-underwriting-autoread: queue selection (condition->type, skip read/unreadable/unmapped) pass');
+// ---- R5.1 — a failed-slice split child (page_bounded=false) is never auto-read ----
+// It still references the whole source package, so reading it as one logical
+// document is the exact contamination the packet-splitter fix prevents. A normal
+// upload (page_bounded null/undefined) and a real page-bounded child (true) queue.
+{
+  const documents = [
+    { id: 'd1', condition_code: 'rtl_cond_title', filename: 'normal.pdf' },                    // null -> queued
+    { id: 'd2', condition_code: 'rtl_cond_title', filename: 'bounded.pdf', page_bounded: true },// true -> queued
+    { id: 'd3', condition_code: 'rtl_cond_title', filename: 'fallback.pdf', page_bounded: false },// false -> skipped
+  ];
+  const q = selectAutoReadQueue({ documents, isReadable: readableAll });
+  assert.deepStrictEqual(q.map((x) => x.id), ['d1', 'd2'], 'page_bounded=false split child is skipped; null/true queue');
+}
+
+console.log('test-underwriting-autoread: queue selection (condition->type, skip read/unreadable/unmapped/unbounded) pass');
