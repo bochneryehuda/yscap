@@ -1108,7 +1108,7 @@ router.post('/files/:id/retainage-release', requirePermission('manage_draws'), a
     const already = Number((await client.query(`SELECT COALESCE(sum(net_release_cents),0) r FROM draw_disbursements WHERE application_id=$1 AND kind='retainage_release'`, [appId])).rows[0].r) || 0;
     const toRelease = held - already;
     if (toRelease <= 0) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'no retainage is being held to release' }); }
-    // Snapshot the total-held at this moment onto the release row (db/234) so a later retro-edit
+    // Snapshot the total-held at this moment onto the release row (db/241) so a later retro-edit
     // of an old draw's retainage_held_cents can't silently shift the pool — the audit trail shows
     // exactly what was held when we wired this release (audit finding 2026-07-21).
     const row = (await client.query(
@@ -2027,7 +2027,7 @@ router.get('/findings/:findingId', requirePermission('manage_draws'), async (req
     });
   // Post-audit fix (2026-07-21): split live vs retired so the coordinator UI's default per-line sum
   // matches the parent totals (which mirror Sitewire's current sum, excluding retired lines).
-  // A retired line — one Sitewire dropped from a fresh read on re-deliver, db/235 retired_at — stays
+  // A retired line — one Sitewire dropped from a fresh read on re-deliver, db/242 retired_at — stays
   // available as history under `retired_lines` (a decided dispute is NEVER retired, so this only ever
   // contains lines the borrower hadn't acted on).
   const lines = allRows.filter((l) => l.retired_at == null);
