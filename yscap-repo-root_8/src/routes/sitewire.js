@@ -1555,7 +1555,7 @@ router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, r
     const draws = (await db.query(`SELECT sitewire_draw_id, number, name, status, risk_level, risk_flags, submitted_at, approved_at, pdf_src, quick_notify_status_id, coordinator_id FROM sitewire_draws WHERE application_id=$1 ORDER BY number DESC NULLS LAST`, [appId])).rows;
     // Owner-directed 2026-07-22 (file 1053 Ella T Grasso Blvd): the request's own job_item_name
     // can arrive null from Sitewire (drafting-state draws often omit it); fall back FIRST to the
-    // crosswalk name (which reconcile hydrates from prop.budget.job_items on adopt), so the desk
+    // crosswalk name (which reconcile hydrates from getBudget().job_items on adopt), so the desk
     // shows "Interior Video Tour" instead of "Line 1180837". LEFT JOIN so an un-adopted item
     // still returns null and the UI's final fallback ("Line <id>") kicks in.
     //
