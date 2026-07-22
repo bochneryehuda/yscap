@@ -109,8 +109,11 @@ function usableEngines(features) {
 // directly? Only for real PDFs with a dense text layer and no scan-quality flag.
 function nativeTextReliable(features) {
   if (!features || features.hasNativeText !== true) return false;
+  // Only a PDF has a native text layer. Require the MIME to explicitly say PDF —
+  // an empty/missing or non-PDF MIME is never trusted to skip OCR (a mistyped
+  // image asserting hasNativeText must still be OCR'd).
   const mime = String(features.mimeType || '').toLowerCase();
-  if (mime && mime.indexOf('pdf') === -1) return false; // images never have a native text layer
+  if (mime.indexOf('pdf') === -1) return false;
   const pages = Number(features.pageCount) || 1;
   const chars = Number(features.nativeTextChars) || 0;
   if (chars / pages < NATIVE_TEXT_MIN_CHARS_PER_PAGE) return false;
@@ -252,18 +255,24 @@ function pageConfidence(p) {
   return words.reduce((a, w) => a + w.confidence, 0) / words.length;
 }
 
-// Extract comparable numeric tokens (money, percentages, plain numbers >= 100)
-// from a block of text — used to reconcile two independent reads of a
-// numeric-critical document.
+// Extract comparable MONEY tokens from a block of text — used to reconcile two
+// independent reads of a numeric-critical document. Deliberately narrow: it
+// matches only money-SHAPED numbers (a $ prefix, comma-grouped thousands, or a
+// two-decimal cents amount) so it does NOT reconcile — and raise false
+// disagreements on — bare integers like a header year (2026), an account/loan
+// number, or a ZIP. A leading minus is captured so a -500 debit does not
+// falsely agree with a +500 credit.
 function numericTokens(text) {
   const s = String(text || '');
   const set = new Set();
-  // Money and large plain numbers: 1,234.56 / 1234.56 / 100000
-  const re = /(?:\$\s*)?(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d{3,}(?:\.\d+)?)/g;
+  // Alternatives (comma-grouped forms first so a "$42,318.55" is matched whole,
+  // never split): $-comma / comma / $-plain / cents.
+  const re = /(-)?\s*(\$\s*\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\$\s*\d+(?:\.\d{1,2})?|\d+\.\d{2})/g;
   let m;
   while ((m = re.exec(s)) !== null) {
-    const norm = m[1].replace(/,/g, '');
-    const val = Number(norm);
+    const sign = m[1] === '-' ? -1 : 1;
+    const norm = m[2].replace(/[$\s,]/g, '');
+    const val = Number(norm) * sign;
     if (Number.isFinite(val) && Math.abs(val) >= 100) set.add(Math.round(val * 100) / 100);
   }
   return set;

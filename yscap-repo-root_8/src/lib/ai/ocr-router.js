@@ -202,18 +202,26 @@ async function readRouted(args, bytesHint) {
   }
   if (!tryOrder.length) tryOrder.push('azure');
 
-  // Read through the ordered engines until one produces a usable read.
+  // Read through the ordered engines until one produces a usable read. Every
+  // engine module is contracted never to throw (a give-up returns {ok:false}),
+  // but we wrap defensively so a contract violation can never lose a read we
+  // already have — the router must never throw (advisory, non-blocking).
   let winner = null;
+  let firstFailure = null;
   for (const engine of tryOrder) {
     sequence.push(engine);
-    const r = await engineRead(engine, args);
+    let r;
+    try { r = await engineRead(engine, args); }
+    catch (e) { r = { ok: false, reason: (e && e.message) || 'engine threw', engine: ENGINE_LABEL[engine] }; }
+    if (!firstFailure) firstFailure = r;
     if (r.ok && !primaryLooksEmpty(r, bytesHint)) { winner = r; break; }
     if (!winner && r.ok && String(r.text || '').trim()) winner = r; // keep the best non-empty as a floor
   }
   if (!winner) {
-    // Nothing usable — return the first engine's failure with the plan attached.
-    const first = await engineRead(tryOrder[0], args);
-    return { ...first, engine: ENGINE_LABEL[tryOrder[0]] || 'azure-docint', engineSequence: sequence, routePlan: plan };
+    // Nothing usable — return the FIRST engine's failure (already read in the
+    // loop; do not re-read it) with the plan attached.
+    const fail = firstFailure || { ok: false, reason: 'no engine produced a read', engine: ENGINE_LABEL[tryOrder[0]] || 'azure-docint' };
+    return { ...fail, engine: fail.engine || ENGINE_LABEL[tryOrder[0]] || 'azure-docint', engineSequence: sequence, routePlan: plan };
   }
 
   const result = { ...winner, engineSequence: sequence, routePlan: plan };

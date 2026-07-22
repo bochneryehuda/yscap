@@ -97,6 +97,21 @@ assert.ok(rec.onlyInPrimary.includes(42318.55));
 assert.ok(rec.onlyInChallenger.includes(42313.55));
 ok('reconcileNumbers flags a numeric disagreement between two independent reads');
 
+// --- year / account-number / ZIP noise must NOT create false disagreements ---
+rec = rm.reconcileNumbers('Statement 2026 account 445566 balance $12,500.00', 'Statement 2026 account 998877 balance $12,500.00');
+assert.strictEqual(rec.disagreement, false, 'differing bare account numbers + same money → agree (bare integers ignored)');
+ok('bare years/account numbers are ignored — only money-shaped numbers reconcile');
+
+// --- a signed debit does not falsely agree with a credit of the same magnitude ---
+rec = rm.reconcileNumbers('withdrawal -$500.00 today', 'deposit $500.00 today');
+assert.strictEqual(rec.disagreement, true, 'a -500 debit is not the same as a +500 credit');
+ok('the sign is preserved — a -500 debit differs from a +500 credit');
+
+// --- native text is only trusted when the MIME explicitly says PDF ---
+assert.strictEqual(rm._internals.nativeTextReliable({ hasNativeText: true, nativeTextChars: 9999, pageCount: 1, mimeType: '' }), false, 'empty MIME is not trusted');
+assert.strictEqual(rm._internals.nativeTextReliable({ hasNativeText: true, nativeTextChars: 9999, pageCount: 1, mimeType: 'application/pdf' }), true, 'explicit PDF MIME is trusted');
+ok('native-text shortcut requires an explicit PDF MIME (empty/other MIME → OCR)');
+
 // --- an unknown document family gets the safe default profile ---
 p = rm.planRoute({ docType: 'something_new', pageCount: 2, ...ALL });
 assert.strictEqual(p.materiality, 'medium');

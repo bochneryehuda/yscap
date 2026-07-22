@@ -113,7 +113,16 @@ async function analyzeDocument({ docType, buffer, base64, mimeType, subject, tod
   // flat fallback chain, byte-identical). The reconciliation is ADVISORY —
   // surfaced on the extraction for a human, it never changes a decision.
   const routeArgs = { buffer, base64, mimeType };
-  if (process.env.OCR_ROUTING_ENABLED === '1' && docType) routeArgs.docType = docType;
+  if (process.env.OCR_ROUTING_ENABLED === '1' && docType) {
+    routeArgs.docType = docType;
+    // Probe native-PDF-text + appraisal-XML so the matrix can prefer a clean
+    // native text layer or a MISMO XML over OCR. Best-effort — a probe failure
+    // just omits those signals and the matrix falls back to OCR.
+    try {
+      const feat = await require('../ai/document-features').detectFeatures({ buffer, base64, mimeType, docType });
+      routeArgs.routeFeatures = { docType, mimeType, bytes: routeArgs.buffer ? routeArgs.buffer.length : null, ...feat };
+    } catch (_) { /* no features → docType-only routing */ }
+  }
   const ocr = await reader.read(routeArgs);
   baseExtraction.ocrEngine = ocr.ok ? (ocr.engine || 'document_intelligence') : null;
   baseExtraction.ocrEngineSequence = Array.isArray(ocr.engineSequence) ? ocr.engineSequence.slice() : null;
