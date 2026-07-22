@@ -960,6 +960,67 @@ router.post('/:appId/certificate/survey', requirePermission('sign_off_conditions
   } catch (e) { next(e); }
 });
 
+// ---- Real-time shadow training (Sovereign 4/4 extension) -----------------
+// Right after an underwriter decides a finding, look at every OTHER open
+// finding with the same code across the pipeline and surface them for
+// bulk-action — instead of waiting for the nightly aggregator to notice the
+// systemic false positive. Read-only lookup + a permissioned bulk-resolve.
+router.get('/:appId/findings/:fid/similar-open', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    if (!isUuid(req.params.fid)) return res.status(404).json({ error: 'finding not found' });
+    const f = (await db.query(
+      `SELECT id, code, severity, application_id FROM document_findings WHERE id=$1 AND application_id=$2`,
+      [req.params.fid, app.id])).rows[0];
+    if (!f) return res.status(404).json({ error: 'finding not found' });
+    const shadow = require('../lib/underwriting/shadow-training');
+    // Filter to files the caller is permitted to see. see_all_files gets
+    // everything the shadow returns; a scoped LO/processor only sees findings
+    // on their own files.
+    const rows = await shadow.findSimilarOpenFindings(db, f, { limit: 25 });
+    const filtered = seesAll(req) ? rows : rows.filter((r) => r.application_id && String(r.application_id) === String(app.id));
+    res.json({ ok: true, anchor: { id: f.id, code: f.code }, similar: filtered });
+  } catch (e) { next(e); }
+});
+
+router.post('/:appId/findings/similar/bulk-resolve', requirePermission('sign_off_conditions'), async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const b = req.body || {};
+    const findingIds = Array.isArray(b.findingIds) ? b.findingIds.filter(isUuid).slice(0, 100) : [];
+    const action = String(b.action || '');
+    if (!findingIds.length) return res.status(400).json({ error: 'no findingIds provided' });
+    if (!['dismiss', 'clear', 'post_condition', 'request_document', 'acknowledge'].includes(action)) {
+      return res.status(400).json({ error: 'action must be one of: dismiss | clear | post_condition | request_document | acknowledge (no grant_exception allowed in bulk — do that on the file individually)' });
+    }
+    // Refuse to bulk-touch findings on files the caller can't see. This is
+    // authorization enforcement — every bulk id gets a fresh scope check.
+    const scopeQ = await db.query(
+      `SELECT df.id, df.application_id FROM document_findings df WHERE df.id = ANY($1::uuid[])`, [findingIds]);
+    const seesAllFlag = seesAll(req);
+    const allowedIds = [];
+    for (const row of scopeQ.rows) {
+      if (seesAllFlag) { allowedIds.push(row.id); continue; }
+      const scoped = await fileFor(req, row.application_id).catch(() => null);
+      if (scoped) allowedIds.push(row.id);
+    }
+    const client = await db.pool.connect();
+    let out;
+    try {
+      await client.query('BEGIN');
+      const shadow = require('../lib/underwriting/shadow-training');
+      out = await shadow.bulkResolve(client, {
+        findingIds: allowedIds, action, note: b.note || null, value: b.value || null, by: req.actor.id,
+      });
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+    res.json({ ok: true, requested: findingIds.length, allowed: allowedIds.length, ...out });
+  } catch (e) { next(e); }
+});
+
 // ---- POST /findings/:fid/committee-review ---------------------------------
 // Run the multi-model reasoning committee on ONE finding (Sovereign 3/4,
 // owner-directed 2026-07-21). Specialist reviewers (identity, entity, credit,
