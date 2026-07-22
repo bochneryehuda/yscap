@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { api } from '../lib/api.js';
+import { api, saveBlob } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
+import DocPreview from '../components/DocPreview.jsx';
 
 /* The finding-escalation WORKLOAD (owner-directed 2026-07-21, Items 7 + 12).
  *
@@ -50,6 +51,7 @@ export default function StaffFindingEscalations() {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
   const [notes, setNotes] = useState({});
+  const [preview, setPreview] = useState(null);   // { documentId, page, title } — in-app source-PDF preview
 
   const flash = (ok, text) => { setMsg({ ok, text }); setTimeout(() => setMsg(null), 7000); };
 
@@ -119,20 +121,17 @@ export default function StaffFindingEscalations() {
     finally { setBusy(false); }
   }
 
-  // Open the source document (the one the finding was raised from) in a new tab — same
-  // authenticated downloader the file view uses.
-  async function openSourceDoc(row) {
+  // Open the source document (the one the finding was raised from) IN-APP, jumped
+  // to the page the finding was raised from — no new tab, no download. DocPreview
+  // renders the PDF with PDF.js; the reviewer sees exactly the page in question.
+  function openSourceDoc(row) {
     if (!row.document_id) return;
-    try {
-      const res = await api.staffDownloadDoc(row.document_id);
-      const blob = res && res.blob;
-      const filename = res && res.filename;
-      if (!blob) return;
-      const url = URL.createObjectURL(blob);
-      const w = window.open(url, '_blank');
-      if (!w) { const a = document.createElement('a'); a.href = url; a.download = filename || 'document'; document.body.appendChild(a); a.click(); a.remove(); }
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
-    } catch (e) { flash(false, e.message || 'could not open the source document'); }
+    const base = row.title || row.code || 'Source document';
+    setPreview({
+      documentId: row.document_id,
+      page: row.page_number != null ? Number(row.page_number) : undefined,
+      title: `${base}${row.page_number != null ? ` — page ${row.page_number}` : ''}`,
+    });
   }
 
   // May THIS user decide THIS row? A super-admin always; otherwise the person it was routed to
@@ -191,18 +190,23 @@ export default function StaffFindingEscalations() {
                       {r.file_value != null && <span>Our file: <b>{String(r.file_value)}</b></span>}
                     </div>
                   )}
-                  {r.document_id && (
-                    <div style={{ fontSize: 12, margin: '4px 0' }}>
-                      <a href="#" onClick={(e) => { e.preventDefault(); openSourceDoc(r); }}
-                         style={{ color: 'var(--teal-deep,#256168)', textDecoration: 'underline' }}>
+                  <div className="row" style={{ gap: 6, margin: '8px 0 2px', flexWrap: 'wrap' }}>
+                    {/* Straight to the loan file (no finding anchor) — the owner's
+                        "open the loan file directly". */}
+                    <a className="btn ghost small" href={`#/internal/app/${r.application_id}`}>Open loan file</a>
+                    {/* Straight to THIS finding on the file (scrolls + highlights it).
+                        Only when there's a stored finding to anchor to — otherwise the
+                        link is identical to "Open loan file" (derived findings). */}
+                    {r.finding_id && (
+                      <a className="btn ghost small" href={fileDeepLink}>Open the finding on the file</a>
+                    )}
+                    {/* The source PDF, IN-APP, jumped to the page it was raised from. */}
+                    {r.document_id && (
+                      <button className="btn ghost small" type="button" onClick={() => openSourceDoc(r)}>
                         Open the source document{pageHint}
-                      </a>
-                      {' · '}
-                      <a href={fileDeepLink} style={{ color: 'var(--teal-deep,#256168)', textDecoration: 'underline' }}>
-                        Open the finding on the file
-                      </a>
-                    </div>
-                  )}
+                      </button>
+                    )}
+                  </div>
                   {r.how_to && <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', marginTop: 4 }}>{r.how_to}</div>}
                   {r.question && (
                     <div style={{ fontSize: 12.5, marginTop: 6, padding: '7px 10px', background: 'var(--ink-2,#F4F1EA)', borderRadius: 8, color: 'var(--ivory,#141B22)' }}>
@@ -269,6 +273,23 @@ export default function StaffFindingEscalations() {
           );
         })}
       </div>
+
+      {/* In-app source-PDF preview, opened to the finding's page. Uses the same
+          authenticated downloader as the file view; DocPreview handles
+          non-PDF/unpreviewable types with its own download card. */}
+      {preview && (
+        <DocPreview
+          key={preview.documentId}
+          title={preview.title}
+          initialPage={preview.page}
+          load={() => api.staffDownloadDoc(preview.documentId)}
+          onDownload={async () => {
+            try { const { blob, filename } = await api.staffDownloadDoc(preview.documentId); saveBlob(blob, filename); }
+            catch (e) { flash(false, e.message || 'could not download the document'); }
+          }}
+          onClose={() => setPreview(null)}
+        />
+      )}
     </div>
   );
 }
