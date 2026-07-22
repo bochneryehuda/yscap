@@ -72,6 +72,17 @@ const todayISO = () => new Date().toISOString().slice(0, 10);
 // In-process is enough to stop a runaway loop; it is NOT a security boundary (authz is elsewhere).
 const PAID_COOLDOWN_MS = 8000;
 const MAX_ANALYZE_BYTES = 50 * 1024 * 1024; // reject an oversized stored document before base64 amplification
+
+// Doc types where a LOW authenticity score (see src/lib/underwriting/authenticity.js)
+// warrants raising a "this document shows signs of tampering" finding. A photo ID
+// or screenshot is NOT here — those legitimately come from Photoshop / Preview and
+// the low-authenticity signal is expected.
+const MATERIAL_DOC_TYPES = new Set([
+  'bank_statement', 'credit_report', 'appraisal', 'insurance', 'insurance_invoice',
+  'title', 'settlement', 'purchase_contract', 'contract_amendment',
+  'signed_term_sheet', 'signed_application', 'ein_letter', 'good_standing',
+  'llc_formation', 'background_report', 'flood',
+]);
 const _lastPaidCall = new Map(); // `${actorId}:${documentId}:${kind}` -> ms of last paid call
 function paidCooldownRemaining(actorId, documentId, kind) {
   const key = `${actorId}:${documentId}:${kind}`;
@@ -627,6 +638,28 @@ async function analyzeOneDocument(app, doc, docType, opts = {}) {
         docType, extraction: result.extraction, findings: result.findings,
         analyzedSha256: doc.sha256 || null, analyzerVersion: ANALYZER_VERSION, subjectHash: subjHash,
       });
+      // Authenticity scoring (Sovereign, blueprint 2026-07-22): score the PDF
+      // bytes for tampering signals + stash on the documents row. If the score
+      // is 'low' on a MATERIAL doc type (bank statement, appraisal, credit,
+      // insurance, ...), spawn a warning finding so the underwriter looks
+      // BEFORE trusting the extracted values. Best-effort — never blocks.
+      try {
+        const auth = require('../lib/underwriting/authenticity').analyzePdf(buffer, { docType });
+        await client.query(
+          `UPDATE documents SET authenticity_score=$2, authenticity_level=$3, authenticity_signals=$4::jsonb, authenticity_checked_at=now() WHERE id=$1`,
+          [doc.id, auth.score, auth.level, JSON.stringify(auth.signals || [])]);
+        if (auth.level === 'low' && MATERIAL_DOC_TYPES.has(docType)) {
+          const signalsFired = (auth.signals || []).filter((s) => s.present && s.weight > 0).map((s) => s.name.replace(/_/g, ' ')).slice(0, 4).join(', ');
+          await client.query(
+            `INSERT INTO document_findings
+               (application_id, borrower_id, document_id, extraction_id, source, code, severity,
+                title, how_to, blocks_ctc)
+             VALUES ($1,$2,$3,$4,'authenticity','doc_low_authenticity','warning',$5,$6,false)`,
+            [app.id, doc.borrower_id || app.borrower_id, doc.id, saved.extractionId,
+             'This document shows signs of tampering',
+             `Signals: ${signalsFired || 'metadata anomalies'}. Ask the borrower for a fresh copy sent DIRECTLY by the source (bank, insurance carrier, appraiser). Do not act on the extracted values until a clean copy is on file.`]);
+        }
+      } catch (_) { /* authenticity is additive */ }
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
     finally { client.release(); }
