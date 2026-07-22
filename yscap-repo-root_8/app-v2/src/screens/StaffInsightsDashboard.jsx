@@ -120,6 +120,7 @@ export default function StaffInsightsDashboard() {
       ))}
 
       <AiStackTile />
+      <SilencedCodesTicker />
 
       <h3 style={{ marginTop: 22 }}>AI spend by loan officer — last 30 days</h3>
       {(d.aiCostByOfficer || []).length === 0 && <Empty>No per-officer AI spend recorded.</Empty>}
@@ -207,6 +208,27 @@ function Row({ label, count, color }) {
     </div>
   );
 }
+// R4.15 — Recently silenced codes ticker. Any admin+ sees the last 5 muted
+// codes so the team knows what the super-admin has silenced portfolio-wide.
+// Silent when no codes are muted.
+function SilencedCodesTicker() {
+  const [rows, setRows] = React.useState(null);
+  React.useEffect(() => { api.aiSilencedCodesList().then((r) => setRows((r && r.codes) || [])).catch(() => setRows([])); }, []);
+  if (!rows || rows.length === 0) return null;
+  return (
+    <div style={{ marginTop: 12, padding: '6px 10px', border: '1px dashed var(--muted,#4B585C)', borderRadius: 8, background: 'var(--paper,#F6F3EC)' }}>
+      <span style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.06em', fontWeight: 700, color: 'var(--muted,#4B585C)', marginRight: 8 }}>Silenced portfolio-wide</span>
+      {rows.slice(0, 5).map((r) => (
+        <span key={r.code} title={r.reason}
+          style={{ display: 'inline-block', margin: '2px 4px 2px 0', padding: '1px 6px', background: 'var(--card,#fff)', border: '1px solid var(--muted,#4B585C)', borderRadius: 6, fontSize: 11, fontFamily: 'ui-monospace,monospace', color: 'var(--muted,#4B585C)' }}>
+          🔇 {r.code}
+        </span>
+      ))}
+      <Link to="/internal/ai-silenced-codes" style={{ fontSize: 11, marginLeft: 6 }}>manage →</Link>
+    </div>
+  );
+}
+
 // R4.11 — AI stack status tile. Reads /api/admin/insights/ai-stack (super_admin
 // only). Silent for non-super_admins (403 returns null). Green pill per enabled
 // component; muted grey per disabled component.
