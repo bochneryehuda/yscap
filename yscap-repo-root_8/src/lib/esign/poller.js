@@ -55,7 +55,7 @@ async function retrySend(opts = {}) {
   return send.drainDue({
     db, docusign: ds, onDeadLetter,
     buildDefinition: async (row) => {
-      const g = await gate.esignSendGate(row.application_id, { db });
+      const g = await gate.esignSendGate(row.application_id, { db, purpose: row.purpose });
       if (!g.ready) {
         const e = new Error(`Send cancelled — file no longer ready to send: ${g.outstanding.map((o) => o.label).join('; ')}`);
         e.retryable = false;   // permanent → dead-letter (a changed deal re-sends fresh)

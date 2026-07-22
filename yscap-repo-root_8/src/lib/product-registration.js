@@ -211,6 +211,10 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
               min_interest_enabled = $3,
               deferred_orig_pct = COALESCE($4, deferred_orig_pct),
               est_closing_date = $5,
+              -- Keep the canonical closing date (expected_closing, ClickUp-synced +
+              -- staff-editable) in lock-step with the term-sheet closing date: fill
+              -- it when the studio supplies one, never clobber an existing value.
+              expected_closing = COALESCE($5, expected_closing),
               first_payment_date = $6,
               maturity_date = $7,
               updated_at = now()

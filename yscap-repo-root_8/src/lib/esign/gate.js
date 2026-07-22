@@ -70,7 +70,7 @@ async function registrationIssuabilityBlockers(applicationId, db) {
   return out;
 }
 
-async function esignSendGate(applicationId, { db = dbDefault } = {}) {
+async function esignSendGate(applicationId, { db = dbDefault, purpose } = {}) {
   const r = await db.query(
     `SELECT t.code, ci.status, ci.signed_off_at
        FROM checklist_items ci
@@ -108,13 +108,34 @@ async function esignSendGate(applicationId, { db = dbDefault } = {}) {
     outstanding.push({ code: PRODUCT_PRICING, label: 'Product & pricing re-registered after appraisal', reason: 'Product & pricing was signed off before the appraisal (or the timing cannot be confirmed). Re-register on the appraised value and sign off again.' });
   }
 
+  // Estimated closing date required for the TERM SHEET package (owner-directed
+  // 2026-07-22): the final term sheet's first-payment + maturity dates are derived
+  // from the estimated closing date, so it must be on the file before the package
+  // is sent for signature — otherwise the signed term sheet is missing those dates.
+  // Applies to the term-sheet package AND the default/UI readiness view; the Heter
+  // Iska package (which carries no such dates) is exempt.
+  let closingOk = true;
+  if (purpose !== 'heter_iska') {
+    // The canonical closing date is applications.expected_closing (staff-editable,
+    // ClickUp-synced); est_closing_date is the term-sheet mirror. Accept EITHER so
+    // the gate is satisfied no matter which surface the date was entered on.
+    const cd = await db.query(`SELECT expected_closing, est_closing_date FROM applications WHERE id = $1`, [applicationId]);
+    const row = cd.rows[0] || {};
+    closingOk = !!(row.expected_closing || row.est_closing_date);
+    if (!closingOk) outstanding.push({
+      code: 'expected_closing',
+      label: 'Estimated closing date',
+      reason: 'Enter the estimated closing date so the term sheet’s first payment and maturity dates are built correctly before the package is sent for signature.',
+    });
+  }
+
   // R6.4 — MANUAL/stale registration is a hard stop for ISSUANCE (not just the
   // borrower email). Appended after the appraisal/P&P checks so the staff UI
   // shows every blocker at once.
   const regBlockers = await registrationIssuabilityBlockers(applicationId, db);
   for (const b of regBlockers) outstanding.push(b);
 
-  return { ready: apprOk && reviewOk && ppOk && regBlockers.length === 0, outstanding };
+  return { ready: apprOk && reviewOk && ppOk && closingOk && regBlockers.length === 0, outstanding };
 }
 
 /**
