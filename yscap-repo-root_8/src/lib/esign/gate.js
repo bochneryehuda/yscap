@@ -129,9 +129,11 @@ async function esignSendGate(applicationId, { db = dbDefault, purpose } = {}) {
     });
   }
 
-  // R6.4 — MANUAL/stale registration is a hard stop for ISSUANCE (not just the
-  // borrower email). Appended after the appraisal/P&P checks so the staff UI
-  // shows every blocker at once.
+  // MANUAL is a HARD STOP for issuance (owner-directed 2026-07-22): a
+  // MANUAL/Manual-Program registration still awaiting super-admin exception
+  // approval — or a STALE registration — may NOT send an e-sign package. Any
+  // manual file must get admin approval as an exception first. Appended after the
+  // appraisal/P&P/closing checks so the staff UI shows every blocker at once.
   const regBlockers = await registrationIssuabilityBlockers(applicationId, db);
   for (const b of regBlockers) outstanding.push(b);
 

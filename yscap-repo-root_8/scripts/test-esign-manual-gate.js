@@ -1,11 +1,13 @@
 'use strict';
 /**
- * R6.4 — the MANUAL-is-a-stop issuance gate. Proves (with a stub db, no PG) that
- * registrationIssuabilityBlockers blocks a binding term-sheet issuance when the
+ * R6.4 — the MANUAL-is-a-stop registration-issuability ADVISORY. Proves (with a
+ * stub db, no PG) that registrationIssuabilityBlockers REPORTS a blocker when the
  * current registration is MANUAL/Manual-Program still awaiting super-admin
- * approval, or is STALE — while an approved/eligible/fresh registration passes.
- * This is the fix for the audit's critical finding (the issuance gate had
- * diverged from the borrower-email gate).
+ * approval, or is STALE — while an approved/eligible/fresh registration reports
+ * none. (owner-directed 2026-07-22: this is ADVISORY only — the AI underwriter
+ * surfaces it as a finding for a human to review. It is deliberately NOT wired
+ * into esignSendGate's `ready`, so no existing feature's behavior changes. The
+ * "BLOCKED" labels below mean "reports a blocker entry", not "prevents a send".)
  */
 const assert = require('assert');
 
