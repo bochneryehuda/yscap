@@ -76,6 +76,10 @@ router.post('/proposals/:id/decide', requireRole('super_admin'), async (req, res
       [req.params.id, decision, req.actor.id, note]);
     if (!r.rowCount) return res.status(409).json({ error: 'This proposal was already decided.' });
     auditSafe(req.actor.id, 'training_proposal_decided', 'training_proposal', req.params.id, { decision, note });
+    // R2.7 — promoted-rules cache invalidation. The applier caches promoted
+    // rules for 60s; when a super-admin promotes/rejects a proposal we drop
+    // the cache so the next finding-insert picks it up immediately (no wait).
+    try { require('../lib/underwriting/promoted-rules')._reset(); } catch (_) { /* best-effort */ }
     res.json({ ok: true, proposal: r.rows[0] });
   } catch (e) { res.status(500).json({ error: 'could not record the decision' }); }
 });

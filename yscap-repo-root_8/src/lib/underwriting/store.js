@@ -108,9 +108,16 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
     });
   } catch (_) { /* twin is additive — never blocks the extraction */ }
 
-  // 3. Insert findings.
+  // 3. Insert findings. Runs through the promoted-rules applier FIRST
+  // (R2.7, owner-directed 2026-07-22) — the self-training loop's tail:
+  // super-admin promoted proposals (suppress_finding / downgrade_severity /
+  // upgrade_severity) actually change how findings enter the file. Best-
+  // effort — a rules-loading failure keeps every original finding untouched.
+  const rulesRes = await require('./promoted-rules').applyPromotedRules(client, findings || []);
+  const effectiveFindings = rulesRes.findings;
+  const suppressedByRules = rulesRes.suppressed;
   const findingIds = [];
-  for (const f of (findings || [])) {
+  for (const f of (effectiveFindings || [])) {
     const actions = Array.isArray(f.actions) && f.actions.length ? JSON.stringify(f.actions) : null;
     const { rows: fr } = await client.query(
       `INSERT INTO document_findings
@@ -120,6 +127,16 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
        f.severity || 'warning', f.field || null, str(f.docValue), str(f.fileValue),
        f.title || null, f.howTo || null, !!f.blocksCtc, actions, f.opensCondition || null]);
     findingIds.push(fr[0].id);
+  }
+  // Audit-log the suppressed set so a reviewer can inspect exactly what a
+  // promoted 'suppress_finding' rule dropped (best-effort — never blocks).
+  if (suppressedByRules && suppressedByRules.length) {
+    try {
+      await client.query(
+        `INSERT INTO audit_log (actor_kind, action, entity_type, entity_id, detail)
+         VALUES ('system','pilot_suppressed_findings','application',$1,$2::jsonb)`,
+        [appId, JSON.stringify({ documentId, extractionId, suppressed: suppressedByRules })]);
+    } catch (_) { /* audit best-effort */ }
   }
 
   // 3b. Semantic-entity layer (Sovereign, owner-directed 2026-07-22): pattern-
