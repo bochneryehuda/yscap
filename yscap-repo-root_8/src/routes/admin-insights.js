@@ -26,6 +26,7 @@ router.get('/', requireRole('admin'), async (req, res) => {
       agedFatalAiFiles,
       decisionsThisWeek,
       aiCostByOfficer,
+      acceptanceRate,
     ] = await Promise.all([
       db.query(
         `SELECT severity, COUNT(*)::int AS n
@@ -99,9 +100,21 @@ router.get('/', requireRole('admin'), async (req, res) => {
          HAVING COALESCE(SUM(e.cost_cents),0) > 0
           ORDER BY cents DESC
           LIMIT 10`),
+      // R4.18 — AI acceptance rate: how many decided suggestions the team
+      // kept (converted-to-condition / filed / escalated / marked-important)
+      // vs dismissed. Signal of AI usefulness. Two windows: this week + all
+      // time. Rate is `1 - dismissed/decided` — a decision on a suggestion
+      // that was NOT a dismissal is treated as acceptance.
+      db.query(
+        `SELECT
+           SUM(CASE WHEN decided_at IS NOT NULL AND decided_at > now() - interval '7 days' THEN 1 ELSE 0 END)::int AS decided_wk,
+           SUM(CASE WHEN decided_at IS NOT NULL AND decided_at > now() - interval '7 days' AND status='dismissed' THEN 1 ELSE 0 END)::int AS dismissed_wk,
+           SUM(CASE WHEN decided_at IS NOT NULL THEN 1 ELSE 0 END)::int AS decided_all,
+           SUM(CASE WHEN decided_at IS NOT NULL AND status='dismissed' THEN 1 ELSE 0 END)::int AS dismissed_all
+           FROM ai_suggestions`),
     ]).catch(() => {
       // On any single-query failure, return an empty shape rather than 500 the whole dashboard.
-      return [ { rows: [] }, { rows: [] }, { rows: [] }, { rows: [] }, { rows: [{ cents: 0, n: 0 }] }, { rows: [] }, { rows: [] }, { rows: [] }, { rows: [] } ];
+      return [ { rows: [] }, { rows: [] }, { rows: [] }, { rows: [] }, { rows: [{ cents: 0, n: 0 }] }, { rows: [] }, { rows: [] }, { rows: [] }, { rows: [] }, { rows: [{ decided_wk: 0, dismissed_wk: 0, decided_all: 0, dismissed_all: 0 }] } ];
     });
 
     // Recent AI-related audit trail (best-effort — table may not always exist on
@@ -127,6 +140,7 @@ router.get('/', requireRole('admin'), async (req, res) => {
       agedFatalAiFiles: agedFatalAiFiles.rows,
       decisionsThisWeek: decisionsThisWeek.rows,
       aiCostByOfficer: aiCostByOfficer.rows,
+      acceptanceRate: acceptanceRate.rows[0] || { decided_wk: 0, dismissed_wk: 0, decided_all: 0, dismissed_all: 0 },
       recentDecisions,
     });
   } catch (e) { res.status(500).json({ error: e.message || 'insights load failed' }); }

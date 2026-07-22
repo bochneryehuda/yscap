@@ -154,6 +154,39 @@ export default function StaffInsightsDashboard() {
         </div>
       )}
 
+      {/* R4.18 — AI acceptance rate: signal of AI usefulness. Team accepted
+          (converted / filed / escalated / marked-important) vs dismissed. */}
+      {(() => {
+        const a = d.acceptanceRate || {};
+        const dw = Number(a.decided_wk) || 0;
+        const xw = Number(a.dismissed_wk) || 0;
+        const dall = Number(a.decided_all) || 0;
+        const xall = Number(a.dismissed_all) || 0;
+        const pctWk = dw > 0 ? Math.round(((dw - xw) / dw) * 100) : null;
+        const pctAll = dall > 0 ? Math.round(((dall - xall) / dall) * 100) : null;
+        const tone = (p) => p == null ? 'var(--muted,#4B585C)' : p >= 70 ? 'var(--good,#3F7A5B)' : p >= 40 ? 'var(--amber,#B7791F)' : 'var(--crit,#B4483C)';
+        return (
+          <div style={{ marginTop: 22 }}>
+            <h3 style={{ margin: '0 0 8px 0' }}>AI acceptance rate</h3>
+            <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginBottom: 8 }}>
+              Share of decided AI suggestions the team KEPT (converted, filed, escalated, marked important) vs dismissed. Higher is better.
+            </div>
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 160, padding: 12, borderRadius: 10, border: '1px solid var(--paper,#E9E4D3)', background: 'var(--card,#fff)' }}>
+                <div style={{ fontSize: 11, color: 'var(--muted,#4B585C)', textTransform: 'uppercase', letterSpacing: 0.4 }}>This week</div>
+                <div style={{ fontSize: 28, fontWeight: 700, color: tone(pctWk), marginTop: 4 }}>{pctWk == null ? '—' : `${pctWk}%`}</div>
+                <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginTop: 2 }}>{dw} decided · {xw} dismissed</div>
+              </div>
+              <div style={{ flex: 1, minWidth: 160, padding: 12, borderRadius: 10, border: '1px solid var(--paper,#E9E4D3)', background: 'var(--card,#fff)' }}>
+                <div style={{ fontSize: 11, color: 'var(--muted,#4B585C)', textTransform: 'uppercase', letterSpacing: 0.4 }}>All time</div>
+                <div style={{ fontSize: 28, fontWeight: 700, color: tone(pctAll), marginTop: 4 }}>{pctAll == null ? '—' : `${pctAll}%`}</div>
+                <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginTop: 2 }}>{dall} decided · {xall} dismissed</div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       <h3 style={{ marginTop: 22 }}>Files with aging fatal AI findings</h3>
       {(d.agedFatalAiFiles || []).length === 0 && <Empty>None — no open fatal AI findings on any file.</Empty>}
       {(d.agedFatalAiFiles || []).map((r) => {
