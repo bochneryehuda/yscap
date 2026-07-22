@@ -115,6 +115,39 @@ router.get('/', requireRole('admin'), async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message || 'insights load failed' }); }
 });
 
+// R4.8 — Portfolio-wide mute list for AI finding codes. super_admin only.
+// GET returns current mute list. POST {code, reason} adds one. DELETE removes.
+router.get('/silenced-codes', requireRole('super_admin'), async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT s.code, s.reason, s.silenced_at, u.email AS silenced_by_email
+         FROM ai_silenced_codes s
+         LEFT JOIN staff_users u ON u.id = s.silenced_by
+        ORDER BY s.silenced_at DESC`);
+    res.json({ ok: true, codes: r.rows });
+  } catch (e) { res.status(500).json({ error: e.message || 'load failed' }); }
+});
+router.post('/silenced-codes', requireRole('super_admin'), async (req, res) => {
+  try {
+    const code = String((req.body && req.body.code) || '').trim().slice(0, 100);
+    const reason = String((req.body && req.body.reason) || '').trim().slice(0, 400);
+    if (!code) return res.status(400).json({ error: 'code required' });
+    if (!reason) return res.status(400).json({ error: 'reason required — mute list is auditable' });
+    await db.query(
+      `INSERT INTO ai_silenced_codes (code, reason, silenced_by)
+       VALUES ($1,$2,$3)
+       ON CONFLICT (code) DO UPDATE SET reason=EXCLUDED.reason, silenced_by=EXCLUDED.silenced_by, silenced_at=now()`,
+      [code, reason, req.actor.staffId || null]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message || 'mute failed' }); }
+});
+router.delete('/silenced-codes/:code', requireRole('super_admin'), async (req, res) => {
+  try {
+    await db.query(`DELETE FROM ai_silenced_codes WHERE code=$1`, [req.params.code]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message || 'unmute failed' }); }
+});
+
 // R4.3 — Regulator-ready AI decision audit CSV export. Every ai_suggestion
 // decide event with actor + timestamp + reason + linked condition/task + trace
 // url. Filterable by date range (?since=YYYY-MM-DD&until=YYYY-MM-DD). super_admin
