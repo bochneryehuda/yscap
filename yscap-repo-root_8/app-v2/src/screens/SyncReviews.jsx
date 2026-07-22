@@ -218,6 +218,7 @@ export default function SyncReviews() {
   const [customVal, setCustomVal] = useState({});     // rowId -> reviewer-typed correct value
   const [selected, setSelected] = useState({});       // rowId -> checked (bulk actions)
   const [bulkMsg, setBulkMsg] = useState('');
+  const [recheckMsg, setRecheckMsg] = useState({});   // rowId -> "look again" result message
 
   async function bulk(action, winner) {
     const ids = Object.keys(selected).filter((id) => selected[id]);
@@ -260,6 +261,40 @@ export default function SyncReviews() {
     finally { setBusyId(null); }
   }
 
+  // "Look again" — ask the backend to RE-RUN the underlying comparison (re-read
+  // both systems live) and clear this review by itself if the data was already
+  // fixed by hand. It never blind-dismisses: a row that still genuinely differs
+  // stays open. Owner-directed 2026-07-22.
+  async function recheck(id) {
+    setBusyId(id); setErr('');
+    setRecheckMsg((m) => ({ ...m, [id]: '' }));
+    try {
+      const out = await api.post(`/api/staff/sync-reviews/${id}/recheck`, {});
+      if (out.outcome === 'closed') {
+        // 'adopt' means PILOT applied the proven correction to both systems;
+        // 'agree' means the two sides already matched. Say which — never claim
+        // "already fixed" when PILOT itself wrote the value.
+        setBulkMsg(out.reason === 'adopt'
+          ? '✓ Re-checked — PILOT confirmed the correct value and cleared this review (applied to both systems).'
+          : '✓ Re-checked — the two sides already match, so PILOT cleared this review on its own.');
+        await load();
+      } else if (out.outcome === 'still_open') {
+        setRecheckMsg((m) => ({ ...m, [id]: 'Checked just now — the two sides still don’t match, so this still needs you.' }));
+        await load();
+      } else if (out.outcome === 'error') {
+        setRecheckMsg((m) => ({ ...m, [id]: 'Couldn’t reach ClickUp to re-check just now — try again in a moment.' }));
+      } else {
+        // 'unsupported' — a file-level / draw / status row PILOT can't prove from
+        // a value re-read. Don't over-promise that it "clears itself" (some, like
+        // a duplicate loan number typed in, never do) — point to this card's own
+        // options instead.
+        setRecheckMsg((m) => ({ ...m, [id]: 'Re-checked — this one isn’t a simple value match, so PILOT can’t auto-clear it here. Use the options on this card to resolve it.' }));
+        await load();
+      }
+    } catch (e) { setErr(e.message || 'Could not re-check'); }
+    finally { setBusyId(null); }
+  }
+
   // relink_task: move an EXISTING ClickUp card onto this orphaned file. If the
   // card is currently on another file, the server returns needsConfirm + the
   // holder so we can confirm the move (admin-only; enforced server-side).
@@ -288,7 +323,8 @@ export default function SyncReviews() {
       <div className="row" style={{ alignItems: 'center', marginBottom: 14 }}>
         <h2>Sync review</h2>
         <div className="spacer" />
-        <select className="input" style={{ maxWidth: 180 }} value={status} onChange={(e) => setStatus(e.target.value)}
+        <select className="input" style={{ maxWidth: 180 }} value={status}
+          onChange={(e) => { setStatus(e.target.value); setRecheckMsg({}); setBulkMsg(''); }}
           aria-label="Filter by status">
           <option value="open">Needs review</option>
           <option value="resolved">Resolved</option>
@@ -343,8 +379,18 @@ export default function SyncReviews() {
               <span className={`pill ${r.direction === 'outbound' ? '' : 'done'}`}>{isSitewire ? 'PILOT → Sitewire' : (r.direction === 'outbound' ? 'PILOT → ClickUp' : 'ClickUp → PILOT')}</span>
               <span className="muted small">{new Date(r.created_at).toLocaleString()}</span>
               <div className="spacer" />
+              {status === 'open' && (
+                <button className="btn ghost btn-sm" disabled={busyId === r.id}
+                  title="Look again — re-run the check in the background and clear this review if it was already fixed on either side (nothing is written unless the data proves it resolved)"
+                  onClick={() => recheck(r.id)}>{busyId === r.id ? '…' : '↻ Re-check'}</button>
+              )}
               {r.application_id && <Link className="btn ghost btn-sm" to={`/internal/app/${r.application_id}`}>Open file</Link>}
             </div>
+            {status === 'open' && (recheckMsg[r.id] || r.last_checked_at) && (
+              <p className="muted small" style={{ margin: '2px 0 0' }}>
+                {recheckMsg[r.id] || `Last re-checked ${new Date(r.last_checked_at).toLocaleString()} — still open.`}
+              </p>
+            )}
             <div className="metrow"><span className="k">Who</span><span className="v">{r.borrower_name || '—'}{r.property ? ` — ${r.property}` : ''}</span></div>
             {isSitewire ? (
               (cu != null || p != null) && <div className="metrow"><span className="k">Details</span><span className="v">{p != null ? <>expected <strong>{showVal(p)}</strong></> : null}{p != null && cu != null ? ' · ' : ''}{cu != null ? <>found <strong>{showVal(cu)}</strong></> : null}</span></div>
