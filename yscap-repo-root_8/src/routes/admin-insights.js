@@ -132,6 +132,46 @@ router.get('/', requireRole('admin'), async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message || 'insights load failed' }); }
 });
 
+// R4.11 — AI stack status. Read-only booleans + provider slugs so the
+// super-admin can see at a glance what's actually configured without SSH-ing
+// into Render. No secret values leaked.
+router.get('/ai-stack', requireRole('super_admin'), async (_req, res) => {
+  const env = process.env;
+  const has = (k) => !!(env[k] && String(env[k]).trim());
+  const cfg = require('../config');
+  res.json({
+    ok: true,
+    stack: {
+      langfuse:            { enabled: has('LANGFUSE_HOST') && has('LANGFUSE_PUBLIC_KEY'), host: env.LANGFUSE_HOST || null },
+      azureOpenAI:         { enabled: has('AZURE_OPENAI_ENDPOINT') && has('AZURE_OPENAI_API_KEY'), deployment: env.AZURE_OPENAI_DEPLOYMENT || null },
+      azureDocumentAI:     { enabled: has('AZURE_DI_ENDPOINT') && has('AZURE_DI_KEY') },
+      azureCustomClassifier: { enabled: has('AZURE_CUSTOM_CLASSIFIER_MODEL_ID'), modelId: env.AZURE_CUSTOM_CLASSIFIER_MODEL_ID || null },
+      azureNeuralExtractor:  { enabled: has('AZURE_NEURAL_EXTRACTOR_PREFIX'), prefix: env.AZURE_NEURAL_EXTRACTOR_PREFIX || null },
+      googleDocumentAI:    { enabled: has('GOOGLE_DOC_AI_PROJECT_ID') && has('GOOGLE_DOC_AI_LOCATION') },
+      mistralOcr:          { enabled: has('MISTRAL_API_KEY') },
+      perFileCostCap:      { enabled: Number(env.AI_PER_FILE_CAP_USD || 0) > 0, capUsd: Number(env.AI_PER_FILE_CAP_USD || 0) || null },
+      nightlyCrossdocSweep:{ enabled: env.AI_CROSSDOC_SWEEP_ENABLED === '1' },
+      notifyDigests:       { enabled: env.NOTIFY_DIGESTS_ENABLED !== '0' },
+      renderDeployHook:    { enabled: has('RENDER_DEPLOY_HOOK_URL') },
+    },
+    // R3-era detectors are IN THE CODE (dormant until their model ids arrive).
+    // Reflect their code-level presence so the super-admin knows they exist.
+    detectors: {
+      splitter:                 { wired: true },
+      wrongCondition:           { wired: true },
+      entityChain:              { wired: true },
+      assignmentFraud:          { wired: true },
+      bankStatementChecks:      { wired: true },
+      badClearance:             { wired: true },
+      publicRecordsCrosscheck:  { wired: true },
+      identityChain:            { wired: true },   // R4.2
+      aiCrossDoc:               { wired: true, requiresAzureOpenAI: true },
+      aiRiskScore:              { wired: true },   // R4.1
+    },
+    appVersion: cfg.appVersion || null,
+  });
+});
+
 // R4.8 — Portfolio-wide mute list for AI finding codes. super_admin only.
 // GET returns current mute list. POST {code, reason} adds one. DELETE removes.
 router.get('/silenced-codes', requireRole('super_admin'), async (req, res) => {

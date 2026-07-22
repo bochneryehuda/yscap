@@ -119,6 +119,8 @@ export default function StaffInsightsDashboard() {
         </div>
       ))}
 
+      <AiStackTile />
+
       <h3 style={{ marginTop: 22 }}>AI spend by loan officer — last 30 days</h3>
       {(d.aiCostByOfficer || []).length === 0 && <Empty>No per-officer AI spend recorded.</Empty>}
       {(d.aiCostByOfficer || []).map((r) => (
@@ -205,6 +207,50 @@ function Row({ label, count, color }) {
     </div>
   );
 }
+// R4.11 — AI stack status tile. Reads /api/admin/insights/ai-stack (super_admin
+// only). Silent for non-super_admins (403 returns null). Green pill per enabled
+// component; muted grey per disabled component.
+function AiStackTile() {
+  const [data, setData] = React.useState(null);
+  React.useEffect(() => { api.insightsAiStack().then((r) => setData((r && r.stack) ? r : null)).catch(() => setData(null)); }, []);
+  if (!data) return null;
+  const S = data.stack || {};
+  const items = [
+    ['Langfuse tracer', S.langfuse],
+    ['Azure OpenAI (GPT)', S.azureOpenAI],
+    ['Azure Document AI', S.azureDocumentAI],
+    ['Azure Custom classifier', S.azureCustomClassifier],
+    ['Azure Neural extractor', S.azureNeuralExtractor],
+    ['Google Document AI', S.googleDocumentAI],
+    ['Mistral OCR', S.mistralOcr],
+    ['Per-file cost cap', S.perFileCostCap],
+    ['Nightly cross-doc sweep', S.nightlyCrossdocSweep],
+    ['Scheduled digests', S.notifyDigests],
+    ['Render auto-deploy hook', S.renderDeployHook],
+  ];
+  return (
+    <div style={{ marginTop: 22, border: '1px solid var(--paper,#E9E4D3)', borderRadius: 12, padding: 12, background: 'var(--card,#fff)' }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 6 }}>
+        <h3 style={{ margin: 0 }}>AI stack — what's live on this deploy</h3>
+        <span className="muted small">{Object.values(S).filter(v => v && v.enabled).length}/{items.length} configured</span>
+      </div>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {items.map(([label, v]) => {
+          const on = !!(v && v.enabled);
+          const tone = on ? 'var(--good,#3F7A5B)' : 'var(--muted,#4B585C)';
+          return (
+            <span key={label} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '3px 8px', borderRadius: 8, fontSize: 11, border: `1px solid ${tone}`, color: tone, background: on ? 'rgba(63,122,91,.08)' : 'transparent' }}>
+              <span aria-hidden="true">{on ? '●' : '○'}</span>
+              {label}
+              {on && v.capUsd ? ` · $${v.capUsd.toFixed(2)}` : ''}
+            </span>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // R3.36 — 7-day mini-sparkline. Pure inline SVG, no chart lib.
 function AiCostSpark() {
   const [rows, setRows] = React.useState([]);

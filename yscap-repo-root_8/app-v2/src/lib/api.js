@@ -486,6 +486,7 @@ export const api = {
   fileKnowledgeGraph:     (appId) => req('GET', `/api/underwriting/${appId}/knowledge-graph`),
   insightsDashboard:      () => req('GET', '/api/admin/insights'),
   insightsAiCostTrend:    () => req('GET', '/api/admin/insights/ai-cost-trend'),
+  insightsAiStack:        () => req('GET', '/api/admin/insights/ai-stack'),
   aiSilencedCodesList:    () => req('GET', '/api/admin/insights/silenced-codes'),
   aiSilencedCodesAdd:     (code, reason) => req('POST', '/api/admin/insights/silenced-codes', { code, reason }),
   aiSilencedCodesRemove:  (code) => req('DELETE', `/api/admin/insights/silenced-codes/${encodeURIComponent(code)}`),
