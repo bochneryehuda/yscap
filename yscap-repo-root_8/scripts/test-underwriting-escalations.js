@@ -136,6 +136,43 @@ const esc = require('../src/lib/underwriting/escalations');
     const superView2 = await esc.listEscalations({ status: 'open', viewer: { id: 'x', role: 'super_admin' }, seeAll: true }, client);
     assert.ok(superView2.some((r) => r.id === e3.id), 'super-admin sees the role-routed escalation');
 
+    // 10. PAGE-NUMBER PLUMBING (owner-directed 2026-07-22): the escalation snapshots the
+    //     source page the finding was raised from, and the workload list surfaces it —
+    //     pulling LIVE from the finding for rows whose snapshot is null (escalations created
+    //     before this was plumbed, or paged after the escalation). This is what lets the
+    //     "Findings to review" screen open the source document to the exact page.
+    const fnd2 = (await client.query(
+      `INSERT INTO document_findings (application_id,borrower_id,document_id,extraction_id,source,code,severity,field,title,how_to,blocks_ctc,status,page_number)
+       VALUES ($1,$2,$3,$4,'insurance','ins_page','warning','coverage','Coverage note','fix it',false,'open',4) RETURNING id`,
+      [app.id, b.id, doc.id, ext.id])).rows[0];
+    const ePage = await esc.openEscalation(client, {
+      appId: app.id, findingId: fnd2.id,
+      finding: { code: 'ins_page', title: 'Coverage note', document_id: doc.id, page_number: 4 },
+      targetRole: 'super_admin', requestedBy: proc.id });
+    assert.strictEqual(Number(ePage.page_number), 4, 'escalation snapshots the source page from the finding');
+    const pageRow = (await esc.listEscalations({ status: 'open', seeAll: true }, client)).find((r) => r.id === ePage.id);
+    assert.strictEqual(Number(pageRow.page_number), 4, 'the workload list surfaces the source page');
+    // A row whose SNAPSHOT is null still gets the page LIVE from the finding (COALESCE join).
+    await client.query(`UPDATE finding_escalations SET page_number=NULL WHERE id=$1`, [ePage.id]);
+    const pageRow2 = (await esc.listEscalations({ status: 'open', seeAll: true }, client)).find((r) => r.id === ePage.id);
+    assert.strictEqual(Number(pageRow2.page_number), 4, 'a null-snapshot escalation still surfaces the page live from the finding');
+
+    // openEscalation's OWN null-page path must store SQL NULL, not 0 — else the finding
+    // shows "(page 0)" AND the live fallback breaks (COALESCE(0, df.page)=0). Exercise it
+    // through openEscalation (not a manual UPDATE) on a finding whose snapshot omits the page.
+    const fnd3 = (await client.query(
+      `INSERT INTO document_findings (application_id,borrower_id,document_id,extraction_id,source,code,severity,field,title,how_to,blocks_ctc,status,page_number)
+       VALUES ($1,$2,$3,$4,'insurance','ins_page3','warning','coverage3','Coverage note 3','fix it',false,'open',6) RETURNING id`,
+      [app.id, b.id, doc.id, ext.id])).rows[0];
+    const eNoPage = await esc.openEscalation(client, {
+      appId: app.id, findingId: fnd3.id,
+      finding: { code: 'ins_page3', title: 'Coverage note 3', document_id: doc.id }, // NO page in the snapshot
+      targetRole: 'super_admin', requestedBy: proc.id });
+    assert.strictEqual(eNoPage.page_number, null, 'a null-page snapshot stores SQL NULL, not 0');
+    const noPageRow = (await esc.listEscalations({ status: 'open', seeAll: true }, client)).find((r) => r.id === eNoPage.id);
+    assert.strictEqual(Number(noPageRow.page_number), 6, 'a null-snapshot escalation surfaces the live finding page (COALESCE not defeated by a 0)');
+    assert.ok(!('finding_page' in noPageRow), 'the helper column is not leaked to callers');
+
     await client.query('ROLLBACK');
     console.log('PASS test-underwriting-escalations');
   } catch (e) {

@@ -1337,7 +1337,7 @@ router.post('/:appId/findings/escalate', async (req, res, next) => {
     let finding = snap;
     if (b.findingId && isUuid(b.findingId)) {
       const row = (await db.query(
-        `SELECT id, document_id, borrower_id, code, severity, field, title, how_to, doc_value, file_value, suggested_actions
+        `SELECT id, document_id, borrower_id, code, severity, field, title, how_to, doc_value, file_value, suggested_actions, page_number
            FROM document_findings WHERE id=$1 AND application_id=$2`, [b.findingId, app.id])).rows[0];
       if (row) { findingId = row.id; finding = row; }
     }

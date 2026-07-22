@@ -72,12 +72,21 @@ async function openEscalation(client, { appId, findingId, finding, targetRole, a
   const actions = Array.isArray(f.availableActions) ? f.availableActions
     : Array.isArray(f.suggested_actions) ? f.suggested_actions
     : Array.isArray(f.actions) ? f.actions : null;
+  // Snapshot the source PAGE the finding was raised from (document_findings.page_number,
+  // populated by the analyzer) so the workload screen can open the source document to
+  // that exact page. Null when the analyzer couldn't locate it (never a wrong page).
+  // MUST short-circuit on null BEFORE Number() — Number(null) is 0 (a finite number),
+  // which would store page 0 (showing "(page 0)" and, worse, defeating the live COALESCE
+  // fallback: COALESCE(0, df.page_number)=0). Null in → null stored.
+  const rawPage = f.pageNumber != null ? f.pageNumber : (f.page_number != null ? f.page_number : null);
+  // PDF pages are 1-based — a 0/negative/non-finite page is "no page", stored NULL.
+  const pageNumber = rawPage != null && Number.isFinite(Number(rawPage)) && Number(rawPage) >= 1 ? Number(rawPage) : null;
   const ins = await client.query(
     `INSERT INTO finding_escalations
        (application_id, finding_id, document_id, borrower_id,
         code, severity, field, title, how_to, doc_value, file_value, suggested_actions,
-        target_role, assigned_to, status, question, requested_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'open',$15,$16)
+        target_role, assigned_to, status, question, requested_by, page_number)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'open',$15,$16,$17)
      RETURNING *`,
     [appId, fid, f.documentId || f.document_id || null, borrowerId || null,
      f.code || null, f.severity || 'warning', f.field || null, f.title || null,
@@ -86,13 +95,19 @@ async function openEscalation(client, { appId, findingId, finding, targetRole, a
      str(f.fileValue != null ? f.fileValue : f.file_value),
      actions ? JSON.stringify(actions) : null,
      normTargetRole(targetRole), assignedTo || null,
-     question ? String(question).slice(0, 2000) : null, requestedBy || null]);
+     question ? String(question).slice(0, 2000) : null, requestedBy || null,
+     pageNumber]);
   return ins.rows[0];
 }
 
 // Common SELECT with the file + borrower + people joins the workload surface shows.
+// `finding_page` is the LIVE page from the finding (a DISTINCT column name — no
+// shadowing of e.page_number); listEscalations coalesces the two in JS so the
+// effective page doesn't depend on SQL column ordering. This fixes escalations
+// created before the snapshot was plumbed, and any the analyzer paged afterward.
 const LIST_SELECT = `
   SELECT e.*,
+         df.page_number AS finding_page,
          a.ys_loan_number, a.property_address, a.loan_amount, a.status AS file_status,
          b.first_name, b.last_name,
          rq.full_name AS requested_by_name, rq.role AS requested_by_role,
@@ -100,10 +115,19 @@ const LIST_SELECT = `
          asg.full_name AS assigned_to_name
     FROM finding_escalations e
     JOIN applications a ON a.id = e.application_id
+    LEFT JOIN document_findings df ON df.id = e.finding_id
     LEFT JOIN borrowers b ON b.id = a.borrower_id
     LEFT JOIN staff_users rq ON rq.id = e.requested_by
     LEFT JOIN staff_users dc ON dc.id = e.decided_by
     LEFT JOIN staff_users asg ON asg.id = e.assigned_to`;
+
+// The effective source page = the escalation's own snapshot, else the finding's
+// live page. Explicit JS coalesce (not a shadowed SQL column) + drop the helper.
+function withEffectivePage(row) {
+  const page = row.page_number != null ? row.page_number : (row.finding_page != null ? row.finding_page : null);
+  const { finding_page, ...rest } = row;   // eslint-disable-line no-unused-vars
+  return { ...rest, page_number: page };
+}
 
 /**
  * List escalations for the workload surface. When `viewer` is passed (a non-super
@@ -130,7 +154,7 @@ async function listEscalations({ status = 'open', limit = 200, viewer = null, se
   const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const lim = Math.min(500, Math.max(1, Number(limit) || 200));
   const r = await client.query(`${LIST_SELECT} ${clause} ORDER BY e.created_at DESC LIMIT ${lim}`, params);
-  return r.rows;
+  return r.rows.map(withEffectivePage);
 }
 
 /** Open escalations for ONE file (to show state next to each finding). */

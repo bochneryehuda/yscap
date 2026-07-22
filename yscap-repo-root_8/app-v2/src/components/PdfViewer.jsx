@@ -14,10 +14,13 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
  * from a CDN — the strict CSP is honored.
  *
  * Props:
- *   data      ArrayBuffer of the PDF bytes (preferred — origin-independent)
- *   onError   () => void   called if the document can't be parsed
+ *   data        ArrayBuffer of the PDF bytes (preferred — origin-independent)
+ *   onError     () => void   called if the document can't be parsed
+ *   initialPage optional 1-based page to scroll to once rendered (findings
+ *               "open the source document to page N" — the page the finding
+ *               was raised from). Auto-jumps ONCE; the reader can then scroll.
  */
-export default function PdfViewer({ data, onError }) {
+export default function PdfViewer({ data, onError, initialPage }) {
   const [status, setStatus] = useState('loading');   // loading | ready | error
   const [numPages, setNumPages] = useState(0);
   const [page, setPage] = useState(1);
@@ -26,6 +29,7 @@ export default function PdfViewer({ data, onError }) {
   const scrollRef = useRef(null);
   const pageRefs = useRef([]);          // one wrapper div per page
   const renderTokens = useRef(0);       // cancels stale re-renders on zoom
+  const jumpedRef = useRef(false);      // auto-jump to initialPage only once
 
   // Load the document once. Clone the ArrayBuffer because pdfjs transfers
   // (neuters) the buffer it's given, which would break a later re-open.
@@ -77,6 +81,28 @@ export default function PdfViewer({ data, onError }) {
       }
     })();
   }, [status, scale, numPages]);
+
+  // Auto-jump to a requested page once it has actually rendered (its wrapper has
+  // real height). Pages render sequentially + async, so poll a few frames until
+  // the target page is measurable, then scroll to it — once. A manual scroll or
+  // zoom afterward won't re-trigger it (jumpedRef).
+  useEffect(() => {
+    if (status !== 'ready' || !initialPage || initialPage < 1 || jumpedRef.current) return;
+    let raf = 0, tries = 0;
+    const tryScroll = () => {
+      const target = Math.min(numPages || 1, initialPage);
+      const w = pageRefs.current[target - 1];
+      if (w && w.offsetHeight > 60 && scrollRef.current) {
+        scrollRef.current.scrollTo({ top: Math.max(0, w.offsetTop - 8), behavior: 'auto' });
+        setPage(target);
+        jumpedRef.current = true;
+        return;
+      }
+      if (tries++ < 180) raf = requestAnimationFrame(tryScroll);   // ~3s at 60fps, then give up
+    };
+    raf = requestAnimationFrame(tryScroll);
+    return () => { if (raf) cancelAnimationFrame(raf); };
+  }, [status, numPages, initialPage]);
 
   // Track which page is centered so the toolbar counter is live.
   const onScroll = useCallback(() => {
