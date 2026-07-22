@@ -409,6 +409,29 @@ async function reconcileOne(appId) {
   // for the escalate path — pushDocuments itself uses escalate:false to avoid recursing into its
   // own retry.
   try { await require('./doc-push').verifyPushedDocsOnce(appId, link.sitewire_property_id, null, { escalate: true }); } catch (_) {}
+  // Owner-directed 2026-07-22 (file 1053 Ella T Grasso Blvd — "he did get the invite and accepted"):
+  // a `sitewire_borrower_assign_failed` park can be STALE — the initial assign 422'd (bad email
+  // shape, race, etc.) but a later push, resend, or manual Sitewire action DID assign the borrower.
+  // Live-check the property's borrower.status; if Sitewire now shows the borrower as `invited` or
+  // `assigned`, the park no longer describes reality — auto-close it. Read-only, best-effort.
+  try {
+    const openBa = await db.query(
+      `SELECT id, task_id FROM sync_review_queue
+        WHERE status='open' AND application_id=$1 AND field_key='sitewire'
+          AND task_id LIKE 'sitewire:%:sitewire_borrower_assign_failed%' LIMIT 1`, [appId]);
+    if (openBa.rowCount > 0) {
+      const live = await require('./orchestrator').getBorrowerInviteStatus(appId);
+      if (live && live.available && (live.status === 'invited' || live.status === 'assigned')) {
+        await db.query(
+          `UPDATE sync_review_queue
+              SET status='resolved', auto_resolved=true, resolved_at=now(),
+                  resolution_note=$2
+            WHERE status='open' AND application_id=$1 AND field_key='sitewire'
+              AND task_id LIKE 'sitewire:%:sitewire_borrower_assign_failed%'`,
+          [appId, `auto-closed — Sitewire now shows the borrower as ${live.status}${live.contact_email ? ` (${live.contact_email})` : ''}; the earlier assign failure no longer describes reality.`]);
+      }
+    }
+  } catch (_) { /* best-effort */ }
   return { draws: n };
 }
 

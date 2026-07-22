@@ -338,14 +338,37 @@ async function pushFile(appId, opts = {}) {
   const fileUnits = (a.units != null && Number(a.units) > 0) ? Number(a.units) : 0;
   const physicalUnits = Math.max(1, fileUnits, sowUnits);
   if (fileUnits > 0 && fileUnits !== sowUnits) {
-    // current/proposed drive the review card's "expected · found" line — anchor them to the REAL
-    // discrepancy (Scope-of-Work unit count vs the file's unit count), NOT file-vs-physical (which are
-    // often equal and read as a confusing "expected 2 · found 2"). Owner-directed 2026-07-20.
-    await park({ appId, dedupe: 'units', notify: false, reason: `sitewire_units_note: the file lists ${fileUnits} unit(s) but the Scope of Work is built for ${sowUnits} — pushing the physical building count of ${physicalUnits} unit(s) (units with no work carry no budget lines). Update the file's unit count in the application if ${physicalUnits} is wrong.`, current: String(fileUnits), proposed: String(sowUnits) });
+    // Owner-directed 2026-07-22 (file 1053 Ella T Grasso Blvd — "I looked in Sitewire and it does
+    // say 4 units"): the units_note kept re-appearing because the auto-close only fires on EQUAL,
+    // and the coordinator never realized they had to hand-edit the file's unit count. The SOW went
+    // through borrower + underwriter review and is the SIGNED-OFF, AUTHORITATIVE scope of what's
+    // being built. Auto-adopt: raise applications.units to match SOW when SOW is higher (the file
+    // was probably just a stale intake value from before the SOW was built). This mirrors the
+    // ClickUp two-sided review pattern — "compare both sides and adopt the correct one" — applied
+    // here because SOW is the authoritative side.
+    //
+    // Only auto-adopt UPWARDS (fileUnits < sowUnits). If fileUnits > sowUnits the SOW is behind
+    // and we can't safely guess which side is right (maybe the borrower descoped some units) —
+    // keep the advisory in that direction so the coordinator decides.
+    if (fileUnits < sowUnits) {
+      try {
+        await db.query(`UPDATE applications SET units=$2, updated_at=now() WHERE id=$1`, [appId, sowUnits]);
+        await journal({ appId, entity: 'application', field: 'units', oldValue: fileUnits, newValue: sowUnits, source: 'auto_adopt_sow_units' });
+        // Close any existing units_note park row for this file — the file now matches SOW.
+        await db.query(
+          `UPDATE sync_review_queue
+              SET status='resolved', auto_resolved=true, resolved_at=now(),
+                  resolution_note=$2
+            WHERE status='open' AND application_id=$1 AND field_key='sitewire'
+              AND task_id LIKE 'sitewire:%:sitewire_units_note%'`,
+          [appId, `auto-adopted — the file's unit count was ${fileUnits}, the signed-off Scope of Work was built for ${sowUnits}; adopted SOW's ${sowUnits} into the file (SOW is authoritative for what's being built)`]);
+      } catch (_) { /* best-effort — a failed adopt just re-parks the advisory below */ }
+    } else {
+      // fileUnits > sowUnits — keep the advisory (never guess which side is right).
+      await park({ appId, dedupe: 'units', notify: false, reason: `sitewire_units_note: the file lists ${fileUnits} unit(s) but the Scope of Work is built for only ${sowUnits} — pushing the physical building count of ${physicalUnits} unit(s). If the Scope of Work should cover all ${fileUnits} units, edit it to add the missing ones; if the property is really only ${sowUnits} units, lower the file's unit count to match.`, current: String(fileUnits), proposed: String(sowUnits) });
+    }
   } else {
-    // Owner-directed 2026-07-22: the units_note is ADVISORY (the push proceeds past it), so once
-    // the file and SOW agree it should quietly self-close instead of sitting on the desk forever.
-    // Runs on every pushFile so a coordinator's "update the file's unit count" fix visibly resolves.
+    // file == SOW — quietly close any lingering park row. Runs on every pushFile.
     try {
       await db.query(
         `UPDATE sync_review_queue
