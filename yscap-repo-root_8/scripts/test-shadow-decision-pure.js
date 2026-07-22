@@ -100,6 +100,16 @@ assert.strictEqual(agg.reviewQueue[0].severity, SEVERITY.HIGH, 'the queue is sor
 assert.strictEqual(agg.byComponent.title.falseClears, 1, 'per-component rollup counts the false clear');
 ok('aggregateShadows rolls up agreement rate (unknowns excluded), false-clear count, and a severity-sorted review queue');
 
+// --- a hand-built object with a NON-canonical verdict is still canonicalized ---
+// (guards the "already captured" fast path from bypassing normalization)
+r = sd.compareToHuman({ component: 'title', verdict: 'Approved', rawVerdict: 'Approved' }, { verdict: 'declined' });
+assert.strictEqual(r.class, CLASS.FALSE_CLEAR, 'a non-canonical verdict is normalized, not compared raw — still a false clear');
+assert.strictEqual(r.reviewWorthy, true);
+// a genuinely canonical captured shadow still takes the fast path correctly
+r = sd.compareToHuman(sd.captureShadow({ component: 'title', verdict: 'clear' }), { verdict: 'declined' });
+assert.strictEqual(r.class, CLASS.FALSE_CLEAR, 'a properly captured shadow classifies correctly');
+ok('a hand-built non-canonical verdict is canonicalized (the captured fast-path cannot bypass normalization)');
+
 // --- empty / junk input is safe ---
 assert.doesNotThrow(() => sd.captureShadow(null));
 assert.strictEqual(sd.captureShadow(null).verdict, VERDICT.UNKNOWN);

@@ -92,8 +92,15 @@ function captureShadow(shadow) {
  * When either side is unknown → class 'unknown', not a false anything (never invent a
  * disagreement from missing data).
  */
+// The four canonical verdicts — used to detect an ALREADY-captured shadow.
+const CANONICAL = new Set([VERDICT.CLEAR, VERDICT.DECLINE, VERDICT.REFER, VERDICT.UNKNOWN]);
+
 function compareToHuman(shadow, human, opts = {}) {
-  const s = shadow && shadow.verdict && shadow.rawVerdict !== undefined ? shadow : captureShadow(shadow);
+  // Treat the input as already-captured only when its verdict is genuinely one of
+  // the four canonical values — a hand-built object with a non-canonical `verdict`
+  // (e.g. { verdict:'Approved', rawVerdict:'Approved' }) must still be canonicalized,
+  // never compared on the raw string.
+  const s = shadow && CANONICAL.has(shadow.verdict) && shadow.rawVerdict !== undefined ? shadow : captureShadow(shadow);
   const ai = s.verdict;
   const hv = canonicalVerdict((human && (human.verdict != null ? human.verdict : human.decision)));
   const reviewConf = num(opts.reviewConfidence);
