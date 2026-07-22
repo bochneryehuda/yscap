@@ -36,6 +36,7 @@ import StaffFindingEscalations from './screens/StaffFindingEscalations.jsx';
 import StaffTrainingProposals from './screens/StaffTrainingProposals.jsx';
 import StaffLabelingConsole from './screens/StaffLabelingConsole.jsx';
 import StaffAiAdminInbox from './screens/StaffAiAdminInbox.jsx';
+import StaffInsightsDashboard from './screens/StaffInsightsDashboard.jsx';
 import StaffArchived from './screens/StaffArchived.jsx';
 import StaffLeads from './screens/StaffLeads.jsx';
 import StaffLeadDetail from './screens/StaffLeadDetail.jsx';
@@ -144,6 +145,7 @@ export default function App() {
           <Route path="/internal/training" element={<StaffPrivate><StaffTrainingProposals /></StaffPrivate>} />
           <Route path="/internal/labeling" element={<StaffPrivate><StaffLabelingConsole /></StaffPrivate>} />
           <Route path="/internal/ai-inbox" element={<StaffPrivate><StaffAiAdminInbox /></StaffPrivate>} />
+          <Route path="/internal/insights" element={<StaffPrivate><StaffInsightsDashboard /></StaffPrivate>} />
           <Route path="/internal/archived" element={<StaffPrivate><StaffArchived /></StaffPrivate>} />
           <Route path="/internal/leads" element={<StaffPrivate><StaffLeads /></StaffPrivate>} />
           <Route path="/internal/leads/:id" element={<StaffPrivate><StaffLeadDetail /></StaffPrivate>} />
