@@ -218,6 +218,15 @@ async function readRouted(args, bytesHint) {
 
   const result = { ...winner, engineSequence: sequence, routePlan: plan };
 
+  // Weak-page identification — which pages read below the plan's confidence floor
+  // and are worth a targeted re-read by the challenger. Attached advisorily; the
+  // full re-OCR-and-splice of just these pages is a follow-up. Only meaningful
+  // when the engine surfaced per-page confidence (Azure prebuilt-layout does).
+  if (plan.reread && plan.reread.enabled && Array.isArray(winner.pages)) {
+    const weak = matrix.weakPages(winner.pages, plan.reread.confidenceFloor);
+    if (weak.length) result.weakPages = weak;
+  }
+
   // Mandatory challenger for numeric-critical documents — a SECOND independent
   // read whose material numbers are reconciled against the winner's. Pick a
   // usable engine that is NOT the winner and has not already been read.
