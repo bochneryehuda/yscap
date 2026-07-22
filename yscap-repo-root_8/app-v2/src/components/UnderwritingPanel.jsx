@@ -1652,6 +1652,8 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true }) {
   const [busy, setBusy] = React.useState(false);
   const [showDismissed, setShowDismissed] = React.useState(false);
   const [expanded, setExpanded] = React.useState(true);
+  const [sourceFilter, setSourceFilter] = React.useState('all');
+  const [sevFilter, setSevFilter] = React.useState('all');
 
   const load = React.useCallback(async () => {
     if (!appId) return;
@@ -1698,23 +1700,46 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true }) {
       {expanded && (
         <div style={{ padding: '10px 14px' }}>
           {err && <div className="error" style={{ marginBottom: 8 }}>{err}</div>}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, fontSize: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, fontSize: 12, flexWrap: 'wrap' }}>
             <button className="btn ghost" onClick={load} disabled={busy} style={{ padding: '3px 9px', fontSize: 11 }}>{busy ? '…' : '↻ Refresh'}</button>
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: 'var(--muted,#4B585C)' }}>
               <input type="checkbox" checked={showDismissed} onChange={(e) => setShowDismissed(e.target.checked)} />
               Show dismissed
             </label>
+            {/* R3.37 — filter chips */}
+            {(() => {
+              const sources = Array.from(new Set((rows || []).map(r => r.source))).sort();
+              const sevs = Array.from(new Set((rows || []).map(r => r.severity).filter(Boolean))).sort();
+              if (!sources.length) return null;
+              return (
+                <>
+                  <span style={{ color: 'var(--muted,#4B585C)' }}>Filter:</span>
+                  <select value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)} style={{ fontSize: 11, padding: '2px 4px' }}>
+                    <option value="all">Any source</option>
+                    {sources.map((s) => <option key={s} value={s}>{SOURCE_LABEL[s] || s}</option>)}
+                  </select>
+                  <select value={sevFilter} onChange={(e) => setSevFilter(e.target.value)} style={{ fontSize: 11, padding: '2px 4px' }}>
+                    <option value="all">Any severity</option>
+                    {sevs.map((s) => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </>
+              );
+            })()}
           </div>
-          {(rows || []).length === 0 && !busy && (
-            <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', padding: '10px 0' }}>
-              The AI has no suggestions on this file yet. When it reads a document or spots something odd,
-              you'll see it here as a suggestion you can act on.
-            </div>
-          )}
-          {(rows || []).map((s) => (
-            <AISuggestionCard key={s.id} appId={appId} suggestion={s} onChanged={load}
-              disabled={readOnly || !canResolve} />
-          ))}
+          {(() => {
+            const filtered = (rows || []).filter((r) => (sourceFilter === 'all' || r.source === sourceFilter) && (sevFilter === 'all' || r.severity === sevFilter));
+            if (filtered.length === 0 && !busy) {
+              return (
+                <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', padding: '10px 0' }}>
+                  {(rows || []).length ? 'No suggestions match the current filter.' : 'The AI has no suggestions on this file yet. When it reads a document or spots something odd, you\'ll see it here as a suggestion you can act on.'}
+                </div>
+              );
+            }
+            return filtered.map((s) => (
+              <AISuggestionCard key={s.id} appId={appId} suggestion={s} onChanged={load}
+                disabled={readOnly || !canResolve} />
+            ));
+          })()}
         </div>
       )}
     </div>
