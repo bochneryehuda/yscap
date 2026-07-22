@@ -20,6 +20,72 @@ import { api } from '../lib/api.js';
    send an ad-hoc notification on any of their files. Undo toast on send.
    ═════════════════════════════════════════════════════════════════════════ */
 
+/* ---- ICONS (inline SVG so no dep + they inherit currentColor) ---- */
+const Icon = ({ name, size = 16 }) => {
+  const s = size;
+  const stroke = 'currentColor', sw = 1.75;
+  const wrap = (paths) => (
+    <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke={stroke} strokeWidth={sw}
+      strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, verticalAlign: '-2px' }}>{paths}</svg>
+  );
+  switch (name) {
+    case 'send':      return wrap(<><path d="M4 12l16-8-6 16-3-7-7-1z" /></>);
+    case 'snooze':    return wrap(<><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>);
+    case 'clock':     return wrap(<><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>);
+    case 'schedule':  return wrap(<><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M3 10h18M8 3v4M16 3v4M12 14v3M9 17h6" /></>);
+    case 'discard':   return wrap(<><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13" /></>);
+    case 'edit':      return wrap(<><path d="M4 20h4l11-11-4-4L4 16v4z" /></>);
+    case 'preview':   return wrap(<><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></>);
+    case 'mail':      return wrap(<><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M3 7l9 6 9-6" /></>);
+    case 'compose':   return wrap(<><path d="M12 20h9M4 20V13l10-10 4 4L8 17H4z" /></>);
+    case 'search':    return wrap(<><circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" /></>);
+    case 'refresh':   return wrap(<><path d="M4 12a8 8 0 0114-5l2-2M20 4v5h-5M20 12a8 8 0 01-14 5l-2 2M4 20v-5h5" /></>);
+    case 'check':     return wrap(<><path d="M5 12l4 4 10-10" /></>);
+    case 'x':         return wrap(<><path d="M6 6l12 12M6 18L18 6" /></>);
+    case 'bell':      return wrap(<><path d="M6 8a6 6 0 0112 0v5l2 2H4l2-2V8z" /><path d="M9 19a3 3 0 006 0" /></>);
+    case 'file':      return wrap(<><path d="M6 3h9l5 5v13a1 1 0 01-1 1H6a1 1 0 01-1-1V4a1 1 0 011-1z" /><path d="M15 3v5h5" /></>);
+    case 'user':      return wrap(<><circle cx="12" cy="8" r="4" /><path d="M4 21c1.5-4 5-6 8-6s6.5 2 8 6" /></>);
+    case 'sparkle':   return wrap(<><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3z" /></>);
+    case 'chevron':   return wrap(<><path d="M9 6l6 6-6 6" /></>);
+    case 'help':      return wrap(<><circle cx="12" cy="12" r="9" /><path d="M9 9a3 3 0 016 0c0 2-3 2-3 4M12 17.5v.1" /></>);
+    default:          return null;
+  }
+};
+
+/* ---- avatars (initials, deterministic gold/teal from a hash) ---- */
+const AVATAR_TINTS = ['#2F7F86', '#AE8746', '#5B6B7A', '#7A5C8E', '#4F8A6B', '#B5683E', '#3E6FB5'];
+function _hash(s) { let h = 0; for (let i = 0; i < String(s).length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return Math.abs(h); }
+function initials(name) {
+  const parts = String(name || '?').trim().split(/[\s@._-]+/).filter(Boolean);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return String(name || '?').slice(0, 2).toUpperCase();
+}
+function Avatar({ name, size = 32, kind }) {
+  const tint = kind === 'staff' ? '#5B6B7A' : AVATAR_TINTS[_hash(name || '?') % AVATAR_TINTS.length];
+  return (
+    <span style={{ width: size, height: size, minWidth: size, borderRadius: '50%',
+      background: tint, color: 'white', display: 'inline-flex', alignItems: 'center',
+      justifyContent: 'center', fontSize: Math.round(size * 0.38), fontWeight: 600,
+      letterSpacing: '.02em' }}>{initials(name)}</span>
+  );
+}
+
+/* ---- icon-only button with tooltip (accessible) ---- */
+function IconBtn({ name, title, onClick, disabled, tone, size = 30 }) {
+  const color = tone === 'danger' ? 'var(--danger)' : tone === 'gold' ? 'var(--gold)' : 'var(--ink)';
+  return (
+    <button onClick={onClick} disabled={disabled} title={title} aria-label={title}
+      style={{ width: size, height: size, borderRadius: 6, border: '1px solid var(--line)',
+        background: 'transparent', color, cursor: disabled ? 'default' : 'pointer',
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        opacity: disabled ? 0.4 : 1, transition: 'background .12s ease' }}
+      onMouseEnter={(e) => { if (!disabled) e.currentTarget.style.background = 'var(--paper)'; }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}>
+      <Icon name={name} size={16} />
+    </button>
+  );
+}
+
 /* ---- tiny helpers ---- */
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 function maskDay(mask, i)  { return (mask & (1 << i)) !== 0; }
@@ -465,77 +531,123 @@ function DraftPreview({ draft, onSend, onDiscard, onSnooze, onSchedule, busy }) 
   const [note, setNote] = useState('');
   const [tab, setTab] = useState('preview');
   const [openSched, setOpenSched] = useState(false);
-  useEffect(() => { setSubject(draft.subject || ''); setBody(draft.body || ''); setNote(''); setTab('preview'); }, [draft.id]);
+  const [snoozeOpen, setSnoozeOpen] = useState(false);
+  useEffect(() => { setSubject(draft.subject || ''); setBody(draft.body || ''); setNote(''); setTab('preview'); setSnoozeOpen(false); }, [draft.id]);
   const canEdit = draft.status === 'pending';
+  const dirty = subject !== (draft.subject || '') || body !== (draft.body || '') || note.trim() !== '';
   const send = () => onSend(draft, { title: subject, body, note });
+  const who = draft.recipientLabel || (draft.recipientKind === 'borrower' ? 'Borrower' : 'Team member');
 
   return (
-    <div className="panel" style={{ padding: 16 }}>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4, flexWrap: 'wrap' }}>
-        <span className="ec-pill ec-pill-muted">{draft.entry ? draft.entry.label : draft.notifType}</span>
-        {draft.priority === 'high' && <span className="ec-pill ec-pill-danger">High priority</span>}
-        {draft.composeSource === 'compose' && <span className="ec-pill ec-pill-ok">Composed</span>}
-        {draft.scheduledFor && <span className="ec-pill ec-pill-muted">Scheduled {humanCountdown(draft.scheduledFor)}</span>}
-        {draft.snoozedUntil && new Date(draft.snoozedUntil) > new Date() && <span className="ec-pill ec-pill-muted">Snoozed {humanCountdown(draft.snoozedUntil)}</span>}
-        {draft.autoSendAt && <span className="ec-pill ec-pill-muted" title="If you don't touch it, it auto-sends at this time">Auto-sends {humanCountdown(draft.autoSendAt)}</span>}
-        {draft.loanNumber && <span className="muted small">{draft.loanNumber}</span>}
-        {draft.address && <span className="muted small">· {draft.address}</span>}
-      </div>
-      <div className="muted small" style={{ marginBottom: 10 }}>
-        To {draft.recipientKind === 'borrower' ? 'borrower' : 'staff'}{draft.recipientLabel ? ` — ${draft.recipientLabel}` : ''}
-        {' · '}Parked {fmtWhen(draft.createdAt, true)}
-      </div>
-
-      <div className="row" style={{ marginBottom: 10, gap: 4 }}>
-        <button className="btn ghost small" onClick={() => setTab('preview')}
-          style={{ background: tab === 'preview' ? 'var(--paper)' : 'transparent' }}>Preview</button>
-        <button className="btn ghost small" onClick={() => setTab('edit')}
-          style={{ background: tab === 'edit' ? 'var(--paper)' : 'transparent' }}>Edit</button>
-      </div>
-
-      {tab === 'preview' ? (
-        <LiveEmailPreview draftId={draft.id} />
-      ) : (
-        <>
-          <label className="muted small">Subject</label>
-          <input value={subject} disabled={!canEdit} onChange={(e) => setSubject(e.target.value)}
-            style={{ width: '100%', padding: '6px 10px', border: '1px solid var(--line)', borderRadius: 4, marginBottom: 10 }} />
-          <label className="muted small">Body</label>
-          <textarea value={body} disabled={!canEdit} onChange={(e) => setBody(e.target.value)}
-            rows={8} style={{ width: '100%', padding: '8px 10px', border: '1px solid var(--line)', borderRadius: 4, marginBottom: 10, fontFamily: 'inherit' }} />
-          {canEdit && (
-            <>
-              <label className="muted small">Add a note (optional)</label>
-              <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2}
-                placeholder="Extra note that will be added to the email…"
-                style={{ width: '100%', padding: '8px 10px', border: '1px solid var(--line)', borderRadius: 4, marginBottom: 10, fontFamily: 'inherit' }} />
-            </>
-          )}
-        </>
-      )}
-
-      <div className="row" style={{ gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
-        {canEdit ? (
-          <>
-            <button className="btn btn-gold" disabled={busy} onClick={send}>{busy ? 'Sending…' : 'Send now'}</button>
-            <button className="btn ghost" disabled={busy} onClick={() => setOpenSched(true)}>Schedule…</button>
-            <div style={{ display: 'inline-flex' }}>
-              <button className="btn ghost" disabled={busy} onClick={() => onSnooze(draft, 60)}>Snooze 1h</button>
-              <button className="btn ghost" disabled={busy} onClick={() => onSnooze(draft, 60 * 24)}>1d</button>
-              <button className="btn ghost" disabled={busy} onClick={() => onSnooze(draft, 60 * 24 * 7)}>1w</button>
+    <div className="panel" style={{ padding: 0, overflow: 'hidden' }}>
+      {/* HEADER — Gmail-style with recipient + subject + action bar */}
+      <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--line)',
+        background: 'linear-gradient(180deg, var(--ink-1) 0%, var(--ink-2) 100%)' }}>
+        <div className="row" style={{ gap: 12, alignItems: 'center' }}>
+          <Avatar name={who} kind={draft.recipientKind} size={38} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontWeight: 600, fontSize: 15 }}>
+              To {who}
+              {draft.recipientKind === 'staff' && <span className="muted small" style={{ marginLeft: 6 }}>(team)</span>}
             </div>
-            <button className="btn ghost" disabled={busy} onClick={() => onDiscard(draft)}>Discard</button>
-          </>
+            <div className="muted small" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {subject || <em>(no subject)</em>}
+            </div>
+          </div>
+          {canEdit && (
+            <div style={{ display: 'inline-flex', gap: 4 }}>
+              <IconBtn name="send"     title="Send now"         onClick={send}                     disabled={busy} tone="gold" size={34} />
+              <IconBtn name="schedule" title="Schedule for later" onClick={() => setOpenSched(true)} disabled={busy} size={34} />
+              <div style={{ position: 'relative' }}>
+                <IconBtn name="snooze" title="Snooze"           onClick={() => setSnoozeOpen((v) => !v)} disabled={busy} size={34} />
+                {snoozeOpen && (
+                  <div className="panel" style={{ position: 'absolute', top: 40, right: 0, zIndex: 10, padding: 4, minWidth: 120 }}>
+                    {[[60, '1 hour'], [60 * 4, '4 hours'], [60 * 24, '1 day'], [60 * 24 * 3, '3 days'], [60 * 24 * 7, '1 week']].map(([m, l]) => (
+                      <button key={m} className="btn ghost small" style={{ display: 'block', width: '100%', textAlign: 'left', border: 'none', padding: '6px 10px' }}
+                        onClick={() => { setSnoozeOpen(false); onSnooze(draft, m); }}>
+                        <Icon name="snooze" size={13} /> {l}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <IconBtn name="discard"  title="Discard"          onClick={() => onDiscard(draft)}   disabled={busy} tone="danger" size={34} />
+            </div>
+          )}
+        </div>
+        {/* CHIPS: notification kind + status + timing */}
+        <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+          <span className="ec-pill ec-pill-muted"><Icon name="mail" size={12} /> {draft.entry ? draft.entry.label : draft.notifType}</span>
+          {draft.priority === 'high' && <span className="ec-pill ec-pill-danger">High priority</span>}
+          {draft.composeSource === 'compose' && <span className="ec-pill ec-pill-ok"><Icon name="compose" size={12} /> Composed by you</span>}
+          {draft.scheduledFor && <span className="ec-pill ec-pill-muted"><Icon name="schedule" size={12} /> Scheduled {humanCountdown(draft.scheduledFor)}</span>}
+          {draft.snoozedUntil && new Date(draft.snoozedUntil) > new Date() && <span className="ec-pill ec-pill-muted"><Icon name="snooze" size={12} /> Snoozed {humanCountdown(draft.snoozedUntil)}</span>}
+          {draft.autoSendAt && !draft.scheduledFor && (
+            <span className="ec-pill ec-pill-muted" title="If you don't act on this, it will auto-send at this time so nothing important gets stuck">
+              <Icon name="clock" size={12} /> Auto-sends {humanCountdown(draft.autoSendAt)}
+            </span>
+          )}
+          {draft.loanNumber && <span className="muted small" style={{ marginLeft: 'auto' }}><Icon name="file" size={12} /> {draft.loanNumber}</span>}
+          {draft.address && <span className="muted small">· {draft.address}</span>}
+        </div>
+      </div>
+
+      {/* PREVIEW / EDIT SWITCH */}
+      <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid var(--line)', background: 'var(--ink-2)' }}>
+        {[{ id: 'preview', label: 'Preview', icon: 'preview' }, { id: 'edit', label: 'Edit', icon: 'edit' }].map((t) => (
+          <button key={t.id} onClick={() => setTab(t.id)}
+            style={{ padding: '10px 16px', border: 'none', background: tab === t.id ? 'var(--ink-1)' : 'transparent',
+              borderRight: '1px solid var(--line)', cursor: 'pointer', fontSize: 13,
+              color: tab === t.id ? 'var(--ink)' : 'var(--muted)', fontWeight: tab === t.id ? 600 : 400,
+              display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+            <Icon name={t.icon} size={14} /> {t.label}
+          </button>
+        ))}
+        {dirty && canEdit && (
+          <div style={{ marginLeft: 'auto', padding: '10px 14px', fontSize: 12, color: 'var(--gold)', fontStyle: 'italic' }}>
+            You have unsaved edits — they apply when you Send.
+          </div>
+        )}
+      </div>
+
+      <div style={{ padding: 16 }}>
+        {tab === 'preview' ? (
+          <LiveEmailPreview draftId={draft.id} />
         ) : (
-          <span className="muted small">
+          <>
+            <label style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted)', display: 'block', marginBottom: 4 }}>Subject</label>
+            <input value={subject} disabled={!canEdit} onChange={(e) => setSubject(e.target.value)}
+              style={{ width: '100%', padding: '8px 12px', border: '1px solid var(--line)', borderRadius: 6, marginBottom: 14, fontSize: 14 }} />
+            <label style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted)', display: 'block', marginBottom: 4 }}>Body</label>
+            <textarea value={body} disabled={!canEdit} onChange={(e) => setBody(e.target.value)}
+              rows={10} style={{ width: '100%', padding: '10px 12px', border: '1px solid var(--line)', borderRadius: 6, marginBottom: 14, fontFamily: 'inherit', fontSize: 14, resize: 'vertical' }} />
+            {canEdit && (
+              <>
+                <label style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted)', display: 'block', marginBottom: 4 }}>Personal note (optional)</label>
+                <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={3}
+                  placeholder="Add a note that will appear in the email body…"
+                  style={{ width: '100%', padding: '10px 12px', border: '1px solid var(--line)', borderRadius: 6, marginBottom: 14, fontFamily: 'inherit', fontSize: 14, resize: 'vertical' }} />
+              </>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* FOOTER — status line + link to file */}
+      <div style={{ padding: '10px 18px', borderTop: '1px solid var(--line)', display: 'flex', alignItems: 'center', gap: 10, background: 'var(--ink-2)' }}>
+        {canEdit ? (
+          <span className="muted small">Parked {fmtWhen(draft.createdAt, true)}</span>
+        ) : (
+          <span className="muted small" style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
             {draft.status === 'sent'
-              ? `Sent ${draft.sentAt ? fmtWhen(draft.sentAt, true) : ''}`
-              : `Discarded ${draft.discardedAt ? fmtWhen(draft.discardedAt, true) : ''}`}
+              ? <><Icon name="check" size={13} /> Sent {draft.sentAt ? fmtWhen(draft.sentAt, true) : ''}</>
+              : <><Icon name="x" size={13} /> Discarded {draft.discardedAt ? fmtWhen(draft.discardedAt, true) : ''}</>}
           </span>
         )}
+        <div className="spacer" />
         {draft.applicationId && (
-          <NavLink to={`/internal/app/${draft.applicationId}`} className="btn ghost small" style={{ marginLeft: 'auto' }}>
-            Open the file
+          <NavLink to={`/internal/app/${draft.applicationId}`} className="btn ghost small">
+            <Icon name="file" size={13} /> Open the file
           </NavLink>
         )}
       </div>
@@ -545,7 +657,99 @@ function DraftPreview({ draft, onSend, onDiscard, onSnooze, onSchedule, busy }) 
   );
 }
 
-/* ---- DRAFTS TAB ---- */
+/* ---- DRAFT CARD (row in the left rail) — modern card with hover actions ---- */
+function DraftCard({ draft, selected, showCheckbox, checked, onCheck, onSelect, onQuickSend, onQuickSnooze, onQuickDiscard, busy }) {
+  const [hover, setHover] = useState(false);
+  const priorityStrip = draft.priority === 'high' ? 'var(--danger)' : draft.composeSource === 'compose' ? 'var(--gold)' : 'transparent';
+  const who = draft.recipientLabel || (draft.recipientKind === 'borrower' ? 'Borrower' : 'Team');
+  return (
+    <div
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      onClick={onSelect}
+      style={{ display: 'flex', gap: 8, padding: '12px 14px 12px 10px',
+        background: selected ? 'var(--gold-soft)' : hover ? 'var(--ink-2)' : 'transparent',
+        borderLeft: `3px solid ${selected ? 'var(--gold)' : priorityStrip}`,
+        borderBottom: '1px solid var(--line)', cursor: 'pointer', position: 'relative',
+        transition: 'background .1s ease' }}>
+      {showCheckbox && (
+        <label onClick={(e) => e.stopPropagation()} style={{ alignSelf: 'flex-start', paddingTop: 2 }}>
+          <input type="checkbox" checked={checked} onChange={onCheck} />
+        </label>
+      )}
+      <Avatar name={who} kind={draft.recipientKind} size={32} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+            {who}
+          </span>
+          <span style={{ fontSize: 11, color: 'var(--muted)' }}>{fmtWhen(draft.createdAt)}</span>
+        </div>
+        <div style={{ fontWeight: 600, fontSize: 14, marginTop: 2,
+          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          {draft.subject || <em style={{ color: 'var(--muted)', fontWeight: 400 }}>(no subject)</em>}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
+          <span className="ec-pill ec-pill-muted" style={{ fontSize: 10 }}>
+            <Icon name="mail" size={10} /> {(draft.entry && draft.entry.label) || draft.notifType}
+          </span>
+          {draft.priority === 'high' && <span className="ec-pill ec-pill-danger" style={{ fontSize: 10 }}>High</span>}
+          {draft.composeSource === 'compose' && <span className="ec-pill ec-pill-ok" style={{ fontSize: 10 }}><Icon name="compose" size={10} /> yours</span>}
+          {draft.scheduledFor && <span className="ec-pill ec-pill-muted" style={{ fontSize: 10 }}><Icon name="schedule" size={10} /> {humanCountdown(draft.scheduledFor)}</span>}
+          {draft.snoozedUntil && new Date(draft.snoozedUntil) > new Date() && <span className="ec-pill ec-pill-muted" style={{ fontSize: 10 }}><Icon name="snooze" size={10} /> {humanCountdown(draft.snoozedUntil)}</span>}
+          {draft.loanNumber && <span className="muted" style={{ fontSize: 11, marginLeft: 'auto' }}>{draft.loanNumber}</span>}
+        </div>
+      </div>
+      {/* Hover-reveal quick actions on Pending only */}
+      {hover && onQuickSend && (
+        <div onClick={(e) => e.stopPropagation()}
+          style={{ position: 'absolute', right: 6, top: 6, display: 'inline-flex', gap: 2,
+            background: 'var(--ink-1)', border: '1px solid var(--line)', borderRadius: 6, padding: 2,
+            boxShadow: '0 2px 6px rgba(0,0,0,0.06)' }}>
+          <IconBtn name="send"    title="Send now"  onClick={onQuickSend}     disabled={busy} tone="gold"   size={26} />
+          <IconBtn name="snooze"  title="Snooze 1h" onClick={onQuickSnooze}   disabled={busy}               size={26} />
+          <IconBtn name="discard" title="Discard"   onClick={onQuickDiscard}  disabled={busy} tone="danger" size={26} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---- LIVE INDICATOR — pulses when the auto-refresh timer is running ---- */
+function LiveDot({ on, label }) {
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--muted)' }}>
+      <span style={{ width: 8, height: 8, borderRadius: '50%',
+        background: on ? 'var(--ok)' : 'var(--muted)',
+        boxShadow: on ? '0 0 0 0 rgba(46,122,94,0.6)' : 'none',
+        animation: on ? 'lo-pulse 2s infinite' : 'none' }} />
+      {label}
+      <style>{`@keyframes lo-pulse { 0%{box-shadow:0 0 0 0 rgba(46,122,94,0.6);} 70%{box-shadow:0 0 0 6px rgba(46,122,94,0);} 100%{box-shadow:0 0 0 0 rgba(46,122,94,0);} }`}</style>
+    </span>
+  );
+}
+
+/* ---- EMPTY STATE — designed for each sub-tab ---- */
+function EmptyState({ kind }) {
+  const cfg = kind === 'pending'
+    ? { icon: 'mail', title: 'Your drafts are empty', body: <>Any notification you flip to <strong>Manual</strong> in the Catalog lands here — plus anything parked by quiet hours or learning mode. You review each one and click <strong>Send</strong>.</> }
+    : kind === 'sent'
+    ? { icon: 'check', title: 'No sent drafts yet', body: 'Drafts you review + send show up here as a searchable history.' }
+    : { icon: 'discard', title: 'No discarded drafts', body: 'Drafts you drop show up here.' };
+  return (
+    <div className="panel" style={{ textAlign: 'center', padding: '48px 24px' }}>
+      <div style={{ width: 56, height: 56, margin: '0 auto 14px', borderRadius: '50%',
+        background: 'var(--gold-soft)', color: 'var(--gold)',
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+        <Icon name={cfg.icon} size={26} />
+      </div>
+      <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 6 }}>{cfg.title}</div>
+      <div className="muted small" style={{ maxWidth: 420, margin: '0 auto' }}>{cfg.body}</div>
+    </div>
+  );
+}
+
+/* ---- DRAFTS TAB — modern Gmail-style inbox with live refresh ---- */
 function DraftsTab({ onCountChange, showToast }) {
   const [tab, setTab] = useState('pending');
   const [items, setItems] = useState(null);
@@ -555,46 +759,70 @@ function DraftsTab({ onCountChange, showToast }) {
   const [busy, setBusy] = useState(false);
   const [q, setQ] = useState('');
   const [bulkScheduleOpen, setBulkScheduleOpen] = useState(false);
+  const [lastRefreshed, setLastRefreshed] = useState(null);
+  const [autoRefresh, setAutoRefresh] = useState(true);
 
-  const load = useCallback(async () => {
-    setItems(null); setErr(''); setSelectedId(null); setChecked(new Set());
+  const load = useCallback(async (opts) => {
+    const soft = opts && opts.soft;
+    if (!soft) { setItems(null); setSelectedId(null); setChecked(new Set()); }
+    setErr('');
     try {
       const r = await api.loNotifDrafts({ status: tab, q });
       setItems(r.items || []);
-      if (r.items && r.items[0]) setSelectedId(r.items[0].id);
+      setLastRefreshed(new Date());
+      // Preserve the current selection if it still exists in the new list
+      if (soft) {
+        if (r.items && !r.items.some((i) => i.id === selectedId) && r.items[0]) setSelectedId(r.items[0].id);
+      } else if (r.items && r.items[0]) setSelectedId(r.items[0].id);
       if (tab === 'pending' && onCountChange) onCountChange((r.items || []).length);
     } catch (e) { setErr(e.message || 'Could not load drafts'); }
-  }, [tab, q, onCountChange]);
-  useEffect(() => { load(); }, [load]);
+  }, [tab, q, onCountChange, selectedId]);
+
+  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [tab, q]);
+
+  // LIVE — auto-refresh every 30s, and on window focus. Off when the tab isn't
+  // Pending (Sent + Discarded rarely change) and off when the LO opted out.
+  useEffect(() => {
+    if (!autoRefresh || tab !== 'pending') return undefined;
+    const iv = setInterval(() => load({ soft: true }), 30_000);
+    const onFocus = () => load({ soft: true });
+    window.addEventListener('focus', onFocus);
+    return () => { clearInterval(iv); window.removeEventListener('focus', onFocus); };
+  }, [autoRefresh, tab, load]);
+
+  // Countdown ticker — force a re-render every 30s so "in 2 min" stays truthy.
+  const [, setTick] = useState(0);
+  useEffect(() => { const t = setInterval(() => setTick((n) => n + 1), 30_000); return () => clearInterval(t); }, []);
 
   const selected = items && items.find((i) => i.id === selectedId);
 
   const handleSend = async (draft, edits) => {
     setBusy(true); setErr('');
-    try {
-      await api.loNotifDraftSend(draft.id, edits);
-      showToast && showToast('Sent — it went out via PILOT.');
-      await load();
-    } catch (e) { setErr(e.message || 'Send failed'); }
+    try { await api.loNotifDraftSend(draft.id, edits); showToast && showToast('Sent — it went out via PILOT.'); await load({ soft: true }); }
+    catch (e) { setErr(e.message || 'Send failed'); }
     finally { setBusy(false); }
   };
   const handleDiscard = async (draft) => {
     if (!window.confirm('Discard this notification? The borrower will never see it.')) return;
     setBusy(true); setErr('');
-    try { await api.loNotifDraftDiscard(draft.id); await load(); } catch (e) { setErr(e.message || 'Discard failed'); } finally { setBusy(false); }
+    try { await api.loNotifDraftDiscard(draft.id); await load({ soft: true }); }
+    catch (e) { setErr(e.message || 'Discard failed'); }
+    finally { setBusy(false); }
   };
   const handleSnooze = async (draft, minutes) => {
     setBusy(true); setErr('');
-    try { await api.loNotifDraftSnooze(draft.id, minutes); showToast && showToast('Snoozed.'); await load(); } catch (e) { setErr(e.message || 'Snooze failed'); } finally { setBusy(false); }
+    try { await api.loNotifDraftSnooze(draft.id, minutes); showToast && showToast('Snoozed.'); await load({ soft: true }); }
+    catch (e) { setErr(e.message || 'Snooze failed'); }
+    finally { setBusy(false); }
   };
   const handleSchedule = async (draft, iso) => {
     setBusy(true); setErr('');
-    try { await api.loNotifDraftSchedule(draft.id, iso); showToast && showToast('Scheduled.'); await load(); } catch (e) { setErr(e.message || 'Schedule failed'); } finally { setBusy(false); }
+    try { await api.loNotifDraftSchedule(draft.id, iso); showToast && showToast('Scheduled.'); await load({ soft: true }); }
+    catch (e) { setErr(e.message || 'Schedule failed'); }
+    finally { setBusy(false); }
   };
 
-  const toggleChecked = (id) => setChecked((s) => {
-    const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n;
-  });
+  const toggleChecked = (id) => setChecked((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const selectAll = () => setChecked(new Set((items || []).map((i) => i.id)));
   const clearChecks = () => setChecked(new Set());
 
@@ -605,99 +833,143 @@ function DraftsTab({ onCountChange, showToast }) {
     try {
       const r = await api.loNotifDraftsBulk([...checked], action, extra);
       showToast && showToast(`${r.applied} updated${r.failed ? ` · ${r.failed} skipped` : ''}.`);
-      await load();
+      await load({ soft: false });
     } catch (e) { setErr(e.message || 'Bulk action failed'); }
     finally { setBusy(false); }
   };
 
+  // KEYBOARD SHORTCUTS — Gmail-style j/k/e/d/s/enter, only on Pending.
+  useEffect(() => {
+    if (tab !== 'pending' || !items || !items.length) return undefined;
+    const onKey = (e) => {
+      if (e.target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
+      const idx = items.findIndex((i) => i.id === selectedId);
+      if (e.key === 'j' || e.key === 'ArrowDown') { e.preventDefault(); setSelectedId(items[Math.min(idx + 1, items.length - 1)].id); }
+      else if (e.key === 'k' || e.key === 'ArrowUp') { e.preventDefault(); setSelectedId(items[Math.max(idx - 1, 0)].id); }
+      else if (selected && e.key === 'e') { e.preventDefault(); handleSend(selected, { title: selected.subject, body: selected.body, note: '' }); }
+      else if (selected && e.key === '#') { e.preventDefault(); handleDiscard(selected); }
+      else if (selected && e.key === 's') { e.preventDefault(); handleSnooze(selected, 60); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [tab, items, selectedId, selected]); // eslint-disable-line react-hooks/exhaustive-deps
+
   return (
     <>
+      {/* SUB-TAB BAR — with live counters on Pending */}
       <div className="row" style={{ marginBottom: 12, gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-        <Tab active={tab === 'pending'} onClick={() => setTab('pending')}>Pending{items && tab === 'pending' ? ` (${items.length})` : ''}</Tab>
-        <Tab active={tab === 'sent'} onClick={() => setTab('sent')}>Sent</Tab>
-        <Tab active={tab === 'discarded'} onClick={() => setTab('discarded')}>Discarded</Tab>
-        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search subject / recipient…"
-          style={{ padding: '6px 10px', border: '1px solid var(--line)', borderRadius: 4, minWidth: 220 }} />
+        <div style={{ display: 'inline-flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }}>
+          {[{ id: 'pending', label: 'Pending', icon: 'mail' },
+            { id: 'sent',    label: 'Sent',    icon: 'check' },
+            { id: 'discarded', label: 'Discarded', icon: 'discard' }].map((t) => (
+            <button key={t.id} onClick={() => setTab(t.id)}
+              style={{ padding: '8px 14px', border: 'none', borderRight: '1px solid var(--line)',
+                background: tab === t.id ? 'var(--ink)' : 'transparent',
+                color: tab === t.id ? 'white' : 'var(--ink)', cursor: 'pointer',
+                display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
+              <Icon name={t.icon} size={14} /> {t.label}
+              {tab === t.id && items && ` (${items.length})`}
+            </button>
+          ))}
+        </div>
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginLeft: 6 }}>
+          <Icon name="search" size={14} />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search subject or recipient"
+            style={{ padding: '6px 10px', border: '1px solid var(--line)', borderRadius: 6, minWidth: 220, fontSize: 13 }} />
+        </div>
         <div className="spacer" />
-        <button className="btn ghost small" onClick={load}>Refresh</button>
+        {tab === 'pending' && <LiveDot on={autoRefresh} label={autoRefresh ? 'Live · updates every 30s' : 'Live off'} />}
+        <IconBtn name="refresh" title="Refresh now" onClick={() => load({ soft: true })} disabled={busy} />
+        {tab === 'pending' && (
+          <label className="muted small" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
+            Auto
+          </label>
+        )}
       </div>
 
+      {/* BULK TOOLBAR */}
       {checked.size > 0 && tab === 'pending' && (
-        <div className="panel" style={{ marginBottom: 10, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', padding: 10 }}>
-          <span className="muted small">{checked.size} selected</span>
-          <button className="btn btn-gold small" disabled={busy} onClick={() => bulk('send')}>Send all</button>
-          <button className="btn ghost small" disabled={busy} onClick={() => bulk('snooze', { minutes: 60 })}>Snooze 1h</button>
-          <button className="btn ghost small" disabled={busy} onClick={() => bulk('snooze', { minutes: 60 * 24 })}>Snooze 1d</button>
-          <button className="btn ghost small" disabled={busy} onClick={() => setBulkScheduleOpen(true)}>Schedule…</button>
-          <button className="btn ghost small" disabled={busy} onClick={() => bulk('discard')}>Discard all</button>
-          <button className="btn ghost small" onClick={clearChecks}>Clear</button>
+        <div className="panel" style={{ marginBottom: 10, padding: 10,
+          display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap',
+          borderColor: 'var(--gold)', background: 'var(--gold-soft)' }}>
+          <span style={{ fontWeight: 600, fontSize: 13 }}>{checked.size} selected</span>
+          <div className="spacer" />
+          <button className="btn btn-gold small" disabled={busy} onClick={() => bulk('send')}>
+            <Icon name="send" size={13} /> Send all
+          </button>
+          <button className="btn ghost small" disabled={busy} onClick={() => bulk('snooze', { minutes: 60 })}>
+            <Icon name="snooze" size={13} /> 1h
+          </button>
+          <button className="btn ghost small" disabled={busy} onClick={() => bulk('snooze', { minutes: 60 * 24 })}>
+            <Icon name="snooze" size={13} /> 1d
+          </button>
+          <button className="btn ghost small" disabled={busy} onClick={() => setBulkScheduleOpen(true)}>
+            <Icon name="schedule" size={13} /> Schedule
+          </button>
+          <button className="btn ghost small" disabled={busy} onClick={() => bulk('discard')} style={{ color: 'var(--danger)' }}>
+            <Icon name="discard" size={13} /> Discard all
+          </button>
+          <button className="btn ghost small" onClick={clearChecks} title="Clear selection">
+            <Icon name="x" size={13} />
+          </button>
         </div>
       )}
 
       {err && <div role="alert" className="notice err">{err}</div>}
 
       {items === null ? (
-        <div className="panel muted">Loading…</div>
+        <div className="panel muted" style={{ textAlign: 'center', padding: 40 }}>Loading drafts…</div>
       ) : items.length === 0 ? (
-        <div className="panel" style={{ textAlign: 'center', padding: 30 }}>
-          <div style={{ fontSize: 15, fontWeight: 500 }}>
-            {tab === 'pending' ? 'No drafts waiting.' : tab === 'sent' ? 'No sent drafts yet.' : 'No discarded drafts.'}
-          </div>
-          {tab === 'pending' && (
-            <div className="muted small" style={{ marginTop: 8 }}>
-              Any notification you set to <strong>Manual</strong> in the Catalog tab lands here — plus anything
-              parked by quiet hours or learning mode.
-            </div>
-          )}
-        </div>
+        <EmptyState kind={tab} />
       ) : (
         <div className="row" style={{ gap: 14, alignItems: 'flex-start' }}>
-          <div style={{ flex: '0 0 360px', maxWidth: 360 }}>
-            <div className="panel" style={{ padding: 0, maxHeight: '75vh', overflowY: 'auto' }}>
+          {/* LEFT RAIL */}
+          <div style={{ flex: '0 0 380px', maxWidth: 380 }}>
+            <div className="panel" style={{ padding: 0, maxHeight: '76vh', overflowY: 'auto' }}>
               {tab === 'pending' && items.length > 0 && (
-                <div style={{ padding: '8px 10px', borderBottom: '1px solid var(--line)' }}>
-                  <label className="muted small" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <input type="checkbox" checked={checked.size === items.length}
-                      onChange={(e) => e.target.checked ? selectAll() : clearChecks()} />
-                    Select all
-                  </label>
+                <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--line)',
+                  display: 'flex', alignItems: 'center', gap: 8, background: 'var(--ink-2)', position: 'sticky', top: 0 }}>
+                  <input type="checkbox" checked={checked.size === items.length}
+                    onChange={(e) => e.target.checked ? selectAll() : clearChecks()}
+                    title="Select all" />
+                  <span className="muted small">{items.length} draft{items.length === 1 ? '' : 's'} waiting</span>
                 </div>
               )}
               {items.map((it) => (
-                <div key={it.id} className="row" style={{ alignItems: 'flex-start' }}>
-                  {tab === 'pending' && (
-                    <label style={{ padding: '10px 4px 10px 12px' }}>
-                      <input type="checkbox" checked={checked.has(it.id)} onChange={() => toggleChecked(it.id)} />
-                    </label>
-                  )}
-                  <button onClick={() => setSelectedId(it.id)}
-                    style={{ display: 'block', flex: 1, textAlign: 'left',
-                      padding: '10px 12px', background: it.id === selectedId ? 'var(--paper)' : 'transparent',
-                      border: 'none', borderBottom: '1px solid var(--line)', cursor: 'pointer' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                      <span className="ec-pill ec-pill-muted" style={{ fontSize: 10 }}>{it.entry ? it.entry.label : it.notifType}</span>
-                      {it.priority === 'high' && <span className="ec-pill ec-pill-danger" style={{ fontSize: 10 }}>High</span>}
-                      {it.scheduledFor && <span className="ec-pill ec-pill-muted" style={{ fontSize: 10 }}>⏰ {humanCountdown(it.scheduledFor)}</span>}
-                      {it.loanNumber && <span className="muted small">{it.loanNumber}</span>}
-                    </div>
-                    <div style={{ fontWeight: 500, marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      {it.subject || '(no subject)'}
-                    </div>
-                    <div className="muted small" style={{ marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      To {it.recipientLabel || (it.recipientKind === 'borrower' ? 'borrower' : 'staff')} · {fmtWhen(it.createdAt)}
-                    </div>
-                  </button>
-                </div>
+                <DraftCard key={it.id} draft={it}
+                  selected={it.id === selectedId}
+                  showCheckbox={tab === 'pending'}
+                  checked={checked.has(it.id)}
+                  onCheck={() => toggleChecked(it.id)}
+                  onSelect={() => setSelectedId(it.id)}
+                  onQuickSend={tab === 'pending' ? () => handleSend(it, { title: it.subject, body: it.body, note: '' }) : null}
+                  onQuickSnooze={tab === 'pending' ? () => handleSnooze(it, 60) : null}
+                  onQuickDiscard={tab === 'pending' ? () => handleDiscard(it) : null}
+                  busy={busy}
+                />
               ))}
+              {tab === 'pending' && (
+                <div style={{ padding: '10px 12px', borderTop: '1px solid var(--line)',
+                  background: 'var(--ink-2)', color: 'var(--muted)', fontSize: 11, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                  <span><kbd style={{ padding: '1px 6px', border: '1px solid var(--line)', borderRadius: 3, fontFamily: 'monospace' }}>j</kbd>/<kbd style={{ padding: '1px 6px', border: '1px solid var(--line)', borderRadius: 3, fontFamily: 'monospace' }}>k</kbd> nav</span>
+                  <span><kbd style={{ padding: '1px 6px', border: '1px solid var(--line)', borderRadius: 3, fontFamily: 'monospace' }}>e</kbd> send</span>
+                  <span><kbd style={{ padding: '1px 6px', border: '1px solid var(--line)', borderRadius: 3, fontFamily: 'monospace' }}>s</kbd> snooze</span>
+                  <span><kbd style={{ padding: '1px 6px', border: '1px solid var(--line)', borderRadius: 3, fontFamily: 'monospace' }}>#</kbd> discard</span>
+                </div>
+              )}
             </div>
           </div>
+          {/* RIGHT PANE */}
           <div style={{ flex: 1, minWidth: 0 }}>
             {selected ? (
               <DraftPreview draft={selected}
                 onSend={handleSend} onDiscard={handleDiscard}
                 onSnooze={handleSnooze} onSchedule={handleSchedule} busy={busy} />
             ) : (
-              <div className="panel muted">Pick a draft to review.</div>
+              <div className="panel" style={{ padding: 40, textAlign: 'center', color: 'var(--muted)' }}>
+                Pick a draft on the left to preview and send.
+              </div>
             )}
           </div>
         </div>
@@ -921,7 +1193,18 @@ export default function StaffNotificationCenter() {
   const [toast, setToast] = useState('');
   const [toastTimer, setToastTimer] = useState(null);
 
-  useEffect(() => { api.loNotifDraftCount().then((r) => setPendingCount(r.pending || 0)).catch(() => {}); }, []);
+  useEffect(() => {
+    // Live tab badge — poll every 30s + on focus. When the Drafts tab is open
+    // its own load() already updates via onCountChange, so this is mostly for
+    // the Catalog/Rules/Analytics tabs where the LO can see fresh drafts arrive.
+    let alive = true;
+    const poll = () => api.loNotifDraftCount().then((r) => { if (alive) setPendingCount(r.pending || 0); }).catch(() => {});
+    poll();
+    const t = setInterval(poll, 30_000);
+    const onFocus = () => poll();
+    window.addEventListener('focus', onFocus);
+    return () => { alive = false; clearInterval(t); window.removeEventListener('focus', onFocus); };
+  }, []);
 
   const showToast = useCallback((t) => {
     setToast(t);

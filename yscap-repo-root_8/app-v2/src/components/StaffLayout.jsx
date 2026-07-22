@@ -309,11 +309,15 @@ export default function StaffLayout({ children }) {
   }, []);
   useEffect(() => {
     let alive = true;
+    // Poll the pending-drafts count every 30s + on window focus so the nav
+    // badge stays LIVE — matches the Drafts tab's own auto-refresh cadence.
     const poll = () => api.loNotifDraftCount()
       .then((r) => { if (alive) setNotifDraftCount((r && r.pending) || 0); }).catch(() => {});
     poll();
-    const t = setInterval(poll, 120000);
-    return () => { alive = false; clearInterval(t); };
+    const t = setInterval(poll, 30_000);
+    const onFocus = () => poll();
+    window.addEventListener('focus', onFocus);
+    return () => { alive = false; clearInterval(t); window.removeEventListener('focus', onFocus); };
   }, []);
   useEffect(() => {
     // Only admins / super-admins see (and can load) the escalation box, so only
