@@ -1349,16 +1349,26 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
             <tbody>
               {requests.map((r) => (
                 <tr key={r.sitewire_request_id}>
-                  <td>{r.job_item_name || `Line ${r.sitewire_job_item_id}`}</td>
-                  <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{usd2(r.requested_cents)}</td>
-                  <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{r.approved_cents == null ? '—' : usd2(r.approved_cents)}</td>
+                  {/* Owner-directed 2026-07-22: a media item (Photo/Video Required — Sitewire's
+                      inspection gate) is NOT a money line. Show the requirement label instead of
+                      dashes for amounts, and REPLACE the "Set approved $ Save" input with a
+                      "Photo/video only" note so a coordinator can't accidentally record money
+                      against a $0 gate row. is_media_item comes from the crosswalk via the
+                      /files/:id/rollup request query (LEFT JOIN sitewire_job_item_links). */}
+                  <td>{r.job_item_name || `Line ${r.sitewire_job_item_id}`}{r.is_media_item ? <span className="muted small" style={{ marginLeft: 6 }}>· photo/video required</span> : null}</td>
+                  <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }} className={r.is_media_item ? 'muted' : undefined}>{r.is_media_item ? '—' : usd2(r.requested_cents)}</td>
+                  <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }} className={r.is_media_item ? 'muted' : undefined}>{r.is_media_item ? '—' : (r.approved_cents == null ? '—' : usd2(r.approved_cents))}</td>
                   <td className="muted small">{r.inspection_count || 0}</td>
                   {isOpen && (
                     <td>
-                      <div className="row" style={{ gap: 6 }}>
-                        <input className="input" style={{ width: 100 }} placeholder="$" disabled={writesOff} value={edits[r.sitewire_request_id] ?? ''} onChange={(e) => setEdits((s) => ({ ...s, [r.sitewire_request_id]: e.target.value }))} />
-                        <button className="btn btn-sm ghost" title={offTip} disabled={writesOff || busy === 'appr:' + r.sitewire_request_id} onClick={() => setApproved(r)}>Save</button>
-                      </div>
+                      {r.is_media_item ? (
+                        <span className="muted small">Photo/video only — no dollars to enter</span>
+                      ) : (
+                        <div className="row" style={{ gap: 6 }}>
+                          <input className="input" style={{ width: 100 }} placeholder="$" disabled={writesOff} value={edits[r.sitewire_request_id] ?? ''} onChange={(e) => setEdits((s) => ({ ...s, [r.sitewire_request_id]: e.target.value }))} />
+                          <button className="btn btn-sm ghost" title={offTip} disabled={writesOff || busy === 'appr:' + r.sitewire_request_id} onClick={() => setApproved(r)}>Save</button>
+                        </div>
+                      )}
                     </td>
                   )}
                 </tr>
