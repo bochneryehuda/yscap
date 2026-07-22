@@ -56,6 +56,10 @@ const KICKER_OF = {
   // Finding escalation (owner-directed 2026-07-21): a finding was routed to your workload,
   // or a finding you escalated was decided.
   finding_escalation: 'Finding to review', finding_escalation_decided: 'Finding review',
+  // R3.39 — a NEW fatal AI suggestion just landed on a file. Action-bearing —
+  // the LO + admins are emailed the moment it lands (not just added to the
+  // panel). Deduped in the source module so one detector doesn't blast a batch.
+  ai_fatal_finding: 'New AI finding',
 };
 
 /**
@@ -381,6 +385,9 @@ const CATEGORY_OF = {
   // Major-fraud / authenticity alert (R3.14, owner-directed 2026-07-22).
   // Action-bearing — admins ARE emailed (owner explicitly asked).
   workflow_alert: 'conditions',
+  // R3.39 — new fatal AI suggestion. Action-bearing. NOT in STAFF_INAPP_TYPES
+  // so it emails LO + processor + admins per file (deduped upstream).
+  ai_fatal_finding: 'conditions',
 };
 // These always reach the borrower in-app even if the category is muted — they
 // require action and can't be silently dropped (email can still be turned off).

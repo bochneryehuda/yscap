@@ -92,7 +92,52 @@ async function record(client, s) {
      JSON.stringify(s.evidence || {}), JSON.stringify(s.proposedAction || {}),
      s.severity || null, s.confidence != null ? Number(s.confidence) : null, s.traceUrl || null,
      s.dedupeKey || null, !!s.important]);
-  return { id: ins.rows[0].id, deduped: false };
+  const rowId = ins.rows[0].id;
+  // R3.39 — real-time notify on NEW fatal AI suggestions. Fires only on the
+  // fresh-insert branch (dedupe path above never re-notifies). Scheduled via
+  // setImmediate so the caller's transaction gets a chance to COMMIT first,
+  // and then re-verifies the row still exists (defensive against a rollback).
+  // Best-effort — a notify failure never rolls back the suggestion.
+  if (String(s.severity || '').toLowerCase() === 'fatal') {
+    setImmediate(() => { _notifyFatalNew(s, rowId).catch(() => { /* additive */ }); });
+  }
+  return { id: rowId, deduped: false };
+}
+
+/**
+ * Fire a staff notification for a new fatal AI finding. In-app + email to the
+ * file's LO + processor (and admins-that-should-know via notifyAdmins). Uses
+ * the notify chokepoint's file enrichment so the subject + meta name the file.
+ * Best-effort — never throws.
+ */
+async function _notifyFatalNew(s, suggestionId) {
+  try {
+    const notify = require('../notify');
+    const applicationId = s.applicationId;
+    // Registered notify type `ai_fatal_finding` — action-bearing so NOT in
+    // STAFF_INAPP_TYPES; the notify layer emails LO/processor and lets the
+    // recipient's category preference silence it if they've muted 'conditions'.
+    const opts = {
+      applicationId,
+      type: 'ai_fatal_finding',
+      title: 'New fatal AI finding',
+      body: `AI detected a fatal issue on this file: "${(s.title || '').slice(0, 140)}". Open the AI Findings panel to review, escalate, or dismiss.`,
+      link: `/internal/app/${applicationId}#ai-findings-${suggestionId}`,
+      ctaLabel: 'Open the AI Findings panel',
+      // Kicker auto-mapped from type via KICKER_OF; category auto-mapped via CATEGORY_OF.
+    };
+    // Fan out to the file's staff (LO + processor + assistants). notifyAppStaff
+    // enriches the subject line with the file identity and wires the officer card.
+    if (typeof notify.notifyAppStaff === 'function') {
+      await notify.notifyAppStaff(applicationId, opts);
+    }
+    // Also loop admins in so a rogue AI signal on a file isn't missed if the LO
+    // is off-hours. Keyed to the same message; notifyAdmins dedupes by (type,
+    // entity_id) via its own upstream logic.
+    if (typeof notify.notifyAdmins === 'function') {
+      await notify.notifyAdmins({ ...opts, applicationId });
+    }
+  } catch (_) { /* additive */ }
 }
 
 /**
