@@ -129,14 +129,15 @@ async function esignSendGate(applicationId, { db = dbDefault, purpose } = {}) {
     });
   }
 
-  // NOTE (owner-directed 2026-07-22): the whole-loan underwriter is ADVISORY
-  // ONLY for now — it must not change or block any existing feature. The
-  // registration-issuability check (`registrationIssuabilityBlockers`) is kept
-  // as an exported ADVISORY helper the AI underwriter surfaces as a finding for a
-  // human to review; it is deliberately NOT wired into this gate's `ready`, so the
-  // send gate behaves as it did before the whole-loan work. (The `closingOk` term
-  // above is a SEPARATE, owner-directed term-sheet-package requirement and stays.)
-  return { ready: apprOk && reviewOk && ppOk && closingOk, outstanding };
+  // MANUAL is a HARD STOP for issuance (owner-directed 2026-07-22): a
+  // MANUAL/Manual-Program registration still awaiting super-admin exception
+  // approval — or a STALE registration — may NOT send an e-sign package. Any
+  // manual file must get admin approval as an exception first. Appended after the
+  // appraisal/P&P/closing checks so the staff UI shows every blocker at once.
+  const regBlockers = await registrationIssuabilityBlockers(applicationId, db);
+  for (const b of regBlockers) outstanding.push(b);
+
+  return { ready: apprOk && reviewOk && ppOk && closingOk && regBlockers.length === 0, outstanding };
 }
 
 /**
