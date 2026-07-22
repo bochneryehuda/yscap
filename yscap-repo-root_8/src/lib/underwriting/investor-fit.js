@@ -27,7 +27,13 @@ function num(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
 
 // Normalize one investor's evaluation result to a stable shape.
 //   { investor, eligible, failures:[{ ruleId, reason, severity }], notes:[...], score? }
+// Wrapped so a hostile result object (e.g. a throwing getter on investor/failures)
+// degrades to a safe non-fit rather than escaping the module's never-throws contract.
 function normResult(r) {
+  try { return normResultUnsafe(r); }
+  catch (_e) { return { investor: 'unknown', eligible: false, failures: [], blockers: [], notes: [], exceptions: 0 }; }
+}
+function normResultUnsafe(r) {
   const rr = r || {};
   const investor = rr.investor != null ? String(rr.investor) : (rr.name != null ? String(rr.name) : (rr.id != null ? String(rr.id) : 'unknown'));
   const failsRaw = Array.isArray(rr.failures) ? rr.failures

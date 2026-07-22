@@ -97,6 +97,10 @@ assert.strictEqual(inv.rankInvestorFit([]).anyFit, false);
 assert.doesNotThrow(() => inv.rankInvestorFit([null, 'junk', {}, { investor: 'A', failures: 'notarray' }]));
 assert.doesNotThrow(() => inv.compareInvestors(null, 'a', 'b'));
 assert.strictEqual(inv.compareInvestors(null, 'a', 'b'), null);
+// a hostile result with a throwing getter degrades to a safe non-fit, never escapes
+assert.doesNotThrow(() => inv.rankInvestorFit([{ get investor() { throw new Error('boom'); } }]));
+assert.doesNotThrow(() => inv.rankInvestorFit([{ investor: 'A', get failures() { throw new Error('boom'); } }]));
+assert.strictEqual(inv.rankInvestorFit([{ get failures() { throw new Error('boom'); } }]).ranked[0].fit, 'fails', 'a throwing result degrades to a non-fit');
 ok('empty / null / junk input is safe (never throws)');
 
 console.log(`\nR5.39 investor-fit pure — ${passed} checks passed`);
