@@ -3249,7 +3249,7 @@ export default function StaffApplication() {
 
       <Section id="sec-esign" title="E-signatures" defaultOpen={false}
         info="Send and track the term-sheet package and Heter Iska, with live per-signer status, resend, void, re-issue and downloads.">
-      <EsignFileSection appId={id} role={role} />
+      <EsignFileSection appId={id} role={role} onChanged={load} />
       </Section>
 
       <Section id="sec-orders" title="Orders (title &amp; insurance)" defaultOpen={false}

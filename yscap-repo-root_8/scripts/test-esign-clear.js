@@ -148,6 +148,45 @@ async function cleanup(ids) {
       assert(iskaE.status === 'completed', 'F: the Heter Iska envelope is UNTOUCHED');
     }
 
+    // ---- (G) a cleared COMPLETED package can NOT be resurrected by a late DocuSign event ----
+    // A completed envelope is never voided at DocuSign, so a replayed Connect event
+    // still reports 'completed'. reconcileEnvelope must SKIP a cleared/voided row
+    // rather than re-run handleCompletion (which would re-link the doc, re-close the
+    // condition, and flip status voided→completed, re-engaging the freeze).
+    {
+      const { reconcileEnvelope } = require('../src/lib/esign/webhook');
+      const ids = await seed(`${sfx}g`, { envStatus: 'completed' }); created.push(ids);
+      await clearPackage({ rowId: ids.envId, actorId: ids.superId, reason: 'restructure', db, docusign: { voidEnvelope: async () => {} } });
+      // The full row as the inbox drain would load it (SELECT *), now carrying cleared_at.
+      const row = (await db.query(`SELECT * FROM esign_envelopes WHERE id=$1`, [ids.envId])).rows[0];
+      let fetched = false;
+      // getEnvelope must NOT even be called — the guard short-circuits before the fetch.
+      const docusign = { getEnvelope: async () => { fetched = true; return { status: 'completed', recipients: {} }; } };
+      const ret = await reconcileEnvelope(db, docusign, {}, row);
+      assert(fetched === false, 'G: reconcile skips a cleared envelope WITHOUT re-fetching DocuSign');
+      assert(ret === 'voided', 'G: reconcile returns the terminal local status for a cleared envelope');
+      const env = (await db.query(`SELECT status, cleared_at FROM esign_envelopes WHERE id=$1`, [ids.envId])).rows[0];
+      const item = (await db.query(`SELECT status FROM checklist_items WHERE id=$1`, [ids.itemId])).rows[0];
+      const doc = (await db.query(`SELECT is_current FROM documents WHERE id=$1`, [ids.docId])).rows[0];
+      const edoc = (await db.query(`SELECT completed_document_id FROM esign_envelope_docs WHERE envelope_row_id=$1`, [ids.envId])).rows[0];
+      assert(env.status === 'voided', 'G: the envelope stays voided (NOT flipped back to completed) — freeze does not re-engage');
+      assert(item.status === 'outstanding', 'G: the reopened condition stays outstanding (NOT re-closed)');
+      assert(doc.is_current === false && edoc.completed_document_id === null, 'G: the signed doc stays superseded + detached (NOT re-linked)');
+    }
+
+    // ---- (H) a WAIVED condition is PRESERVED — clearing supersedes the doc but keeps the human waive ----
+    {
+      const ids = await seed(`${sfx}h`, { envStatus: 'completed', itemStatus: 'satisfied', signedOff: true }); created.push(ids);
+      // Stamp the condition as WAIVED (as staff.js does: satisfied + signed_off + waived_*).
+      await db.query(`UPDATE checklist_items SET waived_at=now(), waived_by=$2 WHERE id=$1`, [ids.itemId, ids.superId]);
+      const out = await clearPackage({ rowId: ids.envId, actorId: ids.superId, reason: 'restructure', db, docusign: { voidEnvelope: async () => {} } });
+      const item = (await db.query(`SELECT status, waived_at, waived_by FROM checklist_items WHERE id=$1`, [ids.itemId])).rows[0];
+      const doc = (await db.query(`SELECT is_current FROM documents WHERE id=$1`, [ids.docId])).rows[0];
+      assert(item.status === 'satisfied' && item.waived_at !== null && item.waived_by === ids.superId, 'H: a WAIVED condition is NOT reopened — the human waive is preserved');
+      assert((out.conditionsReopened || []).length === 0, 'H: clear reports no condition reopened for a waived one');
+      assert(doc.is_current === false, 'H: the stale signed doc is still superseded even when the condition stays waived');
+    }
+
     console.log(failures ? `\n${failures} assertion(s) failed` : '\nALL esign-clear assertions passed');
   } catch (e) {
     console.error('ERROR', e); failures++;

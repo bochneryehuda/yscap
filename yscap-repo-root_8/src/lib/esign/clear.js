@@ -98,7 +98,11 @@ async function clearPackage({ rowId, actorId, reason, db = dbDefault, docusign }
     // Reopen exactly this package's conditions — clear the signed/received state
     // and every sign-off / review stamp, with an [auto] note explaining why. The
     // WHERE is fully parenthesised so the id guard applies to BOTH OR branches (a
-    // bare `id=$1 AND a OR b` would let branch b match every row).
+    // bare `id=$1 AND a OR b` would let branch b match every row). A human WAIVE is
+    // PRESERVED (`waived_at IS NULL`) — a waive isn't a distinct status here (it's
+    // stored as satisfied + waived_at), and clearing a stale signed doc must not
+    // undo a person's decision that the condition isn't needed. This mirrors the
+    // completion path, which likewise never disturbs a waived condition.
     const note = `[auto] Reopened — the ${label} DocuSign package was cleared.`;
     const itemIds = [...new Set(docs.map((d) => d.checklist_item_id).filter(Boolean))];
     for (const itemId of itemIds) {
@@ -108,7 +112,8 @@ async function clearPackage({ rowId, actorId, reason, db = dbDefault, docusign }
                 reviewed_at=NULL, reviewed_by=NULL,
                 notes = CASE WHEN COALESCE(notes,'') = '' THEN $2 ELSE notes || E'\n' || $2 END,
                 updated_at=now()
-          WHERE id=$1 AND (status IN ('received','satisfied') OR signed_off_at IS NOT NULL)`,
+          WHERE id=$1 AND waived_at IS NULL
+            AND (status IN ('received','satisfied') OR signed_off_at IS NOT NULL)`,
         [itemId, note]);
       if (r.rowCount) reopened.push(itemId);
     }

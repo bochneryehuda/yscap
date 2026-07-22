@@ -52,7 +52,7 @@ function Recipient({ r }) {
   );
 }
 
-export default function EsignFileSection({ appId, role }) {
+export default function EsignFileSection({ appId, role, onChanged }) {
   const isAdmin = role === 'admin' || role === 'super_admin';
   const [data, setData] = useState(null);   // { gate, packages, envelopes, loanNumber }
   const [err, setErr] = useState('');
@@ -78,12 +78,17 @@ export default function EsignFileSection({ appId, role }) {
   }, [load]);
 
   const msgT = useRef(null);
-  async function act(key, fn, okMsg) {
+  // `after` runs only on SUCCESS, after the local esign refetch — used by actions
+  // that also change data OUTSIDE this section (clearing a package reopens the
+  // file's conditions), so the parent can refetch its conditions panel and it
+  // doesn't sit showing a just-reopened condition as still "signed off".
+  async function act(key, fn, okMsg, after) {
     setBusy(key); setErr(''); setMsg('');
     if (msgT.current) { clearTimeout(msgT.current); msgT.current = null; }
     try {
       await fn(); if (okMsg) { setMsg(okMsg); msgT.current = setTimeout(() => setMsg(''), 6000); }   // auto-dismiss so a stale "Sent" banner never sits above a failed card
       await load(true);
+      if (after) { try { await after(); } catch (_) { /* the parent refresh is best-effort */ } }
     } catch (e) { setErr(e.message || 'Action failed'); }
     finally { setBusy(''); }
   }
@@ -124,7 +129,9 @@ export default function EsignFileSection({ appId, role }) {
       + `  • the structure unfreezes and you can send a fresh package with updated details\n\n`
       + `This CANNOT be undone. Continue?`);
     if (!ok) return;
-    return act(`clear:${e.id}`, () => api.post(`/api/staff/esign/${e.id}/clear`, {}), `${label} package cleared — send a fresh one when you’re ready.`);
+    // Pass onChanged as the success callback so the parent refetches its
+    // conditions panel — clearing reopened this package's condition(s).
+    return act(`clear:${e.id}`, () => api.post(`/api/staff/esign/${e.id}/clear`, {}), `${label} package cleared — send a fresh one when you’re ready.`, onChanged);
   };
   const countersign = (rowId) => act(`cs:${rowId}`, async () => {
     const { url } = await api.post(`/api/staff/esign/${rowId}/countersign-view`);
