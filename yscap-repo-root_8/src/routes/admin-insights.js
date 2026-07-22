@@ -107,6 +107,67 @@ router.get('/', requireRole('admin'), async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message || 'insights load failed' }); }
 });
 
+// R4.3 — Regulator-ready AI decision audit CSV export. Every ai_suggestion
+// decide event with actor + timestamp + reason + linked condition/task + trace
+// url. Filterable by date range (?since=YYYY-MM-DD&until=YYYY-MM-DD). super_admin
+// only — audit-trail data is sensitive.
+router.get('/ai-audit.csv', requireRole('super_admin'), async (req, res) => {
+  try {
+    const since = req.query.since ? String(req.query.since).slice(0, 10) : '1970-01-01';
+    const until = req.query.until ? String(req.query.until).slice(0, 10) : '2999-12-31';
+    const r = await db.query(
+      `SELECT s.id, s.application_id, a.ys_loan_number, a.property_address,
+              s.source, s.kind, s.severity, s.title, s.status, s.status_reason,
+              s.decided_at, s.decided_by_staff_id, u.email AS decided_by_email,
+              s.created_at, s.trace_url, s.evidence->>'code' AS finding_code,
+              s.linked_condition_id, s.linked_task_id
+         FROM ai_suggestions s
+         LEFT JOIN applications a ON a.id = s.application_id
+         LEFT JOIN staff_users u ON u.id = s.decided_by_staff_id
+        WHERE s.decided_at IS NOT NULL
+          AND s.decided_at::date BETWEEN $1::date AND $2::date
+        ORDER BY s.decided_at DESC
+        LIMIT 10000`, [since, until]);
+    const headers = [
+      'suggestion_id', 'application_id', 'ys_loan_number', 'property',
+      'source', 'kind', 'severity', 'code', 'title',
+      'status', 'status_reason', 'created_at', 'decided_at',
+      'decided_by_email', 'linked_condition_id', 'linked_task_id', 'trace_url',
+    ];
+    const esc = (v) => {
+      if (v == null) return '';
+      const s = String(v).replace(/"/g, '""');
+      return /[",\n]/.test(s) ? `"${s}"` : s;
+    };
+    const rows = r.rows.map((row) => headers.map((h) => {
+      switch (h) {
+        case 'suggestion_id':    return esc(row.id);
+        case 'application_id':   return esc(row.application_id);
+        case 'ys_loan_number':   return esc(row.ys_loan_number);
+        case 'property':         return esc((row.property_address && (row.property_address.line1 || row.property_address.address || row.property_address.oneLine)) || '');
+        case 'source':           return esc(row.source);
+        case 'kind':             return esc(row.kind);
+        case 'severity':         return esc(row.severity);
+        case 'code':             return esc(row.finding_code);
+        case 'title':            return esc(row.title);
+        case 'status':           return esc(row.status);
+        case 'status_reason':    return esc(row.status_reason);
+        case 'created_at':       return esc(row.created_at && new Date(row.created_at).toISOString());
+        case 'decided_at':       return esc(row.decided_at && new Date(row.decided_at).toISOString());
+        case 'decided_by_email': return esc(row.decided_by_email);
+        case 'linked_condition_id': return esc(row.linked_condition_id);
+        case 'linked_task_id':   return esc(row.linked_task_id);
+        case 'trace_url':        return esc(row.trace_url);
+        default:                 return '';
+      }
+    }).join(','));
+    const body = [headers.join(','), ...rows].join('\n') + '\n';
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="ai-audit-${since}-to-${until}.csv"`);
+    res.send(body);
+  } catch (e) { res.status(500).json({ error: e.message || 'audit export failed' }); }
+});
+
 // R3.36 — 7-day AI cost trend (per-day $ + call count). admin+ only.
 router.get('/ai-cost-trend', requireRole('admin'), async (req, res) => {
   try {
