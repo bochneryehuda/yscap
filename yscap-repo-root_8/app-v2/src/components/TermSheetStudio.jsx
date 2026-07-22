@@ -100,6 +100,9 @@ export function buildStudioState(x) {
     tsTerm: termDigits(x.termMonths || x.term),
     irMonths: rawNum(x.irMonths) || '',
     irAmount: rawNum(x.irAmount) || '',
+    // Term-sheet options (owner-directed 2026-07-22): carry the file's estimated
+    // closing date into the studio so it shows and re-registers without wiping.
+    estClosingDate: (x.estClosingDate && /^\d{4}-\d{2}-\d{2}/.test(String(x.estClosingDate))) ? String(x.estClosingDate).slice(0, 10) : '',
   };
   const c = {
     isAssign,
@@ -163,6 +166,10 @@ function readSnapshot(win) {
       tsManualOn: chk('tsManualOn'),
       tsMLtv: val('tsMLtv'), tsMArv: val('tsMArv'), tsMLtc: val('tsMLtc'),
       tsMRate: val('tsMRate'), tsMIr: val('tsMIr'),
+      // Term-sheet options (owner-directed 2026-07-22) — display/record only.
+      estClosingDate: val('estClosingDate'),
+      tsAccrual: val('tsAccrual'), tsDeferredOrig: val('tsDeferredOrig'),
+      tsMinIntStd: chk('tsMinIntStd'), tsMinIntGold: chk('tsMinIntGold'), tsMinIntManual: chk('tsMinIntManual'),
     },
   };
 }

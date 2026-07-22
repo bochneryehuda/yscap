@@ -24,6 +24,7 @@ const { requireAuth, requireRole, issueEmailToken } = require('../auth');
 const pricing = require('../lib/pricing');
 const { persistProductRegistration } = require('../lib/product-registration');
 const manualProgram = require('../lib/manual-program');
+const termOpts = require('../lib/term-options');
 const workflow = require('../lib/workflow');
 const workflowAuto = require('../lib/workflow-automation');
 const { syncExperienceChecklistForApplication, RECENT_EXIT_SQL, EXIT_DATE_SQL } = require('../lib/experience');
@@ -1610,7 +1611,7 @@ router.get('/applications/:id/pricing', async (req, res) => {
     if (!f) return res.status(404).json({ error: 'not found' });
     const hist = await db.query(
       `SELECT r.id, r.program, r.product_label, r.status, r.note_rate, r.total_loan, r.target_ltc,
-              r.is_current, r.created_at, r.inputs, r.quote, r.is_manual, r.asset_months, s.full_name AS registered_by_name
+              r.is_current, r.created_at, r.inputs, r.quote, r.is_manual, r.asset_months, r.term_options, s.full_name AS registered_by_name
          FROM product_registrations r LEFT JOIN staff_users s ON s.id=r.registered_by
         WHERE r.application_id=$1 ORDER BY r.created_at DESC`, [req.params.id]);
     const current = hist.rows.find((x) => x.is_current) || null;
@@ -1702,6 +1703,22 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       }
     }
     const inputs = pricing.buildInputs(f.app, f.exp, overrides);
+    // Term-sheet options (owner-directed 2026-07-22) — DISPLAY / record only, never
+    // engine math. The min-interest default follows the resolved program (manual
+    // ON, Standard/Gold OFF) unless the admin explicitly set it; the key dates are
+    // derived from the estimated closing date + the priced term.
+    const rawTermOptions = (b.termOptions && typeof b.termOptions === 'object') ? b.termOptions : {};
+    // Derive the key dates from the effective closing date — the one the studio
+    // sent, else the one already on the file — so a re-register that doesn't
+    // re-enter the date never WIPES it, and the dates re-derive when the term moves.
+    const closingForDates = rawTermOptions.estClosingDate || f.app.est_closing_date || null;
+    const kd = termOpts.keyDates(closingForDates, inputs.term);
+    const resolvedTermOptions = {
+      accrualType: termOpts.resolveAccrual(rawTermOptions.accrualType),
+      minInterestEnabled: termOpts.resolveMinInterest(program, rawTermOptions.minInterestEnabled),
+      deferredOrigPct: termOpts.resolveDeferredOrigPct(rawTermOptions.deferredOrigPct),
+      estClosing: kd.estClosing, firstPayment: kd.firstPayment, maturity: kd.maturity,
+    };
     // A manual product overrides the guidelines by design — always force-price it
     // so a leverage override that lands "ineligible" against the Standard caps is
     // sized/registered as MANUAL (with the escalation), never bounced.
@@ -1779,7 +1796,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       await client.query('BEGIN');
       const reg = await persistProductRegistration(client, {
         appId, program, inputs, quote, registeredByStaffId: req.actor.id,
-        isManual, assetMonths,
+        isManual, assetMonths, termOptions: resolvedTermOptions,
       });
       regId = reg.id;
       economicsChanged = reg.economicsChanged;
@@ -1806,6 +1823,12 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
             ltcPct: quote.sizing ? quote.sizing.ltcPct : null,
             assetMonths,
             manualReasons,
+            // Owner-directed 2026-07-22: the super-admin approval must state whether
+            // the 3-month minimum earned interest was left on (its default for a
+            // manual product) or turned off, plus the accrual type.
+            minInterest: resolvedTermOptions.minInterestEnabled,
+            minInterestDefault: termOpts.defaultMinInterest(program),
+            accrual: resolvedTermOptions.accrualType,
           },
           requestedBy: req.actor.id,
         });

@@ -162,6 +162,26 @@ export function overridesFromSnapshot(snap, mode) {
   };
 }
 
+// Term-sheet options (owner-directed 2026-07-22) from the studio snapshot — the
+// DISPLAY / record-only attributes the register persists (never engine math). The
+// min-interest flag is the admin's EFFECTIVE choice for the drilled program: a
+// manual scenario is ON unless the manual toggle is unchecked; Standard/Gold are
+// OFF unless the admin added it per program. The server re-applies the same
+// program default for any missing value.
+export function termOptionsFromSnapshot(snap) {
+  const f = (snap && snap.fields) || {};
+  const gold = snap && snap.program === 'gold';
+  let minInterestEnabled;
+  if (f.tsManualOn) minInterestEnabled = f.tsMinIntManual !== false;      // manual: on unless explicitly unchecked
+  else minInterestEnabled = gold ? !!f.tsMinIntGold : !!f.tsMinIntStd;    // Standard/Gold: off unless added
+  return {
+    accrualType: f.tsAccrual === 'dutch' ? 'dutch' : 'non_dutch',
+    minInterestEnabled,
+    deferredOrigPct: (f.tsDeferredOrig === '' || f.tsDeferredOrig == null) ? 0 : (Number(f.tsDeferredOrig) || 0),
+    estClosingDate: f.estClosingDate || '',
+  };
+}
+
 /* Every detail of the registered product, laid out in the file. `reg` is a
    product_registrations row (quote + inputs jsonb). */
 export function RegisteredProductDetails({ reg, compactView = false, showAdmin = false }) {
@@ -240,6 +260,28 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
           {showAdmin && q.adminPricing && (q.adminPricing.markupPct != null || q.adminPricing.manualPricing) && (
             <Row k="Admin pricing" v={`${q.adminPricing.markupPct != null ? 'markup ' + q.adminPricing.markupPct + '%' : ''}${q.adminPricing.manualPricing ? ' · manual basis' : ''}`.trim()} />
           )}
+          {(() => {
+            // Term-sheet options (owner-directed 2026-07-22) — accrual, 3-month
+            // minimum interest, deferred origination fee, and the estimated dates.
+            const to = typeof reg.term_options === 'string' ? (() => { try { return JSON.parse(reg.term_options); } catch (_) { return null; } })() : (reg.term_options || null);
+            if (!to) return null;
+            const niceDate = (ymd) => {
+              const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(ymd || ''));
+              return m ? new Date(+m[1], +m[2] - 1, +m[3]).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : '—';
+            };
+            const def = Number(to.deferredOrigPct) || 0;
+            return (
+              <>
+                <p className="muted small" style={{ margin: '10px 0 4px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Term-sheet options</p>
+                <Row k="Interest accrual" v={to.accrualType === 'dutch' ? 'Dutch / Full-Boat' : 'Non-Dutch / As-Drawn'} />
+                <Row k="3-month minimum interest" v={to.minInterestEnabled === true ? 'Included' : 'Not included'} />
+                {def > 0 && <Row k="Deferred origination fee (at payoff)" v={`${def}%`} />}
+                {to.estClosing && <Row k="Estimated closing date" v={niceDate(to.estClosing)} />}
+                {to.firstPayment && <Row k="First payment date (est.)" v={niceDate(to.firstPayment)} />}
+                {to.maturity && <Row k="Maturity date (est.)" v={niceDate(to.maturity)} />}
+              </>
+            );
+          })()}
         </div>
       </div>
     </div>
@@ -491,7 +533,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       // the raise-block 403 for LOs. Scenario-only choices (strategy, loan
       // type, property/rehab type, fico) stay with the registered scenario.
       const inp = typeof cur.inputs === 'string' ? JSON.parse(cur.inputs) : cur.inputs;
-      st = buildStudioState(scenarioFromEngineInputs(inp, { entityName: entity, borrowerName: name, coBorrowerName: coName, address: inp.address || addrLine(app.property_address), ...econFallback(inp), ...fileEcon() }));
+      st = buildStudioState(scenarioFromEngineInputs(inp, { entityName: entity, borrowerName: name, coBorrowerName: coName, address: inp.address || addrLine(app.property_address), estClosingDate: app.est_closing_date, ...econFallback(inp), ...fileEcon() }));
       if (isStaff) {
         // Admin knobs restore ONLY for roles the server will honor. The zone is
         // already hidden for non-admin staff (Pinchus), but the RESTORE used to
@@ -519,6 +561,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         expHolds: app.requested_exp_holds ?? inp.expHolds,
         expGround: app.requested_exp_ground ?? inp.expGround,
         fico: inp.fico || (profile && profile.fico) || '',
+        estClosingDate: app.est_closing_date,
         ...econFallback(inp),
       }));
     } else {
@@ -541,6 +584,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         fico: app.fico || (profile && profile.fico) || '',
         expFlips: app.requested_exp_flips, expHolds: app.requested_exp_holds, expGround: app.requested_exp_ground,
         termMonths: app.term, irMonths: app.requested_ir_months, irAmount: app.requested_ir_amount,
+        estClosingDate: app.est_closing_date,
       });
     }
     return st;
@@ -618,9 +662,12 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       // from — the server refuses (409) if the file's economics moved since,
       // so a stale sheet can never write old numbers back onto the file (#148).
       const econVersion = data && data.econVersion;
+      // Term-sheet options (owner-directed 2026-07-22) ride the register body — the
+      // server persists them and applies the min-interest program default.
+      const termOptions = termOptionsFromSnapshot(s);
       const resp = isStaff
-        ? await api.staffRegisterProduct(appId, s.program, overrides, econVersion, manual ? months : undefined, submitException)
-        : await api.borrowerRegisterProduct(appId, s.program, overrides, adminKey || undefined, econVersion, submitException);
+        ? await api.staffRegisterProduct(appId, s.program, overrides, econVersion, manual ? months : undefined, submitException, termOptions)
+        : await api.borrowerRegisterProduct(appId, s.program, overrides, adminKey || undefined, econVersion, submitException, termOptions);
       setExceptionInfo(null);
       const pendingApproval = !!(resp && resp.pendingApproval);
       let note = pendingApproval
