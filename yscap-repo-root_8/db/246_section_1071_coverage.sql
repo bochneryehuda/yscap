@@ -1,4 +1,9 @@
--- 239 — CFPB Section 1071 coverage tracking (R2.10, owner-directed 2026-07-22).
+-- 246 — CFPB Section 1071 coverage tracking (R2.10, owner-directed 2026-07-22).
+-- Renumbered from an earlier number (post-merge collision with a sitewire migration
+-- that landed on main first via PR #546; per CLAUDE.md, renumber the newer file to
+-- the next free number). Every DDL statement below is idempotent (IF NOT EXISTS /
+-- ON CONFLICT), so any environment that already ran it under the previous filename
+-- treats the reapply-under-new-name as a no-op; new environments apply once at 246.
 --
 -- The 2026 Final Rule requires small-business lending data collection by
 -- January 1, 2028. It does NOT carve out business-purpose commercial-real-
