@@ -154,4 +154,25 @@ assert.ok(bad.parseError, 'malformed sets parseError');
 assert.strictEqual(bad.scores.length, 0, 'malformed yields empty, no throw');
 assert.strictEqual(parseCreditXml('').parseError, 'empty document');
 
+// --- reject / no-hit codes (0, 9001-9004) are NOT scores -----------------------
+// They must never land in the 300-850-CHECKed middle_score column.
+const REJECT = `<?xml version="1.0"?><CREDIT_RESPONSE>
+  <CREDIT_SCORE _Value="9002" CreditRepositorySourceType="Equifax"/>
+  <CREDIT_SCORE _Value="0" CreditRepositorySourceType="Experian"/>
+  <CREDIT_SCORE _Value="705" CreditRepositorySourceType="TransUnion"/>
+</CREDIT_RESPONSE>`;
+const rr = parseCreditXml(REJECT);
+assert.strictEqual(rr.scores.length, 1, 'reject/no-hit codes dropped, only the real score kept');
+assert.strictEqual(rr.scores[0].value, 705);
+assert.strictEqual(rr.middleScore, 705, 'middle score ignores reject codes');
+assert.deepStrictEqual(rr.bureausReturned, ['TransUnion'], 'only the scored bureau counts');
+
+const NOHIT = `<?xml version="1.0"?><CREDIT_RESPONSE>
+  <CREDIT_SCORE _Value="0" CreditRepositorySourceType="Equifax"/>
+  <CREDIT_SCORE _Value="9001" CreditRepositorySourceType="Experian"/>
+</CREDIT_RESPONSE>`;
+const rn = parseCreditXml(NOHIT);
+assert.strictEqual(rn.scores.length, 0, 'all reject codes → no scores');
+assert.strictEqual(rn.middleScore, null, 'all-no-hit → middle score null (safe for the DB column)');
+
 console.log('OK  credit-parse: MISMO 2.x + 3.x extraction, middle-score, summary, malformed-safe — all assertions passed');

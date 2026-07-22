@@ -98,6 +98,8 @@ const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failu
   ok(docs.length === 2, 'two documents stored');
   ok(docs.every(d => d.visibility === 'staff_only' && d.is_current && d.checklist_item_id === item.id), 'docs are staff-only, current, on the condition');
   ok(docs.some(d => d.doc_kind === 'credit_pdf') && docs.some(d => d.doc_kind === 'credit_xml'), 'credit_pdf + credit_xml kinds');
+  const upl = (await db.query(`SELECT DISTINCT uploaded_by_id FROM documents WHERE application_id=$1 AND doc_kind IN ('credit_pdf','credit_xml')`, [app.id])).rows;
+  ok(upl.length === 1 && upl[0].uploaded_by_id === staff.id, 'credit documents record the importer');
 
   // FICO written to the borrower (→ reopens pricing via db/126 trigger)
   const fico = (await db.query(`SELECT fico FROM borrowers WHERE id=$1`, [bor.id])).rows[0].fico;
@@ -120,6 +122,24 @@ const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failu
   ok(cur === 2, `only the fresh 2 docs are current after re-import (got ${cur})`);
   const total = (await db.query(`SELECT COUNT(*)::int n FROM credit_reports WHERE application_id=$1`, [app.id])).rows[0].n;
   ok(total === 2, `two credit_reports rows after two imports (got ${total})`);
+
+  // --- M1 regression: a no-hit / thin-file report (reject codes) must NOT crash
+  // the 300-850 middle_score column, must not overwrite an existing FICO --------
+  const NOHIT_XML = `<?xml version="1.0"?><RESPONSE_GROUP><RESPONSE><RESPONSE_DATA>
+    <CREDIT_RESPONSE CreditReportIdentifier="XAC-NOHIT">
+      <BORROWER _FirstName="Dana" _LastName="Borrower" _SSN="123456789"/>
+      <CREDIT_SCORE _Value="0" CreditRepositorySourceType="Equifax"/>
+      <CREDIT_SCORE _Value="9002" CreditRepositorySourceType="Experian"/>
+      <CREDIT_SCORE _Value="9002" CreditRepositorySourceType="TransUnion"/>
+    </CREDIT_RESPONSE></RESPONSE_DATA></RESPONSE></RESPONSE_GROUP>`;
+  let noHitErr = null, out3 = null;
+  try { out3 = await credit.importCredit(app.id, { xml: NOHIT_XML, actorId: staff.id }); }
+  catch (e) { noHitErr = e; }
+  ok(!noHitErr && out3 && out3.ok, `no-hit / thin-file import does NOT crash (M1)${noHitErr ? ' — ' + noHitErr.message : ''}`);
+  ok(out3 && out3.middleScore == null, 'no-hit → middle score null');
+  const crNoHit = (await db.query(`SELECT middle_score, status FROM credit_reports WHERE application_id=$1 ORDER BY pulled_at DESC LIMIT 1`, [app.id])).rows[0];
+  ok(crNoHit.middle_score === null && crNoHit.status === 'completed', 'no-hit credit_reports row saved with null middle score');
+  ok((await db.query(`SELECT fico FROM borrowers WHERE id=$1`, [bor.id])).rows[0].fico === 705, 'no-hit import does not overwrite the existing FICO (stays 705)');
 
   // cleanup (throwaway DB, but be tidy)
   await db.query(`DELETE FROM applications WHERE id=$1`, [app.id]).catch(() => {});

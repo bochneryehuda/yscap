@@ -110,8 +110,8 @@ async function importCredit(appId, opts = {}) {
   if (xml || pdfBase64) {
     // Import a report the team downloaded from Xactus (works today, no live call).
     source = 'upload';
-    if (typeof xml === 'string' && /^JVBER/i.test(xml.trim())) {
-      // guard against a PDF pasted into the XML slot
+    if (typeof xml === 'string' && /^(JVBER|%PDF-)/i.test(xml.trim())) {
+      // guard against a PDF put in the XML slot (raw %PDF- or base64 JVBER…)
       throw userError('That looks like a PDF in the report-data box. Put the PDF in the PDF box and the XML data file in the data box.');
     }
   } else {

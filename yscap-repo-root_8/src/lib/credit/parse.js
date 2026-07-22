@@ -91,7 +91,12 @@ function parseScores(cr) {
   const out = [];
   for (const s of X.allDeep(cr, 'CREDIT_SCORE')) {
     const value = num(field(s, ['_Value', 'CreditScoreValue'], ['CreditScoreValue']));
-    if (value == null) continue;
+    // A real FICO/VantageScore is 300–850. Bureaus return REJECT / no-hit codes
+    // (0, 9001–9004, etc.) for frozen/thin/no-record files — very common for this
+    // RTL/fix-and-flip borrower population. Treat anything outside 300–850 as
+    // "no score" so it never lands in the 300–850-CHECKed middle_score column
+    // and never shows as a bogus bureau chip.
+    if (value == null || value < 300 || value > 850) continue;
     const src = field(s, ['CreditRepositorySourceType', '_CreditRepositorySourceType'],
       ['CreditRepositorySourceType']);
     const model = field(s, ['_ModelNameType', 'CreditScoreModelNameType', '_Name'],

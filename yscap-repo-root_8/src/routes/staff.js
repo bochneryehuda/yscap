@@ -2758,9 +2758,14 @@ router.post('/mismo/create', async (req, res) => {
 // ════════════════════════════════════════════════════════════════════════════
 
 // The stored credit-details section for a file (latest report + history).
+// `canImport` reflects the REAL server gate (sign_off_conditions — includes
+// closers + per-person capability grants) so the button matches the API exactly.
 router.get('/applications/:id/credit', async (req, res) => {
-  try { res.json(await require('../lib/credit').fileCredit(req.params.id)); }
-  catch (e) { res.status(e.status || 500).json({ error: e.userMessage || 'server error' }); }
+  try {
+    const out = await require('../lib/credit').fileCredit(req.params.id);
+    out.canImport = can(req.actor, 'sign_off_conditions');
+    res.json(out);
+  } catch (e) { res.status(e.status || 500).json({ error: e.userMessage || 'server error' }); }
 });
 
 // The review screen data: exactly what will be sent + the defaults + provider readiness.

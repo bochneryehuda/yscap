@@ -31,7 +31,7 @@ async function creditConditionItemId(appId) {
   return r.rows[0] ? r.rows[0].id : null;
 }
 
-async function insertDoc({ appId, borrowerId, itemId, buf, filename, contentType, docKind, slotLabel, sourceType }) {
+async function insertDoc({ appId, borrowerId, itemId, uploadedById, buf, filename, contentType, docKind, slotLabel, sourceType }) {
   const s = await storage.save(buf, { filename });
   const row = await db.query(
     `INSERT INTO documents
@@ -41,7 +41,7 @@ async function insertDoc({ appId, borrowerId, itemId, buf, filename, contentType
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,$10,$11,'staff_only',$12,'accepted',now(),$13)
      RETURNING id`,
     [appId, itemId, borrowerId, filename, contentType, buf.length, s.provider, s.ref,
-      null, docKind, slotLabel, sourceType, sha256hex(buf)]);
+      uploadedById || null, docKind, slotLabel, sourceType, sha256hex(buf)]);
   return row.rows[0].id;
 }
 
@@ -60,21 +60,28 @@ async function storeImport({ app, parsed, xml, pdfBase64, request, actorId, sour
   const sourceType = source === 'upload' ? 'staff_upload' : 'system';
   let xmlDocId = null, pdfDocId = null;
 
+  // Decode the PDF up-front so a corrupt PDF can NEVER abort the XML store or
+  // skip the supersede (m2): a bad decode logs and we proceed data-file-only.
+  let pdfBuf = null;
+  if (pdfBase64) {
+    try { pdfBuf = decodeUploadBase64(pdfBase64, { maxBytes: MAX_BYTES }).buf; }
+    catch (e) { console.error('[credit] PDF decode failed — storing the data file only:', (e && e.message) || e); }
+  }
+
   // 1) Store source documents (best-effort — never lose the parsed data).
   try {
     if (xml) {
       const xbuf = Buffer.from(String(xml), 'utf8');
       if (xbuf.length <= MAX_BYTES) {
         xmlDocId = await insertDoc({
-          appId: app.id, borrowerId: app.borrower_id, itemId, buf: xbuf,
+          appId: app.id, borrowerId: app.borrower_id, itemId, uploadedById: actorId, buf: xbuf,
           filename: 'credit-report.xml', contentType: 'application/xml',
           docKind: 'credit_xml', slotLabel: 'Credit report (data)', sourceType });
       }
     }
-    if (pdfBase64) {
-      const { buf } = decodeUploadBase64(pdfBase64, { maxBytes: MAX_BYTES });
+    if (pdfBuf) {
       pdfDocId = await insertDoc({
-        appId: app.id, borrowerId: app.borrower_id, itemId, buf,
+        appId: app.id, borrowerId: app.borrower_id, itemId, uploadedById: actorId, buf: pdfBuf,
         filename: 'credit-report.pdf', contentType: 'application/pdf',
         docKind: 'credit_pdf', slotLabel: 'Credit report', sourceType });
     }
@@ -100,7 +107,7 @@ async function storeImport({ app, parsed, xml, pdfBase64, request, actorId, sour
      RETURNING id`,
     [app.id, app.borrower_id, request.pullType, request.requestType, request.bureaus, request.version,
       parsed.parseError ? 'error' : 'completed', source, parsed.reportId || null,
-      parsed.reportDate || null, parsed.middleScore != null ? parsed.middleScore : null,
+      parsed.reportDate || null, sanitizeFico(parsed.middleScore),
       JSON.stringify(parsed.scores || []), JSON.stringify(parsed.summary || {}),
       JSON.stringify(parsed), xmlDocId, pdfDocId, itemId, actorId]);
   const creditReportId = ins.rows[0].id;
