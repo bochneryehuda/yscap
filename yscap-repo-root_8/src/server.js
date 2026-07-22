@@ -221,6 +221,11 @@ app.use('/api/underwriting', require('./routes/underwriting'));
   // API Health — the status of every external API / integration (config presence + live reach).
   // The router applies its own requireAuth + platform_setup guards.
   app.use('/api/admin/integrations', requireAuth, requireStaff, require('./routes/admin-integrations'));
+  // Encompass READ-ONLY admin routes (owner-directed 2026-07-22): the cached
+  // tenant field catalog + per-file cached raw loan JSON + refresh triggers.
+  // The router applies its own requireAuth + platform_setup guards, and every
+  // "pull" endpoint is structurally read-only (see src/lib/integrations/encompass.js).
+  app.use('/api/admin/encompass', requireAuth, requireStaff, require('./routes/admin-encompass'));
   // Manual Program admin config + the super-admin escalation box. Each route
   // adds its own capability/role gate (manage_pricing for settings, super_admin
   // to decide an escalation).
@@ -522,6 +527,11 @@ if (require.main === module) {
     // Self-gated by SITEWIRE_ENABLED (+ SITEWIRE_OUTBOUND_ENABLED for writes); inert
     // otherwise. Manages ONLY properties PILOT created (only-ours rule).
     try { require('./sync/sitewire-sync').start(); } catch (e) { console.warn('sitewire sync not started:', e.message); }
+    // Encompass READ-ONLY pull worker (owner-directed 2026-07-22). Self-gates on
+    // ENCOMPASS_ENABLED=1 + ENCOMPASS_* env creds. Never writes to Encompass
+    // (structurally impossible via src/lib/integrations/encompass.js); writes ONLY
+    // to PILOT's own DB — encompass_field_catalog + applications.encompass_extra.
+    try { require('./sync/encompass-sync').start(); } catch (e) { console.warn('encompass sync not started:', e.message); }
     // Scheduled notification digests (owner-directed 2026-07-20): weekly borrower
     // "what's still needed", daily per-officer pipeline snapshot, stale-file
     // alerts, and the Monday admin summary. Each self-gates via audit_log so it
