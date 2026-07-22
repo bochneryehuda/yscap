@@ -341,6 +341,22 @@ async function persistProof(client, { appId, checklistItemId, intentId, document
      // suggestion ids sit here (schema is uuid[] — same shape). The routes read
      // the row as a report, not as a set of active findings.
      suggestionIds, 'cure.v1']);
+
+  // R3.16 — Ambiguous case → ask super-admin. When the cure engine can't tell
+  // whether a document cures its condition (unable_to_determine) AND the
+  // AI didn't spawn any new findings that would clarify, pull the super-
+  // admin in. Best-effort — never blocks the proof.
+  try {
+    if (analysis.result === 'unable_to_determine' && (analysis.newFindings || []).length === 0) {
+      await aiSug.askAdmin(client, {
+        applicationId: appId, documentId, checklistItemId,
+        agent: 'cure',
+        question: `The cure engine could not verify whether this document satisfies its condition. Please review and decide: does it clear the condition, or does the borrower need to upload a different document?`,
+        context: { intentId: intentId || null, requirements: analysis.requirements || [], summary: analysis.summary },
+      });
+    }
+  } catch (_) { /* ask-admin is additive — never blocks the proof */ }
+
   return ins.rows[0];
 }
 
