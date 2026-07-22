@@ -227,6 +227,54 @@ async function weeklyAdminSummaryOnce() {
   return admins.rows.length;
 }
 
+/* R3.43 — Weekly super-admin digest of pending AI questions. Every super-admin
+   with is_active=true gets ONE email per week listing every ai_admin_questions
+   row still waiting for their answer, oldest first. Silent when no pending
+   questions. Self-gates via audit_log stamp so it fires at most once per week
+   across restarts / instances. The R3.7 inbox link is CTA. */
+async function weeklyAdminAiQuestionsOnce() {
+  if (!(await _gate('admin_weekly_ai_questions', null, '6 days'))) return 0;
+  let pending;
+  try {
+    pending = await db.query(
+      `SELECT q.id, q.agent, q.question, q.asked_at,
+              a.id AS application_id, a.property_address, a.status AS app_status,
+              b.first_name, b.last_name,
+              EXTRACT(EPOCH FROM (now() - q.asked_at))/86400 AS age_days
+         FROM ai_admin_questions q
+         JOIN applications a ON a.id = q.application_id AND a.deleted_at IS NULL
+         LEFT JOIN borrowers b ON b.id = a.borrower_id
+        WHERE q.answered_at IS NULL
+        ORDER BY q.asked_at ASC
+        LIMIT 50`);
+  } catch (_) { return 0; }   // schema not present yet on this deploy
+  if (!pending.rows.length) { await _stamp('admin_weekly_ai_questions', null, { pending: 0 }); return 0; }
+  const admins = await db.query(
+    `SELECT id, email FROM staff_users WHERE role='super_admin' AND is_active=true`);
+  if (!admins.rows.length) return 0;
+  const lines = pending.rows.slice(0, 20).map((q) => {
+    const addr = (q.property_address && (q.property_address.line1 || q.property_address.address || q.property_address.oneLine)) || String(q.application_id).slice(0, 8);
+    const days = Math.max(1, Math.floor(Number(q.age_days) || 0));
+    const snippet = String(q.question || '').replace(/\s+/g, ' ').slice(0, 120);
+    return `• ${addr} · ${q.first_name || ''} ${q.last_name || ''} · ${q.agent} (${days}d old): ${snippet}`;
+  });
+  const total = pending.rows.length;
+  for (const ad of admins.rows) {
+    try {
+      await notify.notifyStaff(ad.id, {
+        type: 'digest',
+        title: `${total} AI question${total === 1 ? '' : 's'} waiting for you`,
+        badge: { text: 'Weekly', tone: 'gold' },
+        hero: { label: 'Pending questions', value: String(total), sub: `Oldest ${Math.max(1, Math.floor(Number(pending.rows[0].age_days) || 0))}d ago`, tone: 'gold' },
+        body: `The AI has ${total} question${total === 1 ? '' : 's'} that need your answer. Open the AI Inbox to reply — each answer becomes training signal for the specific agent that asked it.`,
+        lines,
+        link: '/internal/ai-inbox', ctaLabel: 'Open the AI Inbox', emailTo: ad.email });
+    } catch (e) { console.error('[digest] admin-weekly-ai', ad.id, e && e.message); }
+  }
+  await _stamp('admin_weekly_ai_questions', null, { pending: total, admins: admins.rows.length });
+  return admins.rows.length;
+}
+
 /* 5) Draw result awaiting the borrower — a delivered inspection result the borrower hasn't accepted or
    disputed is HOLDING THEIR MONEY (the release clock only starts on accept), so nudge them if it's sat a
    few days. Borrower-safe (notifyAppBorrowers scrubs); per file, ≤ once / 2 days. draw_findings exist only
@@ -683,6 +731,7 @@ async function runDue() {
     await autoCommitteeReviewOnce().catch((e) => console.error('[digests] auto-committee', e && e.message));
     await aiCrossdocSweepOnce().catch((e) => console.error('[digests] ai-crossdoc-sweep', e && e.message));
     if (weekday === 'Mon') await weeklyAdminSummaryOnce().catch((e) => console.error('[digests] admin', e && e.message));
+    if (weekday === 'Mon') await weeklyAdminAiQuestionsOnce().catch((e) => console.error('[digests] admin-ai-questions', e && e.message));
   }
   if (hour >= 8 && hour < 18) {
     await weeklyBorrowerOutstandingOnce().catch((e) => console.error('[digests] borrower', e && e.message));
@@ -707,5 +756,5 @@ module.exports = {
   weeklyBorrowerOutstandingOnce, dailyPipelineDigestOnce, staleFileAlertsOnce, weeklyAdminSummaryOnce,
   drawFindingsAwaitingBorrowerOnce, drawReleaseOverdueOnce, workflowAgingOnce,
   trainingRunOnce, certificateSurveyOnce, autoCommitteeReviewOnce, directSourceSweepOnce, autoReadSweepOnce, section1071SweepOnce,
-  aiCrossdocSweepOnce,
+  aiCrossdocSweepOnce, weeklyAdminAiQuestionsOnce,
 };
