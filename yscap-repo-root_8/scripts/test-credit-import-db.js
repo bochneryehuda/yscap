@@ -73,7 +73,7 @@ const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failu
   // --- preview: shows the borrower info + defaults, ready to pull -------------
   const pv = await credit.preview(app.id);
   ok(pv.borrower.firstName === 'Dana' && pv.borrower.ssnMasked === '•••-••-6789', 'preview shows borrower + masked SSN');
-  ok(pv.defaults.pullType === 'soft' && pv.defaults.requestType === 'reissue' && pv.defaults.version === '3.4', 'defaults: soft · reissue · v3.4');
+  ok(pv.defaults.pullType === 'soft' && pv.defaults.requestType === 'new' && pv.defaults.version === '3.4', 'first-pull defaults: soft · brand-new · v3.4 (no prior report → new, not reissue)');
   ok(pv.defaults.bureaus.length === 3, 'preview defaults tri-merge');
   ok(pv.canPull === true && pv.missing.length === 0, 'canPull with full PII');
 
@@ -153,6 +153,36 @@ const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failu
   ok(!bdErr && out4 && out4.ok, `malformed report date does NOT crash the import (M1 class)${bdErr ? ' — ' + bdErr.message : ''}`);
   const crBad = (await db.query(`SELECT report_date, status FROM credit_reports WHERE application_id=$1 ORDER BY pulled_at DESC LIMIT 1`, [app.id])).rows[0];
   ok(crBad && crBad.report_date === null && crBad.status === 'completed', 'malformed report date stored as null, row still saved');
+
+  // --- after a report exists, the default order flips to Reissue (M3) ---------
+  const pv2 = await credit.preview(app.id);
+  ok(pv2.defaults.requestType === 'reissue' && pv2.reissueReportId, 'once a report exists, default order is reissue (pre-filled reference)');
+
+  // --- consent gate (S-M1): a LIVE pull REQUIRES a permissible-purpose attestation
+  // server-side, not just the UI checkbox. The test borrower is fully populated,
+  // so the consent check (which runs BEFORE any bureau call) is what fires. ------
+  const beforeN = (await db.query('SELECT count(*)::int n FROM credit_reports WHERE application_id=$1', [app.id])).rows[0].n;
+  let consentErr = null;
+  try { await credit.importCredit(app.id, { actorId: staff.id }); }   // live path, NO consent
+  catch (e) { consentErr = e; }
+  ok(consentErr && /authoriz|permissible|consent/i.test(consentErr.userMessage || consentErr.message || ''), 'live pull without consent is rejected (S-M1)');
+  const afterN = (await db.query('SELECT count(*)::int n FROM credit_reports WHERE application_id=$1', [app.id])).rows[0].n;
+  ok(afterN === beforeN, 'no credit_reports row is written when consent is missing');
+  // the earlier upload imports recorded NO attestation (consent is a live-pull control)
+  const uplConsent = (await db.query(`SELECT consent_attested FROM credit_reports WHERE application_id=$1 AND source='upload' LIMIT 1`, [app.id])).rows[0];
+  ok(uplConsent && uplConsent.consent_attested === false, 'an upload import records consent_attested=false');
+
+  // --- consent is RECORDED (attester + timestamp) when attested (store level) ---
+  const store = require('../src/lib/credit/store');
+  const { parseCreditXml } = require('../src/lib/credit/parse');
+  const storedC = await store.storeImport({
+    app: { id: app.id, borrower_id: bor.id, ssn_last4: ssn.last4 },
+    parsed: parseCreditXml(XML), xml: XML, pdfBase64: PDF_B64,
+    request: { pullType: 'hard', requestType: 'new', bureaus: ['Equifax', 'Experian', 'TransUnion'], version: '3.4' },
+    actorId: staff.id, source: 'api', consentAttested: true,
+  });
+  const crC = (await db.query('SELECT consent_attested, consent_by, consent_at FROM credit_reports WHERE id=$1', [storedC.creditReportId])).rows[0];
+  ok(crC.consent_attested === true && String(crC.consent_by) === String(staff.id) && !!crC.consent_at, 'consent attestation recorded on the report row (attested + by + at)');
 
   // cleanup (throwaway DB, but be tidy)
   await db.query(`DELETE FROM applications WHERE id=$1`, [app.id]).catch(() => {});

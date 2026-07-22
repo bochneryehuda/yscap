@@ -476,7 +476,9 @@ module.exports = {
   // per-user credential. This block is deliberately SEPARATE from the two legacy
   // `xactus` blocks above (the per-user framework), which are left in place and
   // dormant in case we return to that model. Consumed by src/lib/credit/provider.js.
-  //   XACTUS_API_URL          your assigned Xactus PRODUCTION base URL
+  //   XACTUS_API_URL          the FULL Credit ReportX request URL Xactus gave you
+  //                           to POST reports to (the exact endpoint, NOT a base
+  //                           host — the code POSTs to this address verbatim)
   //   XACTUS_API_USERNAME     the one shared login user
   //   XACTUS_API_PASSWORD     the one shared login password
   //   XACTUS_API_ACCOUNT      optional account / subscriber id (if Xactus needs it)

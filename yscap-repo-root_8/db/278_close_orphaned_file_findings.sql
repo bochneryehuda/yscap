@@ -16,7 +16,7 @@
 -- a second run finds no open rows left to close.
 UPDATE sync_review_queue q
    SET status='resolved', auto_resolved=true, resolved_at=now(),
-       resolution_note='auto-closed (backfill db/277) — the file this review was about was removed from the portal (descoped to a non-RTL/data-only type)'
+       resolution_note='auto-closed (backfill db/278) — the file this review was about was removed from the portal (descoped to a non-RTL/data-only type)'
   FROM applications a
  WHERE q.status='open'
    AND q.application_id = a.id

@@ -126,8 +126,15 @@ function parseScores(cr) {
 }
 
 // The single representative score for a borrower: middle of 3, lower of 2, or the one.
+// Compute over ONE score per RECOGNIZED bureau (Equifax/Experian/TransUnion) so a
+// supplementary/unclassifiable score (e.g. a VantageScore, or a repository the
+// bureau() map doesn't know) can't pollute the median and push a wrong FICO into
+// pricing. Fall back to all scores only when NONE classify (e.g. numeric-code
+// repositories) so that case still yields a true middle.
 function representative(scores) {
-  const vals = scores.map((s) => s.value).filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
+  const known = (scores || []).filter((s) => s.bureau);
+  const pool = known.length ? known : (scores || []);
+  const vals = pool.map((s) => s.value).filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
   if (vals.length === 0) return null;
   if (vals.length === 1) return vals[0];
   if (vals.length === 2) return vals[0]; // lower of two
