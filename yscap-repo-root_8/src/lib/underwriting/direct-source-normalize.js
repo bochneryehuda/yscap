@@ -54,13 +54,26 @@ function get(obj, path) {
     return cur;
   } catch (_e) { return undefined; }
 }
-// First non-empty of several candidate paths.
+// First non-empty of several candidate paths. NOTE: this returns the first
+// non-null candidate EVEN IF it is an object/array — callers that need a scalar
+// must use numFirstOf/strFirstOf, which keep scanning until a candidate actually
+// coerces (so a `{ value: { amount: N } }` shape doesn't short-circuit and drop
+// the real value on a later path).
 function firstOf(obj, paths) {
   for (const p of paths) {
     const v = get(obj, p);
     if (v != null && !(typeof v === 'string' && v.trim() === '')) return v;
   }
   return undefined;
+}
+// First candidate path that coerces to a finite NUMBER (skips object/array/blank
+// candidates instead of stopping on them).
+function numFirstOf(obj, paths) {
+  for (const p of paths) {
+    const n = num(get(obj, p));
+    if (n != null) return n;
+  }
+  return null;
 }
 function arr(v) { try { return Array.isArray(v) ? v : []; } catch (_e) { return []; } }
 
@@ -122,10 +135,14 @@ function normalizeSos(raw) {
     if (!raw || typeof raw !== 'object') return unavailable('sos', 'empty response');
     const name = str(firstOf(raw, ['legal_name', 'name', 'entity.name', 'entity_name', 'business_name']));
     const status = str(firstOf(raw, ['status', 'standing', 'entity.status', 'registration.status', 'good_standing_status']));
-    // some providers give a boolean good_standing instead of a status string.
-    const gsBool = firstOf(raw, ['good_standing', 'is_active', 'active']);
+    // some providers give good_standing as a boolean OR a string ('true'/'active'/
+    // 'false') instead of a separate status; resolve both to a status string.
+    const gs = firstOf(raw, ['good_standing', 'is_active', 'active']);
+    const gsStr = typeof gs === 'string' ? gs.trim().toLowerCase() : null;
+    const gsTrue = gs === true || gsStr === 'true' || gsStr === 'active' || gsStr === 'good' || gsStr === 'yes';
+    const gsFalse = gs === false || gsStr === 'false' || gsStr === 'inactive' || gsStr === 'no';
     const statusValue = status != null ? status
-      : (gsBool === true ? 'active' : (gsBool === false ? 'inactive' : null));
+      : (gsTrue ? 'active' : (gsFalse ? 'inactive' : null));
     const formation = str(firstOf(raw, ['formation_date', 'formed_on', 'registration_date', 'incorporation_date', 'entity.formation_date']));
     const available = name != null || statusValue != null;
     return {
@@ -147,14 +164,19 @@ function normalizeSos(raw) {
 // Raw shapes differ per vendor; normalize each to a single dollar value.
 const AVM_PATHS = [
   'avm.amount.value', 'avm.value', 'avm_value', 'value', 'estimated_value', 'estimatedValue',
-  'price_hint', 'property.avm.amount.value', 'valuation.value', 'result.value', 'value_estimate',
+  'price_hint', 'price_mean', // HouseCanary value_report → price_mean
+  'property.avm.amount.value', 'property.0.avm.amount.value', // ATTOM array-wrapped
+  'valuation.value', 'result.value', 'value_estimate',
 ];
 function normalizeAvm(raw, provider) {
   try {
     if (!raw || typeof raw !== 'object') return unavailable(provider || 'avm', 'empty response');
-    const value = num(firstOf(raw, AVM_PATHS));
-    const low = num(firstOf(raw, ['avm.amount.low', 'value_low', 'low', 'valuation.low', 'confidence.low']));
-    const high = num(firstOf(raw, ['avm.amount.high', 'value_high', 'high', 'valuation.high', 'confidence.high']));
+    // numFirstOf scans ALL candidates for the first that coerces to a number, so a
+    // shape like { value: { amount: N } } doesn't stop on the object and drop the
+    // real value carried on a later path.
+    const value = numFirstOf(raw, AVM_PATHS);
+    const low = numFirstOf(raw, ['avm.amount.low', 'value_low', 'low', 'valuation.low', 'confidence.low', 'price_lower']);
+    const high = numFirstOf(raw, ['avm.amount.high', 'value_high', 'high', 'valuation.high', 'confidence.high', 'price_upper']);
     const available = value != null;
     return {
       available,
@@ -163,7 +185,7 @@ function normalizeAvm(raw, provider) {
       field: 'property_value',
       low, high,
       // fsd = forecast standard deviation / confidence, if the vendor gives one.
-      confidence: num(firstOf(raw, ['avm.confidence', 'confidence_score', 'fsd', 'confidence'])),
+      confidence: numFirstOf(raw, ['avm.confidence', 'confidence_score', 'fsd', 'confidence']),
       reason: available ? null : 'no AVM value in response',
     };
   } catch (_e) { return unavailable(provider || 'avm', 'parse error'); }
@@ -287,5 +309,5 @@ module.exports = {
   normalizeByKind,
   toReconcilable,
   KIND_META,
-  _internals: { str, num, get, firstOf, collectOwnerNames, collectFlags, SEVERE_FLAG },
+  _internals: { str, num, get, firstOf, numFirstOf, collectOwnerNames, collectFlags, SEVERE_FLAG },
 };

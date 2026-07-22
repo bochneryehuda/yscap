@@ -29,6 +29,10 @@ const MATERIAL_EVENTS = Object.freeze(new Set([
   'appraisal_imported', 'liquidity_changed', 'entity_verified',
   'note_buyer_changed', 'assignment_changed', 'guideline_changed',
   'fact_confirmed', 'exception_decided',
+  // a borrower-info / application-field edit can change sizing + gates even when
+  // it isn't a headline economics change; SOW/budget + track-record feed sizing.
+  'application_updated', 'borrower_updated', 'fields_changed',
+  'rehab_budget_changed', 'sow_changed', 'track_record_changed',
 ]));
 
 const DEFAULT_DEBOUNCE_MS = 90 * 1000;   // coalesce a burst over ~90s
@@ -38,15 +42,23 @@ function isMaterial(kind) {
   try { return MATERIAL_EVENTS.has(String(kind == null ? '' : kind)); } catch (_e) { return false; }
 }
 
+// The contract is epoch MILLISECONDS. A bare positive value below this floor is
+// implausible as ms (it is before 1973) and is almost certainly epoch SECONDS or
+// garbage — accepting it would mis-scale to ~1970 and, combined with a real-ms
+// lastRunAt, silently drop the event as "already covered" (a FALSE SKIP → stale
+// verdict, the dangerous direction). We reject it rather than guess a ×1000.
+const MS_FLOOR = 1e11; // ~1973-03 in epoch ms
+
 // Parse a timestamp (epoch ms number, numeric string, or ISO/date string) to
-// epoch ms. Returns null on anything unparseable — NEVER throws.
+// epoch ms. Returns null on anything unparseable or an implausible bare value —
+// NEVER throws.
 function toMs(v) {
   try {
     if (v == null) return null;
-    if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+    if (typeof v === 'number') return Number.isFinite(v) && !(v > 0 && v < MS_FLOOR) ? v : null;
     const s = String(v).trim();
     if (s === '') return null;
-    if (/^\d+$/.test(s)) { const n = Number(s); return Number.isFinite(n) ? n : null; }
+    if (/^\d+$/.test(s)) { const n = Number(s); return Number.isFinite(n) && !(n > 0 && n < MS_FLOOR) ? n : null; }
     const t = Date.parse(s);
     return Number.isFinite(t) ? t : null;
   } catch (_e) { return null; }

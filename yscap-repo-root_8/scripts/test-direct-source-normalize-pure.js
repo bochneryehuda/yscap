@@ -37,6 +37,17 @@ assert.strictEqual(rc.source.value, 40950.12);
 assert.strictEqual(reconcile(rc.claim, rc.source).status, 'confirmed', '$40,950 doc vs $40,950.12 source is within tolerance');
 ok('Plaid balance pairs into an amount reconcile that confirms within tolerance');
 
+// the Plaid NAME path is the fatal ownership check — confirm AND conflict end-to-end
+const nameOk = dsn.toReconcilable('plaid', { owners: [{ names: ['Chase Adams'] }] }, { value: 'Chase Adams' });
+assert.strictEqual(nameOk.claim.type, 'name');
+assert.strictEqual(reconcile(nameOk.claim, nameOk.source).status, 'confirmed', 'a matching account owner confirms');
+const nameBad = dsn.toReconcilable('plaid', { owners: [{ names: ['Someone Else'] }] }, { value: 'Chase Adams' });
+const nameBadR = reconcile(nameBad.claim, nameBad.source);
+assert.strictEqual(nameBadR.status, 'conflict', 'a different account owner is a conflict');
+assert.strictEqual(nameBadR.finding.severity, 'fatal', 'an ownership mismatch is FATAL');
+assert.strictEqual(nameBadR.finding.code, 'verify_ownership_mismatch');
+ok('Plaid account-owner name reconciles: a match confirms and a mismatch is a FATAL ownership conflict');
+
 // --- R5.51 SoS: entity status + name; good standing confirms, dissolved conflicts ---
 let s = dsn.normalizeSos({ legal_name: 'Oak Street Holdings LLC', status: 'Active', formation_date: '2021-03-04', jurisdiction: 'NY' });
 assert.strictEqual(s.value, 'Active');
@@ -50,15 +61,32 @@ assert.strictEqual(deadR.status, 'conflict', 'a dissolved entity conflicts');
 assert.strictEqual(deadR.finding.severity, 'fatal');
 ok('SoS: good-standing confirms and a dissolved entity raises a fatal not-active conflict');
 
-// a boolean good_standing:false maps to an inactive status
+// a good_standing flag (boolean OR string) maps to an active/inactive status
 assert.strictEqual(dsn.normalizeSos({ name: 'X LLC', good_standing: false }).value, 'inactive');
 assert.strictEqual(dsn.normalizeSos({ name: 'X LLC', good_standing: true }).value, 'active');
-ok('SoS: a boolean good_standing flag maps to active/inactive');
+assert.strictEqual(dsn.normalizeSos({ name: 'X LLC', good_standing: 'active' }).value, 'active', 'a string good_standing resolves too');
+assert.strictEqual(dsn.normalizeSos({ name: 'X LLC', good_standing: 'false' }).value, 'inactive');
+ok('SoS: a good_standing flag (boolean or string) maps to active/inactive');
 
-// --- R5.52 AVM: value from three vendor shapes; supports / does not support ---
+// the entity-NAME path reconciles as a name match too (sos_name)
+const sn = dsn.toReconcilable('sos_name', { legal_name: 'Oak Street Holdings LLC', status: 'Active' }, { value: 'Oak Street Holdings, LLC' });
+assert.strictEqual(sn.claim.type, 'name');
+assert.strictEqual(reconcile(sn.claim, sn.source).status, 'confirmed', 'entity name matches (suffix/punctuation tolerant)');
+ok('SoS entity name reconciles as a suffix-tolerant name match (sos_name kind)');
+
+// --- R5.52 AVM: value from several vendor shapes; supports / does not support ---
 assert.strictEqual(dsn.normalizeAvm({ avm: { amount: { value: 450000 } } }, 'attom').value, 450000);
 assert.strictEqual(dsn.normalizeAvm({ value_estimate: 455000 }, 'housecanary').value, 455000);
 assert.strictEqual(dsn.normalizeAvm({ result: { value: 460000 } }, 'clearcapital').value, 460000);
+// HouseCanary's documented value_report shape (price_mean/lower/upper) is read
+let hc = dsn.normalizeAvm({ price_mean: 452000, price_lower: 430000, price_upper: 475000 }, 'housecanary');
+assert.strictEqual(hc.value, 452000, 'HouseCanary price_mean is read as the AVM value');
+assert.strictEqual(hc.low, 430000); assert.strictEqual(hc.high, 475000);
+// ATTOM's array-wrapped property shape is read (numFirstOf skips the object candidate)
+assert.strictEqual(dsn.normalizeAvm({ property: [{ avm: { amount: { value: 461000 } } }] }, 'attom').value, 461000, 'ATTOM array-wrapped AVM is read');
+// a { value: { amount } } object candidate does not short-circuit and drop a later scalar path
+assert.strictEqual(dsn.normalizeAvm({ value: { amount: 1 }, valuation: { value: 462000 } }, 'attom').value, 462000, 'an object candidate is skipped for the next scalar path');
+ok('AVM: HouseCanary price_mean, ATTOM array-wrapped, and object-candidate shapes all normalize to the scalar value');
 const supp = dsn.toReconcilable('attom', { avm: { amount: { value: 460000 } } }, { value: 450000 });
 assert.strictEqual(reconcile(supp.claim, supp.source).status, 'confirmed', '460k AVM supports a 450k claim within ±10%');
 const unsupp = dsn.toReconcilable('attom', { avm: { amount: { value: 300000 } } }, { value: 450000 });
@@ -81,6 +109,14 @@ ok('Xactus: score + fraud flags extract; OFAC is severe, a benign note is not; a
 // a boolean ofac:true hit becomes a severe flag even without an alerts array
 assert.ok(dsn.normalizeXactus({ ofac: true, score: 700 }).fraudFlags.some((f) => /ofac/i.test(f.code)));
 ok('Xactus: a boolean OFAC hit surfaces as a severe fraud flag');
+
+// a NOT-FOUND credit file conflicts an exists claim (the credit file was expected)
+const nf = dsn.toReconcilable('xactus', { found: false }, { value: true });
+const nfR = reconcile(nf.claim, nf.source);
+assert.strictEqual(nf.source.value, 'not_found');
+assert.strictEqual(nfR.status, 'conflict', 'an expected credit file that is not found is a conflict');
+assert.strictEqual(nfR.finding.code, 'verify_not_found');
+ok('Xactus: a not-found credit file conflicts an expected-exists claim (verify_not_found)');
 
 // --- an unavailable / missing source never conflicts ---
 const noSrc = dsn.toReconcilable('attom', {}, { value: 450000 });

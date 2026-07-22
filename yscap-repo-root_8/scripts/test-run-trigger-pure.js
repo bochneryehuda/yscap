@@ -68,7 +68,15 @@ ok('the max-defer ceiling forces a run even while events keep arriving');
 // --- an event the last run already saw is ignored ---
 d = rt.decideTrigger({ events: [{ kind: 'document_uploaded', at: T0 }], now: T0 + DEB + 1, lastRunAt: T0 + 100 });
 assert.strictEqual(d.action, 'skip', 'an event at/before lastRunAt was already covered');
-ok('an event the last run already covered does not re-trigger');
+// exactly AT lastRunAt must also be excluded (the <= boundary, not <)
+d = rt.decideTrigger({ events: [{ kind: 'document_uploaded', at: T0 }], now: T0 + DEB + 1, lastRunAt: T0 });
+assert.strictEqual(d.action, 'skip', 'an event exactly at lastRunAt is already covered (<= boundary)');
+ok('an event the last run already covered — including one exactly at lastRunAt — does not re-trigger');
+
+// --- an epoch-SECONDS timestamp is rejected, never mis-scaled to 1970 (false-skip guard) ---
+d = rt.decideTrigger({ events: [{ kind: 'document_uploaded', at: 1_737_500_000 /* seconds, ~2025 */ }], now: T0, lastRunAt: T0 - 1000, contextHash: 'h2', lastContextHash: 'h1' });
+assert.strictEqual(d.action, 'run', 'a seconds-scale timestamp is treated as untimed (runs now) rather than dropped as pre-1970');
+ok('an implausible seconds-scale timestamp is not mis-parsed into a false skip');
 
 // --- unchanged context hash → skip even with a material event ---
 d = rt.decideTrigger({ events: [{ kind: 'status_changed', at: T0 + 5000 }], now: T0 + DEB + 6000, lastRunAt: T0, contextHash: 'same', lastContextHash: 'same' });
