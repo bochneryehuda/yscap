@@ -2855,8 +2855,11 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 
 /* Modal ------------------------------------------------------------------ */
 .crx-back { backdrop-filter:blur(3px); }
-.cv-modal.crx-modal { max-width:620px; padding:0; border-radius:18px; overflow:hidden; }
-.crx-modal-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px;
+/* Flex column: fixed header, scrollable body, fixed footer — so the primary
+   action never gets clipped and is always reachable on short screens. */
+.cv-modal.crx-modal { max-width:620px; max-height:90dvh; padding:0; border-radius:18px;
+  overflow:hidden; display:flex; flex-direction:column; }
+.crx-modal-head { flex:none; display:flex; align-items:flex-start; justify-content:space-between; gap:12px;
   padding:22px 24px 16px; border-bottom:1px solid var(--border);
   background:linear-gradient(180deg,#fff,var(--surface-soft)); position:relative; }
 .crx-modal-head::after { content:""; position:absolute; left:24px; right:24px; bottom:-1px; height:2px;
@@ -2866,7 +2869,14 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .crx-x { flex:none; width:34px; height:34px; border-radius:10px; border:1px solid var(--border); background:var(--surface);
   color:var(--muted); font-size:15px; line-height:1; cursor:pointer; }
 .crx-x:hover { color:var(--text); border-color:var(--muted); }
-.crx-modal-body { padding:20px 24px 24px; display:flex; flex-direction:column; gap:18px; }
+.crx-modal-body { flex:1 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain;
+  padding:20px 24px; display:flex; flex-direction:column; gap:18px; }
+.crx-modal-foot { flex:none; display:flex; flex-direction:column; gap:8px;
+  padding:14px 24px calc(14px + env(safe-area-inset-bottom)); border-top:1px solid var(--border);
+  background:linear-gradient(0deg,var(--surface-soft),#fff); }
+.crx-foot-hint { font-size:.8rem; color:var(--muted); line-height:1.35; }
+.crx-foot-actions { display:flex; gap:10px; flex-wrap:wrap; }
+.crx-foot-actions .crx-btn.primary { flex:1 1 auto; min-width:180px; }
 .crx-loading { padding:26px 24px; color:var(--muted); font-size:.92rem; }
 
 /* Recipient card --------------------------------------------------------- */
@@ -2924,8 +2934,6 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .crx-consent b { font-weight:700; }
 
 /* Actions + upload ------------------------------------------------------- */
-.crx-actions { display:flex; gap:10px; flex-wrap:wrap; }
-.crx-actions .crx-btn.primary { flex:1 1 auto; min-width:180px; }
 .crx-upload { border:1px dashed var(--border); border-radius:12px; background:var(--surface-soft); padding:15px 16px; }
 .crx-upload-title { font-weight:700; font-size:.85rem; color:var(--text); margin-bottom:10px; }
 .crx-upload-row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:4px 0; font-size:.86rem; }
