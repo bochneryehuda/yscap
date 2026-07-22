@@ -440,14 +440,29 @@ async function reconcileOne(appId) {
   } catch (_) { /* best-effort */ }
   // 2) sitewire_units_note: the push parks this when the file's unit count and the SOW's unit count
   //    disagree (advisory — the push still proceeds with `Math.max(1, fileUnits, sowUnits)` per the
-  //    2026-07-20 physical-units rule). If Sitewire NOW carries the physical count AND the file's
-  //    units column has since been updated to match, the two-sided disagreement is resolved from
-  //    both directions. We only close when BOTH sides agree — never when only Sitewire changed
-  //    (the review is a two-sided pointer at the file column that still needs fixing).
+  //    2026-07-20 physical-units rule). Owner-directed 2026-07-22 (compare-and-adopt): if Sitewire
+  //    carries a physical count larger than the file's units column, both live external sources
+  //    (SOW + Sitewire, both re-read here) agree on the bigger number → the file column is the
+  //    outlier and gets ADOPTED to match, then the review closes. Only UPWARD (fileUnits < swUnits)
+  //    — a legitimate partial-scope renovation (file has more units than SOW) is left alone. Fully
+  //    audited + ClickUp-synced so the file column also becomes correct in ClickUp.
   try {
     const swUnits = Number(prop.total_units || 0);
     const fileUnits = Number((await db.query(`SELECT units FROM applications WHERE id=$1`, [appId])).rows[0]?.units || 0);
-    if (swUnits > 0 && fileUnits > 0 && swUnits === fileUnits) {
+    if (swUnits > 0 && fileUnits > 0 && fileUnits < swUnits) {
+      await db.query(`UPDATE applications SET units=$2, updated_at=now() WHERE id=$1`, [appId, swUnits]);
+      try {
+        await db.query(
+          `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+           VALUES ('system', NULL, 'sitewire_units_adopt', 'application', $1, $2)`,
+          [appId, JSON.stringify({ before: { units: fileUnits }, after: { units: swUnits }, source: 'reconcile', note: `Sitewire's live property shows ${swUnits} unit(s); the file's ${fileUnits} was the outlier. Adopted ${swUnits} onto the file card.` })]);
+      } catch (_) {}
+      try { await require('../clickup/enqueue').enqueueClickupPush(appId, ['units'], { humanEditKeys: ['units'] }); } catch (_) {}
+    }
+    // Close the review when the file and Sitewire agree (either the adopt above just made it so,
+    // or a human fixed the file card since the row was parked).
+    const finalFileUnits = Number((await db.query(`SELECT units FROM applications WHERE id=$1`, [appId])).rows[0]?.units || 0);
+    if (swUnits > 0 && finalFileUnits > 0 && swUnits === finalFileUnits) {
       await db.query(
         `UPDATE sync_review_queue
             SET status='resolved', auto_resolved=true, resolved_at=now(),

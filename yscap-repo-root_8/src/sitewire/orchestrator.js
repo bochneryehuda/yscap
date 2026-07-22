@@ -338,10 +338,44 @@ async function pushFile(appId, opts = {}) {
   const fileUnits = (a.units != null && Number(a.units) > 0) ? Number(a.units) : 0;
   const physicalUnits = Math.max(1, fileUnits, sowUnits);
   if (fileUnits > 0 && fileUnits !== sowUnits) {
-    // current/proposed drive the review card's "expected · found" line — anchor them to the REAL
-    // discrepancy (Scope-of-Work unit count vs the file's unit count), NOT file-vs-physical (which are
-    // often equal and read as a confusing "expected 2 · found 2"). Owner-directed 2026-07-20.
-    await park({ appId, dedupe: 'units', notify: false, reason: `sitewire_units_note: the file lists ${fileUnits} unit(s) but the Scope of Work is built for ${sowUnits} — pushing the physical building count of ${physicalUnits} unit(s) (units with no work carry no budget lines). Update the file's unit count in the application if ${physicalUnits} is wrong.`, current: String(fileUnits), proposed: String(sowUnits) });
+    // Owner-directed 2026-07-22 (compare-and-adopt pattern — same as ClickUp two-sided reviews):
+    // when the SOW says MORE units than the file card, the file card is the outlier. Two live
+    // sources of truth — the borrower's own Scope of Work AND Sitewire's property record — will
+    // both carry the LARGER number after this push. Rather than leaving a stuck advisory row that
+    // asks "please fix the file card", adopt physicalUnits into applications.units automatically:
+    // both live systems agree on the value, so PILOT's file column just gets pulled into line.
+    //
+    // Only UPWARD (fileUnits < sowUnits) — a 4-unit file with a 2-unit SOW is legitimate (the
+    // borrower is only renovating part of the building) and never triggers this. Fully audited
+    // (source='sitewire_units_adopt'), and — critically — the ClickUp sync's `units` field is
+    // enqueued so ClickUp picks up the corrected value too (BOTH systems, exactly the owner's rule).
+    if (fileUnits < sowUnits) {
+      try {
+        await db.query(`UPDATE applications SET units=$2, updated_at=now() WHERE id=$1`, [appId, physicalUnits]);
+        try {
+          await db.query(
+            `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+             VALUES ('system', NULL, 'sitewire_units_adopt', 'application', $1, $2)`,
+            [appId, JSON.stringify({ before: { units: fileUnits }, after: { units: physicalUnits }, sowUnits, sitewireUnits: physicalUnits, note: `Scope of Work is built for ${sowUnits} unit(s); adopting on the file (both SOW + Sitewire now agree on ${physicalUnits}).` })]);
+        } catch (_) {}
+        try { await require('../clickup/enqueue').enqueueClickupPush(appId, ['units'], { humanEditKeys: ['units'] }); } catch (_) {}
+        // Close the (deduped) review row on the spot — the disagreement is now resolved on all sides.
+        await db.query(
+          `UPDATE sync_review_queue
+              SET status='resolved', auto_resolved=true, resolved_at=now(),
+                  resolution_note='auto-closed — Scope of Work + Sitewire both say ' || $2 || ' unit(s); adopted onto the file card'
+            WHERE status='open' AND application_id=$1 AND field_key='sitewire'
+              AND task_id LIKE 'sitewire:%:sitewire_units_note%'`,
+          [appId, String(physicalUnits)]);
+      } catch (_) { /* best-effort — never break the push */ }
+    } else {
+      // sowUnits < fileUnits: legitimate partial-scope renovation, no adopt. Keep the advisory so
+      // the coordinator SEES the difference (the push proceeds pushing the physical count).
+      // current/proposed drive the review card's "expected · found" line — anchor them to the REAL
+      // discrepancy (Scope-of-Work unit count vs the file's unit count), NOT file-vs-physical (which are
+      // often equal and read as a confusing "expected 2 · found 2"). Owner-directed 2026-07-20.
+      await park({ appId, dedupe: 'units', notify: false, reason: `sitewire_units_note: the file lists ${fileUnits} unit(s) but the Scope of Work is built for ${sowUnits} — pushing the physical building count of ${physicalUnits} unit(s) (units with no work carry no budget lines). Update the file's unit count in the application if ${physicalUnits} is wrong.`, current: String(fileUnits), proposed: String(sowUnits) });
+    }
   } else {
     // Owner-directed 2026-07-22: the units_note is ADVISORY (the push proceeds past it), so once
     // the file and SOW agree it should quietly self-close instead of sitting on the desk forever.
@@ -560,18 +594,37 @@ async function pushFile(appId, opts = {}) {
       if (!(res && res.__dryrun)) await journal({ appId, propertyId, entity: 'borrower', field: 'contact_email', newValue: inviteEmail, source: 'push' });
     } catch (e) {
       if (e.retryable) throw e; // transient → the queue retries the whole push
-      // Any NON-retryable failure (422/400/403/404/409/…) must PARK, never be silently swallowed —
-      // Sitewire owns borrower draw submission, so an unassigned borrower can't submit and someone
-      // must be told (never-silently-drop).
-      // Owner-directed 2026-07-22: surface the actual reason on 422 so the coordinator sees WHY
-      // Sitewire rejected the email (bad format / duplicate contact / not accepted) instead of a
-      // bare status code. Sitewire's body typically carries a plain-English message; slice it in.
+      // Owner-directed 2026-07-22 (compare-and-adopt pattern): Sitewire returns 422 on assign in
+      // several "not a real failure" cases — the borrower is ALREADY assigned/invited on the
+      // property with this email, or the exact same assignment was attempted twice in quick
+      // succession. Instead of parking blindly on a 422, RE-READ the property live: if Sitewire
+      // now shows the borrower as assigned/invited (and the email matches, case-insensitive),
+      // the reality is that the assignment SUCCEEDED — journal the actual state and don't park.
+      // This is the same "compare live, adopt what's true" pattern the ClickUp reviews use.
       const status = e && e.status;
-      const sitewireMsg = e && e.body ? String(typeof e.body === 'string' ? e.body : JSON.stringify(e.body)).slice(0, 220) : '';
-      const advice = status === 422
-        ? ` — the email may be malformed, already in use by another borrower on this Sitewire property, or the domain is not accepted. Try setting a different invite email on this file (Draw desk → "Invite to PILOT").`
-        : '';
-      await park({ appId, reason: `sitewire_borrower_assign_failed: could not assign borrower ${inviteEmail} (Sitewire ${status || 'error'})${sitewireMsg ? `: ${sitewireMsg}` : ''}${advice}` });
+      let liveResolved = false;
+      if (status === 422 || status === 409) {
+        try {
+          const live = await client.getProperty(propertyId);
+          const bs = live && live.borrower && String(live.borrower.status || '').toLowerCase();
+          const be = live && live.borrower && String(live.borrower.contact_email || '').toLowerCase();
+          if ((bs === 'assigned' || bs === 'invited') && be === String(inviteEmail).toLowerCase()) {
+            await journal({ appId, propertyId, entity: 'borrower', field: 'contact_email', newValue: inviteEmail, source: 'push_reconciled_from_422', changed: false });
+            liveResolved = true;
+          }
+        } catch (_) { /* re-read failed → fall through to park */ }
+      }
+      if (!liveResolved) {
+        // Any NON-retryable failure (422/400/403/404/409/…) that is NOT the already-assigned case
+        // must PARK — Sitewire owns borrower draw submission, so an unassigned borrower can't
+        // submit and someone must be told (never-silently-drop). Surface the actual reason so the
+        // coordinator sees WHY Sitewire rejected the email instead of a bare status code.
+        const sitewireMsg = e && e.body ? String(typeof e.body === 'string' ? e.body : JSON.stringify(e.body)).slice(0, 220) : '';
+        const advice = status === 422
+          ? ` — the email may be malformed, already in use by another borrower on this Sitewire property, or the domain is not accepted. Try setting a different invite email on this file (Draw desk → "Invite to PILOT").`
+          : '';
+        await park({ appId, reason: `sitewire_borrower_assign_failed: could not assign borrower ${inviteEmail} (Sitewire ${status || 'error'})${sitewireMsg ? `: ${sitewireMsg}` : ''}${advice}` });
+      }
     }
   }
 
