@@ -125,7 +125,11 @@ function decideRollout(history, opts = {}) {
   const o = { ...DEFAULTS, ...(opts && typeof opts === 'object' ? opts : {}) };
   const list = Array.isArray(history) ? history : [];
   const evals = list.map((h) => {
-    if (h && h.decision && Array.isArray(h.breaches)) return h; // already an eval
+    // Treat an entry as an ALREADY-computed eval only when it looks like one AND does
+    // NOT carry a top-level `canary` (a raw {canary,baseline} pair always does) — so a
+    // raw pair that happens to fabricate decision/breaches fields can never bypass
+    // evaluation of its embedded canary metrics.
+    if (h && h.decision && Array.isArray(h.breaches) && h.canary === undefined) return h;
     const hh = h && typeof h === 'object' ? h : {};
     return evaluateCanary(hh.canary, hh.baseline, o);
   });
