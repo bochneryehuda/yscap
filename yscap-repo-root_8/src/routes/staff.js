@@ -8430,6 +8430,168 @@ router.get('/audit-log/facets', async (req, res) => {
   }
 });
 
+// ---------------- request-audit (automatic HTTP firehose) -------------------
+// Companion to /audit-log: this feed is the AUTOMATIC log written by
+// src/lib/request-audit.js — ONE row per HTTP request the server answered,
+// regardless of whether the handler chose to journal a semantic action. Same
+// permission gate (view_audit_log) — this is a whole-company operational log,
+// not a per-file view — so only admins hold it by default.
+//
+// Filter shape mirrors /audit-log: q (free-text over path/method/actor/route),
+// actorKind, actorId, method, status (integer OR '2xx'/'4xx'/'5xx' bucket),
+// path (substring), route (exact), from/to dates, limit/offset.
+router.get('/request-audit', async (req, res) => {
+  if (!can(req.actor, 'view_audit_log')) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const q = String(req.query.q || '').trim();
+    const actorKindRaw = String(req.query.actorKind || '').trim();
+    const actorKind = ['staff', 'borrower', 'anon', 'system'].includes(actorKindRaw) ? actorKindRaw : '';
+    const actorIdRaw = String(req.query.actorId || '').trim();
+    const actorId = UUID_RE.test(actorIdRaw) ? actorIdRaw : '';
+    const method = String(req.query.method || '').trim().toUpperCase().slice(0, 10);
+    const statusRaw = String(req.query.status || '').trim();
+    const pathQ = String(req.query.path || '').trim();
+    const route = String(req.query.route || '').trim();
+    const fromRaw = String(req.query.from || '').trim();
+    const from = /^\d{4}-\d{2}-\d{2}$/.test(fromRaw) ? fromRaw : '';
+    const toRaw = String(req.query.to || '').trim();
+    const to = /^\d{4}-\d{2}-\d{2}$/.test(toRaw) ? toRaw : '';
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 500);
+    const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+
+    const params = [];
+    const where = [];
+    const P = (v) => { params.push(v); return '$' + params.length; };
+
+    if (actorKind) where.push(`ra.actor_kind = ${P(actorKind)}`);
+    if (actorId) where.push(`ra.actor_id = ${P(actorId)}::uuid`);
+    if (method && /^[A-Z]+$/.test(method)) where.push(`ra.method = ${P(method)}`);
+    if (pathQ) where.push(`ra.path ILIKE ${P('%' + pathQ + '%')}`);
+    if (route) where.push(`ra.route = ${P(route)}`);
+    if (from) where.push(`ra.at >= ${P(from)}::date`);
+    if (to) where.push(`ra.at < (${P(to)}::date + 1)`);
+    if (statusRaw) {
+      if (/^\d{3}$/.test(statusRaw)) where.push(`ra.status = ${P(parseInt(statusRaw, 10))}`);
+      else if (/^[2345]xx$/i.test(statusRaw)) {
+        const bucket = parseInt(statusRaw[0], 10) * 100;
+        where.push(`ra.status >= ${P(bucket)} AND ra.status < ${P(bucket + 100)}`);
+      } else if (statusRaw === 'error') where.push(`ra.status >= 400`);
+    }
+    if (q) {
+      const like = P('%' + q + '%');
+      where.push(`(ra.path ILIKE ${like} OR ra.route ILIKE ${like} OR ra.method ILIKE ${like}
+                    OR ra.user_agent ILIKE ${like} OR ra.referer ILIKE ${like}
+                    OR ra.actor_email ILIKE ${like} OR ra.error ILIKE ${like}
+                    OR s.full_name ILIKE ${like}
+                    OR (bo.first_name || ' ' || bo.last_name) ILIKE ${like})`);
+    }
+
+    const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
+    const lim = P(limit), off = P(offset);
+    const sql = `
+      SELECT ra.id, ra.at, ra.request_id,
+             ra.actor_kind, ra.actor_id, ra.actor_email, ra.actor_role,
+             ra.method, ra.path, ra.route, ra.query, ra.status, ra.duration_ms,
+             ra.ip::text AS ip, ra.user_agent, ra.referer,
+             ra.entity_type, ra.entity_id, ra.body_summary, ra.error, ra.bytes_out,
+             CASE WHEN ra.actor_kind = 'staff' THEN s.full_name
+                  WHEN ra.actor_kind = 'borrower' THEN NULLIF(btrim(coalesce(bo.first_name,'')||' '||coalesce(bo.last_name,'')), '')
+                  ELSE NULL END AS actor_name
+        FROM request_audit_log ra
+        LEFT JOIN staff_users s ON ra.actor_kind='staff' AND s.id = ra.actor_id
+        LEFT JOIN borrowers bo  ON ra.actor_kind='borrower' AND bo.id = ra.actor_id
+        ${whereSql}
+       ORDER BY ra.at DESC, ra.id DESC
+       LIMIT ${lim} OFFSET ${off}`;
+    const r = await db.query(sql, params);
+    const rows = r.rows.map((row) => ({
+      id: String(row.id),
+      at: row.at,
+      requestId: row.request_id,
+      actor: {
+        kind: row.actor_kind,
+        id: row.actor_id,
+        role: row.actor_role,
+        email: row.actor_email,
+        name: row.actor_name || (row.actor_kind === 'anon' ? 'Anonymous' : row.actor_kind === 'system' ? 'System' : null),
+      },
+      method: row.method,
+      path: row.path,
+      route: row.route,
+      query: row.query,
+      status: row.status,
+      durationMs: row.duration_ms,
+      ip: row.ip,
+      userAgent: row.user_agent,
+      referer: row.referer,
+      entity: row.entity_type ? { type: row.entity_type, id: row.entity_id } : null,
+      bodySummary: row.body_summary,
+      error: row.error,
+      bytesOut: row.bytes_out,
+    }));
+    res.json({ rows, limit, offset, hasMore: rows.length === limit });
+  } catch (e) {
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+// Summary counters for the request-audit dashboard header — small,
+// bounded scans across the recent window so a filter panel + a
+// "requests-per-minute" strip can render off ONE call.
+router.get('/request-audit/summary', async (req, res) => {
+  if (!can(req.actor, 'view_audit_log')) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const hours = Math.min(Math.max(parseInt(req.query.hours, 10) || 24, 1), 168);
+    const [totals, byMethod, byStatus, topPaths, topActors] = await Promise.all([
+      db.query(
+        `SELECT count(*)::int AS n,
+                count(*) FILTER (WHERE status >= 500)::int AS errors_5xx,
+                count(*) FILTER (WHERE status >= 400 AND status < 500)::int AS errors_4xx,
+                round(avg(duration_ms))::int AS avg_ms,
+                percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms)::int AS p95_ms
+           FROM request_audit_log
+          WHERE at >= now() - make_interval(hours => $1)`, [hours]),
+      db.query(
+        `SELECT method, count(*)::int AS n
+           FROM request_audit_log
+          WHERE at >= now() - make_interval(hours => $1)
+          GROUP BY method ORDER BY n DESC`, [hours]),
+      db.query(
+        `SELECT status, count(*)::int AS n
+           FROM request_audit_log
+          WHERE at >= now() - make_interval(hours => $1) AND status IS NOT NULL
+          GROUP BY status ORDER BY n DESC LIMIT 20`, [hours]),
+      db.query(
+        `SELECT COALESCE(route, path) AS p, count(*)::int AS n,
+                round(avg(duration_ms))::int AS avg_ms
+           FROM request_audit_log
+          WHERE at >= now() - make_interval(hours => $1)
+          GROUP BY p ORDER BY n DESC LIMIT 25`, [hours]),
+      db.query(
+        `SELECT ra.actor_kind, ra.actor_id, count(*)::int AS n,
+                CASE WHEN ra.actor_kind='staff' THEN s.full_name
+                     WHEN ra.actor_kind='borrower' THEN NULLIF(btrim(coalesce(bo.first_name,'')||' '||coalesce(bo.last_name,'')), '')
+                     ELSE ra.actor_kind END AS name
+           FROM request_audit_log ra
+           LEFT JOIN staff_users s ON ra.actor_kind='staff' AND s.id = ra.actor_id
+           LEFT JOIN borrowers bo  ON ra.actor_kind='borrower' AND bo.id = ra.actor_id
+          WHERE ra.at >= now() - make_interval(hours => $1)
+          GROUP BY ra.actor_kind, ra.actor_id, name
+          ORDER BY n DESC LIMIT 20`, [hours]),
+    ]);
+    res.json({
+      windowHours: hours,
+      totals: totals.rows[0] || {},
+      byMethod: byMethod.rows,
+      byStatus: byStatus.rows,
+      topPaths: topPaths.rows,
+      topActors: topActors.rows,
+    });
+  } catch (e) {
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
 // ---------------- per-file observability timeline (#147) --------------------
 // ONE cross-system "what happened to this file" feed, time-ordered, merging every
 // event stream the platform already journals: the portal audit trail (audit_log),
