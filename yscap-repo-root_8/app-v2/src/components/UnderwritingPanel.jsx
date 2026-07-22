@@ -1137,6 +1137,7 @@ function SovereignCockpit({ twinFacts, cureProofs, appId, canIssueCerts, canConf
       {appId && <SovereignCertificatesSection appId={appId} canIssue={canIssueCerts} />}
       {appId && <SovereignStructuringSection appId={appId} />}
       {appId && <SovereignAiCostSection appId={appId} />}
+      {appId && <SovereignKnowledgeGraphSection appId={appId} />}
       {appId && <SovereignAskAdminSection appId={appId} />}
     </div>
   );
@@ -1472,6 +1473,76 @@ function SovereignAiCostSection({ appId }) {
               {data.events.slice(0, 20).map((e, i) => (
                 <div key={i} style={{ fontSize: 11, color: 'var(--muted,#4B585C)', padding: '2px 0', borderBottom: '1px dashed var(--paper,#E9E4D3)' }}>
                   {new Date(e.created_at).toLocaleTimeString()} · <b>{e.op_name}</b> · {e.tokens_total} tok · ${(e.cost_cents / 100).toFixed(3)}{!e.ok ? ` · error: ${e.reason || 'unknown'}` : ''}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Knowledge Graph tile (R3.34) — collapsible portfolio-context tile showing
+// this borrower's file count, entities on the borrower, and other files on
+// the same borrower. Pure aggregate from the R3.28 knowledge-graph route.
+// ---------------------------------------------------------------------------
+function SovereignKnowledgeGraphSection({ appId }) {
+  const [open, setOpen] = useState(false);
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    if (!open || !appId) return;
+    api.fileKnowledgeGraph(appId).then((r) => setData((r && r.graph) || null)).catch(() => setData(null));
+  }, [open, appId]);
+  const b = data && data.borrower;
+  const entities = (data && data.entities) || [];
+  const siblings = (data && data.siblingFiles) || [];
+  const shared = (data && data.sharedSignals) || [];
+  return (
+    <div style={{ marginTop: 12, border: '1px solid var(--paper,#E9E4D3)', borderRadius: 10, background: 'var(--card,#fff)' }}>
+      <div onClick={() => setOpen(!open)} style={{ cursor: 'pointer', padding: '8px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div>
+          <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted,#4B585C)', fontWeight: 700 }}>Portfolio context for this borrower</div>
+          <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginTop: 2 }}>
+            {b ? `${b.files_total || 0} total files · ${b.files_12mo || 0} in the last 12 months · ${b.zips_touched || 0} distinct zips` : 'Loading…'}
+          </div>
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)' }}>{open ? '▾' : '▸'}</div>
+      </div>
+      {open && (
+        <div style={{ padding: '8px 12px', borderTop: '1px solid var(--paper,#E9E4D3)' }}>
+          {entities.length > 0 && (
+            <div style={{ marginBottom: 8 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--ivory,#141B22)', marginBottom: 4 }}>Entities on this borrower</div>
+              {entities.map((e) => (
+                <div key={e.id} style={{ fontSize: 12, padding: '2px 0' }}>
+                  <b>{e.name}</b>{e.state ? ` (${e.state})` : ''} — {e.files_on_entity} file{e.files_on_entity === 1 ? '' : 's'}
+                  {e.is_verified && <span style={{ color: 'var(--good,#3F7A5B)' }}> ✓ verified</span>}
+                </div>
+              ))}
+            </div>
+          )}
+          {siblings.length > 0 && (
+            <div style={{ marginBottom: 8 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--ivory,#141B22)', marginBottom: 4 }}>Other files on this borrower</div>
+              {siblings.slice(0, 8).map((s) => (
+                <div key={s.id} style={{ fontSize: 12, padding: '2px 0' }}>
+                  <a href={`#/staff/applications/${s.id}`} style={{ color: 'var(--teal-deep,#256168)' }}>
+                    {(s.property_address && (s.property_address.line1 || s.property_address.address)) || s.id.slice(0, 8)}
+                  </a>
+                  {' · '}<span style={{ color: 'var(--muted,#4B585C)' }}>{s.program || 'no program'} · {s.status}</span>
+                </div>
+              ))}
+              {siblings.length > 8 && <div style={{ fontSize: 11, color: 'var(--muted,#4B585C)' }}>+ {siblings.length - 8} more</div>}
+            </div>
+          )}
+          {shared.length > 0 && (
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--amber,#B7791F)', marginBottom: 4 }}>Shared signals</div>
+              {shared.map((s, i) => (
+                <div key={i} style={{ fontSize: 12, padding: '2px 0', color: 'var(--amber,#B7791F)' }}>
+                  {s.signal}: {s.files_on_llc} files on this LLC
                 </div>
               ))}
             </div>
