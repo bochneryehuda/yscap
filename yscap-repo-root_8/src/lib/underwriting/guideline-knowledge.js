@@ -125,9 +125,69 @@ async function activeRules(client, { investorId, program, asOf } = {}) {
   return r.rows;
 }
 
+// ---------------------------------------------------------------------------
+// R5.33 — internal overlays / exceptions / decision snapshots.
+// ---------------------------------------------------------------------------
+const EXCEPTION_STATES = new Set(['pending', 'approved', 'denied', 'expired']);
+
+async function recordOverlay(client, { ruleKey, scope, expression, outcome, materiality, precedenceTier, effectiveFrom, effectiveTo, staffId, notes, meta }) {
+  const m = MATERIALITY.has(materiality) ? materiality : 'material';
+  const r = await client.query(
+    `INSERT INTO internal_overlays
+       (rule_key, scope, expression, outcome, materiality, precedence_tier, effective_from, effective_to, created_by, notes, meta)
+     VALUES ($1,$2::jsonb,$3::jsonb,$4::jsonb,$5,$6,$7,$8,$9,$10,$11::jsonb) RETURNING *`,
+    [ruleKey, JSON.stringify(scope || {}), JSON.stringify(expression || {}), JSON.stringify(outcome || {}),
+     m, Number.isFinite(precedenceTier) ? precedenceTier : 50, effectiveFrom || null, effectiveTo || null,
+     staffId || null, notes || null, JSON.stringify(meta || {})]);
+  return r.rows[0];
+}
+
+async function requestException(client, { applicationId, ruleKey, guidelineRuleId, overlayId, approvedValue, reason, compensatingFactors, meta }) {
+  const r = await client.query(
+    `INSERT INTO guideline_exceptions
+       (application_id, rule_key, guideline_rule_id, overlay_id, approved_value, reason, compensating_factors, status, meta)
+     VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,'pending',$8::jsonb) RETURNING *`,
+    [applicationId, ruleKey, guidelineRuleId || null, overlayId || null,
+     JSON.stringify(approvedValue || {}), reason || null, compensatingFactors || null, JSON.stringify(meta || {})]);
+  return r.rows[0];
+}
+
+async function decideException(client, exceptionId, { status, staffId, expiresAt }) {
+  if (!EXCEPTION_STATES.has(status)) throw new Error(`invalid exception status: ${status}`);
+  const r = await client.query(
+    `UPDATE guideline_exceptions
+        SET status=$2,
+            approved_by = CASE WHEN $2 IN ('approved','denied') THEN $3 ELSE approved_by END,
+            approved_at = CASE WHEN $2='approved' THEN now() ELSE approved_at END,
+            expires_at = COALESCE($4, expires_at)
+      WHERE id=$1 RETURNING *`,
+    [exceptionId, status, staffId || null, expiresAt || null]);
+  return r.rows[0] || null;
+}
+
+async function activeExceptions(client, applicationId) {
+  const r = await client.query(
+    `SELECT * FROM guideline_exceptions
+      WHERE application_id=$1 AND status='approved'
+        AND (expires_at IS NULL OR expires_at > now())
+      ORDER BY approved_at DESC NULLS LAST`, [applicationId]);
+  return r.rows;
+}
+
+async function writeSnapshot(client, { applicationId, producedFor, investorId, program, snapshot, asOf, staffId }) {
+  const r = await client.query(
+    `INSERT INTO underwriting_context_snapshots
+       (application_id, produced_for, investor_id, program, snapshot, as_of, created_by)
+     VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7) RETURNING *`,
+    [applicationId, producedFor || null, investorId || null, program || null,
+     JSON.stringify(snapshot || {}), asOf || null, staffId || null]);
+  return r.rows[0];
+}
+
 module.exports = {
   upsertInvestor, findInvestor,
   createGuidelineDocument, createVersion, activateVersion, addRule, activeRules,
-  MATERIALITY, APPROVAL_STATES,
+  recordOverlay, requestException, decideException, activeExceptions, writeSnapshot,
+  MATERIALITY, APPROVAL_STATES, EXCEPTION_STATES,
   _internals: { investorKey },
 };
