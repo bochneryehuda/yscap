@@ -67,6 +67,14 @@ const FAMILY_PROFILES = Object.freeze({
   signed_term_sheet: { materiality: 'high',   numericCritical: true,  tables: false, signatures: true,  handwriting: true  },
   investor_structure:{ materiality: 'medium', numericCritical: true,  tables: true,  signatures: false, handwriting: false },
   plans_permits:     { materiality: 'medium', numericCritical: false, tables: false, signatures: true,  handwriting: true  },
+  // Expanded RTL taxonomy (owner-directed 2026-07-22).
+  cpl:               { materiality: 'high',   numericCritical: false, tables: false, signatures: true,  handwriting: false },
+  appraisal_revision:{ materiality: 'high',   numericCritical: true,  tables: true,  signatures: true,  handwriting: false, preferAppraisalXml: true },
+  lease:             { materiality: 'high',   numericCritical: true,  tables: false, signatures: true,  handwriting: true  },
+  mortgage_statement:{ materiality: 'high',   numericCritical: true,  tables: true,  signatures: false, handwriting: false },
+  entity_resolution: { materiality: 'high',   numericCritical: false, tables: false, signatures: true,  handwriting: true  },
+  draw_request:      { materiality: 'high',   numericCritical: true,  tables: true,  signatures: true,  handwriting: true  },
+  experience_docs:   { materiality: 'medium', numericCritical: false, tables: true,  signatures: false, handwriting: false },
 });
 
 // The three OCR engines the router can reach, ranked by our default trust for a
