@@ -9,13 +9,14 @@
  * advances a milestone, NEVER updates a field, NEVER uploads to eFolder, NEVER
  * creates a loan, NEVER deletes anything. The ONLY POST allowed in this file is
  * the OAuth token exchange (`POST /oauth2/v1/token`). Every other HTTP verb
- * against `${baseUrl}/encompass/*` is refused STRUCTURALLY by `_httpGet` +
+ * against `${baseUrl}/encompass/*` is refused STRUCTURALLY by `_fetchGuarded` +
  * `assertReadOnlyPath`. Do NOT add `apiPost`/`apiPut`/`apiPatch`/`apiDelete`
  * to this module. Do NOT relax `assertReadOnlyPath`. The rule is layered:
- * (1) only GET helpers are exported; (2) `assertReadOnlyPath` blocks any path
- * that starts with the OAuth token endpoint from being called via the read
- * helper (safety belt); (3) `guardReadOnlyRequest` refuses any `fetch()`-style
- * request built here whose method is not GET (belt AND suspenders).
+ * (1) only GET helpers are exported (`configured`, `ping`, `apiGet`, `READ_ONLY`);
+ * (2) `assertReadOnlyPath` blocks any path in the OAuth namespace from being
+ * called via the read helper (safety belt); (3) `_fetchGuarded` refuses any
+ * `fetch()`-style request built here whose method is not GET, unless the URL
+ * is the OAuth token endpoint (belt AND suspenders).
  * ─────────────────────────────────────────────────────────────────────────────
  *
  * Framework client: Encompass access is per-INSTANCE via Developer Connect (OAuth2), so the
