@@ -97,19 +97,24 @@ const DUP_SIMILARITY = 0.92;
  * Returns each input document annotated with:
  *   { id, docType, family, state, supersedes:[ids], duplicateOf?:id, reason }
  * and a per-family summary { family, docType, currentId, states:{...}, count,
- * incompleteCurrent } — incompleteCurrent = a family whose only members are
- * drafts (no authoritative current exists yet), which a human should chase.
- * Never throws.
+ * incompleteCurrent } — incompleteCurrent = a family with NO authoritative
+ * current version (only drafts, or only an amendment with no base document to
+ * amend), which a human should chase down. Never throws.
  */
 function resolveVersions(documents, opts = {}) {
   const dupThreshold = opts.dupThreshold != null ? opts.dupThreshold : DUP_SIMILARITY;
   const list = (Array.isArray(documents) ? documents : []).filter((d) => d && d.id != null);
 
   // Group into families: docType + normalized subject. No subject → docType only.
+  // A subject that was PROVIDED but normalizes to empty (all punctuation, e.g. an
+  // em-dash) must NOT collapse into the no-subject bucket and cross-supersede an
+  // unrelated doc — give it its own per-doc sentinel family instead.
   const families = new Map();
   list.forEach((d, i) => {
+    const provided = d.subject != null && String(d.subject).trim() !== '';
     const subj = normSubject(d.subject);
-    const family = `${String(d.docType || 'unknown')}|${subj}`;
+    const subjKey = (provided && subj === '') ? `~unresolved-${i}` : subj;
+    const family = `${String(d.docType || 'unknown')}|${subjKey}`;
     if (!families.has(family)) families.set(family, []);
     families.get(family).push({ d, i });
   });
@@ -132,18 +137,34 @@ function resolveVersions(documents, opts = {}) {
     };
     const ordered = [...members].sort(cmp);
 
-    // 1) Duplicate clustering: a later/lower-priority member that is byte- or
-    // near-identical to a higher-priority one is a duplicate OF it.
-    const dupOf = new Map(); // id → canonical id
+    // 1) Duplicate clustering (union-find over byte-/near-identical members),
+    // then pick each cluster's CANONICAL survivor by AUTHORITY first, recency
+    // second — a real (non-draft, non-amendment) copy always beats a draft, so a
+    // draft that happens to outrank the final by date can never swallow it and
+    // leave the family with no current (the medium/high pre-merge audit case).
+    const parent = ordered.map((_, i) => i);
+    const find = (i) => { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; };
+    const union = (i, j) => { const ri = find(i), rj = find(j); if (ri !== rj) parent[ri] = rj; };
     for (let x = 0; x < ordered.length; x++) {
-      if (dupOf.has(ordered[x].d.id)) continue; // already a dup of something
       for (let y = x + 1; y < ordered.length; y++) {
-        if (dupOf.has(ordered[y].d.id)) continue;
         const a = ordered[x], b = ordered[y];
         const sameHash = a.d.sha256 && b.d.sha256 && a.d.sha256 === b.d.sha256;
         const near = jaccard(a.tokens, b.tokens) >= dupThreshold;
-        if (sameHash || near) dupOf.set(b.d.id, a.d.id); // b duplicates the earlier-in-order a
+        if (sameHash || near) union(x, y);
       }
+    }
+    // authority rank: a real version (0) beats an amendment (1) beats a draft (2).
+    const authorityRank = (m) => hasAmendment(m.d) ? 1 : (hasDraft(m.d) ? 2 : 0);
+    const clusters = new Map();
+    ordered.forEach((m, i) => { const r = find(i); if (!clusters.has(r)) clusters.set(r, []); clusters.get(r).push(i); });
+    const dupOf = new Map(); // id → canonical id (the survivor of its duplicate cluster)
+    for (const idxs of clusters.values()) {
+      if (idxs.length < 2) continue;
+      // ordered[] is already recency-sorted, so a lower index = higher recency;
+      // canonical = best authority, then highest recency.
+      const canonicalIdx = idxs.slice().sort((i, j) => (authorityRank(ordered[i]) - authorityRank(ordered[j])) || (i - j))[0];
+      const canonId = ordered[canonicalIdx].d.id;
+      for (const i of idxs) if (i !== canonicalIdx) dupOf.set(ordered[i].d.id, canonId);
     }
 
     // 2) Among NON-duplicate members, find the current version: the highest-recency

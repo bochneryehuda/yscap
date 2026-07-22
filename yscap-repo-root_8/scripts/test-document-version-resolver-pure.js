@@ -101,6 +101,30 @@ assert.strictEqual(byId(r, 'v1').state, STATE.SUPERSEDED);
 assert.strictEqual(byId(r, 'v2').state, STATE.SUPERSEDED);
 ok('with three versions only the newest is current and it supersedes both older ones');
 
+// --- a near-identical DRAFT that outranks the final by date can't bury the final ---
+// (pre-merge audit Finding 1: authority must beat recency when picking the dup canonical)
+const tc = 'title commitment schedule a b c property 7 pine street owner abc llc effective date exceptions';
+r = dv.resolveVersions([
+  { id: 'FINAL', docType: 'title', subject: '7 pine', text: tc + ' issued', filename: 'title_7pine.pdf', effectiveDate: '2026-01-10' },
+  { id: 'DRAFT', docType: 'title', subject: '7 pine', text: tc + ' issued', filename: 'title_draft.pdf', effectiveDate: '2026-02-01' }, // newer + near-identical
+]);
+assert.strictEqual(byId(r, 'FINAL').state, STATE.CURRENT, 'the real (non-draft) copy is current even though a near-identical draft is newer');
+assert.strictEqual(byId(r, 'DRAFT').state, STATE.DUPLICATE, 'the near-identical newer draft is the duplicate');
+assert.strictEqual(byId(r, 'DRAFT').duplicateOf, 'FINAL', 'the draft points at the final as its canonical');
+assert.strictEqual(r.families[0].currentId, 'FINAL');
+assert.strictEqual(r.families[0].incompleteCurrent, false, 'the family is NOT falsely reported incomplete');
+ok('a near-identical draft that outranks the final by date cannot bury the authoritative copy');
+
+// --- a subject that normalizes to empty does not cross-supersede a subject-less doc ---
+r = dv.resolveVersions([
+  { id: 'punct', docType: 'misc', subject: '—' },   // em-dash → normalizes to empty
+  { id: 'nosubj', docType: 'misc' },                // genuinely no subject
+]);
+assert.strictEqual(r.families.length, 2, 'an all-punctuation subject stays its own family, not merged with the subject-less doc');
+assert.strictEqual(byId(r, 'punct').state, STATE.CURRENT);
+assert.strictEqual(byId(r, 'nosubj').state, STATE.CURRENT, 'neither supersedes the other');
+ok('an all-punctuation subject does not cross-supersede an unrelated subject-less document');
+
 // --- empty / junk input is safe ---
 assert.doesNotThrow(() => dv.resolveVersions(null));
 assert.deepStrictEqual(dv.resolveVersions(null).documents, []);
