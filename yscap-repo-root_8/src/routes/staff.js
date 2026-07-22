@@ -564,7 +564,13 @@ router.get('/applications', async (req, res) => {
                         b.first_name,b.last_name,b.email,
                         (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id) AS total_items,
                         (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id
-                           AND (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')) AS done_items
+                           AND (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')) AS done_items,
+                        (SELECT count(*)::int FROM ai_suggestions s
+                           WHERE s.application_id=a.id AND s.severity='fatal'
+                             AND s.status IN ('open','marked_important','escalated','asked_admin')) AS open_fatal_ai,
+                        (SELECT EXTRACT(EPOCH FROM (now() - MIN(s.created_at)))/86400 FROM ai_suggestions s
+                           WHERE s.application_id=a.id AND s.severity='fatal'
+                             AND s.status IN ('open','marked_important','escalated','asked_admin')) AS open_fatal_ai_oldest_days
                  FROM applications a JOIN borrowers b ON b.id=a.borrower_id
                  WHERE ${where.join(' AND ')} ORDER BY ${orderBy}
                  LIMIT ${add(limit)} OFFSET ${add(offset)}`;

@@ -262,6 +262,25 @@ function HealthBlock({ d }) {
   );
 }
 
+// R3.40 — tiny amber/red chip warning that a file has open FATAL AI findings.
+// Silent when count is 0. Tint darkens with the age of the oldest open finding:
+// same-day = amber, 1–2 days = deeper amber, ≥3 days = crit red.
+function FatalAiChip({ count, days }) {
+  const n = Number(count) || 0;
+  if (n <= 0) return null;
+  const age = Number(days) || 0;
+  const level = age >= 3 ? 'crit' : (age >= 1 ? 'warn2' : 'warn');
+  const bg = level === 'crit' ? 'var(--crit,#B4483C)' : (level === 'warn2' ? 'var(--amber-strong,#A05F0A)' : 'var(--amber,#B7791F)');
+  const label = age >= 1 ? `${n} · ${Math.floor(age)}d` : `${n}`;
+  return (
+    <span title={`${n} open fatal AI finding${n === 1 ? '' : 's'} on this file${age >= 1 ? ` — oldest ${Math.floor(age)} day${age >= 2 ? 's' : ''} old` : ''}`}
+      style={{ marginLeft: 6, display: 'inline-flex', alignItems: 'center', gap: 3, padding: '1px 6px', borderRadius: 8,
+        background: bg, color: '#fff', fontSize: 10, fontWeight: 700, letterSpacing: '.02em', verticalAlign: 'middle' }}>
+      AI {label}
+    </span>
+  );
+}
+
 function Row({ a }) {
   const pct = a.total_items > 0 ? Math.round((a.done_items / a.total_items) * 100) : 0;
   const off = a.loan_officer_name;
@@ -283,7 +302,10 @@ function Row({ a }) {
       <div className="q-off">
         {off ? <span className="off"><span className="mono">{initials(off)}</span>{off}</span> : <span className="mut">Unassigned</span>}
       </div>
-      <div className="q-stat"><span className={`pill ${PILL[a.status] || 'mut'}`}>{LABEL[a.status] || a.status}</span></div>
+      <div className="q-stat">
+        <span className={`pill ${PILL[a.status] || 'mut'}`}>{LABEL[a.status] || a.status}</span>
+        <FatalAiChip count={a.open_fatal_ai} days={a.open_fatal_ai_oldest_days} />
+      </div>
       <div className="prog-cell">
         {a.total_items > 0
           ? <><span className="pct">{pct}%</span><div className="prog-bar"><i style={{ width: pct + '%' }} /></div></>
