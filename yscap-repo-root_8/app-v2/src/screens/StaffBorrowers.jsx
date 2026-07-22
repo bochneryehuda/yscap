@@ -169,30 +169,35 @@ export default function StaffBorrowers() {
                         {b.has_account ? (last || <span className="muted">never</span>) : <span className="muted">—</span>}
                       </td>
                       <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                        {/* Create a new mortgage (application) directly for this borrower
-                            (owner-directed 2026-07-21): the new-file screen takes an
-                            initial borrower via ?borrowerId so this row's borrower is
-                            preselected — one click to start their next deal without
-                            re-searching from the pipeline. */}
-                        <Link className="btn ghost small" style={{ marginRight: 6 }}
-                          to={`/internal/new?borrowerId=${b.id}`}
-                          title={`Start a new mortgage for ${name}`}>
-                          + New mortgage
-                        </Link>
-                        {!b.has_account && (
-                          <button className="btn primary small" disabled={busy === 'invite:' + b.id || !b.email}
-                            title={b.email ? 'Email a set-password invite for their latest file' : 'No email on file'}
-                            onClick={() => invite(b)}>{busy === 'invite:' + b.id ? '…' : 'Invite'}</button>
-                        )}
-                        {b.has_account && (
-                          <button className="btn ghost small" disabled={busy === 'reset:' + b.id || !b.email}
-                            title="Email the borrower a password-reset link" onClick={() => reset(b)}>
-                            {busy === 'reset:' + b.id ? '…' : 'Reset password'}</button>
-                        )}
-                        <button className="btn ghost small" style={{ marginLeft: 6 }}
-                          onClick={() => { setPwFor(pwFor === b.id ? null : b.id); setPwVal(''); }}
-                          title="Set a password for this borrower directly">
-                          {pwFor === b.id ? 'Cancel' : 'Set password'}</button>
+                        {/* Row actions live in a flex row so they breathe. The "New
+                            mortgage" action is a primary-tinted CTA (it's the row's
+                            main forward action) and pins to the front. */}
+                        <div className="row" style={{ gap: 6, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                          <Link className="btn primary small"
+                            to={`/internal/new?borrowerId=${b.id}`}
+                            aria-label={`Start a new mortgage for ${name}`}
+                            title={`Start a new mortgage for ${name}`}>
+                            <span aria-hidden="true" style={{ fontWeight: 700, marginRight: 2 }}>+</span> New mortgage
+                          </Link>
+                          {!b.has_account && (
+                            <button className="btn ghost small" disabled={busy === 'invite:' + b.id || !b.email}
+                              title={b.email ? 'Email a set-password invite for their latest file' : 'No email on file'}
+                              aria-label={`Send portal invite to ${name}`}
+                              onClick={() => invite(b)}>{busy === 'invite:' + b.id ? '…' : 'Invite'}</button>
+                          )}
+                          {b.has_account && (
+                            <button className="btn ghost small" disabled={busy === 'reset:' + b.id || !b.email}
+                              title="Email the borrower a password-reset link"
+                              aria-label={`Send password reset to ${name}`}
+                              onClick={() => reset(b)}>
+                              {busy === 'reset:' + b.id ? '…' : 'Reset password'}</button>
+                          )}
+                          <button className="btn ghost small"
+                            onClick={() => { setPwFor(pwFor === b.id ? null : b.id); setPwVal(''); }}
+                            aria-expanded={pwFor === b.id}
+                            title="Set a password for this borrower directly">
+                            {pwFor === b.id ? 'Cancel' : 'Set password'}</button>
+                        </div>
                       </td>
                     </tr>
                     {pwFor === b.id && (

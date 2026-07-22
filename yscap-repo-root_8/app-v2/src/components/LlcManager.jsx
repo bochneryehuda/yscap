@@ -262,18 +262,28 @@ export default function LlcManager({ llcId, onChanged, compactHeader, staff = fa
           ]);
         };
         return (
-          <div className="notice" style={{ marginTop: 10, marginBottom: 4, background: 'rgba(47,127,134,.06)' }}>
-            <span className="small">
-              This file has a co-borrower ({coBorrower.fullName}). Split the LLC 50/50 to start —
-              you can adjust either percentage after adding.
-            </span>
-            <div className="row" style={{ gap: 8, marginTop: 6 }}>
-              <button className="btn primary small" onClick={applySplit}>
+          <div className="notice" role="status"
+            style={{ marginTop: 12, marginBottom: 4, background: 'var(--primary-soft, rgba(47,127,134,.06))',
+              borderLeft: '3px solid var(--teal, #2F7F86)', padding: '10px 12px', borderRadius: 8,
+              display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+            <div style={{ flex: 1, minWidth: 220 }}>
+              <div className="small" style={{ fontWeight: 600, color: 'var(--ivory)' }}>
+                Two borrowers on this file
+              </div>
+              <div className="small muted" style={{ marginTop: 2 }}>
+                Split the LLC 50/50 with {coBorrower.fullName} to start — you can adjust either
+                percentage after adding.
+              </div>
+            </div>
+            <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <span className="muted small">
+                {currentOwn == null ? 'You haven\'t set your % yet' : `Currently ${currentOwn}% you`}
+              </span>
+              <button className="btn primary small" onClick={applySplit}
+                aria-label={`Split ownership 50/50 with ${coBorrower.fullName}`}>
+                <span aria-hidden="true" style={{ marginRight: 4 }}>⇋</span>
                 Split 50/50 with {coBorrower.fullName.split(' ')[0]}
               </button>
-              <span className="muted small" title="Sets the borrower to 50% and adds the co-borrower as a 50% member.">
-                {currentOwn == null ? '(you haven\'t set your % yet)' : `(currently ${currentOwn}% you)`}
-              </span>
             </div>
           </div>
         );
