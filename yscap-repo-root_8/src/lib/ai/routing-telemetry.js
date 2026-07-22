@@ -11,7 +11,7 @@
  * document family and per engine — so a human can SEE which reader is best where,
  * and (later) let the router self-improve on measured accuracy.
  *
- * Pure: no DB, no I/O. The persistence layer (db/270 routing_outcomes) feeds it
+ * Pure: no DB, no I/O. The persistence layer (db/271 routing_outcomes) feeds it
  * rows; this computes the rollup. Advisory — it measures, it never routes or
  * blocks. `recommendPrimary` is a SUGGESTION for a human/config to adopt, never
  * auto-applied.
