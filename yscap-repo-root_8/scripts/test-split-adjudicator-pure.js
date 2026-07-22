@@ -49,9 +49,11 @@ r = sa.adjudicateSplit(
   { pageCount: 4, continuationGroups: [[2, 3]] },    // pages 2-3 are ONE continuous doc
 );
 assert.ok(!r.boundaries.includes(3), 'the cut is dropped — a continuation group spans it');
-assert.ok(r.contested.some((c) => c.page === 3 && /continuation/.test(c.reason)));
+assert.ok(r.rejected.some((c) => c.page === 3 && /continuation/.test(c.reason)), 'the drop is recorded in rejected[], not contested[]');
+assert.strictEqual(r.contested.length, 0, 'a confident signal-rejected cut is NOT a review item');
+assert.strictEqual(r.needsReview, false, 'a confidently-resolved packet needs no review');
 assert.deepStrictEqual(r.boundaries, [1], 'the packet stays one document');
-ok('a one-sided cut is rejected when a continuation group spans it (continuous document)');
+ok('a one-sided cut is rejected when a continuation group spans it (recorded in rejected, no review)');
 
 // --- one-sided cut with NO signal: kept but contested + flagged ---
 r = sa.adjudicateSplit(
@@ -92,7 +94,20 @@ assert.ok(d3.typeConflict, 'a docType disagreement at an agreed boundary is surf
 assert.deepStrictEqual(d3.typeConflict, { primary: 'title', challenger: 'settlement' });
 assert.strictEqual(d3.contested, true, 'a type conflict makes the boundary need review');
 assert.strictEqual(r.needsReview, true);
+assert.ok(r.contested.some((c) => c.page === 3 && /type disagrees/.test(c.reason)), 'the type conflict is also listed in contested[] so it and needsReview agree');
 ok('an agreed boundary with disagreeing document types is flagged as a type conflict');
+
+// --- pageCount is never allowed below the highest proposed page (no inverted range) ---
+r = sa.adjudicateSplit(
+  [{ pages: [1, 2] }, { pages: [5, 6] }],
+  [{ pages: [1, 2] }, { pages: [5, 6] }],
+  { pageCount: 3 }, // bogus: smaller than the last document's start (5)
+);
+const last = r.documents[r.documents.length - 1];
+assert.strictEqual(last.start, 5);
+assert.ok(last.end >= last.start, 'the last document never has end < start even with a too-small pageCount');
+assert.strictEqual(last.end, 6, 'pageCount is clamped up to the highest proposed page');
+ok('a pageCount below the highest proposed page never produces an inverted document range');
 
 // --- agreementRate reflects partial overlap ---
 r = sa.adjudicateSplit(

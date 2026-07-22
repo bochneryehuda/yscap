@@ -43,15 +43,17 @@ function startsOf(proposal) {
 function docTypeAtStart(proposal, p) {
   const list = Array.isArray(proposal) ? proposal : [];
   for (const d of list) {
-    if (!d || d.blank) continue;
+    if (!d || d.blank || d.reason === 'separator') continue;
     const s = Array.isArray(d.pages) && d.pages.length ? Math.min(...d.pages.map(Number).filter(Number.isFinite)) : Number(d.start);
     if (s === p) return d.docType || null;
   }
   return null;
 }
 
+// The packet's true page count. Prefer signals.pageCount, but NEVER let it fall
+// below the highest page any proposal references — otherwise the last document's
+// end (pageCount) would be less than its start (an inverted range).
 function pageCountOf(signals, primary, challenger) {
-  if (signals && Number.isFinite(Number(signals.pageCount)) && Number(signals.pageCount) > 0) return Number(signals.pageCount);
   let max = 1;
   for (const prop of [primary, challenger]) {
     for (const d of (Array.isArray(prop) ? prop : [])) {
@@ -59,7 +61,8 @@ function pageCountOf(signals, primary, challenger) {
       for (const n of ps) if (Number.isFinite(n) && n > max) max = n;
     }
   }
-  return max;
+  const signalPc = signals && Number.isFinite(Number(signals.pageCount)) ? Number(signals.pageCount) : 0;
+  return Math.max(signalPc, max);
 }
 
 // Build a page → continuation-group-id map from signals.continuationGroups
@@ -77,9 +80,10 @@ const CONF = Object.freeze({ agreed: 0.95, separator: 0.85, contested: 0.45, fir
  * adjudicateSplit(primary, challenger, signals?, opts?) → {
  *   boundaries: [startPage...],                              // final document starts, sorted
  *   documents:  [{ start, end, source, confidence, contested, reason, typeConflict? }],
- *   contested:  [{ page, proposedBy, reason }],              // boundaries a human should confirm
+ *   contested:  [{ page, proposedBy, reason }],              // boundaries a human should CONFIRM
+ *   rejected:   [{ page, proposedBy, reason }],              // one-sided cuts a signal DROPPED (not review)
  *   agreement:  { agreedCuts, primaryOnly, challengerOnly, agreementRate },
- *   needsReview: bool,
+ *   needsReview: bool,                                       // true iff contested.length > 0
  * }
  *   primary/challenger: [{ pages:[n] | start,end, docType?, blank? }]  — two split proposals
  *   signals: { pageCount?, separators?:[n], continuationGroups?:[[n]] } — the packet's physical cues
@@ -108,7 +112,8 @@ function adjudicateSplit(primary, challenger, signals = {}, opts = {}) {
 
   const boundaries = [firstPage];
   const boundaryMeta = new Map([[firstPage, { source: 'first', confidence: CONF.first, contested: false, reason: 'packet start' }]]);
-  const contested = [];
+  const contested = []; // boundaries a human should CONFIRM (kept-unconfirmed + type conflicts)
+  const rejected = [];  // one-sided cuts a signal confidently DROPPED (not review items)
 
   for (const p of internal) {
     const inBoth = pSet.has(p) && cSet.has(p);
@@ -118,16 +123,18 @@ function adjudicateSplit(primary, challenger, signals = {}, opts = {}) {
       continue;
     }
     const proposedBy = pSet.has(p) ? 'primary' : 'challenger';
-    // A blank separator page sitting just before the proposed start supports the cut.
-    if (separators.has(p - 1) || separators.has(p)) {
+    // A blank separator page sitting immediately BEFORE the proposed start (p-1)
+    // supports the cut (a document can't start on a blank page, so only p-1 counts).
+    if (separators.has(p - 1)) {
       boundaries.push(p);
       boundaryMeta.set(p, { source: 'separator', confidence: CONF.separator, contested: false, reason: `blank separator supports the ${proposedBy} cut` });
       continue;
     }
     // A continuation group that spans p-1 → p means these pages are ONE document;
-    // the lone cut splits a continuous doc → reject it (drop the boundary).
+    // the lone cut splits a continuous doc → reject it (drop the boundary). This
+    // is a CONFIDENT resolution, not a review item — it goes to `rejected`.
     if (sameGroup(p - 1, p)) {
-      contested.push({ page: p, proposedBy, reason: 'rejected: continuation group spans the cut' });
+      rejected.push({ page: p, proposedBy, reason: 'continuation group spans the cut — dropped' });
       continue;
     }
     // Unresolved single-sided cut: keep it (don't lose a real document), but mark
@@ -141,13 +148,22 @@ function adjudicateSplit(primary, challenger, signals = {}, opts = {}) {
 
   // Materialize documents from consecutive boundaries.
   const documents = boundaries.map((start, i) => {
-    const end = i + 1 < boundaries.length ? boundaries[i + 1] - 1 : pageCount;
+    // Never emit an inverted range: pageCountOf guarantees pageCount >= every
+    // proposed page, so end >= start, but clamp defensively for junk input.
+    const rawEnd = i + 1 < boundaries.length ? boundaries[i + 1] - 1 : pageCount;
+    const end = Math.max(rawEnd, start);
     const meta = boundaryMeta.get(start) || { source: 'primary', confidence: CONF.contested, contested: true, reason: 'unknown' };
     const pType = docTypeAtStart(primary, start);
     const cType = docTypeAtStart(challenger, start);
     const typeConflict = pType && cType && pType !== cType ? { primary: pType, challenger: cType } : undefined;
     const doc = { start, end, source: meta.source, confidence: meta.confidence, contested: meta.contested, reason: meta.reason };
-    if (typeConflict) { doc.typeConflict = typeConflict; doc.contested = true; }
+    if (typeConflict) {
+      doc.typeConflict = typeConflict;
+      doc.contested = true;
+      // Surface the type disagreement in the review list too, so `contested` and
+      // `needsReview` stay consistent for a consumer that gates on either.
+      contested.push({ page: start, proposedBy: 'both', reason: `document type disagrees: primary "${pType}" vs challenger "${cType}"` });
+    }
     doc.docType = pType || cType || null;
     return doc;
   });
@@ -157,6 +173,7 @@ function adjudicateSplit(primary, challenger, signals = {}, opts = {}) {
     boundaries,
     documents,
     contested,
+    rejected,
     agreement: {
       agreedCuts: agreedInternal.length,
       primaryOnly: internal.filter((p) => pSet.has(p) && !cSet.has(p)).length,
@@ -165,7 +182,9 @@ function adjudicateSplit(primary, challenger, signals = {}, opts = {}) {
       // are no internal cuts at all — a single-document packet is trivial agreement).
       agreementRate: unionInternal ? +(agreedInternal.length / unionInternal).toFixed(4) : 1,
     },
-    needsReview: documents.some((d) => d.contested),
+    // A human should review whenever there is any item to confirm — kept-unconfirmed
+    // cuts or type conflicts. (A signal-rejected cut is a confident drop, not review.)
+    needsReview: contested.length > 0,
   };
 }
 
