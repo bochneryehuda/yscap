@@ -23,7 +23,7 @@ function userError(msg, status) { const e = new Error(msg); e.userMessage = msg;
 
 async function loadForPull(appId) {
   const r = await db.query(
-    `SELECT a.id, a.borrower_id, a.property_address,
+    `SELECT a.id, a.borrower_id, a.property_address, a.ys_loan_number,
             b.first_name, b.last_name, b.date_of_birth, b.ssn_encrypted, b.ssn_last4,
             b.current_address
        FROM applications a
@@ -31,6 +31,16 @@ async function loadForPull(appId) {
       WHERE a.id = $1 AND a.deleted_at IS NULL`, [appId]);
   if (!r.rows[0]) throw userError('File not found.', 404);
   return r.rows[0];
+}
+
+// The reference number of a prior completed report on this file — used to
+// default a Reissue (re-pull an existing Xactus report without a new inquiry).
+async function priorReportId(appId) {
+  const r = await db.query(
+    `SELECT vendor_report_id FROM credit_reports
+      WHERE application_id=$1 AND vendor_report_id IS NOT NULL AND status='completed'
+      ORDER BY pulled_at DESC LIMIT 1`, [appId]);
+  return r.rows[0] ? r.rows[0].vendor_report_id : null;
 }
 
 // The borrower packet sent to Xactus. `includeSsn` decrypts the SSN (import
@@ -92,6 +102,9 @@ async function preview(appId) {
     provider: provider.status(),
     missing: missingForPull(b),
     canPull: missingForPull(b).length === 0,
+    // Prior report reference (pre-fills a Reissue). Null on a file's first pull —
+    // then a Reissue needs the reference typed in, or use "Order brand-new".
+    reissueReportId: await priorReportId(appId),
   };
 }
 
@@ -120,7 +133,11 @@ async function importCredit(appId, opts = {}) {
     const miss = missingForPull(b);
     if (miss.length) throw userError(`Can’t pull credit yet — this file is missing the borrower’s ${miss.join(', ')}.`);
     if (!b.ssn) throw userError('The borrower’s Social Security number couldn’t be read for this pull.');
-    const res = await provider.pull({ borrower: b, pullType, requestType, bureaus, version });
+    // A Reissue re-pulls an existing report by its reference number: use the one
+    // the caller entered, else the last completed report on this file.
+    let reissueReportId = (opts.reissueReportId && String(opts.reissueReportId).trim()) || null;
+    if (requestType === 'reissue' && !reissueReportId) reissueReportId = await priorReportId(appId);
+    const res = await provider.pull({ borrower: b, pullType, requestType, bureaus, version, reissueReportId, loanNumber: row.ys_loan_number });
     xml = res.xml; pdfBase64 = res.pdfBase64; vendorReportId = res.vendorReportId;
     if (!xml && !pdfBase64) throw userError('Xactus returned nothing for this request.');
   }

@@ -70,6 +70,7 @@ function CreditImportModal({ appId, onClose, onDone }) {
   const [pullType, setPullType] = useState('soft');
   const [requestType, setRequestType] = useState('reissue');
   const [version, setVersion] = useState('3.4');
+  const [reissueRef, setReissueRef] = useState('');
   const [consent, setConsent] = useState(false);
   const [showUpload, setShowUpload] = useState(false);
   const [xmlFile, setXmlFile] = useState(null);
@@ -78,7 +79,7 @@ function CreditImportModal({ appId, onClose, onDone }) {
   useEffect(() => {
     let alive = true;
     api.staffCreditPreview(appId)
-      .then((d) => { if (alive) { setPre(d); if (d && d.defaults) { setPullType(d.defaults.pullType); setRequestType(d.defaults.requestType); setVersion(d.defaults.version || '3.4'); } } })
+      .then((d) => { if (alive) { setPre(d); if (d) { if (d.defaults) { setPullType(d.defaults.pullType); setRequestType(d.defaults.requestType); setVersion(d.defaults.version || '3.4'); } setReissueRef(d.reissueReportId || ''); } } })
       .catch((e) => alive && setErr(e.message || 'Could not load the borrower info.'));
     return () => { alive = false; };
   }, [appId]);
@@ -96,6 +97,7 @@ function CreditImportModal({ appId, onClose, onDone }) {
     setErr(''); setBusy(true);
     try {
       const body = { pullType, requestType, version };
+      if (requestType === 'reissue') body.reissueReportId = reissueRef;
       if (kind === 'upload') {
         if (!xmlFile && !pdfFile) throw new Error('Choose the credit data file (XML) and/or the PDF to import.');
         if (xmlFile) body.xml = await readFileText(xmlFile);
@@ -152,6 +154,17 @@ function CreditImportModal({ appId, onClose, onDone }) {
                 { value: 'reissue', label: 'Reissue existing', hint: 'Re-pull a report already on file (faster).' },
                 { value: 'new', label: 'Order brand-new', hint: 'Order a fresh report.' },
               ]} />
+              {requestType === 'reissue' && (
+                <div style={{ marginTop: 4 }}>
+                  <label className="cr-opt-label" style={{ display: 'block' }}>Reissue reference #</label>
+                  <input className="input" style={{ maxWidth: 260 }} value={reissueRef} onChange={(e) => setReissueRef(e.target.value)} placeholder="Xactus report reference" />
+                  <div className="muted small" style={{ marginTop: 2 }}>
+                    {pre.reissueReportId
+                      ? 'Pre-filled from the last report on this file — change it to re-pull a different one.'
+                      : 'A reissue re-pulls an existing Xactus report by its reference. For a first pull, choose “Order brand-new”.'}
+                  </div>
+                </div>
+              )}
               <div className="row" style={{ gap: 16, alignItems: 'center', marginTop: 6, flexWrap: 'wrap' }}>
                 <div><label className="cr-opt-label" style={{ display: 'block' }}>Bureaus</label><span className="pill">Tri-merge · all three</span></div>
                 <div><label className="cr-opt-label" style={{ display: 'block' }}>Version</label>

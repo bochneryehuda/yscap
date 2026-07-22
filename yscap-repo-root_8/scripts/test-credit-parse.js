@@ -13,6 +13,14 @@ assert.strictEqual(_internal.isoDate('05/17/2024'), '2024-05-17', 'US date → I
 assert.strictEqual(_internal.isoDate('2024-05-17'), '2024-05-17', 'ISO passthrough');
 assert.strictEqual(_internal.isoDate('20240517'), '2024-05-17', 'compact date → ISO');
 assert.strictEqual(_internal.isoDate(''), null, 'empty date → null');
+// calendar validation: a malformed date must be null, never a bad string that
+// would crash the typed report_date column (same crash-and-orphan class as M1).
+assert.strictEqual(_internal.isoDate('25/12/2026'), null, 'month>12 (day-first) rejected — not guessed');
+assert.strictEqual(_internal.isoDate('2026-02-30'), null, 'Feb 30 rejected');
+assert.strictEqual(_internal.isoDate('2026-13-01'), null, 'month 13 rejected');
+assert.strictEqual(_internal.isoDate('0000-00-00'), null, 'zero date rejected');
+assert.strictEqual(_internal.isoDate('2024-02-29'), '2024-02-29', 'valid leap day kept');
+assert.strictEqual(_internal.isoDate('2026-12-31'), '2026-12-31', 'valid year-end kept');
 assert.strictEqual(_internal.bureau('Equifax'), 'Equifax');
 assert.strictEqual(_internal.bureau('EquifaxBeacon5.0'), 'Equifax');
 assert.strictEqual(_internal.bureau('TransUnion FICO Risk'), 'TransUnion');

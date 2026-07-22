@@ -40,13 +40,20 @@ function isoDate(v) {
   if (v == null) return null;
   const s = String(v).trim();
   if (!s) return null;
-  let m = s.match(/^(\d{4})-(\d{2})-(\d{2})/); // ISO / datetime
-  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
-  m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/); // US
-  if (m) return `${m[3]}-${String(m[1]).padStart(2, '0')}-${String(m[2]).padStart(2, '0')}`;
-  m = s.match(/^(\d{4})(\d{2})(\d{2})$/); // compact
-  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
-  return null;
+  let y, mo, d, m;
+  if ((m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/))) { y = +m[1]; mo = +m[2]; d = +m[3]; }        // ISO / datetime
+  else if ((m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/))) { y = +m[3]; mo = +m[1]; d = +m[2]; }  // US MM/DD/YYYY
+  else if ((m = s.match(/^(\d{4})(\d{2})(\d{2})$/))) { y = +m[1]; mo = +m[2]; d = +m[3]; }         // compact
+  else return null;
+  // Validate a REAL calendar date so a malformed value (e.g. 2026-25-12, day-first
+  // 25/12/2026, Feb 30, 0000-00-00) never reaches the typed `date` column and
+  // crashes the credit_reports INSERT after the documents were already stored.
+  if (y < 1900 || y > 2100 || mo < 1 || mo > 12 || d < 1) return null;
+  const leap = (y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0));
+  const dim = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (d > dim[mo - 1]) return null;
+  const p2 = (n) => String(n).padStart(2, '0');
+  return `${y}-${p2(mo)}-${p2(d)}`;
 }
 
 /**

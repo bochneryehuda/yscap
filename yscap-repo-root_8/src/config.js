@@ -484,11 +484,17 @@ module.exports = {
   //   XACTUS_INTERFACE_VERSION default report interface version (default '3.4')
   xactusProd: {
     endpoint: (process.env.XACTUS_API_URL || '').trim().replace(/\/+$/, ''),
-    username: process.env.XACTUS_API_USERNAME || '',
-    password: process.env.XACTUS_API_PASSWORD || '',
+    username: process.env.XACTUS_API_USERNAME || '',   // Xactus Operator ID / login
+    password: process.env.XACTUS_API_PASSWORD || '',   // Xactus login password
     account:  process.env.XACTUS_API_ACCOUNT || '',
     clientId: process.env.XACTUS_API_CLIENT_ID || '',
     version:  (process.env.XACTUS_INTERFACE_VERSION || '3.4').trim(),
+    // RequestingParty name printed in the MISMO request (informational).
+    requestingParty: (process.env.XACTUS_REQUESTING_PARTY || 'YS Capital Group').trim(),
+    // Auth: 'basic' (HTTP Basic header, the documented default) or 'query'
+    // (LoginAccountIdentifier/LoginAccountPassword query params, the Postman-
+    // collection style). Flip to 'query' only if your Xactus endpoint needs it.
+    authMode: /^query$/i.test((process.env.XACTUS_AUTH_MODE || 'basic').trim()) ? 'query' : 'basic',
   },
   //   HouseCanary — AVM + Rent AVM (independent value + rent triangulation)
   houseCanary: {

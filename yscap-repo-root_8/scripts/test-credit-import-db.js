@@ -141,6 +141,19 @@ const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failu
   ok(crNoHit.middle_score === null && crNoHit.status === 'completed', 'no-hit credit_reports row saved with null middle score');
   ok((await db.query(`SELECT fico FROM borrowers WHERE id=$1`, [bor.id])).rows[0].fico === 705, 'no-hit import does not overwrite the existing FICO (stays 705)');
 
+  // --- same M1 class: a MALFORMED report DATE must NOT crash the typed date column
+  const BADDATE_XML = `<?xml version="1.0"?><RESPONSE_GROUP><RESPONSE><RESPONSE_DATA>
+    <CREDIT_RESPONSE CreditReportIdentifier="XAC-BADDATE" CreditReportFirstIssuedDate="2026-13-45">
+      <BORROWER _FirstName="Dana" _LastName="Borrower" _SSN="123456789"/>
+      <CREDIT_SCORE _Value="701" CreditRepositorySourceType="Equifax"/>
+    </CREDIT_RESPONSE></RESPONSE_DATA></RESPONSE></RESPONSE_GROUP>`;
+  let bdErr = null, out4 = null;
+  try { out4 = await credit.importCredit(app.id, { xml: BADDATE_XML, actorId: staff.id }); }
+  catch (e) { bdErr = e; }
+  ok(!bdErr && out4 && out4.ok, `malformed report date does NOT crash the import (M1 class)${bdErr ? ' — ' + bdErr.message : ''}`);
+  const crBad = (await db.query(`SELECT report_date, status FROM credit_reports WHERE application_id=$1 ORDER BY pulled_at DESC LIMIT 1`, [app.id])).rows[0];
+  ok(crBad && crBad.report_date === null && crBad.status === 'completed', 'malformed report date stored as null, row still saved');
+
   // cleanup (throwaway DB, but be tidy)
   await db.query(`DELETE FROM applications WHERE id=$1`, [app.id]).catch(() => {});
   await db.query(`DELETE FROM borrowers WHERE id=$1`, [bor.id]).catch(() => {});

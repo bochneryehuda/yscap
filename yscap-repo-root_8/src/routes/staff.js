@@ -2783,6 +2783,7 @@ router.post('/applications/:id/credit/import', async (req, res) => {
   try {
     const out = await require('../lib/credit').importCredit(req.params.id, {
       pullType: b.pullType, requestType: b.requestType, version: b.version,
+      reissueReportId: typeof b.reissueReportId === 'string' ? b.reissueReportId : undefined,
       xml: typeof b.xml === 'string' ? b.xml : undefined,
       pdfBase64: typeof b.pdfBase64 === 'string' ? b.pdfBase64 : undefined,
       actorId: req.actor.id,
