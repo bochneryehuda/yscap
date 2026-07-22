@@ -130,10 +130,16 @@ function assembleRun(inputs) {
   }
 
   // The frozen engine's MANUAL / INELIGIBLE reasons become findings so they
-  // appear in the one registry (the decision also gates on engineStatus).
+  // appear in the one registry (the decision also gates on engineStatus). A
+  // MANUAL reason blocks issuance ONLY while the exception is unapproved; once a
+  // super-admin approves it, the reason is the APPROVED deviation (recorded as
+  // info, no longer blocking) — the status is MANUAL_APPROVED and issuable.
   if (pd) {
     for (const msg of (pd.manualReasons || [])) {
-      findings.push({ code: 'program_manual_reason', subject: msg, severity: 'warning', category: 'program', title: 'Program manual-review reason', explanation: msg, source: 'pricing_engine', blocks_term_sheet: true });
+      findings.push({ code: 'program_manual_reason', subject: msg,
+        severity: i.manualApproved ? 'info' : 'warning', category: 'program',
+        title: i.manualApproved ? 'Approved manual-review exception' : 'Program manual-review reason',
+        explanation: msg, source: 'pricing_engine', blocks_term_sheet: !i.manualApproved });
     }
     for (const msg of (pd.blockingReasons || [])) {
       findings.push({ code: 'program_ineligible_reason', subject: msg, severity: 'fatal', category: 'program', title: 'Program ineligible reason', explanation: msg, source: 'pricing_engine', blocks_term_sheet: true, blocks_ctc: true, blocks_funding: true });
