@@ -860,6 +860,38 @@ router.post('/:appId/avm-consensus/verify', requirePermission('sign_off_conditio
   } catch (e) { next(e); }
 });
 
+// ---- Section 1071 coverage classifier (R2.10, blueprint compliance) ------
+// The CFPB Section 1071 small-business lending data-collection rule takes
+// effect January 1, 2028. This endpoint tells staff whether PILOT is on the
+// hook to report on a given loan — considering the borrower's revenue, the
+// product carve-outs, PILOT's material-terms authority (correspondent /
+// table-funded structures), and PILOT's institutional threshold.
+router.get('/:appId/section-1071', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const s1071 = require('../lib/underwriting/section-1071');
+    const cur = await s1071.currentForFile(app.id, db);
+    res.json({ ok: true, coverage: cur, institutionCovered: s1071.institutionCovered() });
+  } catch (e) { next(e); }
+});
+router.post('/:appId/section-1071/classify', requirePermission('manage_pricing'), async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const s1071 = require('../lib/underwriting/section-1071');
+    const client = await db.pool.connect();
+    let result;
+    try {
+      await client.query('BEGIN');
+      result = await s1071.classifyAndPersist(client, app.id);
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+    res.json({ ok: true, ...result });
+  } catch (e) { next(e); }
+});
+
 // ---- Twin fact history (Sovereign 1/4 drilldown) --------------------------
 // Every observation of a fact + every state event, so the file view can show
 // the reconciliation trail behind a canonical value (WHY this value is

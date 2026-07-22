@@ -361,6 +361,41 @@ async function trainingRunOnce() {
    every file with a VALID decision certificate; any canonical fact change
    since issue flips the certificate to 'validation_required' so a coordinator
    re-verifies before the file advances. Self-gated to at most once per day. */
+/* R2.10 — Nightly Section 1071 coverage classification sweep (owner-directed
+   2026-07-22). Runs the classifier over every ACTIVE file so the coverage
+   verdict (covered-report-PILOT / covered-report-partner / not-covered-* /
+   pending) is always current on the compliance dashboard. The classifier
+   only reads applications columns + one env flag, so it's cheap; the
+   institution-not-covered branch short-circuits to a no-op verdict when
+   INSTITUTION_1071_COVERED is unset (the default today). Self-gated to
+   at most once per 20 hours. */
+async function section1071SweepOnce() {
+  if (!(await _gate('section_1071_sweep_daily', null, '20 hours'))) return 0;
+  let touched = 0, changed = 0;
+  try {
+    const s1071 = require('./underwriting/section-1071');
+    const targets = await db.query(
+      `SELECT id FROM applications
+        WHERE deleted_at IS NULL AND status NOT IN ('withdrawn','cancelled','declined')
+        ORDER BY updated_at DESC`);
+    for (const row of targets.rows) {
+      try {
+        const client = await db.getClient();
+        try {
+          await client.query('BEGIN');
+          const r = await s1071.classifyAndPersist(client, row.id);
+          await client.query('COMMIT');
+          touched += 1;
+          if (r && r.changed) changed += 1;
+        } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+        finally { client.release(); }
+      } catch (e) { console.error('[digests] section-1071', row.id, e && e.message); }
+    }
+    await _stamp('section_1071_sweep_daily', null, { touched, changed });
+    return changed;
+  } catch (e) { console.error('[digests] section-1071', e && e.message); return changed; }
+}
+
 /* R2.9 — Nightly auto-read sweep (owner-directed 2026-07-22). Walks every
    active file with UNREAD document(s) uploaded in the last 24 hours and
    drives them through the exact same auto-read pipeline the /:appId/auto-read
@@ -589,6 +624,7 @@ async function runDue() {
     await certificateSurveyOnce().catch((e) => console.error('[digests] cert-survey', e && e.message));
     await directSourceSweepOnce().catch((e) => console.error('[digests] direct-source-sweep', e && e.message));
     await autoReadSweepOnce().catch((e) => console.error('[digests] auto-read-sweep', e && e.message));
+    await section1071SweepOnce().catch((e) => console.error('[digests] section-1071', e && e.message));
     await autoCommitteeReviewOnce().catch((e) => console.error('[digests] auto-committee', e && e.message));
     if (weekday === 'Mon') await weeklyAdminSummaryOnce().catch((e) => console.error('[digests] admin', e && e.message));
   }
@@ -614,5 +650,5 @@ module.exports = {
   start, runDue, nyParts,
   weeklyBorrowerOutstandingOnce, dailyPipelineDigestOnce, staleFileAlertsOnce, weeklyAdminSummaryOnce,
   drawFindingsAwaitingBorrowerOnce, drawReleaseOverdueOnce, workflowAgingOnce,
-  trainingRunOnce, certificateSurveyOnce, autoCommitteeReviewOnce, directSourceSweepOnce, autoReadSweepOnce,
+  trainingRunOnce, certificateSurveyOnce, autoCommitteeReviewOnce, directSourceSweepOnce, autoReadSweepOnce, section1071SweepOnce,
 };
