@@ -24,8 +24,19 @@ const crypto = require('crypto');
 const wholeLoanContext = require('./whole-loan-context');
 const programAdapter = require('./program-adapter');
 const structureUnderwriter = require('./structure-underwriter');
-const staleDetector = require('./stale-detector');
 const decision = require('./decision');
+
+// The context fields that are PRICING inputs — a registration↔application
+// disagreement on any of these means the file drifted off the priced structure
+// (STALE), not merely a data conflict. Keyed to whole-loan-context CONTEXT_FIELDS
+// (snake_case), so it composes with the context's own discrepancy detection —
+// which already compares the registration's stored inputs against the current
+// application values correctly (regardless of the engine snapshot's key casing).
+const PRICED_CONTEXT_FIELDS = Object.freeze(new Set([
+  'loan_amount', 'purchase_price', 'effective_purchase_price', 'as_is_value', 'arv',
+  'rehab_budget', 'program', 'loan_type', 'property_type', 'units', 'is_assignment',
+  'assignment_fee', 'underlying_contract_price', 'fico',
+]));
 
 // Structure-breach severity → finding shape. A hard ineligibility is fatal and
 // blocks everything; a manual-review / approvable-exception breach blocks
@@ -219,13 +230,13 @@ async function runWholeLoan(applicationId, db, opts) {
     ? programAdapter.fromRegistration(registration, { manualApproved: o.manualApproved, missingRequired: !context.ready })
     : null;
 
-  // Priced-input drift: compare the file's CURRENT priced inputs to the
-  // registration's stored input snapshot.
-  let staleChanged = [];
-  if (registration && registration.inputs) {
-    const cur = currentPricedInputs(context);
-    staleChanged = staleDetector.detectStale(cur, registration.inputs).changed;
-  }
+  // Priced-input drift: the whole-loan context already resolves each field with
+  // a source-priority discrepancy when the REGISTRATION's priced value disagrees
+  // with the current APPLICATION value. A disagreement on a PRICING input means
+  // the structure was priced on since-changed inputs (STALE). Derive the drift
+  // from those discrepancies — this reuses the context's correct, casing-agnostic
+  // comparison instead of re-comparing the engine's camelCase input snapshot.
+  const staleChanged = registration ? pricedDrift(context) : [];
 
   const assembled = assembleRun({
     context,
@@ -242,26 +253,33 @@ async function runWholeLoan(applicationId, db, opts) {
   return { runId, context, ...assembled };
 }
 
-// The file's CURRENT priced inputs (governing values), keyed to the stale
-// detector's PRICING_INPUT_KEYS camelCase snapshot form used by the engine.
-function currentPricedInputs(context) {
-  const v = (context && context.values) || {};
-  return {
-    loan_amount: v.loan_amount, purchase_price: v.purchase_price, as_is_value: v.as_is_value,
-    arv: v.arv, rehab_budget: v.rehab_budget, program: v.program, loan_type: v.loan_type,
-    property_type: v.property_type, units: v.units, is_assignment: v.is_assignment,
-    underlying_contract_price: v.underlying_contract_price, assignment_fee: v.assignment_fee,
-    fico: v.fico,
-  };
+// Priced-input drift, derived from the context's source-priority discrepancies:
+// a disagreement on a PRICING field (registration governing vs application) →
+// { key, from: registration value, to: application value }. Casing-agnostic
+// because the context did the comparison (regInputs camelCase vs app columns).
+function pricedDrift(context) {
+  const discrepancies = (context && context.discrepancies) || [];
+  const out = [];
+  for (const d of discrepancies) {
+    if (!PRICED_CONTEXT_FIELDS.has(d.field)) continue;
+    const conflict = (d.conflicts && d.conflicts[0]) || {};
+    out.push({ key: d.field, from: d.governing ? d.governing.value : null, to: conflict.value != null ? conflict.value : null });
+  }
+  return out;
 }
 
 // Persist the run immutably: supersede the prior current run, insert the run +
 // snapshot + calculations + findings + decision, all in one transaction.
 async function persistRun(db, applicationId, context, assembled, createdBy) {
+  // A dedicated client when a pool is available (so BEGIN/COMMIT span ONE
+  // connection); otherwise a single-connection db handle (its .query is one
+  // connection). Either way the whole write is wrapped in a transaction, so the
+  // supersede-UPDATE + INSERT are atomic and the partial-unique current-run index
+  // can never be violated by a concurrent run or left with no current run.
   const client = db.pool ? await db.pool.connect() : null;
   const q = client ? (text, params) => client.query(text, params) : (text, params) => db.query(text, params);
   try {
-    if (client) await q('BEGIN');
+    await q('BEGIN');
     await q(`UPDATE underwriting_runs SET superseded_at = now() WHERE application_id = $1 AND superseded_at IS NULL`, [applicationId]);
     const runRes = await q(
       `INSERT INTO underwriting_runs
@@ -300,10 +318,10 @@ async function persistRun(db, applicationId, context, assembled, createdBy) {
        VALUES ($1,$2,$3)`,
       [runId, assembled.status, JSON.stringify(assembled.reasons || [])]);
 
-    if (client) await q('COMMIT');
+    await q('COMMIT');
     return runId;
   } catch (e) {
-    if (client) { try { await q('ROLLBACK'); } catch (_) { /* ignore */ } }
+    try { await q('ROLLBACK'); } catch (_) { /* ignore */ }
     throw e;
   } finally {
     if (client) client.release();
@@ -312,4 +330,4 @@ async function persistRun(db, applicationId, context, assembled, createdBy) {
 
 function str(v) { return v == null ? null : String(v); }
 
-module.exports = { assembleRun, runWholeLoan, _internals: { capsFromQuote, structureFromContext, currentPricedInputs } };
+module.exports = { assembleRun, runWholeLoan, _internals: { capsFromQuote, structureFromContext, pricedDrift } };

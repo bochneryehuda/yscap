@@ -94,6 +94,21 @@ assert.strictEqual(out.ctcEligible, false, 'a fatal appraisal finding blocks CTC
 assert.strictEqual(out.termSheetEligible, true, 'but the term sheet can still issue (no term-sheet block on it)');
 ok('an appraisal/desk finding flows into the ONE registry and gates CTC');
 
+// --- pricedDrift derives stale from a CONTEXT discrepancy on a priced field ---
+// (the audit-fixed path: runWholeLoan builds staleChanged from the context's
+// source-priority discrepancies, casing-agnostic — not a snake/camel key match).
+const runInternals = require('../src/lib/underwriting/run')._internals;
+const driftCtx = { discrepancies: [
+  { field: 'purchase_price', governing: { source: 'pricing_engine', value: 400000 }, conflicts: [{ source: 'application', value: 450000 }] },
+  { field: 'rehab_budget', governing: { source: 'pricing_engine', value: 100000 }, conflicts: [{ source: 'application', value: 130000 }] },
+  { field: 'borrower_name', governing: { source: 'application', value: 'Jane' }, conflicts: [{ source: 'appraisal', value: 'Jane Q' }] },
+] };
+const drift = runInternals.pricedDrift(driftCtx);
+assert.strictEqual(drift.length, 2, 'only the two PRICED-field discrepancies are drift (not borrower_name)');
+assert.ok(drift.some((d) => d.key === 'purchase_price' && d.from === 400000 && d.to === 450000), 'purchase_price drift captured with from/to');
+assert.ok(!drift.some((d) => d.key === 'borrower_name'), 'a non-priced discrepancy is not treated as priced-input drift');
+ok('pricedDrift derives stale from priced-field context discrepancies (casing-agnostic, audit fix)');
+
 // --- reproducible source hash ---
 const h1 = build().sourceHash;
 const h2 = build().sourceHash;
