@@ -451,6 +451,12 @@ export const api = {
   trainingProposals:         (status = 'pending') => req('GET', `/api/admin/training/proposals${status ? `?status=${status}` : ''}`),
   trainingProposalsRun:      () => req('POST', '/api/admin/training/run', {}),
   trainingProposalsDecide:   (id, decision, note) => req('POST', `/api/admin/training/proposals/${id}/decide`, { decision, note }),
+  // Azure Custom labeling console (R3.3 — owner-directed 2026-07-22).
+  labelingExamples:          () => req('GET', '/api/admin/labeling/examples'),
+  labelingAddExample:        (b) => req('POST', '/api/admin/labeling/examples', normalizeUpload(b)),
+  labelingDeleteExample:     (id) => req('DELETE', `/api/admin/labeling/examples/${id}`),
+  labelingTrainingRuns:      () => req('GET', '/api/admin/labeling/training-runs'),
+  labelingRequestTraining:   (b) => req('POST', '/api/admin/labeling/training-runs', b),
   fileCertificates:          (appId) => req('GET', `/api/underwriting/${appId}/certificate`),
   fileCertificateIssue:      (appId, milestone, reason) => req('POST', `/api/underwriting/${appId}/certificate/issue`, { milestone, reason: reason || undefined }),
   fileCertificateSurvey:     (appId) => req('POST', `/api/underwriting/${appId}/certificate/survey`, {}),
