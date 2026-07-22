@@ -1325,6 +1325,38 @@ async function setDrawQuickNotify(appId, drawId, statusId) {
    no longer smuggle an arbitrary attacker origin — or a private cloud host — into the coordinator's
    browser through the Documents tab. Same allowlist as web-client.js:assertUploadUrl. */
 const SITEWIRE_DOC_HOST = (() => { try { return new URL(cfg.sitewireBaseUrl || 'https://app.sitewire.co').host.toLowerCase(); } catch (_) { return 'app.sitewire.co'; } })();
+
+// Owner-directed 2026-07-22 (deep-dive audit): Sitewire's property.documents[] schema per the
+// SWAGGER has NO name/filename/title field — only `uploaded_by_email`, `draw_id`,
+// `deliverable_update_id`, `checklist{name,list_name,item_name}`, `created_at`, and `src`. The
+// prior mapping `name: d.name || d.filename || d.title || 'Document'` collapsed EVERY document to
+// the literal string "Document", which then broke verifyPresent (matching "appraisal.pdf" against
+// "document" always returns false). Verify has silently failed on every call since day 1;
+// PR #557's escalation then uploads a duplicate every 30 min because verify never confirms.
+//
+// Sitewire's ActiveStorage redirect URL always ends with the original uploaded filename as the
+// last path segment (per the swagger example: `/rails/active_storage/blobs/redirect/…/door1.jpg`).
+// This helper extracts it, URL-decoded so "Scope%20of%20Work.pdf" → "Scope of Work.pdf". Never
+// throws — returns "Document" on any parse failure (so a mangled URL still displays SOMETHING in
+// the coordinator UI). The checklist.item_name (photo/inspection docs from the borrower) is
+// tacked into the label when present so a coordinator can distinguish "door1.jpg on Kitchen line"
+// from "door1.jpg on Bath line".
+function sitewireDocDisplayName(d) {
+  if (!d) return 'Document';
+  let base = 'Document';
+  const src = String(d.src || d.url || d.download_url || d.file_url || '');
+  if (src) {
+    try {
+      const u = new URL(src);
+      // pathname's last segment (drop query string via URL parser)
+      const seg = decodeURIComponent(u.pathname.split('/').pop() || '');
+      if (seg) base = seg;
+    } catch (_) { /* fall back to "Document" */ }
+  }
+  const cl = d.checklist && (d.checklist.item_name || d.checklist.name);
+  return cl ? `${base} — ${String(cl).slice(0, 80)}` : base;
+}
+
 function safeSitewireDocUrl(u) {
   if (u == null || u === '') return null;
   let url; try { url = new URL(String(u)); } catch (_) { return null; }
@@ -1345,7 +1377,7 @@ async function getSitewireDocuments(appId) {
     const p = await client.getProperty(link.sitewire_property_id);
     const docs = (p && (p.documents || (p.property && p.property.documents))) || [];
     return { managed: true, available: true, documents: (Array.isArray(docs) ? docs : []).map((d) => ({
-      name: d.name || d.filename || d.title || 'Document',
+      name: sitewireDocDisplayName(d),
       url: safeSitewireDocUrl(d.url || d.src || d.download_url || d.file_url),
       kind: d.kind || d.type || d.document_type || null,
       uploaded_at: d.created_at || d.uploaded_at || d.inserted_at || null,
@@ -1367,7 +1399,7 @@ async function listSitewireDocumentsForVerify(appId) {
     const p = await client.getProperty(link.sitewire_property_id);
     const docs = (p && (p.documents || (p.property && p.property.documents))) || [];
     return { managed: true, available: true, documents: (Array.isArray(docs) ? docs : []).map((d) => ({
-      name: d.name || d.filename || d.title || 'Document',
+      name: sitewireDocDisplayName(d),
       kind: d.kind || d.type || d.document_type || null,
       uploaded_at: d.created_at || d.uploaded_at || d.inserted_at || null,
     })) };
