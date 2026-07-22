@@ -182,6 +182,13 @@ router.get('/ai-stack', requireRole('super_admin'), async (_req, res) => {
       aiCrossDoc:               { wired: true, requiresAzureOpenAI: true },
       aiRiskScore:              { wired: true },   // R4.1
     },
+    // R5.5 — independent artifact versions, so a super-admin can see exactly
+    // which part of the pipeline is at which revision (and why a decision
+    // changed). ocr/model/extractionSchema compose ANALYZER_VERSION.
+    artifactVersions: (() => {
+      try { return require('../lib/underwriting/fingerprint').artifactVersionBundle(); }
+      catch (_) { return null; }
+    })(),
     appVersion: cfg.appVersion || null,
   });
 });

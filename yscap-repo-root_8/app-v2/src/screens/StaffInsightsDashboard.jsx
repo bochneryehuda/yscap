@@ -270,6 +270,7 @@ function AiStackTile() {
   React.useEffect(() => { api.insightsAiStack().then((r) => setData((r && r.stack) ? r : null)).catch(() => setData(null)); }, []);
   if (!data) return null;
   const S = data.stack || {};
+  const av = data.artifactVersions || null;
   const items = [
     ['Langfuse tracer', S.langfuse],
     ['Azure OpenAI (GPT)', S.azureOpenAI],
@@ -302,6 +303,23 @@ function AiStackTile() {
           );
         })}
       </div>
+      {/* R5.5 — independent artifact versions, so a super-admin can see which
+          part of the pipeline is at which revision (why a decision changed). */}
+      {av && av.versions && (
+        <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px dashed var(--paper,#E9E4D3)' }}>
+          <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted,#4B585C)', fontWeight: 700, marginBottom: 4 }}>
+            Artifact versions <span style={{ fontFamily: 'ui-monospace,monospace', fontWeight: 400 }}>· {av.composite}</span>
+          </div>
+          <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+            {Object.entries(av.versions).map(([k, val]) => (
+              <span key={k} title={`${k}: ${val}`}
+                style={{ padding: '1px 6px', borderRadius: 6, fontSize: 10.5, fontFamily: 'ui-monospace,monospace', border: '1px solid var(--paper,#E9E4D3)', color: 'var(--muted,#4B585C)' }}>
+                {k}:{val}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
