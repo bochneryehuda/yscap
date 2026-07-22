@@ -1625,6 +1625,27 @@ router.post('/:appId/ai-suggestions/:id/note', async (req, res, next) => {
 });
 
 // -------------------------------------------------------------------------
+// R3.32 — Snooze/dismiss the fraud alert banner on a file. Snooze records an
+// audit_log stamp with `until` (24h default); the /:appId view suppresses the
+// banner (still shows the underlying suggestions in the panel) until the stamp
+// expires. Dismiss is a permanent snooze the human can undo by dismissing the
+// underlying suggestions.
+// -------------------------------------------------------------------------
+router.post('/:appId/fraud-banner/snooze', requirePermission('sign_off_conditions'), async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const hours = Math.max(1, Math.min(168, Number((req.body && req.body.hours) || 24))); // 1h..7d
+    const until = new Date(Date.now() + hours * 3600000).toISOString();
+    await db.query(
+      `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+       VALUES ('staff',$1,'fraud_banner_snoozed','application',$2,$3::jsonb)`,
+      [req.actor.staffId, app.id, JSON.stringify({ until, hours, note: (req.body && req.body.note) || null })]);
+    res.json({ ok: true, until });
+  } catch (e) { next(e); }
+});
+
+// -------------------------------------------------------------------------
 // File-wide "Ask super-admin" — a human on the file can hand the whole file
 // (not a specific finding) to the super-admin as a question. Creates an
 // ai_admin_question tied to this application; the super-admin's answer lands

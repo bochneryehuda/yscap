@@ -2017,6 +2017,17 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
             <div style={{ fontSize: 11, color: 'var(--muted,#4B585C)', marginTop: 6 }}>
               PILOT did NOT change anything on the file. Open the AI Findings panel below to review or dismiss.
             </div>
+            <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+              <button className="btn ghost" style={{ fontSize: 11 }} onClick={async () => {
+                const hours = parseInt(window.prompt('Snooze the fraud banner for how many hours? (1–168)', '24') || '', 10);
+                if (!(hours >= 1 && hours <= 168)) return;
+                try { await api.fraudBannerSnooze(appId, hours); load(); }
+                catch (e) { alert(`Snooze failed: ${(e && e.message) || 'error'}`); }
+              }}>Snooze banner</button>
+              <button className="btn ghost" style={{ fontSize: 11 }} onClick={() => {
+                document.querySelector('h4')?.scrollIntoView({ behavior: 'smooth' });
+              }}>Open AI Findings panel</button>
+            </div>
           </div>
         );
       })()}

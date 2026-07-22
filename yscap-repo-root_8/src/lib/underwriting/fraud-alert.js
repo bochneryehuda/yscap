@@ -49,6 +49,18 @@ async function openMajorSignals(appId, client) {
 async function fileBanner(appId, client) {
   const signals = await openMajorSignals(appId, client);
   if (!signals.length) return null;
+  // R3.32 — snooze: latest audit_log 'fraud_banner_snoozed' stamp whose `until`
+  // is in the future suppresses the BANNER (the underlying suggestions still
+  // show in the AI Findings panel). Silent if no valid stamp.
+  try {
+    const c = client || db();
+    const s = await c.query(
+      `SELECT detail FROM audit_log
+        WHERE action='fraud_banner_snoozed' AND entity_type='application' AND entity_id=$1
+        ORDER BY created_at DESC LIMIT 1`, [appId]);
+    const until = s.rows[0] && s.rows[0].detail && s.rows[0].detail.until;
+    if (until && new Date(until).getTime() > Date.now()) return null;
+  } catch (_) { /* audit-log read failure never surfaces */ }
   const level = signals.some((s) => s.severity === 'fatal') ? 'critical' : 'high';
   const headline = signals.length === 1
     ? signals[0].title

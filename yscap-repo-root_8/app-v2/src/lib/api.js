@@ -479,6 +479,7 @@ export const api = {
   aiCostForFile:          (appId) => req('GET', `/api/underwriting/${appId}/ai-cost`),
   askAdminAboutFile:      (appId, question) => req('POST', `/api/underwriting/${appId}/ask-admin`, { question }),
   aiCrossDocCheck:        (appId) => req('POST', `/api/underwriting/${appId}/ai-crossdoc`, {}),
+  fraudBannerSnooze:      (appId, hours = 24, note) => req('POST', `/api/underwriting/${appId}/fraud-banner/snooze`, { hours, note }),
   fileKnowledgeGraph:     (appId) => req('GET', `/api/underwriting/${appId}/knowledge-graph`),
   insightsDashboard:      () => req('GET', '/api/admin/insights'),
   insightsFilesWithSuggestion: (params = {}) => {
