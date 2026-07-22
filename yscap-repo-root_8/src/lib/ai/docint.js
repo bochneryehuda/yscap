@@ -169,6 +169,12 @@ async function read({ buffer, base64 } = {}) {
     const pageNumber = Number.isFinite(p && p.pageNumber) ? p.pageNumber : (i + 1);
     const lines = Array.isArray(p && p.lines) ? p.lines : [];
     const lineText = lines.map((ln) => (ln && typeof ln.content === 'string') ? ln.content : '').filter(Boolean).join('\n');
+    // Per-page OCR word confidence — the routing matrix (P1) uses this to spot
+    // pages that read badly and re-read only those. Azure prebuilt-layout puts a
+    // 0..1 confidence on each word; `confidence` is the mean (null when the page
+    // has no words with a confidence — absence of a signal is not a bad read).
+    const words = Array.isArray(p && p.words) ? p.words.filter((w) => w && Number.isFinite(w.confidence)) : [];
+    const confidence = words.length ? +(words.reduce((a, w) => a + w.confidence, 0) / words.length).toFixed(4) : null;
     return {
       pageNumber,
       width: p && Number.isFinite(p.width) ? p.width : null,
@@ -176,6 +182,8 @@ async function read({ buffer, base64 } = {}) {
       unit: p && typeof p.unit === 'string' ? p.unit : null,
       angle: p && Number.isFinite(p.angle) ? p.angle : null,
       text: lineText,
+      confidence,
+      wordCount: words.length,
     };
   });
   return { ok: true, text, pageCount, pages };

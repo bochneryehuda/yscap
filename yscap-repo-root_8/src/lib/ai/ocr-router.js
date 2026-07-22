@@ -26,6 +26,15 @@
 const azure = require('./docint');
 const google = require('./docai-google');
 const mistral = require('./docai-mistral');
+const matrix = require('./routing-matrix');
+
+// Map a routing-matrix engine name → the per-engine module + the winner label
+// the router reports. 'native_pdf' / 'appraisal_xml' are UPSTREAM deterministic
+// sources (unpdf native text / a MISMO parser) the router itself doesn't read —
+// when the plan names one, the router still runs the plan's OCR challenger as a
+// cross-check and reports the special handling so the caller prefers the source.
+const ENGINE_MODULE = { azure, google, mistral };
+const ENGINE_LABEL = { azure: 'azure-docint', google: 'google-docai', mistral: 'mistral-ocr' };
 
 // A rescue is worth trying when the primary returned NO text at all, or so
 // little text that we suspect its OCR failed to segment the page (a scanned
@@ -60,6 +69,14 @@ function primaryLooksEmpty(result, bytesHint) {
 async function read(args = {}) {
   const sequence = [];
   const bytesHint = args.buffer ? args.buffer.length : (args.base64 ? Math.floor((args.base64.length * 3) / 4) : null);
+
+  // Document-aware routing (P1) — OPT-IN and backward-compatible: only when a
+  // caller passes a document family (docType) or explicit routeFeatures. No
+  // existing caller passes those, so the default fallback chain below is
+  // byte-identical to before. forceEngine still wins outright.
+  if (!args.forceEngine && (args.docType || args.routeFeatures)) {
+    return readRouted(args, bytesHint);
+  }
 
   if (args.forceEngine === 'google') {
     sequence.push('google');
@@ -140,6 +157,111 @@ async function read(args = {}) {
   };
 }
 
+// Read with exactly one named OCR engine. Returns the engine's result with the
+// router's winner label attached. Unknown / unavailable engine → a clean failure.
+async function engineRead(engine, args) {
+  const mod = ENGINE_MODULE[engine];
+  if (!mod) return { ok: false, reason: `unknown engine ${engine}` };
+  if (!mod.configured()) return { ok: false, reason: `${engine} not configured` };
+  const r = await mod.read(args);
+  return { ...r, engine: ENGINE_LABEL[engine] };
+}
+
+/**
+ * Document-aware read (P1). Consults the routing matrix for a PLAN, reads with
+ * the plan's OCR primary (falling back through the plan's fallbacks on an empty
+ * read, exactly as the flat chain does), and — for a numeric-critical document
+ * — ALSO runs the mandatory challenger and reconciles the material numbers. The
+ * plan + any numeric disagreement ride back on the result as `routePlan` /
+ * `reconciliation`; the winning text is still the single authoritative `text`,
+ * so every existing consumer reads it unchanged. Advisory: it never blocks — a
+ * disagreement is surfaced for a human, never auto-acted.
+ */
+async function readRouted(args, bytesHint) {
+  const sequence = [];
+  const features = args.routeFeatures || {
+    docType: args.docType,
+    mimeType: args.mimeType,
+    bytes: bytesHint,
+    availability: { azure: azure.configured(), google: google.configured(), mistral: mistral.configured() },
+  };
+  if (features.availability == null) {
+    features.availability = { azure: azure.configured(), google: google.configured(), mistral: mistral.configured() };
+  }
+  const plan = matrix.planRoute(features);
+
+  // The plan's primary may be an upstream deterministic source (native_pdf /
+  // appraisal_xml) the router doesn't read — in that case the OCR job is the
+  // plan's challenger (the cross-check engine). Build the ordered list of OCR
+  // engines to actually try: [ocrPrimary, ...fallbacks], de-duplicated.
+  const isOcr = (e) => e === 'azure' || e === 'google' || e === 'mistral';
+  const ocrPrimary = isOcr(plan.primary) ? plan.primary : (plan.challenger && isOcr(plan.challenger) ? plan.challenger : (plan.fallbacks || [])[0]);
+  const tryOrder = [];
+  for (const e of [ocrPrimary, ...(plan.fallbacks || []), plan.challenger].filter(Boolean)) {
+    if (isOcr(e) && !tryOrder.includes(e)) tryOrder.push(e);
+  }
+  if (!tryOrder.length) tryOrder.push('azure');
+
+  // Read through the ordered engines until one produces a usable read. Every
+  // engine module is contracted never to throw (a give-up returns {ok:false}),
+  // but we wrap defensively so a contract violation can never lose a read we
+  // already have — the router must never throw (advisory, non-blocking).
+  let winner = null;
+  let firstFailure = null;
+  for (const engine of tryOrder) {
+    sequence.push(engine);
+    let r;
+    try { r = await engineRead(engine, args); }
+    catch (e) { r = { ok: false, reason: (e && e.message) || 'engine threw', engine: ENGINE_LABEL[engine] }; }
+    if (!firstFailure) firstFailure = r;
+    if (r.ok && !primaryLooksEmpty(r, bytesHint)) { winner = r; break; }
+    if (!winner && r.ok && String(r.text || '').trim()) winner = r; // keep the best non-empty as a floor
+  }
+  if (!winner) {
+    // Nothing usable — return the FIRST engine's failure (already read in the
+    // loop; do not re-read it) with the plan attached.
+    const fail = firstFailure || { ok: false, reason: 'no engine produced a read', engine: ENGINE_LABEL[tryOrder[0]] || 'azure-docint' };
+    return { ...fail, engine: fail.engine || ENGINE_LABEL[tryOrder[0]] || 'azure-docint', engineSequence: sequence, routePlan: plan };
+  }
+
+  const result = { ...winner, engineSequence: sequence, routePlan: plan };
+
+  // Weak-page identification — which pages read below the plan's confidence floor
+  // and are worth a targeted re-read by the challenger. Attached advisorily; the
+  // full re-OCR-and-splice of just these pages is a follow-up. Only meaningful
+  // when the engine surfaced per-page confidence (Azure prebuilt-layout does).
+  if (plan.reread && plan.reread.enabled && Array.isArray(winner.pages)) {
+    const weak = matrix.weakPages(winner.pages, plan.reread.confidenceFloor);
+    if (weak.length) result.weakPages = weak;
+  }
+
+  // Mandatory challenger for numeric-critical documents — a SECOND independent
+  // read whose material numbers are reconciled against the winner's. Pick a
+  // usable engine that is NOT the winner and has not already been read.
+  if (plan.numericCritical && plan.specialHandling.includes('mandatory_challenger')) {
+    const winnerEngine = Object.keys(ENGINE_LABEL).find((k) => ENGINE_LABEL[k] === winner.engine);
+    const preferred = (plan.challenger && isOcr(plan.challenger) && plan.challenger !== winnerEngine) ? plan.challenger : null;
+    const challenger = preferred || tryOrder.find((e) => e !== winnerEngine && !sequence.includes(e))
+      || (plan.fallbacks || []).find((e) => isOcr(e) && e !== winnerEngine);
+    if (challenger && challenger !== winnerEngine && !sequence.includes(challenger)) {
+      sequence.push(challenger);
+      // Defensive: the reconciliation is a nice-to-have — a challenger that
+      // throws (a never-throw contract violation) must NEVER lose the winning
+      // read we already have. Swallow any error and return the winner as-is.
+      let chRes = null;
+      try { chRes = await engineRead(challenger, args); } catch (_) { chRes = null; }
+      if (chRes && chRes.ok && String(chRes.text || '').trim()) {
+        result.reconciliation = {
+          ...matrix.reconcileNumbers(winner.text, chRes.text),
+          winner: winner.engine,
+          challenger: ENGINE_LABEL[challenger],
+        };
+      }
+    }
+  }
+  return result;
+}
+
 /** True when ANY engine is configured (at least one usable). */
 function configured() { return azure.configured() || google.configured() || mistral.configured(); }
 
@@ -153,4 +275,4 @@ async function ping() {
   return { ok: a.ok || g.ok || m.ok, azure: a, google: g, mistral: m };
 }
 
-module.exports = { read, ping, configured, _internals: { primaryLooksEmpty } };
+module.exports = { read, readRouted, planRoute: matrix.planRoute, weakPages: matrix.weakPages, ping, configured, _internals: { primaryLooksEmpty, engineRead } };

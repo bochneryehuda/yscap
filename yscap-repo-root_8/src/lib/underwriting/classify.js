@@ -40,10 +40,35 @@ const SIGNALS = [
   ['signed_term_sheet', ['term sheet', 'loan term sheet', 'summary of terms', 'conditional loan approval'], ['terms', 'loan amount', 'accepted', 'signature']],
   ['signed_application', ['loan application', 'business purpose', 'business-purpose', 'non-owner occupied', 'borrower certification', '1003'], ['application', 'certify', 'occupancy']],
   ['investor_structure', ['investor structure', 'deal structure', 'structure printout', 'pricing structure'], ['structure', 'investor', 'points', 'rate']],
+  // --- Expanded RTL taxonomy (owner-directed 2026-07-22) — clean, distinct families the packet
+  // classifier previously left as "unknown". Each anchored on phrases unique to it so it never
+  // steals from an existing family (verified against the classify test suite). ---
+  // Closing Protection Letter — a title-adjacent letter, distinct from the title commitment.
+  ['cpl', ['closing protection letter', 'insured closing letter', 'closing protection coverage'], ['cpl', 'closing protection', 'issuing agent', 'underwriter']],
+  // A REVISED / updated appraisal or a reconsideration-of-value — anchored so it beats plain 'appraisal'.
+  ['appraisal_revision', ['revised appraisal', 'appraisal update', 'reconsideration of value', 'updated appraisal report', 'appraisal revision'], ['revised', 'reconsideration', 'rov', 'updated value']],
+  // A lease / rental agreement (rented subject, DSCR support).
+  ['lease', ['lease agreement', 'residential lease', 'rental agreement', 'term of lease', 'landlord and tenant'], ['landlord', 'tenant', 'monthly rent', 'lessee', 'lessor']],
+  // A servicer's periodic mortgage statement — distinct from a payoff and from a bank statement.
+  ['mortgage_statement', ['mortgage statement', 'monthly mortgage statement', 'escrow account summary', 'your mortgage'], ['escrow balance', 'principal balance', 'servicer', 'amount due']],
+  // An entity borrowing / corporate resolution authorizing the loan + signer.
+  ['entity_resolution', ['borrowing resolution', 'resolution of the members', 'corporate resolution', 'certificate of resolution', 'unanimous written consent'], ['resolved', 'authorized to', 'resolution', 'members']],
+  // A construction draw / disbursement request (distinct from the Scope of Work).
+  ['draw_request', ['draw request', 'request for draw', 'disbursement request', 'request for disbursement', 'draw reconciliation'], ['percent complete', 'draw number', 'disbursement', 'inspection']],
+  // Borrower experience documentation — a schedule of real estate owned / prior projects.
+  ['experience_docs', ['schedule of real estate owned', 'real estate owned schedule', 'reo schedule', 'track record of', 'prior projects completed'], ['reo', 'properties owned', 'flips completed', 'experience']],
 ];
 
 // Filename keyword → docType hints (a strong nudge when the OCR text is thin).
 const FILENAME_HINTS = [
+  // Expanded taxonomy hints — placed BEFORE any generic pattern they could collide with.
+  [/reconsideration|revised.*apprais|apprais.*(revis|updat|rov)|\brov\b|appraisal.?update/i, 'appraisal_revision'], // before 'apprais' → appraisal
+  [/closing.?protection|insured.?closing|\bcpl\b/i, 'cpl'],
+  [/draw.?request|disbursement.?request|request.?for.?draw|draw.?recon/i, 'draw_request'], // before scope-of-work/sow
+  [/mortgage.?stmt|mortgage.?statement/i, 'mortgage_statement'], // before bank/statement
+  [/\blease\b|rental.?agreement|landlord/i, 'lease'],
+  [/borrowing.?resolution|corporate.?resolution|member.?resolution|written.?consent/i, 'entity_resolution'],
+  [/\breo\b|schedule.?of.?real|real.?estate.?owned|experience.?(doc|schedule)/i, 'experience_docs'],
   [/operating\s*ag|op\s*agmt/i, 'operating_agreement'],
   [/articles|formation|cert.*org/i, 'llc_formation'],
   [/good\s*stand|existence|status/i, 'good_standing'],
