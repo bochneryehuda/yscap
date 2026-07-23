@@ -97,20 +97,23 @@ export default function InvestorGuidelinesPanel({ appId }) {
 
   const d = desk;
   const verdicts = (d && Array.isArray(d.verdicts)) ? d.verdicts : [];
-  const summary = (d && d.summary) || { applicable: 0, satisfied: 0, outstanding: 0, conflicts: 0, deferred: 0, toPost: 0 };
+  const summary = (d && d.summary) || { applicable: 0, satisfied: 0, outstanding: 0, conflicts: 0, deferred: 0, toPost: 0, unhappy: 0, coverageGaps: 0, fatal: 0 };
   const noteBuyer = (d && d.noteBuyer) || {};
-  const conflicts = verdicts.filter((c) => c.verdict === 'conflicts');
-  const outstanding = verdicts.filter((c) => c.verdict === 'outstanding');
-  const satisfied = verdicts.filter((c) => c.verdict === 'satisfied');
-  const deferred = verdicts.filter((c) => c.verdict === 'deferred');
+  // OVERLAY view (owner-directed 2026-07-23): lead with whether the note buyer is happy with the
+  // file AS-IS, and surface ONLY what they are not happy about (a conflict, or a required condition
+  // that is missing entirely). Everything else is quiet — an open condition is fine, it will be
+  // checked when its document arrives. The full checked list is available but collapsed.
+  const unhappy = (d && Array.isArray(d.unhappy)) ? d.unhappy : [];
+  const happy = !!(d && d.happy);
   const nothing = !d || d.empty || verdicts.length === 0;
 
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
         <p style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', margin: 0, flex: 1, minWidth: 220 }}>
-          How this file measures up against <strong>{noteBuyer.name || 'the note buyer'}</strong>'s own guidelines —
-          what's met, what's still needed, and anything that conflicts with their rules. This is a read-out; it decides nothing on its own.
+          A backend read of the file against <strong>{noteBuyer.name || 'the note buyer'}</strong>'s own guidelines. It stays
+          quiet unless the note buyer would <strong>not</strong> be happy with the file as it stands — a value that conflicts
+          with their rules, or a requirement with no condition on the file at all. Advisory; it decides nothing.
         </p>
         <button className="btn ghost small" disabled={loading} onClick={load}>{loading ? '…' : 'Refresh'}</button>
       </div>
@@ -121,65 +124,67 @@ export default function InvestorGuidelinesPanel({ appId }) {
         <div className="muted" style={{ fontSize: 12.5 }}>
           {noteBuyer.name
             ? `No investor guideline conditions apply to this file yet for ${noteBuyer.name}.`
-            : 'Set the note buyer on this file to see their guideline conditions here.'}
+            : 'Set the note buyer on this file to see their guideline read here.'}
         </div>
       )}
 
       {!nothing && (
         <>
-          {/* headline + tallies */}
-          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-            <span style={{ fontSize: 12.5, fontWeight: 700 }}>{d.headline}</span>
-            {d.generatedAt && <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--muted,#4B585C)' }}>as of {fmtAgo(d.generatedAt)}</span>}
-          </div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 14 }}>
-            {[
-              ['conflicts', summary.conflicts, VERDICT.conflicts],
-              ['still needed', summary.outstanding, VERDICT.outstanding],
-              ['met', summary.satisfied, VERDICT.satisfied],
-              ['to post', summary.toPost, VERDICT.outstanding],
-            ].map(([label, n, st], i) => (
-              <span key={i} style={{ fontSize: 11.5, fontWeight: 700, color: st.fg, background: st.bg, border: `1px solid ${st.fg}33`, borderRadius: 8, padding: '3px 10px' }}>
-                {n} {label}
-              </span>
-            ))}
+          {/* the headline verdict — happy vs not happy */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 12,
+            border: `1px solid ${happy ? 'var(--good,#3F7A5B)' : 'var(--crit,#B4483C)'}44`,
+            borderLeft: `4px solid ${happy ? 'var(--good,#3F7A5B)' : 'var(--crit,#B4483C)'}`,
+            background: happy ? 'rgba(63,122,91,.08)' : 'var(--crit-bg,#F6E7E4)', borderRadius: 10, padding: '9px 14px' }}>
+            <span style={{ fontSize: 15 }}>{happy ? '✓' : '⚠'}</span>
+            <span style={{ fontSize: 12.5, fontWeight: 700, flex: 1, minWidth: 200 }}>{d.headline}</span>
+            {d.generatedAt && <span style={{ fontSize: 11, color: 'var(--muted,#4B585C)' }}>as of {fmtAgo(d.generatedAt)}</span>}
           </div>
 
-          {/* conflicts first — the ones a human must look at */}
-          {conflicts.length > 0 && (
-            <div style={{ marginBottom: 14, border: '1px solid var(--crit,#B4483C)33', borderLeft: '4px solid var(--crit,#B4483C)', borderRadius: 10, padding: '4px 14px', background: 'var(--crit-bg,#F6E7E4)' }}>
-              <div style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--crit,#B4483C)', margin: '8px 0 2px' }}>Conflicts with the note buyer's guideline</div>
-              {conflicts.map((c, i) => <CondRow key={c.cond_no} c={c} first={i === 0} />)}
+          {/* the ONLY thing surfaced: what the note buyer is not happy about */}
+          {unhappy.length > 0 && (
+            <div style={{ marginBottom: 12 }}>
+              {unhappy.map((u, i) => {
+                const fatal = u.severity === 'fatal';
+                const fg = fatal ? 'var(--crit,#B4483C)' : 'var(--amber,#B7791F)';
+                const bg = fatal ? 'var(--crit-bg,#F6E7E4)' : 'var(--amber-bg,#F6EEDD)';
+                const kind = u.flag === 'coverage_gap' ? 'No condition on the file' : 'Conflicts with the guideline';
+                return (
+                  <div key={`${u.cond_no}-${i}`} style={{ marginBottom: 8, border: `1px solid ${fg}44`, borderLeft: `4px solid ${fg}`, borderRadius: 10, padding: '8px 14px', background: bg }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 10.5, fontWeight: 800, color: fg, textTransform: 'uppercase', letterSpacing: '.05em' }}>{fatal ? '● ' : '○ '}{kind}</span>
+                      <span style={{ fontSize: 13, fontWeight: 700 }}>{u.name}</span>
+                    </div>
+                    {u.flag === 'coverage_gap' && (
+                      <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginTop: 2 }}>
+                        {noteBuyer.name || 'The note buyer'} requires this, but there is no condition on the file for it{fatal ? ' — post one now.' : '.'}
+                        {u.required_evidence ? <span> <span style={{ fontWeight: 700 }}>Needs:</span> {u.required_evidence}</span> : null}
+                      </div>
+                    )}
+                    {u.flag === 'conflict' && (
+                      <>
+                        {u.reason && <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginTop: 2 }}>{u.reason}</div>}
+                        {Array.isArray(u.checks) && u.checks.filter((k) => k.status === 'conflict').map((k, j) => (
+                          <div key={j} style={{ fontSize: 11.5, color: fg, marginTop: 3, fontWeight: 600 }}>✕ {k.detail || k.text}</div>
+                        ))}
+                      </>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
 
-          {/* still needed */}
-          {outstanding.length > 0 && (
-            <div style={{ marginBottom: 14 }}>
-              <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--muted,#4B585C)', marginBottom: 4 }}>Still needed for this note buyer</div>
-              {outstanding.map((c, i) => <CondRow key={c.cond_no} c={c} first={i === 0} />)}
-            </div>
-          )}
-
-          {/* met — collapsed */}
-          {satisfied.length > 0 && (
-            <div style={{ marginBottom: 10 }}>
-              <button onClick={() => setShowMet((v) => !v)} style={{ background: 'none', border: 'none', color: 'var(--teal,#2F7F86)', cursor: 'pointer', fontSize: 11.5, padding: 0 }}>
-                {showMet ? 'Hide' : 'Show'} {satisfied.length} already met
-              </button>
-              {showMet && <div style={{ marginTop: 4 }}>{satisfied.map((c, i) => <CondRow key={c.cond_no} c={c} first={i === 0} />)}</div>}
-            </div>
-          )}
-
-          {/* deferred — attorney/closing + post-closing, separate + muted */}
-          {deferred.length > 0 && (
-            <div>
-              <button onClick={() => setShowDeferred((v) => !v)} style={{ background: 'none', border: 'none', color: 'var(--teal,#2F7F86)', cursor: 'pointer', fontSize: 11.5, padding: 0 }}>
-                {showDeferred ? 'Hide' : 'Show'} {deferred.length} held for the closing / attorney stage
-              </button>
-              {showDeferred && <div style={{ marginTop: 4, opacity: 0.85 }}>{deferred.map((c, i) => <CondRow key={c.cond_no} c={c} first={i === 0} />)}</div>}
-            </div>
-          )}
+          {/* everything checked — collapsed, de-emphasized (open conditions are fine, no need to nag) */}
+          <div>
+            <button onClick={() => setShowMet((v) => !v)} style={{ background: 'none', border: 'none', color: 'var(--teal,#2F7F86)', cursor: 'pointer', fontSize: 11.5, padding: 0 }}>
+              {showMet ? 'Hide' : 'Show'} everything checked ({summary.applicable} against {noteBuyer.name || 'the note buyer'}: {summary.satisfied} met, {summary.outstanding} still coming in{summary.deferred ? `, ${summary.deferred} held for closing` : ''})
+            </button>
+            {showMet && (
+              <div style={{ marginTop: 6, opacity: 0.9 }}>
+                {verdicts.map((c, i) => <CondRow key={c.cond_no} c={c} first={i === 0} />)}
+              </div>
+            )}
+          </div>
         </>
       )}
     </div>

@@ -150,11 +150,29 @@ function assessCondition(cond, ctx) {
     }
 
     // note-buyer numeric checks (advisory verifications; a known bad value → conflict).
+    // A condition's evaluator produces ONE result for the file's actual tier — it must run
+    // ONCE, not once per spec check (the tiered note-buyer-specific spec rows are alternative
+    // wordings of the SAME numeric rule, so stamping the evaluator's detail onto every one
+    // printed the same line N times). So: when an evaluator exists, emit a SINGLE numeric line
+    // (the file's applicable tier) plus any genuinely descriptive (non-numeric) checks; when
+    // there is no evaluator, keep the spec checks as-is (each with its own text, to_verify).
     const evaluator = CHECK_EVALUATORS[c.cond_no];
-    const checks = (Array.isArray(c.checks) ? c.checks : []).map((k) => {
-      const r = evaluator ? evaluator(signals) : null;
-      return { text: k.text, note_buyer_specific: !!k.note_buyer_specific, status: (r && r.status) || 'to_verify', detail: r ? r.detail : null };
-    });
+    const specChecks = Array.isArray(c.checks) ? c.checks : [];
+    let checks;
+    if (evaluator) {
+      const r = evaluator(signals) || null;
+      const nbs = specChecks.filter((k) => k && k.note_buyer_specific);
+      const descriptive = specChecks.filter((k) => k && !k.note_buyer_specific);
+      const numericLine = {
+        text: (r && r.detail) || (nbs[0] && nbs[0].text) || 'Note-buyer numeric verification',
+        note_buyer_specific: true,
+        status: (r && r.status) || 'to_verify',
+        detail: r ? r.detail : null,
+      };
+      checks = [numericLine, ...descriptive.map((k) => ({ text: k.text, note_buyer_specific: false, status: 'to_verify', detail: null }))];
+    } else {
+      checks = specChecks.map((k) => ({ text: k.text, note_buyer_specific: !!k.note_buyer_specific, status: 'to_verify', detail: null }));
+    }
     const conflicting = checks.filter((k) => k.status === 'conflict');
 
     // evidence status from the mapped PILOT condition (if any).
@@ -251,6 +269,26 @@ function assess(input) {
   const verdicts = conditions.map((c) => assessCondition(c, ctx));
 
   const active = verdicts.filter((v) => v.verdict !== VERDICT.DEFERRED);
+
+  // The OVERLAY view (owner-directed 2026-07-23): the investor-guideline layer is a backend AI
+  // that only speaks up when the note buyer would NOT be happy with the file as-is. It is NOT a
+  // list to post. Two things make the investor unhappy:
+  //   1. CONFLICT — a value on the file contradicts the note buyer's guideline (a satisfied doc
+  //      that doesn't meet the rule, or a field over the buyer's limit). Always fatal.
+  //   2. COVERAGE GAP — the note buyer REQUIRES this, but there is NO condition posted for it on
+  //      the file (deleted / never populated). An OPEN condition is fine (it will be checked when
+  //      its document arrives) — a gap is when nothing exists at all. Feasibility / construction
+  //      requirements missing on a ground-up or heavy-rehab loan are FATAL ("pop up something
+  //      big"); other missing required conditions are a warning to post them.
+  const isGap = (v) => v.verdict === VERDICT.OUTSTANDING && !v.pilotOnFile;
+  const gapSeverity = (v) => (v.domain === 'construction_feasibility' ? 'fatal' : 'warning');
+  const unhappy = [];
+  for (const v of active) {
+    if (v.verdict === VERDICT.CONFLICTS) unhappy.push(Object.assign({}, v, { flag: 'conflict', severity: 'fatal' }));
+    else if (isGap(v)) unhappy.push(Object.assign({}, v, { flag: 'coverage_gap', severity: gapSeverity(v) }));
+  }
+  const happy = unhappy.length === 0;
+
   const summary = {
     applicable: active.length,
     satisfied: active.filter((v) => v.verdict === VERDICT.SATISFIED).length,
@@ -258,21 +296,27 @@ function assess(input) {
     conflicts: active.filter((v) => v.verdict === VERDICT.CONFLICTS).length,
     deferred: verdicts.filter((v) => v.verdict === VERDICT.DEFERRED).length,
     toPost: active.filter((v) => v.suggestPost).length,
+    // overlay tallies
+    unhappy: unhappy.length,
+    coverageGaps: unhappy.filter((u) => u.flag === 'coverage_gap').length,
+    fatal: unhappy.filter((u) => u.severity === 'fatal').length,
   };
   return {
     noteBuyer: { key: i.noteBuyerKey || null, name: i.noteBuyerName || null },
     product: spec.PRODUCT,
+    happy,
+    unhappy,
     verdicts,
     conflicts: active.filter((v) => v.verdict === VERDICT.CONFLICTS),
     suggestedToPost: active.filter((v) => v.suggestPost),
     deferred: verdicts.filter((v) => v.verdict === VERDICT.DEFERRED),
     summary,
-    // a plain one-line read for the owner.
-    headline: summary.conflicts > 0
-      ? `${summary.conflicts} item(s) conflict with the note buyer's guideline; ${summary.outstanding} still outstanding.`
-      : summary.applicable === 0
-        ? 'No investor guideline conditions apply to this file yet.'
-        : `${summary.satisfied} of ${summary.applicable} met; ${summary.outstanding} outstanding${summary.toPost ? `, ${summary.toPost} to post` : ''}.`,
+    // a plain one-line read — leads with whether the investor is happy with the file as-is.
+    headline: summary.applicable === 0
+      ? 'No investor guideline conditions apply to this file yet.'
+      : happy
+        ? `The note buyer is satisfied with the file as it stands (${summary.satisfied} of ${summary.applicable} met; ${summary.outstanding} still coming in).`
+        : `The note buyer is NOT satisfied with the file as-is: ${summary.unhappy} item(s) need attention${summary.fatal ? ` (${summary.fatal} urgent)` : ''}.`,
   };
 }
 

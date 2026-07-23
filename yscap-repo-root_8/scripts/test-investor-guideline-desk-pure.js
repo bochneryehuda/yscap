@@ -113,7 +113,7 @@ const cond = (over) => Object.assign({ cond_no: 9001, name: 'Test', domain: 'oth
   assert.strictEqual(res.summary.deferred, 1, 'one deferred (attorney-hold)');
   assert.strictEqual(res.summary.toPost, 1, 'one to post (new, unmapped)');
   assert.ok(res.suggestedToPost.length === 1 && res.conflicts.length === 1);
-  assert.ok(/conflict/i.test(res.headline));
+  assert.ok(/NOT satisfied/i.test(res.headline), 'the headline leads with the note buyer being not satisfied');
   // hostile input never throws
   for (const bad of [null, undefined, 42, 'x', [], {}]) {
     assert.doesNotThrow(() => desk.assess(bad));
@@ -153,6 +153,48 @@ const cond = (over) => Object.assign({ cond_no: 9001, name: 'Test', domain: 'oth
     assert.doesNotThrow(() => desk.triggerFields(bad));
   }
   ok('triggerApplies: known non-match excludes, unknown/absent field fails OPEN (never drops a requirement)');
+}
+
+// 8. duplicate-check bug FIX — an evaluator condition renders ONE numeric line (the file's tier)
+//    plus any descriptive checks, not one copy per spec check.
+{
+  const hz = spec.CONDITIONS.find((x) => x.cond_no === 2186); // hazard: 4 spec checks (3 tiers + 1 note)
+  assert.ok(hz.checks.length >= 3, 'the spec carries the tiered checks');
+  const r = desk.assessCondition(hz, { existingByCode: new Map(), signals: { loan_amount: 318500, liability_coverage: 300000 } });
+  const liabilityLines = r.checks.filter((k) => /liability coverage/i.test(k.text || '') || /\$300,000/.test(k.text || ''));
+  assert.strictEqual(liabilityLines.length, 1, 'the liability line renders ONCE (the file tier), not once per spec check');
+  assert.ok(r.checks.length < hz.checks.length, 'the tiered spec rows collapsed to the applicable one');
+  ok('duplicate-check fix: an evaluator condition shows ONE tier line + descriptive checks (no N-copy repeat)');
+}
+
+// 9. the OVERLAY view — the desk answers "is the note buyer happy with the file as-is?" and
+//    surfaces ONLY the not-happy items: a CONFLICT (fatal) and a COVERAGE GAP (a required
+//    condition not posted; feasibility/construction missing → fatal). A satisfied condition is
+//    silent (not unhappy); an OPEN posted condition is silent (it will be checked on arrival).
+{
+  const sc = spec.CONDITIONS.find((x) => x.cond_no === 3035);   // seller concession (evaluator)
+  const feas = spec.CONDITIONS.find((x) => x.cond_no === 2193); // construction feasibility
+  const cred = spec.CONDITIONS.find((x) => x.cond_no === 1015); // credit
+  const existingByCode = new Map([['rtl_cond_credit', { status: 'satisfied', signed_off: false }]]);
+  const res = desk.assess({ conditions: [sc, feas, cred], existingByCode, signals: { seller_concession_pct: 9 }, noteBuyerKey: 'corrfirst', noteBuyerName: 'CorrFirst' });
+  assert.strictEqual(res.happy, false, 'the investor is not happy');
+  assert.strictEqual(res.unhappy.length, 2, 'exactly the conflict + the coverage gap surface');
+  assert.ok(res.unhappy.some((u) => u.flag === 'conflict' && u.severity === 'fatal'), 'the over-cap seller concession is a fatal conflict');
+  const gap = res.unhappy.find((u) => u.flag === 'coverage_gap');
+  assert.ok(gap && gap.severity === 'fatal', 'a missing construction/feasibility condition is a FATAL coverage gap');
+  assert.strictEqual(res.summary.fatal, 2);
+  assert.ok(/NOT satisfied/i.test(res.headline));
+  // a fully-satisfied, non-conflicting file → happy + silent.
+  const happyRes = desk.assess({ conditions: [cred], existingByCode, signals: {}, noteBuyerKey: 'corrfirst' });
+  assert.strictEqual(happyRes.happy, true, 'a satisfied file makes the investor happy');
+  assert.strictEqual(happyRes.unhappy.length, 0, 'nothing surfaces when the investor is happy');
+  assert.ok(/satisfied with the file/i.test(happyRes.headline));
+  // an OPEN posted condition (not satisfied, but on file) is NOT a coverage gap.
+  const openRes = desk.assess({ conditions: [cred], existingByCode: new Map([['rtl_cond_credit', { status: 'received', signed_off: false }]]), signals: {}, noteBuyerKey: 'corrfirst' });
+  assert.strictEqual(openRes.happy, true, 'an open (posted) condition is fine — not a gap');
+  // hostile input never throws + still returns happy/unhappy shape.
+  for (const bad of [null, undefined, 42, 'x', [], {}]) { const r = desk.assess(bad); assert.ok(typeof r.happy === 'boolean' && Array.isArray(r.unhappy)); }
+  ok('overlay: surfaces ONLY not-happy items (conflict + missing-required coverage gap); happy+silent otherwise; null-safe');
 }
 
 console.log(`\ninvestor-guideline desk pure — ${passed} checks passed`);
