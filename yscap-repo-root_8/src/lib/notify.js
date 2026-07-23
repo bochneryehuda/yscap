@@ -37,6 +37,7 @@ const KICKER_OF = {
   // to review, and the decision sent back to the file's team.
   guaranty_exception: 'Guaranty exception', guaranty_exception_decided: 'Guaranty exception',
   guaranty_exception_comment: 'Exception comment',
+  esign_before_ctc_exception: 'Send-before-CTC exception', esign_before_ctc_exception_decided: 'Send-before-CTC exception',
   message: 'New message', mention: 'You were mentioned', reminder: 'Reminder',
   llc_verified: 'Your entity', llc_unverified: 'Your entity',
   track_record_unverified: 'Track record',
@@ -395,6 +396,7 @@ const CATEGORY_OF = {
   // events (super-admin review request + decision), so they email the recipient.
   guaranty_exception: 'conditions', guaranty_exception_decided: 'conditions',
   guaranty_exception_comment: 'conditions',
+  esign_before_ctc_exception: 'conditions', esign_before_ctc_exception_decided: 'conditions',
   // Major-fraud / authenticity alert (R3.14, owner-directed 2026-07-22).
   // Action-bearing — admins ARE emailed (owner explicitly asked).
   workflow_alert: 'conditions',

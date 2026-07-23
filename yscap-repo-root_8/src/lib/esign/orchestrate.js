@@ -885,8 +885,17 @@ async function sendPackage(applicationId, purpose, actor, opts = {}) {
   // are enforced by the route + validateGenerated.
   if (!spec.skipAppraisalGate) {
     const g = await gate.esignSendGate(applicationId, { db, purpose });
-    if (!g.ready) {
-      const e = new Error(`Not ready to send: ${g.outstanding.map((o) => o.label).join('; ')}`);
+    // sendAllowed honors an APPROVED "send before clear-to-close" exception (which
+    // waives only the clear-to-close-readiness blockers) — the floor is always
+    // enforced. If it's not allowed, report the blockers that actually matter: the
+    // FLOOR if the floor isn't met (an exception can't help until it is), otherwise
+    // the remaining readiness plus a pointer to the exception path.
+    if (!g.sendAllowed) {
+      const blockers = g.floorMet ? g.ctcOutstanding : g.floorOutstanding;
+      const list = (blockers.length ? blockers : g.outstanding).map((o) => o.label).join('; ');
+      const hint = g.floorMet && !(g.exception && g.exception.status === 'approved')
+        ? ' A super-admin can approve an exception to send this before clear-to-close.' : '';
+      const e = new Error(`Not ready to send: ${list}.${hint}`);
       e.code = 'DOCUSIGN_GATE_NOT_READY'; e.retryable = false; e.outstanding = g.outstanding; throw e;
     }
   }

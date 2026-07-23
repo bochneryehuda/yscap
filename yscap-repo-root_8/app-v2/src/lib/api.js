@@ -455,6 +455,7 @@ export const api = {
   // request/withdraw/state (any staff) + the super-admin review box (decide = super-admin).
   fileExceptions:            (appId) => req('GET', `/api/staff/applications/${appId}/exceptions`),
   requestGuarantyWaiver:     (appId, body) => req('POST', `/api/staff/applications/${appId}/exceptions/guaranty-waiver`, body || {}),
+  requestEsignBeforeCtc:     (appId, body) => req('POST', `/api/staff/applications/${appId}/exceptions/esign-before-ctc`, body || {}),
   withdrawException:         (appId, eid) => req('POST', `/api/staff/applications/${appId}/exceptions/${eid}/withdraw`, {}),
   loanExceptions:            (status) => req('GET', `/api/admin/exceptions${status ? `?status=${status}` : ''}`),
   loanExceptionsCount:       () => req('GET', '/api/admin/exceptions/count'),

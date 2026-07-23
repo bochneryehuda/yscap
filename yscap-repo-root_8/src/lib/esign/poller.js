@@ -56,7 +56,11 @@ async function retrySend(opts = {}) {
     db, docusign: ds, onDeadLetter,
     buildDefinition: async (row) => {
       const g = await gate.esignSendGate(row.application_id, { db, purpose: row.purpose });
-      if (!g.ready) {
+      // sendAllowed honors an approved send-before-clear-to-close exception (the floor
+      // is still enforced). If the gate REOPENED between claim and retry — e.g. the
+      // deal economics changed (a floor blocker) — this fails permanent so the stale
+      // envelope dead-letters and a re-registered deal sends a fresh one.
+      if (!g.sendAllowed) {
         const e = new Error(`Send cancelled — file no longer ready to send: ${g.outstanding.map((o) => o.label).join('; ')}`);
         e.retryable = false;   // permanent → dead-letter (a changed deal re-sends fresh)
         throw e;
