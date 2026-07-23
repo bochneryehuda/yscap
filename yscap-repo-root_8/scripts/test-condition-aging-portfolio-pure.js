@@ -91,6 +91,13 @@ assert.doesNotThrow(() => cap.rollupAging([null, 42, 'x', {}]));
 assert.doesNotThrow(() => cap.rollupAging([{ summary: { open: 'NaN', overdue: -3, buckets: 'bad' } }]));
 assert.doesNotThrow(() => cap.rollupAging([{ get summary() { throw new Error('boom'); } }]));
 assert.strictEqual(cap.rollupAging([{ summary: { open: 'NaN', overdue: -3 } }]).conditions.open, 0, 'junk numeric fields floor to 0');
-ok('empty / null / junk / throwing-getter input is safe (never throws)');
+// one bad entry (throwing getter on its OWN bare-summary field) degrades just itself; good files survive
+const mixed = cap.rollupAging([
+  { id: 'good', summary: ca.ageConditions([{ status: 'open', opened_at: daysAgo(9) }], { now: NOW }).summary },
+  { get open() { throw new Error('boom'); }, get overdue() { throw new Error('boom'); } }, // bare-summary entry that throws
+]);
+assert.strictEqual(mixed.conditions.open, 1, 'the good file still contributes its open count despite a sibling that throws');
+assert.ok(mixed.worstFiles.some((f) => f.id === 'good'));
+ok('empty / null / junk / throwing-getter input is safe (never throws); one bad file degrades just itself');
 
 console.log(`\ncondition-aging-portfolio pure — ${passed} checks passed`);

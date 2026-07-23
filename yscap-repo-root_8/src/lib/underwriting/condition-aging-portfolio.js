@@ -80,31 +80,35 @@ function rollupAging(files, opts = {}) {
     const perFile = [];
 
     for (const entry of list) {
-      const e = obj(entry);
-      const s = summaryOf(entry);
-      const open = count(s.open);
-      const overdue = count(s.overdue);
-      const closed = count(s.closed);
-      const total = count(s.total) || (open + closed);
-      const fileOldest = count(s.oldestDaysOpen);
-      const b = obj(s.buckets);
-      for (const k of BUCKET_KEYS) buckets[k] += count(b[k]);
+      // Per-file guard: one bad entry (a throwing getter on its own field)
+      // degrades just itself, not the whole portfolio rollup.
+      try {
+        const e = obj(entry);
+        const s = summaryOf(entry);
+        const open = count(s.open);
+        const overdue = count(s.overdue);
+        const closed = count(s.closed);
+        const total = count(s.total) || (open + closed);
+        const fileOldest = count(s.oldestDaysOpen);
+        const b = obj(s.buckets);
+        for (const k of BUCKET_KEYS) buckets[k] += count(b[k]);
 
-      if (open > 0) filesWithOpen++;
-      if (overdue > 0) filesWithOverdue++;
-      openTotal += open;
-      overdueTotal += overdue;
-      closedTotal += closed;
-      condTotal += total;
-      if (fileOldest > oldest) oldest = fileOldest;
+        if (open > 0) filesWithOpen++;
+        if (overdue > 0) filesWithOverdue++;
+        openTotal += open;
+        overdueTotal += overdue;
+        closedTotal += closed;
+        condTotal += total;
+        if (fileOldest > oldest) oldest = fileOldest;
 
-      perFile.push({
-        id: str(e.id) || str(e.applicationId) || str(e.app_id) || null,
-        label: str(e.label) || str(e.name) || str(e.address) || null,
-        open,
-        overdue,
-        oldestDaysOpen: fileOldest,
-      });
+        perFile.push({
+          id: str(e.id) || str(e.applicationId) || str(e.app_id) || null,
+          label: str(e.label) || str(e.name) || str(e.address) || null,
+          open,
+          overdue,
+          oldestDaysOpen: fileOldest,
+        });
+      } catch (_e) { /* skip a single unreadable file, keep the rest */ }
     }
 
     // Rank: most overdue first, then oldest, then most open. Only files with
