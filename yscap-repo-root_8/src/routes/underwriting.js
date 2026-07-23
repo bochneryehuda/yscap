@@ -986,6 +986,25 @@ router.post('/:appId/avm-consensus/verify', requirePermission('sign_off_conditio
   } catch (e) { next(e); }
 });
 
+// #192 — advisory guideline evaluation. Runs the file's flat rule CONTEXT (the
+// same one the conditions engine builds) through the active knowledge-graph rules
+// (registered program + any note-buyer investor), returning per-rule verdicts +
+// plain citations + an investor-fit ranking. READ-ONLY and advisory — it changes
+// no decision, clears no condition, sizes no loan, and touches NO frozen pricing/
+// guideline number; it explains the frozen baselines db/260 recorded as data.
+// Staff-only (inherits requireAuth+requireStaff on the router); best-effort — an
+// unseeded knowledge graph returns an empty-but-valid report, never an error.
+router.get('/:appId/guideline-evaluation', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const gi = require('../lib/underwriting/guideline-intelligence');
+    const report = await gi.evaluateApplicationGuidelines(app.id);
+    if (report) report.generatedAt = new Date().toISOString();
+    res.json({ ok: true, report: report || { empty: true, applicationId: app.id, sets: [], fit: { ranked: [], best: null, anyFit: false, comparison: [] } } });
+  } catch (e) { next(e); }
+});
+
 // ---- Section 1071 coverage classifier (R2.10, blueprint compliance) ------
 // The CFPB Section 1071 small-business lending data-collection rule takes
 // effect January 1, 2028. This endpoint tells staff whether PILOT is on the
