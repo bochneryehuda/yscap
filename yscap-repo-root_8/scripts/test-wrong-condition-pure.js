@@ -10,6 +10,19 @@ assert.ok(wc.isValidPlacement('bank_statement', 'rtl_p3_assets'));
 assert.ok(!wc.isValidPlacement('insurance', 'rtl_p3_assets'), 'insurance on assets condition → wrong');
 assert.ok(!wc.isValidPlacement('operating_agreement', 'rtl_p1_id'), 'OA on ID condition → wrong');
 
+// ---- the REAL live template codes must be recognized (2026-07-23 fix) ----
+// Before the fix these primary codes were absent, so the detector silently
+// no-op'd on insurance / entity / purchase-contract conditions.
+assert.ok(wc.isValidPlacement('insurance', 'rtl_cond_insurance'), 'insurance on the real insurance condition → ok');
+assert.ok(wc.isValidPlacement('operating_agreement', 'rtl_p1_llc'), 'OA on the real entity condition → ok');
+assert.ok(wc.isValidPlacement('operating_agreement', 'rtl_llc_opagmt'), 'OA on the real operating-agreement condition → ok');
+assert.ok(wc.isValidPlacement('purchase_contract', 'rtl_p1_contract'), 'contract on the real contract condition → ok');
+assert.ok(wc.isValidPlacement('drivers_license', 'rtl_p1_id'), 'ID on the real ID condition → ok');
+// And a WRONG doc on a real condition is now caught (was invisible before).
+assert.ok(!wc.isValidPlacement('bank_statement', 'rtl_cond_insurance'), 'bank statement on the insurance condition → wrong');
+assert.ok(!wc.isValidPlacement('insurance', 'rtl_p1_llc'), 'insurance on the entity condition → wrong');
+assert.ok(!wc.isValidPlacement('operating_agreement', 'rtl_p1_contract'), 'OA on the contract condition → wrong');
+
 // Unmapped codes get no opinion (treated as valid).
 assert.ok(wc.isValidPlacement('bank_statement', 'rtl_appraisal_report_new_shiny_thing'));
 
@@ -22,7 +35,7 @@ const r1 = wc.analyze({
 assert.strictEqual(r1.action, 'suggest_move');
 assert.match(r1.reason, /insurance page/);
 assert.match(r1.reason, /91% confident/);
-assert.deepStrictEqual(r1.suggestedTargets, ['rtl_p4_insurance', 'ins_binder', 'insurance', 'hoi']);
+assert.deepStrictEqual(r1.suggestedTargets, ['rtl_cond_insurance', 'rtl_p4_insurance', 'ins_binder', 'insurance', 'hoi']);
 
 // Right doc on right condition → ok.
 const r2 = wc.analyze({ conditionCode: 'rtl_p4_insurance', classifier: { docType: 'insurance', confidence: 0.88 } });
@@ -62,7 +75,7 @@ const wc2 = require('../src/lib/underwriting/wrong-condition');
   assert.strictEqual(recorded.checklistItemId, 'ci-1');
   assert.strictEqual(recorded.proposedAction.type, 'move_document');
   assert.strictEqual(recorded.proposedAction.from.checklistItemId, 'ci-1');
-  assert.deepStrictEqual(recorded.proposedAction.to.candidateCodes, ['rtl_p4_insurance', 'ins_binder', 'insurance', 'hoi']);
+  assert.deepStrictEqual(recorded.proposedAction.to.candidateCodes, ['rtl_cond_insurance', 'rtl_p4_insurance', 'ins_binder', 'insurance', 'hoi']);
   assert.strictEqual(recorded.dedupeKey, 'wrong-condition:d-42');
   assert.strictEqual(recorded.traceUrl, 'https://lf/x');
 
