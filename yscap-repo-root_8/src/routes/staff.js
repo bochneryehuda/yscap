@@ -2134,7 +2134,8 @@ router.post('/applications/:id/exceptions/:eid/withdraw', async (req, res) => {
     if (exc.status !== 'requested') return res.status(409).json({ error: 'That exception is not open, so it can’t be withdrawn.' });
     const row = await loanExceptions.withdrawException(req.params.eid, req.actor.id);
     if (!row) return res.status(409).json({ error: 'That exception is no longer open.' });
-    await audit(req, 'guaranty_exception_withdrawn', 'application', appId, { exceptionId: row.id });
+    const wdAction = exc.exception_type === 'esign_before_ctc' ? 'esign_before_ctc_exception_withdrawn' : 'guaranty_exception_withdrawn';
+    await audit(req, wdAction, 'application', appId, { exceptionId: row.id, exceptionType: exc.exception_type });
     res.json({ ok: true, exception: row });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
@@ -2192,7 +2193,14 @@ router.post('/applications/:id/exceptions/esign-before-ctc', async (req, res) =>
     } catch (_) { /* best-effort */ }
     await audit(req, 'esign_before_ctc_exception_requested', 'application', appId, { exceptionId: row.id, reasonCode: row.reason_code });
     res.json({ ok: true, exception: row });
-  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+  } catch (e) {
+    // Two staff submitting at once race on the uq_loan_exc_open_per_app partial
+    // index; the loser's INSERT is a unique violation. That's the "already pending"
+    // case, not a server error — report it as such (the supersede+insert keeps the
+    // one-open-per-file invariant either way).
+    if (e && e.code === '23505') return res.status(409).json({ error: 'An exception is already awaiting super-admin review on this file.' });
+    console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
+  }
 });
 
 // Loan officer's ONE-CLICK accept of a super-admin's counter-offer (owner-directed

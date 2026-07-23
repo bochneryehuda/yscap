@@ -149,8 +149,9 @@ router.post('/:id/clear', async (req, res) => {
     const note = req.body && req.body.note;
     const row = await loanExceptions.clearException(req.params.id, req.actor.id, note);
     if (!row) return res.status(409).json({ error: 'That exception is already cleared.' });
-    auditSafe(req.actor.id, 'guaranty_exception_cleared', 'application', row.application_id,
-      { exceptionId: row.id, note: note ? String(note).slice(0, 200) : null });
+    const clrAction = exc.exception_type === 'esign_before_ctc' ? 'esign_before_ctc_exception_cleared' : 'guaranty_exception_cleared';
+    auditSafe(req.actor.id, clrAction, 'application', row.application_id,
+      { exceptionId: row.id, exceptionType: exc.exception_type, note: note ? String(note).slice(0, 200) : null });
     res.json({ ok: true, exception: row });
   } catch (e) { res.status(500).json({ error: 'could not clear the exception' }); }
 });

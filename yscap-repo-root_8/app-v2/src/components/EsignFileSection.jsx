@@ -343,7 +343,7 @@ export default function EsignFileSection({ appId, role, onChanged }) {
             {/* Send-before-clear-to-close: the super-admin exception path. */}
             {excApproved ? (
               <div className="notice ok" style={{ margin: '2px 0 10px' }}>
-                <strong>Approved to send before clear-to-close.</strong> A super-admin approved sending this early{exc.decided_by_name ? ` (${exc.decided_by_name})` : ''}{exc.decision_note ? ` — ${exc.decision_note}` : ''}. The prerequisites above are still enforced.
+                <strong>Approved to send before clear-to-close.</strong> A super-admin approved sending this early{exc.decision_note ? ` — ${exc.decision_note}` : ''}. The prerequisites above are still enforced.
               </div>
             ) : excRequested ? (
               <div className="notice info" style={{ margin: '2px 0 10px' }}>
