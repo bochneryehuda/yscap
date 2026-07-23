@@ -238,6 +238,12 @@ function headlineOf({ statusChanged, statusFrom, statusTo, gatesGained, gatesLos
     if (counts.worsened) parts.push(`${plural(counts.worsened, 'item')} got more serious.`);
     if (counts.removed) parts.push(`${plural(counts.removed, 'item')} cleared.`);
     if (counts.improved) parts.push(`${plural(counts.improved, 'item')} eased.`);
+    // A finding can CHANGE without a severity-rank move — a blocks_* flag flip, or
+    // a same-rank relabel (e.g. warning→advisory). Those are counted in
+    // `counts.changed` but not in worsened/improved, so surface the remainder here
+    // to keep the headline self-consistent with `changed`.
+    const otherChanged = Math.max(0, (counts.changed || 0) - (counts.worsened || 0) - (counts.improved || 0));
+    if (otherChanged) parts.push(`${plural(otherChanged, 'item')} updated.`);
     if (!parts.length) return 'No change since the last review.';
     return parts.join(' ');
   } catch (_e) { return 'No change since the last review.'; }

@@ -124,22 +124,26 @@ function digestFindings(decision, opts = {}) {
     let overallWorst = null;
 
     for (const f of list) {
-      const cat = normCategory(obj(f).category);
-      const sev = normSev(obj(f).severity);
-      const blk = isBlocking(f);
-      if (!groups.has(cat)) {
-        groups.set(cat, { category: cat, label: CATEGORY_LABEL[cat] || 'Other', count: 0, worstSeverity: null, blocking: false, bySeverity: { fatal: 0, warning: 0, info: 0 }, examples: [] });
-      }
-      const g = groups.get(cat);
-      g.count++;
-      g.bySeverity[sev]++;
-      g.worstSeverity = worstSev(g.worstSeverity, sev);
-      if (blk) g.blocking = true;
-      if (!borrowerSafe && g.examples.length < maxExamples) g.examples.push(titleOf(f));
+      // Per-finding guard: one hostile finding (a throwing getter) degrades just
+      // itself, not the whole digest.
+      try {
+        const cat = normCategory(obj(f).category);
+        const sev = normSev(obj(f).severity);
+        const blk = isBlocking(f);
+        if (!groups.has(cat)) {
+          groups.set(cat, { category: cat, label: CATEGORY_LABEL[cat] || 'Other', count: 0, worstSeverity: null, blocking: false, bySeverity: { fatal: 0, warning: 0, info: 0 }, examples: [] });
+        }
+        const g = groups.get(cat);
+        g.count++;
+        g.bySeverity[sev]++;
+        g.worstSeverity = worstSev(g.worstSeverity, sev);
+        if (blk) g.blocking = true;
+        if (!borrowerSafe && g.examples.length < maxExamples) g.examples.push(titleOf(f));
 
-      totalsBySev[sev]++;
-      if (blk) blockingTotal++;
-      overallWorst = worstSev(overallWorst, sev);
+        totalsBySev[sev]++;
+        if (blk) blockingTotal++;
+        overallWorst = worstSev(overallWorst, sev);
+      } catch (_e) { /* skip a single unreadable finding, keep the rest */ }
     }
 
     const categories = Array.from(groups.values()).sort((a, b) => {
@@ -171,7 +175,7 @@ function headlineOf(totals, categories) {
     const parts = [];
     parts.push(`${plural(totals.total, 'finding')} across ${plural(totals.categories, 'category', 'categories')}`);
     if (totals.bySeverity.fatal) parts.push(`${totals.bySeverity.fatal} fatal`);
-    if (totals.blocking) parts.push(`${plural(totals.blocking, 'blocking')}`);
+    if (totals.blocking) parts.push(`${totals.blocking} blocking`);
     const worst = categories && categories[0];
     let s = parts.join(' · ') + '.';
     if (worst && worst.worstSeverity === 'fatal') s += ` Worst: ${worst.label}.`;

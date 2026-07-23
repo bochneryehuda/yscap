@@ -62,6 +62,26 @@ assert.strictEqual(d.findings.changed[0].direction, 'better');
 assert.strictEqual(d.counts.improved, 1);
 ok('a de-escalated finding is direction=better and counts as improved');
 
+// --- a blocks_* flip with UNCHANGED severity is a change, and the headline says so ---
+prev = decide({ engineStatus: 'INELIGIBLE', findings: [
+  { code: 'x', subject: 'a', severity: 'fatal', title: 'blocker A' },                 // keeps status INELIGIBLE both runs
+  { code: 'ltv', subject: 'ltv', severity: 'warning', title: 'LTV near cap' },
+] });
+curr = decide({ engineStatus: 'INELIGIBLE', findings: [
+  { code: 'x', subject: 'a', severity: 'fatal', title: 'blocker A' },
+  { code: 'ltv', subject: 'ltv', severity: 'warning', title: 'LTV near cap', blocks_ctc: true }, // same severity, blocks flag flips
+] });
+d = rd.diffRuns(prev, curr);
+assert.strictEqual(d.counts.changed, 1, 'the blocks flag flip is one change');
+assert.strictEqual(d.counts.worsened, 0, 'severity did not move, so not worsened');
+assert.strictEqual(d.counts.improved, 0);
+assert.strictEqual(d.findings.changed[0].blocksChanged, true);
+assert.strictEqual(d.findings.changed[0].direction, 'same', 'same rank → direction same');
+assert.strictEqual(d.changed, true);
+assert.ok(/updated/.test(d.headline), `a rank-neutral change must still show in the headline (not "No change"): ${d.headline}`);
+assert.ok(!/No change/.test(d.headline));
+ok('a blocks_* flip with unchanged severity is a change and the headline reports it (not "No change")');
+
 // --- two identical runs → no change ---
 d = rd.diffRuns(prev, prev);
 assert.strictEqual(d.changed, false);
