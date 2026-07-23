@@ -236,6 +236,184 @@ async function computeRecheck(row, opts) {
     return { outcome: 'still_open', reason: 'still_duplicated' };
   }
 
+  // ---- Co-borrower value disagreement (co_first_name / co_cell_phone) — the mirror
+  // of the borrower name/cell re-read, on the co-borrower slot. Reads the live MAIN
+  // task AND cross-checks the last-ingested subtask-wins snapshot (the producer's
+  // source) so a divergent co-borrower subtask can never be closed out prematurely.
+  if (fieldKey === 'co_first_name' || fieldKey === 'co_cell_phone') {
+    if (!taskId) return { outcome: 'unsupported', reason: 'no_task' };
+    if (!appId) return { outcome: 'unsupported', reason: 'no_application' };
+    const arow = (await db.query(`SELECT co_borrower_id FROM applications WHERE id=$1`, [appId])).rows[0];
+    const coId = arow && arow.co_borrower_id;
+    if (!coId) {
+      // No co-borrower on the file at all → BOTH co-borrower cards are moot; close them.
+      const closed = (await syncReview.closeStaleReviews({ taskId, fieldKey: 'co_first_name', note: 'auto-closed by re-check — this file no longer has a co-borrower.' }))
+        + (await syncReview.closeStaleReviews({ taskId, fieldKey: 'co_cell_phone', note: 'auto-closed by re-check — this file no longer has a co-borrower.' }));
+      return { outcome: 'closed', reason: 'no_co_borrower', closed };
+    }
+    const fieldId = fieldKey === 'co_first_name' ? F.PIPELINE.coBorrowerName : F.PIPELINE.secondBorrowerCell;
+    let clickupVal;
+    try { const task = await clickup.getTask(taskId); clickupVal = readTaskField(task, fieldId); }
+    catch (e) { return { outcome: 'error', reason: 'clickup_read_failed', message: e.message }; }
+    const b = (await db.query(`SELECT first_name, cell_phone FROM borrowers WHERE id=$1`, [coId])).rows[0] || {};
+    // The producer flags the co-borrower off the ingest SNAPSHOT's coBorrower block,
+    // which is SUBTASK-wins (a co-borrower subtask carries the richer name/cell). The
+    // live main task alone can miss a divergent subtask, so require the last-ingested
+    // snapshot value to ALSO agree before closing — a divergent subtask keeps the row
+    // open until the next ingest refreshes the snapshot (which self-closes it anyway).
+    let snapCo = null;
+    try { const s = (await db.query(`SELECT snapshot->'coBorrower' AS co FROM clickup_task_index WHERE task_id=$1`, [taskId])).rows[0]; snapCo = s && s.co; } catch (_) {}
+    let agree;
+    if (fieldKey === 'co_first_name') {
+      // The producer flags on the FIRST-name token; the ClickUp field is a full name.
+      const cuFirst = String(clickupVal == null ? '' : clickupVal).trim().split(/\s+/)[0] || '';
+      const liveAgree = valuesAgree('first_name', cuFirst, b.first_name);
+      const snapAgree = !snapCo || !snapCo.first_name || valuesAgree('first_name', snapCo.first_name, b.first_name);
+      agree = liveAgree && snapAgree;
+    } else {
+      const liveAgree = valuesAgree('cell_phone', clickupVal, b.cell_phone);
+      const portalLast4 = String(b.cell_phone == null ? '' : b.cell_phone).replace(/\D/g, '').slice(-4);
+      const snapAgree = !snapCo || !snapCo.phone_last4 || (portalLast4.length === 4 && String(snapCo.phone_last4) === portalLast4);
+      agree = liveAgree && snapAgree;
+    }
+    if (agree) {
+      const closed = await syncReview.closeStaleReviews({ taskId, fieldKey,
+        note: 'auto-closed by re-check — both systems now hold the same co-borrower value.' });
+      return { outcome: 'closed', reason: 'agree', closed };
+    }
+    return { outcome: 'still_open', reason: 'differs' };
+  }
+
+  // ---- File-status disagreement. Resolved when ClickUp's status maps to the SAME
+  // external bucket PILOT holds. (No producer emits these today, but the two-sided
+  // applier + the RESOLVABLE entry already exist, so Re-check handles them the day
+  // one does — and a soft-deleted file's row is closed as moot.)
+  if (fieldKey === 'status') {
+    if (!appId) return { outcome: 'unsupported', reason: 'no_application' };
+    const a = (await db.query(`SELECT status, deleted_at FROM applications WHERE id=$1`, [appId])).rows[0];
+    if (!a) return { outcome: 'unsupported', reason: 'no_application' };
+    if (a.deleted_at) {
+      const closed = await syncReview.closeStaleReviews({ applicationId: appId, fieldKey: 'status',
+        note: 'auto-closed by re-check — this file was removed from the portal.' });
+      return { outcome: 'closed', reason: 'file_removed', closed };
+    }
+    if (!taskId) return { outcome: 'unsupported', reason: 'no_task' };
+    let cuStatus;
+    try { const task = await clickup.getTask(taskId); cuStatus = task && task.status && task.status.status; }
+    catch (e) { return { outcome: 'error', reason: 'clickup_read_failed', message: e.message }; }
+    const ext = require('../clickup/status').externalFor(cuStatus);
+    if (ext && a.status && String(ext) === String(a.status)) {
+      const closed = await syncReview.closeStaleReviews({ applicationId: appId, taskId, fieldKey: 'status',
+        note: 'auto-closed by re-check — both systems now show the same file status.' });
+      return { outcome: 'closed', reason: 'agree', closed };
+    }
+    return { outcome: 'still_open', reason: 'differs' };
+  }
+
+  // ---- Outbound push that dead-lettered (push_job / push_dead_lettered). Resolved
+  // when the file's ClickUp push path is healthy again — no push job for this file
+  // is still queued/processing/failed (a later push went through). Pure DB re-read.
+  if (fieldKey === 'push_job') {
+    if (!appId) return { outcome: 'unsupported', reason: 'no_application' };
+    const a = (await db.query(`SELECT deleted_at FROM applications WHERE id=$1`, [appId])).rows[0];
+    if (a && a.deleted_at) {
+      const closed = await syncReview.closeStaleReviews({ applicationId: appId, fieldKey: 'push_job',
+        note: 'auto-closed by re-check — this file was removed from the portal.' });
+      return { outcome: 'closed', reason: 'file_removed', closed };
+    }
+    const stuck = (await db.query(
+      `SELECT count(*)::int AS n FROM sync_queue
+        WHERE entity_type='application' AND entity_id=$1 AND target='clickup' AND direction='push'
+          AND status IN ('queued','processing','dead','error')`, [appId])).rows[0].n;
+    if (stuck === 0) {
+      const closed = await syncReview.closeStaleReviews({ applicationId: appId, fieldKey: 'push_job',
+        note: 'auto-closed by re-check — no failed or pending ClickUp updates remain for this file (the push went through).' });
+      return { outcome: 'closed', reason: 'push_healthy', closed };
+    }
+    return { outcome: 'still_open', reason: 'push_pending' };
+  }
+
+  // ---- SharePoint document mirror failure (sharepoint_doc). Resolved when the
+  // document is now mirrored (backed up, no error, not diagnosed corrupt) or the
+  // document no longer exists. Pure DB re-read.
+  if (fieldKey === 'sharepoint_doc') {
+    let docId = null;
+    try { const raw = row.raw_value ? JSON.parse(row.raw_value) : null; docId = raw && raw.docId; } catch (_) {}
+    if (!docId && taskId && /^spdoc:/.test(taskId)) docId = taskId.slice('spdoc:'.length);
+    if (!docId) return { outcome: 'unsupported', reason: 'no_document' };
+    const d = (await db.query(
+      `SELECT sharepoint_backed_up_at, sharepoint_backup_error, sharepoint_integrity
+         FROM documents WHERE id=$1`, [docId])).rows[0];
+    if (!d) {
+      const closed = await syncReview.closeStaleReviews({ taskId: `spdoc:${docId}`, fieldKey: 'sharepoint_doc',
+        note: 'auto-closed by re-check — the document no longer exists.' });
+      return { outcome: 'closed', reason: 'doc_gone', closed };
+    }
+    // Close ONLY on a genuinely-good integrity verdict — an ALLOWLIST, never a
+    // denylist. The audit stamps 'ok' / 'ok (office format…)' for a healthy mirror;
+    // a previously-mirrored doc that the 6-hourly integrity audit later flags gets a
+    // BAD verdict ('item-missing' / 'local-missing' / 'source-suspect…' /
+    // 'malware-flagged…' / 'mismatch…' / 'verify-error…') but KEEPS its old
+    // sharepoint_backed_up_at + NULL backup_error — so a `!== 'corrupt'` denylist (a
+    // sentinel that never exists here) would wrongly close those cards, including the
+    // "the mirror may be the only surviving copy — do not delete it" one. `NULL` =
+    // mirrored + size-verified at upload, not yet re-audited → safe to close.
+    const integ = d.sharepoint_integrity;
+    const integrityGood = integ == null || integ === 'ok' || /^ok /.test(String(integ));
+    const mirrored = d.sharepoint_backed_up_at != null && d.sharepoint_backup_error == null && integrityGood;
+    if (mirrored) {
+      const closed = await syncReview.closeStaleReviews({ taskId: `spdoc:${docId}`, fieldKey: 'sharepoint_doc',
+        note: 'auto-closed by re-check — the document is now saved to SharePoint.' });
+      return { outcome: 'closed', reason: 'mirrored', closed };
+    }
+    return { outcome: 'still_open', reason: 'not_mirrored' };
+  }
+
+  // ---- Two profiles sharing one email (shared_email). Resolved when the pair was
+  // LINKED (allow-shared-email), or the two profiles now carry their own real,
+  // distinct emails (someone gave one of them a different email). Pure DB re-read.
+  if (fieldKey === 'shared_email') {
+    let b1 = null, b2 = null;
+    try { const raw = row.raw_value ? JSON.parse(row.raw_value) : null; b1 = raw && raw.b1; b2 = raw && raw.b2; } catch (_) {}
+    if (!b1 || !b2) return { outcome: 'unsupported', reason: 'no_pair' };
+    const linked = (await db.query(
+      `SELECT 1 FROM borrower_profile_links
+        WHERE (borrower_id=$1 AND linked_borrower_id=$2) OR (borrower_id=$2 AND linked_borrower_id=$1) LIMIT 1`,
+      [b1, b2])).rows[0];
+    const em = (await db.query(`SELECT email FROM borrowers WHERE id = ANY($1::uuid[])`, [[b1, b2]])).rows;
+    const isPlaceholder = (e) => /^noemail\+.*@clickup\.local$/i.test(String(e == null ? '' : e));
+    const bothRealDistinct = em.length === 2 && !isPlaceholder(em[0].email) && !isPlaceholder(em[1].email)
+      && String(em[0].email).trim().toLowerCase() !== String(em[1].email).trim().toLowerCase();
+    if (linked || bothRealDistinct) {
+      const closed = await syncReview.closeStaleReviews({ taskId, fieldKey: 'shared_email',
+        note: linked ? 'auto-closed by re-check — the two profiles are now linked (a login on either sees both).'
+          : 'auto-closed by re-check — the two profiles now have their own separate emails.' });
+      return { outcome: 'closed', reason: linked ? 'linked' : 'separate_emails', closed };
+    }
+    return { outcome: 'still_open', reason: 'still_shared' };
+  }
+
+  // ---- Two people merged onto one profile (borrower_identity / co_borrower_identity).
+  // Provably resolved when the file no longer points at the conflicted person (a
+  // Split re-pointed the slot) or the file is gone. Pure DB re-read — never adopts.
+  if (fieldKey === 'borrower_identity' || fieldKey === 'co_borrower_identity') {
+    if (!appId) return { outcome: 'unsupported', reason: 'no_application' };
+    if (!borrowerId) return { outcome: 'unsupported', reason: 'no_borrower' };
+    const a = (await db.query(`SELECT borrower_id, co_borrower_id, deleted_at FROM applications WHERE id=$1`, [appId])).rows[0];
+    if (!a || a.deleted_at) {
+      const closed = await syncReview.closeStaleReviews({ taskId, fieldKey,
+        note: 'auto-closed by re-check — this file was removed from the portal.' });
+      return { outcome: 'closed', reason: 'file_removed', closed };
+    }
+    const slot = fieldKey === 'co_borrower_identity' ? a.co_borrower_id : a.borrower_id;
+    if (String(slot || '') !== String(borrowerId)) {
+      const closed = await syncReview.closeStaleReviews({ taskId, fieldKey,
+        note: 'auto-closed by re-check — this file now points at a separate profile for this person (the split was done).' });
+      return { outcome: 'closed', reason: 'split_done', closed };
+    }
+    return { outcome: 'still_open', reason: 'still_merged' };
+  }
+
   // ---- Value fields we can prove by a two-sided re-read.
   const fieldIdFn = APP_DATE_FIELDS[fieldKey] || IDENTITY_FIELDS[fieldKey]
     || (fieldKey === 'ssn' ? () => F.SHARED.borrowerSSN : null);
@@ -289,8 +467,12 @@ async function computeRecheck(row, opts) {
     return { outcome: 'still_open', reason: 'differs' };
   }
 
-  // File-level / Sitewire / status rows: nothing to prove from a value re-read
-  // here — they resolve through their own actions / natural recovery.
+  // Sitewire draw rows + the SharePoint folder-match row resolve through their OWN
+  // actions (Retry / Acknowledge / Restore / Re-match) or natural recovery — Re-check
+  // can't prove those from a plain value re-read, so it points the reviewer at the
+  // card's options rather than dead-ending with a generic "not a value match".
+  if (fieldKey === 'sitewire') return { outcome: 'unsupported', reason: 'sitewire_use_actions' };
+  if (fieldKey === 'sharepoint_folder') return { outcome: 'unsupported', reason: 'sharepoint_folder_use_actions' };
   return { outcome: 'unsupported', reason: 'not_value_field' };
 }
 

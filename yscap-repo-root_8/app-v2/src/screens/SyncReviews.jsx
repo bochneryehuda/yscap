@@ -179,6 +179,33 @@ const RESOLVABLE = new Set(['date_of_birth', 'expected_closing', 'actual_closing
 // tried to type is one of these (it shows an Approve that would be a confusing
 // no-op otherwise).
 const DISMISS_ONLY = new Set(['loan_number_duplicate_entered']);
+// Re-check result copy, keyed by the backend outcome `reason` (src/lib/sync-review-recheck.js).
+// The engine now re-derives EVERY row type it can prove — value fields, the loan-number
+// clash, co-borrower fields, file status, a failed ClickUp push, a SharePoint document,
+// a shared-email pair, and a two-people-one-profile split — so each gets a plain line.
+const RECHECK_CLOSED_MSG = {
+  adopt: 'PILOT confirmed the correct value and cleared this review (applied to both systems).',
+  file_removed: 'the file was removed from the portal, so this no longer applies. Cleared.',
+  no_longer_duplicated: 'that loan number is no longer on any other file, so PILOT cleared this on its own.',
+  mirrored: 'the document is now saved to SharePoint, so PILOT cleared this.',
+  doc_gone: 'that document no longer exists, so there was nothing left to save. Cleared.',
+  linked: 'the two profiles are now linked (a login on either sees both), so PILOT cleared this.',
+  separate_emails: 'the two people now have their own separate emails, so PILOT cleared this.',
+  split_done: 'this file now points at a separate profile for that person, so PILOT cleared this.',
+  push_healthy: 'the update reached ClickUp — no failed pushes remain — so PILOT cleared this.',
+  no_co_borrower: 'this file no longer has a co-borrower, so PILOT cleared this.',
+};
+const RECHECK_OPEN_MSG = {
+  still_duplicated: 'that loan number is still on another file too, so this still needs you.',
+  not_mirrored: 'the document still hasn’t saved to SharePoint, so this still needs you.',
+  still_shared: 'the two profiles still share one email, so this still needs you.',
+  still_merged: 'this file still points at the shared profile, so this still needs you.',
+  push_pending: 'there are still failed or pending ClickUp updates for this file, so this still needs you.',
+};
+const RECHECK_UNSUPPORTED_MSG = {
+  sitewire_use_actions: 'Re-checked — a construction-draw setup clears when you fix the cause and use this card’s Retry (or Acknowledge) button; Re-check can’t settle a draw setup on its own.',
+  sharepoint_folder_use_actions: 'Re-checked — fix or merge the folders in SharePoint, then use this card’s Re-match; Re-check can’t settle a folder match on its own.',
+};
 // Which file SECTION each review is about — so the reviewer can jump straight to
 // where the value is edited (owner-directed 2026-07-22: "a button to open the
 // exact file section the review is about"). Borrower/co-borrower identity lives in
@@ -292,34 +319,24 @@ export default function SyncReviews() {
     try {
       const out = await api.post(`/api/staff/sync-reviews/${id}/recheck`, {});
       if (out.outcome === 'closed') {
-        // 'adopt' means PILOT applied the proven correction to both systems;
-        // 'agree' means the two sides already matched. Say which — never claim
-        // "already fixed" when PILOT itself wrote the value. The loan-number
-        // duplicate reasons ('file_removed' / 'no_longer_duplicated') get their
-        // own plain-language line — "the two sides match" doesn't describe a
-        // duplicate-loan-number clash that is now gone.
-        setBulkMsg(
-          out.reason === 'adopt'
-            ? '✓ Re-checked — PILOT confirmed the correct value and cleared this review (applied to both systems).'
-            : out.reason === 'file_removed'
-              ? '✓ Re-checked — the duplicate file was removed from the portal (it’s now a data-only DSCR), so nothing is clashing. Cleared.'
-              : out.reason === 'no_longer_duplicated'
-                ? '✓ Re-checked — that loan number is no longer on any other file, so PILOT cleared this on its own.'
-                : '✓ Re-checked — the two sides already match, so PILOT cleared this review on its own.');
+        // Each proven-resolved reason gets its own plain line (never claim "already
+        // fixed" when PILOT itself wrote the value); anything new falls back to the
+        // generic "the two sides already match" line.
+        setBulkMsg('✓ Re-checked — ' + (RECHECK_CLOSED_MSG[out.reason]
+          || 'the two sides already match, so PILOT cleared this review on its own.'));
         await load();
       } else if (out.outcome === 'still_open') {
-        setRecheckMsg((m) => ({ ...m, [id]: out.reason === 'still_duplicated'
-          ? 'Checked just now — that loan number is still on another file too, so this still needs you.'
-          : 'Checked just now — the two sides still don’t match, so this still needs you.' }));
+        setRecheckMsg((m) => ({ ...m, [id]: 'Checked just now — ' + (RECHECK_OPEN_MSG[out.reason]
+          || 'the two sides still don’t match, so this still needs you.') }));
         await load();
       } else if (out.outcome === 'error') {
         setRecheckMsg((m) => ({ ...m, [id]: 'Couldn’t reach ClickUp to re-check just now — try again in a moment.' }));
       } else {
-        // 'unsupported' — a file-level / draw / status row PILOT can't prove from
-        // a value re-read. Don't over-promise that it "clears itself" (some, like
-        // a duplicate loan number typed in, never do) — point to this card's own
-        // options instead.
-        setRecheckMsg((m) => ({ ...m, [id]: 'Re-checked — this one isn’t a simple value match, so PILOT can’t auto-clear it here. Use the options on this card to resolve it.' }));
+        // 'unsupported' — a row PILOT can't prove from a re-read. Draw + folder-match
+        // rows get a specific "use this card's actions" line; everything else points
+        // to the card's own options rather than dead-ending.
+        setRecheckMsg((m) => ({ ...m, [id]: RECHECK_UNSUPPORTED_MSG[out.reason]
+          || 'Re-checked — this one isn’t a simple value match, so PILOT can’t auto-clear it here. Use the options on this card to resolve it.' }));
         await load();
       }
     } catch (e) { setErr(e.message || 'Could not re-check'); }
