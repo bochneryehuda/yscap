@@ -6625,13 +6625,19 @@ router.patch('/applications/:id', async (req, res) => {
       try { await workflowAuto.onFunded(req.params.id, req.actor.id); } catch (_) {}
     }
     await audit(req, 'status_change', 'application', req.params.id, { from: cur.rows[0].status, to: status, forced: forced || undefined });
+    // R6.18 (#202) — a super-admin proceeding past a confirmed-fatal issuance hard
+    // warning is recorded as an explicit override (parity with the internal-status door).
+    if (issuance && issuance.override && issuance.override.applied) {
+      await audit(req, 'issuance_override', 'application', req.params.id,
+        { action: issuance.action, tier: issuance.tier, reason: issuance.override.reason });
+    }
     // Status is a rule-engine field (e.g. "when the file reaches underwriting").
     try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'status_change' }); } catch (_) {}
     // Announce the transition to the borrower + team (shared with the
     // internal-status door so both notify identically). The bucket always
     // changed here (guarded by the unchanged-status early return above).
     await notifyStatusTransition(req.params.id, cur.rows[0].status, status, { forced, actorId: req.actor.id });
-    res.json({ ok: true, status });
+    res.json({ ok: true, status, issuance: issuance || undefined });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
