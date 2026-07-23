@@ -139,4 +139,70 @@ function groundingFinding(docType, grounding) {
   };
 }
 
-module.exports = { groundFields, groundingFinding, _internals: { coverageOf } };
+// #212 (launch blocker 1) — QUARANTINE the unconfirmed MATERIAL fields before the
+// deterministic document checks run, so a value PILOT extracted but could NOT
+// confirm in the document (a possible AI mis-read / hallucination) can never
+// create a "mismatch" finding. It only ever raises the grounding "please verify"
+// advisory (groundingFinding above). Confirmed fields, non-material fields, and
+// dates (never escalated) are left untouched. Returns a DEEP-CLONED copy — the
+// original extraction (ext.data) is never mutated, so the full read is still
+// stored; only the copy handed to the checkers has the unconfirmed material
+// fields held out.
+//
+// A field path is the same dotted/[i] path groundFields emits (e.g. "price",
+// "sellerNames[0]", "borrower.name"). NEVER THROWS.
+function quarantineUngrounded(fields, grounding, opts = {}) {
+  const empty = { verified: fields, quarantined: [] };
+  try {
+    if (fields == null || typeof fields !== 'object') return empty;
+    const g = grounding || {};
+    const list = Array.isArray(g.unconfirmed) ? g.unconfirmed : [];
+    // Only MATERIAL (critical) unconfirmed values are held out; a minor field a
+    // human wouldn't underwrite on stays. opts.onlyCritical=false widens to all
+    // unconfirmed (not used by the engine, available for stricter callers).
+    const onlyCritical = opts.onlyCritical !== false;
+    const paths = list
+      .filter((u) => u && u.field && (onlyCritical ? u.critical === true : true))
+      .map((u) => String(u.field));
+    if (!paths.length) return empty;
+    const clone = JSON.parse(JSON.stringify(fields));
+    const quarantined = [];
+    for (const p of paths) { if (deletePath(clone, p)) quarantined.push(p); }
+    return { verified: clone, quarantined };
+  } catch (_e) { return empty; }
+}
+
+// Delete (or null out) the value at a dotted/[i] path. Object leaves are deleted;
+// array elements are set to null (preserving array shape so a checker that maps
+// the array simply skips the held-out slot). Returns true when something was removed.
+function tokenizePath(path) {
+  const out = [];
+  const re = /[^.[\]]+|\[(\d+)\]/g;
+  let m;
+  while ((m = re.exec(path)) !== null) {
+    if (m[1] !== undefined) out.push(Number(m[1]));
+    else out.push(m[0]);
+  }
+  return out;
+}
+function deletePath(root, path) {
+  try {
+    const toks = tokenizePath(path);
+    if (!toks.length) return false;
+    let cur = root;
+    for (let i = 0; i < toks.length - 1; i++) {
+      if (cur == null || typeof cur !== 'object') return false;
+      cur = cur[toks[i]];
+    }
+    const leaf = toks[toks.length - 1];
+    if (cur == null || typeof cur !== 'object') return false;
+    if (Array.isArray(cur)) {
+      if (typeof leaf === 'number' && leaf >= 0 && leaf < cur.length) { cur[leaf] = null; return true; }
+      return false;
+    }
+    if (Object.prototype.hasOwnProperty.call(cur, leaf)) { delete cur[leaf]; return true; }
+    return false;
+  } catch (_e) { return false; }
+}
+
+module.exports = { groundFields, groundingFinding, quarantineUngrounded, _internals: { coverageOf, deletePath, tokenizePath } };
