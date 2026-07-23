@@ -571,6 +571,15 @@ router.get('/:appId', async (req, res, next) => {
             fileCtx: { vestingName: mctx && mctx.vestingName },
             extractions: exts.rows,
           }));
+          // ISG overlay (owner-directed 2026-07-23): forward the note buyer's
+          // "not happy" items — a MISSING required condition (FATAL for a
+          // construction feasibility report on a ground-up / heavy rehab file) or
+          // a value that CONFLICTS with the guideline — into the finding surface
+          // so they actually surface (a fatal notifies the LO/processor). The
+          // desk stays quiet on OPEN conditions. Advisory: records ai_suggestions,
+          // posts/clears nothing, touches no frozen number.
+          await step(() => require('../lib/underwriting/investor-guidelines/desk-sync')
+            .syncInvestorGuidelineFindings(c, app.id));
           // #199 — party collusion (independence-required parties sharing an
           // identity) + double-pledged collateral (this property on another live
           // loan). Advisory — records ai_suggestions, never auto-blocks.
