@@ -235,7 +235,11 @@ function CreditImportModal({ appId, onClose, onDone }) {
   // body scrolls independently. The button adapts to the active mode (live pull
   // vs an uploaded file); a hint explains any disabled state so it's never a
   // dead, unexplained button.
-  const canLive = providerReady && consent && selBorrowers.length > 0 && selBorrowers.every((x) => (x.missing || []).length === 0);
+  // A Reissue needs a reference number. On a first pull there's none, so the live
+  // button is held until a reference is entered or the order is switched to Brand-new
+  // (rather than sending a reissue Xactus will reject).
+  const reissueReady = requestType !== 'reissue' || !!(reissueRef && reissueRef.trim());
+  const canLive = providerReady && consent && selBorrowers.length > 0 && selBorrowers.every((x) => (x.missing || []).length === 0) && reissueReady;
   const liveLabel = requestType === 'new' ? 'Order & import' : 'Reissue & import';
   const liveLabelN = hasMulti && selBorrowers.length > 1 ? `${liveLabel} (${selBorrowers.length})` : liveLabel;
   const uploadReady = (xmlFile || pdfFile) && selBorrowers.length === 1;
@@ -251,6 +255,7 @@ function CreditImportModal({ appId, onClose, onDone }) {
     else if (selBorrowers.length === 0) footerHint = 'Select at least one borrower to pull.';
     else if (selMissing.length) footerHint = `Add the ${selMissing.join(', ')} to pull the selected borrower${selBorrowers.length > 1 ? 's' : ''}.`;
     else if (!consent) footerHint = 'Check the authorization box above to enable the pull.';
+    else if (!reissueReady) footerHint = 'Enter the reissue reference number, or switch to “Brand-new” for a first pull.';
   }
 
   return (
@@ -669,6 +674,9 @@ export function CreditCondition({ appId, canPull, onChanged }) {
   const borrowers = (data && data.borrowers) || null;
   const hasCo = !!(borrowers && borrowers.hasCoBorrower);
   const primaryScore = borrowers && borrowers.primary ? borrowers.primary.middleScore : (report ? report.middleScore : null);
+  // A borrower's summary sub-label: pulled-with-score, pulled-but-no-score (a
+  // thin/no-hit file — NOT "not pulled"), or genuinely not pulled yet.
+  const cellSuffix = (b) => (!b || !b.hasReport) ? ' · not pulled yet' : (b.middleScore != null ? ' · middle' : ' · no score');
 
   return (
     <div className="crx-wrap">
@@ -706,12 +714,12 @@ export function CreditCondition({ appId, canPull, onChanged }) {
           <div className="crx-scoreline">
             <ScoreCell value={primaryScore}
               label={hasCo && borrowers.primary
-                ? `${borrowers.primary.name}${borrowers.primary.hasReport ? ' · middle' : ' · not pulled yet'}`
+                ? `${borrowers.primary.name}${cellSuffix(borrowers.primary)}`
                 : 'Middle score'}
               emphasis={!hasCo} />
             {hasCo && borrowers.coBorrower && (
               <ScoreCell value={borrowers.coBorrower.middleScore}
-                label={borrowers.coBorrower.name + (borrowers.coBorrower.hasReport ? ' · middle' : ' · not pulled yet')} />
+                label={borrowers.coBorrower.name + cellSuffix(borrowers.coBorrower)} />
             )}
             {hasCo && (
               <ScoreCell value={borrowers.higher}

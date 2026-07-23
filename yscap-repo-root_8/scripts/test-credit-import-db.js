@@ -236,6 +236,26 @@ const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failu
   await db.query('DELETE FROM applications WHERE id=$1', [app2.id]).catch(() => {});
   await db.query('DELETE FROM borrowers WHERE id=$1', [bor2.id]).catch(() => {});
 
+  // --- the interface version is SERVER-frozen: a client-sent version is IGNORED
+  //     (owner-directed "nobody can change that field" — enforced server-side). ----
+  const vf = await credit.importCredit(app.id, { xml: XML, pdfBase64: PDF_B64, actorId: staff.id, version: '9.9-hacked' });
+  const vfRow = (await db.query('SELECT interface_version FROM credit_reports WHERE id=$1', [vf.creditReportId])).rows[0];
+  ok(vfRow.interface_version === '3.4', `interface version is server-frozen to 3.4 despite a client override (got ${vfRow.interface_version})`);
+
+  // --- a completed NO-SCORE report (a thin/no-hit file) counts as PULLED
+  //     (hasReport true) with a null middle score, so the summary reads "no score"
+  //     not "not pulled yet", and the null score never prices the deal. -----------
+  const bor3 = (await db.query("INSERT INTO borrowers (first_name,last_name,email) VALUES ('Thin','File',$1) RETURNING id", [`thintest_${process.pid}@example.com`])).rows[0];
+  const app3 = (await db.query('INSERT INTO applications (borrower_id) VALUES ($1) RETURNING id', [bor3.id])).rows[0];
+  await credit.importCredit(app3.id, { xml: NOHIT_XML, actorId: staff.id });   // completed, middle null
+  const fc3 = await credit.fileCredit(app3.id);
+  ok(fc3.borrowers.primary.hasReport === true && fc3.borrowers.primary.middleScore === null, 'a completed no-score report reads as PULLED (hasReport) with a null middle score — not "not pulled yet"');
+  ok(fc3.borrowers.higher === null && fc3.borrowers.higherReady === true, 'a no-score-only file: higher is null (nothing prices), but the borrower counts as pulled');
+  await db.query('DELETE FROM credit_reports WHERE application_id=$1', [app3.id]).catch(() => {});
+  await db.query('DELETE FROM documents WHERE application_id=$1', [app3.id]).catch(() => {});
+  await db.query('DELETE FROM applications WHERE id=$1', [app3.id]).catch(() => {});
+  await db.query('DELETE FROM borrowers WHERE id=$1', [bor3.id]).catch(() => {});
+
   // ═══ Wave 2 — co-borrower joint pull ═══════════════════════════════════════
   // Link a SECOND borrower as the co-borrower; credit is required for BOTH.
   const coCondition = require('../src/lib/credit/co-condition');

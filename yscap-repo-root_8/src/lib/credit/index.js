@@ -242,7 +242,10 @@ async function importCredit(appId, opts = {}) {
   const { file, borrowers } = await fileBorrowers(appId);
   const pullType = PULL_TYPES.includes(opts.pullType) ? opts.pullType : 'soft';
   const requestType = REQUEST_TYPES.includes(opts.requestType) ? opts.requestType : 'reissue';
-  const version = (opts.version && String(opts.version).trim()) || provider.version();
+  // The interface version is FROZEN (owner-directed: "nobody can change that field").
+  // Enforced SERVER-side — the client's value is ignored, not just locked in the UI —
+  // so a direct API call can't send anything other than the configured version.
+  const version = provider.version();
   const isUpload = !!(opts.xml || opts.pdfBase64);
 
   // Which borrowers this import targets.
@@ -345,16 +348,19 @@ function shapeReport(r, { full }) {
   };
 }
 
-// A borrower's representative score for the condition summary: their latest
-// completed report's middle score. `middleScore` is REPORT-BACKED only — a
-// borrower not yet pulled has middleScore=null and hasReport=false (their fico is
-// returned separately for reference but never used as a stand-in middle score, so
-// it can never drive the higher-of-two that prices the deal).
+// A borrower's representative score for the condition summary.
+//   hasReport   — a report was actually PULLED (a completed row exists — even a
+//                 thin/no-hit file that returned no score). This is "pulled", NOT
+//                 "has a score", so a genuinely-pulled no-score borrower reads
+//                 "no score" instead of the misleading "not pulled yet".
+//   middleScore — that latest completed report's middle score (null on a no-hit).
+//                 A null score is still excluded from the higher-of-two that prices
+//                 the deal (fileCredit filters null), and fico is never a stand-in.
 async function borrowerScore(appId, borrowerId) {
   if (!borrowerId) return { middleScore: null, hasReport: false, fico: null };
   const r = await db.query(
     `SELECT middle_score FROM credit_reports
-      WHERE application_id=$1 AND borrower_id=$2 AND status='completed' AND middle_score IS NOT NULL
+      WHERE application_id=$1 AND borrower_id=$2 AND status='completed'
       ORDER BY pulled_at DESC LIMIT 1`, [appId, borrowerId]);
   const f = await db.query('SELECT fico FROM borrowers WHERE id=$1', [borrowerId]);
   const fico = (f.rows[0] && f.rows[0].fico != null) ? f.rows[0].fico : null;

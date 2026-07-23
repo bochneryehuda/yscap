@@ -2854,7 +2854,7 @@ router.post('/applications/:id/credit/import', async (req, res) => {
   const b = req.body || {};
   try {
     const out = await require('../lib/credit').importCredit(req.params.id, {
-      pullType: b.pullType, requestType: b.requestType, version: b.version,
+      pullType: b.pullType, requestType: b.requestType,   // version is server-frozen (ignored if sent)
       reissueReportId: typeof b.reissueReportId === 'string' ? b.reissueReportId : undefined,
       xml: typeof b.xml === 'string' ? b.xml : undefined,
       pdfBase64: typeof b.pdfBase64 === 'string' ? b.pdfBase64 : undefined,
