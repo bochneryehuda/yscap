@@ -250,13 +250,23 @@ async function runWholeLoan(applicationId, db, opts) {
   // comparison instead of re-comparing the engine's camelCase input snapshot.
   const staleChanged = registration ? pricedDrift(context) : [];
 
+  // #193 — wire independent VERIFICATION into the decision loop. A material AVM-
+  // vs-appraisal disagreement (and, later, other independent sources) becomes a
+  // NON-blocking finding in the one run registry so the underwriter sees it on the
+  // decision record — advisory, a human decides. Best-effort: never breaks or
+  // blocks a run; zero impact on files with no AVM observations.
+  let verificationFindings = [];
+  try {
+    verificationFindings = await require('./verification-findings').gatherVerificationFindings(applicationId, db);
+  } catch (_) { verificationFindings = []; }
+
   const assembled = assembleRun({
     context,
     registration,
     programDecision,
     staleChanged,
     manualApproved: o.manualApproved,
-    extraFindings: o.extraFindings || [],
+    extraFindings: [...(o.extraFindings || []), ...verificationFindings],
     trigger: o.trigger || 'manual_run',
   });
 
