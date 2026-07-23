@@ -137,13 +137,18 @@ function explainDecision(decision, opts = {}) {
 function blockerOf(f, borrowerSafe) {
   try {
     const ff = f || {};
-    const title = scrub(str(ff.title) || str(ff.message) || str(ff.code) || 'A blocking issue', borrowerSafe);
-    const severity = str(ff.severity) || 'fatal';
+    const severity = (str(ff.severity) || 'fatal').toLowerCase();
+    // A finding title / explanation is FREE-FORM, partner-authorable text — a
+    // note-buyer name in it can be any string, and scrubText only knows a fixed
+    // list. So on a borrower surface we NEVER surface the raw finding text:
+    // the title becomes a generic placeholder and the how-to is dropped entirely
+    // (the borrower gets the friendly headline + generic next step instead).
+    if (borrowerSafe) return { title: 'An item needs attention', severity, howTo: null };
     // the consolidated finding-registry shape carries the detail as `explanation`;
     // a raw finding may carry it as howTo/advice — accept any.
-    const howToRaw = str(ff.howTo) || str(ff.how_to) || str(ff.advice) || str(ff.explanation) || null;
-    const howTo = howToRaw ? scrub(howToRaw, borrowerSafe) : null;
-    return { title, severity: severity.toLowerCase(), howTo };
+    const title = str(ff.title) || str(ff.message) || str(ff.code) || 'A blocking issue';
+    const howTo = str(ff.howTo) || str(ff.how_to) || str(ff.advice) || str(ff.explanation) || null;
+    return { title, severity, howTo };
   } catch (_e) { return null; }
 }
 

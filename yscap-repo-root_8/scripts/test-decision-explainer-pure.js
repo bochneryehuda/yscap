@@ -49,24 +49,45 @@ d = decide({
   findings: [{ code: 'title_defect', severity: 'fatal', title: 'Open lien on title', explanation: 'Clear the lien with the title company.', blocks_ctc: true }],
 });
 e = ex.explainDecision(d);
+assert.strictEqual(e.verdict, 'needs_review', 'an ELIGIBLE status with a gate-blocking finding downgrades ready → needs_review');
+assert.strictEqual(e.gates.find((g) => g.gate === 'ctc').allowed, false, 'the fatal finding blocks CTC');
 assert.ok(e.blockers.some((b) => /open lien/i.test(b.title)), 'the fatal finding is a blocker');
 const lien = e.blockers.find((b) => /open lien/i.test(b.title));
 assert.strictEqual(lien.severity, 'fatal');
 assert.ok(e.nextSteps.some((s) => /title company/i.test(s)), 'the finding detail becomes a staff next step');
 assert.ok(/blocking issue/i.test(e.plain), 'the plain paragraph mentions the blocking issue');
-ok('a fatal finding surfaces as a blocker and its how-to becomes a next step (staff)');
+ok('a fatal finding downgrades ready→needs_review, surfaces as a blocker, and its how-to becomes a staff next step');
 
-// --- borrowerSafe: friendly copy + a capital-partner name is scrubbed ---
+// --- MANUAL_APPROVED is "ready" with all gates open ---
+let ea = ex.explainDecision(decide({ engineStatus: 'MANUAL', manualApproved: true, findings: [] }));
+assert.strictEqual(ea.status, 'MANUAL_APPROVED');
+assert.strictEqual(ea.verdict, 'ready');
+assert.deepStrictEqual(ea.gates.map((g) => g.allowed), [true, true, true], 'an approved exception opens all gates');
+ok('an approved manual exception is ready with all gates open');
+
+// --- a blocker with NO explanation/how-to is safe (no staff next step, no throw) ---
+let en = ex.explainDecision(decide({ engineStatus: 'ELIGIBLE', findings: [{ code: 'x', severity: 'fatal', title: 'Something', blocks_funding: true }] }));
+assert.strictEqual(en.blockers[0].howTo, null, 'a blocker with no detail has a null how-to');
+ok('a blocker with no how-to is handled safely');
+
+// --- borrowerSafe: friendly copy + NO free-form finding text reaches the borrower ---
+// Use an ARBITRARY note-buyer name NOT in the scrub list (open-ended, from the
+// ClickUp dropdown) — the borrower surface must never surface raw finding text,
+// so it can't rely on a fixed scrub list.
 d = decide({
   engineStatus: 'INELIGIBLE',
-  findings: [{ code: 'x', severity: 'fatal', title: 'BlueLake will not buy this note', howTo: 'BlueLake requires 2 months reserves.', blocks_funding: true }],
+  findings: [{ code: 'x', severity: 'fatal', title: 'Toorak Capital will not buy this note', explanation: 'Toorak requires 2 months reserves.', blocks_funding: true }],
 });
 e = ex.explainDecision(d, { borrowerSafe: true });
 const blob = JSON.stringify(e);
-assert.ok(!/bluelake|blue lake/i.test(blob), `no capital-partner name in borrower-safe explanation: ${blob}`);
+assert.ok(!/toorak/i.test(blob), `an arbitrary capital-partner name must not appear in a borrower-safe explanation: ${blob}`);
+assert.ok(e.blockers.every((b) => b.title === 'An item needs attention' && b.howTo === null), 'borrower blockers carry no raw finding text');
 assert.ok(/loan officer|options/i.test(e.headline), 'borrower headline is friendly, not the raw program-rule language');
-assert.ok(!e.nextSteps.some((s) => /reserves|BlueLake/i.test(s)), 'staff-only finding how-to is not pushed to the borrower');
-ok('borrowerSafe uses friendly copy and scrubs every capital-partner name from the explanation');
+assert.ok(!e.nextSteps.some((s) => /reserves|toorak/i.test(s)), 'staff-only finding detail is not pushed to the borrower');
+// and a KNOWN name is scrubbed too (belt-and-suspenders)
+const bl = ex.explainDecision(decide({ engineStatus: 'INELIGIBLE', findings: [{ code: 'y', severity: 'fatal', title: 'BlueLake declines', explanation: 'x', blocks_funding: true }] }), { borrowerSafe: true });
+assert.ok(!/bluelake|blue lake/i.test(JSON.stringify(bl)));
+ok('borrowerSafe surfaces NO raw finding text — an arbitrary (or known) capital-partner name never reaches the borrower');
 
 // --- DATA_CONFLICT is blocked; STALE / NOT_READY are needs_review ---
 assert.strictEqual(ex.explainDecision(decide({ engineStatus: 'ELIGIBLE', discrepancies: [{ field: 'loan_amount' }], findings: [] })).verdict, 'blocked');
