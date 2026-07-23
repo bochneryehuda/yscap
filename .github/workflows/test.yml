@@ -35,6 +35,49 @@ jobs:
       - run: npm test
 
   # ---------------------------------------------------------------------------
+  # Same suite against a REAL Postgres (task #195). Every *-db.js suite that
+  # self-skips without DATABASE_URL actually runs here: migrations apply to a
+  # fresh database first (schema.sql + every numbered db/*.sql — so this job
+  # also proves the migration chain itself), then the full chain runs with the
+  # DB present. Deliberately NOT in `deploy.needs` yet: the ~50 DB suites have
+  # never run in CI, so this job soaks as a visible check first; once it is
+  # reliably green, add it to `deploy: needs:` so DB regressions gate deploys.
+  # ---------------------------------------------------------------------------
+  test-db:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: yscap-repo-root_8
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: yscap
+          POSTGRES_PASSWORD: yscap
+          POSTGRES_DB: yscap_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U yscap"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://yscap:yscap@localhost:5432/yscap_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: yscap-repo-root_8/package-lock.json
+      - run: npm ci
+      - name: Apply every migration to the fresh database
+        run: npm run migrate
+      - run: npm test
+
+  # ---------------------------------------------------------------------------
   # Auto-publish to Render. Runs ONLY:
   #   • after `test` succeeds (needs: test) — broken code never auto-deploys, and
   #   • on a push to main (never on a pull_request or any other branch).
