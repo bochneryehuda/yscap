@@ -74,9 +74,19 @@ ok(!sameValue('Gold', 'Standard'), 'sameValue: different text differs');
   ok(changedFrozenFields(cols, current).length === 0, 'fill: setting a blank frozen figure is allowed (not a term-sheet contradiction)');
 }
 
-// only real economics keys are guarded (a non-economics field never appears)
-ok(!FROZEN_KEYS.includes('title_company') && !FROZEN_KEYS.includes('actual_rate') && FROZEN_KEYS.includes('loan_amount'),
-  'keys: guards economics only, not workflow/contact fields');
+// only real economics keys are guarded (a non-economics field never appears);
+// `term` is protected because it prints on the signed Loan Application.
+ok(!FROZEN_KEYS.includes('title_company') && !FROZEN_KEYS.includes('actual_rate')
+  && FROZEN_KEYS.includes('loan_amount') && FROZEN_KEYS.includes('term'),
+  'keys: guards economics + term (signed-doc figure), not workflow/contact fields');
+
+// a term change on a frozen file is held (loan term drifts the signed Loan App)
+{
+  const current = { loan_amount: 100000, term: 12 };
+  const cols = { loan_amount: 100000, term: 24 };
+  const ch = changedFrozenFields(cols, current);
+  ok(ch.length === 1 && ch[0].field === 'term' && ch[0].from === '12' && ch[0].to === '24', 'changed: a loan-term change is flagged');
+}
 
 assert.strictEqual(failures, 0, `${failures} assertion(s) failed`);
 console.log(failures ? `\n${failures} failed` : '\nALL inbound-economics-freeze assertions passed');

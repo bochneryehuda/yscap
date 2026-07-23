@@ -43,6 +43,11 @@ const FROZEN_ECON_FIELDS = [
   ['loan_type', 'Loan type'],
   ['property_type', 'Property type'],
   ['units', 'Units'],
+  // `term` is not a priced input (it is absent from the db/072 reopen trigger),
+  // but it PRINTS on the signed Loan Application inside the term-sheet package —
+  // so a ClickUp term change while frozen would drift the file from the signed
+  // document, which is exactly what the freeze exists to prevent (pre-merge audit).
+  ['term', 'Loan term'],
   ['is_assignment', 'Assignment purchase'],
   ['underlying_contract_price', "Seller's contract price"],
   ['assignment_fee', 'Assignment fee'],
