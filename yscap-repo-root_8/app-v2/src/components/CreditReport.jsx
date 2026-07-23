@@ -434,16 +434,105 @@ function CreditDetails({ report }) {
   );
 }
 
+// The hero block (big middle score + gauge + bureau tiles) — shown at the top of
+// the full-screen report overlay.
+function CreditHero({ report }) {
+  const band = scoreBand(report.middleScore);
+  return (
+    <div className={'crx-hero tone-' + band.tone}>
+      <div className="crx-hero-main">
+        <div className="crx-hero-score">{report.middleScore != null ? report.middleScore : '—'}</div>
+        <div className="crx-hero-meta">
+          <span className={'crx-band tone-' + band.tone}>{band.label}</span>
+          <div className="crx-hero-lbl">Middle score</div>
+          <div className="crx-gauge">
+            <div className="crx-gauge-track">
+              {report.middleScore != null && <span className="crx-gauge-mark" style={{ left: gaugePct(report.middleScore) + '%' }} />}
+            </div>
+            <div className="crx-gauge-scale"><span>300</span><span>850</span></div>
+          </div>
+        </div>
+      </div>
+      <div className="crx-hero-bureaus">
+        {(report.scores || []).length
+          ? report.scores.filter(Boolean).map((sc, i) => <BureauTile key={i} s={sc} />)
+          : <span className="crx-muted">No numeric scores were read from the data file.</span>}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────── the full-screen report overlay ────────
+// The entire report, laid out with the whole screen (owner-directed 2026-07-23):
+// opens on import and from the condition's "Open full report" button, closeable.
+function CreditReportOverlay({ report, history, onClose, onDownload }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { window.removeEventListener('keydown', onKey); document.body.style.overflow = prev; };
+  }, [onClose]);
+
+  return (
+    <div className="crx-overlay-back" onClick={onClose}>
+      <div className="crx-overlay" onClick={(e) => e.stopPropagation()}>
+        <div className="crx-overlay-head">
+          <div className="crx-overlay-title">
+            <h3 className="crx-modal-title">Credit report</h3>
+            <p className="crx-modal-sub">
+              {report.pullType === 'hard' ? 'Hard pull' : 'Soft pull'} · {report.requestType === 'new' ? 'new order' : 'reissue'}
+              {report.reportDate ? ` · dated ${fmtDay(report.reportDate)}` : ''} · imported {fmtWhen(report.pulledAt)}
+              {report.source === 'upload' ? ' · from an uploaded file' : ''}
+            </p>
+          </div>
+          <div className="crx-overlay-tools">
+            {report.pdfDocumentId && <button className="crx-btn ghost sm" onClick={() => onDownload(report.pdfDocumentId, 'credit-report.pdf')}>Download PDF</button>}
+            {report.xmlDocumentId && <button className="crx-btn ghost sm" onClick={() => onDownload(report.xmlDocumentId, 'credit-report.xml')}>Download data (XML)</button>}
+            <button className="crx-x" onClick={onClose} aria-label="Close">✕</button>
+          </div>
+        </div>
+        <div className="crx-overlay-body">
+          <CreditHero report={report} />
+          <CreditDetails report={report} />
+          {Array.isArray(history) && history.length > 1 && (
+            <details className="crx-sec" style={{ marginTop: 12 }}>
+              <summary>Import history <span className="crx-count">{history.length}</span></summary>
+              <div className="crx-table-wrap"><table className="crx-table">
+                <thead><tr><th>When</th><th>Type</th><th>Order</th><th className="r">Middle</th><th>Source</th></tr></thead>
+                <tbody>{history.filter(Boolean).map((h) => (
+                  <tr key={h.id}><td>{fmtWhen(h.pulledAt)}</td><td>{h.pullType === 'hard' ? 'Hard' : 'Soft'}</td><td>{h.requestType === 'new' ? 'New' : 'Reissue'}</td><td className="r">{h.middleScore != null ? h.middleScore : '—'}</td><td>{h.source === 'upload' ? 'uploaded' : 'pulled'}</td></tr>
+                ))}</tbody>
+              </table></div>
+            </details>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// One compact score tile for the condition summary (primary / co-borrower / higher).
+function ScoreCell({ value, label, tone, emphasis }) {
+  const band = scoreBand(value);
+  return (
+    <div className={'crx-scorecell' + (emphasis ? ' emphasis' : '') + ' tone-' + (tone || band.tone)}>
+      <div className="crx-scorecell-num">{value != null ? value : '—'}</div>
+      <div className="crx-scorecell-lbl">{label}</div>
+    </div>
+  );
+}
+
 // ──────────────────────────────────────────────────── the condition surface ───
 export function CreditCondition({ appId, canPull, onChanged }) {
   const [data, setData] = useState(null);
   const [showModal, setShowModal] = useState(false);
-  const [expanded, setExpanded] = useState(false);
+  const [showOverlay, setShowOverlay] = useState(false);
   const [flash, setFlash] = useState('');
   const [flashTone, setFlashTone] = useState('ok');
 
   const loadCredit = useCallback(() => {
-    return api.staffCredit(appId).then(setData).catch(() => setData({ hasReport: false, provider: {}, report: null, history: [] }));
+    return api.staffCredit(appId).then(setData).catch(() => setData({ hasReport: false, provider: {}, report: null, history: [], borrowers: null }));
   }, [appId]);
 
   useEffect(() => { loadCredit(); }, [loadCredit]);
@@ -461,7 +550,6 @@ export function CreditCondition({ appId, canPull, onChanged }) {
 
   const onImported = (out) => {
     setShowModal(false);
-    setExpanded(true);
     const bits = [];
     if (out && out.middleScore != null) bits.push(`middle score ${out.middleScore}`);
     if (out && out.ficoWritten != null) bits.push(`FICO set to ${out.ficoWritten}`);
@@ -470,8 +558,9 @@ export function CreditCondition({ appId, canPull, onChanged }) {
     if (out && out.pdfMissing) bits.push('no PDF in the response — data file saved');
     if (out && out.parseError) bits.push('some details couldn’t be read');
     const tone = out && (out.ficoMismatch || out.ficoUnverified || out.parseError || out.pdfMissing) ? 'warn' : 'ok';
-    showFlash('Imported ✓' + (bits.length ? ' — ' + bits.join(' · ') : ''), tone);
-    loadCredit();
+    showFlash('Credit report imported successfully ✓' + (bits.length ? ' — ' + bits.join(' · ') : ''), tone);
+    // Reload, then pop the full report open on the whole screen.
+    loadCredit().then(() => setShowOverlay(true));
     if (onChanged) onChanged();
   };
 
@@ -480,7 +569,9 @@ export function CreditCondition({ appId, canPull, onChanged }) {
     catch (e) { showFlash('Download failed: ' + (e.message || 'please try again'), 'warn'); }
   };
 
-  const band = report ? scoreBand(report.middleScore) : null;
+  const borrowers = (data && data.borrowers) || null;
+  const hasCo = !!(borrowers && borrowers.hasCoBorrower);
+  const primaryScore = borrowers && borrowers.primary ? borrowers.primary.middleScore : (report ? report.middleScore : null);
 
   return (
     <div className="crx-wrap">
@@ -491,37 +582,28 @@ export function CreditCondition({ appId, canPull, onChanged }) {
         {canImport && !provider.configured && <span className="crx-pill" title="The shared Xactus login is not set yet">Live pull: not set up</span>}
         <span className="crx-bar-spacer" />
         {report && report.pdfDocumentId && (
-          <button className="crx-btn ghost sm" onClick={() => download(report.pdfDocumentId, 'credit-report.pdf')}>Download PDF</button>
-        )}
-        {report && report.xmlDocumentId && (
-          <button className="crx-btn ghost sm" onClick={() => download(report.xmlDocumentId, 'credit-report.xml')}>Download data (XML)</button>
+          <button className="crx-btn ghost sm" onClick={() => download(report.pdfDocumentId, 'credit-report.pdf')}>Open / download PDF</button>
         )}
       </div>
 
       {flash && <div className={'crx-alert ' + (flashTone === 'warn' ? 'warn' : 'ok')}>{flash}</div>}
 
+      {/* Compact summary that ALWAYS sits at the bottom of the condition: the
+          middle score (and, with a co-borrower, the higher-of-two that prices the
+          deal) + a button to open the whole report on the full screen. */}
       {report ? (
-        <div className="crx-report">
-          {/* Hero: middle score + gauge + bureau tiles */}
-          <div className={'crx-hero tone-' + (band ? band.tone : 'none')}>
-            <div className="crx-hero-main">
-              <div className="crx-hero-score">{report.middleScore != null ? report.middleScore : '—'}</div>
-              <div className="crx-hero-meta">
-                <span className={'crx-band tone-' + (band ? band.tone : 'none')}>{band ? band.label : 'No score'}</span>
-                <div className="crx-hero-lbl">Middle score</div>
-                <div className="crx-gauge">
-                  <div className="crx-gauge-track"><i style={{ width: gaugePct(report.middleScore) + '%' }} />
-                    {report.middleScore != null && <span className="crx-gauge-mark" style={{ left: gaugePct(report.middleScore) + '%' }} />}
-                  </div>
-                  <div className="crx-gauge-scale"><span>300</span><span>850</span></div>
-                </div>
-              </div>
-            </div>
-            <div className="crx-hero-bureaus">
-              {(report.scores || []).length
-                ? report.scores.filter(Boolean).map((sc, i) => <BureauTile key={i} s={sc} />)
-                : <span className="crx-muted">No numeric scores were read from the data file.</span>}
-            </div>
+        <div className="crx-cond-summary">
+          <div className="crx-scoreline">
+            <ScoreCell value={primaryScore}
+              label={hasCo && borrowers.primary ? `${borrowers.primary.name} · middle` : 'Middle score'}
+              emphasis={!hasCo} />
+            {hasCo && borrowers.coBorrower && (
+              <ScoreCell value={borrowers.coBorrower.middleScore}
+                label={borrowers.coBorrower.name + (borrowers.coBorrower.hasReport ? ' · middle' : ' · not pulled yet')} />
+            )}
+            {hasCo && (
+              <ScoreCell value={borrowers.higher} label="Higher — prices the deal" emphasis />
+            )}
           </div>
 
           <div className="crx-sub">
@@ -531,28 +613,18 @@ export function CreditCondition({ appId, canPull, onChanged }) {
             {report.vendorReportId ? ` · ref ${report.vendorReportId}` : ''}
           </div>
 
-          <button className="crx-link" onClick={() => setExpanded((v) => !v)}>
-            {expanded ? 'Hide full credit details' : 'View full credit details'}
-          </button>
-          {expanded && <CreditDetails report={report} />}
-
-          {data && data.history && data.history.length > 1 && (
-            <details className="crx-sec" style={{ marginTop: 10 }}>
-              <summary>Import history <span className="crx-count">{data.history.length}</span></summary>
-              <div className="crx-table-wrap"><table className="crx-table">
-                <thead><tr><th>When</th><th>Type</th><th>Order</th><th className="r">Middle</th><th>Source</th></tr></thead>
-                <tbody>{data.history.filter(Boolean).map((h) => (
-                  <tr key={h.id}><td>{fmtWhen(h.pulledAt)}</td><td>{h.pullType === 'hard' ? 'Hard' : 'Soft'}</td><td>{h.requestType === 'new' ? 'New' : 'Reissue'}</td><td className="r">{h.middleScore != null ? h.middleScore : '—'}</td><td>{h.source === 'upload' ? 'uploaded' : 'pulled'}</td></tr>
-                ))}</tbody>
-              </table></div>
-            </details>
-          )}
+          <div className="crx-summary-actions">
+            <button className="crx-btn primary sm" onClick={() => setShowOverlay(true)}>⛶ Open full credit report</button>
+          </div>
         </div>
       ) : (
         <div className="crx-empty">No credit report imported yet. Click <b>Import credit</b> to pull a tri-merge report or import one you downloaded.</div>
       )}
 
       {showModal && <CreditImportModal appId={appId} onClose={() => setShowModal(false)} onDone={onImported} />}
+      {showOverlay && report && (
+        <CreditReportOverlay report={report} history={data && data.history} onClose={() => setShowOverlay(false)} onDownload={download} />
+      )}
     </div>
   );
 }

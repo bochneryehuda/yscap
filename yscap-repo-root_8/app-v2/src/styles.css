@@ -3007,11 +3007,42 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .crx-empty { margin-top:8px; padding:16px; border:1px dashed var(--border); border-radius:12px;
   background:var(--surface-soft); color:var(--muted); font-size:.9rem; }
 
+/* Condition compact summary — the score(s) that always sit at the bottom of the
+   credit condition, + the "open full report" action. No big inline section. */
+.crx-cond-summary { margin-top:10px; }
+.crx-scoreline { display:flex; gap:12px; flex-wrap:wrap; align-items:stretch; }
+.crx-scorecell { flex:1 1 130px; min-width:130px; border:1px solid var(--border); border-radius:12px;
+  background:var(--surface); padding:12px 14px; border-left:4px solid var(--crx-tone,var(--muted)); }
+.crx-scorecell.emphasis { background:linear-gradient(135deg,#fff,var(--crx-tone-soft,var(--surface-soft))); }
+.crx-scorecell-num { font-family:var(--serif); font-size:2.1rem; font-weight:600; line-height:1;
+  color:var(--crx-tone,var(--text)); font-variant-numeric:tabular-nums; letter-spacing:-.01em; }
+.crx-scorecell.emphasis .crx-scorecell-num { font-size:2.6rem; }
+.crx-scorecell-lbl { margin-top:5px; font-size:.72rem; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); font-weight:600; }
+.crx-summary-actions { margin-top:12px; display:flex; gap:8px; flex-wrap:wrap; }
+
+/* Full-screen report overlay — the whole report, laid out with the entire screen. */
+.crx-overlay-back { position:fixed; inset:0; z-index:220; background:rgba(20,27,34,.5); backdrop-filter:blur(3px);
+  display:flex; align-items:center; justify-content:center; padding:24px; }
+.crx-overlay { width:100%; max-width:1120px; max-height:92dvh; display:flex; flex-direction:column;
+  background:var(--surface); border-radius:18px; overflow:hidden; box-shadow:0 30px 70px rgba(20,27,34,.35); }
+.crx-overlay-head { flex:none; display:flex; align-items:flex-start; justify-content:space-between; gap:12px;
+  padding:20px 24px 16px; border-bottom:1px solid var(--border);
+  background:linear-gradient(180deg,#fff,var(--surface-soft)); position:relative; }
+.crx-overlay-head::after { content:""; position:absolute; left:24px; right:24px; bottom:-1px; height:2px;
+  background:linear-gradient(90deg,var(--gold),transparent 70%); }
+.crx-overlay-title { min-width:0; }
+.crx-overlay-tools { display:flex; gap:8px; align-items:center; flex-wrap:wrap; flex:none; }
+.crx-overlay-body { flex:1 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain; padding:20px 24px 26px; }
+
 @media (max-width:640px) {
   .crx-recip-grid, .crx-id { grid-template-columns:1fr; }
   .crx-hero-main { gap:14px; }
   .crx-hero-score { font-size:3.1rem; }
   .cv-modal.crx-modal { border-radius:18px 18px 0 0; }
+  .crx-overlay-back { padding:0; align-items:stretch; }
+  .crx-overlay { max-width:100%; max-height:100dvh; border-radius:0; }
+  .crx-scorecell-num { font-size:1.8rem; }
+  .crx-scorecell.emphasis .crx-scorecell-num { font-size:2.1rem; }
 }
 @media (prefers-reduced-motion:reduce) {
   .crx-btn, .crx-gauge-mark, .crx-bureau-bar > i { transition:none; }

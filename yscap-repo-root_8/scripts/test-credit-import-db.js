@@ -114,6 +114,17 @@ const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failu
   ok(fc.hasReport && fc.report.middleScore === 705, 'fileCredit returns the latest report');
   ok(fc.report.liabilities.length === 2 && fc.report.inquiries.length === 1, 'section carries tradelines + inquiries');
   ok((fc.report.scores || []).length === 3, 'section carries all three bureau scores');
+  // per-borrower summary (the higher-of-two rule) — single borrower here
+  ok(fc.borrowers && fc.borrowers.primary && fc.borrowers.primary.middleScore === 705, 'fileCredit returns the primary middle score in the borrowers summary');
+  ok(fc.borrowers.hasCoBorrower === false && fc.borrowers.coBorrower === null, 'single-borrower file: no co-borrower in the summary');
+  ok(fc.borrowers.higher === 705, 'higher-of-two = the single borrower score when there is no co-borrower');
+
+  // --- sign-off gate: a completed credit_reports row must exist (the gate blocks
+  //     until a report is IMPORTED — a bare PDF upload is not enough) -----------
+  const gateRow = (await db.query(
+    `SELECT 1 FROM credit_reports WHERE application_id=$1 AND status='completed'
+       AND ($2::uuid IS NULL OR borrower_id=$2) LIMIT 1`, [app.id, null])).rows[0];
+  ok(!!gateRow, 'a completed credit_reports row exists → the credit sign-off gate is satisfied');
 
   // --- re-import supersedes the prior documents ------------------------------
   const out2 = await credit.importCredit(app.id, { xml: XML, pdfBase64: PDF_B64, actorId: staff.id });
