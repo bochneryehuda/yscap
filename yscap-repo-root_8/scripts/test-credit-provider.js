@@ -101,6 +101,9 @@ assert.ok(!('password' in st) && !('username' in st), 'status never leaks creden
   assert.ok(scrub('at https://op42:S3cret@api.example.com/x') === 'at https://***:***@api.example.com/x',
     'scheme://user:pass@host userinfo is masked');
   assert.strictEqual(scrub(null), '', 'null/undefined scrubs to empty, never crashes');
+  // a vendor 4xx body that reflects the request URL (query-auth mode) must not leak the login
+  assert.ok(!/S3cret/.test(scrub('<error>Bad request to /report?LoginAccountPassword=S3cret</error>')),
+    'a reflected request URL in a vendor error body has the login masked');
 
   console.log('OK  credit-provider: gating, tri-merge + soft/hard + reissue/new request, tolerant extractor, connection test, credential scrub — all assertions passed');
 })().catch((e) => { console.error(e); process.exit(1); });

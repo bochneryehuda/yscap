@@ -262,9 +262,10 @@ async function pull({ borrower, pullType = 'soft', requestType = 'reissue', bure
     clearTimeout(timer);
   }
   if (!r.ok) {
-    // Never echo the borrower's identifiers into logs: the outbound request
-    // carried the full SSN, and a vendor validation error can reflect it back.
-    const safe = String(respText)
+    // Never echo the borrower's identifiers OR the shared login into logs: the
+    // outbound request carried the full SSN, and in query-auth mode the login
+    // rides in the request URL — a vendor 4xx body can reflect either back.
+    const safe = scrubCredentials(String(respText))
       .replace(/\b\d{3}[-\s]?\d{2}[-\s]?\d{4}\b/g, '***-**-****')   // dashed, bare, or space-separated SSN
       .replace(/\b\d{9,}\b/g, '*********');
     const e = new Error(`Xactus ${r.status}: ${safe.slice(0, 300)}`);
