@@ -324,7 +324,10 @@ const CONDITIONS = [
   { cond_no: 200, name: 'CONSTRUCTION FEASIBILITY REPORT (GROUND-UP / HEAVY REHAB)', domain: 'construction_feasibility', scope: 'note_buyer', lifecycle: 'active_now', trigger: T.ground_up_or_heavy,
     required_evidence: `A third-party feasibility report from an approved vendor (${FEASIBILITY_VENDORS.join(', ')}) with site inspection + photos and a budget assessment. Budget line items within a 10% variance to the report (if no variance is given, all line items are acceptable).`,
     checks: [S('Feasibility report from an approved vendor (ground-up or heavy rehab)', true), S('Site inspection with photos + budget assessment', true), S('Budget line items within 10% variance to the feasibility report', true)],
-    clears_by: 'third_party_order', pilot_template_code: 'rtl_p3_sow1', match_quality: 'partial', source_page: 5 },
+    // Dedicated feasibility-report condition (db/285) — NOT the SOW code, so the
+    // overlay fires a FATAL coverage gap when a ground-up/heavy file has no
+    // third-party feasibility-report condition (owner: "pop up something big").
+    clears_by: 'third_party_order', pilot_template_code: 'rtl_cond_feasibility', match_quality: 'exact', source_page: 5 },
   { cond_no: 201, name: 'CONSTRUCTION BUDGET (EXCEL) + CONTINGENCY', domain: 'construction_feasibility', scope: 'note_buyer', lifecycle: 'active_now', trigger: T.has_rehab,
     required_evidence: 'A line-item budget in Excel with a narrative scope, hard/soft costs by line item, and a contingency: minimum 7% for ground-up / heavy rehab, minimum 5% for renovation. An ADU is broken out separately.',
     checks: [S('Line-item budget in Excel with narrative scope', true), S('Contingency ≥ 7% (ground-up / heavy rehab) or ≥ 5% (renovation)', true), S('ADU broken out separately', true)],
