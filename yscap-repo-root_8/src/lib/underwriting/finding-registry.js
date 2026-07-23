@@ -81,7 +81,11 @@ function summarize(registry) {
     fatal: r.filter((f) => norm(f.severity) === 'fatal').length,
     warning: r.filter((f) => norm(f.severity) === 'warning').length,
     info: r.filter((f) => norm(f.severity) === 'info').length,
-    blocksTermSheet: r.some((f) => f.blocks_term_sheet),
+    // A FATAL finding blocks the term sheet too — mirroring the CTC/funding
+    // rows below AND issuance-gate.blockersFor, which already treats any fatal
+    // as a term-sheet blocker (fix 2026-07-23: the asymmetry let a fatal
+    // appraisal finding leave termSheetEligible true).
+    blocksTermSheet: r.some((f) => f.blocks_term_sheet || norm(f.severity) === 'fatal'),
     blocksCtc: r.some((f) => f.blocks_ctc || norm(f.severity) === 'fatal'),
     blocksFunding: r.some((f) => f.blocks_funding || norm(f.severity) === 'fatal'),
     hasFatal: r.some((f) => norm(f.severity) === 'fatal'),

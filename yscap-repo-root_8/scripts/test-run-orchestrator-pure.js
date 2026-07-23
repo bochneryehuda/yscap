@@ -91,8 +91,10 @@ ok('a source disagreement → DATA_CONFLICT, blocks CTC + funding');
 out = build({}, {}, { extraFindings: [{ code: 'appraisal_value_low', severity: 'fatal', source: 'appraisal', blocks_ctc: true, title: 'Appraisal value below sizing' }] });
 assert.ok(out.findings.some((f) => f.code === 'appraisal_value_low'), 'the appraisal finding is in the one registry');
 assert.strictEqual(out.ctcEligible, false, 'a fatal appraisal finding blocks CTC');
-assert.strictEqual(out.termSheetEligible, true, 'but the term sheet can still issue (no term-sheet block on it)');
-ok('an appraisal/desk finding flows into the ONE registry and gates CTC');
+// Fix 2026-07-23: any fatal blocks the term sheet too (summarize now mirrors
+// issuance-gate.blockersFor, which always listed a fatal as a TS blocker).
+assert.strictEqual(out.termSheetEligible, false, 'a fatal blocks the term sheet as well');
+ok('an appraisal/desk finding flows into the ONE registry and gates every issuance');
 
 // --- pricedDrift derives stale from a CONTEXT discrepancy on a priced field ---
 // (the audit-fixed path: runWholeLoan builds staleChanged from the context's

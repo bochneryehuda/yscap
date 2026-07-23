@@ -99,7 +99,12 @@ function adaptQuote(quote, opts) {
   return {
     engineStatus,
     wholeLoanStatus,
-    eligible: q.eligible !== undefined ? !!q.eligible : engineStatus !== 'INELIGIBLE',
+    // Fail-safe (fix 2026-07-23): an UNKNOWN/absent engine status must never
+    // read as eligible. Eligible only when the engine SAID eligible (status
+    // ELIGIBLE, or an explicit true flag alongside a recognized status).
+    eligible: engineStatus === 'ELIGIBLE'
+      ? (q.eligible !== undefined ? !!q.eligible : true)
+      : (q.eligible === true && engineStatus !== null),
     manualReasons,
     blockingReasons,
     reasons,

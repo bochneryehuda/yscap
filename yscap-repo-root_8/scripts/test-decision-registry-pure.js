@@ -69,9 +69,12 @@ d = dec.decide({ engineStatus: 'ELIGIBLE', findings: [{ code: 'x', severity: 'fa
 assert.strictEqual(d.status, 'ELIGIBLE', 'status still eligible…');
 assert.strictEqual(d.ctcEligible, false, '…but a fatal finding blocks CTC');
 assert.strictEqual(d.fundingEligible, false);
-assert.strictEqual(d.termSheetEligible, true, 'a fatal finding that does not block the term sheet still lets it issue');
+// Fix 2026-07-23: a FATAL blocks the term sheet too (mirrors issuance-gate,
+// which already treated any fatal as a term-sheet blocker — the old asymmetry
+// let a fatal appraisal finding leave termSheetEligible true).
+assert.strictEqual(d.termSheetEligible, false, 'a fatal finding blocks the term sheet as well');
 assert.ok(d.blockingFindings.length >= 1);
-ok('a fatal finding blocks CTC + funding even under ELIGIBLE');
+ok('a fatal finding blocks term sheet + CTC + funding even under ELIGIBLE');
 
 // funding from a stale RUN is blocked.
 d = dec.decide({ engineStatus: 'ELIGIBLE', staleRun: true, findings: [] });
@@ -84,5 +87,18 @@ d = dec.decide({ engineStatus: 'ELIGIBLE', staleRegistration: true, findings: []
 assert.strictEqual(d.status, 'STALE');
 assert.strictEqual(d.termSheetEligible, false);
 ok('a stale registration → STALE, not issuable');
+
+
+// --- fix 2026-07-23: a FATAL finding blocks the TERM SHEET too (mirrors CTC/funding) ---
+{
+  const reg = require('../src/lib/underwriting/finding-registry');
+  const sum = reg.summarize(reg.consolidate([
+    { code: 'appraisal_as_is_below_sizing', subject: 'as_is', severity: 'fatal', title: 'x' }, // fatal, no blocks_term_sheet flag
+  ]));
+  assert.strictEqual(sum.blocksTermSheet, true, 'a fatal finding blocks the term sheet even without the explicit flag');
+  assert.strictEqual(sum.blocksCtc, true);
+  assert.strictEqual(sum.blocksFunding, true);
+  ok('summarize: a fatal finding blocks term sheet + CTC + funding consistently');
+}
 
 console.log(`\nR6.9 + R6.14 decision + registry pure — ${passed} checks passed`);

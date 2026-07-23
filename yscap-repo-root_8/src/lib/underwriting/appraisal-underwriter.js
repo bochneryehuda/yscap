@@ -74,7 +74,9 @@ function underwriteAppraisal(inputs) {
   // No current appraisal → cannot support the collateral value (not ready to CTC).
   if (!appr) {
     findings.push(mk('appraisal_missing', 'warning', 'collateral', 'No current appraisal imported',
-      'No appraisal is on file to support the values the loan was sized on.', { blocks_ctc: true }));
+      // blocks_funding too (fix 2026-07-23): a loan must never FUND without an
+      // appraisal on file, independent of the CTC gate having been satisfied.
+      'No appraisal is on file to support the values the loan was sized on.', { blocks_ctc: true, blocks_funding: true }));
     return { findings, valueSupport: { asIs: null, arv: null } };
   }
 
@@ -89,7 +91,7 @@ function underwriteAppraisal(inputs) {
   } else if (asIsSupport.supported === false) {
     findings.push(mk('appraisal_as_is_below_sizing', 'fatal', 'collateral', 'Appraisal As-Is below the value the loan sized on',
       `Appraisal As-Is ${apprAsIs} is below the ${sizingAsIs} the loan sized on (short ${asIsSupport.shortfall}).`,
-      { field: 'as_is_value', expected_value: sizingAsIs, actual_value: apprAsIs, blocks_ctc: true, blocks_funding: true }));
+      { field: 'as_is_value', expected_value: sizingAsIs, actual_value: apprAsIs, blocks_term_sheet: true, blocks_ctc: true, blocks_funding: true }));
   }
 
   // --- ARV support (only meaningful on a rehab deal) ---
@@ -102,7 +104,7 @@ function underwriteAppraisal(inputs) {
       if (arvSupport.supported === false) {
         findings.push(mk('appraisal_arv_below_sizing', 'fatal', 'collateral', 'Appraisal ARV below the value the loan sized on',
           `Appraisal ARV ${apprArv} is below the ${sizingArv} the loan sized on (short ${arvSupport.shortfall}).`,
-          { field: 'arv', expected_value: sizingArv, actual_value: apprArv, blocks_ctc: true, blocks_funding: true }));
+          { field: 'arv', expected_value: sizingArv, actual_value: apprArv, blocks_term_sheet: true, blocks_ctc: true, blocks_funding: true }));
       }
     }
   }
