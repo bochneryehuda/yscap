@@ -1053,6 +1053,26 @@ router.get('/:appId/guideline-evaluation', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ISG-3 — Investor-Specific Soft Guidelines desk. For the file's NOTE BUYER, works out
+// which note-buyer condition guidelines apply, then judges each against the file: satisfied
+// (the mapped PILOT condition is cleared), outstanding, or CONFLICTS with the guideline
+// (a value contradicts the buyer's limit), plus which applicable-but-unmapped conditions to
+// suggest posting, and the deferred (attorney-hold / post-closing) set shown separately.
+// READ-ONLY / advisory — it posts nothing, blocks nothing, clears no condition, and touches
+// NO frozen number; it explains the note buyer's own guidelines against this file. Staff-only
+// (inherits requireAuth+requireStaff); best-effort — a file with no note-buyer guidelines
+// returns a valid empty result, never an error.
+router.get('/:appId/investor-guidelines', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const deskMod = require('../lib/underwriting/investor-guidelines/desk');
+    const desk = await deskMod.runInvestorGuidelineDesk(app.id, db);
+    if (desk) desk.generatedAt = new Date().toISOString();
+    res.json({ ok: true, desk });
+  } catch (e) { next(e); }
+});
+
 // #197 — whole-loan run cockpit. Reads the latest immutable underwriting run
 // (schema db/266) for the file and folds it into ONE staff panel: the current
 // decision (status + the three gates), what CHANGED since the previous run
