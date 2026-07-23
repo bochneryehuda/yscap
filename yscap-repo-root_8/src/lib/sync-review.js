@@ -37,6 +37,10 @@ const FIELD_LABELS = {
   // Two different people using ONE email address (owner-directed: the email
   // must be assigned to exactly one borrower; until then it never links files):
   shared_email: 'Shared email — two borrowers',
+  // ClickUp changed a loan FIGURE while the file was frozen (sent term sheet /
+  // Clear-to-Close / Funded) — the change was held so the sent term sheet stays
+  // in agreement with the file:
+  economics_frozen: 'Loan figures — frozen (term sheet sent / file locked)',
 };
 
 async function queueReview({ applicationId, borrowerId, taskId, direction, fieldKey,
