@@ -928,6 +928,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const client = await db.getClient();
     let regId;
     let economicsChanged = true;   // first registration always confirms to the borrower
+    let loanAmountChanged = false;   // loan amount moved → auto-clear a signed Heter Iska
     try {
       await client.query('BEGIN');
       const reg = await persistProductRegistration(client, {
@@ -936,6 +937,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       });
       regId = reg.id;
       economicsChanged = reg.economicsChanged;
+      loanAmountChanged = reg.loanAmountChanged;
       // A borrower-submitted exception (MANUAL) opens a super-admin escalation and
       // stays pending until approved; a clean product closes any stale escalation.
       if (needsEscalation) {
@@ -984,6 +986,14 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // condition (even if already signed off) with a FATAL note when the saved
     // Scope of Work is missing it.
     try { await require('../lib/rehab-budget').enforceGoldSowContingency(appId); } catch (_) {}
+    // Loan amount moved → auto-clear a signed Heter Iska (tied to the loan amount).
+    if (loanAmountChanged) {
+      try {
+        await require('../lib/esign/iska-autoclear').autoClearIskaOnLoanChange({
+          appId, actorId: null, db, docusign: require('../lib/integrations/docusign'),
+        });
+      } catch (e) { console.warn('[borrower-register] ISKA auto-clear failed:', db.describeError(e)); }
+    }
 
     // Push the freshly-committed scenario (loan amount, rate, rehab, term, IR,
     // ARV / as-is / purchase, assignment, desired rate) to ClickUp immediately.

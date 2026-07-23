@@ -1796,6 +1796,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const client = await db.getClient();
     let regId;
     let economicsChanged = true;   // first registration always notifies the borrower
+    let loanAmountChanged = false;   // loan amount moved → auto-clear a signed Heter Iska
     try {
       await client.query('BEGIN');
       const reg = await persistProductRegistration(client, {
@@ -1804,6 +1805,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       });
       regId = reg.id;
       economicsChanged = reg.economicsChanged;
+      loanAmountChanged = reg.loanAmountChanged;
       // Needs manual review → open a super-admin escalation in the same
       // transaction. The file registers now, but the product stays "pending
       // super-admin approval" until the escalation is decided (db/207), and the
@@ -1876,6 +1878,17 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     finally { client.release(); }
     // Registration rewrites loan amount / rate / program — re-run condition rules.
     try { await conditionEngine.evaluateApplication(appId, { actor: req.actor, reason: 'product_registered' }); } catch (_) {}
+
+    // Loan amount moved → auto-clear a signed Heter Iska (its terms are tied to the
+    // loan amount). The db/280 trigger already reopened the ISKA condition; this
+    // voids the live package + supersedes the signed doc so a fresh one can be sent.
+    if (loanAmountChanged) {
+      try {
+        await require('../lib/esign/iska-autoclear').autoClearIskaOnLoanChange({
+          appId, actorId: req.actor.id, db, docusign: require('../lib/integrations/docusign'),
+        });
+      } catch (e) { console.warn('[staff-register] ISKA auto-clear failed:', db.describeError(e)); }
+    }
 
     await audit(req, 'register_product', 'application', appId,
       { program, status: quote.status, noteRate: quote.noteRate, totalLoan: total, productLabel: quote.productLabel || null,
@@ -2175,6 +2188,7 @@ router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
     // never half-lands (registered without the escalation closing, or vice versa).
     const client = await db.getClient();
     let regId;
+    let loanAmountChanged = false;   // loan amount moved → auto-clear a signed Heter Iska
     try {
       await client.query('BEGIN');
       const reg = await persistProductRegistration(client, {
@@ -2182,6 +2196,7 @@ router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
         isManual: program === 'manual', assetMonths: esc.asset_months,
       });
       regId = reg.id;
+      loanAmountChanged = reg.loanAmountChanged;
       // The LO's accept IS the approval. Mark THIS row 'approved' (persistProductRegistration
       // may have opened a NEW escalation for the re-register — that's a separate row and stays
       // pending only if the new scenario is itself manual-review, which is fine). The status
@@ -2206,6 +2221,14 @@ router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
     try { await conditionEngine.evaluateApplication(appId, { actor: req.actor, reason: 'counter_accepted' }); } catch (_) {}
     try { await require('../lib/liquidity').syncLiquidityCondition(appId, quote, db, program === 'manual' ? { program, assetMonths: esc.asset_months } : {}); } catch (_) {}
     try { await require('../lib/rehab-budget').enforceGoldSowContingency(appId); } catch (_) {}
+    // Loan amount moved on the re-register → auto-clear a signed Heter Iska.
+    if (loanAmountChanged) {
+      try {
+        await require('../lib/esign/iska-autoclear').autoClearIskaOnLoanChange({
+          appId, actorId: req.actor.id, db, docusign: require('../lib/integrations/docusign'),
+        });
+      } catch (e) { console.warn('[counter-accept] ISKA auto-clear failed:', db.describeError(e)); }
+    }
     // Push the new economics to ClickUp so the task mirrors the accepted terms.
     try { require('../clickup/orchestrator').pushApplication(appId).catch(() => {}); } catch (_) {}
 
