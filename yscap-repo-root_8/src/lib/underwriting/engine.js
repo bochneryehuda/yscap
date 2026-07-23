@@ -22,7 +22,7 @@ const docint = require('../ai/ocr-router');
 const azureOpenai = require('../ai/azure-openai');
 const registry = require('./registry');
 const { analyzePdf } = require('./pdf-forensics');
-const { groundFields, groundingFinding } = require('./grounding');
+const { groundFields, groundingFinding, quarantineUngrounded } = require('./grounding');
 
 // The extractor's system prompt — shared by the first read and the vision SECOND-LOOK so both
 // speak to the model identically.
@@ -197,13 +197,20 @@ async function analyzeDocument({ docType, buffer, base64, mimeType, subject, tod
   const gFinding = grounding ? groundingFinding(docType, grounding) : null;
 
   // 4. CHECK → findings (pure) + the forensic tampering advisory + the grounding advisory.
-  const findings = (entry.check(ext.data, subject, { today }) || []).concat(forensic, gFinding ? [gFinding] : []);
+  //    #212 (launch blocker 1) — QUARANTINE unconfirmed MATERIAL fields BEFORE the
+  //    deterministic checks run: a value PILOT extracted but could not confirm in
+  //    the document (a possible mis-read / hallucination) must never create a
+  //    "mismatch" finding — it only raises the grounding "please verify" advisory
+  //    (gFinding). The checkers therefore see the VERIFIED-only copy; the full read
+  //    (ext.data) is still what gets STORED, so nothing is lost.
+  const q = grounding ? quarantineUngrounded(ext.data, grounding) : { verified: ext.data, quarantined: [] };
+  const findings = (entry.check(q.verified, subject, { today }) || []).concat(forensic, gFinding ? [gFinding] : []);
   const confidence = ext.data && ext.data.readable === false ? 'unreadable' : 'analyzed';
   return {
     ok: true,
     extraction: Object.assign(baseExtraction, {
       fields: ext.data, status: 'analyzed', confidence, secondLook,
-      grounding: grounding ? { score: grounding.score, checked: grounding.checked, confirmed: grounding.confirmed, unconfirmed: grounding.unconfirmed.length } : null,
+      grounding: grounding ? { score: grounding.score, checked: grounding.checked, confirmed: grounding.confirmed, unconfirmed: grounding.unconfirmed.length, quarantined: q.quarantined } : null,
     }),
     findings,
     usage: ext.usage || null,

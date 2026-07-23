@@ -5,8 +5,8 @@
  * Instead of one model producing every finding on its own, MATERIAL findings
  * (fatals + high-impact warnings) are reviewed by a COMMITTEE of specialist
  * agents plus an ADJUDICATOR. Each specialist has a narrow prompt + a specific
- * lens (identity, entity, credit, fraud, appraisal, title, insurance, DSCR,
- * RTL). The adjudicator combines their opinions and produces:
+ * lens (identity, entity, credit, fraud, appraisal, title, insurance). The
+ * adjudicator combines their opinions and produces:
  *   * adjudicated_severity ('fatal' | 'warning' | 'informational' | 'dismiss')
  *   * majority_conclusion (short paragraph)
  *   * dissenting_opinions[] (specialists that disagreed with the majority)
@@ -27,6 +27,12 @@
  */
 const azureOpenai = require('./azure-openai');
 const langfuse = require('./langfuse');
+const { routeFinding } = require('./committee-routing');
+
+// Severity ordering — used by the never-weaken guard so an UNCOVERED finding can
+// never be moved BELOW its original severity by off-lens specialists (#213).
+const SEV_RANK = Object.freeze({ dismiss: 0, informational: 1, warning: 2, fatal: 3 });
+function sevRank(s) { return SEV_RANK[s] != null ? SEV_RANK[s] : 1; }
 
 // -------------------------------------------------------------------------
 // SPECIALISTS — narrow-prompt reviewers, each with an adversarial bias.
@@ -172,11 +178,20 @@ async function askSpecialist(key, finding, context, trace) {
 //   2. If >= half of NON-ABSTAINING specialists confirm → the finding is real
 //      at the majority-recommended severity.
 //   3. If >= 2/3 of non-abstaining specialists refute at high confidence
-//      (>= 0.8) → 'dismiss'.
+//      (>= 0.8) → 'dismiss' — BUT ONLY when the finding was actually COVERED
+//      by a qualified specialist (opts.covered !== false). A finding that no
+//      qualified specialist reviewed can never be auto-dismissed; it is HELD
+//      for a human (#213 — the never-miss / abstain-on-uncertainty guard).
 //   4. Otherwise → hold at the original severity, mark 'needs_review'.
 //   Dissents are always preserved so the underwriter sees who disagreed.
+//   Confirming a finding (keeping it) is always allowed — the coverage guard
+//   only constrains DISMISSAL, the sole action that could drop a real issue.
 // -------------------------------------------------------------------------
-function adjudicate(finding, specialistResults) {
+function adjudicate(finding, specialistResults, opts = {}) {
+  // Default TRUE for back-compat: a caller that doesn't declare coverage is
+  // trusted (the specialists it passed are assumed qualified). The live path
+  // (review()) always passes the real coverage from routeFinding().
+  const covered = !opts || opts.covered !== false;
   const votes = specialistResults.filter((r) => r.ok && r.verdict && r.verdict.verdict !== 'abstain');
   const total = votes.length;
   const confirms = votes.filter((v) => v.verdict.verdict === 'confirm');
@@ -206,8 +221,9 @@ function adjudicate(finding, specialistResults) {
     action = 'confirm';
     confidence = confirms.length / total;
     reasoning = `Confirmed by ${confirms.length}/${total} specialist(s).`;
-  } else if (total > 0 && highConfRefutes.length * 3 >= total * 2) {
-    // >= 2/3 high-confidence refute → dismiss.
+  } else if (covered && total > 0 && highConfRefutes.length * 3 >= total * 2) {
+    // >= 2/3 high-confidence refute → dismiss — but ONLY when a qualified
+    // specialist covered this finding (see the coverage guard above).
     action = 'dismiss';
     adjudicatedSeverity = 'dismiss';
     confidence = highConfRefutes.reduce((a, v) => a + Number(v.verdict.confidence || 0.8), 0) / highConfRefutes.length;
@@ -222,15 +238,34 @@ function adjudicate(finding, specialistResults) {
   } else {
     action = 'hold';
     confidence = total > 0 ? Math.max(0.3, confirms.length / total) : 0.3;
-    reasoning = total > 0
-      ? `Split panel — ${confirms.length} confirm, ${refutes.length} refute, ${modifies.length} modify. Holding original severity; human review recommended.`
-      : 'No specialist opinion available. Holding original severity.';
+    if (!covered && highConfRefutes.length * 3 >= total * 2 && total > 0) {
+      // Would have been dismissed, but no QUALIFIED specialist covered this
+      // finding's domain — hold for a human rather than drop a possibly-real issue.
+      reasoning = `No specialist whose lens covers this finding was available, so the ${highConfRefutes.length}/${total} refuting vote(s) cannot dismiss it. Holding the original severity for human review.`;
+    } else {
+      reasoning = total > 0
+        ? `Split panel — ${confirms.length} confirm, ${refutes.length} refute, ${modifies.length} modify. Holding original severity; human review recommended.`
+        : 'No specialist opinion available. Holding original severity.';
+    }
+  }
+
+  // #213 NEVER-WEAKEN GUARD (belt-and-suspenders over the dismiss gate): an
+  // UNCOVERED finding — one no qualified specialist reviewed — may never be moved
+  // BELOW its original severity by off-lens specialists (a downgrade is the same
+  // "buried by the wrong lens" miss as a dismiss, just softer). Upgrades (a stronger
+  // severity) are always allowed. When uncovered and the panel wanted to weaken it,
+  // hold at the original severity for a human instead.
+  if (!covered && sevRank(adjudicatedSeverity) < sevRank(originalSeverity)) {
+    adjudicatedSeverity = originalSeverity;
+    action = 'hold';
+    reasoning = 'No specialist whose lens covers this finding was available, so it cannot be downgraded or dismissed. Holding the original severity for human review.';
   }
 
   return {
     action,
     adjudicated_severity: adjudicatedSeverity,
     original_severity: originalSeverity,
+    covered,
     confidence,
     reasoning,
     votes: specialistResults.map((r) => ({
@@ -254,14 +289,19 @@ function adjudicate(finding, specialistResults) {
 // but don't stop the panel.
 // -------------------------------------------------------------------------
 async function review(finding, context = {}, opts = {}) {
-  const codeMatch = (spec) => Array.isArray(spec.applies_to) && spec.applies_to.some((pfx) => (finding.code || '').startsWith(pfx));
-  const specialistsToRun = Object.entries(SPECIALISTS)
-    .filter(([_k, spec]) => opts.all === true || codeMatch(spec) || Object.keys(SPECIALISTS).length <= 3);
-  // If NO specialist matches the code, run 3 default lenses (fraud, identity, credit)
-  // so the finding still gets some independent review.
-  const keys = specialistsToRun.length > 0
-    ? specialistsToRun.map(([k]) => k)
-    : ['fraud','identity','credit'];
+  // #213 — DOMAIN-based routing (code keywords + document source + field + the
+  // specialist's own applies_to prefix), not a single code prefix. `covered` is
+  // false when no qualified specialist's lens applies → the adjudicator HOLDS
+  // (never dismisses) so a real finding in an unrouted domain is never dropped.
+  let keys, covered;
+  if (opts.all === true) {
+    keys = Object.keys(SPECIALISTS);
+    covered = true;
+  } else {
+    const route = routeFinding(finding, SPECIALISTS);
+    keys = route.specialists;
+    covered = route.covered;
+  }
   const results = [];
   // ONE Langfuse trace per committee review — every specialist call nests under it.
   const trace = langfuse.trace({
@@ -276,7 +316,7 @@ async function review(finding, context = {}, opts = {}) {
   const promises = keys.map((k) => askSpecialist(k, finding, context, trace).catch((e) => ({ key: k, ok: false, reason: (e && e.message) || 'error' })));
   const settled = await Promise.all(promises);
   results.push(...settled);
-  const opinion = adjudicate(finding, results);
+  const opinion = adjudicate(finding, results, { covered });
   trace.end({ output: { action: opinion.action, adjudicated_severity: opinion.adjudicated_severity, confidence: opinion.confidence } });
   return {
     finding: { code: finding.code, id: finding.id, severity: finding.severity, title: finding.title },

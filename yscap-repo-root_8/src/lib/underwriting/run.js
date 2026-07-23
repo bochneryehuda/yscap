@@ -26,6 +26,7 @@ const programAdapter = require('./program-adapter');
 const structureUnderwriter = require('./structure-underwriter');
 const assignmentAnalysis = require('./assignment-analysis');
 const decision = require('./decision');
+const runManifest = require('./run-manifest');
 
 // The context fields that are PRICING inputs — a registration↔application
 // disagreement on any of these means the file drifted off the priced structure
@@ -192,6 +193,14 @@ function assembleRun(inputs) {
   // Findings from the other desks (appraisal R6.8 / document R6.9 / system R6.10-12 / liquidity).
   for (const f of (i.extraFindings || [])) findings.push(f);
 
+  // #214 — per-run REVIEW MANIFEST (orchestration proof). Record which required
+  // components contributed; if any is missing, the run raises an ORDINARY ADVISORY
+  // (never a super-admin gate, never a block — never-block rule #217). The advisory
+  // flows into the same deduped registry so the human sees the run was incomplete.
+  const manifestSignals = runManifest.signalsFromRun(i, calculations);
+  const manifest = runManifest.buildManifest(manifestSignals);
+  for (const f of runManifest.manifestFindings(manifest)) findings.push(f);
+
   // --- final decision (decision.js composes uw-status + finding registry) ---
   const staleChanged = i.staleChanged || [];
   const d = decision.decide({
@@ -220,6 +229,7 @@ function assembleRun(inputs) {
     sourceVersions,
     sourceHash,
     reasons: d.reasons,
+    manifest,
   };
 }
 
@@ -283,9 +293,11 @@ async function runWholeLoan(applicationId, db, opts) {
   // decision record — advisory, a human decides. Best-effort: never breaks or
   // blocks a run; zero impact on files with no AVM observations.
   let verificationFindings = [];
+  let verificationAttested = false;
   try {
     verificationFindings = await require('./verification-findings').gatherVerificationFindings(applicationId, db);
-  } catch (_) { verificationFindings = []; }
+    verificationAttested = true; // the sweep RAN (zero findings ≠ didn't run)
+  } catch (_) { verificationFindings = []; verificationAttested = false; }
 
   const assembled = assembleRun({
     context,
@@ -294,6 +306,7 @@ async function runWholeLoan(applicationId, db, opts) {
     staleChanged,
     manualApproved: o.manualApproved,
     extraFindings: [...(o.extraFindings || []), ...verificationFindings],
+    verificationAttested,
     trigger: o.trigger || 'manual_run',
   });
 

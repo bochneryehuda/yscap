@@ -43,6 +43,21 @@ Closing Date: 2026-08-15
   assert.ok(/purchasePrice|buyerName/.test(f.docValue));
 }
 
+// ---- PARTIAL-BAND critical (0 < coverage < 0.5) → NOT "absent", but STILL surfaced in the advisory ----
+//      #212 lockstep: the engine quarantines any critical with coverage < 0.5, so the "please verify"
+//      advisory must name it too — a withheld value can never be dropped silently. A 3-word buyer name
+//      with only 1 word in the OCR ("Maple") is coverage ~0.33: not criticalAbsent (coverage !== 0), but
+//      it IS unconfirmed+critical, so groundingFinding must list it.
+{
+  const g = groundFields({ buyerName: 'Maple Nonexistent Phantom', readable: true }, OCR);
+  assert.strictEqual(g.criticalAbsent.length, 0, 'a partial match is not "absent" (coverage !== 0)');
+  assert.ok(g.unconfirmed.some((u) => u.field === 'buyerName' && u.critical && u.coverage > 0 && u.coverage < 0.5),
+    'the partial-band buyer name is an unconfirmed CRITICAL value');
+  const f = groundingFinding('purchase_contract', g);
+  assert.ok(f && f.code === 'values_unconfirmed_in_document', 'a partial-band critical still raises the advisory');
+  assert.ok(/buyerName/.test(f.docValue), 'the withheld value is named for the human — never dropped silently');
+}
+
 // ---- DATE FORMAT tolerance: an ISO date grounds against a US-formatted date in the OCR ----
 {
   const usOcr = 'DRIVER LICENSE  DOB 05/15/1980  EXP 08-01-2028  Class C';
