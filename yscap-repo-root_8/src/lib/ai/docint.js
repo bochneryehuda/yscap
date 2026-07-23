@@ -27,6 +27,14 @@
  */
 const cfg = require('../../config');
 const { runWithRetry, classifyStatus, retryAfterMs, breakerFor } = require('./resilience');
+const layoutCapture = require('./layout-capture'); // #112 (R5.15) — line/word polygon capture
+
+// Canonical, normalized (0..1) line/word geometry for one Azure page. Best-effort:
+// never throws, so it can never break a read (returns empty arrays on any trouble).
+function layoutFor(rawPage, index) {
+  try { const c = layoutCapture.normalizeAzurePage(rawPage, index); return { lines: c.lines, words: c.words }; }
+  catch (_e) { return { lines: [], words: [] }; }
+}
 
 // The synchronous submit accepts large files, but we cap to keep memory + latency
 // sane; bigger documents can move to the batch path later.
@@ -184,6 +192,10 @@ async function read({ buffer, base64 } = {}) {
       text: lineText,
       confidence,
       wordCount: words.length,
+      // #112 (R5.15) — preserve the line/word POLYGONS in one canonical, normalized
+      // (0..1) shape so an evidence span can later be drawn over the rendered page.
+      // Additive + best-effort: never throws, never blocks the read.
+      layout: layoutFor(p, i),
     };
   });
   return { ok: true, text, pageCount, pages };
