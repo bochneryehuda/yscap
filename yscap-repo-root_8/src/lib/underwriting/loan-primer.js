@@ -218,6 +218,27 @@ function txt(v) {
   return String(v);
 }
 
+// Render one discrepancy as "field: governing=<value> (<source>) vs <value> (<source>)".
+// Reads the canonical source-priority shape { field, governing:{source,value},
+// conflicts:[{source,value}] } (source-priority.js:66) and degrades gracefully for
+// any older/foreign shape so a caller never gets a raw JSON dump.
+function discrepancyLine(d) {
+  if (!d || typeof d !== 'object') return String(d);
+  const field = d.field || d.key || '?';
+  const one = (c) => {
+    if (!c || typeof c !== 'object') return txt(c);
+    const val = ('value' in c) ? c.value : c;
+    return `${txt(val)}${c.source ? ` (${c.source})` : ''}`;
+  };
+  if (d.governing || Array.isArray(d.conflicts)) {
+    const gov = d.governing ? one(d.governing) : '(none)';
+    const conflicts = Array.isArray(d.conflicts) ? d.conflicts.map(one) : [];
+    return `${field}: governing=${gov}${conflicts.length ? ` vs ${conflicts.join(', ')}` : ''}`;
+  }
+  // Fallback for a foreign shape — compact, still no raw object dump beyond values.
+  return `${field}: ${JSON.stringify(d.values || d.sources || d).slice(0, 200)}`;
+}
+
 /**
  * fileSummaryText(primer, opts) → a compact, human/AI-legible per-file block.
  * Pure — takes the assembled primer object, renders the load-bearing values with
@@ -253,8 +274,7 @@ function fileSummaryText(primer, opts) {
   if (s && Array.isArray(s.discrepancies) && s.discrepancies.length) {
     lines.push(`- DISCREPANCIES (present sources disagree — do NOT silently pick one):`);
     for (const d of s.discrepancies.slice(0, 12)) {
-      const key = d && (d.key || d.field) ? (d.key || d.field) : '?';
-      lines.push(`    · ${key}: ${JSON.stringify(d && (d.values || d.sources || d)).slice(0, 200)}`);
+      lines.push(`    · ${discrepancyLine(d)}`);
     }
   }
   if (primer && Array.isArray(primer.missing) && primer.missing.length) {

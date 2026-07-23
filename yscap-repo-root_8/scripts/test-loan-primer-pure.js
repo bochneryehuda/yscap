@@ -50,16 +50,24 @@ async function main() {
 
   // 4 — staff summary surfaces the note buyer, discrepancies and missing-required.
   await check('staff summary shows note buyer + discrepancies + missing', () => {
+    // Real source-priority discrepancy shape: { field, governing:{source,value}, conflicts:[{source,value}] }.
     const s = p.fileSummaryText({
       applicationId: 'x',
       fields: { registered_program: 'gold', note_buyer: 'bluelake', loan_amount: 500000 },
-      structure: { discrepancies: [{ key: 'arv', values: { app: 400000, appraisal: 380000 } }], ready: false },
+      structure: {
+        discrepancies: [{
+          field: 'arv',
+          governing: { source: 'appraisal', value: 380000 },
+          conflicts: [{ source: 'application', value: 400000 }],
+        }],
+        ready: false,
+      },
       facts: [{ status: 'human_confirmed' }],
       missing: ['loan_amount'],
     });
     assert(/Note buyer \(STAFF-ONLY\): bluelake/.test(s), 'note buyer shown to staff');
     assert(/DISCREPANCIES/.test(s), 'discrepancies section present');
-    assert(/arv:/.test(s), 'the disagreeing field named');
+    assert(/arv: governing=380000 \(appraisal\) vs 400000 \(application\)/.test(s), 'discrepancy rendered from the real shape');
     assert(/MISSING REQUIRED/.test(s), 'missing-required surfaced');
     assert(/human_confirmed fact outranks/.test(s), 'verified-fact note present');
   });
