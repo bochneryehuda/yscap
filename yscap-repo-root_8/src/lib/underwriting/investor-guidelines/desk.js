@@ -44,10 +44,14 @@ function lc(v) { return String(v == null ? '' : v).trim().toLowerCase(); }
 // ---------------------------------------------------------------------------
 function fmtMoney(n) { return `$${Math.round(Number(n) || 0).toLocaleString('en-US')}`; }
 
+// A check never throws on hostile input — a non-object signals bag reads as empty.
+function sig(signals) { return signals && typeof signals === 'object' ? signals : {}; }
+
 // seller concession cap: 6% of sale price (3% for 5+ unit / mixed-use). cond 3035.
 function checkSellerConcession(signals) {
-  const pct = num(signals.seller_concession_pct);
-  const units = num(signals.units);
+  const s = sig(signals);
+  const pct = num(s.seller_concession_pct);
+  const units = num(s.units);
   const cap = (units != null && units >= 5) ? 3 : 6;
   if (pct == null) return { status: 'to_verify', detail: `Confirm the seller concession does not exceed ${cap}% of the sale price.` };
   if (pct > cap + 1e-9) return { status: 'conflict', detail: `Seller concession is ${pct}% — over the ${cap}% cap.` };
@@ -56,7 +60,7 @@ function checkSellerConcession(signals) {
 
 // construction contingency cap: 10% of total budget. cond 2193.
 function checkContingency(signals) {
-  const pct = num(signals.sow_contingency_pct);
+  const pct = num(sig(signals).sow_contingency_pct);
   if (pct == null) return { status: 'to_verify', detail: 'Confirm the SOW contingency does not exceed 10% of the total budget.' };
   if (pct > 10 + 1e-9) return { status: 'conflict', detail: `Contingency is ${pct}% — over the 10% maximum.` };
   return { status: 'ok', detail: `Contingency ${pct}% is within the 10% maximum.` };
@@ -64,8 +68,9 @@ function checkContingency(signals) {
 
 // hazard liability coverage tiers by loan amount. cond 2186 (CorrFirst limits).
 function checkLiabilityTier(signals) {
-  const loan = num(signals.loan_amount);
-  const cover = num(signals.liability_coverage);
+  const s = sig(signals);
+  const loan = num(s.loan_amount);
+  const cover = num(s.liability_coverage);
   if (loan == null) return { status: 'to_verify', detail: 'Confirm liability coverage meets the tier for the loan amount.' };
   const required = loan <= 500000 ? 300000 : (loan <= 1000000 ? 500000 : 1000000);
   if (cover == null) return { status: 'to_verify', detail: `Requires at least ${fmtMoney(required)} liability coverage for a ${fmtMoney(loan)} loan.` };
@@ -75,9 +80,10 @@ function checkLiabilityTier(signals) {
 
 // subject value vs Zillow median caps (125/200/300% by unit count). cond 2798.
 function checkMedianValue(signals) {
-  const units = num(signals.units) || 1;
-  const median = num(signals.zillow_median);
-  const value = num(signals.arv) != null ? num(signals.arv) : num(signals.as_is_value);
+  const s = sig(signals);
+  const units = num(s.units) || 1;
+  const median = num(s.zillow_median);
+  const value = num(s.arv) != null ? num(s.arv) : num(s.as_is_value);
   const capPct = units >= 3 ? 300 : (units === 2 ? 200 : 125);
   if (median == null || value == null) return { status: 'to_verify', detail: `Confirm the As-Is/ARV does not exceed ${capPct}% of the Zillow median (unless exempt).` };
   const ratio = Math.round((value / median) * 1000) / 10;
@@ -158,7 +164,8 @@ function assessCondition(cond, ctx) {
     let verdict; let reason;
     if (conflicting.length) {
       verdict = VERDICT.CONFLICTS;
-      reason = conflicting.map((k) => k.detail).filter(Boolean).join(' ');
+      // several checks on one condition share the same evaluator → dedupe the cited reason.
+      reason = [...new Set(conflicting.map((k) => k.detail).filter(Boolean))].join(' ');
     } else if (satisfied) {
       verdict = VERDICT.SATISFIED;
       reason = c.pilot_template_code ? `Cleared on the file (${c.pilot_template_code}).` : 'Cleared on the file.';

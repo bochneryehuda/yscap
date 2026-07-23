@@ -74,7 +74,14 @@ const cond = (over) => Object.assign({ cond_no: 9001, name: 'Test', domain: 'oth
   assert.strictEqual(desk.checkMedianValue({ arv: 150000, zillow_median: 100000, units: 1 }).status, 'conflict', '150% > 125% (1 unit)');
   assert.strictEqual(desk.checkMedianValue({ arv: 150000, zillow_median: 100000, units: 3 }).status, 'ok', '150% < 300% (3-4 unit)');
   assert.strictEqual(desk.checkMedianValue({ arv: 150000 }).status, 'to_verify', 'no median → to_verify');
-  ok('numeric checks: conflict only on a known bad value; missing data → to_verify (never fabricated)');
+  // the checks honor the never-throws contract even on a null/garbage signals bag.
+  for (const bad of [null, undefined, 42, 'x', []]) {
+    for (const fn of [desk.checkSellerConcession, desk.checkContingency, desk.checkLiabilityTier, desk.checkMedianValue]) {
+      assert.doesNotThrow(() => fn(bad));
+      assert.strictEqual(fn(bad).status, 'to_verify', 'no signals → to_verify, never a throw/conflict');
+    }
+  }
+  ok('numeric checks: conflict only on a known bad value; missing data → to_verify (never fabricated); null-safe');
 }
 
 // 5. a note-buyer-specific conflict escalates the condition verdict to CONFLICTS with a cited number.
