@@ -24,6 +24,7 @@ const crypto = require('crypto');
 const wholeLoanContext = require('./whole-loan-context');
 const programAdapter = require('./program-adapter');
 const structureUnderwriter = require('./structure-underwriter');
+const assignmentAnalysis = require('./assignment-analysis');
 const decision = require('./decision');
 
 // The context fields that are PRICING inputs — a registration↔application
@@ -160,6 +161,32 @@ function assembleRun(inputs) {
       title: `${ch.key} changed since pricing`, explanation: `${ch.key}: ${ch.from} → ${ch.to}`,
       source: 'application', governing_rule: 'registration inputs must match current file', blocks_term_sheet: true,
     });
+  }
+
+  // #196 — independent ASSIGNMENT-fee re-derivation. On an assignment purchase,
+  // re-derive the financeable fee / recognized price the SAME way the frozen
+  // engine does (15% of the seller's original price; Gold's $75k ceiling) and
+  // flag a basis mismatch vs the registered figure. ADVISORY: it verifies the
+  // frozen math and surfaces a discrepancy for a human — it never changes a number
+  // and never blocks (the engine already applied the cap; the excess-to-close is a
+  // note, and a registered-fee mismatch is a data-integrity warning, not a gate).
+  if (ctx.values && ctx.values.is_assignment) {
+    const regAsg = (reg && reg.quote && reg.quote.assignment) || null;
+    const av = assignmentAnalysis.analyze({
+      sellerPrice: ctx.values.underlying_contract_price,
+      actualFee: ctx.values.assignment_fee,
+      program: ctx.values.program,
+      registeredFinanceableFee: regAsg ? regAsg.financeableFee : undefined,
+    });
+    for (const f of (av.findings || [])) {
+      findings.push({
+        code: f.code, subject: 'assignment_fee', severity: f.severity, category: 'assignment',
+        title: f.title, explanation: f.explanation, source: 'assignment_analysis',
+        governing_rule: '15% of the seller’s original contract price (Gold: lesser of $75,000 or 15%)',
+        expected_value: av.financeableFee != null ? `$${Number(av.financeableFee).toLocaleString('en-US')}` : null,
+        blocks_term_sheet: false, blocks_ctc: false, blocks_funding: false,
+      });
+    }
   }
 
   // Findings from the other desks (appraisal R6.8 / document R6.9 / system R6.10-12 / liquidity).
