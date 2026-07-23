@@ -2186,7 +2186,14 @@ router.get('/ai-admin/questions', requirePermission('promote_training'), async (
     const aiSug = require('../lib/underwriting/ai-suggestions');
     const rows = await aiSug.listOpenAdminQuestions({ appId: req.query.appId || undefined,
       limit: Number(req.query.limit) || undefined }, db);
-    res.json({ ok: true, questions: rows });
+    // #200 — attach an SLA clock to each open question (how long it's waited, when
+    // it's due, whether it's overdue) + a roll-up, and surface the most overdue
+    // first. Advisory / read-only — computed from asked_at + the agent's SLA (no
+    // schema change); an explicit decision_deadline wins when set.
+    const aged = require('../lib/underwriting/admin-question-sla').ageQuestions(rows, {});
+    aged.rows.sort((a, b) => (Number(b._sla && b._sla.overdue) - Number(a._sla && a._sla.overdue))
+      || ((b._sla && b._sla.hoursOpen || 0) - (a._sla && a._sla.hoursOpen || 0)));
+    res.json({ ok: true, questions: aged.rows, sla: aged.summary });
   } catch (e) { next(e); }
 });
 router.post('/ai-admin/questions/:id/answer', requirePermission('promote_training'), async (req, res, next) => {
