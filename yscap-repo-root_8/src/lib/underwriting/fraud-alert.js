@@ -26,7 +26,10 @@ const db = () => (_db || (_db = require('../../db')));
 // - entity_chain: identity-chain fatals (identity_ssn_mismatch etc.) are
 //   recorded under this source by identity-chain.js
 // - independent_verification: reconciler conflicts (ownership/entity-status)
-const HIGH_CONF_SOURCES = new Set(['assignment_fraud', 'authenticity', 'entity_chain', 'independent_verification']);
+// - party_collusion: independence-required parties (seller/borrower/appraiser/
+//   title agent) sharing an identity — a straw-buyer / conflict-of-interest signal (#199)
+// - double_pledge: the subject property pledged on another live loan in PILOT (#199)
+const HIGH_CONF_SOURCES = new Set(['assignment_fraud', 'authenticity', 'entity_chain', 'independent_verification', 'party_collusion', 'double_pledge']);
 const FATAL_SOURCES = Array.from(HIGH_CONF_SOURCES);
 
 /**

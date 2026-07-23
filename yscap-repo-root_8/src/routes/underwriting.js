@@ -553,6 +553,17 @@ router.get('/:appId', async (req, res, next) => {
             fileCtx: { vestingName: mctx && mctx.vestingName },
             extractions: exts.rows,
           }));
+          // #199 — party collusion (independence-required parties sharing an
+          // identity) + double-pledged collateral (this property on another live
+          // loan). Advisory — records ai_suggestions, never auto-blocks.
+          await step(() => require('../lib/underwriting/party-collusion').analyzeAndRecord(c, {
+            applicationId: app.id,
+            fileCtx: { vestingName: mctx && mctx.vestingName },
+            extractions: exts.rows,
+          }));
+          await step(() => require('../lib/underwriting/party-collusion').checkDoublePledgeAndRecord(c, {
+            applicationId: app.id,
+          }));
           await c.query('COMMIT');
         } catch (_) { await c.query('ROLLBACK').catch(() => {}); }
         finally { c.release(); }
@@ -1667,6 +1678,10 @@ router.post('/:appId/ai-suggestions/rerun-checks', requirePermission('sign_off_c
         ['bad_clearance',   () => require('../lib/underwriting/bad-clearance').scanFile(client, app.id, { maxConditions: 15 })],
         ['public_records',  () => require('../lib/underwriting/public-records-crosscheck').analyzeAndRecord(client, { applicationId: app.id, fileCtx: { vestingName: mctx && mctx.vestingName }, extractions: exts.rows })],
         ['identity_chain',  () => require('../lib/underwriting/identity-chain').analyzeAndRecord(client, { applicationId: app.id, extractions: exts.rows })],
+        // #199 — party collusion (independence-required parties sharing an identity)
+        // + double-pledged collateral (this property on another live loan). Advisory.
+        ['party_collusion', () => require('../lib/underwriting/party-collusion').analyzeAndRecord(client, { applicationId: app.id, extractions: exts.rows, fileCtx: { vestingName: mctx && mctx.vestingName } })],
+        ['double_pledge',   () => require('../lib/underwriting/party-collusion').checkDoublePledgeAndRecord(client, { applicationId: app.id })],
       ];
       for (const [k, fn] of bridges) {
         // SAVEPOINT per bridge — one failure must never abort the shared tx and
