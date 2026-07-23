@@ -1944,6 +1944,70 @@ router.post('/:appId/ai-suggestions/:id/note', async (req, res, next) => {
 });
 
 // -------------------------------------------------------------------------
+// #191 activation 1 — CLEARANCE PREVIEW (read-only, ADVISORY).
+// "Would the documents on this condition clear it?" — runs the SAME
+// deterministic cure analysis the extraction pipeline records proofs with
+// (condition intent → cure.analyze per current document → clearance-outcome
+// aggregation) but WRITES NOTHING: no proof row, no status change, no
+// suggestion, no notification. Sign-off still goes ONLY through staff.js
+// signOffGate — this endpoint is a preview beside that gate, never a way
+// around it. First reader of checklist_items.intent_override (db/233).
+// -------------------------------------------------------------------------
+router.get('/:appId/checklist/:itemId/clearance-preview', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    if (!isUuid(req.params.itemId)) return res.status(404).json({ error: 'condition not found' });
+    const itemQ = await db.query(
+      `SELECT ci.id, ci.status, ci.intent_override,
+              ct.code, COALESCE(ct.label, ct.code) AS label
+         FROM checklist_items ci
+         LEFT JOIN checklist_templates ct ON ct.id = ci.template_id
+        WHERE ci.id = $1 AND ci.application_id = $2`, [req.params.itemId, app.id]);
+    const item = itemQ.rows[0];
+    if (!item) return res.status(404).json({ error: 'condition not found' });
+
+    const cure = require('../lib/underwriting/cure');
+    const twin = require('../lib/underwriting/twin');
+    const preview = require('../lib/underwriting/clearance-preview');
+
+    const intent = (item.intent_override && typeof item.intent_override === 'object')
+      ? item.intent_override
+      : (item.code ? await cure.intentForCode(item.code, db) : null);
+    if (!intent) {
+      return res.json({ ok: true, available: false, advisory: true,
+        reason: 'This condition has no registered intent — the preview covers intent-backed conditions only.',
+        item: { id: item.id, code: item.code, label: item.label, status: item.status } });
+    }
+
+    // The item's CURRENT analyzed documents (extraction status is 'analyzed' — db/200).
+    const exts = await db.query(
+      `SELECT de.document_id, de.doc_type, de.fields, d.filename
+         FROM document_extractions de
+         JOIN documents d ON d.id = de.document_id
+        WHERE d.checklist_item_id = $1 AND d.is_current
+          AND de.is_current AND de.status = 'analyzed'
+        ORDER BY de.created_at DESC LIMIT 12`, [item.id]);
+
+    const twinRows = await twin.factsForFile(app.id, db).catch(() => []);
+    const twinFacts = Object.fromEntries((twinRows || []).map((r) => [r.fact_key, r]));
+    const { subject, expected } = await cure.loadCureContext(app.id, db);
+
+    const { documents, overall } = preview.previewDocuments({
+      intent,
+      documents: exts.rows.map((r) => ({ documentId: r.document_id, docType: r.doc_type, filename: r.filename, fields: r.fields })),
+      twinFacts, subject, expected,
+    });
+    res.json({
+      ok: true, available: true, advisory: true,
+      item: { id: item.id, code: item.code, label: item.label, status: item.status },
+      intent: { code: item.code, version: intent.version || null, primaryGoal: intent.primary_goal || null },
+      documents, overall,
+    });
+  } catch (e) { next(e); }
+});
+
+// -------------------------------------------------------------------------
 // R3.32 — Snooze/dismiss the fraud alert banner on a file. Snooze records an
 // audit_log stamp with `until` (24h default); the /:appId view suppresses the
 // banner (still shows the underlying suggestions in the panel) until the stamp

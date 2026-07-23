@@ -2458,7 +2458,18 @@ router.get('/applications/:id/checklist', async (req, res) => {
        LEFT JOIN staff_users wv  ON wv.id  = ci.waived_by
       WHERE ci.application_id=$1
       ORDER BY ci.sort_order, ci.created_at`, [req.params.id]);
-  res.json(r.rows);
+  // #191 activation 2 — condition AGING (advisory, additive): each row gains
+  // daysOpen / agingBucket / overdue / overdueBy from the pure ager. The
+  // response stays a bare array (no shape change for the UI); an ager hiccup
+  // degrades to the un-aged rows, never breaks the panel.
+  try {
+    const aged = require('../lib/underwriting/condition-aging').ageConditions(r.rows, { now: new Date() });
+    const byId = new Map((aged.conditions || []).map((c) => [c.id, c]));
+    return res.json(r.rows.map((row) => {
+      const a = byId.get(row.id);
+      return a ? { ...row, daysOpen: a.daysOpen, agingBucket: a.bucket, overdue: a.overdue, overdueBy: a.overdueBy } : row;
+    }));
+  } catch (_) { return res.json(r.rows); }
 });
 
 // add a borrower-facing document request
@@ -3694,7 +3705,15 @@ router.get('/applications/:id/conditions', async (req, res) => {
        LEFT JOIN staff_users xb ON xb.id=c.cleared_by
        LEFT JOIN staff_users rb ON rb.id=c.reviewed_by
       WHERE c.application_id=$1 ORDER BY (c.status='open') DESC, c.created_at DESC`, [req.params.id]);
-  res.json(r.rows);
+  // #191 activation 2 — same additive aging as the checklist endpoint.
+  try {
+    const aged = require('../lib/underwriting/condition-aging').ageConditions(r.rows, { now: new Date() });
+    const byId = new Map((aged.conditions || []).map((c) => [c.id, c]));
+    return res.json(r.rows.map((row) => {
+      const a = byId.get(row.id);
+      return a ? { ...row, daysOpen: a.daysOpen, agingBucket: a.bucket, overdue: a.overdue, overdueBy: a.overdueBy } : row;
+    }));
+  } catch (_) { return res.json(r.rows); }
 });
 router.post('/applications/:id/loan-conditions', async (req, res) => {
   const b = req.body || {};
