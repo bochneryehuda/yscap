@@ -149,6 +149,8 @@ export default function StaffFindingEscalations() {
       documentId: row.document_id,
       page: row.page_number != null ? Number(row.page_number) : undefined,
       title: `${base}${row.page_number != null ? ` — page ${row.page_number}` : ''}`,
+      // Highlight the conflicting value from the document on the page it's on.
+      highlight: row.doc_value != null ? String(row.doc_value) : undefined,
     });
   }
 
@@ -300,6 +302,7 @@ export default function StaffFindingEscalations() {
           key={preview.documentId}
           title={preview.title}
           initialPage={preview.page}
+          highlight={preview.highlight}
           load={() => api.staffDownloadDoc(preview.documentId)}
           onDownload={async () => {
             try { const { blob, filename } = await api.staffDownloadDoc(preview.documentId); saveBlob(blob, filename); }

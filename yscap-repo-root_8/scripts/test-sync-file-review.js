@@ -35,7 +35,8 @@ async function expectHttp(status, fn) {
       'file_not_materialized_ambiguous', 'file_not_materialized_duplicate_pending',
       'file_unlinked_no_task', 'file_dead_unlinked', 'push_dead_lettered', 'task_deleted_needs_decision',
       'sharepoint_match_uncertain', 'sharepoint_mirror_failed', 'borrower_identity_conflict',
-      'shared_email_needs_reassignment', 'copied_loan_number_needs_assignment'].sort());
+      'shared_email_needs_reassignment', 'copied_loan_number_needs_assignment',
+      'economics_frozen_conflict'].sort());
     for (const k of keys) assert.ok(SFR.REASON_ACTIONS[k].length >= 1, `${k} has at least one action`);
   });
   await ta('allow_shared_email without the pair reference → 409', () =>
@@ -204,6 +205,18 @@ async function expectHttp(status, fn) {
   await ta('loan_number_keep_other without a file → 409', () =>
     expectHttp(409, () => SFR.applyFileReviewAction({
       row: { reason: 'copied_loan_number_needs_assignment', application_id: null }, action: 'loan_number_keep_other' })));
+  // economics-frozen conflict: keep-frozen-figures validates BEFORE any write.
+  t('economics_frozen_conflict offers ONLY keep_frozen_figures', () => {
+    assert.strictEqual(SFR.isActionAllowed('economics_frozen_conflict', 'keep_frozen_figures'), true);
+    assert.strictEqual(SFR.isActionAllowed('economics_frozen_conflict', 'retry_push'), false);
+    assert.strictEqual(SFR.isActionAllowed('push_dead_lettered', 'keep_frozen_figures'), false, 'keep_frozen_figures never leaks onto other reasons');
+  });
+  await ta('keep_frozen_figures without a file → 409', () =>
+    expectHttp(409, () => SFR.applyFileReviewAction({
+      row: { reason: 'economics_frozen_conflict', application_id: null }, action: 'keep_frozen_figures' })));
+  await ta('keep_frozen_figures with no listed frozen fields → 409', () =>
+    expectHttp(409, () => SFR.applyFileReviewAction({
+      row: { reason: 'economics_frozen_conflict', application_id: 'a1', raw_value: 'not-json' }, action: 'keep_frozen_figures' })));
   // relink_task is ADMIN-ONLY — the authorization check fires FIRST, before any
   // field validation (pre-merge audit B1: the review-queue route is LO-reachable,
   // so the action layer must refuse a non-admin even with valid inputs).

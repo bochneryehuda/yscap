@@ -37,6 +37,10 @@ const FIELD_LABELS = {
   // Two different people using ONE email address (owner-directed: the email
   // must be assigned to exactly one borrower; until then it never links files):
   shared_email: 'Shared email — two borrowers',
+  // ClickUp changed a loan FIGURE while the file was frozen (sent term sheet /
+  // Clear-to-Close / Funded) — the change was held so the sent term sheet stays
+  // in agreement with the file:
+  economics_frozen: 'Loan figures — frozen (term sheet sent / file locked)',
 };
 
 async function queueReview({ applicationId, borrowerId, taskId, direction, fieldKey,
@@ -177,6 +181,11 @@ async function notifyLoanOfficer(reviewId) {
   // wrong system name). Owner-directed 2026-07-20. ----
   const isSitewire = row.field_key === 'sitewire';
   const isSharepointDoc = row.field_key === 'sharepoint_doc';
+  // A frozen-economics hold is neither a two-sided "pick a winner" nor a generic
+  // file-level stuck state — it needs its OWN email (pre-merge audit): PILOT held
+  // a ClickUp loan-figure change because the file is frozen, and the ONE action is
+  // keep-the-file's-figures (or clear the term sheet to accept the change).
+  const isEconomicsFrozen = row.field_key === 'economics_frozen';
   let swAddress = null;
   if (isSitewire && row.application_id) {
     try { const ar = (await db.query(`SELECT property_address FROM applications WHERE id=$1`, [row.application_id])).rows[0]; swAddress = ar ? shortAddress(ar.property_address) : null; } catch (_) {}
@@ -188,6 +197,11 @@ async function notifyLoanOfficer(reviewId) {
   let title, body;
   if (isSharepointDoc) {
     ({ title, body } = sharepointDocEmail({ borrowerName: row.borrower_name, portalValue: row.portal_value }));
+  } else if (isEconomicsFrozen) {
+    title = `Sync review needed: loan figures held — the file is locked${who}`;
+    body = `A loan figure was changed in ClickUp, but this file is LOCKED — a term sheet has been sent for signature, or the file is Clear-to-Close / Funded — so PILOT did NOT change the file (the term sheet that already went out stays accurate).\n\n` +
+      `In ClickUp: ${row.clickup_value || '—'}\nOn the file (kept): ${row.portal_value || '—'}\n\n` +
+      `Open the Sync review screen. You can keep the file's figures and push them back to ClickUp so the two match. To ACCEPT the ClickUp change instead, clear the Term Sheet package (or ask a super-admin to unlock a Clear-to-Close / Funded file) and re-register — the figures then update on their own.`;
   } else if (isSitewire) {
     const place = swAddress || row.borrower_name || 'a construction-draw file';
     title = `Draw review needed — ${place}`;

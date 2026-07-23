@@ -1527,6 +1527,20 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     } catch (_) { /* best-effort — a guard failure must never break the inbound pull */ }
   }
 
+  // ECONOMICS FREEZE (owner-directed follow-up to the term-sheet-sent freeze):
+  // if this existing file is frozen — a Term Sheet DocuSign package is sent, or
+  // the file is Clear-to-Close / Funded — an inbound economics CHANGE must not
+  // silently overwrite the file (it would make the sent term sheet disagree with
+  // it). The guard strips the changed frozen-economics fields from `cols` (their
+  // COALESCE keeps the current value) and parks a review row for the loan officer.
+  // No-op on an unfrozen file, or when ClickUp already matches the frozen figures.
+  if (targetId && task) {
+    try {
+      await require('../lib/inbound-economics-freeze')
+        .applyInboundEconomicsFreeze({ appId: targetId, cols, taskId: task.id, borrowerId });
+    } catch (_) { /* best-effort — never breaks the inbound pull */ }
+  }
+
   const vals = Object.values(cols);
   const set = Object.keys(cols).map((k, i) => `${k}=COALESCE($${i + 2}, ${k})`).join(', ');
   if (targetId) {

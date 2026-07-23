@@ -74,6 +74,12 @@ const REASON_ACTIONS = {
   // the copy and keep it on the other deal. PILOT does its own side; the human then deletes the leftover
   // copy on the LOSING file's ClickUp card (PILOT never erases a ClickUp box — the hard no-clear rule).
   copied_loan_number_needs_assignment: ['loan_number_assign_here', 'loan_number_keep_other'],
+  // ClickUp changed a loan FIGURE while the file is FROZEN (a sent term sheet,
+  // or Clear-to-Close / Funded), so it was not applied. Keep PILOT's frozen
+  // figures and push them back to ClickUp so the two agree; the other option
+  // (accept the change) is the human clearing the term-sheet package / a
+  // super-admin unlock + re-register, which lifts the freeze on its own.
+  economics_frozen_conflict: ['keep_frozen_figures'],
 };
 
 // The OTHER bumping file, read out of the review's forensic raw_value (queued by the ingest layer as
@@ -499,6 +505,31 @@ async function applyFileReviewAction({ row, action, targetApplicationId, targetT
     }
     const other = info.otherId ? `the other deal (file ${info.otherId})` : 'the other deal';
     return { note: `confirmed — this file is the copy; ${other} keeps loan number ${number || ''}. Delete the leftover loan number on THIS file's ClickUp card so the two stop clashing (PILOT never erases a ClickUp box).`, applicationId: row.application_id };
+  }
+
+  if (action === 'keep_frozen_figures') {
+    // The file is FROZEN (a sent term sheet, or Clear-to-Close / Funded) and
+    // ClickUp carried different economics, which the inbound guard held back.
+    // Keep PILOT's frozen figures and push them BACK to ClickUp so the two agree
+    // (economics fields sync both ways — a no-op if ClickUp already matches). To
+    // ACCEPT the ClickUp change instead, the LO clears the term-sheet package (or
+    // a super-admin unlocks a CTC/Funded file) and re-registers: the freeze lifts
+    // and the change flows in on the next sync.
+    if (!row.application_id) throw httpError(409, 'this row has no portal file');
+    const { FROZEN_KEYS } = require('./inbound-economics-freeze');
+    let fields = [];
+    try {
+      const raw = row.raw_value ? JSON.parse(row.raw_value) : null;
+      fields = ((raw && raw.changes) || []).map((c) => c && c.field).filter(Boolean);
+    } catch (_) { /* raw_value is forensic — unparseable falls through */ }
+    fields = [...new Set(fields)].filter((f) => FROZEN_KEYS.includes(f));
+    if (!fields.length) throw httpError(409, 'this row does not list the frozen figures to restore');
+    try { await require('../clickup/enqueue').enqueueClickupPush(row.application_id, fields); } catch (_) { /* re-sync ClickUp; no-op if already equal */ }
+    await audit('sync_review_keep_frozen_figures', row.application_id, actorId, { fields, reviewId: row.id });
+    return {
+      note: `kept the file's frozen figures and re-pushed them to ClickUp so the two agree (${fields.join(', ')}). ` +
+        `To accept the ClickUp change instead, clear the term-sheet package (or have a super-admin unlock a Clear-to-Close / Funded file) and re-register.`,
+      applicationId: row.application_id };
   }
 
   throw httpError(400, `unknown action '${action}'`);

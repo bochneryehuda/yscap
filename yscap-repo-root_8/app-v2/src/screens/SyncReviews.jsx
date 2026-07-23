@@ -35,6 +35,7 @@ const REASON_COPY = {
   sharepoint_mirror_failed: 'This document could NOT be mirrored to SharePoint after every automatic retry — the exact error is shown on the “Last error” line above. Fix the cause if it needs a human (a folder problem, an unreadable file), then Retry the document; if the folder match itself is wrong, use Re-match. Nothing is lost — the document is safe in PILOT.',
   borrower_identity_conflict: 'TWO DIFFERENT PEOPLE appear to share ONE borrower profile: this file’s ClickUp task and the PILOT profile disagree on identity (name, phone, or SSN), and the profile also belongs to another officer’s relationship (a lead or owned profile). This usually comes from a family-shared email + the family last name. Do NOT adopt either value — that would change the other person too. Click Split: the file’s person gets their OWN fresh profile (rebuilt from ClickUp), and the other person keeps the original profile untouched. Dismiss only if you are sure it is genuinely the same human.',
   shared_email_needs_reassignment: 'TWO BORROWER PROFILES are using ONE email address (shown under “In ClickUp”; the two people under “In PILOT”). Two ways to settle it: (1) if the sharing is RIGHT — spouses on the same deals, or the same person twice — click Allow: the two profiles are LINKED, whoever logs in with the email sees BOTH sets of files, and this never flags again (nothing is merged; each keeps their own profile and officer). (2) If they are unrelated people, give one of them their OWN email — edit it on their borrower screen in PILOT or on the ClickUp task — and this card closes itself. Until settled, the system deliberately refuses to link files by this email.',
+  economics_frozen_conflict: 'ClickUp carries different loan figures than PILOT (shown above), but this file is FROZEN — a term sheet has been sent for signature, or the file is Clear-to-Close / Funded — so the numbers can’t change on their own (they would no longer match the term sheet that already went out). PILOT kept its figures and did NOT apply the ClickUp change. Two ways to settle it: keep PILOT’s figures and push them back to ClickUp so both match; OR, to accept the ClickUp change, clear the term sheet package (or ask a super-admin to unlock a Clear-to-Close / Funded file) and re-register — the figures then update by themselves on the next sync. You can also simply set it back in ClickUp to match the file.',
 };
 // Sitewire draw-management parks (field_key='sitewire'). The stored reason is
 // "<class>: <detail>"; we key friendly copy by the class and show the detail beneath.
@@ -107,6 +108,9 @@ const REASON_FILE_ACTIONS = {
     { action: 'loan_number_assign_here', label: 'This file owns the number', title: 'Give the loan number to THIS file and take it off the other file in PILOT. Then delete the leftover copy on the OTHER deal’s ClickUp card.' },
     { action: 'loan_number_keep_other', label: 'The other file owns it — this is the copy', title: 'Keep the number on the other deal; this file stays blank. Then delete the leftover copy on THIS file’s ClickUp card.' },
   ],
+  economics_frozen_conflict: [
+    { action: 'keep_frozen_figures', label: 'Keep PILOT’s figures (push to ClickUp)', title: 'Keep the file’s frozen loan figures and push them back to ClickUp so the two match. To accept the ClickUp change instead, clear the term sheet package (or have a super-admin unlock the file) and re-register.' },
+  ],
 };
 // The OTHER file that shares the contested loan number (from the row's forensic raw_value).
 function otherLoanFile(r) {
@@ -166,6 +170,7 @@ const FIELD_LABELS = {
   co_borrower_identity: 'Co-borrower identity — one profile, two people',
   shared_email: 'Shared email — two borrowers',
   sitewire: 'Construction draws (Sitewire)',
+  economics_frozen: 'Loan figures — frozen (term sheet sent / file locked)',
 };
 // Field keys the two-sided resolver can apply to BOTH systems today.
 // 'file_link' / 'ys_loan_number' rows are deliberately NOT here: they are
