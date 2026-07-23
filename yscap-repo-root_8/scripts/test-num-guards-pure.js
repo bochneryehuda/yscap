@@ -53,6 +53,8 @@ try { rb = require('../src/lib/rehab-budget'); } catch (_e) { rb = null; }
 if (rb) {
   assert.strictEqual(rb.toNum(-5000), -5000, 'a negative number keeps its sign');
   assert.strictEqual(rb.toNum('-5,000'), -5000, 'a formatted negative keeps its sign');
+  assert.strictEqual(rb.toNum('$-5,000'), -5000, 'a currency-prefixed negative keeps its sign (audit follow-up)');
+  assert.strictEqual(rb.toNum('(5,000)'), -5000, 'accounting parens stay negative');
   assert.strictEqual(rb.toNum('$75,000.50'), 75000.5, 'positive money still parses');
   assert.strictEqual(rb.goldContingencyOk({ subtotal: 100000, contingency: -5000 }), false,
     'a NEGATIVE contingency no longer satisfies the 5% requirement');
@@ -70,6 +72,21 @@ const found = bs.computeBankFindings(
   { borrowerName: 'Test LLC', entityName: 'Test LLC' });
 assert.ok((found || []).some((f) => f.code === 'bank_missing_page'), 'string page numbers still detect the missing page 3');
 ok('bank-statement-checks: string page numbers no longer disarm the detector');
+
+// 6b (audit fix, same day): a null/blank entry must DROP OUT — a bare
+// Number(null)===0 turned it into a phantom "page 0" that fabricated a FATAL
+// missing-page finding on a complete statement.
+const found2 = bs.computeBankFindings(
+  { accountHolderName: 'Test LLC', pageNumbers: [null, 2] },
+  { borrowerName: 'Test LLC', entityName: 'Test LLC' });
+assert.ok(!(found2 || []).some((f) => f.code === 'bank_missing_page'),
+  'a null page entry does not become page 0 (no false fatal)');
+const found3 = bs.computeBankFindings(
+  { accountHolderName: 'Test LLC', pageNumbers: ['', '3'], declaredPageCount: null },
+  { borrowerName: 'Test LLC', entityName: 'Test LLC' });
+assert.ok(!(found3 || []).some((f) => f.code === 'bank_missing_page'),
+  'a blank page entry does not become page 0 (single usable page, no gap provable)');
+ok('bank-statement-checks: null/blank page entries drop out — no phantom page 0');
 
 // 7. appraisal-underwriter: whitespace value is unreadable, not $0
 const uw = require('../src/lib/underwriting/appraisal-underwriter');

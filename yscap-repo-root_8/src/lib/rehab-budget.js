@@ -28,10 +28,13 @@ function toNum(v) {
   if (v == null) return null;
   const raw = String(v).trim();
   // Preserve the SIGN (fix 2026-07-23): stripping '-' let a NEGATIVE
-  // contingency/total pass the SOW gates in this JS layer while the DB
-  // trigger layer (signed numerics) disagreed. Correctness tightening only —
-  // no threshold or budget number changes.
-  const neg = /^\(.*\)$/.test(raw) || raw.startsWith('-');
+  // contingency (or a sign-flipped total) satisfy the SOW gates — this JS
+  // layer is the primary gate (signOffGate rejects before any DB write; the
+  // db/069/192 trigger also sign-strips, so it is belt-and-suspenders only).
+  // Correctness tightening only — no threshold or budget number changes.
+  // '$-5,000' counts as negative too (the minus may sit after the currency
+  // symbol), and accounting parens '(5,000)' stay negative.
+  const neg = /^\(.*\)$/.test(raw) || /^[^0-9]*-/.test(raw);
   const s = raw.replace(/[^0-9.]/g, '');
   if (s === '') return null;
   const n = Number(s);
