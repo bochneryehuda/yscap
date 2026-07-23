@@ -143,7 +143,11 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
     finally { setBusy(false); }
   };
   const click = (a) => {
-    if (a.needs === 'note' || a.needs === 'value') { setPending(a); setText(''); return; }
+    // "Fix the file" (needs a value): pre-fill with what the DOCUMENT says (the
+    // suggested correction) so the underwriter just confirms; for price / as-is /
+    // ARV / rehab budget the server writes it straight onto the loan file.
+    if (a.needs === 'value') { setPending(a); setText(docVal != null ? String(docVal) : ''); return; }
+    if (a.needs === 'note') { setPending(a); setText(''); return; }
     if (a.key === 'decline' && !window.confirm('Decline this file on this finding?')) return;
     submit(a.key);
   };
@@ -234,6 +238,11 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
             style={{ flex: 1, minWidth: 180, padding: '7px 10px', border: '1px solid var(--line,#E7E1D3)', borderRadius: 8, fontSize: 14 }} />
           <button disabled={busy || !text.trim()} onClick={confirmPending} style={btn(true)}>{pending.label}</button>
           <button disabled={busy} onClick={() => setPending(null)} style={btn()}>Cancel</button>
+        </div>
+      )}
+      {resolvable && pending && pending.needs === 'value' && (
+        <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginTop: 4 }}>
+          A purchase-price, as-is, ARV or rehab-budget correction is written straight onto the loan file (the pricing conditions reopen so it's re-registered). If the file is locked, clear the term-sheet package or unlock it first.
         </div>
       )}
       {/* Escalate — hand a finding you can't decide to the super-admin / processor / underwriter
