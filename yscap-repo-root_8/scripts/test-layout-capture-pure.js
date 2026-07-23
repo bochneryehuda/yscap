@@ -100,7 +100,14 @@ const near = (a, b, e = 1e-6) => Math.abs(a - b) <= e;
   const u = lc.captureLayout({}, { engine: 'mystery', index: 3 });
   assert.strictEqual(u.pageNumber, 4);
   assert.deepStrictEqual(u.lines, []);
-  ok('hostile/partial input never throws; garbled geometry → null, text preserved');
+  // captureLayout must survive an EXPLICIT null/garbage opts (not just undefined) —
+  // the `opts = {}` default only covers undefined, so this locks the NEVER THROWS contract.
+  for (const badOpts of [null, 42, 'x', []]) {
+    assert.doesNotThrow(() => lc.captureLayout({}, badOpts));
+    const r = lc.captureLayout({ width: 1, height: 1, lines: [] }, badOpts);
+    assert.ok(r && Array.isArray(r.lines), 'explicit bad opts → safe empty canonical page');
+  }
+  ok('hostile/partial input never throws (incl. explicit null opts); garbled geometry → null, text preserved');
 }
 
 // 6. alignerLines flattens canonical pages into the field-aligner input shape.
