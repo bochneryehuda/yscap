@@ -986,6 +986,25 @@ router.post('/:appId/avm-consensus/verify', requirePermission('sign_off_conditio
   } catch (e) { next(e); }
 });
 
+// #192 — advisory guideline evaluation. Runs the file's flat rule CONTEXT (the
+// same one the conditions engine builds) through the active knowledge-graph rules
+// (registered program + any note-buyer investor), returning per-rule verdicts +
+// plain citations + an investor-fit ranking. READ-ONLY and advisory — it changes
+// no decision, clears no condition, sizes no loan, and touches NO frozen pricing/
+// guideline number; it explains the frozen baselines db/260 recorded as data.
+// Staff-only (inherits requireAuth+requireStaff on the router); best-effort — an
+// unseeded knowledge graph returns an empty-but-valid report, never an error.
+router.get('/:appId/guideline-evaluation', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const gi = require('../lib/underwriting/guideline-intelligence');
+    const report = await gi.evaluateApplicationGuidelines(app.id);
+    if (report) report.generatedAt = new Date().toISOString();
+    res.json({ ok: true, report: report || { empty: true, applicationId: app.id, sets: [], fit: { ranked: [], best: null, anyFit: false, comparison: [] } } });
+  } catch (e) { next(e); }
+});
+
 // ---- Section 1071 coverage classifier (R2.10, blueprint compliance) ------
 // The CFPB Section 1071 small-business lending data-collection rule takes
 // effect January 1, 2028. This endpoint tells staff whether PILOT is on the
@@ -1940,6 +1959,118 @@ router.post('/:appId/ai-suggestions/:id/note', async (req, res, next) => {
     if (!sc.rows[0] || sc.rows[0].application_id !== app.id) return res.status(404).json({ error: 'not found on this file' });
     await aiSug.addNote(db, req.params.id, { staffId: req.actor.id, text: String(req.body && req.body.text || '') });
     res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
+// -------------------------------------------------------------------------
+// #191 activation 1 — CLEARANCE PREVIEW (read-only, ADVISORY).
+// "Would the documents on this condition clear it?" — runs the SAME
+// deterministic cure analysis the extraction pipeline records proofs with
+// (condition intent → cure.analyze per current document → clearance-outcome
+// aggregation) but WRITES NOTHING: no proof row, no status change, no
+// suggestion, no notification. Sign-off still goes ONLY through staff.js
+// signOffGate — this endpoint is a preview beside that gate, never a way
+// around it. First reader of checklist_items.intent_override (db/233).
+// -------------------------------------------------------------------------
+router.get('/:appId/checklist/:itemId/clearance-preview', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    if (!isUuid(req.params.itemId)) return res.status(404).json({ error: 'condition not found' });
+    const itemQ = await db.query(
+      `SELECT ci.id, ci.status, ci.intent_override,
+              ct.code, COALESCE(ct.label, ct.code) AS label
+         FROM checklist_items ci
+         LEFT JOIN checklist_templates ct ON ct.id = ci.template_id
+        WHERE ci.id = $1 AND ci.application_id = $2`, [req.params.itemId, app.id]);
+    const item = itemQ.rows[0];
+    if (!item) return res.status(404).json({ error: 'condition not found' });
+
+    const cure = require('../lib/underwriting/cure');
+    const twin = require('../lib/underwriting/twin');
+    const preview = require('../lib/underwriting/clearance-preview');
+
+    const intent = (item.intent_override && typeof item.intent_override === 'object')
+      ? item.intent_override
+      : (item.code ? await cure.intentForCode(item.code, db) : null);
+    if (!intent) {
+      return res.json({ ok: true, available: false, advisory: true,
+        reason: 'This condition has no registered intent — the preview covers intent-backed conditions only.',
+        item: { id: item.id, code: item.code, label: item.label, status: item.status } });
+    }
+
+    // The item's CURRENT analyzed documents (extraction status is 'analyzed' —
+    // db/200). Audit F2: a staff-REJECTED document is a recorded human decision
+    // — it must not feed a "would clear" preview (same filter signOffGate uses).
+    const exts = await db.query(
+      `SELECT de.document_id, de.doc_type, de.fields, d.filename
+         FROM document_extractions de
+         JOIN documents d ON d.id = de.document_id
+        WHERE d.checklist_item_id = $1 AND d.is_current
+          AND COALESCE(d.review_status, '') <> 'rejected'
+          AND de.is_current AND de.status = 'analyzed'
+        ORDER BY de.created_at DESC LIMIT 12`, [item.id]);
+
+    const twinRows = await twin.factsForFile(app.id, db).catch(() => []);
+    const twinFacts = Object.fromEntries((twinRows || []).map((r) => [r.fact_key, r]));
+    const { subject, expected } = await cure.loadCureContext(app.id, db);
+
+    const { documents, overall } = preview.previewDocuments({
+      intent,
+      documents: exts.rows.map((r) => ({ documentId: r.document_id, docType: r.doc_type, filename: r.filename, fields: r.fields })),
+      twinFacts, subject, expected,
+    });
+
+    // Audit F1: signOffGate is per-SLOT on four template codes (staff.js
+    // signOffGate is the AUTHORITY — this only mirrors its presence check so
+    // the preview never says "would clear" while the gate still wants another
+    // slot's document). Missing slots force overall.clears=false with the gap
+    // named; the analysis sections above stay as-is.
+    const SLOT_REQUIREMENTS = {
+      rtl_cond_insurance: ['binder', 'invoice'],
+      rtl_cond_appraisaldocs: ['xml', 'pdf'],
+      rtl_cond_fraud: ['background'],           // + 'criminal' on a Gold file (below)
+      rtl_cond_title: [],                        // any one document; presence handled by no_documents
+    };
+    if (Object.prototype.hasOwnProperty.call(SLOT_REQUIREMENTS, String(item.code))) {
+      const required = [...SLOT_REQUIREMENTS[item.code]];
+      if (item.code === 'rtl_cond_fraud') {
+        const gp = await db.query(
+          `SELECT program FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`, [app.id]);
+        if (gp.rows[0] && /gold/i.test(String(gp.rows[0].program || ''))) required.push('criminal');
+      }
+      const missingSlots = [];
+      if (required.length) {
+        const slotRows = await db.query(
+          `SELECT lower(coalesce(slot_label,'')) AS slot FROM documents
+            WHERE checklist_item_id=$1 AND is_current AND COALESCE(review_status,'') <> 'rejected'`, [item.id]);
+        const have = slotRows.rows.map((r) => r.slot);
+        for (const need of required) if (!have.some((s) => s.includes(need))) missingSlots.push(need);
+      }
+      // Appraisal docs: signOffGate additionally requires a non-superseded
+      // appraisals row (the XML actually IMPORTED), not merely an uploaded file
+      // slot — mirror that so the preview can't report "would clear" before the
+      // import lands. Defense-in-depth: unreachable today (no seeded intent for
+      // this code → available:false above), but a future intent-seed or a manual
+      // intent_override would otherwise let the preview overstate clearance.
+      if (item.code === 'rtl_cond_appraisaldocs') {
+        const appr = await db.query(
+          `SELECT 1 FROM appraisals WHERE application_id=$1 AND superseded=false LIMIT 1`, [app.id]);
+        if (!appr.rows.length) missingSlots.push('imported appraisal (XML)');
+      }
+      if (missingSlots.length) {
+        overall.clears = false;
+        overall.slotsIncomplete = true;
+        overall.missingSlots = missingSlots;
+        overall.reason = `The sign-off gate also requires: ${missingSlots.join(', ')} — this condition needs every required document slot filled, not just one clearing document.`;
+      }
+    }
+    res.json({
+      ok: true, available: true, advisory: true,
+      item: { id: item.id, code: item.code, label: item.label, status: item.status },
+      intent: { code: item.code, version: intent.version || null, primaryGoal: intent.primary_goal || null },
+      documents, overall,
+    });
   } catch (e) { next(e); }
 });
 

@@ -933,6 +933,71 @@ async function aiCrossdocSweepOnce() {
 
 /* Time-gated dispatcher — morning window for staff/admin, business hours for the
    borrower digest; each function's own audit-gate enforces the true frequency. */
+// -------------------------------------------------------------------------
+// #191 activation 3 — condition FRESHNESS reopen sweep (daily, capped).
+// Cleared conditions whose evidence has outlived its freshness window
+// (bank statements 60d, credit 120d, title 120d, insurance/flood 365d —
+// windows live in condition-reopen.js, never here) reopen through the SAME
+// audited path every automated reopen uses: checklist-evidence.
+// reopenConditionEvidence + an [auto] note + an audit_log row. Waived
+// conditions never reopen (human decision); the frozen SOW gates are
+// structurally out of scope (their codes aren't in the freshness map);
+// capped per run so a first activation drains a backlog gradually.
+// Kill switch: CONDITION_FRESHNESS_ENABLED=0.
+// -------------------------------------------------------------------------
+async function conditionFreshnessReopenOnce() {
+  if (process.env.CONDITION_FRESHNESS_ENABLED === '0') return;
+  if (!(await _gate('condition_freshness_reopen', null, '20 hours'))) return;
+  const freshness = require('./underwriting/condition-freshness');
+  const { reopenConditionEvidence } = require('./checklist-evidence');
+  const codes = Object.keys(freshness.KIND_BY_TEMPLATE_CODE);
+  const rows = await db.query(
+    `SELECT ci.id, ci.application_id, ci.status, ci.signed_off_at, ci.waived_at,
+            ct.code AS template_code
+       FROM checklist_items ci
+       JOIN checklist_templates ct ON ct.id = ci.template_id
+       JOIN applications a ON a.id = ci.application_id
+      WHERE ct.code = ANY($1)
+        AND ci.signed_off_at IS NOT NULL
+        AND ci.waived_at IS NULL
+        AND a.deleted_at IS NULL
+        AND a.status NOT IN ('funded','declined','withdrawn')
+      ORDER BY ci.signed_off_at ASC
+      LIMIT 400`, [codes]);
+  const plans = freshness.planFreshnessReopens(rows.rows, { now: new Date(), limit: 25 });
+  let reopened = 0;
+  for (const plan of plans) {
+    const c = await db.pool.connect();
+    try {
+      await c.query('BEGIN');
+      // Re-check under the tx so a just-refreshed condition isn't clobbered.
+      const cur = (await c.query(
+        `SELECT signed_off_at, waived_at FROM checklist_items WHERE id=$1 FOR UPDATE`, [plan.id])).rows[0];
+      // `continue` still runs the finally{} below, which releases — a second
+      // c.release() here would throw synchronously in pg-pool and abort the
+      // whole run mid-plan. ROLLBACK only; the finally releases exactly once.
+      if (!cur || !cur.signed_off_at || cur.waived_at) { await c.query('ROLLBACK'); continue; }
+      await reopenConditionEvidence(c, plan.id, 'outstanding');
+      await c.query(
+        `UPDATE checklist_items
+            SET notes = CASE WHEN notes IS NULL OR notes LIKE '[auto]%' THEN $2 ELSE notes END,
+                updated_at = now()
+          WHERE id = $1`, [plan.id, freshness.autoNoteFor(plan)]);
+      await c.query(
+        `INSERT INTO audit_log (actor_kind, action, entity_type, entity_id, detail)
+         VALUES ('system','condition_freshness_reopened','checklist_item',$1,$2::jsonb)`,
+        [plan.id, JSON.stringify({ applicationId: plan.applicationId, kind: plan.kind,
+          trigger: plan.trigger, daysStale: plan.daysStale, clearedAt: plan.clearedAt })]);
+      await c.query('COMMIT');
+      reopened += 1;
+    } catch (e) {
+      await c.query('ROLLBACK').catch(() => {});
+      console.error('[digests] freshness-reopen', plan.id, e && e.message);
+    } finally { c.release(); }
+  }
+  if (reopened) console.log(`[digests] freshness reopened ${reopened} condition(s)`);
+}
+
 async function runDue() {
   const { hour, weekday } = nyParts();
   if (hour >= 7 && hour < 11) {
@@ -948,6 +1013,7 @@ async function runDue() {
     await autoCommitteeReviewOnce().catch((e) => console.error('[digests] auto-committee', e && e.message));
     await aiCrossdocSweepOnce().catch((e) => console.error('[digests] ai-crossdoc-sweep', e && e.message));
     await qaDeskAuditOnce().catch((e) => console.error('[digests] qa-desk-audit', e && e.message));
+    await conditionFreshnessReopenOnce().catch((e) => console.error('[digests] freshness-reopen', e && e.message));
     if (weekday === 'Mon') await weeklyAdminSummaryOnce().catch((e) => console.error('[digests] admin', e && e.message));
     if (weekday === 'Mon') await weeklyAdminAiQuestionsOnce().catch((e) => console.error('[digests] admin-ai-questions', e && e.message));
     if (weekday === 'Mon') await weeklyTopRiskyFilesOnce().catch((e) => console.error('[digests] admin-top-risky', e && e.message));
@@ -974,7 +1040,7 @@ function start() {
 module.exports = {
   start, runDue, nyParts,
   weeklyBorrowerOutstandingOnce, dailyPipelineDigestOnce, staleFileAlertsOnce, weeklyAdminSummaryOnce,
-  drawFindingsAwaitingBorrowerOnce, drawReleaseOverdueOnce, workflowAgingOnce,
+  drawFindingsAwaitingBorrowerOnce, drawReleaseOverdueOnce, workflowAgingOnce, conditionFreshnessReopenOnce,
   trainingRunOnce, certificateSurveyOnce, autoCommitteeReviewOnce, directSourceSweepOnce, autoReadSweepOnce, section1071SweepOnce,
   aiCrossdocSweepOnce, weeklyAdminAiQuestionsOnce, weeklyTopRiskyFilesOnce, weeklyLoAiDigestOnce,
   qaDeskAuditOnce,

@@ -39,9 +39,9 @@ jobs:
   # self-skips without DATABASE_URL actually runs here: migrations apply to a
   # fresh database first (schema.sql + every numbered db/*.sql — so this job
   # also proves the migration chain itself), then the full chain runs with the
-  # DB present. Deliberately NOT in `deploy.needs` yet: the ~50 DB suites have
-  # never run in CI, so this job soaks as a visible check first; once it is
-  # reliably green, add it to `deploy: needs:` so DB regressions gate deploys.
+  # DB present. This job IS a deploy gate: after its soak went green it was added
+  # to `deploy: needs:` (see the deploy job below), so a DB-layer regression now
+  # blocks the auto-publish exactly like a pure-suite failure.
   # ---------------------------------------------------------------------------
   test-db:
     runs-on: ubuntu-latest
@@ -89,7 +89,9 @@ jobs:
   # deploy that boots unhealthy is not switched into production.
   # ---------------------------------------------------------------------------
   deploy:
-    needs: test
+    # test-db added 2026-07-23 after its soak went green (task #195): a DB-layer
+    # regression now blocks the deploy exactly like a pure-suite failure.
+    needs: [test, test-db]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:

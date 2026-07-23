@@ -68,8 +68,14 @@ web.attachDocument = async (_s, propId, sig) => { attachCalls.push({ propId, sig
 // ---- stub storage read (return deterministic bytes per ref) ----
 storage.read = async (ref) => Buffer.from('BYTES:' + ref);
 // ---- stub the trusted-API read-after-write (what documents Sitewire reports) ----
+// Fix 2026-07-23: #546 (audit C-2) switched verifyPresent() to the URL-agnostic
+// listSitewireDocumentsForVerify WITHOUT updating this stub — the un-stubbed
+// real function then called the live Sitewire API from the test (33s+ retry
+// stalls in CI, verify always negative, cases 3/7b false-failed). Stub BOTH so
+// the suite stays hermetic regardless of which variant verify uses.
 let apiDocs = [];
 orch.getSitewireDocuments = async () => ({ managed: true, available: true, documents: apiDocs });
+orch.listSitewireDocumentsForVerify = async () => ({ managed: true, available: true, documents: apiDocs });
 
 const PROP = 900000 + crypto.randomBytes(2).readUInt16BE(0);
 

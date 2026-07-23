@@ -129,8 +129,35 @@ router.get('/', requireRole('admin'), async (req, res) => {
       recentDecisions = r.rows;
     } catch (_) { recentDecisions = []; }
 
+    // #191 activation 2 — PORTFOLIO condition aging (advisory tile). Ages every
+    // active file's checklist conditions with the pure ager and rolls them up
+    // (buckets, overdue counts, worst files). Best-effort — a failure leaves the
+    // tile null, never breaks the dashboard. Staff/admin-only surface.
+    let conditionAging = null;
+    try {
+      const condRows = await db.query(
+        `SELECT ci.id, ci.status, ci.created_at, ci.signed_off_at, ci.waived_at,
+                ci.application_id,
+                COALESCE(a.property_address->>'oneLine', a.property_address->>'street', a.ys_loan_number, LEFT(a.id::text, 8)) AS file_label
+           FROM checklist_items ci
+           JOIN applications a ON a.id = ci.application_id
+          WHERE a.deleted_at IS NULL
+            AND a.status NOT IN ('funded','cancelled','closed','declined','withdrawn')`);
+      const { ageConditions } = require('../lib/underwriting/condition-aging');
+      const { rollupAging } = require('../lib/underwriting/condition-aging-portfolio');
+      const byFile = new Map();
+      for (const row of condRows.rows) {
+        if (!byFile.has(row.application_id)) byFile.set(row.application_id, { id: row.application_id, label: row.file_label, rows: [] });
+        byFile.get(row.application_id).rows.push(row);
+      }
+      const now = new Date();
+      const files = [...byFile.values()].map((f) => ({ id: f.id, label: f.label, summary: ageConditions(f.rows, { now }).summary }));
+      conditionAging = rollupAging(files, { limit: 10 });
+    } catch (_) { conditionAging = null; }
+
     res.json({
       ok: true,
+      conditionAging,
       openFindings: openFindings.rows,
       openSuggestions: openSuggestions.rows,
       certificates30d: certificates.rows,

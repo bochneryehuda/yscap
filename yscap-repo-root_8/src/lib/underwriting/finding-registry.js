@@ -29,8 +29,9 @@ function keyOf(f) {
 
 /**
  * consolidate(findings) → deduped [{code, subject, severity, category, title,
- *   explanation, sources:[], blocks_term_sheet, blocks_ctc, blocks_funding,
- *   evidence:[] }], ordered fatal → warning → info then by title.
+ *   explanation, governing_rule, expected_value, actual_value, permitted_actions,
+ *   sources:[], blocks_term_sheet, blocks_ctc, blocks_funding, evidence:[] }],
+ *   ordered fatal → warning → info then by title.
  */
 function consolidate(findings) {
   const byKey = new Map();
@@ -46,6 +47,14 @@ function consolidate(findings) {
         category: f.category || null,
         title: f.title || f.code,
         explanation: f.explanation || null,
+        // Carry the evidentiary fields through so persistRun stores them in the
+        // run_findings columns instead of NULL — every finding built with
+        // expected/actual (structure caps, the AVM verification finding, …) keeps
+        // its numbers on the immutable decision record, not only in the prose.
+        governing_rule: f.governing_rule || null,
+        expected_value: f.expected_value != null ? f.expected_value : null,
+        actual_value: f.actual_value != null ? f.actual_value : null,
+        permitted_actions: Array.isArray(f.permitted_actions) ? [...f.permitted_actions] : [],
         sources: [src],
         blocks_term_sheet: !!f.blocks_term_sheet,
         blocks_ctc: !!f.blocks_ctc,
@@ -60,6 +69,11 @@ function consolidate(findings) {
       cur.blocks_ctc = cur.blocks_ctc || !!f.blocks_ctc;
       cur.blocks_funding = cur.blocks_funding || !!f.blocks_funding;
       if (f.explanation && !cur.explanation) cur.explanation = f.explanation;
+      // first non-null wins for the evidentiary fields (mirrors explanation).
+      if (f.governing_rule && !cur.governing_rule) cur.governing_rule = f.governing_rule;
+      if (f.expected_value != null && cur.expected_value == null) cur.expected_value = f.expected_value;
+      if (f.actual_value != null && cur.actual_value == null) cur.actual_value = f.actual_value;
+      if (Array.isArray(f.permitted_actions) && f.permitted_actions.length && (!cur.permitted_actions || !cur.permitted_actions.length)) cur.permitted_actions = [...f.permitted_actions];
       if (Array.isArray(f.evidence)) cur.evidence.push(...f.evidence);
       else if (f.evidence) cur.evidence.push(f.evidence);
     }
