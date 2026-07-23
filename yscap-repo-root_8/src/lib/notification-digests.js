@@ -973,7 +973,10 @@ async function conditionFreshnessReopenOnce() {
       // Re-check under the tx so a just-refreshed condition isn't clobbered.
       const cur = (await c.query(
         `SELECT signed_off_at, waived_at FROM checklist_items WHERE id=$1 FOR UPDATE`, [plan.id])).rows[0];
-      if (!cur || !cur.signed_off_at || cur.waived_at) { await c.query('ROLLBACK'); c.release(); continue; }
+      // `continue` still runs the finally{} below, which releases — a second
+      // c.release() here would throw synchronously in pg-pool and abort the
+      // whole run mid-plan. ROLLBACK only; the finally releases exactly once.
+      if (!cur || !cur.signed_off_at || cur.waived_at) { await c.query('ROLLBACK'); continue; }
       await reopenConditionEvidence(c, plan.id, 'outstanding');
       await c.query(
         `UPDATE checklist_items
