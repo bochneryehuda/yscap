@@ -57,12 +57,17 @@ export default function StaffExceptions() {
   async function decide(row, decision) {
     const note = (notes[row.id] || '').trim();
     if (!note) { flash(false, 'Add a short note explaining your decision.'); return; }
+    const isEsign = (row.type || row.exception_type) === 'esign_before_ctc';
     setBusy(row.id);
     try {
       await api.decideLoanException(row.id, decision, note);
-      flash(true, decision === 'approved'
-        ? 'Waiver approved. The co-borrower now shows as a member (non-guarantor); re-issue the term sheet to reflect it.'
-        : 'Waiver denied. Both borrowers remain personal guarantors.');
+      flash(true, isEsign
+        ? (decision === 'approved'
+            ? 'Approved. The team can send the term-sheet package before clear-to-close — the appraisal/pricing/closing/registration prerequisites still apply.'
+            : 'Denied. The package can be sent once the outstanding items are done.')
+        : (decision === 'approved'
+            ? 'Waiver approved. The co-borrower now shows as a member (non-guarantor); re-issue the term sheet to reflect it.'
+            : 'Waiver denied. Both borrowers remain personal guarantors.'));
       await load();
     } catch (e) { flash(false, (e && e.message) || 'could not record the decision'); }
     finally { setBusy(''); }
@@ -88,8 +93,9 @@ export default function StaffExceptions() {
         {pendingCount > 0 && <span className="ts-badge warn">{pendingCount} awaiting review</span>}
       </div>
       <p className="muted" style={{ marginTop: 6 }}>
-        Requests to make an exception to a loan policy. Today: waiving a co-borrower’s personal guarantee (they
-        stay a member of the borrowing entity but are not a personal guarantor). {isSuper
+        Requests to make an exception to a loan policy — waiving a co-borrower’s personal guarantee (they stay a
+        member of the borrowing entity but are not a personal guarantor), or sending a term-sheet package before the
+        file is ready for clear-to-close. {isSuper
           ? 'Approve or deny each one — a short note is required — then clear it when it’s handled.'
           : 'Only a super-admin can approve or deny; you can review the queue and clear a handled one.'}
       </p>
@@ -125,7 +131,7 @@ export default function StaffExceptions() {
                       value={notes[r.id] || ''} onChange={(e) => setNotes((n) => ({ ...n, [r.id]: e.target.value }))} />
                     <div className="row" style={{ gap: 8, marginTop: 8 }}>
                       <button className="btn primary small" disabled={busy === r.id || !(notes[r.id] || '').trim()} onClick={() => decide(r, 'approved')}>
-                        {busy === r.id ? 'Saving…' : 'Approve waiver'}
+                        {busy === r.id ? 'Saving…' : ((r.type || r.exception_type) === 'esign_before_ctc' ? 'Approve' : 'Approve waiver')}
                       </button>
                       <button className="btn ghost small" disabled={busy === r.id || !(notes[r.id] || '').trim()} onClick={() => decide(r, 'denied')}>Deny</button>
                     </div>

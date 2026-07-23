@@ -60,6 +60,9 @@ export default function EsignFileSection({ appId, role, onChanged }) {
   const [busy, setBusy] = useState('');      // action key currently running
   const [lnInput, setLnInput] = useState('');   // inline YS loan-number backfill
   const [openEnvs, setOpenEnvs] = useState({});  // per-envelope expand override (id -> bool)
+  const [excOpen, setExcOpen] = useState(false);   // send-before-CTC request form open
+  const [excReason, setExcReason] = useState('');  // selected reason code
+  const [excNote, setExcNote] = useState('');
   const seq = useRef(0);
 
   const load = useCallback(async (quiet) => {
@@ -145,9 +148,34 @@ export default function EsignFileSection({ appId, role, onChanged }) {
     const { blob, filename } = await api.staffDownloadDoc(doc.documentId);
     saveBlob(blob, filename || doc.filename);
   });
+  // Request a super-admin exception to send the term-sheet package before the file
+  // is ready for clear-to-close. The server refuses unless the hard floor (appraisal
+  // back · re-priced · closing date · registration current) is already met.
+  const requestException = () => act('exc:req', async () => {
+    const r = await api.requestEsignBeforeCtc(appId, { reasonCode: excReason, reasonNote: excNote });
+    if (!r || !r.ok) throw new Error((r && r.error) || 'Could not send the request.');
+    setExcOpen(false); setExcNote('');
+  }, 'Exception requested — a super-admin will review it.', onChanged);
+  const withdrawException = (eid) => act('exc:wd', async () => {
+    const r = await api.withdrawException(appId, eid);
+    if (!r || !r.ok) throw new Error((r && r.error) || 'Could not withdraw the request.');
+  }, 'Exception request withdrawn.', onChanged);
 
   if (data == null) return <p className="muted small">Loading…</p>;
+  // Defaults keep the component safe against an older server payload that lacks the
+  // send-before-clear-to-close fields (sendAllowed falls back to ready).
   const gate = data.gate || { ready: false, outstanding: [] };
+  const sendAllowed = gate.sendAllowed !== undefined ? gate.sendAllowed : gate.ready;
+  const floorOutstanding = gate.floorOutstanding || (gate.ready ? [] : gate.outstanding || []);
+  const ctcOutstanding = gate.ctcOutstanding || [];
+  const floorMet = gate.floorMet !== undefined ? gate.floorMet : gate.ready;
+  const exc = gate.exception || null;                       // latest esign_before_ctc exception (any status)
+  const excApproved = !!(exc && exc.status === 'approved');
+  const excRequested = !!(exc && exc.status === 'requested');
+  const canRequestException = gate.canRequestException !== undefined
+    ? gate.canRequestException
+    : (!gate.ready && floorMet && !excRequested && !excApproved);
+  const reasonOpts = data.exceptionReasonCodes || {};
   const envelopes = data.envelopes || [];
   const hasLoanNumber = !!(data.loanNumber && String(data.loanNumber).trim());
 
@@ -245,7 +273,7 @@ export default function EsignFileSection({ appId, role, onChanged }) {
               <button className="btn ghost btn-sm" disabled={busy === `void:${e.id}`} onClick={() => voidEnv(e.id)}>Void</button>
             </>
           )}
-          {(e.phase === 'declined' || e.phase === 'voided' || e.phase === 'error') && gate.ready && (
+          {(e.phase === 'declined' || e.phase === 'voided' || e.phase === 'error') && sendAllowed && (
             <button className="btn primary btn-sm"
               disabled={busy === `send:${e.purpose}` || (e.purpose === 'term_sheet_package' && !hasLoanNumber)}
               title={e.purpose === 'term_sheet_package' && !hasLoanNumber ? 'Enter the YS loan number above first' : 'Send a fresh envelope for this package'}
@@ -281,15 +309,89 @@ export default function EsignFileSection({ appId, role, onChanged }) {
         <div className="row" style={{ alignItems: 'baseline' }}>
           <h4 style={{ margin: 0 }}>Ready to send?</h4>
           <div className="spacer" />
-          <span className={`pill ${gate.ready ? 'ok' : 'muted'}`}>{gate.ready ? 'All prerequisites met' : 'Not yet'}</span>
+          <span className={`pill ${gate.ready ? 'ok' : excApproved ? 'warn' : 'muted'}`}>
+            {gate.ready ? 'All prerequisites met' : excApproved ? 'Cleared by exception' : 'Not yet'}
+          </span>
         </div>
-        <ul className="esign-gate">
-          {gate.ready ? (
+        {gate.ready ? (
+          <ul className="esign-gate">
             <li className="ok"><span className="esign-gate-ic">✓</span> Appraisal back · reviewed · product re-priced after the appraisal.</li>
-          ) : gate.outstanding.map((o) => (
-            <li key={o.code} className="bad"><span className="esign-gate-ic">✗</span> <strong>{o.label}</strong> — <span className="muted small">{o.reason}</span></li>
-          ))}
-        </ul>
+          </ul>
+        ) : (
+          <>
+            {/* The four term-sheet-CORRECTNESS prerequisites — a hard floor that an
+                exception can never waive (they make the signed term sheet correct). */}
+            {floorOutstanding.length > 0 && (
+              <ul className="esign-gate">
+                {floorOutstanding.map((o) => (
+                  <li key={o.code} className="bad"><span className="esign-gate-ic">✗</span> <strong>{o.label}</strong> — <span className="muted small">{o.reason}</span></li>
+                ))}
+              </ul>
+            )}
+            {/* Clear-to-close readiness — a super-admin can waive these with an
+                exception so the package can go out before clear-to-close. */}
+            {ctcOutstanding.length > 0 && (
+              <ul className="esign-gate">
+                {ctcOutstanding.map((o) => (
+                  <li key={o.code} className={excApproved ? 'ok' : 'bad'}>
+                    <span className="esign-gate-ic">{excApproved ? '✓' : '✗'}</span> <strong>{o.label}</strong> — <span className="muted small">{excApproved ? 'waived by approved exception' : o.reason}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {/* Send-before-clear-to-close: the super-admin exception path. */}
+            {excApproved ? (
+              <div className="notice ok" style={{ margin: '2px 0 10px' }}>
+                <strong>Approved to send before clear-to-close.</strong> A super-admin approved sending this early{exc.decision_note ? ` — ${exc.decision_note}` : ''}. The prerequisites above are still enforced.
+              </div>
+            ) : excRequested ? (
+              <div className="notice info" style={{ margin: '2px 0 10px' }}>
+                <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <span className="ts-badge warn">Exception requested — awaiting super-admin approval</span>
+                  <button className="btn ghost btn-sm" disabled={busy === 'exc:wd'} onClick={() => withdrawException(exc.id)}>Withdraw request</button>
+                </div>
+              </div>
+            ) : !floorMet ? (
+              <div className="notice info" style={{ margin: '2px 0 10px' }}>
+                An exception to send before clear-to-close can be requested once the prerequisites above are done.
+              </div>
+            ) : canRequestException ? (
+              <div style={{ margin: '2px 0 10px' }}>
+                {exc && exc.status === 'denied' && (
+                  <div className="muted small" style={{ marginBottom: 6 }}>A previous exception request was denied{exc.decision_note ? ` — ${exc.decision_note}` : ''}.</div>
+                )}
+                {!excOpen ? (
+                  <button className="btn ghost btn-sm" onClick={() => { setExcOpen(true); setErr(''); }}>
+                    Request an exception to send before clear-to-close
+                  </button>
+                ) : (
+                  <div style={{ padding: 10, background: 'rgba(174,135,70,0.08)', border: '1px solid #AE8746', borderRadius: 8 }}>
+                    <div className="muted small" style={{ marginBottom: 6 }}>
+                      Ask a super-admin to approve sending the term-sheet package before the file is clear-to-close. The
+                      appraisal / pricing / closing-date / registration prerequisites still apply — this waives only the
+                      remaining readiness. It goes to the Exceptions box; the package can be sent only if it’s approved.
+                    </div>
+                    <label className="muted small">Reason</label>
+                    <select className="input" value={excReason} onChange={(e) => setExcReason(e.target.value)} style={{ width: '100%', marginBottom: 6 }}>
+                      <option value="">Select a reason…</option>
+                      {Object.entries(reasonOpts).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                    </select>
+                    <textarea className="input" rows={2} style={{ width: '100%' }}
+                      placeholder="Explain why this needs to go out before clear-to-close…"
+                      value={excNote} onChange={(e) => setExcNote(e.target.value)} />
+                    <div className="row" style={{ gap: 8, marginTop: 8 }}>
+                      <button className="btn primary btn-sm" disabled={busy === 'exc:req' || !excNote.trim()} onClick={requestException}>
+                        {busy === 'exc:req' ? 'Sending…' : 'Send request'}
+                      </button>
+                      <button className="btn ghost btn-sm" onClick={() => { setExcOpen(false); setExcNote(''); }}>Cancel</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : null}
+          </>
+        )}
         {/* Inline loan-number backfill — the term-sheet package prints the loan number
             on the disclosure, so a file without one can't send. Enter it right here. */}
         {!hasLoanNumber && (
@@ -315,10 +417,10 @@ export default function EsignFileSection({ appId, role, onChanged }) {
             // send"). Manage that package from its envelope card below (Resend / Void /
             // Re-issue). The first send is the only one that starts here.
             const already = envelopes.some((e) => e.purpose === p.purpose);
-            const blocked = !gate.ready || needsLoan || already;
+            const blocked = !sendAllowed || needsLoan || already;
             const title = already ? 'This package is already started — manage it on its envelope below (Resend / Void / Re-issue)'
               : needsLoan ? 'Enter the YS loan number above first'
-              : (gate.ready ? p.hint : 'Complete the prerequisites above first');
+              : (sendAllowed ? (gate.ready ? p.hint : `${p.hint} (approved to send before clear-to-close)`) : 'Complete the prerequisites above first — or request a super-admin exception');
             return (
               <button key={p.purpose} className="btn primary btn-sm" disabled={blocked || busy === `send:${p.purpose}`}
                 title={title} onClick={() => send(p.purpose)}>

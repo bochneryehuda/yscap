@@ -173,7 +173,10 @@ async function fileEsign(db, applicationId) {
   // backfill when it's missing — the term-sheet package prints the loan number on
   // the disclosure, so a file with no loan number can't send until one is entered.
   const meta = (await db.query(`SELECT ys_loan_number FROM applications WHERE id = $1`, [applicationId])).rows[0] || {};
-  return { gate: g, packages: byPurpose, envelopes, loanNumber: meta.ys_loan_number || null };
+  // The reason options for the "request an exception to send before clear-to-close"
+  // form (one source of truth — the server validates against the same set).
+  const exceptionReasonCodes = require('../loan-exceptions').reasonCodesFor('esign_before_ctc');
+  return { gate: g, packages: byPurpose, envelopes, loanNumber: meta.ys_loan_number || null, exceptionReasonCodes };
 }
 
 module.exports = { esignPhase, waitingOn, dashboard, fileEsign };

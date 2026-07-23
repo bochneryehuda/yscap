@@ -70,42 +70,63 @@ router.post('/:id/decide', requireRole('super_admin'), async (req, res) => {
       return res.status(403).json({ error: 'The person who requested an exception cannot approve their own request.' });
     }
 
+    const isGuaranty = exc.exception_type === 'guaranty_waiver';
     const client = await db.getClient();
     let row;
     try {
       await client.query('BEGIN');
       row = await loanExceptions.decideException(req.params.id, decision, req.actor.id, note, client);
       if (!row) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'This exception was already decided or no longer exists.' }); }
-      // Approve → waive the co-borrower's personal guaranty on the file (the
-      // term-sheet display flag). Deny → both borrowers guarantee (the default).
-      await client.query(
-        `UPDATE applications SET co_borrower_pg_waived=$2, updated_at=now() WHERE id=$1`,
-        [row.application_id, decision === 'approved']);
+      // Guaranty waiver: Approve → waive the co-borrower's personal guaranty (the
+      // term-sheet display flag); Deny → both borrowers guarantee (the default).
+      // esign_before_ctc: no application-column change — the APPROVED loan_exceptions
+      // row itself is what the e-sign send-gate reads to allow sending the term-sheet
+      // package before clear-to-close (the floor is always re-checked at send time).
+      if (isGuaranty) {
+        await client.query(
+          `UPDATE applications SET co_borrower_pg_waived=$2, updated_at=now() WHERE id=$1`,
+          [row.application_id, decision === 'approved']);
+      }
       await client.query('COMMIT');
     } catch (e) {
       await client.query('ROLLBACK').catch(() => {});
       throw e;
     } finally { client.release(); }
 
-    auditSafe(req.actor.id, 'guaranty_exception_decided', 'application', row.application_id,
-      { exceptionId: row.id, decision, note: String(note).slice(0, 200) });
+    auditSafe(req.actor.id, isGuaranty ? 'guaranty_exception_decided' : 'esign_before_ctc_exception_decided',
+      'application', row.application_id, { exceptionId: row.id, exceptionType: exc.exception_type, decision, note: String(note).slice(0, 200) });
 
-    // Tell the file's team the verdict (best-effort). A waiver changes the term
-    // sheet wording, so the note reminds them to re-issue it.
+    // Tell the file's team the verdict (best-effort). An approval reminds them what
+    // it unlocked; a denial reminds them the default policy stands.
     try {
-      const subject = [exc.subject_first, exc.subject_last].filter(Boolean).join(' ') || 'the co-borrower';
-      const ctx = await notify.fileContext(row.application_id, [
-        { label: 'Guaranty waiver', value: decision === 'approved' ? 'Approved' : 'Denied' },
-      ]);
-      await notify.notifyAppStaff(row.application_id, {
-        type: 'guaranty_exception_decided',
-        title: decision === 'approved' ? 'Guaranty waiver approved' : 'Guaranty waiver denied',
-        body: decision === 'approved'
-          ? `The request to waive ${subject}'s personal guaranty on ${ctx ? ctx.label : 'the file'} was APPROVED by a super-admin${note ? ` — ${String(note).slice(0, 200)}` : ''}. ${subject} will show as a member of the borrowing entity (not a personal guarantor). Re-issue the term sheet so it reflects the change.`
-          : `The request to waive ${subject}'s personal guaranty on ${ctx ? ctx.label : 'the file'} was DENIED by a super-admin${note ? ` — ${String(note).slice(0, 200)}` : ''}. Both borrowers remain personal guarantors (full recourse).`,
-        meta: (ctx && ctx.meta) || undefined, applicationId: row.application_id,
-        link: `/internal/app/${row.application_id}`, ctaLabel: 'Open the loan file',
-      });
+      if (isGuaranty) {
+        const subject = [exc.subject_first, exc.subject_last].filter(Boolean).join(' ') || 'the co-borrower';
+        const ctx = await notify.fileContext(row.application_id, [
+          { label: 'Guaranty waiver', value: decision === 'approved' ? 'Approved' : 'Denied' },
+        ]);
+        await notify.notifyAppStaff(row.application_id, {
+          type: 'guaranty_exception_decided',
+          title: decision === 'approved' ? 'Guaranty waiver approved' : 'Guaranty waiver denied',
+          body: decision === 'approved'
+            ? `The request to waive ${subject}'s personal guaranty on ${ctx ? ctx.label : 'the file'} was APPROVED by a super-admin${note ? ` — ${String(note).slice(0, 200)}` : ''}. ${subject} will show as a member of the borrowing entity (not a personal guarantor). Re-issue the term sheet so it reflects the change.`
+            : `The request to waive ${subject}'s personal guaranty on ${ctx ? ctx.label : 'the file'} was DENIED by a super-admin${note ? ` — ${String(note).slice(0, 200)}` : ''}. Both borrowers remain personal guarantors (full recourse).`,
+          meta: (ctx && ctx.meta) || undefined, applicationId: row.application_id,
+          link: `/internal/app/${row.application_id}`, ctaLabel: 'Open the loan file',
+        });
+      } else {
+        const ctx = await notify.fileContext(row.application_id, [
+          { label: 'Send before clear-to-close', value: decision === 'approved' ? 'Approved' : 'Denied' },
+        ]);
+        await notify.notifyAppStaff(row.application_id, {
+          type: 'esign_before_ctc_exception_decided',
+          title: decision === 'approved' ? 'Send-before-clear-to-close approved' : 'Send-before-clear-to-close denied',
+          body: decision === 'approved'
+            ? `A super-admin APPROVED sending the term-sheet package on ${ctx ? ctx.label : 'the file'} before it is ready for clear-to-close${note ? ` — ${String(note).slice(0, 200)}` : ''}. You can send it now — the appraisal/pricing/closing-date/registration prerequisites are still enforced.`
+            : `A super-admin DENIED sending the term-sheet package on ${ctx ? ctx.label : 'the file'} before clear-to-close${note ? ` — ${String(note).slice(0, 200)}` : ''}. Finish the outstanding items, then it can be sent.`,
+          meta: (ctx && ctx.meta) || undefined, applicationId: row.application_id,
+          link: `/internal/app/${row.application_id}#sec-esign`, ctaLabel: 'Open the loan file',
+        });
+      }
     } catch (_) { /* best-effort */ }
 
     res.json({ ok: true, exception: row });
@@ -128,8 +149,9 @@ router.post('/:id/clear', async (req, res) => {
     const note = req.body && req.body.note;
     const row = await loanExceptions.clearException(req.params.id, req.actor.id, note);
     if (!row) return res.status(409).json({ error: 'That exception is already cleared.' });
-    auditSafe(req.actor.id, 'guaranty_exception_cleared', 'application', row.application_id,
-      { exceptionId: row.id, note: note ? String(note).slice(0, 200) : null });
+    const clrAction = exc.exception_type === 'esign_before_ctc' ? 'esign_before_ctc_exception_cleared' : 'guaranty_exception_cleared';
+    auditSafe(req.actor.id, clrAction, 'application', row.application_id,
+      { exceptionId: row.id, exceptionType: exc.exception_type, note: note ? String(note).slice(0, 200) : null });
     res.json({ ok: true, exception: row });
   } catch (e) { res.status(500).json({ error: 'could not clear the exception' }); }
 });

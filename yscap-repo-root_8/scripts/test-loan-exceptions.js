@@ -175,6 +175,40 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
   ok((await db.query('SELECT 1 FROM documents WHERE checklist_item_id=$1', [ciDoc.rows[0].id])).rows.length === 1,
      'the uploaded document is never destroyed by clearing an exception');
 
+  // db/284 — send-before-clear-to-close exception (owner-directed 2026-07-23). A
+  // NEW exception_type on the same queue (proves the CHECK was widened, else 23514),
+  // with its own reason codes and no subject borrower.
+  ok(LE.isEsignReasonCode('review_pending') === true && LE.isEsignReasonCode('passive_member') === false,
+     'esign reason codes are their own set (guaranty codes are not valid here)');
+  ok(LE.reasonCodesFor('esign_before_ctc') !== LE.REASON_CODES, 'reasonCodesFor returns the esign set for the esign type');
+  const app3 = await db.query('INSERT INTO applications(borrower_id) VALUES($1) RETURNING id', [b.rows[0].id]);
+  const app3Id = app3.rows[0].id;
+  let ce = await db.getClient(); await ce.query('BEGIN');
+  const e1 = await LE.requestEsignBeforeCtc(ce, { appId: app3Id, reasonCode: 'review_pending', reasonNote: 'appraisal review pending', requestedBy: loId });
+  await ce.query('COMMIT'); ce.release();
+  ok(e1.exception_type === 'esign_before_ctc' && e1.status === 'requested' && e1.subject_borrower_id === null,
+     'requestEsignBeforeCtc inserts an esign_before_ctc row with no subject borrower');
+  ok((await LE.latestEsignBeforeCtc(app3Id)) && (await LE.latestEsignBeforeCtc(app3Id)).id === e1.id, 'latestEsignBeforeCtc finds it');
+  ok((await LE.openForApp(app3Id, 'esign_before_ctc')) && (await LE.openForApp(app3Id)) === null,
+     'openForApp is per-type: the esign request is open, but there is no open guaranty_waiver');
+  // an unknown reason code falls back to 'other'
+  let ce2 = await db.getClient(); await ce2.query('BEGIN');
+  const e2 = await LE.requestEsignBeforeCtc(ce2, { appId: app3Id, reasonCode: 'not_a_real_code', reasonNote: 'y', requestedBy: loId });
+  await ce2.query('COMMIT'); ce2.release();
+  ok(e2.reason_code === 'other', 'unknown esign reason code falls back to other');
+  ok((await LE.latestEsignBeforeCtc(app3Id)).id === e2.id, 're-request supersedes the prior open esign request');
+  // approve → latest is approved (this is exactly what the send-gate reads)
+  const eDec = await LE.decideException(e2.id, 'approved', saId, 'ok to send early');
+  ok(eDec && eDec.status === 'approved', 'an esign_before_ctc exception approves');
+  ok((await LE.latestEsignBeforeCtc(app3Id)).status === 'approved', 'the approved row is the latest — the send-gate will read it');
+  // getById carries the per-type reason label
+  const eById = await LE.getById(e1.id);
+  ok(eById && eById.reason_label === LE.ESIGN_BEFORE_CTC_REASONS.review_pending, 'getById attaches the per-type reason_label');
+  // the review box lists BOTH types
+  const allOpen = await LE.listExceptions({ status: 'all' });
+  ok(allOpen.some((x) => x.exception_type === 'esign_before_ctc') && allOpen.some((x) => x.exception_type === 'guaranty_waiver'),
+     'listExceptions returns both exception types on one queue');
+
   await db.pool.end();
 })().then(() => {
   console.log(`\n${pass} passed, ${fail} failed`);
