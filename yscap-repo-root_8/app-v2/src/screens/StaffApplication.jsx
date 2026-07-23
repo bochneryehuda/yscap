@@ -14,6 +14,7 @@ import PropertyPhoto from '../components/PropertyPhoto.jsx';
 import ActivityFeed from '../components/ActivityFeed.jsx';
 import EmailCenter from '../components/EmailCenter.jsx';
 import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
+import InvestorGuidelinesPanel from '../components/InvestorGuidelinesPanel.jsx';
 import DealSnapshot from '../components/DealSnapshot.jsx';
 import ClearToClosePanel from '../components/ClearToClosePanel.jsx';
 import LoanProgress from '../components/LoanProgress.jsx';
@@ -2855,6 +2856,7 @@ export default function StaffApplication() {
     { id: 'sec-appraisal', label: 'Appraisal & findings', group: 'Application & pricing', badge: apprSummary && apprSummary.fatal ? `${apprSummary.fatal} ⚠` : '' },
     { id: 'sec-underwriting', label: 'Document review', group: 'Application & pricing', badge: uwSummary && uwSummary.fatal ? `${uwSummary.fatal} ⚠` : '' },
     { id: 'sec-conditions', label: 'Conditions', group: 'Conditions', badge: nCondOpen || '' },
+    { id: 'sec-investor-guidelines', label: 'Investor guidelines', group: 'Conditions' },
     { id: 'sec-esign', label: 'E-signatures', group: 'Signing & documents' },
     { id: 'sec-orders', label: 'Orders (title & insurance)', group: 'Signing & documents',
       badge: (() => { const n = docs.filter(d => ['title_order_return', 'insurance_order_return'].includes(d.doc_kind) && !d.slot_label && d.is_current !== false).length; return n ? `${n} to assign` : ''; })() },
@@ -3257,6 +3259,11 @@ export default function StaffApplication() {
           dlBusy={dlBusy} onChanged={load} reviewBusy={busyAct === 'review'} onPreview={openPreview} />
         <VestingLlcOwners appId={id} app={app} />
       </>}
+      </Section>
+
+      <Section id="sec-investor-guidelines" title="Investor guidelines" defaultOpen={false}
+        info="How this file measures up against the note buyer's own condition guidelines — what's met, what's still needed, and anything that conflicts with their rules. Advisory only; it decides nothing on its own.">
+      <InvestorGuidelinesPanel appId={id} />
       </Section>
 
       <Section id="sec-esign" title="E-signatures" defaultOpen={false}

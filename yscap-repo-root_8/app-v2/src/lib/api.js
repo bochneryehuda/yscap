@@ -489,6 +489,8 @@ export const api = {
   fileUnderwritingRun:       (appId) => req('GET', `/api/underwriting/${appId}/underwriting-run`),
   // #136 (R5.39) — advisory guideline evaluation (per-rule verdicts + plain citations + investor-fit "A vs B").
   fileGuidelineEvaluation:   (appId) => req('GET', `/api/underwriting/${appId}/guideline-evaluation`),
+  // ISG — Investor-Specific Soft Guidelines desk (per note-buyer condition verdicts + conflicts).
+  fileInvestorGuidelines:    (appId) => req('GET', `/api/underwriting/${appId}/investor-guidelines`),
   fileAvmConsensusVerify:    (appId) => req('POST', `/api/underwriting/${appId}/avm-consensus/verify`, {}),
   // AI Suggestions panel (R3.5/R3.6 — owner-directed 2026-07-22).
   aiSuggestionsList:      (appId, params = {}) => {
