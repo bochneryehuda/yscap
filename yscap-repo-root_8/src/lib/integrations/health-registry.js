@@ -335,8 +335,12 @@ const INTEGRATIONS = [
     purpose: 'The "Import credit" button on the internal Credit report condition — pull/reissue a tri-merge report using ONE shared company login (not per-user), file the PDF + data file, and build the credit-details section.',
     direction: 'Outbound', auth: 'Shared username + password',
     env: [{ name: 'XACTUS_API_URL', required: true }, { name: 'XACTUS_API_USERNAME', required: true }, { name: 'XACTUS_API_PASSWORD', required: true }],
-    switches: [], liveProbe: false,
-    async probe() { const m = require('../credit/provider'); return m.configured() ? { configured: true, live: null, detail: 'Shared Xactus login is set — the Import credit button can pull. XACTUS_API_URL must be the EXACT Credit ReportX request URL Xactus gave you (the full endpoint reports are POSTed to, not just a base host).' } : { configured: false, live: null, detail: 'Not connected — add the FULL Xactus Credit ReportX request URL, username and password (XACTUS_API_URL / XACTUS_API_USERNAME / XACTUS_API_PASSWORD) to turn on live pulls. Reports downloaded from Xactus can still be imported.' }; },
+    switches: [], liveProbe: true,
+    async probe() { const m = require('../credit/provider'); return m.configured() ? { configured: true, live: null, detail: 'Shared Xactus login is set — the Import credit button can pull. Press “Test now” to check the connection. XACTUS_API_URL must be the EXACT Credit ReportX request URL Xactus gave you (the full endpoint reports are POSTed to, not just a base host).' } : { configured: false, live: null, detail: 'Not connected — add the FULL Xactus Credit ReportX request URL, username and password (XACTUS_API_URL / XACTUS_API_USERNAME / XACTUS_API_PASSWORD) to turn on live pulls. Reports downloaded from Xactus can still be imported.' }; },
+    // "Test now" runs a real, SAFE connection check (a HEAD reach — no credit pull,
+    // no borrower data). Only fires on the button (probeOne); page-load probeAll()
+    // stays cheap via probe().
+    async test() { const m = require('../credit/provider'); return m.testConnection(); },
   },
   {
     key: 'usps', name: 'USPS (address validation)', group: 'data',
@@ -369,9 +373,16 @@ const INTEGRATIONS = [
 
 // Turn a probe result + descriptor into the resolved shape the page renders. `state` is the single
 // status word the light is keyed on. Never throws.
-function computeState(entry, r) {
+function computeState(entry, r, tested) {
   if (entry.notBuilt) return 'planned';
-  if (entry.group === 'framework') return r.configured ? 'configured' : 'framework';
+  if (entry.group === 'framework') {
+    // A framework integration normally shows only presence ("configured"). But when
+    // an explicit "Test now" (tested) ran a live reach, reflect its verdict so the
+    // status light turns green/red with the result — not only the detail text.
+    if (tested && r.live === true) return 'live';
+    if (tested && r.live === false) return 'unreachable';
+    return r.configured ? 'configured' : 'framework';
+  }
   if (!r.configured) return 'not_configured';
   if (r.enabled === false) return 'disabled';
   if (r.live === true) return 'live';
@@ -379,9 +390,14 @@ function computeState(entry, r) {
   return 'configured'; // configured but no live confirmation available
 }
 
-async function resolveOne(entry) {
+async function resolveOne(entry, opts) {
   let r;
-  try { r = await entry.probe(); } catch (e) { r = { configured: false, live: false, detail: e && e.message ? e.message : 'probe failed' }; }
+  // On the explicit "Test now" button (live), run the entry's on-demand test() if
+  // it has one (a real connection reach); otherwise, and on every page load, run
+  // the cheap probe() so probeAll never hammers external services.
+  const useTest = opts && opts.live && typeof entry.test === 'function';
+  try { r = useTest ? await entry.test() : await entry.probe(); }
+  catch (e) { r = { configured: false, live: false, detail: e && e.message ? e.message : 'probe failed' }; }
   r = r || {};
   return {
     key: entry.key, name: entry.name, group: entry.group, purpose: entry.purpose,
@@ -397,7 +413,7 @@ async function resolveOne(entry) {
     displaySwitches: (entry.switches || []).map((s) => ({ name: s.name, label: s.label, on: envSet(s.name), invert: !!s.invert })),
     configured: !!r.configured, enabled: r.enabled === undefined ? null : r.enabled,
     live: r.live === undefined ? null : r.live, detail: r.detail || '',
-    state: computeState(entry, r),
+    state: computeState(entry, r, useTest),
   };
 }
 
@@ -409,7 +425,7 @@ async function probeAll() {
 async function probeOne(key) {
   const entry = INTEGRATIONS.find((e) => e.key === key);
   if (!entry) return null;
-  return resolveOne(entry);
+  return resolveOne(entry, { live: true });
 }
 
 module.exports = { INTEGRATIONS, probeAll, probeOne, _internals: { computeState, envSet } };

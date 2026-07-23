@@ -75,5 +75,21 @@ assert.ok(!('password' in st) && !('username' in st), 'status never leaks creden
   r = p._seam.extractReport('not xml or json at all', 'text/plain');
   assert.ok(r._unrecognized && r._error, 'unrecognized flagged, error attached (not thrown)');
 
-  console.log('OK  credit-provider: gating, tri-merge + soft/hard + reissue/new request, tolerant extractor — all assertions passed');
+  // --- connection test ("Test now"): status → plain-language verdict -----------
+  const cc = p._seam.classifyConnection;
+  assert.strictEqual(cc(401).live, false, '401 → login rejected (reached but not live)');
+  assert.strictEqual(cc(403).live, false, '403 → login rejected');
+  assert.ok(/login was rejected/.test(cc(401).detail), '401 detail names the login');
+  assert.strictEqual(cc(405).live, null, '405 (HEAD not allowed) → reached but unconfirmed (neutral, not green)');
+  assert.strictEqual(cc(404).live, null, '404 → reached but unconfirmed (neutral)');
+  assert.ok(/reachable/.test(cc(404).detail), '404 detail says the address is reachable');
+  assert.strictEqual(cc(200).live, true, '200 → connected (green)');
+  assert.ok(/successfully/.test(cc(200).detail), '200 detail says connected successfully');
+  assert.strictEqual(cc(503).live, null, 'unexpected status → indeterminate (null)');
+  // unconfigured provider → safe not-connected verdict, no network
+  const tc = await p.testConnection();
+  assert.ok(tc.configured === false && tc.live === false && /Not connected/.test(tc.detail),
+    'testConnection with no creds → not connected (no reach attempted)');
+
+  console.log('OK  credit-provider: gating, tri-merge + soft/hard + reissue/new request, tolerant extractor, connection test — all assertions passed');
 })().catch((e) => { console.error(e); process.exit(1); });

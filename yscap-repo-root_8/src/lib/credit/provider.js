@@ -263,10 +263,68 @@ async function pull({ borrower, pullType = 'soft', requestType = 'reissue', bure
   return { xml: out.xml, pdfBase64: out.pdfBase64, vendorReportId: out.vendorReportId };
 }
 
+// ── Connection test (the "Test now" button on the API Health page) ────────────
+// A SAFE reachability check: a HEAD request to the configured endpoint with the
+// shared login — NO credit request, NO borrower data, not a billable pull. It
+// distinguishes "couldn't reach the address at all" (wrong/unreachable URL) from
+// "reached it" (address OK; login/path is the remaining question), so staff can
+// pinpoint a live-pull failure in one click instead of guessing.
+
+// Pure: turn a reached HTTP status into a plain-language verdict (unit-tested).
+function _classifyConnection(status) {
+  if (status === 401 || status === 403) {
+    return { live: false, detail: `Reached Xactus (so the web address is correct), but the login was rejected (error ${status}). The shared username/password may be wrong, or the account isn’t turned on for sending yet — ask Xactus to confirm it’s activated.` };
+  }
+  if (status === 400 || status === 404 || status === 405 || status === 501) {
+    // Reached the server, but this quick check can't confirm it's the right endpoint
+    // + a working login — neutral, not a green "connected".
+    return { live: null, detail: `Reached the Xactus server at that address (it answered with ${status}). The address is reachable; this quick check can’t fully confirm the login — run a real import to confirm, or double-check the exact endpoint with Xactus.` };
+  }
+  if (status >= 200 && status < 400) {
+    return { live: true, detail: `Connected to Xactus successfully (the address answered, status ${status}). You’re ready to try an import.` };
+  }
+  return { live: null, detail: `Reached Xactus, but it answered with an unexpected status (${status}). Try a real import, or check with Xactus.` };
+}
+
+async function testConnection() {
+  if (!configured()) {
+    return { configured: false, live: false, detail: 'Not connected yet — add the full Xactus Credit ReportX web address, username and password (in the system settings) first.' };
+  }
+  let u;
+  try { u = new URL(cfg.endpoint); }
+  catch (_) { return { configured: true, live: false, detail: 'The Xactus web address isn’t a valid link. It must be the full address Xactus gave you, starting with https:// — fix XACTUS_API_URL in the settings.' }; }
+  if (u.protocol !== 'https:') {
+    return { configured: true, live: false, detail: `The Xactus web address must start with https:// (it starts with “${u.protocol.replace(':', '')}”). Fix XACTUS_API_URL in the settings.` };
+  }
+  let url = cfg.endpoint;
+  const headers = { Accept: 'application/xml, text/xml' };
+  if ((cfg.authMode || 'basic') === 'query') {
+    const q = new URL(url);
+    q.searchParams.set('LoginAccountIdentifier', cfg.username);
+    q.searchParams.set('LoginAccountPassword', cfg.password);
+    url = q.toString();
+  } else {
+    headers.Authorization = 'Basic ' + Buffer.from(`${cfg.username}:${cfg.password}`).toString('base64');
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const r = await fetch(url, { method: 'HEAD', headers, signal: controller.signal });
+    return Object.assign({ configured: true }, _classifyConnection(r.status));
+  } catch (err) {
+    const aborted = err && (err.name === 'AbortError' || String((err && err.message) || '').includes('aborted'));
+    return { configured: true, live: false, detail: aborted
+      ? 'Timed out reaching Xactus (no answer within 15 seconds). The address may be wrong, or Xactus can’t be reached from the server.'
+      : 'Couldn’t reach Xactus at that web address. Double-check XACTUS_API_URL is the exact address Xactus gave you to send reports to — spelled correctly and starting with https://.' };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 module.exports = {
   name: 'xactus',
   ALL_BUREAUS,
-  configured, status, version, pull,
+  configured, status, version, pull, testConnection,
   // exposed for unit tests + the packet wiring
-  _seam: { buildRequestBody, extractReport, embeddedPdfBase64 },
+  _seam: { buildRequestBody, extractReport, embeddedPdfBase64, classifyConnection: _classifyConnection },
 };
