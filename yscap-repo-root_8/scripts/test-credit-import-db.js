@@ -267,6 +267,13 @@ const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failu
   const fcM2 = await credit.fileCredit(app.id);
   ok(fcM2.borrowers.higher === 705 && fcM2.borrowers.higherReady === false, 'an UNPULLED co-borrower fico (840) never drives higher-of-two — stays 705 (MINOR-2)');
 
+  // Edge: an EXPLICIT empty borrower list is rejected, never silently promoted to
+  // "pull everyone" (only an ABSENT borrowerIds means "pull all").
+  let emptySelErr = null;
+  try { await credit.importCredit(app.id, { requestType: 'new', consent: true, actorId: staff.id, borrowerIds: [] }); }
+  catch (e) { emptySelErr = e; }
+  ok(emptySelErr && /select at least one/i.test(emptySelErr.userMessage || emptySelErr.message || ''), 'an explicit empty borrowerIds is rejected (not promoted to pull-all)');
+
   // Sign-off gate DATA requirement (mirrors staff.js signOffGate isCredit): the
   // file-level condition needs the primary AND any co-borrower without their own
   // condition; a per-borrower condition needs that borrower's report.

@@ -254,7 +254,10 @@ async function importCredit(appId, opts = {}) {
       || file.borrower_id;
     targets = borrowers.filter((b) => String(b.borrowerId) === String(wantId));
     if (!targets.length) targets = [borrowers[0]];
-  } else if (Array.isArray(opts.borrowerIds) && opts.borrowerIds.length) {
+  } else if (Array.isArray(opts.borrowerIds)) {
+    // An EXPLICIT list selects exactly those borrowers. An empty [] means "none"
+    // and is rejected (never silently promoted to "pull everyone") — only an
+    // ABSENT borrowerIds falls through to the default of every borrower on the file.
     const want = new Set(opts.borrowerIds.map(String));
     targets = borrowers.filter((b) => want.has(String(b.borrowerId)));
     if (!targets.length) throw userError('Select at least one borrower to pull credit for.');
