@@ -177,6 +177,25 @@ router.get('/insights/feedback', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ---- Reliability / calibration report (#194): how trustworthy is the AI? ------
+// Closes the calibration loop: over the shadow decisions whose REAL outcome is now
+// known, how often the AI's would-be verdict matched reality, how well-calibrated
+// its stated confidence is (accuracy, Brier score, per-confidence-bucket calibration
+// + ECE), and the dangerous-miss (confirmed false-clear) rate — plus per-component
+// slices. ADVISORY / measurement only: read-only, changes no decision, promotes
+// nothing (the release gate is what would CONSUME this signal). Portfolio-wide, so
+// see-all staff only; best-effort (empty report until outcomes are ingested).
+// Registered BEFORE '/:appId' so 'insights' isn't read as an application id.
+router.get('/insights/reliability', async (req, res, next) => {
+  try {
+    if (!can(req.actor, 'see_all_files')) return res.status(403).json({ error: 'this report needs access to every file' });
+    const days = Number(req.query.sinceDays);
+    const report = await require('../lib/underwriting/reliability')
+      .loadReliabilityReport(db, { sinceDays: Number.isFinite(days) && days > 0 ? days : 180 });
+    res.json({ ok: true, report });
+  } catch (e) { next(e); }
+});
+
 // ---- Finding-escalation WORKLOAD (owner-directed 2026-07-21, Items 7 + 12) -----------------
 // A staffer who can't decide a finding escalates it to a super-admin / processor / underwriter,
 // creating a workload item that carries the file link, the finding, its explanation, and the
