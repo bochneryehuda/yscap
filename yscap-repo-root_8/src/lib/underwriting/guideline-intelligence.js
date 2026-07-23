@@ -107,6 +107,31 @@ function shapeRuleForCitation(rule, source) {
   };
 }
 
+// Optimistic evaluation: would `expr` STILL fail if every UNKNOWN leaf (a field
+// absent/null in ctx) were assumed to PASS? Returns true only when the failure
+// survives the most-favorable assumption for unknowns — i.e. it is a genuine
+// violation that no missing data could rescue. Correct for and/or/not: a
+// known-false OR-branch does NOT make the rule a violation while a sibling branch
+// is still unknown. Pure, never throws; a malformed/unknown node is treated
+// optimistically (never asserted as a violation).
+function optimisticPass(expr, ctx) {
+  if (expr === true) return true;
+  if (expr === false) return false;
+  if (!expr || typeof expr !== 'object') return true;
+  if (expr.op === 'and') return (Array.isArray(expr.clauses) ? expr.clauses : []).every((c) => optimisticPass(c, ctx));
+  if (expr.op === 'or') return (Array.isArray(expr.clauses) ? expr.clauses : []).some((c) => optimisticPass(c, ctx));
+  if (expr.op === 'not') return !optimisticPass(expr.clause, ctx);
+  if ('field' in expr && 'cmp' in expr) {
+    const actual = ctx ? ctx[expr.field] : undefined;
+    if (actual === undefined || actual === null) return true;   // unknown leaf → optimistic pass
+    try { return evaluator.evaluate(expr, ctx).matched === true; } catch (_e) { return true; }
+  }
+  return true;
+}
+function failsUnderOptimisticUnknowns(expr, ctx) {
+  try { return optimisticPass(expr, ctx) === false; } catch (_e) { return false; }
+}
+
 /**
  * evaluateGuidelineSet({ rules, context, source, label, exceptedKeys, opts }) → {
  *   label, source,
@@ -142,11 +167,12 @@ function evaluateGuidelineSet(input = {}) {
       } else {
         ev = evaluator.evaluate(rule.expression, ctx);
         if (ev.matched) verdict = 'met';
-        else {
-          // fails: is it a real breach (a known value fails) or just unknown data?
-          const anyKnownFailure = (ev.unmet || []).some((u) => u && u.actual !== null && u.actual !== undefined);
-          verdict = anyKnownFailure ? 'violated' : 'indeterminate';
-        }
+        // fails: a real breach only if it STILL fails when every UNKNOWN leaf is
+        // assumed to pass — otherwise the failure hinges on missing data and is
+        // indeterminate. Correct for and/or/not, not just single leaves: a
+        // known-false branch of an OR must not read as a violation while another
+        // branch is still unknown (it could yet satisfy the OR).
+        else verdict = failsUnderOptimisticUnknowns(rule.expression, ctx) ? 'violated' : 'indeterminate';
       }
       const cit = citation.formatCitation(shapeRuleForCitation(rule, source), ev, opts);
       return {
@@ -262,7 +288,7 @@ async function evaluateApplicationGuidelines(appId, { client } = {}) {
   try {
     engine = require('../conditions/engine');
     knowledge = require('./guideline-knowledge');
-    db = client || require('../db');
+    db = client || require('../../db');
   } catch (_e) { return null; }
 
   let ctx; let app;

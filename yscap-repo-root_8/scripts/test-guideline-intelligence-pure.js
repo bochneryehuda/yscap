@@ -124,6 +124,25 @@ const GOLD_SOW = { rule_key: 'sow_contingency', scope: {}, expression: { field: 
   ok('rankSets ranks the fitting program over the failing investor and explains the difference');
 }
 
+// 8b. Compound expressions: an UNKNOWN branch of an OR must not read as a
+// violation while it could still pass; a fully-known OR failure IS a violation;
+// an AND with any known-false leaf is a violation regardless of unknowns.
+{
+  const OR_RULE = [{ rule_key: 'alt_qual', scope: {}, materiality: 'hard_stop',
+    expression: { op: 'or', clauses: [{ field: 'fico', cmp: '>=', value: 740 }, { field: 'dscr', cmp: '>=', value: 1.2 }] }, outcome: {} }];
+  const unknownBranch = gi.evaluateGuidelineSet({ rules: OR_RULE, context: { fico: 720 } }); // dscr unknown
+  assert.strictEqual(unknownBranch.rules[0].verdict, 'indeterminate', 'a known-false OR branch with an unknown sibling is NOT a violation');
+  assert.strictEqual(unknownBranch.eligible, true, 'unknown data never blocks');
+  const bothKnownFail = gi.evaluateGuidelineSet({ rules: OR_RULE, context: { fico: 720, dscr: 1.0 } });
+  assert.strictEqual(bothKnownFail.rules[0].verdict, 'violated', 'a fully-known OR failure is a real violation');
+
+  const AND_RULE = [{ rule_key: 'both', scope: {}, materiality: 'hard_stop',
+    expression: { op: 'and', clauses: [{ field: 'fico', cmp: '>=', value: 600 }, { field: 'dscr', cmp: '>=', value: 1.2 }] }, outcome: {} }];
+  const andKnownFalse = gi.evaluateGuidelineSet({ rules: AND_RULE, context: { fico: 580 } }); // dscr unknown, fico fails
+  assert.strictEqual(andKnownFalse.rules[0].verdict, 'violated', 'an AND with a known-false leaf is a violation regardless of unknowns');
+  ok('compound and/or: unknown OR-branch → indeterminate, known OR-failure → violated, known-false AND leaf → violated');
+}
+
 // 9. Hostile input never throws — degrades to a safe empty report.
 {
   const bad1 = gi.evaluateGuidelineSet(null);
