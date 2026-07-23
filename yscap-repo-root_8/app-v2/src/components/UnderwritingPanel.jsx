@@ -1890,6 +1890,11 @@ const SOURCE_LABEL = {
   wrong_condition: 'Wrong condition',
   ask_admin: 'Ask super-admin',
   splitter: 'Document splitter',
+  party_collusion: 'Party conflict',
+  double_pledge: 'Double-pledged',
+  public_records: 'Public records',
+  identity_chain: 'Identity chain',
+  independent_verification: 'Independent check',
 };
 const SOURCE_TINT = {
   cure_analysis: { fg: 'var(--teal-deep,#256168)', bg: 'rgba(47,127,134,.12)' },
@@ -1900,6 +1905,8 @@ const SOURCE_TINT = {
   ask_admin:     { fg: 'var(--teal-deep,#256168)', bg: 'rgba(47,127,134,.12)' },
   splitter:      { fg: 'var(--gold,#AE8746)', bg: 'rgba(174,135,70,.14)' },
   committee:     { fg: 'var(--teal-deep,#256168)', bg: 'rgba(47,127,134,.12)' },
+  party_collusion: { fg: 'var(--crit,#B4483C)', bg: 'var(--crit-bg,#F6E7E4)' },
+  double_pledge:   { fg: 'var(--crit,#B4483C)', bg: 'var(--crit-bg,#F6E7E4)' },
 };
 
 function AISuggestionsSection({ appId, readOnly = false, canResolve = true }) {
