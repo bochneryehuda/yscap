@@ -107,7 +107,10 @@ export default function StaffFindingEscalations() {
       let alreadyResolved = false;
       try {
         const resp = await api.underwritingResolveFinding(row.application_id, row.finding_id, extra);
-        if (resp && resp.fileFix && resp.fileFix.applied) fileFix = resp.fileFix;
+        // Capture the file-fix outcome — applied (updated the file) OR a
+        // bad-value skip (the finding is still resolved, but the file was NOT
+        // changed, so we tell the reviewer rather than let them assume it was).
+        if (resp && resp.fileFix) fileFix = resp.fileFix;
       } catch (err) {
         const msg = String((err && err.message) || '').toLowerCase();
         const status = err && (err.status || err.statusCode);
@@ -123,7 +126,9 @@ export default function StaffFindingEscalations() {
         if (status === 409 || /already/i.test(msg)) { alreadyDecided = true; }
         else { throw err; }
       }
-      const fixMsg = fileFix ? ` The loan file's ${String(fileFix.field).replace(/_/g, ' ')} was updated to ${fileFix.value}.` : '';
+      const fixMsg = (fileFix && fileFix.applied)
+        ? ` The loan file's ${String(fileFix.field).replace(/_/g, ' ')} was updated to ${fileFix.value}.`
+        : (fileFix && fileFix.reason === 'bad-value' ? ' Note: the loan file was NOT changed — the value entered wasn’t a number.' : '');
       flash(true, (alreadyResolved
         ? 'The finding was already resolved — queue item closed.'
         : (alreadyDecided
