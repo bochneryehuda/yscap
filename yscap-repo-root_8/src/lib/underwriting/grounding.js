@@ -124,16 +124,32 @@ function groundFields(fields, ocrText) {
   };
 }
 
-// Build the advisory finding when critical extracted values are ABSENT from the document text.
+// Build the advisory finding when critical extracted values could not be confirmed in the document text.
+// Surfaces EVERY unconfirmed CRITICAL value (coverage < 0.5) — the SAME set the engine quarantines out
+// of the deterministic checks (#212). This keeps the "please verify" advisory in lockstep with the
+// quarantine: a critical value held out of the checks is ALWAYS flagged for a human, never silently
+// dropped. `criticalAbsent` (coverage === 0) is the strong fabrication subset; a partial match
+// (0 < coverage < 0.5, a multi-word name/address with fewer than half its words in the OCR) is the
+// weaker "couldn't confirm" case — both belong in the advisory so a human always sees a withheld value.
 function groundingFinding(docType, grounding) {
-  if (!grounding || !grounding.criticalAbsent || !grounding.criticalAbsent.length) return null;
-  const names = grounding.criticalAbsent.map((u) => u.field).join(', ');
+  if (!grounding) return null;
+  const unconfirmed = Array.isArray(grounding.unconfirmed) ? grounding.unconfirmed : [];
+  const absent = Array.isArray(grounding.criticalAbsent) ? grounding.criticalAbsent : [];
+  // Union of field names, absent (fabrication) first, then partial-band criticals; order-stable, deduped.
+  const names = [];
+  const seen = new Set();
+  for (const u of absent.concat(unconfirmed.filter((u) => u && u.critical))) {
+    const nm = u && u.field;
+    if (nm && !seen.has(nm)) { seen.add(nm); names.push(nm); }
+  }
+  if (!names.length) return null;
+  const list = names.join(', ');
   return {
     source: docType, code: 'values_unconfirmed_in_document', severity: 'warning', status: 'open',
     field: 'grounding', blocksCtc: false,
-    docValue: names, fileValue: null,
+    docValue: list, fileValue: null,
     title: 'Some read values could not be confirmed in the document text',
-    howTo: `PILOT extracted these values but could not find them in the document's own text: ${names}. This can mean the copy is poor OR a value was mis-read — confirm them by hand before relying on them, and re-scan a clearer copy if needed.`,
+    howTo: `PILOT extracted these values but could not confirm them in the document's own text: ${list}. This can mean the copy is poor OR a value was mis-read — confirm them by hand before relying on them, and re-scan a clearer copy if needed.`,
     actions: ['post_condition', 'request_document', 'dismiss'],
     opensCondition: 'underwriting_review_cleared',
   };
