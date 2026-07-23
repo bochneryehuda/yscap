@@ -63,7 +63,7 @@ function Pane({ src }) {
       <div style={{ flex: 1, minHeight: 240, background: 'var(--ink-2,#F4F2EC)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         {state.status === 'loading' && <span className="muted small">Loading…</span>}
         {state.status === 'error' && <span className="notice err" style={{ margin: 12 }}>{state.error}</span>}
-        {state.status === 'ready' && state.kind === 'pdf' && <PdfViewer data={state.data} onError={pdfFailed} />}
+        {state.status === 'ready' && state.kind === 'pdf' && <PdfViewer data={state.data} onError={pdfFailed} highlight={src.value != null ? String(src.value) : undefined} />}
         {state.status === 'ready' && state.kind === 'pdf-native' && (
           <iframe title={state.filename || 'document'} src={state.pdfUrl} style={{ width: '100%', height: '100%', border: 0, background: '#fff' }} />
         )}
