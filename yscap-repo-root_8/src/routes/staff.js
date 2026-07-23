@@ -33,6 +33,7 @@ const { enqueueClickupPush, enqueueChecklistStatusPush } = require('../clickup/e
 const statusMap = require('../clickup/status');
 const llcLib = require('../lib/llc');
 const conditionEngine = require('../lib/conditions/engine');
+const issuanceBackstop = require('../lib/underwriting/issuance-backstop'); // R6.18 (#202) issuance HARD-WARNING backstop
 const conditionRules = require('../lib/conditions/rules');
 const conditionRegistry = require('../lib/conditions/field-registry');
 const { CONDITION_TYPES, TOOLS, CATEGORIES, conditionTypeOf } = require('../lib/conditions/types');
@@ -6496,6 +6497,26 @@ async function applyInternalStatus(appId, internalStatus, opts = {}) {
       forced = true;
     }
   }
+  // R6.18 (#202) — the ISSUANCE BACKSTOP. The whole-loan underwriting decision is a
+  // super-admin-overridable HARD WARNING on the two irreversible actions (CTC /
+  // funding), NEVER an un-overridable block: a super-admin always proceeds (recorded
+  // as an override); anyone else escalates. It fails OPEN (advisory → proceed) on no
+  // run / any error, so it only ever warns on a CURRENT run's CONFIRMED grounded
+  // fatal. Advisory-only — it touches no frozen pricing number.
+  let issuance = null;
+  const bsAction = issuanceBackstop.actionForStatus(external);
+  if (bsAction) {
+    issuance = await issuanceBackstop.backstopForRun(appId, bsAction, db, {
+      actorRole: opts.actorRole || null,
+      override: !!opts.force,
+      overrideReason: opts.overrideReason || null,
+    });
+    if (issuance.hardWarning && !issuance.proceed) {
+      // a confirmed fatal + not a super-admin → escalate (a super-admin can always proceed).
+      return { blocked: true, target: external, blockers: { conditions: [], gates: [], issuance } };
+    }
+    if (issuance.override && issuance.override.applied) forced = true;
+  }
   await db.query(
     // status_notified_external tracks the announced status (db/187) so a ClickUp
     // echo of this change never re-notifies the borrower.
@@ -6517,7 +6538,7 @@ async function applyInternalStatus(appId, internalStatus, opts = {}) {
   if (external !== cur.rows[0].status) {
     await notifyStatusTransition(appId, cur.rows[0].status, external, { forced, actorId: opts.actorId });
   }
-  return { ok: true, internal_status: internalStatus, status: external, fromStatus: cur.rows[0].status, forced };
+  return { ok: true, internal_status: internalStatus, status: external, fromStatus: cur.rows[0].status, forced, issuance };
 }
 
 // The Workflow, phase two: after conditions move, gently nudge the loan officer
@@ -6573,6 +6594,20 @@ router.patch('/applications/:id', async (req, res) => {
         forced = true;
       }
     }
+    // R6.18 (#202) — the ISSUANCE BACKSTOP: the whole-loan decision as a
+    // super-admin-overridable HARD WARNING on CTC / funding. NEVER an un-overridable
+    // block (a super-admin always proceeds, recorded); fails OPEN on no run / error.
+    let issuance = null;
+    const bsAction2 = issuanceBackstop.actionForStatus(status);
+    if (bsAction2) {
+      issuance = await issuanceBackstop.backstopForRun(req.params.id, bsAction2, db, {
+        actorRole: req.actor.role, override: force, overrideReason: req.body && req.body.overrideReason,
+      });
+      if (issuance.hardWarning && !issuance.proceed) {
+        return res.status(409).json({ error: 'blocked', target: status, blockers: { conditions: [], gates: [], issuance } });
+      }
+      if (issuance.override && issuance.override.applied) forced = true;
+    }
     // Advance the go-forward notification watermark in lock-step with the status
     // we're about to announce, so a later ClickUp ECHO of this same change is
     // recognized as already-notified and does not re-notify (db/187).
@@ -6590,13 +6625,19 @@ router.patch('/applications/:id', async (req, res) => {
       try { await workflowAuto.onFunded(req.params.id, req.actor.id); } catch (_) {}
     }
     await audit(req, 'status_change', 'application', req.params.id, { from: cur.rows[0].status, to: status, forced: forced || undefined });
+    // R6.18 (#202) — a super-admin proceeding past a confirmed-fatal issuance hard
+    // warning is recorded as an explicit override (parity with the internal-status door).
+    if (issuance && issuance.override && issuance.override.applied) {
+      await audit(req, 'issuance_override', 'application', req.params.id,
+        { action: issuance.action, tier: issuance.tier, reason: issuance.override.reason });
+    }
     // Status is a rule-engine field (e.g. "when the file reaches underwriting").
     try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'status_change' }); } catch (_) {}
     // Announce the transition to the borrower + team (shared with the
     // internal-status door so both notify identically). The bucket always
     // changed here (guarded by the unchanged-status early return above).
     await notifyStatusTransition(req.params.id, cur.rows[0].status, status, { forced, actorId: req.actor.id });
-    res.json({ ok: true, status });
+    res.json({ ok: true, status, issuance: issuance || undefined });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
@@ -6615,13 +6656,20 @@ router.post('/applications/:id/internal-status', async (req, res) => {
     const r = await applyInternalStatus(req.params.id, internalStatus, {
       actorId: req.actor.id, canDecide: seesAll(req),
       force: !!(req.body && req.body.force), allowForce: isAdmin(req),
+      actorRole: req.actor.role, overrideReason: req.body && req.body.overrideReason,
     });
     if (r.forbidden) return res.status(403).json({ error: r.reason });
     if (r.blocked) return res.status(409).json({ error: 'blocked', target: r.target, blockers: r.blockers });
     if (r.unchanged) return res.json({ ok: true, unchanged: true, internal_status: r.internal_status, status: r.status });
     await audit(req, 'internal_status_change', 'application', req.params.id,
       { from: before.rows[0] ? before.rows[0].internal_status : null, to: internalStatus, external: r.status, forced: r.forced || undefined });
-    res.json({ ok: true, internal_status: r.internal_status, status: r.status });
+    // R6.18 (#202) — a super-admin proceeding past a confirmed-fatal issuance hard
+    // warning is recorded as an explicit override.
+    if (r.issuance && r.issuance.override && r.issuance.override.applied) {
+      await audit(req, 'issuance_override', 'application', req.params.id,
+        { action: r.issuance.action, tier: r.issuance.tier, reason: r.issuance.override.reason });
+    }
+    res.json({ ok: true, internal_status: r.internal_status, status: r.status, issuance: r.issuance || undefined });
   } catch (e) {
     if (e && e.code === 'not_found') return res.status(404).json({ error: 'not found' });
     if (e && e.code === 'unknown_status') return res.status(400).json({ error: 'unknown internal status' });
