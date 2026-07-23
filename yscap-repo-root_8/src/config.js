@@ -516,12 +516,15 @@ module.exports = {
     secret:   process.env.HOUSECANARY_SECRET || '',
     endpoint: (process.env.HOUSECANARY_ENDPOINT || 'https://api.housecanary.com').trim().replace(/\/+$/, ''),
   },
-  //   Clear Capital ClearAVM — second AVM source
+  //   Clear Capital ClearAVM — third independent AVM source (ATTOM + HouseCanary + Clear Capital → real triangulation)
   clearCapital: {
     key:      process.env.CLEARCAPITAL_KEY || '',
     endpoint: (process.env.CLEARCAPITAL_ENDPOINT || 'https://api.clearcapital.com').trim().replace(/\/+$/, ''),
+    // The ClearAVM value endpoint PATH — env-overridable so the exact contract path
+    // can be confirmed against Clear Capital's docs at onboarding without a code change.
+    avmPath:  (process.env.CLEARCAPITAL_AVM_PATH || '/uve/v1.0.0/avm').trim(),
   },
-  //   ATTOM Data Solutions — third AVM source + property intelligence
+  //   ATTOM Data Solutions — AVM source + property intelligence
   attom: {
     key:      process.env.ATTOM_API_KEY || '',
     endpoint: (process.env.ATTOM_ENDPOINT || 'https://api.gateway.attomdata.com').trim().replace(/\/+$/, ''),
