@@ -1199,6 +1199,234 @@ function SovereignCockpit({ twinFacts, cureProofs, appId, canIssueCerts, canConf
 // rolled up by category. READ-ONLY / advisory — it summarizes an already-computed,
 // already-persisted run; it runs nothing, decides nothing, and clears no
 // condition. A file that has never been run shows a quiet "not run yet" note.
+// #136 (R5.39) — Guideline fit panel. Reads /guideline-evaluation (the advisory
+// composition layer over the R5.32–39 knowledge graph): per-rule verdicts + plain
+// citations for the registered program and any note-buyer investor, plus the
+// investor-fit ranking with an "A vs B" differentiator (the exact rules that
+// separate one investor from another). READ-ONLY / advisory — it explains the
+// frozen guideline baselines against this file; it changes no decision, clears no
+// condition, sizes no loan, and touches no frozen number. An unseeded knowledge
+// graph shows a quiet "nothing to compare yet" note.
+function GuidelineFitPanel({ appId }) {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [report, setReport] = useState(null);
+  const [showContext, setShowContext] = useState(false);
+  const [showAllRules, setShowAllRules] = useState(false);
+  const load = useCallback(() => {
+    if (!appId) return Promise.resolve();
+    setLoading(true);
+    return api.fileGuidelineEvaluation(appId)
+      .then((d) => setReport((d && d.report) || { empty: true, sets: [], fit: { ranked: [], best: null, anyFit: false, comparison: [] } }))
+      .catch(() => setReport({ empty: true, sets: [], fit: { ranked: [], best: null, anyFit: false, comparison: [] } }))
+      .finally(() => setLoading(false));
+  }, [appId]);
+  useEffect(() => { if (open && appId) load(); }, [open, appId, load]);
+
+  // Neutral verdict styling. not_applicable rules are never shown.
+  const VERDICT = {
+    met:           { fg: 'var(--good,#3F7A5B)', bg: 'rgba(63,122,91,.10)', label: 'Meets' },
+    violated:      { fg: 'var(--crit,#B4483C)', bg: 'var(--crit-bg,#F6E7E4)', label: 'Does not meet' },
+    indeterminate: { fg: 'var(--amber,#B7791F)', bg: 'var(--amber-bg,#F6EEDD)', label: 'Need more info' },
+    noted:         { fg: 'var(--muted,#4B585C)', bg: 'var(--paper,#F6F3EC)', label: 'Noted' },
+  };
+  const verdictChip = (v, excepted) => {
+    const s = VERDICT[v] || VERDICT.noted;
+    return (
+      <span style={{ fontSize: 10.5, fontWeight: 800, color: s.fg, background: s.bg, border: `1px solid ${s.fg}44`, borderRadius: 999, padding: '2px 9px', whiteSpace: 'nowrap' }}>
+        {excepted && v === 'violated' ? 'Exception applies' : s.label}
+      </span>
+    );
+  };
+  // one plain line for a rule: its reasons (if it doesn't meet) else its recorded requirement.
+  const ruleText = (r) => {
+    const cit = r && r.citation;
+    const reasons = cit && Array.isArray(cit.reasons) ? cit.reasons.filter(Boolean) : [];
+    if (reasons.length) return reasons.join('; ');
+    if (r && r.outcome != null && typeof r.outcome !== 'object') return String(r.outcome);
+    if (r && r.outcome && typeof r.outcome === 'object') {
+      const parts = Object.entries(r.outcome).map(([k, v]) => `${k}: ${v}`);
+      if (parts.length) return parts.join(', ');
+    }
+    return r && r.ruleKey ? r.ruleKey : 'Recorded guideline';
+  };
+
+  const rpt = report;
+  const sets = (rpt && Array.isArray(rpt.sets)) ? rpt.sets : [];
+  const fit = (rpt && rpt.fit) || { ranked: [], best: null, anyFit: false, comparison: [] };
+  const ranked = Array.isArray(fit.ranked) ? fit.ranked : [];
+  const comparison = Array.isArray(fit.comparison) ? fit.comparison : [];
+  const ctx = (rpt && rpt.context) || {};
+  const ctxKeys = Object.keys(ctx);
+  const isEmpty = !rpt || rpt.empty || sets.length === 0;
+
+  return (
+    <div style={{ border: '1px solid var(--line,#E7E1D3)', borderRadius: 12, padding: '12px 16px', marginBottom: 18 }}>
+      <button onClick={() => setOpen((v) => !v)} style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'none', border: 'none', cursor: 'pointer', padding: 0, textAlign: 'left', width: '100%' }}>
+        <span style={{ fontSize: 14, fontWeight: 700 }}>Guideline fit — which program &amp; investor this loan meets, and why</span>
+        <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--muted,#4B585C)' }}>{open ? 'hide' : 'show'}</span>
+      </button>
+      {open && (
+        <div style={{ marginTop: 12 }}>
+          <p style={{ fontSize: 12, color: 'var(--muted,#4B585C)', margin: '0 0 12px' }}>
+            How this file measures up against the program and any note-buyer guidelines — rule by rule,
+            in plain terms, with the reasons cited. This is a read-out; it decides nothing on its own.
+          </p>
+          {loading && <div className="muted" style={{ fontSize: 12 }}>Loading…</div>}
+          {!loading && isEmpty && (
+            <div className="muted" style={{ fontSize: 12.5 }}>
+              There are no guideline sets to compare on this file yet. Fit reasoning appears once a program is
+              registered and its guideline rules are on file.
+            </div>
+          )}
+          {!loading && !isEmpty && (
+            <>
+              {/* investor fit — best fit + the ranking */}
+              <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+                {fit.anyFit ? (
+                  <span style={{ fontSize: 12.5, fontWeight: 800, color: 'var(--good,#3F7A5B)', background: 'rgba(63,122,91,.10)', border: '1px solid var(--good,#3F7A5B)44', borderRadius: 999, padding: '4px 12px' }}>
+                    Best fit: {fit.best}
+                  </span>
+                ) : (
+                  <span style={{ fontSize: 12.5, fontWeight: 800, color: 'var(--amber,#B7791F)', background: 'var(--amber-bg,#F6EEDD)', border: '1px solid var(--amber,#B7791F)44', borderRadius: 999, padding: '4px 12px' }}>
+                    No clean fit yet
+                  </span>
+                )}
+                {rpt.generatedAt && (
+                  <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--muted,#4B585C)' }}>as of {fmtAgo(rpt.generatedAt)}</span>
+                )}
+              </div>
+
+              {ranked.length > 0 && (
+                <div style={{ marginBottom: 14 }}>
+                  {ranked.map((r, i) => {
+                    const fits = r.eligible;
+                    const fg = fits ? 'var(--good,#3F7A5B)' : 'var(--crit,#B4483C)';
+                    const blockers = Array.isArray(r.blockers) ? r.blockers : [];
+                    const notes = Array.isArray(r.notes) ? r.notes : [];
+                    return (
+                      <div key={i} style={{ padding: '7px 0', borderTop: i === 0 ? 'none' : '1px solid var(--line,#E7E1D3)' }}>
+                        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                          <span style={{ fontSize: 10.5, fontWeight: 800, color: fg, minWidth: 34 }}>{fits ? 'FITS' : 'FAILS'}</span>
+                          <span style={{ fontSize: 13, fontWeight: 700 }}>{r.investor}</span>
+                        </div>
+                        {blockers.length > 0 && (
+                          <ul style={{ margin: '4px 0 0 42px', padding: 0, listStyle: 'disc' }}>
+                            {blockers.slice(0, 6).map((b, j) => (
+                              <li key={j} style={{ fontSize: 12, color: 'var(--crit,#B4483C)' }}>{b.reason || b.ruleId}</li>
+                            ))}
+                          </ul>
+                        )}
+                        {notes.length > 0 && (
+                          <ul style={{ margin: '4px 0 0 42px', padding: 0, listStyle: 'disc' }}>
+                            {notes.slice(0, 4).map((n, j) => (
+                              <li key={j} style={{ fontSize: 11.5, color: 'var(--muted,#4B585C)' }}>{n}</li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* A vs B differentiators */}
+              {comparison.length > 0 && (
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--muted,#4B585C)', marginBottom: 6 }}>What separates them</div>
+                  {comparison.map((cmp, i) => {
+                    const diffs = Array.isArray(cmp.differentiators) ? cmp.differentiators : [];
+                    return (
+                      <div key={i} style={{ fontSize: 12.5, marginBottom: 8, padding: '8px 12px', background: 'var(--paper,#F6F3EC)', borderRadius: 8, border: '1px solid var(--line,#E7E1D3)' }}>
+                        <div style={{ fontWeight: 700, marginBottom: diffs.length ? 4 : 0 }}>{cmp.a} vs {cmp.b}</div>
+                        {diffs.length === 0 ? (
+                          <div className="muted" style={{ fontSize: 12 }}>Same guideline outcome on this file — nothing separates them.</div>
+                        ) : (
+                          <ul style={{ margin: 0, paddingLeft: 18 }}>
+                            {diffs.map((d, j) => (
+                              <li key={j} style={{ fontSize: 12 }}><strong>Only {d.onlyOn}:</strong> {d.reason || d.ruleId}</li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* per-set rule verdicts + citations */}
+              {sets.map((set, si) => {
+                const sm = set.summary || {};
+                const rules = Array.isArray(set.rules) ? set.rules : [];
+                // applicable rules only; violated + indeterminate first (the ones a human needs).
+                const applicable = rules.filter((r) => r.applicable && r.verdict !== 'not_applicable');
+                const order = { violated: 0, indeterminate: 1, met: 2, noted: 3 };
+                const sorted = applicable.slice().sort((a, b) => (order[a.verdict] ?? 4) - (order[b.verdict] ?? 4));
+                const primary = sorted.filter((r) => r.verdict === 'violated' || r.verdict === 'indeterminate');
+                const rest = sorted.filter((r) => r.verdict === 'met' || r.verdict === 'noted');
+                const shown = showAllRules ? sorted : (primary.length ? primary : sorted.slice(0, 4));
+                return (
+                  <div key={si} style={{ marginBottom: 14 }}>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', marginBottom: 6 }}>
+                      <span style={{ fontSize: 13, fontWeight: 800 }}>{set.label || 'Guideline set'}</span>
+                      <span style={{ fontSize: 11.5, fontWeight: 700, color: set.eligible ? 'var(--good,#3F7A5B)' : 'var(--crit,#B4483C)' }}>
+                        {set.eligible ? 'Eligible' : `${sm.blockers || 0} blocking`}
+                      </span>
+                      <span style={{ fontSize: 11, color: 'var(--muted,#4B585C)' }}>
+                        {sm.met || 0} meet · {sm.violated || 0} don't · {sm.indeterminate || 0} need info · {sm.noted || 0} noted
+                      </span>
+                    </div>
+                    {shown.length === 0 && (
+                      <div className="muted" style={{ fontSize: 12 }}>No rules apply to this file in this set.</div>
+                    )}
+                    {shown.map((r, ri) => {
+                      const cit = r.citation || {};
+                      return (
+                        <div key={ri} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '6px 0', borderTop: ri === 0 ? 'none' : '1px solid var(--line,#E7E1D3)' }}>
+                          <span style={{ marginTop: 1 }}>{verdictChip(r.verdict, r.excepted)}</span>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 12.5 }}>{ruleText(r)}</div>
+                            {cit.citation && (
+                              <div style={{ fontSize: 11, color: 'var(--muted,#4B585C)', marginTop: 2 }}>{cit.citation}</div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {rest.length > 0 && primary.length > 0 && !showAllRules && (
+                      <button onClick={() => setShowAllRules(true)} style={{ background: 'none', border: 'none', color: 'var(--teal,#2F7F86)', cursor: 'pointer', fontSize: 11.5, padding: '4px 0' }}>
+                        Show {rest.length} rule{rest.length === 1 ? '' : 's'} this file already meets
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+
+              {/* what the check saw — the exact context values, echoed */}
+              {ctxKeys.length > 0 && (
+                <div style={{ marginTop: 6 }}>
+                  <button onClick={() => setShowContext((v) => !v)} style={{ background: 'none', border: 'none', color: 'var(--teal,#2F7F86)', cursor: 'pointer', fontSize: 11.5, padding: 0 }}>
+                    {showContext ? 'Hide' : 'Show'} what the check looked at
+                  </button>
+                  {showContext && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                      {ctxKeys.map((k) => (
+                        <span key={k} style={{ fontSize: 11, color: 'var(--muted,#4B585C)', background: 'var(--paper,#F6F3EC)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 6, padding: '2px 8px' }}>
+                          {k.replace(/_/g, ' ')}: <strong>{String(ctx[k])}</strong>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function WholeLoanRunPanel({ appId }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -2495,6 +2723,12 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
           run, the ordered worklist, and findings by kind. Read-only / advisory. */}
       <WholeLoanRunPanel appId={appId} />
 
+      {/* Guideline fit (#136 / R5.39) — per-rule verdicts + plain citations for the
+          registered program and any note-buyer investor, plus the investor-fit
+          ranking with an "Investor A vs B" differentiator. Read-only / advisory —
+          it explains the frozen guideline baselines against this file. */}
+      <GuidelineFitPanel appId={appId} />
+
       {/* Sovereign Cockpit — Canonical facts (twin) + Condition cure proofs
           (Sovereign 1/4 + 2/4, owner-directed 2026-07-21). These two collapsible
           sections surface the underlying evidence layer PILOT computes on:
@@ -2609,3 +2843,4 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
 }
 
 const sel = { padding: '7px 10px', border: '1px solid var(--line,#E7E1D3)', borderRadius: 8, fontSize: 13.5, background: 'var(--card,#fff)', color: 'var(--ivory,#141B22)', maxWidth: 280 };
+
