@@ -4303,7 +4303,10 @@ router.patch('/checklist/:itemId', async (req, res) => {
     try { await audit(req, 'push_back_condition', 'checklist_item', req.params.itemId, { reason: String(b.issueReason).slice(0, 500) }); } catch (_) {}
     try {
       const it = await db.query(
-        `SELECT ci.application_id, ci.audience, COALESCE(ci.borrower_label, ci.label) AS label, a.borrower_id
+        `SELECT ci.application_id, ci.audience,
+                -- BORROWER wording only (leak fix 2026-07-23): the internal
+                -- label can carry capital-partner context — never email it.
+                COALESCE(NULLIF(ci.borrower_label,''), 'An item on your file') AS label, a.borrower_id
            FROM checklist_items ci LEFT JOIN applications a ON a.id=ci.application_id WHERE ci.id=$1`,
         [req.params.itemId]);
       const row = it.rows[0];
@@ -6401,7 +6404,12 @@ async function applyInternalStatus(appId, internalStatus, opts = {}) {
   let forced = false;
   if (external === 'clear_to_close' || external === 'funded') {
     const blockers = await advancementBlockers(appId, external);
-    if (blockers.conditions.length || blockers.gates.length) {
+    // AI suggestions are ADVISORY per the HARD RULE (and this fold's own R3.17
+    // comment): they show on the readiness widget / in the blocked payload but
+    // never gate the transition themselves (fix 2026-07-23 — the doors were
+    // counting them, contradicting the documented contract).
+    const enforceable = blockers.conditions.filter((c) => c && c.source !== 'ai_suggestion');
+    if (enforceable.length || blockers.gates.length) {
       if (!(opts.force && opts.allowForce)) return { blocked: true, target: external, blockers };
       forced = true;
     }
@@ -6475,7 +6483,10 @@ router.patch('/applications/:id', async (req, res) => {
     let forced = false;
     if (status === 'clear_to_close' || status === 'funded') {
       const blockers = await advancementBlockers(req.params.id, status);
-      if (blockers.conditions.length || blockers.gates.length) {
+      // AI suggestions are ADVISORY (HARD RULE + the fold's own R3.17 comment):
+      // surfaced in the payload, never counted as a gate (fix 2026-07-23).
+      const enforceable = blockers.conditions.filter((c) => c && c.source !== 'ai_suggestion');
+      if (enforceable.length || blockers.gates.length) {
         if (!(force && isAdmin(req))) return res.status(409).json({ error: 'blocked', target: status, blockers });
         forced = true;
       }

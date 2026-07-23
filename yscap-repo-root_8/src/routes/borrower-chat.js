@@ -120,6 +120,9 @@ router.get('/conversations/:cid/messages', async (req, res) => {
       m.reply_snippet = { ...m.reply_snippet, body: scrubText(m.reply_snippet.body) };
     if (Array.isArray(m.entity_refs))
       m.entity_refs = m.entity_refs.map(r => (r && typeof r.label === 'string') ? { ...r, label: scrubText(r.label) } : r);
+    // staff-named attachment filenames are a partner-name vector too — the
+    // email path already scrubs them ("BlueLake_terms.pdf"; leak fix 2026-07-23)
+    if (typeof m.attachment_name === 'string') m.attachment_name = scrubText(m.attachment_name);
   }
   res.json({ messages: msgs, members: await chat.membersOf(conv.id) });
 });

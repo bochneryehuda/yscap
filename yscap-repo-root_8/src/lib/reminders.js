@@ -143,9 +143,9 @@ function _fmtItem(label, detail) {
 }
 async function outstandingItems(appId, client = db) {
   const items = await client.query(
-    `SELECT COALESCE(borrower_label,label) AS label,
+    `SELECT COALESCE(NULLIF(borrower_label,''), 'An item your loan team needs') AS label,
             CASE WHEN status='issue' AND issue_reason IS NOT NULL THEN 'sent back — ' || issue_reason
-                 ELSE COALESCE(borrower_hint, hint) END AS detail
+                 ELSE borrower_hint END AS detail
        FROM checklist_items
       WHERE application_id=$1 AND audience IN ('borrower','both')
         AND status IN ('outstanding','requested','issue')

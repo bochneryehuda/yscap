@@ -724,6 +724,7 @@ async function analyzeOneDocument(app, doc, docType, opts = {}) {
 
     const client = await db.pool.connect();
     let saved;
+    let authFatalSignal = null; // set inside the tx, recorded AFTER COMMIT (audit M2)
     try {
       await client.query('BEGIN');
       saved = await store.saveAnalysis(client, {
@@ -754,25 +755,33 @@ async function analyzeOneDocument(app, doc, docType, opts = {}) {
           // R3.14 fix (2026-07-23): the major-fraud banner reads ai_suggestions
           // (source='authenticity', severity='fatal') — the document_findings row
           // above never reaches it, so the banner's authenticity branch was dead
-          // code. Record the high-alert signal as an ai_suggestion too (advisory
-          // only — blocks nothing; deduped per document so a re-analyze never
-          // duplicates). This also fires the R3.39 new-fatal-suggestion notify.
-          try {
-            await require('../lib/underwriting/ai-suggestions').record(client, {
-              applicationId: app.id, documentId: doc.id,
-              source: 'authenticity', kind: 'finding', severity: 'fatal',
-              title: 'A key document shows strong signs of tampering',
-              body: `Signals: ${signalsFired || 'metadata anomalies'}. The AI changed nothing — review the document and request a fresh copy directly from the source.`,
-              evidence: { code: 'doc_low_authenticity', docType, score: auth.score, signals: signalsFired || null },
-              dedupeKey: `doc_low_authenticity:${doc.id}`,
-            });
-          } catch (_) { /* additive — the banner signal never blocks the analyze */ }
+          // code. Stash the high-alert signal and record it AFTER COMMIT (audit
+          // M2: an in-transaction record() failure — e.g. a dedupe-race 23505 —
+          // would abort/poison the tx and silently roll back the whole analysis).
+          authFatalSignal = { docType, score: auth.score, signalsFired: signalsFired || null };
         }
       } catch (_) { /* authenticity is additive */ }
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
     finally { client.release(); }
 
+    // R3.14 fix (2026-07-23): record the low-authenticity high-alert signal as
+    // an ai_suggestion AFTER the analyze tx committed — an in-tx record()
+    // failure (dedupe-race 23505 etc.) would have poisoned the transaction and
+    // silently rolled back the whole analysis (pre-merge audit M2). Advisory
+    // only — the banner blocks nothing; deduped per document.
+    if (authFatalSignal) {
+      try {
+        await require('../lib/underwriting/ai-suggestions').record(null, {
+          applicationId: app.id, documentId: doc.id,
+          source: 'authenticity', kind: 'finding', severity: 'fatal',
+          title: 'A key document shows strong signs of tampering',
+          body: `Signals: ${authFatalSignal.signalsFired || 'metadata anomalies'}. The AI changed nothing — review the document and request a fresh copy directly from the source.`,
+          evidence: { code: 'doc_low_authenticity', docType: authFatalSignal.docType, score: authFatalSignal.score, signals: authFatalSignal.signalsFired },
+          dedupeKey: `doc_low_authenticity:${doc.id}`,
+        });
+      } catch (_) { /* additive — never fails the analyze result */ }
+    }
     if (actorId) await audit(actorId, 'underwriting_analyze', app.id, { documentId: doc.id, docType, ok: result.ok, findings: (result.findings || []).map((f) => f.code), reason: result.reason || null });
     // Materialize the CTC gate condition when analysis produced a blocking fatal (mirrors the manual path).
     if ((result.findings || []).some((f) => f.severity === 'fatal' && f.blocksCtc)) {
