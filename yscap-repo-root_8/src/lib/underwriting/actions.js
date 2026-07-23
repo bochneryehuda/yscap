@@ -27,6 +27,14 @@ const ACTIONS = {
     desc: 'This is not a real problem; dismiss it.' },
   decline:          { label: 'Decline the file',        outcome: 'resolved',  needs: 'note',
     desc: 'This finding is grounds to decline the loan.' },
+  // Severity-adjust actions (#200): the human tells PILOT its severity was
+  // mis-rated. The finding STAYS OPEN (still needs a real resolution) — this only
+  // records a labeled severity correction the self-training loop learns from
+  // (learning.proposeImprovements downgrades/upgrades a code after enough of these).
+  downgrade_severity: { label: 'Severity too high',      outcome: 'open',      needs: 'note',
+    desc: 'PILOT rated this more serious than it is; record that (the finding stays open) so PILOT rates this kind lower over time.' },
+  upgrade_severity:   { label: 'Severity too low',       outcome: 'open',      needs: 'note',
+    desc: 'PILOT rated this less serious than it is; record that (the finding stays open) so PILOT rates this kind higher over time.' },
 };
 
 // Map the check modules' suggested-action verbs onto canonical underwriter actions.
@@ -38,8 +46,8 @@ const ALIAS = {
 function canon(a) { return ALIAS[a] || a; }
 
 // Default action menus by severity when a finding doesn't specify its own.
-const DEFAULT_FATAL = ['post_condition', 'request_document', 'fix_file', 'grant_exception', 'clear', 'dismiss', 'decline'];
-const DEFAULT_WARN = ['post_condition', 'request_document', 'fix_file', 'clear', 'dismiss'];
+const DEFAULT_FATAL = ['post_condition', 'request_document', 'fix_file', 'grant_exception', 'clear', 'dismiss', 'decline', 'downgrade_severity', 'upgrade_severity'];
+const DEFAULT_WARN = ['post_condition', 'request_document', 'fix_file', 'clear', 'dismiss', 'downgrade_severity', 'upgrade_severity'];
 
 /**
  * The ordered list of actions to offer the underwriter for a finding, as catalog entries

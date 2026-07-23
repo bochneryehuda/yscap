@@ -47,6 +47,13 @@ const DECISION_BY_ACTION = Object.freeze({
   fix_file:         'confirmed_real',
   decline:          'declined',
   acknowledge:      'false_positive',
+  // #200 — severity-adjust capture: a human flagging a finding's severity as
+  // mis-rated becomes the exact correction the severity-drift proposer already
+  // reads (proposeImprovements counts decision='severity_too_high'/'…_too_low'
+  // per code → a downgrade/upgrade_severity training proposal). Before this,
+  // NO action produced these decisions, so that learning branch was dead.
+  downgrade_severity: 'severity_too_high',
+  upgrade_severity:   'severity_too_low',
 });
 
 /**
@@ -186,15 +193,19 @@ async function proposeImprovements(client, opts = {}) {
 
   // 2. severity drift — the human's decision consistently rates the finding
   //    differently than PILOT does.
+  // Count DISTINCT findings, not raw corrections: the severity-adjust action
+  // (#200) keeps the finding OPEN, so one finding could be flagged more than once
+  // — the drift signal must reflect how many SEPARATE findings the humans re-rated,
+  // never how many times one button was clicked.
   const severityQ = await client.query(
     `SELECT finding_code,
-            count(*) FILTER (WHERE decision = 'severity_too_high')::int AS too_high,
-            count(*) FILTER (WHERE decision = 'severity_too_low')::int AS too_low,
-            count(*)::int AS total
+            count(DISTINCT finding_id) FILTER (WHERE decision = 'severity_too_high')::int AS too_high,
+            count(DISTINCT finding_id) FILTER (WHERE decision = 'severity_too_low')::int AS too_low,
+            count(DISTINCT finding_id)::int AS total
        FROM finding_corrections
       WHERE captured_at > now() - interval '90 days' AND finding_code IS NOT NULL
       GROUP BY finding_code
-      HAVING count(*) >= 5`);
+      HAVING count(DISTINCT finding_id) >= 5`);
   for (const r of severityQ.rows) {
     if (r.too_high >= 5 && r.too_high / r.total >= 0.7) {
       proposals.push({
