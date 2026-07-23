@@ -76,7 +76,8 @@ function buildTieout(fileCtx, sources = []) {
   const ctx = fileCtx || {};
   const isAssignment = !!(ctx.app && ctx.app.is_assignment);
   const srcs = (sources || []).filter((s) => s && s.docType).map((s, i) => ({
-    id: s.id || `${s.docType}_${i}`, docType: s.docType, label: s.label || lbl(s.docType),
+    id: s.id || `${s.docType}_${i}`, documentId: s.documentId != null ? s.documentId : null,
+    docType: s.docType, label: s.label || lbl(s.docType),
     claims: claimsFor(s.docType, s.fields),
   }));
 
@@ -89,7 +90,7 @@ function buildTieout(fileCtx, sources = []) {
   for (const fact of FACTS) {
     const fileVal = fact.file(ctx);
     const fileHas = present(fileVal);
-    const claims = srcs.map((s) => ({ id: s.id, label: s.label, docType: s.docType, value: s.claims[fact.key] }));
+    const claims = srcs.map((s) => ({ id: s.id, documentId: s.documentId, label: s.label, docType: s.docType, value: s.claims[fact.key] }));
     const withVal = claims.filter((c) => present(c.value));
 
     // Truth = the file value if the file stores this fact, else the documents' consensus.
@@ -132,6 +133,12 @@ function buildTieout(fileCtx, sources = []) {
           fileValue: display(fact.kind, fileVal),
           title: `${fact.label} doesn't match the file`,
           howTo: `The loan file shows ${display(fact.kind, fileVal)}, but the ${bad.map((c) => c.label).join(', ')} show${bad.length === 1 ? 's' : ''} a different value. Reconcile — a fact that appears on more than one document must agree everywhere.`,
+          // The specific sources that disagree — the loan file plus each conflicting
+          // document, with its document id so the desk can open them side by side
+          // ("this document vs. that document"). documentId is null for the loan
+          // file (no PDF) and for the appraisal source (it's its own table).
+          sources: [{ kind: 'file', label: 'Loan file', value: display(fact.kind, fileVal), documentId: null }]
+            .concat(bad.map((c) => ({ kind: 'document', label: c.label, value: display(fact.kind, c.value), documentId: c.documentId || null }))),
         }));
       }
     } else if (cons.conflict) {
@@ -142,6 +149,9 @@ function buildTieout(fileCtx, sources = []) {
         fileValue: null,
         title: `${fact.label} differs between documents`,
         howTo: `The documents don't agree on the ${fact.label.toLowerCase()}: ${withVal.map((c) => `${c.label} = ${display(fact.kind, c.value)}`).join('; ')}. This must be reconciled — a mismatched ${fact.label.toLowerCase()} across documents is a top fraud/misrepresentation signal.`,
+        // The documents that disagree with each other — "this document vs. that
+        // document" — each with its id so the desk can open them side by side.
+        sources: withVal.map((c) => ({ kind: 'document', label: c.label, value: display(fact.kind, c.value), documentId: c.documentId || null })),
       }));
     }
   }
