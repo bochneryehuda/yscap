@@ -290,20 +290,30 @@ async function addNote(client, id, { staffId, text } = {}) {
 async function askAdmin(client, { applicationId, agent, question, context, documentId, checklistItemId } = {}) {
   const c = client || db();
   if (!applicationId || !agent || !question) throw new Error('askAdmin: applicationId, agent, question required');
-  // Dedupe by (agent + question) so the same open question doesn't stack across runs.
-  const dedupe = 'q:' + agent + ':' + Buffer.from(String(question)).toString('base64').slice(0, 40);
+  // Dedupe key = agent + SCOPE + full-question hash (audit fixes 2026-07-23):
+  //   * the scope (condition/doc, else 'file') keeps the cure engine's CONSTANT
+  //     question text from collapsing ACROSS documents — doc B's escalation must
+  //     not be swallowed because doc A's identical question is still unanswered;
+  //   * a sha256 of the WHOLE question (not a 30-byte base64 prefix) keeps two
+  //     different staff questions with a shared prefix from colliding.
+  const scope = checklistItemId || documentId || 'file';
+  const qHash = require('crypto').createHash('sha256').update(String(question)).digest('hex').slice(0, 24);
+  const dedupe = `q:${agent}:${scope}:${qHash}`;
   // Fix 2026-07-23: record()'s dedupe only matches status='open' suggestions,
   // but this function flips its suggestion to 'asked_admin' below — so every
   // repeat call (e.g. each cure re-run on the same document) stacked a brand-new
   // suggestion + a DUPLICATE super-admin inbox question. Check for a live
-  // UNANSWERED question on the same (file, dedupe) first; legacy rows written
-  // before dedupe_key was populated match by (agent + question text).
+  // UNANSWERED question on the same (file, dedupe) first. Legacy rows written
+  // before dedupe_key existed match by (agent + question text) — but ONLY for a
+  // file-scoped ask: a doc/condition-scoped ask must never be suppressed by an
+  // unscoped legacy row for a different document.
+  const legacyMatch = scope === 'file';
   const dup = await c.query(
     `SELECT id, suggestion_id FROM ai_admin_questions
       WHERE application_id=$1 AND answered_at IS NULL
-        AND (dedupe_key=$2 OR (dedupe_key IS NULL AND agent=$3 AND question=$4))
+        AND (dedupe_key=$2 OR ($5 AND dedupe_key IS NULL AND agent=$3 AND question=$4))
       ORDER BY asked_at DESC LIMIT 1`,
-    [applicationId, dedupe, agent, question]);
+    [applicationId, dedupe, agent, question, legacyMatch]);
   if (dup.rows[0]) return { suggestionId: dup.rows[0].suggestion_id, questionId: dup.rows[0].id, deduped: true };
   const sug = await record(c, {
     applicationId, documentId, checklistItemId,
@@ -313,17 +323,24 @@ async function askAdmin(client, { applicationId, agent, question, context, docum
     evidence: { context: context || {}, agent },
     dedupeKey: dedupe,
   });
+  // SAVEPOINT (best-effort — no-op outside a transaction) so a lost 23505 race
+  // on the db/264 partial-unique index doesn't abort the CALLER's transaction:
+  // rolled back to the savepoint, the re-select works and resolves the race.
+  let sp = false;
+  try { await c.query('SAVEPOINT ask_admin'); sp = true; } catch (_) { /* not in a tx */ }
   let q;
   try {
     q = await c.query(
       `INSERT INTO ai_admin_questions (suggestion_id, application_id, agent, question, context, dedupe_key)
        VALUES ($1,$2,$3,$4,$5::jsonb,$6) RETURNING *`,
       [sug.id, applicationId, agent, question, JSON.stringify(context || {}), dedupe]);
+    if (sp) await c.query('RELEASE SAVEPOINT ask_admin').catch(() => {});
   } catch (e) {
+    if (sp) await c.query('ROLLBACK TO SAVEPOINT ask_admin').catch(() => {});
     if (e && e.code === '23505') {
-      // A concurrent ask won the db/264 partial-unique race. Inside a caller
-      // transaction the tx is already aborted, so the re-select fails too and
-      // we rethrow for the caller's rollback path; outside a tx it resolves.
+      // A concurrent ask won the race — return its row. (With the savepoint
+      // rolled back this works even inside a caller transaction; without a
+      // savepoint the re-select fails on the aborted tx and we rethrow.)
       try {
         const again = await c.query(
           `SELECT id, suggestion_id FROM ai_admin_questions

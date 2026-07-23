@@ -302,10 +302,14 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
       const oa = (sib.rows.find((r) => r.doc_type === 'operating_agreement') || {}).fields || {};
       const ein = (sib.rows.find((r) => r.doc_type === 'ein_letter') || {}).fields || {};
       const assignor = { name: ext.fields.assignorName };
+      // Fix 2026-07-23 (#211): the OA schema now actually extracts ein /
+      // principalOfficeAddress / registeredAgent (they were read here but
+      // never in the schema — always null). entityAddress kept as a legacy
+      // fallback for any older extraction that carried it.
       const assignee = {
         name: ext.fields.assigneeName,
         ein: oa.ein || ein.ein || null,
-        address: oa.entityAddress || null,
+        address: oa.principalOfficeAddress || oa.entityAddress || null,
         registeredAgent: oa.registeredAgent || null,
       };
       await af.analyzeAndRecord(client, {

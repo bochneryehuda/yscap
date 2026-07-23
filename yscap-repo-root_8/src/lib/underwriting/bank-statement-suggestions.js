@@ -39,10 +39,16 @@ const OA_CASCADE_TEMPLATE_CODES = [
  * @returns {Promise<{recorded:number, deduped:number, failed:number}>}
  */
 async function syncBankFindingsToSuggestions(client, appId, documentId, bankFindings = []) {
-  if (!appId || !documentId || !Array.isArray(bankFindings) || !bankFindings.length) {
+  if (!appId || !Array.isArray(bankFindings) || !bankFindings.length) {
     return { recorded: 0, deduped: 0, failed: 0 };
   }
-  const suggestions = bankFindings.map((f) => build(appId, documentId, f)).filter(Boolean);
+  // Fix 2026-07-23 (#211): documentId is OPTIONAL. The file-view roll-up
+  // findings (liquidity short / no ending balance) are file-level, not
+  // per-document — the old caller passed app.id here, which violated the
+  // ai_suggestions.document_id FK (23503) and aborted the WHOLE file-view
+  // sync transaction. A null documentId records an app-level suggestion with
+  // an app-scoped dedupe key instead.
+  const suggestions = bankFindings.map((f) => build(appId, documentId || null, f)).filter(Boolean);
   return aiSug.recordMany(client, suggestions);
 }
 
@@ -59,7 +65,9 @@ function build(appId, documentId, f) {
       code: f.code, field: f.field, docValue: f.docValue, fileValue: f.fileValue,
       source: 'bank_statement',
     },
-    dedupeKey: `bank:${documentId}:${f.code}`,
+    // Dedupe scopes to the document when one is known, else to the file
+    // ('file' — dedupe keys already pair with application_id in record()).
+    dedupeKey: `bank:${documentId || 'file'}:${f.code}`,
   };
 
   // Special case: different-entity ownership → propose an operating-agreement

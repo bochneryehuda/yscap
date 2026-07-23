@@ -49,6 +49,9 @@ const { computeMetrics, capsFromRegistration } = require('../lib/underwriting/me
 const { buildChain } = require('../lib/underwriting/entity-chain');
 const { buildSellerChain } = require('../lib/underwriting/seller-chain');
 const { assessBankLiquidity, readRequiredLiquidity } = require('../lib/underwriting/bank-liquidity');
+// Fix 2026-07-23 (#211): similar-open + bulk-resolve referenced seesAll() without
+// defining it in this file (staff.js has its own copy) — ReferenceError → 500.
+const seesAll = (req) => can(req.actor, 'see_all_files');
 const { assessExperienceForFile } = require('../lib/underwriting/experience');
 const { assessCompleteness } = require('../lib/underwriting/completeness');
 const { computeRiskScore } = require('../lib/underwriting/risk-score');
@@ -490,37 +493,47 @@ router.get('/:appId', async (req, res, next) => {
     setImmediate(() => {
       (async () => {
         const c = await db.pool.connect();
+        // Fix 2026-07-23 (#211): each step runs under its OWN SAVEPOINT. Before
+        // this, one failing step aborted the shared transaction (25P02) — every
+        // later step silently no-oped AND the rollback wiped the earlier steps'
+        // suggestions. The concrete trigger: app.id was passed as the bank
+        // bridge's documentId, violating the ai_suggestions.document_id FK
+        // (23503) on ANY file with a bank finding — so the whole post-view
+        // detector sync recorded NOTHING on those files, every render.
+        const step = async (fn) => {
+          try {
+            await c.query('SAVEPOINT view_sync');
+            await fn();
+            await c.query('RELEASE SAVEPOINT view_sync');
+          } catch (_) { await c.query('ROLLBACK TO SAVEPOINT view_sync').catch(() => {}); }
+        };
         try {
           await c.query('BEGIN');
           if (entityChain || sellerChain) {
-            await syncEntityChain.syncChainsToSuggestions(c, app.id, { entityChain, sellerChain });
+            await step(() => syncEntityChain.syncChainsToSuggestions(c, app.id, { entityChain, sellerChain }));
           }
           if (bankFindingsFlat.length) {
-            // Bank-statement findings live per-document; group them under a synthetic doc id
-            // (the first per-doc source we can identify) — sync bridges accept a documentId.
-            await syncBankBridge.syncBankFindingsToSuggestions(c, app.id, app.id, bankFindingsFlat);
+            // These liquidity roll-up findings are FILE-level (no single source
+            // document) — documentId null records an app-level suggestion.
+            await step(() => syncBankBridge.syncBankFindingsToSuggestions(c, app.id, null, bankFindingsFlat));
           }
           // R3.18 — Bad-clearance scan: for every satisfied condition on the file,
           // run the classifier on its attached doc and post a "may have been cleared
           // with the wrong document" suggestion when the type doesn't match.
           // Dormant when the classifier isn't configured; capped per run.
-          try { await require('../lib/underwriting/bad-clearance').scanFile(c, app.id, { maxConditions: 15 }); } catch (_) { /* additive */ }
+          await step(() => require('../lib/underwriting/bad-clearance').scanFile(c, app.id, { maxConditions: 15 }));
           // R4.2 — Identity chain deep check: SSN/DOB/name mismatches across
           // every borrower-carrying doc → ai_suggestions. Best-effort.
-          try {
-            await require('../lib/underwriting/identity-chain').analyzeAndRecord(c, {
-              applicationId: app.id, extractions: exts.rows,
-            });
-          } catch (_) { /* additive */ }
+          await step(() => require('../lib/underwriting/identity-chain').analyzeAndRecord(c, {
+            applicationId: app.id, extractions: exts.rows,
+          }));
           // R3.23 — Public-records cross-check (advisory): seller/grantor/appraisal
           // owner + vesting/buyer chain mismatches → ai_suggestions. Best-effort.
-          try {
-            await require('../lib/underwriting/public-records-crosscheck').analyzeAndRecord(c, {
-              applicationId: app.id,
-              fileCtx: { vestingName: mctx && mctx.vestingName },
-              extractions: exts.rows,
-            });
-          } catch (_) { /* additive */ }
+          await step(() => require('../lib/underwriting/public-records-crosscheck').analyzeAndRecord(c, {
+            applicationId: app.id,
+            fileCtx: { vestingName: mctx && mctx.vestingName },
+            extractions: exts.rows,
+          }));
           await c.query('COMMIT');
         } catch (_) { await c.query('ROLLBACK').catch(() => {}); }
         finally { c.release(); }
@@ -1566,15 +1579,48 @@ router.post('/:appId/ai-suggestions/rerun-checks', requirePermission('sign_off_c
         `SELECT doc_type, document_id, fields FROM document_extractions
           WHERE application_id=$1 AND is_current AND status='analyzed' ORDER BY created_at DESC LIMIT 60`, [app.id]);
       const mctx = await fileView.loadContext(client, app.id).catch(() => ({}));
+      // Fix 2026-07-23 (#211): entity-chain and bank-statement-checks never
+      // exported analyzeAndRecord — both arms were dead TypeErrors swallowed by
+      // the per-bridge catch, so "Re-run AI checks" silently skipped them. Use
+      // the REAL file-view pipeline: build the chains / liquidity, then sync
+      // through the same suggestion bridges the file view uses.
+      const requiredLiquidity = await readRequiredLiquidity(client, app.id).catch(() => null);
       const bridges = [
-        ['entity_chain',    () => require('../lib/underwriting/entity-chain').analyzeAndRecord(client, { applicationId: app.id, fileCtx: mctx, extractions: exts.rows })],
-        ['bank',            () => require('../lib/underwriting/bank-statement-checks').analyzeAndRecord(client, { applicationId: app.id, extractions: exts.rows })],
+        ['entity_chain', () => {
+          const a2 = (mctx && mctx.app) || {};
+          const isEntity = !!((mctx && mctx.vestingName) || a2.llc_id ||
+            exts.rows.some((e) => e.doc_type === 'operating_agreement'));
+          const entityChain = isEntity ? buildChain(
+            { vestingName: mctx && mctx.vestingName,
+              borrowerName: fileView.borrowerName(mctx && mctx.borrower),
+              program: (mctx.registration && mctx.registration.program) || a2.program || null },
+            exts.rows) : null;
+          const sellerChain = buildSellerChain(mctx || {}, exts.rows);
+          if (!entityChain && !sellerChain) return { recorded: 0 };
+          return require('../lib/underwriting/entity-chain-suggestions')
+            .syncChainsToSuggestions(client, app.id, { entityChain, sellerChain });
+        }],
+        ['bank', () => {
+          const bl = assessBankLiquidity(mctx || {}, exts.rows, { requiredLiquidity });
+          const findings = (bl && bl.findings) || [];
+          if (!findings.length) return { recorded: 0 };
+          return require('../lib/underwriting/bank-statement-suggestions')
+            .syncBankFindingsToSuggestions(client, app.id, null, findings);
+        }],
         ['bad_clearance',   () => require('../lib/underwriting/bad-clearance').scanFile(client, app.id, { maxConditions: 15 })],
         ['public_records',  () => require('../lib/underwriting/public-records-crosscheck').analyzeAndRecord(client, { applicationId: app.id, fileCtx: { vestingName: mctx && mctx.vestingName }, extractions: exts.rows })],
         ['identity_chain',  () => require('../lib/underwriting/identity-chain').analyzeAndRecord(client, { applicationId: app.id, extractions: exts.rows })],
       ];
       for (const [k, fn] of bridges) {
-        try { const r = await fn(); ran[k] = (r && r.recorded) || 0; } catch (_) { /* additive */ }
+        // SAVEPOINT per bridge — one failure must never abort the shared tx and
+        // silently no-op the remaining bridges (the poisoned-tx class).
+        try {
+          await client.query('SAVEPOINT rerun_bridge');
+          const r = await fn();
+          await client.query('RELEASE SAVEPOINT rerun_bridge');
+          // bad-clearance reports {scanned, flagged}; the sync bridges {recorded}.
+          ran[k] = (r && (r.recorded != null ? r.recorded : r.flagged)) || 0;
+        } catch (_) { await client.query('ROLLBACK TO SAVEPOINT rerun_bridge').catch(() => {}); }
       }
       // R4.16 — stamp the file so the AI Findings panel can show a 'Last re-run' time.
       try {

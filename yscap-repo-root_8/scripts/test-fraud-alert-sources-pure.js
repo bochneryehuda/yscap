@@ -16,16 +16,21 @@ let passed = 0;
 const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
 
 // --- the query covers every fraud-relevant fatal source ---
-let capturedSql = null, capturedParams = null;
+let capturedSql = null, capturedParams = null, capturedDfSql = null;
 const fakeClient = {
   query: async (sql, params) => {
+    if (/FROM document_findings/.test(sql)) {
+      // #211 fix: the registry's own bank_account_other_entity fatal is read too.
+      capturedDfSql = sql;
+      return { rows: [{ id: 'df1', source: 'bank_statement', title: 'Money sits in an unverified entity account', severity: 'fatal', confidence: null, created_at: new Date().toISOString() }] };
+    }
     capturedSql = sql; capturedParams = params;
     return { rows: [{ id: 's1', source: 'entity_chain', title: 'SSN mismatch across documents', severity: 'fatal', confidence: null, created_at: new Date().toISOString() }] };
   },
 };
 (async () => {
   const rows = await fa.openMajorSignals('app-1', fakeClient);
-  assert.strictEqual(rows.length, 1, 'rows pass through');
+  assert.strictEqual(rows.length, 2, 'ai_suggestions row + the registry document_findings fatal both pass through');
   assert.ok(/source = ANY\(\$2\)/.test(capturedSql), 'sources are parameterized via ANY($2)');
   const sources = capturedParams[1];
   for (const s of ['assignment_fraud', 'authenticity', 'entity_chain', 'independent_verification']) {
@@ -33,7 +38,10 @@ const fakeClient = {
   }
   assert.ok(/cure_analysis/.test(capturedSql) && /bank_account_other_entity/.test(capturedSql), 'the cure_analysis bank-account clause is kept');
   assert.ok(/severity = 'fatal'/.test(capturedSql), 'only FATAL rows raise the banner');
-  ok('openMajorSignals covers assignment_fraud + authenticity + entity_chain + independent_verification fatals + the cure clause');
+  // #211: the document_findings read targets exactly the open registry fatal.
+  assert.ok(capturedDfSql && /bank_account_other_entity/.test(capturedDfSql) && /status='open'/.test(capturedDfSql)
+    && /severity='fatal'/.test(capturedDfSql), 'the registry read is scoped to the OPEN FATAL bank_account_other_entity');
+  ok('openMajorSignals covers all fatal sources + the cure clause + the registry bank fatal (#211)');
 
   // --- HIGH_CONF_SOURCES exported set matches ---
   for (const s of ['assignment_fraud', 'authenticity', 'entity_chain', 'independent_verification']) {

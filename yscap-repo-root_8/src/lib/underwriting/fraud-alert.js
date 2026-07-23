@@ -48,7 +48,17 @@ async function openMajorSignals(appId, client) {
              OR (source = 'cure_analysis' AND severity = 'fatal' AND evidence->>'code' = 'bank_account_other_entity')
           )
         ORDER BY created_at DESC`, [appId, FATAL_SOURCES]);
-    return r.rows;
+    // Fix 2026-07-23 (#211): the bank_account_other_entity FATAL is written by
+    // the extraction registry into document_findings — it only reaches
+    // ai_suggestions if the (previously broken) file-view bank bridge runs. Read
+    // the registry's own open fatal too so the banner can never miss it.
+    const dfr = await c.query(
+      `SELECT id, source, title, severity, NULL::numeric AS confidence, created_at
+         FROM document_findings
+        WHERE application_id=$1 AND status='open' AND severity='fatal'
+          AND code='bank_account_other_entity'
+        ORDER BY created_at DESC`, [appId]);
+    return r.rows.concat(dfr.rows);
   } catch (_) { return []; }
 }
 
