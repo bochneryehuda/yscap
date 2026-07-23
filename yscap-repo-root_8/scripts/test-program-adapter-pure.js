@@ -81,4 +81,14 @@ d = pa.adaptQuote(manualQuote);
 assert.strictEqual(d.topReason.level, 'MANUAL', 'topReason is the most severe engine reason');
 ok('topReason surfaces the most severe engine reason');
 
+
+// --- fix 2026-07-23: an unknown/absent engine status is NEVER eligible ---
+d = pa.adaptQuote({ status: 'SOMETHING_NEW' });
+assert.strictEqual(d.eligible, false, 'an unrecognized engine status is not eligible');
+d = pa.adaptQuote({});
+assert.strictEqual(d.eligible, false, 'an absent engine status is not eligible');
+d = pa.adaptQuote(null);
+assert.strictEqual(d.eligible, false, 'a null quote is not eligible');
+ok('eligible fails safe on unknown/absent/null engine status');
+
 console.log(`\nR6.5 program-adapter pure — ${passed} checks passed`);

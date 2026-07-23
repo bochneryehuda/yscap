@@ -905,9 +905,11 @@ async function aiCrossdocSweepOnce() {
       const c = await db.getClient();
       try {
         await c.query('BEGIN');
+        // Fix 2026-07-23: extraction status is 'analyzed' (db/200), never 'ok' —
+        // the nightly cross-doc sweep saw zero extractions on every file.
         const exts = await c.query(
           `SELECT doc_type, document_id, fields FROM document_extractions
-            WHERE application_id=$1 AND status='ok' ORDER BY created_at DESC LIMIT 40`, [row.id]);
+            WHERE application_id=$1 AND is_current AND status='analyzed' ORDER BY created_at DESC LIMIT 40`, [row.id]);
         if (exts.rows.length >= 2) {
           await require('./underwriting/ai-cross-doc').analyzeFile(c, {
             applicationId: row.id, extractions: exts.rows,

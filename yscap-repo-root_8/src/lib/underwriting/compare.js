@@ -21,7 +21,11 @@ function num(v) {
   // overdrawn/negative balance parses instead of silently dropping out of a reconciliation.
   const raw = String(v).trim();
   const neg = /^\(.*\)$/.test(raw);
-  const n = Number(raw.replace(/[()$,\s]/g, ''));
+  const cleaned = raw.replace(/[()$,\s]/g, '');
+  // blank-after-strip ('$', '  ', '()') is null, never 0 (fix 2026-07-23: a
+  // whitespace extraction became a false FATAL "$0" tie-out discrepancy)
+  if (cleaned === '') return null;
+  const n = Number(cleaned);
   if (!Number.isFinite(n)) return null;
   return neg ? -n : n;
 }

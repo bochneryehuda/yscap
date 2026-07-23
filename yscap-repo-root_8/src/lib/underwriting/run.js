@@ -48,8 +48,12 @@ const BREACH_FINDING = {
 };
 
 // Map the registered quote's caps to the structure underwriter's cap shape.
+// Fix 2026-07-23 (#209): real persisted quotes (pricing.quoteProgram) carry the
+// caps at quote.guidelines.caps — a top-level quote.caps only exists in test
+// fixtures. Reading only quote.caps left every cap null, every ledger row
+// 'incomplete', and NO structure breach could ever fire.
 function capsFromQuote(quote) {
-  const c = (quote && quote.caps) || {};
+  const c = (quote && (quote.caps || (quote.guidelines && quote.guidelines.caps))) || {};
   const n = (v) => (v === '' || v == null || !Number.isFinite(Number(v)) ? null : Number(v));
   return {
     maxAcquisitionLtv: n(c.maxAcqLtv),
@@ -77,6 +81,11 @@ function structureFromContext(ctx, programDecision) {
     asIsValue: num(v.as_is_value),
     arv: num(v.arv),
     rehabBudget: num(v.rehab_budget),
+    // Fix 2026-07-23 (#209): the frozen engine's cost basis includes the
+    // financed reserve (reserve-in-cost). Without it the ledger re-derived
+    // LTC = loan/(purchase+rehab) and a correctly-sized reserve-financed loan
+    // at exactly the cap would false-breach. computeRatios honors costBasis.
+    costBasis: num(sz.costBasis),
   };
 }
 

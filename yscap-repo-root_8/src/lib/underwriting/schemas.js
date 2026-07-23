@@ -232,7 +232,9 @@ const OPERATING_AGREEMENT = {
     "name, whether it is member-managed or manager-managed, the managing member / authorized signer, " +
     "every member with their ownership percentage AND whether that member is a natural PERSON, another " +
     "ENTITY (an LLC/corp), or a TRUST (member type: individual | entity | trust), whether the agreement " +
-    "authorizes the entity to borrow money and encumber real property, and whether it is signed. Use " +
+    "authorizes the entity to borrow money and encumber real property, and whether it is signed. Also " +
+    "extract the entity's EIN if stated, the principal office / business address, and the registered " +
+    "agent's name (fraud cross-checks compare these against the assignment parties). Use " +
     "null for anything absent or unreadable — do NOT guess. Percentages as plain numbers (e.g. 50 for " +
     "50%). readable=false if poor.",
   schema: obj({
@@ -247,6 +249,12 @@ const OPERATING_AGREEMENT = {
     authorizesBorrowing: { type: ['boolean', 'null'] },     // clause authorizing debt/encumbrance
     signed: { type: ['boolean', 'null'] },
     effectiveDate: { type: ['string', 'null'] },
+    // Fix 2026-07-23 (#211): the assignment-fraud enrichment reads these —
+    // they were never in the schema, so shared-EIN / shared-address /
+    // shared-agent signals could not fire off the OA. Additive + nullable.
+    ein: { type: ['string', 'null'] },
+    principalOfficeAddress: { type: ['string', 'null'] },
+    registeredAgent: { type: ['string', 'null'] },
     readable: { type: 'boolean' },
     notes: { type: ['string', 'null'] },
   }),

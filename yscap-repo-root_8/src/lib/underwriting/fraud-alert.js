@@ -3,10 +3,14 @@
  * Major-fraud alert (R3.14, owner-directed 2026-07-22).
  *
  * When a file carries a HIGH-confidence fraud signal — a fatal-severity
- * assignment_fraud, authenticity, or bank_account_other_entity AI
- * suggestion, OR a document-authenticity high-alert score — PILOT should
- * pin an admin banner on the file view AND notify admins ONCE per file per
- * signal (dedupe by suggestion id).
+ * assignment_fraud / authenticity / entity_chain (identity) /
+ * independent_verification suggestion, or the bank_account_other_entity
+ * cure signal — PILOT should pin an admin banner on the file view AND
+ * notify admins ONCE per file per signal (dedupe by suggestion id).
+ * (2026-07-23 fix: the source set was assignment_fraud+authenticity only,
+ * and authenticity signals were never recorded as ai_suggestions — so the
+ * authenticity branch was dead code and fatal identity/verification
+ * conflicts never raised the banner.)
  *
  * Never blocks the file, never overrides anything (HARD RULE) — the alert
  * is a *notice* the admin decides on.
@@ -15,7 +19,15 @@
 let _db = null;
 const db = () => (_db || (_db = require('../../db')));
 
-const HIGH_CONF_SOURCES = new Set(['assignment_fraud', 'authenticity']);
+// Fraud-relevant suggestion sources whose FATAL rows raise the banner.
+// - assignment_fraud: non-arm's-length assignment signals
+// - authenticity: document tampering high-alert (recorded as an ai_suggestion
+//   by the analyze path when a MATERIAL doc scores low — see routes/underwriting.js)
+// - entity_chain: identity-chain fatals (identity_ssn_mismatch etc.) are
+//   recorded under this source by identity-chain.js
+// - independent_verification: reconciler conflicts (ownership/entity-status)
+const HIGH_CONF_SOURCES = new Set(['assignment_fraud', 'authenticity', 'entity_chain', 'independent_verification']);
+const FATAL_SOURCES = Array.from(HIGH_CONF_SOURCES);
 
 /**
  * Return the OPEN high-severity fraud/authenticity signals on a file that
@@ -32,12 +44,21 @@ async function openMajorSignals(appId, client) {
         WHERE application_id=$1
           AND status IN ('open','marked_important','escalated')
           AND (
-                (source = 'assignment_fraud' AND severity = 'fatal')
-             OR (source = 'authenticity' AND severity = 'fatal')
+                (source = ANY($2) AND severity = 'fatal')
              OR (source = 'cure_analysis' AND severity = 'fatal' AND evidence->>'code' = 'bank_account_other_entity')
           )
+        ORDER BY created_at DESC`, [appId, FATAL_SOURCES]);
+    // Fix 2026-07-23 (#211): the bank_account_other_entity FATAL is written by
+    // the extraction registry into document_findings — it only reaches
+    // ai_suggestions if the (previously broken) file-view bank bridge runs. Read
+    // the registry's own open fatal too so the banner can never miss it.
+    const dfr = await c.query(
+      `SELECT id, source, title, severity, NULL::numeric AS confidence, created_at
+         FROM document_findings
+        WHERE application_id=$1 AND status='open' AND severity='fatal'
+          AND code='bank_account_other_entity'
         ORDER BY created_at DESC`, [appId]);
-    return r.rows;
+    return r.rows.concat(dfr.rows);
   } catch (_) { return []; }
 }
 

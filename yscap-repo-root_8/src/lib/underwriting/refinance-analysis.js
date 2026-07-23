@@ -19,7 +19,22 @@
 
 const CASH_OUT_DEMINIMIS = 2000;
 
-function num(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
+// Fix 2026-07-23 (#209): Number(null)===0 and Number('  ')===0 — a DB-NULL
+// payoff fabricated a $0 payoff and skipped the refi_missing_payoff finding.
+function num(v) {
+  if (v == null || (typeof v === 'string' && v.trim() === '')) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+// Human label for a refi type key ('cash_out' → 'cash-out', 'rate_term' →
+// 'rate & term') — a bare replace('_', ' & ') printed "cash & out".
+function typeLabel(t) {
+  const s = String(t || '');
+  if (s === 'cash_out') return 'cash-out';
+  if (s === 'rate_term') return 'rate & term';
+  return s.replace(/_/g, ' ');
+}
 
 /**
  * analyze({ statedType, loanProceeds, payoff, existingDebt, closingCosts,
@@ -55,8 +70,8 @@ function analyze(input) {
   if (stated && stated !== economicType) {
     mismatch = true;
     findings.push({ code: 'refi_type_mismatch', severity: 'warning',
-      title: `Stated ${stated.replace('_', ' & ')} behaves as ${economicType.replace('_', ' & ')}`,
-      explanation: `The loan nets the borrower ${fmt(netToBorrower)} after payoff/debt/closing — that is economically a ${economicType.replace('_', ' & ')}, not a ${stated.replace('_', ' & ')}.` });
+      title: `Stated ${typeLabel(stated)} behaves as ${typeLabel(economicType)}`,
+      explanation: `The loan nets the borrower ${fmt(netToBorrower)} after payoff/debt/closing — that is economically a ${typeLabel(economicType)}, not a ${typeLabel(stated)}.` });
   }
 
   // Cash-out above verified hard costs (reimbursement cap) — audit scenario.

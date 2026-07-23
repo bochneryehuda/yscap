@@ -26,8 +26,20 @@ const eqCents = (a, b) => Math.round((Number(a) || 0) * 100) === Math.round((Num
 // or null when there's nothing usable.
 function toNum(v) {
   if (v == null) return null;
-  const n = Number(String(v).replace(/[^0-9.]/g, ''));
-  return Number.isFinite(n) ? n : null;
+  const raw = String(v).trim();
+  // Preserve the SIGN (fix 2026-07-23): stripping '-' let a NEGATIVE
+  // contingency (or a sign-flipped total) satisfy the SOW gates — this JS
+  // layer is the primary gate (signOffGate rejects before any DB write; the
+  // db/069/192 trigger also sign-strips, so it is belt-and-suspenders only).
+  // Correctness tightening only — no threshold or budget number changes.
+  // '$-5,000' counts as negative too (the minus may sit after the currency
+  // symbol), and accounting parens '(5,000)' stay negative.
+  const neg = /^\(.*\)$/.test(raw) || /^[^0-9]*-/.test(raw);
+  const s = raw.replace(/[^0-9.]/g, '');
+  if (s === '') return null;
+  const n = Number(s);
+  if (!Number.isFinite(n)) return null;
+  return neg ? -n : n;
 }
 
 // The first-page construction budget carried on a saved SOW payload

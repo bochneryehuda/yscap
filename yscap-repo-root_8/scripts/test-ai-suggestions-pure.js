@@ -91,11 +91,22 @@ function mkClient(store) {
         return { rows: filtered };
       }
       if (/^INSERT INTO ai_admin_questions/i.test(s)) {
-        const [sugId, appId, agent, question, context] = params;
-        const row = { id: store.id(), suggestion_id: sugId, application_id: appId, agent, question, context: JSON.parse(context), asked_at: new Date().toISOString(), answered_at: null };
+        const [sugId, appId, agent, question, context, dedupeKey] = params;
+        const row = { id: store.id(), suggestion_id: sugId, application_id: appId, agent, question, context: JSON.parse(context), dedupe_key: dedupeKey || null, asked_at: new Date().toISOString(), answered_at: null };
         store.aq.push(row);
         return { rows: [row] };
       }
+      // Fix 2026-07-23 (#208): askAdmin's unanswered-question dedupe pre-check
+      // (and its 23505 race re-select share this SELECT-list prefix). The
+      // legacy (agent+question) match only applies when $5 says file-scoped.
+      if (/^SELECT id, suggestion_id FROM ai_admin_questions/i.test(s)) {
+        const legacyOk = params.length > 4 ? !!params[4] : false;
+        const hit = store.aq.find(r => r.application_id === params[0] && !r.answered_at &&
+          (r.dedupe_key === params[1] || (legacyOk && r.dedupe_key == null && r.agent === params[2] && r.question === params[3])));
+        return { rows: hit ? [{ id: hit.id, suggestion_id: hit.suggestion_id }] : [] };
+      }
+      // askAdmin's best-effort savepoint around the inbox INSERT.
+      if (/^(SAVEPOINT|RELEASE SAVEPOINT|ROLLBACK TO SAVEPOINT) ask_admin$/i.test(s)) return { rows: [] };
       if (/^UPDATE ai_admin_questions SET learning_captured=true/i.test(s)) return { rows: [] };
       if (/^UPDATE ai_admin_questions SET answered_by_staff_id/i.test(s)) {
         const [id, staffId, ans] = params;
@@ -193,6 +204,34 @@ const aiSug = require('../src/lib/underwriting/ai-suggestions');
   const sug = store.rows.find(r => r.id === q.suggestionId);
   assert.strictEqual(sug.status, 'asked_admin');
   assert.strictEqual(sug.kind, 'question');
+  // Fix 2026-07-23 (#208): re-asking while the question is still UNANSWERED
+  // dedupes to the SAME inbox row (before the fix it stacked a duplicate —
+  // the suggestion's 'asked_admin' status hid it from record()'s open-only dedupe).
+  const qDup = await aiSug.askAdmin(c, {
+    applicationId: appId, agent: 'cure', question: 'The insurance dec page is 4-family but the file says 3-family. Which is the truth?',
+  });
+  assert.strictEqual(qDup.deduped, true, 'unanswered repeat ask is deduped');
+  assert.strictEqual(qDup.questionId, q.questionId, 'same inbox question returned');
+  assert.strictEqual(store.aq.length, 1, 'no duplicate inbox row stacked');
+  // Audit fix 2026-07-23: the SAME question text about a DIFFERENT document is a
+  // DIFFERENT escalation — the scope is part of the dedupe key, so doc B's ask
+  // must NOT be swallowed by doc A's unanswered question.
+  const qDocA = await aiSug.askAdmin(c, {
+    applicationId: appId, agent: 'cure', documentId: 'doc-A',
+    question: 'The cure engine could not verify this document. Review?',
+  });
+  const qDocB = await aiSug.askAdmin(c, {
+    applicationId: appId, agent: 'cure', documentId: 'doc-B',
+    question: 'The cure engine could not verify this document. Review?',
+  });
+  assert.ok(!qDocB.deduped, 'a different document is a different escalation');
+  assert.notStrictEqual(qDocB.questionId, qDocA.questionId, 'doc B gets its own inbox question');
+  const qDocA2 = await aiSug.askAdmin(c, {
+    applicationId: appId, agent: 'cure', documentId: 'doc-A',
+    question: 'The cure engine could not verify this document. Review?',
+  });
+  assert.strictEqual(qDocA2.deduped, true, 'the SAME document re-ask still dedupes');
+  assert.strictEqual(qDocA2.questionId, qDocA.questionId);
   await aiSug.answerAdminQuestion(c, q.questionId, { staffId: 's3', answer: 'File says 3 — appraiser to confirm.' });
   const aq = store.aq.find(r => r.id === q.questionId);
   assert.ok(aq.answered_at);

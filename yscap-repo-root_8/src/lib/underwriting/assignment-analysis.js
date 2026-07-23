@@ -19,7 +19,8 @@
 const SELLER_PCT_CAP = 0.15;      // 15% of the seller's original price
 const GOLD_DOLLAR_CEILING = 75000; // Gold's additional dollar ceiling
 
-function num(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
+// null/blank -> null FIRST (fix 2026-07-23: Number(null)===0 fabricated a $0 basis)
+function num(v) { if (v == null || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null; }
 
 /**
  * analyze({ sellerPrice, actualFee, program, registeredFinanceableFee?,

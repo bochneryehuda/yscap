@@ -215,13 +215,13 @@ router.post('/silenced-codes', requireRole('super_admin'), async (req, res) => {
       `INSERT INTO ai_silenced_codes (code, reason, silenced_by)
        VALUES ($1,$2,$3)
        ON CONFLICT (code) DO UPDATE SET reason=EXCLUDED.reason, silenced_by=EXCLUDED.silenced_by, silenced_at=now()`,
-      [code, reason, req.actor.staffId || null]);
+      [code, reason, req.actor.id || null]);
     // R4.20 — audit trail: who silenced what, when, why. Best-effort.
     try {
       await db.query(
         `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
          VALUES ('staff',$1,'ai_code_silenced','ai_silenced_code',NULL,$2::jsonb)`,
-        [req.actor.staffId || null, JSON.stringify({ code, reason })]);
+        [req.actor.id || null, JSON.stringify({ code, reason })]);
     } catch (_) { /* additive */ }
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message || 'mute failed' }); }
@@ -235,7 +235,7 @@ router.delete('/silenced-codes/:code', requireRole('super_admin'), async (req, r
       await db.query(
         `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
          VALUES ('staff',$1,'ai_code_unsilenced','ai_silenced_code',NULL,$2::jsonb)`,
-        [req.actor.staffId || null, JSON.stringify({ code })]);
+        [req.actor.id || null, JSON.stringify({ code })]);
     } catch (_) { /* additive */ }
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message || 'unmute failed' }); }

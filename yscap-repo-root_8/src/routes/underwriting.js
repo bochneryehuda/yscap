@@ -49,6 +49,9 @@ const { computeMetrics, capsFromRegistration } = require('../lib/underwriting/me
 const { buildChain } = require('../lib/underwriting/entity-chain');
 const { buildSellerChain } = require('../lib/underwriting/seller-chain');
 const { assessBankLiquidity, readRequiredLiquidity } = require('../lib/underwriting/bank-liquidity');
+// Fix 2026-07-23 (#211): similar-open + bulk-resolve referenced seesAll() without
+// defining it in this file (staff.js has its own copy) — ReferenceError → 500.
+const seesAll = (req) => can(req.actor, 'see_all_files');
 const { assessExperienceForFile } = require('../lib/underwriting/experience');
 const { assessCompleteness } = require('../lib/underwriting/completeness');
 const { computeRiskScore } = require('../lib/underwriting/risk-score');
@@ -490,37 +493,47 @@ router.get('/:appId', async (req, res, next) => {
     setImmediate(() => {
       (async () => {
         const c = await db.pool.connect();
+        // Fix 2026-07-23 (#211): each step runs under its OWN SAVEPOINT. Before
+        // this, one failing step aborted the shared transaction (25P02) — every
+        // later step silently no-oped AND the rollback wiped the earlier steps'
+        // suggestions. The concrete trigger: app.id was passed as the bank
+        // bridge's documentId, violating the ai_suggestions.document_id FK
+        // (23503) on ANY file with a bank finding — so the whole post-view
+        // detector sync recorded NOTHING on those files, every render.
+        const step = async (fn) => {
+          try {
+            await c.query('SAVEPOINT view_sync');
+            await fn();
+            await c.query('RELEASE SAVEPOINT view_sync');
+          } catch (_) { await c.query('ROLLBACK TO SAVEPOINT view_sync').catch(() => {}); }
+        };
         try {
           await c.query('BEGIN');
           if (entityChain || sellerChain) {
-            await syncEntityChain.syncChainsToSuggestions(c, app.id, { entityChain, sellerChain });
+            await step(() => syncEntityChain.syncChainsToSuggestions(c, app.id, { entityChain, sellerChain }));
           }
           if (bankFindingsFlat.length) {
-            // Bank-statement findings live per-document; group them under a synthetic doc id
-            // (the first per-doc source we can identify) — sync bridges accept a documentId.
-            await syncBankBridge.syncBankFindingsToSuggestions(c, app.id, app.id, bankFindingsFlat);
+            // These liquidity roll-up findings are FILE-level (no single source
+            // document) — documentId null records an app-level suggestion.
+            await step(() => syncBankBridge.syncBankFindingsToSuggestions(c, app.id, null, bankFindingsFlat));
           }
           // R3.18 — Bad-clearance scan: for every satisfied condition on the file,
           // run the classifier on its attached doc and post a "may have been cleared
           // with the wrong document" suggestion when the type doesn't match.
           // Dormant when the classifier isn't configured; capped per run.
-          try { await require('../lib/underwriting/bad-clearance').scanFile(c, app.id, { maxConditions: 15 }); } catch (_) { /* additive */ }
+          await step(() => require('../lib/underwriting/bad-clearance').scanFile(c, app.id, { maxConditions: 15 }));
           // R4.2 — Identity chain deep check: SSN/DOB/name mismatches across
           // every borrower-carrying doc → ai_suggestions. Best-effort.
-          try {
-            await require('../lib/underwriting/identity-chain').analyzeAndRecord(c, {
-              applicationId: app.id, extractions: exts.rows,
-            });
-          } catch (_) { /* additive */ }
+          await step(() => require('../lib/underwriting/identity-chain').analyzeAndRecord(c, {
+            applicationId: app.id, extractions: exts.rows,
+          }));
           // R3.23 — Public-records cross-check (advisory): seller/grantor/appraisal
           // owner + vesting/buyer chain mismatches → ai_suggestions. Best-effort.
-          try {
-            await require('../lib/underwriting/public-records-crosscheck').analyzeAndRecord(c, {
-              applicationId: app.id,
-              fileCtx: { vestingName: mctx && mctx.vestingName },
-              extractions: exts.rows,
-            });
-          } catch (_) { /* additive */ }
+          await step(() => require('../lib/underwriting/public-records-crosscheck').analyzeAndRecord(c, {
+            applicationId: app.id,
+            fileCtx: { vestingName: mctx && mctx.vestingName },
+            extractions: exts.rows,
+          }));
           await c.query('COMMIT');
         } catch (_) { await c.query('ROLLBACK').catch(() => {}); }
         finally { c.release(); }
@@ -724,6 +737,7 @@ async function analyzeOneDocument(app, doc, docType, opts = {}) {
 
     const client = await db.pool.connect();
     let saved;
+    let authFatalSignal = null; // set inside the tx, recorded AFTER COMMIT (audit M2)
     try {
       await client.query('BEGIN');
       saved = await store.saveAnalysis(client, {
@@ -751,12 +765,36 @@ async function analyzeOneDocument(app, doc, docType, opts = {}) {
             [app.id, doc.borrower_id || app.borrower_id, doc.id, saved.extractionId,
              'This document shows signs of tampering',
              `Signals: ${signalsFired || 'metadata anomalies'}. Ask the borrower for a fresh copy sent DIRECTLY by the source (bank, insurance carrier, appraiser). Do not act on the extracted values until a clean copy is on file.`]);
+          // R3.14 fix (2026-07-23): the major-fraud banner reads ai_suggestions
+          // (source='authenticity', severity='fatal') — the document_findings row
+          // above never reaches it, so the banner's authenticity branch was dead
+          // code. Stash the high-alert signal and record it AFTER COMMIT (audit
+          // M2: an in-transaction record() failure — e.g. a dedupe-race 23505 —
+          // would abort/poison the tx and silently roll back the whole analysis).
+          authFatalSignal = { docType, score: auth.score, signalsFired: signalsFired || null };
         }
       } catch (_) { /* authenticity is additive */ }
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
     finally { client.release(); }
 
+    // R3.14 fix (2026-07-23): record the low-authenticity high-alert signal as
+    // an ai_suggestion AFTER the analyze tx committed — an in-tx record()
+    // failure (dedupe-race 23505 etc.) would have poisoned the transaction and
+    // silently rolled back the whole analysis (pre-merge audit M2). Advisory
+    // only — the banner blocks nothing; deduped per document.
+    if (authFatalSignal) {
+      try {
+        await require('../lib/underwriting/ai-suggestions').record(null, {
+          applicationId: app.id, documentId: doc.id,
+          source: 'authenticity', kind: 'finding', severity: 'fatal',
+          title: 'A key document shows strong signs of tampering',
+          body: `Signals: ${authFatalSignal.signalsFired || 'metadata anomalies'}. The AI changed nothing — review the document and request a fresh copy directly from the source.`,
+          evidence: { code: 'doc_low_authenticity', docType: authFatalSignal.docType, score: authFatalSignal.score, signals: authFatalSignal.signalsFired },
+          dedupeKey: `doc_low_authenticity:${doc.id}`,
+        });
+      } catch (_) { /* additive — never fails the analyze result */ }
+    }
     if (actorId) await audit(actorId, 'underwriting_analyze', app.id, { documentId: doc.id, docType, ok: result.ok, findings: (result.findings || []).map((f) => f.code), reason: result.reason || null });
     // Materialize the CTC gate condition when analysis produced a blocking fatal (mirrors the manual path).
     if ((result.findings || []).some((f) => f.severity === 'fatal' && f.blocksCtc)) {
@@ -1465,10 +1503,12 @@ router.post('/:appId/ai-crossdoc', requirePermission('sign_off_conditions'), asy
     const app = await fileFor(req, req.params.appId);
     if (!app) return res.status(404).json({ error: 'not found' });
     // Pull current extractions on the file.
+    // Fix 2026-07-23: extraction status is 'analyzed' (db/200) — a status='ok'
+    // filter matched NOTHING, so this ran on zero extractions every time.
     const exts = await db.query(
       `SELECT doc_type, document_id, fields
          FROM document_extractions
-        WHERE application_id=$1 AND status='ok'
+        WHERE application_id=$1 AND is_current AND status='analyzed'
         ORDER BY created_at DESC LIMIT 40`, [app.id]);
     const client = await db.pool.connect();
     let result;
@@ -1533,26 +1573,61 @@ router.post('/:appId/ai-suggestions/rerun-checks', requirePermission('sign_off_c
     const ran = { entity_chain: 0, bank: 0, bad_clearance: 0, public_records: 0, identity_chain: 0 };
     try {
       await client.query('BEGIN');
+      // Fix 2026-07-23: same dead status='ok' filter — the "Re-run AI checks"
+      // button fed every detector an EMPTY extraction set.
       const exts = await client.query(
         `SELECT doc_type, document_id, fields FROM document_extractions
-          WHERE application_id=$1 AND status='ok' ORDER BY created_at DESC LIMIT 60`, [app.id]);
+          WHERE application_id=$1 AND is_current AND status='analyzed' ORDER BY created_at DESC LIMIT 60`, [app.id]);
       const mctx = await fileView.loadContext(client, app.id).catch(() => ({}));
+      // Fix 2026-07-23 (#211): entity-chain and bank-statement-checks never
+      // exported analyzeAndRecord — both arms were dead TypeErrors swallowed by
+      // the per-bridge catch, so "Re-run AI checks" silently skipped them. Use
+      // the REAL file-view pipeline: build the chains / liquidity, then sync
+      // through the same suggestion bridges the file view uses.
+      const requiredLiquidity = await readRequiredLiquidity(client, app.id).catch(() => null);
       const bridges = [
-        ['entity_chain',    () => require('../lib/underwriting/entity-chain').analyzeAndRecord(client, { applicationId: app.id, fileCtx: mctx, extractions: exts.rows })],
-        ['bank',            () => require('../lib/underwriting/bank-statement-checks').analyzeAndRecord(client, { applicationId: app.id, extractions: exts.rows })],
+        ['entity_chain', () => {
+          const a2 = (mctx && mctx.app) || {};
+          const isEntity = !!((mctx && mctx.vestingName) || a2.llc_id ||
+            exts.rows.some((e) => e.doc_type === 'operating_agreement'));
+          const entityChain = isEntity ? buildChain(
+            { vestingName: mctx && mctx.vestingName,
+              borrowerName: fileView.borrowerName(mctx && mctx.borrower),
+              program: (mctx.registration && mctx.registration.program) || a2.program || null },
+            exts.rows) : null;
+          const sellerChain = buildSellerChain(mctx || {}, exts.rows);
+          if (!entityChain && !sellerChain) return { recorded: 0 };
+          return require('../lib/underwriting/entity-chain-suggestions')
+            .syncChainsToSuggestions(client, app.id, { entityChain, sellerChain });
+        }],
+        ['bank', () => {
+          const bl = assessBankLiquidity(mctx || {}, exts.rows, { requiredLiquidity });
+          const findings = (bl && bl.findings) || [];
+          if (!findings.length) return { recorded: 0 };
+          return require('../lib/underwriting/bank-statement-suggestions')
+            .syncBankFindingsToSuggestions(client, app.id, null, findings);
+        }],
         ['bad_clearance',   () => require('../lib/underwriting/bad-clearance').scanFile(client, app.id, { maxConditions: 15 })],
         ['public_records',  () => require('../lib/underwriting/public-records-crosscheck').analyzeAndRecord(client, { applicationId: app.id, fileCtx: { vestingName: mctx && mctx.vestingName }, extractions: exts.rows })],
         ['identity_chain',  () => require('../lib/underwriting/identity-chain').analyzeAndRecord(client, { applicationId: app.id, extractions: exts.rows })],
       ];
       for (const [k, fn] of bridges) {
-        try { const r = await fn(); ran[k] = (r && r.recorded) || 0; } catch (_) { /* additive */ }
+        // SAVEPOINT per bridge — one failure must never abort the shared tx and
+        // silently no-op the remaining bridges (the poisoned-tx class).
+        try {
+          await client.query('SAVEPOINT rerun_bridge');
+          const r = await fn();
+          await client.query('RELEASE SAVEPOINT rerun_bridge');
+          // bad-clearance reports {scanned, flagged}; the sync bridges {recorded}.
+          ran[k] = (r && (r.recorded != null ? r.recorded : r.flagged)) || 0;
+        } catch (_) { await client.query('ROLLBACK TO SAVEPOINT rerun_bridge').catch(() => {}); }
       }
       // R4.16 — stamp the file so the AI Findings panel can show a 'Last re-run' time.
       try {
         await client.query(
           `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
            VALUES ('staff',$1,'ai_checks_rerun','application',$2,$3::jsonb)`,
-          [req.actor.staffId, app.id, JSON.stringify({ ran, at: new Date().toISOString() })]);
+          [req.actor.id, app.id, JSON.stringify({ ran, at: new Date().toISOString() })]);
       } catch (_) { /* additive */ }
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
@@ -1578,7 +1653,7 @@ router.post('/:appId/ai-suggestions/dismiss-all', requirePermission('sign_off_co
       const aiSug = require('../lib/underwriting/ai-suggestions');
       for (const row of open.rows) {
         try {
-          await aiSug.decide(client, row.id, { action: 'dismiss', reason, staffId: req.actor.staffId });
+          await aiSug.decide(client, row.id, { action: 'dismiss', reason, staffId: req.actor.id });
           dismissed += 1;
         } catch (_) { /* one bad row doesn't stop the batch */ }
       }
@@ -1718,7 +1793,7 @@ router.post('/:appId/ai-suggestions/:id/decide', async (req, res, next) => {
 
       // Special path — "convert to condition" from a proposedAction can create
       // the checklist_items row in the same tx and link it back on the suggestion.
-      let opts = { action, staffId: req.actor.staffId, reason: body.reason, note: body.note };
+      let opts = { action, staffId: req.actor.id, reason: body.reason, note: body.note };
       if (action === 'convert_to_condition' && !body.conditionId) {
         const sug = (await client.query(`SELECT * FROM ai_suggestions WHERE id=$1`, [req.params.id])).rows[0];
         const pa = sug && sug.proposed_action || {};
@@ -1834,7 +1909,7 @@ router.post('/:appId/ai-suggestions/:id/split-and-file', requirePermission('sign
            RETURNING id`,
           [app.id, seg.checklistItemId, src.borrower_id, `${(seg.docType || 'part')}—${src.filename}`,
            (pageBounded ? 'application/pdf' : src.content_type), childBytes, childProvider, childRef,
-           req.actor.staffId, slotLabel, src.id, recordedPages, pageBounded, childSha]);
+           req.actor.id, slotLabel, src.id, recordedPages, pageBounded, childSha]);
         created.push({ id: ins.rows[0].id, checklistItemId: seg.checklistItemId, pages, pageBounded });
       }
 
@@ -1842,7 +1917,7 @@ router.post('/:appId/ai-suggestions/:id/split-and-file', requirePermission('sign
       await require('../lib/underwriting/ai-suggestions').decide(client, req.params.id, {
         action: 'dismiss',
         reason: `Split into ${created.length} child document(s) via the splitter suggestion.`,
-        staffId: req.actor.staffId,
+        staffId: req.actor.id,
       });
       await client.query('COMMIT');
       res.json({ ok: true, created });
@@ -1863,7 +1938,7 @@ router.post('/:appId/ai-suggestions/:id/note', async (req, res, next) => {
     // Same scope guard as decide.
     const sc = await db.query(`SELECT application_id FROM ai_suggestions WHERE id=$1`, [req.params.id]);
     if (!sc.rows[0] || sc.rows[0].application_id !== app.id) return res.status(404).json({ error: 'not found on this file' });
-    await aiSug.addNote(db, req.params.id, { staffId: req.actor.staffId, text: String(req.body && req.body.text || '') });
+    await aiSug.addNote(db, req.params.id, { staffId: req.actor.id, text: String(req.body && req.body.text || '') });
     res.json({ ok: true });
   } catch (e) { next(e); }
 });
@@ -1884,7 +1959,7 @@ router.post('/:appId/fraud-banner/snooze', requirePermission('sign_off_condition
     await db.query(
       `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
        VALUES ('staff',$1,'fraud_banner_snoozed','application',$2,$3::jsonb)`,
-      [req.actor.staffId, app.id, JSON.stringify({ until, hours, note: (req.body && req.body.note) || null })]);
+      [req.actor.id, app.id, JSON.stringify({ until, hours, note: (req.body && req.body.note) || null })]);
     res.json({ ok: true, until });
   } catch (e) { next(e); }
 });
@@ -1908,7 +1983,7 @@ router.post('/:appId/ask-admin', async (req, res, next) => {
       const r = await aiSug.askAdmin(client, {
         applicationId: app.id, agent: 'staff_request',
         question,
-        context: { asked_by_staff_id: req.actor.staffId, at: new Date().toISOString() },
+        context: { asked_by_staff_id: req.actor.id, at: new Date().toISOString() },
       });
       await client.query('COMMIT');
       res.json({ ok: true, ...r });
@@ -1937,7 +2012,7 @@ router.post('/ai-admin/questions/:id/answer', requirePermission('promote_trainin
     try {
       await client.query('BEGIN');
       await aiSug.answerAdminQuestion(client, req.params.id, {
-        staffId: req.actor.staffId,
+        staffId: req.actor.id,
         answer: String((req.body && req.body.answer) || ''),
       });
       await client.query('COMMIT');

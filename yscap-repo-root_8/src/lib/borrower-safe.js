@@ -22,17 +22,39 @@
 
 const PROGRAM = 'Gold Standard program';
 
-// Word-boundary, case-insensitive, tolerant of a space/hyphen inside the
-// two-word names. Keep in sync with the CLAUDE.md capital-partner list.
+// Case-insensitive (via explicit character classes), tolerant of a space /
+// hyphen / underscore / dot inside the two-word names. Keep in sync with the
+// CLAUDE.md capital-partner list.
+//
+// Fix 2026-07-23 (audit HIGH): the old `\b`-bounded patterns missed the way
+// staff actually NAME FILES — underscore-joined ("BlueLake_terms.pdf") and
+// camelCase-joined ("BlueLakeTerms.pdf") forms sailed through because `_` and
+// adjacent letters are word characters, so `\bblue[\s-]?lake\b` never matched.
+// The generator below builds each pattern with:
+//   * a hard LEFT boundary `(?<![A-Za-z0-9])` — never matches mid-word;
+//   * `[\s_.-]?` between the parts of two-word names;
+//   * explicit `[Bb]`-style classes instead of the /i flag, so the DISTINCTIVE
+//     names carry NO right boundary (catches "BlueLake_terms", "BlueLakeTerms",
+//     "bluelakes") — over-scrubbing a rare legitimate word is acceptable,
+//     under-scrubbing a partner name is a hard-rule violation;
+//   * short ACRONYMS (rcn, roc) keep a hard right boundary `(?![A-Za-z0-9])`
+//     so "ROCK_CREEK.pdf" is never corrupted — `_`/`.`/`-` still count as
+//     separators, so "RCN_invoice.pdf" scrubs.
+function partnerRe(parts, opts) {
+  const cls = (w) => w.split('').map((ch) => (/[a-z]/i.test(ch) ? `[${ch.toUpperCase()}${ch.toLowerCase()}]` : ch)).join('');
+  const body = parts.map(cls).join('[\\s_.-]?');
+  const tail = opts && opts.acronym ? '(?![A-Za-z0-9])' : '';
+  return new RegExp(`(?<![A-Za-z0-9])${body}${tail}`, 'g');
+}
 const PARTNER_PATTERNS = [
-  /\bblue[\s-]?lake\b/gi,
-  /\btemple[\s-]?view\b/gi,
-  /\bchurchill\b/gi,
-  /\bfidelis\b/gi,
-  /\brcn\b/gi,
-  /\bcorr[\s-]?first\b/gi,
-  /\bkiavi\b/gi,
-  /\broc\b/gi,
+  partnerRe(['blue', 'lake']),
+  partnerRe(['temple', 'view']),
+  partnerRe(['churchill']),
+  partnerRe(['fidelis']),
+  partnerRe(['rcn'], { acronym: true }),
+  partnerRe(['corr', 'first']),
+  partnerRe(['kiavi']),
+  partnerRe(['roc'], { acronym: true }),
 ];
 
 /**

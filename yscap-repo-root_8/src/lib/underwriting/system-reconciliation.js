@@ -16,13 +16,23 @@
  * Pure: no DB, no AI, no network. Consumes already-loaded values.
  */
 
-function num(v) { return (v === '' || v == null || !Number.isFinite(Number(v))) ? null : Number(v); }
+// Money-tolerant (fix 2026-07-23): a mirrored '250,000'/'$250,000' must compare
+// as a NUMBER (it false-mismatched before); blank-after-strip is null, never 0.
+function num(v) {
+  if (v == null) return null;
+  const s = String(v).replace(/[$,\s]/g, '');
+  if (s === '') return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
 function norm(s) { return String(s == null ? '' : s).trim().toLowerCase(); }
 
 // Two values agree if equal after light normalization (numbers within a cent;
 // strings case/space-insensitive). Null on either side = "not comparable".
 function agree(a, b) {
   if (a == null || b == null) return null;
+  // a whitespace-only mirror value is "not mirrored", not a mismatch (fix 2026-07-23)
+  if (norm(a) === '' || norm(b) === '') return null;
   const na = num(a), nb = num(b);
   if (na != null && nb != null) return Math.abs(na - nb) < 0.005;
   return norm(a) === norm(b);

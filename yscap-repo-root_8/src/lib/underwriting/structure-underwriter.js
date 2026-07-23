@@ -29,10 +29,16 @@ const round = (n, dp = 4) => (Number.isFinite(n) ? Math.round(n * 10 ** dp) / 10
 
 // A safe ratio: null when either side is missing or the denominator is 0.
 function ratio(numerator, denominator) {
+  // Null/blank guards FIRST (fix 2026-07-23): Number(null)===0 is finite, so a
+  // missing numerator used to fabricate a PASSING 0.00 ratio on the ledger
+  // instead of the contract's null/incomplete.
+  if (numerator == null || numerator === '' || denominator == null || denominator === '') return null;
   const n = Number(numerator), d = Number(denominator);
   if (!Number.isFinite(n) || !Number.isFinite(d) || d === 0) return null;
   return round(n / d);
 }
+// Null-safe number: null/blank -> null (never a fabricated 0).
+function nnum(v) { return (v == null || v === '' || !Number.isFinite(Number(v))) ? null : Number(v); }
 
 /**
  * computeRatios(s) — s: the registered structure (whole dollars):
@@ -46,9 +52,11 @@ function ratio(numerator, denominator) {
  */
 function computeRatios(s) {
   s = s || {};
-  const costBasis = Number.isFinite(Number(s.costBasis)) ? Number(s.costBasis)
-    : (Number.isFinite(Number(s.recognizedPurchasePrice)) && Number.isFinite(Number(s.rehabBudget))
-      ? Number(s.recognizedPurchasePrice) + Number(s.rehabBudget) : null);
+  // Fix 2026-07-23: a NULL costBasis (typical DB row) coerced to 0 and BLOCKED
+  // the purchase+rehab fallback; a NULL rehabBudget added +0 to the basis.
+  const costBasis = nnum(s.costBasis) != null ? nnum(s.costBasis)
+    : (nnum(s.recognizedPurchasePrice) != null && nnum(s.rehabBudget) != null
+      ? nnum(s.recognizedPurchasePrice) + nnum(s.rehabBudget) : null);
   return {
     acquisitionLtv: ratio(s.initialAdvance, s.recognizedPurchasePrice),
     asIsLtv: ratio(s.initialAdvance, s.asIsValue),

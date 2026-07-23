@@ -34,6 +34,22 @@ assert.ok(r.findings.some((f) => f.code === 'refi_missing_payoff'));
 assert.strictEqual(r.netToBorrower, null, 'no fabricated net');
 ok('a missing payoff is a finding (never a silent 0)');
 
+// Fix 2026-07-23 (#209): a DB-NULL payoff must behave like a missing one —
+// Number(null)===0 previously fabricated a $0 payoff and skipped the finding.
+r = refi.analyze({ statedType: 'cash_out', loanProceeds: 300000, payoff: null });
+assert.strictEqual(r.incomplete, true, 'null payoff → incomplete (was a fabricated $0 payoff)');
+assert.ok(r.findings.some((f) => f.code === 'refi_missing_payoff'), 'null payoff raises the finding');
+r = refi.analyze({ statedType: 'rate_term', loanProceeds: 300000, payoff: '  ' });
+assert.strictEqual(r.incomplete, true, 'whitespace payoff → incomplete');
+ok('a DB-NULL / blank payoff is incomplete, never a fabricated $0');
+
+// Label fix: 'cash_out' prints as "cash-out", never "cash & out".
+r = refi.analyze({ statedType: 'rate_term', loanProceeds: 300000, payoff: 150000 });
+const mm = r.findings.find((f) => f.code === 'refi_type_mismatch');
+assert.ok(mm, 'stated rate&term netting 150k is a mismatch');
+assert.ok(/cash-out/.test(mm.title) && !/cash & out/.test(mm.title), `label reads cash-out (got: ${mm.title})`);
+ok("the mismatch label prints 'cash-out', not 'cash & out'");
+
 // cash-out above verified hard costs.
 r = refi.analyze({ statedType: 'cash_out', loanProceeds: 300000, payoff: 150000, verifiedHardCosts: 100000 });
 assert.ok(r.findings.some((f) => f.code === 'cashout_above_verified_costs'), 'net 150k > verified 100k');

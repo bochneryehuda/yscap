@@ -91,8 +91,10 @@ ok('a source disagreement → DATA_CONFLICT, blocks CTC + funding');
 out = build({}, {}, { extraFindings: [{ code: 'appraisal_value_low', severity: 'fatal', source: 'appraisal', blocks_ctc: true, title: 'Appraisal value below sizing' }] });
 assert.ok(out.findings.some((f) => f.code === 'appraisal_value_low'), 'the appraisal finding is in the one registry');
 assert.strictEqual(out.ctcEligible, false, 'a fatal appraisal finding blocks CTC');
-assert.strictEqual(out.termSheetEligible, true, 'but the term sheet can still issue (no term-sheet block on it)');
-ok('an appraisal/desk finding flows into the ONE registry and gates CTC');
+// Fix 2026-07-23: any fatal blocks the term sheet too (summarize now mirrors
+// issuance-gate.blockersFor, which always listed a fatal as a TS blocker).
+assert.strictEqual(out.termSheetEligible, false, 'a fatal blocks the term sheet as well');
+ok('an appraisal/desk finding flows into the ONE registry and gates every issuance');
 
 // --- pricedDrift derives stale from a CONTEXT discrepancy on a priced field ---
 // (the audit-fixed path: runWholeLoan builds staleChanged from the context's
@@ -108,6 +110,30 @@ assert.strictEqual(drift.length, 2, 'only the two PRICED-field discrepancies are
 assert.ok(drift.some((d) => d.key === 'purchase_price' && d.from === 400000 && d.to === 450000), 'purchase_price drift captured with from/to');
 assert.ok(!drift.some((d) => d.key === 'borrower_name'), 'a non-priced discrepancy is not treated as priced-input drift');
 ok('pricedDrift derives stale from priced-field context discrepancies (casing-agnostic, audit fix)');
+
+// --- Fix 2026-07-23 (#209): caps nested at quote.guidelines.caps (the REAL
+// persisted shape from pricing.quoteProgram) drive the ledger — previously only
+// the fixture-only top-level quote.caps was read, so every cap arrived null and
+// NO structure breach could ever fire on a real registration.
+const { caps: _topCaps, ...quoteNoTopCaps } = goodQuote;
+out = build({}, { quote: { ...quoteNoTopCaps, guidelines: { caps: { ...goodQuote.caps, maxArvLtv: 0.6 } } } });
+assert.ok(out.findings.some((f) => /arv_ltv_over_cap/.test(f.code)),
+  'a breach against guidelines.caps produces a finding (the gate is alive on real quotes)');
+assert.strictEqual(out.termSheetEligible, false, 'the guidelines.caps breach blocks issuance');
+ok('caps at quote.guidelines.caps (real persisted shape) arm the structure gate');
+
+// --- Fix 2026-07-23 (#209): reserve-in-cost LTC — the engine's costBasis
+// (purchase + rehab + financed reserve) must reach the ledger, or a correctly
+// sized reserve-financed loan at exactly the cap would false-breach.
+out = build({}, { total_loan: 508750, quote: { ...goodQuote,
+  caps: { ...goodQuote.caps, maxLtc: 0.925, maxAcqLtv: 0.95, maxArvLtv: 0.9 },
+  sizing: { ...goodQuote.sizing, totalLoan: 508750, financedReserve: 50000, costBasis: 550000 } } });
+const ltcRow = out.calculations.find((c) => c.metric === 'ltc');
+assert.ok(ltcRow && Math.abs(ltcRow.result - 0.925) < 0.001,
+  `LTC measures on the engine costBasis 550k (got ${ltcRow && ltcRow.result})`);
+assert.ok(!out.findings.some((f) => /ltc_over_cap/.test(f.code)),
+  'a loan sized exactly at the cap on a reserve-in-cost basis does not false-breach');
+ok('the ledger LTC uses the engine costBasis (reserve-in-cost) — no false breach');
 
 // --- reproducible source hash ---
 const h1 = build().sourceHash;

@@ -1684,7 +1684,8 @@ router.get('/llcs/:id/documents', async (req, res) => {
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   const r = await db.query(`SELECT id,filename,content_type,size_bytes,created_at FROM documents
      WHERE llc_id=$1 AND visibility='borrower' AND source_type <> 'chat_attachment' ORDER BY created_at`, [req.params.id]);
-  res.json(r.rows);
+  // staff-named filenames can carry a partner name (leak fix 2026-07-23)
+  res.json(r.rows.map((row) => scrubFields(row, ['filename'])));
 });
 // Link (or switch) the vesting LLC on an open file. The file's LLC condition
 // immediately reflects the linked entity's real state — a verified LLC
@@ -2180,15 +2181,26 @@ router.get('/track-records', async (req, res) => {
                FROM documents d
               WHERE d.track_record_id=t.id AND d.visibility='borrower' AND d.is_current) AS docs,
             (SELECT COALESCE(json_agg(json_build_object(
-                    'id', ci.id, 'label', COALESCE(ci.borrower_label, ci.label),
-                    'hint', COALESCE(ci.borrower_hint, ci.hint), 'status', ci.status) ORDER BY ci.created_at), '[]'::json)
+                    'id', ci.id, 'label', COALESCE(NULLIF(ci.borrower_label,''), 'An item your loan team needs'),
+                    'hint', ci.borrower_hint, 'status', ci.status) ORDER BY ci.created_at), '[]'::json)
                FROM checklist_items ci
               WHERE ci.track_record_id=t.id AND ci.audience IN ('borrower','both')
                 AND ci.status NOT IN ('satisfied')) AS doc_requests
        FROM track_records t
        LEFT JOIN llcs l ON l.id = t.llc_id
       WHERE t.borrower_id=$1 ORDER BY t.sale_date DESC NULLS LAST, t.created_at DESC`, [me(req)]);
-  res.json(r.rows);
+  // Leak fix 2026-07-23: BORROWER wording only above (internal label/hint can
+  // carry capital-partner context, and raise-issue stores staff free text into
+  // borrower_label/hint) — plus a scrub pass over the free-form strings.
+  res.json(r.rows.map((row) => ({
+    ...row,
+    docs: Array.isArray(row.docs)
+      ? row.docs.map((d) => ({ ...d, filename: typeof d.filename === 'string' ? scrubText(d.filename) : d.filename }))
+      : row.docs,
+    doc_requests: Array.isArray(row.doc_requests)
+      ? row.doc_requests.map((q) => ({ ...q, label: scrubText(q.label), hint: q.hint ? scrubText(q.hint) : q.hint }))
+      : row.doc_requests,
+  })));
 });
 // Shared field validation + column mapping for create/update. Mirrors the
 // static Track Record tool's rules: a flip needs a sale; a hold needs a
@@ -2352,7 +2364,8 @@ router.get('/track-records/:id/documents', async (req, res) => {
   const r = await db.query(
     `SELECT id,filename,content_type,size_bytes,created_at,review_status,rejection_reason,slot_label AS doc_type FROM documents
       WHERE track_record_id=$1 AND visibility='borrower' AND is_current ORDER BY created_at`, [req.params.id]);
-  res.json(r.rows);
+  // filename + rejection_reason + slot label are staff free text (leak fix 2026-07-23)
+  res.json(r.rows.map((row) => scrubFields(row, ['filename', 'rejection_reason', 'doc_type'])));
 });
 router.post('/track-records/:id/documents', async (req, res) => {
   const b = req.body || {};
@@ -2674,8 +2687,9 @@ router.get('/documents', async (req, res) => {
       ORDER BY is_current DESC, created_at DESC`,
     [me(req), req.query.applicationId || null]);
   // rejection_reason AND slot_label are staff free-text shown to the borrower —
-  // scrub any capital-partner name out of both.
-  res.json(r.rows.map((row) => scrubFields(row, ['rejection_reason', 'slot_label'])));
+  // scrub any capital-partner name out of both. Staff-named FILENAMES are the
+  // same vector ("BlueLake_terms.pdf") — scrub those too (leak fix 2026-07-23).
+  res.json(r.rows.map((row) => scrubFields(row, ['rejection_reason', 'slot_label', 'filename'])));
 });
 
 // Download a document the borrower may see: their own uploads plus staff files
@@ -2700,7 +2714,11 @@ router.get('/documents/:id/download', async (req, res) => {
     [req.params.id, me(req)]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
   await audit(req, 'download_document', 'document', r.rows[0].id);
-  return serveDocument(res, r.rows[0], { inline: req.query.inline === '1' });
+  // Content-Disposition carries the stored name — scrub it so a staff-named
+  // "BlueLake_terms.pdf" never lands on a borrower's disk (leak fix 2026-07-23;
+  // bytes are untouched, only the suggested download name changes).
+  const doc = { ...r.rows[0], filename: typeof r.rows[0].filename === 'string' ? scrubText(r.rows[0].filename) : r.rows[0].filename };
+  return serveDocument(res, doc, { inline: req.query.inline === '1' });
 });
 
 // ---------------- bank verification (Plaid framework) ----------------
@@ -2787,7 +2805,13 @@ router.get('/messages', async (req, res) => {
       ORDER BY m.created_at DESC LIMIT 500`,
     [me(req), req.query.applicationId || null]);
   r.rows.reverse();   // newest-500 window, still rendered oldest-first
-  for (const m of r.rows) if (m && typeof m.body === 'string') m.body = scrubText(m.body);  // no partner name to a borrower
+  for (const m of r.rows) {
+    if (!m) continue;
+    if (typeof m.body === 'string') m.body = scrubText(m.body);  // no partner name to a borrower
+    // staff-named attachment filenames are a partner-name vector too
+    // ("BlueLake_terms.pdf" — the email path already scrubs them; leak fix 2026-07-23)
+    if (typeof m.attachment_name === 'string') m.attachment_name = scrubText(m.attachment_name);
+  }
   // Opening the thread clears the "new message" badge for staff replies —
   // legacy read_at plus the new per-member watermark (035).
   if (req.query.applicationId) {
@@ -2916,7 +2940,10 @@ router.get('/applications/:id/mentionables', async (req, res) => {
     db.query(`SELECT s.id, s.full_name AS label FROM applications a
                 JOIN staff_users s ON s.id IN (a.loan_officer_id, a.processor_id)
                WHERE a.id=$1 AND s.is_active=true`, [req.params.id]),
-    db.query(`SELECT id, label, status FROM checklist_items
+    // BORROWER label only (leak fix 2026-07-23): the internal `label` can carry
+    // capital-partner wording (e.g. the CorrFirst EMD condition) — never
+    // surface it to a borrower. Generic fallback + scrub on output below.
+    db.query(`SELECT id, COALESCE(NULLIF(borrower_label,''), 'An item your loan team needs') AS label, status FROM checklist_items
                WHERE application_id=$1 AND audience IN ('borrower','both') ORDER BY sort_order LIMIT 200`, [req.params.id]),
     // Co-borrower privacy (#82): don't surface the OTHER borrower's personal
     // uploads in the mention list — same rule as the download endpoint.
@@ -2928,7 +2955,15 @@ router.get('/applications/:id/mentionables', async (req, res) => {
     db.query(`SELECT id, COALESCE(property_address->>'oneLine', property_address->>'street', 'Application') AS label
                 FROM applications WHERE ${OWN_FILE_SQL("", "$1")}`, [me(req)]),
   ]);
-  res.json({ users: users.rows, tasks: tasks.rows, documents: docs.rows, applications: apps.rows });
+  // Belt-and-suspenders (leak fix 2026-07-23): scrub every mentionable label —
+  // condition labels and staff-named document FILENAMES are partner-name
+  // vectors (the email path already scrubs attachment names for this reason).
+  res.json({
+    users: users.rows,
+    tasks: tasks.rows.map((t) => ({ ...t, label: scrubText(t.label) })),
+    documents: docs.rows.map((d) => ({ ...d, label: scrubText(d.label) })),
+    applications: apps.rows,
+  });
 });
 
 // Which of my applications have unread messages from the loan team.

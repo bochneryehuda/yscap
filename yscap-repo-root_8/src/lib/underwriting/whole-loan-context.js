@@ -271,7 +271,16 @@ async function buildWholeLoanContext(applicationId, db, opts) {
   const a = await db.query(
     `SELECT a.*,
             NULLIF(GREATEST(COALESCE(b.fico,0), COALESCE(cb.fico,0)), 0) AS fico,
-            b.full_name AS borrower_name
+            b.full_name AS borrower_name,
+            -- Fix 2026-07-23 (#209): registered_program is a JOIN alias everywhere
+            -- in this codebase, never an applications column. Without it the
+            -- assembler fell back to a.program (STRATEGY text like "Fix & Flip
+            -- w/ Construction"), compared it to reg.program ('standard'/'gold'),
+            -- and flagged a false program discrepancy → STALE on essentially
+            -- every registered file.
+            (SELECT pr.program FROM product_registrations pr
+              WHERE pr.application_id = a.id AND pr.is_current = true
+              ORDER BY pr.created_at DESC LIMIT 1) AS registered_program
        FROM applications a
        JOIN borrowers b  ON b.id = a.borrower_id
        LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id
