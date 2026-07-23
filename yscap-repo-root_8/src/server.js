@@ -513,6 +513,12 @@ if (require.main === module) {
         require('./lib/email-log').backfillEmailHistoryOnce()
           .then((r) => r && (r.notifs || r.inbound) && console.log('[boot] email history backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] email history backfill failed:', e.message));
+        // Investor-Specific Soft Guidelines (ISG-2, owner-directed 2026-07-23): seed the
+        // per-note-buyer condition guidelines from the checked-in CorrFirst "Fix & Flip
+        // Purchase" spec into note_buyer_conditions. Idempotent (ON CONFLICT), never throws.
+        require('./lib/underwriting/investor-guidelines/seed').seedNoteBuyerConditions()
+          .then((r) => r && r.ok && console.log('[boot] note-buyer conditions seed:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] note-buyer conditions seed failed:', e.message));
       } catch (e) {
         console.error('[migrate] unexpected error (continuing):', require('./db').describeError(e));
       }
