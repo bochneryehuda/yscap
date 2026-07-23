@@ -3673,11 +3673,14 @@ router.get('/applications/:id/conditions', async (req, res) => {
 router.post('/applications/:id/loan-conditions', async (req, res) => {
   const b = req.body || {};
   if (!b.title && !b.borrowerTitle) return res.status(400).json({ error: 'title required' });
-  // Stray-value guard (2026-07-22 root cause) — check the staff-facing title.
+  // Stray-value guard (2026-07-22 root cause) — flag if EITHER the staff title or
+  // the borrower-facing title is a stray value (a caller could send a real title
+  // alongside a stray borrowerTitle that the borrower would then see).
   {
-    const stray = strayConditionReason(b.title || b.borrowerTitle);
+    const stray = strayConditionReason(b.title) || strayConditionReason(b.borrowerTitle);
     if (stray && b.confirmStrayLabel !== true) {
-      return res.status(409).json({ error: strayConditionMessage(stray, b.title || b.borrowerTitle), code: 'stray_condition_label', reason: stray, needsConfirm: true });
+      const bad = strayConditionReason(b.title) ? b.title : b.borrowerTitle;
+      return res.status(409).json({ error: strayConditionMessage(stray, bad), code: 'stray_condition_label', reason: stray, needsConfirm: true });
     }
   }
   const audience = ['staff', 'borrower', 'both'].includes(b.audience) ? b.audience : 'staff';

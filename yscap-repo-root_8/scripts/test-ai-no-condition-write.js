@@ -9,8 +9,9 @@
  * and the convert_to_condition route in src/routes/underwriting.js).
  *
  * This test fails the build if ANY code path — an AI module, an AI suggestion
- * producer, or any NEW unreviewed file — inserts a `checklist_items` /
- * `checklist_templates` row. The complete set of condition-writers is pinned to a
+ * producer, or any NEW unreviewed file — inserts a `checklist_items`,
+ * `checklist_templates`, OR first-class `conditions` (db/022) row. The complete
+ * set of condition-writers (across BOTH condition models) is pinned to a
  * reviewed allowlist below; a new writer can't slip in unnoticed (least of all an
  * AI one). This is a source scan, so it holds even with no database.
  */
@@ -21,7 +22,11 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..');
 const SRC = path.join(ROOT, 'src');
 const rel = (p) => path.relative(ROOT, p).replace(/\\/g, '/');
-const INSERT_RE = /INSERT\s+INTO\s+checklist_(items|templates)\b/i;
+// Cover BOTH condition models: the checklist-item model (checklist_items /
+// checklist_templates) AND the first-class conditions table (db/022). An AI
+// writing EITHER is a freeze breach — the /loan-conditions box this fix guards
+// writes the `conditions` table, so the lock must watch it too.
+const INSERT_RE = /INSERT\s+INTO\s+(checklist_(items|templates)|conditions)\b/i;
 
 function walk(dir, out = []) {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -44,6 +49,7 @@ const ALLOWLIST = new Set([
   'src/lib/vesting.js',              // entity / LLC vesting condition
   'src/lib/esign/draw-wire.js',      // e-sign / draw-wire condition
   'src/lib/raise-issue.js',          // staff "raise an issue" on an entity
+  'src/lib/product-registration.js', // product registration -> first-class conditions row (db/022)
   'src/routes/admin-conditions.js',  // admin Condition Studio (checklist_templates)
   'src/routes/underwriting.js',      // ensureUnderwritingCondition + human convert_to_condition (vetted template)
   'src/routes/borrower.js',          // initial checklist generated from templates on registration
