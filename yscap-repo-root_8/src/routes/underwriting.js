@@ -196,6 +196,24 @@ router.get('/insights/reliability', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// #218 — STRICT production-metrics dashboard. Same scored outcomes as the
+// reliability report, but the two SAFETY numbers a lender running an AI
+// underwriter live actually cares about are the HEADLINE: the FALSE-CLEAR rate (a
+// real problem waved through — the release bar is ZERO) and the MISSED-MATERIAL
+// rate (a material finding the AI omitted). Returns a blunt production-readiness
+// status (green / amber / red / insufficient_data) + the blockers. ADVISORY /
+// measurement only — read-only, promotes nothing, gates nothing. Portfolio-wide,
+// so see-all staff only; best-effort (insufficient_data until outcomes accrue).
+router.get('/insights/production-metrics', async (req, res, next) => {
+  try {
+    if (!can(req.actor, 'see_all_files')) return res.status(403).json({ error: 'this report needs access to every file' });
+    const days = Number(req.query.sinceDays);
+    const metrics = await require('../lib/underwriting/production-metrics')
+      .loadProductionMetrics(db, { sinceDays: Number.isFinite(days) && days > 0 ? days : 180 });
+    res.json({ ok: true, metrics, generatedAt: new Date().toISOString() });
+  } catch (e) { next(e); }
+});
+
 // ---- Finding-escalation WORKLOAD (owner-directed 2026-07-21, Items 7 + 12) -----------------
 // A staffer who can't decide a finding escalates it to a super-admin / processor / underwriter,
 // creating a workload item that carries the file link, the finding, its explanation, and the
