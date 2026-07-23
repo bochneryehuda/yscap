@@ -94,6 +94,9 @@ function adaptQuote(quote, opts) {
     downPayment: num(s.downPayment),
     monthlyPayment: num(s.monthlyPayment),
     assignmentExcessOOP: num(s.assignmentExcessOOP),
+    // Fix 2026-07-23 (#209): the engine's reserve-in-cost basis must survive
+    // adaptation — the run's structure ledger needs it for a correct LTC.
+    costBasis: num(s.costBasis),
   };
 
   return {
@@ -109,7 +112,8 @@ function adaptQuote(quote, opts) {
     blockingReasons,
     reasons,
     sizing,
-    caps: q.caps || null,
+    // Fix 2026-07-23 (#209): persisted quotes carry caps at guidelines.caps.
+    caps: q.caps || (q.guidelines && q.guidelines.caps) || null,
     noteRate: num(q.noteRate),
     program: q.program || null,
     productLabel: q.productLabel || q.programLabel || null,

@@ -50,7 +50,11 @@ async function loadContext(client, appId) {
   if (typeof quoteObj === 'string') { try { quoteObj = JSON.parse(quoteObj); } catch (_) { quoteObj = null; } }
   const sizing = quoteObj && quoteObj.sizing ? quoteObj.sizing : null;
   const numOrNull = (v) => (v == null || !isFinite(Number(v)) ? null : Number(v));
-  const qcaps = quoteObj && quoteObj.caps ? quoteObj.caps : null;
+  // Fix 2026-07-23 (#209): persisted quotes carry the caps at guidelines.caps —
+  // a top-level quote.caps never exists on a real registration, so the metrics
+  // silently fell back to the loosest per-program ceiling instead of the file's
+  // ACTUAL registered tier caps.
+  const qcaps = (quoteObj && (quoteObj.caps || (quoteObj.guidelines && quoteObj.guidelines.caps))) || null;
   const registration = reg ? {
     program: reg.program || null,
     totalLoan: numOrNull(reg.total_loan),
