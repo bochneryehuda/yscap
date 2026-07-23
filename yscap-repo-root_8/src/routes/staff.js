@@ -7846,7 +7846,7 @@ router.post('/applications/:id/documents', async (req, res) => {
         const maxPage = Math.max(...classifier.segments.flatMap(s => s.pages || [0]).map(Number).filter(Number.isFinite));
         await ss.suggestSplit(client, {
           applicationId: appIdForAi, documentId: uploadedDocId, buffer: buf, pageCount: maxPage,
-          staffId: req.actor.staffId,
+          staffId: req.actor.id,
         });
         await client.query('COMMIT');
       } catch (_) { await client.query('ROLLBACK').catch(() => {}); }

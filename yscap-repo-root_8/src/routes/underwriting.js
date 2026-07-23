@@ -1490,10 +1490,12 @@ router.post('/:appId/ai-crossdoc', requirePermission('sign_off_conditions'), asy
     const app = await fileFor(req, req.params.appId);
     if (!app) return res.status(404).json({ error: 'not found' });
     // Pull current extractions on the file.
+    // Fix 2026-07-23: extraction status is 'analyzed' (db/200) — a status='ok'
+    // filter matched NOTHING, so this ran on zero extractions every time.
     const exts = await db.query(
       `SELECT doc_type, document_id, fields
          FROM document_extractions
-        WHERE application_id=$1 AND status='ok'
+        WHERE application_id=$1 AND is_current AND status='analyzed'
         ORDER BY created_at DESC LIMIT 40`, [app.id]);
     const client = await db.pool.connect();
     let result;
@@ -1558,9 +1560,11 @@ router.post('/:appId/ai-suggestions/rerun-checks', requirePermission('sign_off_c
     const ran = { entity_chain: 0, bank: 0, bad_clearance: 0, public_records: 0, identity_chain: 0 };
     try {
       await client.query('BEGIN');
+      // Fix 2026-07-23: same dead status='ok' filter — the "Re-run AI checks"
+      // button fed every detector an EMPTY extraction set.
       const exts = await client.query(
         `SELECT doc_type, document_id, fields FROM document_extractions
-          WHERE application_id=$1 AND status='ok' ORDER BY created_at DESC LIMIT 60`, [app.id]);
+          WHERE application_id=$1 AND is_current AND status='analyzed' ORDER BY created_at DESC LIMIT 60`, [app.id]);
       const mctx = await fileView.loadContext(client, app.id).catch(() => ({}));
       const bridges = [
         ['entity_chain',    () => require('../lib/underwriting/entity-chain').analyzeAndRecord(client, { applicationId: app.id, fileCtx: mctx, extractions: exts.rows })],
@@ -1577,7 +1581,7 @@ router.post('/:appId/ai-suggestions/rerun-checks', requirePermission('sign_off_c
         await client.query(
           `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
            VALUES ('staff',$1,'ai_checks_rerun','application',$2,$3::jsonb)`,
-          [req.actor.staffId, app.id, JSON.stringify({ ran, at: new Date().toISOString() })]);
+          [req.actor.id, app.id, JSON.stringify({ ran, at: new Date().toISOString() })]);
       } catch (_) { /* additive */ }
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
@@ -1603,7 +1607,7 @@ router.post('/:appId/ai-suggestions/dismiss-all', requirePermission('sign_off_co
       const aiSug = require('../lib/underwriting/ai-suggestions');
       for (const row of open.rows) {
         try {
-          await aiSug.decide(client, row.id, { action: 'dismiss', reason, staffId: req.actor.staffId });
+          await aiSug.decide(client, row.id, { action: 'dismiss', reason, staffId: req.actor.id });
           dismissed += 1;
         } catch (_) { /* one bad row doesn't stop the batch */ }
       }
@@ -1743,7 +1747,7 @@ router.post('/:appId/ai-suggestions/:id/decide', async (req, res, next) => {
 
       // Special path — "convert to condition" from a proposedAction can create
       // the checklist_items row in the same tx and link it back on the suggestion.
-      let opts = { action, staffId: req.actor.staffId, reason: body.reason, note: body.note };
+      let opts = { action, staffId: req.actor.id, reason: body.reason, note: body.note };
       if (action === 'convert_to_condition' && !body.conditionId) {
         const sug = (await client.query(`SELECT * FROM ai_suggestions WHERE id=$1`, [req.params.id])).rows[0];
         const pa = sug && sug.proposed_action || {};
@@ -1859,7 +1863,7 @@ router.post('/:appId/ai-suggestions/:id/split-and-file', requirePermission('sign
            RETURNING id`,
           [app.id, seg.checklistItemId, src.borrower_id, `${(seg.docType || 'part')}—${src.filename}`,
            (pageBounded ? 'application/pdf' : src.content_type), childBytes, childProvider, childRef,
-           req.actor.staffId, slotLabel, src.id, recordedPages, pageBounded, childSha]);
+           req.actor.id, slotLabel, src.id, recordedPages, pageBounded, childSha]);
         created.push({ id: ins.rows[0].id, checklistItemId: seg.checklistItemId, pages, pageBounded });
       }
 
@@ -1867,7 +1871,7 @@ router.post('/:appId/ai-suggestions/:id/split-and-file', requirePermission('sign
       await require('../lib/underwriting/ai-suggestions').decide(client, req.params.id, {
         action: 'dismiss',
         reason: `Split into ${created.length} child document(s) via the splitter suggestion.`,
-        staffId: req.actor.staffId,
+        staffId: req.actor.id,
       });
       await client.query('COMMIT');
       res.json({ ok: true, created });
@@ -1888,7 +1892,7 @@ router.post('/:appId/ai-suggestions/:id/note', async (req, res, next) => {
     // Same scope guard as decide.
     const sc = await db.query(`SELECT application_id FROM ai_suggestions WHERE id=$1`, [req.params.id]);
     if (!sc.rows[0] || sc.rows[0].application_id !== app.id) return res.status(404).json({ error: 'not found on this file' });
-    await aiSug.addNote(db, req.params.id, { staffId: req.actor.staffId, text: String(req.body && req.body.text || '') });
+    await aiSug.addNote(db, req.params.id, { staffId: req.actor.id, text: String(req.body && req.body.text || '') });
     res.json({ ok: true });
   } catch (e) { next(e); }
 });
@@ -1909,7 +1913,7 @@ router.post('/:appId/fraud-banner/snooze', requirePermission('sign_off_condition
     await db.query(
       `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
        VALUES ('staff',$1,'fraud_banner_snoozed','application',$2,$3::jsonb)`,
-      [req.actor.staffId, app.id, JSON.stringify({ until, hours, note: (req.body && req.body.note) || null })]);
+      [req.actor.id, app.id, JSON.stringify({ until, hours, note: (req.body && req.body.note) || null })]);
     res.json({ ok: true, until });
   } catch (e) { next(e); }
 });
@@ -1933,7 +1937,7 @@ router.post('/:appId/ask-admin', async (req, res, next) => {
       const r = await aiSug.askAdmin(client, {
         applicationId: app.id, agent: 'staff_request',
         question,
-        context: { asked_by_staff_id: req.actor.staffId, at: new Date().toISOString() },
+        context: { asked_by_staff_id: req.actor.id, at: new Date().toISOString() },
       });
       await client.query('COMMIT');
       res.json({ ok: true, ...r });
@@ -1962,7 +1966,7 @@ router.post('/ai-admin/questions/:id/answer', requirePermission('promote_trainin
     try {
       await client.query('BEGIN');
       await aiSug.answerAdminQuestion(client, req.params.id, {
-        staffId: req.actor.staffId,
+        staffId: req.actor.id,
         answer: String((req.body && req.body.answer) || ''),
       });
       await client.query('COMMIT');

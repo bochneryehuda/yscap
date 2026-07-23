@@ -292,6 +292,19 @@ async function askAdmin(client, { applicationId, agent, question, context, docum
   if (!applicationId || !agent || !question) throw new Error('askAdmin: applicationId, agent, question required');
   // Dedupe by (agent + question) so the same open question doesn't stack across runs.
   const dedupe = 'q:' + agent + ':' + Buffer.from(String(question)).toString('base64').slice(0, 40);
+  // Fix 2026-07-23: record()'s dedupe only matches status='open' suggestions,
+  // but this function flips its suggestion to 'asked_admin' below — so every
+  // repeat call (e.g. each cure re-run on the same document) stacked a brand-new
+  // suggestion + a DUPLICATE super-admin inbox question. Check for a live
+  // UNANSWERED question on the same (file, dedupe) first; legacy rows written
+  // before dedupe_key was populated match by (agent + question text).
+  const dup = await c.query(
+    `SELECT id, suggestion_id FROM ai_admin_questions
+      WHERE application_id=$1 AND answered_at IS NULL
+        AND (dedupe_key=$2 OR (dedupe_key IS NULL AND agent=$3 AND question=$4))
+      ORDER BY asked_at DESC LIMIT 1`,
+    [applicationId, dedupe, agent, question]);
+  if (dup.rows[0]) return { suggestionId: dup.rows[0].suggestion_id, questionId: dup.rows[0].id, deduped: true };
   const sug = await record(c, {
     applicationId, documentId, checklistItemId,
     source: 'ask_admin', kind: 'question',
@@ -300,10 +313,27 @@ async function askAdmin(client, { applicationId, agent, question, context, docum
     evidence: { context: context || {}, agent },
     dedupeKey: dedupe,
   });
-  const q = await c.query(
-    `INSERT INTO ai_admin_questions (suggestion_id, application_id, agent, question, context)
-     VALUES ($1,$2,$3,$4,$5::jsonb) RETURNING *`,
-    [sug.id, applicationId, agent, question, JSON.stringify(context || {})]);
+  let q;
+  try {
+    q = await c.query(
+      `INSERT INTO ai_admin_questions (suggestion_id, application_id, agent, question, context, dedupe_key)
+       VALUES ($1,$2,$3,$4,$5::jsonb,$6) RETURNING *`,
+      [sug.id, applicationId, agent, question, JSON.stringify(context || {}), dedupe]);
+  } catch (e) {
+    if (e && e.code === '23505') {
+      // A concurrent ask won the db/264 partial-unique race. Inside a caller
+      // transaction the tx is already aborted, so the re-select fails too and
+      // we rethrow for the caller's rollback path; outside a tx it resolves.
+      try {
+        const again = await c.query(
+          `SELECT id, suggestion_id FROM ai_admin_questions
+            WHERE application_id=$1 AND dedupe_key=$2 AND answered_at IS NULL LIMIT 1`,
+          [applicationId, dedupe]);
+        if (again.rows[0]) return { suggestionId: again.rows[0].suggestion_id, questionId: again.rows[0].id, deduped: true };
+      } catch (_) { /* aborted tx — fall through to rethrow */ }
+    }
+    throw e;
+  }
   await c.query(`UPDATE ai_suggestions SET status='asked_admin' WHERE id=$1 AND status='open'`, [sug.id]);
   return { suggestionId: sug.id, questionId: q.rows[0].id };
 }

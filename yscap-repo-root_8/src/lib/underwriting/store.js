@@ -293,9 +293,11 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
     if (docType === 'assignment' && appId && ext.fields) {
       const af = require('./assignment-fraud');
       // Pull sibling extractions to enrich the parties.
+      // Fix 2026-07-23: extraction status is 'analyzed' (db/200), never 'ok' —
+      // the OA/EIN sibling enrichment never found its documents.
       const sib = await client.query(
         `SELECT doc_type, fields FROM document_extractions
-          WHERE application_id=$1 AND status='ok' AND (doc_type='operating_agreement' OR doc_type='ein_letter')
+          WHERE application_id=$1 AND is_current AND status='analyzed' AND (doc_type='operating_agreement' OR doc_type='ein_letter')
           ORDER BY created_at DESC LIMIT 4`, [appId]);
       const oa = (sib.rows.find((r) => r.doc_type === 'operating_agreement') || {}).fields || {};
       const ein = (sib.rows.find((r) => r.doc_type === 'ein_letter') || {}).fields || {};
