@@ -1980,12 +1980,15 @@ router.get('/:appId/checklist/:itemId/clearance-preview', async (req, res, next)
         item: { id: item.id, code: item.code, label: item.label, status: item.status } });
     }
 
-    // The item's CURRENT analyzed documents (extraction status is 'analyzed' — db/200).
+    // The item's CURRENT analyzed documents (extraction status is 'analyzed' —
+    // db/200). Audit F2: a staff-REJECTED document is a recorded human decision
+    // — it must not feed a "would clear" preview (same filter signOffGate uses).
     const exts = await db.query(
       `SELECT de.document_id, de.doc_type, de.fields, d.filename
          FROM document_extractions de
          JOIN documents d ON d.id = de.document_id
         WHERE d.checklist_item_id = $1 AND d.is_current
+          AND COALESCE(d.review_status, '') <> 'rejected'
           AND de.is_current AND de.status = 'analyzed'
         ORDER BY de.created_at DESC LIMIT 12`, [item.id]);
 
@@ -1998,6 +2001,39 @@ router.get('/:appId/checklist/:itemId/clearance-preview', async (req, res, next)
       documents: exts.rows.map((r) => ({ documentId: r.document_id, docType: r.doc_type, filename: r.filename, fields: r.fields })),
       twinFacts, subject, expected,
     });
+
+    // Audit F1: signOffGate is per-SLOT on four template codes (staff.js
+    // signOffGate is the AUTHORITY — this only mirrors its presence check so
+    // the preview never says "would clear" while the gate still wants another
+    // slot's document). Missing slots force overall.clears=false with the gap
+    // named; the analysis sections above stay as-is.
+    const SLOT_REQUIREMENTS = {
+      rtl_cond_insurance: ['binder', 'invoice'],
+      rtl_cond_appraisaldocs: ['xml', 'pdf'],
+      rtl_cond_fraud: ['background'],           // + 'criminal' on a Gold file (below)
+      rtl_cond_title: [],                        // any one document; presence handled by no_documents
+    };
+    if (Object.prototype.hasOwnProperty.call(SLOT_REQUIREMENTS, String(item.code))) {
+      const required = [...SLOT_REQUIREMENTS[item.code]];
+      if (item.code === 'rtl_cond_fraud') {
+        const gp = await db.query(
+          `SELECT program FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`, [app.id]);
+        if (gp.rows[0] && /gold/i.test(String(gp.rows[0].program || ''))) required.push('criminal');
+      }
+      if (required.length) {
+        const slotRows = await db.query(
+          `SELECT lower(coalesce(slot_label,'')) AS slot FROM documents
+            WHERE checklist_item_id=$1 AND is_current AND COALESCE(review_status,'') <> 'rejected'`, [item.id]);
+        const have = slotRows.rows.map((r) => r.slot);
+        const missingSlots = required.filter((need) => !have.some((s) => s.includes(need)));
+        if (missingSlots.length) {
+          overall.clears = false;
+          overall.slotsIncomplete = true;
+          overall.missingSlots = missingSlots;
+          overall.reason = `The sign-off gate also requires: ${missingSlots.join(', ')} — this condition needs every required document slot filled, not just one clearing document.`;
+        }
+      }
+    }
     res.json({
       ok: true, available: true, advisory: true,
       item: { id: item.id, code: item.code, label: item.label, status: item.status },

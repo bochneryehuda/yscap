@@ -20,9 +20,11 @@ const outcomeLib = require('./clearance-outcome');
  *   overall:   { clears, outcome, reason },
  * }
  * documents in: [{ documentId, docType, filename, fields }] — the condition's
- * CURRENT analyzed extractions. One good document clears a condition (mirrors
- * how sign-off treats slots): overall prefers a clearing document, else the
- * first for context.
+ * CURRENT analyzed extractions (rejected documents excluded by the caller).
+ * overall prefers a clearing document, else the first for context. NOTE: this
+ * is the ANALYSIS-level answer only — slot-gated conditions (insurance,
+ * appraisal docs, fraud) additionally require every slot filled; the ROUTE
+ * overlays that check from signOffGate's slot rules (which stay the authority).
  */
 function previewDocuments({ intent, documents = [], twinFacts = {}, subject = {}, expected = {} } = {}) {
   const acceptable = intent && Array.isArray(intent.acceptable_evidence)
