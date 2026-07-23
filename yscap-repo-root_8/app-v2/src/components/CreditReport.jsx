@@ -68,6 +68,26 @@ function gaugePct(v) {
   return Math.max(0, Math.min(100, ((n - 300) / 550) * 100));
 }
 
+// Lock the background page scroll while a modal/overlay is open AND preserve the
+// scroll position (owner-reported 2026-07-23: closing the full report flew the
+// page back to the top of the file). `overflow:hidden` can clamp the page scroll
+// to 0, so we capture window.scrollY on open and restore it on close — the user
+// stays exactly where they were. Also closes on Escape when onClose is given.
+function useScrollLock(onClose) {
+  useEffect(() => {
+    const scrollY = window.scrollY || window.pageYOffset || 0;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const onKey = onClose ? (e) => { if (e.key === 'Escape') onClose(); } : null;
+    if (onKey) window.addEventListener('keydown', onKey);
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      if (onKey) window.removeEventListener('keydown', onKey);
+      window.scrollTo(0, scrollY);
+    };
+  }, [onClose]);
+}
+
 // Small line icons for the KPI badges (inline SVG, stroke = currentColor).
 function KIcon({ name }) {
   const p = {
@@ -162,19 +182,9 @@ function CreditImportModal({ appId, onClose, onDone }) {
     return () => { alive = false; };
   }, [appId]);
 
-  // Lock the background page scroll while the modal is open (house pattern —
-  // matches ToolModal/ProductStudioPanel/TrackRecordScreen) so the page behind
-  // doesn't scroll under the box. Also close on Escape.
-  useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      window.removeEventListener('keydown', onKey);
-      document.body.style.overflow = prevOverflow;
-    };
-  }, [onClose]);
+  // Lock the background scroll AND preserve the scroll position while the modal is
+  // open; also close on Escape (so the page doesn't jump to the top on close).
+  useScrollLock(onClose);
 
   const providerReady = pre && pre.provider && pre.provider.configured;
   const roster = (pre && pre.borrowers) || [];
@@ -515,14 +525,9 @@ function CreditHero({ report }) {
 // ─────────────────────────────────────── the full-screen report overlay ────────
 // The entire report, laid out with the whole screen (owner-directed 2026-07-23):
 // opens on import and from the condition's "Open full report" button, closeable.
-function CreditReportOverlay({ report, history, onClose, onDownload }) {
-  useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => { window.removeEventListener('keydown', onKey); document.body.style.overflow = prev; };
-  }, [onClose]);
+function CreditReportOverlay({ report, history, justImported, onClose, onDownload }) {
+  // Scroll-locked + position-preserving + Escape-to-close (see useScrollLock).
+  useScrollLock(onClose);
 
   return (
     <div className="crx-overlay-back" onClick={onClose}>
@@ -537,12 +542,13 @@ function CreditReportOverlay({ report, history, onClose, onDownload }) {
             </p>
           </div>
           <div className="crx-overlay-tools">
-            {report.pdfDocumentId && <button className="crx-btn ghost sm" onClick={() => onDownload(report.pdfDocumentId, 'credit-report.pdf')}>Download PDF</button>}
+            {report.pdfDocumentId && <button className="crx-btn ghost sm" onClick={() => onDownload(report.pdfDocumentId, 'credit-report.pdf')}>📄 Open PDF</button>}
             {report.xmlDocumentId && <button className="crx-btn ghost sm" onClick={() => onDownload(report.xmlDocumentId, 'credit-report.xml')}>Download data (XML)</button>}
             <button className="crx-x" onClick={onClose} aria-label="Close">✕</button>
           </div>
         </div>
         <div className="crx-overlay-body">
+          {justImported && <div className="crx-alert ok" style={{ marginTop: 0 }}>Credit report imported successfully ✓</div>}
           <CreditHero report={report} />
           <CreditDetails report={report} />
           {Array.isArray(history) && history.length > 1 && (
@@ -578,6 +584,7 @@ export function CreditCondition({ appId, canPull, onChanged }) {
   const [data, setData] = useState(null);
   const [showModal, setShowModal] = useState(false);
   const [showOverlay, setShowOverlay] = useState(false);
+  const [justImported, setJustImported] = useState(false);
   const [flash, setFlash] = useState('');
   const [flashTone, setFlashTone] = useState('ok');
 
@@ -601,30 +608,39 @@ export function CreditCondition({ appId, canPull, onChanged }) {
   const onImported = (out) => {
     setShowModal(false);
     const results = (out && Array.isArray(out.results)) ? out.results : [];
-    const failed = results.filter((r) => r.ok === false);
-    const okd = results.filter((r) => r.ok !== false);
+    // A borrower produced a REAL report only when the pull succeeded AND the data
+    // parsed. A live pull that returned nothing recognizable (parseError) is NOT a
+    // success — it must read as a clear failure, not "imported successfully".
+    const usable = results.filter((r) => r.ok !== false && !r.parseError);
+    const problems = results.filter((r) => r.ok === false || r.parseError);
     const multi = results.length > 1;
-    const bits = [];
-    let msg;
-    if (multi) {
-      // One line per borrower: name · score (or why it couldn't be pulled).
-      okd.forEach((r) => bits.push(`${r.name}: ${r.middleScore != null ? 'middle ' + r.middleScore : 'no score'}`));
-      failed.forEach((r) => bits.push(`${r.name}: not pulled — ${r.error || 'failed'}`));
-      msg = `Imported credit for ${okd.length} of ${results.length} borrowers ✓`;
+
+    if (usable.length > 0) {
+      // SUCCESS — confirm it and auto-open the full report on the whole screen.
+      const bits = [];
+      if (multi) {
+        usable.forEach((r) => bits.push(`${r.name}: ${r.middleScore != null ? 'middle ' + r.middleScore : 'no score'}`));
+        problems.forEach((r) => bits.push(`${r.name}: not pulled — ${r.error || r.parseError || 'failed'}`));
+      } else {
+        if (out.middleScore != null) bits.push(`middle score ${out.middleScore}`);
+        if (out.ficoWritten != null) bits.push(`FICO set to ${out.ficoWritten}`);
+        if (out.ficoMismatch) bits.push('FICO not auto-set — the report named a different person');
+        if (out.ficoUnverified) bits.push('FICO not auto-set — no SSN on file to confirm identity');
+      }
+      if (out.coConditionOpened) bits.push('opened a separate credit condition for the co-borrower');
+      const tone = (problems.length || out.ficoMismatch || out.ficoUnverified) ? 'warn' : 'ok';
+      const msg = multi ? `Imported credit for ${usable.length} of ${results.length} borrowers ✓` : 'Credit report imported successfully ✓';
+      showFlash(msg + (bits.length ? ' — ' + bits.join(' · ') : ''), tone);
+      setJustImported(true);
+      loadCredit().then(() => setShowOverlay(true));
     } else {
-      if (out && out.middleScore != null) bits.push(`middle score ${out.middleScore}`);
-      if (out && out.ficoWritten != null) bits.push(`FICO set to ${out.ficoWritten}`);
-      if (out && out.ficoMismatch) bits.push('FICO not auto-set — the report named a different person');
-      if (out && out.ficoUnverified) bits.push('FICO not auto-set — no SSN on file to confirm identity');
-      if (out && out.pdfMissing) bits.push('no PDF in the response — data file saved');
-      if (out && out.parseError) bits.push('some details couldn’t be read');
-      msg = 'Credit report imported successfully ✓';
+      // FAILURE — the pull returned no usable report. Keep any good report on file
+      // visible (no empty overlay), and say clearly what to do next.
+      const reason = (results[0] && (results[0].error || results[0].parseError)) || out.parseError
+        || 'no credit data was recognized in the response';
+      showFlash(`The credit pull didn’t return a report — ${reason}. This usually means the Xactus connection needs attention (double-check the web address, or run the “Test connection” on the API Health page). You can also import a report you downloaded from Xactus.`, 'warn');
+      loadCredit();
     }
-    if (out && out.coConditionOpened) bits.push('opened a separate credit condition for the co-borrower');
-    const tone = (failed.length || (out && (out.ficoMismatch || out.ficoUnverified || out.parseError || out.pdfMissing))) ? 'warn' : 'ok';
-    showFlash(msg + (bits.length ? ' — ' + bits.join(' · ') : ''), tone);
-    // Reload, then pop the full report open on the whole screen.
-    loadCredit().then(() => setShowOverlay(true));
     if (onChanged) onChanged();
   };
 
@@ -632,6 +648,11 @@ export function CreditCondition({ appId, canPull, onChanged }) {
     try { const { blob, filename } = await api.staffDownloadDoc(docId); saveBlob(blob, filename || fallback); }
     catch (e) { showFlash('Download failed: ' + (e.message || 'please try again'), 'warn'); }
   };
+
+  // Stable close handlers (so the scroll-lock effect doesn't churn on re-render);
+  // closing the overlay also clears the just-imported success banner.
+  const closeOverlay = useCallback(() => { setShowOverlay(false); setJustImported(false); }, []);
+  const closeModal = useCallback(() => setShowModal(false), []);
 
   const borrowers = (data && data.borrowers) || null;
   const hasCo = !!(borrowers && borrowers.hasCoBorrower);
@@ -651,6 +672,15 @@ export function CreditCondition({ appId, canPull, onChanged }) {
       </div>
 
       {flash && <div className={'crx-alert ' + (flashTone === 'warn' ? 'warn' : 'ok')}>{flash}</div>}
+
+      {/* A most-recent pull that FAILED (empty/unrecognized) is surfaced here so
+          staff know the last attempt didn't work — WITHOUT hiding the good report
+          already on file (which stays displayed below with its PDF). */}
+      {data && data.lastAttempt && (
+        <div className="crx-alert warn">
+          Your last credit pull{data.lastAttempt.pulledAt ? ' on ' + fmtWhen(data.lastAttempt.pulledAt) : ''} didn’t return a report{data.lastAttempt.reason ? ` — ${data.lastAttempt.reason}` : ''}.{report ? ' The report below is the last good one on file.' : ''} Check the Xactus connection (or run the “Test connection” on the API Health page), or import a report you downloaded from Xactus.
+        </div>
+      )}
 
       {/* Compact summary that ALWAYS sits at the bottom of the condition: the
           middle score (and, with a co-borrower, the higher-of-two that prices the
@@ -683,15 +713,19 @@ export function CreditCondition({ appId, canPull, onChanged }) {
 
           <div className="crx-summary-actions">
             <button className="crx-btn primary sm" onClick={() => setShowOverlay(true)}>⛶ Open full credit report</button>
+            {report.pdfDocumentId
+              ? <button className="crx-btn ghost sm" onClick={() => download(report.pdfDocumentId, 'credit-report.pdf')}>📄 Open credit report PDF</button>
+              : <span className="crx-muted" title="This report had no PDF in the response">No PDF on this report</span>}
+            {report.xmlDocumentId && <button className="crx-btn ghost sm" onClick={() => download(report.xmlDocumentId, 'credit-report.xml')}>Data file (XML)</button>}
           </div>
         </div>
       ) : (
         <div className="crx-empty">No credit report imported yet. Click <b>Import credit</b> to pull a tri-merge report or import one you downloaded.</div>
       )}
 
-      {showModal && <CreditImportModal appId={appId} onClose={() => setShowModal(false)} onDone={onImported} />}
+      {showModal && <CreditImportModal appId={appId} onClose={closeModal} onDone={onImported} />}
       {showOverlay && report && (
-        <CreditReportOverlay report={report} history={data && data.history} onClose={() => setShowOverlay(false)} onDownload={download} />
+        <CreditReportOverlay report={report} history={data && data.history} justImported={justImported} onClose={closeOverlay} onDownload={download} />
       )}
     </div>
   );

@@ -195,6 +195,25 @@ const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failu
   const crC = (await db.query('SELECT consent_attested, consent_by, consent_at FROM credit_reports WHERE id=$1', [storedC.creditReportId])).rows[0];
   ok(crC.consent_attested === true && String(crC.consent_by) === String(staff.id) && !!crC.consent_at, 'consent attestation recorded on the report row (attested + by + at)');
 
+  // --- a FAILED / empty live pull must NOT hide the last GOOD report or its PDF
+  //     (owner-reported 2026-07-23). The empty pull is stored status='error' and
+  //     surfaced as `lastAttempt`, while fileCredit keeps DISPLAYING the last
+  //     completed report (with its PDF). ------------------------------------------
+  const beforeErr = await credit.fileCredit(app.id);
+  ok(beforeErr.report && beforeErr.report.middleScore === 705 && beforeErr.report.pdfDocumentId, 'baseline: fileCredit shows the last completed report (middle 705) with its PDF');
+  ok(beforeErr.lastAttempt == null, 'no lastAttempt banner while the newest report is a good one');
+  const errStore = await store.storeImport({
+    file: { id: app.id }, borrower: { id: bor.id, ssn_last4: ssn.last4 },
+    parsed: { parseError: 'no credit data recognized in the response', middleScore: null, scores: [], liabilities: [], inquiries: [], publicRecords: [], summary: {}, reportId: null, reportDate: null, borrower: null, bureausReturned: [] },
+    xml: '<empty/>', pdfBase64: null,
+    request: { pullType: 'soft', requestType: 'new', bureaus: ['Equifax', 'Experian', 'TransUnion'], version: '3.4' },
+    actorId: staff.id, source: 'api',
+  });
+  ok((await db.query('SELECT status FROM credit_reports WHERE id=$1', [errStore.creditReportId])).rows[0].status === 'error', 'an empty/unparsed live pull is stored with status=error');
+  const afterErr = await credit.fileCredit(app.id);
+  ok(afterErr.hasReport && afterErr.report && afterErr.report.middleScore === 705 && afterErr.report.pdfDocumentId, 'a failed pull does NOT hide the last good report — still shows middle 705 WITH its PDF');
+  ok(afterErr.lastAttempt && afterErr.lastAttempt.status === 'error' && /no credit data/i.test(afterErr.lastAttempt.reason || ''), 'the failed attempt is surfaced separately as lastAttempt (with a reason)');
+
   // ═══ Wave 2 — co-borrower joint pull ═══════════════════════════════════════
   // Link a SECOND borrower as the co-borrower; credit is required for BOTH.
   const coCondition = require('../src/lib/credit/co-condition');
