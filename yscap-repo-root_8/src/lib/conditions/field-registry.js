@@ -160,6 +160,9 @@ const FIELDS = [
   // option list is the known/confirmed note buyers — an admin can still author a
   // rule against any of them, and a value not in the list still EVALUATES fine
   // (the engine matches on the normalized ctx value, not on option membership).
+  // Drives note-buyer conditions: CorrFirst opens the borrower EMD condition
+  // (db/191), and Blue Lake / CorrFirst require the internal flood-certificate
+  // condition (rtl_cond_flood, db/281).
   { key: 'note_buyer', label: 'Note buyer (capital partner)', group: 'Loan & program', type: 'enum',
     options: [
       { v: 'bluelake', label: 'Blue Lake' }, { v: 'corrfirst', label: 'CorrFirst' },
@@ -197,8 +200,9 @@ const FIELDS = [
       { v: 'secondary', label: 'Secondary' }, { v: 'other', label: 'Other' }] },
   // Known Special Flood Hazard Area — derived from the current appraisal (the
   // FEMA SFHA flag, the FEMA-mapped zone, or the appraiser's stated zone; an A*
-  // or V* zone is an SFHA). Drives the flood-certificate condition: the cert is
-  // ALWAYS required when a flood zone is known, on top of the Gold/Manual rule.
+  // or V* zone is an SFHA). Drives the flood-certificate condition (rtl_cond_flood):
+  // the cert is ALWAYS required when a flood zone is known, on top of the
+  // Gold/Manual program rule AND the Blue Lake / CorrFirst note-buyer rule (db/281).
   { key: 'in_flood_zone', label: 'In a flood zone (SFHA)?', group: 'Property', type: 'boolean',
     description: 'True when the current appraisal places the property in a FEMA Special Flood Hazard Area (zone A*/V*).' },
 
