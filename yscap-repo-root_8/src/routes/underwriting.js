@@ -751,6 +751,22 @@ async function analyzeOneDocument(app, doc, docType, opts = {}) {
             [app.id, doc.borrower_id || app.borrower_id, doc.id, saved.extractionId,
              'This document shows signs of tampering',
              `Signals: ${signalsFired || 'metadata anomalies'}. Ask the borrower for a fresh copy sent DIRECTLY by the source (bank, insurance carrier, appraiser). Do not act on the extracted values until a clean copy is on file.`]);
+          // R3.14 fix (2026-07-23): the major-fraud banner reads ai_suggestions
+          // (source='authenticity', severity='fatal') — the document_findings row
+          // above never reaches it, so the banner's authenticity branch was dead
+          // code. Record the high-alert signal as an ai_suggestion too (advisory
+          // only — blocks nothing; deduped per document so a re-analyze never
+          // duplicates). This also fires the R3.39 new-fatal-suggestion notify.
+          try {
+            await require('../lib/underwriting/ai-suggestions').record(client, {
+              applicationId: app.id, documentId: doc.id,
+              source: 'authenticity', kind: 'finding', severity: 'fatal',
+              title: 'A key document shows strong signs of tampering',
+              body: `Signals: ${signalsFired || 'metadata anomalies'}. The AI changed nothing — review the document and request a fresh copy directly from the source.`,
+              evidence: { code: 'doc_low_authenticity', docType, score: auth.score, signals: signalsFired || null },
+              dedupeKey: `doc_low_authenticity:${doc.id}`,
+            });
+          } catch (_) { /* additive — the banner signal never blocks the analyze */ }
         }
       } catch (_) { /* authenticity is additive */ }
       await client.query('COMMIT');
