@@ -196,6 +196,24 @@ router.get('/insights/reliability', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// #218 — STRICT production-metrics dashboard. Same scored outcomes as the
+// reliability report, but the two SAFETY numbers a lender running an AI
+// underwriter live actually cares about are the HEADLINE: the FALSE-CLEAR rate (a
+// real problem waved through — the release bar is ZERO) and the MISSED-MATERIAL
+// rate (a material finding the AI omitted). Returns a blunt production-readiness
+// status (green / amber / red / insufficient_data) + the blockers. ADVISORY /
+// measurement only — read-only, promotes nothing, gates nothing. Portfolio-wide,
+// so see-all staff only; best-effort (insufficient_data until outcomes accrue).
+router.get('/insights/production-metrics', async (req, res, next) => {
+  try {
+    if (!can(req.actor, 'see_all_files')) return res.status(403).json({ error: 'this report needs access to every file' });
+    const days = Number(req.query.sinceDays);
+    const metrics = await require('../lib/underwriting/production-metrics')
+      .loadProductionMetrics(db, { sinceDays: Number.isFinite(days) && days > 0 ? days : 180 });
+    res.json({ ok: true, metrics, generatedAt: new Date().toISOString() });
+  } catch (e) { next(e); }
+});
+
 // ---- Finding-escalation WORKLOAD (owner-directed 2026-07-21, Items 7 + 12) -----------------
 // A staffer who can't decide a finding escalates it to a super-admin / processor / underwriter,
 // creating a workload item that carries the file link, the finding, its explanation, and the
@@ -1051,6 +1069,35 @@ router.get('/:appId/underwriting-run', async (req, res, next) => {
     const cockpit = await require('../lib/underwriting/run-cockpit').loadRunCockpit(app.id, db);
     if (cockpit) cockpit.generatedAt = new Date().toISOString();
     res.json({ ok: true, cockpit: cockpit || { hasRun: false } });
+  } catch (e) { next(e); }
+});
+
+// #217 — the never-block ISSUANCE verdict at every issuance point. For each action
+// (term sheet / CTC / funding) it returns the two-tier answer from the shared
+// issuance POLICY (issuance-policy.js): CLEAR (proceed, no warning), ADVISORY (any
+// staff member proceeds — a heads-up, not a gate), or FATAL (a super-admin-
+// overridable HARD WARNING — a super-admin can ALWAYS proceed). It NEVER returns an
+// un-overridable block: the AI never hard-blocks a loan (owner-directed). READ-ONLY
+// / advisory — it reads the latest run's issuance gate and applies policy; it
+// decides nothing, clears nothing, and touches NO frozen pricing number. Best-effort:
+// a file with no run, or any read error, degrades to a non-blocking advisory (the
+// policy fails OPEN), never a 500. The UI's term-sheet / CTC / funding actions
+// consult this so a genuine fatal shows as a super-admin-overridable warning and
+// everything else is a proceed-past advisory. Staff-only (router requireAuth+requireStaff).
+router.get('/:appId/issuance-check', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const policy = require('../lib/underwriting/issuance-policy');
+    const gate = require('../lib/underwriting/issuance-gate');
+    const actorRole = (req.actor && req.actor.role) || null;
+    const only = String((req.query && req.query.action) || '').trim();
+    const actions = gate.ACTIONS.includes(only) ? [only] : gate.ACTIONS;
+    const issuance = {};
+    for (const a of actions) {
+      issuance[a] = await policy.resolveFromLatestRun(app.id, a, db, { actorRole });
+    }
+    res.json({ ok: true, actorRole, issuance, generatedAt: new Date().toISOString() });
   } catch (e) { next(e); }
 });
 
