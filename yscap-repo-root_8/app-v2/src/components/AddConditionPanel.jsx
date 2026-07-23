@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api.js';
 import { InfoTip } from './FileSections.jsx';
+import { strayConditionReason, strayConfirmText } from '../lib/conditionLabel.js';
 
 /**
  * Per-file "Add a condition" panel (Condition Center) — underwriters, LOs,
@@ -48,15 +49,19 @@ export default function AddConditionPanel({ appId, items, onChanged, onError, on
     if (!f.label.trim()) return onError('Give the condition a name.');
     if (f.conditionType === 'info_field' && !f.fieldKey) return onError('Pick which field the borrower fills in.');
     if (f.conditionType === 'tool' && !f.toolKey) return onError('Pick which form this condition opens.');
+    const label = f.label.trim();
+    const strayReason = strayConditionReason(label);
+    if (strayReason && !window.confirm(strayConfirmText(strayReason, label))) return;
     setBusy('add');
     try {
       await api.staffAddCustomCondition(appId, {
-        conditionType: f.conditionType, label: f.label.trim(),
+        conditionType: f.conditionType, label,
         borrowerLabel: f.borrowerLabel.trim() || undefined, borrowerHint: f.borrowerHint.trim() || undefined,
         audience: internal ? 'staff' : f.audience, category: f.category || undefined,
         fieldKey: f.conditionType === 'info_field' ? f.fieldKey : undefined,
         toolKey: f.conditionType === 'tool' ? f.toolKey : undefined,
         esignDoc: f.conditionType === 'esign' ? (f.esignDoc.trim() || undefined) : undefined,
+        confirmStrayLabel: strayReason ? true : undefined,
       });
       onFlash(external ? 'Condition added ✓ — the borrower was notified.' : 'Internal condition added ✓');
       setF(blank());

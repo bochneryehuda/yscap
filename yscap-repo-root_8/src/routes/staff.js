@@ -36,6 +36,7 @@ const conditionEngine = require('../lib/conditions/engine');
 const conditionRules = require('../lib/conditions/rules');
 const conditionRegistry = require('../lib/conditions/field-registry');
 const { CONDITION_TYPES, TOOLS, CATEGORIES, conditionTypeOf } = require('../lib/conditions/types');
+const { strayConditionReason, strayConditionMessage } = require('../lib/conditions/label-sanity');
 const { raiseEntityIssue } = require('../lib/raise-issue');
 
 const { can } = require('../lib/permissions');
@@ -2464,6 +2465,14 @@ router.get('/applications/:id/checklist', async (req, res) => {
 router.post('/applications/:id/checklist', async (req, res) => {
   const b = req.body || {};
   if (!b.label) return res.status(400).json({ error: 'label required' });
+  // Stray-value guard (2026-07-22 root cause) — this label is borrower-facing, so
+  // a stray "08759" would read "08759 was added to your conditions" to the borrower.
+  {
+    const stray = strayConditionReason(b.label);
+    if (stray && b.confirmStrayLabel !== true) {
+      return res.status(409).json({ error: strayConditionMessage(stray, b.label), code: 'stray_condition_label', reason: stray, needsConfirm: true });
+    }
+  }
   // This IS a borrower-facing request — the typed label is what the borrower
   // should see, so it doubles as the borrower_label. Without it the borrower
   // portal would show the generic "An item your loan team needs" (#78).
@@ -2493,6 +2502,16 @@ router.post('/applications/:id/checklist', async (req, res) => {
 router.post('/applications/:id/conditions', async (req, res) => {
   const b = req.body || {};
   if (!b.label) return res.status(400).json({ error: 'label required' });
+  // Guard against a stray value (a ZIP like "08759", a phone number, "asdf")
+  // being saved as a real internal condition — the 2026-07-22 root cause. A
+  // caller that genuinely means an odd-looking label passes confirmStrayLabel:true
+  // (an inline "add anyway" confirm on the box).
+  {
+    const stray = strayConditionReason(b.label);
+    if (stray && b.confirmStrayLabel !== true) {
+      return res.status(409).json({ error: strayConditionMessage(stray, b.label), code: 'stray_condition_label', reason: stray, needsConfirm: true });
+    }
+  }
   const r = await db.query(
     `INSERT INTO checklist_items (scope,application_id,label,audience,item_kind,is_required,notes,created_by_kind,created_by_id)
      VALUES ('application',$1,$2,$3,'condition',$4,$5,'staff',$6) RETURNING id`,
@@ -2537,6 +2556,11 @@ router.post('/applications/:id/conditions/custom', async (req, res) => {
   if (!type) return res.status(400).json({ error: 'pick a condition type' });
   const label = String(b.label || '').trim();
   if (!label) return res.status(400).json({ error: 'label required' });
+  // Same stray-value guard as the quick add box (2026-07-22 root cause).
+  const strayLabel = strayConditionReason(label);
+  if (strayLabel && b.confirmStrayLabel !== true) {
+    return res.status(409).json({ error: strayConditionMessage(strayLabel, label), code: 'stray_condition_label', reason: strayLabel, needsConfirm: true });
+  }
   const audience = ['borrower', 'staff', 'both'].includes(b.audience) ? b.audience
     : (type === 'internal_task' || type === 'internal_condition' ? 'staff' : 'borrower');
   let toolKey = CONDITION_TYPES[type].toolKey;
@@ -3675,6 +3699,16 @@ router.get('/applications/:id/conditions', async (req, res) => {
 router.post('/applications/:id/loan-conditions', async (req, res) => {
   const b = req.body || {};
   if (!b.title && !b.borrowerTitle) return res.status(400).json({ error: 'title required' });
+  // Stray-value guard (2026-07-22 root cause) — flag if EITHER the staff title or
+  // the borrower-facing title is a stray value (a caller could send a real title
+  // alongside a stray borrowerTitle that the borrower would then see).
+  {
+    const stray = strayConditionReason(b.title) || strayConditionReason(b.borrowerTitle);
+    if (stray && b.confirmStrayLabel !== true) {
+      const bad = strayConditionReason(b.title) ? b.title : b.borrowerTitle;
+      return res.status(409).json({ error: strayConditionMessage(stray, bad), code: 'stray_condition_label', reason: stray, needsConfirm: true });
+    }
+  }
   const audience = ['staff', 'borrower', 'both'].includes(b.audience) ? b.audience : 'staff';
   const severity = ['standard', 'prior_to_docs', 'prior_to_funding', 'post_closing'].includes(b.severity) ? b.severity : 'standard';
   try {
