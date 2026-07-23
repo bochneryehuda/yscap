@@ -3948,6 +3948,7 @@ async function signOffGate(itemId, actor) {
   const isTitle = code === 'rtl_cond_title';
   const isFraud = code === 'rtl_cond_fraud';
   const isAppraisalDocs = code === 'rtl_cond_appraisaldocs';   // two slots: XML + PDF
+  const isCredit = code === 'rtl_cond_credit';                 // requires an IMPORTED credit report (not a bare PDF)
   const isAppraisalReview = code === 'appraisal_review_cleared'; // CTC gate: no open fatal finding
   const isUnderwritingReview = code === 'underwriting_review_cleared'; // CTC gate: no open fatal document finding
   // Structured-DATA conditions — the borrower/staff enter DATA (not a document):
@@ -3969,8 +3970,24 @@ async function signOffGate(itemId, actor) {
   // An OPTIONAL document condition (is_required=false — e.g. the Investor
   // Structure Printout) may still be signed off with nothing uploaded: "optional"
   // means the file can complete without it (matches the Waive affordance).
+  // Credit report condition: cannot be signed off until a report was actually
+  // IMPORTED (the import files the PDF + XML AND reads the scores). A bare PDF
+  // upload is NOT enough (owner-directed 2026-07-23). Scoped to the condition's
+  // borrower when set (so a co-borrower credit condition needs the co-borrower's
+  // own report); a file-level credit condition accepts any completed import.
+  if (isCredit) {
+    const imported = (await db.query(
+      `SELECT 1 FROM credit_reports
+        WHERE application_id=$1 AND status='completed'
+          AND ($2::uuid IS NULL OR borrower_id=$2) LIMIT 1`,
+      [item.application_id, item.borrower_id || null])).rows[0];
+    if (!imported)
+      return 'Import the credit report before signing off — a report must be imported here (that files the PDF + data file and reads the scores). Uploading a PDF by itself is not enough.';
+    return null;
+  }
+
   if (item.item_kind === 'document' && !item.tool_key && item.is_required !== false
-      && code !== 'rtl_p1_llc' && !isInsurance && !isTitle && !isFraud && !isAppraisalDocs) {
+      && code !== 'rtl_p1_llc' && !isInsurance && !isTitle && !isFraud && !isAppraisalDocs && !isCredit) {
     const has = await db.query(
       `SELECT 1 FROM documents WHERE checklist_item_id=$1 AND is_current
          AND COALESCE(review_status,'') <> 'rejected' LIMIT 1`, [itemId]);

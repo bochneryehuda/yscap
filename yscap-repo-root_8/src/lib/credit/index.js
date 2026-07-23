@@ -215,16 +215,56 @@ function shapeReport(r, { full }) {
   };
 }
 
+// A borrower's representative score for the condition summary: their latest
+// completed report's middle score, else their borrowers.fico (the import writes
+// the middle score back to fico, so this is a sensible fallback).
+async function borrowerScore(appId, borrowerId) {
+  if (!borrowerId) return { middleScore: null, hasReport: false };
+  const r = await db.query(
+    `SELECT middle_score FROM credit_reports
+      WHERE application_id=$1 AND borrower_id=$2 AND status='completed' AND middle_score IS NOT NULL
+      ORDER BY pulled_at DESC LIMIT 1`, [appId, borrowerId]);
+  if (r.rows[0]) return { middleScore: r.rows[0].middle_score, hasReport: true };
+  const f = await db.query('SELECT fico FROM borrowers WHERE id=$1', [borrowerId]);
+  return { middleScore: (f.rows[0] && f.rows[0].fico != null) ? f.rows[0].fico : null, hasReport: false };
+}
+
 async function fileCredit(appId) {
   const latest = await db.query(
     'SELECT * FROM credit_reports WHERE application_id=$1 ORDER BY pulled_at DESC LIMIT 1', [appId]);
   const hist = await db.query(
     `SELECT id, pulled_at, pull_type, request_type, source, status, middle_score, interface_version
        FROM credit_reports WHERE application_id=$1 ORDER BY pulled_at DESC LIMIT 25`, [appId]);
+
+  // Per-borrower summary + the higher-of-two rule (the higher middle score prices
+  // the deal). With a co-borrower, the condition shows both + which one is higher.
+  const bq = await db.query(
+    `SELECT a.borrower_id, a.co_borrower_id,
+            pb.first_name AS p_first, pb.last_name AS p_last,
+            cb.first_name AS c_first, cb.last_name AS c_last
+       FROM applications a
+       LEFT JOIN borrowers pb ON pb.id=a.borrower_id
+       LEFT JOIN borrowers cb ON cb.id=a.co_borrower_id
+      WHERE a.id=$1`, [appId]);
+  const row = bq.rows[0] || {};
+  const nm = (f, l, fb) => [f, l].filter(Boolean).join(' ') || fb;
+  const pScore = await borrowerScore(appId, row.borrower_id);
+  const cScore = row.co_borrower_id ? await borrowerScore(appId, row.co_borrower_id) : null;
+  const vals = [pScore.middleScore, cScore && cScore.middleScore].filter((v) => v != null);
+  const borrowers = {
+    primary: { name: nm(row.p_first, row.p_last, 'Borrower'), middleScore: pScore.middleScore, hasReport: pScore.hasReport },
+    coBorrower: row.co_borrower_id
+      ? { name: nm(row.c_first, row.c_last, 'Co-borrower'), middleScore: cScore.middleScore, hasReport: cScore.hasReport }
+      : null,
+    higher: vals.length ? Math.max(...vals) : null,   // the score that prices the deal
+    hasCoBorrower: !!row.co_borrower_id,
+  };
+
   return {
     hasReport: latest.rows.length > 0,
     provider: provider.status(),
     report: latest.rows[0] ? shapeReport(latest.rows[0], { full: true }) : null,
+    borrowers,
     history: hist.rows.map((r) => ({
       id: r.id, pulledAt: r.pulled_at, pullType: r.pull_type, requestType: r.request_type,
       source: r.source, status: r.status, middleScore: r.middle_score, version: r.interface_version,
