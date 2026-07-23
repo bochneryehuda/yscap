@@ -485,6 +485,8 @@ export const api = {
   similarOpenFindings:       (appId, findingId) => req('GET', `/api/underwriting/${appId}/findings/${findingId}/similar-open`),
   bulkResolveFindings:       (appId, findingIds, action, note) => req('POST', `/api/underwriting/${appId}/findings/similar/bulk-resolve`, { findingIds, action, note: note || undefined }),
   fileAvmConsensus:          (appId) => req('GET', `/api/underwriting/${appId}/avm-consensus`),
+  // #197 — whole-loan run cockpit (decision + run-diff + next-actions + findings digest).
+  fileUnderwritingRun:       (appId) => req('GET', `/api/underwriting/${appId}/underwriting-run`),
   fileAvmConsensusVerify:    (appId) => req('POST', `/api/underwriting/${appId}/avm-consensus/verify`, {}),
   // AI Suggestions panel (R3.5/R3.6 — owner-directed 2026-07-22).
   aiSuggestionsList:      (appId, params = {}) => {

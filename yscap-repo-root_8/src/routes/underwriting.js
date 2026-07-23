@@ -1024,6 +1024,25 @@ router.get('/:appId/guideline-evaluation', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// #197 — whole-loan run cockpit. Reads the latest immutable underwriting run
+// (schema db/266) for the file and folds it into ONE staff panel: the current
+// decision (status + the three gates), what CHANGED since the previous run
+// (run-diff), the ordered "what to do next" worklist (next-actions), and the
+// findings rolled up by category (findings-digest). READ-ONLY / advisory — it
+// summarizes an already-computed, already-persisted run; it runs nothing, decides
+// nothing, clears no condition, and touches NO frozen pricing number. Staff-only
+// (inherits requireAuth+requireStaff on the router); best-effort — a file that has
+// never been run returns a valid hasRun:false payload, never an error.
+router.get('/:appId/underwriting-run', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const cockpit = await require('../lib/underwriting/run-cockpit').loadRunCockpit(app.id, db);
+    if (cockpit) cockpit.generatedAt = new Date().toISOString();
+    res.json({ ok: true, cockpit: cockpit || { hasRun: false } });
+  } catch (e) { next(e); }
+});
+
 // ---- Section 1071 coverage classifier (R2.10, blueprint compliance) ------
 // The CFPB Section 1071 small-business lending data-collection rule takes
 // effect January 1, 2028. This endpoint tells staff whether PILOT is on the

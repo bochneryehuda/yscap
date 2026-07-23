@@ -1192,6 +1192,137 @@ function SovereignCockpit({ twinFacts, cureProofs, appId, canIssueCerts, canConf
 // every configured AVM provider via /verify (fires the hub with kind='avm'
 // → feeds api_verification observations → re-analyzes). Empty when no AVMs
 // are configured (all three today are stubs).
+// #197 — Whole-loan run cockpit. Reads the latest immutable underwriting run
+// (schema db/266) and folds it into ONE at-a-glance panel: the current decision
+// (status + the three gates term-sheet / clear-to-close / funding), what CHANGED
+// since the previous run, the ordered "what to do next" worklist, and the findings
+// rolled up by category. READ-ONLY / advisory — it summarizes an already-computed,
+// already-persisted run; it runs nothing, decides nothing, and clears no
+// condition. A file that has never been run shows a quiet "not run yet" note.
+function WholeLoanRunPanel({ appId }) {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [cockpit, setCockpit] = useState(null);
+  const load = useCallback(() => {
+    if (!appId) return Promise.resolve();
+    setLoading(true);
+    return api.fileUnderwritingRun(appId)
+      .then((d) => setCockpit((d && d.cockpit) || { hasRun: false }))
+      .catch(() => setCockpit({ hasRun: false }))
+      .finally(() => setLoading(false));
+  }, [appId]);
+  useEffect(() => { if (open && appId) load(); }, [open, appId, load]);
+
+  const STATUS_STYLE = {
+    ELIGIBLE: { fg: 'var(--good,#3F7A5B)', bg: 'rgba(63,122,91,.10)', label: 'Eligible' },
+    MANUAL_APPROVED: { fg: 'var(--good,#3F7A5B)', bg: 'rgba(63,122,91,.10)', label: 'Manually approved' },
+    MANUAL_PENDING: { fg: 'var(--amber,#B7791F)', bg: 'var(--amber-bg,#F6EEDD)', label: 'Manual review' },
+    NOT_READY: { fg: 'var(--muted,#4B585C)', bg: 'var(--paper,#F6F3EC)', label: 'Not ready' },
+    DATA_CONFLICT: { fg: 'var(--amber,#B7791F)', bg: 'var(--amber-bg,#F6EEDD)', label: 'Data conflict' },
+    STALE: { fg: 'var(--amber,#B7791F)', bg: 'var(--amber-bg,#F6EEDD)', label: 'Stale — re-run needed' },
+    INELIGIBLE: { fg: 'var(--crit,#B4483C)', bg: 'var(--crit-bg,#F6E7E4)', label: 'Ineligible' },
+  };
+  const gateChip = (label, on) => (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11.5, fontWeight: 700,
+      color: on ? 'var(--good,#3F7A5B)' : 'var(--muted,#4B585C)',
+      background: on ? 'rgba(63,122,91,.10)' : 'var(--paper,#F6F3EC)',
+      border: `1px solid ${on ? 'rgba(63,122,91,.35)' : 'var(--line,#E7E1D3)'}`,
+      borderRadius: 999, padding: '3px 10px' }}>
+      {on ? '✓' : '—'} {label}
+    </span>
+  );
+  const c = cockpit;
+  const dec = c && c.decision;
+  const st = dec && (STATUS_STYLE[dec.status] || { fg: 'var(--muted,#4B585C)', bg: 'var(--paper,#F6F3EC)', label: dec.status || 'Unknown' });
+
+  return (
+    <div style={{ border: '1px solid var(--line,#E7E1D3)', borderRadius: 12, padding: '12px 16px', marginBottom: 18 }}>
+      <button onClick={() => setOpen((v) => !v)} style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'none', border: 'none', cursor: 'pointer', padding: 0, textAlign: 'left', width: '100%' }}>
+        <span style={{ fontSize: 14, fontWeight: 700 }}>Whole-loan underwriting run — where the whole file stands</span>
+        <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--muted,#4B585C)' }}>{open ? 'hide' : 'show'}</span>
+      </button>
+      {open && (
+        <div style={{ marginTop: 12 }}>
+          <p style={{ fontSize: 12, color: 'var(--muted,#4B585C)', margin: '0 0 12px' }}>
+            One snapshot of the loan as a whole — the current standing, what changed since the last check,
+            what to work next, and the kinds of issues on file. This is a read-out; it decides nothing on its own.
+          </p>
+          {loading && <div className="muted" style={{ fontSize: 12 }}>Loading…</div>}
+          {!loading && (!c || !c.hasRun) && (
+            <div className="muted" style={{ fontSize: 12.5 }}>This file hasn't been run through the whole-loan review yet. It runs on its own as documents and terms come in.</div>
+          )}
+          {!loading && c && c.hasRun && (
+            <>
+              {/* current standing + the three gates */}
+              <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+                {st && (
+                  <span style={{ fontSize: 12.5, fontWeight: 800, color: st.fg, background: st.bg, border: `1px solid ${st.fg}44`, borderRadius: 999, padding: '4px 12px' }}>{st.label}</span>
+                )}
+                {dec && dec.gates && (
+                  <>
+                    {gateChip('Term sheet', dec.gates.termSheet)}
+                    {gateChip('Clear to close', dec.gates.ctc)}
+                    {gateChip('Funding', dec.gates.funding)}
+                  </>
+                )}
+                {c.current && c.current.asOf && (
+                  <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--muted,#4B585C)' }}>as of {fmtAgo(c.current.asOf)}</span>
+                )}
+              </div>
+
+              {/* what changed since the previous run */}
+              {c.diff && c.diff.changed && (
+                <div style={{ fontSize: 12.5, marginBottom: 12, padding: '8px 12px', background: 'var(--paper,#F6F3EC)', borderRadius: 8, border: '1px solid var(--line,#E7E1D3)' }}>
+                  <span style={{ fontWeight: 700 }}>Since the last check: </span>{c.diff.headline}
+                </div>
+              )}
+
+              {/* what to do next — the ordered worklist */}
+              {c.nextActions && Array.isArray(c.nextActions.actions) && c.nextActions.actions.length > 0 && (
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--muted,#4B585C)', marginBottom: 6 }}>What to work next</div>
+                  {c.nextActions.actions.slice(0, 8).map((a, i) => (
+                    <div key={i} style={{ display: 'flex', alignItems: 'baseline', gap: 8, padding: '5px 0', borderTop: i === 0 ? 'none' : '1px solid var(--line,#E7E1D3)' }}>
+                      <span style={{ fontSize: 10.5, fontWeight: 800, minWidth: 62, color: a.blocking ? 'var(--crit,#B4483C)' : (a.overdue ? 'var(--amber,#B7791F)' : 'var(--muted,#4B585C)') }}>
+                        {a.blocking ? 'BLOCKING' : (a.overdue ? 'OVERDUE' : (a.kind === 'condition' ? 'CONDITION' : 'REVIEW'))}
+                      </span>
+                      <span style={{ fontSize: 13, fontWeight: 600 }}>{a.title}</span>
+                      <span style={{ fontSize: 11.5, color: 'var(--muted,#4B585C)' }}>{a.why}</span>
+                    </div>
+                  ))}
+                  {c.nextActions.actions.length > 8 && (
+                    <div className="muted" style={{ fontSize: 11.5, marginTop: 4 }}>+{c.nextActions.actions.length - 8} more below.</div>
+                  )}
+                </div>
+              )}
+
+              {/* findings rolled up by category */}
+              {c.findingsDigest && Array.isArray(c.findingsDigest.categories) && c.findingsDigest.categories.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--muted,#4B585C)', marginBottom: 6 }}>Issues by kind</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                    {c.findingsDigest.categories.map((g, i) => {
+                      const crit = g.worstSeverity === 'fatal';
+                      const warn = g.worstSeverity === 'warning';
+                      const fg = crit ? 'var(--crit,#B4483C)' : (warn ? 'var(--amber,#B7791F)' : 'var(--muted,#4B585C)');
+                      const bg = crit ? 'var(--crit-bg,#F6E7E4)' : (warn ? 'var(--amber-bg,#F6EEDD)' : 'var(--paper,#F6F3EC)');
+                      return (
+                        <span key={i} title={g.blocking ? 'Includes a blocking item' : ''} style={{ fontSize: 12, fontWeight: 700, color: fg, background: bg, border: `1px solid ${fg}33`, borderRadius: 8, padding: '4px 10px' }}>
+                          {g.label}: {g.count}{g.blocking ? ' ⛔' : ''}
+                        </span>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SovereignAVMSection({ appId, canRefresh }) {
   const [open, setOpen] = useState(false);
   const [rpt, setRpt] = useState(null);
@@ -2351,6 +2482,11 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
           </div>
         );
       })()}
+
+      {/* Whole-loan run cockpit (#197) — the latest immutable run folded into one
+          read-out: current standing + the three gates, what changed since the last
+          run, the ordered worklist, and findings by kind. Read-only / advisory. */}
+      <WholeLoanRunPanel appId={appId} />
 
       {/* Sovereign Cockpit — Canonical facts (twin) + Condition cure proofs
           (Sovereign 1/4 + 2/4, owner-directed 2026-07-21). These two collapsible
