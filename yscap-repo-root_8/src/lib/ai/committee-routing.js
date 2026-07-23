@@ -58,11 +58,12 @@ const KEYWORD_DOMAINS = Object.freeze([
   // entity / LLC
   [/(entity| llc | ein |good standing|signing authority|beneficial owner|operating agreement|articles|member|manager)/, 'entity'],
   // credit
-  [/(fico|credit|tradeline|derog|undisclosed debt|undisclosed mortgage|mortgage late|bankruptc|foreclosure|liabilit)/, 'credit'],
+  [/(fico|credit|tradeline|derog|undisclosed debt|undisclosed mortgage|mortgage late|bankruptc|foreclosure|liabilit|collection|charge ?off)/, 'credit'],
   // appraisal / collateral
   [/(appraisal| arv |as is value|property type| units? |comp grid|comparable|value variance|value defensib|condition)/, 'appraisal'],
-  // title
-  [/(title|vesting|lien|encumbrance|seller of record|legal descr|chain of title|judgment|exception)/, 'title'],
+  // title — a foreclosure / lis pendens can cloud TITLE (prior foreclosure, pending
+  // action) as well as be a borrower CREDIT event, so it consults BOTH lenses.
+  [/(title|vesting|lien|encumbrance|seller of record|legal descr|chain of title|judgment|exception|foreclosure|lis pendens)/, 'title'],
   // insurance / flood
   [/(insur| hoi |coverage|mortgagee|flood|effective date|insured)/, 'insurance'],
 ]);

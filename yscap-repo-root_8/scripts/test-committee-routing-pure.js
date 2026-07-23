@@ -87,6 +87,40 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
   ok('uncovered high-confidence refutes HOLD for a human — a real finding is never dropped off-lens');
 }
 
+// 5b. NEVER-WEAKEN GUARD — an uncovered finding can't be DOWNGRADED (modify) either, not just dismissed.
+{
+  const finding = { code: 'totally_unknown_widget_code', severity: 'fatal' };
+  const modifies = [
+    { key: 'fraud', ok: true, verdict: { verdict: 'modify', confidence: 0.85, severity_recommendation: 'informational', reason: 'off-lens' } },
+    { key: 'identity', ok: true, verdict: { verdict: 'modify', confidence: 0.85, severity_recommendation: 'informational', reason: 'off-lens' } },
+    { key: 'credit', ok: true, verdict: { verdict: 'refute', confidence: 0.5, severity_recommendation: 'dismiss', reason: 'x' } },
+  ];
+  const uncovered = adjudicate(finding, modifies, { covered: false });
+  assert.strictEqual(uncovered.adjudicated_severity, 'fatal', 'an uncovered fatal is NOT downgraded to informational by off-lens modify votes');
+  assert.strictEqual(uncovered.action, 'hold', 'it holds for a human instead');
+  // covered → the plurality modify is honored (unchanged behavior)
+  const covered = adjudicate(finding, modifies, { covered: true });
+  assert.strictEqual(covered.action, 'modify');
+  assert.strictEqual(covered.adjudicated_severity, 'informational', 'a COVERED finding can still be modified down');
+  // an UPGRADE is always allowed even when uncovered (strengthening never hurts)
+  const up = adjudicate({ code: 'x', severity: 'informational' }, [
+    { key: 'fraud', ok: true, verdict: { verdict: 'modify', confidence: 0.85, severity_recommendation: 'fatal', reason: 'worse than thought' } },
+    { key: 'identity', ok: true, verdict: { verdict: 'modify', confidence: 0.85, severity_recommendation: 'fatal', reason: 'worse' } },
+  ], { covered: false });
+  assert.strictEqual(up.adjudicated_severity, 'fatal', 'an uncovered finding CAN be upgraded (strengthened)');
+  ok('never-weaken guard: an uncovered finding is never downgraded below its original severity (only upgraded)');
+}
+
+// 5c. A foreclosure / lis-pendens finding consults BOTH the credit and the title lens.
+{
+  const dom = routing.domainsOf({ code: 'foreclosure_pending' });
+  assert.ok(dom.includes('credit') && dom.includes('title'), 'a foreclosure routes to BOTH credit and title');
+  const r = routing.routeFinding({ code: 'foreclosure_pending', severity: 'fatal' }, SPECIALISTS);
+  assert.ok(r.specialists.includes('title') && r.specialists.includes('credit'), 'both specialists are consulted');
+  assert.strictEqual(r.covered, true);
+  ok('a foreclosure / lis pendens consults both the credit and title lens (no wrong-lens dismissal)');
+}
+
 // 6. covered defaults to TRUE when opts omitted (back-compat with existing callers/tests).
 {
   const finding = { code: 'borrower_name_mismatch', severity: 'warning' };

@@ -5,8 +5,8 @@
  * Instead of one model producing every finding on its own, MATERIAL findings
  * (fatals + high-impact warnings) are reviewed by a COMMITTEE of specialist
  * agents plus an ADJUDICATOR. Each specialist has a narrow prompt + a specific
- * lens (identity, entity, credit, fraud, appraisal, title, insurance, DSCR,
- * RTL). The adjudicator combines their opinions and produces:
+ * lens (identity, entity, credit, fraud, appraisal, title, insurance). The
+ * adjudicator combines their opinions and produces:
  *   * adjudicated_severity ('fatal' | 'warning' | 'informational' | 'dismiss')
  *   * majority_conclusion (short paragraph)
  *   * dissenting_opinions[] (specialists that disagreed with the majority)
@@ -28,6 +28,11 @@
 const azureOpenai = require('./azure-openai');
 const langfuse = require('./langfuse');
 const { routeFinding } = require('./committee-routing');
+
+// Severity ordering — used by the never-weaken guard so an UNCOVERED finding can
+// never be moved BELOW its original severity by off-lens specialists (#213).
+const SEV_RANK = Object.freeze({ dismiss: 0, informational: 1, warning: 2, fatal: 3 });
+function sevRank(s) { return SEV_RANK[s] != null ? SEV_RANK[s] : 1; }
 
 // -------------------------------------------------------------------------
 // SPECIALISTS — narrow-prompt reviewers, each with an adversarial bias.
@@ -242,6 +247,18 @@ function adjudicate(finding, specialistResults, opts = {}) {
         ? `Split panel — ${confirms.length} confirm, ${refutes.length} refute, ${modifies.length} modify. Holding original severity; human review recommended.`
         : 'No specialist opinion available. Holding original severity.';
     }
+  }
+
+  // #213 NEVER-WEAKEN GUARD (belt-and-suspenders over the dismiss gate): an
+  // UNCOVERED finding — one no qualified specialist reviewed — may never be moved
+  // BELOW its original severity by off-lens specialists (a downgrade is the same
+  // "buried by the wrong lens" miss as a dismiss, just softer). Upgrades (a stronger
+  // severity) are always allowed. When uncovered and the panel wanted to weaken it,
+  // hold at the original severity for a human instead.
+  if (!covered && sevRank(adjudicatedSeverity) < sevRank(originalSeverity)) {
+    adjudicatedSeverity = originalSeverity;
+    action = 'hold';
+    reasoning = 'No specialist whose lens covers this finding was available, so it cannot be downgraded or dismissed. Holding the original severity for human review.';
   }
 
   return {
