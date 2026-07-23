@@ -520,6 +520,9 @@ module.exports = {
   clearCapital: {
     key:      process.env.CLEARCAPITAL_KEY || '',
     endpoint: (process.env.CLEARCAPITAL_ENDPOINT || 'https://api.clearcapital.com').trim().replace(/\/+$/, ''),
+    // The ClearAVM value endpoint PATH — env-overridable so the exact contract path
+    // can be confirmed against Clear Capital's docs at onboarding without a code change.
+    avmPath:  (process.env.CLEARCAPITAL_AVM_PATH || '/uve/v1.0.0/avm').trim(),
   },
   //   ATTOM Data Solutions — third AVM source + property intelligence
   attom: {
