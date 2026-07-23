@@ -170,16 +170,19 @@ function normalizeGooglePage(page, index, fullText) {
  * THROWS.
  *   opts: { engine: 'azure' | 'google', index?, fullText? (google) }
  */
-function captureLayout(rawPage, opts = {}) {
+function captureLayout(rawPage, opts) {
+  // normalize opts ONCE up front so an explicit null/garbage never trips the catch
+  // handler (the `opts = {}` default only covers undefined) — keeps NEVER THROWS true.
+  const o = opts && typeof opts === 'object' ? opts : {};
   try {
-    const engine = String(opts.engine || '').toLowerCase();
-    const index = Number.isFinite(opts.index) ? opts.index : 0;
-    if (engine === 'google' || engine === 'google-docai') return normalizeGooglePage(rawPage, index, opts.fullText);
+    const engine = String(o.engine || '').toLowerCase();
+    const index = Number.isFinite(o.index) ? o.index : 0;
+    if (engine === 'google' || engine === 'google-docai') return normalizeGooglePage(rawPage, index, o.fullText);
     if (engine === 'azure' || engine === 'docint') return normalizeAzurePage(rawPage, index);
     // unknown engine → empty canonical page (never throw).
     return { pageNumber: index + 1, width: null, height: null, unit: null, lines: [], words: [] };
   } catch (_e) {
-    return { pageNumber: (Number.isFinite(opts.index) ? opts.index : 0) + 1, width: null, height: null, unit: null, lines: [], words: [] };
+    return { pageNumber: (Number.isFinite(o.index) ? o.index : 0) + 1, width: null, height: null, unit: null, lines: [], words: [] };
   }
 }
 
