@@ -1431,6 +1431,12 @@ function WholeLoanRunPanel({ appId }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [cockpit, setCockpit] = useState(null);
+  // #179 — "Why this decision?" explanation + findings CSV export.
+  const [whyOpen, setWhyOpen] = useState(false);
+  const [whyLoading, setWhyLoading] = useState(false);
+  const [why, setWhy] = useState(null);
+  const [exporting, setExporting] = useState(false);
+  const [exportMsg, setExportMsg] = useState(null);
   const load = useCallback(() => {
     if (!appId) return Promise.resolve();
     setLoading(true);
@@ -1440,6 +1446,26 @@ function WholeLoanRunPanel({ appId }) {
       .finally(() => setLoading(false));
   }, [appId]);
   useEffect(() => { if (open && appId) load(); }, [open, appId, load]);
+
+  const loadWhy = useCallback(() => {
+    if (!appId) return Promise.resolve();
+    setWhyLoading(true);
+    return api.fileUnderwritingWhy(appId)
+      .then((d) => setWhy(d && d.hasRun ? (d.explanation || { headline: 'No explanation available.' }) : { empty: true }))
+      .catch(() => setWhy({ empty: true }))
+      .finally(() => setWhyLoading(false));
+  }, [appId]);
+  const toggleWhy = useCallback(() => {
+    setWhyOpen((v) => { const nv = !v; if (nv && !why) loadWhy(); return nv; });
+  }, [why, loadWhy]);
+
+  async function exportCsv() {
+    if (exporting) return;
+    setExporting(true); setExportMsg(null);
+    try { await api.fileUnderwritingFindingsCsv(appId); }
+    catch (_e) { setExportMsg('Could not build the findings file.'); setTimeout(() => setExportMsg(null), 6000); }
+    finally { setExporting(false); }
+  }
 
   const STATUS_STYLE = {
     ELIGIBLE: { fg: 'var(--good,#3F7A5B)', bg: 'rgba(63,122,91,.10)', label: 'Eligible' },
@@ -1497,6 +1523,51 @@ function WholeLoanRunPanel({ appId }) {
                   <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--muted,#4B585C)' }}>as of {fmtAgo(c.current.asOf)}</span>
                 )}
               </div>
+
+              {/* #179 — Why this decision? + Export findings (CSV) */}
+              <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                <button className="btn ghost small" onClick={toggleWhy}>{whyOpen ? 'Hide why' : 'Why this decision?'}</button>
+                <button className="btn ghost small" disabled={exporting} onClick={exportCsv}>{exporting ? 'Preparing…' : 'Export findings (CSV)'}</button>
+                {exportMsg && <span style={{ fontSize: 11.5, color: 'var(--crit,#B4483C)' }}>{exportMsg}</span>}
+              </div>
+
+              {whyOpen && (
+                <div style={{ marginBottom: 14, padding: '10px 14px', background: 'var(--paper,#F6F3EC)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 10 }}>
+                  {whyLoading && <div className="muted" style={{ fontSize: 12 }}>Loading…</div>}
+                  {!whyLoading && why && why.empty && (
+                    <div className="muted" style={{ fontSize: 12.5 }}>No explanation is available for this file yet.</div>
+                  )}
+                  {!whyLoading && why && !why.empty && (
+                    <>
+                      {why.headline && <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>{why.headline}</div>}
+                      {why.plain && why.plain !== why.headline && (
+                        <p style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', margin: '0 0 8px' }}>{why.plain}</p>
+                      )}
+                      {Array.isArray(why.blockers) && why.blockers.length > 0 && (
+                        <div style={{ marginBottom: 8 }}>
+                          <div style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--muted,#4B585C)', marginBottom: 3 }}>What's blocking</div>
+                          <ul style={{ margin: 0, paddingLeft: 18 }}>
+                            {why.blockers.map((b, i) => (
+                              <li key={i} style={{ fontSize: 12, marginBottom: 3 }}>
+                                <span style={{ fontWeight: 600 }}>{b.title}</span>
+                                {b.howTo && <span style={{ color: 'var(--muted,#4B585C)' }}> — {b.howTo}</span>}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {Array.isArray(why.nextSteps) && why.nextSteps.length > 0 && (
+                        <div>
+                          <div style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--muted,#4B585C)', marginBottom: 3 }}>What to do next</div>
+                          <ul style={{ margin: 0, paddingLeft: 18 }}>
+                            {why.nextSteps.map((s, i) => <li key={i} style={{ fontSize: 12, marginBottom: 3 }}>{s}</li>)}
+                          </ul>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
 
               {/* what changed since the previous run */}
               {c.diff && c.diff.changed && (

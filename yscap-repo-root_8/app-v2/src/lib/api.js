@@ -487,6 +487,10 @@ export const api = {
   fileAvmConsensus:          (appId) => req('GET', `/api/underwriting/${appId}/avm-consensus`),
   // #197 — whole-loan run cockpit (decision + run-diff + next-actions + findings digest).
   fileUnderwritingRun:       (appId) => req('GET', `/api/underwriting/${appId}/underwriting-run`),
+  // #179 (R6.16) — plain-language "Why this decision?" explanation of the latest whole-loan run.
+  fileUnderwritingWhy:       (appId) => req('GET', `/api/underwriting/${appId}/underwriting-run/why`),
+  // #179 (R6.16) — download the latest whole-loan run findings as a CSV (auth'd fetch → browser save).
+  fileUnderwritingFindingsCsv: async (appId) => { const { blob, filename } = await download(`/api/underwriting/${appId}/underwriting-run/findings.csv`); saveBlob(blob, filename); },
   // #136 (R5.39) — advisory guideline evaluation (per-rule verdicts + plain citations + investor-fit "A vs B").
   fileGuidelineEvaluation:   (appId) => req('GET', `/api/underwriting/${appId}/guideline-evaluation`),
   // ISG — Investor-Specific Soft Guidelines desk (per note-buyer condition verdicts + conflicts).
