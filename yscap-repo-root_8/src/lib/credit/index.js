@@ -363,8 +363,30 @@ async function borrowerScore(appId, borrowerId) {
 }
 
 async function fileCredit(appId) {
+  // The report we DISPLAY is the latest COMPLETED one — a failed/empty live pull
+  // (status='error', no PDF, no data) must never hide a good report already on
+  // file. Fall back to the latest attempt only when nothing completed exists yet.
+  const completed = await db.query(
+    "SELECT * FROM credit_reports WHERE application_id=$1 AND status='completed' ORDER BY pulled_at DESC LIMIT 1", [appId]);
   const latest = await db.query(
     'SELECT * FROM credit_reports WHERE application_id=$1 ORDER BY pulled_at DESC LIMIT 1', [appId]);
+  const displayRow = completed.rows[0] || null;   // only a real, completed report is displayed
+  const latestRow = latest.rows[0] || null;
+  // A most-recent attempt that FAILED (errored / no recognizable data) and is NOT
+  // the displayed good report — surfaced so staff clearly see "the last pull didn't
+  // return a report" while the good report (and its PDF) stays visible below.
+  const lastAttempt = (latestRow && latestRow.status !== 'completed' && (!displayRow || latestRow.id !== displayRow.id))
+    ? {
+      id: latestRow.id, status: latestRow.status,
+      reason: (latestRow.parsed && latestRow.parsed.parseError) || latestRow.error || null,
+      pulledAt: latestRow.pulled_at, source: latestRow.source, pullType: latestRow.pull_type,
+      // A failed/partial attempt can still have filed a real PDF (a PDF-only upload,
+      // or a live pull that returned a PDF but unreadable data) — carry the doc ids
+      // so the UI keeps that PDF reachable instead of orphaning it.
+      pdfDocumentId: latestRow.pdf_document_id || null,
+      xmlDocumentId: latestRow.xml_document_id || null,
+    }
+    : null;
   const hist = await db.query(
     `SELECT id, pulled_at, pull_type, request_type, source, status, middle_score, interface_version
        FROM credit_reports WHERE application_id=$1 ORDER BY pulled_at DESC LIMIT 25`, [appId]);
@@ -409,9 +431,10 @@ async function fileCredit(appId) {
   };
 
   return {
-    hasReport: latest.rows.length > 0,
+    hasReport: !!displayRow,
     provider: provider.status(),
-    report: latest.rows[0] ? shapeReport(latest.rows[0], { full: true }) : null,
+    report: displayRow ? shapeReport(displayRow, { full: true }) : null,
+    lastAttempt,
     borrowers,
     history: hist.rows.map((r) => ({
       id: r.id, pulledAt: r.pulled_at, pullType: r.pull_type, requestType: r.request_type,
