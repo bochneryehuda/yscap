@@ -26,8 +26,17 @@ const eqCents = (a, b) => Math.round((Number(a) || 0) * 100) === Math.round((Num
 // or null when there's nothing usable.
 function toNum(v) {
   if (v == null) return null;
-  const n = Number(String(v).replace(/[^0-9.]/g, ''));
-  return Number.isFinite(n) ? n : null;
+  const raw = String(v).trim();
+  // Preserve the SIGN (fix 2026-07-23): stripping '-' let a NEGATIVE
+  // contingency/total pass the SOW gates in this JS layer while the DB
+  // trigger layer (signed numerics) disagreed. Correctness tightening only —
+  // no threshold or budget number changes.
+  const neg = /^\(.*\)$/.test(raw) || raw.startsWith('-');
+  const s = raw.replace(/[^0-9.]/g, '');
+  if (s === '') return null;
+  const n = Number(s);
+  if (!Number.isFinite(n)) return null;
+  return neg ? -n : n;
 }
 
 // The first-page construction budget carried on a saved SOW payload

@@ -18,7 +18,7 @@
  */
 
 function num(v) {
-  if (v === '' || v == null || !Number.isFinite(Number(v))) return null;
+  if (v == null || String(v).trim() === '' || !Number.isFinite(Number(v))) return null;
   return Number(v);
 }
 function norm(s) { return String(s == null ? '' : s).trim().toLowerCase(); }

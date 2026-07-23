@@ -103,7 +103,9 @@ function computeBankFindings(statement, subject, opts = {}) {
   // combined with declaredPageCount. Only fires when we can prove missing pages.
   const declaredTotal = num(statement.declaredPageCount);
   const actualCount = num(statement.pageCount);
-  const nums = Array.isArray(statement.pageNumbers) ? statement.pageNumbers.filter(Number.isFinite).sort((a, b) => a - b) : null;
+  // map(Number) FIRST (fix 2026-07-23): string page numbers from AI/JSON ('1','2')
+  // silently disarmed the missing-page detector.
+  const nums = Array.isArray(statement.pageNumbers) ? statement.pageNumbers.map(Number).filter(Number.isFinite).sort((a, b) => a - b) : null;
   let missing = null;
   if (nums && nums.length && declaredTotal != null) {
     const expected = Array.from({ length: declaredTotal }, (_, i) => i + 1);
