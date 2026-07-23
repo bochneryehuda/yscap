@@ -181,7 +181,7 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
         // findings with a doc-side value → spans (findingIds is 1:1 with effectiveFindings)
         for (let i = 0; i < findingIds.length; i++) {
           const f = (effectiveFindings || [])[i];
-          if (!f || f.docValue == null || f.docValue === '') continue;
+          if (!f || f.docValue == null || f.docValue === '' || typeof f.docValue === 'object') continue;
           const span = aligner.alignToSpan(f.docValue, lines);
           if (!span) continue;
           const row = await ledger.recordSpan(client, { ...spanBase, ...span, meta: { code: f.code || null, field: f.field || null } });

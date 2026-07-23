@@ -2194,6 +2194,9 @@ router.get('/track-records', async (req, res) => {
   // borrower_label/hint) — plus a scrub pass over the free-form strings.
   res.json(r.rows.map((row) => ({
     ...row,
+    docs: Array.isArray(row.docs)
+      ? row.docs.map((d) => ({ ...d, filename: typeof d.filename === 'string' ? scrubText(d.filename) : d.filename }))
+      : row.docs,
     doc_requests: Array.isArray(row.doc_requests)
       ? row.doc_requests.map((q) => ({ ...q, label: scrubText(q.label), hint: q.hint ? scrubText(q.hint) : q.hint }))
       : row.doc_requests,
@@ -2361,7 +2364,8 @@ router.get('/track-records/:id/documents', async (req, res) => {
   const r = await db.query(
     `SELECT id,filename,content_type,size_bytes,created_at,review_status,rejection_reason,slot_label AS doc_type FROM documents
       WHERE track_record_id=$1 AND visibility='borrower' AND is_current ORDER BY created_at`, [req.params.id]);
-  res.json(r.rows);
+  // filename + rejection_reason + slot label are staff free text (leak fix 2026-07-23)
+  res.json(r.rows.map((row) => scrubFields(row, ['filename', 'rejection_reason', 'doc_type'])));
 });
 router.post('/track-records/:id/documents', async (req, res) => {
   const b = req.body || {};
@@ -2710,7 +2714,11 @@ router.get('/documents/:id/download', async (req, res) => {
     [req.params.id, me(req)]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
   await audit(req, 'download_document', 'document', r.rows[0].id);
-  return serveDocument(res, r.rows[0], { inline: req.query.inline === '1' });
+  // Content-Disposition carries the stored name — scrub it so a staff-named
+  // "BlueLake_terms.pdf" never lands on a borrower's disk (leak fix 2026-07-23;
+  // bytes are untouched, only the suggested download name changes).
+  const doc = { ...r.rows[0], filename: typeof r.rows[0].filename === 'string' ? scrubText(r.rows[0].filename) : r.rows[0].filename };
+  return serveDocument(res, doc, { inline: req.query.inline === '1' });
 });
 
 // ---------------- bank verification (Plaid framework) ----------------

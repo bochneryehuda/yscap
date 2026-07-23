@@ -215,9 +215,12 @@ router.get('/conversations/:cid/shared', async (req, res) => {
        LEFT JOIN borrowers b ON b.id=m.sender_id AND m.sender_kind='borrower'
       WHERE m.conversation_id=$1 AND m.deleted_at IS NULL
       ORDER BY m.seq DESC LIMIT 200`, [conv.id]);
+  // staff-named filenames are a partner-name vector (leak fix 2026-07-23 —
+  // same class as /messages above)
+  const safe = files.rows.map(f => ({ ...f, filename: typeof f.filename === 'string' ? scrubText(f.filename) : f.filename, seq: Number(f.seq) }));
   res.json({
-    media: files.rows.filter(f => ['image', 'video', 'audio'].includes(f.attachment_kind)).map(f => ({ ...f, seq: Number(f.seq) })),
-    files: files.rows.filter(f => !['image', 'video', 'audio'].includes(f.attachment_kind)).map(f => ({ ...f, seq: Number(f.seq) })),
+    media: safe.filter(f => ['image', 'video', 'audio'].includes(f.attachment_kind)),
+    files: safe.filter(f => !['image', 'video', 'audio'].includes(f.attachment_kind)),
     links: [],
   });
 });
