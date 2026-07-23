@@ -28,7 +28,7 @@ assert.ok(!('password' in st) && !('username' in st), 'status never leaks creden
   assert.ok(/set up/i.test(threw.userMessage || ''), 'friendly userMessage');
 
   // --- request seam: the REAL MISMO 3.4 MESSAGE (from the Xactus packet) --------
-  const bor = { firstName: 'Jane', lastName: 'Investor', ssn: '123456789',
+  const bor = { firstName: 'Jane', lastName: 'Investor', ssn: '123456789', dob: '1985-04-02',
     address: { line1: '12 Maple Ave', city: 'Lakewood', state: 'NJ', zip: '08701' } };
 
   // soft (PQx) + reissue (with a prior report id)
@@ -45,6 +45,10 @@ assert.ok(!('password' in st) && !('username' in st), 'status never leaks creden
   assert.ok(/<TaxpayerIdentifierValue>123456789<\/TaxpayerIdentifierValue>/.test(req.body), 'SSN in TaxpayerIdentifierValue');
   assert.ok(/<PostalCode>08701<\/PostalCode>/.test(req.body), 'address zip present');
   assert.ok(/<LoanIdentifier>YS-1<\/LoanIdentifier>/.test(req.body), 'loan number present');
+  assert.ok(/<BorrowerBirthDate>1985-04-02<\/BorrowerBirthDate>/.test(req.body), 'DOB sent (BorrowerBirthDate) — the review screen promises it, so it must be transmitted');
+  // …and a borrower with NO DOB emits no birth-date element (leaf omits blanks)
+  const noDob = p._seam.buildRequestBody({ borrower: { firstName: 'A', lastName: 'B', ssn: '1', address: {} }, pullType: 'soft', requestType: 'new', bureaus: p.ALL_BUREAUS, version: '3.4' });
+  assert.ok(!/BorrowerBirthDate/.test(noDob.body), 'no DOB on file → no empty BorrowerBirthDate element');
   const X = require('../src/lib/mismo/xml');
   assert.strictEqual(X.parse(req.body).local, 'MESSAGE', 'built request is well-formed MISMO, root MESSAGE');
 

@@ -54,8 +54,9 @@ async function insertDoc({ appId, borrowerId, itemId, uploadedById, buf, filenam
  * @param {object} a.request { pullType, requestType, bureaus, version }
  * @param {string} a.actorId staff id
  * @param {'api'|'upload'} a.source
+ * @param {boolean} [a.consentAttested] the actor attested borrower permissible-purpose (live pulls)
  */
-async function storeImport({ app, parsed, xml, pdfBase64, request, actorId, source }) {
+async function storeImport({ app, parsed, xml, pdfBase64, request, actorId, source, consentAttested }) {
   const itemId = await creditConditionItemId(app.id);
   const sourceType = source === 'upload' ? 'staff_upload' : 'system';
   let xmlDocId = null, pdfDocId = null;
@@ -102,14 +103,17 @@ async function storeImport({ app, parsed, xml, pdfBase64, request, actorId, sour
     `INSERT INTO credit_reports
        (application_id,borrower_id,vendor,pull_type,request_type,bureaus,interface_version,
         status,source,vendor_report_id,report_date,middle_score,scores,summary,parsed,
-        xml_document_id,pdf_document_id,checklist_item_id,pulled_by)
-     VALUES ($1,$2,'xactus',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+        xml_document_id,pdf_document_id,checklist_item_id,pulled_by,
+        consent_attested,consent_by,consent_at)
+     VALUES ($1,$2,'xactus',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
+        $19,$20, CASE WHEN $19 THEN now() ELSE NULL END)
      RETURNING id`,
     [app.id, app.borrower_id, request.pullType, request.requestType, request.bureaus, request.version,
       parsed.parseError ? 'error' : 'completed', source, parsed.reportId || null,
       parsed.reportDate || null, sanitizeFico(parsed.middleScore),
       JSON.stringify(parsed.scores || []), JSON.stringify(parsed.summary || {}),
-      JSON.stringify(parsed), xmlDocId, pdfDocId, itemId, actorId]);
+      JSON.stringify(parsed), xmlDocId, pdfDocId, itemId, actorId,
+      !!consentAttested, consentAttested ? (actorId || null) : null]);
   const creditReportId = ins.rows[0].id;
 
   // 3) Move the condition to 'received' + mirror to the ClickUp dropdown.
@@ -123,11 +127,13 @@ async function storeImport({ app, parsed, xml, pdfBase64, request, actorId, sour
   // 4) FICO write-back: middle score → borrowers.fico (auto-reopens P&P via db/126).
   //    SAFETY: if the returned report names a different last-4 than the file's
   //    borrower, DON'T auto-overwrite FICO — surface a mismatch instead.
-  let ficoWritten = null, ficoMismatch = false;
+  let ficoWritten = null, ficoMismatch = false, ficoUnverified = false;
   const returned4 = parsed.borrower && parsed.borrower.ssnLast4;
   const onFile4 = app.ssn_last4 || null;
   if (returned4 && onFile4 && String(returned4) !== String(onFile4)) {
-    ficoMismatch = true;
+    ficoMismatch = true;                    // report names a DIFFERENT person — never auto-set
+  } else if (returned4 && !onFile4) {
+    ficoUnverified = true;                  // no SSN on file to confirm identity — don't silently overwrite FICO
   } else if (app.borrower_id && parsed.middleScore != null) {
     const f = sanitizeFico(parsed.middleScore);
     if (f != null) {
@@ -136,7 +142,7 @@ async function storeImport({ app, parsed, xml, pdfBase64, request, actorId, sour
     }
   }
 
-  return { creditReportId, xmlDocId, pdfDocId, itemId, ficoWritten, ficoMismatch };
+  return { creditReportId, xmlDocId, pdfDocId, itemId, ficoWritten, ficoMismatch, ficoUnverified };
 }
 
 module.exports = { storeImport, creditConditionItemId };

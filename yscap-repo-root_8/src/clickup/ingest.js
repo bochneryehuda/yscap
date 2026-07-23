@@ -850,6 +850,20 @@ async function descopeFlipped(taskId) {
        VALUES ('system', NULL, 'clickup_descope_flip', 'application', $1, $2)`,
       [r.rows[0].id, JSON.stringify({ taskId, from: r.rows[0].program,
         reason: 'ClickUp program changed to an unsupported (non-RTL) type; removed from portal, ClickUp left untouched' })]).catch(() => {});
+    // A descoped file is OUT of the portal — close any open FILE-LEVEL sync-review
+    // findings it was carrying (they are unactionable now, and a copied-loan-number
+    // finding must not linger after the file it was about is gone — the exact
+    // dead-end the owner hit turning an RTL duplicate into a DSCR, 2026-07-22).
+    // Scoped to the file-level "action card" keys; a value disagreement (or a real
+    // issue) re-raises on the next ingest if the task ever flips back to RTL.
+    await db.query(
+      `UPDATE sync_review_queue
+          SET status='resolved', auto_resolved=true, resolved_at=now(),
+              resolution_note='auto-closed — the file was removed from the portal (its ClickUp program changed to a data-only, non-RTL type)'
+        WHERE status='open'
+          AND (application_id=$1 OR task_id=$2)
+          AND field_key IN ('ys_loan_number','file_link','push_job','sharepoint_folder','sharepoint_doc')`,
+      [r.rows[0].id, String(taskId)]).catch(() => {});
     return r.rows[0];
   } catch (_) { return null; }
 }
@@ -1513,6 +1527,20 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     } catch (_) { /* best-effort — a guard failure must never break the inbound pull */ }
   }
 
+  // ECONOMICS FREEZE (owner-directed follow-up to the term-sheet-sent freeze):
+  // if this existing file is frozen — a Term Sheet DocuSign package is sent, or
+  // the file is Clear-to-Close / Funded — an inbound economics CHANGE must not
+  // silently overwrite the file (it would make the sent term sheet disagree with
+  // it). The guard strips the changed frozen-economics fields from `cols` (their
+  // COALESCE keeps the current value) and parks a review row for the loan officer.
+  // No-op on an unfrozen file, or when ClickUp already matches the frozen figures.
+  if (targetId && task) {
+    try {
+      await require('../lib/inbound-economics-freeze')
+        .applyInboundEconomicsFreeze({ appId: targetId, cols, taskId: task.id, borrowerId });
+    } catch (_) { /* best-effort — never breaks the inbound pull */ }
+  }
+
   const vals = Object.values(cols);
   const set = Object.keys(cols).map((k, i) => `${k}=COALESCE($${i + 2}, ${k})`).join(', ');
   if (targetId) {
@@ -1695,4 +1723,5 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
 module.exports = {
   ingestTask, resolveBorrower, upsertLlc, upsertTrackRecord, linkOrCreateApplication,
   applyChecklistStatuses, identityFrom, RTL_PROGRAMS, decideInboundProcessor,
+  descopeFlipped,
 };

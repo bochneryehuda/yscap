@@ -35,6 +35,7 @@ const REASON_COPY = {
   sharepoint_mirror_failed: 'This document could NOT be mirrored to SharePoint after every automatic retry — the exact error is shown on the “Last error” line above. Fix the cause if it needs a human (a folder problem, an unreadable file), then Retry the document; if the folder match itself is wrong, use Re-match. Nothing is lost — the document is safe in PILOT.',
   borrower_identity_conflict: 'TWO DIFFERENT PEOPLE appear to share ONE borrower profile: this file’s ClickUp task and the PILOT profile disagree on identity (name, phone, or SSN), and the profile also belongs to another officer’s relationship (a lead or owned profile). This usually comes from a family-shared email + the family last name. Do NOT adopt either value — that would change the other person too. Click Split: the file’s person gets their OWN fresh profile (rebuilt from ClickUp), and the other person keeps the original profile untouched. Dismiss only if you are sure it is genuinely the same human.',
   shared_email_needs_reassignment: 'TWO BORROWER PROFILES are using ONE email address (shown under “In ClickUp”; the two people under “In PILOT”). Two ways to settle it: (1) if the sharing is RIGHT — spouses on the same deals, or the same person twice — click Allow: the two profiles are LINKED, whoever logs in with the email sees BOTH sets of files, and this never flags again (nothing is merged; each keeps their own profile and officer). (2) If they are unrelated people, give one of them their OWN email — edit it on their borrower screen in PILOT or on the ClickUp task — and this card closes itself. Until settled, the system deliberately refuses to link files by this email.',
+  economics_frozen_conflict: 'ClickUp carries different loan figures than PILOT (shown above), but this file is FROZEN — a term sheet has been sent for signature, or the file is Clear-to-Close / Funded — so the numbers can’t change on their own (they would no longer match the term sheet that already went out). PILOT kept its figures and did NOT apply the ClickUp change. Two ways to settle it: keep PILOT’s figures and push them back to ClickUp so both match; OR, to accept the ClickUp change, clear the term sheet package (or ask a super-admin to unlock a Clear-to-Close / Funded file) and re-register — the figures then update by themselves on the next sync. You can also simply set it back in ClickUp to match the file.',
 };
 // Sitewire draw-management parks (field_key='sitewire'). The stored reason is
 // "<class>: <detail>"; we key friendly copy by the class and show the detail beneath.
@@ -107,6 +108,9 @@ const REASON_FILE_ACTIONS = {
     { action: 'loan_number_assign_here', label: 'This file owns the number', title: 'Give the loan number to THIS file and take it off the other file in PILOT. Then delete the leftover copy on the OTHER deal’s ClickUp card.' },
     { action: 'loan_number_keep_other', label: 'The other file owns it — this is the copy', title: 'Keep the number on the other deal; this file stays blank. Then delete the leftover copy on THIS file’s ClickUp card.' },
   ],
+  economics_frozen_conflict: [
+    { action: 'keep_frozen_figures', label: 'Keep PILOT’s figures (push to ClickUp)', title: 'Keep the file’s frozen loan figures and push them back to ClickUp so the two match. To accept the ClickUp change instead, clear the term sheet package (or have a super-admin unlock the file) and re-register.' },
+  ],
 };
 // The OTHER file that shares the contested loan number (from the row's forensic raw_value).
 function otherLoanFile(r) {
@@ -166,6 +170,7 @@ const FIELD_LABELS = {
   co_borrower_identity: 'Co-borrower identity — one profile, two people',
   shared_email: 'Shared email — two borrowers',
   sitewire: 'Construction draws (Sitewire)',
+  economics_frozen: 'Loan figures — frozen (term sheet sent / file locked)',
 };
 // Field keys the two-sided resolver can apply to BOTH systems today.
 // 'file_link' / 'ys_loan_number' rows are deliberately NOT here: they are
@@ -179,6 +184,33 @@ const RESOLVABLE = new Set(['date_of_birth', 'expected_closing', 'actual_closing
 // tried to type is one of these (it shows an Approve that would be a confusing
 // no-op otherwise).
 const DISMISS_ONLY = new Set(['loan_number_duplicate_entered']);
+// Re-check result copy, keyed by the backend outcome `reason` (src/lib/sync-review-recheck.js).
+// The engine now re-derives EVERY row type it can prove — value fields, the loan-number
+// clash, co-borrower fields, file status, a failed ClickUp push, a SharePoint document,
+// a shared-email pair, and a two-people-one-profile split — so each gets a plain line.
+const RECHECK_CLOSED_MSG = {
+  adopt: 'PILOT confirmed the correct value and cleared this review (applied to both systems).',
+  file_removed: 'the file was removed from the portal, so this no longer applies. Cleared.',
+  no_longer_duplicated: 'that loan number is no longer on any other file, so PILOT cleared this on its own.',
+  mirrored: 'the document is now saved to SharePoint, so PILOT cleared this.',
+  doc_gone: 'that document no longer exists, so there was nothing left to save. Cleared.',
+  linked: 'the two profiles are now linked (a login on either sees both), so PILOT cleared this.',
+  separate_emails: 'the two people now have their own separate emails, so PILOT cleared this.',
+  split_done: 'this file now points at a separate profile for that person, so PILOT cleared this.',
+  push_healthy: 'the update reached ClickUp — no failed pushes remain — so PILOT cleared this.',
+  no_co_borrower: 'this file no longer has a co-borrower, so PILOT cleared this.',
+};
+const RECHECK_OPEN_MSG = {
+  still_duplicated: 'that loan number is still on another file too, so this still needs you.',
+  not_mirrored: 'the document still hasn’t saved to SharePoint, so this still needs you.',
+  still_shared: 'the two profiles still share one email, so this still needs you.',
+  still_merged: 'this file still points at the shared profile, so this still needs you.',
+  push_pending: 'there are still failed or pending ClickUp updates for this file, so this still needs you.',
+};
+const RECHECK_UNSUPPORTED_MSG = {
+  sitewire_use_actions: 'Re-checked — a construction-draw setup clears when you fix the cause and use this card’s Retry (or Acknowledge) button; Re-check can’t settle a draw setup on its own.',
+  sharepoint_folder_use_actions: 'Re-checked — fix or merge the folders in SharePoint, then use this card’s Re-match; Re-check can’t settle a folder match on its own.',
+};
 // Which file SECTION each review is about — so the reviewer can jump straight to
 // where the value is edited (owner-directed 2026-07-22: "a button to open the
 // exact file section the review is about"). Borrower/co-borrower identity lives in
@@ -292,24 +324,24 @@ export default function SyncReviews() {
     try {
       const out = await api.post(`/api/staff/sync-reviews/${id}/recheck`, {});
       if (out.outcome === 'closed') {
-        // 'adopt' means PILOT applied the proven correction to both systems;
-        // 'agree' means the two sides already matched. Say which — never claim
-        // "already fixed" when PILOT itself wrote the value.
-        setBulkMsg(out.reason === 'adopt'
-          ? '✓ Re-checked — PILOT confirmed the correct value and cleared this review (applied to both systems).'
-          : '✓ Re-checked — the two sides already match, so PILOT cleared this review on its own.');
+        // Each proven-resolved reason gets its own plain line (never claim "already
+        // fixed" when PILOT itself wrote the value); anything new falls back to the
+        // generic "the two sides already match" line.
+        setBulkMsg('✓ Re-checked — ' + (RECHECK_CLOSED_MSG[out.reason]
+          || 'the two sides already match, so PILOT cleared this review on its own.'));
         await load();
       } else if (out.outcome === 'still_open') {
-        setRecheckMsg((m) => ({ ...m, [id]: 'Checked just now — the two sides still don’t match, so this still needs you.' }));
+        setRecheckMsg((m) => ({ ...m, [id]: 'Checked just now — ' + (RECHECK_OPEN_MSG[out.reason]
+          || 'the two sides still don’t match, so this still needs you.') }));
         await load();
       } else if (out.outcome === 'error') {
         setRecheckMsg((m) => ({ ...m, [id]: 'Couldn’t reach ClickUp to re-check just now — try again in a moment.' }));
       } else {
-        // 'unsupported' — a file-level / draw / status row PILOT can't prove from
-        // a value re-read. Don't over-promise that it "clears itself" (some, like
-        // a duplicate loan number typed in, never do) — point to this card's own
-        // options instead.
-        setRecheckMsg((m) => ({ ...m, [id]: 'Re-checked — this one isn’t a simple value match, so PILOT can’t auto-clear it here. Use the options on this card to resolve it.' }));
+        // 'unsupported' — a row PILOT can't prove from a re-read. Draw + folder-match
+        // rows get a specific "use this card's actions" line; everything else points
+        // to the card's own options rather than dead-ending.
+        setRecheckMsg((m) => ({ ...m, [id]: RECHECK_UNSUPPORTED_MSG[out.reason]
+          || 'Re-checked — this one isn’t a simple value match, so PILOT can’t auto-clear it here. Use the options on this card to resolve it.' }));
         await load();
       }
     } catch (e) { setErr(e.message || 'Could not re-check'); }

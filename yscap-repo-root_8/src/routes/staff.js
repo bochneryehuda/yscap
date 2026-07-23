@@ -1797,6 +1797,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const client = await db.getClient();
     let regId;
     let economicsChanged = true;   // first registration always notifies the borrower
+    let loanAmountChanged = false;   // loan amount moved → auto-clear a signed Heter Iska
     try {
       await client.query('BEGIN');
       const reg = await persistProductRegistration(client, {
@@ -1805,6 +1806,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       });
       regId = reg.id;
       economicsChanged = reg.economicsChanged;
+      loanAmountChanged = reg.loanAmountChanged;
       // Needs manual review → open a super-admin escalation in the same
       // transaction. The file registers now, but the product stays "pending
       // super-admin approval" until the escalation is decided (db/207), and the
@@ -1877,6 +1879,17 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     finally { client.release(); }
     // Registration rewrites loan amount / rate / program — re-run condition rules.
     try { await conditionEngine.evaluateApplication(appId, { actor: req.actor, reason: 'product_registered' }); } catch (_) {}
+
+    // Loan amount moved → auto-clear a signed Heter Iska (its terms are tied to the
+    // loan amount). The db/280 trigger already reopened the ISKA condition; this
+    // voids the live package + supersedes the signed doc so a fresh one can be sent.
+    if (loanAmountChanged) {
+      try {
+        await require('../lib/esign/iska-autoclear').autoClearIskaOnLoanChange({
+          appId, actorId: req.actor.id, db, docusign: require('../lib/integrations/docusign'),
+        });
+      } catch (e) { console.warn('[staff-register] ISKA auto-clear failed:', db.describeError(e)); }
+    }
 
     await audit(req, 'register_product', 'application', appId,
       { program, status: quote.status, noteRate: quote.noteRate, totalLoan: total, productLabel: quote.productLabel || null,
@@ -2176,6 +2189,7 @@ router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
     // never half-lands (registered without the escalation closing, or vice versa).
     const client = await db.getClient();
     let regId;
+    let loanAmountChanged = false;   // loan amount moved → auto-clear a signed Heter Iska
     try {
       await client.query('BEGIN');
       const reg = await persistProductRegistration(client, {
@@ -2183,6 +2197,7 @@ router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
         isManual: program === 'manual', assetMonths: esc.asset_months,
       });
       regId = reg.id;
+      loanAmountChanged = reg.loanAmountChanged;
       // The LO's accept IS the approval. Mark THIS row 'approved' (persistProductRegistration
       // may have opened a NEW escalation for the re-register — that's a separate row and stays
       // pending only if the new scenario is itself manual-review, which is fine). The status
@@ -2207,6 +2222,14 @@ router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
     try { await conditionEngine.evaluateApplication(appId, { actor: req.actor, reason: 'counter_accepted' }); } catch (_) {}
     try { await require('../lib/liquidity').syncLiquidityCondition(appId, quote, db, program === 'manual' ? { program, assetMonths: esc.asset_months } : {}); } catch (_) {}
     try { await require('../lib/rehab-budget').enforceGoldSowContingency(appId); } catch (_) {}
+    // Loan amount moved on the re-register → auto-clear a signed Heter Iska.
+    if (loanAmountChanged) {
+      try {
+        await require('../lib/esign/iska-autoclear').autoClearIskaOnLoanChange({
+          appId, actorId: req.actor.id, db, docusign: require('../lib/integrations/docusign'),
+        });
+      } catch (e) { console.warn('[counter-accept] ISKA auto-clear failed:', db.describeError(e)); }
+    }
     // Push the new economics to ClickUp so the task mirrors the accepted terms.
     try { require('../clickup/orchestrator').pushApplication(appId).catch(() => {}); } catch (_) {}
 
@@ -2820,11 +2843,14 @@ router.post('/applications/:id/credit/import', async (req, res) => {
       reissueReportId: typeof b.reissueReportId === 'string' ? b.reissueReportId : undefined,
       xml: typeof b.xml === 'string' ? b.xml : undefined,
       pdfBase64: typeof b.pdfBase64 === 'string' ? b.pdfBase64 : undefined,
+      consent: b.consent === true,
       actorId: req.actor.id,
     });
     await audit(req, 'credit_import', 'application', req.params.id, {
-      source: out.source, middleScore: out.middleScore, ficoWritten: out.ficoWritten,
-      ficoMismatch: out.ficoMismatch, bureaus: out.bureausReturned, parseError: out.parseError || undefined,
+      source: out.source, pullType: out.pullType, requestType: out.requestType,
+      consentAttested: out.consentAttested, middleScore: out.middleScore, ficoWritten: out.ficoWritten,
+      ficoMismatch: out.ficoMismatch, ficoUnverified: out.ficoUnverified || undefined,
+      bureaus: out.bureausReturned, parseError: out.parseError || undefined,
     });
     res.json(out);
   } catch (e) {
@@ -9495,6 +9521,27 @@ router.post('/esign/:rowId/void', async (req, res) => {
     await audit(req, 'esign_void', 'application', row.application_id, { purpose: row.purpose, reason });
     res.json({ ok: true });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// CLEAR a package (owner-directed 2026-07-22): void it (if still out for
+// signature), supersede the signed document(s), and reopen exactly the
+// condition(s) this package satisfied — so a fresh package can be sent with
+// updated details. Handles a COMPLETED (signed) package too, which Void cannot.
+// The UI warns first that this can't be undone. Reuses loadEsignEnvelope's
+// file-visibility check.
+router.post('/esign/:rowId/clear', async (req, res) => {
+  try {
+    const { row, status, error } = await loadEsignEnvelope(req, req.params.rowId);
+    if (!row) return res.status(status).json({ error });
+    const reason = String((req.body && req.body.reason) || '').trim() || undefined;
+    const out = await require('../lib/esign/clear').clearPackage({ rowId: row.id, actorId: req.actor.id, reason, db, docusign: docusignLib });
+    await audit(req, 'esign_clear', 'application', row.application_id,
+      { purpose: row.purpose, voided: out.voided, docsCleared: out.docsCleared, conditionsReopened: (out.conditionsReopened || []).length });
+    res.json({ ok: true, ...out });
+  } catch (e) {
+    if (e && e.status && e.expose) return res.status(e.status).json({ error: e.message });
+    console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
+  }
 });
 
 // Mint an embedded signing URL for the ADMIN counter-signer to sign from the

@@ -1,0 +1,168 @@
+'use strict';
+/**
+ * R5.10 — Storage-boundary page-range enforcement (deterministic core, ADVISORY).
+ *
+ * After the splitter/adjudicator (R5.9) decides where each logical document
+ * starts and ends, SOMETHING has to guarantee those boundaries map to REAL,
+ * in-bounds, non-overlapping pages before a byte of the packet is sliced or
+ * mirrored. If two documents claim the same page, or a range runs past the last
+ * page of the file, a physical slice would silently produce a corrupt or
+ * cross-contaminated sub-document (bank statement page bleeding into the title).
+ * This module is that boundary check: it validates every logical document's page
+ * range against the packet's true page count, flags OVERLAPS (a page owned by
+ * two documents) and GAPS (a page owned by none), and emits a per-document SLICE
+ * PLAN — physical (extract a real sub-PDF via pdf-slice) or virtual (a page-range
+ * reference into the original) — that a caller can trust never reads out of bounds.
+ *
+ * Pure: no DB, no AI, no I/O — it plans/validates; pdf-slice.js does the actual
+ * byte extraction from the plan. Advisory: it PRODUCES a plan + flags a human
+ * reviews; it slices nothing and stores nothing itself. Never throws.
+ */
+
+const MODES = Object.freeze({ PHYSICAL: 'physical', VIRTUAL: 'virtual' });
+
+// Hard ceiling on any page number. No real combined document packet approaches
+// this (a few thousand pages at most); a page number above it is bad or hostile
+// input (a hallucinated page from the AI adjudicator, an oversized start/end).
+// Capping at the SOURCE bounds every downstream loop by page COUNT, never by page
+// MAGNITUDE — so the module can honor its "never throws" contract instead of
+// building a billion-element array and throwing RangeError.
+const MAX_PAGE = 100000;
+
+// Normalize a document's page range to a sorted, de-duplicated list of 1-based
+// integer page numbers (each in [1, MAX_PAGE]), from either { pages:[n...] } or
+// { start, end }. An out-of-range page is dropped; an oversized or inverted
+// start/end range yields [] (the document is then flagged invalid, never enumerated).
+function pagesOf(doc) {
+  if (!doc) return [];
+  if (Array.isArray(doc.pages) && doc.pages.length) {
+    return [...new Set(doc.pages.map(Number).filter((n) => Number.isInteger(n) && n >= 1 && n <= MAX_PAGE))].sort((a, b) => a - b);
+  }
+  const s = Number(doc.start), e = Number(doc.end != null ? doc.end : doc.start);
+  if (!Number.isInteger(s) || s < 1 || s > MAX_PAGE) return [];
+  // An explicit end below start is an inverted (invalid) range — flag it, don't
+  // silently collapse to a single page and mask a real upstream error.
+  if (doc.end != null && Number.isInteger(e) && e < s) return [];
+  const end = Number.isInteger(e) && e >= s ? e : s;
+  if (end > MAX_PAGE) return []; // oversized span → invalid, never enumerate a giant array
+  const out = [];
+  for (let p = s; p <= end; p++) out.push(p);
+  return out;
+}
+
+// Is a page list contiguous (no internal gap)? A non-contiguous document (e.g.
+// pages 1,2,5) needs an explicit multi-range physical slice, not one span.
+function isContiguous(pages) {
+  for (let i = 1; i < pages.length; i++) if (pages[i] !== pages[i - 1] + 1) return false;
+  return true;
+}
+
+// Collapse a sorted page list into contiguous [start,end] runs (the ranges a
+// physical slicer actually cuts).
+function toRuns(pages) {
+  const runs = [];
+  for (const p of pages) {
+    const last = runs[runs.length - 1];
+    if (last && p === last.end + 1) last.end = p;
+    else runs.push({ start: p, end: p });
+  }
+  return runs;
+}
+
+/**
+ * planSlices(documents, opts?) → {
+ *   ok,                                        // true iff every plan is valid AND no overlaps
+ *   plans: [{ id, pages, runs, start, end, pageCount, contiguous, mode, valid, reason }],
+ *   coverage: { totalPages, assignedPages, gaps:[page], trailingUnassigned:{from,to,count}|null,
+ *               overlaps:[{ page, docs:[id] }], outOfBounds:[{ id, pages:[page] }] },
+ * }
+ *   documents: [{ id, pages:[n] | start,end, mode?, needsPhysical? }]
+ *   opts: { totalPages?, defaultMode?:'virtual'|'physical' }
+ * A range outside [1, totalPages] is INVALID (never sliced). Two documents sharing
+ * a page is an OVERLAP (a page can't belong to two documents) → ok:false. A page
+ * owned by no document is a GAP (advisory — a dropped page a human should place).
+ * mode: a doc's explicit `mode`, else physical when `needsPhysical`, else the
+ * opts.defaultMode (default 'virtual' — reference the original, don't duplicate bytes).
+ */
+function planSlices(documents, opts = {}) {
+  const docs = Array.isArray(documents) ? documents.filter((d) => d && d.id != null) : [];
+  const defaultMode = opts.defaultMode === MODES.PHYSICAL ? MODES.PHYSICAL : MODES.VIRTUAL;
+
+  // Determine the packet's true page count: explicit, else the max page any
+  // document references (so a bounds check is always possible).
+  let maxSeen = 0;
+  for (const d of docs) { const ps = pagesOf(d); if (ps.length) maxSeen = Math.max(maxSeen, ps[ps.length - 1]); }
+  const totalPages = Number.isInteger(Number(opts.totalPages)) && Number(opts.totalPages) > 0
+    ? Number(opts.totalPages) : maxSeen;
+
+  // Ownership map for overlap/gap detection.
+  const owners = new Map(); // page → [ids]
+  const outOfBounds = [];
+  const plans = [];
+
+  for (const d of docs) {
+    const allPages = pagesOf(d);
+    // A referenced page above the magnitude cap was scrubbed by pagesOf (so no
+    // loop enumerates a billion pages). SURFACE it as out-of-bounds rather than
+    // silently dropping a hallucinated page reference — this keeps the { pages }
+    // path consistent with the { start, end } path (which invalidates on an
+    // oversized end) and gives a reviewer the signal that a bad page was ignored.
+    const overCap = Array.isArray(d && d.pages)
+      ? [...new Set(d.pages.map(Number).filter((n) => Number.isInteger(n) && n > MAX_PAGE))].sort((a, b) => a - b)
+      : [];
+    const inBounds = allPages.filter((p) => p >= 1 && p <= totalPages);
+    const oob = allPages.filter((p) => p < 1 || p > totalPages).concat(overCap);
+    if (oob.length) outOfBounds.push({ id: d.id, pages: oob });
+
+    for (const p of inBounds) { const arr = owners.get(p) || []; arr.push(d.id); owners.set(p, arr); }
+
+    const contiguous = isContiguous(allPages);
+    const mode = d.mode === MODES.PHYSICAL || d.mode === MODES.VIRTUAL ? d.mode
+      : (d.needsPhysical ? MODES.PHYSICAL : defaultMode);
+    let valid = true, reason = 'in bounds';
+    if (!allPages.length) { valid = false; reason = 'no valid pages'; }
+    else if (oob.length) { valid = false; reason = `pages out of bounds (1..${totalPages}): ${oob.join(', ')}`; }
+
+    plans.push({
+      id: d.id,
+      pages: allPages,
+      runs: toRuns(inBounds),
+      start: allPages.length ? allPages[0] : null,
+      end: allPages.length ? allPages[allPages.length - 1] : null,
+      pageCount: allPages.length,
+      contiguous,
+      mode,
+      valid,
+      reason,
+    });
+  }
+
+  // Overlaps: any page owned by more than one document.
+  const overlaps = [];
+  for (const [page, ids] of owners) if (ids.length > 1) overlaps.push({ page, docs: [...new Set(ids)] });
+  overlaps.sort((a, b) => a.page - b.page);
+
+  // Gaps: an in-bounds page owned by nobody. Enumerate only up to the last page
+  // any document actually references (interior gaps between documents) — a real
+  // packet's totalPages ≈ that, so this is identical for legitimate input. If a
+  // caller passes an absurd totalPages far above any referenced page (bad/hostile
+  // input), the trailing unassigned pages are SUMMARIZED, never enumerated, so
+  // the scan can never run an unbounded O(totalPages) loop.
+  const gapScanTo = Math.min(totalPages, maxSeen);
+  const gaps = [];
+  for (let p = 1; p <= gapScanTo; p++) if (!owners.has(p)) gaps.push(p);
+  const trailingUnassigned = totalPages > maxSeen
+    ? { from: maxSeen + 1, to: totalPages, count: totalPages - maxSeen }
+    : null;
+
+  const assignedPages = owners.size;
+  const ok = plans.every((p) => p.valid) && overlaps.length === 0;
+
+  return {
+    ok,
+    plans,
+    coverage: { totalPages, assignedPages, gaps, trailingUnassigned, overlaps, outOfBounds },
+  };
+}
+
+module.exports = { planSlices, MODES, _internals: { pagesOf, isContiguous, toRuns } };

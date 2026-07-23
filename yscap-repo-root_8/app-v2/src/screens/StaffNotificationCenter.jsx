@@ -315,7 +315,6 @@ function CatalogTab() {
 function LiveEmailPreview({ draftId }) {
   const [html, setHtml] = useState(null);
   const [err, setErr] = useState('');
-  const iframeRef = useRef(null);
   useEffect(() => {
     if (!draftId) return;
     setHtml(null); setErr('');
@@ -323,17 +322,14 @@ function LiveEmailPreview({ draftId }) {
       .then((r) => setHtml(r.html || ''))
       .catch((e) => setErr(e.message || 'Could not render preview'));
   }, [draftId]);
-  useEffect(() => {
-    if (!html || !iframeRef.current) return;
-    const doc = iframeRef.current.contentDocument;
-    if (!doc) return;
-    doc.open(); doc.write(html); doc.close();
-  }, [html]);
   if (err) return <div className="notice err">{err}</div>;
   if (html == null) return <div className="muted small">Loading preview…</div>;
+  // srcDoc renders reliably into a fully-sandboxed iframe (unique origin) —
+  // writing via `contentDocument.write` on a sandbox="" iframe silently fails
+  // in some browsers because the parent can't reach the sandboxed doc.
   return (
-    <iframe ref={iframeRef} title="Email preview" sandbox=""
-      style={{ width: '100%', height: 520, border: '1px solid var(--line)', borderRadius: 4, background: 'white' }} />
+    <iframe title="Email preview" sandbox="" srcDoc={html}
+      style={{ width: '100%', height: 560, border: '1px solid var(--line)', borderRadius: 4, background: 'white' }} />
   );
 }
 

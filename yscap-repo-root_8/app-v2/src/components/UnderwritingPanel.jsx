@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { AppraisalFinding } from './AppraisalPanel.jsx';
+import DocCompare from './DocCompare.jsx';
 import { useAuth } from '../lib/auth.jsx';
 
 /* The PILOT document-underwriting desk. For each uploaded document PILOT reads it (best-in-class
@@ -75,6 +76,7 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState(null); // the action awaiting its note/value
   const [text, setText] = useState('');
+  const [compare, setCompare] = useState(null); // the "this document vs. that document" side-by-side
   const [escOpen, setEscOpen] = useState(false);
   const [escRole, setEscRole] = useState('super_admin');
   const [escNote, setEscNote] = useState('');
@@ -128,6 +130,11 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
   // prebuilt-layout switch land and a document is re-analyzed; existing rows are NULL and the link
   // just says "Open source document" without the page hint.
   const docId = f.document_id || f.documentId || null;
+  // Tie-out discrepancies carry the specific conflicting `sources`; when two of
+  // them have a real source PDF, offer the side-by-side "this document vs. that
+  // document" compare (a single-doc conflict already has "Open the source doc").
+  const compareSources = Array.isArray(f.sources) ? f.sources : [];
+  const openableCompare = compareSources.filter((s) => s && s.documentId);
   const pageNumber = f.page_number != null ? f.page_number : (f.pageNumber != null ? f.pageNumber : null);
   const allActions = Array.isArray(f.availableActions) ? f.availableActions : [];
   const isFatalBlocking = f.severity === 'fatal' && (f.blocks_ctc != null ? f.blocks_ctc : (f.blocksCtc != null ? f.blocksCtc : false));
@@ -143,7 +150,11 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
     finally { setBusy(false); }
   };
   const click = (a) => {
-    if (a.needs === 'note' || a.needs === 'value') { setPending(a); setText(''); return; }
+    // "Fix the file" (needs a value): pre-fill with what the DOCUMENT says (the
+    // suggested correction) so the underwriter just confirms; for price / as-is /
+    // ARV / rehab budget the server writes it straight onto the loan file.
+    if (a.needs === 'value') { setPending(a); setText(docVal != null ? String(docVal) : ''); return; }
+    if (a.needs === 'note') { setPending(a); setText(''); return; }
     if (a.key === 'decline' && !window.confirm('Decline this file on this finding?')) return;
     submit(a.key);
   };
@@ -214,6 +225,15 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
           </a>
         </div>
       )}
+      {openableCompare.length >= 2 && (
+        <div style={{ fontSize: 12, margin: '4px 0 6px' }}>
+          <a href="#" onClick={(e) => { e.preventDefault(); setCompare(compareSources); }}
+            style={{ color: 'var(--teal-deep,#256168)', textDecoration: 'underline' }}>
+            ⇆ Compare the documents side by side
+          </a>
+        </div>
+      )}
+      {compare && <DocCompare title={f.title} field={f.field} sources={compare} onClose={() => setCompare(null)} />}
       {howTo && <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', marginBottom: resolvable ? 10 : 0 }}>{howTo}</div>}
       {resolvable && actions.length > 0 && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
@@ -234,6 +254,11 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
             style={{ flex: 1, minWidth: 180, padding: '7px 10px', border: '1px solid var(--line,#E7E1D3)', borderRadius: 8, fontSize: 14 }} />
           <button disabled={busy || !text.trim()} onClick={confirmPending} style={btn(true)}>{pending.label}</button>
           <button disabled={busy} onClick={() => setPending(null)} style={btn()}>Cancel</button>
+        </div>
+      )}
+      {resolvable && pending && pending.needs === 'value' && (
+        <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginTop: 4 }}>
+          A purchase-price, as-is, ARV or rehab-budget correction is written straight onto the loan file (the pricing conditions reopen so it's re-registered). If the file is locked, clear the term-sheet package or unlock it first.
         </div>
       )}
       {/* Escalate — hand a finding you can't decide to the super-admin / processor / underwriter
