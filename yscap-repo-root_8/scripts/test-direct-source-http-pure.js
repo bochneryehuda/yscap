@@ -130,7 +130,60 @@ async function main() {
     ok('ATTOM.fetch composes end-to-end and never throws on hostile input');
   }
 
-  console.log(`\ndirect-source http + ATTOM pure — ${passed} checks passed`);
+  // 6. HouseCanary — Basic-auth request build + value/rental parse + fetch never throws.
+  {
+    const hc = require('../src/lib/integrations/direct-source-connectors/housecanary');
+    // basic auth header
+    assert.strictEqual(hc.basicAuth('k', 's'), 'Basic ' + Buffer.from('k:s').toString('base64'));
+    // build only with key+secret AND address+zip
+    assert.strictEqual(hc.buildRequest({ key: '', secret: 's' }, { property: { street: '1 A', zip: '10001' } }, '/v2/property/value').ok, false, 'no key → refused');
+    assert.strictEqual(hc.buildRequest({ key: 'k', secret: 's' }, { property: { street: '1 A' } }, '/v2/property/value').ok, false, 'no zip → refused');
+    const req = hc.buildRequest({ key: 'k', secret: 's' }, { property: { street: '123 Oak St', zip: '78701' } }, '/v2/property/value');
+    assert.strictEqual(req.ok, true);
+    assert.ok(req.url.startsWith('https://api.housecanary.com/v2/property/value?'), 'documented value path');
+    assert.ok(/address=123%20Oak%20St/.test(req.url) && /zipcode=78701/.test(req.url));
+    assert.ok(/^Basic /.test(req.headers.Authorization), 'key+secret ride the Basic auth header, never the url');
+    assert.ok(!/k:s/.test(req.url), 'credentials never appear in the url');
+
+    // parse value → appraisal.arv (fsd 0.05 → 0.95 confidence)
+    const valJson = { 'property/value': { api_code: 0, result: { value: { price_mean: 383000, price_lower: 360000, price_upper: 410000, fsd: 0.05 } } } };
+    const pv = hc.parseValue(valJson);
+    assert.strictEqual(pv.ok, true);
+    assert.strictEqual(pv.observations[0].fact_key, 'appraisal.arv');
+    assert.strictEqual(pv.observations[0].raw_value, 383000);
+    assert.ok(Math.abs(pv.observations[0].confidence - 0.95) < 1e-9, 'fsd 0.05 → 0.95');
+    // parse rental → appraisal.market_rent
+    const rentJson = { 'property/rental_value': { api_code: 0, result: { rental_value: { price_mean: 2400 } } } };
+    const pr = hc.parseRental(rentJson);
+    assert.strictEqual(pr.ok, true);
+    assert.strictEqual(pr.observations[0].fact_key, 'appraisal.market_rent');
+    assert.strictEqual(pr.observations[0].raw_value, 2400);
+    // a non-zero api_code (provider "no result") → clean ok:false, never invented
+    assert.strictEqual(hc.parseValue({ 'property/value': { api_code: 204, result: {} } }).ok, false);
+    assert.strictEqual(hc.parseValue({ 'property/value': { api_code: 0, result: { value: { price_mean: 0 } } } }).ok, false, 'a zero value is not a value');
+
+    // fetch composes both GETs through an injected fake HTTP (value ok, rental ok)
+    const fake = async (url) => {
+      if (/rental_value/.test(url)) return { status: 200, text: async () => JSON.stringify(rentJson) };
+      return { status: 200, text: async () => JSON.stringify(valJson) };
+    };
+    // exercised directly since fetch() reads the real cfg.houseCanary (unset in this env)
+    const vreq = hc.buildRequest({ key: 'k', secret: 's' }, { property: { street: '1 A', zip: '10001' } }, '/v2/property/value');
+    const vres = await http.requestJson(vreq.url, { headers: vreq.headers, fetchImpl: fake });
+    assert.strictEqual(hc.parseValue(vres.json).observations[0].raw_value, 383000);
+
+    const skip = await hc.fetch('app1', { property: { street: '1 A', zip: '10001' } }, { fetchImpl: fake });
+    assert.strictEqual(skip.ok, false, 'no HOUSECANARY key in this env → clean skip, not a crash');
+    for (const bad of [null, undefined, 42, 'x']) {
+      assert.doesNotThrow(() => hc.parseValue(bad));
+      assert.doesNotThrow(() => hc.parseRental(bad));
+      assert.doesNotThrow(() => hc.buildRequest(bad, bad, '/v2/property/value'));
+    }
+    await assert.doesNotReject(() => hc.fetch('app1', null, {}));
+    ok('HouseCanary: Basic-auth build + value/rental parse + fetch composes, never throws');
+  }
+
+  console.log(`\ndirect-source http + ATTOM + HouseCanary pure — ${passed} checks passed`);
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });
