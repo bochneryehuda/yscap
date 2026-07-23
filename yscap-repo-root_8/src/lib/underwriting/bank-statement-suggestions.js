@@ -17,14 +17,18 @@
 const aiSug = require('./ai-suggestions');
 
 // Which entity-set condition templates does the "different-LLC" case cascade to?
-// Prefer the borrower's vesting/operating-agreement template first — a follow-up
-// migration adds a dedicated "operating agreement for bank-account entity" template
-// (owner-specific ask) but the borrower-owned entity condition here covers today's
-// checklist vocabulary. Ordered by priority.
+// `firstAvailable` takes the HEAD of this list as the template the AI-panel
+// "Convert to condition" button materializes, so the head MUST be a real live
+// template code. FIX 2026-07-23 (same stale-code class as wrong-condition.js): the
+// previous heads (`llc_operating_agreement`, `rtl_p2_vesting`, `entity_vesting`)
+// are NOT seeded anywhere in db/*.sql — the suggestion pointed at a template that
+// can't materialize. Real codes, ordered most-specific first (verified in
+// db/005_rtl_workflow.sql): the LLC operating-agreement condition, then the entity
+// (LLC) umbrella. Legacy strings kept only as trailing fallbacks.
 const OA_CASCADE_TEMPLATE_CODES = [
-  'llc_operating_agreement',    // if the file exposes one
-  'rtl_p2_vesting',             // fallback: vesting/entity-verification condition
-  'entity_vesting',
+  'rtl_llc_opagmt',             // the LLC operating-agreement condition (db/005:114)
+  'rtl_p1_llc',                 // fallback: the entity/LLC umbrella condition (db/005:61)
+  'llc_operating_agreement', 'rtl_p2_vesting', 'entity_vesting',  // legacy aliases (not live)
 ];
 
 /**
