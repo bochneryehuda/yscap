@@ -28,6 +28,7 @@
 const azureOpenai = require('./azure-openai');
 const langfuse = require('./langfuse');
 const { routeFinding } = require('./committee-routing');
+const providers = require('./committee-providers');
 
 // Severity ordering — used by the never-weaken guard so an UNCOVERED finding can
 // never be moved BELOW its original severity by off-lens specialists (#213).
@@ -147,26 +148,34 @@ const VERDICT_SCHEMA = {
   },
 };
 
-async function askSpecialist(key, finding, context, trace) {
+async function askSpecialist(key, finding, context, trace, providerName) {
   const spec = SPECIALISTS[key];
   if (!spec) return { key, ok: false, reason: 'unknown specialist' };
-  if (!azureOpenai.available()) return { key, ok: false, reason: 'analyzer not configured' };
+  // #215 — resolve this specialist's PROVIDER. When a second independent provider
+  // (Anthropic) is assigned but unavailable, fall back to the primary so the panel
+  // still runs; when nothing is configured at all, report not-configured as before.
+  let client = providerName ? providers.clientFor(providerName) : azureOpenai;
+  let provider = providerName || providers.PRIMARY;
+  if (!client.available()) {
+    if (azureOpenai.available()) { client = azureOpenai; provider = providers.PRIMARY; }
+    else return { key, ok: false, reason: 'analyzer not configured' };
+  }
   const responseFormat = {
     type: 'json_schema',
     json_schema: { name: 'CommitteeVerdict', schema: VERDICT_SCHEMA, strict: true },
   };
-  const r = await azureOpenai.complete({
+  const r = await client.complete({
     system: spec.system,
     userContent: findingPrompt(finding, context),
     maxTokens: 600,
     responseFormat,
     timeoutMs: 45000,
     trace,
-    traceMeta: { opName: `reviewer:${spec.lens}`, specialist: key, findingCode: finding && finding.code },
+    traceMeta: { opName: `reviewer:${spec.lens}`, specialist: key, findingCode: finding && finding.code, provider },
   });
-  if (!r.ok) return { key, ok: false, reason: r.reason || 'no response' };
+  if (!r.ok) return { key, ok: false, reason: r.reason || 'no response', provider };
   let verdict;
-  try { verdict = JSON.parse(r.text); } catch (_) { return { key, ok: false, reason: 'model returned non-JSON' }; }
+  try { verdict = JSON.parse(r.text); } catch (_) { return { key, ok: false, reason: 'model returned non-JSON', provider }; }
   return { key, ok: true, name: spec.name, lens: spec.lens, verdict };
 }
 
@@ -312,8 +321,13 @@ async function review(finding, context = {}, opts = {}) {
     tags: ['committee', finding && finding.code].filter(Boolean),
     input: { finding: { code: finding.code, title: finding.title, severity: finding.severity }, specialists: keys },
   });
+  // #215 — assign each specialist a PROVIDER. With a second independent provider
+  // (Anthropic) live, ~half the panel runs on it so a finding is verified by two
+  // different models; with none, every specialist uses the primary (unchanged).
+  const assignments = providers.resolveAssignments(keys);
+  const multiModel = new Set(Object.values(assignments)).size > 1;
   // Parallel — each specialist is an independent HTTP call.
-  const promises = keys.map((k) => askSpecialist(k, finding, context, trace).catch((e) => ({ key: k, ok: false, reason: (e && e.message) || 'error' })));
+  const promises = keys.map((k) => askSpecialist(k, finding, context, trace, assignments[k]).catch((e) => ({ key: k, ok: false, reason: (e && e.message) || 'error' })));
   const settled = await Promise.all(promises);
   results.push(...settled);
   const opinion = adjudicate(finding, results, { covered });
@@ -321,6 +335,8 @@ async function review(finding, context = {}, opts = {}) {
   return {
     finding: { code: finding.code, id: finding.id, severity: finding.severity, title: finding.title },
     committee: opinion,
+    providers: assignments,   // which model each specialist ran on
+    multi_model: multiModel,  // true when the panel spanned ≥2 independent providers
     generated_at: new Date().toISOString(),
     committee_version: 'v1',
     trace_url: trace.url ? trace.url() : null,
