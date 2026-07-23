@@ -5744,6 +5744,17 @@ async function notifyStatusTransition(appId, fromStatus, toStatus, opts = {}) {
         finally { client.release(); }
       } catch (e) { console.error('[cert] auto-issue', appId, milestone, e && e.message); }
     }
+    // #200 — close the calibration loop: when a file reaches a HUMAN-owned
+    // terminal state (funded = cleared & closed; declined/withdrawn = not), stamp
+    // the realized outcome onto its open whole-loan shadow decision so the
+    // reliability report can score the AI/engine's would-be call against reality.
+    // Best-effort + no-op on any non-terminal move; never breaks the transition.
+    if (toStatus !== fromStatus) {
+      try {
+        await require('../lib/underwriting/shadow-capture')
+          .ingestStatusOutcome(db, { applicationId: appId, status: toStatus });
+      } catch (_) { /* additive, never blocks */ }
+    }
   } catch (_) { /* notify best-effort */ }
 }
 // Conditions-to-close gating. Reaching "clear to close" requires every open

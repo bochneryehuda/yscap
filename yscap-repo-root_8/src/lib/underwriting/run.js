@@ -299,6 +299,12 @@ async function runWholeLoan(applicationId, db, opts) {
 
   if (o.persist === false) return { runId: null, context, ...assembled };
   const runId = await persistRun(db, applicationId, context, assembled, o.createdBy || null);
+  // #200 — feed the calibration loop: record this run's would-be decision as the
+  // open CANDIDATE shadow for the file. Best-effort — a calibration write must
+  // never break a run (the reliability report is advisory / observe-only).
+  try {
+    await require('./shadow-capture').recordRunShadow(db, { applicationId, run: { ...assembled, runId } });
+  } catch (_) { /* additive, never blocks */ }
   return { runId, context, ...assembled };
 }
 
