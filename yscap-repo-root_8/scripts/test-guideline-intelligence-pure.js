@@ -140,7 +140,16 @@ const GOLD_SOW = { rule_key: 'sow_contingency', scope: {}, expression: { field: 
     expression: { op: 'and', clauses: [{ field: 'fico', cmp: '>=', value: 600 }, { field: 'dscr', cmp: '>=', value: 1.2 }] }, outcome: {} }];
   const andKnownFalse = gi.evaluateGuidelineSet({ rules: AND_RULE, context: { fico: 580 } }); // dscr unknown, fico fails
   assert.strictEqual(andKnownFalse.rules[0].verdict, 'violated', 'an AND with a known-false leaf is a violation regardless of unknowns');
-  ok('compound and/or: unknown OR-branch → indeterminate, known OR-failure → violated, known-false AND leaf → violated');
+
+  // NOT polarity: a NOT[unknown] under an AND must not read as a violation on
+  // purely missing data; a NOT with a KNOWN-failing inner leaf IS a violation.
+  const NOT_UNKNOWN = [{ rule_key: 'neg', scope: {}, materiality: 'hard_stop',
+    expression: { op: 'and', clauses: [{ field: 'fico', cmp: '>=', value: 740 }, { op: 'not', clause: { field: 'dscr', cmp: '>=', value: 1.2 } }] }, outcome: {} }];
+  assert.strictEqual(gi.evaluateGuidelineSet({ rules: NOT_UNKNOWN, context: {} }).rules[0].verdict, 'indeterminate', 'NOT[unknown] under AND is not a violation on missing data');
+  const NOT_KNOWN = [{ rule_key: 'nofico', scope: {}, materiality: 'hard_stop',
+    expression: { op: 'not', clause: { field: 'fico', cmp: '>=', value: 600 } }, outcome: {} }];
+  assert.strictEqual(gi.evaluateGuidelineSet({ rules: NOT_KNOWN, context: { fico: 700 } }).rules[0].verdict, 'violated', 'NOT[fico>=600] with a known passing fico is a real violation');
+  ok('compound and/or/not: unknown branch → indeterminate, known failure → violated, NOT polarity honored');
 }
 
 // 9. Hostile input never throws — degrades to a safe empty report.

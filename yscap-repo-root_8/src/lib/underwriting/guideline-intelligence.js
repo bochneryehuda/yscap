@@ -114,19 +114,24 @@ function shapeRuleForCitation(rule, source) {
 // known-false OR-branch does NOT make the rule a violation while a sibling branch
 // is still unknown. Pure, never throws; a malformed/unknown node is treated
 // optimistically (never asserted as a violation).
-function optimisticPass(expr, ctx) {
+// `favorable` is the polarity of the side we are trying to satisfy: true when we
+// want this subexpression to PASS, false (under a `not`) when we want it to FAIL.
+// An unknown leaf takes the favorable side, so a `not` correctly assumes its
+// unknown child fails (NOT-of-fail = pass) — otherwise a `NOT[unknown]` under an
+// `and` would read as a false violation on purely missing data.
+function optimisticPass(expr, ctx, favorable = true) {
   if (expr === true) return true;
   if (expr === false) return false;
-  if (!expr || typeof expr !== 'object') return true;
-  if (expr.op === 'and') return (Array.isArray(expr.clauses) ? expr.clauses : []).every((c) => optimisticPass(c, ctx));
-  if (expr.op === 'or') return (Array.isArray(expr.clauses) ? expr.clauses : []).some((c) => optimisticPass(c, ctx));
-  if (expr.op === 'not') return !optimisticPass(expr.clause, ctx);
+  if (!expr || typeof expr !== 'object') return favorable;
+  if (expr.op === 'and') return (Array.isArray(expr.clauses) ? expr.clauses : []).every((c) => optimisticPass(c, ctx, favorable));
+  if (expr.op === 'or') return (Array.isArray(expr.clauses) ? expr.clauses : []).some((c) => optimisticPass(c, ctx, favorable));
+  if (expr.op === 'not') return !optimisticPass(expr.clause, ctx, !favorable);   // negation flips the favorable side
   if ('field' in expr && 'cmp' in expr) {
     const actual = ctx ? ctx[expr.field] : undefined;
-    if (actual === undefined || actual === null) return true;   // unknown leaf → optimistic pass
-    try { return evaluator.evaluate(expr, ctx).matched === true; } catch (_e) { return true; }
+    if (actual === undefined || actual === null) return favorable;   // unknown leaf → the side being satisfied
+    try { return evaluator.evaluate(expr, ctx).matched === true; } catch (_e) { return favorable; }
   }
-  return true;
+  return favorable;
 }
 function failsUnderOptimisticUnknowns(expr, ctx) {
   try { return optimisticPass(expr, ctx) === false; } catch (_e) { return false; }

@@ -65,8 +65,11 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
     assert.strictEqual(withAvm.termSheetEligible, base.termSheetEligible, 'term-sheet eligibility unchanged');
     assert.strictEqual(withAvm.ctcEligible, base.ctcEligible, 'CTC eligibility unchanged');
     assert.strictEqual(withAvm.fundingEligible, base.fundingEligible, 'funding eligibility unchanged');
-    assert.ok((withAvm.findings || []).some((x) => x.code === 'avm_consensus_disagreement'), 'the finding appears in the deduped registry');
-    ok('assembleRun: the AVM finding enters the registry but changes no eligibility (advisory)');
+    const reg = (withAvm.findings || []).find((x) => x.code === 'avm_consensus_disagreement');
+    assert.ok(reg, 'the finding appears in the deduped registry');
+    assert.strictEqual(reg.expected_value, '$600,000', 'the appraisal ARV survives consolidation (not NULLed)');
+    assert.strictEqual(reg.actual_value, '$700,000', 'the AVM median survives consolidation (not NULLed)');
+    ok('assembleRun: the AVM finding enters the registry (numbers intact) but changes no eligibility (advisory)');
   }
 }
 
