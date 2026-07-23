@@ -1291,6 +1291,10 @@ router.post('/applications/:id/co-borrower', async (req, res) => {
     if (b.unlink === true) {
       await db.query(`UPDATE applications SET co_borrower_id=NULL, updated_at=now() WHERE id=$1`, [appId]);
       try { await require('../lib/co-borrower').ensureCoBorrowerIdCondition(appId, null); } catch (_) {}
+      // Drop a split-out co-borrower CREDIT condition so a required condition for a
+      // borrower no longer on the file can't block sign-off (kept only if a report
+      // was already imported on it — that's real history).
+      try { if (app.co_borrower_id) await require('../lib/credit/co-condition').removeCoBorrowerCreditCondition(appId, app.co_borrower_id); } catch (_) {}
       // Also drop the co-borrower's ownership link on the file's vesting LLC (#81).
       try { if (app.llc_id && app.co_borrower_id) await require('../lib/llc-borrowers').unlinkBorrower(app.llc_id, app.co_borrower_id); } catch (_) {}
       await audit(req, 'unlink_co_borrower', 'application', appId, {});
@@ -2854,6 +2858,11 @@ router.post('/applications/:id/credit/import', async (req, res) => {
       reissueReportId: typeof b.reissueReportId === 'string' ? b.reissueReportId : undefined,
       xml: typeof b.xml === 'string' ? b.xml : undefined,
       pdfBase64: typeof b.pdfBase64 === 'string' ? b.pdfBase64 : undefined,
+      // Which borrower(s) to pull. Default (absent) = every borrower on the file
+      // in one action; a subset drops one from this pull (and opens their own
+      // credit condition). `borrowerId` targets a single borrower for an upload.
+      borrowerIds: Array.isArray(b.borrowerIds) ? b.borrowerIds.filter((x) => typeof x === 'string') : undefined,
+      borrowerId: typeof b.borrowerId === 'string' ? b.borrowerId : undefined,
       consent: b.consent === true,
       actorId: req.actor.id,
     });
@@ -2862,6 +2871,10 @@ router.post('/applications/:id/credit/import', async (req, res) => {
       consentAttested: out.consentAttested, middleScore: out.middleScore, ficoWritten: out.ficoWritten,
       ficoMismatch: out.ficoMismatch, ficoUnverified: out.ficoUnverified || undefined,
       bureaus: out.bureausReturned, parseError: out.parseError || undefined,
+      pulled: out.pulled, coConditionOpened: out.coConditionOpened || undefined,
+      borrowers: Array.isArray(out.results)
+        ? out.results.map((r) => ({ role: r.role, ok: r.ok !== false, middleScore: r.middleScore, error: r.error || undefined }))
+        : undefined,
     });
     res.json(out);
   } catch (e) {
@@ -3935,7 +3948,7 @@ router.post('/change-requests/:cid/reject', async (req, res) => {
 //                     verify more, until they agree).
 async function signOffGate(itemId, actor) {
   const it = await db.query(
-    `SELECT ci.application_id, ci.borrower_id, ci.tool_key, ci.tool_payload, ci.item_kind, ci.is_required,
+    `SELECT ci.application_id, ci.borrower_id, ci.field_key, ci.tool_key, ci.tool_payload, ci.item_kind, ci.is_required,
             (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code
        FROM checklist_items ci WHERE ci.id=$1`, [itemId]);
   const item = it.rows[0];
@@ -3972,17 +3985,39 @@ async function signOffGate(itemId, actor) {
   // means the file can complete without it (matches the Waive affordance).
   // Credit report condition: cannot be signed off until a report was actually
   // IMPORTED (the import files the PDF + XML AND reads the scores). A bare PDF
-  // upload is NOT enough (owner-directed 2026-07-23). Scoped to the condition's
-  // borrower when set (so a co-borrower credit condition needs the co-borrower's
-  // own report); a file-level credit condition accepts any completed import.
+  // upload is NOT enough (owner-directed 2026-07-23). Credit is required for EVERY
+  // borrower on the file. A credit condition is application-scoped (chk_one_owner
+  // forbids a borrower_id on it), so the co-borrower's OWN condition is the one
+  // marked field_key='cob_credit' — it needs the co-borrower's report; the
+  // file-level condition needs the PRIMARY and any co-borrower that doesn't have
+  // their own (marked) condition (the default "pull both" files both reports here,
+  // so signing it off attests to both). Report↔borrower is credit_reports.borrower_id.
   if (isCredit) {
-    const imported = (await db.query(
-      `SELECT 1 FROM credit_reports
-        WHERE application_id=$1 AND status='completed'
-          AND ($2::uuid IS NULL OR borrower_id=$2) LIMIT 1`,
-      [item.application_id, item.borrower_id || null])).rows[0];
-    if (!imported)
-      return 'Import the credit report before signing off — a report must be imported here (that files the PDF + data file and reads the scores). Uploading a PDF by itself is not enough.';
+    const af = (await db.query(
+      'SELECT borrower_id, co_borrower_id FROM applications WHERE id=$1', [item.application_id])).rows[0] || {};
+    const need = [];
+    if (item.field_key === 'cob_credit') {
+      if (af.co_borrower_id) need.push(af.co_borrower_id);
+    } else {
+      if (af.borrower_id) need.push(af.borrower_id);
+      if (af.co_borrower_id) {
+        const coOwn = await db.query(
+          `SELECT 1 FROM checklist_items WHERE application_id=$1 AND field_key='cob_credit' LIMIT 1`,
+          [item.application_id]);
+        if (!coOwn.rows[0]) need.push(af.co_borrower_id);
+      }
+    }
+    for (const bid of need) {
+      const imported = (await db.query(
+        `SELECT 1 FROM credit_reports
+          WHERE application_id=$1 AND borrower_id=$2 AND status='completed' LIMIT 1`,
+        [item.application_id, bid])).rows[0];
+      if (!imported) {
+        const isCo = af.co_borrower_id && String(bid) === String(af.co_borrower_id);
+        const who = isCo ? 'the co-borrower’s ' : (need.length > 1 ? 'the primary borrower’s ' : '');
+        return `Import ${who}credit report before signing off — a report must be imported here (that files the PDF + data file and reads the scores). Uploading a PDF by itself is not enough.`;
+      }
+    }
     return null;
   }
 
