@@ -90,14 +90,22 @@ function sevRank(s) { return FATAL.has(String(s == null ? '' : s).toLowerCase())
 function rowOf(f, borrowerSafe) {
   try {
     const ff = f || {};
+    // A finding title / explanation is FREE-FORM, partner-authorable text; a
+    // note-buyer name in it can be ANY string, and scrubText only knows a fixed
+    // list. So on a borrower-shareable export we NEVER emit the raw text — the
+    // title becomes a generic placeholder and the explanation is blanked (the
+    // borrower still sees the neutral severity/category). Staff export keeps the
+    // full detail. (Same rule as decision-explainer.js.)
+    const title = borrowerSafe ? 'An item needs attention' : (str(ff.title) || str(ff.message) || '');
+    const explanation = borrowerSafe ? '' : (str(ff.explanation) || str(ff.detail) || '');
     return {
-      code: str(ff.code) || str(ff.id) || null,
+      code: borrowerSafe ? null : (str(ff.code) || str(ff.id) || null),
       severity: (str(ff.severity) || 'unknown').toLowerCase(),
       category: str(ff.category) || null,
-      // free-form → scrub on a borrower-shareable export
-      title: scrub(str(ff.title) || str(ff.message) || '', borrowerSafe),
-      explanation: scrub(str(ff.explanation) || str(ff.detail) || '', borrowerSafe),
-      sources: arr(ff.sources).map(String).join('; '),
+      title,
+      explanation,
+      // internal source labels are staff-only too
+      sources: borrowerSafe ? '' : arr(ff.sources).map(String).join('; '),
       blocks_term_sheet: ff.blocks_term_sheet === true,
       blocks_ctc: ff.blocks_ctc === true,
       blocks_funding: ff.blocks_funding === true,

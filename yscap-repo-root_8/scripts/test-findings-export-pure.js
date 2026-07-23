@@ -52,8 +52,10 @@ assert.ok(/^# status=ELIGIBLE;/.test(lines[0]), 'the first line is the decision 
 assert.ok(/ctc=no/.test(lines[0]), 'the CTC gate is blocked by the fatal finding');
 assert.strictEqual(lines[1], 'Code,Severity,Category,Finding,Detail,Sources,Blocks term sheet,Blocks CTC,Blocks funding,Evidence items', 'the header row');
 assert.strictEqual(lines.length, 4, 'summary + header + 2 findings');
-assert.ok(lines.some((l) => /title_defect/.test(l) && /yes/.test(l)), 'the fatal finding row is present with a yes flag');
-ok('toCSV emits a summary line, the header, and one escaped row per finding');
+// the fatal row's fields align to the header POSITIONALLY (exact ordered row)
+const fatalLine = lines.find((l) => l.startsWith('title_defect,'));
+assert.strictEqual(fatalLine, 'title_defect,fatal,title,Open lien on title,Clear the lien.,unknown,no,yes,no,1', 'the fatal row values align to the header columns positionally');
+ok('toCSV emits a summary line, the header, and one positionally-correct escaped row per finding');
 
 // --- a finding title with a comma stays one cell ---
 d = decide({ engineStatus: 'INELIGIBLE', findings: [{ code: 'x', severity: 'fatal', title: 'LTV 82%, over the 80% cap', blocks_funding: true }] });
@@ -71,11 +73,16 @@ assert.ok(typeof ex.csv === 'string' && ex.csv.length > 0);
 assert.deepStrictEqual(ex.columns.map((c) => c.key), fx.COLUMNS.map((c) => c.key));
 ok('toExport returns status + gates + rows + counts + csv together');
 
-// --- borrowerSafe scrubs a capital-partner name from the free-form text ---
-d = decide({ engineStatus: 'INELIGIBLE', findings: [{ code: 'y', severity: 'fatal', title: 'BlueLake will not buy this note', explanation: 'BlueLake needs 2mo reserves', blocks_funding: true }] });
+// --- borrowerSafe surfaces NO raw finding text (an ARBITRARY partner name can't leak) ---
+d = decide({ engineStatus: 'INELIGIBLE', findings: [{ code: 'y', severity: 'fatal', title: 'Summit Ridge Capital will not buy this note', explanation: 'Summit Ridge needs 2mo reserves', sources: ['Summit Ridge Capital'], blocks_funding: true }] });
 const safe = fx.toExport(d, { borrowerSafe: true });
-assert.ok(!/bluelake|blue lake/i.test(JSON.stringify(safe)), 'no capital-partner name in the borrower-safe export');
-ok('borrowerSafe scrubs a capital-partner name from the exported finding text');
+const blob = JSON.stringify(safe);
+assert.ok(!/summit ridge/i.test(blob), `an arbitrary capital-partner name must not appear in a borrower-safe export: ${blob}`);
+assert.ok(safe.rows.every((r) => r.title === 'An item needs attention' && r.explanation === '' && r.sources === '' && r.code === null), 'borrower rows carry no raw finding text/code/sources');
+assert.strictEqual(safe.rows[0].severity, 'fatal', 'the neutral severity still shows');
+// and a KNOWN name is gone too (belt-and-suspenders)
+assert.ok(!/bluelake|blue lake/i.test(JSON.stringify(fx.toExport(decide({ engineStatus: 'INELIGIBLE', findings: [{ code: 'z', severity: 'fatal', title: 'BlueLake declines', blocks_funding: true }] }), { borrowerSafe: true }))));
+ok('borrowerSafe surfaces NO raw finding text — an arbitrary (or known) capital-partner name never appears');
 
 // --- empty / junk / hostile input is safe ---
 assert.doesNotThrow(() => fx.toExport(null));
