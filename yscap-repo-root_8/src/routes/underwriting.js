@@ -2039,18 +2039,30 @@ router.get('/:appId/checklist/:itemId/clearance-preview', async (req, res, next)
           `SELECT program FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`, [app.id]);
         if (gp.rows[0] && /gold/i.test(String(gp.rows[0].program || ''))) required.push('criminal');
       }
+      const missingSlots = [];
       if (required.length) {
         const slotRows = await db.query(
           `SELECT lower(coalesce(slot_label,'')) AS slot FROM documents
             WHERE checklist_item_id=$1 AND is_current AND COALESCE(review_status,'') <> 'rejected'`, [item.id]);
         const have = slotRows.rows.map((r) => r.slot);
-        const missingSlots = required.filter((need) => !have.some((s) => s.includes(need)));
-        if (missingSlots.length) {
-          overall.clears = false;
-          overall.slotsIncomplete = true;
-          overall.missingSlots = missingSlots;
-          overall.reason = `The sign-off gate also requires: ${missingSlots.join(', ')} — this condition needs every required document slot filled, not just one clearing document.`;
-        }
+        for (const need of required) if (!have.some((s) => s.includes(need))) missingSlots.push(need);
+      }
+      // Appraisal docs: signOffGate additionally requires a non-superseded
+      // appraisals row (the XML actually IMPORTED), not merely an uploaded file
+      // slot — mirror that so the preview can't report "would clear" before the
+      // import lands. Defense-in-depth: unreachable today (no seeded intent for
+      // this code → available:false above), but a future intent-seed or a manual
+      // intent_override would otherwise let the preview overstate clearance.
+      if (item.code === 'rtl_cond_appraisaldocs') {
+        const appr = await db.query(
+          `SELECT 1 FROM appraisals WHERE application_id=$1 AND superseded=false LIMIT 1`, [app.id]);
+        if (!appr.rows.length) missingSlots.push('imported appraisal (XML)');
+      }
+      if (missingSlots.length) {
+        overall.clears = false;
+        overall.slotsIncomplete = true;
+        overall.missingSlots = missingSlots;
+        overall.reason = `The sign-off gate also requires: ${missingSlots.join(', ')} — this condition needs every required document slot filled, not just one clearing document.`;
       }
     }
     res.json({
