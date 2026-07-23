@@ -78,6 +78,30 @@ assert.strictEqual(r.conditions[0].overdue, false);
 assert.strictEqual(r.conditions[0].bucket, null);
 ok('a condition with no opened_at has no age and is not flagged overdue');
 
+// --- bucket boundaries are exact (3→0-3, 4→4-7, 7→4-7, 8→8-14, 14→8-14, 15→15+) ---
+const bkt = (days) => ca.ageConditions([{ id: 'x', status: 'open', opened_at: daysAgo(days) }], { now: NOW }).conditions[0].bucket;
+assert.deepStrictEqual([bkt(0), bkt(3), bkt(4), bkt(7), bkt(8), bkt(14), bkt(15), bkt(40)],
+  ['0-3', '0-3', '4-7', '4-7', '8-14', '8-14', '15+', '15+'], 'bucket boundaries are inclusive with no gap/overlap');
+ok('aging buckets are exact at the 3/4/7/8/14/15-day boundaries');
+
+// --- edge cases: a future opened_at clamps to 0; an explicit sla_days:0 is honored ---
+r = ca.ageConditions([
+  { id: 'future', status: 'open', opened_at: NOW + 5 * DAY }, // opened after now → clamp to 0
+  { id: 'sla0', status: 'open', opened_at: daysAgo(1), sla_days: 0 }, // sla 0 → overdue after day 0
+], { now: NOW });
+assert.strictEqual(r.conditions.find((x) => x.id === 'future').daysOpen, 0, 'a future opened_at clamps daysOpen to 0');
+assert.strictEqual(r.conditions.find((x) => x.id === 'future').overdue, false, '0 days open is not overdue at default SLA');
+assert.strictEqual(r.conditions.find((x) => x.id === 'sla0').overdue, true, 'an explicit sla_days:0 makes a 1-day-open condition overdue');
+ok('a future opened_at clamps to 0 days; an explicit sla_days:0 is honored');
+
+// --- a closed condition with NO close timestamp: closed + never overdue (ages to now, display only) ---
+r = ca.ageConditions([{ id: 'noclose', status: 'satisfied', opened_at: daysAgo(20) }], { now: NOW });
+assert.strictEqual(r.conditions[0].open, false, 'a satisfied condition is closed even without a close timestamp');
+assert.strictEqual(r.conditions[0].overdue, false, 'a closed condition is never overdue');
+assert.strictEqual(r.summary.overdue, 0);
+assert.strictEqual(r.summary.buckets['15+'], 0, 'a closed condition is excluded from the open-aging histogram');
+ok('a closed condition with no close timestamp is closed, never overdue, and excluded from the aging histogram');
+
 // --- empty / junk / hostile input is safe ---
 assert.doesNotThrow(() => ca.ageConditions(null, { now: NOW }));
 assert.strictEqual(ca.ageConditions(null, { now: NOW }).summary.total, 0);
