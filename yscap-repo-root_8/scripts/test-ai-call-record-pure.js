@@ -92,6 +92,27 @@ const call = (over = {}) => Object.assign({
   ok('PII (SSN) is masked in the preview and never encoded raw; digest is over redacted text');
 }
 
+// 5b. STRUCTURED (object) prompt/output/outcome are key-redacted, never stored raw.
+{
+  const r = rec.buildRecord(call({
+    prompt: { role: 'system', api_key: 'sk-PROMPT-SECRET', text: 'evaluate' },
+    output: { verdict: 'refer', password: 'hunter2', ssn: '123-45-6789' },
+    outcome: { decision: 'refer', secret: 'leakme', password: 'p@ss' },
+  }));
+  const blob = JSON.stringify(r);
+  // no keyed secret survives anywhere on the record (prompt preview, output preview, outcome)
+  assert.ok(!/sk-PROMPT-SECRET/.test(blob), 'a secret under an api_key on an OBJECT prompt is redacted');
+  assert.ok(!/hunter2/.test(blob), 'a password on an OBJECT output is redacted in the preview');
+  assert.ok(!/leakme/.test(blob), 'a secret key on an object OUTCOME is redacted (same treatment as output)');
+  assert.ok(!/p@ss/.test(blob), 'a password key on the object outcome is redacted');
+  assert.ok(!/123-45-6789/.test(blob), 'an SSN on an object output is masked');
+  assert.strictEqual(r.outcome.decision, 'refer', 'the safe outcome fields are preserved');
+  // an object prompt yields a legible (stringified) preview, not "[object Object]"
+  assert.ok(r.prompt.preview.indexOf('[object Object]') === -1, 'an object prompt gets a real preview');
+  assert.ok(/evaluate/.test(r.prompt.preview), 'the non-secret prompt text survives in the preview');
+  ok('object prompt/output/outcome are key-redacted (no raw secret) with a legible preview');
+}
+
 // 6. hostile input never throws → safe default.
 {
   for (const bad of [null, undefined, 42, 'x', [], { usage: 7 }, { artifactVersions: 'z' }]) {

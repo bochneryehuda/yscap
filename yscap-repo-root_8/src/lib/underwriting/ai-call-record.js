@@ -52,35 +52,63 @@ function redactText(s) {
 }
 
 /**
+ * redactValue(v) → v with PII/secrets masked, PRESERVING structure. Runs langfuse's
+ * redactor over the VALUE itself (not a stringified form), so its KEY-based rules
+ * (api_key / password / secret / ssn keys → [redacted]) fire on objects, not only
+ * the SSN/card regex on string leaves. A string → regex-masked string; an object /
+ * array → a redacted clone; a primitive → unchanged. PURE, never throws.
+ */
+function redactValue(v) {
+  try {
+    const r = redactor();
+    if (r) return r(v);
+    // no redactor available → best-effort: strings still get nothing, objects pass through.
+    return typeof v === 'string' ? v : v;
+  } catch (_e) { return typeof v === 'string' ? '' : null; }
+}
+
+/** serialize a value to a canonical, REDACTED string (string stays a string). */
+function redactedText(value) {
+  const red = redactValue(value);
+  return typeof red === 'string' ? red : stableStringify(red);
+}
+
+/**
  * digest(value) → sha256 hex of a stable serialization of `value`, computed over
- * the REDACTED text so a digest never encodes raw PII. PURE, never throws.
- * A string is hashed directly (redacted); an object is stably stringified first.
+ * the REDACTED value so a digest never encodes raw PII/secrets — including secrets
+ * stored under a known key on an object. PURE, never throws.
  */
 function digest(value) {
   try {
     if (value === null || value === undefined) return null;
-    const text = typeof value === 'string' ? value : stableStringify(value);
-    return crypto.createHash('sha256').update(redactText(text)).digest('hex');
+    return crypto.createHash('sha256').update(redactedText(value)).digest('hex');
   } catch (_e) { return null; }
 }
 
 // deterministic JSON: object keys sorted recursively (mirrors decision-certificate).
+// The cycle guard adds on descent and RELEASES on the way back up, so a shared
+// (non-cyclic) reference appearing twice in a DAG is serialized both times — only a
+// true cycle is broken.
 function stableStringify(obj) {
-  const seen = new WeakSet();
+  const seen = new Set();
   const norm = (v) => {
     if (v === null || typeof v !== 'object') return v;
     if (seen.has(v)) return null;
     seen.add(v);
-    if (Array.isArray(v)) return v.map(norm);
-    const out = {};
-    for (const k of Object.keys(v).sort()) out[k] = norm(v[k]);
+    let out;
+    if (Array.isArray(v)) out = v.map(norm);
+    else { out = {}; for (const k of Object.keys(v).sort()) out[k] = norm(v[k]); }
+    seen.delete(v);
     return out;
   };
   try { return JSON.stringify(norm(obj)); } catch (_e) { return 'null'; }
 }
 
-function preview(s) {
-  const red = redactText(s);
+// a short, REDACTED preview for eyeballing — never the full text; object values are
+// key+regex redacted then canonically stringified (so a structured prompt/output is
+// still legible, and a keyed secret can't slip into the preview).
+function preview(value) {
+  const red = redactedText(value);
   return red.length > PREVIEW_MAX ? red.slice(0, PREVIEW_MAX) : red;
 }
 
@@ -128,17 +156,19 @@ function buildRecord(call) {
         id: c.promptId != null ? String(c.promptId) : null,
         version: c.promptVersion != null ? String(c.promptVersion) : null,
         hash: promptText != null ? digest(promptText) : null,
-        preview: promptText != null ? preview(str(promptText)) : null,
+        preview: promptText != null ? preview(promptText) : null,
       },
       inputDigest: inputVal != null ? digest(inputVal) : null,
       outputDigest: outputVal != null ? digest(outputVal) : null,
-      outputPreview: outputVal != null ? preview(typeof outputVal === 'string' ? outputVal : stableStringify(outputVal)) : null,
+      outputPreview: outputVal != null ? preview(outputVal) : null,
       usage: { tokensIn, tokensOut, tokensTotal: tokensIn + tokensOut },
       costCents: numOrNull(c.costCents),
       latencyMs: int(c.latencyMs != null ? c.latencyMs : c.durationMs, null),
       ok: c.ok === undefined ? true : !!c.ok,
       reason: c.reason != null ? redactText(String(c.reason)) : null,
-      outcome: c.outcome != null ? (typeof c.outcome === 'string' ? redactText(c.outcome) : c.outcome) : null,
+      // outcome may be a string OR a small structured verdict — redact BOTH (key+regex),
+      // never store it raw (an object outcome must not carry a secret into the record).
+      outcome: c.outcome != null ? redactValue(c.outcome) : null,
       artifactVersions,
       at: c.at != null ? String(c.at) : null, // caller stamps the time; the module never touches the clock
     };
@@ -183,4 +213,4 @@ function buildIfRaw(record) {
   return buildRecord(record);
 }
 
-module.exports = { buildRecord, hashRecord, stamp, redactText, digest, stableStringify, SCHEMA_VERSION, _internals: { PREVIEW_MAX, preview } };
+module.exports = { buildRecord, hashRecord, stamp, redactText, redactValue, digest, stableStringify, SCHEMA_VERSION, _internals: { PREVIEW_MAX, preview } };
