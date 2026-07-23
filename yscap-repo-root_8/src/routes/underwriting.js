@@ -1266,9 +1266,11 @@ router.post('/:appId/findings/:fid/resolve', requirePermission('sign_off_conditi
     const note = (b.note || '').slice(0, 2000);
     const value = b.value != null ? String(b.value).slice(0, 500) : null;
 
-    // The finding must be open and belong to this file.
+    // The finding must be open and belong to this file. `field` is the canonical
+    // fact key (purchase_price / arv / …) — used to APPLY a "fix the file" value
+    // to the real application column below.
     const fnd = (await db.query(
-      `SELECT id, code, severity, blocks_ctc FROM document_findings WHERE id=$1 AND application_id=$2 AND status='open'`,
+      `SELECT id, code, severity, blocks_ctc, field FROM document_findings WHERE id=$1 AND application_id=$2 AND status='open'`,
       [req.params.fid, app.id])).rows[0];
     if (!fnd) return res.status(404).json({ error: 'finding not found or already resolved' });
 
@@ -1278,6 +1280,24 @@ router.post('/:appId/findings/:fid/resolve', requirePermission('sign_off_conditi
     // the finding for the audit trail. Everything else clears under the base permission.
     const auth = exceptions.canApply(req.actor, action, fnd, can);
     if (!auth.ok) return res.status(403).json({ error: auth.reason, requiredPermission: auth.requiredPermission });
+
+    // "Fix the file": when the corrected value maps to a real application column
+    // (purchase price / as-is / ARV / rehab budget), APPLY it to the loan file —
+    // not just record it on the finding. Honors the economics freeze: a frozen
+    // file returns 409 and the finding is NOT resolved (clear the freeze / term-
+    // sheet package first). A field with no application column stays records-only.
+    let fileFix = null;
+    if (action === 'fix_file' && value != null) {
+      const applyFix = require('../lib/underwriting/apply-fix');
+      if (applyFix.fixableColumn(fnd.field)) {
+        try {
+          fileFix = await applyFix.applyFindingFixToFile({ appId: app.id, field: fnd.field, value, actor: req.actor, db });
+        } catch (e) {
+          if (e && e.status === 409 && e.expose) return res.status(409).json({ error: e.message, locked: true });
+          throw e;
+        }
+      }
+    }
 
     let updated;
     const client = await db.pool.connect();
@@ -1303,7 +1323,8 @@ router.post('/:appId/findings/:fid/resolve', requirePermission('sign_off_conditi
 
     await audit(req.actor.id, 'underwriting_finding_resolve', app.id,
       { finding: fnd.code, action, status: updated.status, note: note.slice(0, 300),
-        elevated: auth.elevated || null });
+        elevated: auth.elevated || null,
+        appliedToFile: fileFix && fileFix.applied ? { field: fileFix.field, column: fileFix.column, value: fileFix.value } : undefined });
 
     // Remaining open fatal findings gate clear-to-close — the stored per-document fatals AND
     // the derived tie-out fatals (which have no stored row but still block). Both are folded in
@@ -1314,7 +1335,7 @@ router.post('/:appId/findings/:fid/resolve', requirePermission('sign_off_conditi
     const tieout = await tieoutForFile(db, app.id);
     const crossFatal = tieout.discrepancies.filter((f) => f.severity === 'fatal' && f.blocksCtc).length;
 
-    res.json({ ok: true, finding: decorate(updated), openFatal, crossFatal, blocksCtc: (openFatal + crossFatal) > 0 });
+    res.json({ ok: true, finding: decorate(updated), openFatal, crossFatal, blocksCtc: (openFatal + crossFatal) > 0, fileFix });
   } catch (e) { next(e); }
 });
 
