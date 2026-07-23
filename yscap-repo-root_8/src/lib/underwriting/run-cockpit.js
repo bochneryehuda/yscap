@@ -24,6 +24,7 @@
 const runDiff = require('./run-diff');
 const nextActions = require('./next-actions');
 const findingsDigest = require('./findings-digest');
+const uwStatus = require('./uw-status');
 
 function obj(v) { try { return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; } catch (_e) { return {}; } }
 function arr(v) { try { return Array.isArray(v) ? v : []; } catch (_e) { return []; } }
@@ -62,6 +63,32 @@ function runToDecision(run, findings) {
       };
     }),
   };
+}
+
+// Take a runToDecision()-shaped object (status + gate flags + registry) and add
+// the two derived fields the decision.decide() result carries that the explainer /
+// exporter also read — blockingFindings (the registry entries that block a gate or
+// are fatal, filtered EXACTLY as decision.js does) and reasons (the same plain
+// machine reasons decision.js builds). This lets a PERSISTED run drive the "Why?"
+// explainer and the findings CSV exactly like a freshly-computed decision, without
+// re-running the whole underwriting engine. PURE. NEVER THROWS.
+function enrichDecision(base) {
+  try {
+    const d = obj(base);
+    const registry = arr(d.registry);
+    const blockingFindings = registry.filter((f) => {
+      const ff = obj(f);
+      return ff.blocks_term_sheet === true || ff.blocks_ctc === true || ff.blocks_funding === true
+        || String(ff.severity == null ? '' : ff.severity).toLowerCase() === 'fatal';
+    });
+    const fatal = blockingFindings.filter((f) => String(obj(f).severity == null ? '' : obj(f).severity).toLowerCase() === 'fatal').length;
+    const reasons = [];
+    try { const br = uwStatus.blockReason(d.status); if (br) reasons.push(br); } catch (_e) { /* keep going */ }
+    if (fatal > 0) reasons.push(`${fatal} fatal finding(s) open.`);
+    return Object.assign({}, d, { blockingFindings, reasons });
+  } catch (_e) {
+    return Object.assign({}, obj(base), { blockingFindings: [], reasons: [] });
+  }
 }
 
 // A compact, presentational summary of a run row (never the raw snapshot).
@@ -209,4 +236,33 @@ async function loadRunCockpit(applicationId, db, opts = {}) {
   }
 }
 
-module.exports = { composeCockpit, loadRunCockpit, _internals: { runToDecision, runSummary, loadRunFindings } };
+/**
+ * loadCurrentDecision(applicationId, db, opts?) → a decision.decide()-shaped object
+ * (status, *Eligible flags, registry, blockingFindings, reasons) reconstructed from
+ * the file's LATEST persisted underwriting run + its findings, or null when the file
+ * has never been run (or on a hard load error). This is the read-only bridge that
+ * feeds the "Why?" explainer (decision-explainer.js) and the findings CSV export
+ * (findings-export.js) off the immutable run tables — it re-runs nothing and decides
+ * nothing. Read-only. NEVER THROWS (returns null).
+ */
+async function loadCurrentDecision(applicationId, db, opts = {}) {
+  if (!applicationId || !db) return null;
+  try {
+    const runsRes = await db.query(
+      `SELECT id, status, term_sheet_eligible, ctc_eligible, funding_eligible, as_of, created_at
+         FROM underwriting_runs WHERE application_id = $1
+        ORDER BY created_at DESC LIMIT 1`, [applicationId]);
+    const run = (runsRes.rows || [])[0] || null;
+    if (!run || run.id == null) return null;
+    const findings = await loadRunFindings(db, run.id);
+    const decision = enrichDecision(runToDecision(run, findings));
+    // stamp the run identity so a caller can show "as of <when>" without a second read.
+    decision.runId = run.id;
+    decision.asOf = run.as_of || run.created_at || null;
+    return decision;
+  } catch (_e) {
+    return null;
+  }
+}
+
+module.exports = { composeCockpit, loadRunCockpit, loadCurrentDecision, _internals: { runToDecision, enrichDecision, runSummary, loadRunFindings } };

@@ -101,4 +101,34 @@ const finding = (over) => Object.assign({
   ok('runToDecision reconstructs a decision-shaped object from a persisted run');
 }
 
+// 7. #179 — enrichDecision derives blockingFindings + reasons EXACTLY as decision.js
+//    does, so a PERSISTED run drives the "Why?" explainer + findings CSV like a live
+//    decision. Proves the derived shape is what decision-explainer + findings-export read.
+{
+  const explain = require('../src/lib/underwriting/decision-explainer').explainDecision;
+  const toCSV = require('../src/lib/underwriting/findings-export').toCSV;
+  const base = cockpit._internals.runToDecision(
+    runRow({ status: 'NOT_READY', term_sheet_eligible: false }),
+    [finding(), finding({ code: 'soft_note', severity: 'warning', category: 'docs', title: 'A note', blocks_term_sheet: false, blocks_ctc: false, blocks_funding: false })]
+  );
+  const dec = cockpit._internals.enrichDecision(base);
+  // blockingFindings = the fatal/blocking registry entries only (the warning is excluded).
+  assert.strictEqual(dec.blockingFindings.length, 1, 'only the blocking/fatal finding counts as blocking');
+  assert.strictEqual(dec.blockingFindings[0].code, 'title_defect');
+  assert.ok(dec.reasons.some((r) => /fatal/i.test(r)), 'reasons cite the fatal count');
+  assert.ok(dec.registry.length === 2, 'the full registry is preserved for the CSV');
+  // the explainer consumes the derived shape.
+  const ex = explain(dec);
+  assert.strictEqual(ex.status, 'NOT_READY');
+  assert.ok(ex.blockers.length === 1 && /lien/i.test(ex.blockers[0].title), 'the blocker flows to the explainer');
+  assert.ok(Array.isArray(ex.nextSteps) && ex.nextSteps.length > 0, 'next steps are produced');
+  // the exporter serializes the full registry (2 rows + header + summary).
+  const rows = toCSV(dec).split('\r\n');
+  assert.ok(/status=NOT_READY/.test(rows[0]), 'CSV summary carries the status');
+  assert.ok(rows.length >= 4, 'CSV has summary + header + both findings');
+  // hostile input never throws.
+  for (const bad of [null, undefined, 42, 'x', [], {}]) assert.doesNotThrow(() => cockpit._internals.enrichDecision(bad));
+  ok('enrichDecision derives blockingFindings + reasons that drive the explainer + CSV; null-safe');
+}
+
 console.log(`\nrun-cockpit pure — ${passed} checks passed`);

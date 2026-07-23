@@ -1092,6 +1092,52 @@ router.get('/:appId/underwriting-run', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// #179 (R6.16) — "Why this decision?" — a plain-language explanation of the file's
+// latest whole-loan run: what the verdict IS in everyday words, which of the three
+// gates (term sheet / CTC / funding) are blocked and by what, and what to do next.
+// It reads the latest immutable run + its findings, reconstructs the decision, and
+// runs the deterministic decision-explainer. READ-ONLY / advisory — it formats an
+// already-computed run; it decides nothing, clears no condition, touches NO frozen
+// number. Staff-only (router requireAuth+requireStaff). A file with no run returns a
+// valid hasRun:false payload, never an error.
+router.get('/:appId/underwriting-run/why', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const decision = await require('../lib/underwriting/run-cockpit').loadCurrentDecision(app.id, db);
+    if (!decision) return res.json({ ok: true, hasRun: false });
+    const explanation = require('../lib/underwriting/decision-explainer').explainDecision(decision);
+    res.json({
+      ok: true,
+      hasRun: true,
+      runId: decision.runId || null,
+      asOf: decision.asOf || null,
+      explanation,
+      generatedAt: new Date().toISOString(),
+    });
+  } catch (e) { next(e); }
+});
+
+// #179 (R6.16) — findings EXPORT. Streams the file's latest whole-loan run findings
+// as a CSV an underwriter or examiner can open in a spreadsheet (a one-line status
+// summary, a header row, one row per finding, CSV-injection-safe). READ-ONLY /
+// advisory — it serializes an already-computed run; it decides nothing and touches NO
+// frozen number. Staff-only (router requireAuth+requireStaff). A file with no run
+// returns a valid header-only CSV (200), never an error.
+router.get('/:appId/underwriting-run/findings.csv', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const decision = await require('../lib/underwriting/run-cockpit').loadCurrentDecision(app.id, db);
+    const csv = require('../lib/underwriting/findings-export').toCSV(decision || {});
+    const safeId = String(app.id).replace(/[^A-Za-z0-9._-]/g, '');
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="whole-loan-findings_${safeId}.csv"`);
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(csv);
+  } catch (e) { next(e); }
+});
+
 // #217 — the never-block ISSUANCE verdict at every issuance point. For each action
 // (term sheet / CTC / funding) it returns the two-tier answer from the shared
 // issuance POLICY (issuance-policy.js): CLEAR (proceed, no warning), ADVISORY (any
