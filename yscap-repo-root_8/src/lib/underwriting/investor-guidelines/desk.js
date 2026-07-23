@@ -207,6 +207,39 @@ function statusPhrase(s) {
 }
 
 /**
+ * dedupePreferSpecific(rows) → rows (PURE, never throws). The ONLY duplication this removes is a
+ * GENERIC-vs-SPECIFIC pair: when the file's own note buyer has its OWN condition (scope
+ * 'note_buyer' / 'all_but_note_buyer_limits') for a given PILOT template code, the shared generic
+ * `all_note_buyers` condition(s) for that SAME code are dropped (the buyer's own requirement
+ * supersedes the shared one). Everything else is kept AS-IS — critically, TWO note-buyer-specific
+ * conditions that share a template code are DISTINCT requirements (the guideline→PILOT crosswalk
+ * is many-to-one: e.g. 6 different title requirements all clear through rtl_cond_title) and must
+ * both survive. Rows with no template code are always kept. Order is preserved.
+ */
+function dedupePreferSpecific(rows) {
+  try {
+    const list = Array.isArray(rows) ? rows : [];
+    // codes that a note-buyer-SPECIFIC row owns → their generic counterparts are superseded.
+    const specificCodes = new Set();
+    for (const row of list) {
+      const r = row && typeof row === 'object' ? row : null;
+      if (!r || !r.pilot_template_code) continue;
+      if (r.scope && r.scope !== 'all_note_buyers') specificCodes.add(String(r.pilot_template_code));
+    }
+    const out = [];
+    for (const row of list) {
+      const r = row && typeof row === 'object' ? row : null;
+      if (!r) continue;
+      const code = r.pilot_template_code ? String(r.pilot_template_code) : null;
+      // drop ONLY a generic row whose code is covered by a buyer-specific row.
+      if (code && r.scope === 'all_note_buyers' && specificCodes.has(code)) continue;
+      out.push(r);
+    }
+    return out;
+  } catch (_e) { return Array.isArray(rows) ? rows : []; }
+}
+
+/**
  * assess({ conditions, existingByCode, signals, noteBuyerKey, noteBuyerName }) → full desk
  * result (PURE, never throws). `conditions` are the ALREADY trigger-filtered applicable rows
  * (active + deferred); the DB layer evaluates triggers via the shared evaluator.
@@ -271,21 +304,30 @@ async function runInvestorGuidelineDesk(appId, client) {
 
   const noteBuyerKey = lc(ctx.note_buyer);
 
-  // 1. load the applicable note-buyer conditions from the active version(s).
+  // 1. load the applicable note-buyer conditions from the active version(s). Product-AGNOSTIC:
+  // a file's note buyer may own more than one product spec (CorrFirst F&F, Blue Lake RTL, …),
+  // so we load by note-buyer applicability, NOT a single hard-coded product. A row applies when
+  // it is scoped to all note buyers, OR it is note-buyer-scoped and this IS that note buyer.
   let rows = [];
   try {
     const r = await db.query(
       `SELECT nbc.* FROM note_buyer_conditions nbc
          JOIN guideline_versions gv ON gv.id = nbc.guideline_version_id AND gv.approval_status = 'active'
-        WHERE nbc.active = true AND nbc.product = $1
+        WHERE nbc.active = true
           AND ( nbc.scope = 'all_note_buyers'
              OR (nbc.scope IN ('note_buyer','all_but_note_buyer_limits')
-                 AND EXISTS (SELECT 1 FROM investors i WHERE i.id = nbc.investor_id AND i.label_norm = $2)) )
+                 AND EXISTS (SELECT 1 FROM investors i WHERE i.id = nbc.investor_id AND i.label_norm = $1)) )
         ORDER BY nbc.cond_no`,
-      [spec.PRODUCT, noteBuyerKey]);
+      [noteBuyerKey]);
     rows = r.rows || [];
   } catch (_e) { rows = []; }
   if (!rows.length) return { ...empty, noteBuyer: { key: noteBuyerKey || null, name: app && app.lender ? String(app.lender) : null } };
+
+  // 1b. dedup — the file's OWN note buyer's specific condition supersedes a generic
+  // all-note-buyers condition covering the same PILOT template (e.g. Blue Lake's
+  // credit/OFAC/title/appraisal versions win over the shared generic ones), so the desk
+  // never shows two rows for the same requirement.
+  rows = dedupePreferSpecific(rows);
 
   // 2. trigger-filter (fail-open): a condition applies unless its trigger is a KNOWN
   // non-match on a field we can confirm. Uses the condition engine's own rule_logic
@@ -341,7 +383,7 @@ async function runInvestorGuidelineDesk(appId, client) {
 module.exports = {
   VERDICT, assess, assessCondition,
   checkSellerConcession, checkContingency, checkLiabilityTier, checkMedianValue, CHECK_EVALUATORS,
-  triggerApplies, triggerFields,
+  triggerApplies, triggerFields, dedupePreferSpecific,
   runInvestorGuidelineDesk,
   _internals: { num, lc, statusPhrase, labelLifecycle },
 };
