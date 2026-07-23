@@ -48,7 +48,11 @@ const CTX = { property: { street: '12 Main St', city: 'Athens', state: 'GA', zip
   // an already-0..1 confidence passes through; missing confidence → sane default
   assert.strictEqual(cc.parseAvmResponse({ value: 1, confidence: 0.7 }).observations[0].confidence, 0.7);
   assert.strictEqual(cc.parseAvmResponse({ value: 1 }).observations[0].confidence, 0.85);
-  ok('parseAvmResponse reads value tolerantly, carries range, normalizes confidence');
+  // FSD is an ERROR band (lower = better) → inverted to 1-fsd, NOT read straight.
+  assert.ok(Math.abs(cc.parseAvmResponse({ value: 1, fsd: 0.08 }).observations[0].confidence - 0.92) < 1e-9, 'fsd 0.08 → confidence 0.92 (inverted)');
+  // a plain confidence wins over fsd when both are present (fsd is the fallback only).
+  assert.strictEqual(cc.parseAvmResponse({ value: 1, confidence: 0.6, fsd: 0.3 }).observations[0].confidence, 0.6);
+  ok('parseAvmResponse reads value tolerantly, carries range, normalizes confidence (fsd inverted to 1-fsd)');
 }
 
 // 3. no usable value → clean {ok:false}, never a guessed number.

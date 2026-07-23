@@ -87,7 +87,10 @@ function pickNum(obj, paths) {
 const VALUE_PATHS = ['value', 'avm.value', 'estimatedValue', 'estimated_value', 'valuation.value', 'result.value', 'clearAvm.value', 'clearAVM.value', 'price'];
 const LOW_PATHS = ['low', 'value_low', 'avm.low', 'valuation.low', 'confidence.low', 'valueRange.low', 'range.low'];
 const HIGH_PATHS = ['high', 'value_high', 'avm.high', 'valuation.high', 'confidence.high', 'valueRange.high', 'range.high'];
-const CONF_PATHS = ['confidence', 'confidence_score', 'confidenceScore', 'score', 'avm.confidence', 'fsd'];
+// A PLAIN confidence/score (higher = better). FSD is handled separately below
+// because it is an ERROR band (lower = better) and must be inverted.
+const CONF_PATHS = ['confidence', 'confidence_score', 'confidenceScore', 'score', 'avm.confidence'];
+const FSD_PATHS = ['fsd', 'forecast_standard_deviation'];
 
 /**
  * parseAvmResponse(json) → { ok, observations:[{fact_key,value_json,raw_value,confidence}], reason? }
@@ -105,13 +108,19 @@ function parseAvmResponse(json) {
     }
     const low = pickNum(j, LOW_PATHS);
     const high = pickNum(j, HIGH_PATHS);
-    // fsd (forecast standard deviation) is an ERROR band → confidence = 1-fsd; a
-    // plain confidence/score in 0..100 normalizes to 0..1; already-0..1 passes through.
+    // Confidence: a PLAIN confidence/score (higher = better; 0..100 normalizes to
+    // 0..1, already-0..1 passes through) wins; ELSE FSD (forecast standard
+    // deviation, an ERROR band where LOWER = better) is inverted to 1-fsd. Missing
+    // → a sane default. Advisory metadata only — it never touches the AVM value.
     let conf = pickNum(j, CONF_PATHS);
     if (conf != null) {
       if (conf > 1 && conf <= 100) conf = conf / 100;
-      conf = Math.max(0, Math.min(1, conf));
-    } else conf = 0.85;
+    } else {
+      const fsd = pickNum(j, FSD_PATHS);
+      if (fsd != null) conf = 1 - (fsd > 1 ? fsd / 100 : fsd); // lower FSD → higher confidence
+    }
+    if (conf == null) conf = 0.85;
+    conf = Math.max(0, Math.min(1, conf));
     const observations = [{
       fact_key: 'appraisal.arv',
       value_json: { value, low, high, source: 'clearcapital_avm' },
