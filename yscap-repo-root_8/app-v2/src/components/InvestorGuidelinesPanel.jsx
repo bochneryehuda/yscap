@@ -83,7 +83,6 @@ export default function InvestorGuidelinesPanel({ appId }) {
   const [loading, setLoading] = useState(false);
   const [desk, setDesk] = useState(null);
   const [showMet, setShowMet] = useState(false);
-  const [showDeferred, setShowDeferred] = useState(false);
 
   const load = useCallback(() => {
     if (!appId) return Promise.resolve();
