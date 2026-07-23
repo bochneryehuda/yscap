@@ -207,6 +207,37 @@ function statusPhrase(s) {
 }
 
 /**
+ * dedupePreferSpecific(rows) → rows (PURE, never throws). When two conditions map to the SAME
+ * non-null PILOT template code, keep ONE — preferring a note-buyer-specific row over a generic
+ * `all_note_buyers` row (the buyer's own requirement supersedes the shared one), and otherwise
+ * the first seen. Rows with no pilot_template_code are never deduped (each is its own item).
+ * This keeps a file that pulls both the shared set AND its buyer's set from showing the same
+ * requirement twice. Order is preserved.
+ */
+function dedupePreferSpecific(rows) {
+  try {
+    const list = Array.isArray(rows) ? rows : [];
+    const chosen = new Map();   // code -> index into result
+    const out = [];
+    for (const row of list) {
+      const r = row && typeof row === 'object' ? row : null;
+      if (!r) continue;
+      const code = r.pilot_template_code ? String(r.pilot_template_code) : null;
+      if (!code) { out.push(r); continue; }
+      if (!chosen.has(code)) { chosen.set(code, out.length); out.push(r); continue; }
+      // a row already holds this code — replace it only if THIS row is buyer-specific and the
+      // held one is the generic all-note-buyers row.
+      const idx = chosen.get(code);
+      const held = out[idx];
+      const heldGeneric = held && held.scope === 'all_note_buyers';
+      const thisSpecific = r.scope && r.scope !== 'all_note_buyers';
+      if (heldGeneric && thisSpecific) out[idx] = r;
+    }
+    return out;
+  } catch (_e) { return Array.isArray(rows) ? rows : []; }
+}
+
+/**
  * assess({ conditions, existingByCode, signals, noteBuyerKey, noteBuyerName }) → full desk
  * result (PURE, never throws). `conditions` are the ALREADY trigger-filtered applicable rows
  * (active + deferred); the DB layer evaluates triggers via the shared evaluator.
@@ -271,21 +302,30 @@ async function runInvestorGuidelineDesk(appId, client) {
 
   const noteBuyerKey = lc(ctx.note_buyer);
 
-  // 1. load the applicable note-buyer conditions from the active version(s).
+  // 1. load the applicable note-buyer conditions from the active version(s). Product-AGNOSTIC:
+  // a file's note buyer may own more than one product spec (CorrFirst F&F, Blue Lake RTL, …),
+  // so we load by note-buyer applicability, NOT a single hard-coded product. A row applies when
+  // it is scoped to all note buyers, OR it is note-buyer-scoped and this IS that note buyer.
   let rows = [];
   try {
     const r = await db.query(
       `SELECT nbc.* FROM note_buyer_conditions nbc
          JOIN guideline_versions gv ON gv.id = nbc.guideline_version_id AND gv.approval_status = 'active'
-        WHERE nbc.active = true AND nbc.product = $1
+        WHERE nbc.active = true
           AND ( nbc.scope = 'all_note_buyers'
              OR (nbc.scope IN ('note_buyer','all_but_note_buyer_limits')
-                 AND EXISTS (SELECT 1 FROM investors i WHERE i.id = nbc.investor_id AND i.label_norm = $2)) )
+                 AND EXISTS (SELECT 1 FROM investors i WHERE i.id = nbc.investor_id AND i.label_norm = $1)) )
         ORDER BY nbc.cond_no`,
-      [spec.PRODUCT, noteBuyerKey]);
+      [noteBuyerKey]);
     rows = r.rows || [];
   } catch (_e) { rows = []; }
   if (!rows.length) return { ...empty, noteBuyer: { key: noteBuyerKey || null, name: app && app.lender ? String(app.lender) : null } };
+
+  // 1b. dedup — the file's OWN note buyer's specific condition supersedes a generic
+  // all-note-buyers condition covering the same PILOT template (e.g. Blue Lake's
+  // credit/OFAC/title/appraisal versions win over the shared generic ones), so the desk
+  // never shows two rows for the same requirement.
+  rows = dedupePreferSpecific(rows);
 
   // 2. trigger-filter (fail-open): a condition applies unless its trigger is a KNOWN
   // non-match on a field we can confirm. Uses the condition engine's own rule_logic
@@ -341,7 +381,7 @@ async function runInvestorGuidelineDesk(appId, client) {
 module.exports = {
   VERDICT, assess, assessCondition,
   checkSellerConcession, checkContingency, checkLiabilityTier, checkMedianValue, CHECK_EVALUATORS,
-  triggerApplies, triggerFields,
+  triggerApplies, triggerFields, dedupePreferSpecific,
   runInvestorGuidelineDesk,
   _internals: { num, lc, statusPhrase, labelLifecycle },
 };
