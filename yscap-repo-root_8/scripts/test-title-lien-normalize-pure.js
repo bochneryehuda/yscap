@@ -59,6 +59,35 @@ assert.strictEqual(tl.classifyLien('HOA assessment'), 'hoa');
 assert.strictEqual(tl.classifyLien('some weird encumbrance'), 'other');
 ok('lien text classifies into tax / judgment / mechanic / lis_pendens / hoa / other');
 
+// --- a deed-of-trust-in-foreclosure classifies ADVERSE (lis_pendens wins over mortgage) ---
+assert.strictEqual(tl.classifyLien('First Deed of Trust and the Notice of Default recorded thereunder'), 'lis_pendens', 'foreclosure language wins over the mortgage token');
+let fc = tl.normalizeTitleRecord({ owner: 'X', liens: [{ description: 'Deed of Trust; Notice of Default and foreclosure' }] });
+assert.strictEqual(fc.hasAdverseEncumbrance, true, 'a property in active foreclosure never reads as clean');
+ok('a deed-of-trust-in-default classifies as adverse (over-flag), never a benign mortgage');
+
+// --- ATTOM/DataTree nested owner-object + a $-formatted amount + a satisfied:true drop ---
+let attom = tl.normalizeTitleRecord({
+  provider: 'attom',
+  property: [{ owner: { owner1: { lastNameAndSuffix: 'Oak Street Holdings LLC' } } }],
+  liens: [
+    { type: 'tax lien', amount: '$8,500' },                 // formatted-string amount
+    { type: 'mortgage', amount: 100000, satisfied: true },  // satisfied boolean → dropped
+  ],
+});
+assert.strictEqual(attom.ownerOfRecord, 'Oak Street Holdings LLC', 'the nested ATTOM owner object resolves to a name');
+assert.strictEqual(attom.liens.length, 1, 'the satisfied lien is dropped even though released:false is absent');
+assert.strictEqual(attom.liens[0].amount, 8500, 'a "$8,500" formatted amount parses');
+ok('ATTOM nested owner object + $-formatted amount + a satisfied:true (no status) lien are handled');
+
+// --- two DISTINCT liens of the same kind/no-holder do NOT collapse; different amounts survive ---
+let dd = tl.normalizeTitleRecord({ owner: 'X', liens: [
+  { type: 'judgment', description: 'ACME judgment', amount: 5000 },
+  { type: 'judgment', description: 'Beta judgment', amount: 5000 }, // same kind+amount, different lien
+  { type: 'judgment', description: 'Gamma judgment', amount: 9000 },
+] });
+assert.strictEqual(dd.liens.length, 3, 'distinct liens sharing kind+amount but with different descriptions all survive');
+ok('de-dupe does not over-collapse: distinct same-kind/same-amount liens with different descriptions survive');
+
 // --- owner-of-record reconciles against the contract seller (name check) ---
 let rc = tl.toOwnerClaim({ owner: 'Oak Street Holdings, LLC' }, { value: 'Oak Street Holdings LLC' });
 assert.strictEqual(rc.claim.type, 'name');
