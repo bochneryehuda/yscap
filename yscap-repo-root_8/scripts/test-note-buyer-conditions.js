@@ -9,6 +9,9 @@
  *   (3) The 5% SOW-contingency requirement now also applies to a BLUE LAKE note
  *       buyer — sowContingencyRequired, the DB budget guard, and
  *       enforceSowContingency all honor it.
+ *   (4) The internal flood-certificate condition (rtl_cond_flood) is required for
+ *       a BLUE LAKE or CorrFirst note buyer (db/281) — staff-only, attached by the
+ *       engine; a Fidelis / other note buyer does not get it from that rule.
  *
  * Requires DATABASE_URL with migrations applied; skips cleanly otherwise.
  */
@@ -119,6 +122,31 @@ const emdCount = async (appId) => (await db.query(
     row = (await db.query(`SELECT status, notes FROM checklist_items WHERE application_id=$1 AND tool_key='rehab_budget' LIMIT 1`, [bl2])).rows[0];
     assert(r2.cleared === true && row.status === 'received' && row.notes == null,
       'changing the note buyer away clears the stale contingency reopen');
+
+    // (4) Flood certificate INTERNAL condition (rtl_cond_flood, db/281): required
+    //     for a Blue Lake OR CorrFirst note buyer, and staff-only. Not for others.
+    const floodCount = async (appId) => (await db.query(
+      `SELECT count(*)::int n FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
+        WHERE ci.application_id=$1 AND t.code='rtl_cond_flood'`, [appId])).rows[0].n;
+
+    const flBlue = (await db.query(
+      `INSERT INTO applications (borrower_id,status,lender) VALUES ($1,'processing','Blue Lake') RETURNING id`, [borrowerId])).rows[0].id;
+    await engine.evaluateApplication(flBlue, { reason: 'test', notify: false });
+    assert((await floodCount(flBlue)) === 1, 'a Blue Lake file gets the internal flood-certificate condition');
+    const flRow = (await db.query(
+      `SELECT ci.audience FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
+        WHERE ci.application_id=$1 AND t.code='rtl_cond_flood'`, [flBlue])).rows[0];
+    assert(flRow && flRow.audience === 'staff', 'the flood-certificate condition is INTERNAL (staff-only, never shown to the borrower)');
+
+    const flCorr = (await db.query(
+      `INSERT INTO applications (borrower_id,status,lender) VALUES ($1,'underwriting','Corr First') RETURNING id`, [borrowerId])).rows[0].id;
+    await engine.evaluateApplication(flCorr, { reason: 'test', notify: false });
+    assert((await floodCount(flCorr)) === 1, 'a CorrFirst file (spacing-insensitive) gets the internal flood-certificate condition');
+
+    const flFid = (await db.query(
+      `INSERT INTO applications (borrower_id,status,lender) VALUES ($1,'processing','Fidelis') RETURNING id`, [borrowerId])).rows[0].id;
+    await engine.evaluateApplication(flFid, { reason: 'test', notify: false });
+    assert((await floodCount(flFid)) === 0, 'a Fidelis note buyer does NOT get the flood-certificate condition from the note-buyer rule');
 
     console.log(failures ? `\n${failures} assertion(s) failed` : '\nALL note-buyer-conditions assertions passed');
   } catch (e) {

@@ -7,7 +7,8 @@
  *   - resolveProgram forces 'manual' on a structural override, keeps std/gold
  *     otherwise.
  *   - the Standard engine prices a 'manual' quote labeled "Manual Program".
- *   - the flood rule fires for gold/manual/flood-zone, NOT plain standard.
+ *   - the flood rule fires for gold/manual/flood-zone AND for a Blue Lake /
+ *     CorrFirst note buyer, NOT plain standard with no note buyer.
  *   - liquidity months honor the manual program's entered asset_months.
  *
  * DB-backed (requires DATABASE_URL with migrations applied; skips otherwise):
@@ -53,17 +54,26 @@ if (pricing.enginesReady()) {
 }
 
 const fields = reg.BY_KEY;
+// Mirror of the real rtl_cond_flood rule (db/207 + db/281): flood cert required
+// for Gold/Manual, OR a known flood zone, OR a Blue Lake / CorrFirst note buyer.
 const FLOOD_RULE = { combinator: 'or', rules: [
   { field: 'registered_program', operator: 'in', value: ['gold', 'manual'] },
   { field: 'in_flood_zone', operator: 'is_true' },
+  { field: 'note_buyer', operator: 'in', value: ['bluelake', 'corrfirst'] },
 ] };
-assert(rules.evaluateRule(FLOOD_RULE, { registered_program: 'standard', in_flood_zone: false }, fields) === false, 'standard + no flood zone => NO flood cert');
+assert(rules.evaluateRule(FLOOD_RULE, { registered_program: 'standard', in_flood_zone: false }, fields) === false, 'standard + no flood zone + no note buyer => NO flood cert');
 assert(rules.evaluateRule(FLOOD_RULE, { registered_program: 'gold', in_flood_zone: false }, fields) === true, 'gold => flood cert');
 assert(rules.evaluateRule(FLOOD_RULE, { registered_program: 'manual', in_flood_zone: false }, fields) === true, 'manual => flood cert');
 assert(rules.evaluateRule(FLOOD_RULE, { registered_program: 'standard', in_flood_zone: true }, fields) === true, 'standard + flood zone => flood cert');
 assert(rules.evaluateRule(FLOOD_RULE, { registered_program: 'none', in_flood_zone: false }, fields) === false, 'unregistered + no flood zone => NO flood cert');
+// note-buyer branch (owner-directed 2026-07-22): Blue Lake / CorrFirst always require it.
+assert(rules.evaluateRule(FLOOD_RULE, { registered_program: 'standard', in_flood_zone: false, note_buyer: 'bluelake' }, fields) === true, 'standard + Blue Lake note buyer => flood cert');
+assert(rules.evaluateRule(FLOOD_RULE, { registered_program: 'standard', in_flood_zone: false, note_buyer: 'corrfirst' }, fields) === true, 'standard + CorrFirst note buyer => flood cert');
+assert(rules.evaluateRule(FLOOD_RULE, { registered_program: 'standard', in_flood_zone: false, note_buyer: 'fidelis' }, fields) === false, 'standard + Fidelis note buyer => NO flood cert');
 assert(!!reg.BY_KEY.in_flood_zone && reg.BY_KEY.in_flood_zone.type === 'boolean', 'in_flood_zone is a boolean rule field');
 assert((reg.BY_KEY.registered_program.options || []).some((o) => o.v === 'manual'), 'registered_program has a "manual" option');
+assert((reg.BY_KEY.note_buyer.options || []).some((o) => o.v === 'bluelake') && (reg.BY_KEY.note_buyer.options || []).some((o) => o.v === 'corrfirst'),
+  'note_buyer has bluelake + corrfirst options');
 
 assert(liq.bankStatementMonths('manual', 4) === 4, 'manual liquidity months honor the entered value');
 assert(liq.bankStatementMonths('manual') === 2, 'manual liquidity months fall back to 2');
