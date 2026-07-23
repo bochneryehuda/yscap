@@ -89,7 +89,9 @@ jobs:
   # deploy that boots unhealthy is not switched into production.
   # ---------------------------------------------------------------------------
   deploy:
-    needs: test
+    # test-db added 2026-07-23 after its soak went green (task #195): a DB-layer
+    # regression now blocks the deploy exactly like a pure-suite failure.
+    needs: [test, test-db]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
