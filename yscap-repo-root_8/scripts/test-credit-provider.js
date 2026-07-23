@@ -91,5 +91,16 @@ assert.ok(!('password' in st) && !('username' in st), 'status never leaks creden
   assert.ok(tc.configured === false && tc.live === false && /Not connected/.test(tc.detail),
     'testConnection with no creds → not connected (no reach attempted)');
 
-  console.log('OK  credit-provider: gating, tri-merge + soft/hard + reissue/new request, tolerant extractor, connection test — all assertions passed');
+  // --- credential scrub: the shared login must never reach an error/log ---------
+  const scrub = p._seam.scrubCredentials;
+  assert.strictEqual(scrub('fetch failed'), 'fetch failed', 'a normal error message passes through unchanged');
+  assert.ok(!/S3cret/.test(scrub('x?LoginAccountPassword=S3cret&LoginAccountIdentifier=op42')),
+    'login password in a URL query is redacted');
+  assert.ok(/LoginAccountPassword=\*\*\*/.test(scrub('x?LoginAccountPassword=S3cret')),
+    'the redacted query keeps the key but masks the value');
+  assert.ok(scrub('at https://op42:S3cret@api.example.com/x') === 'at https://***:***@api.example.com/x',
+    'scheme://user:pass@host userinfo is masked');
+  assert.strictEqual(scrub(null), '', 'null/undefined scrubs to empty, never crashes');
+
+  console.log('OK  credit-provider: gating, tri-merge + soft/hard + reissue/new request, tolerant extractor, connection test, credential scrub — all assertions passed');
 })().catch((e) => { console.error(e); process.exit(1); });

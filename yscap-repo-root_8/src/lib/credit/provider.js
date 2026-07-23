@@ -30,6 +30,20 @@ const ALL_BUREAUS = Object.freeze(['Equifax', 'Experian', 'TransUnion']);
 
 function version() { return (cfg.version || '3.4'); }
 function configured() { return !!(cfg.endpoint && cfg.username && cfg.password); }
+
+// Remove the shared Xactus login from any string before it can reach an error
+// message or a log. In query-auth mode the login rides in the request URL, so a
+// network error that echoes the URL would otherwise expose the shared password —
+// the login must never appear in an error or a log line.
+function scrubCredentials(s) {
+  let out = String(s == null ? '' : s);
+  out = out.replace(/(LoginAccountIdentifier|LoginAccountPassword)=[^&\s"']*/gi, '$1=***');   // login in URL query
+  out = out.replace(/\/\/[^/@\s]+:[^/@\s]+@/g, '//***:***@');                                  // scheme://user:pass@host
+  for (const secret of [cfg && cfg.password, cfg && cfg.username]) {                            // belt-and-suspenders: the literal values
+    if (secret && String(secret).length >= 3) out = out.split(String(secret)).join('***');
+  }
+  return out;
+}
 function status() {
   return {
     configured: configured(),
@@ -238,7 +252,7 @@ async function pull({ borrower, pullType = 'soft', requestType = 'reissue', bure
     respText = await r.text();
   } catch (err) {
     const aborted = err && (err.name === 'AbortError' || String(err.message || '').includes('aborted'));
-    const e = new Error(`Xactus request failed: ${(err && err.message) || err}`);
+    const e = new Error(`Xactus request failed: ${scrubCredentials((err && err.message) || err)}`);
     e.status = aborted ? 504 : 502;
     e.userMessage = aborted
       ? 'Xactus didn’t respond in time. Please try again in a moment — if it keeps timing out, the shared login may not be activated yet.'
@@ -326,5 +340,5 @@ module.exports = {
   ALL_BUREAUS,
   configured, status, version, pull, testConnection,
   // exposed for unit tests + the packet wiring
-  _seam: { buildRequestBody, extractReport, embeddedPdfBase64, classifyConnection: _classifyConnection },
+  _seam: { buildRequestBody, extractReport, embeddedPdfBase64, classifyConnection: _classifyConnection, scrubCredentials },
 };

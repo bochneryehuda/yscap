@@ -715,7 +715,7 @@ export function CreditCondition({ appId, canPull, onChanged }) {
             <ScoreCell value={primaryScore}
               label={hasCo && borrowers.primary
                 ? `${borrowers.primary.name}${cellSuffix(borrowers.primary)}`
-                : 'Middle score'}
+                : (primaryScore != null ? 'Middle score' : 'Middle score · no score')}
               emphasis={!hasCo} />
             {hasCo && borrowers.coBorrower && (
               <ScoreCell value={borrowers.coBorrower.middleScore}
