@@ -118,6 +118,9 @@ h1{font-size:26px} h2{font-size:20px} h3{font-size:16px}
 .grid.cols-2{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
 .grid.cols-3{grid-template-columns:repeat(3,minmax(0,1fr))}
 @media(max-width:720px){.grid.cols-2,.grid.cols-3{grid-template-columns:1fr}.nav{gap:12px}}
+/* Two-document contradiction compare (DocCompare): two PDF panes side by side on
+   a desk screen, stacked on a phone so each stays readable. */
+@media(max-width:720px){.doc-compare-panes{flex-direction:column}}
 /* Draw-desk stat tiles: a FIXED column count (never auto-fit) so every box is exactly the same
    width and a partial last row can't stretch. 4 across → the 8 tiles form two even rows of four;
    steps to 2 then 1 on narrower screens, always balanced. Equal height comes from the tile itself. */

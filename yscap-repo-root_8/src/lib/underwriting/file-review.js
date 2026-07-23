@@ -23,7 +23,7 @@ async function tieoutForFile(client, appId, preloadedCtx) {
   // resolved by amendments.js into the GOVERNING terms, not direct claims to compare) — exclude
   // them so the matrix doesn't show an all-blank amendment column.
   const sources = rows.filter((e) => e.doc_type !== 'contract_amendment')
-    .map((e) => ({ id: e.id, docType: e.doc_type, fields: e.fields }));
+    .map((e) => ({ id: e.id, documentId: e.document_id, docType: e.doc_type, fields: e.fields }));
 
   // Fold in the appraisal (its own table) so the WHOLE appraisal ties into the matrix — not just
   // address/price/value, but the collateral physicals the appraiser is the authority on (units,
