@@ -28,6 +28,7 @@
 const cfg = require('../../config');
 const { getAccessToken, configured } = require('./gcp-auth');
 const { runWithRetry, classifyStatus, retryAfterMs, breakerFor } = require('./resilience');
+const layoutCapture = require('./layout-capture'); // #112 (R5.15) — line/word polygon capture
 
 // Google's synchronous process endpoint accepts documents up to 20 MB (roughly
 // 15 pages of a typical PDF). Match Azure's cap so callers see the same limit.
@@ -135,6 +136,10 @@ async function read({ buffer, base64, mimeType } = {}) {
       unit: dim && typeof dim.unit === 'string' ? dim.unit : null,
       angle: null,   // Document AI doesn't expose page rotation as a scalar
       text: lineText,
+      // #112 (R5.15) — preserve the line/token POLYGONS in the same canonical,
+      // normalized (0..1) shape Azure emits, so evidence highlighting is
+      // engine-agnostic. Best-effort: never throws, never blocks the read.
+      layout: (() => { try { const c = layoutCapture.normalizeGooglePage(p, i, text); return { lines: c.lines, words: c.words }; } catch (_e) { return { lines: [], words: [] }; } })(),
     };
   });
   return { ok: true, text, pageCount: pages.length || null, pages, engine: 'google-docai' };
