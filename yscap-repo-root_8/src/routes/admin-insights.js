@@ -180,16 +180,33 @@ router.get('/ai-stack', requireRole('super_admin'), async (_req, res) => {
   const env = process.env;
   const has = (k) => !!(env[k] && String(env[k]).trim());
   const cfg = require('../config');
+  // #216 — AUTHORITATIVE model/OCR stack health: each component's OWN
+  // availability predicate + the model version it runs. This replaces the old
+  // hand-typed env-name checks below, which had DRIFTED from the real config
+  // (they read AZURE_OPENAI_API_KEY / AZURE_DI_* / AZURE_CUSTOM_CLASSIFIER_MODEL_ID /
+  // GOOGLE_DOC_AI_* — none of which are the real env vars — so live components were
+  // reported OFF). The stack booleans are now derived from this report so they
+  // never lie again. Never leaks a secret (booleans + model NAMES only).
+  const stackHealth = require('../lib/ai/stack-health');
+  const modelStack = stackHealth.report();
+  const modelStackSummary = stackHealth.summary(modelStack);
+  const byKey = Object.fromEntries(modelStack.map((r) => [r.key, r]));
+  const on = (k) => !!(byKey[k] && byKey[k].active);
+  const modelOf = (k) => (byKey[k] && byKey[k].model) || null;
   res.json({
     ok: true,
+    // Authoritative, model-versioned view (the config-health page reads this).
+    modelStack,
+    modelStackSummary,
     stack: {
-      langfuse:            { enabled: has('LANGFUSE_HOST') && has('LANGFUSE_PUBLIC_KEY'), host: env.LANGFUSE_HOST || null },
-      azureOpenAI:         { enabled: has('AZURE_OPENAI_ENDPOINT') && has('AZURE_OPENAI_API_KEY'), deployment: env.AZURE_OPENAI_DEPLOYMENT || null },
-      azureDocumentAI:     { enabled: has('AZURE_DI_ENDPOINT') && has('AZURE_DI_KEY') },
-      azureCustomClassifier: { enabled: has('AZURE_CUSTOM_CLASSIFIER_MODEL_ID'), modelId: env.AZURE_CUSTOM_CLASSIFIER_MODEL_ID || null },
-      azureNeuralExtractor:  { enabled: has('AZURE_NEURAL_EXTRACTOR_PREFIX'), prefix: env.AZURE_NEURAL_EXTRACTOR_PREFIX || null },
-      googleDocumentAI:    { enabled: has('GOOGLE_DOC_AI_PROJECT_ID') && has('GOOGLE_DOC_AI_LOCATION') },
-      mistralOcr:          { enabled: has('MISTRAL_API_KEY') },
+      langfuse:            { enabled: on('langfuse'), host: env.LANGFUSE_HOST || null },
+      azureOpenAI:         { enabled: on('azure_openai'), deployment: modelOf('azure_openai') },
+      anthropic:           { enabled: on('anthropic'), model: modelOf('anthropic') },
+      azureDocumentAI:     { enabled: on('azure_docint'), model: modelOf('azure_docint') },
+      azureCustomClassifier: { enabled: on('azure_custom_classifier'), modelId: modelOf('azure_custom_classifier') },
+      azureNeuralExtractor:  { enabled: on('azure_custom_extractors'), detail: modelOf('azure_custom_extractors') },
+      googleDocumentAI:    { enabled: on('google_docai') },
+      mistralOcr:          { enabled: on('mistral_ocr'), model: modelOf('mistral_ocr') },
       perFileCostCap:      { enabled: Number(env.AI_PER_FILE_CAP_USD || 0) > 0, capUsd: Number(env.AI_PER_FILE_CAP_USD || 0) || null },
       nightlyCrossdocSweep:{ enabled: env.AI_CROSSDOC_SWEEP_ENABLED === '1' },
       notifyDigests:       { enabled: env.NOTIFY_DIGESTS_ENABLED !== '0' },

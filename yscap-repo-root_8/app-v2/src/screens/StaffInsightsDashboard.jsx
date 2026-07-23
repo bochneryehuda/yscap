@@ -274,6 +274,7 @@ function AiStackTile() {
   const items = [
     ['Langfuse tracer', S.langfuse],
     ['Azure OpenAI (GPT)', S.azureOpenAI],
+    ['Anthropic Claude', S.anthropic],
     ['Azure Document AI', S.azureDocumentAI],
     ['Azure Custom classifier', S.azureCustomClassifier],
     ['Azure Neural extractor', S.azureNeuralExtractor],
@@ -288,7 +289,7 @@ function AiStackTile() {
     <div style={{ marginTop: 22, border: '1px solid var(--paper,#E9E4D3)', borderRadius: 12, padding: 12, background: 'var(--card,#fff)' }}>
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 6 }}>
         <h3 style={{ margin: 0 }}>AI stack — what's live on this deploy</h3>
-        <span className="muted small">{Object.values(S).filter(v => v && v.enabled).length}/{items.length} configured</span>
+        <span className="muted small">{items.filter(([, v]) => v && v.enabled).length}/{items.length} configured</span>
       </div>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         {items.map(([label, v]) => {
