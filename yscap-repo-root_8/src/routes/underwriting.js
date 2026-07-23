@@ -1054,6 +1054,35 @@ router.get('/:appId/underwriting-run', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// #217 — the never-block ISSUANCE verdict at every issuance point. For each action
+// (term sheet / CTC / funding) it returns the two-tier answer from the shared
+// issuance POLICY (issuance-policy.js): CLEAR (proceed, no warning), ADVISORY (any
+// staff member proceeds — a heads-up, not a gate), or FATAL (a super-admin-
+// overridable HARD WARNING — a super-admin can ALWAYS proceed). It NEVER returns an
+// un-overridable block: the AI never hard-blocks a loan (owner-directed). READ-ONLY
+// / advisory — it reads the latest run's issuance gate and applies policy; it
+// decides nothing, clears nothing, and touches NO frozen pricing number. Best-effort:
+// a file with no run, or any read error, degrades to a non-blocking advisory (the
+// policy fails OPEN), never a 500. The UI's term-sheet / CTC / funding actions
+// consult this so a genuine fatal shows as a super-admin-overridable warning and
+// everything else is a proceed-past advisory. Staff-only (router requireAuth+requireStaff).
+router.get('/:appId/issuance-check', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const policy = require('../lib/underwriting/issuance-policy');
+    const gate = require('../lib/underwriting/issuance-gate');
+    const actorRole = (req.actor && req.actor.role) || null;
+    const only = String((req.query && req.query.action) || '').trim();
+    const actions = gate.ACTIONS.includes(only) ? [only] : gate.ACTIONS;
+    const issuance = {};
+    for (const a of actions) {
+      issuance[a] = await policy.resolveFromLatestRun(app.id, a, db, { actorRole });
+    }
+    res.json({ ok: true, actorRole, issuance, generatedAt: new Date().toISOString() });
+  } catch (e) { next(e); }
+});
+
 // ---- Section 1071 coverage classifier (R2.10, blueprint compliance) ------
 // The CFPB Section 1071 small-business lending data-collection rule takes
 // effect January 1, 2028. This endpoint tells staff whether PILOT is on the
