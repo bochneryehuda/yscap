@@ -17,6 +17,10 @@
  */
 const dbDefault = require('../../db');
 const manualProgram = require('../manual-program');
+const loanExceptions = require('../loan-exceptions');
+// PURE tiering + send-disposition (floor vs. clear-to-close readiness, the
+// send-before-CTC exception math). Kept require-free so it unit-tests without a DB.
+const { WAIVABLE_CODES, tierOf, gateDisposition } = require('./gate-disposition');
 
 const APPRAISAL_BACK = 'rtl_cond_appraisaldocs';
 const APPRAISAL_REVIEW = 'rtl_p3_apprreview';
@@ -137,7 +141,16 @@ async function esignSendGate(applicationId, { db = dbDefault, purpose } = {}) {
   const regBlockers = await registrationIssuabilityBlockers(applicationId, db);
   for (const b of regBlockers) outstanding.push(b);
 
-  return { ready: apprOk && reviewOk && ppOk && closingOk && regBlockers.length === 0, outstanding };
+  // A super-admin may approve a "send before clear-to-close" exception so a file
+  // that isn't fully ready can still send the term-sheet package — but ONLY the
+  // clear-to-close-readiness blockers are waived; the FLOOR (appraisal back, P&P
+  // re-registered, closing date, current registration) is always enforced. Fails
+  // CLOSED: an unreadable exception is treated as none (never grants an early send).
+  let exception = null;
+  try { exception = await loanExceptions.latestEsignBeforeCtc(applicationId, db); }
+  catch (_) { exception = null; }
+
+  return gateDisposition(outstanding, exception);
 }
 
 /**
@@ -159,4 +172,4 @@ async function appraisalBackAt(applicationId, { db = dbDefault } = {}) {
   return at ? new Date(at) : null;
 }
 
-module.exports = { esignSendGate, registrationIssuabilityBlockers, appraisalBackAt, APPRAISAL_BACK, APPRAISAL_REVIEW, PRODUCT_PRICING };
+module.exports = { esignSendGate, gateDisposition, tierOf, WAIVABLE_CODES, registrationIssuabilityBlockers, appraisalBackAt, APPRAISAL_BACK, APPRAISAL_REVIEW, PRODUCT_PRICING };

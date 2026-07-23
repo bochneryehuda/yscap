@@ -2139,6 +2139,62 @@ router.post('/applications/:id/exceptions/:eid/withdraw', async (req, res) => {
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
+// Request a super-admin exception to send the term-sheet package for signature
+// BEFORE the file is ready for clear-to-close (owner-directed 2026-07-23). The four
+// term-sheet-CORRECTNESS prerequisites are a HARD FLOOR — the appraisal is back and
+// signed off, product & pricing was re-registered on the appraised value, the
+// estimated closing date is on file, and the registration is current. The exception
+// can be requested ONLY once that floor is met (never before); a super-admin then
+// approves it in the Exceptions box, and the e-sign send-gate reads the approval to
+// allow the early send (still re-checking the floor). File-scoped; the decide lives
+// in /api/admin/exceptions (super-admin only).
+router.post('/applications/:id/exceptions/esign-before-ctc', async (req, res) => {
+  const appId = req.params.id;
+  try {
+    const esignGate = require('../lib/esign/gate');
+    const a = (await db.query(`SELECT id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0];
+    if (!a) return res.status(404).json({ error: 'file not found' });
+
+    const g = await esignGate.esignSendGate(appId, { db });
+    if (g.ready) return res.status(409).json({ error: 'This file already meets every prerequisite — the package can be sent without an exception.' });
+    // The floor can NEVER be waived — refuse the request until it's met, and say what's left.
+    if (!g.floorMet) {
+      return res.status(400).json({
+        error: `An exception can be requested to send before clear-to-close, but not before these are done: ${g.floorOutstanding.map((o) => o.label).join('; ')}.`,
+        floorOutstanding: g.floorOutstanding,
+      });
+    }
+    if (g.exception && g.exception.status === 'approved') return res.status(409).json({ error: 'An exception to send this before clear-to-close is already approved on this file.' });
+    if (g.exception && g.exception.status === 'requested') return res.status(409).json({ error: 'An exception is already awaiting super-admin review on this file.' });
+
+    const reasonCode = req.body && req.body.reasonCode;
+    const reasonNote = String((req.body && req.body.reasonNote) || '').slice(0, 2000).trim();
+    if (!reasonNote) return res.status(400).json({ error: 'Add a short note explaining why this needs to go out before clear-to-close.' });
+
+    const client = await db.getClient();
+    let row;
+    try {
+      await client.query('BEGIN');
+      row = await loanExceptions.requestEsignBeforeCtc(client, { appId, reasonCode, reasonNote, requestedBy: req.actor.id });
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+
+    try {
+      const ctx = await notify.fileContext(appId);
+      await notify.notifyAdmins({
+        type: 'esign_before_ctc_exception',
+        title: 'Send-before-clear-to-close exception needs super-admin review',
+        body: `${req.actor.name || 'A team member'} requested sending the term-sheet package on ${ctx ? ctx.label : 'a file'} before it is ready for clear-to-close: ${reasonNote}`,
+        meta: (ctx && ctx.meta) || undefined, applicationId: appId,
+        link: '/internal/exceptions', ctaLabel: 'Open the Exceptions box',
+      });
+    } catch (_) { /* best-effort */ }
+    await audit(req, 'esign_before_ctc_exception_requested', 'application', appId, { exceptionId: row.id, reasonCode: row.reason_code });
+    res.json({ ok: true, exception: row });
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
 // Loan officer's ONE-CLICK accept of a super-admin's counter-offer (owner-directed
 // 2026-07-21, Task #6). The counter's numeric terms were AUTHORED by a super-admin
 // on the escalations page (manual_program_escalations.counter_terms). Accepting

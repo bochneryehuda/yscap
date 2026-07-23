@@ -36,6 +36,25 @@ const REASON_CODES = Object.freeze({
 });
 function isReasonCode(c) { return !!c && Object.prototype.hasOwnProperty.call(REASON_CODES, c); }
 
+// Structured reasons a term-sheet package is sent BEFORE clear-to-close
+// (owner-directed 2026-07-23). The floor (appraisal back, P&P re-registered on the
+// appraised value, estimated closing date, registration current) is NEVER waivable
+// — these reasons explain waiving only the remaining readiness (the internal
+// appraisal-review sign-off) so the documents can go out early.
+const ESIGN_BEFORE_CTC_REASONS = Object.freeze({
+  review_pending:   'Appraisal is back and re-priced — only the internal appraisal review is still pending',
+  borrower_timeline:'Borrower / closing timeline needs the documents out now',
+  lock_terms:       'Locking the terms with the borrower now',
+  relationship:     'Relationship / repeat sponsor exception',
+  other:            'Other (see note)',
+});
+function isEsignReasonCode(c) { return !!c && Object.prototype.hasOwnProperty.call(ESIGN_BEFORE_CTC_REASONS, c); }
+
+// The reason-code map for a given exception type + the label for one code. Used so
+// the review box / requester queue can render a friendly reason regardless of type.
+function reasonCodesFor(type) { return type === 'esign_before_ctc' ? ESIGN_BEFORE_CTC_REASONS : REASON_CODES; }
+function reasonLabelFor(type, code) { const m = reasonCodesFor(type); return (code && m[code]) || null; }
+
 const OPEN = 'requested';
 
 /**
@@ -61,6 +80,44 @@ async function requestGuarantyWaiver(client, { appId, subjectBorrowerId, reasonC
      reasonNote ? String(reasonNote).slice(0, 2000) : null,
      requestedBy || null]);
   return ins.rows[0];
+}
+
+/**
+ * Request a "send the term-sheet package before clear-to-close" exception
+ * (owner-directed 2026-07-23). Supersedes any prior OPEN one on the file (→
+ * withdrawn) so the one-open-per-file invariant holds, then inserts a fresh
+ * 'requested' row. No subject borrower (it's a file-level policy exception). The
+ * CALLER must have already confirmed the send-gate FLOOR is met — this module
+ * only owns the table write. Returns the new row.
+ */
+async function requestEsignBeforeCtc(client, { appId, reasonCode, reasonNote, requestedBy }) {
+  await client.query(
+    `UPDATE loan_exceptions
+        SET status='withdrawn', updated_at=now(),
+            decision_note=COALESCE(decision_note,'Superseded by a newer request')
+      WHERE application_id=$1 AND exception_type='esign_before_ctc' AND status=$2`,
+    [appId, OPEN]);
+  const ins = await client.query(
+    `INSERT INTO loan_exceptions
+       (application_id, exception_type, status, reason_code, reason_note, requested_by)
+     VALUES ($1,'esign_before_ctc','requested',$2,$3,$4)
+     RETURNING *`,
+    [appId,
+     isEsignReasonCode(reasonCode) ? reasonCode : 'other',
+     reasonNote ? String(reasonNote).slice(0, 2000) : null,
+     requestedBy || null]);
+  return ins.rows[0];
+}
+
+/**
+ * The most-recent 'esign_before_ctc' exception for a file (any status), or null —
+ * the e-sign send-gate reads this: an APPROVED one lets a not-yet-ready file send
+ * the term-sheet package early (the floor is still re-checked). Fails soft (null)
+ * so an unreadable exception never GRANTS an early send.
+ */
+async function latestEsignBeforeCtc(appId, client = db) {
+  try { return await latestForApp(appId, 'esign_before_ctc', client); }
+  catch (_) { return null; }
 }
 
 /**
@@ -132,7 +189,7 @@ async function listForRequester(staffId, { status = 'open', limit = 100 } = {}, 
        ${where}
       ORDER BY e.created_at DESC
       LIMIT ${Math.min(500, Math.max(1, Number(limit) || 100))}`, params);
-  return r.rows;
+  return r.rows.map((row) => ({ ...row, reason_label: reasonLabelFor(row.exception_type, row.reason_code) }));
 }
 
 /* ---------------- comments (staff-only thread on an exception) ---------------- */
@@ -218,7 +275,9 @@ async function getById(id, client = db) {
        LEFT JOIN staff_users rq ON rq.id = e.requested_by
        LEFT JOIN staff_users dc ON dc.id = e.decided_by
       WHERE e.id=$1`, [id]);
-  return r.rows[0] || null;
+  const row = r.rows[0] || null;
+  if (row) row.reason_label = reasonLabelFor(row.exception_type, row.reason_code);
+  return row;
 }
 
 /**
@@ -246,7 +305,7 @@ async function listExceptions({ status = 'open', limit = 100 } = {}, client = db
        ${where}
       ORDER BY e.created_at DESC
       LIMIT ${Math.min(500, Math.max(1, Number(limit) || 100))}`, params);
-  return r.rows;
+  return r.rows.map((row) => ({ ...row, reason_label: reasonLabelFor(row.exception_type, row.reason_code) }));
 }
 
 /**
@@ -286,7 +345,9 @@ async function pendingCount(client = db) {
 
 module.exports = {
   REASON_CODES, isReasonCode,
-  requestGuarantyWaiver, decideException, withdrawException, clearException,
+  ESIGN_BEFORE_CTC_REASONS, isEsignReasonCode, reasonCodesFor, reasonLabelFor,
+  requestGuarantyWaiver, requestEsignBeforeCtc, latestEsignBeforeCtc,
+  decideException, withdrawException, clearException,
   openForApp, latestForApp, getById, listExceptions, pendingCount,
   listForRequester, requesterOpenCount,
   addComment, listComments, commentParticipants,
