@@ -49,7 +49,10 @@ function initials(first, last) {
   return s || '—';
 }
 // FICO/score bands → a label + a tone key that drives the semantic color.
+// A null/blank score is "No score" (neutral) — NOT "Poor". Guard first: Number(null)
+// and Number('') are 0 (a finite number that would wrongly read as a red "Poor").
 function scoreBand(v) {
+  if (v == null || v === '') return { label: 'No score', tone: 'none' };
   const n = Number(v);
   if (!Number.isFinite(n)) return { label: 'No score', tone: 'none' };
   if (n >= 800) return { label: 'Exceptional', tone: 'good' };
@@ -140,6 +143,7 @@ function CreditImportModal({ appId, onClose, onDone }) {
   const [showUpload, setShowUpload] = useState(false);
   const [xmlFile, setXmlFile] = useState(null);
   const [pdfFile, setPdfFile] = useState(null);
+  const [selected, setSelected] = useState(null);   // Set of borrowerIds to pull; null until preview loads
 
   useEffect(() => {
     let alive = true;
@@ -150,6 +154,8 @@ function CreditImportModal({ appId, onClose, onDone }) {
         if (d) {
           if (d.defaults) { setPullType(d.defaults.pullType); setRequestType(d.defaults.requestType); setVersion(d.defaults.version || '3.4'); }
           setReissueRef(d.reissueReportId || '');
+          // Default: pull EVERY borrower on the file (primary + co) in one action.
+          setSelected(new Set((d.borrowers || []).map((x) => x.borrowerId)));
         }
       })
       .catch((e) => alive && setErr(e.message || 'Could not load the borrower info.'));
@@ -171,20 +177,43 @@ function CreditImportModal({ appId, onClose, onDone }) {
   }, [onClose]);
 
   const providerReady = pre && pre.provider && pre.provider.configured;
-  const missing = (pre && pre.missing) || [];
+  const roster = (pre && pre.borrowers) || [];
+  const hasMulti = roster.length > 1;
+  const sel = selected || new Set();
+  const isSel = (id) => sel.has(id);
+  const toggle = (id) => setSelected((prev) => {
+    const next = new Set(prev || []);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const selBorrowers = roster.filter((x) => isSel(x.borrowerId));
+  const selMissing = Array.from(new Set(selBorrowers.flatMap((x) => x.missing || [])));
+  // A co-borrower on the file who is NOT selected: they'll get their own condition.
+  const droppedCo = hasMulti && roster.some((x) => x.role === 'co' && !isSel(x.borrowerId));
 
   async function runImport(kind) {
     setErr(''); setBusy(true);
     try {
       const body = { pullType, requestType, version };
       if (requestType === 'reissue') body.reissueReportId = reissueRef;
-      if (kind === 'live') body.consent = consent;    // permissible-purpose attestation (server enforces too)
+      if (kind === 'live') {
+        body.consent = consent;    // permissible-purpose attestation (server enforces too)
+        body.borrowerIds = selBorrowers.map((x) => x.borrowerId);   // which borrowers to pull
+      }
       if (kind === 'upload') {
         if (!xmlFile && !pdfFile) throw new Error('Choose the credit data file (XML) and/or the PDF to import.');
+        if (selBorrowers.length !== 1) throw new Error('A downloaded report is for one borrower — select exactly one.');
+        body.borrowerId = selBorrowers[0].borrowerId;
         if (xmlFile) body.xml = await readFileText(xmlFile);
         if (pdfFile) body.pdfBase64 = await fileToBase64(pdfFile);
       }
       const out = await api.staffCreditImport(appId, body);
+      // Nothing pulled (every selected borrower failed) — keep the modal open and
+      // show why, rather than closing on a silent non-success.
+      if (out && out.ok === false) {
+        const errs = (out.results || []).filter((r) => r.ok === false).map((r) => `${r.name}: ${r.error || 'failed'}`);
+        throw new Error(errs.length ? errs.join(' · ') : 'The import did not go through.');
+      }
       onDone(out);
     } catch (e) {
       setErr(e.message || 'The import did not go through.');
@@ -192,24 +221,25 @@ function CreditImportModal({ appId, onClose, onDone }) {
     }
   }
 
-  const b = pre && pre.borrower;
-  const addr = (b && b.address) || {};
-  const addrLine = [addr.line1, addr.line2, [addr.city, addr.state].filter(Boolean).join(', '), addr.zip].filter(Boolean).join(' · ');
-  const name = b ? [b.firstName, b.lastName].filter(Boolean).join(' ') : '';
-
   // The primary action lives in a STICKY FOOTER so it's always reachable — the
   // body scrolls independently. The button adapts to the active mode (live pull
   // vs an uploaded file); a hint explains any disabled state so it's never a
   // dead, unexplained button.
-  const canLive = providerReady && consent && missing.length === 0;
+  const canLive = providerReady && consent && selBorrowers.length > 0 && selBorrowers.every((x) => (x.missing || []).length === 0);
   const liveLabel = requestType === 'new' ? 'Order & import' : 'Reissue & import';
-  const primaryLabel = busy ? 'Working…' : (showUpload ? 'Import the file' : liveLabel);
-  const primaryDisabled = busy || (showUpload ? (!xmlFile && !pdfFile) : !canLive);
+  const liveLabelN = hasMulti && selBorrowers.length > 1 ? `${liveLabel} (${selBorrowers.length})` : liveLabel;
+  const uploadReady = (xmlFile || pdfFile) && selBorrowers.length === 1;
+  const primaryLabel = busy ? 'Working…' : (showUpload ? 'Import the file' : liveLabelN);
+  const primaryDisabled = busy || (showUpload ? !uploadReady : !canLive);
   let footerHint = '';
   if (!busy) {
-    if (showUpload) { if (!xmlFile && !pdfFile) footerHint = 'Choose the downloaded data file (XML) and/or the PDF.'; }
+    if (showUpload) {
+      if (!xmlFile && !pdfFile) footerHint = 'Choose the downloaded data file (XML) and/or the PDF.';
+      else if (selBorrowers.length !== 1) footerHint = 'Select exactly one borrower for a downloaded report.';
+    }
     else if (!providerReady) footerHint = 'Live pull isn’t set up yet — use “Import a downloaded report”.';
-    else if (missing.length) footerHint = `Add the borrower’s ${missing.join(', ')} to pull.`;
+    else if (selBorrowers.length === 0) footerHint = 'Select at least one borrower to pull.';
+    else if (selMissing.length) footerHint = `Add the ${selMissing.join(', ')} to pull the selected borrower${selBorrowers.length > 1 ? 's' : ''}.`;
     else if (!consent) footerHint = 'Check the authorization box above to enable the pull.';
   }
 
@@ -231,23 +261,43 @@ function CreditImportModal({ appId, onClose, onDone }) {
           {!pre && err && <div className="crx-alert danger">{err}</div>}
 
           {pre && (<>
-            {/* Recipient / what we transmit */}
+            {/* Recipient(s) / what we transmit — one card per borrower on the file.
+                With a co-borrower, both are shown and pulled by default; unchecking
+                one drops it from this pull and opens its own credit condition. */}
             <section className="crx-recipient">
-              <div className="crx-recip-head">
-                <span className="crx-mono" aria-hidden="true">{initials(b && b.firstName, b && b.lastName)}</span>
-                <div>
-                  <div className="crx-recip-name">{name || 'Borrower'}</div>
-                  <div className="crx-recip-eyebrow">Identity we’ll send to Xactus</div>
-                </div>
-              </div>
-              <div className="crx-recip-grid">
-                <div className="crx-field"><span>Date of birth</span><b>{b && b.dob ? fmtDay(b.dob) : '—'}</b></div>
-                <div className="crx-field"><span>Social Security #</span><b>{(b && b.ssnMasked) || (b && b.hasSsn ? 'on file' : '— not on file')}</b></div>
-                <div className="crx-field crx-field-wide"><span>Current address</span><b>{addrLine || '—'}</b></div>
-              </div>
-              {missing.length > 0
-                ? <div className="crx-note warn">Add the borrower’s {missing.join(', ')} on the file before a live pull. You can still import a downloaded report below.</div>
-                : <div className="crx-note secure"><span className="crx-lock" aria-hidden="true">🔒</span> Sent securely over an encrypted connection — a tri-merge of all three bureaus.</div>}
+              <div className="crx-recip-eyebrow">{hasMulti ? 'Identities we’ll send to Xactus' : 'Identity we’ll send to Xactus'}</div>
+              {roster.map((bb) => {
+                const addr = bb.address || {};
+                const addrLine = [addr.line1, addr.line2, [addr.city, addr.state].filter(Boolean).join(', '), addr.zip].filter(Boolean).join(' · ');
+                const on = isSel(bb.borrowerId);
+                return (
+                  <div key={bb.borrowerId} className={'crx-recip-card' + (hasMulti && !on ? ' off' : '')}>
+                    <div className="crx-recip-head">
+                      {hasMulti && (
+                        <input type="checkbox" className="crx-recip-check" checked={on}
+                          onChange={() => toggle(bb.borrowerId)} aria-label={`Include ${bb.name} in this pull`} />
+                      )}
+                      <span className="crx-mono" aria-hidden="true">{initials(bb.firstName, bb.lastName)}</span>
+                      <div>
+                        <div className="crx-recip-name">{bb.name || (bb.role === 'co' ? 'Co-borrower' : 'Borrower')}
+                          {hasMulti && <span className={'crx-role-tag' + (bb.role === 'co' ? ' co' : '')}>{bb.role === 'co' ? 'Co-borrower' : 'Primary'}</span>}</div>
+                        <div className="crx-recip-eyebrow">{bb.canPull ? 'Ready to pull' : 'Missing info for a live pull'}</div>
+                      </div>
+                    </div>
+                    <div className="crx-recip-grid">
+                      <div className="crx-field"><span>Date of birth</span><b>{bb.dob ? fmtDay(bb.dob) : '—'}</b></div>
+                      <div className="crx-field"><span>Social Security #</span><b>{bb.ssnMasked || (bb.hasSsn ? 'on file' : '— not on file')}</b></div>
+                      <div className="crx-field crx-field-wide"><span>Current address</span><b>{addrLine || '—'}</b></div>
+                    </div>
+                    {(bb.missing || []).length > 0 && (
+                      <div className="crx-note warn">Add the {bb.missing.join(', ')} on the file before a live pull{hasMulti ? ` for ${bb.name}` : ''}. You can still import a downloaded report below.</div>
+                    )}
+                  </div>
+                );
+              })}
+              {droppedCo
+                ? <div className="crx-note">Only the selected borrower will be pulled now. The other borrower gets their own <b>Credit report</b> condition so their credit can be pulled separately — credit is required for both.</div>
+                : (selMissing.length === 0 && <div className="crx-note secure"><span className="crx-lock" aria-hidden="true">🔒</span> Sent securely over an encrypted connection — a tri-merge of all three bureaus{hasMulti ? ', one report per borrower' : ''}.</div>)}
             </section>
 
             {/* Options */}
@@ -303,7 +353,7 @@ function CreditImportModal({ appId, onClose, onDone }) {
             {/* Consent — arms the primary action */}
             <label className={'crx-consent' + (consent ? ' on' : '')}>
               <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} />
-              <span><b>The borrower has authorized this credit pull.</b> Permissible purpose is on file (required to pull).</span>
+              <span><b>{selBorrowers.length > 1 ? 'The borrowers have authorized this credit pull.' : 'The borrower has authorized this credit pull.'}</b> Permissible purpose is on file (required to pull).</span>
             </label>
 
             {!providerReady && (
@@ -550,15 +600,29 @@ export function CreditCondition({ appId, canPull, onChanged }) {
 
   const onImported = (out) => {
     setShowModal(false);
+    const results = (out && Array.isArray(out.results)) ? out.results : [];
+    const failed = results.filter((r) => r.ok === false);
+    const okd = results.filter((r) => r.ok !== false);
+    const multi = results.length > 1;
     const bits = [];
-    if (out && out.middleScore != null) bits.push(`middle score ${out.middleScore}`);
-    if (out && out.ficoWritten != null) bits.push(`FICO set to ${out.ficoWritten}`);
-    if (out && out.ficoMismatch) bits.push('FICO not auto-set — the report named a different person');
-    if (out && out.ficoUnverified) bits.push('FICO not auto-set — no SSN on file to confirm identity');
-    if (out && out.pdfMissing) bits.push('no PDF in the response — data file saved');
-    if (out && out.parseError) bits.push('some details couldn’t be read');
-    const tone = out && (out.ficoMismatch || out.ficoUnverified || out.parseError || out.pdfMissing) ? 'warn' : 'ok';
-    showFlash('Credit report imported successfully ✓' + (bits.length ? ' — ' + bits.join(' · ') : ''), tone);
+    let msg;
+    if (multi) {
+      // One line per borrower: name · score (or why it couldn't be pulled).
+      okd.forEach((r) => bits.push(`${r.name}: ${r.middleScore != null ? 'middle ' + r.middleScore : 'no score'}`));
+      failed.forEach((r) => bits.push(`${r.name}: not pulled — ${r.error || 'failed'}`));
+      msg = `Imported credit for ${okd.length} of ${results.length} borrowers ✓`;
+    } else {
+      if (out && out.middleScore != null) bits.push(`middle score ${out.middleScore}`);
+      if (out && out.ficoWritten != null) bits.push(`FICO set to ${out.ficoWritten}`);
+      if (out && out.ficoMismatch) bits.push('FICO not auto-set — the report named a different person');
+      if (out && out.ficoUnverified) bits.push('FICO not auto-set — no SSN on file to confirm identity');
+      if (out && out.pdfMissing) bits.push('no PDF in the response — data file saved');
+      if (out && out.parseError) bits.push('some details couldn’t be read');
+      msg = 'Credit report imported successfully ✓';
+    }
+    if (out && out.coConditionOpened) bits.push('opened a separate credit condition for the co-borrower');
+    const tone = (failed.length || (out && (out.ficoMismatch || out.ficoUnverified || out.parseError || out.pdfMissing))) ? 'warn' : 'ok';
+    showFlash(msg + (bits.length ? ' — ' + bits.join(' · ') : ''), tone);
     // Reload, then pop the full report open on the whole screen.
     loadCredit().then(() => setShowOverlay(true));
     if (onChanged) onChanged();
@@ -595,14 +659,18 @@ export function CreditCondition({ appId, canPull, onChanged }) {
         <div className="crx-cond-summary">
           <div className="crx-scoreline">
             <ScoreCell value={primaryScore}
-              label={hasCo && borrowers.primary ? `${borrowers.primary.name} · middle` : 'Middle score'}
+              label={hasCo && borrowers.primary
+                ? `${borrowers.primary.name}${borrowers.primary.hasReport ? ' · middle' : ' · not pulled yet'}`
+                : 'Middle score'}
               emphasis={!hasCo} />
             {hasCo && borrowers.coBorrower && (
               <ScoreCell value={borrowers.coBorrower.middleScore}
                 label={borrowers.coBorrower.name + (borrowers.coBorrower.hasReport ? ' · middle' : ' · not pulled yet')} />
             )}
             {hasCo && (
-              <ScoreCell value={borrowers.higher} label="Higher — prices the deal" emphasis />
+              <ScoreCell value={borrowers.higher}
+                label={borrowers.higherReady ? 'Higher — prices the deal' : 'Higher so far · co-borrower pending'}
+                emphasis={borrowers.higherReady} />
             )}
           </div>
 

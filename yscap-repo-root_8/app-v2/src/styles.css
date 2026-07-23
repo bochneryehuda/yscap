@@ -2885,6 +2885,17 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 /* Recipient card --------------------------------------------------------- */
 .crx-recipient { border:1px solid var(--border); border-radius:14px; background:var(--surface);
   padding:16px 18px; box-shadow:0 1px 2px rgba(20,27,34,.04); }
+/* One card per borrower (co-borrower support): a stack of borrower cards, each
+   with an include checkbox. An unchecked (dropped) card dims + dashes. */
+.crx-recip-card { border:1px solid var(--border); border-radius:12px; padding:13px 14px; margin-top:12px;
+  transition:opacity .15s ease, border-color .15s ease; }
+.crx-recip-card:first-of-type { margin-top:10px; }
+.crx-recip-card.off { opacity:.5; border-style:dashed; }
+.crx-recip-card .crx-recip-head { margin-bottom:12px; }
+.crx-recip-check { flex:none; width:18px; height:18px; accent-color:var(--teal); cursor:pointer; }
+.crx-role-tag { display:inline-block; margin-left:8px; font-size:.62rem; font-weight:700; text-transform:uppercase;
+  letter-spacing:.07em; vertical-align:middle; padding:2px 7px; border-radius:999px; background:var(--gold-soft); color:var(--gold); }
+.crx-role-tag.co { background:rgba(47,127,134,.12); color:var(--teal); }
 .crx-recip-head { display:flex; align-items:center; gap:13px; margin-bottom:14px; }
 .crx-mono { flex:none; width:46px; height:46px; border-radius:50%; display:grid; place-items:center;
   font-family:var(--serif); font-size:1.15rem; font-weight:600; color:var(--gold);
@@ -2944,7 +2955,6 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .crx-upload-hint { margin:6px 0 12px; color:var(--muted); font-size:.8rem; }
 
 /* Report — hero ---------------------------------------------------------- */
-.crx-report { margin-top:12px; }
 .crx-hero { display:flex; gap:22px; align-items:stretch; flex-wrap:wrap; padding:20px 22px; border-radius:16px;
   border:1px solid var(--border); background:linear-gradient(135deg,#fff,var(--surface-soft));
   box-shadow:0 1px 3px rgba(20,27,34,.05); position:relative; overflow:hidden; }

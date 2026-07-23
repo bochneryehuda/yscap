@@ -187,13 +187,140 @@ const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failu
   const store = require('../src/lib/credit/store');
   const { parseCreditXml } = require('../src/lib/credit/parse');
   const storedC = await store.storeImport({
-    app: { id: app.id, borrower_id: bor.id, ssn_last4: ssn.last4 },
+    file: { id: app.id }, borrower: { id: bor.id, ssn_last4: ssn.last4 },
     parsed: parseCreditXml(XML), xml: XML, pdfBase64: PDF_B64,
     request: { pullType: 'hard', requestType: 'new', bureaus: ['Equifax', 'Experian', 'TransUnion'], version: '3.4' },
     actorId: staff.id, source: 'api', consentAttested: true,
   });
   const crC = (await db.query('SELECT consent_attested, consent_by, consent_at FROM credit_reports WHERE id=$1', [storedC.creditReportId])).rows[0];
   ok(crC.consent_attested === true && String(crC.consent_by) === String(staff.id) && !!crC.consent_at, 'consent attestation recorded on the report row (attested + by + at)');
+
+  // ═══ Wave 2 — co-borrower joint pull ═══════════════════════════════════════
+  // Link a SECOND borrower as the co-borrower; credit is required for BOTH.
+  const coCondition = require('../src/lib/credit/co-condition');
+  const coSsn = C.ssnForStorage('987654321');
+  const co = (await db.query(
+    `INSERT INTO borrowers (first_name,last_name,email,date_of_birth,ssn_encrypted,ssn_last4,current_address)
+     VALUES ('Casey','Cobor',$1,'1990-09-09',$2,$3,$4) RETURNING id`,
+    [`cotest_${process.pid}@example.com`, coSsn.encrypted, coSsn.last4,
+      JSON.stringify({ line1: '11 Elm St', city: 'Lakewood', state: 'NJ', zip: '08701' })])).rows[0];
+  await db.query('UPDATE applications SET co_borrower_id=$2 WHERE id=$1', [app.id, co.id]);
+  // The co-borrower's tri-merge, middle 768 (sorted 765/768/770), SSN last-4 4321.
+  const CO_XML = XML
+    .replace('_FirstName="Dana"', '_FirstName="Casey"')
+    .replace('_LastName="Borrower"', '_LastName="Cobor"')
+    .replace('_SSN="123456789"', '_SSN="987654321"')
+    .replace('CreditReportIdentifier="XAC-DBT-1"', 'CreditReportIdentifier="XAC-CO-1"')
+    .replace('_Value="712"', '_Value="770"').replace('_Value="698"', '_Value="765"').replace('_Value="705"', '_Value="768"');
+
+  // preview now returns BOTH borrowers (primary first).
+  const pvco = await credit.preview(app.id);
+  ok(pvco.hasCoBorrower === true && Array.isArray(pvco.borrowers) && pvco.borrowers.length === 2, 'preview returns BOTH borrowers when a co-borrower is linked');
+  ok(pvco.borrowers[0].role === 'primary' && pvco.borrowers[1].role === 'co', 'preview lists the primary first, then the co-borrower');
+  ok(pvco.borrowers[1].ssnMasked === `•••-••-${coSsn.last4}` && pvco.borrowers[1].canPull === true, 'co-borrower shows a masked SSN and is ready to pull');
+
+  // Stub provider.pull so the LIVE "pull both" path runs without a real Xactus call.
+  const provider = require('../src/lib/credit/provider');
+  const realPull = provider.pull;
+  provider.pull = async ({ borrower }) => ({
+    xml: borrower.firstName === 'Casey' ? CO_XML : XML,
+    pdfBase64: PDF_B64,
+    vendorReportId: borrower.firstName === 'Casey' ? 'XAC-CO-1' : 'XAC-PRI-1',
+  });
+
+  // Default import (no borrowerIds) pulls BOTH in one action → two transactions.
+  const both = await credit.importCredit(app.id, { requestType: 'new', consent: true, actorId: staff.id });
+  ok(both.ok && both.pulled === 2 && both.results.length === 2, `default import pulls BOTH borrowers in one action (pulled ${both.pulled})`);
+  ok(both.coConditionOpened === false, 'no separate co-borrower condition is opened when both are pulled together');
+  const priRow = (await db.query(`SELECT middle_score FROM credit_reports WHERE application_id=$1 AND borrower_id=$2 ORDER BY pulled_at DESC LIMIT 1`, [app.id, bor.id])).rows[0];
+  const coRow = (await db.query(`SELECT middle_score FROM credit_reports WHERE application_id=$1 AND borrower_id=$2 ORDER BY pulled_at DESC LIMIT 1`, [app.id, co.id])).rows[0];
+  ok(priRow && priRow.middle_score === 705, `primary report stored under the primary borrower_id (${priRow && priRow.middle_score})`);
+  ok(coRow && coRow.middle_score === 768, `co-borrower report stored under the co borrower_id (${coRow && coRow.middle_score})`);
+  ok((await db.query('SELECT fico FROM borrowers WHERE id=$1', [co.id])).rows[0].fico === 768, 'co-borrower FICO written back to 768');
+  ok((await db.query('SELECT fico FROM borrowers WHERE id=$1', [bor.id])).rows[0].fico === 705, 'primary FICO stays 705 (co-borrower pull never overwrote it)');
+  // Both borrowers keep their own 2 current docs (borrower-scoped supersede did NOT
+  // retire the primary's docs when the co-borrower's report landed).
+  const curBoth = (await db.query(`SELECT borrower_id, count(*)::int n FROM documents WHERE application_id=$1 AND is_current AND doc_kind IN ('credit_pdf','credit_xml') GROUP BY borrower_id`, [app.id])).rows;
+  ok(curBoth.length === 2 && curBoth.every((r) => r.n === 2), 'each borrower keeps their 2 current credit docs (borrower-scoped supersede)');
+
+  // fileCredit: higher-of-two = max(705, 768) = 768, ready (both pulled).
+  const fcco = await credit.fileCredit(app.id);
+  ok(fcco.borrowers.hasCoBorrower && fcco.borrowers.coBorrower.middleScore === 768 && fcco.borrowers.coBorrower.hasReport, 'fileCredit shows the co-borrower middle score');
+  ok(fcco.borrowers.higher === 768 && fcco.borrowers.higherReady === true, 'higher-of-two = 768 and ready (both borrowers pulled)');
+
+  // SPLIT: pull ONLY the primary → the co-borrower gets their OWN credit condition.
+  await db.query('DELETE FROM credit_reports WHERE application_id=$1 AND borrower_id=$2', [app.id, co.id]);
+  await db.query('UPDATE borrowers SET fico=NULL WHERE id=$1', [co.id]);
+  const split = await credit.importCredit(app.id, { requestType: 'new', consent: true, actorId: staff.id, borrowerIds: [bor.id] });
+  ok(split.pulled === 1, 'split import pulls only the selected borrower');
+  ok(split.coConditionOpened === true, 'split import opens the co-borrower’s own credit condition');
+  const coCond = (await db.query(`SELECT id, application_id, borrower_id FROM checklist_items WHERE application_id=$1 AND field_key='cob_credit'`, [app.id])).rows[0];
+  ok(!!coCond, 'a co-borrower credit condition (cob_credit marker, application-scoped) was created on the split');
+  ok(coCond && coCond.application_id === app.id && coCond.borrower_id === null, 'the co-borrower credit condition is application-scoped with no borrower_id (chk_one_owner)');
+
+  // fileCredit after the split: co not pulled → null middle score, higher not ready.
+  const fcSplit = await credit.fileCredit(app.id);
+  ok(fcSplit.borrowers.coBorrower.hasReport === false && fcSplit.borrowers.coBorrower.middleScore === null, 'co-borrower reads "not pulled" (null middle score — no fico stand-in)');
+  ok(fcSplit.borrowers.higherReady === false, 'higher-of-two is not "ready" until the co-borrower is pulled too');
+  // MINOR-2: a stored co-borrower FICO must NEVER drive the higher-of-two.
+  await db.query('UPDATE borrowers SET fico=840 WHERE id=$1', [co.id]);   // valid, higher than 705
+  const fcM2 = await credit.fileCredit(app.id);
+  ok(fcM2.borrowers.higher === 705 && fcM2.borrowers.higherReady === false, 'an UNPULLED co-borrower fico (840) never drives higher-of-two — stays 705 (MINOR-2)');
+
+  // Edge: an EXPLICIT empty borrower list is rejected, never silently promoted to
+  // "pull everyone" (only an ABSENT borrowerIds means "pull all").
+  let emptySelErr = null;
+  try { await credit.importCredit(app.id, { requestType: 'new', consent: true, actorId: staff.id, borrowerIds: [] }); }
+  catch (e) { emptySelErr = e; }
+  ok(emptySelErr && /select at least one/i.test(emptySelErr.userMessage || emptySelErr.message || ''), 'an explicit empty borrowerIds is rejected (not promoted to pull-all)');
+
+  // Sign-off gate DATA requirement (mirrors staff.js signOffGate isCredit): the
+  // file-level condition needs the primary AND any co-borrower without their own
+  // condition; a per-borrower condition needs that borrower's report.
+  const gateNeed = async (isCoCondition) => {
+    const af = (await db.query('SELECT borrower_id, co_borrower_id FROM applications WHERE id=$1', [app.id])).rows[0];
+    const need = [];
+    if (isCoCondition) { if (af.co_borrower_id) need.push(af.co_borrower_id); }
+    else {
+      need.push(af.borrower_id);
+      if (af.co_borrower_id) {
+        const own = (await db.query(`SELECT 1 FROM checklist_items WHERE application_id=$1 AND field_key='cob_credit' LIMIT 1`, [app.id])).rows[0];
+        if (!own) need.push(af.co_borrower_id);
+      }
+    }
+    const unmet = [];
+    for (const bid of need) {
+      const has = (await db.query(`SELECT 1 FROM credit_reports WHERE application_id=$1 AND borrower_id=$2 AND status='completed' LIMIT 1`, [app.id, bid])).rows[0];
+      if (!has) unmet.push(bid);
+    }
+    return { need, unmet };
+  };
+  // After the split: co has NO report and DOES have their own condition. The
+  // file-level condition needs only the primary (met); the co condition needs the
+  // co (unmet) → the file still can't be signed off until the co is pulled.
+  const gPri = await gateNeed(false);   // file-level condition
+  ok(gPri.need.length === 1 && gPri.unmet.length === 0, 'file-level credit gate needs only the primary once the co-borrower has their own condition (met)');
+  const gCo = await gateNeed(true);     // the co-borrower's own (cob_credit) condition
+  ok(gCo.need.length === 1 && gCo.unmet.length === 1, 'the co-borrower credit condition blocks sign-off until the co-borrower report is imported');
+
+  // co-condition helper: KEEP a condition that carries a completed report, DROP one
+  // that doesn't (the unlink cleanup path).
+  await coCondition.removeCoBorrowerCreditCondition(app.id, co.id);
+  ok(!(await db.query('SELECT 1 FROM checklist_items WHERE id=$1', [coCond.id])).rows[0], 'removeCoBorrowerCreditCondition DROPS a co condition with no report (unlink cleanup)');
+  await coCondition.ensureCoBorrowerCreditCondition(app.id, co.id);
+  const coCond2 = (await db.query(`SELECT id FROM checklist_items WHERE application_id=$1 AND field_key='cob_credit'`, [app.id])).rows[0];
+  // isCo:true routes the report onto the co-borrower's OWN condition (coCond2).
+  await store.storeImport({ file: { id: app.id }, borrower: { id: co.id, ssn_last4: coSsn.last4, isCo: true }, parsed: parseCreditXml(CO_XML), xml: CO_XML, pdfBase64: PDF_B64, request: { pullType: 'soft', requestType: 'new', bureaus: ['Equifax', 'Experian', 'TransUnion'], version: '3.4' }, actorId: staff.id, source: 'upload' });
+  ok((await db.query('SELECT 1 FROM credit_reports WHERE checklist_item_id=$1 AND status=$2', [coCond2.id, 'completed'])).rows[0], 'isCo import attaches the co-borrower report to the co-borrower condition');
+  await coCondition.removeCoBorrowerCreditCondition(app.id, co.id);
+  ok(!!(await db.query('SELECT 1 FROM checklist_items WHERE id=$1', [coCond2.id])).rows[0], 'removeCoBorrowerCreditCondition KEEPS a co condition that already has an imported report');
+
+  provider.pull = realPull;   // restore
+  // co-borrower cleanup (unlink first so the FK is clear).
+  await db.query('UPDATE applications SET co_borrower_id=NULL WHERE id=$1', [app.id]).catch(() => {});
+  await db.query(`DELETE FROM checklist_items WHERE application_id=$1 AND field_key='cob_credit'`, [app.id]).catch(() => {});
+  await db.query('DELETE FROM credit_reports WHERE borrower_id=$1', [co.id]).catch(() => {});
+  await db.query('DELETE FROM borrowers WHERE id=$1', [co.id]).catch(() => {});
 
   // cleanup (throwaway DB, but be tidy)
   await db.query(`DELETE FROM applications WHERE id=$1`, [app.id]).catch(() => {});

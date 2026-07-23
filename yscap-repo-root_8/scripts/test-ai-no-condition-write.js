@@ -44,6 +44,7 @@ function walk(dir, out = []) {
 // deliberate, reviewed act: confirm it is NOT an AI path before you do.
 const ALLOWLIST = new Set([
   'src/lib/co-borrower.js',          // co-borrower doc condition (staff adds a co-borrower)
+  'src/lib/credit/co-condition.js',  // co-borrower CREDIT condition (staff splits a credit pull)
   'src/lib/conditions/engine.js',    // deterministic rules engine (admin-defined templates)
   'src/lib/appraisal/desk.js',       // appraisal desk condition (fixed template)
   'src/lib/vesting.js',              // entity / LLC vesting condition
