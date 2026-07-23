@@ -421,6 +421,18 @@ module.exports = {
     // hidden reasoning from consuming the output budget; raise only if accuracy needs it.
     reasoningEffort: (process.env.AZURE_OPENAI_REASONING_EFFORT || 'low').trim(),
   },
+  // Anthropic Claude — the INDEPENDENT SECOND reasoning provider for the review
+  // committee (#215). A committee that verifies a finding with the SAME model that
+  // produced it is not truly independent; a different provider catches what the
+  // first one's blind spots miss. OFF until ANTHROPIC_API_KEY is set (Render env
+  // only, never source) — the committee runs all-Azure until then, unchanged. Raw
+  // HTTPS via fetch (no SDK), same as every other integration.
+  anthropic: {
+    key: process.env.ANTHROPIC_API_KEY,
+    model: (process.env.ANTHROPIC_MODEL || 'claude-sonnet-5').trim(),
+    apiVersion: (process.env.ANTHROPIC_API_VERSION || '2023-06-01').trim(),
+    baseUrl: (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').trim().replace(/\/+$/, ''),
+  },
   // Google Cloud Document AI — the INDEPENDENT SECOND OCR engine (owner-directed
   // 2026-07-21). Runs as a fallback when Azure Document Intelligence returns no
   // text / very short text / an error. Different failure modes than Azure, so it
