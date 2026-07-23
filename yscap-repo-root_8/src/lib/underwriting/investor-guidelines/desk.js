@@ -21,6 +21,7 @@
  */
 
 const spec = require('./corrfirst-fnf-spec');
+const rules = require('../../conditions/rules'); // pure rule_logic evaluator (same one the condition engine uses)
 
 // Per-condition verdict.
 const VERDICT = Object.freeze({
@@ -91,6 +92,38 @@ const CHECK_EVALUATORS = {
   2186: checkLiabilityTier,
   2798: checkMedianValue,
 };
+
+// The field keys a trigger references (recursive over rule_logic groups). PURE.
+function triggerFields(trig) {
+  const out = [];
+  const walk = (node) => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node.rules)) node.rules.forEach(walk);
+    else if (node.field) out.push(String(node.field));
+  };
+  walk(trig);
+  return out;
+}
+
+/**
+ * triggerApplies(trigger, ctx, fieldMap) → boolean (PURE, never throws). Uses the SAME
+ * rule_logic evaluator as the condition engine (conditions/rules.evaluateRule). FAIL-OPEN:
+ * an empty trigger always applies, and a trigger whose field we cannot confirm (absent from
+ * the context) INCLUDES the condition — an advisory soft-guideline desk must never silently
+ * DROP a requirement, only skip one it can confidently rule out (a known non-match on a
+ * present field, e.g. property_type is a known value that is not 'condo').
+ */
+function triggerApplies(trigger, ctx, fieldMap) {
+  try {
+    const t = trigger && typeof trigger === 'object' && !Array.isArray(trigger) ? trigger : {};
+    if (!Array.isArray(t.rules) || t.rules.length === 0) return true; // {} = always applies
+    const c = ctx || {};
+    const refs = triggerFields(t);
+    // fail-open: any referenced field missing/blank in the context → cannot confirm → include.
+    if (refs.some((k) => c[k] === undefined || c[k] === null || c[k] === '')) return true;
+    return rules.evaluateRule(t, c, fieldMap || undefined) === true;
+  } catch (_e) { return true; }
+}
 
 /**
  * assessCondition(cond, ctx) → verdict object (PURE, never throws).
@@ -214,10 +247,10 @@ function assess(input) {
  */
 async function runInvestorGuidelineDesk(appId, client) {
   const empty = { noteBuyer: { key: null, name: null }, product: spec.PRODUCT, verdicts: [], conflicts: [], suggestedToPost: [], deferred: [], summary: { applicable: 0, satisfied: 0, outstanding: 0, conflicts: 0, deferred: 0, toPost: 0 }, headline: 'No investor guideline conditions apply to this file yet.', empty: true };
-  let engine; let evaluator; let twin; let db;
+  let engine; let registry; let twin; let db;
   try {
     engine = require('../../conditions/engine');
-    evaluator = require('../guideline-evaluator');
+    registry = require('../../conditions/field-registry');
     twin = require('../twin');
     db = client || require('../../../db');
   } catch (_e) { return empty; }
@@ -247,12 +280,12 @@ async function runInvestorGuidelineDesk(appId, client) {
   } catch (_e) { rows = []; }
   if (!rows.length) return { ...empty, noteBuyer: { key: noteBuyerKey || null, name: app && app.lender ? String(app.lender) : null } };
 
-  // 2. trigger-filter: a condition applies unless its trigger is a KNOWN non-match.
-  const applicable = rows.filter((row) => {
-    const trig = row.trigger;
-    if (!trig || (typeof trig === 'object' && Object.keys(trig).length === 0)) return true; // always
-    try { const ev = evaluator.evaluate(trig, ctx); return ev.matched !== false; } catch (_e) { return true; }
-  });
+  // 2. trigger-filter (fail-open): a condition applies unless its trigger is a KNOWN
+  // non-match on a field we can confirm. Uses the condition engine's own rule_logic
+  // evaluator with the real field map.
+  let fieldMap = null;
+  try { fieldMap = await registry.fieldMap(db); } catch (_e) { fieldMap = registry.BY_KEY; }
+  const applicable = rows.filter((row) => triggerApplies(row.trigger, ctx, fieldMap));
 
   // 3. existing checklist items mapped by their PILOT template CODE.
   const existingByCode = new Map();
@@ -301,6 +334,7 @@ async function runInvestorGuidelineDesk(appId, client) {
 module.exports = {
   VERDICT, assess, assessCondition,
   checkSellerConcession, checkContingency, checkLiabilityTier, checkMedianValue, CHECK_EVALUATORS,
+  triggerApplies, triggerFields,
   runInvestorGuidelineDesk,
   _internals: { num, lc, statusPhrase, labelLifecycle },
 };

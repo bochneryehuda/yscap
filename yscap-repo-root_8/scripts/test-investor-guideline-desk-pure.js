@@ -115,4 +115,37 @@ const cond = (over) => Object.assign({ cond_no: 9001, name: 'Test', domain: 'oth
   ok('assess() rolls up summary + headline; hostile input never throws');
 }
 
+// 7. triggerApplies — fail-open trigger filter using the real rule_logic evaluator.
+{
+  const { BY_KEY } = require('../src/lib/conditions/field-registry');
+  const fm = BY_KEY;
+  // empty trigger always applies.
+  assert.strictEqual(desk.triggerApplies({}, {}, fm), true);
+  assert.strictEqual(desk.triggerApplies(spec.TRIGGERS.always, { anything: 1 }, fm), true);
+  // condo: property_type known-and-matching → true; known-and-different → false; absent → true (fail-open).
+  assert.strictEqual(desk.triggerApplies(spec.TRIGGERS.condo, { property_type: 'condo' }, fm), true);
+  assert.strictEqual(desk.triggerApplies(spec.TRIGGERS.condo, { property_type: 'sfr' }, fm), false, 'known non-condo → excluded');
+  assert.strictEqual(desk.triggerApplies(spec.TRIGGERS.condo, {}, fm), true, 'unknown property_type → fail-open include');
+  // flood zone (boolean is_true).
+  assert.strictEqual(desk.triggerApplies(spec.TRIGGERS.flood_zone, { in_flood_zone: true }, fm), true);
+  assert.strictEqual(desk.triggerApplies(spec.TRIGGERS.flood_zone, { in_flood_zone: false }, fm), false);
+  assert.strictEqual(desk.triggerApplies(spec.TRIGGERS.flood_zone, {}, fm), true, 'unknown flood flag → fail-open include');
+  // loan amount > $2M (money gt).
+  assert.strictEqual(desk.triggerApplies(spec.TRIGGERS.loan_amount_gt_2000000, { loan_amount: 2500000 }, fm), true);
+  assert.strictEqual(desk.triggerApplies(spec.TRIGGERS.loan_amount_gt_2000000, { loan_amount: 500000 }, fm), false, 'under $2M → excluded');
+  assert.strictEqual(desk.triggerApplies(spec.TRIGGERS.loan_amount_gt_2000000, {}, fm), true);
+  // a trigger on a field the registry does not have (vesting_type) fails OPEN when absent,
+  // so the entity conditions are never silently dropped.
+  assert.strictEqual(desk.triggerApplies(spec.TRIGGERS.entity_vesting, {}, fm), true, 'unknown vesting field → fail-open include');
+  // triggerFields extracts the referenced keys.
+  assert.deepStrictEqual(desk.triggerFields(spec.TRIGGERS.condo), ['property_type']);
+  // hostile input never throws.
+  for (const bad of [null, undefined, 42, 'x', []]) {
+    assert.doesNotThrow(() => desk.triggerApplies(bad, bad, fm));
+    assert.strictEqual(desk.triggerApplies(bad, {}, fm), true, 'a non-group trigger → applies (fail-open)');
+    assert.doesNotThrow(() => desk.triggerFields(bad));
+  }
+  ok('triggerApplies: known non-match excludes, unknown/absent field fails OPEN (never drops a requirement)');
+}
+
 console.log(`\ninvestor-guideline desk pure — ${passed} checks passed`);
