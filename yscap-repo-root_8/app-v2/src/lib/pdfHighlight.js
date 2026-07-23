@@ -6,9 +6,13 @@
  * the value (as-is, with $/spaces stripped, digits with grouping commas) so a
  * money value like "$425,000" matches PDF text of "425,000" or "$425,000.00".
  *
- * No length-changing normalization is done to the page text (only toLowerCase,
- * which preserves length), so a match's character offsets map straight back to
- * the items that produced them.
+ * The page text is lower-cased PER ITEM before it is concatenated, and each
+ * item's [start, end) span is measured on that SAME lower-cased string that we
+ * then search — so a match's character offsets always map straight back to the
+ * items that produced them, even for characters whose lower-case form changes
+ * length (e.g. İ → i̇). (Lower-casing the whole concatenation AFTER measuring
+ * spans on the original text would shift the offsets for such characters and
+ * spill the highlight into an adjacent item.)
  */
 
 // The candidate strings to try, most-specific first. Deduped, length >= 2.
@@ -36,22 +40,29 @@ export function highlightCandidates(value) {
 export function findHighlightItems(items, value) {
   const cands = highlightCandidates(value);
   if (!Array.isArray(items) || !items.length || !cands.length) return [];
-  // Concatenate the page text, recording each item's [start, end) char range.
+  // Concatenate the LOWER-CASED page text, recording each item's [start, end)
+  // char range on that same lower-cased string. Lower-casing per item (not once
+  // over the whole concatenation) keeps every offset aligned even when a
+  // character's lower-case form changes length.
   let full = '';
   const spans = [];
   for (let i = 0; i < items.length; i++) {
-    const s = String((items[i] && items[i].str) || '');
+    const s = String((items[i] && items[i].str) || '').toLowerCase();
     spans.push([full.length, full.length + s.length, i]);
     full += s;
   }
-  const hay = full.toLowerCase();
   for (const cand of cands) {
     const needle = cand.toLowerCase();
-    const at = hay.indexOf(needle);
+    const at = full.indexOf(needle);
     if (at < 0) continue;
     const end = at + needle.length;
     const hit = [];
-    for (const [s, e, idx] of spans) { if (s < end && e > at) hit.push(idx); }
+    // e > s skips zero-width (empty) items — they can't "cover" any character,
+    // so a blank item between two matched items never draws a stray box.
+    // Substring matching is deliberate (best-effort): a bare-digit candidate can
+    // land inside a longer digit run when the page has no better-formatted form,
+    // which is acceptable for a soft visual cue.
+    for (const [s, e, idx] of spans) { if (e > s && s < end && e > at) hit.push(idx); }
     if (hit.length) return hit;
   }
   return [];

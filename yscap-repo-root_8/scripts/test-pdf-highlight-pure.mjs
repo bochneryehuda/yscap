@@ -40,6 +40,19 @@ const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failu
   ok(JSON.stringify(findHighlightItems(items, 'John Smith')) === JSON.stringify([0]), 'match: a name found in one item');
 }
 
+// a length-changing lowercase char (İ → i̇) must NOT spill the highlight into
+// the next item — the match offsets are measured on the same lowercased text.
+{
+  const items = [{ str: 'NAME ' }, { str: 'İSTANBUL' }, { str: ' END' }];
+  ok(JSON.stringify(findHighlightItems(items, 'İSTANBUL')) === JSON.stringify([1]), 'match: length-changing lowercase stays on its own item');
+}
+
+// a zero-width (empty) item between covered items is never returned as a hit
+{
+  const items = [{ str: '425' }, { str: '' }, { str: ',000' }];
+  ok(JSON.stringify(findHighlightItems(items, '$425,000')) === JSON.stringify([0, 2]), 'match: empty item between hits is skipped');
+}
+
 // no match → empty (the viewer just opens to the page, no box)
 {
   const items = [{ str: 'nothing relevant here' }];
