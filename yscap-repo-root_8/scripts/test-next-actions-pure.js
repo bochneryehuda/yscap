@@ -90,6 +90,29 @@ assert.ok(!r.actions.some((a) => a.kind === 'finding' && !a.blocking), 'includeW
 assert.strictEqual(na.buildNextActions({ decision, conditions, now: NOW }, { limit: 2 }).actions.length, 2, 'limit caps the list');
 ok('includeWarnings:false drops warnings and limit caps the list');
 
+// --- two DISTINCT findings sharing a code but different subjects both survive ---
+r = na.buildNextActions({ decision: decide({ engineStatus: 'INELIGIBLE', findings: [
+  { code: 'title_defect', subject: 'title', severity: 'fatal', title: 'Lien on title', blocks_funding: true },
+  { code: 'title_defect', subject: 'survey', severity: 'fatal', title: 'Survey gap', blocks_funding: true },
+] }), conditions: [], now: NOW });
+assert.strictEqual(r.actions.length, 2, 'same code + different subject = two separate actions (never collapsed)');
+assert.ok(r.actions.some((a) => /Lien on title/.test(a.title)) && r.actions.some((a) => /Survey gap/.test(a.title)));
+// and a GENUINE duplicate (same code + same subject) still collapses to one
+r = na.buildNextActions({ decision: { registry: [
+  { code: 'dup', subject: 's', severity: 'fatal', title: 'dup A', blocks_funding: true },
+  { code: 'dup', subject: 's', severity: 'fatal', title: 'dup B', blocks_funding: true },
+] }, conditions: [], now: NOW });
+assert.strictEqual(r.actions.length, 1, 'a genuine same-code+same-subject duplicate still collapses');
+ok('finding identity is (code, subject): distinct subjects both survive, true duplicates collapse');
+
+// --- the no-aging fallback path drops a raw closed-status condition ---
+// (simulate raw rows reaching conditionAction directly: pre-aged rows absent + raw status)
+const rawClosed = na._internals.conditionAction({ id: 'sat1', status: 'satisfied' });
+assert.strictEqual(rawClosed, null, 'a raw satisfied condition (no open flag) is not work');
+const rawOpen = na._internals.conditionAction({ id: 'open1', status: 'open' });
+assert.ok(rawOpen && rawOpen.kind === 'condition', 'a raw open condition still becomes an action');
+ok('the raw-row fallback drops closed-status conditions like the aged path');
+
 // --- a clean file has an empty worklist ---
 r = na.buildNextActions({ decision: decide({ engineStatus: 'ELIGIBLE', findings: [] }), conditions: [], now: NOW });
 assert.strictEqual(r.summary.total, 0);

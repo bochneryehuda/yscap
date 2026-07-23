@@ -86,15 +86,27 @@ function findingAction(f) {
       overdue: false,
       severity: norm(ff.severity) || 'unknown',
       ref: findingRef(ff),
+      // The registry's identity is (code, subject) — carry the subject so dedupe
+      // never collapses two DISTINCT findings that share a code (e.g.
+      // title_defect::title vs title_defect::survey are two separate actions).
+      subject: str(ff.subject) || str(ff.field) || null,
     };
   } catch (_e) { return null; }
 }
+
+// Statuses that mean a RAW (un-aged) condition is done — mirrors
+// condition-aging's CLOSED_STATUSES so the no-aging-module fallback drops
+// closed conditions exactly like the aged path does.
+const RAW_CLOSED = new Set(['satisfied', 'cleared', 'waived', 'signed_off', 'signedoff', 'resolved', 'complete', 'completed', 'done', 'closed']);
 
 // Turn an aged OPEN condition row into an action.
 function conditionAction(row) {
   try {
     const r = obj(row);
     if (r.open === false) return null; // closed conditions are not work
+    // A raw row (no aging pass) carries `status`, not `open` — treat a closed
+    // status as not-work too, so the fallback path honors the same rule.
+    if (r.open == null && RAW_CLOSED.has(norm(r.status).replace(/[\s-]+/g, '_'))) return null;
     const overdue = r.overdue === true;
     const days = Number.isFinite(r.daysOpen) ? r.daysOpen : null;
     const why = overdue
@@ -188,7 +200,10 @@ function dedupe(list) {
     const out = [];
     for (const a of list) {
       if (!a) continue;
-      const key = `${a.kind}|${(a.ref || '').toLowerCase()}|${a.ref ? '' : norm(a.title)}`;
+      // Identity: kind + ref + SUBJECT (a finding's registry identity is
+      // (code, subject), so two distinct findings sharing a code but about
+      // different subjects must NOT collapse). Refless items key on the title.
+      const key = `${a.kind}|${(a.ref || '').toLowerCase()}|${a.ref ? norm(a.subject) : norm(a.title)}`;
       if (a.ref || a.title) { if (seen.has(key)) continue; seen.add(key); }
       out.push(a);
     }
