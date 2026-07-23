@@ -380,6 +380,11 @@ async function fileCredit(appId) {
       id: latestRow.id, status: latestRow.status,
       reason: (latestRow.parsed && latestRow.parsed.parseError) || latestRow.error || null,
       pulledAt: latestRow.pulled_at, source: latestRow.source, pullType: latestRow.pull_type,
+      // A failed/partial attempt can still have filed a real PDF (a PDF-only upload,
+      // or a live pull that returned a PDF but unreadable data) — carry the doc ids
+      // so the UI keeps that PDF reachable instead of orphaning it.
+      pdfDocumentId: latestRow.pdf_document_id || null,
+      xmlDocumentId: latestRow.xml_document_id || null,
     }
     : null;
   const hist = await db.query(

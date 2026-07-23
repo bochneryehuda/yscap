@@ -214,6 +214,28 @@ const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failu
   ok(afterErr.hasReport && afterErr.report && afterErr.report.middleScore === 705 && afterErr.report.pdfDocumentId, 'a failed pull does NOT hide the last good report — still shows middle 705 WITH its PDF');
   ok(afterErr.lastAttempt && afterErr.lastAttempt.status === 'error' && /no credit data/i.test(afterErr.lastAttempt.reason || ''), 'the failed attempt is surfaced separately as lastAttempt (with a reason)');
 
+  // --- a PDF-ONLY import (no data file) files a real PDF but can't be read → it is
+  //     stored status='error' WITH a pdf_document_id, and fileCredit carries that PDF
+  //     on lastAttempt so the UI NEVER orphans it (owner: the PDF is a must). ------
+  const pdfOnly = await credit.importCredit(app.id, { pdfBase64: PDF_B64, actorId: staff.id });
+  ok(pdfOnly.ok && pdfOnly.hasPdf && pdfOnly.parseError, 'a PDF-only import files the PDF but reports parseError (no data file)');
+  const pdfOnlyRow = (await db.query('SELECT status, pdf_document_id FROM credit_reports WHERE id=$1', [pdfOnly.creditReportId])).rows[0];
+  ok(pdfOnlyRow.status === 'error' && pdfOnlyRow.pdf_document_id, 'PDF-only import stored status=error WITH a pdf_document_id');
+  ok((await credit.fileCredit(app.id)).lastAttempt.pdfDocumentId === pdfOnlyRow.pdf_document_id, 'fileCredit.lastAttempt carries the filed PDF so the UI keeps it reachable');
+
+  // ...and on a file whose ONLY credit attempt is a PDF-only import (no prior
+  // completed report), fileCredit shows NO full report but STILL surfaces the PDF.
+  const bor2 = (await db.query("INSERT INTO borrowers (first_name,last_name,email) VALUES ('Pdf','Only',$1) RETURNING id", [`pdftest_${process.pid}@example.com`])).rows[0];
+  const app2 = (await db.query('INSERT INTO applications (borrower_id) VALUES ($1) RETURNING id', [bor2.id])).rows[0];
+  await credit.importCredit(app2.id, { pdfBase64: PDF_B64, actorId: staff.id });
+  const fc2 = await credit.fileCredit(app2.id);
+  ok(fc2.report === null && fc2.hasReport === false, 'a PDF-only-only file has no full report (no completed row)');
+  ok(fc2.lastAttempt && fc2.lastAttempt.pdfDocumentId && fc2.lastAttempt.source === 'upload', 'the filed PDF stays reachable via lastAttempt (source=upload) — never orphaned (MAJOR fix)');
+  await db.query('DELETE FROM credit_reports WHERE application_id=$1', [app2.id]).catch(() => {});
+  await db.query('DELETE FROM documents WHERE application_id=$1', [app2.id]).catch(() => {});
+  await db.query('DELETE FROM applications WHERE id=$1', [app2.id]).catch(() => {});
+  await db.query('DELETE FROM borrowers WHERE id=$1', [bor2.id]).catch(() => {});
+
   // ═══ Wave 2 — co-borrower joint pull ═══════════════════════════════════════
   // Link a SECOND borrower as the co-borrower; credit is required for BOTH.
   const coCondition = require('../src/lib/credit/co-condition');

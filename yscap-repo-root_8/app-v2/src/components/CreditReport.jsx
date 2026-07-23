@@ -608,19 +608,24 @@ export function CreditCondition({ appId, canPull, onChanged }) {
   const onImported = (out) => {
     setShowModal(false);
     const results = (out && Array.isArray(out.results)) ? out.results : [];
-    // A borrower produced a REAL report only when the pull succeeded AND the data
-    // parsed. A live pull that returned nothing recognizable (parseError) is NOT a
-    // success — it must read as a clear failure, not "imported successfully".
-    const usable = results.filter((r) => r.ok !== false && !r.parseError);
-    const problems = results.filter((r) => r.ok === false || r.parseError);
+    // Three outcomes per borrower:
+    //   withData — the report parsed (scores/tradelines): a real, full report.
+    //   pdfOnly  — no readable data BUT a PDF was filed (a PDF-only upload, or a
+    //              live pull that returned a PDF but unreadable data): a real
+    //              artifact, just no scores — NOT a failure.
+    //   failed   — nothing usable (no data, no PDF): a true failure.
+    const withData = results.filter((r) => r.ok !== false && !r.parseError);
+    const pdfOnly = results.filter((r) => r.ok !== false && r.parseError && r.hasPdf);
+    const failed = results.filter((r) => r.ok === false || (r.parseError && !r.hasPdf));
     const multi = results.length > 1;
+    const isUpload = !!(out && out.source === 'upload');
 
-    if (usable.length > 0) {
+    if (withData.length > 0) {
       // SUCCESS — confirm it and auto-open the full report on the whole screen.
       const bits = [];
       if (multi) {
-        usable.forEach((r) => bits.push(`${r.name}: ${r.middleScore != null ? 'middle ' + r.middleScore : 'no score'}`));
-        problems.forEach((r) => bits.push(`${r.name}: not pulled — ${r.error || r.parseError || 'failed'}`));
+        withData.forEach((r) => bits.push(`${r.name}: ${r.middleScore != null ? 'middle ' + r.middleScore : 'no score'}`));
+        results.filter((r) => r.ok === false || r.parseError).forEach((r) => bits.push(`${r.name}: ${r.error || r.parseError || 'not read'}`));
       } else {
         if (out.middleScore != null) bits.push(`middle score ${out.middleScore}`);
         if (out.ficoWritten != null) bits.push(`FICO set to ${out.ficoWritten}`);
@@ -628,17 +633,24 @@ export function CreditCondition({ appId, canPull, onChanged }) {
         if (out.ficoUnverified) bits.push('FICO not auto-set — no SSN on file to confirm identity');
       }
       if (out.coConditionOpened) bits.push('opened a separate credit condition for the co-borrower');
-      const tone = (problems.length || out.ficoMismatch || out.ficoUnverified) ? 'warn' : 'ok';
-      const msg = multi ? `Imported credit for ${usable.length} of ${results.length} borrowers ✓` : 'Credit report imported successfully ✓';
+      const tone = (failed.length || pdfOnly.length || out.ficoMismatch || out.ficoUnverified) ? 'warn' : 'ok';
+      const msg = multi ? `Imported credit for ${withData.length} of ${results.length} borrowers ✓` : 'Credit report imported successfully ✓';
       showFlash(msg + (bits.length ? ' — ' + bits.join(' · ') : ''), tone);
       setJustImported(true);
       loadCredit().then(() => setShowOverlay(true));
+    } else if (pdfOnly.length > 0) {
+      // A PDF was filed, but the data file couldn't be read → no scores. It's a real
+      // artifact (surfaced on the condition), not a failure; don't open an empty report.
+      showFlash('Credit report PDF filed ✓ — but the data file (XML) couldn’t be read, so there are no scores yet. The PDF is on the condition below. Import the XML data file too (or re-pull) to get the scores.', 'warn');
+      loadCredit();
     } else {
-      // FAILURE — the pull returned no usable report. Keep any good report on file
-      // visible (no empty overlay), and say clearly what to do next.
-      const reason = (results[0] && (results[0].error || results[0].parseError)) || out.parseError
-        || 'no credit data was recognized in the response';
-      showFlash(`The credit pull didn’t return a report — ${reason}. This usually means the Xactus connection needs attention (double-check the web address, or run the “Test connection” on the API Health page). You can also import a report you downloaded from Xactus.`, 'warn');
+      // Nothing usable — no data and no PDF. Say what to do next, worded for how the
+      // import was attempted (an upload never touched the Xactus connection).
+      const reason = (failed[0] && (failed[0].error || failed[0].parseError)) || (out && out.parseError) || 'no credit data was recognized';
+      const advice = isUpload
+        ? 'The file couldn’t be read as a credit report — double-check you picked the right data file (XML) and/or PDF from Xactus.'
+        : 'This usually means the Xactus connection needs attention (double-check the web address, or run the “Test connection” on the API Health page). You can also import a report you downloaded from Xactus.';
+      showFlash(`The import didn’t produce a report — ${reason}. ${advice}`, 'warn');
       loadCredit();
     }
     if (onChanged) onChanged();
@@ -673,12 +685,16 @@ export function CreditCondition({ appId, canPull, onChanged }) {
 
       {flash && <div className={'crx-alert ' + (flashTone === 'warn' ? 'warn' : 'ok')}>{flash}</div>}
 
-      {/* A most-recent pull that FAILED (empty/unrecognized) is surfaced here so
-          staff know the last attempt didn't work — WITHOUT hiding the good report
-          already on file (which stays displayed below with its PDF). */}
-      {data && data.lastAttempt && (
+      {/* A most-recent attempt that FAILED (no readable data) is surfaced here so
+          staff know it didn't work — WITHOUT hiding the good report already on file.
+          Skipped when the only thing on file is a filed-PDF attempt (the PDF card
+          below explains that case). Worded for how it was attempted (an upload never
+          touched the Xactus connection). */}
+      {data && data.lastAttempt && (report || !data.lastAttempt.pdfDocumentId) && (
         <div className="crx-alert warn">
-          Your last credit pull{data.lastAttempt.pulledAt ? ' on ' + fmtWhen(data.lastAttempt.pulledAt) : ''} didn’t return a report{data.lastAttempt.reason ? ` — ${data.lastAttempt.reason}` : ''}.{report ? ' The report below is the last good one on file.' : ''} Check the Xactus connection (or run the “Test connection” on the API Health page), or import a report you downloaded from Xactus.
+          Your last credit {data.lastAttempt.source === 'upload' ? 'import' : 'pull'}{data.lastAttempt.pulledAt ? ' on ' + fmtWhen(data.lastAttempt.pulledAt) : ''} didn’t return a readable report{data.lastAttempt.reason ? ` — ${data.lastAttempt.reason}` : ''}.{report ? ' The report below is the last good one on file.' : ''} {data.lastAttempt.source === 'upload'
+            ? 'Check the file you selected, or import the data file (XML) too.'
+            : 'Check the Xactus connection (or run the “Test connection” on the API Health page), or import a report you downloaded from Xactus.'}
         </div>
       )}
 
@@ -717,6 +733,18 @@ export function CreditCondition({ appId, canPull, onChanged }) {
               ? <button className="crx-btn ghost sm" onClick={() => download(report.pdfDocumentId, 'credit-report.pdf')}>📄 Open credit report PDF</button>
               : <span className="crx-muted" title="This report had no PDF in the response">No PDF on this report</span>}
             {report.xmlDocumentId && <button className="crx-btn ghost sm" onClick={() => download(report.xmlDocumentId, 'credit-report.xml')}>Data file (XML)</button>}
+          </div>
+        </div>
+      ) : (data && data.lastAttempt && data.lastAttempt.pdfDocumentId) ? (
+        // A PDF was filed but the data file couldn't be read (no scores) — keep the
+        // PDF reachable instead of orphaning it behind the empty state.
+        <div className="crx-cond-summary">
+          <div className="crx-sub">
+            A credit report PDF is filed{data.lastAttempt.pulledAt ? ' (' + fmtWhen(data.lastAttempt.pulledAt) + ')' : ''}, but the data file couldn’t be read automatically{data.lastAttempt.reason ? ` — ${data.lastAttempt.reason}` : ''}, so there are no scores yet. Import the data file (XML) too — or re-pull — to read the scores.
+          </div>
+          <div className="crx-summary-actions">
+            <button className="crx-btn ghost sm" onClick={() => download(data.lastAttempt.pdfDocumentId, 'credit-report.pdf')}>📄 Open credit report PDF</button>
+            {data.lastAttempt.xmlDocumentId && <button className="crx-btn ghost sm" onClick={() => download(data.lastAttempt.xmlDocumentId, 'credit-report.xml')}>Data file (XML)</button>}
           </div>
         </div>
       ) : (
