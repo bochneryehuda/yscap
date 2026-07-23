@@ -60,12 +60,35 @@ const DECISION_BY_ACTION = Object.freeze({
  *   opts.actorId  — the staffer id
  *   opts.note     — reviewer note
  */
+// Best-effort TX-SAFE runner (audit fix 2026-07-23, found by the CI Postgres
+// soak): these captures run on the CALLER's client, usually inside the
+// caller's BEGIN/COMMIT. A bare catch swallows the JS error but leaves the
+// Postgres transaction ABORTED — every later statement fails 25P02 and the
+// COMMIT silently acts as ROLLBACK, so the staff decision the capture was
+// riding on reports ok:true and never persists (the repo's #1 bug class,
+// "returned 200 but didn't save"). SAVEPOINT/ROLLBACK-TO confines a capture
+// failure to the capture (mirrors store.js's evidence_pass). Outside a
+// transaction the SAVEPOINT itself fails — run bare (a failure there cannot
+// poison anything).
+async function txSafe(client, fn) {
+  let sp = false;
+  try { await client.query('SAVEPOINT learning_capture'); sp = true; } catch (_) { /* not in a tx */ }
+  try {
+    const out = await fn();
+    if (sp) await client.query('RELEASE SAVEPOINT learning_capture').catch(() => {});
+    return out;
+  } catch (_) {
+    if (sp) await client.query('ROLLBACK TO SAVEPOINT learning_capture').catch(() => {});
+    return null;
+  }
+}
+
 async function captureFindingDecision(client, { finding, action, actorId, note } = {}) {
   if (!finding || !finding.id || !action) return null;
   const decision = DECISION_BY_ACTION[String(action)] || null;
   if (!decision) return null;
   const committeeAgreed = finding.committee_action == null ? null : matchesDecision(finding.committee_action, decision);
-  try {
+  return txSafe(client, async () => {
     const r = await client.query(
       `INSERT INTO finding_corrections
          (application_id, finding_id, finding_code, finding_severity,
@@ -80,7 +103,7 @@ async function captureFindingDecision(client, { finding, action, actorId, note }
        finding.committee_action || null,
        committeeAgreed]);
     return r.rows[0].id;
-  } catch (_) { return null; }
+  });
 }
 
 // Loose match: did the committee's action (confirm|dismiss|modify|hold) point
@@ -98,7 +121,7 @@ function matchesDecision(committeeAction, decision) {
  */
 async function captureFactCorrection(client, { appId, factKey, observedValue, correctedValue, actorId, reason } = {}) {
   if (!appId || !factKey) return null;
-  try {
+  return txSafe(client, async () => {
     const r = await client.query(
       `INSERT INTO fact_corrections
          (application_id, fact_key, observed_value, corrected_value, corrected_by, reason)
@@ -109,7 +132,7 @@ async function captureFactCorrection(client, { appId, factKey, observedValue, co
        actorId || null,
        reason ? String(reason).slice(0, 500) : null]);
     return r.rows[0].id;
-  } catch (_) { return null; }
+  });
 }
 
 // -------------------------------------------------------------------------
@@ -292,7 +315,7 @@ async function runTraining(client) {
 async function captureAdminAnswer(client, { applicationId, agent, question, answer, context } = {}) {
   if (!agent || !question || !answer) return null;
   const c = client || db();
-  try {
+  return txSafe(c, async () => {
     // Idempotent per (agent, hash(question) — same question re-asked doesn't
     // stack). Uses a small SELECT-first + INSERT; no unique index needed.
     const key = `admin_answer:${agent}:${Buffer.from(String(question)).toString('base64').slice(0, 40)}`;
@@ -322,7 +345,7 @@ async function captureAdminAnswer(client, { applicationId, agent, question, answ
       id = ins.rows[0].id;
     }
     return id;
-  } catch (_) { return null; }
+  });
 }
 
 module.exports = {
