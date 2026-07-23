@@ -94,6 +94,10 @@ export default function PdfViewer({ data, onError, initialPage, highlight }) {
           if (highlight && pdfjsRef.current) {
             try {
               const tc = await pg.getTextContent();
+              // A newer zoom may have superseded us during the await — if so, that
+              // render already cleared + redrew this page's boxes, so bail rather
+              // than append a duplicate stale set (cosmetic race; pre-merge audit).
+              if (token !== renderTokens.current) return;
               const hits = findHighlightItems(tc.items, highlight);
               for (const idx of hits) {
                 const it = tc.items[idx];
