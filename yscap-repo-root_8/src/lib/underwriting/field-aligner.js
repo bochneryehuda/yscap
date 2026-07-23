@@ -124,4 +124,28 @@ function alignToSpan(value, lines, extra = {}) {
   };
 }
 
-module.exports = { align, alignToSpan, MIN_CONFIDENCE, _internals: { norm, stripPunct, digits, tokens, tokenOverlap, scoreLine } };
+/**
+ * pagesToLines(ocrPages) — turn the analyze pipeline's per-page OCR slices
+ * ([{pageNumber, text}, ...]) into the flat line list align()/alignToSpan()
+ * consume: [{text, page}]. Layout polygons are not yet preserved through the
+ * OCR read (R5.15), so spans built from these lines are page+quote-grounded
+ * with polygon null — the polygon column fills in when layout capture lands.
+ * Pure; hostile input → []. NEVER THROWS.
+ */
+function pagesToLines(ocrPages) {
+  try {
+    if (!Array.isArray(ocrPages)) return [];
+    const out = [];
+    for (const p of ocrPages) {
+      if (!p || typeof p.text !== 'string' || !p.text) continue;
+      const page = Number.isFinite(p.pageNumber) ? p.pageNumber : null;
+      for (const raw of p.text.split('\n')) {
+        const text = String(raw).trim();
+        if (text) out.push({ text, page });
+      }
+    }
+    return out;
+  } catch (_e) { return []; }
+}
+
+module.exports = { align, alignToSpan, pagesToLines, MIN_CONFIDENCE, _internals: { norm, stripPunct, digits, tokens, tokenOverlap, scoreLine } };

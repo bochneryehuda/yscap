@@ -98,13 +98,14 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
   // canonical fact. Best-effort — twin recording never blocks an extraction
   // from persisting. Uses the ORIGINAL unmasked fields (safeFields is masked
   // for storage; the twin records the real values behind its own audit trail).
+  let factObservations = [];
   try {
     // R5.3 — resolve the source page of each field from the OCR page text, so
     // fact_observations record page_number (was always null). Heuristic text
     // match; a miss stays null (never a wrong page).
     const { makeFieldPager } = require('./evidence-page');
     const pageNumberFor = makeFieldPager(ext.fields || {}, ext.ocrPages || null);
-    await require('./twin').recordFactsFromExtraction(client, {
+    const twinRes = await require('./twin').recordFactsFromExtraction(client, {
       appId, documentId, docType, extractionId,
       fields: ext.fields || {},
       ocrEngine: ext.ocrEngine || null,
@@ -112,6 +113,7 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
       confidence: ext.confidence || null,
       pageNumberFor,
     });
+    factObservations = Array.isArray(twinRes && twinRes.observations) ? twinRes.observations : [];
   } catch (_) { /* twin is additive — never blocks the extraction */ }
 
   // 3. Insert findings. Runs through the promoted-rules applier FIRST
@@ -144,6 +146,54 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
        pageNumber != null ? pageNumber : null]);
     findingIds.push(fr[0].id);
   }
+
+  // 3b. Evidence ledger (R5.17 wiring, 2026-07-23): ground each recorded fact
+  // observation and each finding's doc-side value to the exact OCR page LINE it
+  // came from — recordSpan (quote + page, polygon null until R5.15 layout
+  // capture) + linkFact/linkFinding. This is what makes "click a fact → see the
+  // snippet" and the certificate's evidence-linked invariant possible. Runs
+  // inside the caller's transaction under a SAVEPOINT so ANY failure here rolls
+  // back only the evidence pass — it can never poison the enclosing COMMIT or
+  // block the extraction/findings from persisting. Best-effort by design.
+  try {
+    await client.query('SAVEPOINT evidence_pass');
+    try {
+      const aligner = require('./field-aligner');
+      const ledger = require('./evidence-ledger');
+      const lines = aligner.pagesToLines(ext.ocrPages);
+      if (lines.length && appId) {
+        const spanBase = {
+          applicationId: appId, documentId,
+          ocrEngine: ext.ocrEngine || null,
+          extractorEngine: ext.aiModel || null,
+          sourceSha256: analyzedSha256 || null,
+          analyzerVersion: analyzerVersion || null,
+        };
+        // facts → spans
+        for (const ob of factObservations) {
+          const value = (ext.fields || {})[ob.extractedField];
+          if (value == null || value === '' || typeof value === 'object') continue;
+          const span = aligner.alignToSpan(value, lines);
+          if (!span) continue; // no confident match — never a guessed citation
+          const row = await ledger.recordSpan(client, { ...spanBase, ...span, meta: { factKey: ob.factKey, field: ob.extractedField } });
+          await ledger.linkFact(client, { factObservationId: ob.observationId, evidenceSpanId: row.id, supportType: 'direct', applicationId: appId });
+        }
+        // findings with a doc-side value → spans (findingIds is 1:1 with effectiveFindings)
+        for (let i = 0; i < findingIds.length; i++) {
+          const f = (effectiveFindings || [])[i];
+          if (!f || f.docValue == null || f.docValue === '') continue;
+          const span = aligner.alignToSpan(f.docValue, lines);
+          if (!span) continue;
+          const row = await ledger.recordSpan(client, { ...spanBase, ...span, meta: { code: f.code || null, field: f.field || null } });
+          await ledger.linkFinding(client, { findingId: findingIds[i], evidenceSpanId: row.id, role: 'supports', applicationId: appId });
+        }
+      }
+      await client.query('RELEASE SAVEPOINT evidence_pass');
+    } catch (_) {
+      await client.query('ROLLBACK TO SAVEPOINT evidence_pass').catch(() => {});
+    }
+  } catch (_) { /* SAVEPOINT itself unavailable (no tx) — skip the evidence pass */ }
+
   // Audit-log the suppressed set so a reviewer can inspect exactly what a
   // promoted 'suppress_finding' rule dropped (best-effort — never blocks).
   if (suppressedByRules && suppressedByRules.length) {

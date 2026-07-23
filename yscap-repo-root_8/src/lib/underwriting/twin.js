@@ -737,11 +737,14 @@ async function recordFactsFromExtraction(client, opts = {}) {
   if (!map) return { recorded: 0 };
   const pageNumberFor = typeof opts.pageNumberFor === 'function' ? opts.pageNumberFor : () => null;
   let recorded = 0;
+  // Evidence-ledger wiring (2026-07-23): return WHICH observation row each
+  // extracted field produced so the caller can link an evidence span to it.
+  const observations = [];
   for (const [extractedField, factKey] of Object.entries(map)) {
     const value = fields[extractedField];
     if (value == null || value === '') continue;
     try {
-      await recordObservation(client, {
+      const ob = await recordObservation(client, {
         appId, factKey,
         sourceType: 'document', sourceId: docType,
         documentId, extractionId,
@@ -754,9 +757,10 @@ async function recordFactsFromExtraction(client, opts = {}) {
         reason: `${docType} extraction`,
       });
       recorded += 1;
+      if (ob && ob.observationId) observations.push({ extractedField, factKey, observationId: ob.observationId });
     } catch (_) { /* one bad field never blocks the rest */ }
   }
-  return { recorded };
+  return { recorded, observations };
 }
 
 function confidenceToNumber(v) {
