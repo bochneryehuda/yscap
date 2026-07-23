@@ -78,24 +78,42 @@ const OPS = new Set(['eq', 'gt', 'lt', 'in', 'is_true', 'is_false']);
   ok('General Liability + Feasibility Report attach on ground-up AND heavy rehab');
 }
 
-// 5. dedup — buyer-specific supersedes generic on the same template; null templates always kept.
+// 5. dedup — ONLY a generic row is dropped when a buyer-specific row covers its template.
+//    TWO buyer-specific rows sharing a template are DISTINCT requirements and BOTH survive
+//    (the guideline→PILOT crosswalk is many-to-one). Null templates always kept.
 {
   const rows = [
     { cond_no: 1015, scope: 'all_note_buyers', pilot_template_code: 'rtl_cond_credit', name: 'GENERIC CREDIT' },
     { cond_no: 41, scope: 'note_buyer', pilot_template_code: 'rtl_cond_credit', name: 'BLUELAKE CREDIT' },
+    // six distinct title requirements all clear through ONE template — every one must survive.
+    { cond_no: 2, scope: 'note_buyer', pilot_template_code: 'rtl_cond_title', name: 'TITLE A' },
+    { cond_no: 140, scope: 'note_buyer', pilot_template_code: 'rtl_cond_title', name: 'TITLE B' },
+    { cond_no: 141, scope: 'note_buyer', pilot_template_code: 'rtl_cond_title', name: 'TITLE C' },
     { cond_no: 5, scope: 'all_note_buyers', pilot_template_code: 'rtl_p1_id', name: 'GENERIC ID' },
     { cond_no: 98, scope: 'note_buyer', pilot_template_code: null, name: 'no-code A' },
     { cond_no: 99, scope: 'note_buyer', pilot_template_code: null, name: 'no-code B' },
   ];
   const out = desk.dedupePreferSpecific(rows);
-  assert.strictEqual(out.length, 4, 'the duplicate credit template collapses to one; others kept');
-  assert.strictEqual(out.find((r) => r.pilot_template_code === 'rtl_cond_credit').name, 'BLUELAKE CREDIT', 'buyer-specific credit wins');
+  assert.strictEqual(out.filter((r) => r.name === 'GENERIC CREDIT').length, 0, 'the generic credit row is superseded and dropped');
+  assert.strictEqual(out.filter((r) => r.pilot_template_code === 'rtl_cond_credit').length, 1, 'exactly the buyer-specific credit survives');
+  assert.strictEqual(out.filter((r) => r.pilot_template_code === 'rtl_cond_title').length, 3, 'ALL THREE distinct title requirements survive (many-to-one crosswalk)');
   assert.strictEqual(out.find((r) => r.pilot_template_code === 'rtl_p1_id').name, 'GENERIC ID', 'an un-superseded generic row stays');
   assert.strictEqual(out.filter((r) => !r.pilot_template_code).length, 2, 'null-template rows are never deduped');
-  // order preserved for kept rows.
-  assert.ok(out.indexOf(out.find((r) => r.pilot_template_code === 'rtl_p1_id')) < out.indexOf(out.find((r) => r.cond_no === 98)));
+  assert.strictEqual(out.length, 7, '8 in → drop only the 1 superseded generic credit = 7 kept');
   for (const bad of [null, undefined, 42, 'x', {}, [{}], [null]]) assert.doesNotThrow(() => desk.dedupePreferSpecific(bad));
-  ok('dedupePreferSpecific: buyer-specific supersedes generic on same template; null-template kept; null-safe');
+  ok('dedup drops ONLY a superseded generic; distinct same-scope rows on one template all survive; null-safe');
+}
+
+// 6. the REAL Blue Lake active set (all note-buyer-scoped) survives dedup intact — nothing lost.
+{
+  const active = spec.applicableFor('bluelake');   // lifecycle active_now
+  const out = desk.dedupePreferSpecific(active.slice());
+  assert.strictEqual(out.length, active.length, 'every active Blue Lake condition survives dedup (no generic to supersede within one buyer)');
+  // and the shared-template conditions are all present (e.g. every rtl_cond_title requirement).
+  const titles = active.filter((c) => c.pilot_template_code === 'rtl_cond_title');
+  assert.ok(titles.length >= 3, 'multiple title requirements exist in the spec');
+  assert.strictEqual(out.filter((c) => c.pilot_template_code === 'rtl_cond_title').length, titles.length, 'all title requirements survive');
+  ok('the full Blue Lake active set survives dedup — no condition silently dropped');
 }
 
 console.log(`\nBlue Lake spec + desk dedup pure — ${passed} checks passed`);

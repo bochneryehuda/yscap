@@ -207,31 +207,33 @@ function statusPhrase(s) {
 }
 
 /**
- * dedupePreferSpecific(rows) → rows (PURE, never throws). When two conditions map to the SAME
- * non-null PILOT template code, keep ONE — preferring a note-buyer-specific row over a generic
- * `all_note_buyers` row (the buyer's own requirement supersedes the shared one), and otherwise
- * the first seen. Rows with no pilot_template_code are never deduped (each is its own item).
- * This keeps a file that pulls both the shared set AND its buyer's set from showing the same
- * requirement twice. Order is preserved.
+ * dedupePreferSpecific(rows) → rows (PURE, never throws). The ONLY duplication this removes is a
+ * GENERIC-vs-SPECIFIC pair: when the file's own note buyer has its OWN condition (scope
+ * 'note_buyer' / 'all_but_note_buyer_limits') for a given PILOT template code, the shared generic
+ * `all_note_buyers` condition(s) for that SAME code are dropped (the buyer's own requirement
+ * supersedes the shared one). Everything else is kept AS-IS — critically, TWO note-buyer-specific
+ * conditions that share a template code are DISTINCT requirements (the guideline→PILOT crosswalk
+ * is many-to-one: e.g. 6 different title requirements all clear through rtl_cond_title) and must
+ * both survive. Rows with no template code are always kept. Order is preserved.
  */
 function dedupePreferSpecific(rows) {
   try {
     const list = Array.isArray(rows) ? rows : [];
-    const chosen = new Map();   // code -> index into result
+    // codes that a note-buyer-SPECIFIC row owns → their generic counterparts are superseded.
+    const specificCodes = new Set();
+    for (const row of list) {
+      const r = row && typeof row === 'object' ? row : null;
+      if (!r || !r.pilot_template_code) continue;
+      if (r.scope && r.scope !== 'all_note_buyers') specificCodes.add(String(r.pilot_template_code));
+    }
     const out = [];
     for (const row of list) {
       const r = row && typeof row === 'object' ? row : null;
       if (!r) continue;
       const code = r.pilot_template_code ? String(r.pilot_template_code) : null;
-      if (!code) { out.push(r); continue; }
-      if (!chosen.has(code)) { chosen.set(code, out.length); out.push(r); continue; }
-      // a row already holds this code — replace it only if THIS row is buyer-specific and the
-      // held one is the generic all-note-buyers row.
-      const idx = chosen.get(code);
-      const held = out[idx];
-      const heldGeneric = held && held.scope === 'all_note_buyers';
-      const thisSpecific = r.scope && r.scope !== 'all_note_buyers';
-      if (heldGeneric && thisSpecific) out[idx] = r;
+      // drop ONLY a generic row whose code is covered by a buyer-specific row.
+      if (code && r.scope === 'all_note_buyers' && specificCodes.has(code)) continue;
+      out.push(r);
     }
     return out;
   } catch (_e) { return Array.isArray(rows) ? rows : []; }
