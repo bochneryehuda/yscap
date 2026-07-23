@@ -2713,6 +2713,17 @@ router.patch('/post-closing/:pid', async (req, res) => {
 // document set with a manifest. Staff-only (path middleware already scoped it).
 router.get('/applications/:id/export/tpr', async (req, res) => {
   try {
+    // R6.18 (#181) — issuance backstop on the EXPORT path: don't hand a note-buyer
+    // tape out for a file with a CONFIRMED fatal without a super-admin. Fails OPEN
+    // (no current run → advisory → proceed); a super-admin ALWAYS proceeds (recorded
+    // as an override). Never an un-overridable block; touches no frozen number.
+    const issuance = await issuanceBackstop.backstopForRun(req.params.id, 'term_sheet', db, { actorRole: req.actor.role, overrideReason: req.query && req.query.overrideReason });
+    if (issuance.hardWarning && !issuance.proceed) {
+      return res.status(409).json({ error: 'blocked', action: 'export_tpr', issuance });
+    }
+    if (issuance.override && issuance.override.applied) {
+      await audit(req, 'issuance_override', 'application', req.params.id, { action: 'export_tpr', tier: issuance.tier, reason: issuance.override.reason });
+    }
     const { zip, filename } = await require('../lib/tpr-export').buildTprExport(req.params.id);
     await audit(req, 'export_tpr', 'application', req.params.id, { bytes: zip.length });
     // Owner-directed (2026-07-13): every export is also kept on the file and
@@ -2756,6 +2767,17 @@ router.get('/applications/:id/export/tpr/preview', async (req, res) => {
 // audited exactly like the TPR export.
 router.get('/applications/:id/export/mismo', async (req, res) => {
   try {
+    // R6.18 (#181) — issuance backstop on the EXPORT path (parity with the TPR
+    // export): a confirmed-fatal file is a super-admin-overridable HARD WARNING
+    // before its loan data leaves in MISMO XML. Fails OPEN on no run; a super-admin
+    // always proceeds (recorded). Never an un-overridable block.
+    const issuance = await issuanceBackstop.backstopForRun(req.params.id, 'term_sheet', db, { actorRole: req.actor.role, overrideReason: req.query && req.query.overrideReason });
+    if (issuance.hardWarning && !issuance.proceed) {
+      return res.status(409).json({ error: 'blocked', action: 'export_mismo', issuance });
+    }
+    if (issuance.override && issuance.override.applied) {
+      await audit(req, 'issuance_override', 'application', req.params.id, { action: 'export_mismo', tier: issuance.tier, reason: issuance.override.reason });
+    }
     const mismo = require('../lib/mismo');
     const xml = await mismo.exportApplicationXml(req.params.id);
     if (!xml) return res.status(404).json({ error: 'application not found' });
