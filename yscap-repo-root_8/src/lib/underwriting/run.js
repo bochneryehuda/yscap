@@ -232,7 +232,10 @@ function assembleRun(inputs) {
     manualApproved: !!i.manualApproved,
     missingRequired: !ctx.ready,
     staleRegistration: (reg && !!reg.stale) || staleChanged.length > 0,
-    discrepancies: ctx.discrepancies || [],
+    // Only MATERIAL disagreements (a pricing-input source disagrees) drive DATA_CONFLICT /
+    // ctc-funding gating. An appraisal-only value difference is advisory (owned by the
+    // appraisal desk) — it stays in ctx.discrepancies for the cockpit but must not block.
+    discrepancies: (ctx.discrepancies || []).filter(materialDiscrepancy),
     findings,
     staleRun: false, // a fresh run is never stale
   });
@@ -587,16 +590,38 @@ async function gatherInvestorInputs(applicationId, db) {
   return out;
 }
 
+// The appraisal is an INDEPENDENT OBSERVATION of value, not a pricing INPUT. An appraisal
+// value that differs from the priced / pro-forma value is exactly what the appraisal desk
+// evaluates (its asis_mismatch / arv_mismatch / asis_below_price findings) — it is NOT a
+// whole-run source-of-truth conflict, nor a "pricing input changed since pricing" alarm.
+// So a source-priority discrepancy whose ONLY disagreeing candidate is the appraisal is
+// ADVISORY: it stays in ctx.discrepancies (for the cockpit / appraisal desk) but must not
+// flip the run to DATA_CONFLICT or STALE. A genuine pricing-input change (the application or
+// the registration) still counts. (Without this, the #248 appraisal candidate on as_is_value /
+// arv false-flipped essentially every appraisal-bearing file to STALE/DATA_CONFLICT and emitted
+// a spurious registration_input_drift finding — the appraisal coming in different from the
+// pro-forma is the normal case the appraisal desk exists to handle.)
+const OBSERVATION_SOURCES = Object.freeze(new Set(['appraisal']));
+function nonObservationConflicts(d) {
+  return (d && Array.isArray(d.conflicts) ? d.conflicts : []).filter((c) => c && !OBSERVATION_SOURCES.has(c.source));
+}
+// A discrepancy is MATERIAL (a real source-of-truth conflict / priced-input drift) only when a
+// non-observation source disagrees with the governing value; an appraisal-only disagreement is advisory.
+function materialDiscrepancy(d) { return nonObservationConflicts(d).length > 0; }
+
 // Priced-input drift, derived from the context's source-priority discrepancies:
 // a disagreement on a PRICING field (registration governing vs application) →
 // { key, from: registration value, to: application value }. Casing-agnostic
 // because the context did the comparison (regInputs camelCase vs app columns).
+// Appraisal-only disagreements are NOT drift (see nonObservationConflicts above).
 function pricedDrift(context) {
   const discrepancies = (context && context.discrepancies) || [];
   const out = [];
   for (const d of discrepancies) {
     if (!PRICED_CONTEXT_FIELDS.has(d.field)) continue;
-    const conflict = (d.conflicts && d.conflicts[0]) || {};
+    const conflicts = nonObservationConflicts(d);
+    if (!conflicts.length) continue;                 // appraisal-only difference → advisory, not stale input
+    const conflict = conflicts[0];
     out.push({ key: d.field, from: d.governing ? d.governing.value : null, to: conflict.value != null ? conflict.value : null });
   }
   return out;
