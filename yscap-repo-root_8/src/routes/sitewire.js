@@ -782,6 +782,105 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
   } catch (e) { if (e.status === 422) return res.status(422).json({ error: e.message }); console.warn('[sitewire] start-draw error:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
+// ---- Portal draw requests (phase 4 — blueprint §2 Path B/C, §5B): the staff composer + desk ----
+// A PORTAL request is a draw cycle born on OUR website (staff here; the borrower on their
+// draws screen) on a physical-inspection file. GET = composer state + pickable lines +
+// history + Trinity orders; POST = create (staff may deliberately pass allow_over /
+// allow_parallel); then cancel / close-out retry / Trinity actions are the desk's levers.
+const intId = (v) => { const n = Number(v); return Number.isInteger(n) && n > 0 ? n : null; };
+router.get('/files/:id/portal-draws', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const portalDraws = require('../lib/portal-draws');
+    const state = await portalDraws.composerState(appId);
+    const lines = state.set_up ? await portalDraws.composerLines(appId) : [];
+    const history = (await db.query(
+      `SELECT id, source, status, platform, lines, total_requested_cents, approved_cents, note,
+              tp_draw_id, sitewire_draw_id, cancelled_reason, created_at, updated_at
+         FROM portal_draw_requests WHERE application_id=$1 ORDER BY created_at DESC LIMIT 50`, [appId])).rows;
+    const trinity = (await db.query(
+      `SELECT id, portal_draw_request_id, sitewire_draw_id, status, ordered_at, note, created_at
+         FROM trinity_inspection_orders WHERE application_id=$1 ORDER BY created_at DESC LIMIT 50`, [appId])).rows;
+    res.json({ state, lines, history, trinity_orders: trinity });
+  } catch (e) { console.warn('[sitewire] portal-draws error:', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/files/:id/portal-draws', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const portalDraws = require('../lib/portal-draws');
+    const b = req.body || {};
+    const row = await portalDraws.createRequest(appId, Array.isArray(b.entries) ? b.entries : [], {
+      source: 'staff', staffId: req.actor.id,
+      allowOver: b.allow_over === true, allowParallel: b.allow_parallel === true,
+      note: b.note ? String(b.note) : null,
+    });
+    res.json({ ok: true, request: row });
+  } catch (e) {
+    if (e && e.status) return res.status(e.status).json({ error: e.message });
+    console.warn('[sitewire] portal-draw create error:', e && e.message); res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.post('/files/:id/portal-draws/:prId/cancel', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id, prId = intId(req.params.prId);
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  if (!prId) return res.status(400).json({ error: 'bad request id' });
+  try {
+    const row = await require('../lib/portal-draws').cancelRequest(appId, prId, {
+      staffId: req.actor.id, reason: req.body && req.body.reason ? String(req.body.reason) : null,
+    });
+    res.json({ ok: true, request: row });
+  } catch (e) {
+    if (e && e.status) return res.status(e.status).json({ error: e.message });
+    console.warn('[sitewire] portal-draw cancel error:', e && e.message); res.status(500).json({ error: 'server error' });
+  }
+});
+
+// Retry the historical close-out (it also runs by itself on the TrustPoint approval).
+router.post('/files/:id/portal-draws/:prId/close-out', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id, prId = intId(req.params.prId);
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  if (!prId) return res.status(400).json({ error: 'bad request id' });
+  try {
+    const r = await require('../lib/portal-draws').historicalCloseOut(appId, prId);
+    res.json({ ok: !!r.ok, ...r });
+  } catch (e) { console.warn('[sitewire] portal-draw close-out error:', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+// The Trinity decision: per-line approved amounts → approved + close-out attempt.
+router.post('/files/:id/portal-draws/:prId/approve-trinity', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id, prId = intId(req.params.prId);
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  if (!prId) return res.status(400).json({ error: 'bad request id' });
+  try {
+    const b = req.body || {};
+    const r = await require('../lib/portal-draws').approveTrinityRequest(appId, prId, Array.isArray(b.entries) ? b.entries : [], { staffId: req.actor.id });
+    res.json({ ok: true, ...r });
+  } catch (e) {
+    if (e && e.status) return res.status(e.status).json({ error: e.message });
+    console.warn('[sitewire] trinity approve error:', e && e.message); res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.post('/files/:id/trinity-orders/:orderId/advance', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id, orderId = intId(req.params.orderId);
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  if (!orderId) return res.status(400).json({ error: 'bad order id' });
+  try {
+    const b = req.body || {};
+    const row = await require('../lib/portal-draws').advanceTrinityOrder(appId, orderId, String(b.action || ''), {
+      staffId: req.actor.id, note: b.note ? String(b.note) : null,
+    });
+    res.json({ ok: true, order: row });
+  } catch (e) {
+    if (e && e.status) return res.status(e.status).json({ error: e.message });
+    console.warn('[sitewire] trinity advance error:', e && e.message); res.status(500).json({ error: 'server error' });
+  }
+});
+
 // ---- GET /files/:id/draw-request — draw-request form status + captured wire instructions ----
 // Everything the coordinator sees for the DocuSign Draw Request & Wire Instructions form:
 // whether it can be sent, the latest envelope's status, the borrower-typed wire details
@@ -1319,7 +1418,7 @@ router.post('/rules', requirePermission('platform_setup'), async (req, res) => {
   // fixes it here. This applies to 'trustpoint' rules too — those files STILL push to Sitewire,
   // so the partner must resolve. Only 'external' rules (no push at all) skip the requirement.
   if (partnerLabel && !cpId && !handledExternally) {
-    return res.status(400).json({ error: `We couldn't find "${partnerLabel}" in the Sitewire capital-partner directory. Either link it to a Sitewire partner on the Partners page, or set the "Draws administered on" choice to External if this partner isn\'t in Sitewire.` });
+    return res.status(400).json({ error: `We couldn't find "${partnerLabel}" in the Sitewire capital-partner directory. Either link it to a Sitewire partner on the Partners page, or set the "Draws administered on" choice to External if this partner isn't in Sitewire.` });
   }
   // Dormant markup knob (owner D9 2026-07-24): stored only; no code charges it yet. Integer
   // cents 0..$100k; blank/garbage → null (no markup), matching the physical-fee handling.

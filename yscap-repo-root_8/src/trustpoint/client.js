@@ -57,7 +57,8 @@ async function call(path, { method = 'GET', body, query } = {}) {
   if (query) for (const [k, v] of Object.entries(query)) if (v != null && v !== '') url.searchParams.set(k, String(v));
   const isWrite = method !== 'GET';
   if (isWrite && cfg.trustpointDryrun) {
-    console.log(`[trustpoint][dryrun] ${method} ${url.pathname}${url.search} body=${JSON.stringify(body || {}).slice(0, 500)}`);
+    const masked = body && body.credentials ? { ...body, credentials: '***' } : body;
+    console.log(`[trustpoint][dryrun] ${method} ${url.pathname}${url.search} body=${JSON.stringify(masked || {}).slice(0, 500)}`);
     return { __dryrun: true };
   }
   const attempt = async () => {

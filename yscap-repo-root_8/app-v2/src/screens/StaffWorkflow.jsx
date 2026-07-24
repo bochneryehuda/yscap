@@ -11,6 +11,7 @@ const TYPE_LABEL = {
   loan_setup: 'Loan Setup', processing: 'Processing', condition_clearing: 'Condition Clearing',
   clear_to_close: 'Clear to Close', closing: 'Closing', draw_setup: 'Draw Setup',
   post_closing: 'Post-Closing / Investor Delivery', exception: 'Exception', escalation: 'Escalation',
+  trustpoint_import: 'TrustPoint Draw Entry', trinity_inspection_order: 'Trinity Inspection Order',
 };
 const addrLine = (a) => !a ? '' : (a.oneLine || [a.street, a.city, a.state].filter(Boolean).join(', ') || '');
 const initials = (...p) => p.filter(Boolean).map(s => String(s).trim()[0] || '').join('').slice(0, 2).toUpperCase() || '—';

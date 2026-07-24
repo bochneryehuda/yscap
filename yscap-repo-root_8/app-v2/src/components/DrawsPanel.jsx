@@ -147,6 +147,7 @@ export default function DrawsPanel({ appId }) {
           )}
           <StartDrawCard appId={appId} onStarted={load} />
           <TrustpointPanel appId={appId} />
+          <PortalDrawsCard appId={appId} />
           {/* Send the DocuSign Draw Request & Wire Instructions form right from the start-draw screen. */}
           <DrawRequestCard appId={appId} />
           {/* The draw email center is visible on the construction-draw screen even BEFORE the file is
@@ -157,6 +158,7 @@ export default function DrawsPanel({ appId }) {
         <>
           {msg && <div className="dd-card" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)' }}>{msg}</div>}
           <TrustpointPanel appId={appId} />
+          <PortalDrawsCard appId={appId} />
 
           {/* Redesigned draw desk: a sticky left section rail (like the loan file) + collapsible sections,
               so the whole draw process is scannable without endless scrolling. Each section opens on demand;
@@ -827,6 +829,216 @@ function CheckRow({ ok, label }) {
 // ---- TrustPoint mirror panel (physical-draw workflow phases 2-3; STAFF-ONLY surface) ----
 // Renders only when the file is linked to a TrustPoint project. Read-mostly: shows the
 // mirrored draws + inspection orders; the one action surface is the coordinator's
+// Portal draw requests (phase 4): the staff line-item composer + desk for physical-inspection
+// files. A request born here (or on the borrower's draws screen) is hand-run through the
+// administered/inspection process by the draw coordinator; once fully approved it closes out
+// into Sitewire as a HISTORICAL draw so the per-line ledger and rollups stay whole.
+function PortalDrawsCard({ appId }) {
+  const [data, setData] = useState(null);
+  const [openForm, setOpenForm] = useState(false);
+  const [amounts, setAmounts] = useState({});
+  const [note, setNote] = useState('');
+  const [allowOver, setAllowOver] = useState(false);
+  const [allowParallel, setAllowParallel] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [apprFor, setApprFor] = useState(null);       // portal request id whose decision form is open
+  const [apprAmounts, setApprAmounts] = useState({});
+  const usd = (c) => c == null ? '—' : '$' + (Number(c) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
+  const cents = (v) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? Math.round(n * 100) : 0; };
+  const load = useCallback(() => {
+    api.get(`/api/sitewire/files/${appId}/portal-draws`).then(setData).catch(() => setData(null));
+  }, [appId]);
+  useEffect(() => { load(); }, [load]);
+  if (!data || !data.state || !data.state.physical) return null;
+  const st = data.state;
+  const lines = data.lines || [];
+  const history = data.history || [];
+  const orders = data.trinity_orders || [];
+  const total = lines.reduce((s, l) => s + cents(amounts[l.sitewire_job_item_id]), 0);
+  const PR_STATUS = {
+    submitted: { label: 'Submitted', cls: 'sw-pending' }, entered: { label: st.platform === 'trustpoint' ? 'Entered in TrustPoint' : 'In review', cls: 'sw-insp' },
+    approved: { label: 'Approved', cls: 'sw-approved' }, closed_out: { label: 'Closed out to Sitewire', cls: 'sw-approved' }, cancelled: { label: 'Cancelled', cls: 'sw-draft' },
+  };
+  const ORDER_NEXT = { requested: { action: 'ordered', label: 'Mark ordered from Trinity' }, ordered: { action: 'report_received', label: 'Report received' } };
+  async function act(fn) {
+    setBusy(true); setMsg('');
+    try { await fn(); load(); }
+    catch (e) { setMsg(e?.data?.error || e.message || 'That didn’t work.'); }
+    finally { setBusy(false); }
+  }
+  function submitCreate() {
+    return act(async () => {
+      const entries = lines
+        .map((l) => ({ sitewire_job_item_id: l.sitewire_job_item_id, requested_cents: cents(amounts[l.sitewire_job_item_id]) }))
+        .filter((x) => x.requested_cents > 0);
+      await api.post(`/api/sitewire/files/${appId}/portal-draws`, {
+        entries, note: note.trim() || undefined, allow_over: allowOver || undefined, allow_parallel: allowParallel || undefined,
+      });
+      setOpenForm(false); setAmounts({}); setNote(''); setAllowOver(false); setAllowParallel(false);
+      setMsg('Draw request submitted — the coordinator has it.');
+    });
+  }
+  function openDecision(pr) {
+    const init = {};
+    for (const l of (Array.isArray(pr.lines) ? pr.lines : [])) init[l.sitewire_job_item_id] = (Number(l.requested_cents) / 100).toFixed(2);
+    setApprAmounts(init); setApprFor(pr.id); setMsg('');
+  }
+  function submitDecision(pr) {
+    return act(async () => {
+      const entries = (Array.isArray(pr.lines) ? pr.lines : [])
+        .map((l) => ({ sitewire_job_item_id: l.sitewire_job_item_id, approved_cents: cents(apprAmounts[l.sitewire_job_item_id]) }));
+      const r = await api.post(`/api/sitewire/files/${appId}/portal-draws/${pr.id}/approve-trinity`, { entries });
+      setApprFor(null);
+      setMsg(r.closeout && r.closeout.ok ? 'Decision recorded — and the draw was closed out into Sitewire.'
+        : `Decision recorded.${r.closeout && r.closeout.skipped ? ` Sitewire close-out is waiting (${String(r.closeout.skipped).replace(/_/g, ' ')}).` : ''}`);
+    });
+  }
+  return (
+    <div className="dd-card" style={{ marginTop: 12 }}>
+      <div className="dd-card-h" style={{ justifyContent: 'space-between' }}>
+        <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+          <span className="dd-card-ic"><SdIcon name="file" /></span>
+          <div>
+            <h3>Portal draw requests</h3>
+            <div className="dd-sub" style={{ marginTop: 1 }}>
+              {st.platform === 'trustpoint'
+                ? 'Physical-inspection file — a request composed here is hand-entered into TrustPoint by the coordinator; once fully approved it lands in Sitewire as a historical draw.'
+                : 'Physical-inspection file — a request composed here has its inspection ordered from Trinity; record the decision when the report is back.'}
+            </div>
+          </div>
+        </div>
+        {st.open_portal_request && <span className="dd-chip warn"><span className="dot" />Request in flight</span>}
+      </div>
+      {msg && <div className="small" style={{ marginTop: 8, fontWeight: 600 }}>{msg}</div>}
+
+      {/* the composer */}
+      {!st.open_portal_request && (
+        !openForm ? (
+          <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+            <button className="btn btn-sm primary" disabled={busy || !st.set_up || !st.funded} onClick={() => { setMsg(''); setOpenForm(true); }}>Compose a draw request</button>
+            {!st.funded && <span className="small muted">Available once the loan is funded.</span>}
+            {st.funded && !st.set_up && <span className="small muted">The draw setup (budget lines) hasn’t finished yet.</span>}
+            {st.open_sitewire_draw && <span className="small muted">Heads up: draw #{st.open_sitewire_draw.number ?? '—'} is already open in Sitewire.</span>}
+          </div>
+        ) : (
+          <div style={{ marginTop: 10 }}>
+            <div style={{ overflowX: 'auto' }}>
+              <table className="tbl">
+                <thead><tr><th>Budget line</th><th className="num">Remaining</th><th className="num" style={{ width: 130 }}>Request ($)</th></tr></thead>
+                <tbody>
+                  {lines.map((l) => (
+                    <tr key={l.sitewire_job_item_id}>
+                      <td>{l.name}</td>
+                      <td className="num muted">{usd(l.remaining_cents)}</td>
+                      <td className="num">
+                        <input type="number" min="0" step="0.01" inputMode="decimal" value={amounts[l.sitewire_job_item_id] ?? ''}
+                          onChange={(ev) => setAmounts((a) => ({ ...a, [l.sitewire_job_item_id]: ev.target.value }))}
+                          style={{ width: 110, textAlign: 'right' }} placeholder="0.00" />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <input className="small" value={note} onChange={(ev) => setNote(ev.target.value)} maxLength={500}
+              placeholder="Note for the coordinator (optional)" style={{ width: '100%', marginTop: 8 }} />
+            <label className="small row" style={{ gap: 6, marginTop: 8, alignItems: 'center' }}>
+              <input type="checkbox" checked={allowOver} onChange={(ev) => setAllowOver(ev.target.checked)} />
+              Allow amounts above a line’s remaining (deliberate override)
+            </label>
+            {st.open_sitewire_draw && (
+              <label className="small row" style={{ gap: 6, marginTop: 4, alignItems: 'center' }}>
+                <input type="checkbox" checked={allowParallel} onChange={(ev) => setAllowParallel(ev.target.checked)} />
+                Proceed even though a Sitewire draw is already open on this file
+              </label>
+            )}
+            <div className="row" style={{ gap: 10, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
+              <span className="small" style={{ fontWeight: 700 }}>Total: {usd(total)}</span>
+              <span style={{ flex: 1 }} />
+              <button className="btn btn-sm ghost" disabled={busy} onClick={() => setOpenForm(false)}>Cancel</button>
+              <button className="btn btn-sm primary" disabled={busy || total <= 0} onClick={submitCreate}>{busy ? 'Submitting…' : 'Submit request'}</button>
+            </div>
+          </div>
+        )
+      )}
+
+      {/* history + desk actions */}
+      {history.length > 0 && history.map((pr) => {
+        const s = PR_STATUS[pr.status] || { label: pr.status, cls: 'sw-insp' };
+        const order = orders.find((o) => Number(o.portal_draw_request_id) === Number(pr.id));
+        const next = order && !['cancelled', 'closed_out'].includes(pr.status) ? ORDER_NEXT[order.status] : null;
+        return (
+          <div key={pr.id} style={{ marginTop: 10, padding: '10px 12px', border: '1px solid var(--line)', borderRadius: 10 }}>
+            <div className="row" style={{ gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+              <b>Request #{pr.id}</b>
+              <span className={'pill ' + s.cls}>{s.label}</span>
+              <span className="small muted">
+                {pr.source === 'staff' ? 'By staff' : 'By the borrower'} · {usd(pr.total_requested_cents)}
+                {pr.approved_cents != null ? ` · Approved ${usd(pr.approved_cents)}` : ''}
+                {pr.platform === 'trinity' && order ? ` · Inspection: ${String(order.status).replace(/_/g, ' ')}` : ''}
+              </span>
+            </div>
+            {Array.isArray(pr.lines) && pr.lines.length > 0 && (
+              <div className="small muted" style={{ marginTop: 4 }}>
+                {pr.lines.slice(0, 6).map((l) => `${l.name}: ${usd(l.requested_cents)}`).join(' · ')}{pr.lines.length > 6 ? ' · …' : ''}
+              </div>
+            )}
+            {pr.cancelled_reason && <div className="small muted" style={{ marginTop: 4 }}>Cancelled: {pr.cancelled_reason}</div>}
+            <div className="row" style={{ gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+              {['submitted', 'entered'].includes(pr.status) && pr.platform === 'trinity' && apprFor !== pr.id && (
+                <button className="btn btn-sm ghost" disabled={busy} onClick={() => openDecision(pr)}>Record the decision</button>
+              )}
+              {next && (
+                <button className="btn btn-sm ghost" disabled={busy}
+                  onClick={() => act(() => api.post(`/api/sitewire/files/${appId}/trinity-orders/${order.id}/advance`, { action: next.action }))}>{next.label}</button>
+              )}
+              {pr.status === 'approved' && !pr.sitewire_draw_id && (
+                <button className="btn btn-sm ghost" disabled={busy}
+                  onClick={() => act(async () => {
+                    const r = await api.post(`/api/sitewire/files/${appId}/portal-draws/${pr.id}/close-out`, {});
+                    setMsg(r.ok ? 'Closed out into Sitewire.' : `Not closed out — ${String(r.skipped || r.parked || 'see the review list').replace(/_/g, ' ')}.`);
+                  })}>Close out into Sitewire</button>
+              )}
+              {['submitted', 'entered', 'approved'].includes(pr.status) && (
+                <button className="btn btn-sm ghost" disabled={busy}
+                  onClick={() => { const reason = window.prompt('Cancel this draw request? Add a short reason (the borrower sees it if they submitted it):'); if (reason !== null) act(() => api.post(`/api/sitewire/files/${appId}/portal-draws/${pr.id}/cancel`, { reason })); }}>Cancel request</button>
+              )}
+            </div>
+            {apprFor === pr.id && (
+              <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed var(--line)' }}>
+                <div className="small" style={{ fontWeight: 700, marginBottom: 6 }}>Approved amount per line (from the inspection report)</div>
+                <div style={{ overflowX: 'auto' }}>
+                  <table className="tbl">
+                    <thead><tr><th>Line</th><th className="num">Requested</th><th className="num" style={{ width: 130 }}>Approved ($)</th></tr></thead>
+                    <tbody>
+                      {(Array.isArray(pr.lines) ? pr.lines : []).map((l) => (
+                        <tr key={l.sitewire_job_item_id}>
+                          <td>{l.name}</td>
+                          <td className="num muted">{usd(l.requested_cents)}</td>
+                          <td className="num">
+                            <input type="number" min="0" step="0.01" inputMode="decimal" value={apprAmounts[l.sitewire_job_item_id] ?? ''}
+                              onChange={(ev) => setApprAmounts((a) => ({ ...a, [l.sitewire_job_item_id]: ev.target.value }))}
+                              style={{ width: 110, textAlign: 'right' }} />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="row" style={{ gap: 8, marginTop: 8 }}>
+                  <button className="btn btn-sm ghost" disabled={busy} onClick={() => setApprFor(null)}>Cancel</button>
+                  <button className="btn btn-sm primary" disabled={busy} onClick={() => submitDecision(pr)}>{busy ? 'Saving…' : 'Approve these amounts'}</button>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // per-line entry (transcribed from TrustPoint's console) + the push-to-Sitewire button.
 function TrustpointPanel({ appId }) {
   const [ov, setOv] = useState(null);
@@ -847,7 +1059,7 @@ function TrustpointPanel({ appId }) {
       const r = await api.get(`/api/trustpoint/files/${appId}/draws/${d.tp_draw_id}/lines`);
       setLineData(r);
       const init = {};
-      for (const l of (r.lines || [])) init[l.sitewire_job_item_id] = String(Math.round(Number(l.approved_cents) / 100));
+      for (const l of (r.lines || [])) init[l.sitewire_job_item_id] = (Number(l.approved_cents) / 100).toFixed(2);
       setAmounts(init);
     } catch (e) { setMsg(e?.data?.error || e.message); }
   }
@@ -868,7 +1080,9 @@ function TrustpointPanel({ appId }) {
     setBusy(true); setMsg('');
     try {
       const r = await api.post(`/api/trustpoint/files/${appId}/draws/${d.tp_draw_id}/push-sitewire`, {});
-      setMsg(r.ok ? 'Approval pushed into Sitewire.' : `Not pushed — ${(r.skipped || r.parked || 'see the draw desk').replace(/_/g, ' ')}.`);
+      setMsg(r.ok
+        ? (r.pushed && r.pushed.dryrun ? 'Checked in dry-run — nothing was sent yet.' : 'Approval pushed into Sitewire.')
+        : `Not pushed — ${String(r.skipped || r.parked || 'see the draw desk').replace(/_/g, ' ')}.`);
       load();
     } catch (e) { setMsg(e?.data?.error || e.message); }
     finally { setBusy(false); }

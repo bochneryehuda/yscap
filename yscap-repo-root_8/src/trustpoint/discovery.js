@@ -35,7 +35,7 @@ async function candidateFiles() {
         AND regexp_replace(lower(COALESCE(a.lender,'')), '[^a-z0-9]+', '', 'g') = ANY($1::text[])`, [labels])).rows;
   return rows.map((r) => ({
     id: r.id, ys_loan_number: r.ys_loan_number, addr_one_line: r.addr_one_line, zip: r.zip,
-    rehab_budget_cents: r.rehab_budget != null ? Math.round(Number(r.rehab_budget) * 100) : null,
+    rehab_budget_cents: client.centsFromTp(r.rehab_budget),
     borrower_email: r.borrower_email, llc_name: r.llc_name,
   }));
 }
@@ -77,13 +77,20 @@ async function linkProject(tpProjectId, applicationId, { matchedBy = 'manual', r
   }
   const taken = (await db.query(`SELECT tp_project_id FROM trustpoint_project_links WHERE application_id=$1 AND tp_project_id<>$2`, [applicationId, String(tpProjectId)])).rows[0];
   if (taken) { const e = new Error('file already linked to another TrustPoint project'); e.code = 'file_taken'; throw e; }
-  await db.query(
-    `INSERT INTO trustpoint_project_links (tp_project_id, application_id, matched_by, match_detail, confirmed_by)
-     VALUES ($1,$2,$3,$4,$5)
-     ON CONFLICT (tp_project_id) DO UPDATE SET application_id=EXCLUDED.application_id, matched_by=EXCLUDED.matched_by,
-        match_detail=EXCLUDED.match_detail, confirmed_by=COALESCE(EXCLUDED.confirmed_by, trustpoint_project_links.confirmed_by),
-        candidate_application_id=NULL, candidate_reason=NULL, updated_at=now()`,
-    [String(tpProjectId), applicationId, matchedBy, reason, staffId]);
+  try {
+    await db.query(
+      `INSERT INTO trustpoint_project_links (tp_project_id, application_id, matched_by, match_detail, confirmed_by)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (tp_project_id) DO UPDATE SET application_id=EXCLUDED.application_id, matched_by=EXCLUDED.matched_by,
+          match_detail=EXCLUDED.match_detail, confirmed_by=COALESCE(EXCLUDED.confirmed_by, trustpoint_project_links.confirmed_by),
+          candidate_application_id=NULL, candidate_reason=NULL, updated_at=now()`,
+      [String(tpProjectId), applicationId, matchedBy, reason, staffId]);
+  } catch (e) {
+    // The concurrent-race loser hits UNIQUE(application_id) — surface it as the same
+    // typed conflict the pre-check produces, never a raw 500 (phase-2 audit #20).
+    if (e && e.code === '23505') { const err = new Error('file already linked to another TrustPoint project'); err.code = 'file_taken'; throw err; }
+    throw e;
+  }
   await notify.notifyAppStaff(applicationId, {
     type: 'draw_inbound', title: 'File linked to its TrustPoint project',
     body: `This file is now linked to its TrustPoint project (${matchedBy === 'manual' ? 'confirmed by hand' : 'matched by ' + matchedBy.replace('_', ' ')}${reason ? ' — ' + reason : ''}). Draw activity there will show here.`,
@@ -91,16 +98,36 @@ async function linkProject(tpProjectId, applicationId, { matchedBy = 'manual', r
   }).catch(() => {});
   // Crosswalk + silent history baseline.
   try { await buildMilestoneLinks(applicationId, String(tpProjectId)); } catch (e) { console.warn('[trustpoint] milestone crosswalk failed:', e && e.message); }
-  if (baselineHydrate && client.available()) {
-    try { await mirror.hydrateProject(applicationId, String(tpProjectId), { baseline: true }); } catch (e) { console.warn('[trustpoint] baseline hydrate failed:', e && e.message); }
+  if (baselineHydrate === false) {
+    // The caller explicitly opted out of the history hydrate (it asserts there is no
+    // pre-link history to guard) — the link counts as baselined so live reactions flow.
+    await db.query(`UPDATE trustpoint_project_links SET baselined_at=now(), updated_at=now() WHERE tp_project_id=$1`, [String(tpProjectId)]);
+  } else if (client.available()) {
+    try {
+      await mirror.hydrateProject(applicationId, String(tpProjectId), { baseline: true });
+      await db.query(`UPDATE trustpoint_project_links SET baselined_at=now(), updated_at=now() WHERE tp_project_id=$1`, [String(tpProjectId)]);
+    } catch (e) {
+      // Leave baselined_at NULL — the sweep retries the baseline before any live
+      // reaction can fire for this project's history (phase-2 audit #9).
+      console.warn('[trustpoint] baseline hydrate failed (sweep will retry):', e && e.message);
+    }
   }
   return { linked: true };
 }
 
 async function unlinkProject(tpProjectId, staffId) {
+  const id = String(tpProjectId);
+  // Mirror rows are DERIVED data — remove them with the link so a mis-link never
+  // strands another borrower's draw amounts on the wrong file (phase-2 audit #10).
+  // A correct re-link re-hydrates everything from TrustPoint.
+  await db.query(`DELETE FROM trustpoint_draw_lines WHERE tp_draw_id IN (SELECT tp_draw_id FROM trustpoint_draws WHERE tp_project_id=$1)`, [id]).catch(() => {});
+  await db.query(`DELETE FROM trustpoint_milestone_snapshots WHERE tp_project_id=$1`, [id]).catch(() => {});
+  await db.query(`DELETE FROM trustpoint_draws WHERE tp_project_id=$1`, [id]);
+  await db.query(`DELETE FROM trustpoint_service_orders WHERE tp_project_id=$1`, [id]);
+  await db.query(`DELETE FROM trustpoint_milestone_links WHERE tp_project_id=$1`, [id]);
   await db.query(
-    `UPDATE trustpoint_project_links SET application_id=NULL, matched_by=NULL, match_detail=NULL, confirmed_by=$2, updated_at=now()
-      WHERE tp_project_id=$1`, [String(tpProjectId), staffId || null]);
+    `UPDATE trustpoint_project_links SET application_id=NULL, matched_by=NULL, match_detail=NULL, baselined_at=NULL, confirmed_by=$2, updated_at=now()
+      WHERE tp_project_id=$1`, [id, staffId || null]);
   return { unlinked: true };
 }
 
@@ -157,8 +184,25 @@ async function sweep() {
           address_text=COALESCE(EXCLUDED.address_text, trustpoint_project_links.address_text),
           tp_status=COALESCE(EXCLUDED.tp_status, trustpoint_project_links.tp_status),
           discarded=EXCLUDED.discarded, updated_at=now()`,
-      [tpId, shape.external_id, shape.name, shape.address_text, shape.status, shape.status === 'DISCARDED', isNew ? JSON.stringify(detail).slice(0, 50000) : null]);
+      [tpId, shape.external_id, shape.name, shape.address_text, shape.status, shape.status === 'DISCARDED', isNew ? ((x) => x.length > 50000 ? null : x)(JSON.stringify(detail)) : null]);
     if (isNew) discovered++;
+    // A linked project whose baseline hydrate failed at link time retries here BEFORE any
+    // live reaction can fire on its history (audit #9).
+    const lrow = (await db.query(`SELECT application_id, baselined_at, discarded FROM trustpoint_project_links WHERE tp_project_id=$1`, [tpId])).rows[0];
+    if (lrow && lrow.application_id && !lrow.baselined_at) {
+      try {
+        await mirror.hydrateProject(lrow.application_id, tpId, { baseline: true });
+        await db.query(`UPDATE trustpoint_project_links SET baselined_at=now(), updated_at=now() WHERE tp_project_id=$1`, [tpId]);
+      } catch (e) { console.warn('[trustpoint] baseline retry failed:', e && e.message); }
+    }
+    // A LINKED project flipping to DISCARDED needs a human look at the link (audit #22).
+    if (lrow && lrow.application_id && shape.status === 'DISCARDED' && !lrow.discarded) {
+      await notify.notifyAppStaff(lrow.application_id, {
+        type: 'draw_inbound', title: 'TrustPoint project was discarded',
+        body: 'The TrustPoint project linked to this file was DISCARDED on their side. Check whether the link is still right (it may have been replaced by a new project).',
+        applicationId: lrow.application_id, link: `/internal/app/${lrow.application_id}/draws`,
+      }).catch(() => {});
+    }
     // (re)try the auto-matcher for any still-unlinked project
     const row = (await db.query(`SELECT application_id FROM trustpoint_project_links WHERE tp_project_id=$1`, [tpId])).rows[0];
     if (row && !row.application_id && candidates.length) {

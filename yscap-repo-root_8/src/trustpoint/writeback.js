@@ -38,6 +38,11 @@ async function pushApprovalToSitewire(appId, tpDrawId, { actorId = null } = {}) 
     if (!tp) return { skipped: 'not_found' };
     if (tp.writeback_at) return { skipped: 'already_pushed' };
     if (tp.status !== 'APPROVED' && tp.status !== 'COMPLETED') { await setNote(tpDrawId, 'waiting: not approved yet'); return { skipped: 'not_approved' }; }
+    if (tp.portal_draw_request_id && !tp.sitewire_draw_id) {
+      // Portal-originated draw — its Sitewire record is the phase-4 HISTORICAL close-out,
+      // not a live write-back (there is no live Sitewire draw to write into).
+      return { skipped: 'portal_closeout_path' };
+    }
     if (!tp.sitewire_draw_id) { await setNote(tpDrawId, 'waiting: no Sitewire draw tied to this TrustPoint draw'); return { skipped: 'no_sitewire_draw' }; }
     const sw = (await db.query(`SELECT * FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [tp.sitewire_draw_id, appId])).rows[0];
     if (!sw) { await setNote(tpDrawId, 'waiting: tied Sitewire draw not found on this file'); return { skipped: 'sitewire_draw_missing' }; }
@@ -102,7 +107,10 @@ async function pushApprovalToSitewire(appId, tpDrawId, { actorId = null } = {}) 
       return { ok: true, pushed: { lines: plan.length, approved: Number(tp.approved_cents), dryrun: true } };
     }
     await orchestrator.journal({ appId, entity: 'draw', entityId: Number(tp.sitewire_draw_id), field: 'approve', newValue: { source: 'trustpoint_writeback', actor: actorId }, source: 'trustpoint_writeback' }).catch(() => {});
-    await db.query(`UPDATE sitewire_draws SET status='approved', total_approved_cents=$2, updated_at=now() WHERE sitewire_draw_id=$1`, [tp.sitewire_draw_id, Number(tp.approved_cents)]);
+    // status_synced moves WITH the status (echo suppression): the next Sitewire reconcile
+    // must see this approve as already-announced — the team was told when TRUSTPOINT
+    // approved; the mirror write into Sitewire is plumbing, not a second event.
+    await db.query(`UPDATE sitewire_draws SET status='approved', status_synced='approved', total_approved_cents=$2, updated_at=now() WHERE sitewire_draw_id=$1`, [tp.sitewire_draw_id, Number(tp.approved_cents)]);
     await db.query(`UPDATE trustpoint_draws SET writeback_at=now(), writeback_note=NULL, updated_at=now() WHERE tp_draw_id=$1`, [tpDrawId]);
     return { ok: true, pushed: { lines: plan.length, approved: Number(tp.approved_cents), dryrun: false } };
   } catch (e) {
@@ -128,4 +136,34 @@ async function onTrustpointApproval(appId, tpDrawId) {
   } catch (e) { return { skipped: 'error' }; }
 }
 
-module.exports = { pushApprovalToSitewire, onTrustpointApproval };
+/**
+ * Retry sweep (audit-3 #3): the approval reaction fires ONCE (the watermark claim), so a
+ * crash mid-chain, a transient Sitewire outage, writes being off, or an IN_REVIEW→COMPLETED
+ * jump that skipped the APPROVED sighting would otherwise leave the mirror un-pushed
+ * forever. Re-drives every approved-but-unpushed draw; every path is idempotent and
+ * self-gating (skips/parks, never double-sends), so re-running is free.
+ */
+async function sweepPending() {
+  const out = { tried: 0 };
+  try {
+    const rows = (await db.query(
+      `SELECT application_id, tp_draw_id, portal_draw_request_id, sitewire_draw_id FROM trustpoint_draws
+        WHERE status IN ('APPROVED','COMPLETED') AND writeback_at IS NULL
+          AND (sitewire_draw_id IS NOT NULL OR portal_draw_request_id IS NOT NULL)
+        ORDER BY updated_at LIMIT 25`)).rows;
+    for (const r of rows) {
+      out.tried++;
+      try {
+        if (r.portal_draw_request_id && !r.sitewire_draw_id) {
+          // Portal-originated: its Sitewire record is the historical close-out.
+          await require('../lib/portal-draws').historicalCloseOut(r.application_id, Number(r.portal_draw_request_id));
+        } else {
+          await onTrustpointApproval(r.application_id, r.tp_draw_id);
+        }
+      } catch (_) {}
+    }
+  } catch (_) {}
+  return out;
+}
+
+module.exports = { pushApprovalToSitewire, onTrustpointApproval, sweepPending };

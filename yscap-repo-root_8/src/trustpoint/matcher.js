@@ -39,7 +39,7 @@ function normAddr(oneLine) {
   if (!s) return { houseNo: null, key: null, zip: null };
   const zipM = s.match(/\b(\d{5})(?:-\d{4})?\b(?!.*\b\d{5}\b)/);
   const zip = zipM ? zipM[1] : null;
-  const street = s.split(',')[0].trim();
+  const street = s.split(',')[0].trim().replace(/#\s*\d+[a-z]?\b/gi, ' ');
   const tokens = street.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(Boolean)
     .map((t) => SUFFIX[t] || t)
     // unit designators never affect identity ("12 Oak St Unit 2" == "12 Oak St")
@@ -64,7 +64,10 @@ function matchProject(project = {}, candidates = []) {
   for (const c of candidates) {
     const ln = normLoanNumber(c.ys_loan_number);
     if (!ln) continue;
-    if ((extKey && extKey === ln) || (nameKey && nameKey.includes(ln))) t1.push(c);
+    // An ALL-DIGIT loan number inside a normalized name is indistinguishable from an
+    // address/zip digit run — those only match on external_id equality (audit #16).
+    const allDigits = /^\d+$/.test(ln);
+    if ((extKey && extKey === ln) || (!allDigits && nameKey && nameKey.includes(ln))) t1.push(c);
   }
   if (t1.length === 1) {
     return { tier: 1, applicationId: t1[0].id, matchedBy: 'loan_number',
@@ -119,7 +122,7 @@ function matchMilestones(milestones = [], sowLines = []) {
     if (hit === null) hit = undefined;         // ambiguous name → skip to amount fallback
     if (hit && !taken.has(hit.sitewire_job_item_id)) {
       taken.add(hit.sitewire_job_item_id);
-      matched.push({ tp_milestone_id: m.tp_milestone_id, sitewire_job_item_id: hit.sitewire_job_item_id, sow_line_key: hit.sow_line_key, matched_by: 'name_amount' });
+      matched.push({ tp_milestone_id: m.tp_milestone_id, sitewire_job_item_id: hit.sitewire_job_item_id, sow_line_key: hit.sow_line_key, matched_by: 'name' });
       continue;
     }
     // amount-unique fallback (only when exactly one un-taken line carries this amount)
@@ -127,7 +130,7 @@ function matchMilestones(milestones = [], sowLines = []) {
     const byAmt = amt == null ? [] : sowLines.filter((l) => !taken.has(l.sitewire_job_item_id) && Number(l.budgeted_cents) === amt && amt > 0);
     if (byAmt.length === 1) {
       taken.add(byAmt[0].sitewire_job_item_id);
-      matched.push({ tp_milestone_id: m.tp_milestone_id, sitewire_job_item_id: byAmt[0].sitewire_job_item_id, sow_line_key: byAmt[0].sow_line_key, matched_by: 'name' });
+      matched.push({ tp_milestone_id: m.tp_milestone_id, sitewire_job_item_id: byAmt[0].sitewire_job_item_id, sow_line_key: byAmt[0].sow_line_key, matched_by: 'amount' });
       continue;
     }
     unmatched.push(m.tp_milestone_id);

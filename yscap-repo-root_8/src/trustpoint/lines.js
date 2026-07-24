@@ -23,28 +23,35 @@ async function snapshotMilestones(appId, tpProjectId, tpDrawId, phase) {
     if (!client.available()) return null;
     const ms = await client.listMilestones(tpProjectId);
     if (!Array.isArray(ms) || !ms.length) return null;
+    const payload = JSON.stringify(ms);
+    if (payload.length > 200000) return null;   // never a sliced (invalid) jsonb fragment
     await db.query(
       `INSERT INTO trustpoint_milestone_snapshots (application_id, tp_project_id, tp_draw_id, phase, lines)
        VALUES ($1,$2,$3,$4,$5::jsonb)`,
-      [appId, tpProjectId, tpDrawId || null, phase, JSON.stringify(ms).slice(0, 200000)]);
+      [appId, tpProjectId, tpDrawId || null, phase, payload]);
     return true;
   } catch (e) { console.warn('[trustpoint] milestone snapshot failed:', e && e.message); return null; }
 }
 
 // Progress-ish numeric fields, direction-aware: "completed/funded/drawn/disbursed"
-// grow with progress; "remaining" shrinks. Never budget/estimate fields (static).
+// grow with progress; "remaining" shrinks. Never budget/estimate fields (static),
+// and never non-money shapes — booleans (`is_completed` flips are not $1 movements)
+// or percent/rate/count fields (a 0→100 completed_percent is not $1.00).
 const GROWS = /(complete|funded|drawn|disburse|approved_to_date|paid)/i;
 const SHRINKS = /(remaining|balance)/i;
 const STATIC = /(estimate|prefunding|budget|original)/i;
+const NON_MONEY = /(percent|pct|_rate\b|rate_|ratio|count|number|qty|quantity|(^|_)(is|has)_)/i;
 
 /** Per-milestone progress delta between two raw milestone objects (cents; null = none). */
 function milestoneDelta(pre, post) {
   let best = null;
   for (const k of Object.keys(post || {})) {
-    if (STATIC.test(k)) continue;
+    if (STATIC.test(k) || NON_MONEY.test(k)) continue;
     const isGrow = GROWS.test(k), isShrink = SHRINKS.test(k);
     if (!isGrow && !isShrink) continue;
-    const a = C(pre ? pre[k] : null), b = C(post[k]);
+    const pv = pre ? pre[k] : null, cv = post[k];
+    if (typeof pv === 'boolean' || typeof cv === 'boolean') continue;
+    const a = C(pv), b = C(cv);
     if (a == null || b == null) continue;
     const d = isGrow ? b - a : a - b;
     if (d > 0 && (best == null || d > best)) best = d;   // strongest positive movement wins
@@ -110,31 +117,44 @@ async function saveManualLines(appId, tpDrawId, entries, staffId) {
   if (!draw) { const e = new Error('draw not found'); e.status = 404; throw e; }
   if (draw.approved_cents == null) { const e = new Error('This draw has no approved total yet — wait for the approval to arrive.'); e.status = 422; throw e; }
   if (!Array.isArray(entries) || !entries.length) { const e = new Error('No line amounts given.'); e.status = 400; throw e; }
+  // Same set the picker shows: real budget lines only (no media anchors, no deleted).
   const valid = (await db.query(
-    `SELECT sitewire_job_item_id, name FROM sitewire_job_item_links WHERE application_id=$1 AND sitewire_job_item_id IS NOT NULL`, [appId])).rows;
+    `SELECT sitewire_job_item_id, sow_line_key, name FROM sitewire_job_item_links
+      WHERE application_id=$1 AND sitewire_job_item_id IS NOT NULL
+        AND is_media_item=false AND (state IS NULL OR state<>'deleted')`, [appId])).rows;
   const validBy = new Map(valid.map((v) => [Number(v.sitewire_job_item_id), v]));
   let sum = 0;
   const clean = [];
+  const seen = new Set();
   for (const e0 of entries) {
     const jid = Number(e0.sitewire_job_item_id);
     const cents = Math.round(Number(e0.approved_cents));
     if (!Number.isFinite(jid) || !validBy.has(jid)) { const e = new Error(`Line ${e0.sitewire_job_item_id} is not one of this file's budget lines.`); e.status = 422; throw e; }
+    if (seen.has(jid)) { const e = new Error('The same budget line was entered twice.'); e.status = 422; throw e; }
+    seen.add(jid);
     if (!Number.isFinite(cents) || cents < 0) { const e = new Error('Every amount must be zero or more.'); e.status = 400; throw e; }
-    clean.push({ jid, cents, name: validBy.get(jid).name });
+    clean.push({ jid, cents, key: validBy.get(jid).sow_line_key || null, name: validBy.get(jid).name });
     sum += cents;
   }
   if (sum !== Number(draw.approved_cents)) {
     const e = new Error(`The line amounts add up to ${(sum / 100).toFixed(2)} but TrustPoint approved ${(Number(draw.approved_cents) / 100).toFixed(2)} — they must match to the penny.`);
     e.status = 422; throw e;
   }
-  await db.query(`DELETE FROM trustpoint_draw_lines WHERE tp_draw_id=$1`, [tpDrawId]);
-  for (const l of clean) {
-    if (l.cents === 0) continue;   // zero lines add nothing to the write-back
-    await db.query(
-      `INSERT INTO trustpoint_draw_lines (application_id, tp_draw_id, sitewire_job_item_id, name, approved_cents, source, entered_by)
-       VALUES ($1,$2,$3,$4,$5,'manual',$6)`,
-      [appId, tpDrawId, l.jid, l.name, l.cents, staffId || null]);
-  }
+  // One transaction: the delete and the re-inserts land together or not at all.
+  const clientDb = await db.getClient();
+  try {
+    await clientDb.query('BEGIN');
+    await clientDb.query(`DELETE FROM trustpoint_draw_lines WHERE tp_draw_id=$1`, [tpDrawId]);
+    for (const l of clean) {
+      if (l.cents === 0) continue;   // zero lines add nothing to the write-back
+      await clientDb.query(
+        `INSERT INTO trustpoint_draw_lines (application_id, tp_draw_id, sitewire_job_item_id, sow_line_key, name, approved_cents, source, entered_by)
+         VALUES ($1,$2,$3,$4,$5,$6,'manual',$7)`,
+        [appId, tpDrawId, l.jid, l.key, l.name, l.cents, staffId || null]);
+    }
+    await clientDb.query('COMMIT');
+  } catch (e) { try { await clientDb.query('ROLLBACK'); } catch (_) {} throw e; }
+  finally { clientDb.release(); }
   return { saved: clean.filter((l) => l.cents > 0).length, total_cents: sum };
 }
 

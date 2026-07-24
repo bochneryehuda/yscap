@@ -86,7 +86,10 @@ async function buildOrGetReport(appId, tpDrawId, mode = 'staff') {
     m: mode, a: draw.approved_cents, r: draw.requested_cents, n: draw.to_disburse_cents,
     s: draw.status, l: lines.map((l) => [l.sitewire_job_item_id, l.approved_cents]),
   })).digest('hex').slice(0, 12);
-  const filename = `draw-${(draw.number != null ? draw.number : 'x')}-report-${mode}-${version}.pdf`;
+  // The tp_draw_id slice scopes the name (and the supersede LIKE below) to THIS draw —
+  // two number-less draws on one file must never supersede each other's reports.
+  const drawTag = String(tpDrawId).replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) || 'x';
+  const filename = `draw-${(draw.number != null ? draw.number : 'x')}-${drawTag}-report-${mode}-${version}.pdf`;
   const existing = (await db.query(
     `SELECT id FROM documents WHERE application_id=$1 AND filename=$2 AND is_current`, [appId, filename])).rows[0];
   if (existing) return { documentId: existing.id, filename };
@@ -111,7 +114,7 @@ async function buildOrGetReport(appId, tpDrawId, mode = 'staff') {
     `UPDATE documents SET is_current=false
       WHERE application_id=$1 AND id<>$2 AND is_current
         AND filename LIKE $3 AND filename <> $4`,
-    [appId, doc.id, `draw-${(draw.number != null ? draw.number : 'x')}-report-${mode}-%`, filename]).catch(() => {});
+    [appId, doc.id, `draw-%-${drawTag}-report-${mode}-%`, filename]).catch(() => {});
   return { documentId: doc.id, filename, bytes };
 }
 

@@ -133,6 +133,17 @@ async function reconcileOnce() {
       await reconcile.syncStaffUsers().catch(() => {});
     }
     await reconcile.reconcileAll();
+    // Approved portal draw requests whose historical close-out hasn't landed (transient
+    // park, writes off at the time, crash mid-chain) re-drive here — every gate inside
+    // historicalCloseOut is idempotent, so a re-attempt is free (phase 4).
+    try {
+      const stuck = (await db.query(
+        `SELECT application_id, id FROM portal_draw_requests
+          WHERE status='approved' AND sitewire_draw_id IS NULL ORDER BY updated_at LIMIT 20`)).rows;
+      for (const s of stuck) {
+        await require('../lib/portal-draws').historicalCloseOut(s.application_id, Number(s.id)).catch(() => {});
+      }
+    } catch (_) {}
   } catch (e) { console.warn('[sitewire] reconcile error:', e.message); }
   finally { reconciling = false; }
 }

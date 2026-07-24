@@ -62,11 +62,11 @@ const sow = [
 ];
 ok('ms: name match', (() => {
   const r = matchMilestones([{ tp_milestone_id: 'm1', name: 'Unit 1 - Kitchen', amount_cents: 500000 }], sow);
-  return r.matched.length === 1 && r.matched[0].sitewire_job_item_id === 1;
+  return r.matched.length === 1 && r.matched[0].sitewire_job_item_id === 1 && r.matched[0].matched_by === 'name';
 })());
 ok('ms: renamed line falls back to unique amount', (() => {
   const r = matchMilestones([{ tp_milestone_id: 'm2', name: 'Roofing Work', amount_cents: 300000 }], sow);
-  return r.matched.length === 1 && r.matched[0].sitewire_job_item_id === 2 && r.matched[0].matched_by === 'name';
+  return r.matched.length === 1 && r.matched[0].sitewire_job_item_id === 2 && r.matched[0].matched_by === 'amount';
 })());
 ok('ms: amount ambiguity stays unmatched', (() => {
   const dup = [...sow, { sitewire_job_item_id: 4, sow_line_key: 'k4', name: 'Unit 2 - Roof', budgeted_cents: 300000 }];

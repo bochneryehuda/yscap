@@ -16,7 +16,7 @@ const db = require('../db');
 const client = require('./client');
 const notify = require('../lib/notify');
 
-const usd = (c) => '$' + Math.round(Number(c || 0) / 100).toLocaleString('en-US');
+const usd = (c) => c == null ? '—' : '$' + Math.floor(Number(c) / 100).toLocaleString('en-US');
 
 async function audit(appId, tpDrawId, entity, entityId, field, oldV, newV, reacted) {
   try {
@@ -27,11 +27,17 @@ async function audit(appId, tpDrawId, entity, entityId, field, oldV, newV, react
   } catch (_) { /* best-effort audit */ }
 }
 
-/** The linked file for a TrustPoint project (null when unlinked/unknown). */
-async function linkedAppFor(tpProjectId) {
+/** The linked file for a TrustPoint project (null when unlinked/unknown/soft-deleted). */
+async function linkFor(tpProjectId) {
   const r = await db.query(
-    `SELECT application_id FROM trustpoint_project_links WHERE tp_project_id=$1 AND application_id IS NOT NULL`, [tpProjectId]);
-  return r.rows[0] ? r.rows[0].application_id : null;
+    `SELECT l.application_id, l.baselined_at FROM trustpoint_project_links l
+       JOIN applications a ON a.id = l.application_id AND a.deleted_at IS NULL
+      WHERE l.tp_project_id=$1 AND l.application_id IS NOT NULL`, [tpProjectId]);
+  return r.rows[0] || null;
+}
+async function linkedAppFor(tpProjectId) {
+  const l = await linkFor(tpProjectId);
+  return l ? l.application_id : null;
 }
 
 // ---- draw upsert (aggregate mirror) ----
@@ -49,13 +55,18 @@ function drawRow(d) {
     holdback_cents: C(d.construction_holdback),
     borrower_equity_cents: C(d.borrower_equity),
     fees: Array.isArray(d.fees) ? JSON.stringify(d.fees) : null,
-    retainage: JSON.stringify({
-      release_requested: d.retainage_release_requested ?? null,
-      release_approved: d.retainage_release_approved ?? null,
-      requested_amount_holdback: d.retainage_requested_amount_holdback ?? null,
-      approved_amount_holdback: d.retainage_approved_amount_holdback ?? null,
-    }),
-    contingency: JSON.stringify({ total: d.contingency_total ?? null, used: d.contingency_used ?? null, used_rate: d.contingency_used_rate ?? null }),
+    // NULL (not an all-null object) when the payload carried none of the fields, so the
+    // upsert's COALESCE protects previously-hydrated detail from thin webhook payloads
+    // (phase-2 audit #2 — TrustPoint is the retainage SOR, never wipe the mirror).
+    retainage: [d.retainage_release_requested, d.retainage_release_approved, d.retainage_requested_amount_holdback, d.retainage_approved_amount_holdback].some((v) => v !== undefined)
+      ? JSON.stringify({
+          release_requested: d.retainage_release_requested ?? null,
+          release_approved: d.retainage_release_approved ?? null,
+          requested_amount_holdback: d.retainage_requested_amount_holdback ?? null,
+          approved_amount_holdback: d.retainage_approved_amount_holdback ?? null,
+        }) : null,
+    contingency: [d.contingency_total, d.contingency_used, d.contingency_used_rate].some((v) => v !== undefined)
+      ? JSON.stringify({ total: d.contingency_total ?? null, used: d.contingency_used ?? null, used_rate: d.contingency_used_rate ?? null }) : null,
     inspector_allowance_rate: d.inspector_allowance_rate != null && Number.isFinite(Number(d.inspector_allowance_rate)) ? Number(d.inspector_allowance_rate) : null,
     inspector_recommendation_rate: d.inspector_recommendation_rate != null && Number.isFinite(Number(d.inspector_recommendation_rate)) ? Number(d.inspector_recommendation_rate) : null,
     lender_allowance_rate: d.lender_allowance_rate != null && Number.isFinite(Number(d.lender_allowance_rate)) ? Number(d.lender_allowance_rate) : null,
@@ -83,6 +94,7 @@ async function upsertDraw(appId, tpProjectId, tpDrawId, detail) {
         estimated_reimbursement_date, raw, updated_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15::jsonb,$16::jsonb,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27::jsonb,now())
      ON CONFLICT (tp_draw_id) DO UPDATE SET
+        application_id=EXCLUDED.application_id, tp_project_id=EXCLUDED.tp_project_id,
         status=COALESCE(EXCLUDED.status, trustpoint_draws.status),
         number=COALESCE(EXCLUDED.number, trustpoint_draws.number),
         name=COALESCE(EXCLUDED.name, trustpoint_draws.name),
@@ -112,7 +124,7 @@ async function upsertDraw(appId, tpProjectId, tpDrawId, detail) {
      v.requested_cents, v.approved_cents, v.disbursed_cents, v.to_disburse_cents, v.holdback_cents, v.borrower_equity_cents,
      v.fees, v.retainage, v.contingency, v.inspector_allowance_rate, v.inspector_recommendation_rate, v.lender_allowance_rate,
      v.coordinator_name, v.submitted_at, v.approved_at, v.completed_at, v.disbursed_at, v.tp_created_at,
-     v.estimated_reimbursement_date, detail ? JSON.stringify(detail).slice(0, 100000) : null]);
+     v.estimated_reimbursement_date, detail ? ((x) => x.length > 100000 ? null : x)(JSON.stringify(detail)) : null]);
   return { prev, row: r.rows[0] };
 }
 
@@ -120,15 +132,37 @@ async function upsertDraw(appId, tpProjectId, tpDrawId, detail) {
 // Phase 3's coordinator UI confirms/corrects; never used for money on its own.
 async function linkToSitewireIntake(appId, tpDrawRow) {
   try {
-    if (!tpDrawRow || tpDrawRow.sitewire_draw_id || tpDrawRow.requested_cents == null) return;
-    const cand = (await db.query(
-      `SELECT sitewire_draw_id FROM sitewire_draws
-        WHERE application_id=$1 AND COALESCE(historical,false)=false
-          AND status IN ('inspecting','pending','pending_capital_partner')
-          AND ABS(COALESCE(total_requested_cents,0) - $2) <= 100`,
-      [appId, tpDrawRow.requested_cents])).rows;
-    if (cand.length === 1) {
-      await db.query(`UPDATE trustpoint_draws SET sitewire_draw_id=$2, updated_at=now() WHERE tp_draw_id=$1 AND sitewire_draw_id IS NULL`, [tpDrawRow.tp_draw_id, cand[0].sitewire_draw_id]);
+    if (!tpDrawRow || tpDrawRow.requested_cents == null) return;
+    let swTied = !!tpDrawRow.sitewire_draw_id;
+    if (!swTied) {
+      const cand = (await db.query(
+        `SELECT sitewire_draw_id FROM sitewire_draws
+          WHERE application_id=$1 AND COALESCE(historical,false)=false
+            AND status IN ('inspecting','pending','pending_capital_partner')
+            AND ABS(COALESCE(total_requested_cents,0) - $2) <= 100`,
+        [appId, tpDrawRow.requested_cents])).rows;
+      if (cand.length === 1) {
+        const tied = (await db.query(`UPDATE trustpoint_draws SET sitewire_draw_id=$2, updated_at=now() WHERE tp_draw_id=$1 AND sitewire_draw_id IS NULL RETURNING tp_draw_id`, [tpDrawRow.tp_draw_id, cand[0].sitewire_draw_id])).rows[0];
+        // The coordinator's entry task is DONE the moment the entered draw mirrors back and
+        // ties to its intake (blueprint §3 auto-complete; audit #13). Recorded as a returned
+        // hand-off with the standard outcome, so the SLA nag stops and history reads right.
+        if (tied) {
+          swTied = true;
+          await db.query(
+            `UPDATE workflow_items SET status='returned', outcome_label='Entered in TrustPoint', returned_at=now(), updated_at=now()
+              WHERE application_id=$1 AND submission_type='trustpoint_import' AND status IN ('open','in_progress')`, [appId]).catch(() => {});
+          await db.query(
+            `INSERT INTO workflow_events (workflow_item_id, application_id, event_type, submission_type, outcome_label, note)
+             SELECT id, application_id, 'returned', 'trustpoint_import', 'Entered in TrustPoint', 'Auto-completed — the draw appeared in TrustPoint and tied to this file.'
+               FROM workflow_items WHERE application_id=$1 AND submission_type='trustpoint_import' AND outcome_label='Entered in TrustPoint' AND returned_at > now() - interval '1 minute'`, [appId]).catch(() => {});
+        }
+      }
+    }
+    // A portal-originated draw ties to its portal request the same way (phase 4) —
+    // but ONLY when the draw is not the mirror of a live Sitewire intake (a TrustPoint
+    // draw is one cycle: it belongs to the intake OR to a portal request, never both).
+    if (!swTied) {
+      try { await require('../lib/portal-draws').tieTrustpointDraw(appId, tpDrawRow); } catch (_) {}
     }
   } catch (_) { /* suggestion only */ }
 }
@@ -152,7 +186,8 @@ async function fetchReportBytes(fileUrl) {
     let current = fileUrl;
     for (let hop = 0; hop <= 3; hop++) {
       await media.assertPublicHttps(current);
-      const r = await fetch(current, { signal: ac.signal, redirect: 'manual', headers: { Authorization: `Api-Key ${cfg.trustpointApiKey}` } });
+      const hostOk = new URL(current).host === baseHost;
+      const r = await fetch(current, { signal: ac.signal, redirect: 'manual', headers: hostOk ? { Authorization: `Api-Key ${cfg.trustpointApiKey}` } : {} });
       if (r.status >= 300 && r.status < 400) {
         const loc = r.headers.get('location');
         if (!loc) throw new Error(`redirect ${r.status} with no location`);
@@ -221,6 +256,13 @@ async function reactDraw(appId, row, prev, { baseline = false, addrText = null }
     `UPDATE trustpoint_draws SET status_synced=$2 WHERE tp_draw_id=$1 AND status_synced IS DISTINCT FROM $2 RETURNING tp_draw_id`,
     [tpDrawId, newStatus])).rowCount === 1;
   if (!won) return;
+  // Only FORWARD transitions notify (audit #19): a stale read regressing the status and
+  // re-advancing must never re-send the borrower approval email. Rank unknown = 0.
+  const RANK = { DRAFT: 1, IN_REVIEW: 2, APPROVED: 3, COMPLETED: 4, DELETED: 5 };
+  if (prev && prev.status_synced && (RANK[newStatus] || 0) <= (RANK[prev.status_synced] || 0)) {
+    await audit(appId, tpDrawId, 'draw', tpDrawId, 'status_nonforward', prev.status_synced, newStatus, false);
+    return;
+  }
   const firstSight = !prev || prev.status_synced == null;
   // A BASELINE hydrate (a just-linked project's history) claims the watermark silently —
   // go-forward: PILOT never notifies for history it wasn't watching.
@@ -253,6 +295,10 @@ async function reactDraw(appId, row, prev, { baseline = false, addrText = null }
     // Fully best-effort; each stage records why it waited (writeback_note) when it can't run.
     try { await require('./lines').snapshotMilestones(appId, row.tp_project_id, tpDrawId, 'post'); } catch (_) {}
     try { await require('./writeback').onTrustpointApproval(appId, tpDrawId); } catch (_) {}
+    // A PORTAL-originated draw closes out into Sitewire as a HISTORICAL draw instead
+    // of the live write-back (phase 4 §5B — needs the per-line amounts, so it runs
+    // after the derive; re-triggered from the lines-save route as well).
+    try { await require('../lib/portal-draws').onTrustpointApproval(appId, row); } catch (_) {}
   } else if (newStatus === 'COMPLETED') {
     await notify.notifyAppStaff(appId, {
       type: 'draw_inbound', title: 'Draw completed on TrustPoint',
@@ -286,6 +332,7 @@ async function upsertServiceOrder(appId, so) {
         service_number, ordered_at, scheduled_at, completed_at, cancelled_at, inspector_allowance_rate, raw, updated_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,now())
      ON CONFLICT (tp_service_order_id) DO UPDATE SET
+        application_id=EXCLUDED.application_id, tp_project_id=EXCLUDED.tp_project_id,
         status=COALESCE(EXCLUDED.status, trustpoint_service_orders.status),
         tp_draw_id=COALESCE(EXCLUDED.tp_draw_id, trustpoint_service_orders.tp_draw_id),
         service_number=COALESCE(EXCLUDED.service_number, trustpoint_service_orders.service_number),
@@ -298,7 +345,7 @@ async function upsertServiceOrder(appId, so) {
     [so.id, appId, so.project_id || so.tp_project_id, so.draw_request_id || null, so.service_type || null, so.status || null,
      so.service_number || null, so.ordered_at || null, so.scheduled_at || null, so.completed_at || null, so.cancelled_at || null,
      so.inspector_allowance_rate != null && Number.isFinite(Number(so.inspector_allowance_rate)) ? Number(so.inspector_allowance_rate) : null,
-     JSON.stringify(so).slice(0, 20000)]);
+     ((x) => x.length > 20000 ? null : x)(JSON.stringify(so))]);
   // Silent by default (in-app timeline data); a COMPLETED inspection gets one in-app staff note.
   if (so.status === 'COMPLETED' && (!prev || prev.status !== 'COMPLETED')) {
     await notify.notifyAppStaff(appId, {
@@ -336,9 +383,20 @@ const SO_EVENTS = new Set(['SERVICE_ORDER_ORDERED', 'SERVICE_ORDER_COMPLETED', '
 
 async function processEvent(evt) {
   const p = evt.payload || {};
-  const tpProjectId = evt.tp_project_id || p.project_id || null;
+  let tpProjectId = evt.tp_project_id || p.project_id || null;
+  // The delivery shape may omit project_id (the documented event schema carries only
+  // draw_id/loan_id — audit #3). Resolve from what we already know before giving up.
+  if (!tpProjectId && (evt.tp_draw_id || p.draw_id)) {
+    const known = (await db.query(`SELECT tp_project_id FROM trustpoint_draws WHERE tp_draw_id=$1`, [String(evt.tp_draw_id || p.draw_id)])).rows[0];
+    if (known) tpProjectId = known.tp_project_id;
+  }
+  if (!tpProjectId && (evt.loan_id || p.loan_id)) {
+    const byLoan = (await db.query(`SELECT tp_project_id FROM trustpoint_project_links WHERE loan_external_id=$1 AND application_id IS NOT NULL`, [String(evt.loan_id || p.loan_id)])).rows;
+    if (byLoan.length === 1) tpProjectId = byLoan[0].tp_project_id;
+  }
   if (!tpProjectId) return { skipped: 'no_project' };
-  const appId = await linkedAppFor(String(tpProjectId));
+  const link = await linkFor(String(tpProjectId));
+  const appId = link ? link.application_id : null;
   if (!appId) {
     // Just-in-time discovery: an event for an unknown/unlinked project seeds the linking
     // desk (park-and-replay: the row is left unprocessed=processed with a note; the next
@@ -370,7 +428,7 @@ async function processEvent(evt) {
       await reactReturned(appId, row, addr);
       return { ok: true };
     }
-    await reactDraw(appId, row, prev, { addrText: addr });
+    await reactDraw(appId, row, prev, { addrText: addr, baseline: !link.baselined_at });
     return { ok: true };
   }
   if (SO_EVENTS.has(evt.event)) {
@@ -389,21 +447,26 @@ async function processEvent(evt) {
 }
 
 async function drainInbox(limit = 50) {
+  // The switch gates the whole MIRROR (its label says so): while off, deliveries sit in
+  // the inbox untouched and drain when it turns back on (audit #4).
+  if (!client.enabled()) return { skipped: 'off' };
   const rows = (await db.query(
-    `SELECT * FROM trustpoint_webhook_events WHERE processed_at IS NULL ORDER BY received_at LIMIT $1`, [limit])).rows;
+    `SELECT * FROM trustpoint_webhook_events WHERE processed_at IS NULL AND attempts < 3 ORDER BY received_at LIMIT $1`, [limit])).rows;
   let ok = 0, failed = 0;
   for (const evt of rows) {
     // claim so overlapping drains never double-process
     const claim = await db.query(
-      `UPDATE trustpoint_webhook_events SET processed_at=now() WHERE id=$1 AND processed_at IS NULL RETURNING id`, [evt.id]);
+      `UPDATE trustpoint_webhook_events SET processed_at=now(), attempts=attempts+1 WHERE id=$1 AND processed_at IS NULL RETURNING id`, [evt.id]);
     if (!claim.rows[0]) continue;
     try { await processEvent(evt); ok++; }
     catch (e) {
       failed++;
-      await db.query(`UPDATE trustpoint_webhook_events SET process_error=$2 WHERE id=$1`, [evt.id, String(e && e.message).slice(0, 500)]).catch(() => {});
+      // TrustPoint never redelivers — a TRANSIENT failure must not eat the event (audit
+      // #11): release the claim so the next drain retries, up to the attempts cap.
+      await db.query(`UPDATE trustpoint_webhook_events SET processed_at=NULL, process_error=$2 WHERE id=$1`, [evt.id, String(e && e.message).slice(0, 500)]).catch(() => {});
     }
   }
   return { ok, failed, drained: rows.length };
 }
 
-module.exports = { upsertDraw, reactDraw, reactReturned, upsertServiceOrder, hydrateProject, processEvent, drainInbox, archiveReport, linkedAppFor, linkToSitewireIntake, _drawRow: drawRow };
+module.exports = { upsertDraw, reactDraw, reactReturned, upsertServiceOrder, hydrateProject, processEvent, drainInbox, archiveReport, linkedAppFor, linkFor, linkToSitewireIntake, _drawRow: drawRow };

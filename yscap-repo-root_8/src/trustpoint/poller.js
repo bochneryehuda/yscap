@@ -45,15 +45,16 @@ async function pollDraws() {
     try {
       const tpProjectId = String(d.project_id || '');
       if (!tpProjectId) continue;
-      const appId = await mirror.linkedAppFor(tpProjectId);
-      if (!appId) { await discovery.noteUnknownProject(tpProjectId, null); continue; }
+      const link = await mirror.linkFor(tpProjectId);
+      if (!link) { await discovery.noteUnknownProject(tpProjectId, null); continue; }
+      const appId = link.application_id;
       let detail = d;
       try { detail = await client.getDraw(tpProjectId, d.id); } catch (_) {}
       const { prev: prevRow, row } = await mirror.upsertDraw(appId, tpProjectId, String(d.id), detail);
       await mirror.linkToSitewireIntake(appId, row);
-      // First-ever sight WITH no watermark yet on a draw that predates the link would have
-      // been baselined at link time; anything arriving through the delta poll is live.
-      await mirror.reactDraw(appId, row, prevRow, {});
+      // A link whose silent history baseline hasn't completed reacts as BASELINE — a
+      // failed link-time hydrate must never turn history into borrower emails (audit #9).
+      await mirror.reactDraw(appId, row, prevRow, { baseline: !link.baselined_at });
       mirrored++;
     } catch (e) { console.warn(`[trustpoint] poll draw ${d && d.id} failed: ${e && e.message}`); }
   }
@@ -88,12 +89,17 @@ function start() {
     // service orders ride the draw cadence at 1-in-12 (≈hourly at the 300s default)
     if (++soTick % 12 === 0) pollServiceOrders().catch(() => {});
   }, pollSec * 1000));
-  timers.push(setInterval(() => { discovery.sweep().catch(() => {}); }, sweepSec * 1000));
+  timers.push(setInterval(() => {
+    discovery.sweep().catch(() => {});
+    // approved-but-unpushed write-backs re-drive on the same cadence (audit-3 #3)
+    require('./writeback').sweepPending().catch(() => {});
+  }, sweepSec * 1000));
   // one prompt pass shortly after boot (never blocks startup)
   setTimeout(() => {
     mirror.drainInbox().catch(() => {});
     discovery.sweep().catch(() => {});
     pollDraws().catch(() => {});
+    require('./writeback').sweepPending().catch(() => {});
   }, 15 * 1000);
   console.log(`[trustpoint] poller started (draws every ${pollSec}s, sweep every ${sweepSec}s)`);
 }

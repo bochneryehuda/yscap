@@ -62,6 +62,11 @@ const TYPES = {
     internalStatus: null, gate: 'funded', assigns: false,
     helper: 'A submitted draw on a TrustPoint-administered file (Blue Lake physical) needs to be entered into TrustPoint by hand.',
   },
+  trinity_inspection_order: {
+    label: 'Trinity Inspection Order', role: 'draw_coordinator', pointer: null,
+    internalStatus: null, gate: 'funded', assigns: false,
+    helper: 'A portal draw on a physical-inspection file (non-Blue-Lake) needs its inspection ordered from Trinity by hand.',
+  },
   post_closing: {
     label: 'Post-Closing / Investor Delivery', role: null, pointer: null,
     internalStatus: 'in purchase review', gate: 'funded', assigns: false, requiresPick: true,
@@ -89,6 +94,9 @@ const SLA_HOURS = {
   // A submitted draw doesn't exist in TrustPoint until a human enters it — the borrower's
   // money clock is running, so this hand-off gets the tightest draw SLA.
   trustpoint_import: 24,
+  // Same clock pressure: the borrower asked for money and nothing moves until the
+  // Trinity inspection is ordered.
+  trinity_inspection_order: 24,
 };
 function slaHoursFor(t) { return SLA_HOURS[t] || null; }
 
@@ -99,7 +107,7 @@ const OUTCOME_LABELS = [
   'Finished processing', 'Finished loan setup', 'Finished CTC',
   'Cleared conditions', 'Added conditions', 'Cleared exception',
   'Finished closing', 'Finished draw setup', 'Entered in TrustPoint',
-  'Reviewed', 'Sent back — needs more',
+  'Inspection ordered', 'Reviewed', 'Sent back — needs more',
 ];
 
 // ---------------------------------------------------------------------------

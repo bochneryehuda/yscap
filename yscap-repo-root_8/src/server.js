@@ -50,6 +50,9 @@ app.use('/api/inbound/file-email', require('./routes/inbound-file-email'));
 // DocuSign Connect webhook — RAW body for the base64 HMAC verification, mounted
 // BEFORE the JSON parser for the same reason as the ClickUp/inbound webhooks.
 app.use('/api/esign/webhook', require('./routes/esign-webhook'));
+// TrustPoint webhook — its OWN small JSON parser + rate limit (never the global 32MB
+// parser: unauthenticated callers must not force huge parses), token-authenticated.
+app.use('/api/trustpoint/webhook', require('./routes/trustpoint-webhook'));
 app.use(express.json({ limit: `${JSON_LIMIT_MB}mb` }));
 
 // Rate limits (IP-based, in-memory) on the sensitive/unauthenticated surface.
@@ -212,9 +215,8 @@ app.use('/api/staff', require('./routes/staff'));
 // requireStaff + per-route capability gates (manage_draws / platform_setup) itself.
 app.use('/api/sitewire', require('./routes/sitewire'));
 
-// TrustPoint mirror (physical-draw workflow phase 2): the PUBLIC webhook receiver
-// (token-authenticated inline, no session) + the staff linking desk / per-file
-// mirror reads (per-route capability gates inside the router, like Sitewire's).
+// TrustPoint mirror (physical-draw workflow phases 2-3): the STAFF router (auth wall
+// + per-route capability gates). The public webhook is mounted earlier, pre-parser.
 app.use('/api/trustpoint', require('./routes/trustpoint'));
 // Appraisal desk: import the appraisal XML, reconcile it against the file, and resolve
 // PILOT findings. The router applies requireAuth + requireStaff + per-file scoping itself.
