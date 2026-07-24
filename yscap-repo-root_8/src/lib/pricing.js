@@ -179,6 +179,15 @@ function buildInputs(app, experience, overrides) {
     for (const k of NUMK) if (overrides[k] != null && overrides[k] !== '') out[k] = num(overrides[k]);
     for (const k of STRK) if (overrides[k] != null) out[k] = clean(overrides[k]);
     for (const k of BOOLK) if (overrides[k] != null) out[k] = !!overrides[k];
+    // The property ADDRESS and CITY are FILE-OWNED display fields (the engines
+    // price off state only). A studio override may FILL them while the file has
+    // no address yet (address-TBD drafts), but may never OVERWRITE the file's
+    // current address: a stale studio snapshot kept re-registering — and the
+    // term sheet kept printing — an old address after the file was corrected
+    // (owner-reported 2026-07-24: file said "392-394 Columbia Ave", the sheet
+    // still printed "392 Columbia Ave"). The file's address always wins here.
+    if (base.address) out.address = base.address;
+    if (base.city) out.city = base.city;
     if (overrides.asIsValue != null && overrides.asIsValue !== '') out.asIsDefaulted = false;
     // Present-but-EMPTY means "clear it" (owner-reported 2026-07-16: a field the
     // user blanked in the studio must never silently revert to the previously-
