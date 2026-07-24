@@ -486,6 +486,8 @@ export const api = {
   similarOpenFindings:       (appId, findingId) => req('GET', `/api/underwriting/${appId}/findings/${findingId}/similar-open`),
   // R5.17 — the grounded evidence behind one finding (exact OCR quote + page), fetched on demand.
   findingEvidence:           (appId, findingId) => req('GET', `/api/underwriting/${appId}/findings/${findingId}/evidence`),
+  // Grounded back-and-forth reasoning chat: ask PILOT "why?" about a file; history is client-held.
+  aiReason:                  (appId, question, history) => req('POST', `/api/underwriting/${appId}/reason`, { question, history: history || [] }),
   // "What to look for" — the note-buyer checklist for a document type (fetched on demand).
   documentReviewGuide:       (appId, docType) => req('GET', `/api/underwriting/${appId}/document-review-guide?docType=${encodeURIComponent(docType || '')}`),
   bulkResolveFindings:       (appId, findingIds, action, note) => req('POST', `/api/underwriting/${appId}/findings/similar/bulk-resolve`, { findingIds, action, note: note || undefined }),
