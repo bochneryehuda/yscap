@@ -180,6 +180,12 @@ module.exports = {
   // to geocoding.geo.census.gov + hazards.fema.gov.
   appraisalFloodCheckEnabled: process.env.APPRAISAL_FLOOD_CHECK_ENABLED === '1',
 
+  // Auto-clear the "Credit report" condition once every borrower on the file has a
+  // report imported AND its PDF filed (never a false-clear — see src/lib/credit/completeness.js).
+  // OFF by default: clearing a condition without a human sign-off is a sensitive action,
+  // so it stays a deliberate opt-in per environment.
+  creditAutoclearEnabled: process.env.CREDIT_AUTOCLEAR_ENABLED === '1',
+
   // --- document storage ---
   storageProvider: process.env.STORAGE_PROVIDER || 'local', // 'local' | 's3' | 'sharepoint'
   // On Render, set STORAGE_DIR to a mounted persistent disk (e.g. /var/data/uploads)
