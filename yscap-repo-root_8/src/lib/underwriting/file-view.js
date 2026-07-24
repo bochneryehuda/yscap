@@ -32,10 +32,10 @@ async function loadContext(client, appId) {
     : null;
   // The vesting entity on the file + every LLC the borrower is on record for (assets).
   const vesting = app.llc_id
-    ? (await client.query(`SELECT llc_name, ein FROM llcs WHERE id = $1`, [app.llc_id])).rows[0] || null
+    ? (await client.query(`SELECT llc_name, ein, is_verified FROM llcs WHERE id = $1`, [app.llc_id])).rows[0] || null
     : null;
   const entities = app.borrower_id
-    ? (await client.query(`SELECT llc_name FROM llcs WHERE borrower_id = $1 ORDER BY llc_name`, [app.borrower_id])).rows
+    ? (await client.query(`SELECT llc_name, is_verified FROM llcs WHERE borrower_id = $1 ORDER BY llc_name`, [app.borrower_id])).rows
     : [];
   // The current registered product breakdown — the engine's own SIZED figures. The leverage metrics
   // need the INITIAL ADVANCE (acquisition portion), NOT the total loan, to check loan-to-purchase /
@@ -70,11 +70,20 @@ async function loadContext(client, appId) {
       maxLtc: numOrNull(qcaps.maxLtc),
     } : null,
   } : null;
+  // Which of the borrower's entities are VERIFIED (LLC section complete: formation + OA + EIN
+  // reviewed, is_verified=true). A business bank account under an entity that is on file but NOT
+  // verified should still prompt "finish setting up that entity" (owner-directed 2026-07-24) —
+  // the bank check needs the verified subset to tell "known & verified" from "named but unverified".
+  const verifiedEntityNames = [
+    ...(vesting && vesting.is_verified ? [vesting.llc_name] : []),
+    ...entities.filter((r) => r.is_verified).map((r) => r.llc_name),
+  ].filter(Boolean);
   return {
     app, borrower,
     vestingName: vesting && vesting.llc_name,
     ein: vesting && vesting.ein,
     entityNames: entities.map((r) => r.llc_name).filter(Boolean),
+    verifiedEntityNames,
     registration,
   };
 }
@@ -87,7 +96,7 @@ function borrowerName(b) {
 
 // Build the subject a given document type's check compares against.
 function subjectFor(docType, ctx) {
-  const { app, borrower, vestingName, entityNames } = ctx || {};
+  const { app, borrower, vestingName, entityNames, verifiedEntityNames } = ctx || {};
   switch (docType) {
     case 'government_id':
       return borrower; // the borrowers row (name / DOB / address)
@@ -109,7 +118,12 @@ function subjectFor(docType, ctx) {
       };
     case 'bank_statement':
     case 'voided_check':
-      return { borrower_name: borrowerName(borrower), entity_names: entityNames || [] };
+      // verified_entity_names lets the bank check tell a KNOWN & VERIFIED entity (funds count,
+      // no flag) from one that is merely named on file (advisory: finish the LLC section). Always
+      // an array here (loadContext returns [] when nothing is verified) — so the check's
+      // never-fabricate guard is satisfied and the advisory actually evaluates in production.
+      return { borrower_name: borrowerName(borrower), entity_names: entityNames || [],
+        verified_entity_names: verifiedEntityNames || [] };
     case 'assignment':
       return {
         entity_name: vestingName || null, is_assignment: !!(app && app.is_assignment),

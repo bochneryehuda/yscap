@@ -156,9 +156,12 @@ const BANK_STATEMENT = {
   docType: 'bank_statement',
   instructions:
     "You are reviewing a bank statement for a loan file (assets / proof of funds). Extract the exact " +
-    "account-holder name as printed, whether the holder is a person or a business/LLC, the bank name, " +
-    "the account number, the statement period, and the opening balance, closing balance, total deposits, " +
-    "and total withdrawals as printed. Also capture the SINGLE LARGEST individual deposit/credit in the " +
+    "account-holder name as printed (the FIRST/primary name if several are shown), whether the holder is a " +
+    "person or a business/LLC, the bank name, the account number, the statement period, and the opening " +
+    "balance, closing balance, total deposits, and total withdrawals as printed. If the account is held " +
+    "JOINTLY by more than one named person (e.g. \"John Smith and Jane Smith\", \"John Smith OR Jane Doe\"), " +
+    "list every ADDITIONAL account holder beyond the primary in additionalHolders (an empty array if the " +
+    "account has a single holder). Also capture the SINGLE LARGEST individual deposit/credit in the " +
     "period (the amount) if the transaction detail is shown. Use null for anything absent/unreadable — do " +
     "NOT guess or compute values that aren't printed. Amounts as plain numbers. Set readable=false if poor.",
   schema: {
@@ -167,6 +170,7 @@ const BANK_STATEMENT = {
     properties: {
       accountHolderName: { type: ['string', 'null'] },
       holderIsBusiness:  { type: ['boolean', 'null'] },   // true if the holder is an LLC/entity
+      additionalHolders: { type: ['array', 'null'], items: { type: 'string' } }, // co-owners beyond the primary (joint accounts)
       bankName:          { type: ['string', 'null'] },
       accountNumber:     { type: ['string', 'null'] },     // masked to last-4 on storage
       statementPeriod:   { type: ['string', 'null'] },
@@ -178,7 +182,7 @@ const BANK_STATEMENT = {
       readable:          { type: 'boolean' },
       notes:             { type: ['string', 'null'] },
     },
-    required: ['accountHolderName', 'holderIsBusiness', 'bankName', 'accountNumber', 'statementPeriod', 'openingBalance', 'closingBalance', 'totalDeposits', 'totalWithdrawals', 'largestDeposit', 'readable', 'notes'],
+    required: ['accountHolderName', 'holderIsBusiness', 'additionalHolders', 'bankName', 'accountNumber', 'statementPeriod', 'openingBalance', 'closingBalance', 'totalDeposits', 'totalWithdrawals', 'largestDeposit', 'readable', 'notes'],
   },
 };
 

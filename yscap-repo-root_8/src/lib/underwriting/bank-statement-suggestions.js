@@ -94,6 +94,38 @@ function build(appId, documentId, f) {
     return base;
   }
 
+  // Business account under a KNOWN-but-UNVERIFIED entity → same LLC-section cascade as the
+  // different-entity case, but advisory: the funds already count; the condition just finishes
+  // establishing the entity (operating agreement + formation + EIN).
+  if (f.code === 'bank_business_entity_unverified') {
+    base.proposedAction = {
+      type: 'create_condition',
+      cascade: 'on_liquidity',
+      templateCode: firstAvailable(OA_CASCADE_TEMPLATE_CODES),
+      entityName: f.entityName || null,
+      fields: {
+        code: f.code, severity: f.severity, title: f.title, howTo: f.howTo, source: 'bank_statement',
+        opensCondition: firstAvailable(OA_CASCADE_TEMPLATE_CODES),
+      },
+    };
+    base.body = f.howTo;
+    return base;
+  }
+
+  // Joint/shared personal account → request an ACCESS LETTER from the co-owner(s).
+  if (f.code === 'bank_account_shared') {
+    base.proposedAction = {
+      type: 'request_document',
+      reason: 'joint_account_access_letter',
+      fields: {
+        code: f.code, severity: f.severity, title: f.title, howTo: f.howTo, source: 'bank_statement',
+        opensCondition: f.opensCondition || 'underwriting_review_cleared',
+      },
+    };
+    base.body = f.howTo;
+    return base;
+  }
+
   if (f.code === 'bank_missing_page') {
     base.proposedAction = {
       type: 'request_document',
