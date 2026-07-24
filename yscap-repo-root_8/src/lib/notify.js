@@ -222,7 +222,16 @@ async function _emailRow(id, to, opts, audience) {
     // sent_emails store that the Draw Management email view reads. Best-effort + caught.
     _captureSentEmail(id, to, opts, audience, msg, replyTo, attachments, status).catch(() => {});
   } catch (e) {
-    await db.query(`UPDATE notifications SET email_status='error', email_error=$2 WHERE id=$1`, [id, String(e.message).slice(0, 400)]);
+    // This whole function is fire-and-forget (call sites at #364/#616 don't await it),
+    // so ANY throw here becomes an unhandled rejection that crashes the process (the two
+    // fire-and-forget call sites below both attach .catch()). In tests
+    // that close the pool at teardown, an in-flight send can lose the race and land here
+    // AFTER pool.end() — the error-status write would then throw "Cannot use a pool after
+    // calling end on the pool" and take the process down. Guard the best-effort write so
+    // this handler can never itself throw. (Prod is unaffected; the pool stays open there.)
+    try {
+      await db.query(`UPDATE notifications SET email_status='error', email_error=$2 WHERE id=$1`, [id, String(e.message).slice(0, 400)]);
+    } catch (_) { /* pool closed / DB unreachable — nothing more we can do here */ }
     // still capture what we tried to send (the reader shows why it failed) — best-effort.
     try { const msg = buildEmail(opts, audience); _captureSentEmail(id, to, opts, audience, msg, opts.replyTo || null, [], 'error').catch(() => {}); } catch (_) { /* ignore */ }
   }
@@ -361,7 +370,7 @@ async function notifyStaff(staffId, opts) {
     [staffId, opts.type, opts.title, opts.body || null, opts.applicationId || null, opts.link || null]);
   const id = rows[0].id;
   const to = emailOn ? (opts.emailTo ? [].concat(opts.emailTo) : await _staffEmail(staffId)) : [];
-  _emailRow(id, to, opts, 'staff');   // fire-and-forget (marks 'skipped' when `to` is empty)
+  _emailRow(id, to, opts, 'staff').catch(() => {});   // fire-and-forget (marks 'skipped' when `to` is empty); never let a stray rejection crash the process
   return id;
 }
 
@@ -613,7 +622,7 @@ async function notifyBorrower(borrowerId, opts) {
     [borrowerId, opts.type, sopts.title, sopts.body || null, opts.applicationId || null, opts.link || null]);
   const id = rows[0].id;
   const to = pref.email ? (opts.emailTo ? [].concat(opts.emailTo) : await _borrowerEmail(borrowerId)) : [];
-  _emailRow(id, to, sopts, 'borrower');
+  _emailRow(id, to, sopts, 'borrower').catch(() => {});   // fire-and-forget; swallow any stray rejection so it can't crash the process
   return id;
 }
 
