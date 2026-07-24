@@ -38,15 +38,47 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
       ok('an empty file omits every investor signal (never fabricated)');
     }
 
-    // 1. A completed credit pull with a middle score → fico_credit reads the real column.
+    // 1. A completed credit pull TIED TO THE BORROWER → fico_credit reads the real column.
+    //    (#260 — the gather ties the report to each borrower via borrower_id and takes the
+    //    higher-of-two once all borrowers are pulled; a report with the wrong/no borrower_id
+    //    must not drive the priced-FICO comparison.)
     await pool.query(
-      `INSERT INTO credit_reports (application_id, status, middle_score, pulled_at)
-         VALUES ($1,'completed',712, now())`, [aId]);
+      `INSERT INTO credit_reports (application_id, borrower_id, status, middle_score, pulled_at)
+         VALUES ($1,$2,'completed',712, now())`, [aId, bId]);
     {
       const out = await gatherInvestorInputs(aId, db);
-      assert.strictEqual(out.fico_credit, 712, 'fico_credit reads credit_reports.middle_score');
-      ok('a completed credit report populates fico_credit from the real schema');
+      assert.strictEqual(out.fico_credit, 712, 'single-borrower file → fico_credit is that borrower’s middle score');
+      ok('a completed, borrower-tied credit report populates fico_credit from the real schema');
     }
+
+    // 1b. #260 — co-borrower higher-of-two + never-false-fire on incomplete credit. Add a
+    //     co-borrower with a LOWER score → fico_credit stays the HIGHER (712), never the latest pull.
+    const coId = (await pool.query(
+      `INSERT INTO borrowers (first_name,last_name,email,date_of_birth)
+         VALUES ('Co','Borrower',$1,'1986-02-02') RETURNING id`,
+      ['isgco+' + Buffer.from(String(process.pid)).toString('hex') + '@example.com'])).rows[0].id;
+    await pool.query(`UPDATE applications SET co_borrower_id=$2 WHERE id=$1`, [aId, coId]);
+    {
+      // Co-borrower not pulled yet → higher-of-two isn't final → fico_credit OMITTED (no false fire).
+      const out = await gatherInvestorInputs(aId, db);
+      assert.ok(!('fico_credit' in out), 'co-borrower unpulled → fico_credit omitted (never judge on incomplete credit)');
+      ok('a co-borrower file with the co-borrower not yet pulled omits fico_credit (no false fire)');
+    }
+    // Pull the co-borrower LATER (more recent) with a LOWER score → fico_credit is the HIGHER (712),
+    // NOT the latest pull (680) — the bug that false-fired the FATAL mismatch is fixed.
+    await pool.query(
+      `INSERT INTO credit_reports (application_id, borrower_id, status, middle_score, pulled_at)
+         VALUES ($1,$2,'completed',680, now() + interval '1 minute')`, [aId, coId]);
+    {
+      const out = await gatherInvestorInputs(aId, db);
+      assert.strictEqual(out.fico_credit, 712, 'both pulled → fico_credit is the higher-of-two (712), not the latest pull (680)');
+      ok('co-borrower both pulled → fico_credit is the higher-of-two, immune to which pull is newest');
+    }
+    // Restore the single-borrower shape for the rest of the suite (experience/cash-out sections
+    // assume the primary borrower only); the co-borrower row is cleaned up with the app cascade.
+    await pool.query(`UPDATE applications SET co_borrower_id=NULL WHERE id=$1`, [aId]);
+    await pool.query(`DELETE FROM credit_reports WHERE borrower_id=$1`, [coId]);
+    await pool.query(`DELETE FROM borrowers WHERE id=$1`, [coId]);
 
     // 2. A current appraisal in a FEMA Special Flood Hazard Area → appraisal_present true
     //    AND in_flood_zone true (proven), reading the real db/150 flood columns.

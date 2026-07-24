@@ -17,15 +17,24 @@ function ok(name, cond) { assert.ok(cond, name); console.log('  ok  ' + name); p
 // ([] = no appraisal row → in_flood_zone stays unknown/omitted).
 // `expApp` = the applications row the experience read returns ([]=no row → omit). `trackAgg`
 // = the rows the reused countBorrowersExperience GROUP BY returns ([{deal_type,n}]) → verified count.
-function mkDb({ fico, apprPresent, flood, expApp, trackAgg, staleExit, throwOn } = {}) {
+// `fico` = the PRIMARY borrower's latest completed middle score; `coFico` = the co-borrower's;
+// set `coBorrower:true` to make the file a co-borrower file. The FICO gather ties the credit report
+// to each borrower (borrower_id=$2) and takes the higher-of-two once all borrowers are pulled.
+function mkDb({ fico, coFico, coBorrower, apprPresent, flood, expApp, trackAgg, staleExit, throwOn } = {}) {
+  const creditFor = (bid) => (bid === 'b2'
+    ? (coFico == null ? [] : [{ middle_score: coFico }])
+    : (fico == null ? [] : [{ middle_score: fico }]));
   return {
-    query: async (sql) => {
+    query: async (sql, params) => {
       if (throwOn && sql.includes(throwOn)) throw new Error('boom');
       if (sql.includes('fema_flood_sfha')) {
         return { rows: flood === undefined ? [] : [flood] };
       }
-      if (sql.includes('credit_reports')) {
-        return { rows: fico == null ? [] : [{ middle_score: fico }] };
+      if (sql.includes('co_borrower_id FROM applications')) {   // the FICO borrower-ids read
+        return { rows: [{ borrower_id: 'b1', co_borrower_id: coBorrower ? 'b2' : null }] };
+      }
+      if (sql.includes('credit_reports')) {                     // per-borrower (borrower_id=$2) middle score
+        return { rows: creditFor(params && params[1]) };
       }
       if (sql.includes('requested_exp_flips')) {   // the applications experience read
         return { rows: expApp === undefined ? [] : [expApp] };
@@ -199,6 +208,26 @@ function mkDb({ fico, apprPresent, flood, expApp, trackAgg, staleExit, throwOn }
     // Not classified (NULL — e.g. a purchase) → is_cash_out OMITTED (never fabricated).
     const outNull = await gatherInvestorInputs('app-co', mkDb({ expApp: coApp({ refinance_economic_type: null, estimated_cash_out: 500000 }) }));
     ok('unclassified refi type → is_cash_out omitted (never guessed)', !('is_cash_out' in outNull) && !('cash_out_proceeds' in outNull));
+  }
+
+  // 9. CO-BORROWER FICO (#260) — fico_credit must be the borrower-tied HIGHER-OF-TWO (the pricing
+  //    convention), and ONLY once every borrower is pulled — never the "latest pull overall", which
+  //    false-fired the FATAL mismatch on ordinary two-borrower files.
+  {
+    const both = await gatherInvestorInputs('app-co1', mkDb({ fico: 720, coFico: 680, coBorrower: true }));
+    ok('co-borrower, both pulled → fico_credit is the HIGHER of the two (720)', both.fico_credit === 720);
+
+    const bothB = await gatherInvestorInputs('app-co2', mkDb({ fico: 680, coFico: 720, coBorrower: true }));
+    ok('higher-of-two regardless of which borrower is higher (720)', bothB.fico_credit === 720);
+
+    const pending = await gatherInvestorInputs('app-co3', mkDb({ fico: 720, coFico: null, coBorrower: true }));
+    ok('co-borrower still unpulled → fico_credit OMITTED (never judge on incomplete credit — no false fire)', !('fico_credit' in pending));
+
+    const single = await gatherInvestorInputs('app-s1', mkDb({ fico: 700 }));
+    ok('single-borrower file → fico_credit is that borrower’s score (700)', single.fico_credit === 700);
+
+    const noApp = await gatherInvestorInputs('app-na', mkDb({ fico: 700, throwOn: 'FROM applications' }));
+    ok('an applications read error omits fico_credit (no throw)', !('fico_credit' in noApp));
   }
 
   console.log(`\ngatherInvestorInputs (#232 data-source wiring) pure — ${passed} checks passed`);
