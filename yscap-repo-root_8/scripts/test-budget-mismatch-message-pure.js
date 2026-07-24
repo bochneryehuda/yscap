@@ -44,7 +44,7 @@ ok(!!msg, 'a one-cent SOW shortfall refuses sign-off (the rule is to-the-cent)')
 ok(msg.includes('$119,999.99') && msg.includes('$120,000.00'), 'the message shows BOTH values at cent precision — never two identical rounded figures');
 ok(msg.includes('$0.01 lower'), 'the message names the exact gap');
 ok(msg.includes('Scope of Work line-item total'), 'the message names WHICH number is off');
-ok(!/\$120,000[^.,]/.test(msg + ' '), 'no dollar-rounded "$120,000" (without cents) appears anywhere in the message');
+ok(!/\$120,000(?!\.\d\d)/.test(msg), 'no dollar-rounded "$120,000" (without cents) appears anywhere in the message');
 
 // ---- each pair is named individually ----
 msg = RB.budgetSignoffCheck(payload(120000, 120000), 120000, { rehabBudget: 121000 });
@@ -57,6 +57,18 @@ ok(msg.includes('first-page construction budget $119,000.00') && msg.includes('$
 ok(RB.budgetSignoffCheck(payload('120,000.00', '$120,000'), 120000, { rehabBudget: '120,000' }) === null, 'comma/"$" formatted payload + registration values parse (toNum) — no false fire');
 msg = RB.budgetSignoffCheck(payload('119,999.99'), 120000, { rehabBudget: 120000 });
 ok(!!msg && msg.includes('$0.01 lower'), 'formatted values still compare at cents when genuinely different');
+
+// ---- the durable [auto] note reuses the SAME cent-precise message ----
+msg = RB.budgetSignoffCheck(payload(119999.99, 120000), 120000, { rehabBudget: 120000 });
+let note = RB.sowAutoNote('X does not match Y', true, 119999.99);
+ok(note === '[auto] X does not match Y', 'a mismatch note is exactly [auto] + the gate message (single source of truth)');
+note = RB.sowAutoNote(null, false, 120000);
+ok(note === '[auto] ' + RB.SOW_CONTINGENCY_MSG, 'a contingency-only failure stamps the contingency message');
+note = RB.sowAutoNote(null, true, '120,000');
+ok(note.includes('$120,000.00'), 'the ready-to-clear note shows cents and parses formatted totals');
+
+// ---- display primitives never lie at the edges ----
+ok(RB.moneyExact(-0.001) === '$0.00', 'sub-cent negative renders $0.00 (never "$-0.00")');
 
 // ---- not-submitted still refuses plainly ----
 ok(/not been submitted/.test(RB.budgetSignoffCheck({}, 120000, null) || ''), 'a missing SOW total refuses with the plain not-submitted message');

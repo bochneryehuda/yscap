@@ -28,7 +28,7 @@ const eqCents = (a, b) => Math.round((Number(a) || 0) * 100) === Math.round((Num
 // "$120,000" — the real gap was cents, hidden by the dollar-rounded `money()`).
 // Every budget-mismatch message below uses THIS, never `money()`.
 const moneyExact = (n) => {
-  const cents = Math.round((Number(n) || 0) * 100);
+  const cents = Math.round((Number(n) || 0) * 100) || 0;   // `|| 0` also kills "-0.00" for sub-cent negatives
   return '$' + (cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 };
 
@@ -147,7 +147,8 @@ async function checkSowBudget(appId, totalOrPayload, client = db) {
 function budgetSignoffCheck(toolPayload, appRehabBudget, regInputs) {
   const sowTotal = toolPayload && toolPayload.total != null ? toNum(toolPayload.total) : null;
   if (sowTotal == null) return 'The Scope of Work / rehab budget has not been submitted yet.';
-  const appBudget = toNum(appRehabBudget) != null ? toNum(appRehabBudget) : 0;
+  const appParsed = toNum(appRehabBudget);
+  const appBudget = appParsed != null ? appParsed : 0;
   const regBudget = regInputs && regInputs.rehabBudget != null ? toNum(regInputs.rehabBudget) : null;
   const fpTarget = firstPageBudget(toolPayload);
   const fpSet = fpTarget != null && fpTarget > 0;
@@ -162,6 +163,24 @@ function budgetSignoffCheck(toolPayload, appRehabBudget, regInputs) {
   return `Budgets do not match to the cent — ${problems.join('; ')}. `
     + `Right now: first-page construction budget ${fpSet ? moneyExact(fpTarget) : '—'} · Scope of Work line-item total ${moneyExact(sowTotal)} · file budget ${moneyExact(appBudget)}${regBudget != null ? ` · registered product budget ${moneyExact(regBudget)}` : ''}. `
     + `They must ALL agree to the cent before sign-off: adjust the Scope of Work (start total + line items) or re-register the product so the numbers match.`;
+}
+
+/**
+ * The durable [auto] note every SOW save stamps on the rehab-budget condition
+ * (staff SOW tool, generic staff tool-submit, borrower submit — all three used
+ * to hand-build this note with the whole-DOLLAR money() helper, so a cents-level
+ * mismatch stamped a note showing identical figures on the condition card even
+ * after the live refusal message was made cent-precise; audit finding 1 on the
+ * 2026-07-24 cent-blind message fix). Built from the SAME cent-precise submit
+ * message, so the note can never round away the gap it reports.
+ *   mismatchMessage — checkSowBudget's message when it refused, else null/undefined
+ *   contingencyOk   — checkSowContingency/checkGoldSow ok flag
+ *   totalRaw        — the payload's line-item total (toNum-parsed here)
+ */
+function sowAutoNote(mismatchMessage, contingencyOk, totalRaw) {
+  if (mismatchMessage) return '[auto] ' + mismatchMessage;
+  if (!contingencyOk) return '[auto] ' + SOW_CONTINGENCY_MSG;
+  return `[auto] Scope of Work totals ${moneyExact(toNum(totalRaw))} and matches the file's rehab budget — ready to clear.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -335,7 +354,7 @@ const enforceGoldSowContingency = enforceSowContingency;
 
 module.exports = {
   requiredRehabBudget, checkSowBudget, firstPageBudget, money, eqCents, toNum,
-  moneyExact, gapPhrase, budgetSignoffCheck,
+  moneyExact, gapPhrase, budgetSignoffCheck, sowAutoNote,
   sowContingency, sowContingencyPct, goldContingencyOk,
   sowContingencyRequired, checkSowContingency, enforceSowContingency,
   checkGoldSow, enforceGoldSowContingency,
