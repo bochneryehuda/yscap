@@ -322,6 +322,11 @@ async function runWholeLoan(applicationId, db, opts) {
     verificationAttested = true; // the sweep RAN (zero findings ≠ didn't run)
   } catch (_) { verificationFindings = []; verificationAttested = false; }
 
+  // #232 — feed the note-buyer review the signals the canonical context can't hold,
+  // read straight from the file's own data. NEVER fabricates (a signal it can't prove
+  // is omitted → its rule stays silent); never throws. An explicit caller value wins.
+  const gathered = await gatherInvestorInputs(applicationId, db);
+
   const assembled = assembleRun({
     context,
     registration,
@@ -331,8 +336,9 @@ async function runWholeLoan(applicationId, db, opts) {
     extraFindings: [...(o.extraFindings || []), ...verificationFindings],
     // Investor-guideline signals the note-buyer review can't read from the canonical context
     // (imported credit FICO, appraisal transferred/rural/comps, verified vs claimed experience,
-    // flood zone). The caller/desks pass what they have; anything absent stays null → silent.
-    investorInputs: o.investorInputs || {},
+    // flood zone). Gathered from the file's data (gatherInvestorInputs), overridden by anything
+    // the caller/desks pass explicitly; anything still absent stays null → silent.
+    investorInputs: Object.assign({}, gathered, o.investorInputs || {}),
     verificationAttested,
     trigger: o.trigger || 'manual_run',
   });
@@ -386,6 +392,51 @@ async function maybeRunWholeLoan(applicationId, db, trigger) {
   try {
     return await runWholeLoan(applicationId, db, { trigger: trigger || 'auto', skipIfUnchanged: true });
   } catch (_) { return null; }
+}
+
+/**
+ * gatherInvestorInputs(applicationId, db) — #232, the per-condition data-source wiring.
+ *
+ * The investor-guideline review (`investor-guideline-review.js`) reads signals the
+ * canonical whole-loan context can't hold. This reads them straight from the file's
+ * own data and returns a flat bag `assembleRun` merges into `investorInputs`.
+ *
+ * DISCIPLINE: NEVER fabricate — a signal it can't PROVE is simply omitted, so its
+ * rule stays silent (its `when` returns null on a missing field). Every read is its
+ * own try/catch and the whole thing NEVER throws (a failed read just omits that one
+ * signal). Each key here lights up a specific rule; the rest are the go-forward:
+ *   • fico_credit        → isg_fico_mismatch (priced FICO must equal the credit report)
+ *   • appraisal_present  → gates isg_price_value_over_requirement (purchase vs as-is,
+ *                          only once the appraisal is in)
+ * Go-forward (need their own careful, never-false-fire wiring): appraisal
+ * transferred/rural/comps/mid-construction, claimed-vs-verified experience,
+ * has_stale_exit, in_flood_zone, ground-up/cash-out/conversion.
+ */
+async function gatherInvestorInputs(applicationId, db) {
+  const out = {};
+  if (!applicationId || !db || typeof db.query !== 'function') return out;
+
+  // Imported credit-report FICO — the LATEST completed pull that actually carries a
+  // middle score. A file with no credit report → no fico_credit → the mismatch rule
+  // stays silent (never invents a score, never false-flags).
+  try {
+    const c = await db.query(
+      `SELECT middle_score FROM credit_reports
+        WHERE application_id = $1 AND status = 'completed' AND middle_score IS NOT NULL
+        ORDER BY pulled_at DESC LIMIT 1`, [applicationId]);
+    if (c.rows[0] && c.rows[0].middle_score != null) out.fico_credit = Number(c.rows[0].middle_score);
+  } catch (_) { /* no credit_reports table / query error → omit fico_credit */ }
+
+  // Is a current appraisal on file? Only TRUE unblocks the price-vs-value rule (which
+  // then compares the already-in-context purchase_price vs as_is_value). Absent → the
+  // rule stays silent (the review must never judge value before the appraisal is in).
+  try {
+    const a = await db.query(
+      `SELECT 1 FROM appraisals WHERE application_id = $1 AND superseded = false LIMIT 1`, [applicationId]);
+    if (a.rows[0]) out.appraisal_present = true;
+  } catch (_) { /* appraisals table optional in some envs → omit */ }
+
+  return out;
 }
 
 // Priced-input drift, derived from the context's source-priority discrepancies:
@@ -465,4 +516,4 @@ async function persistRun(db, applicationId, context, assembled, createdBy) {
 
 function str(v) { return v == null ? null : String(v); }
 
-module.exports = { assembleRun, runWholeLoan, maybeRunWholeLoan, _internals: { capsFromQuote, structureFromContext, pricedDrift } };
+module.exports = { assembleRun, runWholeLoan, maybeRunWholeLoan, gatherInvestorInputs, _internals: { capsFromQuote, structureFromContext, pricedDrift } };
