@@ -611,6 +611,13 @@ router.get('/:appId', async (req, res, next) => {
         } catch (_) { await c.query('ROLLBACK').catch(() => {}); }
         finally { c.release(); }
       })().catch(() => {});
+      // Keep the file's whole-loan RUN fresh on every staff view so the run
+      // cockpit / "why this decision" / investor-guideline escalations reflect
+      // the current file (R6.14/R6.15). Its OWN connection + transaction (never
+      // the `c` above); deduped so it only writes a new immutable run when a real
+      // input moved; best-effort — a run must never break or slow the file view
+      // (advisory only, records nothing a human must act on).
+      require('../lib/underwriting/run').maybeRunWholeLoan(app.id, db, 'file_view').catch(() => {});
     });
 
     // Fraud / red-flag score: aggregate every open signal above + the economic red flags into one

@@ -96,6 +96,13 @@ function decideBackstop(resolved, opts = {}) {
 async function backstopForRun(applicationId, action, db, opts = {}) {
   let resolved;
   try {
+    // Ensure the file's whole-loan run reflects CURRENT data before we read its
+    // issuance decision — otherwise this backstop would decide off a stale (or
+    // absent) run. Best-effort + deduped (no new run when nothing moved) + never
+    // throws; if it can't run, resolveFromLatestRun simply reads whatever exists
+    // (or nothing → advisory/proceed). This is what makes the CTC/funding gate
+    // actually reflect the loan, while staying fail-open by construction.
+    try { await require('./run').maybeRunWholeLoan(applicationId, db, action); } catch (_e2) { /* fail open */ }
     const policy = require('./issuance-policy');
     resolved = await policy.resolveFromLatestRun(applicationId, action, db, { actorRole: (opts && opts.actorRole) || null });
   } catch (_e) {

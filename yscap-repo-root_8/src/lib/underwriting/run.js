@@ -338,6 +338,23 @@ async function runWholeLoan(applicationId, db, opts) {
   });
 
   if (o.persist === false) return { runId: null, context, ...assembled };
+
+  // Dedup (opt-in via skipIfUnchanged): if a CURRENT (non-superseded) run already
+  // captured this exact source hash, nothing underwriting-relevant changed since
+  // it ran → return that run instead of churning a fresh immutable row. This lets
+  // the auto-trigger fire on every file view / issuance check cheaply (it still
+  // builds the context to compute the hash, but only WRITES a new run when a real
+  // input moved). On any lookup error it falls through to a normal persist.
+  if (o.skipIfUnchanged && assembled.sourceHash) {
+    try {
+      const prev = await db.query(
+        `SELECT id FROM underwriting_runs
+          WHERE application_id = $1 AND superseded_at IS NULL AND source_hash = $2
+          ORDER BY created_at DESC LIMIT 1`, [applicationId, assembled.sourceHash]);
+      if (prev.rows[0]) return { runId: prev.rows[0].id, context, unchanged: true, ...assembled };
+    } catch (_) { /* fall through to a normal persist */ }
+  }
+
   const runId = await persistRun(db, applicationId, context, assembled, o.createdBy || null);
   // #200 — feed the calibration loop: record this run's would-be decision as the
   // open CANDIDATE shadow for the file. Best-effort — a calibration write must
@@ -346,6 +363,29 @@ async function runWholeLoan(applicationId, db, opts) {
     await require('./shadow-capture').recordRunShadow(db, { applicationId, run: { ...assembled, runId } });
   } catch (_) { /* additive, never blocks */ }
   return { runId, context, ...assembled };
+}
+
+/**
+ * maybeRunWholeLoan(applicationId, db, trigger) — the ADVISORY auto-trigger.
+ *
+ * The single guarded entry point every live surface uses to keep a file's
+ * whole-loan run fresh (file view, issuance check, material event). It is
+ * deduped (skipIfUnchanged → no new row when nothing material moved), fully
+ * best-effort (NEVER throws — a failed run must never break a page load or a
+ * status change), and kill-switchable without a deploy (WHOLE_LOAN_RUN_DISABLED=1).
+ *
+ * Returns the run result (fresh or the unchanged current run), or null when the
+ * trigger is disabled / the file has no context / anything errored. Because the
+ * run only READS + records to the immutable run tables and every gate built on it
+ * is advisory + super-admin-overridable + fails OPEN, calling this can never block
+ * or mutate anything the frozen engine owns.
+ */
+async function maybeRunWholeLoan(applicationId, db, trigger) {
+  if (!applicationId) return null;
+  if (process.env.WHOLE_LOAN_RUN_DISABLED === '1') return null;
+  try {
+    return await runWholeLoan(applicationId, db, { trigger: trigger || 'auto', skipIfUnchanged: true });
+  } catch (_) { return null; }
 }
 
 // Priced-input drift, derived from the context's source-priority discrepancies:
@@ -425,4 +465,4 @@ async function persistRun(db, applicationId, context, assembled, createdBy) {
 
 function str(v) { return v == null ? null : String(v); }
 
-module.exports = { assembleRun, runWholeLoan, _internals: { capsFromQuote, structureFromContext, pricedDrift } };
+module.exports = { assembleRun, runWholeLoan, maybeRunWholeLoan, _internals: { capsFromQuote, structureFromContext, pricedDrift } };
