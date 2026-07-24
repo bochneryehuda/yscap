@@ -1107,10 +1107,15 @@ router.post('/:appId/investor-guidelines/ai-verify', async (req, res, next) => {
     setImmediate(() => {
       (async () => {
         const verify = require('../lib/underwriting/investor-guidelines/ai-guideline-verify');
+        // Load the file's current per-document extracted fields ONCE so the grounded
+        // check can read the specific document numbers (e.g. a hazard policy's dwelling
+        // coverage), reused across every condition — best-effort, {} on any error.
+        const docFields = await verify.loadFileExtractedFields(db, app.id).catch(() => ({}));
         for (const v of satisfied.slice(0, 12)) {
           const r = await verify.verifySatisfiedCondition(db, {
             applicationId: app.id,
             condition: { name: v.name, required_evidence: v.required_evidence, checks: v.checks, cond_no: v.cond_no },
+            docFields,
             db,
           }).catch(() => null);
           if (r && r.reason === 'cost cap reached') break;   // stop at the per-file spend cap

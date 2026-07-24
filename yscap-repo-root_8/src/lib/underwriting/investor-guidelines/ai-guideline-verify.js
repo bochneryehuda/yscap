@@ -100,6 +100,32 @@ function verdictToSuggestion(condition, verdict, opts) {
 }
 
 /**
+ * loadFileExtractedFields(client, appId) → { [docType]: fields } (DB, best-effort).
+ * The file's CURRENT per-document extracted fields (newest row per doc_type), so the
+ * grounded verifier can read the SPECIFIC document numbers — e.g. a hazard policy's
+ * dwelling-coverage amount, an operating agreement's members — that the loan-level
+ * primer may not carry as a canonical twin fact. NEVER throws; returns {} on any error
+ * or missing input. Bounded (≤40 doc types) so it can't balloon the GPT context.
+ */
+async function loadFileExtractedFields(client, appId) {
+  try {
+    if (!client || typeof client.query !== 'function' || !appId) return {};
+    const { rows } = await client.query(
+      `SELECT doc_type, fields FROM document_extractions
+        WHERE application_id = $1 AND is_current = true AND fields IS NOT NULL
+        ORDER BY created_at DESC`, [appId]);
+    const out = {};
+    for (const r of (rows || [])) {
+      const dt = (r && r.doc_type) || 'document';
+      if (out[dt] || !r || !r.fields || typeof r.fields !== 'object') continue; // newest per doc_type wins
+      out[dt] = r.fields;
+      if (Object.keys(out).length >= 40) break;
+    }
+    return out;
+  } catch (_e) { return {}; }
+}
+
+/**
  * verifySatisfiedCondition(client, { applicationId, condition, docFields, db }) → result (DB/GPT).
  * Grounded GPT satisfaction check for ONE satisfied note-buyer condition. NEVER throws.
  * Returns { ok, meets?, raised?, reason? }.
@@ -139,4 +165,4 @@ async function verifySatisfiedCondition(client, { applicationId, condition, docF
   } catch (_e) { return { ok: false, reason: 'error' }; }
 }
 
-module.exports = { verifySatisfiedCondition, buildInstruction, verdictToSuggestion, VERDICT_SCHEMA, SOURCE };
+module.exports = { verifySatisfiedCondition, loadFileExtractedFields, buildInstruction, verdictToSuggestion, VERDICT_SCHEMA, SOURCE };
