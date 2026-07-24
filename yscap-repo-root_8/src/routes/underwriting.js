@@ -48,6 +48,7 @@ const { assessFile: assessStaleness } = require('../lib/underwriting/staleness')
 const { computeMetrics, capsFromRegistration } = require('../lib/underwriting/metrics');
 const { buildChain } = require('../lib/underwriting/entity-chain');
 const { buildSellerChain } = require('../lib/underwriting/seller-chain');
+const { buildChainOfTitle } = require('../lib/underwriting/chain-of-title');
 const { assessBankLiquidity, readRequiredLiquidity } = require('../lib/underwriting/bank-liquidity');
 // Fix 2026-07-23 (#211): similar-open + bulk-resolve referenced seesAll() without
 // defining it in this file (staff.js has its own copy) — ReferenceError → 500.
@@ -470,6 +471,13 @@ router.get('/:appId', async (req, res, next) => {
     // the seller/buyer FATAL mismatch stays the tie-out's; this adds the view + that condition.
     const sellerChain = buildSellerChain(mctx || {}, exts.rows);
 
+    // CHAIN OF TITLE / ownership trace: the ORDERED, MULTI-HOP reconciliation seller-chain can't
+    // express — owner of record → contract seller → contract buyer → assignor/assignee (every
+    // assignment hop) → vesting entity, confirming each adjacent same-party link. Advisory only
+    // (contract seller ≠ record owner, an assignor who never held the contract, the final buyer ≠
+    // the vesting entity). The personal-name→LLC case is deferred to seller-chain (no duplicate).
+    const chainOfTitle = buildChainOfTitle(mctx || {}, exts.rows);
+
     // Bank LIQUIDITY aggregation: sum every current bank statement's ending balance across the
     // borrower's / verified-entity accounts and compare to the file's required liquidity (read off
     // the registered product's assets condition, above). Raises the "short of required liquidity" and
@@ -507,9 +515,16 @@ router.get('/:appId', async (req, res, next) => {
     // metric warnings + reasonability data-integrity flags + seller-chain advisories into the same
     // fatal/warning gate (all warning-only → never change the CTC-blocking fatal count, but they
     // surface in the roll-up).
+    // The chain-of-title `cot_final_buyer_not_vesting` (warning) is the more informative twin of
+    // seller-chain's `chain_vesting_not_reached` (info) — when the richer one fires, drop the info so
+    // the desk shows the vesting-gap once.
+    const cotFindings = (chainOfTitle.findings || []).filter(Boolean);
+    const cotSuppressesVestingInfo = cotFindings.some((f) => f.code === 'cot_final_buyer_not_vesting');
+    const sellerChainFindings = (sellerChain.findings || [])
+      .filter((f) => !(cotSuppressesVestingInfo && f && f.code === 'chain_vesting_not_reached'));
     const openRaw = [...perDoc, ...cross, ...staleness.findings, ...metrics.findings, ...amendments.findings,
-      ...(entityChain ? entityChain.findings : []), ...reasonability.findings, ...sellerChain.findings,
-      ...bankLiquidity.findings, ...(experience ? experience.findings : [])];
+      ...(entityChain ? entityChain.findings : []), ...reasonability.findings, ...sellerChainFindings,
+      ...cotFindings, ...bankLiquidity.findings, ...(experience ? experience.findings : [])];
     // De-duplicate the few FILE-economic findings that legitimately appear on more than one document
     // — the assignment fee over the cap shows on BOTH the purchase contract and the assignment, but
     // the desk should count/show it ONCE.
@@ -547,8 +562,8 @@ router.get('/:appId', async (req, res, next) => {
         };
         try {
           await c.query('BEGIN');
-          if (entityChain || sellerChain) {
-            await step(() => syncEntityChain.syncChainsToSuggestions(c, app.id, { entityChain, sellerChain }));
+          if (entityChain || sellerChain || chainOfTitle) {
+            await step(() => syncEntityChain.syncChainsToSuggestions(c, app.id, { entityChain, sellerChain, chainOfTitle }));
           }
           if (bankFindingsFlat.length) {
             // These liquidity roll-up findings are FILE-level (no single source
@@ -672,6 +687,9 @@ router.get('/:appId', async (req, res, next) => {
       sellerChain: { status: sellerChain.status, nodes: sellerChain.nodes, edges: sellerChain.edges,
         finalHolder: sellerChain.finalHolder, reachesVesting: sellerChain.reachesVesting,
         findings: sellerChain.findings.map(decorate) },
+      chainOfTitle: { status: chainOfTitle.status, hops: chainOfTitle.hops, ownershipPath: chainOfTitle.ownershipPath,
+        finalBuyer: chainOfTitle.finalBuyer, reachesVesting: chainOfTitle.reachesVesting,
+        findings: cotFindings.map(decorate) },
       bankLiquidity: { requiredLiquidity: bankLiquidity.requiredLiquidity, qualifyingTotal: bankLiquidity.qualifyingTotal,
         excludedTotal: bankLiquidity.excludedTotal, shortfall: bankLiquidity.shortfall,
         accounts: bankLiquidity.accounts, statementsCount: bankLiquidity.statementsCount,
@@ -1898,9 +1916,10 @@ router.post('/:appId/ai-suggestions/rerun-checks', requirePermission('sign_off_c
               program: (mctx.registration && mctx.registration.program) || a2.program || null },
             exts.rows) : null;
           const sellerChain = buildSellerChain(mctx || {}, exts.rows);
-          if (!entityChain && !sellerChain) return { recorded: 0 };
+          const chainOfTitle = buildChainOfTitle(mctx || {}, exts.rows);
+          if (!entityChain && !sellerChain && !chainOfTitle) return { recorded: 0 };
           return require('../lib/underwriting/entity-chain-suggestions')
-            .syncChainsToSuggestions(client, app.id, { entityChain, sellerChain });
+            .syncChainsToSuggestions(client, app.id, { entityChain, sellerChain, chainOfTitle });
         }],
         ['bank', () => {
           const bl = assessBankLiquidity(mctx || {}, exts.rows, { requiredLiquidity });
