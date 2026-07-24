@@ -98,16 +98,27 @@ async function createRequest(appId, entries, opts = {}) {
       : 'A draw is already in progress on this property — your team is on it.');
   }
   if (!Array.isArray(entries) || !entries.length) throw err(400, 'Pick at least one line and amount.');
+  // A deliberate staff parallel run must never silently kill the LIVE Sitewire-intake
+  // coordinator task (submitItem supersedes same-type items — audit-4 #8): finish or
+  // cancel the intake entry first.
+  if (st.open_sitewire_draw && opts.source === 'staff' && opts.allowParallel && st.platform === 'trustpoint') {
+    const liveImport = (await db.query(
+      `SELECT 1 FROM workflow_items WHERE application_id=$1 AND submission_type='trustpoint_import' AND status IN ('open','in_progress') LIMIT 1`, [appId])).rows[0];
+    if (liveImport) throw err(409, 'The coordinator still has an open task to enter the Sitewire draw. Finish or cancel that entry first — a parallel portal request would wipe their task.');
+  }
 
   const lines = await composerLines(appId);
   const byId = new Map(lines.map((l) => [l.sitewire_job_item_id, l]));
   const picked = [];
+  const seen = new Set();
   let total = 0;
   for (const e0 of entries) {
     const jid = Number(e0.sitewire_job_item_id);
     const cents = Math.round(Number(e0.requested_cents));
     if (!byId.has(jid)) throw err(422, 'One of the picked lines is not on this file\'s budget.');
     if (!Number.isFinite(cents) || cents <= 0) continue;   // zero/blank rows are just unpicked
+    if (seen.has(jid)) throw err(422, 'The same budget line was entered twice.');   // audit-4 #5: a dup would dodge the per-line remaining gate
+    seen.add(jid);
     const l = byId.get(jid);
     if (cents > l.remaining_cents && !(opts.source === 'staff' && opts.allowOver)) {
       throw err(422, `"${l.name}" only has ${usd(l.remaining_cents)} left — ${usd(cents)} was requested.`);
@@ -117,19 +128,8 @@ async function createRequest(appId, entries, opts = {}) {
   }
   if (!picked.length || total <= 0) throw err(400, 'Pick at least one line and amount.');
 
-  let row;
-  try {
-    row = (await db.query(
-      `INSERT INTO portal_draw_requests (application_id, source, platform, lines, total_requested_cents, note, created_by_staff, created_by_borrower)
-       VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7,$8) RETURNING *`,
-      [appId, opts.source === 'staff' ? 'staff' : 'borrower', st.platform, JSON.stringify(picked), total,
-       opts.note ? String(opts.note).slice(0, 500) : null, opts.staffId || null, opts.borrowerId || null])).rows[0];
-  } catch (e) {
-    if (e && e.code === '23505') throw err(409, 'A draw request from the portal is already in progress on this file.');
-    throw e;
-  }
-
-  // ---- route: the coordinator hand-off + desk email ----
+  // ---- create + route in ONE transaction (audit-4 #7): a routing failure must never
+  // leave a request holding the one-open-per-file slot with no coordinator task ----
   const addr = (await db.query(`SELECT ys_loan_number, property_address->>'oneLine' AS addr FROM applications WHERE id=$1`, [appId])).rows[0] || {};
   let toStaffId = null;
   try {
@@ -138,9 +138,15 @@ async function createRequest(appId, entries, opts = {}) {
   } catch (_) {}
   const lineNote = picked.slice(0, 12).map((l) => `${l.name}: ${usd(l.requested_cents)}`).join(' · ');
   const isTp = st.platform === 'trustpoint';
+  let row;
   const client = await db.getClient();
   try {
     await client.query('BEGIN');
+    row = (await client.query(
+      `INSERT INTO portal_draw_requests (application_id, source, platform, lines, total_requested_cents, note, created_by_staff, created_by_borrower)
+       VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7,$8) RETURNING *`,
+      [appId, opts.source === 'staff' ? 'staff' : 'borrower', st.platform, JSON.stringify(picked), total,
+       opts.note ? String(opts.note).slice(0, 500) : null, opts.staffId || null, opts.borrowerId || null])).rows[0];
     await workflow.submitItem(client, {
       appId, submissionType: isTp ? 'trustpoint_import' : 'trinity_inspection_order',
       fromStaffId: opts.staffId || null, toStaffId, toRole: 'draw_coordinator', priority: 1, auto: true,
@@ -154,8 +160,11 @@ async function createRequest(appId, entries, opts = {}) {
          VALUES ($1,$2,$3)`, [appId, row.id, `Draw ${usd(total)} across ${picked.length} line(s)`]);
     }
     await client.query('COMMIT');
-  } catch (e) { try { await client.query('ROLLBACK'); } catch (_) {} throw e; }
-  finally { client.release(); }
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    if (e && e.code === '23505') throw err(409, 'A draw request from the portal is already in progress on this file.');
+    throw e;
+  } finally { client.release(); }
 
   const notifyOpts = {
     type: 'trustpoint_import',
@@ -195,8 +204,17 @@ async function createRequest(appId, entries, opts = {}) {
  * HISTORICAL CLOSE-OUT (§5B): after the TrustPoint draw tied to a portal request is
  * fully approved (per-line amounts on file), create the draw in Sitewire as HISTORICAL
  * (+ approve) so the per-line ledger and budget rollups stay whole. Cent-exact hard
- * gate; single-flight via the status flip; park-on-failure. Never for a request tied
- * to a live Sitewire draw (that path is the live write-back).
+ * gate; park-on-failure. Never for a request tied to a live Sitewire draw (that path
+ * is the live write-back).
+ *
+ * SINGLE-FLIGHT (audit-4 #1): five drivers can call this (approval reaction, Trinity
+ * decision, desk button, reconcile re-drive, write-back sweep). Two locks make a
+ * duplicate Sitewire draw impossible:
+ *   · a 10-minute LEASE claim (closeout_claimed_at) — overlapping drivers lose the
+ *     claim and skip; a crashed run self-releases;
+ *   · the created draw id is RECORDED on the request IMMEDIATELY after the create
+ *     call, BEFORE the approve transition — so any retry after a mid-chain failure
+ *     RESUMES (finish transition + ledger) instead of creating a second draw.
  */
 async function historicalCloseOut(appId, portalRequestId) {
   const swClient = require('../sitewire/client');
@@ -205,9 +223,22 @@ async function historicalCloseOut(appId, portalRequestId) {
   const cfg = require('../config');
   const pr = (await db.query(`SELECT * FROM portal_draw_requests WHERE id=$1 AND application_id=$2`, [portalRequestId, appId])).rows[0];
   if (!pr) return { skipped: 'not_found' };
-  if (pr.sitewire_draw_id) return { skipped: 'already_closed_out' };
+  if (pr.status === 'closed_out') return { skipped: 'already_closed_out' };
   if (pr.status !== 'approved') return { skipped: 'not_approved' };
   if (pr.platform !== 'trinity' && !pr.tp_draw_id) return { skipped: 'no_trustpoint_draw' };
+  // One TrustPoint draw = ONE cycle (audit-4 #2 belt-and-suspenders): a TP draw that is
+  // the mirror of a LIVE Sitewire intake gets the live write-back, never a historical
+  // close-out on top — that would put the same money in Sitewire twice.
+  if (pr.tp_draw_id) {
+    const tp = (await db.query(`SELECT sitewire_draw_id FROM trustpoint_draws WHERE tp_draw_id=$1`, [pr.tp_draw_id])).rows[0];
+    if (tp && tp.sitewire_draw_id != null && Number(tp.sitewire_draw_id) !== Number(pr.sitewire_draw_id || 0)) {
+      await orchestrator.park({
+        appId, dedupe: `pdrdual:${pr.id}`,
+        reason: `sitewire_approve_failed: portal draw request #${pr.id} is tied to an administered draw that ALSO mirrors live Sitewire draw ${tp.sitewire_draw_id} — one draw cycle can only live in one place. Untangle by hand on the draw desk (the live write-back owns this approval).`,
+      }).catch(() => {});
+      return { parked: 'tied_to_live_sitewire_draw' };
+    }
+  }
   if (!switches.on('SITEWIRE_ENABLED') || (!switches.on('SITEWIRE_OUTBOUND_ENABLED') && !cfg.sitewireDryrun)) return { skipped: 'sitewire_writes_off' };
   const link = (await db.query(`SELECT sitewire_property_id FROM sitewire_property_links WHERE application_id=$1 AND matched_by='created' AND sitewire_property_id IS NOT NULL`, [appId])).rows[0];
   if (!link) return { skipped: 'no_sitewire_property' };
@@ -243,12 +274,29 @@ async function historicalCloseOut(appId, portalRequestId) {
   }));
   for (const a of anchors) requests.push({ job_item_id: Number(a.sitewire_job_item_id), requested_cents: 0, pending_approved_cents: 0 });
 
+  // ---- the LEASE claim: exactly one driver proceeds; a crashed claim frees in 10 min ----
+  const claimed = (await db.query(
+    `UPDATE portal_draw_requests SET closeout_claimed_at=now(), updated_at=now()
+      WHERE id=$1 AND status='approved'
+        AND (closeout_claimed_at IS NULL OR closeout_claimed_at < now() - interval '10 minutes')
+      RETURNING id`, [pr.id])).rows[0];
+  if (!claimed) return { skipped: 'close_out_in_flight' };
+  const releaseClaim = () => db.query(`UPDATE portal_draw_requests SET closeout_claimed_at=NULL WHERE id=$1`, [pr.id]).catch(() => {});
+
   try {
-    await orchestrator.circuitCheck(2);
-    const created = await swClient.createHistoricalDraw(link.sitewire_property_id, requests);
-    if (created && created.__dryrun) return { ok: true, dryrun: true };
-    const drawId = created && created.id;
-    if (!drawId) throw new Error('Sitewire returned no draw id');
+    let drawId = pr.sitewire_draw_id != null ? Number(pr.sitewire_draw_id) : null;
+    let createdNumber = null;
+    if (drawId == null) {
+      await orchestrator.circuitCheck(2);
+      const created = await swClient.createHistoricalDraw(link.sitewire_property_id, requests);
+      if (created && created.__dryrun) { await releaseClaim(); return { ok: true, dryrun: true }; }
+      drawId = created && created.id;
+      if (!drawId) throw new Error('Sitewire returned no draw id');
+      createdNumber = created.number || null;
+      // RECORD IMMEDIATELY (before the transition): from this instant every retry is a
+      // RESUME of this draw id — a second create is structurally impossible.
+      await db.query(`UPDATE portal_draw_requests SET sitewire_draw_id=$2, updated_at=now() WHERE id=$1 AND sitewire_draw_id IS NULL`, [pr.id, drawId]);
+    }
     await swClient.drawTransition(drawId, 'approve');
     await orchestrator.journal({ appId, entity: 'draw', entityId: Number(drawId), field: 'historical_closeout', newValue: { portal_request: pr.id, approved }, source: 'portal_closeout' }).catch(() => {});
     // status_synced set in lock-step (echo suppression): the reconcile must treat this
@@ -257,8 +305,19 @@ async function historicalCloseOut(appId, portalRequestId) {
       `INSERT INTO sitewire_draws (application_id, sitewire_draw_id, sitewire_property_id, number, status, status_synced, historical, total_requested_cents, total_approved_cents, tp_import_task_opened_at)
        VALUES ($1,$2,$3,$4,'approved','approved',true,$5,$6,now())
        ON CONFLICT (sitewire_draw_id) DO UPDATE SET status='approved', status_synced='approved', historical=true, total_approved_cents=EXCLUDED.total_approved_cents, updated_at=now()`,
-      [appId, drawId, link.sitewire_property_id, created.number || null, Number(pr.total_requested_cents), approved]);
-    await db.query(`UPDATE portal_draw_requests SET status='closed_out', sitewire_draw_id=$2, updated_at=now() WHERE id=$1`, [pr.id, drawId]);
+      [appId, drawId, link.sitewire_property_id, createdNumber, Number(pr.total_requested_cents), approved]);
+    // Guarded finish (audit-4 #6): a request cancelled mid-flight is NOT resurrected —
+    // the draw now exists in Sitewire for a cancelled request, which needs a human.
+    const finished = (await db.query(
+      `UPDATE portal_draw_requests SET status='closed_out', closeout_claimed_at=NULL, updated_at=now()
+        WHERE id=$1 AND status='approved' RETURNING id`, [pr.id])).rows[0];
+    if (!finished) {
+      await orchestrator.park({
+        appId, dedupe: `pdrclose:${pr.id}`,
+        reason: `sitewire_approve_failed: portal draw request #${pr.id} was cancelled while its historical close-out was landing — Sitewire draw ${drawId} now exists for a cancelled request. Reconcile by hand (delete the draw in Sitewire or un-cancel the request).`,
+      }).catch(() => {});
+      return { parked: 'cancelled_mid_closeout', sitewire_draw_id: drawId };
+    }
     // The write-back sweep watches for approved-but-unpushed TrustPoint draws; this one's
     // Sitewire record is the historical close-out, so stamp it done here.
     await db.query(
@@ -266,6 +325,7 @@ async function historicalCloseOut(appId, portalRequestId) {
         WHERE tp_draw_id=$1 AND application_id=$2 AND writeback_at IS NULL`, [pr.tp_draw_id, appId]).catch(() => {});
     return { ok: true, sitewire_draw_id: drawId };
   } catch (e) {
+    await releaseClaim();
     try {
       await orchestrator.park({
         appId, dedupe: `pdrclose:${pr.id}`,
@@ -326,10 +386,11 @@ async function cancelRequest(appId, portalRequestId, { staffId = null, reason = 
   const pr = (await db.query(`SELECT * FROM portal_draw_requests WHERE id=$1 AND application_id=$2`, [portalRequestId, appId])).rows[0];
   if (!pr) throw err(404, 'request not found');
   if (pr.status === 'closed_out') throw err(409, 'This request already closed out into Sitewire — it can no longer be cancelled.');
+  if (pr.sitewire_draw_id != null) throw err(409, 'This request is being closed out into Sitewire right now — it can no longer be cancelled.');
   if (pr.status === 'cancelled') return pr;
   const row = (await db.query(
     `UPDATE portal_draw_requests SET status='cancelled', cancelled_reason=$3, updated_at=now()
-      WHERE id=$1 AND application_id=$2 AND status<>'closed_out' RETURNING *`,
+      WHERE id=$1 AND application_id=$2 AND status<>'closed_out' AND sitewire_draw_id IS NULL RETURNING *`,
     [portalRequestId, appId, reason ? String(reason).slice(0, 300) : null])).rows[0];
   if (!row) throw err(409, 'This request just changed — reload and try again.');
   const type = pr.platform === 'trustpoint' ? 'trustpoint_import' : 'trinity_inspection_order';

@@ -258,6 +258,74 @@ const notesFor = async (app, kind) => (await db.query(
     await cleanup(B.app, B.bor, B.lo);
   }
 
+  // ============ 7b. audit-4 hardening: dup lines, claim lease, resume, cancel guard, one-cycle ============
+  {
+    const D = await seedFile(TP_LABEL);
+    let err = null;
+    try {
+      await portalDraws.createRequest(D.app, [
+        { sitewire_job_item_id: D.jidKitchen, requested_cents: 5000 },
+        { sitewire_job_item_id: D.jidKitchen, requested_cents: 5000 },
+      ], { source: 'borrower', borrowerId: D.bor });
+    } catch (e) { err = e; }
+    ok('duplicate line entries are refused (422)', err && err.status === 422 && /entered twice/.test(err.message));
+
+    // resume: a recorded-but-unfinished close-out finishes WITHOUT a second create
+    const row = await portalDraws.createRequest(D.app, [{ sitewire_job_item_id: D.jidKitchen, requested_cents: 30000 }], { source: 'staff', staffId: D.lo });
+    const tpId = `pd4-${tag}`;
+    await db.query(`INSERT INTO trustpoint_draws (application_id, tp_project_id, tp_draw_id, number, status, requested_cents, approved_cents, portal_draw_request_id)
+                    VALUES ($1,$2,$3,9,'APPROVED',30000,30000,$4)`, [D.app, `pd4p-${tag}`, tpId, row.id]);
+    await db.query(`INSERT INTO trustpoint_draw_lines (application_id, tp_draw_id, sitewire_job_item_id, sow_line_key, name, approved_cents, source)
+                    VALUES ($1,$2,$3,'k1','Unit 1 - Kitchen',30000,'manual')`, [D.app, tpId, D.jidKitchen]);
+    await db.query(
+      `INSERT INTO sitewire_property_links (application_id, matched_by, state, sitewire_property_id)
+       VALUES ($1,'created','live',940000003) ON CONFLICT (application_id) DO UPDATE SET matched_by='created', sitewire_property_id=940000003`, [D.app]);
+    const preRecorded = 960000000 + crypto.randomBytes(2).readUInt16BE(0);
+    await db.query(`UPDATE portal_draw_requests SET status='approved', approved_cents=30000, tp_draw_id=$2, sitewire_draw_id=$3 WHERE id=$1`, [row.id, tpId, preRecorded]);
+    createdHistorical = []; transitions = [];
+    const res = await portalDraws.historicalCloseOut(D.app, row.id);
+    ok('recorded close-out RESUMES: no second create, transition finishes it',
+      res.ok === true && res.sitewire_draw_id === preRecorded && createdHistorical.length === 0
+      && transitions.some((t) => t.id === preRecorded && t.action === 'approve')
+      && (await db.query(`SELECT status FROM portal_draw_requests WHERE id=$1`, [row.id])).rows[0].status === 'closed_out');
+
+    // claim lease: a fresh claim blocks an overlapping driver
+    const row2 = (await db.query(
+      `INSERT INTO portal_draw_requests (application_id, source, platform, lines, total_requested_cents, status, approved_cents, closeout_claimed_at)
+       VALUES ($1,'staff','trustpoint','[]'::jsonb,30000,'approved',30000,now()) RETURNING id`, [D.app])).rows[0];
+    await db.query(`UPDATE portal_draw_requests SET tp_draw_id=$2 WHERE id=$1`, [row2.id, tpId]);
+    const res2 = await portalDraws.historicalCloseOut(D.app, row2.id);
+    ok('an in-flight claim makes an overlapping driver skip', res2.skipped === 'close_out_in_flight');
+    await db.query(`DELETE FROM portal_draw_requests WHERE id=$1`, [row2.id]);
+
+    // cancel guard: a request whose Sitewire draw is already recorded can't be cancelled
+    let err2 = null;
+    try { await portalDraws.cancelRequest(D.app, row.id, { staffId: D.lo }); } catch (e) { err2 = e; }
+    ok('a recorded/closed-out request refuses cancel (409)', err2 && err2.status === 409);
+    await cleanup(D.app, D.bor, D.lo);
+  }
+  {
+    // one draw = one cycle, both directions
+    const E = await seedFile(TP_LABEL);
+    const mirror = require('../src/trustpoint/mirror');
+    const rowE = await portalDraws.createRequest(E.app, [{ sitewire_job_item_id: E.jidKitchen, requested_cents: 20000 }], { source: 'staff', staffId: E.lo });
+    const tpE = `pd4e-${tag}`;
+    await db.query(`INSERT INTO trustpoint_draws (application_id, tp_project_id, tp_draw_id, number, status, requested_cents, portal_draw_request_id)
+                    VALUES ($1,$2,$3,1,'IN_REVIEW',20000,$4)`, [E.app, `pd4ep-${tag}`, tpE, rowE.id]);
+    // an open Sitewire intake draw with the same amount must NOT intake-tie a portal-tied draw
+    const swOpen = 965000000 + crypto.randomBytes(2).readUInt16BE(0);
+    await db.query(`INSERT INTO sitewire_draws (application_id, sitewire_draw_id, number, status, total_requested_cents) VALUES ($1,$2,5,'pending',20000)`, [E.app, swOpen]);
+    await mirror.linkToSitewireIntake(E.app, (await db.query(`SELECT * FROM trustpoint_draws WHERE tp_draw_id=$1`, [tpE])).rows[0]);
+    ok('a portal-tied draw never intake-ties (one cycle, one home)',
+      (await db.query(`SELECT sitewire_draw_id FROM trustpoint_draws WHERE tp_draw_id=$1`, [tpE])).rows[0].sitewire_draw_id == null);
+    // and if a dual tie somehow existed, the close-out parks instead of double-drawing
+    await db.query(`UPDATE trustpoint_draws SET sitewire_draw_id=$2, approved_cents=20000, status='APPROVED' WHERE tp_draw_id=$1`, [tpE, swOpen]);
+    await db.query(`UPDATE portal_draw_requests SET status='approved', approved_cents=20000, tp_draw_id=$2 WHERE id=$1`, [rowE.id, tpE]);
+    const resE = await portalDraws.historicalCloseOut(E.app, rowE.id);
+    ok('a dual-tied draw parks the close-out (never a second Sitewire draw)', resE.parked === 'tied_to_live_sitewire_draw');
+    await cleanup(E.app, E.bor, E.lo);
+  }
+
   // ============ 8. external files never compose ============
   {
     const C = await seedFile(EXT_LABEL);

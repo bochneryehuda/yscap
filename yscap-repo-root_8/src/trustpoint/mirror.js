@@ -144,7 +144,10 @@ async function linkToSitewireIntake(appId, tpDrawRow) {
             AND ABS(COALESCE(total_requested_cents,0) - $2) <= 100`,
         [appId, tpDrawRow.requested_cents])).rows;
       if (cand.length === 1) {
-        const tied = (await db.query(`UPDATE trustpoint_draws SET sitewire_draw_id=$2, updated_at=now() WHERE tp_draw_id=$1 AND sitewire_draw_id IS NULL RETURNING tp_draw_id`, [tpDrawRow.tp_draw_id, cand[0].sitewire_draw_id])).rows[0];
+        // one draw = ONE cycle both ways (audit-4 #2): a portal-tied draw must never
+        // ALSO tie to a live intake — that would run the live write-back AND the
+        // historical close-out on the same money.
+        const tied = (await db.query(`UPDATE trustpoint_draws SET sitewire_draw_id=$2, updated_at=now() WHERE tp_draw_id=$1 AND sitewire_draw_id IS NULL AND portal_draw_request_id IS NULL RETURNING tp_draw_id`, [tpDrawRow.tp_draw_id, cand[0].sitewire_draw_id])).rows[0];
         // The coordinator's entry task is DONE the moment the entered draw mirrors back and
         // ties to its intake (blueprint §3 auto-complete; audit #13). Recorded as a returned
         // hand-off with the standard outcome, so the SLA nag stops and history reads right.

@@ -226,6 +226,9 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText, f
     // A property PILOT created can only gain a draw AFTER we set it up, so a first-seen draw on an
     // already-reconciled file is genuinely a new borrower submission — tell the coordinator.
     if (won) {
+      // …unless it is PILOT's OWN just-created historical close-out draw racing its mirror
+      // row (audit-4 #11): a historical draw is never a borrower submission.
+      if (draw.historical === true) { await recordInboundChange(appId, drawId, 'draw', drawId, 'new_draw_historical', null, newStatus, false); return; }
       await recordInboundChange(appId, drawId, 'draw', drawId, 'new_draw', null, newStatus, true);
       const nextStep = ctx.platform === 'trustpoint'
         ? (tpIntake.SUBMITTED_STATUSES.has(String(newStatus))

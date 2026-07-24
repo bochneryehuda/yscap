@@ -147,7 +147,7 @@ async function sweepPending() {
   const out = { tried: 0 };
   try {
     const rows = (await db.query(
-      `SELECT application_id, tp_draw_id, portal_draw_request_id, sitewire_draw_id FROM trustpoint_draws
+      `SELECT * FROM trustpoint_draws
         WHERE status IN ('APPROVED','COMPLETED') AND writeback_at IS NULL
           AND (sitewire_draw_id IS NOT NULL OR portal_draw_request_id IS NOT NULL)
         ORDER BY updated_at LIMIT 25`)).rows;
@@ -155,8 +155,10 @@ async function sweepPending() {
       out.tried++;
       try {
         if (r.portal_draw_request_id && !r.sitewire_draw_id) {
-          // Portal-originated: its Sitewire record is the historical close-out.
-          await require('../lib/portal-draws').historicalCloseOut(r.application_id, Number(r.portal_draw_request_id));
+          // Portal-originated: go through the portal approval hook (audit-4 #4) — it
+          // stamps the request approved from THIS row first, so a crash between the
+          // mirror watermark and the portal hook still heals here; then it closes out.
+          await require('../lib/portal-draws').onTrustpointApproval(r.application_id, r);
         } else {
           await onTrustpointApproval(r.application_id, r.tp_draw_id);
         }

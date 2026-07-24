@@ -53,6 +53,7 @@ const PARTNER_PATTERNS = [
   partnerRe(['fidelis']),
   partnerRe(['rcn'], { acronym: true }),
   partnerRe(['corr', 'first']),
+  partnerRe(['trinity']),
   partnerRe(['kiavi']),
   partnerRe(['roc'], { acronym: true }),
   // TrustPoint is the note buyer's draw administrator (2026-07-24 physical-draw workflow) —
