@@ -265,4 +265,24 @@ const cond = (over) => Object.assign({ cond_no: 9001, name: 'Test', domain: 'oth
   ok('rural-property verification surfaces only once the appraisal proves rural (silent before / when not rural) [#275]');
 }
 
+// 12. LEASE (cond 1018, CorrFirst) is now appraisal-gated on tenant-occupancy: the desk asks for a
+//     lease ONLY once the appraisal proves the subject is tenant-occupied — never proactively on
+//     every file. (The DB layer feeds tenant_occupied from the appraisal's occupancy_status.)
+{
+  const lease = spec.CONDITIONS.find((x) => x.cond_no === 1018);
+  assert.strictEqual(lease.disposition, 'appraisal');
+  assert.strictEqual(lease.concern_field, 'tenant_occupied');
+  const surface = (signals) => desk.assess({ conditions: [lease], existingByCode: new Map(), signals, noteBuyerKey: 'corrfirst' }).unhappy;
+  // appraisal in + tenant-occupied → the lease is requested.
+  const yes = surface({ appraisal_present: true, tenant_occupied: true });
+  assert.strictEqual(yes.length, 1, 'a tenant-occupied appraisal surfaces the lease requirement');
+  assert.strictEqual(yes[0].flag, 'appraisal_review');
+  // appraisal in + owner-occupied/vacant → silent (no lease asked).
+  assert.strictEqual(surface({ appraisal_present: true, tenant_occupied: false }).length, 0, 'a non-tenant-occupied appraisal → no lease asked');
+  // appraisal not in yet → silent (never proactive).
+  assert.strictEqual(surface({ tenant_occupied: true }).length, 0, 'no appraisal in yet → the lease condition stays silent');
+  assert.strictEqual(surface({}).length, 0, 'no signals → silent');
+  ok('lease is requested only once the appraisal proves the subject is tenant-occupied (CorrFirst) [#280]');
+}
+
 console.log(`\ninvestor-guideline desk pure — ${passed} checks passed`);

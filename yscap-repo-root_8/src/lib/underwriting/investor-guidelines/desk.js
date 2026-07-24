@@ -568,7 +568,7 @@ async function runInvestorGuidelineDesk(appId, client) {
   // Urban/Suburban → appraisal_rural=false (silent); NULL/unread → omitted.
   try {
     const ar = await db.query(
-      `SELECT nbhd_location_type FROM appraisals
+      `SELECT nbhd_location_type, occupancy_status FROM appraisals
          WHERE application_id = $1 AND superseded = false
          ORDER BY imported_at DESC LIMIT 1`, [appId]);
     const row = ar.rows[0];
@@ -578,6 +578,15 @@ async function runInvestorGuidelineDesk(appId, client) {
       if (loc === 'rural') signals.appraisal_rural = true;
       else if (loc === 'urban' || loc === 'suburban') signals.appraisal_rural = false;
       // else: null/blank/unrecognized → OMIT (unknown, never fabricated)
+
+      // tenant_occupied — the appraisal's UAD occupancy status (db/158 occupancy_status ∈
+      // {Vacant, TenantOccupied, OwnerOccupied}; extract.js:534). Surfaces the CorrFirst LEASE
+      // requirement (cond 1018) only when the appraisal PROVES the subject is tenant-occupied.
+      // Vacant/OwnerOccupied → false (silent); NULL/unread → OMIT (never fabricated).
+      const occ = String(row.occupancy_status == null ? '' : row.occupancy_status).trim().toLowerCase();
+      if (occ === 'tenantoccupied') signals.tenant_occupied = true;
+      else if (occ === 'vacant' || occ === 'owneroccupied') signals.tenant_occupied = false;
+      // else: null/blank/unrecognized → OMIT
     }
   } catch (_e) { /* appraisals unreadable → leave appraisal signals absent (conditions stay silent) */ }
 
