@@ -212,15 +212,26 @@ function assessCondition(cond, ctx) {
     // there is no evaluator, keep the spec checks as-is (each with its own text, to_verify).
     const evaluator = CHECK_EVALUATORS[c.cond_no];
     const specChecks = Array.isArray(c.checks) ? c.checks : [];
+    // The note_buyer_specific numeric checks are the note buyer's EXACT limits (e.g. CorrFirst's
+    // hazard-liability tiers). They apply only when THIS file's note buyer owns those limits
+    // (limitsApplyToNoteBuyer). For any OTHER note buyer the condition still applies, but the exact
+    // numbers are the note buyer's own — others follow industry standard. So we must NOT run
+    // CorrFirst's exact evaluator against a non-CorrFirst file (that false-fired a FATAL "conflict"
+    // and cited CorrFirst's exact figure on a buyer that never had that requirement — e.g. hazard
+    // 2186, scope all_but_note_buyer_limits, which loads for every buyer). When the limits don't
+    // apply, emit a single generic advisory (to_verify, never a fabricated conflict, no exact number).
+    const limitsApply = spec.limitsApplyToNoteBuyer(c, o.noteBuyerKey);
     let checks;
     if (evaluator) {
-      const r = evaluator(signals) || null;
+      const r = limitsApply ? (evaluator(signals) || null) : null; // never apply another buyer's exact limit
       const nbs = specChecks.filter((k) => k && k.note_buyer_specific);
       const descriptive = specChecks.filter((k) => k && !k.note_buyer_specific);
       const numericLine = {
-        text: (r && r.detail) || (nbs[0] && nbs[0].text) || 'Note-buyer numeric verification',
+        text: limitsApply
+          ? ((r && r.detail) || (nbs[0] && nbs[0].text) || 'Note-buyer numeric verification')
+          : 'Verify this meets standard requirements for this note buyer (industry standard).',
         note_buyer_specific: true,
-        status: (r && r.status) || 'to_verify',
+        status: (r && r.status) || 'to_verify', // r is null when the limits don't apply → to_verify, never conflict
         detail: r ? r.detail : null,
       };
       checks = [numericLine, ...descriptive.map((k) => ({ text: k.text, note_buyer_specific: false, status: 'to_verify', detail: null }))];

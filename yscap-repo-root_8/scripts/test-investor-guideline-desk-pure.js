@@ -87,12 +87,12 @@ const cond = (over) => Object.assign({ cond_no: 9001, name: 'Test', domain: 'oth
 // 5. a note-buyer-specific conflict escalates the condition verdict to CONFLICTS with a cited number.
 {
   const c = spec.CONDITIONS.find((x) => x.cond_no === 3035); // seller concession, corrfirst
-  const r = desk.assessCondition(c, { existingByCode: new Map(), signals: { seller_concession_pct: 9 } });
+  const r = desk.assessCondition(c, { existingByCode: new Map(), signals: { seller_concession_pct: 9 }, noteBuyerKey: 'corrfirst' });
   assert.strictEqual(r.verdict, V.CONFLICTS);
   assert.ok(/9%/.test(r.reason) && /6%/.test(r.reason), 'reason cites the actual vs the cap');
   assert.ok(r.checks.some((k) => k.status === 'conflict'), 'the conflicting check is attached');
   // with good data it is not a conflict.
-  const good = desk.assessCondition(c, { existingByCode: new Map(), signals: { seller_concession_pct: 5 } });
+  const good = desk.assessCondition(c, { existingByCode: new Map(), signals: { seller_concession_pct: 5 }, noteBuyerKey: 'corrfirst' });
   assert.notStrictEqual(good.verdict, V.CONFLICTS);
   ok('a known over-cap value escalates to CONFLICTS with the actual vs cap cited');
 }
@@ -160,11 +160,34 @@ const cond = (over) => Object.assign({ cond_no: 9001, name: 'Test', domain: 'oth
 {
   const hz = spec.CONDITIONS.find((x) => x.cond_no === 2186); // hazard: 4 spec checks (3 tiers + 1 note)
   assert.ok(hz.checks.length >= 3, 'the spec carries the tiered checks');
-  const r = desk.assessCondition(hz, { existingByCode: new Map(), signals: { loan_amount: 318500, liability_coverage: 300000 } });
+  const r = desk.assessCondition(hz, { existingByCode: new Map(), signals: { loan_amount: 318500, liability_coverage: 300000 }, noteBuyerKey: 'corrfirst' });
   const liabilityLines = r.checks.filter((k) => /liability coverage/i.test(k.text || '') || /\$300,000/.test(k.text || ''));
   assert.strictEqual(liabilityLines.length, 1, 'the liability line renders ONCE (the file tier), not once per spec check');
   assert.ok(r.checks.length < hz.checks.length, 'the tiered spec rows collapsed to the applicable one');
   ok('duplicate-check fix: an evaluator condition shows ONE tier line + descriptive checks (no N-copy repeat)');
+}
+
+// 8b. #279 — a note buyer's EXACT numeric limits apply only to THAT note buyer; on any other
+//     buyer the condition still applies but the exact figure does NOT — others follow industry
+//     standard. Hazard 2186 (scope all_but_note_buyer_limits) loads for every buyer; before the
+//     fix it applied CorrFirst's exact $300k liability tier to a non-CorrFirst file and false-fired
+//     a FATAL conflict. Now: CorrFirst → the exact tier still conflicts on a bad value; a different
+//     buyer → the same bad value is NOT a conflict (generic advisory, no CorrFirst figure cited).
+{
+  const hz = spec.CONDITIONS.find((x) => x.cond_no === 2186);
+  const badSignals = { loan_amount: 400000, liability_coverage: 250000 }; // below CorrFirst's $300k tier
+  // CorrFirst: the exact limit applies → CONFLICTS with the figure cited.
+  const cf = desk.assessCondition(hz, { existingByCode: new Map(), signals: badSignals, noteBuyerKey: 'corrfirst' });
+  assert.strictEqual(cf.verdict, V.CONFLICTS, 'CorrFirst: below its exact tier → conflict');
+  assert.ok(cf.checks.some((k) => k.status === 'conflict'), 'the CorrFirst conflict check is attached');
+  // A different note buyer: the SAME value is NOT a conflict (industry standard, not CorrFirst's number).
+  for (const other of ['bluelake', 'fidelis', '', undefined]) {
+    const r2 = desk.assessCondition(hz, { existingByCode: new Map(), signals: badSignals, noteBuyerKey: other });
+    assert.notStrictEqual(r2.verdict, V.CONFLICTS, `${other || '(unknown)'}: CorrFirst's exact limit does NOT false-fire`);
+    assert.ok(!r2.checks.some((k) => k.status === 'conflict'), 'no fabricated conflict on another buyer');
+    assert.ok(!r2.checks.some((k) => /\$300,000|\$250,000/.test(k.text || '')), "another buyer's line does not cite CorrFirst's exact figure");
+  }
+  ok('note-buyer exact limits apply only to that buyer; others get a generic advisory, never a false conflict [#279]');
 }
 
 // 9. the OVERLAY view — the desk answers "is the note buyer happy with the file as-is?" and
