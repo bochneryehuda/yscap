@@ -908,7 +908,9 @@ function BankLiquidity({ bankLiquidity }) {
           <thead>
             <tr style={{ textAlign: 'left', color: 'var(--muted,#4B585C)' }}>
               <th style={{ padding: '4px 8px', fontWeight: 700 }}>Account holder</th>
+              <th style={{ padding: '4px 8px', fontWeight: 700 }}>Type</th>
               <th style={{ padding: '4px 8px', fontWeight: 700 }}>Bank</th>
+              <th style={{ padding: '4px 8px', fontWeight: 700 }}>Account #</th>
               <th style={{ padding: '4px 8px', fontWeight: 700, textAlign: 'right' }}>Ending balance</th>
               <th style={{ padding: '4px 8px', fontWeight: 700 }}>Counts?</th>
             </tr>
@@ -916,8 +918,10 @@ function BankLiquidity({ bankLiquidity }) {
           <tbody>
             {accounts.map((a, i) => (
               <tr key={i} style={{ borderTop: '1px solid var(--line,#EEE8DA)' }}>
-                <td style={{ padding: '4px 8px' }}>{a.holder || '—'}{a.statementCount > 1 ? <span style={{ color: 'var(--muted,#4B585C)' }}> · {a.statementCount} statements</span> : null}</td>
+                <td style={{ padding: '4px 8px' }}>{a.holder || '—'}{a.statementCount > 1 ? <span style={{ color: 'var(--muted,#4B585C)' }}> · latest of {a.statementCount} statements</span> : null}</td>
+                <td style={{ padding: '4px 8px' }}>{a.holderIsBusiness ? 'Business' : 'Individual'}</td>
                 <td style={{ padding: '4px 8px' }}>{a.bankName || '—'}</td>
+                <td style={{ padding: '4px 8px', fontVariantNumeric: 'tabular-nums' }}>{a.accountNumber || '—'}</td>
                 <td style={{ padding: '4px 8px', textAlign: 'right' }}>{money(a.ending)}</td>
                 <td style={{ padding: '4px 8px', color: a.tied ? 'var(--good,#3F7A5B)' : 'var(--muted,#4B585C)' }}>{a.tied ? 'yes' : 'not counted — needs entity docs'}</td>
               </tr>
