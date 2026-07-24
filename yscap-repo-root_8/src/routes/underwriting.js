@@ -1433,6 +1433,35 @@ router.get('/:appId/findings/:fid/similar-open', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// R5.17 — on-demand: the grounded evidence behind ONE finding (the exact OCR
+// quote + page it was raised from). Fetched only when an underwriter expands
+// "where we saw this", so the big desk read stays lean. Staff-only (router
+// guard) + IDOR-checked (finding must belong to this file). Read-only.
+router.get('/:appId/findings/:fid/evidence', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    if (!isUuid(req.params.fid)) return res.status(404).json({ error: 'finding not found' });
+    const f = (await db.query(
+      `SELECT id FROM document_findings WHERE id=$1 AND application_id=$2`,
+      [req.params.fid, app.id])).rows[0];
+    if (!f) return res.status(404).json({ error: 'finding not found' });
+    let spans = [];
+    try {
+      const ledger = require('../lib/underwriting/evidence-ledger');
+      const rows = await ledger.spansForFinding(db, f.id).catch(() => []);
+      spans = (rows || []).map((s) => ({
+        quote: s.quote != null ? String(s.quote).slice(0, 400) : null,
+        pageNumber: s.page_number != null ? s.page_number : null,
+        spanType: s.span_type || null,
+        role: s.role || null,
+        documentId: s.document_id || null,
+      })).filter((s) => s.quote);
+    } catch (_e) { /* evidence is additive — return an empty list, never an error */ }
+    res.json({ ok: true, findingId: f.id, spans });
+  } catch (e) { next(e); }
+});
+
 router.post('/:appId/findings/similar/bulk-resolve', requirePermission('sign_off_conditions'), async (req, res, next) => {
   try {
     const app = await fileFor(req, req.params.appId);
