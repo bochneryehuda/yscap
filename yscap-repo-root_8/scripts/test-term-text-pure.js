@@ -28,6 +28,7 @@ ok(termKey('2 yrs') === '24', '"2 yrs" → 24');
 ok(termKey('Interest only') === 'interest only', 'word-only value compares as words');
 ok(termKey('Other') === 'other', '"Other" → other');
 ok(termKey(null) === null && termKey('') === null && termKey('   ') === null, 'null/blank → null');
+ok(termKey('012 Months') === '12' && termKey('06') === '6', 'leading zeros strip (parity with pilot_term_norm ::numeric::text — audit 2026-07-24)');
 
 // ---- termsEquivalent: THE bug case + real changes ----
 ok(termsEquivalent('12', '12 Months') === true, 'THE BUG: "12" ≡ "12 Months" (never a pricing change)');

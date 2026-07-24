@@ -148,9 +148,10 @@ export default function EsignFileSection({ appId, role, onChanged }) {
     const { blob, filename } = await api.staffDownloadDoc(doc.documentId);
     saveBlob(blob, filename || doc.filename);
   });
-  // Request a super-admin exception to send the term-sheet package before the file
-  // is ready for clear-to-close. The server refuses unless the hard floor (appraisal
-  // back · re-priced · closing date · registration current) is already met.
+  // Request a super-admin exception to send the term-sheet package now. May be
+  // requested whenever the package can't send (owner-directed 2026-07-24) — the
+  // reviewing super-admin sees the full done/outstanding picture and picks
+  // exactly which requirements to waive; everything not waived still applies.
   const requestException = () => act('exc:req', async () => {
     const r = await api.requestEsignBeforeCtc(appId, { reasonCode: excReason, reasonNote: excNote });
     if (!r || !r.ok) throw new Error((r && r.error) || 'Could not send the request.');

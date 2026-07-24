@@ -71,7 +71,14 @@ export default function EsignGatePanel({ exceptionId, status, select }) {
 
       <ul className="esign-gate" style={{ marginTop: 8 }}>
         {checks.map((c) => {
-          const isWaived = c.ok ? false : (data.status !== 'requested' && waivedCodes.includes(c.code));
+          // Trust the LIVE per-item flag from the gate (c.waived) — it is reason-
+          // pinned and fails closed, so a blocker that changed meaning after the
+          // approval (or a cleared exception) correctly shows as STILL REQUIRED,
+          // never a false green ✓. The waivedCodes membership is only a fallback
+          // for an older server payload that lacks the flag.
+          const isWaived = c.ok ? false
+            : (c.waived !== undefined ? c.waived === true
+              : (data.status === 'approved' && waivedCodes.includes(c.code)));
           const checkedHere = selectable && !c.ok && selected.has(c.code);
           return (
             <li key={c.code} className={c.ok || isWaived ? 'ok' : 'bad'}>

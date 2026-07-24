@@ -61,7 +61,10 @@ async function retrySend(opts = {}) {
       // deal economics changed (a floor blocker) — this fails permanent so the stale
       // envelope dead-letters and a re-registered deal sends a fresh one.
       if (!g.sendAllowed) {
-        const e = new Error(`Send cancelled — file no longer ready to send: ${g.outstanding.map((o) => o.label).join('; ')}`);
+        // Name only the blockers that actually still apply (never ones a
+        // super-admin exception waived) — same copy rule as orchestrate.js.
+        const blockers = g.unwaivedOutstanding && g.unwaivedOutstanding.length ? g.unwaivedOutstanding : g.outstanding;
+        const e = new Error(`Send cancelled — file no longer ready to send: ${blockers.map((o) => o.label).join('; ')}`);
         e.retryable = false;   // permanent → dead-letter (a changed deal re-sends fresh)
         throw e;
       }

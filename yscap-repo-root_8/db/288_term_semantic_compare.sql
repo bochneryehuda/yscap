@@ -41,7 +41,9 @@ CREATE OR REPLACE FUNCTION pilot_term_norm(v text) RETURNS text AS $$
     WHEN v IS NULL OR btrim(v) = '' THEN NULL
     WHEN btrim(v) ~* '^\d+(\.\d+)?\s*(years?|yrs?|y)\M' THEN
       (round((substring(btrim(v) from '^(\d+(\.\d+)?)'))::numeric * 12))::text
-    WHEN btrim(v) ~ '^\d' THEN substring(btrim(v) from '^(\d+)')
+    -- ::numeric::text strips leading zeros ('012' → '12') so the key matches the
+    -- JS twin (termKey uses parseInt) even on a hand-typed zero-padded spelling.
+    WHEN btrim(v) ~ '^\d' THEN (substring(btrim(v) from '^(\d+)'))::numeric::text
     ELSE lower(btrim(v))
   END;
 $$ LANGUAGE sql IMMUTABLE;
@@ -206,6 +208,14 @@ $$ LANGUAGE plpgsql;
 -- was a Term-ONLY re-spelling: the reason names exactly one change ("Term: a →
 -- b", no ';' separator) and both sides normalize to the same semantic term. A
 -- reason listing any REAL change (or a real term change) never matches.
+-- KNOWN LIMIT (audit 2026-07-24): the db/190–280 itemizer never itemized a few
+-- watched columns (rehab_type, sqft, property state, co-borrower, markups,
+-- requested experience) — a single UPDATE combining a cosmetic term echo with
+-- one of THOSE real changes also produced a Term-only reason, which this heal
+-- clears. Safe because the same event reopened the Products & Pricing +
+-- signed-term-sheet conditions and this heal deliberately restores NO statuses/
+-- sign-offs — a human still re-verifies before the gate passes, and any next
+-- real change re-flags under the (now semantic) trigger.
 UPDATE product_registrations
    SET stale = false, stale_reason = NULL
  WHERE is_current AND stale
