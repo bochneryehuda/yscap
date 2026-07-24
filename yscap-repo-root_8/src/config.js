@@ -222,10 +222,11 @@ module.exports = {
   // "PILOT verified — ready to clear" advisory STAMP (owner-directed 2026-07-24). When a
   // per-domain completeness check (credit / gov-ID / SSN / assets / purchase-contract /
   // background) verifies a Condition Center condition is met, PILOT does NOT sign it off —
-  // it puts an advisory stamp on the condition (pilot_ready_at + note) and a human still
-  // clears it. The stamp is safe (it never clears anything), so it is ON by default; set
-  // PILOT_READY_STAMP=0 to turn the advisory off entirely. This supersedes the old per-domain
-  // *_AUTOCLEAR_ENABLED flags (kept below only for back-compat; they no longer sign anything off).
+  // it puts an advisory stamp on the condition (the pilot_advice / pilot_advice_note /
+  // pilot_advice_at columns, db/295) and a human still clears it. The stamp is safe (it never
+  // clears anything), so it is ON by default; set PILOT_READY_STAMP=0 to turn the advisory off
+  // entirely. This is the go-forward replacement for the old per-domain *_AUTOCLEAR_ENABLED
+  // flags below, which stay OFF by default (=== '1'); a follow-up removes those sign-off paths.
   pilotReadyStampEnabled: process.env.PILOT_READY_STAMP !== '0',
 
   // Auto-clear the "Executed purchase contract" condition (rtl_p1_contract) once PILOT has

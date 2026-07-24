@@ -9,7 +9,7 @@
  *   agree     — signed off, PILOT confirms it was cleared correctly
  *   dispute   — signed off, but PILOT has evidence it should NOT be → revisit (with reason)
  * PILOT NEVER signs off / clears the condition itself — a human always does that. The
- * advisory only ever writes pilot_advice / pilot_advice_note (see pilot-advice.js + db/294).
+ * advisory only ever writes pilot_advice / pilot_advice_note (see pilot-advice.js + db/295).
  *
  * Each condition template maps to a per-domain evaluator that returns { complete,
  * contradicted, note } — reusing the already-audited completeness checks (credit / gov-ID /
