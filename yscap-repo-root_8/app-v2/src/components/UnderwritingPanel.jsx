@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { AppraisalFinding } from './AppraisalPanel.jsx';
 import DocCompare from './DocCompare.jsx';
+import AiReasoningChat from './AiReasoningChat.jsx';
 import { useAuth } from '../lib/auth.jsx';
 
 /* The PILOT document-underwriting desk. For each uploaded document PILOT reads it (best-in-class
@@ -2410,6 +2411,8 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true }) {
       </div>
       {expanded && (
         <div style={{ padding: '10px 14px' }}>
+          {/* AI Command Center phase 2 — ask PILOT "why?" grounded on this file's facts. */}
+          <AiReasoningChat appId={appId} />
           {err && <div className="error" style={{ marginBottom: 8 }}>{err}</div>}
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, fontSize: 12, flexWrap: 'wrap' }}>
             <button className="btn ghost" onClick={load} disabled={busy} style={{ padding: '3px 9px', fontSize: 11 }}>{busy ? '…' : '↻ Refresh'}</button>

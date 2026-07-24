@@ -2429,6 +2429,60 @@ router.post('/:appId/ask-admin', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Grounded back-and-forth reasoning chat (owner-directed 2026-07-24, AI Command Center phase 2):
+// a staff underwriter asks PILOT "why did you flag this?" / "what does the file say about X?" and
+// gets an answer grounded ONLY on the loan-file primer (the canonical facts) — never a fabricated
+// number. Ephemeral: the client holds the transcript and sends it back each turn (no thread table).
+// Non-authoritative + advisory (it explains; a human decides), env-gated (azureOpenai.available())
+// and per-file cost-capped (costMeter.allowSpend). NEVER throws — always returns a shaped result.
+router.post('/:appId/reason', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const question = String((req.body && req.body.question) || '').trim().slice(0, 2000);
+    if (!question) return res.status(400).json({ error: 'Ask a question.' });
+    // Last 12 turns only (bound the prompt). Each: { role:'user'|'assistant', text }.
+    const history = Array.isArray(req.body && req.body.history) ? req.body.history.slice(-12) : [];
+
+    const azureOpenai = require('../lib/ai/azure-openai');
+    if (!azureOpenai.available()) {
+      return res.json({ available: false, answer: null,
+        reason: 'PILOT\'s reasoning assistant is not turned on for this workspace yet.' });
+    }
+    const costMeter = require('../lib/ai/cost-meter');
+    const under = await costMeter.allowSpend(app.id, db).catch(() => true); // fail-open on a meter hiccup
+    if (!under) {
+      return res.json({ available: true, answer: null,
+        reason: 'This file has reached its AI spending limit for now — try again later or ask an admin to raise it.' });
+    }
+
+    const primer = require('../lib/underwriting/loan-primer');
+    // Staff surface → full grounding (do NOT scrub the note buyer; this never reaches a borrower).
+    const grounding = await primer.groundingBlock(app.id, db).catch(() => '');
+    const system =
+      'You are PILOT, a mortgage-underwriting assistant explaining your reasoning to a STAFF underwriter. '
+      + 'Answer ONLY from the loan-file facts below. If a fact is missing, say "the file doesn\'t show that" — '
+      + 'NEVER invent or estimate a number. Be concise and plain-language, and name the specific fields you used. '
+      + 'You are NON-AUTHORITATIVE: you explain and suggest; the underwriter decides. Do not claim to change or '
+      + 'clear anything.\n\n' + grounding;
+    const transcript = history
+      .filter((m) => m && m.text)
+      .map((m) => `${m.role === 'assistant' ? 'PILOT' : 'Underwriter'}: ${String(m.text).slice(0, 2000)}`)
+      .join('\n');
+    const userContent = (transcript ? `Conversation so far:\n${transcript}\n\n` : '') + `Underwriter asks: ${question}`;
+
+    const r = await azureOpenai.complete({
+      system, userContent, maxTokens: 700,
+      traceMeta: { name: 'ai-reason', opName: 'reason', appId: app.id, staffId: req.actor && req.actor.id, tags: ['reason'] },
+    });
+    if (!r || !r.ok) {
+      return res.json({ available: true, answer: null,
+        reason: (r && r.reason) || 'PILOT couldn\'t answer just now — try again in a moment.' });
+    }
+    return res.json({ available: true, answer: r.text || '' });
+  } catch (e) { next(e); }
+});
+
 // -------------------------------------------------------------------------
 // AI-to-super-admin questions (R3.7). AI agents call ai-suggestions.askAdmin(...)
 // which creates a suggestion (kind='question') AND an ai_admin_questions row.
