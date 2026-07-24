@@ -2039,9 +2039,12 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
         // "received" screen \u2014 hand the submission to the lead pipeline, which
         // needs no token and still lands + emails server-side.
         if (resp && resp.applicationId) finish(off, resp);
-        else legacyLeadSubmit(off, btn, oo);
+        else return legacyLeadSubmit(off, btn, oo);
       })
-      .catch(function () { legacyLeadSubmit(off, btn, oo); })
+      .catch(function () { return legacyLeadSubmit(off, btn, oo); })
+      // Returning the fallback's promise above means this runs only after the
+      // WHOLE submission (primary or fallback) settled — the button can't
+      // re-enable while a fallback POST is still in flight (audit finding).
       .finally(function () { if (btn) { btn.textContent = oo; btn.disabled = false; } });
   }
   // Fallback capture \u2014 the older lead pipeline (also server-side; no mail client).
@@ -2049,7 +2052,7 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
     var subject = "New Loan Application \u2014 " + bName(1) + " \u2014 " + addrJoin("pStreet", null, "pCity", "pState", null);
     var officerCode = (off && off.email) ? off.email.split("@")[0].toLowerCase()
       : ((new URLSearchParams(location.search).get("lo")) || "");
-    fetch("/api/leads", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+    return fetch("/api/leads", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
       tool: "loan_application", name: bName(1), email: val("b1Email"), phone: val("b1Phone"),
       officerCode: officerCode, subject: subject, message: buildSummary(), payload: YS.collectState()
     }) })

@@ -391,6 +391,10 @@ router.post('/contact', async (req, res) => {
         await require('../lib/email').sendMail({
           to: [cfg.salesNotifyTo], subject: built.subject, text: built.text, html: built.html,
           replyTo: finalEmail || null, _ctx: { type: 'new_lead', audience: 'staff' } }).catch(() => {});
+      } else {
+        // No sales inbox configured: legacy admin fan-out, so a visitor who
+        // left contact info is never silently unnoticed (audit finding).
+        await notify.notifyAdmins(notifyOpts);
       }
     } catch (_) { /* best-effort */ }
     res.json({ ok: true });
