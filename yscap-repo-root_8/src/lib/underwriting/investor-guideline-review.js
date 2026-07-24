@@ -24,10 +24,18 @@
  * no DB, no network, never throws.
  */
 
+const { normNoteBuyer } = require('../conditions/field-registry');
+
 const SOURCE = 'investor_guideline';
 const CATEGORY = 'investor_guideline';
 
-function normKey(v) { return String(v == null ? '' : v).toLowerCase().replace(/[^a-z0-9]/g, ''); }
+// A note-buyer label is keyed with the SHARED normalizer (field-registry.normNoteBuyer) — the
+// SAME one the conditions engine uses for `ctx.note_buyer` (engine.js) and the ISG desk uses to
+// match `investors.label_norm`. Keeping one normalizer means the review keys a note buyer the
+// exact same way the rest of the ISG stack does; a real future alias (e.g. a longer dropdown
+// label) is added in that one shared place so every consumer agrees at once. normNoteBuyer is
+// pure (field-registry has no requires) so this module stays PURE / never-throws.
+function normKey(v) { return normNoteBuyer(v) || ''; }
 function num(v) { const n = typeof v === 'number' ? v : (v == null || v === '' ? null : Number(v)); return Number.isFinite(n) ? n : null; }
 function bool(v) { return v === true || v === 1 || v === '1' || v === 'true' || v === 't'; }
 function money(n) { return n == null ? '(missing)' : `$${Math.round(n).toLocaleString('en-US')}`; }
