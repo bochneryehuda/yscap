@@ -12,7 +12,12 @@ const assert = require('assert');
 const v = require('../src/lib/underwriting/investor-guidelines/ai-guideline-verify');
 
 let n = 0;
-function check(name, fn) { fn(); n++; console.log('  ok -', name); }
+const asyncChecks = [];
+function check(name, fn) {
+  const r = fn();
+  if (r && typeof r.then === 'function') { asyncChecks.push(r.then(() => { n++; console.log('  ok -', name); })); return; }
+  n++; console.log('  ok -', name);
+}
 
 console.log('ai-guideline-verify pure tests');
 
@@ -69,6 +74,23 @@ check('verdictToSuggestion: dedupe key fallback', () => {
   assert.strictEqual(byName.dedupeKey, 'isg-ai-verify:Some Condition');
 });
 
+// 4b — loadFileExtractedFields is null-safe, newest-per-doc_type, and bounded.
+check('loadFileExtractedFields: null-safe + newest-per-type + bound', async () => {
+  assert.deepStrictEqual(await v.loadFileExtractedFields(null, 'app-1'), {}, 'no client → {}');
+  assert.deepStrictEqual(await v.loadFileExtractedFields({}, 'app-1'), {}, 'client without .query → {}');
+  assert.deepStrictEqual(await v.loadFileExtractedFields({ query: () => { throw new Error('boom'); } }, 'a'), {}, 'query throw → {}');
+  assert.deepStrictEqual(await v.loadFileExtractedFields({ query: async () => ({ rows: [] }) }, null), {}, 'no appId → {}');
+  // newest row per doc_type wins (rows arrive DESC by created_at); non-object fields skipped.
+  const fake = { query: async () => ({ rows: [
+    { doc_type: 'insurance', fields: { dwelling: 200000 } },       // newest insurance → kept
+    { doc_type: 'insurance', fields: { dwelling: 111 } },          // older insurance → ignored
+    { doc_type: 'title', fields: { vesting: 'LLC' } },
+    { doc_type: 'bad', fields: 'not-an-object' },                  // skipped
+  ] }) };
+  const out = await v.loadFileExtractedFields(fake, 'app-1');
+  assert.deepStrictEqual(out, { insurance: { dwelling: 200000 }, title: { vesting: 'LLC' } });
+});
+
 // 5 — schema shape is a strict object with the four verdict fields.
 check('VERDICT_SCHEMA is well-formed', () => {
   const sc = v.VERDICT_SCHEMA;
@@ -78,4 +100,6 @@ check('VERDICT_SCHEMA is well-formed', () => {
   assert.strictEqual(sc.properties.meets.type, 'boolean');
 });
 
-console.log(`\nai-guideline-verify: ${n} checks passed`);
+Promise.all(asyncChecks).then(() => {
+  console.log(`\nai-guideline-verify: ${n} checks passed`);
+}).catch((e) => { console.error('FAILED:', e && e.message); process.exit(1); });
