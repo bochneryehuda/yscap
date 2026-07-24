@@ -13,6 +13,7 @@
  */
 
 const apprUw = require('./appraisal-underwriter');
+const { propertyTypeUnitRange } = require('../mismo/enums');
 
 function num(v) { return (v === '' || v == null || !Number.isFinite(Number(v))) ? null : Number(v); }
 function norm(s) { return String(s == null ? '' : s).trim().toLowerCase(); }
@@ -51,8 +52,13 @@ function assessFit(inputs) {
     add('arv_basis', arv.supported, arv.supported === false ? `ARV short by ${arv.shortfall}` : (num(appr.arv_value) == null ? 'no ARV on appraisal' : 'ARV supported'));
   }
 
-  // property type / units
-  if (v.property_type && appr.property_type) add('property_type', norm(v.property_type) === norm(appr.property_type), `priced ${v.property_type} vs appraisal ${appr.property_type}`);
+  // property type / units — judge the property type by the appraisal's UNIT COUNT against
+  // the range our property_type category implies (SFR = 1, Multi 2–4, Multi 5+, Condo = 1),
+  // NOT a string compare of the range category to the appraisal's specific type text (which
+  // false-"disagrees" on every multi-family file — owner-reported 2026-07-24).
+  const ptRange = propertyTypeUnitRange(v.property_type);
+  const au = num(appr.units);
+  if (ptRange && au != null) add('property_type', au >= ptRange.min && au <= ptRange.max, `file ${v.property_type} vs appraisal ${au} unit${au === 1 ? '' : 's'}`);
   if (num(v.units) != null && num(appr.units) != null) add('units', num(v.units) === num(appr.units), `application ${v.units} vs appraisal ${appr.units}`);
 
   // transaction type: a rehab loan wants a value that reflects the after-repair

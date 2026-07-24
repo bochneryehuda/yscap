@@ -179,7 +179,7 @@ function Finding({ appId, f, onChange, readOnly }) {
     catch (e) { alert(e.message || 'Could not resolve'); }
     finally { setBusy(false); }
   };
-  const canWriteBack = ['arv', 'as_is_value', 'purchase_price', 'units', 'property_type'].includes(f.field);
+  const canWriteBack = ['arv', 'as_is_value', 'purchase_price', 'units'].includes(f.field);
   // A dry-run "what-if": price the file WITH the appraisal's value as an override and compare to
   // the current terms — NON-persisting (reuses the /pricing/quote engine, nothing is written).
   const previewKey = PREVIEW_KEY[f.field];
