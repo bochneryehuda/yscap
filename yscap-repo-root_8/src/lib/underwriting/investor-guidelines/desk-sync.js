@@ -40,15 +40,34 @@ function deskToSuggestions(desk) {
       const code = u.pilot_template_code || null;
       const sev = u.severity === 'fatal' ? 'fatal' : 'warning';
       if (u.flag === 'coverage_gap') {
+        // The guideline→PILOT crosswalk is many-to-one, so the desk COLLAPSES all the
+        // note-buyer requirements that map to ONE missing PILOT condition into a single
+        // gap (carrying gapKey + coveredConditions[] + coveredCount). Key the suggestion
+        // on that collapsed code — NOT on cond_no — so one absent condition raises ONE
+        // "post this" row listing every requirement it satisfies, never N duplicates.
+        const covered = Array.isArray(u.coveredConditions) && u.coveredConditions.length
+          ? u.coveredConditions
+          : [u.name].filter(Boolean);
+        const count = u.coveredCount || covered.length || 1;
+        // Mirror desk.js's key derivation EXACTLY (trim+lowercase FIRST, then fall back) so a
+        // raw item with a whitespace-only pilot code keys identically on both sides.
+        const normCode = String(u.pilot_template_code || '').trim().toLowerCase();
+        const gapKey = u.gapKey || normCode || `cond:${u.cond_no}`;
+        const many = count > 1;
+        const reqList = covered.join(', ');
         out.push({
           source: SOURCE, kind: 'condition', severity: sev, important: sev === 'fatal',
-          title: `${nb} requires "${u.name}" — no condition on the file`,
-          body: `${nb}'s own guidelines require this, but there is no condition on the file covering it.`
+          title: many
+            ? `${nb} needs ${count} requirements — no condition on the file covers them`
+            : `${nb} requires "${u.name}" — no condition on the file`,
+          body: (many
+            ? `${nb}'s own guidelines require ${count} things that all belong on one condition (${reqList}), but there is no condition on the file covering it.`
+            : `${nb}'s own guidelines require this, but there is no condition on the file covering it.`)
             + (sev === 'fatal' ? ' Post one now — the note buyer will not take the file without it.' : '')
             + (u.required_evidence ? ` Needs: ${u.required_evidence}` : ''),
-          evidence: { code, domain: u.domain || null, cond_no: u.cond_no, noteBuyer: nb, flag: 'coverage_gap' },
+          evidence: { code, domain: u.domain || null, cond_no: u.cond_no, noteBuyer: nb, flag: 'coverage_gap', coveredConditions: covered, coveredCount: count },
           proposedAction: { type: 'attach_condition', fields: { code, cond_no: u.cond_no } },
-          dedupeKey: `isg-gap:${u.cond_no}`,
+          dedupeKey: `isg-gap:${gapKey}`,
         });
       } else if (u.flag === 'conflict') {
         const conflicts = Array.isArray(u.checks)

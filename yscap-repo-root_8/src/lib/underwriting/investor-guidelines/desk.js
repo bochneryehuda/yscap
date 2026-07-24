@@ -283,10 +283,29 @@ function assess(input) {
   const isGap = (v) => v.verdict === VERDICT.OUTSTANDING && !v.pilotOnFile;
   const gapSeverity = (v) => (v.domain === 'construction_feasibility' ? 'fatal' : 'warning');
   const unhappy = [];
+  // COLLAPSE coverage gaps that point at the SAME PILOT condition. The guideline→PILOT
+  // crosswalk is many-to-one (e.g. ~6 Blue Lake rows map to rtl_cond_title): when that one
+  // condition is simply absent, EVERY mapped row is a "gap", which used to surface N identical
+  // "post this condition" rows (and N duplicate suggestions). Surface ONE item per PILOT
+  // condition, covering all N requirements, at the max severity. Conflicts stay per-value (a
+  // conflict is about a specific number, not a missing condition).
+  const gapByCode = new Map();
   for (const v of active) {
-    if (v.verdict === VERDICT.CONFLICTS) unhappy.push(Object.assign({}, v, { flag: 'conflict', severity: 'fatal' }));
-    else if (isGap(v)) unhappy.push(Object.assign({}, v, { flag: 'coverage_gap', severity: gapSeverity(v) }));
+    if (v.verdict === VERDICT.CONFLICTS) { unhappy.push(Object.assign({}, v, { flag: 'conflict', severity: 'fatal' })); continue; }
+    if (!isGap(v)) continue;
+    const code = String(v.pilot_template_code || '').trim().toLowerCase();
+    const key = code || `cond:${v.cond_no}`;
+    const sev = gapSeverity(v);
+    if (!gapByCode.has(key)) {
+      gapByCode.set(key, Object.assign({}, v, { flag: 'coverage_gap', severity: sev, gapKey: key, coveredConditions: [v.name].filter(Boolean), coveredCount: 1 }));
+    } else {
+      const g = gapByCode.get(key);
+      if (sev === 'fatal') g.severity = 'fatal';
+      g.coveredCount += 1;
+      if (v.name && g.coveredConditions.indexOf(v.name) === -1) g.coveredConditions.push(v.name);
+    }
   }
+  for (const g of gapByCode.values()) unhappy.push(g);
   const happy = unhappy.length === 0;
 
   const summary = {

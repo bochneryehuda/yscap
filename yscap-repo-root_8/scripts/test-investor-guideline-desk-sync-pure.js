@@ -48,7 +48,7 @@ check('missing feasibility condition → fatal attach_condition', () => {
   assert.strictEqual(s.proposedAction.fields.code, 'rtl_cond_feasibility');
   assert.strictEqual(s.evidence.code, 'rtl_cond_feasibility');
   assert.strictEqual(s.evidence.domain, 'construction_feasibility');
-  assert.strictEqual(s.dedupeKey, 'isg-gap:200');
+  assert.strictEqual(s.dedupeKey, 'isg-gap:rtl_cond_feasibility');
 });
 
 // 3 — a non-feasibility coverage gap is a WARNING (not fatal).
@@ -60,7 +60,7 @@ check('other missing condition → warning attach_condition', () => {
   assert.strictEqual(s.severity, 'warning');
   assert.strictEqual(s.important, false);
   assert.ok(!/Post one now/.test(s.body), 'no urgent line for a warning gap');
-  assert.strictEqual(s.dedupeKey, 'isg-gap:12');
+  assert.strictEqual(s.dedupeKey, 'isg-gap:rtl_cond_flood');
 });
 
 // 4 — a conflict is a FATAL finding carrying the conflicting check details.
@@ -95,6 +95,26 @@ check('missing noteBuyer name + malformed row are handled', () => {
   });
   assert.strictEqual(out.length, 1, 'malformed row skipped');
   assert.match(out[0].title, /the note buyer requires/i);
+});
+
+// 6 — a COLLAPSED gap (many note-buyer requirements → one missing PILOT condition) is
+// ONE suggestion, keyed on the PILOT code, listing every requirement it covers.
+check('collapsed coverage gap → one suggestion keyed on the PILOT code', () => {
+  const out = ds.deskToSuggestions({
+    noteBuyer: { name: 'Blue Lake Capital' },
+    unhappy: [{
+      cond_no: 1001, name: 'TITLE COMMITMENT', domain: 'title', flag: 'coverage_gap', severity: 'warning',
+      pilot_template_code: 'rtl_cond_title', gapKey: 'rtl_cond_title', coveredCount: 3,
+      coveredConditions: ['TITLE COMMITMENT', 'PAYOFF/PRELIM', 'VESTING CHECK'],
+    }],
+  });
+  assert.strictEqual(out.length, 1, 'the collapsed gap is a single suggestion');
+  const s = out[0];
+  assert.strictEqual(s.dedupeKey, 'isg-gap:rtl_cond_title', 'keyed on the collapsed PILOT code, not cond_no');
+  assert.match(s.title, /3 requirements/, 'title states how many requirements ride on the one condition');
+  assert.match(s.body, /TITLE COMMITMENT, PAYOFF\/PRELIM, VESTING CHECK/, 'body lists every covered requirement');
+  assert.strictEqual(s.evidence.coveredCount, 3);
+  assert.deepStrictEqual(s.evidence.coveredConditions, ['TITLE COMMITMENT', 'PAYOFF/PRELIM', 'VESTING CHECK']);
 });
 
 console.log(`\ndesk-sync: ${n} checks passed`);
