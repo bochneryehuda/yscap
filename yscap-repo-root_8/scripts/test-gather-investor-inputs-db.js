@@ -51,9 +51,9 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
     // 2. A current appraisal in a FEMA Special Flood Hazard Area → appraisal_present true
     //    AND in_flood_zone true (proven), reading the real db/150 flood columns.
     const apprInsert = (extra) => pool.query(
-      `INSERT INTO appraisals (application_id, superseded, imported_at, fema_flood_sfha, fema_flood_zone, flood_zone, nbhd_location_type)
-         VALUES ($1, false, now(), $2, $3, $4, $5) RETURNING id`,
-      [aId, extra.sfha, extra.femaZone, extra.statedZone, extra.loc == null ? null : extra.loc]);
+      `INSERT INTO appraisals (application_id, superseded, imported_at, fema_flood_sfha, fema_flood_zone, flood_zone, nbhd_location_type, condition_of_appraisal)
+         VALUES ($1, false, now(), $2, $3, $4, $5, $6) RETURNING id`,
+      [aId, extra.sfha, extra.femaZone, extra.statedZone, extra.loc == null ? null : extra.loc, extra.cond == null ? null : extra.cond]);
 
     let apprId = (await apprInsert({ sfha: true, femaZone: 'AE', statedZone: 'AE' })).rows[0].id;
     {
@@ -98,6 +98,22 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
       const out = await gatherInvestorInputs(aId, db);
       assert.strictEqual(out.appraisal_rural, false, 'a Suburban neighborhood → appraisal_rural false');
       ok('a Suburban appraisal sets appraisal_rural false (escalation stays silent)');
+    }
+
+    // 4c. APPRAISAL_MID_CONSTRUCTION (#255) — SubjectToCompletion → true; SubjectToRepairs → false.
+    await pool.query(`UPDATE appraisals SET superseded = true WHERE application_id = $1 AND superseded = false`, [aId]);
+    await apprInsert({ sfha: null, femaZone: null, statedZone: null, cond: 'SubjectToCompletion' });
+    {
+      const out = await gatherInvestorInputs(aId, db);
+      assert.strictEqual(out.appraisal_mid_construction, true, 'SubjectToCompletion → appraisal_mid_construction true');
+      ok('a SubjectToCompletion appraisal sets appraisal_mid_construction true (real condition_of_appraisal column)');
+    }
+    await pool.query(`UPDATE appraisals SET superseded = true WHERE application_id = $1 AND superseded = false`, [aId]);
+    await apprInsert({ sfha: null, femaZone: null, statedZone: null, cond: 'SubjectToRepairs' });
+    {
+      const out = await gatherInvestorInputs(aId, db);
+      assert.strictEqual(out.appraisal_mid_construction, false, 'SubjectToRepairs → appraisal_mid_construction false');
+      ok('a SubjectToRepairs appraisal → appraisal_mid_construction false (a rehab, not construction)');
     }
 
     // 5. CLAIMED vs VERIFIED EXPERIENCE (#251) — reuses experience.js against the REAL
