@@ -93,6 +93,32 @@ console.log('investor-guideline-review pure tests');
   ok('price-vs-value only fires once the appraisal is present');
 }
 
+// 7b — RECOGNIZED price, not the gross contract price, is compared to value. On an
+// assignment the gross price includes a fee the loan isn't sized on; firing this FATAL on
+// the gross price would be a FALSE fire when the recognized (sized) price is within value.
+{
+  // Gross 200k > as-is 180k, BUT the loan is sized on the recognized 172.5k (≤ value) → NO fatal.
+  const withinValue = g.review({
+    purchase_price: 200_000, effective_purchase_price: 172_500, as_is_value: 180_000,
+    is_assignment: true, appraisal: { present: true } });
+  assert.ok(!byCode(withinValue, 'isg_price_value_over_requirement'),
+    'recognized price within value → no false FATAL even though gross price exceeds value');
+
+  // Recognized price itself exceeds value → the FATAL still fires (real problem).
+  const overValue = g.review({
+    purchase_price: 260_000, effective_purchase_price: 240_000, as_is_value: 200_000,
+    is_assignment: true, appraisal: { present: true } });
+  const f = byCode(overValue, 'isg_price_value_over_requirement');
+  assert.ok(f, 'recognized price over value → FATAL still fires');
+  assert.strictEqual(f.actual_value, '$240,000', 'the finding cites the recognized price, not the gross price');
+
+  // No effective price on file (a straight purchase) → falls back to the gross price (unchanged).
+  const straight = g.review({ purchase_price: 300_000, as_is_value: 200_000, appraisal: { present: true } });
+  assert.ok(byCode(straight, 'isg_price_value_over_requirement'),
+    'a straight purchase with no recognized price still fires on the gross price');
+  ok('price-vs-value compares the recognized (loan-sized) price, not the gross contract price');
+}
+
 // 8 — null-safe / never throws on hostile input.
 {
   for (const bad of [null, undefined, 42, 'x', [], { note_buyer: {} }]) {

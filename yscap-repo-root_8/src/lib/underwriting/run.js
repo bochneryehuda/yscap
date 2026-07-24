@@ -212,6 +212,7 @@ function assembleRun(inputs) {
     as_is_value: v.as_is_value,
     arv: v.arv,
     purchase_price: v.purchase_price,
+    effective_purchase_price: v.effective_purchase_price,
     fico_file: v.fico,
   }, i.investorInputs || {});
   for (const f of investorGuidelineReview.review(investorBag)) findings.push(f);

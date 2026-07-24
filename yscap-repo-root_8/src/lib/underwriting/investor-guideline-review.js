@@ -147,11 +147,25 @@ const RULES = [
     detail: () => 'The property is in a flood zone. A flood-insurance condition is required for all note buyers.' },
 
   // ----- Price vs value (post-appraisal only — never before the appraisal is in) -----
+  // Compare the RECOGNIZED (loan-sized) price to value, NOT the gross contract price. On an
+  // assignment the gross price includes a wholesaler fee that may be the borrower's own,
+  // non-financed funds; the loan is sized on effective_purchase_price (seller contract + the
+  // financeable portion of the fee). Firing on the gross price would FALSE-FIRE this FATAL when
+  // the sized price is comfortably within value. Same recognized-price convention the rest of
+  // the run uses (run.js sizingInputs, appraisal-underwriter.js). No effective price on file
+  // (a straight purchase) → falls back to purchase_price, so ordinary purchases are unchanged.
   { code: 'isg_price_value_over_requirement', audience: 'all', severity: 'fatal',
-    title: 'Purchase price above the value requirement', governing_rule: 'Purchase price must satisfy the as-is / ARV requirement once the appraisal is in',
-    when: (x) => (!x.appraisal_present || x.purchase_price == null || x.as_is_value == null) ? null : x.purchase_price > x.as_is_value,
-    expected: (x) => money(x.as_is_value), actual: (x) => money(x.purchase_price),
-    detail: (x) => `Purchase price ${money(x.purchase_price)} exceeds the appraised as-is value ${money(x.as_is_value)}.` },
+    title: 'Purchase price above the value requirement', governing_rule: 'The recognized purchase price must satisfy the as-is / ARV requirement once the appraisal is in',
+    when: (x) => {
+      const p = x.effective_purchase_price != null ? x.effective_purchase_price : x.purchase_price;
+      return (!x.appraisal_present || p == null || x.as_is_value == null) ? null : p > x.as_is_value;
+    },
+    expected: (x) => money(x.as_is_value),
+    actual: (x) => money(x.effective_purchase_price != null ? x.effective_purchase_price : x.purchase_price),
+    detail: (x) => {
+      const p = x.effective_purchase_price != null ? x.effective_purchase_price : x.purchase_price;
+      return `The recognized purchase price ${money(p)} exceeds the appraised as-is value ${money(x.as_is_value)}.`;
+    } },
 ];
 
 /**
@@ -170,6 +184,7 @@ function reviewInput(raw) {
     as_is_value: num(r.as_is_value),
     arv: num(r.arv),
     purchase_price: num(r.purchase_price),
+    effective_purchase_price: num(r.effective_purchase_price),
     is_ground_up: bool(r.is_ground_up),
     ground_up_deposit: num(r.ground_up_deposit),
     is_cash_out: bool(r.is_cash_out),
