@@ -177,6 +177,24 @@ const INTEGRATIONS = [
     },
   },
   {
+    key: 'trustpoint', name: 'TrustPoint (administered draws)', group: 'workflow',
+    purpose: 'Follows the note buyer’s draw administrator on Blue Lake physical files — draw statuses, inspections, approvals, and releases are mirrored into PILOT (read-only; PILOT never moves this money).',
+    direction: 'One-way (read + webhooks in)', auth: 'Api-Key',
+    env: [{ name: 'TRUSTPOINT_API_KEY', required: true }, { name: 'TRUSTPOINT_BASE_URL', required: false },
+      { name: 'TRUSTPOINT_WEBHOOK_TOKEN', required: false }],
+    switches: [{ name: 'TRUSTPOINT_ENABLED', label: 'Mirroring' }],
+    liveProbe: true,
+    async probe() {
+      if (!cfg.trustpointApiKey) return { configured: false, live: null, detail: 'The TrustPoint API key is not set.' };
+      if (!require('./switches').on('TRUSTPOINT_ENABLED')) return { configured: true, enabled: false, live: null, detail: 'The key is set, but the master switch (TRUSTPOINT_ENABLED) is off, so nothing mirrors yet.' };
+      try {
+        const c = require('../../trustpoint/client');
+        await timebox(c.call('/projects/', { query: { page_size: 1 } }));
+        return { configured: true, enabled: true, live: true, detail: 'Reached TrustPoint.' };
+      } catch (e) { return { configured: true, enabled: true, live: false, detail: e.message === 'timed out' ? 'Timed out reaching TrustPoint.' : (e.message || 'Not reachable — the key may be wrong.') }; }
+    },
+  },
+  {
     key: 'clickup', name: 'ClickUp (pipeline / CRM)', group: 'workflow',
     purpose: 'Keeps loan-file data (status, borrower details, dates) in sync with the team’s ClickUp pipeline.',
     direction: 'Two-way', auth: 'API token',
