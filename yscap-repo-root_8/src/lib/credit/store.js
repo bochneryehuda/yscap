@@ -168,6 +168,16 @@ async function storeImport({ file, borrower, parsed, xml, pdfBase64, request, ac
     }
   }
 
+  // 5) Auto-clear the SSN-verification condition (CorrFirst only). Best-effort:
+  //    the SSN on file now has a matching credit report, which is exactly how
+  //    CorrFirst verifies the SSN. Gated on SSN_AUTOCLEAR_ENABLED (default OFF),
+  //    scoped to CorrFirst, never a false-clear, never throws.
+  try {
+    await require('../underwriting/ssn-autoclear').autoClearSsnCondition(db, appId);
+  } catch (e) {
+    console.error('[credit] SSN auto-clear (import continues):', (e && e.message) || e);
+  }
+
   return { creditReportId, xmlDocId, pdfDocId, itemId, ficoWritten, ficoMismatch, ficoUnverified };
 }
 
