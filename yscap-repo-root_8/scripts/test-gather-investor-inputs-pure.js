@@ -104,6 +104,17 @@ function mkDb({ fico, apprPresent, flood, expApp, trackAgg, staleExit, throwOn }
     // A flood-query error omits in_flood_zone and never throws.
     const outErr = await gatherInvestorInputs('app-fe', mkDb({ apprPresent: true, flood: { fema_flood_sfha: true }, throwOn: 'fema_flood_sfha' }));
     ok('a flood query error omits in_flood_zone (no throw)', !('in_flood_zone' in outErr));
+
+    // appraisal_rural (#254) — from the current appraisal's UAD neighborhood location type
+    // (same current-appraisal read). Feeds the FATAL isg_rural_property (fires only on === true).
+    const ruralOf = async (loc) => (await gatherInvestorInputs('app-r', mkDb({ apprPresent: true, flood: { nbhd_location_type: loc } }))).appraisal_rural;
+    ok('nbhd_location_type Rural → appraisal_rural true', (await ruralOf('Rural')) === true);
+    ok('nbhd_location_type Urban → appraisal_rural false', (await ruralOf('Urban')) === false);
+    ok('nbhd_location_type Suburban → appraisal_rural false', (await ruralOf('Suburban')) === false);
+    const outRuralNull = await gatherInvestorInputs('app-rn', mkDb({ apprPresent: true, flood: { nbhd_location_type: null } }));
+    ok('nbhd_location_type NULL → appraisal_rural omitted (never guessed)', !('appraisal_rural' in outRuralNull));
+    const outRuralNoAppr = await gatherInvestorInputs('app-rx', mkDb({ apprPresent: false }));
+    ok('no appraisal row → appraisal_rural omitted', !('appraisal_rural' in outRuralNoAppr));
   }
 
   // 7. CLAIMED vs VERIFIED EXPERIENCE (#251) — the FATAL isg_experience_claimed_over_verified
