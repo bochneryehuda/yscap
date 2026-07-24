@@ -178,6 +178,15 @@ async function storeImport({ file, borrower, parsed, xml, pdfBase64, request, ac
     console.error('[credit] SSN auto-clear (import continues):', (e && e.message) || e);
   }
 
+  // Refresh PILOT's ADVISORY overlay across the file's conditions (SSN + credit both change
+  // on a credit import). PILOT never signs a condition off itself — advisory only. Gated ON
+  // by default (PILOT_READY_STAMP) inside the engine; best-effort, never throws.
+  try {
+    await require('../underwriting/pilot-advice-engine').runFileAdvice(db, appId);
+  } catch (e) {
+    console.error('[credit] PILOT advisory (import continues):', (e && e.message) || e);
+  }
+
   return { creditReportId, xmlDocId, pdfDocId, itemId, ficoWritten, ficoMismatch, ficoUnverified };
 }
 
