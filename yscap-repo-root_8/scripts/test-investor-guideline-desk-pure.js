@@ -285,4 +285,25 @@ const cond = (over) => Object.assign({ cond_no: 9001, name: 'Test', domain: 'oth
   ok('lease is requested only once the appraisal proves the subject is tenant-occupied (CorrFirst) [#280]');
 }
 
+// 13. Owner-specified dispositions locked against regression (real spec conditions):
+//     #282 Final Settlement (4257) is a CLOSING-PHASE condition — surfaced as DEFERRED, NEVER an
+//     active/CTC-blocking item; #281 Non-arms-length (3333) is CONCERN-gated — silent by default,
+//     surfacing ONLY when a non_arms_length_concern signal is present (never posted on every file).
+{
+  const settlement = spec.CONDITIONS.find((x) => x.cond_no === 4257);
+  assert.strictEqual(settlement.lifecycle, 'closing_phase', 'Final Settlement is a closing-phase condition');
+  const sRes = desk.assess({ conditions: [settlement], existingByCode: new Map(), signals: {}, noteBuyerKey: 'corrfirst' });
+  assert.strictEqual(sRes.verdicts[0].verdict, V.DEFERRED, 'Final Settlement is DEFERRED (never active / never a CTC gate) [#282]');
+  assert.strictEqual(sRes.unhappy.length, 0, 'a closing-phase condition never surfaces as an unhappy/blocking item');
+  assert.strictEqual(sRes.deferred.length, 1, 'it is carried as deferred (visible, not gating)');
+
+  const nal = spec.CONDITIONS.find((x) => x.cond_no === 3333);
+  assert.strictEqual(nal.disposition, 'concern', 'Non-arms-length is concern-gated');
+  assert.strictEqual(desk.assess({ conditions: [nal], existingByCode: new Map(), signals: {}, noteBuyerKey: 'corrfirst' }).unhappy.length, 0,
+    'Non-arms-length is SILENT by default — never posted on every file [#281]');
+  assert.strictEqual(desk.assess({ conditions: [nal], existingByCode: new Map(), signals: { non_arms_length_concern: true }, noteBuyerKey: 'corrfirst' }).unhappy.length, 1,
+    'Non-arms-length surfaces ONLY when a real concern signal is present');
+  ok('owner dispositions locked: settlement is closing-phase-deferred (#282); non-arms-length is concern-only (#281)');
+}
+
 console.log(`\ninvestor-guideline desk pure — ${passed} checks passed`);
