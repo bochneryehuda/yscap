@@ -40,6 +40,7 @@ import StaffLabelingConsole from './screens/StaffLabelingConsole.jsx';
 import StaffAiAdminInbox from './screens/StaffAiAdminInbox.jsx';
 import StaffAiSilencedCodes from './screens/StaffAiSilencedCodes.jsx';
 import StaffInsightsDashboard from './screens/StaffInsightsDashboard.jsx';
+import StaffAiCenter from './screens/StaffAiCenter.jsx';
 import StaffArchived from './screens/StaffArchived.jsx';
 import StaffLeads from './screens/StaffLeads.jsx';
 import StaffLeadDetail from './screens/StaffLeadDetail.jsx';
@@ -147,11 +148,14 @@ export default function App() {
           <Route path="/internal/exceptions" element={<StaffPrivate><StaffExceptions /></StaffPrivate>} />
           <Route path="/internal/my-exceptions" element={<StaffPrivate><StaffMyExceptions /></StaffPrivate>} />
           <Route path="/internal/findings-review" element={<StaffPrivate><StaffFindingEscalations /></StaffPrivate>} />
-          <Route path="/internal/training" element={<StaffPrivate><StaffTrainingProposals /></StaffPrivate>} />
-          <Route path="/internal/labeling" element={<StaffPrivate><StaffLabelingConsole /></StaffPrivate>} />
-          <Route path="/internal/ai-inbox" element={<StaffPrivate><StaffAiAdminInbox /></StaffPrivate>} />
-          <Route path="/internal/ai-silenced-codes" element={<StaffPrivate><StaffAiSilencedCodes /></StaffPrivate>} />
-          <Route path="/internal/insights" element={<StaffPrivate><StaffInsightsDashboard /></StaffPrivate>} />
+          {/* AI Command Center — the one hub for everything AI (owner-directed 2026-07-24). */}
+          <Route path="/internal/ai" element={<StaffPrivate><StaffAiCenter /></StaffPrivate>} />
+          {/* Old scattered AI routes now redirect into the hub (keeps emails/bookmarks working). */}
+          <Route path="/internal/training" element={<Navigate to="/internal/ai?tab=training" replace />} />
+          <Route path="/internal/labeling" element={<Navigate to="/internal/ai?tab=labeling" replace />} />
+          <Route path="/internal/ai-inbox" element={<Navigate to="/internal/ai?tab=inbox" replace />} />
+          <Route path="/internal/ai-silenced-codes" element={<Navigate to="/internal/ai?tab=silenced" replace />} />
+          <Route path="/internal/insights" element={<Navigate to="/internal/ai?tab=overview" replace />} />
           <Route path="/internal/archived" element={<StaffPrivate><StaffArchived /></StaffPrivate>} />
           <Route path="/internal/leads" element={<StaffPrivate><StaffLeads /></StaffPrivate>} />
           <Route path="/internal/leads/:id" element={<StaffPrivate><StaffLeadDetail /></StaffPrivate>} />

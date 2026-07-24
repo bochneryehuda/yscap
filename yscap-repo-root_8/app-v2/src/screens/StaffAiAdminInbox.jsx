@@ -87,7 +87,7 @@ export default function StaffAiAdminInbox() {
               <span style={{ background: 'rgba(47,127,134,.12)', color: 'var(--teal-deep,#256168)', fontSize: 10, fontWeight: 800, padding: '2px 7px', borderRadius: 6, textTransform: 'uppercase', letterSpacing: '.05em' }}>{agent}</span>
               <span style={{ fontSize: 11, color: 'var(--muted,#4B585C)' }}>{new Date(q.asked_at).toLocaleString()}</span>
               {q.application_id && (
-                <Link to={`/staff/applications/${q.application_id}`} style={{ fontSize: 11, color: 'var(--teal-deep,#256168)', marginLeft: 'auto' }}>Open file →</Link>
+                <Link to={`/internal/app/${q.application_id}`} style={{ fontSize: 11, color: 'var(--teal-deep,#256168)', marginLeft: 'auto' }}>Open file →</Link>
               )}
             </div>
             <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6, whiteSpace: 'pre-wrap' }}>{q.question}</div>

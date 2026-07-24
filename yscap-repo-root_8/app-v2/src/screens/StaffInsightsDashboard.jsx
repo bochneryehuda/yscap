@@ -197,10 +197,10 @@ export default function StaffInsightsDashboard() {
           <div key={r.application_id} style={{ display: 'flex', gap: 10, padding: '4px 0', borderBottom: '1px dashed var(--paper,#E9E4D3)', fontSize: 12, alignItems: 'center' }}>
             <span style={{ minWidth: 70, color: tint, fontWeight: 700 }}>{days >= 1 ? `${days}d old` : '<1d'}</span>
             <span style={{ flex: 1, minWidth: 0 }}>
-              <Link to={`/staff/applications/${r.application_id}`} style={{ color: 'var(--teal-deep,#256168)' }}>{addr}</Link>
+              <Link to={`/internal/app/${r.application_id}`} style={{ color: 'var(--teal-deep,#256168)' }}>{addr}</Link>
               {' — '}<span style={{ color: 'var(--muted,#4B585C)' }}>{r.first_name} {r.last_name} · {r.program || 'no program'} · {r.app_status}</span>
             </span>
-            <Link to={`/staff/applications/${r.application_id}?focus=ai-findings`}
+            <Link to={`/internal/app/${r.application_id}?focus=ai-findings`}
               title="Jump to the AI Findings panel on this file"
               style={{ fontSize: 10.5, padding: '2px 6px', borderRadius: 8, border: `1px solid ${tint}`, color: tint, textDecoration: 'none', fontWeight: 700, whiteSpace: 'nowrap' }}>
               Review AI →
@@ -218,7 +218,7 @@ export default function StaffInsightsDashboard() {
           {' · '}<b>{SOURCE_LABEL[r.source] || r.source}</b>
           {' · '}<span style={{ color: 'var(--teal-deep,#256168)' }}>{r.status.replace(/_/g, ' ')}</span>
           {' · '}<span>{r.title}</span>
-          {r.application_id && <Link to={`/staff/applications/${r.application_id}`} style={{ marginLeft: 6, fontSize: 11 }}>open file →</Link>}
+          {r.application_id && <Link to={`/internal/app/${r.application_id}`} style={{ marginLeft: 6, fontSize: 11 }}>open file →</Link>}
         </div>
       ))}
     </div>
@@ -395,7 +395,7 @@ function FilesLink({ bucket }) {
           {rows.length === 0 && <div style={{ fontSize: 11, color: 'var(--muted,#4B585C)' }}>No open files match.</div>}
           {rows.map((f) => (
             <div key={f.application_id + '|' + f.created_at} style={{ fontSize: 11, padding: '2px 0' }}>
-              <Link to={`/staff/applications/${f.application_id}`} style={{ color: 'var(--teal-deep,#256168)' }}>
+              <Link to={`/internal/app/${f.application_id}`} style={{ color: 'var(--teal-deep,#256168)' }}>
                 {(f.property_address && (f.property_address.line1 || f.property_address.address)) || f.application_id.slice(0, 8)}
               </Link>
               {' — '}{f.first_name} {f.last_name}

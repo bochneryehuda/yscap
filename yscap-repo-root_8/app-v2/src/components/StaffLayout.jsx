@@ -432,10 +432,9 @@ export default function StaffLayout({ children }) {
           {escCount > 0 && <span className="sb-badge">{escCount > 99 ? '99+' : escCount}</span>}</NavLink>}
         {(canManagePricing || role === 'super_admin') && <NavLink className="sb-link" to="/internal/exceptions" title="Exceptions — approve or deny requests to make an exception to a loan policy (today: waiving a co-borrower's personal guarantee)"><NavIcon name="conditions" />Exceptions
           {excCount > 0 && <span className="sb-badge">{excCount > 99 ? '99+' : excCount}</span>}</NavLink>}
-        {(canManagePricing || role === 'super_admin') && <NavLink className="sb-link" to="/internal/training" title="Training proposals — candidate improvements PILOT learned from underwriter corrections; approve, shadow-test, or reject each one"><NavIcon name="conditions" />Training</NavLink>}
-        {role === 'super_admin' && <NavLink className="sb-link" to="/internal/labeling" title="AI labeling console — tag past documents to train the classifier and per-type field readers"><NavIcon name="conditions" />AI labeling</NavLink>}
-        {role === 'super_admin' && <NavLink className="sb-link" to="/internal/ai-inbox" title="AI questions inbox — the AI asks here when it's unsure; your answer feeds its learning"><NavIcon name="conditions" />AI inbox</NavLink>}
-        {(role === 'admin' || role === 'super_admin') && <NavLink className="sb-link" to="/internal/insights" title="Sovereign Insights — portfolio-wide view of everything the AI has surfaced across all files"><NavIcon name="conditions" />Insights</NavLink>}
+        {(role === 'admin' || role === 'super_admin') && <NavLink className="sb-link" to="/internal/ai" title="AI Command Center — one place to see everything PILOT flagged, review findings, answer PILOT's questions, and teach it (training, labeling, muted alerts)">
+          <NavIcon name="conditions" />AI Command Center
+          {fescCount > 0 && <span className="sb-badge">{fescCount > 99 ? '99+' : fescCount}</span>}</NavLink>}
         {canPlatformSetup && <NavLink className="sb-link" to="/internal/api-health" title="API Health — every integration & API: live or down, what it needs, and a one-click test"><NavIcon name="health" />API Health</NavLink>}
         {canPlatformSetup && <NavLink className="sb-link" to="/internal/clickup" title="ClickUp Control Center — sync health, dry-run, backfill"><NavIcon name="clickup" />ClickUp</NavLink>}
         {canPlatformSetup && <NavLink className="sb-link" to="/internal/draw-rules" title="Inspection & fee rules — virtual vs on-site and the per-partner fee schedule for draws"><NavIcon name="pipeline" />Draw rules</NavLink>}
