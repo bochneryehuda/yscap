@@ -4261,10 +4261,6 @@ async function signOffGate(itemId, actor) {
   const reg = (await db.query(
     `SELECT inputs, quote, program FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`,
     [item.application_id])).rows[0] || null;
-  const money = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('en-US');
-  // Exact match to the cent (owner-directed): the Scope of Work must equal the
-  // file budget and the registered product budget EXACTLY, not just to the dollar.
-  const eq = (a, c) => Math.round((Number(a) || 0) * 100) === Math.round((Number(c) || 0) * 100);
 
   if (isProduct) {
     if (!reg) return 'Register a product first — this condition can only be signed off once a product is registered on the file in the Term Sheet Studio.';
@@ -4272,20 +4268,16 @@ async function signOffGate(itemId, actor) {
   }
   if (isBudget) {
     if (!reg) return 'Register a product first — the rehab budget must match the registered product before this can be signed off.';
-    const sowTotal = item.tool_payload && item.tool_payload.total != null ? Number(item.tool_payload.total) : null;
-    if (sowTotal == null) return 'The Scope of Work / rehab budget has not been submitted yet.';
-    const appBudget = Number(app.rehab_budget) || 0;
-    const regBudget = reg.inputs && reg.inputs.rehabBudget != null ? Number(reg.inputs.rehabBudget) : null;
-    // The FIRST-PAGE construction budget on the SOW (state.target) — prefilled
-    // from the application ("the total you start at originally"). When set it must
-    // ALSO equal the budget exactly, so the number you start at, the line-item
-    // total, the file budget and the product budget all agree (owner-directed
-    // 2026-07-10 belt-and-suspenders).
-    const fpTarget = require('../lib/rehab-budget').firstPageBudget(item.tool_payload);
-    const fpSet = fpTarget != null && fpTarget > 0;
-    if (!eq(sowTotal, appBudget) || (regBudget != null && !eq(appBudget, regBudget)) || (fpSet && !eq(fpTarget, appBudget))) {
-      return `Budgets do not match — first-page construction budget ${fpSet ? money(fpTarget) : '—'}, Scope of Work line-item total ${money(sowTotal)}, file budget ${money(appBudget)}${regBudget != null ? `, registered product budget ${money(regBudget)}` : ''}. They must ALL agree to the cent before sign-off: adjust the Scope of Work (start total + line items) or re-register the product so the numbers match.`;
-    }
+    // First-page construction budget, SOW line-item total, file budget and the
+    // registered product budget must ALL agree to the cent (owner-directed
+    // 2026-07-10 belt-and-suspenders). The comparison, the comma/"$"-tolerant
+    // parsing AND the cent-precise mismatch message (which names exactly which
+    // number is off and by how much) live in ONE place — rehab-budget.js
+    // budgetSignoffCheck — so the check and its explanation can never use
+    // different precision again (owner-reported 2026-07-24: a cents-level gap
+    // printed four identical dollar-rounded "$120,000" figures).
+    const budgetMsg = require('../lib/rehab-budget').budgetSignoffCheck(item.tool_payload, app.rehab_budget, reg.inputs);
+    if (budgetMsg) return budgetMsg;
     // 5% construction contingency requirement (owner-directed 2026-07-12; extended
     // 2026-07-20): the Scope of Work must carry a >= 5% contingency when the file
     // is registered Gold OR its note buyer is Blue Lake. The budget still matches
