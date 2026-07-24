@@ -109,7 +109,9 @@ async function siteIntake(p, opts = {}) {
     }
     // 2) resolve loan officer (by email or name) -> may be null (Lead Capture)
     if (p.loOfficerEmail || p.loanOfficerEmail) {
-      const o = await client.query(`SELECT id,full_name FROM staff_users WHERE email=$1 AND is_active=true`,
+      // Case-insensitive: the site's branded links carry "Yehuda@…"-style
+      // casing; the routing must not silently fall to Lead Capture over case.
+      const o = await client.query(`SELECT id,full_name FROM staff_users WHERE lower(email)=lower($1) AND is_active=true`,
         [p.loOfficerEmail || p.loanOfficerEmail]);
       if (o.rows[0]) { officerId = o.rows[0].id; officerName = o.rows[0].full_name; }
     } else if (officerName) {
@@ -273,10 +275,28 @@ async function siteIntake(p, opts = {}) {
           body: `${p.firstName || p.b1First || 'A borrower'} — ${addr}`, applicationId: appId,
           link: `/internal/app/${appId}` });
       } else {
-        await notify.notifyAdmins({
+        // No officer picked (owner-directed 2026-07-24): the SALES desk inbox
+        // gets the email; admins keep their in-app rows (no email blast). The
+        // file still lands in Lead Capture for assignment exactly as before.
+        // With no sales inbox configured, the legacy admin fan-out applies.
+        const unassignedOpts = {
           type: 'unassigned_application', title: 'New application needs assignment (Lead Capture)',
           body: `${p.firstName || p.b1First || 'A borrower'} — ${addr}`, applicationId: appId,
-          link: `/internal` });
+          link: `/internal` };
+        if (cfg.salesNotifyTo) {
+          // Same file-identity subject suffix the admin emails get via enrichment.
+          const built = notify.buildEmail({
+            ...unassignedOpts,
+            subjectTag: [`${p.firstName || p.b1First || ''} ${p.lastName || p.b1Last || ''}`.trim(), addr].filter(Boolean).join(' · '),
+          }, 'staff');
+          await require('../lib/email').sendMail({
+            to: [cfg.salesNotifyTo], subject: built.subject, text: built.text, html: built.html,
+            replyTo: (p.email || p.b1Email || null), _ctx: { type: 'unassigned_application', audience: 'staff' },
+          }).catch(() => {});
+          await notify.notifyAdmins({ ...unassignedOpts, inAppOnly: true });
+        } else {
+          await notify.notifyAdmins(unassignedOpts);
+        }
       }
     } catch (followUpErr) { console.error('[intake] post-commit follow-up failed:', db.describeError(followUpErr)); }
   }

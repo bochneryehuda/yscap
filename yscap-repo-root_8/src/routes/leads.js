@@ -54,13 +54,14 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  */
 const LOW_SIGNAL_TOOLS = new Set(['subscribe', 'dscr_waitlist']);
 // Tools allowed to land WITHOUT any visitor contact info (owner-directed
-// 2026-07-24): a term-sheet generation notifies the sales desk with the exact
-// terms even when the visitor left no email/phone (we ASK for contact right
-// after, but it is never a requirement). Contact-less submissions must carry a
-// valid form token (proof-of-page-visit + dwell) — a blind bot never has one.
+// 2026-07-24): a term-sheet generation notifies our team with the exact terms
+// even when the visitor left no email/phone (we ASK for contact right after,
+// but it is never a requirement). Contact-less submissions must carry a valid
+// form token (proof-of-page-visit + dwell) — a blind bot never has one.
 const CONTACTLESS_TOOLS = new Set(['term_sheet_generated']);
-// Tools the SALES desk is always told about, even when an officer is routed
-// (owner-directed 2026-07-24): every term-sheet event goes to sales.
+// Term-sheet events carry their own descriptive subject line (used as the
+// notification title so the inbox shows EXACTLY what was generated). Routing
+// is the same for every tool — see the owner-directed rule below.
 const SALES_TOOLS = new Set(['term_sheet', 'term_sheet_generated', 'term_sheet_exception']);
 const MX_CHECK = process.env.LEADS_MX_CHECK !== '0';
 const cryptoLib = require('crypto');
@@ -250,19 +251,21 @@ router.post('/', async (req, res) => {
       attachments: atts, files: atts.map(a => a.filename),
     };
 
-    // Notify: the routed officer gets their lead (unchanged), the SALES desk
-    // gets every term-sheet event AND every unrouted content submission
-    // (owner-directed 2026-07-24: "general goes to sales" — a track record /
-    // rehab budget / contact with no picked officer lands in the sales inbox,
-    // not the whole admin desk), and a SUBSCRIPTION stays a single quiet email
-    // to pilot@ (owner-directed 2026-07-15). Admins keep their in-app Leads
-    // desk rows for unrouted leads without the email fan-out; if no sales
-    // inbox is configured (SALES_NOTIFY_TO="") the legacy admin-desk fan-out
-    // still applies so an unrouted lead is never silent.
+    // Notify — the owner's routing rule (owner-directed 2026-07-24, refined):
+    //   • An officer was picked (branded ?lo= link or an explicit selection) →
+    //     it goes to THAT officer's email, and ONLY that officer. Every tool.
+    //   • No officer → the SALES desk inbox. Every content tool (a track
+    //     record / rehab budget / term sheet / quote / contact with nobody
+    //     picked lands at sales, not the whole admin desk).
+    //   • A SUBSCRIPTION stays a single quiet email to pilot@ (owner-directed
+    //     2026-07-15). Admins keep their in-app Leads-desk rows for unrouted
+    //     leads without the email fan-out; if no sales inbox is configured
+    //     (SALES_NOTIFY_TO="") the legacy admin-desk fan-out still applies so
+    //     an unrouted lead is never silent.
     try {
       const mailer = require('../lib/email');
       const salesTo = cfg.salesNotifyTo;
-      const wantsSales = !!salesTo && (SALES_TOOLS.has(tool) || (!officerId && !LOW_SIGNAL_TOOLS.has(tool)));
+      const wantsSales = !!salesTo && !officerId && !LOW_SIGNAL_TOOLS.has(tool);
       if (officerId) { await notify.notifyStaff(officerId, { ...notifyOpts, emailTo: officerRow.email }); }
       if (wantsSales) {
         const built = notify.buildEmail(notifyOpts, 'staff');
@@ -275,7 +278,7 @@ router.post('/', async (req, res) => {
           _ctx: { type: 'new_lead', audience: 'staff' },
         }).catch(() => {});
         // Admins keep their in-app Leads-desk rows (badge/count), no email blast.
-        if (!officerId) await notify.notifyAdmins({ ...notifyOpts, inAppOnly: true });
+        await notify.notifyAdmins({ ...notifyOpts, inAppOnly: true });
       } else if (!officerId) {
         if (tool === 'subscribe') {
           const built = notify.buildEmail(notifyOpts, 'staff');
@@ -365,11 +368,12 @@ router.post('/contact', async (req, res) => {
         ],
         link: '/internal/leads', ctaLabel: 'Open leads',
       };
+      // Same routing rule as the submission itself: the routed officer owns it;
+      // sales only hears about unrouted visitors.
       if (lead.officer_id) {
         const o = await db.query(`SELECT email FROM staff_users WHERE id=$1`, [lead.officer_id]);
         await notify.notifyStaff(lead.officer_id, { ...notifyOpts, emailTo: o.rows[0]?.email });
-      }
-      if (cfg.salesNotifyTo) {
+      } else if (cfg.salesNotifyTo) {
         const built = notify.buildEmail(notifyOpts, 'staff');
         await require('../lib/email').sendMail({
           to: [cfg.salesNotifyTo], subject: built.subject, text: built.text, html: built.html,

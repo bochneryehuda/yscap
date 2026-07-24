@@ -1198,7 +1198,29 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
         .catch(function () {});
     } catch (e) {}
   })();
+  // A loan-officer-branded link (?lo=) LOCKS the recipient: the application
+  // always routes to that officer and no other choice is offered at all
+  // (owner-directed 2026-07-24). The whole officer panel collapses to a
+  // "goes straight to <name>" note; every submit path reads selectedOfficer(),
+  // so the lock covers the application, the manual-review request, the review
+  // screen and the confirmation copy in one place.
+  var BRANDED_OFFICER = null;
+  (function lockBrandedOfficer() {
+    var ob = window.YSBRAND || null;
+    if (!ob || !ob.email) return;
+    BRANDED_OFFICER = { name: ob.name || ob.email, title: ob.role || "", email: ob.email };
+    var sel = el("loOfficerSel");
+    var panel = sel && sel.closest(".panel");
+    if (!panel) return;
+    var tog = el("hasOfficer"), togCard = tog && tog.closest(".toggle-card");
+    if (togCard) togCard.style.display = "none";
+    var fld = sel.closest(".field"); if (fld) { fld.classList.add("hidden"); fld.removeAttribute("data-cond"); }
+    var note = panel.querySelector(".panel-note");
+    if (note) note.innerHTML = "This application goes straight to <b>" + esc(BRANDED_OFFICER.name) +
+      (BRANDED_OFFICER.title ? " — " + esc(BRANDED_OFFICER.title) : "") + "</b>, who will follow up with you personally.";
+  })();
   function selectedOfficer() {
+    if (BRANDED_OFFICER) return BRANDED_OFFICER;
     var i = parseInt(val("loOfficer"), 10);
     return (i >= 0 && CURRENT_OFFICERS[i]) ? CURRENT_OFFICERS[i] : null;
   }

@@ -1051,16 +1051,24 @@ const RB = (function(){
   function openEmailPicker(){
     let ov=document.getElementById("rb-emailov"); if(ov) ov.remove();
     ov=document.createElement("div"); ov.id="rb-emailov"; ov.className="rb-ov";
+    // A loan-officer-branded link (?lo=) ALWAYS sends to that officer — no
+    // recipient choice is offered at all (owner-directed 2026-07-24). On the
+    // default site: "General" (the sales desk) first, then the live roster.
+    const ob=window.YSBRAND||{};
+    const branded=!!(ob&&ob.email);
     const roster=TEAM_LIVE||TEAM;
-    // "General" first (owner-directed 2026-07-24): with no specific pick the
-    // submission goes straight to the YS Capital sales desk.
     const general='<div class="rb-ov-group">Not sure who?</div><div class="rb-ov-people">'+
       '<button class="rb-ov-person" data-e="" data-n="the YS Capital sales desk"><span class="rb-ov-nm">General — YS Capital sales desk</span><span class="rb-ov-rl">We\'ll route it for you</span></button></div>';
-    const groups=general+roster.map(g=>'<div class="rb-ov-group">'+esc(g.g)+'</div><div class="rb-ov-people">'+
-      g.people.map(p=>'<button class="rb-ov-person" data-e="'+esc(p.e)+'" data-n="'+esc(p.n)+'"><span class="rb-ov-nm">'+esc(p.n)+'</span><span class="rb-ov-rl">'+esc(p.r)+'</span></button>').join("")+'</div>').join("");
+    const groups=branded
+      ? '<div class="rb-ov-group">Going to</div><div class="rb-ov-people">'+
+        '<button class="rb-ov-person" data-e="'+esc(ob.email)+'" data-n="'+esc(ob.name||ob.email)+'"><span class="rb-ov-nm">Send to '+esc(ob.name||ob.email)+' →</span><span class="rb-ov-rl">'+esc(ob.role||"Your YS Capital loan officer")+'</span></button></div>'
+      : general+roster.map(g=>'<div class="rb-ov-group">'+esc(g.g)+'</div><div class="rb-ov-people">'+
+        g.people.map(p=>'<button class="rb-ov-person" data-e="'+esc(p.e)+'" data-n="'+esc(p.n)+'"><span class="rb-ov-nm">'+esc(p.n)+'</span><span class="rb-ov-rl">'+esc(p.r)+'</span></button>').join("")+'</div>').join("");
     ov.innerHTML='<div class="rb-ov-box"><button class="rb-ov-x" aria-label="Close">✕</button>'+
       '<h3>Send your scope of work</h3>'+
-      '<p>Add your details, then pick who to send it to — it goes straight to our team with the PDF &amp; Excel attached, and they\'ll follow up with you.</p>'+
+      '<p>'+(branded
+        ? 'Add your details — it goes straight to '+esc(ob.name||"your loan officer")+' with the PDF &amp; Excel attached, and they\'ll follow up with you.'
+        : 'Add your details, then pick who to send it to — it goes straight to our team with the PDF &amp; Excel attached, and they\'ll follow up with you.')+'</p>'+
       '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px">'+
         '<input id="rb-em-name" placeholder="Your name" autocomplete="name" style="flex:1;min-width:140px;padding:10px 12px;border:1px solid var(--line,#d8d2c4);border-radius:8px;font-size:16px">'+
         '<input id="rb-em-email" type="email" placeholder="Your email" autocomplete="email" style="flex:1;min-width:140px;padding:10px 12px;border:1px solid var(--line,#d8d2c4);border-radius:8px;font-size:16px">'+

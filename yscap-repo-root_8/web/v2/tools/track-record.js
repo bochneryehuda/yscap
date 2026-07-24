@@ -675,27 +675,36 @@ const TR=(function(){
   function esc2(s){ return String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
   async function emailToOfficer(btn){
     save();
-    const groups=await loadRoster();
     const ob=window.YSBRAND||{};
-    const brandedEmail=(ob.email||"").toLowerCase();
+    // A loan-officer-branded link (?lo=) ALWAYS sends to that officer — no
+    // recipient choice is offered at all (owner-directed 2026-07-24). Only the
+    // default, unbranded site shows the pick-an-officer / sales-desk list.
+    const branded=!!(ob&&ob.email);
+    const groups=branded?[]:await loadRoster();
     let ov=document.getElementById("tr-sendov"); if(ov) ov.remove();
     ov=document.createElement("div"); ov.id="tr-sendov";
     ov.style.cssText="position:fixed;inset:0;background:rgba(10,14,17,.55);z-index:220;display:flex;align-items:center;justify-content:center;padding:16px";
     const peopleBtns=(gs)=>gs.map(g=>'<div style="font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;opacity:.65;margin:12px 0 6px">'+esc2(g.g)+'</div>'+
       '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:6px">'+
-      g.people.map(p=>'<button type="button" class="tr-send-person" data-e="'+esc2(p.e)+'" data-n="'+esc2(p.n)+'" style="text-align:left;padding:9px 11px;border:1px solid '+(brandedEmail&&p.e.toLowerCase()===brandedEmail?"var(--teal,#2F7F86)":"var(--line,#d8d2c4)")+';border-radius:8px;background:transparent;cursor:pointer"><span style="display:block;font-weight:600">'+esc2(p.n)+'</span><span style="display:block;font-size:.78rem;opacity:.7">'+esc2(p.r)+'</span></button>').join("")+'</div>').join("");
+      g.people.map(p=>'<button type="button" class="tr-send-person" data-e="'+esc2(p.e)+'" data-n="'+esc2(p.n)+'" style="text-align:left;padding:9px 11px;border:1px solid var(--line,#d8d2c4);border-radius:8px;background:transparent;cursor:pointer"><span style="display:block;font-weight:600">'+esc2(p.n)+'</span><span style="display:block;font-size:.78rem;opacity:.7">'+esc2(p.r)+'</span></button>').join("")+'</div>').join("");
+    const recipients=branded
+      ? '<div style="margin:12px 0 0;padding:10px 12px;border:1px solid var(--teal,#2F7F86);border-radius:8px"><span style="display:block;font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;opacity:.65">Going to</span><span style="display:block;font-weight:600">'+esc2(ob.name||ob.email)+'</span>'+(ob.role?'<span style="display:block;font-size:.78rem;opacity:.7">'+esc2(ob.role)+'</span>':'')+'</div>'+
+        '<div style="margin-top:10px"><button type="button" class="tr-send-person" data-e="'+esc2(ob.email)+'" data-n="'+esc2(ob.name||ob.email)+'" style="width:100%;padding:11px 12px;border:0;border-radius:8px;background:var(--teal,#2F7F86);color:#fff;font-weight:700;cursor:pointer">Send to '+esc2((ob.name||"my loan officer").split(" ")[0])+' →</button></div>'
+      : '<div style="font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;opacity:.65;margin:12px 0 6px">Not sure who?</div>'+
+        '<div><button type="button" class="tr-send-person" data-e="" data-n="the YS Capital sales desk" style="text-align:left;width:100%;padding:9px 11px;border:1px solid var(--gold,#AE8746);border-radius:8px;background:transparent;cursor:pointer"><span style="display:block;font-weight:600">General — YS Capital sales desk</span><span style="display:block;font-size:.78rem;opacity:.7">We\'ll route it for you</span></button></div>'+
+        (groups.length?peopleBtns(groups):'<p style="opacity:.7;margin:10px 0 0">Team list unavailable right now — the sales desk option above still works.</p>');
     ov.innerHTML='<div style="background:var(--card,#fff);color:inherit;max-width:640px;width:100%;max-height:86vh;overflow:auto;border-radius:14px;padding:18px 20px;position:relative">'+
       '<button type="button" id="tr-send-x" aria-label="Close" style="position:absolute;top:10px;right:12px;border:0;background:none;font-size:1.1rem;cursor:pointer">✕</button>'+
       '<h3 style="margin:0 0 6px">Send your track record</h3>'+
-      '<p style="margin:0 0 12px;opacity:.8">It goes straight to our team with the PDF &amp; Excel attached — pick your loan officer, or send it to the sales desk and we\'ll route it.</p>'+
+      '<p style="margin:0 0 12px;opacity:.8">'+(branded
+        ? 'It goes straight to '+esc2(ob.name||"your loan officer")+' with the PDF &amp; Excel attached — they\'ll follow up with you.'
+        : 'It goes straight to our team with the PDF &amp; Excel attached — pick your loan officer, or send it to the sales desk and we\'ll route it.')+'</p>'+
       '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:0 0 4px">'+
         '<input id="tr-send-name" placeholder="Your name" autocomplete="name" value="'+esc2(S.borrower||"")+'" style="flex:1;min-width:140px;padding:10px 12px;border:1px solid var(--line,#d8d2c4);border-radius:8px;font-size:16px">'+
         '<input id="tr-send-email" type="email" placeholder="Your email (required)" autocomplete="email" style="flex:1;min-width:140px;padding:10px 12px;border:1px solid var(--line,#d8d2c4);border-radius:8px;font-size:16px">'+
         '<input id="tr-send-phone" type="tel" placeholder="Your phone (optional)" autocomplete="tel" style="flex:1;min-width:140px;padding:10px 12px;border:1px solid var(--line,#d8d2c4);border-radius:8px;font-size:16px">'+
       '</div>'+
-      '<div style="font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;opacity:.65;margin:12px 0 6px">Not sure who?</div>'+
-      '<div><button type="button" class="tr-send-person" data-e="" data-n="the YS Capital sales desk" style="text-align:left;width:100%;padding:9px 11px;border:1px solid var(--gold,#AE8746);border-radius:8px;background:transparent;cursor:pointer"><span style="display:block;font-weight:600">General — YS Capital sales desk</span><span style="display:block;font-size:.78rem;opacity:.7">We\'ll route it for you</span></button></div>'+
-      (groups.length?peopleBtns(groups):'<p style="opacity:.7;margin:10px 0 0">Team list unavailable right now — the sales desk option above still works.</p>')+
+      recipients+
       '</div>';
     document.body.appendChild(ov); document.body.style.overflow="hidden";
     const close=()=>{ ov.remove(); document.body.style.overflow=""; document.removeEventListener("keydown",onKey); };
