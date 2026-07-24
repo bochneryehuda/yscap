@@ -111,6 +111,36 @@ assert.ok(drift.some((d) => d.key === 'purchase_price' && d.from === 400000 && d
 assert.ok(!drift.some((d) => d.key === 'borrower_name'), 'a non-priced discrepancy is not treated as priced-input drift');
 ok('pricedDrift derives stale from priced-field context discrepancies (casing-agnostic, audit fix)');
 
+// --- #264: an APPRAISAL value differing from the priced/pro-forma value is ADVISORY, NOT a
+//     whole-run DATA_CONFLICT or STALE. The appraisal is an independent observation the appraisal
+//     desk evaluates (asis_mismatch/arv_mismatch); the #248 appraisal candidate on as_is_value/arv
+//     must not false-flip healthy files. A genuine application/registration change still flags. ---
+{
+  // pricedDrift: an appraisal-ONLY conflict on a priced field is not stale input.
+  const apprOnly = runInternals.pricedDrift({ discrepancies: [
+    { field: 'arv', governing: { source: 'pricing_engine', value: 600000 }, conflicts: [{ source: 'appraisal', value: 620000 }] },
+  ] });
+  assert.strictEqual(apprOnly.length, 0, 'an appraisal-only difference on a priced field is NOT priced-input drift');
+  // a mixed discrepancy (application AND appraisal) still counts, via the pricing-input conflict.
+  const mixed = runInternals.pricedDrift({ discrepancies: [
+    { field: 'arv', governing: { source: 'pricing_engine', value: 600000 }, conflicts: [{ source: 'appraisal', value: 620000 }, { source: 'application', value: 650000 }] },
+  ] });
+  assert.strictEqual(mixed.length, 1, 'a real application drift still counts even when the appraisal also differs');
+  assert.strictEqual(mixed[0].to, 650000, 'drift uses the pricing-input (application) value, not the appraisal observation');
+
+  // assembleRun: an appraisal arv above the priced arv → still ELIGIBLE, no false drift/conflict.
+  const a = { ...app };                              // app.arv === 600000 (matches the priced arv)
+  const r = { ...reg };                              // reg.inputs.arv === 600000 (governing)
+  const ctxA = wlc.assembleContext({ application: a, registration: r, appraisal: { as_is_value: 400000, arv_value: 620000 } });
+  assert.ok((ctxA.discrepancies || []).some((d) => d.field === 'arv'), 'the appraisal arv disagreement is recorded (advisory) in the context');
+  const outA = run.assembleRun({ context: ctxA, registration: r, programDecision: pa.fromRegistration(r, { missingRequired: !ctxA.ready }) });
+  assert.strictEqual(outA.status, 'ELIGIBLE', 'an appraisal-only value difference does NOT make the run DATA_CONFLICT/STALE');
+  assert.strictEqual(outA.ctcEligible, true, 'an appraisal-only value difference does NOT block CTC');
+  assert.strictEqual(outA.fundingEligible, true, 'an appraisal-only value difference does NOT block funding');
+  assert.ok(!outA.findings.some((f) => f.code === 'registration_input_drift'), 'no spurious priced-input-drift finding from the appraisal');
+  ok('an appraisal value differing from the priced value is advisory (no false DATA_CONFLICT / STALE / drift) [#264]');
+}
+
 // --- Fix 2026-07-23 (#209): caps nested at quote.guidelines.caps (the REAL
 // persisted shape from pricing.quoteProgram) drive the ledger — previously only
 // the fixture-only top-level quote.caps was read, so every cap arrived null and
