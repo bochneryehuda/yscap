@@ -496,6 +496,11 @@ export const api = {
   fileGuidelineEvaluation:   (appId) => req('GET', `/api/underwriting/${appId}/guideline-evaluation`),
   // ISG — Investor-Specific Soft Guidelines desk (per note-buyer condition verdicts + conflicts).
   fileInvestorGuidelines:    (appId) => req('GET', `/api/underwriting/${appId}/investor-guidelines`),
+  // ISG AI satisfaction-quality check — asks the grounded GPT brain whether each SATISFIED
+  // note-buyer condition's cleared evidence actually meets the investor's exact rule. On-demand
+  // (staff clicks), env-gated + cost-capped, advisory only. Returns immediately; advisories land
+  // in the AI suggestions panel on its next refresh.
+  aiVerifyInvestorGuidelines: (appId) => req('POST', `/api/underwriting/${appId}/investor-guidelines/ai-verify`, {}),
   fileAvmConsensusVerify:    (appId) => req('POST', `/api/underwriting/${appId}/avm-consensus/verify`, {}),
   // AI Suggestions panel (R3.5/R3.6 — owner-directed 2026-07-22).
   aiSuggestionsList:      (appId, params = {}) => {
