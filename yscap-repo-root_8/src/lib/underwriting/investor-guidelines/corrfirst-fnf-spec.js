@@ -122,6 +122,7 @@ const CONDITIONS = [
     checks: [S('Maximum seller concession is 6% of the sale price', true), S('3% for Swifty50 Mixed-Use or Multifamily 5+ units', true)],
     clears_by: 'system_field_check', pilot_template_code: null, match_quality: 'new', source_row: 18 },
   { cond_no: 1018, name: 'LEASE (IF PROPERTY IS TENANT OCCUPIED)', domain: 'lease_rent', scope: 'note_buyer', lifecycle: 'active_now', trigger: T.tenant_occupied,
+    disposition: 'appraisal', concern_field: 'tenant_occupied',
     required_evidence: 'Current rental agreement/lease; management agreement if a refinance and the landlord on the lease does not match the borrower/guarantor; a Rent Roll is acceptable if 10+ units.',
     checks: [S('Lease is current, valid, and pertains to the subject property')], clears_by: 'document_upload', pilot_template_code: null, match_quality: 'new', source_row: 19 },
   { cond_no: 2454, name: 'PLEDGE AND SECURITY AGREEMENT', domain: 'closing_docs', scope: 'all_note_buyers', lifecycle: 'hold_attorney_closing', trigger: T.ny_only,
