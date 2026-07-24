@@ -161,6 +161,32 @@ function injectOpenPixel(html, notifId) {
   } catch (_) { return html; }
 }
 
+// In-flight email fan-out promises. Email delivery is fire-and-forget in production
+// (the call sites below don't await it, so a web request never waits on an email).
+// We track those promises here ONLY so a test harness can await them before it tears
+// down the shared DB pool: without a drain, the detached sent_emails INSERT / status
+// UPDATE can lose the race with the test's pool.end() ("Cannot use a pool after
+// calling end") or a cleanup DELETE (a sent_emails → notifications foreign-key error).
+// Production never calls drainEmails(); the Set self-empties as each send settles.
+const _inflight = new Set();
+function _track(p) {
+  _inflight.add(p);
+  const done = () => _inflight.delete(p);
+  // then(done, done): remove on BOTH fulfill and reject, and never re-throw here — the
+  // original promise `p` is returned so the call site's own .catch() still applies.
+  p.then(done, done);
+  return p;
+}
+// Test-only: resolve once every currently in-flight email fan-out has fully settled
+// (including its sent_emails capture). Loops so a send that spawns a follow-up is
+// still awaited; bounded so it can never hang. A no-op when nothing is in flight.
+async function drainEmails() {
+  for (let i = 0; i < 50 && _inflight.size; i++) {
+    // eslint-disable-next-line no-await-in-loop
+    await Promise.allSettled([..._inflight]);
+  }
+}
+
 async function _emailRow(id, to, opts, audience) {
   if (!to || !to.length) {
     await _mark(id, 'skipped');
@@ -220,7 +246,7 @@ async function _emailRow(id, to, opts, audience) {
     }
     // #442 draw email center: also persist the rendered email + attachment BYTES to the
     // sent_emails store that the Draw Management email view reads. Best-effort + caught.
-    _captureSentEmail(id, to, opts, audience, msg, replyTo, attachments, status).catch(() => {});
+    await _captureSentEmail(id, to, opts, audience, msg, replyTo, attachments, status).catch(() => {});
   } catch (e) {
     // This whole function is fire-and-forget (call sites at #364/#616 don't await it),
     // so ANY throw here becomes an unhandled rejection that crashes the process (the two
@@ -233,7 +259,7 @@ async function _emailRow(id, to, opts, audience) {
       await db.query(`UPDATE notifications SET email_status='error', email_error=$2 WHERE id=$1`, [id, String(e.message).slice(0, 400)]);
     } catch (_) { /* pool closed / DB unreachable — nothing more we can do here */ }
     // still capture what we tried to send (the reader shows why it failed) — best-effort.
-    try { const msg = buildEmail(opts, audience); _captureSentEmail(id, to, opts, audience, msg, opts.replyTo || null, [], 'error').catch(() => {}); } catch (_) { /* ignore */ }
+    try { const msg = buildEmail(opts, audience); await _captureSentEmail(id, to, opts, audience, msg, opts.replyTo || null, [], 'error').catch(() => {}); } catch (_) { /* ignore */ }
   }
 }
 
@@ -370,7 +396,7 @@ async function notifyStaff(staffId, opts) {
     [staffId, opts.type, opts.title, opts.body || null, opts.applicationId || null, opts.link || null]);
   const id = rows[0].id;
   const to = emailOn ? (opts.emailTo ? [].concat(opts.emailTo) : await _staffEmail(staffId)) : [];
-  _emailRow(id, to, opts, 'staff').catch(() => {});   // fire-and-forget (marks 'skipped' when `to` is empty); never let a stray rejection crash the process
+  _track(_emailRow(id, to, opts, 'staff')).catch(() => {});   // fire-and-forget (marks 'skipped' when `to` is empty); never let a stray rejection crash the process
   return id;
 }
 
@@ -622,7 +648,7 @@ async function notifyBorrower(borrowerId, opts) {
     [borrowerId, opts.type, sopts.title, sopts.body || null, opts.applicationId || null, opts.link || null]);
   const id = rows[0].id;
   const to = pref.email ? (opts.emailTo ? [].concat(opts.emailTo) : await _borrowerEmail(borrowerId)) : [];
-  _emailRow(id, to, sopts, 'borrower').catch(() => {});   // fire-and-forget; swallow any stray rejection so it can't crash the process
+  _track(_emailRow(id, to, sopts, 'borrower')).catch(() => {});   // fire-and-forget; swallow any stray rejection so it can't crash the process
   return id;
 }
 
@@ -785,4 +811,4 @@ async function fileContext(appId, extraMeta = []) {
   } catch (_) { return null; }
 }
 
-module.exports = { notifyStaff, notifyBorrower, notifyAppBorrowers, notifyAppStaff, notifyAdmins, buildEmail, fileContext, injectOpenPixel, NOTIFY_CATEGORIES, ALWAYS_IN_APP, categoryEmailsByDefault };
+module.exports = { notifyStaff, notifyBorrower, notifyAppBorrowers, notifyAppStaff, notifyAdmins, buildEmail, fileContext, injectOpenPixel, NOTIFY_CATEGORIES, ALWAYS_IN_APP, categoryEmailsByDefault, drainEmails };
