@@ -57,6 +57,11 @@ const TYPES = {
     internalStatus: null, gate: 'funded', assigns: false,
     helper: 'Sends this funded file to the draw coordinator to set up construction draws.',
   },
+  trustpoint_import: {
+    label: 'TrustPoint Draw Entry', role: 'draw_coordinator', pointer: null,
+    internalStatus: null, gate: 'funded', assigns: false,
+    helper: 'A submitted draw on a TrustPoint-administered file (Blue Lake physical) needs to be entered into TrustPoint by hand.',
+  },
   post_closing: {
     label: 'Post-Closing / Investor Delivery', role: null, pointer: null,
     internalStatus: 'in purchase review', gate: 'funded', assigns: false, requiresPick: true,
@@ -81,6 +86,9 @@ const TYPE_KEYS = Object.keys(TYPES);
 const SLA_HOURS = {
   loan_setup: 24, processing: 48, condition_clearing: 48, clear_to_close: 24,
   closing: 72, draw_setup: 48, post_closing: 72, exception: 24, escalation: 24,
+  // A submitted draw doesn't exist in TrustPoint until a human enters it — the borrower's
+  // money clock is running, so this hand-off gets the tightest draw SLA.
+  trustpoint_import: 24,
 };
 function slaHoursFor(t) { return SLA_HOURS[t] || null; }
 
@@ -90,7 +98,8 @@ function typeConfig(t) { return TYPES[t] || null; }
 const OUTCOME_LABELS = [
   'Finished processing', 'Finished loan setup', 'Finished CTC',
   'Cleared conditions', 'Added conditions', 'Cleared exception',
-  'Finished closing', 'Finished draw setup', 'Reviewed', 'Sent back — needs more',
+  'Finished closing', 'Finished draw setup', 'Entered in TrustPoint',
+  'Reviewed', 'Sent back — needs more',
 ];
 
 // ---------------------------------------------------------------------------

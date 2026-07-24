@@ -45,6 +45,7 @@ const KICKER_OF = {
   draw_setup: 'Construction draws are open',
   draw_accepted: 'Construction draw', draw_disputed: 'Construction draw', draw_dispute_resolved: 'Draw inspection',
   draw_message: 'Message from your loan team', draw_started: 'Construction draw', draw_inbound: 'Construction draw',
+  trustpoint_import: 'Construction draw',
   sow_reallocation: 'Budget change', sow_change_request: 'Budget change',
   change_request: 'Change request', assignment: 'File assignment',
   new_application: 'New application', unassigned_application: 'Needs assignment',
@@ -415,6 +416,9 @@ const CATEGORY_OF = {
   // Sitewire draw-management events (findings delivery, accept/dispute, SOW reallocations)
   draw_findings: 'draws', draw_accepted: 'draws', draw_disputed: 'draws', draw_dispute_resolved: 'draws',
   draw_message: 'draws', draw_started: 'draws', draw_inbound: 'draws',
+  // Action-needed (a submitted draw must be hand-entered into TrustPoint) — deliberately
+  // NOT in STAFF_INAPP_TYPES, so it emails the coordinator.
+  trustpoint_import: 'draws',
   sow_reallocation: 'draws', sow_change_request: 'draws',
   // New borrower touchpoints (owner-directed 2026-07-20)
   officer_assigned: 'status_updates', all_caught_up: 'status_updates',

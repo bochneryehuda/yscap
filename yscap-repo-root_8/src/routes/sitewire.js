@@ -25,6 +25,7 @@ const rollupMod = require('../sitewire/rollup');
 const { planReallocation } = require('../sitewire/reallocation');
 const M = require('../sitewire/mapper');
 const T = require('../sitewire/transforms');
+const routing = require('../sitewire/routing');
 const rehab = require('../lib/rehab-budget');
 const { sanitizeDateOnly } = require('../lib/fields'); // strict YYYY-MM-DD validation for date inputs
 const notify = require('../lib/notify');
@@ -677,11 +678,15 @@ router.get('/files/:id/draw-setup', requirePermission('manage_draws'), async (re
       requires: { sitewire_inspector: !!(rule && rule.require_sitewire_inspector), capital_partner_approval: !!(rule && rule.require_capital_partner_approval) },
       // disagree only once a SOW exists (before that, sowUnits defaults to 1 and would falsely flag)
       units: { file: fileUnits || null, sow: hasSow ? sowUnits : null, physical: physicalUnits, disagree: hasSow && fileUnits > 0 && fileUnits !== sowUnits },
+      // Routing (phase 1, 2026-07-24): which platform administers this file's draws.
+      // 'external' = the legacy handled-externally semantics (PILOT does nothing);
+      // 'trustpoint' = full Sitewire setup as intake+mirror, approvals run in TrustPoint.
+      draw_platform: routing.platformOf(rule),
       // handled externally = this capital partner runs draws in its own system; PILOT never pushes it.
-      handled_externally: !!(rule && rule.handled_externally),
+      handled_externally: routing.isExternal(rule),
       prereqs,
       open_reviews: openReviews,
-      can_start: !(rule && rule.handled_externally) && Object.values(prereqs).every(Boolean),
+      can_start: !routing.isExternal(rule) && Object.values(prereqs).every(Boolean),
       switches: { enabled: switches.on('SITEWIRE_ENABLED'), outbound: switches.on('SITEWIRE_OUTBOUND_ENABLED'), dryrun: cfg.sitewireDryrun },
     });
   } catch (e) { console.warn('[sitewire] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
@@ -701,9 +706,10 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
     const program = /gold/i.test(String(a.registered_program || '')) ? 'gold' : 'standard';
     const cp = await orchestrator.resolveCapitalPartnerId(a.lender);
     const rule = await orchestrator.resolveRule(a.lender, cp.id, program);
-    // HANDLED EXTERNALLY: this capital partner runs its draws in its own system — the file is never
-    // pushed to Sitewire, so there is nothing to start here (never guess around the owner's rule).
-    if (rule && rule.handled_externally) {
+    // Routing (phase 1, 2026-07-24): only the legacy 'external' platform blocks the start —
+    // a 'trustpoint' file gets the FULL Sitewire setup (Sitewire is its borrower intake +
+    // mirror; approvals run in TrustPoint via the coordinator import-task flow).
+    if (routing.isExternal(rule)) {
       return res.status(422).json({ error: 'This capital partner is handled externally — its draws run in the partner\'s own system and are not pushed to Sitewire.' });
     }
     // validate a coordinator-chosen method against what the file's rule allows (never guess)
@@ -1288,23 +1294,38 @@ router.post('/rules', requirePermission('platform_setup'), async (req, res) => {
   if (partnerLabel && !cpId) {
     try { const m = await orchestrator.resolveCapitalPartnerId(partnerLabel); cpId = m.id || null; } catch (_) { cpId = null; }
   }
-  const handledExternally = !!b.handled_externally;
-  // "Handled externally" must NAME a partner. A global-default rule (no partner_label) marked
-  // handled-externally would make resolveRule's last-resort fallback return handled_externally for
-  // EVERY unmatched file — silently stopping all Sitewire pushes portfolio-wide with no park/alert.
-  // Never allow that (owner's never-guess / never-silently-drop rule); reject it up front.
-  if (handledExternally && !partnerLabel) {
-    return res.status(400).json({ error: 'Pick a specific capital partner before marking a rule “handled externally” — the global default can’t be handled externally.' });
+  // Routing (phase 1, 2026-07-24): the rule now names WHICH PLATFORM administers the
+  // partner's draws — 'sitewire' (default), 'trustpoint' (Blue Lake physical: full
+  // Sitewire setup as intake+mirror, approvals in TrustPoint), or 'external' (the legacy
+  // handled_externally semantics). Back-compat: an absent draw_platform falls back to the
+  // old handled_externally checkbox; handled_externally is derived and kept in lock-step.
+  const rawPlatform = b.draw_platform != null ? String(b.draw_platform).trim() : null;
+  if (rawPlatform && !['sitewire', 'trustpoint', 'external'].includes(rawPlatform)) {
+    return res.status(400).json({ error: 'draw_platform must be sitewire, trustpoint, or external' });
+  }
+  const drawPlatform = rawPlatform || (b.handled_externally ? 'external' : 'sitewire');
+  const handledExternally = drawPlatform === 'external';
+  // A NON-Sitewire platform must NAME a partner. A global-default rule (no partner_label)
+  // marked external/trustpoint would make resolveRule's last-resort fallback apply it to
+  // EVERY unmatched file — silently rerouting/stopping all Sitewire pushes portfolio-wide
+  // with no park/alert. Never allow that (owner's never-guess / never-silently-drop rule).
+  if (drawPlatform !== 'sitewire' && !partnerLabel) {
+    return res.status(400).json({ error: 'Pick a specific capital partner before routing a rule to TrustPoint or marking it “handled externally” — the global default must stay on Sitewire.' });
   }
   // Audit finding B-9 (2026-07-21): a rule for a partner_label that DOESN'T map to a Sitewire
-  // capital_partner_id (either directory-exact or an owner-confirmed link) AND isn't marked
-  // handled_externally used to save cp_id=NULL. Every push for that label then paused at bind-time
-  // with `sitewire_capital_partner_unmatched` — a silent trap. Reject at POST time so the coordinator
-  // fixes it here: either pick a partner from the directory / confirm a link on the /partners page,
-  // or mark the rule handled externally. Global defaults (no partner_label) don't need a cp_id.
+  // capital_partner_id (either directory-exact or an owner-confirmed link) AND isn't external
+  // used to save cp_id=NULL. Every push for that label then paused at bind-time with
+  // `sitewire_capital_partner_unmatched` — a silent trap. Reject at POST time so the coordinator
+  // fixes it here. This applies to 'trustpoint' rules too — those files STILL push to Sitewire,
+  // so the partner must resolve. Only 'external' rules (no push at all) skip the requirement.
   if (partnerLabel && !cpId && !handledExternally) {
     return res.status(400).json({ error: `We couldn't find "${partnerLabel}" in the Sitewire capital-partner directory. Either link it to a Sitewire partner on the Partners page, or check "Handled externally" if this partner isn't in Sitewire.` });
   }
+  // Dormant markup knob (owner D9 2026-07-24): stored only; no code charges it yet. Integer
+  // cents 0..$100k; blank/garbage → null (no markup), matching the physical-fee handling.
+  const mkRaw = b.markup_cents;
+  const mkNum = Number(mkRaw);
+  const markupCents = mkRaw == null || mkRaw === '' || !Number.isFinite(mkNum) || mkNum < 0 || mkNum > 10000000 ? null : Math.round(mkNum);
   const method = b.inspection_method === 'traditional' ? 'traditional' : 'mobile';
   // allow_virtual / allow_physical say which methods this program MAY use (both = coordinator can switch).
   // Default each to true when absent. Never let a rule forbid its own default method — that would leave a
@@ -1326,11 +1347,11 @@ router.post('/rules', requirePermission('platform_setup'), async (req, res) => {
   const feePhysical = pRaw == null || pRaw === '' || !Number.isFinite(pFee) || pFee < 0 ? null : Math.round(pFee);
   try {
     const row = (await db.query(
-      `INSERT INTO sitewire_inspection_rules (capital_partner_id, partner_label, program, inspection_method, require_sitewire_inspector, require_capital_partner_approval, allow_reallocation, fee_cents_virtual, fee_cents_physical, allow_virtual, allow_physical, handled_externally)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-       ON CONFLICT (regexp_replace(lower(COALESCE(partner_label,'')), '[^a-z0-9]+', '', 'g'), COALESCE(program,'')) DO UPDATE SET capital_partner_id=EXCLUDED.capital_partner_id, partner_label=COALESCE(EXCLUDED.partner_label, sitewire_inspection_rules.partner_label), inspection_method=EXCLUDED.inspection_method, require_sitewire_inspector=EXCLUDED.require_sitewire_inspector, require_capital_partner_approval=EXCLUDED.require_capital_partner_approval, allow_reallocation=EXCLUDED.allow_reallocation, fee_cents_virtual=EXCLUDED.fee_cents_virtual, fee_cents_physical=EXCLUDED.fee_cents_physical, allow_virtual=EXCLUDED.allow_virtual, allow_physical=EXCLUDED.allow_physical, handled_externally=EXCLUDED.handled_externally, updated_at=now()
+      `INSERT INTO sitewire_inspection_rules (capital_partner_id, partner_label, program, inspection_method, require_sitewire_inspector, require_capital_partner_approval, allow_reallocation, fee_cents_virtual, fee_cents_physical, allow_virtual, allow_physical, handled_externally, draw_platform, markup_cents)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+       ON CONFLICT (regexp_replace(lower(COALESCE(partner_label,'')), '[^a-z0-9]+', '', 'g'), COALESCE(program,'')) DO UPDATE SET capital_partner_id=EXCLUDED.capital_partner_id, partner_label=COALESCE(EXCLUDED.partner_label, sitewire_inspection_rules.partner_label), inspection_method=EXCLUDED.inspection_method, require_sitewire_inspector=EXCLUDED.require_sitewire_inspector, require_capital_partner_approval=EXCLUDED.require_capital_partner_approval, allow_reallocation=EXCLUDED.allow_reallocation, fee_cents_virtual=EXCLUDED.fee_cents_virtual, fee_cents_physical=EXCLUDED.fee_cents_physical, allow_virtual=EXCLUDED.allow_virtual, allow_physical=EXCLUDED.allow_physical, handled_externally=EXCLUDED.handled_externally, draw_platform=EXCLUDED.draw_platform, markup_cents=EXCLUDED.markup_cents, updated_at=now()
        RETURNING *`,
-      [cpId, partnerLabel, b.program || null, method, b.require_sitewire_inspector !== false, !!b.require_capital_partner_approval, !!b.allow_reallocation, feeVirtual, feePhysical, allowVirtual, allowPhysical, handledExternally])).rows[0];
+      [cpId, partnerLabel, b.program || null, method, b.require_sitewire_inspector !== false, !!b.require_capital_partner_approval, !!b.allow_reallocation, feeVirtual, feePhysical, allowVirtual, allowPhysical, handledExternally, drawPlatform, markupCents])).rows[0];
     res.json({ ok: true, rule: row });
   } catch (e) { console.warn('[sitewire] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });

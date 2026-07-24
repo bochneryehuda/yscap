@@ -45,6 +45,7 @@ const OUTCOME_ACTIONS = {
   'Added conditions': { internalStatus: null },
   'Cleared exception': { internalStatus: null },
   'Finished draw setup': { internalStatus: null },
+  'Entered in TrustPoint': { internalStatus: null },
   'Reviewed': { internalStatus: null },
   'Sent back — needs more': { internalStatus: null },
 };

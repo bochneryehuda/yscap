@@ -20,6 +20,7 @@ const switches = require('../lib/integrations/switches'); // runtime on/off (env
 const client = require('./client');
 const T = require('./transforms');
 const M = require('./mapper');
+const routing = require('./routing');
 const rehab = require('../lib/rehab-budget');
 
 // ---- journal every write (before/after) ----
@@ -314,7 +315,10 @@ async function pushFile(appId, opts = {}) {
   const program = /gold/i.test(String(a.registered_program || '')) ? 'gold' : 'standard';
   const cp = await resolveCapitalPartnerId(a.lender);
   const rule = await resolveRule(a.lender, cp.id, program);
-  if (rule && rule.handled_externally) return { skipped: 'handled_externally', partner: a.lender || null };
+  // Phase-1 routing (2026-07-24 blueprint): only the legacy 'external' platform skips the push.
+  // A 'trustpoint' file gets the FULL Sitewire setup — Sitewire stays the borrower intake +
+  // mirror while TrustPoint administers approvals (the coordinator import-task flow).
+  if (routing.isExternal(rule)) return { skipped: 'handled_externally', partner: a.lender || null };
 
   // G-LOAN
   if (!a.ys_loan_number) { await park({ appId, reason: 'sitewire_missing_loan_number: file has no YS loan number to push' }); return { parked: 'missing_loan_number' }; }

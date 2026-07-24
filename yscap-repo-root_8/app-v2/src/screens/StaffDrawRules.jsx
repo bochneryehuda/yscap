@@ -80,7 +80,7 @@ export default function StaffDrawRules() {
   const [err, setErr] = useState('');
   const [draft, setDraft] = useState(blankDraft());
 
-  function blankDraft() { return { partner_label: '', program: '', handled_externally: false, inspection_method: 'mobile', allow_virtual: true, allow_physical: true, require_sitewire_inspector: true, require_capital_partner_approval: false, allow_reallocation: false, fee_cents_virtual: '299', fee_cents_physical: '499' }; }
+  function blankDraft() { return { partner_label: '', program: '', draw_platform: 'sitewire', inspection_method: 'mobile', allow_virtual: true, allow_physical: true, require_sitewire_inspector: true, require_capital_partner_approval: false, allow_reallocation: false, fee_cents_virtual: '299', fee_cents_physical: '499' }; }
 
   const [settings, setSettings] = useState({});
   const [status, setStatus] = useState(null);
@@ -109,7 +109,7 @@ export default function StaffDrawRules() {
     try {
       await api.post('/api/sitewire/rules', {
         partner_label: draft.partner_label || null, program: draft.program || null,
-        handled_externally: draft.handled_externally,
+        draw_platform: draft.draw_platform, handled_externally: draft.draw_platform === 'external',
         inspection_method: draft.inspection_method, allow_virtual: draft.allow_virtual, allow_physical: draft.allow_physical,
         require_sitewire_inspector: draft.require_sitewire_inspector,
         require_capital_partner_approval: draft.require_capital_partner_approval, allow_reallocation: draft.allow_reallocation,
@@ -121,7 +121,7 @@ export default function StaffDrawRules() {
     } catch (e) { setErr(e?.data?.error || e.message || 'Could not save.'); }
   }
   function edit(r) {
-    setDraft({ partner_label: r.partner_label || r.capital_partner_name || '', program: r.program || '', handled_externally: !!r.handled_externally, inspection_method: r.inspection_method, allow_virtual: r.allow_virtual !== false, allow_physical: r.allow_physical !== false, require_sitewire_inspector: r.require_sitewire_inspector, require_capital_partner_approval: r.require_capital_partner_approval, allow_reallocation: r.allow_reallocation, fee_cents_virtual: dollars(r.fee_cents_virtual), fee_cents_physical: r.fee_cents_physical == null ? '' : dollars(r.fee_cents_physical) });
+    setDraft({ partner_label: r.partner_label || r.capital_partner_name || '', program: r.program || '', draw_platform: r.draw_platform || (r.handled_externally ? 'external' : 'sitewire'), inspection_method: r.inspection_method, allow_virtual: r.allow_virtual !== false, allow_physical: r.allow_physical !== false, require_sitewire_inspector: r.require_sitewire_inspector, require_capital_partner_approval: r.require_capital_partner_approval, allow_reallocation: r.allow_reallocation, fee_cents_virtual: dollars(r.fee_cents_virtual), fee_cents_physical: r.fee_cents_physical == null ? '' : dollars(r.fee_cents_physical) });
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
@@ -167,7 +167,7 @@ export default function StaffDrawRules() {
           <CardHead icon="plus" title="Add / update a rule" />
           <div className="grid cols-3" style={{ gap: 12, marginTop: 6 }}>
             <label className="small">Capital partner (note buyer)<InfoTip tip={HELP.partner} />
-              <select className="input" value={draft.partner_label} onChange={(e) => { const v = e.target.value; setDraft({ ...draft, partner_label: v, handled_externally: v ? draft.handled_externally : false }); }}>
+              <select className="input" value={draft.partner_label} onChange={(e) => { const v = e.target.value; setDraft({ ...draft, partner_label: v, draw_platform: v ? draft.draw_platform : 'sitewire' }); }}>
                 <option value="">Global default (all partners)</option>
                 {partners.map((p) => <option key={p.label} value={p.label}>{p.label}{!p.in_directory && !p.linked_sitewire_id ? ' (not in Sitewire)' : ''}</option>)}
                 {draft.partner_label && !partners.some((p) => p.label === draft.partner_label) && <option value={draft.partner_label}>{draft.partner_label}</option>}
@@ -177,27 +177,31 @@ export default function StaffDrawRules() {
               <input className="input" placeholder="e.g. gold" value={draft.program} onChange={(e) => setDraft({ ...draft, program: e.target.value })} />
             </label>
             <label className="small">Set up automatically as<InfoTip tip={HELP.auto_method} />
-              <select className="input" value={draft.inspection_method} onChange={(e) => setDraft({ ...draft, inspection_method: e.target.value })} disabled={draft.handled_externally}>
+              <select className="input" value={draft.inspection_method} onChange={(e) => setDraft({ ...draft, inspection_method: e.target.value })} disabled={draft.draw_platform === 'external'}>
                 <option value="mobile">Virtual (mobile)</option>
                 <option value="traditional">On-site (traditional)</option>
               </select>
             </label>
-            <label className="small row" style={{ gridColumn: '1 / -1', gap: 8, alignItems: 'center', padding: '10px 12px', borderRadius: 8, background: draft.handled_externally ? 'var(--gold-soft)' : 'var(--ink-2)', border: '1px solid var(--line)', opacity: draft.partner_label ? 1 : 0.55 }}>
-              <input type="checkbox" checked={draft.handled_externally} disabled={!draft.partner_label} onChange={(e) => setDraft({ ...draft, handled_externally: e.target.checked })} />
-              <span><b>Handled externally</b> — this capital partner runs its own draws; never push these files to Sitewire<InfoTip tip={HELP.handled} />
-                {!draft.partner_label && <span className="muted"> Pick a specific capital partner above to use this.</span>}
-                {draft.handled_externally && !!draft.partner_label && <span className="muted"> The inspection &amp; fee settings below are ignored for this partner.</span>}
-              </span>
+            <label className="small" style={{ gridColumn: '1 / -1', padding: '10px 12px', borderRadius: 8, background: draft.draw_platform !== 'sitewire' ? 'var(--gold-soft)' : 'var(--ink-2)', border: '1px solid var(--line)', opacity: draft.partner_label ? 1 : 0.55 }}>
+              <b>Draws administered on</b><InfoTip tip={HELP.handled} />
+              <select className="input" style={{ marginTop: 6 }} value={draft.draw_platform} disabled={!draft.partner_label} onChange={(e) => setDraft({ ...draft, draw_platform: e.target.value })}>
+                <option value="sitewire">Sitewire — we run the whole draw here (default)</option>
+                <option value="trustpoint">TrustPoint — full Sitewire setup for intake, approvals run in TrustPoint (physical)</option>
+                <option value="external">External — partner runs its own draws; never push to Sitewire</option>
+              </select>
+              {!draft.partner_label && <div className="muted" style={{ marginTop: 4 }}>Pick a specific capital partner above to change this — the global default stays on Sitewire.</div>}
+              {draft.draw_platform === 'trustpoint' && !!draft.partner_label && <div className="muted" style={{ marginTop: 4 }}>Files still get the full Sitewire setup (borrower submits there as usual). Every submitted draw opens a coordinator task to enter it into TrustPoint, and TrustPoint's decisions are mirrored back.</div>}
+              {draft.draw_platform === 'external' && !!draft.partner_label && <div className="muted" style={{ marginTop: 4 }}>The inspection &amp; fee settings below are ignored for this partner.</div>}
             </label>
-            <label className="small">Virtual fee $<InfoTip tip={HELP.fee} /><input className="input" value={draft.fee_cents_virtual} onChange={(e) => setDraft({ ...draft, fee_cents_virtual: e.target.value })} disabled={draft.handled_externally} /></label>
-            <label className="small">On-site fee $<input className="input" value={draft.fee_cents_physical} onChange={(e) => setDraft({ ...draft, fee_cents_physical: e.target.value })} disabled={draft.handled_externally} /></label>
+            <label className="small">Virtual fee $<InfoTip tip={HELP.fee} /><input className="input" value={draft.fee_cents_virtual} onChange={(e) => setDraft({ ...draft, fee_cents_virtual: e.target.value })} disabled={draft.draw_platform === 'external'} /></label>
+            <label className="small">On-site fee $<input className="input" value={draft.fee_cents_physical} onChange={(e) => setDraft({ ...draft, fee_cents_physical: e.target.value })} disabled={draft.draw_platform === 'external'} /></label>
             <div />
-            <label className="small row" style={{ gap: 6, alignItems: 'center' }}><input type="checkbox" checked={draft.allow_virtual} disabled={draft.handled_externally} onChange={(e) => setDraft({ ...draft, allow_virtual: e.target.checked })} /> Virtual allowed<InfoTip tip={HELP.allowed} /></label>
-            <label className="small row" style={{ gap: 6, alignItems: 'center' }}><input type="checkbox" checked={draft.allow_physical} disabled={draft.handled_externally} onChange={(e) => setDraft({ ...draft, allow_physical: e.target.checked })} /> On-site allowed</label>
+            <label className="small row" style={{ gap: 6, alignItems: 'center' }}><input type="checkbox" checked={draft.allow_virtual} disabled={draft.draw_platform === 'external'} onChange={(e) => setDraft({ ...draft, allow_virtual: e.target.checked })} /> Virtual allowed<InfoTip tip={HELP.allowed} /></label>
+            <label className="small row" style={{ gap: 6, alignItems: 'center' }}><input type="checkbox" checked={draft.allow_physical} disabled={draft.draw_platform === 'external'} onChange={(e) => setDraft({ ...draft, allow_physical: e.target.checked })} /> On-site allowed</label>
             <div className="small muted" style={{ alignSelf: 'center' }}>Allow both to let the coordinator switch method per file.</div>
-            <label className="small row" style={{ gap: 6, alignItems: 'center' }}><input type="checkbox" checked={draft.require_sitewire_inspector} disabled={draft.handled_externally} onChange={(e) => setDraft({ ...draft, require_sitewire_inspector: e.target.checked })} /> Require Sitewire inspector<InfoTip tip={HELP.inspector} /></label>
-            <label className="small row" style={{ gap: 6, alignItems: 'center' }}><input type="checkbox" checked={draft.require_capital_partner_approval} disabled={draft.handled_externally} onChange={(e) => setDraft({ ...draft, require_capital_partner_approval: e.target.checked })} /> Require capital-partner approval<InfoTip tip={HELP.cp_approval} /></label>
-            <label className="small row" style={{ gap: 6, alignItems: 'center' }}><input type="checkbox" checked={draft.allow_reallocation} disabled={draft.handled_externally} onChange={(e) => setDraft({ ...draft, allow_reallocation: e.target.checked })} /> Allow reallocations<InfoTip tip={HELP.realloc} /></label>
+            <label className="small row" style={{ gap: 6, alignItems: 'center' }}><input type="checkbox" checked={draft.require_sitewire_inspector} disabled={draft.draw_platform === 'external'} onChange={(e) => setDraft({ ...draft, require_sitewire_inspector: e.target.checked })} /> Require Sitewire inspector<InfoTip tip={HELP.inspector} /></label>
+            <label className="small row" style={{ gap: 6, alignItems: 'center' }}><input type="checkbox" checked={draft.require_capital_partner_approval} disabled={draft.draw_platform === 'external'} onChange={(e) => setDraft({ ...draft, require_capital_partner_approval: e.target.checked })} /> Require capital-partner approval<InfoTip tip={HELP.cp_approval} /></label>
+            <label className="small row" style={{ gap: 6, alignItems: 'center' }}><input type="checkbox" checked={draft.allow_reallocation} disabled={draft.draw_platform === 'external'} onChange={(e) => setDraft({ ...draft, allow_reallocation: e.target.checked })} /> Allow reallocations<InfoTip tip={HELP.realloc} /></label>
           </div>
           <div className="row" style={{ gap: 8, marginTop: 14 }}>
             <button className="btn btn-sm primary" onClick={save}>Save rule</button>
@@ -215,11 +219,13 @@ export default function StaffDrawRules() {
               {rules.map((r) => {
                 const av = r.allow_virtual !== false, ap = r.allow_physical !== false;
                 const allowed = av && ap ? 'Both (can switch)' : av ? 'Virtual only' : ap ? 'On-site only' : '—';
-                const ext = !!r.handled_externally;
+                const platform = r.draw_platform || (r.handled_externally ? 'external' : 'sitewire');
+                const ext = platform === 'external';
                 return (
                 <tr key={r.id}>
                   <td style={{ fontWeight: 600 }}>{r.partner_label || r.capital_partner_name || (r.capital_partner_id ? '#' + r.capital_partner_id : 'Global default')}
                     {ext && <span className="pill sw-insp" style={{ marginLeft: 6 }}>Handled externally</span>}
+                    {platform === 'trustpoint' && <span className="pill sw-insp" style={{ marginLeft: 6 }}>TrustPoint</span>}
                   </td>
                   <td className="muted">{r.program || '—'}</td>
                   {ext ? (

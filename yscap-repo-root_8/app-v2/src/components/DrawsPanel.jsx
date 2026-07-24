@@ -938,11 +938,18 @@ function StartDrawCard({ appId, onStarted }) {
           </div>
         </div>
         <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+          {s.draw_platform === 'trustpoint' && <span className="dd-chip warn"><span className="dot" />Administered on TrustPoint</span>}
           {!s.switches?.enabled && <span className="dd-chip warn"><span className="dot" />Sitewire off — will queue</span>}
           {s.switches?.enabled && s.switches?.dryrun && <span className="dd-chip warn"><span className="dot" />Dry-run</span>}
           {s.switches?.enabled && !s.switches?.dryrun && !s.switches?.outbound && <span className="dd-chip warn"><span className="dot" />Read-only</span>}
         </div>
       </div>
+
+      {s.draw_platform === 'trustpoint' && (
+        <div className="small" style={{ marginTop: 10, padding: '10px 12px', borderRadius: 10, background: 'var(--gold-soft)', fontWeight: 600 }}>
+          This file's draws are administered on TrustPoint (physical inspection). Set it up in Sitewire as usual — the borrower submits there — and every submitted draw opens a coordinator task to enter it into TrustPoint. Approvals happen in TrustPoint and are mirrored back.
+        </div>
+      )}
 
       {alreadyStarted && (
         <div className="small" style={{ marginTop: 10, padding: '10px 12px', borderRadius: 10, background: 'var(--success-soft)', color: 'var(--success)', fontWeight: 600 }}>
