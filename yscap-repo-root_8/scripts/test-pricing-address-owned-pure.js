@@ -50,5 +50,26 @@ inp = buildInputs(fileApp, null, { state: 'NJ' });
 ok(inp.state === 'NJ', 'state override still wins (priced input — behavior unchanged)');
 ok(inp.address === '392-394 Columbia Ave', 'address untouched by a state-only override');
 
+// ---- historical property_address shapes (audit 2026-07-24) ----
+// `street`-shaped object (borrower scenario files) — the guard still engages.
+inp = buildInputs({ property_address: { street: '55 Street Shape Rd', city: 'Utica', state: 'NY' } }, null, { address: 'OLD SNAPSHOT' });
+ok(inp.address === '55 Street Shape Rd', 'street-shaped file address wins over a stale override');
+
+// Bare STRING property_address (jsonb string) — guard engages, city recovered.
+inp = buildInputs({ property_address: '392-394 Columbia Ave, Rochester, NY 14611' }, null, { address: '392 Columbia Ave' });
+ok(inp.address === '392-394 Columbia Ave, Rochester, NY 14611', 'string-shaped file address wins over a stale override');
+ok(inp.city === 'Rochester', 'city recovered from a string-shaped address (feeds the engines’ city checks)');
+
+// oneLine-only object (unparseable ClickUp formatted string) — the CITY is
+// recovered for the engines' ineligible-city / adverse-market scans even though
+// no line1 exists (the address itself may then be filled by an override).
+inp = buildInputs({ property_address: { line1: '', oneLine: '1 Main St, Chicago, IL' } }, null, null);
+ok(inp.city === 'Chicago', 'city recovered from a oneLine-only address (detection never starves)');
+ok(inp.address === '', 'no line1 anywhere → address stays blank (an override may fill it)');
+
+// Component city always beats recovery; recovery never overwrites a real city.
+inp = buildInputs({ property_address: { line1: '9 A St', city: 'Buffalo', oneLine: '9 A St, Chicago, IL' } }, null, null);
+ok(inp.city === 'Buffalo', 'a recorded component city is never overridden by recovery');
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
