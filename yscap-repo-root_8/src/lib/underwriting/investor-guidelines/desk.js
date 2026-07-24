@@ -418,6 +418,26 @@ async function runInvestorGuidelineDesk(appId, client) {
     }
   } catch (_e) { /* twin unavailable — numeric checks stay to_verify */ }
 
+  // SOW-contingency % bridge (2026-07-24): a note buyer's contingency-CAP guideline
+  // (e.g. Blue Lake cond 2193) checks a MAX contingency %, but no twin fact carries
+  // it — so the numeric check fell back to "to verify" on every file. The amount is
+  // already on the file: the saved Scope-of-Work payload (checklist_items.tool_payload
+  // for the rehab-budget tool). Compute the pct directly = contingency / construction
+  // subtotal × 100. Best-effort; only sets the signal when a real subtotal is present,
+  // and never overrides a twin fact if one exists. On any error the check stays advisory.
+  if (signals.sow_contingency_pct == null) {
+    try {
+      const rb = require('../../rehab-budget');
+      const sowRow = await db.query(
+        `SELECT tool_payload FROM checklist_items
+          WHERE application_id=$1 AND tool_key='rehab_budget' AND tool_payload IS NOT NULL
+          ORDER BY updated_at DESC NULLS LAST LIMIT 1`, [appId]);
+      const payload = sowRow.rows[0] && sowRow.rows[0].tool_payload;
+      const pct = payload ? rb.sowContingencyPct(payload) : null;
+      if (pct != null) signals.sow_contingency_pct = pct;
+    } catch (_e) { /* SOW unreadable — contingency check stays to_verify */ }
+  }
+
   return assess({
     conditions: applicable, existingByCode, signals,
     noteBuyerKey, noteBuyerName: app && app.lender ? String(app.lender) : null,

@@ -4455,6 +4455,19 @@ router.patch('/checklist/:itemId', async (req, res) => {
   // self-gating no-op for unmapped items / unlinked files).
   enqueueChecklistStatusPush(req.params.itemId).catch(() => {});
 
+  // Non-blocking false-clear guard (owner-directed): when a condition is signed
+  // off, if PILOT's read of the cleared document (the cure proof) says it does
+  // NOT actually satisfy the requirement, raise an advisory so the reviewer can
+  // confirm or reopen. NEVER blocks the sign-off (the human action already
+  // happened) — the AI never blocks. Best-effort, deferred, dedupe-keyed.
+  if (b.signedOff === true || b.status === 'satisfied') {
+    const _itemId = req.params.itemId;
+    setImmediate(() => {
+      require('../lib/underwriting/cure-signoff-advisory')
+        .warnOnWeakProofSignoff(db, _itemId).catch(() => {});
+    });
+  }
+
   // Push-back: audit it and tell the borrower what needs fixing (only for
   // borrower-facing conditions — a staff-only item has no borrower to notify).
   if (b.pushBack === true) {
