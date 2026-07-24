@@ -45,6 +45,29 @@ async function buildDigest(client, appId) {
        FROM document_findings
       WHERE application_id=$1 AND resolution='grant_exception'
       ORDER BY resolved_at DESC`, [appId]);
+  // Exception-workflow redesign (2026-07-24): the certificate's "exceptions
+  // granted" list also carries the APPROVED loan_exceptions register rows
+  // (guaranty waiver, send-before-CTC, pricing exception, issuance override) —
+  // previously it read only finding-level grant_exception resolutions, so the
+  // attestation's own promise was materially incomplete. Fails soft: an
+  // unreadable register never blocks certificate issuance.
+  let policyExceptions = [];
+  try {
+    const pe = await client.query(
+      `SELECT id, exception_type, exception_seq, reason_code, reason_note,
+              decided_by AS granted_by, decided_at AS granted_at, decision_note AS note,
+              expires_at, waived_codes
+         FROM loan_exceptions
+        WHERE application_id=$1 AND status='approved'
+        ORDER BY decided_at DESC`, [appId]);
+    policyExceptions = pe.rows.map((r) => ({
+      id: r.id, ref: r.exception_seq != null ? `EX-${r.exception_seq}` : null,
+      exception_type: r.exception_type, reason_code: r.reason_code || null,
+      granted_by: r.granted_by, granted_at: r.granted_at, note: r.note || null,
+      expires_at: r.expires_at || null,
+      waived_codes: Array.isArray(r.waived_codes) ? r.waived_codes : null,
+    }));
+  } catch (_) { /* register unavailable → certificate still issues */ }
   // Program registration (the guideline version the loan sized on).
   const reg = await client.query(
     `SELECT id, program, product_label, note_rate, total_loan, is_manual, created_at
@@ -68,6 +91,7 @@ async function buildDigest(client, appId) {
       resolved_at: f.resolved_at, resolved_by: f.resolved_by,
     })),
     exceptions: exceptions.rows,
+    policy_exceptions: policyExceptions,
     registration: reg.rows[0] ? {
       id: reg.rows[0].id, program: reg.rows[0].program,
       product_label: reg.rows[0].product_label, note_rate: reg.rows[0].note_rate,

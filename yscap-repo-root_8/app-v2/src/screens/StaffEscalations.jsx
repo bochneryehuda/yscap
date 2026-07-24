@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 
@@ -52,6 +52,10 @@ export default function StaffEscalations() {
   const [counterNote, setCounterNote] = useState('');
   const [counterTerms, setCounterTerms] = useState({ maxAcqLtv: '', maxArvLtv: '', maxLtc: '', noteRate: '', origPct: '', loanAmount: '' });
   const [highlightId, setHighlightId] = useState('');   // deep-link visual pulse
+  // Deep-link landed here but the file has no manual escalation — the ask is
+  // almost certainly a PRICING EXCEPTION, which now lives in the Exceptions box
+  // (redesign 2026-07-24; this page structurally can't show those).
+  const [focusMissed, setFocusMissed] = useState(false);
   const rowRefs = useRef({});
 
   const flash = (ok, text) => { setMsg({ ok, text }); setTimeout(() => setMsg(null), 7000); };
@@ -138,7 +142,8 @@ export default function StaffEscalations() {
   useEffect(() => {
     if (!focusAppId || !rows.length) return;
     const match = rows.find((r) => r.application_id === focusAppId);
-    if (!match) return;
+    if (!match) { setFocusMissed(true); return; }
+    setFocusMissed(false);
     setHighlightId(match.id);
     const el = rowRefs.current[match.id];
     if (el && typeof el.scrollIntoView === 'function') {
@@ -155,6 +160,15 @@ export default function StaffEscalations() {
     <div>
       <div className="page-head"><h1>Manual programs &amp; escalations</h1></div>
       {msg && <div className={`notice ${msg.ok ? 'ok' : 'err'}`} style={{ marginBottom: 12 }}>{msg.text}</div>}
+      {/* A deep-link pointed here but this file has no manual escalation — the
+          ask is almost certainly a pricing/guideline EXCEPTION, which lives in
+          the Exceptions box (this queue can only show manual-product rows). */}
+      {focusMissed && (
+        <div className="notice warn" style={{ marginBottom: 12 }}>
+          No manual-product escalation on that file. Looking for its <b>exception request</b>? Pricing/guideline
+          exceptions live in the Exceptions box — <Link to={`/internal/exceptions?app=${focusAppId}`}>open it there</Link>.
+        </div>
+      )}
 
       {/* --- Manual Program config --- */}
       {canManage && (

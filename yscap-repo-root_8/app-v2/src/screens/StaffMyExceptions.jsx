@@ -11,6 +11,8 @@ import ExceptionCard from '../components/ExceptionCard.jsx';
 export default function StaffMyExceptions() {
   const [rows, setRows] = useState([]);
   const [reasonCodes, setReasonCodes] = useState({});
+  const [reasonCodesByType, setReasonCodesByType] = useState({});
+  const [compFactors, setCompFactors] = useState({});
   const [statusFilter, setStatusFilter] = useState('all-active');
   const [openCount, setOpenCount] = useState(0);
   const [busy, setBusy] = useState('');
@@ -19,7 +21,11 @@ export default function StaffMyExceptions() {
   const flash = (ok, text) => { setMsg({ ok, text }); setTimeout(() => setMsg(null), 7000); };
 
   const load = () => api.myExceptions(statusFilter)
-    .then((d) => { setRows(d.exceptions || []); setOpenCount(d.openCount || 0); setReasonCodes(d.reasonCodes || {}); })
+    .then((d) => {
+      setRows(d.exceptions || []); setOpenCount(d.openCount || 0);
+      setReasonCodes(d.reasonCodes || {}); setReasonCodesByType(d.reasonCodesByType || {});
+      setCompFactors(d.compensatingFactors || {});
+    })
     .catch((e) => flash(false, (e && e.message) || 'could not load your exceptions'));
 
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [statusFilter]);
@@ -37,8 +43,8 @@ export default function StaffMyExceptions() {
     finally { setBusy(''); }
   }
 
-  const filters = ['all-active', 'open', 'approved', 'denied', 'cleared', 'all'];
-  const filterLabel = { 'all-active': 'Active', open: 'Awaiting review', approved: 'Approved', denied: 'Denied', cleared: 'Cleared', all: 'All' };
+  const filters = ['all-active', 'open', 'approved', 'denied', 'withdrawn', 'expired', 'cleared', 'all'];
+  const filterLabel = { 'all-active': 'Active', open: 'Awaiting review', approved: 'Approved', denied: 'Denied', withdrawn: 'Withdrawn', expired: 'Expired', cleared: 'Cleared', all: 'All' };
 
   return (
     <div className="wrap" style={{ maxWidth: 940 }}>
@@ -65,13 +71,18 @@ export default function StaffMyExceptions() {
 
       {rows.map((r) => {
         const open = r.status === 'requested';
-        const canClear = r.status !== 'cleared';
+        // An OPEN request is withdrawn, never cleared (server-enforced).
+        const canClear = r.status !== 'cleared' && !open;
+        const perTypeReasons = reasonCodesByType[r.type || r.exception_type] || reasonCodes;
         return (
-          <ExceptionCard key={r.id} r={r} reasonCodes={reasonCodes}>
+          <ExceptionCard key={r.id} r={r} reasonCodes={perTypeReasons} compFactors={compFactors}>
             {(open || canClear) && (
               <div className="row" style={{ gap: 8, marginTop: 10, borderTop: '1px solid var(--hair,#e7e2d6)', paddingTop: 10, alignItems: 'center' }}>
                 {open && <button className="btn ghost small" disabled={busy === r.id} onClick={() => withdraw(r)}>Withdraw request</button>}
                 {canClear && <button className="btn ghost small" disabled={busy === r.id} onClick={() => clear(r)}>Clear (archive)</button>}
+                {(r.status === 'denied' || r.status === 'expired') && (
+                  <span className="muted small">Need it after all? Open the file and request it again — the new ask links back to this one.</span>
+                )}
               </div>
             )}
           </ExceptionCard>

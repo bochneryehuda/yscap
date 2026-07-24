@@ -23,6 +23,7 @@ const pricing = require('../lib/pricing');
 const manualProgram = require('../lib/manual-program');
 const termOpts = require('../lib/term-options');
 const workflowAuto = require('../lib/workflow-automation');
+const loanExceptions = require('../lib/loan-exceptions');
 const { persistProductRegistration } = require('../lib/product-registration');
 const { syncExperienceChecklistForApplication, syncExperienceChecklistForBorrower, RECENT_EXIT_SQL } = require('../lib/experience');
 const llcLib = require('../lib/llc');
@@ -1077,10 +1078,14 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
 });
 
 // Borrower requests an EXCEPTION to a guideline (e.g. finance more of an
-// assignment fee than the 15% cap → a bigger loan). Raises an escalation into the
-// super-admin Workflow + Escalations box; does NOT change the registered product
-// (owner-directed 2026-07-21). A super-admin reviews and, if granted, applies the
-// admin override and re-registers.
+// assignment fee than the 15% cap → a bigger loan). Now recorded as a
+// FIRST-CLASS pricing_exception in the loan_exceptions register
+// (requested_by_kind='borrower' — previously this left no reviewable record at
+// all), AND still raises the escalation into the super-admin Workflow box. It
+// does NOT change the registered product (owner-directed 2026-07-21): a
+// super-admin decides the record in the Exceptions box and, if granting,
+// applies the admin override and re-registers. The register is STAFF-ONLY —
+// the borrower gets the same simple "your team will review it" answer as before.
 router.post('/applications/:id/pricing/request-exception', async (req, res) => {
   const appId = req.params.id;
   try {
@@ -1088,15 +1093,36 @@ router.post('/applications/:id/pricing/request-exception', async (req, res) => {
     if (!f) return res.status(404).json({ error: 'not found' });
     const note = String((req.body && req.body.note) || '').slice(0, 1000).trim();
     if (!note) return res.status(400).json({ error: 'Describe the exception you’re requesting.' });
+
+    try {
+      const already = await loanExceptions.openForApp(appId, 'pricing_exception');
+      if (!already) {
+        const prior = await loanExceptions.latestForApp(appId, 'pricing_exception');
+        const client = await db.getClient();
+        try {
+          await client.query('BEGIN');
+          await loanExceptions.requestPricingException(client, {
+            appId, reasonNote: note,
+            requestedByKind: 'borrower', requestedByBorrowerId: me(req),
+            reRequestOf: prior && ['denied', 'withdrawn', 'expired'].includes(prior.status) ? prior.id : null,
+          });
+          await client.query('COMMIT');
+        } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+        finally { client.release(); }
+      }
+      // An already-open ask isn't an error for the borrower — their request is
+      // in review either way; the note still reaches the team via the escalation.
+    } catch (e) { console.warn('[borrower pricing] exception record skipped:', e && e.message); }
+
     const ctx = await notify.fileContext(appId);
     await workflowAuto.onEscalationOpened(appId, { fromStaffId: null, note: `Borrower exception request: ${note}` });
     try {
       await notify.notifyAdmins({
-        type: 'manual_escalation',
+        type: 'pricing_exception',
         title: 'Borrower requested an exception',
         body: `The borrower requested an exception on ${ctx ? ctx.label : 'a file'}: ${note}`,
         meta: (ctx && ctx.meta) || undefined, applicationId: appId,
-        link: '/internal/escalations', ctaLabel: 'Open the Escalations box',
+        link: `/internal/exceptions?app=${appId}`, ctaLabel: 'Open the Exceptions box',
       });
     } catch (_) { /* best-effort */ }
     await audit(req, 'pricing_exception_requested', 'application', appId, { note });

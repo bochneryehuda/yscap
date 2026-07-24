@@ -22,6 +22,7 @@
 const db = require('../db');
 const notify = require('./notify');
 const workflow = require('./workflow');
+const loanExceptions = require('./loan-exceptions');
 const { outstandingItems } = require('./reminders');
 const { claimOncePerPeriod } = require('./throttle-claim');
 
@@ -998,12 +999,80 @@ async function conditionFreshnessReopenOnce() {
   if (reopened) console.log(`[digests] freshness reopened ${reopened} condition(s)`);
 }
 
+/* ── Exception-workflow redesign (2026-07-24): the register's two clocks ──
+   (1) exceptionAgingOnce — open exception requests past their review SLA
+       (due_at) nudge every super-admin once a day: an unanswered exception is
+       a stalled file, and the requester can't move it themselves.
+   (2) exceptionExpirySweepOnce — flips approved, TIME-BOXED exceptions past
+       their expires_at to 'expired' (the e-sign gate honors only
+       status='approved', so an expired one fails CLOSED on its own) and tells
+       the file's team. Only expirable types are swept — a guaranty waiver can
+       never be flipped by a clock (engine-enforced too). The flip itself is
+       once-per-row by construction (status change), so no extra gate. */
+async function exceptionAgingOnce() {
+  let rows = [];
+  try { rows = await loanExceptions.agingOpen(); } catch (_) { return 0; }
+  if (!rows.length) return 0;
+  if (!(await _gate('exception_aging_digest', null, '20 hours'))) return 0;
+  const labels = Object.fromEntries(Object.entries(loanExceptions.EXCEPTION_TYPES).map(([k, v]) => [k, v.label]));
+  const lines = rows.slice(0, 10).map((r) => {
+    const days = Math.floor(Number(r.open_hours || 0) / 24);
+    const age = days >= 1 ? `${days}d` : `${Math.round(Number(r.open_hours || 0))}h`;
+    const a = r.property_address;
+    const addr1 = !a ? '' : (typeof a === 'string' ? a : [a.line1 || a.address, a.city].filter(Boolean).join(', '));
+    return `• ${labels[r.exception_type] || r.exception_type} — ${addr1 || r.ys_loan_number || 'a file'} · waiting ${age}`;
+  });
+  if (rows.length > 10) lines.push(`…and ${rows.length - 10} more.`);
+  const supers = await db.query(`SELECT id FROM staff_users WHERE role='super_admin' AND is_active=true`);
+  let sent = 0;
+  for (const su of supers.rows) {
+    try {
+      await notify.notifyStaff(su.id, {
+        type: 'exception_aging',
+        title: rows.length === 1 ? 'An exception request is waiting past its review target'
+          : `${rows.length} exception requests are waiting past their review target`,
+        badge: { text: 'Review due', tone: 'action' },
+        body: `These policy-exception requests have been open longer than the review target. The requester can’t move them — only a super-admin can approve or deny:\n\n${lines.join('\n')}`,
+        link: '/internal/exceptions', ctaLabel: 'Open the Exceptions box',
+      });
+      sent++;
+    } catch (e) { console.error('[digest] exception-aging', su.id, e && e.message); }
+  }
+  await _stamp('exception_aging_digest', null, { open: rows.length, notified: sent });
+  return sent;
+}
+
+async function exceptionExpirySweepOnce() {
+  let flipped = [];
+  try { flipped = await loanExceptions.expireDueApprovals(); } catch (_) { return 0; }
+  let sent = 0;
+  for (const r of flipped) {
+    try {
+      await db.query(
+        `INSERT INTO audit_log (actor_kind, action, entity_type, entity_id, detail)
+         VALUES ('system','loan_exception_expired','application',$1,$2::jsonb)`,
+        [r.application_id, JSON.stringify({ exceptionId: r.id, exceptionType: r.exception_type, expiresAt: r.expires_at })]).catch(() => {});
+      const labels = Object.fromEntries(Object.entries(loanExceptions.EXCEPTION_TYPES).map(([k, v]) => [k, v.label]));
+      await notify.notifyAppStaff(r.application_id, {
+        type: 'exception_expired',
+        title: `An approved exception expired (${labels[r.exception_type] || r.exception_type})`,
+        body: `The approved "${labels[r.exception_type] || r.exception_type}" exception (EX-${r.exception_seq}) on this file passed its validity date and has EXPIRED — it no longer grants anything. If it's still needed, request it again so a super-admin can re-approve it against the current state of the deal.`,
+        applicationId: r.application_id,
+        link: `/internal/app/${r.application_id}`, ctaLabel: 'Open the loan file',
+      });
+      sent++;
+    } catch (e) { console.error('[digest] exception-expiry', r.id, e && e.message); }
+  }
+  return sent;
+}
+
 async function runDue() {
   const { hour, weekday } = nyParts();
   if (hour >= 7 && hour < 11) {
     await dailyPipelineDigestOnce().catch((e) => console.error('[digests] pipeline', e && e.message));
     await staleFileAlertsOnce().catch((e) => console.error('[digests] stale', e && e.message));
     await workflowAgingOnce().catch((e) => console.error('[digests] workflow-aging', e && e.message));
+    await exceptionAgingOnce().catch((e) => console.error('[digests] exception-aging', e && e.message));
     await drawReleaseOverdueOnce().catch((e) => console.error('[digests] draw-release', e && e.message));
     await trainingRunOnce().catch((e) => console.error('[digests] training-run', e && e.message));
     await certificateSurveyOnce().catch((e) => console.error('[digests] cert-survey', e && e.message));
@@ -1022,6 +1091,9 @@ async function runDue() {
   if (hour >= 8 && hour < 18) {
     await weeklyBorrowerOutstandingOnce().catch((e) => console.error('[digests] borrower', e && e.message));
     await drawFindingsAwaitingBorrowerOnce().catch((e) => console.error('[digests] draw-findings', e && e.message));
+    // The expiry sweep runs through the business day so a lapsed approval flips
+    // within hours (the flip is once-per-row by construction — status change).
+    await exceptionExpirySweepOnce().catch((e) => console.error('[digests] exception-expiry', e && e.message));
   }
 }
 
@@ -1043,5 +1115,5 @@ module.exports = {
   drawFindingsAwaitingBorrowerOnce, drawReleaseOverdueOnce, workflowAgingOnce, conditionFreshnessReopenOnce,
   trainingRunOnce, certificateSurveyOnce, autoCommitteeReviewOnce, directSourceSweepOnce, autoReadSweepOnce, section1071SweepOnce,
   aiCrossdocSweepOnce, weeklyAdminAiQuestionsOnce, weeklyTopRiskyFilesOnce, weeklyLoAiDigestOnce,
-  qaDeskAuditOnce,
+  qaDeskAuditOnce, exceptionAgingOnce, exceptionExpirySweepOnce,
 };

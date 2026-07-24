@@ -26,6 +26,7 @@ import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
 import FileSections, { Section, InfoTip, subscribeConditionsTab, goToSection } from '../components/FileSections.jsx';
 import EsignFileSection from '../components/EsignFileSection.jsx';
+import ExceptionRegisterCard from '../components/ExceptionRegisterCard.jsx';
 import OrdersPanel from '../components/OrdersPanel.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
 import UnderwritingPanel from '../components/UnderwritingPanel.jsx';
@@ -2853,6 +2854,7 @@ export default function StaffApplication() {
     { id: 'sec-overview', label: 'File overview', group: 'Overview' },
     { id: 'sec-application', label: 'Application details', group: 'Application & pricing' },
     { id: 'sec-pricing', label: 'Structure & pricing', group: 'Application & pricing', badge: app.registered_program ? '✓' : '' },
+    { id: 'sec-exceptions', label: 'Exceptions', group: 'Application & pricing' },
     { id: 'sec-appraisal', label: 'Appraisal & findings', group: 'Application & pricing', badge: apprSummary && apprSummary.fatal ? `${apprSummary.fatal} ⚠` : '' },
     { id: 'sec-underwriting', label: 'Document review', group: 'Application & pricing', badge: uwSummary && uwSummary.fatal ? `${uwSummary.fatal} ⚠` : '' },
     { id: 'sec-conditions', label: 'Conditions', group: 'Conditions', badge: nCondOpen || '' },
@@ -3127,6 +3129,16 @@ export default function StaffApplication() {
         badge={app.registered_program ? 'Registered ✓' : 'Not registered'}>
       <ProductStudioPanel ref={studioRef} appId={id} app={app} onRegistered={load} mode="staff" staffRole={role}
         toolItemId={(items.find(it => it.tool_key === 'product_pricing') || {}).id} />
+      </Section>
+
+      {/* The file's policy-exception REGISTER (redesign 2026-07-24): every
+          deviation this loan asked for or carries — guaranty waiver, early
+          send, pricing exception, recorded overrides — with EX-n references.
+          Requests are made from the sections they belong to; this is the
+          one-look history a diligence conversation starts from. */}
+      <Section id="sec-exceptions" title="Exceptions (policy register)" defaultOpen={false}
+        info="Every exception to loan policy on this file — asked for, granted, denied, or recorded — with its EX-number, validity, and whether the deal has changed since. Granted exceptions ride onto the decision certificate and the register export automatically.">
+        <ExceptionRegisterCard appId={id} canSeeBox={can('manage_pricing') || role === 'super_admin'} />
       </Section>
 
       <Section id="sec-appraisal" title="Appraisal & PILOT findings" defaultOpen={false}

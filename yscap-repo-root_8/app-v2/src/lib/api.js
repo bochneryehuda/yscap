@@ -442,7 +442,9 @@ export const api = {
   staffPricing:      (appId) => req('GET', `/api/staff/applications/${appId}/pricing`),
   staffPricingQuote: (appId, overrides) => req('POST', `/api/staff/applications/${appId}/pricing/quote`, { overrides }),
   staffRegisterProduct: (appId, program, overrides, econVersion, assetMonths, submitException, termOptions) => req('POST', `/api/staff/applications/${appId}/pricing/register`, { program, overrides, econVersion, assetMonths, submitException, termOptions }),
-  staffRequestException: (appId, note) => req('POST', `/api/staff/applications/${appId}/pricing/request-exception`, { note }),
+  // Redesign 2026-07-24: the pricing exception is a first-class register record —
+  // the request now carries an optional structured reason + compensating factors.
+  staffRequestException: (appId, note, reasonCode, compensatingFactors) => req('POST', `/api/staff/applications/${appId}/pricing/request-exception`, { note, reasonCode, compensatingFactors }),
   // Manual Program admin config + the super-admin escalation box.
   manualProgramSettings:     () => req('GET', '/api/admin/manual-programs/settings'),
   saveManualProgramSettings: (b) => req('PUT', '/api/admin/manual-programs/settings', b),
@@ -457,11 +459,16 @@ export const api = {
   requestGuarantyWaiver:     (appId, body) => req('POST', `/api/staff/applications/${appId}/exceptions/guaranty-waiver`, body || {}),
   requestEsignBeforeCtc:     (appId, body) => req('POST', `/api/staff/applications/${appId}/exceptions/esign-before-ctc`, body || {}),
   withdrawException:         (appId, eid) => req('POST', `/api/staff/applications/${appId}/exceptions/${eid}/withdraw`, {}),
-  loanExceptions:            (status) => req('GET', `/api/admin/exceptions${status ? `?status=${status}` : ''}`),
+  loanExceptions:            (status, type) => req('GET', `/api/admin/exceptions${qs({ status, type })}`),
   loanExceptionsCount:       () => req('GET', '/api/admin/exceptions/count'),
+  // The register report (counts, approval rate, time-to-decision, aging) and the
+  // diligence-ready xlsx export of the register (redesign 2026-07-24).
+  loanExceptionMetrics:      () => req('GET', '/api/admin/exceptions/metrics'),
+  exportExceptionRegister:   async (status, type) => { const { blob, filename } = await download(`/api/admin/exceptions/export.xlsx${qs({ status, type })}`); saveBlob(blob, filename); },
   // decide: `waivedCodes` (esign_before_ctc approvals, 2026-07-24) names EXACTLY
   // which outstanding requirements the super-admin waives; omitted → legacy meaning.
-  decideLoanException:       (id, decision, note, waivedCodes) => req('POST', `/api/admin/exceptions/${id}/decide`, waivedCodes ? { decision, note, waivedCodes } : { decision, note }),
+  // `expiresAt` (redesign) sets an approval validity on expirable types.
+  decideLoanException:       (id, decision, note, waivedCodes, expiresAt) => req('POST', `/api/admin/exceptions/${id}/decide`, { decision, note, ...(waivedCodes ? { waivedCodes } : {}), ...(expiresAt ? { expiresAt } : {}) }),
   clearLoanException:        (id, note) => req('POST', `/api/admin/exceptions/${id}/clear`, { note }),
   // The esign exception's clear view: live ✓/✗ requirements + request snapshot + waived codes.
   exceptionGate:             (id) => req('GET', `/api/admin/exceptions/${id}/gate`),
