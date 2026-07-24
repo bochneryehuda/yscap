@@ -32,6 +32,12 @@ console.log('ISG disposition pure tests');
   assert.strictEqual(desk.dispositionOf({ clears_by: 'system_field_check' }), D.SYSTEM, 'system_field_check → system');
   // a genuine document rule (appraisal domain that is a real report) is NOT silenced by inference.
   assert.strictEqual(desk.dispositionOf({ domain: 'appraisal', clears_by: 'third_party_order' }), D.DOCUMENT, 'a real appraisal doc stays document');
+  // an appraisal-domain rule that hinges on an appraisal CONCERN signal (transferred/comps) infers
+  // APPRAISAL — never a document gap — so the transfer-letter rule stays silent until the appraisal
+  // is in and the concern is proven, even if the DB seed never carried its disposition (owner 2026-07-24).
+  assert.strictEqual(desk.dispositionOf({ domain: 'appraisal', concern_field: 'appraisal_transferred' }), D.APPRAISAL, 'appraisal-domain concern rule infers appraisal (not a doc gap)');
+  // …but a real PILOT-backed appraisal document still wins over the concern inference.
+  assert.strictEqual(desk.dispositionOf({ domain: 'appraisal', concern_field: 'appraisal_transferred', pilot_template_code: 'rtl_cond_appraisal' }), D.DOCUMENT, 'a PILOT-backed appraisal doc stays document even with a concern_field');
   assert.strictEqual(desk.dispositionOf({ domain: 'title', clears_by: 'document_upload' }), D.DOCUMENT, 'default is document');
   // REGRESSION GUARD: a condition mapped to a REAL PILOT code is a document gap even if it
   // clears by internal_verification / system (e.g. SSN → rtl_p1_ssn). Inference must not silence it.
@@ -129,6 +135,24 @@ console.log('ISG disposition pure tests');
   assert.ok(res.unhappy.some((u) => u.flag === 'coverage_gap' && u.severity === 'fatal'), 'the feasibility document gap is still a fatal coverage gap');
   assert.ok(res.unhappy.some((u) => u.flag === 'conflict'), 'the over-cap seller concession is still a fatal conflict');
   ok('no regression: a real document rule is still a coverage gap; a real conflict is still surfaced');
+}
+
+// 6b — the APPRAISAL TRANSFER LETTER (cond 3349) never requests a transfer letter unless the
+// appraisal is in AND it is provably transferred — even if the DB seed never carried the
+// disposition (older seed). This is the owner's "if it's in our name we don't need a transfer
+// letter" fix: PILOT must stay silent when it cannot even see the appraisal.
+{
+  const t = findCorr(3349);
+  assert.ok(t && t.domain === 'appraisal' && t.concern_field === 'appraisal_transferred', 'cond 3349 is the appraisal transfer rule');
+  const seedNoDisp = { ...t, disposition: undefined }; // simulate a DB row that never seeded the disposition
+  assert.strictEqual(desk.dispositionOf(seedNoDisp), D.APPRAISAL, 'transfer-letter rule still infers appraisal without a seeded disposition');
+  const c = [seedNoDisp];
+  assert.strictEqual(desk.assess({ conditions: c, existingByCode: new Map(), signals: {}, noteBuyerKey: 'corrfirst' }).unhappy.length, 0, 'no appraisal → no transfer-letter request');
+  assert.strictEqual(desk.assess({ conditions: c, existingByCode: new Map(), signals: { appraisal_present: true }, noteBuyerKey: 'corrfirst' }).unhappy.length, 0, 'appraisal in but not proven transferred → still no request');
+  const xfer = desk.assess({ conditions: c, existingByCode: new Map(), signals: { appraisal_present: true, appraisal_transferred: true }, noteBuyerKey: 'corrfirst' });
+  assert.strictEqual(xfer.unhappy.length, 1, 'appraisal in AND provably transferred → the transfer-letter review surfaces');
+  assert.strictEqual(xfer.unhappy[0].flag, 'appraisal_review');
+  ok('transfer letter: silent unless the appraisal is in AND provably transferred (owner rule)');
 }
 
 console.log(`\nISG disposition: ${n} checks passed`);

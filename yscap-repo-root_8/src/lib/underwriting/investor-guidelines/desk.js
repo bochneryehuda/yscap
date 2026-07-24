@@ -71,6 +71,15 @@ function dispositionOf(cond) {
     // PILOT-mapped condition (e.g. SSN verification → rtl_p1_ssn) being dropped just because
     // it clears by internal verification.
     if (c.pilot_template_code) return DISPOSITION.DOCUMENT;
+    // An appraisal-domain guideline that is NOT backed by a PILOT document and hinges on an
+    // appraisal CONCERN signal (a transferred appraisal, comps, appraisal condition) is an
+    // APPRAISAL-review item — SILENT until the appraisal is in AND the concern is PROVEN — never a
+    // standing document gap. Without this, the CorrFirst "appraisal transfer letter" rule (cond
+    // 3349, domain=appraisal, concern_field=appraisal_transferred) with no explicitly-seeded
+    // disposition fell through to DOCUMENT and PILOT requested a transfer letter as a coverage gap
+    // even when it cannot see the appraisal or whose name it is in. Owner-directed 2026-07-24: "if
+    // it's in our name we don't need a transfer letter" — only ask when it's PROVABLY not ours.
+    if (domain === 'appraisal' && c.concern_field) return DISPOSITION.APPRAISAL;
     const clears = lc(c.clears_by);
     if (clears === 'internal_verification') return DISPOSITION.FILE_DATA; // an unmapped fact to confirm on the file
     if (clears === 'system_field_check' || clears === 'system') return DISPOSITION.SYSTEM;
