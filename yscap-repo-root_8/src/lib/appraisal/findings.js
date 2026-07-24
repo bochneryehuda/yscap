@@ -18,6 +18,7 @@
  */
 
 const { arvDefensibility, compImpliedValue } = require('./scoring');
+const { propertyTypeUnitRange } = require('../mismo/enums');
 
 const DEFAULTS = {
   valueTolerancePct: 2,        // ARV/As-Is: treat within this % (and $) as a match
@@ -141,18 +142,44 @@ function computeFindings(appraisal, file, opts = {}) {
       actions: ['replace', 'keep', 'custom', 'dismiss', 'decline'], reprices: true }));
   }
 
-  // ---- 3. Property type ----
-  // The appraisal form implies a property class; flag when the file clearly disagrees.
-  // Class keys mirror src/lib/mismo/enums.js so the two modules never drift on the
-  // portal's property-type vocabulary ('SFR (1 unit)' | 'Multi 2–4' | 'Condo' | …).
-  const formClass = { FNM1004: 'sfr', FNM1025: 'multi24', FNM1073: 'condo' }[A.formType];
-  const fc = fileClass(file && file.property_type);
-  if (formClass && fc && fc !== formClass && !(formClass === 'multi24' && fc === 'multi5')) {
+  // ---- 3. Property type / unit-count consistency ----
+  // Our file's property_type is a RANGE CATEGORY (SFR = 1 unit, Multi 2–4, Multi 5+,
+  // Condo = 1, …), NOT a unit count — while the appraisal reports a SPECIFIC count. So we
+  // judge it by the UNIT COUNT: the appraisal's count must fall WITHIN the range our
+  // property_type implies. A 2-unit appraisal on a 'Multi 2–4' file is CONSISTENT (2 is
+  // within 2–4). The old code string-compared our range category to the appraisal's form
+  // class, so it wrongly fired this FATAL on every multi-family file (owner-reported
+  // 2026-07-24: "appraisal says 2 unit, our file says 2-4 — you're looking on the wrong
+  // field; compare the real unit count"). NEVER guesses: an unknown property_type (range
+  // null) or an unknown appraisal count leaves the fatal silent.
+  const ptRange = propertyTypeUnitRange(file && file.property_type);
+  // The appraisal's authoritative unit count: the parsed subject count, else the form's
+  // implied count (1004/1073 = 1 unit; a 1025 is a 2–4 form with no single number → null).
+  const apprUnitCount = A.subject.units != null ? num(A.subject.units)
+    : ({ FNM1004: 1, FNM1073: 1 }[A.formType] != null ? { FNM1004: 1, FNM1073: 1 }[A.formType] : null);
+  if (ptRange && apprUnitCount != null && (apprUnitCount < ptRange.min || apprUnitCount > ptRange.max)) {
+    const rangeText = ptRange.max === Infinity ? `${ptRange.min}+ units`
+      : ptRange.min === ptRange.max ? `${ptRange.min} unit${ptRange.min === 1 ? '' : 's'}`
+        : `${ptRange.min}–${ptRange.max} units`;
     out.push(finding({ code: 'property_type_mismatch', severity: 'fatal', field: 'property_type',
-      appraisalValue: A.formType, fileValue: file.property_type,
-      title: `Property type disagrees — appraisal is a ${formClass === 'sfr' ? 'single-family (1004)' : formClass === 'condo' ? 'condo (1073)' : '2–4 unit (1025)'} form, file says ${file.property_type}`,
-      howTo: 'The appraisal form and the file describe different property kinds. Confirm which is right — a wrong type changes the program and eligibility.',
+      appraisalValue: `${apprUnitCount} unit${apprUnitCount === 1 ? '' : 's'}`, fileValue: file.property_type,
+      title: `Property type disagrees — appraisal shows ${apprUnitCount} unit${apprUnitCount === 1 ? '' : 's'}, file property type is ${file.property_type} (${rangeText})`,
+      howTo: 'The appraisal\'s unit count is outside the range for the file\'s property type. Confirm which is right — a wrong type changes the program and eligibility.',
       actions: ['replace', 'keep', 'custom', 'dismiss', 'decline'], reprices: true }));
+  } else {
+    // Same-unit-count STYLE difference (SFR vs Condo — both 1-unit dwelling styles). A real
+    // but non-blocking distinction: surface as an ADVISORY, never a CTC-blocking fatal (the
+    // fatal above is unit-count only, per the owner's directive). Only the 1-unit forms
+    // carry a comparable style; a 1025 (2–4) form has no single dwelling style to compare.
+    const styleForm = { FNM1004: 'sfr', FNM1073: 'condo' }[A.formType];
+    const styleFile = fileClass(file && file.property_type);
+    if (styleForm && styleFile && styleForm !== styleFile && (styleFile === 'sfr' || styleFile === 'condo' || styleFile === 'town')) {
+      out.push(finding({ code: 'property_style_note', severity: 'warning', field: 'property_type',
+        appraisalValue: A.formType, fileValue: file.property_type,
+        title: `Property style differs — appraisal is a ${styleForm === 'sfr' ? 'single-family (1004)' : 'condo (1073)'} form, file property type is ${file.property_type}`,
+        howTo: 'Same unit count but a different dwelling style (single-family vs condo). Confirm the program allows it — not a blocker.',
+        actions: ['keep', 'custom', 'dismiss'] }));
+    }
   }
 
   // ---- 4. ARV ----

@@ -108,6 +108,25 @@ function unitsHint(propertyType) {
   if (s.includes('mixed')) return 1;
   return null;
 }
+// The UNIT-COUNT RANGE a portal property_type implies. Our property_type is a CATEGORY
+// (SFR = 1 unit, Multi 2–4, Multi 5+, Condo = 1, …), NOT a specific unit count — while an
+// appraisal reports a SPECIFIC count. So a check must judge the appraisal's real unit
+// count AGAINST this range, never string-compare our range category to the appraisal's
+// specific type (that false-"disagrees" on every multi-family file — owner-reported
+// 2026-07-24: 'Multi 2–4' vs an appraisal's 2-unit). Returns {min,max} (max may be
+// Infinity) or null when the type is unknown OR unbounded (mixed-use) — callers MUST
+// treat null as "no unit constraint" and never guess.
+function propertyTypeUnitRange(propertyType) {
+  const s = norm(propertyType);
+  if (!s) return null;
+  if (s.startsWith('sfr') || s.includes('singlefamily')) return { min: 1, max: 1 };
+  if (s.includes('condo')) return { min: 1, max: 1 };
+  if (s.includes('town')) return { min: 1, max: 1 };
+  if (s.includes('multi54') || s.includes('multi5')) return { min: 5, max: Infinity };
+  if (s.includes('multi24') || s.includes('multi2')) return { min: 2, max: 4 };
+  if (s.includes('mixed')) return null;   // mixed-use: no unit-count constraint — never guess
+  return null;
+}
 function toMismoAttachment(propertyType) {
   const s = norm(propertyType);
   if (!s) return null;
@@ -126,6 +145,7 @@ module.exports = {
   toMismoMarital: makeForward(MARITAL),
   toMismoAttachment,
   unitsHint,
+  propertyTypeUnitRange,
   DEFAULT_MORTGAGE_TYPE,
   DEFAULT_AMORTIZATION_TYPE,
   // reverse (MISMO -> ours), used by the importer
