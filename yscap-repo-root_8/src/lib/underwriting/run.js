@@ -428,15 +428,36 @@ async function gatherInvestorInputs(applicationId, db) {
   const out = {};
   if (!applicationId || !db || typeof db.query !== 'function') return out;
 
-  // Imported credit-report FICO — the LATEST completed pull that actually carries a
-  // middle score. A file with no credit report → no fico_credit → the mismatch rule
-  // stays silent (never invents a score, never false-flags).
+  // Imported credit-report FICO — feeds the FATAL isg_fico_mismatch (the priced FICO must equal
+  // the credit report). This MUST be the score the deal was actually PRICED on, tied to the file's
+  // borrowers. The pricing convention (credit/index.js fileCredit) is the HIGHER-OF-TWO
+  // report-backed middle score across the file's borrowers, and it is only FINAL once EVERY
+  // borrower has a completed report. NEVER-FALSE-FIRE: emit fico_credit ONLY when the higher-of-two
+  // is final (all borrowers pulled); otherwise OMIT → the mismatch rule stays silent. (The old
+  // query read the single latest pull with NO borrower filter, so on a co-borrower file the most
+  // recent pull could be the OTHER borrower's — a different score than the priced one — and the
+  // FATAL "restructure at X" fired WRONGLY on ordinary two-borrower files.)
   try {
-    const c = await db.query(
-      `SELECT middle_score FROM credit_reports
-        WHERE application_id = $1 AND status = 'completed' AND middle_score IS NOT NULL
-        ORDER BY pulled_at DESC LIMIT 1`, [applicationId]);
-    if (c.rows[0] && c.rows[0].middle_score != null) out.fico_credit = Number(c.rows[0].middle_score);
+    const ar = await db.query('SELECT borrower_id, co_borrower_id FROM applications WHERE id = $1', [applicationId]);
+    const app0 = ar.rows[0];
+    const ids = app0 ? [app0.borrower_id, app0.co_borrower_id].filter(Boolean) : [];
+    if (ids.length) {
+      // Each borrower's latest completed report's middle score. undefined = no completed report
+      // for that borrower yet (so the higher-of-two isn't final); null = a completed no-hit report
+      // (pulled, no score — excluded from the higher-of-two, exactly like fileCredit).
+      const perBorrower = [];
+      for (const bid of ids) {
+        const r = await db.query(
+          `SELECT middle_score FROM credit_reports
+            WHERE application_id = $1 AND borrower_id = $2 AND status = 'completed'
+            ORDER BY pulled_at DESC LIMIT 1`, [applicationId, bid]);
+        perBorrower.push(r.rows[0] ? r.rows[0].middle_score : undefined);
+      }
+      const allPulled = perBorrower.every((s) => s !== undefined);   // every borrower has a completed report
+      const scores = perBorrower.filter((s) => s != null).map(Number); // report-backed, non-null middle scores
+      if (allPulled && scores.length) out.fico_credit = Math.max(...scores); // the higher-of-two prices the deal
+      // else: a borrower still unpulled, or no scored report → OMIT (never judge on incomplete credit)
+    }
   } catch (_) { /* no credit_reports table / query error → omit fico_credit */ }
 
   // Is a current appraisal on file? Only TRUE unblocks the price-vs-value rule (which
