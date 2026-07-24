@@ -25,6 +25,7 @@ const wholeLoanContext = require('./whole-loan-context');
 const programAdapter = require('./program-adapter');
 const structureUnderwriter = require('./structure-underwriter');
 const assignmentAnalysis = require('./assignment-analysis');
+const investorGuidelineReview = require('./investor-guideline-review');
 const decision = require('./decision');
 const runManifest = require('./run-manifest');
 
@@ -193,6 +194,28 @@ function assembleRun(inputs) {
   // Findings from the other desks (appraisal R6.8 / document R6.9 / system R6.10-12 / liquidity).
   for (const f of (i.extraFindings || [])) findings.push(f);
 
+  // INVESTOR-SPECIFIC GUIDELINE REVIEW — folded INTO this ONE run (owner-directed 2026-07-24):
+  // the note-buyer guideline checks run AS PART OF the whole-loan document-review run, not a
+  // separate AI pass. Deterministic rules read the data the run already gathered (canonical
+  // values here, plus appraisal / credit / experience signals the caller passes via
+  // `i.investorInputs`). The findings land in the SAME registry, categorized
+  // `investor_guideline`, so everything talks together — one place, one cost. It NEVER
+  // fabricates (a missing signal → no finding) and is advisory (a fatal is a super-admin-
+  // overridable HARD WARNING via the run's issuance backstop, never a hard block).
+  const v = ctx.values || {};
+  const investorBag = Object.assign({
+    note_buyer: v.note_buyer,
+    property_state: v.property_state,
+    is_assignment: v.is_assignment,
+    loan_amount: v.loan_amount,
+    rehab_budget: v.rehab_budget,
+    as_is_value: v.as_is_value,
+    arv: v.arv,
+    purchase_price: v.purchase_price,
+    fico_file: v.fico,
+  }, i.investorInputs || {});
+  for (const f of investorGuidelineReview.review(investorBag)) findings.push(f);
+
   // #214 — per-run REVIEW MANIFEST (orchestration proof). Record which required
   // components contributed; if any is missing, the run raises an ORDINARY ADVISORY
   // (never a super-admin gate, never a block — never-block rule #217). The advisory
@@ -306,6 +329,10 @@ async function runWholeLoan(applicationId, db, opts) {
     staleChanged,
     manualApproved: o.manualApproved,
     extraFindings: [...(o.extraFindings || []), ...verificationFindings],
+    // Investor-guideline signals the note-buyer review can't read from the canonical context
+    // (imported credit FICO, appraisal transferred/rural/comps, verified vs claimed experience,
+    // flood zone). The caller/desks pass what they have; anything absent stays null → silent.
+    investorInputs: o.investorInputs || {},
     verificationAttested,
     trigger: o.trigger || 'manual_run',
   });
