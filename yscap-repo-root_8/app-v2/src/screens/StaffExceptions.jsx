@@ -28,6 +28,10 @@ export default function StaffExceptions() {
   const [busy, setBusy] = useState('');
   const [msg, setMsg] = useState(null);
   const [notes, setNotes] = useState({});
+  // Per-row waive selection for send-before-clear-to-close requests (2026-07-24):
+  // rowId -> array of blocker codes the super-admin is waiving. Initialized by
+  // EsignGatePanel with the safe default (readiness items only).
+  const [waiveSel, setWaiveSel] = useState({});
   const [highlightId, setHighlightId] = useState('');
   const rowRefs = useRef({});
 
@@ -58,12 +62,19 @@ export default function StaffExceptions() {
     const note = (notes[row.id] || '').trim();
     if (!note) { flash(false, 'Add a short note explaining your decision.'); return; }
     const isEsign = (row.type || row.exception_type) === 'esign_before_ctc';
+    // An esign APPROVAL must name exactly what it waives — everything unchecked
+    // still applies. The server re-validates against the live gate.
+    const waived = isEsign && decision === 'approved' ? (waiveSel[row.id] || []) : undefined;
+    if (isEsign && decision === 'approved' && !waived.length) {
+      flash(false, 'Tick at least one requirement to waive in the picture above — or deny the request.');
+      return;
+    }
     setBusy(row.id);
     try {
-      await api.decideLoanException(row.id, decision, note);
+      await api.decideLoanException(row.id, decision, note, waived);
       flash(true, isEsign
         ? (decision === 'approved'
-            ? 'Approved. The team can send the term-sheet package before clear-to-close — the appraisal/pricing/closing/registration prerequisites still apply.'
+            ? `Approved with ${waived.length} requirement${waived.length === 1 ? '' : 's'} waived. Everything not waived still applies before the package can send.`
             : 'Denied. The package can be sent once the outstanding items are done.')
         : (decision === 'approved'
             ? 'Waiver approved. The co-borrower now shows as a member (non-guarantor); re-issue the term sheet to reflect it.'
@@ -94,9 +105,9 @@ export default function StaffExceptions() {
       </div>
       <p className="muted" style={{ marginTop: 6 }}>
         Requests to make an exception to a loan policy — waiving a co-borrower’s personal guarantee (they stay a
-        member of the borrowing entity but are not a personal guarantor), or sending a term-sheet package before the
-        file is ready for clear-to-close. {isSuper
-          ? 'Approve or deny each one — a short note is required — then clear it when it’s handled.'
+        member of the borrowing entity but are not a personal guarantor), or sending a term-sheet package before
+        every send requirement is met. {isSuper
+          ? 'For a send exception you see the whole picture — what’s done and what’s outstanding — and tick exactly which requirements you’re waiving; everything unchecked still applies. A short note is required; clear the exception when it’s handled.'
           : 'Only a super-admin can approve or deny; you can review the queue and clear a handled one.'}
       </p>
 
@@ -116,8 +127,16 @@ export default function StaffExceptions() {
         const open = r.status === 'requested';
         const ownRequest = r.requested_by && actorId && r.requested_by === actorId;
         const canClear = r.status !== 'cleared' && (isSuper || ownRequest);
+        const isEsign = (r.type || r.exception_type) === 'esign_before_ctc';
+        // The deciding super-admin picks which requirements to waive right in the
+        // card's requirements picture; the selection lives here so Approve can
+        // submit it. (EsignGatePanel only enables pickers when the server says
+        // this actor can decide.)
+        const gateSelect = isEsign && open && canDecide && !ownRequest
+          ? { selected: waiveSel[r.id], onChange: (codes) => setWaiveSel((m) => ({ ...m, [r.id]: codes })) }
+          : undefined;
         return (
-          <ExceptionCard key={r.id} r={r} reasonCodes={reasonCodes}
+          <ExceptionCard key={r.id} r={r} reasonCodes={reasonCodes} gateSelect={gateSelect}
             highlight={highlightId === r.id} forwardRef={(el) => { rowRefs.current[r.id] = el; }}>
             {(open && canDecide) || canClear ? (
               <div style={{ marginTop: 10, borderTop: '1px solid var(--hair,#e7e2d6)', paddingTop: 10 }}>

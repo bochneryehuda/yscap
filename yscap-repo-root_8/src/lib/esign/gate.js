@@ -8,8 +8,12 @@
  *      signed_off_at >= the appraisal-back time. A P&P sign-off from BEFORE the
  *      appraisal does NOT count (enforces "re-registered on the appraised value").
  *
- * Returns { ready, outstanding:[{code,label,reason}] } for the staff UI. The
- * server re-checks this on the actual send — the client is never trusted.
+ * Returns the full disposition (see gate-disposition.js): { ready, sendAllowed,
+ * outstanding:[{code,label,reason,tier,waived}], checks:[the ✓/✗ clear view],
+ * floorMet, exception, canRequestException, … } for the staff UI. The server
+ * re-checks this on the actual send — the client is never trusted. A super-admin
+ * exception may waive SPECIFIC named blockers (owner-directed 2026-07-24);
+ * everything not waived is always enforced.
  * No-guessing: if the appraisal has no sign-off timestamp to compare against, the
  * "re-signed after" test cannot be proven, so P&P is treated as NOT ready.
  *
@@ -142,15 +146,49 @@ async function esignSendGate(applicationId, { db = dbDefault, purpose } = {}) {
   for (const b of regBlockers) outstanding.push(b);
 
   // A super-admin may approve a "send before clear-to-close" exception so a file
-  // that isn't fully ready can still send the term-sheet package — but ONLY the
-  // clear-to-close-readiness blockers are waived; the FLOOR (appraisal back, P&P
-  // re-registered, closing date, current registration) is always enforced. Fails
-  // CLOSED: an unreadable exception is treated as none (never grants an early send).
+  // that isn't fully ready can still send the term-sheet package. The approval
+  // names EXACTLY which outstanding requirements it waives (per-requirement
+  // waivers, owner-directed 2026-07-24) — everything not named stays enforced;
+  // a legacy approval (no waived codes) keeps waiving only the clear-to-close
+  // readiness tier with the floor enforced. Fails CLOSED: an unreadable
+  // exception is treated as none (never grants an early send).
   let exception = null;
   try { exception = await loanExceptions.latestEsignBeforeCtc(applicationId, db); }
   catch (_) { exception = null; }
 
-  return gateDisposition(outstanding, exception);
+  const dispo = gateDisposition(outstanding, exception);
+  // The CLEAR VIEW (owner-directed 2026-07-24): every requirement with a ✓/✗ —
+  // what is already DONE and what is still outstanding — so the requester and
+  // the reviewing super-admin both see the whole picture, not just the misses.
+  dispo.checks = buildChecks(dispo.outstanding, purpose);
+  return dispo;
+}
+
+// The full requirements catalog for the ✓/✗ view. Outstanding entries carry
+// their live label/reason/tier/waived flags; satisfied ones render with the
+// catalog label. Blockers outside the catalog (manual_approval / an unreadable
+// registration) appear only when outstanding — appended at the end.
+function buildChecks(outstanding, purpose) {
+  const catalog = [
+    { code: APPRAISAL_BACK, label: 'Appraisal documents received' },
+    { code: APPRAISAL_REVIEW, label: 'Appraisal review cleared' },
+    { code: PRODUCT_PRICING, label: 'Product & pricing registered after the appraisal' },
+    ...(purpose !== 'heter_iska' ? [{ code: 'expected_closing', label: 'Estimated closing date' }] : []),
+    { code: 'registration_stale', label: 'Registration is current' },
+  ];
+  const byCode = {};
+  for (const o of outstanding || []) if (!(o.code in byCode)) byCode[o.code] = o;
+  const checks = catalog.map((c) => {
+    const o = byCode[c.code];
+    delete byCode[c.code];
+    return o
+      ? { code: o.code, label: o.label, ok: false, reason: o.reason, tier: o.tier, waived: !!o.waived, waiveWarning: o.waiveWarning }
+      : { code: c.code, label: c.label, ok: true, tier: tierOf(c.code) };
+  });
+  for (const o of Object.values(byCode)) {
+    checks.push({ code: o.code, label: o.label, ok: false, reason: o.reason, tier: o.tier, waived: !!o.waived, waiveWarning: o.waiveWarning });
+  }
+  return checks;
 }
 
 /**

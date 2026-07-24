@@ -69,6 +69,17 @@ function sameValue(incoming, current) {
   return Number.isFinite(a) && Number.isFinite(b) && a === b;
 }
 
+// Per-field semantic comparators layered on top of sameValue. `term` is free
+// TEXT written in different spellings by different doors ("12" vs "12 Months")
+// — compare it by MEANING so a ClickUp echo of the very same term is never held
+// as a frozen-economics conflict (same root cause as the db/288 trigger fix).
+const { termsEquivalent } = require('./term-text');
+function fieldSame(field, incoming, current) {
+  if (sameValue(incoming, current)) return true;
+  if (field === 'term') return termsEquivalent(incoming, current);
+  return false;
+}
+
 /**
  * PURE — given the incoming ClickUp `cols` and the current stored applications
  * row, return the frozen-economics fields that would actually CHANGE. No DB, so
@@ -83,7 +94,7 @@ function changedFrozenFields(cols, current) {
     const nv = cols[k];
     if (nv == null) continue;               // COALESCE keeps the current value — never a change
     const ov = current ? current[k] : undefined;
-    if (sameValue(nv, ov)) continue;
+    if (fieldSame(k, nv, ov)) continue;
     out.push({ field: k, label: LABEL_OF[k], from: ov == null ? null : String(ov), to: String(nv) });
   }
   return out;
@@ -154,4 +165,4 @@ async function applyInboundEconomicsFreeze({ appId, cols, taskId, borrowerId, cl
   return changed.map((c) => c.field);
 }
 
-module.exports = { FROZEN_ECON_FIELDS, FROZEN_KEYS, sameValue, changedFrozenFields, summarize, applyInboundEconomicsFreeze };
+module.exports = { FROZEN_ECON_FIELDS, FROZEN_KEYS, sameValue, fieldSame, changedFrozenFields, summarize, applyInboundEconomicsFreeze };

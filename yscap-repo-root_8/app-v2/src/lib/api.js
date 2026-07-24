@@ -459,8 +459,12 @@ export const api = {
   withdrawException:         (appId, eid) => req('POST', `/api/staff/applications/${appId}/exceptions/${eid}/withdraw`, {}),
   loanExceptions:            (status) => req('GET', `/api/admin/exceptions${status ? `?status=${status}` : ''}`),
   loanExceptionsCount:       () => req('GET', '/api/admin/exceptions/count'),
-  decideLoanException:       (id, decision, note) => req('POST', `/api/admin/exceptions/${id}/decide`, { decision, note }),
+  // decide: `waivedCodes` (esign_before_ctc approvals, 2026-07-24) names EXACTLY
+  // which outstanding requirements the super-admin waives; omitted → legacy meaning.
+  decideLoanException:       (id, decision, note, waivedCodes) => req('POST', `/api/admin/exceptions/${id}/decide`, waivedCodes ? { decision, note, waivedCodes } : { decision, note }),
   clearLoanException:        (id, note) => req('POST', `/api/admin/exceptions/${id}/clear`, { note }),
+  // The esign exception's clear view: live ✓/✗ requirements + request snapshot + waived codes.
+  exceptionGate:             (id) => req('GET', `/api/admin/exceptions/${id}/gate`),
   exceptionComments:         (id) => req('GET', `/api/admin/exceptions/${id}/comments`),
   addExceptionComment:       (id, body) => req('POST', `/api/admin/exceptions/${id}/comments`, { body }),
   exceptionConditions:       (id) => req('GET', `/api/admin/exceptions/${id}/conditions`),

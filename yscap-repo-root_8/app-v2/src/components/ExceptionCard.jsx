@@ -2,6 +2,7 @@ import React from 'react';
 import { Link } from 'react-router-dom';
 import ExceptionComments from './ExceptionComments.jsx';
 import ExceptionConditions from './ExceptionConditions.jsx';
+import EsignGatePanel from './EsignGatePanel.jsx';
 
 /* One exception row, shared by the super-admin Exceptions box (StaffExceptions)
    and the loan-officer "My exceptions" queue (StaffMyExceptions). Renders the
@@ -35,12 +36,12 @@ const TYPE_META = {
   },
   esign_before_ctc: {
     jumpHash: '#sec-esign', jumpLabel: 'Jump to e-sign',
-    defaultPolicy: () => 'A term-sheet package sends only once the file is ready for clear-to-close (appraisal back · reviewed · re-priced · closing date · registration current).',
-    requestedChange: () => <>Send the <b>term-sheet package</b> for signature <b>before clear-to-close</b>. The appraisal / pricing / closing-date / registration prerequisites still apply — this waives only the remaining readiness (the internal appraisal review).</>,
+    defaultPolicy: () => 'A term-sheet package sends only once every send requirement is met (appraisal back · reviewed · re-priced · closing date · registration current).',
+    requestedChange: () => <>Send the <b>term-sheet package</b> for signature <b>before every send requirement is met</b>. The requirements picture below shows what’s done and what’s outstanding — a super-admin chooses exactly which outstanding requirements to waive, and <b>everything not waived still applies</b>.</>,
   },
 };
 
-export default function ExceptionCard({ r, reasonCodes = {}, highlight = false, forwardRef, children }) {
+export default function ExceptionCard({ r, reasonCodes = {}, highlight = false, forwardRef, gateSelect, children }) {
   const type = r.type || r.exception_type || 'guaranty_waiver';
   const meta = TYPE_META[type] || TYPE_META.guaranty_waiver;
   const subject = [r.subject_first, r.subject_last].filter(Boolean).join(' ') || 'the co-borrower';
@@ -87,6 +88,10 @@ export default function ExceptionCard({ r, reasonCodes = {}, highlight = false, 
 
       <div className="metrow" style={{ marginTop: 8 }}><span className="k">Reason</span><span className="v">{reasonLabel}</span></div>
       {r.reason_note && <div className="notice" style={{ marginTop: 6, whiteSpace: 'pre-wrap' }}>{r.reason_note}</div>}
+
+      {/* Send-before-clear-to-close: the CLEAR VIEW — every requirement ✓/✗, what
+          the approval waived, and (for a deciding super-admin) the waive pickers. */}
+      {type === 'esign_before_ctc' && <EsignGatePanel exceptionId={r.id} status={r.status} select={gateSelect} />}
 
       <div className="muted small" style={{ marginTop: 6 }}>
         {r.requested_by_name && <>Requested by {r.requested_by_name} · </>}{fmtWhen(r.requested_at || r.created_at)}

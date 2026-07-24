@@ -36,15 +36,16 @@ const REASON_CODES = Object.freeze({
 });
 function isReasonCode(c) { return !!c && Object.prototype.hasOwnProperty.call(REASON_CODES, c); }
 
-// Structured reasons a term-sheet package is sent BEFORE clear-to-close
-// (owner-directed 2026-07-23). The floor (appraisal back, P&P re-registered on the
-// appraised value, estimated closing date, registration current) is NEVER waivable
-// — these reasons explain waiving only the remaining readiness (the internal
-// appraisal-review sign-off) so the documents can go out early.
+// Structured reasons a term-sheet package is sent BEFORE clear-to-close.
+// The request may be made whenever the package can't send (owner-directed
+// 2026-07-24 — floor met or not); the approving super-admin then picks exactly
+// which outstanding requirements are waived (waived_codes), and everything not
+// waived stays enforced.
 const ESIGN_BEFORE_CTC_REASONS = Object.freeze({
   review_pending:   'Appraisal is back and re-priced — only the internal appraisal review is still pending',
   borrower_timeline:'Borrower / closing timeline needs the documents out now',
   lock_terms:       'Locking the terms with the borrower now',
+  system_issue:     'A system flag is blocking the send in error (e.g. a false “re-register” warning)',
   relationship:     'Relationship / repeat sponsor exception',
   other:            'Other (see note)',
 });
@@ -84,13 +85,15 @@ async function requestGuarantyWaiver(client, { appId, subjectBorrowerId, reasonC
 
 /**
  * Request a "send the term-sheet package before clear-to-close" exception
- * (owner-directed 2026-07-23). Supersedes any prior OPEN one on the file (→
- * withdrawn) so the one-open-per-file invariant holds, then inserts a fresh
- * 'requested' row. No subject borrower (it's a file-level policy exception). The
- * CALLER must have already confirmed the send-gate FLOOR is met — this module
- * only owns the table write. Returns the new row.
+ * (owner-directed 2026-07-23; request-anytime + per-requirement waivers
+ * 2026-07-24). Supersedes any prior OPEN one on the file (→ withdrawn) so the
+ * one-open-per-file invariant holds, then inserts a fresh 'requested' row. No
+ * subject borrower (it's a file-level policy exception). `gateSnapshot` is the
+ * full requirements picture at request time ({ at, checks, outstanding }) so the
+ * reviewing super-admin sees exactly what state prompted the request. This
+ * module only owns the table write. Returns the new row.
  */
-async function requestEsignBeforeCtc(client, { appId, reasonCode, reasonNote, requestedBy }) {
+async function requestEsignBeforeCtc(client, { appId, reasonCode, reasonNote, requestedBy, gateSnapshot }) {
   await client.query(
     `UPDATE loan_exceptions
         SET status='withdrawn', updated_at=now(),
@@ -99,13 +102,14 @@ async function requestEsignBeforeCtc(client, { appId, reasonCode, reasonNote, re
     [appId, OPEN]);
   const ins = await client.query(
     `INSERT INTO loan_exceptions
-       (application_id, exception_type, status, reason_code, reason_note, requested_by)
-     VALUES ($1,'esign_before_ctc','requested',$2,$3,$4)
+       (application_id, exception_type, status, reason_code, reason_note, requested_by, gate_snapshot)
+     VALUES ($1,'esign_before_ctc','requested',$2,$3,$4,$5)
      RETURNING *`,
     [appId,
      isEsignReasonCode(reasonCode) ? reasonCode : 'other',
      reasonNote ? String(reasonNote).slice(0, 2000) : null,
-     requestedBy || null]);
+     requestedBy || null,
+     gateSnapshot ? JSON.stringify(gateSnapshot) : null]);
   return ins.rows[0];
 }
 
@@ -124,15 +128,28 @@ async function latestEsignBeforeCtc(appId, client = db) {
  * Decide (approve|deny) an OPEN exception. Guarded so a row can be decided once.
  * Returns the updated row, or null if it was already decided / no longer open.
  * The caller flips applications.co_borrower_pg_waived and audits.
+ *
+ * `extras` (esign_before_ctc approvals only, owner-directed 2026-07-24):
+ *   waivedCodes — the EXACT blocker codes this approval waives (jsonb array).
+ *                 Absent/null keeps the legacy meaning (ctc tier only).
+ *   decidedGate — { at, outstanding:[{code,label,reason,tier}] }, the LIVE gate
+ *                 picture at decision time; pins each waiver to the state the
+ *                 super-admin actually saw (gate-disposition re-checks it).
+ * A denial never stores waivers.
  */
-async function decideException(id, decision, staffId, note, client = db) {
+async function decideException(id, decision, staffId, note, client = db, extras = {}) {
   const status = decision === 'approved' ? 'approved' : 'denied';
+  const waived = status === 'approved' && Array.isArray(extras.waivedCodes)
+    ? JSON.stringify(extras.waivedCodes.map(String)) : null;
+  const decidedGate = status === 'approved' && extras.decidedGate
+    ? JSON.stringify(extras.decidedGate) : null;
   const r = await client.query(
     `UPDATE loan_exceptions
-        SET status=$2, decided_by=$3, decided_at=now(), decision_note=$4, updated_at=now()
+        SET status=$2, decided_by=$3, decided_at=now(), decision_note=$4, updated_at=now(),
+            waived_codes=$6, decided_gate=$7
       WHERE id=$1 AND status=$5
       RETURNING *`,
-    [id, status, staffId || null, note ? String(note).slice(0, 1000) : null, OPEN]);
+    [id, status, staffId || null, note ? String(note).slice(0, 1000) : null, OPEN, waived, decidedGate]);
   return r.rows[0] || null;
 }
 
