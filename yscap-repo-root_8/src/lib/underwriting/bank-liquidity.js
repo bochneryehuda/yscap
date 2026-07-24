@@ -32,6 +32,27 @@ const { _internals: { holderMatchesFile } } = require('./bank-statement-checks')
 
 const money = (n) => (num(n) == null ? '—' : `$${Math.round(num(n)).toLocaleString('en-US')}`);
 
+// Masked account number for the assets table (owner-directed 2026-07-24: the breakdown was
+// "missing accounts number"). Last 4 digits only — never the full number. null when none was read.
+function maskAcct(f) {
+  const digits = String((f && f.accountNumber) || '').replace(/\D/g, '');
+  return digits ? `••${digits.slice(-4)}` : null;
+}
+
+// The best comparable DATE for a statement — used to keep only the MOST RECENT statement per
+// account (owner-directed 2026-07-24: "need most recent statement by date not old one"). Prefers
+// the end of `statementPeriod`; falls back to a single statement-date field if the period is
+// unparseable. Returns null when nothing parses (then the upload date / input order decides).
+function statementDateOf(f) {
+  const fromPeriod = periodEndOf(f && f.statementPeriod);
+  if (fromPeriod != null) return fromPeriod;
+  for (const k of ['statementDate', 'periodEnd', 'asOfDate', 'statement_end_date', 'endDate', 'statement_date']) {
+    const t = Date.parse(String((f && f[k]) || '').trim());
+    if (Number.isFinite(t)) return t;
+  }
+  return null;
+}
+
 // A stable identity for an account so two months of the SAME account collapse to one. The account
 // NUMBER is the identity — and NOTHING ELSE when it's present: the same account's extracted bank
 // name drifts month-to-month ("Chase" vs "JPMorgan Chase Bank NA"), so folding the bank string into
@@ -92,29 +113,34 @@ function assessBankLiquidity(ctx = {}, extractions = [], opts = {}) {
 
   const statements = (extractions || [])
     .filter((e) => (e.doc_type || e.docType) === 'bank_statement')
-    .map((e) => ({ document_id: e.document_id || null, f: e.fields || {} }));
+    .map((e, ix) => ({ document_id: e.document_id || null, created_at: e.created_at || e.createdAt || null, ix, f: e.fields || {} }));
 
-  // Collapse statements of the same account to ONE representative — the LATEST month
-  // (R5.59, owner: "make sure you have the last statement and calculate based on the last
-  // ending balance"). We pick by statement-period END date; only when neither month has a
-  // parseable period do we fall back to input order (created_at — the most recently analyzed
-  // month wins). Counting the latest month's ending balance — never summing two months of one
-  // account — is what stops the same account being double-counted (the dangerous inflate).
+  // Collapse statements of the SAME account to ONE representative — the MOST RECENT statement
+  // (R5.59 + owner-directed 2026-07-24: "need most recent statement by date not old one... not
+  // duplicating both same account's statements"). Each statement gets a comparable rank
+  // [statementDate, uploadDate, inputIndex]; per account we keep the MAX rank. So the latest
+  // statement's ending balance is the ONE we count — never two months of one account summed
+  // (the dangerous inflate), and never an OLDER month when a newer one is on file. When no date
+  // parses at all, the most-recently-uploaded (then last-analyzed) statement wins.
+  const rankOf = (st) => {
+    const date = statementDateOf(st.f);
+    const up = Date.parse(String(st.created_at || ''));
+    return [date != null ? date : -Infinity, Number.isFinite(up) ? up : -Infinity, st.ix];
+  };
+  const rankGt = (a, b) => (a[0] > b[0]) || (a[0] === b[0] && a[1] > b[1]) || (a[0] === b[0] && a[1] === b[1] && a[2] > b[2]);
   const byAccount = new Map();
   for (const st of statements) {
     const f = st.f;
     if (f.readable === false || !f.accountHolderName) continue; // an unreadable statement is bank_unreadable's job
     const key = accountKey(f);
-    const end = periodEndOf(f.statementPeriod);
+    const rank = rankOf(st);
     const prev = byAccount.get(key);
-    if (!prev) { byAccount.set(key, { rep: st, repEnd: end, count: 1 }); continue; }
-    // Keep whichever month is LATER by period end. A row WITH a period beats one without;
-    // ties (or both undated) keep the later-analyzed row (input order) — the prior behavior.
-    const takeNew = (end != null && (prev.repEnd == null || end >= prev.repEnd)) ||
-                    (end == null && prev.repEnd == null);
+    if (!prev) { byAccount.set(key, { rep: st, repEnd: rank[0] === -Infinity ? null : rank[0], rank, count: 1 }); continue; }
+    const better = rankGt(rank, prev.rank);
     byAccount.set(key, {
-      rep: takeNew ? st : prev.rep,
-      repEnd: takeNew ? end : prev.repEnd,
+      rep: better ? st : prev.rep,
+      repEnd: better ? (rank[0] === -Infinity ? null : rank[0]) : prev.repEnd,
+      rank: better ? rank : prev.rank,
       count: prev.count + 1,
     });
   }
@@ -130,6 +156,7 @@ function assessBankLiquidity(ctx = {}, extractions = [], opts = {}) {
     const ending = num(f.closingBalance);
     accounts.push({
       holder, bankName: f.bankName || null, tied, ending,
+      accountNumber: maskAcct(f),   // #244 (owner: the assets table was "missing accounts number") — last-4 only
       holderIsBusiness: f.holderIsBusiness === true, statementCount: count,
       // R5.59 — the month actually counted for this account (the latest of `count` months).
       countedPeriod: f.statementPeriod || null,
