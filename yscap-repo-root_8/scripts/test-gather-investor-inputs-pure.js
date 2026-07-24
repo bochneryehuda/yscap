@@ -150,5 +150,33 @@ function mkDb({ fico, apprPresent, flood, expApp, trackAgg, staleExit, throwOn }
     ok('no claim → has_stale_exit omitted (never nags a file that does not rely on experience)', !('has_stale_exit' in outNoClaimStale));
   }
 
+  // 8. CASH-OUT (#253) — is_cash_out is the ECONOMIC classification (refinance_economic_type);
+  //    feeds the Blue Lake escalation isg_bl_cashout_over_250k (fires on is_cash_out && proceeds>250k).
+  //    Independent of experience claim. Never-false-fire: only 'cash_out' sets true; NULL → omit.
+  const coApp = (extra) => Object.assign({ borrower_id: 'b1', co_borrower_id: null, requested_exp_flips: 0, requested_exp_holds: 0, requested_exp_ground: 0 }, extra);
+  {
+    // Economic cash-out with a verified number → is_cash_out true + cash_out_proceeds (prefers verified).
+    const out = await gatherInvestorInputs('app-co', mkDb({ expApp: coApp({ refinance_economic_type: 'cash_out', verified_cash_out: 300000, estimated_cash_out: 999999 }) }));
+    ok('economic cash_out → is_cash_out true', out.is_cash_out === true);
+    ok('cash_out_proceeds prefers the VERIFIED number', out.cash_out_proceeds === 300000);
+
+    // Only an estimate on file → falls back to the estimate (real, file-carried).
+    const outEst = await gatherInvestorInputs('app-co', mkDb({ expApp: coApp({ refinance_economic_type: 'cash_out', verified_cash_out: null, estimated_cash_out: 275000 }) }));
+    ok('no verified number → cash_out_proceeds falls back to the estimate', outEst.cash_out_proceeds === 275000);
+
+    // Economically cash_out but no proceeds number → is_cash_out true, proceeds omitted (rule stays silent).
+    const outNoAmt = await gatherInvestorInputs('app-co', mkDb({ expApp: coApp({ refinance_economic_type: 'cash_out', verified_cash_out: null, estimated_cash_out: null }) }));
+    ok('cash_out with no proceeds number → cash_out_proceeds omitted', outNoAmt.is_cash_out === true && !('cash_out_proceeds' in outNoAmt));
+
+    // Rate-and-term → a real false (economically NOT cash-out); rule stays silent.
+    const outRT = await gatherInvestorInputs('app-co', mkDb({ expApp: coApp({ refinance_economic_type: 'rate_term', estimated_cash_out: 500000 }) }));
+    ok('rate_term → is_cash_out false (not omitted, not true)', outRT.is_cash_out === false);
+    ok('rate_term → cash_out_proceeds omitted (never fires the escalation)', !('cash_out_proceeds' in outRT));
+
+    // Not classified (NULL — e.g. a purchase) → is_cash_out OMITTED (never fabricated).
+    const outNull = await gatherInvestorInputs('app-co', mkDb({ expApp: coApp({ refinance_economic_type: null, estimated_cash_out: 500000 }) }));
+    ok('unclassified refi type → is_cash_out omitted (never guessed)', !('is_cash_out' in outNull) && !('cash_out_proceeds' in outNull));
+  }
+
   console.log(`\ngatherInvestorInputs (#232 data-source wiring) pure — ${passed} checks passed`);
 })().catch((e) => { console.error(e); process.exit(1); });

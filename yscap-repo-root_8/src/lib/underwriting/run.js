@@ -476,7 +476,8 @@ async function gatherInvestorInputs(applicationId, db) {
   try {
     const exp = require('../experience');
     const ar = await db.query(
-      `SELECT borrower_id, co_borrower_id, requested_exp_flips, requested_exp_holds, requested_exp_ground
+      `SELECT borrower_id, co_borrower_id, requested_exp_flips, requested_exp_holds, requested_exp_ground,
+              refinance_economic_type, verified_cash_out, estimated_cash_out
          FROM applications WHERE id = $1`, [applicationId]);
     const app = ar.rows[0];
     if (app) {
@@ -506,6 +507,25 @@ async function gatherInvestorInputs(applicationId, db) {
         } catch (_) { /* stale-exit read error → omit has_stale_exit (rule stays silent) */ }
       }
       // claim === 0 → nothing claimed → OMIT all three (rule stays silent, never a fabricated 0)
+
+      // Cash-out (economic truth) — feeds the Blue Lake escalation isg_bl_cashout_over_250k
+      // (fires only when is_cash_out AND cash_out_proceeds > $250k). is_cash_out is the structure
+      // underwriter's ECONOMIC classification (db/267 refinance_economic_type), independent of how
+      // the file was labeled → the authoritative, never-false-fire flag: 'cash_out' → true,
+      // 'rate_term' → false, NULL (not yet classified / not a refinance) → OMIT (never guessed).
+      // cash_out_proceeds prefers the VERIFIED number and falls back to the borrower's estimate
+      // (both real, file-carried; the estimate is an acceptable basis for an ESCALATION-to-review,
+      // never a decline). Absent proceeds → omit → the rule stays silent (is_cash_out alone can't fire).
+      const ret = String(app.refinance_economic_type == null ? '' : app.refinance_economic_type).toLowerCase();
+      if (ret === 'cash_out') {
+        out.is_cash_out = true;
+        const raw = app.verified_cash_out != null ? app.verified_cash_out
+          : (app.estimated_cash_out != null ? app.estimated_cash_out : null);
+        if (raw != null && Number.isFinite(Number(raw))) out.cash_out_proceeds = Number(raw);
+      } else if (ret === 'rate_term') {
+        out.is_cash_out = false;                 // a real determination: economically NOT cash-out
+      }
+      // else: NULL / unclassified → OMIT is_cash_out (unknown, never fabricated)
     }
   } catch (_) { /* app row / track_records read error → omit claimed_exp+verified_exp */ }
 
