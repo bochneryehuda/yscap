@@ -186,22 +186,22 @@ function assessCondition(cond, ctx) {
       reason = [...new Set(conflicting.map((k) => k.detail).filter(Boolean))].join(' ');
     } else if (satisfied) {
       verdict = VERDICT.SATISFIED;
-      reason = c.pilot_template_code ? `Cleared on the file (${c.pilot_template_code}).` : 'Cleared on the file.';
+      reason = c.pilot_template_code ? `Our system has this cleared on the file (${c.pilot_template_code}).` : 'Our system has this cleared on the file.';
     } else if (item) {
       verdict = VERDICT.OUTSTANDING;
-      reason = `In progress on the file (${c.pilot_template_code}); ${statusPhrase(item.status)}.`;
+      reason = `Our system is still working this on the file (${c.pilot_template_code}); ${statusPhrase(item.status)}.`;
     } else {
       verdict = VERDICT.OUTSTANDING;
       reason = c.match_quality === 'new'
-        ? 'No matching condition on the file yet — suggest posting it.'
-        : `Maps to ${c.pilot_template_code || 'a PILOT condition'}, not yet on the file.`;
+        ? 'Our system has no condition for this yet — we suggest posting one.'
+        : `Our system will check this as ${c.pilot_template_code || 'a PILOT condition'}; it is not on the file yet.`;
     }
     // "suggest posting" applies only to an OUTSTANDING, unmapped (new) condition — a
     // conflicting or satisfied condition is surfaced under its own signal, not as a post.
     const suggestPost = verdict === VERDICT.OUTSTANDING && !item && c.match_quality === 'new';
     return base(c, verdict, reason, checks, { pilotOnFile: !!item, suggestPost });
   } catch (_e) {
-    return base(cond || {}, VERDICT.OUTSTANDING, 'Could not assess (defaulted to outstanding).', []);
+    return base(cond || {}, VERDICT.OUTSTANDING, 'Our system could not check this yet (treating it as still outstanding).', []);
   }
 }
 
