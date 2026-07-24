@@ -206,6 +206,12 @@ module.exports = {
   // OFF by default: OFAC/BSA-AML is compliance-sensitive, so it's opt-in.
   fraudAutoclearEnabled: process.env.FRAUD_AUTOCLEAR_ENABLED === '1',
 
+  // Auto-clear the "Bank statements / liquid assets" condition once PILOT has AI-read
+  // the statements on the file AND the borrower's (and verified entity's) liquid assets
+  // provably cover what the registered deal requires — stricter than the human gate,
+  // never a false-clear. See src/lib/underwriting/assets-autoclear.js. OFF by default.
+  assetsAutoclearEnabled: process.env.ASSETS_AUTOCLEAR_ENABLED === '1',
+
   // --- document storage ---
   storageProvider: process.env.STORAGE_PROVIDER || 'local', // 'local' | 's3' | 'sharepoint'
   // On Render, set STORAGE_DIR to a mounted persistent disk (e.g. /var/data/uploads)

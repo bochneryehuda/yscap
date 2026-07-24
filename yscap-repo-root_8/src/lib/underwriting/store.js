@@ -347,6 +347,14 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
     }
   } catch (_) { /* auto-clear is additive — never blocks the extraction */ }
 
+  // Step 8 (IG-W5): after a bank statement is AI-read, try to auto-clear the liquid-assets
+  // condition — only when the statements prove the deal's required liquidity is covered.
+  try {
+    if (docType === 'bank_statement' && appId) {
+      await require('./assets-autoclear').autoClearAssetsCondition(client, appId);
+    }
+  } catch (_) { /* auto-clear is additive — never blocks the extraction */ }
+
   return { extractionId, findingIds };
 }
 
