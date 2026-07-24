@@ -41,8 +41,13 @@ const statusWord = (st) => (st === 'MANUAL' ? 'manual-review exception' : st ===
 function addrLine(a) {
   if (!a) return '';
   if (typeof a === 'string') return a;
+  // Every historical property_address shape (post-#717 audit): components,
+  // oneLine, or a ClickUp-written formatted string — never let a shape gap make
+  // the file's address read as blank (that would silently fall back to a stale
+  // registered-scenario address).
   if (a.oneLine) return a.oneLine;
-  return [a.line1 || a.street, a.city, a.state, a.zip].filter(Boolean).join(', ');
+  const composed = [a.line1 || a.street || a.address, a.city, a.state, a.zip].filter(Boolean).join(', ');
+  return composed || a.formatted_address || a.formatted || '';
 }
 
 /* Admin-mode soft gate — the SAME password gate the static Term Sheet tool
