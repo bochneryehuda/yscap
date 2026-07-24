@@ -94,7 +94,7 @@ router.get('/files/:id/overview', requirePermission('manage_draws'), async (req,
       `SELECT tp_draw_id, number, name, status, draw_type, requested_cents, approved_cents, disbursed_cents,
               to_disburse_cents, fees, retainage, contingency, inspector_allowance_rate, inspector_recommendation_rate,
               coordinator_name, submitted_at, approved_at, completed_at, disbursed_at, estimated_reimbursement_date,
-              sitewire_draw_id, report_document_id, updated_at
+              sitewire_draw_id, portal_draw_request_id, report_document_id, writeback_at, writeback_note, updated_at
          FROM trustpoint_draws WHERE application_id=$1 ORDER BY COALESCE(number, 0), tp_created_at`, [appId])).rows : [];
     const serviceOrders = link ? (await db.query(
       `SELECT tp_service_order_id, tp_draw_id, service_type, status, service_number, ordered_at, scheduled_at, completed_at, cancelled_at, inspector_allowance_rate

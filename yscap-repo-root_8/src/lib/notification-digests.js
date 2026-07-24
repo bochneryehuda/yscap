@@ -545,6 +545,43 @@ async function drawFindingsAwaitingBorrowerOnce() {
    (The portfolio monitor flags this passively; this is the active push.) Staff surface — not borrower-safe-gated.
    The active-link EXISTS mirrors the passive monitor (rule 10): a finished/paid-off project is excluded, so an
    accepted finding whose wire was handled outside PILOT on a closed loan never alerts the team forever. */
+/* TrustPoint phase 5 (§5C, D2 — the SLA inverts): on an ADMINISTERED file the note
+   buyer wires the draw, not PILOT. An APPROVED TrustPoint draw with no observed
+   release after N days (TRUSTPOINT_UNRELEASED_DAYS, default 5) means someone should
+   chase the administrator so the borrower isn't left waiting. Self-gated per file,
+   at most every 2 days; the moment the poll observes the disbursement it stops. */
+async function trustpointUnreleasedOnce() {
+  let sent = 0;
+  const days = Math.max(1, Math.round(Number(process.env.TRUSTPOINT_UNRELEASED_DAYS) || 5));
+  let rows = [];
+  try {
+    rows = (await db.query(
+      `SELECT t.application_id, count(*)::int AS n, min(COALESCE(t.approved_at, t.updated_at)) AS oldest
+         FROM trustpoint_draws t
+         JOIN applications a ON a.id=t.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
+        WHERE t.status='APPROVED' AND t.disbursed_at IS NULL
+          AND COALESCE(t.approved_at, t.updated_at) < now() - ($1 || ' days')::interval
+          AND NOT EXISTS (SELECT 1 FROM draw_disbursements dd WHERE dd.trustpoint_draw_id = t.tp_draw_id)
+        GROUP BY t.application_id
+        LIMIT 200`, [String(days)])).rows;
+  } catch (_) { return 0; }
+  for (const r of rows) {
+    try {
+      if (!(await _gate('trustpoint_unreleased', r.application_id, '2 days'))) continue;
+      const d = daysAt(r.oldest);
+      await notify.notifyAppStaff(r.application_id, {
+        type: 'draw',
+        title: r.n === 1 ? 'Approved draw not released yet' : `${r.n} approved draws not released yet`,
+        badge: { text: 'Chase release', tone: 'action' },
+        body: `${r.n === 1 ? 'A draw' : `${r.n} draws`} on this file ${r.n === 1 ? 'was' : 'were'} approved by the draw administrator ${d != null && d > 0 ? `${d} day${d === 1 ? '' : 's'} ago ` : ''}but no funds release has been observed yet. The wire comes from the note buyer's side — please follow up with them so the borrower isn't left waiting.`,
+        applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk' });
+      await _stamp('trustpoint_unreleased', r.application_id, { unreleased: r.n, days: d });
+      sent++;
+    } catch (e) { console.error('[digest] trustpoint-unreleased', r.application_id, e && e.message); }
+  }
+  return sent;
+}
+
 async function drawReleaseOverdueOnce() {
   let sent = 0;
   const rows = (await db.query(
@@ -1005,6 +1042,7 @@ async function runDue() {
     await staleFileAlertsOnce().catch((e) => console.error('[digests] stale', e && e.message));
     await workflowAgingOnce().catch((e) => console.error('[digests] workflow-aging', e && e.message));
     await drawReleaseOverdueOnce().catch((e) => console.error('[digests] draw-release', e && e.message));
+    await trustpointUnreleasedOnce().catch((e) => console.error('[digests] trustpoint-unreleased', e && e.message));
     await trainingRunOnce().catch((e) => console.error('[digests] training-run', e && e.message));
     await certificateSurveyOnce().catch((e) => console.error('[digests] cert-survey', e && e.message));
     await directSourceSweepOnce().catch((e) => console.error('[digests] direct-source-sweep', e && e.message));
@@ -1040,7 +1078,7 @@ function start() {
 module.exports = {
   start, runDue, nyParts,
   weeklyBorrowerOutstandingOnce, dailyPipelineDigestOnce, staleFileAlertsOnce, weeklyAdminSummaryOnce,
-  drawFindingsAwaitingBorrowerOnce, drawReleaseOverdueOnce, workflowAgingOnce, conditionFreshnessReopenOnce,
+  drawFindingsAwaitingBorrowerOnce, drawReleaseOverdueOnce, trustpointUnreleasedOnce, workflowAgingOnce, conditionFreshnessReopenOnce,
   trainingRunOnce, certificateSurveyOnce, autoCommitteeReviewOnce, directSourceSweepOnce, autoReadSweepOnce, section1071SweepOnce,
   aiCrossdocSweepOnce, weeklyAdminAiQuestionsOnce, weeklyTopRiskyFilesOnce, weeklyLoAiDigestOnce,
   qaDeskAuditOnce,

@@ -55,6 +55,13 @@ const drawWire = require('../lib/esign/draw-wire');
 // Clamped to [0,100] so a nonsensical setting can't distort the client-side net preview either.
 async function retainagePctFor(appId) {
   try {
+    // D7 (phase 5): on a TrustPoint-administered file the ADMINISTRATOR owns retainage —
+    // PILOT holding its own % on top would double-withhold from the borrower. Zero here
+    // kills the computation at the one chokepoint every caller (release + overview) uses.
+    try {
+      const rp = await require('../sitewire/routing').resolveFilePlatform(appId);
+      if (rp && rp.platform === 'trustpoint') return 0;
+    } catch (_) { /* fall through to the normal resolution */ }
     const clamp = (n) => Math.min(100, Math.max(0, Number(n) || 0));
     const link = (await db.query(`SELECT retainage_pct FROM sitewire_property_links WHERE application_id=$1`, [appId])).rows[0];
     if (link && link.retainage_pct != null) return clamp(link.retainage_pct);
@@ -2472,3 +2479,5 @@ router.get('/change-requests/:crId/export', requirePermission('manage_draws'), a
 });
 
 module.exports = router;
+// test hook (never used by production code): the D7 retainage chokepoint
+module.exports._retainagePctFor = retainagePctFor;

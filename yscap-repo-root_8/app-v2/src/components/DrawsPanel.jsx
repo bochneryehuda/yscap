@@ -1108,6 +1108,9 @@ function TrustpointPanel({ appId }) {
             <b>Draw #{d.number == null ? '—' : d.number}</b>
             <span className="pill sw-insp">{STATUS_LABEL[d.status] || d.status || '—'}</span>
             <span className="small muted">Requested {usd(d.requested_cents)} · Approved {usd(d.approved_cents)}{d.to_disburse_cents != null ? ` · Net ${usd(d.to_disburse_cents)}` : ''}</span>
+            {(d.disbursed_at || Number(d.disbursed_cents) > 0) && (
+              <span className="small" style={{ color: 'var(--success)' }}>✓ Released{d.disbursed_cents != null ? ` ${usd(d.disbursed_cents)}` : ''}</span>
+            )}
             {d.writeback_at ? <span className="small" style={{ color: 'var(--success)' }}>✓ In Sitewire</span>
               : d.writeback_note ? <span className="small muted">{d.writeback_note}</span> : null}
           </div>

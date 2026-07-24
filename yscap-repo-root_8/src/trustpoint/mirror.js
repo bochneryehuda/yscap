@@ -17,6 +17,8 @@ const client = require('./client');
 const notify = require('../lib/notify');
 
 const usd = (c) => c == null ? '—' : '$' + Math.floor(Number(c) / 100).toLocaleString('en-US');
+// money-leg amounts keep their cents (a mirrored wire is exact, never floored)
+const usd2 = (c) => c == null ? '—' : '$' + (Number(c) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 async function audit(appId, tpDrawId, entity, entityId, field, oldV, newV, reacted) {
   try {
@@ -243,6 +245,130 @@ async function archiveReport(appId, tpProjectId, tpDrawId) {
 // Statuses map: IN_REVIEW = submitted/awaiting; APPROVED; COMPLETED (poll-only).
 // 'Returned' has no status of its own (draw returns to DRAFT) — reacted via the
 // DRAW_REQUEST_RETURNED webhook event, not the status watermark.
+/**
+ * Extract cents from the administrator's fees[] payload (shape is sandbox-unverified —
+ * sandbox item Q-C). One entry per parsable fee line; anything unparsable is dropped,
+ * an empty/absent payload returns null (never guessed as "$0 in fees").
+ */
+function feeLinesCents(fees) {
+  let arr = fees;
+  if (typeof arr === 'string') { try { arr = JSON.parse(arr); } catch (_) { return null; } }
+  if (!Array.isArray(arr) || !arr.length) return null;
+  const out = [];
+  for (const f of arr) {
+    if (f == null) continue;
+    if (typeof f === 'number' || typeof f === 'string') { const c = client.centsFromTp(f); if (c != null) out.push(c); continue; }
+    if (typeof f !== 'object') continue;
+    const v = f.amount ?? f.fee_amount ?? f.value ?? f.total ?? f.fee ?? null;
+    const c = client.centsFromTp(v);
+    if (c != null) out.push(c);
+  }
+  return out.length ? out : null;
+}
+
+/**
+ * §5C MONEY MIRROR (D2): the administrator wires the draw directly — PILOT observes the
+ * disbursement by poll (`disbursed_at`/`disbursed_cents` never arrive on webhooks) and
+ * records ONE mirror ledger row per draw. Insert-once via the uq_dd_tp_draw claim, so a
+ * re-read can never double-record; the borrower's single NET email rides the claim.
+ * Runs OUTSIDE the status watermark — money can move without a status transition.
+ */
+async function mirrorDisbursement(appId, row, { baseline = false, addr = 'the property' } = {}) {
+  try {
+    const disbursedCents = row.disbursed_cents != null ? Number(row.disbursed_cents) : null;
+    if (!(row.disbursed_at != null || (disbursedCents != null && disbursedCents > 0))) return { skipped: 'not_disbursed' };
+    // the Sitewire draw this money belongs to: the live intake tie, or the portal close-out
+    let swDrawId = row.sitewire_draw_id != null ? Number(row.sitewire_draw_id) : null;
+    if (swDrawId == null && row.portal_draw_request_id != null) {
+      const pr = (await db.query(`SELECT sitewire_draw_id FROM portal_draw_requests WHERE id=$1`, [row.portal_draw_request_id])).rows[0];
+      if (pr && pr.sitewire_draw_id != null) swDrawId = Number(pr.sitewire_draw_id);
+    }
+    const feeList = feeLinesCents(row.fees);
+    const feeSum = feeList ? feeList.reduce((s, c) => s + c, 0) : 0;
+    const approved = row.approved_cents != null ? Number(row.approved_cents) : 0;
+    // NET precedence: the administrator's own to_disburse; else what it says went out;
+    // else approved − fees. Their numbers, mirrored — never re-derived when they speak.
+    const net = row.to_disburse_cents != null ? Number(row.to_disburse_cents)
+      : (disbursedCents != null && disbursedCents > 0 ? disbursedCents : Math.max(0, approved - feeSum));
+    const relDate = row.disbursed_at ? new Date(row.disbursed_at).toISOString().slice(0, 10) : null;
+    const feesJson = ((x) => (x && x.length <= 20000 ? x : null))(JSON.stringify(row.fees ?? null));
+    const ins = (await db.query(
+      `INSERT INTO draw_disbursements (application_id, sitewire_draw_id, trustpoint_draw_id, approved_cents, fee_cents,
+          retainage_held_cents, net_release_cents, release_date, funded_status, kind, source, fees, note)
+       VALUES ($1,$2,$3,$4,$5,0,$6,$7,'released','draw','trustpoint',$8::jsonb,
+               'Mirrored from the draw administrator — the note buyer wires these draws directly.')
+       ON CONFLICT DO NOTHING RETURNING id`,
+      [appId, swDrawId, row.tp_draw_id, approved, feeSum, net, relDate, feesJson])).rows[0];
+    if (!ins) {
+      // Already recorded (an earlier pass, or a staff manual entry that claimed the
+      // per-draw slot): adopt the linkage — never a duplicate row, never a re-announce.
+      if (swDrawId != null) {
+        await db.query(
+          `UPDATE draw_disbursements SET trustpoint_draw_id=COALESCE(trustpoint_draw_id,$2), fees=COALESCE(fees,$3::jsonb), updated_at=now()
+            WHERE sitewire_draw_id=$1 AND kind='draw' AND trustpoint_draw_id IS NULL`, [swDrawId, row.tp_draw_id, feesJson]).catch(() => {});
+      }
+      return { skipped: 'already_recorded' };
+    }
+    await audit(appId, row.tp_draw_id, 'draw', row.tp_draw_id, 'disbursement_mirrored', null, String(net), !baseline);
+    if (baseline) return { ok: true, silent: true };
+    try { await verifyPartnerFee(appId, row); } catch (_) {}   // straight-to-completed draws still get the fee check
+    // The dormant markup knob (D9): when the note buyer later allows a YS markup, it is
+    // deducted from what reaches the borrower — the shown NET honors it the day it's set.
+    let markup = 0;
+    try {
+      const rp = await require('../sitewire/routing').resolveFilePlatform(appId);
+      if (rp && rp.rule && Number(rp.rule.markup_cents) > 0) markup = Number(rp.rule.markup_cents);
+    } catch (_) {}
+    const shown = Math.max(0, net - markup);
+    if (shown > 0) {
+      await notify.notifyAppBorrowers(appId, {
+        type: 'draw', title: 'Your construction draw has been released',
+        hero: { label: 'Released to you', value: usd2(shown), sub: 'typically arrives in 1–2 business days', tone: 'positive' },
+        badge: { text: 'Draw released', tone: 'positive' },
+        body: `Your construction draw of ${usd2(shown)} is on its way. Depending on your bank, funds typically take 1–2 business days to arrive.`,
+        lines: ['Questions about this draw? Just reply to this email or reach your loan officer.'],
+        applicationId: appId, link: `/app/${appId}`, ctaLabel: 'View your draws',
+      }).catch(() => {});
+    }
+    await notify.notifyAppStaff(appId, {
+      type: 'draw_inbound', title: 'Draw funds released',
+      body: `Draw #${row.number == null ? '—' : row.number} for ${addr}: ${usd2(net)} net was released by the administrator${feeSum ? ` (fees ${usd2(feeSum)})` : ''}. Recorded in the money ledger automatically.`,
+      badge: { text: 'Released', tone: 'positive' }, applicationId: appId, link: `/internal/app/${appId}/draws`, inAppOnly: true,
+    }).catch(() => {});
+    return { ok: true, net };
+  } catch (e) { console.warn('[trustpoint] disbursement mirror failed:', e && e.message); return { error: true }; }
+}
+
+/**
+ * §5E fee verification (D6): every administered draw's fee lines are checked ONCE
+ * against the rule's agreed per-draw physical fee (Blue Lake: $250, deducted from the
+ * net wire). A missing/different fee alerts staff — the borrower's NET depends on it.
+ * Absent fee DATA skips silently (never guessed); the check stamps fee_check_at.
+ */
+async function verifyPartnerFee(appId, row) {
+  try {
+    if (row.fee_check_at) return { skipped: 'checked' };
+    const rp = await require('../sitewire/routing').resolveFilePlatform(appId);
+    if (!rp || rp.platform !== 'trustpoint' || !rp.rule) return { skipped: 'not_applicable' };
+    const expected = rp.rule.fee_cents_physical != null ? Number(rp.rule.fee_cents_physical) : null;
+    if (expected == null || !Number.isFinite(expected)) return { skipped: 'no_expected_fee' };
+    const fees = feeLinesCents(row.fees);
+    if (fees == null) return { skipped: 'no_fee_data' };
+    const stamped = (await db.query(
+      `UPDATE trustpoint_draws SET fee_check_at=now(), updated_at=now() WHERE tp_draw_id=$1 AND fee_check_at IS NULL RETURNING tp_draw_id`,
+      [row.tp_draw_id])).rows[0];
+    if (!stamped) return { skipped: 'checked' };
+    if (fees.includes(expected)) return { ok: true };
+    const total = fees.reduce((s, c) => s + c, 0);
+    await notify.notifyAppStaff(appId, {
+      type: 'draw_inbound', title: 'Draw fee doesn’t match the agreed amount',
+      body: `Draw #${row.number == null ? '—' : row.number} carries fee lines totaling ${usd2(total)}, but the agreed per-draw fee for this program is ${usd2(expected)}. The borrower's net wire depends on this — please double-check the fee with the draw administrator.`,
+      badge: { text: 'Fee check', tone: 'action' }, applicationId: appId, link: `/internal/app/${appId}/draws`,
+    }).catch(() => {});
+    return { alerted: true };
+  } catch (e) { return { error: true }; }
+}
+
 async function reactDraw(appId, row, prev, { baseline = false, addrText = null } = {}) {
   const tpDrawId = row.tp_draw_id;
   const newStatus = row.status || null;
@@ -250,6 +376,10 @@ async function reactDraw(appId, row, prev, { baseline = false, addrText = null }
   const addr = addrText || (await db.query(`SELECT property_address->>'oneLine' AS a FROM applications WHERE id=$1`, [appId])).rows[0]?.a || 'the property';
   const nLabel = row.number == null ? '—' : row.number;
   const link = `/internal/app/${appId}/draws`;
+
+  // §5C money mirror — BEFORE (and independent of) the status watermark: a disbursement
+  // can land with no status change, and the mirror row has its own insert-once claim.
+  try { await mirrorDisbursement(appId, row, { baseline, addr }); } catch (_) {}
 
   // Atomic watermark claim (same shape as the Sitewire reconcile) — one reactor wins.
   const won = (await db.query(
@@ -291,6 +421,8 @@ async function reactDraw(appId, row, prev, { baseline = false, addrText = null }
       applicationId: appId, link: `/app/${appId}`,
     }).catch(() => {});
     await archiveReport(appId, row.tp_project_id, tpDrawId).catch(() => {});
+    // §5E: the once-per-draw fee check runs at approval (the NET depends on the fee).
+    try { await verifyPartnerFee(appId, row); } catch (_) {}
     // Phase 3 §5A/§6: POST-approval snapshot → per-line derivation → Sitewire write-back.
     // Fully best-effort; each stage records why it waited (writeback_note) when it can't run.
     try { await require('./lines').snapshotMilestones(appId, row.tp_project_id, tpDrawId, 'post'); } catch (_) {}
@@ -469,4 +601,4 @@ async function drainInbox(limit = 50) {
   return { ok, failed, drained: rows.length };
 }
 
-module.exports = { upsertDraw, reactDraw, reactReturned, upsertServiceOrder, hydrateProject, processEvent, drainInbox, archiveReport, linkedAppFor, linkFor, linkToSitewireIntake, _drawRow: drawRow };
+module.exports = { upsertDraw, reactDraw, reactReturned, upsertServiceOrder, hydrateProject, processEvent, drainInbox, archiveReport, linkedAppFor, linkFor, linkToSitewireIntake, mirrorDisbursement, verifyPartnerFee, _drawRow: drawRow, _feeLinesCents: feeLinesCents };
