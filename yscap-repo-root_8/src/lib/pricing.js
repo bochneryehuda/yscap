@@ -31,6 +31,7 @@ const PROGRAM_LABEL = { standard: 'Standard Program', gold: 'Gold Standard Progr
 // both. The engine MATH is untouched — this is the input/fee-default layer.
 const FEES = { lender: 2195, credit: 150, appraisal: 800 };
 const pricingSettings = require('./pricing-settings');
+const { parseAddress } = require('./address');   // city recovery from composed/string addresses
 
 /* ---- small coercers ---- */
 // Strips thousands-separator commas before parsing (#143): the studio's dollar
@@ -109,6 +110,20 @@ function isCashOut(app) {
 function buildInputs(app, experience, overrides) {
   app = app || {};
   const addr = app.property_address || {};
+  // property_address arrives in several historical shapes (object with line1 or
+  // street, object carrying only a composed oneLine/formatted string, or a bare
+  // JSON string). Recover the street text AND the CITY from whatever shape the
+  // file has: the frozen engines scan city+address text for the ineligible-city
+  // and adverse-market checks, so a recoverable city must never be dropped just
+  // because the file stored a composed string instead of components (audit
+  // 2026-07-24 on the file-owned-address fix).
+  const addrIsString = typeof app.property_address === 'string';
+  const fileLine1 = clean(addrIsString ? app.property_address : (addr.line1 || addr.address || addr.street || ''));
+  let fileCity = clean(addrIsString ? '' : addr.city);
+  if (!fileCity) {
+    const composed = clean(addrIsString ? app.property_address : (addr.oneLine || addr.formatted_address || addr.formatted || ''));
+    if (composed) { try { fileCity = clean(parseAddress(composed).city); } catch (_) { /* best-effort recovery */ } }
+  }
   const loanType = loanTypeOf(app);
 
   // Assignment purchases: leverage/pricing size off seller price + financeable fee.
@@ -123,8 +138,8 @@ function buildInputs(app, experience, overrides) {
     cashOut: loanType === 'Refinance' && isCashOut(app),
     strategy: engineStrategy(clean(app.program) || clean(app.loan_type)),
     state: clean(addr.state).toUpperCase(),
-    city: clean(addr.city),
-    address: clean(addr.line1 || addr.address || ''),
+    city: fileCity,
+    address: fileLine1,
     propertyType: normPropertyType(app.property_type),
     units: num(app.units) || 0,
     purchasePrice: totalPrice,
@@ -179,6 +194,20 @@ function buildInputs(app, experience, overrides) {
     for (const k of NUMK) if (overrides[k] != null && overrides[k] !== '') out[k] = num(overrides[k]);
     for (const k of STRK) if (overrides[k] != null) out[k] = clean(overrides[k]);
     for (const k of BOOLK) if (overrides[k] != null) out[k] = !!overrides[k];
+    // The property ADDRESS and CITY are FILE-OWNED. A studio override may FILL
+    // them while the file has no address yet (address-TBD drafts), but may never
+    // OVERWRITE the file's current address: a stale studio snapshot kept
+    // re-registering — and the term sheet kept printing — an old address after
+    // the file was corrected (owner-reported 2026-07-24: file said "392-394
+    // Columbia Ave", the sheet still printed "392 Columbia Ave"). The file's
+    // address always wins here. NOTE (audit): these are NOT display-only — the
+    // frozen engines scan city+address text for the ineligible-city and
+    // adverse-market checks (the caps themselves key off state) — which is
+    // exactly why the property's REAL recorded location must govern that
+    // detection, never a stale studio snapshot; the city-recovery ladder above
+    // keeps the detection fed on every historical property_address shape.
+    if (base.address) out.address = base.address;
+    if (base.city) out.city = base.city;
     if (overrides.asIsValue != null && overrides.asIsValue !== '') out.asIsDefaulted = false;
     // Present-but-EMPTY means "clear it" (owner-reported 2026-07-16: a field the
     // user blanked in the studio must never silently revert to the previously-

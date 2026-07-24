@@ -491,6 +491,15 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       }
       const c = { ...savedStudio.c };
       if ('isAssignment' in ae) c.isAssign = st2.c.isAssign;
+      // The property ADDRESS (and its state) is file-owned exactly like the
+      // economics above (owner-reported 2026-07-24: the file's corrected
+      // "392-394 Columbia Ave" never reached the term sheet — a draft/registered
+      // snapshot kept showing, printing, and re-registering the old address).
+      // A draft must never carry a stale address over the file's current one.
+      const fileAddr = addrLine(app.property_address);
+      if (fileAddr) { v.propAddr = fileAddr; c.addrTBD = false; }
+      const fileState = app.property_address && app.property_address.state;
+      if (fileState) v.propState = String(fileState).toUpperCase();
       // A pre-fix autosave could carry an invisibly restored manual-pricing
       // flag (the #148 LO-403 poison) — non-admin staff never resume it.
       if (isStaff && !staffAdmin) c.tsManualOn = false;
@@ -535,7 +544,11 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       // the raise-block 403 for LOs. Scenario-only choices (strategy, loan
       // type, property/rehab type, fico) stay with the registered scenario.
       const inp = typeof cur.inputs === 'string' ? JSON.parse(cur.inputs) : cur.inputs;
-      st = buildStudioState(scenarioFromEngineInputs(inp, { entityName: entity, borrowerName: name, coBorrowerName: coName, address: inp.address || addrLine(app.property_address), estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived, ...econFallback(inp), ...fileEcon() }));
+      // Address + state are FILE-OWNED (owner-reported 2026-07-24): the file's
+      // CURRENT address always prefills; the registered scenario's stored copy is
+      // only a fallback for a file with no address yet. The old order kept the
+      // registration-era address on the term sheet forever after a correction.
+      st = buildStudioState(scenarioFromEngineInputs(inp, { entityName: entity, borrowerName: name, coBorrowerName: coName, address: addrLine(app.property_address) || inp.address, state: (app.property_address && app.property_address.state) || inp.state, estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived, ...econFallback(inp), ...fileEcon() }));
       if (isStaff) {
         // Admin knobs restore ONLY for roles the server will honor. The zone is
         // already hidden for non-admin staff (Pinchus), but the RESTORE used to
@@ -558,7 +571,9 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       const inp = data.quote.inputs;
       st = buildStudioState(scenarioFromEngineInputs(inp, {
         entityName: entity, borrowerName: name, coBorrowerName: coName,
-        address: inp.address || addrLine(app.property_address),
+        // File-owned address/state — same rule as the registered-scenario path.
+        address: addrLine(app.property_address) || inp.address,
+        state: (app.property_address && app.property_address.state) || inp.state,
         expFlips: app.requested_exp_flips ?? inp.expFlips,
         expHolds: app.requested_exp_holds ?? inp.expHolds,
         expGround: app.requested_exp_ground ?? inp.expGround,
