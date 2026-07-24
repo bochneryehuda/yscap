@@ -436,6 +436,32 @@ async function gatherInvestorInputs(applicationId, db) {
     if (a.rows[0]) out.appraisal_present = true;
   } catch (_) { /* appraisals table optional in some envs → omit */ }
 
+  // Flood zone — from the CURRENT appraisal's FEMA cross-check / stated zone. The
+  // isg_flood_zone_needs_insurance rule is FATAL and fires ONLY on in_flood_zone === true,
+  // so the discipline here is absolute: set true ONLY when the file PROVES a Special Flood
+  // Hazard Area. This mirrors PILOT's own already-blessed flood definition (db/207): the
+  // FEMA SFHA flag, a FEMA zone A*/V*, or the appraiser's stated zone A*/V*. A concrete
+  // not-in-SFHA determination (checked-and-false, or a stated non-A/V zone like "X") → false
+  // (harmless — the rule stays silent). No appraisal / not-yet-checked (all NULL) → OMITTED,
+  // never guessed either way, so the FATAL rule can't false-fire on an unknown.
+  try {
+    const f = await db.query(
+      `SELECT fema_flood_sfha, fema_flood_zone, flood_zone
+         FROM appraisals WHERE application_id = $1 AND superseded = false
+         ORDER BY imported_at DESC LIMIT 1`, [applicationId]);
+    const r = f.rows[0];
+    if (r) {
+      const inZone = (z) => /^[AV]/.test(String(z == null ? '' : z).trim().toUpperCase());
+      const stated = (z) => String(z == null ? '' : z).trim() !== '';
+      if (r.fema_flood_sfha === true || inZone(r.fema_flood_zone) || inZone(r.flood_zone)) {
+        out.in_flood_zone = true;               // proven in a Special Flood Hazard Area
+      } else if (r.fema_flood_sfha === false || stated(r.fema_flood_zone) || stated(r.flood_zone)) {
+        out.in_flood_zone = false;              // a real determination: checked / a stated non-A/V zone
+      }
+      // else: all NULL → not checked → leave OMITTED (unknown, never fabricated)
+    }
+  } catch (_) { /* fema_flood_* columns optional in some envs → omit in_flood_zone */ }
+
   return out;
 }
 
