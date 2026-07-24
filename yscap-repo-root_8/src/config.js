@@ -212,6 +212,13 @@ module.exports = {
   // never a false-clear. See src/lib/underwriting/assets-autoclear.js. OFF by default.
   assetsAutoclearEnabled: process.env.ASSETS_AUTOCLEAR_ENABLED === '1',
 
+  // Auto-clear the "SSN verification" condition (rtl_p1_ssn) — CorrFirst note buyer ONLY —
+  // once an imported credit report's SSN provably matches the SSN on file for every
+  // borrower. Note-buyer-specific (CorrFirst verifies the SSN off the credit report),
+  // stricter than a blind clear, never a false-clear. See src/lib/underwriting/ssn-autoclear.js.
+  // OFF by default.
+  ssnAutoclearEnabled: process.env.SSN_AUTOCLEAR_ENABLED === '1',
+
   // --- document storage ---
   storageProvider: process.env.STORAGE_PROVIDER || 'local', // 'local' | 's3' | 'sharepoint'
   // On Render, set STORAGE_DIR to a mounted persistent disk (e.g. /var/data/uploads)
