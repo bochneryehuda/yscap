@@ -186,6 +186,12 @@ module.exports = {
   // so it stays a deliberate opt-in per environment.
   creditAutoclearEnabled: process.env.CREDIT_AUTOCLEAR_ENABLED === '1',
 
+  // Auto-clear the "Government-issued ID" condition once PILOT has AI-READ the ID on
+  // this file and every checked field lines up (no open ID finding). Never a
+  // false-clear — see src/lib/underwriting/gov-id-autoclear.js. OFF by default:
+  // clearing an identity condition without a human is sensitive, so it's opt-in.
+  govIdAutoclearEnabled: process.env.GOVID_AUTOCLEAR_ENABLED === '1',
+
   // --- document storage ---
   storageProvider: process.env.STORAGE_PROVIDER || 'local', // 'local' | 's3' | 'sharepoint'
   // On Render, set STORAGE_DIR to a mounted persistent disk (e.g. /var/data/uploads)
