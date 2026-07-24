@@ -462,6 +462,35 @@ async function gatherInvestorInputs(applicationId, db) {
     }
   } catch (_) { /* fema_flood_* columns optional in some envs → omit in_flood_zone */ }
 
+  // Claimed vs verified experience — feeds the FATAL isg_experience_claimed_over_verified
+  // (fires only when claimed_exp > verified_exp, both present). NEVER-FALSE-FIRE discipline:
+  //   • claimed_exp = the file's CLAIM of record = requested_exp_flips+holds+ground (the frozen
+  //     experience math; `reo` is a legacy counter NOT part of it — src/lib/experience.js
+  //     requestedFromApp). We only emit the pair when there IS a claim (sum > 0); no claim → the
+  //     rule is moot, so both are OMITTED (never a fabricated 0).
+  //   • verified_exp = experience.countBorrowersExperience(fileBorrowerIds, {verifiedOnly:true}).total
+  //     — the co-borrower-summed count of VERIFIED track-record deals in the frozen 3-year exit
+  //     window (REUSES the frozen RECENT_EXIT_SQL — never re-derived). A real success returning 0
+  //     (claimed but nothing verified yet) DOES fire, which is exactly the note-buyer rule
+  //     ("claimed experience must be verified before clearing"). Any query error → OMITTED → silent.
+  try {
+    const exp = require('../experience');
+    const ar = await db.query(
+      `SELECT borrower_id, co_borrower_id, requested_exp_flips, requested_exp_holds, requested_exp_ground
+         FROM applications WHERE id = $1`, [applicationId]);
+    const app = ar.rows[0];
+    if (app) {
+      const int = (v) => { const n = parseInt(v, 10); return Number.isFinite(n) && n > 0 ? n : 0; };
+      const claim = int(app.requested_exp_flips) + int(app.requested_exp_holds) + int(app.requested_exp_ground);
+      if (claim > 0) {
+        const verified = await exp.countBorrowersExperience(exp.fileBorrowerIds(app), db, { verifiedOnly: true });
+        out.claimed_exp = claim;
+        out.verified_exp = int(verified && verified.total);
+      }
+      // claim === 0 → nothing claimed → OMIT both (rule stays silent, never a fabricated 0)
+    }
+  } catch (_) { /* app row / track_records read error → omit claimed_exp+verified_exp */ }
+
   return out;
 }
 

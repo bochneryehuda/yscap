@@ -84,7 +84,36 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
       ok('a not-checked appraisal keeps appraisal_present but omits in_flood_zone');
     }
 
-    console.log(`\ngatherInvestorInputs (#250 flood + #232) db — ${passed} checks passed`);
+    // 5. CLAIMED vs VERIFIED EXPERIENCE (#251) — reuses experience.js against the REAL
+    //    track_records schema + the frozen 3-year exit window. No claim yet → both omitted.
+    {
+      const out = await gatherInvestorInputs(aId, db);
+      assert.ok(!('claimed_exp' in out), 'no experience claimed → claimed_exp omitted');
+      assert.ok(!('verified_exp' in out), 'no experience claimed → verified_exp omitted');
+      ok('a file with no claimed experience omits claimed/verified (never a fabricated 0)');
+    }
+
+    // Claim 3 deals on the file (2 flips + 1 hold).
+    await pool.query(
+      `UPDATE applications SET requested_exp_flips=2, requested_exp_holds=1, requested_exp_ground=0 WHERE id=$1`, [aId]);
+
+    // Track record for the borrower: 1 VERIFIED recent flip, 1 UNVERIFIED recent flip,
+    // 1 VERIFIED but OLD flip (exited >3y ago → outside the frozen window). Only the first counts.
+    const tr = (dealType, verified, saleOffset) => pool.query(
+      `INSERT INTO track_records (borrower_id, deal_type, purchase_price, sale_price, sale_date, is_verified)
+         VALUES ($1,$2,200000,260000, (CURRENT_DATE - ($3 || ' months')::interval), $4)`,
+      [bId, dealType, String(saleOffset), verified]);
+    await tr('flip', true, 6);     // verified, exited 6 months ago → counts
+    await tr('flip', false, 6);    // unverified, recent → does NOT count (verifiedOnly)
+    await tr('flip', true, 60);    // verified but 5 years ago → outside the 3-year window → does NOT count
+    {
+      const out = await gatherInvestorInputs(aId, db);
+      assert.strictEqual(out.claimed_exp, 3, 'claimed_exp = requested_exp sum (3)');
+      assert.strictEqual(out.verified_exp, 1, 'verified_exp counts only the verified, recent-exit deal (1)');
+      ok('claimed 3 vs verified 1 — only verified + in-window deals count (frozen 3yr window reused)');
+    }
+
+    console.log(`\ngatherInvestorInputs (#250 flood + #251 experience + #232) db — ${passed} checks passed`);
   } finally {
     if (aId) await pool.query(`DELETE FROM applications WHERE id=$1`, [aId]).catch(() => {}); // cascades appraisals + credit_reports
     if (bId) await pool.query(`DELETE FROM borrowers WHERE id=$1`, [bId]).catch(() => {});
