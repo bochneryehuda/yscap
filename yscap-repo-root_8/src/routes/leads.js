@@ -17,9 +17,12 @@ const TOOL_LABEL = {
   loan_application: 'Loan application',
   rehab_budget: 'Rehab budget / Scope of Work',
   term_sheet: 'Term sheet request',
+  term_sheet_generated: 'Term sheet generated',
+  term_sheet_exception: 'Term sheet — exception request',
   track_record: 'Track record',
   deal_analyzer: 'Deal analyzer',
   qualifier: 'Qualifier',
+  quote_request: 'Quote request',
   contact: 'Contact request',
   subscribe: 'Newsletter / updates subscription',
   dscr_waitlist: 'DSCR instant pricing — waitlist',
@@ -50,21 +53,22 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  * what tripped); every drop is console-logged with the reason + IP for ops.
  */
 const LOW_SIGNAL_TOOLS = new Set(['subscribe', 'dscr_waitlist']);
-const TOKEN_MIN_MS = Number(process.env.LEADS_TOKEN_MIN_MS || 3000);
-const TOKEN_MAX_MS = Number(process.env.LEADS_TOKEN_MAX_MS || 2 * 60 * 60 * 1000);
+// Tools allowed to land WITHOUT any visitor contact info (owner-directed
+// 2026-07-24): a term-sheet generation notifies our team with the exact terms
+// even when the visitor left no email/phone (we ASK for contact right after,
+// but it is never a requirement). Contact-less submissions must carry a valid
+// form token (proof-of-page-visit + dwell) — a blind bot never has one.
+const CONTACTLESS_TOOLS = new Set(['term_sheet_generated']);
+// Term-sheet events carry their own descriptive subject line (used as the
+// notification title so the inbox shows EXACTLY what was generated). Routing
+// is the same for every tool — see the owner-directed rule below.
+const SALES_TOOLS = new Set(['term_sheet', 'term_sheet_generated', 'term_sheet_exception']);
 const MX_CHECK = process.env.LEADS_MX_CHECK !== '0';
 const cryptoLib = require('crypto');
 const cfg = require('../config');
-function signFormToken(ts) {
-  return ts + '.' + cryptoLib.createHmac('sha256', String(cfg.jwtSecret || 'dev')).update('leadform|' + ts).digest('hex').slice(0, 32);
-}
-function formTokenAgeMs(token) {
-  const m = /^(\d{10,16})\.([0-9a-f]{32})$/.exec(String(token || ''));
-  if (!m) return null;
-  if (signFormToken(m[1]) !== m[0]) return null;
-  const age = Date.now() - Number(m[1]);
-  return age >= 0 ? age : null;
-}
+// Shared HMAC form token (extracted to lib/form-token so /api/apply verifies
+// the exact same tokens this page-token endpoint hands out).
+const { signFormToken, formTokenAgeMs, TOKEN_MIN_MS, TOKEN_MAX_MS } = require('../lib/form-token');
 const MX_CACHE = new Map(); // domain -> { ok, at }
 async function domainAcceptsMail(email) {
   if (!MX_CHECK) return true;
@@ -109,13 +113,27 @@ function rateLimited(ip) {
   return arr.length > MAX_PER_WINDOW;
 }
 
+// Contact-less tools (term-sheet generations) can double-fire on a re-render —
+// absorb repeats of the SAME payload from the SAME IP for a few minutes.
+// In-memory like the rate limiter (single-instance service).
+const ANON_SEEN = new Map(); // key -> ts
+const ANON_DEDUP_MS = 10 * 60 * 1000;
+function anonDuplicate(ip, tool, payload) {
+  const key = ip + '|' + tool + '|' + cryptoLib.createHash('sha256').update(JSON.stringify(payload || {})).digest('hex').slice(0, 24);
+  const now = Date.now();
+  if (ANON_SEEN.size > 5000) for (const [k, t] of ANON_SEEN) if (now - t > ANON_DEDUP_MS) ANON_SEEN.delete(k);
+  const seen = ANON_SEEN.get(key);
+  ANON_SEEN.set(key, now);
+  return !!(seen && now - seen < ANON_DEDUP_MS);
+}
+
 router.post('/', async (req, res) => {
   const b = req.body || {};
   const tool = String(b.tool || 'contact').slice(0, 60);
   const name = b.name ? String(b.name).slice(0, 200) : null;
   const email = b.email ? String(b.email).trim().slice(0, 200) : null;
   const phone = b.phone ? String(b.phone).slice(0, 40) : null;
-  if (!email && !phone) return res.status(400).json({ error: 'email or phone required' });
+  if (!email && !phone && !CONTACTLESS_TOOLS.has(tool)) return res.status(400).json({ error: 'email or phone required' });
   if (email && !EMAIL_RE.test(email)) return res.status(400).json({ error: 'invalid email' });
   if (rateLimited(req.ip)) return res.status(429).json({ error: 'too many submissions — please try again later' });
 
@@ -134,6 +152,18 @@ router.post('/', async (req, res) => {
     if (age == null) return drop('missing/invalid form token');
     if (age < TOKEN_MIN_MS || age > TOKEN_MAX_MS) return drop(`token age ${age}ms out of range`);
     if (email && !(await domainAcceptsMail(email))) return drop('domain has no MX');
+  }
+  if (CONTACTLESS_TOOLS.has(tool)) {
+    // No contact info to vouch for the sender — the form token is mandatory
+    // (a curl replay never fetched one), and repeats of the same generation
+    // from the same IP are absorbed instead of re-emailing the sales desk.
+    const age = formTokenAgeMs(b.formToken);
+    if (age == null) return drop('missing/invalid form token');
+    if (age < TOKEN_MIN_MS || age > TOKEN_MAX_MS) return drop(`token age ${age}ms out of range`);
+    if (!b.payload) return drop('contact-less submission with no payload');
+    if (anonDuplicate(req.ip, tool, b.payload)) {
+      return res.status(201).json({ ok: true, leadId: null, duplicate: true, routedTo: 'the YS Capital Group loan desk' });
+    }
   }
 
   try {
@@ -178,6 +208,20 @@ router.post('/', async (req, res) => {
     if (email) meta.push({ label: 'Email', value: email });
     if (phone) meta.push({ label: 'Phone', value: phone });
     meta.push({ label: 'Tool', value: label });
+    // The tools may pass display rows (e.g. the exact term-sheet terms: program,
+    // loan amount, rate, LTC/ARV…) so the sales/officer email shows the deal at
+    // a glance. Sanitized + capped — this is public input headed into an email —
+    // and value-scrubbed for SSN/card patterns (audit 2026-07-24: redactPII is
+    // key-based, so a number typed into free text would otherwise ride along).
+    if (b.payload && Array.isArray(b.payload.metaRows)) {
+      const pii = require('../lib/pii-guard');
+      for (const r of b.payload.metaRows.slice(0, 14)) {
+        if (r && r.label && r.value != null && String(r.value).trim() !== '') {
+          meta.push({ label: pii.scan(String(r.label).slice(0, 48)).redacted,
+                      value: pii.scan(String(r.value).slice(0, 160)).redacted });
+        }
+      }
+    }
     // #99: the marketing tools attach their generated PDF/Excel so the routed
     // officer receives the ACTUAL files server-side — no more ugly .eml draft the
     // visitor has to open and send. Cap count + size defensively (public,
@@ -200,25 +244,54 @@ router.post('/', async (req, res) => {
       .filter(a => a.content.length > 0 && a.content.length < 8 * 1024 * 1024);
     const notifyOpts = {
       type: 'new_lead',
-      title: `New ${label.toLowerCase()} from ${name || email || 'a visitor'}`,
+      // Term-sheet events carry their own descriptive subject ("Term sheet
+      // generated — $455,000 Fix & Flip — 12 Main St") so sales sees EXACTLY
+      // what was generated right in the inbox; everything else keeps the
+      // uniform "New <tool> from <who>" title.
+      title: (SALES_TOOLS.has(tool) && b.subject) ? String(b.subject).slice(0, 160)
+           : `New ${label.toLowerCase()} from ${name || email || 'a visitor'}`,
       body: (b.message ? String(b.message).slice(0, 4000) : null) || `A visitor submitted the ${label.toLowerCase()} on the site.`,
       meta, link: '/internal/leads', ctaLabel: 'Open leads',
       attachments: atts, files: atts.map(a => a.filename),
     };
 
-    // Notify the routed officer, else the admin desk (in-app + branded email).
-    // EXCEPTION — a newsletter/updates SUBSCRIPTION is low-signal and was pinging
-    // the whole admin desk (owner-directed 2026-07-15: "making everybody nervous").
-    // It now goes to a SINGLE inbox (pilot@yscapgroup.com) as email only — no
-    // fan-out, no in-app rows for every admin. The lead is still stored and shows
-    // on the Leads desk for anyone who looks.
+    // Notify — the owner's routing rule (owner-directed 2026-07-24, refined):
+    //   • An officer was picked (branded ?lo= link or an explicit selection) →
+    //     it goes to THAT officer's email, and ONLY that officer. Every tool.
+    //   • No officer → the SALES desk inbox. Every content tool (a track
+    //     record / rehab budget / term sheet / quote / contact with nobody
+    //     picked lands at sales, not the whole admin desk).
+    //   • A SUBSCRIPTION stays a single quiet email to pilot@ (owner-directed
+    //     2026-07-15). Admins keep their in-app Leads-desk rows for unrouted
+    //     leads without the email fan-out; if no sales inbox is configured
+    //     (SALES_NOTIFY_TO="") the legacy admin-desk fan-out still applies so
+    //     an unrouted lead is never silent.
     try {
+      const mailer = require('../lib/email');
+      const salesTo = cfg.salesNotifyTo;
+      const wantsSales = !!salesTo && !officerId && !LOW_SIGNAL_TOOLS.has(tool);
       if (officerId) { await notify.notifyStaff(officerId, { ...notifyOpts, emailTo: officerRow.email }); }
-      else if (tool === 'subscribe') {
+      if (wantsSales) {
         const built = notify.buildEmail(notifyOpts, 'staff');
-        await require('../lib/email').sendMail({ to: [SUBSCRIBE_NOTIFY_TO], subject: built.subject, text: built.text, html: built.html }).catch(() => {});
+        // Reply-To the visitor when we have their address — sales can just hit
+        // reply. Attachments ride along (the generated PDF/Excel the tools send).
+        await mailer.sendMail({
+          to: [salesTo], subject: built.subject, text: built.text, html: built.html,
+          attachments: atts.length ? atts : undefined,
+          replyTo: email || null,
+          _ctx: { type: 'new_lead', audience: 'staff' },
+        }).catch(() => {});
+        // Admins keep their in-app Leads-desk rows (badge/count), no email blast.
+        await notify.notifyAdmins({ ...notifyOpts, inAppOnly: true });
+      } else if (!officerId) {
+        if (tool === 'subscribe') {
+          const built = notify.buildEmail(notifyOpts, 'staff');
+          await mailer.sendMail({ to: [SUBSCRIBE_NOTIFY_TO], subject: built.subject, text: built.text, html: built.html }).catch(() => {});
+        } else {
+          // No sales inbox configured (or low-signal tool): legacy admin-desk fan-out.
+          await notify.notifyAdmins(notifyOpts);
+        }
       }
-      else { await notify.notifyAdmins(notifyOpts); }
       await db.query(`UPDATE leads SET emailed_officer=true WHERE id=$1`, [leadId]);
     } catch (_) { /* never fail the submission on a notify hiccup */ }
 
@@ -241,10 +314,93 @@ router.post('/', async (req, res) => {
       } catch (_) {}
     }
 
-    res.status(201).json({ ok: true, leadId, routedTo: officerRow ? officerRow.full_name : 'the YS Capital Group loan desk' });
+    res.status(201).json({ ok: true, leadId,
+      routedTo: officerRow ? officerRow.full_name : 'the YS Capital Group loan desk',
+      // Contact-less submissions get a signed handle so the page can attach the
+      // visitor's email/phone AFTERWARDS (the optional "want us to follow up?"
+      // ask) — nothing but contact info can be written with it.
+      contactToken: CONTACTLESS_TOOLS.has(tool) ? signContactToken(leadId) : undefined });
   } catch (e) {
     console.error('[leads] submit failed:', db.describeError(e));
     res.status(500).json({ error: 'could not submit — please try again' });
+  }
+});
+
+/* ------------------------------------------------------------------ contact
+ * attach — the optional follow-up after a contact-less term-sheet generation.
+ * The signed token (issued in the 201 above) is the capability: it can only
+ * fill the CONTACT fields of that one lead row, and only within 2 hours. */
+function signContactToken(leadId, ts) {
+  const t = ts || Date.now();
+  const sig = cryptoLib.createHmac('sha256', String(cfg.jwtSecret || 'dev'))
+    .update(`leadcontact|${leadId}|${t}`).digest('hex').slice(0, 40);
+  return `${t}.${sig}`;
+}
+router.post('/contact', async (req, res) => {
+  const b = req.body || {};
+  const leadId = String(b.leadId || '');
+  const m = /^(\d{10,16})\.([0-9a-f]{40})$/.exec(String(b.contactToken || ''));
+  if (!/^[0-9a-f-]{36}$/i.test(leadId) || !m) return res.status(400).json({ error: 'invalid request' });
+  const age = Date.now() - Number(m[1]);
+  const h = (s) => cryptoLib.createHash('sha256').update(String(s), 'utf8').digest();
+  if (!(age >= 0 && age <= TOKEN_MAX_MS) ||
+      !cryptoLib.timingSafeEqual(h(signContactToken(leadId, Number(m[1]))), h(String(b.contactToken)))) {
+    return res.status(400).json({ error: 'invalid request' });
+  }
+  // Same per-IP hourly cap as submissions — this endpoint sends email too
+  // (audit 2026-07-24: a valid token must not become a 2-hour replay bomb).
+  if (rateLimited(req.ip)) return res.status(429).json({ error: 'too many submissions — please try again later' });
+  const email = b.email ? String(b.email).trim().slice(0, 200) : null;
+  const phone = b.phone ? String(b.phone).slice(0, 40) : null;
+  const name = b.name ? String(b.name).slice(0, 200) : null;
+  if (!email && !phone) return res.status(400).json({ error: 'email or phone required' });
+  if (email && !EMAIL_RE.test(email)) return res.status(400).json({ error: 'invalid email' });
+  try {
+    const cur = (await db.query(
+      `SELECT id, tool, subject, officer_id, name, email, phone FROM leads WHERE id=$1`, [leadId])).rows[0];
+    if (!cur) return res.status(404).json({ error: 'not found' });
+    // Fill BLANKS only, and notify with the values ACTUALLY stored. A replay
+    // (or a call that changes nothing) stores nothing and re-notifies no one.
+    const finalName = cur.name || name, finalEmail = cur.email || email, finalPhone = cur.phone || phone;
+    const changed = finalName !== cur.name || finalEmail !== cur.email || finalPhone !== cur.phone;
+    if (!changed) return res.json({ ok: true, unchanged: true });
+    await db.query(`UPDATE leads SET name=$2, email=$3, phone=$4 WHERE id=$1`,
+      [leadId, finalName, finalEmail, finalPhone]);
+    const lead = cur;
+    // Tell the same people who saw the generation that the visitor is reachable now.
+    try {
+      const label = TOOL_LABEL[lead.tool] || lead.tool;
+      const notifyOpts = {
+        type: 'new_lead',
+        title: `Visitor left contact info — ${label.toLowerCase()}`,
+        body: `The visitor behind "${lead.subject || label}" left their contact details.`,
+        meta: [
+          ...(finalName ? [{ label: 'Name', value: finalName }] : []),
+          ...(finalEmail ? [{ label: 'Email', value: finalEmail }] : []),
+          ...(finalPhone ? [{ label: 'Phone', value: finalPhone }] : []),
+        ],
+        link: '/internal/leads', ctaLabel: 'Open leads',
+      };
+      // Same routing rule as the submission itself: the routed officer owns it;
+      // sales only hears about unrouted visitors.
+      if (lead.officer_id) {
+        const o = await db.query(`SELECT email FROM staff_users WHERE id=$1`, [lead.officer_id]);
+        await notify.notifyStaff(lead.officer_id, { ...notifyOpts, emailTo: o.rows[0]?.email });
+      } else if (cfg.salesNotifyTo) {
+        const built = notify.buildEmail(notifyOpts, 'staff');
+        await require('../lib/email').sendMail({
+          to: [cfg.salesNotifyTo], subject: built.subject, text: built.text, html: built.html,
+          replyTo: finalEmail || null, _ctx: { type: 'new_lead', audience: 'staff' } }).catch(() => {});
+      } else {
+        // No sales inbox configured: legacy admin fan-out, so a visitor who
+        // left contact info is never silently unnoticed (audit finding).
+        await notify.notifyAdmins(notifyOpts);
+      }
+    } catch (_) { /* best-effort */ }
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[leads] contact attach failed:', db.describeError(e));
+    res.status(500).json({ error: 'could not save — please try again' });
   }
 });
 
