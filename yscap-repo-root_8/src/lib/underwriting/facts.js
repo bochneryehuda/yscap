@@ -109,7 +109,13 @@ const DOC_CLAIMS = {
     living_area: pick(f.gla, f.sqft, f.livingArea), market_rent: pick(f.marketRent, f.market_rent) }),
   bank_statement: (f) => (f.holderIsBusiness ? { entity_name: f.accountHolderName } : { borrower_name: f.accountHolderName }),
   // ---- expanded document types (Phase B) ----
-  assignment: (f) => ({ entity_name: f.assigneeName, underlying_price: f.originalPurchasePrice, assignment_fee: f.assignmentFee, property_address: f.propertyAddress, seller_name: f.sellerName ? [f.sellerName] : null }),
+  // The assignment of contract states its OWN total price to the assignee (seller's original price +
+  // the assignment fee) — this is the borrower's final purchase price. Mapping it to purchase_price
+  // lets the tie-out match the assignment document's total against the file's final price (owner-
+  // directed 2026-07-24: "match up the final purchase price with the assignment fee"). The tie-out's
+  // purchase_price comparison is already assignment-aware (priceAwareMatch), so a total that equals
+  // the file's underlying OR final price agrees; only a genuinely wrong total flags.
+  assignment: (f) => ({ entity_name: f.assigneeName, underlying_price: f.originalPurchasePrice, assignment_fee: f.assignmentFee, purchase_price: f.totalPriceToAssignee, property_address: f.propertyAddress, seller_name: f.sellerName ? [f.sellerName] : null }),
   insurance: (f) => ({ entity_name: f.namedInsured, property_address: f.propertyAddress, policy_number: f.policyNumber }),
   insurance_invoice: (f) => ({ entity_name: f.namedInsured, property_address: f.propertyAddress, policy_number: f.policyNumber }),
   operating_agreement: (f) => ({ entity_name: f.entityLegalName, borrower_name: f.managingMember }),
@@ -134,7 +140,7 @@ const DOC_CARRIES = {
   title: ['property_address', 'seller_name', 'entity_name'],
   appraisal: ['property_address', 'purchase_price', 'seller_name', 'as_is_value', 'arv', 'units', 'property_type', 'occupancy', 'year_built', 'living_area', 'market_rent'],
   bank_statement: ['entity_name', 'borrower_name'],
-  assignment: ['entity_name', 'underlying_price', 'assignment_fee', 'property_address', 'seller_name'],
+  assignment: ['entity_name', 'underlying_price', 'assignment_fee', 'purchase_price', 'property_address', 'seller_name'],
   insurance: ['entity_name', 'property_address', 'policy_number'],
   insurance_invoice: ['entity_name', 'property_address', 'policy_number'],
   operating_agreement: ['entity_name', 'borrower_name'],

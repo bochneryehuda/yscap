@@ -257,6 +257,22 @@ assert.strictEqual(factMatch('measure', 1850, 2400), false, 'GLA far apart is a 
   // On a STRAIGHT purchase the tolerance does NOT apply — a doc at 438k vs file 412k still fires.
   const rStraight = buildTieout(ctx, [{ id: 'a', docType: 'appraisal', fields: { propertyAddress: ADDR, contractPrice: 438000 } }]);
   assert.ok(rStraight.discrepancies.some((d) => d.code === 'tieout_purchase_price'), 'a straight purchase is unchanged (still fires)');
+
+  // The ASSIGNMENT DOCUMENT states its OWN total-to-assignee (final price = seller price + fee).
+  // NEW-C: that total now ties out against the file's final purchase price.
+  const asgDoc = (total) => ({ id: 'asg', docType: 'assignment',
+    fields: { propertyAddress: ADDR, assigneeName: 'Maple Grove Holdings LLC', originalPurchasePrice: 438000, assignmentFee: 36000, totalPriceToAssignee: total } });
+  // Correct total (474k) → agrees; the seller's underlying (438k) also agrees (assignment-aware).
+  assert.ok(!buildTieout(asgCtx, [asgDoc(474000)]).discrepancies.some((d) => d.code === 'tieout_purchase_price'),
+    "the assignment document's total-to-assignee ties out against the file's final price");
+  assert.ok(!buildTieout(asgCtx, [asgDoc(438000)]).discrepancies.some((d) => d.code === 'tieout_purchase_price'),
+    "an assignment doc stating the seller's underlying total also agrees on an assignment");
+  // A genuinely wrong assignment total (matches neither underlying nor final) → flags.
+  assert.ok(buildTieout(asgCtx, [asgDoc(500000)]).discrepancies.some((d) => d.code === 'tieout_purchase_price'),
+    'a wrong total on the assignment document flags a purchase-price discrepancy');
+  // The assignment doc's purchase_price is a CARRIED fact now (shows in the matrix row).
+  const mRow = buildTieout(asgCtx, [asgDoc(474000)]).matrix.find((m) => m.key === 'purchase_price');
+  assert.ok(mRow.cells.some((c) => c.value === '$474,000'), "the assignment doc's total surfaces in the purchase_price matrix row");
 }
 
 console.log('✓ test-underwriting-tieout: fact registry + data-comparison matrix + discrepancies pass');
