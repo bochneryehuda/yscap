@@ -1263,6 +1263,25 @@ router.get('/:appId/twin/fact/:factKey', async (req, res, next) => {
     if (!factKey) return res.status(400).json({ error: 'fact key required' });
     const twin = require('../lib/underwriting/twin');
     const history = await twin.factWithHistory(app.id, factKey, db);
+    // R5.17 — attach each observation's grounded evidence span(s): the exact OCR
+    // quote + page it came from, so the UI can show "click a fact → here's where
+    // we saw it". Best-effort, bounded to the first 25 observations to avoid an
+    // N+1 blowup; a load failure just leaves that observation without a snippet.
+    try {
+      const ledger = require('../lib/underwriting/evidence-ledger');
+      const obs = Array.isArray(history.observations) ? history.observations : [];
+      await Promise.all(obs.slice(0, 25).map(async (o) => {
+        if (!o || !o.id) return;
+        const spans = await ledger.spansForFact(db, o.id).catch(() => []);
+        o.evidenceSpans = (spans || []).map((s) => ({
+          quote: s.quote != null ? String(s.quote).slice(0, 400) : null,
+          pageNumber: s.page_number != null ? s.page_number : null,
+          spanType: s.span_type || null,
+          supportType: s.support_type || null,
+          documentId: s.document_id || null,
+        }));
+      }));
+    } catch (_e) { /* evidence enrichment is additive — never breaks the drilldown */ }
     res.json({ ok: true, factKey, ...history });
   } catch (e) { next(e); }
 });
