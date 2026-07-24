@@ -1078,6 +1078,16 @@ function SovereignCockpit({ twinFacts, cureProofs, appId, canIssueCerts, canConf
                                         {' said '}
                                         <span style={{ overflowWrap: 'anywhere' }}>{stringifyValue(o.value_json && (o.value_json.value != null ? o.value_json.value : o.value_json)) || o.raw_value || '—'}</span>
                                         <span className="muted"> · {new Date(o.created_at).toLocaleString()}</span>
+                                        {Array.isArray(o.evidenceSpans) && o.evidenceSpans.filter((s) => s && s.quote).slice(0, 3).map((s, si) => (
+                                          <div key={si} style={{ marginTop: 3, marginLeft: 20, fontSize: 11.5, color: 'var(--muted,#4B585C)', borderLeft: '2px solid var(--gold,#AE8746)', paddingLeft: 8 }}>
+                                            <span style={{ fontStyle: 'italic', overflowWrap: 'anywhere' }}>“{s.quote}”</span>
+                                            {s.pageNumber != null && (
+                                              <span> · {s.documentId
+                                                ? <a href={`#/staff/documents/${s.documentId}`} onClick={(e) => e.stopPropagation()} style={{ color: 'var(--teal-deep,#256168)' }}>page {s.pageNumber}</a>
+                                                : `page ${s.pageNumber}`}</span>
+                                            )}
+                                          </div>
+                                        ))}
                                       </li>
                                     ))}
                                   </ul>
