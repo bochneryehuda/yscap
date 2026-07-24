@@ -253,7 +253,7 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText) {
       `SELECT approved_cents FROM draw_disbursements WHERE application_id=$1 AND sitewire_draw_id=$2 AND kind='draw' AND funded_status='released' ORDER BY created_at LIMIT 1`, [appId, drawId])).rows[0] || null; } catch (_) {}
     await recordInboundChange(appId, drawId, 'draw', drawId, released ? 'release_drift' : 'total_approved_cents', String(prev.total_approved_cents || 0), String(newAppr), !!released);
     if (released) {
-      const usd0 = (c) => '$' + Math.round(Number(c || 0) / 100).toLocaleString('en-US');
+      const usd0 = (c) => require('./transforms').usdExact(c);   // cent-exact: these messages report exact-cents comparisons
       try {
         await require('./orchestrator').park({
           appId, dedupe: `reldrift:${drawId}`,
@@ -296,7 +296,7 @@ async function verifyBudgetDrift(appId, budgetId) {
   let driftLines = 0;
   for (const it of items) { const exp = expById.get(Number(it.id)); if (exp != null && Number(it.budgeted_cents) !== exp) driftLines++; }
   if (observedTotal === expectedTotal && driftLines === 0) return { checked: true, ok: true };
-  const usd0 = (c) => '$' + Math.round(Number(c || 0) / 100).toLocaleString('en-US');
+  const usd0 = (c) => require('./transforms').usdExact(c);   // cent-exact: these messages report exact-cents comparisons
   await recordInboundChange(appId, null, 'budget', budgetId, 'budget_drift', String(expectedTotal), String(observedTotal), true);
   try {
     await require('./orchestrator').park({

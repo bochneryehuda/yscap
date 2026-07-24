@@ -1166,6 +1166,21 @@
       wb.Workbook = { Sheets: [{ Hidden: 0 }, { Hidden: 2 }] };
       X.writeFile(wb, fileStem() + ".xlsx");
       flash("Excel exported.");
+      // Same sales/officer heads-up as the PDF download — an Excel term sheet is
+      // a generated term sheet too. Only for a priced deal (no noise for a
+      // half-filled scenario); best-effort, never blocks the export.
+      try {
+        // Skip entirely in the embedded portal studio (notifyGeneration would
+        // refuse anyway — this just avoids serializing the workbook for nothing).
+        var dX = EMBEDDED ? null : ((chosenProgram === "gold") ? (calcGold() || calc()) : calc());
+        if (dX && (dX.pricingReady || dX.totalLoan > 0)) {
+          notifyGeneration(dX, "Term sheet (Excel)", {
+            dataBase64: X.write(wb, { bookType: "xlsx", type: "base64" }),
+            filename: fileStem() + ".xlsx",
+            contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          });
+        }
+      } catch (e) {}
     } catch (e) { flash("Excel export needs an internet connection (loads the spreadsheet engine)."); }
     finally { if (btn) { btn.textContent = o; btn.disabled = false; } }
   }
@@ -1805,7 +1820,9 @@
     ];
   }
   var _lastGen = null;   // {leadId, contactToken} \u2192 lets the optional contact ask attach to the same lead
-  function notifyGeneration(d, kind, pdfBlob) {
+  // fileArg: a Blob (PDF path) OR a ready {dataBase64, filename, contentType}
+  // (the Excel path) OR null \u2014 the notification sends with whatever it gets.
+  function notifyGeneration(d, kind, fileArg) {
     if (EMBEDDED) return;   // internal portal studio \u2014 not a marketing-site visitor
     try {
       var doSend = function () {
@@ -1815,9 +1832,15 @@
           (d && d.totalLoan ? " \u2014 " + YS.fmtUSD(d.totalLoan) : "") + (addr ? " \u2014 " + addr : "");
         var ob = window.YSBRAND || {};
         var code = ob.email ? String(ob.email).split("@")[0].toLowerCase().replace(/[^a-z0-9._-]/g, "") : "";
-        var attsP = pdfBlob
-          ? blobToB64(pdfBlob).then(function (b64) { return [{ filename: fileStem() + ".pdf", contentType: "application/pdf", dataBase64: b64 }]; }).catch(function () { return []; })
-          : Promise.resolve([]);
+        var attsP;
+        if (fileArg && typeof fileArg === "object" && fileArg.dataBase64) {
+          attsP = Promise.resolve([{ filename: fileArg.filename || (fileStem() + ".pdf"),
+            contentType: fileArg.contentType || "application/octet-stream", dataBase64: fileArg.dataBase64 }]);
+        } else if (fileArg) {
+          attsP = blobToB64(fileArg).then(function (b64) { return [{ filename: fileStem() + ".pdf", contentType: "application/pdf", dataBase64: b64 }]; }).catch(function () { return []; });
+        } else {
+          attsP = Promise.resolve([]);
+        }
         attsP.then(function (atts) {
           return fetch("/api/leads", { method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ tool: "term_sheet_generated", formToken: FORM_TOKEN.t,

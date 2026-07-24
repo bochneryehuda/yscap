@@ -2443,18 +2443,18 @@ router.post('/applications/:id/rehab-budget', async (req, res) => {
     // saves (never refused) and NEVER changes the file's rehab budget (frozen). The
     // exact-match rule is a CONDITION gate only — the condition stays open with a
     // plain-language note until the line items total the budget exactly.
-    const total = Number(payload.total);
-    const chk = await require('../lib/rehab-budget').checkSowBudget(appId, payload);
+    const RBsow = require('../lib/rehab-budget');
+    // toNum (comma/"$"-tolerant) everywhere — the same parser the gate compares
+    // with, so the status flip and the note can never disagree with the check.
+    const total = RBsow.toNum(payload.total);
+    const chk = await RBsow.checkSowBudget(appId, payload);
     const mismatch = chk.ok ? null : { required: chk.required, total, message: chk.message };
-    const goldSow = await require('../lib/rehab-budget').checkGoldSow(appId, payload);
-    const st = (mismatch || !goldSow.ok) ? (isFinite(total) && total > 0 ? 'issue' : null) : 'received';
+    const goldSow = await RBsow.checkGoldSow(appId, payload);
+    const st = (mismatch || !goldSow.ok) ? (total != null && total > 0 ? 'issue' : null) : 'received';
     await db.query(`UPDATE checklist_items SET tool_payload=$2, status=COALESCE($3,status), updated_at=now() WHERE id=$1`, [itemId, JSON.stringify(payload), st]);
-    const rbMoney = require('../lib/rehab-budget').money;
-    const note = mismatch
-      ? `[auto] Scope of Work (line items ${rbMoney(total)}) does not match the file's rehab budget ${rbMoney(mismatch.required)} — this condition stays open for all parties until the first-page construction budget AND the line items each total exactly ${rbMoney(mismatch.required)}.`
-      : (!goldSow.ok
-        ? `[auto] ${require('../lib/rehab-budget').GOLD_CONTINGENCY_MSG}`
-        : `[auto] Scope of Work totals ${rbMoney(total)} and matches the file's rehab budget — ready to clear.`);
+    // The durable note reuses the gate's own cent-precise message (audit
+    // finding 1: this note used to re-round the figures to whole dollars).
+    const note = RBsow.sowAutoNote(mismatch && mismatch.message, goldSow.ok, payload.total);
     try { await db.query(`UPDATE checklist_items SET notes=CASE WHEN notes IS NULL OR notes LIKE '[auto]%' THEN $2 ELSE notes END, updated_at=now() WHERE id=$1`, [itemId, note]); } catch (_) {}
     await audit(req, 'save_rehab_budget', 'application', appId, { total: isFinite(total) ? total : null });
     try { await conditionEngine.evaluateApplication(appId, { actor: req.actor, reason: 'rehab_budget_saved' }); } catch (_) {}
@@ -2516,22 +2516,19 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   let sowMismatch = null, goldSow = { ok: true };
   if (toolKey === 'rehab_budget') {
     const chk = await require('../lib/rehab-budget').checkSowBudget(req.params.id, payload);
-    if (!chk.ok) sowMismatch = { required: chk.required, total: Number(payload && payload.total), message: chk.message };
+    if (!chk.ok) sowMismatch = { required: chk.required, total: require('../lib/rehab-budget').toNum(payload && payload.total), message: chk.message };
     goldSow = await require('../lib/rehab-budget').checkGoldSow(req.params.id, payload);
   }
-  const rbTotal = Number(payload && payload.total);
-  const toolStatus = (sowMismatch || !goldSow.ok) ? (isFinite(rbTotal) && rbTotal > 0 ? 'issue' : null) : 'received';
+  // toNum (comma/"$"-tolerant) — same parser as the gate (audit finding 6).
+  const rbTotal = require('../lib/rehab-budget').toNum(payload && payload.total);
+  const toolStatus = (sowMismatch || !goldSow.ok) ? (rbTotal != null && rbTotal > 0 ? 'issue' : null) : 'received';
   await db.query(
     `UPDATE checklist_items SET tool_payload=$2, tool_state=COALESCE($3,tool_state), status=COALESCE($4,status), updated_at=now() WHERE id=$1`,
     [req.params.itemId, JSON.stringify(payload),
      payload && typeof payload.state === 'object' ? JSON.stringify(payload.state) : null, toolStatus]);
   if (toolKey === 'rehab_budget') {
-    const rbMoney = require('../lib/rehab-budget').money;
-    const note = sowMismatch
-      ? `[auto] Scope of Work (line items ${rbMoney(rbTotal)}) does not match the file's rehab budget ${rbMoney(sowMismatch.required)} — this condition stays open for all parties until the first-page construction budget AND the line items each total exactly ${rbMoney(sowMismatch.required)}.`
-      : (!goldSow.ok
-        ? `[auto] ${require('../lib/rehab-budget').GOLD_CONTINGENCY_MSG}`
-        : `[auto] Scope of Work totals ${rbMoney(rbTotal)} and matches the file's rehab budget — ready to clear.`);
+    // Durable note = the gate's own cent-precise message (audit finding 1).
+    const note = require('../lib/rehab-budget').sowAutoNote(sowMismatch && sowMismatch.message, goldSow.ok, payload && payload.total);
     try { await db.query(`UPDATE checklist_items SET notes=CASE WHEN notes IS NULL OR notes LIKE '[auto]%' THEN $2 ELSE notes END, updated_at=now() WHERE id=$1`, [req.params.itemId, note]); } catch (_) {}
     try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'rehab_budget_saved' }); } catch (_) {}
   }
@@ -4342,10 +4339,6 @@ async function signOffGate(itemId, actor) {
   const reg = (await db.query(
     `SELECT inputs, quote, program FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`,
     [item.application_id])).rows[0] || null;
-  const money = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('en-US');
-  // Exact match to the cent (owner-directed): the Scope of Work must equal the
-  // file budget and the registered product budget EXACTLY, not just to the dollar.
-  const eq = (a, c) => Math.round((Number(a) || 0) * 100) === Math.round((Number(c) || 0) * 100);
 
   if (isProduct) {
     if (!reg) return 'Register a product first — this condition can only be signed off once a product is registered on the file in the Term Sheet Studio.';
@@ -4353,20 +4346,16 @@ async function signOffGate(itemId, actor) {
   }
   if (isBudget) {
     if (!reg) return 'Register a product first — the rehab budget must match the registered product before this can be signed off.';
-    const sowTotal = item.tool_payload && item.tool_payload.total != null ? Number(item.tool_payload.total) : null;
-    if (sowTotal == null) return 'The Scope of Work / rehab budget has not been submitted yet.';
-    const appBudget = Number(app.rehab_budget) || 0;
-    const regBudget = reg.inputs && reg.inputs.rehabBudget != null ? Number(reg.inputs.rehabBudget) : null;
-    // The FIRST-PAGE construction budget on the SOW (state.target) — prefilled
-    // from the application ("the total you start at originally"). When set it must
-    // ALSO equal the budget exactly, so the number you start at, the line-item
-    // total, the file budget and the product budget all agree (owner-directed
-    // 2026-07-10 belt-and-suspenders).
-    const fpTarget = require('../lib/rehab-budget').firstPageBudget(item.tool_payload);
-    const fpSet = fpTarget != null && fpTarget > 0;
-    if (!eq(sowTotal, appBudget) || (regBudget != null && !eq(appBudget, regBudget)) || (fpSet && !eq(fpTarget, appBudget))) {
-      return `Budgets do not match — first-page construction budget ${fpSet ? money(fpTarget) : '—'}, Scope of Work line-item total ${money(sowTotal)}, file budget ${money(appBudget)}${regBudget != null ? `, registered product budget ${money(regBudget)}` : ''}. They must ALL agree to the cent before sign-off: adjust the Scope of Work (start total + line items) or re-register the product so the numbers match.`;
-    }
+    // First-page construction budget, SOW line-item total, file budget and the
+    // registered product budget must ALL agree to the cent (owner-directed
+    // 2026-07-10 belt-and-suspenders). The comparison, the comma/"$"-tolerant
+    // parsing AND the cent-precise mismatch message (which names exactly which
+    // number is off and by how much) live in ONE place — rehab-budget.js
+    // budgetSignoffCheck — so the check and its explanation can never use
+    // different precision again (owner-reported 2026-07-24: a cents-level gap
+    // printed four identical dollar-rounded "$120,000" figures).
+    const budgetMsg = require('../lib/rehab-budget').budgetSignoffCheck(item.tool_payload, app.rehab_budget, reg.inputs);
+    if (budgetMsg) return budgetMsg;
     // 5% construction contingency requirement (owner-directed 2026-07-12; extended
     // 2026-07-20): the Scope of Work must carry a >= 5% contingency when the file
     // is registered Gold OR its note buyer is Blue Lake. The budget still matches
