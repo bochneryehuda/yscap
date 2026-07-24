@@ -36,6 +36,54 @@ function num(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
 function lc(v) { return String(v == null ? '' : v).trim().toLowerCase(); }
 
 // ---------------------------------------------------------------------------
+// DISPOSITION — HOW a note-buyer guideline is handled (owner-directed 2026-07-24).
+// A guideline is NOT automatically a "document to collect." Most back-office rules are
+// facts read off the file, appraisal-only checks, closing-package items, or a concern
+// that only surfaces when something looks off. The disposition governs whether the overlay
+// turns an un-met rule into a "post this condition" coverage gap or handles it another way.
+// See docs/ISG-GUIDELINE-DISPOSITION.md.
+//   document        → a real document/condition the file must carry (default; coverage gap if missing).
+//   file_data       → a fact already on the file (email/contact); surface ONLY an empty slot, never a condition.
+//   appraisal       → only knowable from the appraisal (rural / transferred appraisal); SILENT until the appraisal is in.
+//   closing_package → arrives with the DocuSign / term-sheet package (occupancy cert); SILENT until the package is present.
+//   concern         → a back-of-mind risk (non-arms-length); NEVER proactive — only with a concern signal + an explanation.
+//   system          → an automatic eligibility check the engine already evaluates; not a document to post.
+const DISPOSITION = Object.freeze({
+  DOCUMENT: 'document', FILE_DATA: 'file_data', APPRAISAL: 'appraisal',
+  CLOSING_PACKAGE: 'closing_package', CONCERN: 'concern', SYSTEM: 'system',
+});
+const DISPOSITION_SET = new Set(Object.values(DISPOSITION));
+
+// dispositionOf(cond) → disposition string (PURE, never throws). An explicit `cond.disposition`
+// always wins; otherwise inferred CONSERVATIVELY from the few unambiguous signals so that a
+// genuine document gap is never silenced by inference (domain wins over clears_by).
+function dispositionOf(cond) {
+  try {
+    const c = cond && typeof cond === 'object' ? cond : {};
+    const explicit = lc(c.disposition);
+    if (DISPOSITION_SET.has(explicit)) return explicit;
+    const domain = lc(c.domain);
+    const clears = lc(c.clears_by);
+    if (domain === 'non_arms_length') return DISPOSITION.CONCERN;      // a relationship risk, never a doc
+    if (domain === 'rural') return DISPOSITION.APPRAISAL;              // read from the appraisal, not a standing doc
+    if (clears === 'internal_verification') return DISPOSITION.FILE_DATA; // a fact to confirm on the file
+    if (clears === 'system_field_check' || clears === 'system') return DISPOSITION.SYSTEM;
+    return DISPOSITION.DOCUMENT;
+  } catch (_e) { return DISPOSITION.DOCUMENT; }
+}
+
+// signalPresent(signals, key) → true (non-empty) | false (explicitly empty) | null (absent).
+// Never fabricates: an absent signal reads as null so a handler can stay silent.
+function signalPresent(signals, key) {
+  if (!signals || typeof signals !== 'object' || !key) return null;
+  if (!(key in signals)) return null;
+  const v = signals[key];
+  if (v === undefined || v === null) return null;
+  if (typeof v === 'string') return v.trim() !== '';
+  return !!v;
+}
+
+// ---------------------------------------------------------------------------
 // Numeric checks — evaluate a note-buyer's exact limits against KNOWN file signals.
 // A check only ever fires a CONFLICT on a known value; a missing value → 'to_verify'
 // (advisory), NEVER a fabricated conflict. Each returns { status, detail }.
@@ -210,6 +258,7 @@ function base(c, verdict, reason, checks, extra) {
     cond_no: c.cond_no, name: c.name, domain: c.domain, scope: c.scope,
     lifecycle: c.lifecycle, clears_by: c.clears_by, required_evidence: c.required_evidence,
     pilot_template_code: c.pilot_template_code || null, match_quality: c.match_quality || null,
+    disposition: dispositionOf(c), data_field: c.data_field || null, concern_field: c.concern_field || null,
     verdict, reason, checks: Array.isArray(checks) ? checks : [],
     ...(extra || {}),
   };
@@ -280,8 +329,18 @@ function assess(input) {
   //      its document arrives) — a gap is when nothing exists at all. Feasibility / construction
   //      requirements missing on a ground-up or heavy-rehab loan are FATAL ("pop up something
   //      big"); other missing required conditions are a warning to post them.
-  const isGap = (v) => v.verdict === VERDICT.OUTSTANDING && !v.pilotOnFile;
+  // DISPOSITION-AWARE routing (owner-directed 2026-07-24): an un-met rule only becomes a
+  // "post this condition" coverage gap when its disposition is `document`. A back-office rule
+  // is handled the RIGHT way instead — read off the file (file_data), read from the appraisal
+  // (appraisal), waited for the closing package (closing_package), or raised only on a concern
+  // (concern). When a non-document rule's triggering signal is ABSENT, it stays SILENT — never a
+  // fabricated condition. See docs/ISG-GUIDELINE-DISPOSITION.md.
+  const isDocGap = (v) => v.verdict === VERDICT.OUTSTANDING && !v.pilotOnFile;
   const gapSeverity = (v) => (v.domain === 'construction_feasibility' ? 'fatal' : 'warning');
+  const signals = ctx.signals;
+  const packagePresent = signalPresent(signals, 'closing_package_present') === true;
+  const appraisalIn = signalPresent(signals, 'appraisal_present') === true
+    || (signals && signals.appraisal && signals.appraisal.present === true);
   const unhappy = [];
   // COLLAPSE coverage gaps that point at the SAME PILOT condition. The guideline→PILOT
   // crosswalk is many-to-one (e.g. ~6 Blue Lake rows map to rtl_cond_title): when that one
@@ -290,9 +349,7 @@ function assess(input) {
   // condition, covering all N requirements, at the max severity. Conflicts stay per-value (a
   // conflict is about a specific number, not a missing condition).
   const gapByCode = new Map();
-  for (const v of active) {
-    if (v.verdict === VERDICT.CONFLICTS) { unhappy.push(Object.assign({}, v, { flag: 'conflict', severity: 'fatal' })); continue; }
-    if (!isGap(v)) continue;
+  const addGap = (v) => {
     const code = String(v.pilot_template_code || '').trim().toLowerCase();
     const key = code || `cond:${v.cond_no}`;
     const sev = gapSeverity(v);
@@ -304,6 +361,41 @@ function assess(input) {
       g.coveredCount += 1;
       if (v.name && g.coveredConditions.indexOf(v.name) === -1) g.coveredConditions.push(v.name);
     }
+  };
+  for (const v of active) {
+    // A real value conflict always surfaces, regardless of disposition.
+    if (v.verdict === VERDICT.CONFLICTS) { unhappy.push(Object.assign({}, v, { flag: 'conflict', severity: 'fatal' })); continue; }
+    const disp = v.disposition || DISPOSITION.DOCUMENT;
+
+    if (disp === DISPOSITION.FILE_DATA) {
+      // A fact to read off the file (email/contact). Surface ONLY a KNOWN-EMPTY slot — never a
+      // condition, and never when the value is present or simply not loaded (no fabrication).
+      if (v.data_field && signalPresent(signals, v.data_field) === false) {
+        unhappy.push(Object.assign({}, v, { flag: 'info_missing', severity: 'warning' }));
+      }
+      continue;
+    }
+    if (disp === DISPOSITION.CONCERN) {
+      // Never proactive — only with a concern signal, and it must explain why.
+      if (v.concern_field && signalPresent(signals, v.concern_field) === true) {
+        unhappy.push(Object.assign({}, v, { flag: 'concern', severity: 'warning' }));
+      }
+      continue;
+    }
+    if (disp === DISPOSITION.APPRAISAL) {
+      // Only knowable from the appraisal — SILENT until it is in; then a concern signal (rural,
+      // transferred) surfaces an escalation. Without the appraisal we raise nothing.
+      if (!appraisalIn) continue;
+      if (v.concern_field && signalPresent(signals, v.concern_field) === true) {
+        unhappy.push(Object.assign({}, v, { flag: 'appraisal_review', severity: gapSeverity(v) }));
+      }
+      continue;
+    }
+    if (disp === DISPOSITION.SYSTEM) continue; // an auto-eval rule — conflicts already surfaced above
+    if (disp === DISPOSITION.CLOSING_PACKAGE && !packagePresent) continue; // wait for the DocuSign package
+
+    // DOCUMENT (or a CLOSING_PACKAGE once its package is present): a genuine missing condition.
+    if (isDocGap(v)) addGap(v);
   }
   for (const g of gapByCode.values()) unhappy.push(g);
   const happy = unhappy.length === 0;
@@ -464,7 +556,7 @@ async function runInvestorGuidelineDesk(appId, client) {
 }
 
 module.exports = {
-  VERDICT, assess, assessCondition,
+  VERDICT, DISPOSITION, dispositionOf, assess, assessCondition,
   checkSellerConcession, checkContingency, checkLiabilityTier, checkMedianValue, CHECK_EVALUATORS,
   triggerApplies, triggerFields, dedupePreferSpecific,
   runInvestorGuidelineDesk,
