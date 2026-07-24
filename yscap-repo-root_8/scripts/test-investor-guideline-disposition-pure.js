@@ -33,6 +33,12 @@ console.log('ISG disposition pure tests');
   // a genuine document rule (appraisal domain that is a real report) is NOT silenced by inference.
   assert.strictEqual(desk.dispositionOf({ domain: 'appraisal', clears_by: 'third_party_order' }), D.DOCUMENT, 'a real appraisal doc stays document');
   assert.strictEqual(desk.dispositionOf({ domain: 'title', clears_by: 'document_upload' }), D.DOCUMENT, 'default is document');
+  // REGRESSION GUARD: a condition mapped to a REAL PILOT code is a document gap even if it
+  // clears by internal_verification / system (e.g. SSN → rtl_p1_ssn). Inference must not silence it.
+  assert.strictEqual(desk.dispositionOf({ clears_by: 'internal_verification', pilot_template_code: 'rtl_p1_ssn' }), D.DOCUMENT, 'PILOT-mapped internal_verification stays document (SSN)');
+  assert.strictEqual(desk.dispositionOf({ clears_by: 'system_field_check', pilot_template_code: 'rtl_p3_sow1' }), D.DOCUMENT, 'PILOT-mapped system_field_check stays document (rehab budget)');
+  // an UNMAPPED internal_verification / system rule is still de-noised (email, eligibility).
+  assert.strictEqual(desk.dispositionOf({ clears_by: 'internal_verification', pilot_template_code: null }), D.FILE_DATA, 'unmapped internal_verification → file_data');
   // hostile input never throws.
   for (const bad of [null, undefined, 42, 'x', []]) assert.strictEqual(desk.dispositionOf(bad), D.DOCUMENT);
   ok('dispositionOf: explicit wins, conservative inference, document default, null-safe');
@@ -57,6 +63,18 @@ console.log('ISG disposition pure tests');
   assert.strictEqual(res.unhappy.length, 0, 'no back-office rule shows as a condition on a bare file');
   assert.strictEqual(res.happy, true, 'the file is happy — nothing to post');
   ok('email / non-arms-length / rural / transfer / occupancy no longer surface as "post this condition"');
+}
+
+// 3b — REGRESSION: the SSN-verification condition (mapped to rtl_p1_ssn) still surfaces as a
+// coverage gap when absent — it must NOT be silenced by the internal_verification inference.
+{
+  const ssn = corr.CONDITIONS.find((c) => c.cond_no === 1050);
+  assert.ok(ssn && ssn.pilot_template_code === 'rtl_p1_ssn', 'cond 1050 maps to rtl_p1_ssn');
+  assert.strictEqual(desk.dispositionOf(ssn), D.DOCUMENT, 'SSN verification is a document condition, not file_data');
+  const res = desk.assess({ conditions: [ssn], existingByCode: new Map(), signals: {}, noteBuyerKey: 'corrfirst' });
+  assert.strictEqual(res.unhappy.length, 1, 'a missing SSN condition still surfaces');
+  assert.strictEqual(res.unhappy[0].flag, 'coverage_gap', 'as a coverage gap, not silenced');
+  ok('regression guard: a PILOT-mapped internal_verification condition (SSN) still surfaces as a coverage gap');
 }
 
 // 4 — file_data (email) surfaces ONLY a KNOWN-EMPTY slot — not when present, not when unknown.
