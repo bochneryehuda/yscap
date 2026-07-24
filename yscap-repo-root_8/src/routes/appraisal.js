@@ -244,7 +244,12 @@ router.post('/:appId/photos/refresh', async (req, res, next) => {
 
 // ---- POST /findings/:fid/resolve -------------------------------------------
 // Fields a "replace"/"custom" may write to the loan file (each trips the reprice trigger).
-const REPRICE_COLS = { arv: 'numeric', as_is_value: 'numeric', purchase_price: 'numeric', units: 'int', property_type: 'text' };
+// property_type is DELIBERATELY excluded: the appraisal never yields a valid portal
+// property_type CATEGORY (it gives a unit count / a MISMO form code, e.g. "3 units" /
+// "FNM1004"), so auto/custom write-back to it would corrupt the enum. A property-type
+// finding is keep/dismiss only; a wrong property_type is corrected on the application
+// form (the validated place). `units` stays — the appraisal's unit count IS a real int.
+const REPRICE_COLS = { arv: 'numeric', as_is_value: 'numeric', purchase_price: 'numeric', units: 'int' };
 const ACTIONS = new Set(['replace', 'keep', 'custom', 'dismiss', 'decline', 'acknowledge', 'grant_exception', 'request_revision']);
 
 // Resolving a PILOT finding can rewrite a reprice-affecting value on the loan file and

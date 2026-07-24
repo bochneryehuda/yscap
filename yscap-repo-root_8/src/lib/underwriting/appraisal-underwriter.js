@@ -17,6 +17,8 @@
  * Pure: no DB, no AI. Consumes already-loaded rows.
  */
 
+const { propertyTypeUnitRange } = require('../mismo/enums');
+
 function num(v) {
   if (v == null || String(v).trim() === '' || !Number.isFinite(Number(v))) return null;
   return Number(v);
@@ -110,11 +112,22 @@ function underwriteAppraisal(inputs) {
   }
 
   // --- property type / units match the pricing inputs ---
-  if (v.property_type && appr.property_type && norm(v.property_type) !== norm(appr.property_type)) {
-    findings.push(mk('appraisal_property_type_mismatch', 'warning', 'collateral', 'Appraisal property type differs from pricing',
-      `Priced as ${v.property_type}; appraisal says ${appr.property_type}.`,
-      { field: 'property_type', expected_value: v.property_type, actual_value: appr.property_type }));
+  // The pricing property_type is a RANGE CATEGORY (SFR = 1, Multi 2–4, Multi 5+, Condo = 1),
+  // NOT a unit count — so judge it by the appraisal's real UNIT COUNT against the range our
+  // property_type implies, never a string compare of the range category to the appraisal's
+  // specific type text (that false-fires on every multi-family file — owner-reported
+  // 2026-07-24). Silent when the type is unknown (range null) or the appraisal count is absent.
+  const ptRange = propertyTypeUnitRange(v.property_type);
+  const au = num(appr.units);
+  if (ptRange && au != null && (au < ptRange.min || au > ptRange.max)) {
+    const rangeText = ptRange.max === Infinity ? `${ptRange.min}+ units`
+      : ptRange.min === ptRange.max ? `${ptRange.min} unit${ptRange.min === 1 ? '' : 's'}`
+        : `${ptRange.min}–${ptRange.max} units`;
+    findings.push(mk('appraisal_property_type_mismatch', 'warning', 'collateral', 'Appraisal unit count is outside the file property type',
+      `File property type ${v.property_type} (${rangeText}); appraisal shows ${au} unit${au === 1 ? '' : 's'}.`,
+      { field: 'property_type', expected_value: v.property_type, actual_value: au }));
   }
+  // The real, count-vs-count check: the application's own unit count vs the appraisal's.
   if (num(v.units) != null && num(appr.units) != null && num(v.units) !== num(appr.units)) {
     findings.push(mk('appraisal_units_mismatch', 'warning', 'collateral', 'Appraisal unit count differs from application',
       `Application units ${v.units}; appraisal units ${appr.units}.`,

@@ -147,8 +147,10 @@ scn(29, 'Appraisal value differs from registration → fatal below-sizing findin
   const r = apprUw.underwriteAppraisal({ appraisal: { as_is_value: 380000, arv_value: 600000, property_type: 'sfr', units: 1, condition_of_appraisal: 'AsIs' }, context: ctxOf(APP) });
   assert.ok(r.findings.some((f) => f.code === 'appraisal_as_is_below_sizing' && f.severity === 'fatal' && f.blocks_ctc));
 });
-scn(30, 'Appraisal property type differs from pricing → finding', () => {
-  const r = apprUw.underwriteAppraisal({ appraisal: { as_is_value: 400000, arv_value: 600000, property_type: 'condo', units: 1, condition_of_appraisal: 'AsIs' }, context: ctxOf(APP) });
+scn(30, 'Appraisal unit count is outside the file property-type range → finding', () => {
+  // File is SFR (1 unit); an appraisal showing 3 units is outside the SFR range → mismatch.
+  // (Judged by the real unit count, not a property_type category string — owner-fix 2026-07-24.)
+  const r = apprUw.underwriteAppraisal({ appraisal: { as_is_value: 400000, arv_value: 600000, property_type: 'multi_2_4', units: 3, condition_of_appraisal: 'AsIs' }, context: ctxOf(APP) });
   assert.ok(r.findings.some((f) => f.code === 'appraisal_property_type_mismatch'));
 });
 scn(31, 'Appraisal units differ from application → finding', () => {

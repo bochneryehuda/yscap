@@ -25,8 +25,12 @@ const { namesMatchLoose, entityMatch, withinMoney, addrMatches, addrLine, toISOD
 function canonPropertyType(v) {
   const s = norm(String(v == null ? '' : v));
   if (!s) return null;
-  if (/\b(5|five|six|seven|eight|nine|ten|\d{2,})\b.*unit|multi.*(5|five)\+?|5\+/.test(s) || /apartment|multifamily 5/.test(s)) return 'multi_5plus';
-  if (/\b(2|3|4|two|three|four|duplex|triplex|fourplex|quad)\b.*unit|multi.*2.?4|2.?4 unit|two to four/.test(s) || /\bduplex\b|\btriplex\b|\bfourplex\b/.test(s)) return 'multi_2_4';
+  if (/\b(5|five|six|seven|eight|nine|ten|\d{2,})\b.*unit|multi.*(5|five)\+?|5\+/.test(s) || /apartment|multifamily 5/.test(s)
+      || /\b(5|six|seven|eight|nine|ten|\d{2,})\s*(?:family|fam|plex)\b/.test(s) || /\bfive\s*(?:family|fam)\b/.test(s)) return 'multi_5plus';
+  // "Two/Three/Four Family" (and "2/3/4 family") are the common appraisal descriptors for a
+  // 2–4 unit property — bucket them so the file's "Multi 2–4" range agrees (owner-fix 2026-07-24).
+  if (/\b(2|3|4|two|three|four|duplex|triplex|fourplex|quad)\b.*unit|multi.*2.?4|2.?4 unit|two to four/.test(s) || /\bduplex\b|\btriplex\b|\bfourplex\b/.test(s)
+      || /\b(2|3|4|two|three|four)\s*(?:family|fam)\b/.test(s)) return 'multi_2_4';
   if (/condo|condominium/.test(s)) return 'condo';
   if (/town\s?home|town\s?house|\bpud\b|planned unit/.test(s)) return 'townhouse';
   if (/mixed.?use/.test(s)) return 'mixed_use';
@@ -242,4 +246,5 @@ function carries(docType, factKey) {
 module.exports = {
   FACTS, FACT_BY_KEY, DOC_CLAIMS, DOC_CARRIES,
   factMatch, matchScalar, display, present, claimsFor, carries, borrowerName,
+  canonPropertyType,
 };
