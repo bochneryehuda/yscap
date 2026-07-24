@@ -180,7 +180,14 @@ export default function InvestorGuidelinesPanel({ appId }) {
                 const fatal = u.severity === 'fatal';
                 const fg = fatal ? 'var(--crit,#B4483C)' : 'var(--amber,#B7791F)';
                 const bg = fatal ? 'var(--crit-bg,#F6E7E4)' : 'var(--amber-bg,#F6EEDD)';
-                const kind = u.flag === 'coverage_gap' ? 'No condition on the file' : 'Conflicts with the guideline';
+                const KIND_LABEL = {
+                  coverage_gap: 'No condition on the file',
+                  conflict: 'Conflicts with the guideline',
+                  info_missing: 'Missing information on the file',
+                  concern: 'Concern to review',
+                  appraisal_review: 'Review the appraisal',
+                };
+                const kind = KIND_LABEL[u.flag] || 'Needs review';
                 return (
                   <div key={`${u.cond_no}-${i}`} style={{ marginBottom: 8, border: `1px solid ${fg}44`, borderLeft: `4px solid ${fg}`, borderRadius: 10, padding: '8px 14px', background: bg }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -200,6 +207,14 @@ export default function InvestorGuidelinesPanel({ appId }) {
                           <div key={j} style={{ fontSize: 11.5, color: fg, marginTop: 3, fontWeight: 600 }}>✕ {k.detail || k.text}</div>
                         ))}
                       </>
+                    )}
+                    {(u.flag === 'info_missing' || u.flag === 'concern' || u.flag === 'appraisal_review') && (
+                      <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginTop: 2 }}>
+                        {u.flag === 'info_missing' && `This is on the file's contact information — the slot is empty and needs to be filled in. Not a document to collect.`}
+                        {u.flag === 'concern' && `${noteBuyer.name || 'The note buyer'} flags this only when something points to it. `}
+                        {u.flag === 'appraisal_review' && `Found while reviewing the appraisal${fatal ? ' — escalate.' : '.'} `}
+                        {u.required_evidence ? <span> <span style={{ fontWeight: 700 }}>Check:</span> {u.required_evidence}</span> : null}
+                      </div>
                     )}
                   </div>
                 );
