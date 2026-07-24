@@ -2226,7 +2226,7 @@ function SovereignKnowledgeGraphSection({ appId }) {
               <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--ivory,#141B22)', marginBottom: 4 }}>Other files on this borrower</div>
               {siblings.slice(0, 8).map((s) => (
                 <div key={s.id} style={{ fontSize: 12, padding: '2px 0' }}>
-                  <a href={`#/staff/applications/${s.id}`} style={{ color: 'var(--teal-deep,#256168)' }}>
+                  <a href={`#/internal/app/${s.id}`} style={{ color: 'var(--teal-deep,#256168)' }}>
                     {(s.property_address && (s.property_address.line1 || s.property_address.address)) || s.id.slice(0, 8)}
                   </a>
                   {' · '}<span style={{ color: 'var(--muted,#4B585C)' }}>{s.program || 'no program'} · {s.status}</span>
