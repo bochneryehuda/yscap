@@ -236,4 +236,27 @@ assert.strictEqual(factMatch('measure', 1850, 2400), false, 'GLA far apart is a 
   assert.ok(!st.discrepancies.some((d) => d.field === 'loan_amount'), 'settlement loan amount matches the file');
 }
 
+// ===== Assignment: a doc reporting the SELLER's underlying price is NOT a mismatch (owner 2026-07-24) =====
+{
+  // File total is the fee-inclusive price (474k); seller's underlying price is 438k, fee 36k.
+  const asgCtx = { ...ctx, app: { ...ctx.app, purchase_price: 474000, is_assignment: true, underlying_contract_price: 438000, assignment_fee: 36000 } };
+  // The appraisal/settlement legitimately report the SELLER's price (438k) — this used to fire a
+  // false tieout_purchase_price fatal. With the assignment tolerance it AGREES.
+  const rSeller = buildTieout(asgCtx, [
+    { id: 'a', docType: 'appraisal', fields: { propertyAddress: ADDR, contractPrice: 438000 } },
+    { id: 's', docType: 'settlement', fields: { propertyAddress: ADDR, contractSalesPrice: 438000, loanAmount: 300000 } },
+  ]);
+  assert.ok(!rSeller.discrepancies.some((d) => d.code === 'tieout_purchase_price'),
+    "a doc reporting the seller's underlying price on an assignment is not a mismatch");
+  // A doc reporting the fee-inclusive TOTAL (474k) also agrees.
+  const rTotal = buildTieout(asgCtx, [{ id: 'a', docType: 'appraisal', fields: { propertyAddress: ADDR, contractPrice: 474000 } }]);
+  assert.ok(!rTotal.discrepancies.some((d) => d.code === 'tieout_purchase_price'), 'the fee-inclusive total also agrees on an assignment');
+  // A doc reporting a price matching NEITHER (500k) still fires the discrepancy.
+  const rWrong = buildTieout(asgCtx, [{ id: 'a', docType: 'appraisal', fields: { propertyAddress: ADDR, contractPrice: 500000 } }]);
+  assert.ok(rWrong.discrepancies.some((d) => d.code === 'tieout_purchase_price'), 'a price matching neither still fires on an assignment');
+  // On a STRAIGHT purchase the tolerance does NOT apply — a doc at 438k vs file 412k still fires.
+  const rStraight = buildTieout(ctx, [{ id: 'a', docType: 'appraisal', fields: { propertyAddress: ADDR, contractPrice: 438000 } }]);
+  assert.ok(rStraight.discrepancies.some((d) => d.code === 'tieout_purchase_price'), 'a straight purchase is unchanged (still fires)');
+}
+
 console.log('✓ test-underwriting-tieout: fact registry + data-comparison matrix + discrepancies pass');
