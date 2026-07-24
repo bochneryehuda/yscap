@@ -51,7 +51,7 @@ function holderMatchesFile(holder, subject) {
 
 // Does a holder look like a business/entity (LLC/Inc/Corp/…)? Used to route the ownership
 // finding between the "different entity → operating agreement" cascade and the personal cases.
-const ENTITY_WORDS = /\b(llc|l\.l\.c|inc|corp|lp|llp|ltd|company|co|trust|holdings?|partners?|group|capital|properties|enterprises?|ventures?)\b/i;
+const ENTITY_WORDS = /\b(llc|l\.l\.c|inc|corp|lp|llp|ltd|company|co|trust|holdings?|partners?|partnership|associates|assoc|group|capital|properties|property|realty|management|mgmt|investments?|enterprises?|ventures?)\b/i;
 function looksEntityName(holder, holderIsBusiness) {
   return holderIsBusiness === true || ENTITY_WORDS.test(String(holder || ''));
 }

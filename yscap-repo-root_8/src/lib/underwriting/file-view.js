@@ -96,7 +96,7 @@ function borrowerName(b) {
 
 // Build the subject a given document type's check compares against.
 function subjectFor(docType, ctx) {
-  const { app, borrower, vestingName, entityNames } = ctx || {};
+  const { app, borrower, vestingName, entityNames, verifiedEntityNames } = ctx || {};
   switch (docType) {
     case 'government_id':
       return borrower; // the borrowers row (name / DOB / address)
@@ -118,7 +118,12 @@ function subjectFor(docType, ctx) {
       };
     case 'bank_statement':
     case 'voided_check':
-      return { borrower_name: borrowerName(borrower), entity_names: entityNames || [] };
+      // verified_entity_names lets the bank check tell a KNOWN & VERIFIED entity (funds count,
+      // no flag) from one that is merely named on file (advisory: finish the LLC section). Always
+      // an array here (loadContext returns [] when nothing is verified) — so the check's
+      // never-fabricate guard is satisfied and the advisory actually evaluates in production.
+      return { borrower_name: borrowerName(borrower), entity_names: entityNames || [],
+        verified_entity_names: verifiedEntityNames || [] };
     case 'assignment':
       return {
         entity_name: vestingName || null, is_assignment: !!(app && app.is_assignment),

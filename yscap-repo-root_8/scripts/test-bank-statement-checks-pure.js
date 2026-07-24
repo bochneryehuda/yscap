@@ -108,6 +108,20 @@ assert.deepStrictEqual(sph('John Smith & Jane Doe'), ['John Smith', 'Jane Doe'])
 assert.deepStrictEqual(sph('John Smith'), []);                      // solo → no split
 assert.deepStrictEqual(sph('Smith, John'), []);                    // comma is last-first, not a split
 
+// ---- 4h. WIRING: subjectFor('bank_statement') must carry verified_entity_names ----
+// (regression guard: the check's verified-vs-unverified distinction is dead in production if the
+// subject builder drops the verified set — so assert the real production subject includes it.)
+const fileView = require('../src/lib/underwriting/file-view');
+const bankSubject = fileView.subjectFor('bank_statement', {
+  app: {}, borrower: { first_name: 'John', last_name: 'Smith' },
+  entityNames: ['Beta Holdings LLC'], verifiedEntityNames: ['John Smith Investments LLC'],
+});
+assert.ok(Array.isArray(bankSubject.verified_entity_names), 'bank subject carries verified_entity_names array');
+assert.deepStrictEqual(bankSubject.verified_entity_names, ['John Smith Investments LLC']);
+// and it defaults to [] (never undefined) so the check's never-fabricate guard evaluates:
+const bankSubject2 = fileView.subjectFor('bank_statement', { app: {}, borrower: null, entityNames: [] });
+assert.deepStrictEqual(bankSubject2.verified_entity_names, []);
+
 // ---- 5. Bridge → ai_suggestions ----
 let posted = [];
 require.cache[require.resolve('../src/lib/underwriting/ai-suggestions')] = { exports: {
