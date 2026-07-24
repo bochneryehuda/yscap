@@ -192,6 +192,12 @@ module.exports = {
   // clearing an identity condition without a human is sensitive, so it's opt-in.
   govIdAutoclearEnabled: process.env.GOVID_AUTOCLEAR_ENABLED === '1',
 
+  // Auto-clear the "Background check / OFAC" condition once PILOT has AI-read the
+  // background report on the file and it comes back clean (no open background/OFAC
+  // finding). Never a false-clear — see src/lib/underwriting/fraud-autoclear.js.
+  // OFF by default: OFAC/BSA-AML is compliance-sensitive, so it's opt-in.
+  fraudAutoclearEnabled: process.env.FRAUD_AUTOCLEAR_ENABLED === '1',
+
   // --- document storage ---
   storageProvider: process.env.STORAGE_PROVIDER || 'local', // 'local' | 's3' | 'sharepoint'
   // On Render, set STORAGE_DIR to a mounted persistent disk (e.g. /var/data/uploads)
