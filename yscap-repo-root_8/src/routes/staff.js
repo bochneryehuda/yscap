@@ -5921,6 +5921,16 @@ async function notifyStatusTransition(appId, fromStatus, toStatus, opts = {}) {
 // post_closing conditions never block. An admin may force past blockers.
 const CTC_SEVERITIES = ['standard', 'prior_to_docs'];
 const FUND_SEVERITIES = ['standard', 'prior_to_docs', 'prior_to_funding'];
+// Closing-stage checklist categories are collected DURING the closing process — they
+// are due before funding, not before clear-to-close. The first-class `conditions` rows
+// already stage this by severity (a `prior_to_funding` condition blocks funding, not
+// CTC — see FUND_SEVERITIES above); this mirrors that for the document/condition
+// checklist items via their category (owner-directed IG-W8, 2026-07-24: "Title & Tax —
+// push to closing, do NOT hold CTC"). A condition in one of these categories (title,
+// insurance, ISKA, and any future closing/funding-stage doc) still HARD-blocks funding —
+// it is only excluded from the clear-to-close gate. Everything pre-close (core `none`,
+// `prior_to_approval`, `prior_to_docs`) keeps holding CTC exactly as before.
+const CLOSING_STAGE_CATEGORIES = ['prior_to_closing', 'prior_to_funding', 'at_closing', 'post_closing'];
 const SEV_LABEL = { standard: 'Standard', prior_to_docs: 'Prior to docs', prior_to_funding: 'Prior to funding', post_closing: 'Post-closing' };
 // Which file SECTION resolves a given blocker — so the "clear to close"
 // outstanding list can link each item straight to where you fix it (the section
@@ -5979,6 +5989,11 @@ async function advancementBlockers(appId, target) {
   // Gate items are counted separately below, so exclude them here to avoid a
   // double count. Internal checklist TASKS are workflow, not conditions, so they
   // don't gate here (their milestone subset is captured by is_gate).
+  // For the clear-to-close gate, exclude closing/funding-stage conditions (title,
+  // insurance, ISKA, …) — they are due at closing, not to be cleared-to-close, and are
+  // re-included for the funding gate below. The effective category is the per-item
+  // override if set, else the template's. A closing-stage condition still blocks funding.
+  const excludeClosingStage = target !== 'funded';
   const checklistConds = await db.query(
     `SELECT ci.id, COALESCE(ci.label, ci.borrower_label, 'Condition') AS title,
             ci.tool_key, t.code AS template_code, ci.audience, ci.status, ci.hint
@@ -5989,7 +6004,10 @@ async function advancementBlockers(appId, target) {
         AND COALESCE(ci.is_required, true) = true
         AND COALESCE(ci.is_gate, false) = false
         AND NOT (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')
-      ORDER BY ci.sort_order, ci.created_at`, [appId]);
+        AND ($3::boolean = false
+             OR COALESCE(NULLIF(ci.category,''), t.category) IS NULL
+             OR COALESCE(NULLIF(ci.category,''), t.category) <> ALL($2::text[]))
+      ORDER BY ci.sort_order, ci.created_at`, [appId, CLOSING_STAGE_CATEGORIES, excludeClosingStage]);
   const gates = await db.query(
     `SELECT ci.id, ci.label, ci.tool_key, t.code AS template_code, ci.audience, ci.status
        FROM checklist_items ci
@@ -9830,3 +9848,6 @@ router.use(require('./staff-notif-center'));
 module.exports = router;
 // exported for tests (the draw email center's DocuSign + Sitewire activity fold-in)
 module.exports.assembleDrawEventRows = assembleDrawEventRows;
+// exported for the IG-W8 test: closing-stage conditions (title/insurance/ISKA) hold
+// funding but NOT clear-to-close.
+module.exports.advancementBlockers = advancementBlockers;
