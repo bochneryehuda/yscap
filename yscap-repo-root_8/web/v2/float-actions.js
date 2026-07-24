@@ -171,10 +171,10 @@
       '<button type="button" id="ysQuoteX" aria-label="Close" style="position:absolute;top:10px;right:12px;border:0;background:none;font-size:1.05rem;cursor:pointer;color:inherit">✕</button>' +
       '<h3 style="margin:0 0 6px;font-size:1.15rem"></h3>' +
       '<p style="margin:0 0 12px;opacity:.75;font-size:.92rem">Tell us how to reach you — your request goes straight to the YS Capital sales desk and a specialist will follow up.</p>' +
-      '<input id="ysQuoteName" placeholder="Your name" autocomplete="name" style="width:100%;margin:0 0 6px;padding:10px 12px;border:1px solid var(--line,#d8d2c4);border-radius:8px;font-size:16px;background:transparent;color:inherit">' +
-      '<input id="ysQuoteEmail" type="email" placeholder="Your email" autocomplete="email" style="width:100%;margin:0 0 6px;padding:10px 12px;border:1px solid var(--line,#d8d2c4);border-radius:8px;font-size:16px;background:transparent;color:inherit">' +
-      '<input id="ysQuotePhone" type="tel" placeholder="Your phone" autocomplete="tel" style="width:100%;margin:0 0 6px;padding:10px 12px;border:1px solid var(--line,#d8d2c4);border-radius:8px;font-size:16px;background:transparent;color:inherit">' +
-      '<textarea id="ysQuoteMsg" rows="3" placeholder="What are you working on? (address, purchase price, timeline…)" style="width:100%;margin:0 0 8px;padding:10px 12px;border:1px solid var(--line,#d8d2c4);border-radius:8px;font-size:16px;background:transparent;color:inherit"></textarea>' +
+      '<input id="ysQuoteName" data-noshare placeholder="Your name" autocomplete="name" style="width:100%;margin:0 0 6px;padding:10px 12px;border:1px solid var(--line,#d8d2c4);border-radius:8px;font-size:16px;background:transparent;color:inherit">' +
+      '<input id="ysQuoteEmail" data-noshare type="email" placeholder="Your email" autocomplete="email" style="width:100%;margin:0 0 6px;padding:10px 12px;border:1px solid var(--line,#d8d2c4);border-radius:8px;font-size:16px;background:transparent;color:inherit">' +
+      '<input id="ysQuotePhone" data-noshare type="tel" placeholder="Your phone" autocomplete="tel" style="width:100%;margin:0 0 6px;padding:10px 12px;border:1px solid var(--line,#d8d2c4);border-radius:8px;font-size:16px;background:transparent;color:inherit">' +
+      '<textarea id="ysQuoteMsg" data-noshare rows="3" placeholder="What are you working on? (address, purchase price, timeline…)" style="width:100%;margin:0 0 8px;padding:10px 12px;border:1px solid var(--line,#d8d2c4);border-radius:8px;font-size:16px;background:transparent;color:inherit"></textarea>' +
       '<p id="ysQuoteErr" style="display:none;color:#b8604a;margin:0 0 8px;font-size:.9rem"></p>' +
       '<button type="button" id="ysQuoteSend" class="btn btn-solid" style="width:100%;padding:11px 14px;border-radius:8px;border:0;background:var(--teal,#2F7F86);color:#fff;font-weight:700;cursor:pointer">Send my request →</button></div>';
     document.body.appendChild(ov);
@@ -202,7 +202,12 @@
           name: nm || undefined, email: em || undefined, phone: ph || undefined,
           subject: heading + " — " + ((ctx && ctx.page) || document.title),
           message: (msg || "A visitor asked for a quote.") + "\n\nSent from: " + location.href,
-          payload: { page: location.pathname, title: document.title } }) })
+          // Attach the visitor's ACTUAL scenario: every calculator page exposes
+          // its working numbers via YS.collectState(), so the team sees the deal
+          // they built — not just "a visitor asked for a quote".
+          payload: { page: location.pathname, title: document.title,
+            referrer: document.referrer || undefined,
+            state: (function () { try { return (window.YS && typeof window.YS.collectState === "function") ? window.YS.collectState() : undefined; } catch (e) { return undefined; } })() } }) })
         .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
         .then(function () {
           ov.firstChild.innerHTML = '<h3 style="margin:0 0 6px">Sent ✓</h3><p style="margin:0;opacity:.8">Thanks — the YS Capital sales desk has your request and will follow up shortly.</p>';
