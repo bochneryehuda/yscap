@@ -2352,11 +2352,12 @@ const SOURCE_TINT = {
   double_pledge:   { fg: 'var(--crit,#B4483C)', bg: 'var(--crit-bg,#F6E7E4)' },
 };
 
-function AISuggestionsSection({ appId, readOnly = false, canResolve = true }) {
+function AISuggestionsSection({ appId, readOnly = false, canResolve = true, shownFindingCodes = null }) {
   const [rows, setRows] = React.useState(null);
   const [err, setErr] = React.useState('');
   const [busy, setBusy] = React.useState(false);
   const [showDismissed, setShowDismissed] = React.useState(false);
+  const [showDupes, setShowDupes] = React.useState(false);
   const [expanded, setExpanded] = React.useState(true);
   const [sourceFilter, setSourceFilter] = React.useState('all');
   const [sevFilter, setSevFilter] = React.useState('all');
@@ -2386,9 +2387,19 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true }) {
   }, [appId, load]);
 
   if (rows == null && !err) return null;
+  // A suggestion is a "repeat" when its underlying finding CODE is already shown in the "Open
+  // findings" list below (the chain / bank / tie-out desks surface there AND bridge into this
+  // panel with the same evidence.code). Hidden by default so the same issue isn't shown twice;
+  // a toggle brings them back. Nothing is lost — each repeat stays fully actionable in Open findings.
+  const dupCodes = shownFindingCodes instanceof Set ? shownFindingCodes : null;
+  const rowCode = (r) => { const c = r && r.evidence && r.evidence.code; return c ? String(c).trim().toLowerCase() : null; };
+  const isRepeat = (r) => { if (!dupCodes) return false; const c = rowCode(r); return !!(c && dupCodes.has(c)); };
+  const isHiddenRepeat = (r) => !showDupes && isRepeat(r);
   const openRows = (rows || []).filter((r) => r.status !== 'dismissed');
-  const importantCount = openRows.filter((r) => r.important).length;
-  const total = openRows.length;
+  const repeatCount = openRows.filter(isRepeat).length;
+  const visibleOpen = openRows.filter((r) => !isHiddenRepeat(r));
+  const importantCount = visibleOpen.filter((r) => r.important).length;
+  const total = visibleOpen.length;
 
   return (
     <div id="ai-findings" style={{ marginBottom: 22, border: '1px solid var(--paper,#E9E4D3)', borderRadius: 12, background: 'var(--card,#fff)', scrollMarginTop: 80 }}>
@@ -2400,7 +2411,8 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true }) {
             </span>
           </h4>
           <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginTop: 3 }}>
-            {total === 0 ? 'Nothing to review right now.' : `${total} open${importantCount ? ` · ${importantCount} marked important` : ''}`}
+            {total === 0 ? (repeatCount && !showDupes ? 'Nothing new here — everything is already listed in Open findings below.' : 'Nothing to review right now.') : `${total} open${importantCount ? ` · ${importantCount} marked important` : ''}`}
+            {repeatCount > 0 && !showDupes && <span style={{ marginLeft: 8 }}>· {repeatCount} repeat{repeatCount === 1 ? '' : 's'} of Open findings hidden</span>}
             {/* R4.16 — Last re-run stamp, so a re-audit trail is visible on the header. */}
             {lastRerunAt && (
               <span style={{ marginLeft: 8 }}>· Last re-run: {fmtAgo(lastRerunAt)}</span>
@@ -2431,6 +2443,13 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true }) {
               <input type="checkbox" checked={showDismissed} onChange={(e) => setShowDismissed(e.target.checked)} />
               Show dismissed
             </label>
+            {repeatCount > 0 && (
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: 'var(--muted,#4B585C)' }}
+                title="These are the same items already listed in Open findings below — hidden here so nothing shows twice.">
+                <input type="checkbox" checked={showDupes} onChange={(e) => setShowDupes(e.target.checked)} />
+                Show {repeatCount} also in Open findings
+              </label>
+            )}
             {(rows || []).some(r => r.status !== 'dismissed') && !readOnly && canResolve && (
               <button className="btn ghost" style={{ padding: '3px 9px', fontSize: 11, color: 'var(--crit,#B4483C)', borderColor: 'var(--crit,#B4483C)' }}
                 onClick={async () => {
@@ -2465,11 +2484,15 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true }) {
             })()}
           </div>
           {(() => {
-            const filtered = (rows || []).filter((r) => (sourceFilter === 'all' || r.source === sourceFilter) && (sevFilter === 'all' || r.severity === sevFilter));
+            const filtered = (rows || []).filter((r) => (sourceFilter === 'all' || r.source === sourceFilter) && (sevFilter === 'all' || r.severity === sevFilter) && !isHiddenRepeat(r));
             if (filtered.length === 0 && !busy) {
               return (
                 <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', padding: '10px 0' }}>
-                  {(rows || []).length ? 'No suggestions match the current filter.' : 'The AI has no suggestions on this file yet. When it reads a document or spots something odd, you\'ll see it here as a suggestion you can act on.'}
+                  {(rows || []).length
+                    ? (repeatCount > 0 && !showDupes
+                      ? 'Everything here is already listed in Open findings below — nothing extra to review. Tick the box above to see the repeats.'
+                      : 'No suggestions match the current filter.')
+                    : 'The AI has no suggestions on this file yet. When it reads a document or spots something odd, you\'ll see it here as a suggestion you can act on.'}
                 </div>
               );
             }
@@ -2773,6 +2796,16 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
   // "2 warnings" chip maps to two visible items (owner-reported: "it says 2 warnings and I can't see
   // them"). Shown once, at the top; the per-section finding lists below were removed so nothing repeats.
   const allFindings = (data && data.allFindings) || [];
+  // The set of finding CODES already shown in the "Open findings" list below. Detectors like the
+  // chain-of-title / seller-chain / bank / tie-out desks surface here AND get bridged into the AI
+  // Findings panel (same evidence.code), so the identical issue was appearing twice (owner-reported
+  // 2026-07-24: "so many duplicates"). We pass these codes into the AI panel so it hides the bridged
+  // repeats by default — nothing is lost, each is still fully actionable in "Open findings".
+  const shownFindingCodes = React.useMemo(() => {
+    const s = new Set();
+    for (const f of allFindings) { if (f && f.code) s.add(String(f.code).trim().toLowerCase()); }
+    return s;
+  }, [allFindings]);
   const apprFindings = (appr && appr.findings) || [];
   const apprSum = (appr && appr.summary) || { fatal: 0, warning: 0, info: 0 };
   const exts = (data && data.extractions) || [];
@@ -2962,7 +2995,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
           AI agent posts here — the AI never writes on the file itself. A human
           clicks Escalate / Add note / Convert to condition / Convert to task /
           Mark important / Dismiss / Ask super-admin. */}
-      <AISuggestionsSection appId={appId} readOnly={readOnly} canResolve={canResolve} />
+      <AISuggestionsSection appId={appId} readOnly={readOnly} canResolve={canResolve} shownFindingCodes={shownFindingCodes} />
 
 
       {/* ALL open findings, in ONE place — exactly the set the roll-up counts, so the "2 warnings"

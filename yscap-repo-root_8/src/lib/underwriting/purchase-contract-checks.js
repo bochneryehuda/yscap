@@ -57,11 +57,33 @@ function computeContractFindings(contract, file, opts = {}) {
   }
 
   // ---- 2. Purchase price ----
-  if (withinMoney(contract.purchasePrice, f.purchase_price, 1) === false) {
+  // On an ASSIGNMENT / wholesale deal the contract on file is the SELLER's underlying purchase &
+  // sale agreement, so its stated price is the seller's ORIGINAL price (e.g. $438k) — NOT the
+  // fee-inclusive total the borrower pays (e.g. $474k). Blindly comparing the contract price to the
+  // file's total fired a FALSE "purchase price mismatch" fatal on every assignment (owner-directed
+  // 2026-07-24). On an assignment we therefore treat a contract price that equals EITHER the
+  // seller's underlying price OR the fee-inclusive total as a MATCH, and only flag it when it
+  // matches NEITHER (a genuine mismatch); the assignment economics themselves (fee, underlying
+  // price, and the file-level reconciliation) are checked in §4/§4b/§4c below. On a straight
+  // purchase the check is unchanged.
+  const isAsg = !!f.is_assignment && num(f.underlying_contract_price) != null;
+  let priceMismatch = false;
+  if (isAsg) {
+    const mUnder = withinMoney(contract.purchasePrice, f.underlying_contract_price, 1);
+    const mTotal = withinMoney(contract.purchasePrice, f.purchase_price, 1);
+    // Fire only when the contract price is present and matches NEITHER acceptable price.
+    priceMismatch = mUnder === false && mTotal === false;
+  } else {
+    priceMismatch = withinMoney(contract.purchasePrice, f.purchase_price, 1) === false;
+  }
+  if (priceMismatch) {
+    const expected = isAsg ? f.underlying_contract_price : f.purchase_price;
     out.push(finding({ code: 'contract_price_mismatch', severity: 'fatal', field: 'purchase_price',
-      docValue: money(contract.purchasePrice), fileValue: money(f.purchase_price),
+      docValue: money(contract.purchasePrice), fileValue: money(expected),
       title: 'Purchase price on the contract does not match the file',
-      howTo: `Contract shows ${money(contract.purchasePrice)} vs file ${money(f.purchase_price)}. Reconcile — the price flows into every leverage cap.`,
+      howTo: isAsg
+        ? `The contract shows ${money(contract.purchasePrice)}, which matches neither the seller's original price on file (${money(f.underlying_contract_price)}) nor the total purchase price (${money(f.purchase_price)}). Reconcile — the price flows into every leverage cap.`
+        : `Contract shows ${money(contract.purchasePrice)} vs file ${money(f.purchase_price)}. Reconcile — the price flows into every leverage cap.`,
       actions: ['fix_file', 'keep', 'custom', 'dismiss'] }));
   }
 
@@ -133,6 +155,25 @@ function computeContractFindings(contract, file, opts = {}) {
         title: 'Assignment fee exceeds the 15% financeable cap',
         howTo: `The financeable fee is capped at 15% of the seller's original price (${money(cap)}); the contract shows ${money(fee)}. The excess is out-of-pocket unless an approved exception is on file.`,
         actions: ['grant_exception', 'acknowledge', 'custom', 'dismiss'] }));
+    }
+  }
+
+  // ---- 4c. File reconciliation: the price increase over the seller's price IS the fee ----
+  // The owner's rule (2026-07-24): on an assignment the ONLY reason the price on file is higher
+  // than the seller's original contract price is the assignment (flip) fee. So the seller's
+  // underlying price plus the assignment fee must equal the purchase price on file. When it
+  // reconciles we do NOT flag the higher price (that was the false fatal above); when it does not,
+  // THIS is the real thing to surface — the price jump doesn't match the recorded fee. Advisory
+  // (warning), never a hard block. Pure file-data check — independent of the contract document, so
+  // it holds even before the contract is read.
+  if (f.is_assignment) {
+    const under = num(f.underlying_contract_price), fee = num(f.assignment_fee), total = num(f.purchase_price);
+    if (under != null && fee != null && total != null && Math.abs(total - (under + fee)) > 1) {
+      out.push(finding({ code: 'assignment_price_unreconciled', severity: 'warning', field: 'purchase_price',
+        docValue: `${money(under)} + ${money(fee)} = ${money(under + fee)}`, fileValue: money(total),
+        title: "The price increase on this assignment doesn't equal the assignment fee",
+        howTo: `The seller's original price on file (${money(under)}) plus the assignment fee (${money(fee)}) should equal the purchase price on file (${money(total)}). The increase over the seller's price is ${money(total - under)}, which does not match the ${money(fee)} fee — confirm the seller price, the fee, and the final price all agree.`,
+        actions: ['fix_file', 'custom', 'acknowledge', 'dismiss'] }));
     }
   }
 

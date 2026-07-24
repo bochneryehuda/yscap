@@ -334,6 +334,19 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
     }
   } catch (_) { /* auto-clear is additive — never blocks the extraction */ }
 
+  // 7. Background/OFAC condition auto-clear (IG-W12, owner-directed 2026-07-24). Now
+  // that this background report's extraction + findings are persisted, re-evaluate
+  // the file's fraud/OFAC condition: clear it when the report is AI-read clean, or
+  // reopen a prior auto-clear that has gone dirty. Gated OFF by default
+  // (FRAUD_AUTOCLEAR_ENABLED) inside the helper; never a false-clear (it requires a
+  // clean read with no open background finding); best-effort — never blocks the
+  // extraction from persisting.
+  try {
+    if (docType === 'background_report' && appId) {
+      await require('./fraud-autoclear').autoClearFraudCondition(client, appId);
+    }
+  } catch (_) { /* auto-clear is additive — never blocks the extraction */ }
+
   return { extractionId, findingIds };
 }
 
