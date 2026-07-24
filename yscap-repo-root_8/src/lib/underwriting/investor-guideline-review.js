@@ -217,9 +217,12 @@ function review(raw) {
         governing_rule: rule.governing_rule || null,
         expected_value: rule.expected ? rule.expected(x) : null,
         actual_value: rule.actual ? rule.actual(x) : null,
-        // Advisory hard-warning: a fatal ISG finding blocks CTC/funding as a super-admin-overridable
-        // warning (never a hard block). Term-sheet is not blocked by these (they are file-quality /
-        // escalation items, not a pricing-engine ineligibility).
+        // Advisory hard-warning: a fatal ISG finding flags CTC/funding as a super-admin-overridable
+        // warning (never a hard block). We set blocks_term_sheet:false here because these are
+        // file-quality / escalation items, not a pricing-engine ineligibility — BUT note the ONE
+        // registry's summarize() flips the AGGREGATE blocksTermSheet on ANY fatal severity (same as
+        // every other desk's fatal), so a fatal ISG finding does surface on the term-sheet gate too;
+        // it stays super-admin-overridable via the R6.18 issuance backstop, never a true block.
         blocks_term_sheet: false,
         blocks_ctc: fatal,
         blocks_funding: fatal,
