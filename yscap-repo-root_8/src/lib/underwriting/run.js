@@ -483,11 +483,29 @@ async function gatherInvestorInputs(applicationId, db) {
       const int = (v) => { const n = parseInt(v, 10); return Number.isFinite(n) && n > 0 ? n : 0; };
       const claim = int(app.requested_exp_flips) + int(app.requested_exp_holds) + int(app.requested_exp_ground);
       if (claim > 0) {
-        const verified = await exp.countBorrowersExperience(exp.fileBorrowerIds(app), db, { verifiedOnly: true });
+        const ids = exp.fileBorrowerIds(app);
+        const verified = await exp.countBorrowersExperience(ids, db, { verifiedOnly: true });
         out.claimed_exp = claim;
         out.verified_exp = int(verified && verified.total);
+
+        // has_stale_exit — feeds the WARNING isg_experience_stale_exit ("only exits within the
+        // last 3 years count"). Gated on claim>0 (a file that doesn't rely on experience should
+        // never be nagged about an old exit). We REUSE the frozen exit-date definition
+        // (experience.EXIT_DATE_SQL — flip=sale, hold=lease/refi) and just invert its window: a
+        // stale exit is a track-record deal whose exit date IS KNOWN and is OLDER than 36 months.
+        // true = a stale exit exists; false = we checked and none is stale; OMITTED only on error
+        // (never fabricated). A deal with no exit date is NOT stale (it just hasn't exited).
+        try {
+          const stale = await db.query(
+            `SELECT 1 /* isg_stale_exit */ FROM track_records
+               WHERE borrower_id = ANY($1::uuid[])
+                 AND (${exp.EXIT_DATE_SQL}) IS NOT NULL
+                 AND (${exp.EXIT_DATE_SQL}) < (CURRENT_DATE - INTERVAL '36 months')
+               LIMIT 1`, [ids]);
+          out.has_stale_exit = !!stale.rows[0];
+        } catch (_) { /* stale-exit read error → omit has_stale_exit (rule stays silent) */ }
       }
-      // claim === 0 → nothing claimed → OMIT both (rule stays silent, never a fabricated 0)
+      // claim === 0 → nothing claimed → OMIT all three (rule stays silent, never a fabricated 0)
     }
   } catch (_) { /* app row / track_records read error → omit claimed_exp+verified_exp */ }
 

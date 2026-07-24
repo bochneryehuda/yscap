@@ -111,9 +111,21 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
       assert.strictEqual(out.claimed_exp, 3, 'claimed_exp = requested_exp sum (3)');
       assert.strictEqual(out.verified_exp, 1, 'verified_exp counts only the verified, recent-exit deal (1)');
       ok('claimed 3 vs verified 1 — only verified + in-window deals count (frozen 3yr window reused)');
+      // The 5-year-old flip is a KNOWN exit older than 36 months → has_stale_exit true (#252).
+      assert.strictEqual(out.has_stale_exit, true, 'the 5-year-old exit → has_stale_exit true');
+      ok('a claimed exit older than 3 years surfaces has_stale_exit true (reuses EXIT_DATE_SQL)');
     }
 
-    console.log(`\ngatherInvestorInputs (#250 flood + #251 experience + #232) db — ${passed} checks passed`);
+    // Remove every stale (>36 months) exit → has_stale_exit becomes a real false (checked, none stale).
+    await pool.query(
+      `DELETE FROM track_records WHERE borrower_id=$1 AND sale_date < (CURRENT_DATE - INTERVAL '36 months')`, [bId]);
+    {
+      const out = await gatherInvestorInputs(aId, db);
+      assert.strictEqual(out.has_stale_exit, false, 'with no stale exits → has_stale_exit false (not omitted, not true)');
+      ok('once the old exit is gone, has_stale_exit is a real false');
+    }
+
+    console.log(`\ngatherInvestorInputs (#250 flood + #251 experience + #252 stale-exit + #232) db — ${passed} checks passed`);
   } finally {
     if (aId) await pool.query(`DELETE FROM applications WHERE id=$1`, [aId]).catch(() => {}); // cascades appraisals + credit_reports
     if (bId) await pool.query(`DELETE FROM borrowers WHERE id=$1`, [bId]).catch(() => {});
