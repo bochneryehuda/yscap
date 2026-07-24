@@ -49,7 +49,10 @@ function deskToSuggestions(desk) {
           ? u.coveredConditions
           : [u.name].filter(Boolean);
         const count = u.coveredCount || covered.length || 1;
-        const gapKey = u.gapKey || (code ? String(code).trim().toLowerCase() : `cond:${u.cond_no}`);
+        // Mirror desk.js's key derivation EXACTLY (trim+lowercase FIRST, then fall back) so a
+        // raw item with a whitespace-only pilot code keys identically on both sides.
+        const normCode = String(u.pilot_template_code || '').trim().toLowerCase();
+        const gapKey = u.gapKey || normCode || `cond:${u.cond_no}`;
         const many = count > 1;
         const reqList = covered.join(', ');
         out.push({
