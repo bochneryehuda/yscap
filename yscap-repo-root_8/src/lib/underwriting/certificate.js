@@ -59,6 +59,9 @@ async function buildDigest(client, appId) {
               expires_at, waived_codes
          FROM loan_exceptions
         WHERE application_id=$1 AND status='approved'
+          -- a lapsed approval is no longer in force — never attest to it, even
+          -- before the scheduled sweep flips the row to 'expired'
+          AND (expires_at IS NULL OR expires_at > now())
         ORDER BY decided_at DESC`, [appId]);
     policyExceptions = pe.rows.map((r) => ({
       id: r.id, ref: r.exception_seq != null ? `EX-${r.exception_seq}` : null,

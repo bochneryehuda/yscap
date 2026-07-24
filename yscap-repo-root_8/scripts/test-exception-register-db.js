@@ -219,7 +219,9 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
   await db.query(`UPDATE loan_exceptions SET expires_at = now() - interval '1 minute' WHERE id=$1`, [es1.id]);
   const lapsedView = await LE.latestEsignBeforeCtc(appId);
   ok(lapsedView && lapsedView.status === 'expired', 'a lapsed esign approval reads as expired BEFORE the sweep (fail-closed)');
-  ok((await LE.getById(es1.id)).status === 'approved', 'the DB row is untouched by the read (the sweep stays the writer)');
+  ok((await LE.getById(es1.id)).status === 'expired', 'every read surface presents the lapsed approval as expired');
+  const rawEs1 = (await db.query('SELECT status FROM loan_exceptions WHERE id=$1', [es1.id])).rows[0];
+  ok(rawEs1.status === 'approved', 'the DB row is untouched by the read (the sweep stays the writer)');
 
   // ---- updated_at trigger keeps itself fresh without hand-setting.
   const before = (await db.query('SELECT updated_at FROM loan_exceptions WHERE id=$1', [p5.id])).rows[0].updated_at;

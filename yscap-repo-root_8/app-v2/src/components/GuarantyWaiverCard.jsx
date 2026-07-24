@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
+import { useAuth } from '../lib/auth.jsx';
 
 /* Personal-guaranty status + the co-borrower guaranty-waiver request flow on a
    loan file (owner-directed 2026-07-22). STAFF file view only.
@@ -12,6 +13,7 @@ import { api } from '../lib/api.js';
 
    Self-hides when the file has no co-borrower (nothing to waive). */
 export default function GuarantyWaiverCard({ appId }) {
+  const { actor, role } = useAuth();
   const [state, setState] = useState(null);
   const [open, setOpen] = useState(false);
   const [reasonCode, setReasonCode] = useState('passive_member');
@@ -52,7 +54,10 @@ export default function GuarantyWaiverCard({ appId }) {
       {!waived && openReq && (
         <div className="row" style={{ gap: 8, alignItems: 'center', marginTop: 8 }}>
           <span className="ts-badge warn">Waiver requested — awaiting super-admin approval</span>
-          <button className="btn ghost small" disabled={busy} onClick={withdraw}>Withdraw request</button>
+          {/* Only the requester (or an admin) may withdraw — matches the server rule. */}
+          {(role === 'admin' || role === 'super_admin' || (actor && gw.requested_by === actor.id))
+            ? <button className="btn ghost small" disabled={busy} onClick={withdraw}>Withdraw request</button>
+            : <span className="muted small">Only the requester or an admin can withdraw it.</span>}
         </div>
       )}
 

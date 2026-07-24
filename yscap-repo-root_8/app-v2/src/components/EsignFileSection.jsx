@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api, saveBlob } from '../lib/api.js';
+import { useAuth } from '../lib/auth.jsx';
 import {
   PHASE, PURPOSE, ROLE, TERMINAL, timeAgo, absTime, recipientSteps, recipientState,
   agingHours, agingLevel, agingLabel,
@@ -53,6 +54,7 @@ function Recipient({ r }) {
 }
 
 export default function EsignFileSection({ appId, role, onChanged }) {
+  const { actor } = useAuth();
   const isAdmin = role === 'admin' || role === 'super_admin';
   const [data, setData] = useState(null);   // { gate, packages, envelopes, loanNumber }
   const [err, setErr] = useState('');
@@ -359,7 +361,10 @@ export default function EsignFileSection({ appId, role, onChanged }) {
               <div className="notice info" style={{ margin: '2px 0 10px' }}>
                 <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                   <span className="ts-badge warn">Exception requested — awaiting super-admin review</span>
-                  <button className="btn ghost btn-sm" disabled={busy === 'exc:wd'} onClick={() => withdrawException(exc.id)}>Withdraw request</button>
+                  {/* Only the requester (or an admin) may withdraw — matches the server rule. */}
+                  {(isAdmin || (actor && exc.requested_by === actor.id))
+                    ? <button className="btn ghost btn-sm" disabled={busy === 'exc:wd'} onClick={() => withdrawException(exc.id)}>Withdraw request</button>
+                    : <span className="muted small">Only the requester or an admin can withdraw it.</span>}
                 </div>
                 <div className="muted small" style={{ marginTop: 4 }}>
                   The super-admin sees everything that’s done and still outstanding, and chooses exactly which

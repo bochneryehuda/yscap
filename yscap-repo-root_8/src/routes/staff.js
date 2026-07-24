@@ -2175,7 +2175,13 @@ router.post('/applications/:id/exceptions/guaranty-waiver', async (req, res) => 
     } catch (_) { /* best-effort */ }
     await audit(req, 'guaranty_exception_requested', 'application', appId, { exceptionId: row.id, reasonCode: row.reason_code });
     res.json({ ok: true, exception: row });
-  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+  } catch (e) {
+    // Concurrent double-submit races on uq_loan_exc_open_per_app — the loser's
+    // INSERT is a unique violation, i.e. "already pending", not a server error
+    // (same mapping as the esign + pricing request routes).
+    if (e && e.code === '23505') return res.status(409).json({ error: 'A guaranty-waiver request is already awaiting super-admin review on this file.' });
+    console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
+  }
 });
 
 // Withdraw an OPEN exception request — the REQUESTER or an admin/super-admin

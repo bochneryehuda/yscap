@@ -247,6 +247,21 @@ function dueAtFor(type, from = new Date()) {
  * decision (the e-sign gate separately pins waivers to their blocker state and
  * fails closed on its own).
  */
+/**
+ * READ-TIME EXPIRY PRESENTATION — an approved row whose expires_at has passed
+ * is PRESENTED as 'expired' on every read surface, even before the scheduled
+ * sweep flips the DB row (the sweep remains the writer + notifier). Fail-closed
+ * display: a lapsed approval never *looks* in force anywhere. Pure — never
+ * mutates the input.
+ */
+function presentExpiry(row) {
+  if (row && row.status === 'approved' && row.expires_at
+      && new Date(row.expires_at).getTime() < Date.now()) {
+    return { ...row, status: 'expired', expired_at: row.expired_at || row.expires_at };
+  }
+  return row;
+}
+
 function dealDrift(row) {
   const snap = row && row.deal_snapshot;
   if (!snap || typeof snap !== 'object') return [];
@@ -296,7 +311,7 @@ async function requestException(client, opts) {
      VALUES ($1,$2,$3,'requested',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
      RETURNING *`,
     [opts.appId, type,
-     cfg.subject === 'co_borrower' ? (opts.subjectBorrowerId || null) : (opts.subjectBorrowerId || null),
+     cfg.subject === 'co_borrower' ? (opts.subjectBorrowerId || null) : null,
      isReasonCodeFor(type, opts.reasonCode) ? opts.reasonCode : 'other',
      opts.reasonNote ? String(opts.reasonNote).slice(0, 2000) : null,
      opts.requestedBy || null, kind, opts.requestedByBorrowerId || null,
@@ -362,18 +377,23 @@ async function requestPricingException(client, { appId, reasonCode, reasonNote, 
  */
 async function recordIssuanceOverride({ appId, staffId, note, snapshot }, client = db) {
   try {
+    // gate_snapshot = the override context (action/tier/at — "the state that
+    // prompted it"); deal_snapshot = the REAL deal economics, same as every
+    // other type, so the register/drift read overrides consistently.
+    const deal = await dealSnapshotFor(appId);
     const ins = await client.query(
       `INSERT INTO loan_exceptions
          (application_id, exception_type, status, reason_code, reason_note,
           requested_by, requested_by_kind, decided_by, decided_at, decision_note,
-          deal_snapshot, severity)
-       VALUES ($1,'issuance_override','approved','other',$2,$3,'staff',$3,now(),$4,$5,'material')
+          gate_snapshot, deal_snapshot, severity)
+       VALUES ($1,'issuance_override','approved','other',$2,$3,'staff',$3,now(),$4,$5,$6,'material')
        RETURNING *`,
       [appId,
        note ? String(note).slice(0, 2000) : 'Super-admin override past a fatal hard-warning',
        staffId || null,
        note ? String(note).slice(0, 1000) : null,
-       snapshot ? JSON.stringify(snapshot) : null]);
+       snapshot ? JSON.stringify(snapshot) : null,
+       deal ? JSON.stringify(deal) : null]);
     return ins.rows[0] || null;
   } catch (e) {
     try { console.warn('[loan-exceptions] issuance-override record skipped:', e.message); } catch (_) {}
@@ -394,11 +414,7 @@ async function recordIssuanceOverride({ appId, staffId, note, snapshot }, client
  */
 async function latestEsignBeforeCtc(appId, client = db) {
   try {
-    const row = await latestForApp(appId, 'esign_before_ctc', client);
-    if (row && row.status === 'approved' && row.expires_at && new Date(row.expires_at).getTime() < Date.now()) {
-      return { ...row, status: 'expired', expired_at: row.expired_at || row.expires_at };
-    }
-    return row;
+    return presentExpiry(await latestForApp(appId, 'esign_before_ctc', client));
   } catch (_) { return null; }
 }
 
@@ -537,7 +553,7 @@ async function listForRequester(staffId, { status = 'open', limit = 100 } = {}, 
        ${where}
       ORDER BY e.created_at DESC
       LIMIT ${Math.min(500, Math.max(1, Number(limit) || 100))}`, params);
-  return r.rows.map((row) => ({ ...row, reason_label: reasonLabelFor(row.exception_type, row.reason_code) }));
+  return r.rows.map((row) => presentExpiry({ ...row, reason_label: reasonLabelFor(row.exception_type, row.reason_code) }));
 }
 
 /* ---------------- comments (staff-only thread on an exception) ---------------- */
@@ -617,11 +633,14 @@ async function latestForApp(appId, type = 'guaranty_waiver', client = db) {
 async function registerForApp(appId, client = db) {
   const r = await client.query(
     `SELECT e.*, e.exception_type AS type,
+            a.loan_amount,
+            a.purchase_price AS live_purchase_price, a.rehab_budget AS live_rehab_budget, a.arv AS live_arv,
             sb.first_name AS subject_first, sb.last_name AS subject_last,
             rq.full_name AS requested_by_name, dc.full_name AS decided_by_name,
             wd.full_name AS withdrawn_by_name,
             rb.first_name AS requested_borrower_first, rb.last_name AS requested_borrower_last
        FROM loan_exceptions e
+       JOIN applications a ON a.id = e.application_id
        LEFT JOIN borrowers sb ON sb.id = e.subject_borrower_id
        LEFT JOIN borrowers rb ON rb.id = e.requested_by_borrower_id
        LEFT JOIN staff_users rq ON rq.id = e.requested_by
@@ -630,7 +649,11 @@ async function registerForApp(appId, client = db) {
       WHERE e.application_id = $1
       ORDER BY e.created_at DESC
       LIMIT 200`, [appId]);
-  return r.rows.map((row) => ({ ...row, reason_label: reasonLabelFor(row.exception_type, row.reason_code) }));
+  return r.rows.map((row) => presentExpiry({
+    ...row,
+    reason_label: reasonLabelFor(row.exception_type, row.reason_code),
+    deal_drift: dealDrift(row),
+  }));
 }
 
 /** A single exception row with file/requester/decider identity, or null. */
@@ -656,6 +679,7 @@ async function getById(id, client = db) {
   if (row) {
     row.reason_label = reasonLabelFor(row.exception_type, row.reason_code);
     row.deal_drift = dealDrift(row);
+    return presentExpiry(row);
   }
   return row;
 }
@@ -696,7 +720,7 @@ async function listExceptions({ status = 'open', type = null, limit = 100, offse
        ${where}
       ORDER BY e.created_at DESC
       ${limSql} ${offSql}`, params);
-  return r.rows.map((row) => ({
+  return r.rows.map((row) => presentExpiry({
     ...row,
     reason_label: reasonLabelFor(row.exception_type, row.reason_code),
     deal_drift: dealDrift(row),
@@ -750,10 +774,14 @@ async function metrics(client = db) {
         `SELECT exception_type, status, count(*)::int AS n
            FROM loan_exceptions
           GROUP BY exception_type, status`),
+      // Approval-rate accounting: an 'expired' row WAS approved (it lapsed, it
+      // wasn't refused). A 'cleared' row no longer says which way it went, so it
+      // counts toward timing (decided_at is real) but not the rate.
       client.query(
         `SELECT exception_type,
                 count(*)::int AS decided,
-                count(*) FILTER (WHERE status='approved')::int AS approved,
+                count(*) FILTER (WHERE status IN ('approved','expired'))::int AS approved,
+                count(*) FILTER (WHERE status='denied')::int AS denied,
                 percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (decided_at - requested_at))/3600.0) AS median_hours,
                 avg(EXTRACT(EPOCH FROM (decided_at - requested_at))/3600.0) AS avg_hours
            FROM loan_exceptions
@@ -780,7 +808,10 @@ async function metrics(client = db) {
         exception_type: t.exception_type,
         decided: t.decided,
         approved: t.approved,
-        approvalRate: t.decided ? Math.round((t.approved / t.decided) * 100) : null,
+        denied: t.denied,
+        // Rate over rows whose decision is still legible (approved/expired vs
+        // denied); cleared rows keep feeding the timing but not the rate.
+        approvalRate: (t.approved + t.denied) ? Math.round((t.approved / (t.approved + t.denied)) * 100) : null,
         medianHours: t.median_hours == null ? null : Math.round(Number(t.median_hours) * 10) / 10,
         avgHours: t.avg_hours == null ? null : Math.round(Number(t.avg_hours) * 10) / 10,
       })),
@@ -801,7 +832,7 @@ module.exports = {
   COMPENSATING_FACTORS, sanitizeCompensatingFactors,
   EXCEPTION_TYPES, isExceptionType, typeConfig,
   reasonCodesFor, reasonLabelFor, isReasonCodeFor,
-  dealSnapshotFor, dueAtFor, dealDrift,
+  dealSnapshotFor, dueAtFor, dealDrift, presentExpiry,
   requestException, requestGuarantyWaiver, requestEsignBeforeCtc, requestPricingException,
   recordIssuanceOverride, latestEsignBeforeCtc,
   decideException, withdrawException, clearException,

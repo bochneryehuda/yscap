@@ -141,12 +141,17 @@ export default function StaffExceptions() {
   const filterLabel = { open: 'Awaiting review', approved: 'Approved', denied: 'Denied', withdrawn: 'Withdrawn', expired: 'Expired', cleared: 'Cleared', all: 'All' };
   const typeChips = [['', 'All types'], ...Object.entries(typeLabels)];
 
-  // The register report strip (aggregates only — no borrower data).
+  // The register report strip (aggregates only — no borrower data). Approval
+  // rate over legible decisions (approved/expired vs denied — the server
+  // excludes archived rows whose decision is no longer readable); "typical
+  // decision time" is the per-type medians weighted by how many each type
+  // decided (an honest blend, not a raw mean of medians).
   const agg = metrics && metrics.openAging;
   const rates = (metrics && metrics.timing) || [];
-  const overallDecided = rates.reduce((s, t) => s + (t.decided || 0), 0);
+  const rateN = rates.reduce((s, t) => s + ((t.approved || 0) + (t.denied || 0)), 0);
   const overallApproved = rates.reduce((s, t) => s + (t.approved || 0), 0);
-  const medHours = rates.length ? rates.map((t) => t.medianHours).filter((x) => x != null) : [];
+  const wSum = rates.reduce((s, t) => s + ((t.medianHours != null && t.decided) ? t.medianHours * t.decided : 0), 0);
+  const wN = rates.reduce((s, t) => s + ((t.medianHours != null && t.decided) ? t.decided : 0), 0);
 
   return (
     <div className="wrap" style={{ maxWidth: 940 }}>
@@ -170,8 +175,8 @@ export default function StaffExceptions() {
           <div><div className="muted small">Open now</div><div style={{ fontWeight: 700 }}>{agg ? agg.open : 0}</div></div>
           <div><div className="muted small">Past review target</div><div style={{ fontWeight: 700, color: agg && agg.overdue ? '#a33' : undefined }}>{agg ? agg.overdue : 0}</div></div>
           <div><div className="muted small">Oldest waiting</div><div style={{ fontWeight: 700 }}>{agg && agg.oldestHours != null ? (agg.oldestHours >= 48 ? `${Math.floor(agg.oldestHours / 24)}d` : `${Math.round(agg.oldestHours)}h`) : '—'}</div></div>
-          <div><div className="muted small">Approval rate (all time)</div><div style={{ fontWeight: 700 }}>{overallDecided ? `${Math.round((overallApproved / overallDecided) * 100)}%` : '—'}</div></div>
-          <div><div className="muted small">Median time to decide</div><div style={{ fontWeight: 700 }}>{medHours.length ? `${Math.round(medHours.reduce((a, b) => a + b, 0) / medHours.length)}h` : '—'}</div></div>
+          <div><div className="muted small">Approval rate (all time)</div><div style={{ fontWeight: 700 }}>{rateN ? `${Math.round((overallApproved / rateN) * 100)}%` : '—'}</div></div>
+          <div><div className="muted small">Typical decision time</div><div style={{ fontWeight: 700 }}>{wN ? `${Math.round(wSum / wN)}h` : '—'}</div></div>
         </div>
       )}
 
