@@ -1083,6 +1083,27 @@ router.get('/:appId/investor-guidelines', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Document-reviewer guidance — "what to look for on this document." Projects the note
+// buyer's condition checklist (required_evidence + specific checks) onto a document TYPE,
+// so when staff (or the AI read) open, say, an insurance policy, they see exactly what
+// this note buyer needs confirmed on it (dwelling coverage = replacement cost, mortgagee
+// clause ISAOA/ATIMA, premium paid, ...). Reads the file's note buyer to filter; advisory /
+// read-only. Staff-only (router guard). Query: ?docType=insurance
+router.get('/:appId/document-review-guide', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const docType = String(req.query.docType || '').slice(0, 60);
+    let noteBuyer = null;
+    try {
+      noteBuyer = (await db.query('SELECT lender FROM applications WHERE id=$1', [app.id])).rows[0]?.lender || null;
+    } catch (_e) { /* best-effort — an unknown note buyer just returns every buyer's checklist */ }
+    const guide = require('../lib/underwriting/document-review-guide')
+      .reviewGuideForDocType(docType, { noteBuyerKey: noteBuyer });
+    res.json({ ok: true, noteBuyer, ...guide });
+  } catch (e) { next(e); }
+});
+
 // ISG AI satisfaction-quality check (owner-directed: "each investor guideline built
 // in an AI way to understand documents / conditions / the file"). For the file's
 // SATISFIED note-buyer conditions, asks the grounded GPT brain (grounded on the
