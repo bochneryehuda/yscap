@@ -58,7 +58,7 @@ const cleanup = async (app, bor, lo) => {
   await db.query(`DELETE FROM borrowers WHERE id=$1`, [bor]);
   if (lo) { await db.query(`DELETE FROM notifications WHERE staff_id=$1`, [lo]).catch(() => {}); await db.query(`DELETE FROM staff_users WHERE id=$1`, [lo]); }
 };
-const wfItems = async (app) => (await db.query(`SELECT * FROM workflow_items WHERE application_id=$1 ORDER BY id`, [app])).rows;
+const wfItems = async (app) => (await db.query(`SELECT * FROM workflow_items WHERE application_id=$1 ORDER BY created_at, id`, [app])).rows;
 const notesFor = async (app, kind) => (await db.query(
   `SELECT * FROM notifications WHERE application_id=$1 AND recipient_kind=$2 ORDER BY created_at`, [app, kind])).rows;
 
@@ -203,8 +203,9 @@ const notesFor = async (app, kind) => (await db.query(
     const row = await portalDraws.createRequest(A.app, [{ sitewire_job_item_id: A.jidRoof, requested_cents: 2000 }], { source: 'borrower', borrowerId: A.bor });
     const cancelled = await portalDraws.cancelRequest(A.app, row.id, { staffId: A.lo, reason: 'submitted by mistake' });
     ok('cancel lands with the reason', cancelled.status === 'cancelled' && /mistake/.test(cancelled.cancelled_reason));
-    const task = (await wfItems(A.app)).filter((i) => i.submission_type === 'trustpoint_import').pop();
-    ok('live coordinator task folded into the cancel', task && task.status === 'cancelled');
+    const tpItems = (await wfItems(A.app)).filter((i) => i.submission_type === 'trustpoint_import');
+    ok('live coordinator task folded into the cancel',
+      tpItems.some((i) => i.status === 'cancelled') && !tpItems.some((i) => ['open', 'in_progress'].includes(i.status)));
     ok('borrower told about the cancel', (await notesFor(A.app, 'borrower')).some((n) => /cancelled/i.test(n.title)));
     const st = await portalDraws.composerState(A.app);
     ok('cancel frees the slot', st.eligible === true && !st.open_portal_request);
