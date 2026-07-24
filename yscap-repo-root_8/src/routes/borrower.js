@@ -1430,16 +1430,17 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
     const locked = await require('../lib/file-lock').structuralLockReason(req.params.id);
     if (locked) return res.status(409).json({ error: locked, fatal: true });
     const chk = await require('../lib/rehab-budget').checkSowBudget(req.params.id, payload);
-    if (!chk.ok) sowMismatch = { required: chk.required, total: Number(payload && payload.total), message: chk.message };
+    if (!chk.ok) sowMismatch = { required: chk.required, total: require('../lib/rehab-budget').toNum(payload && payload.total), message: chk.message };
     // Gold Standard Program: the SOW must carry a >= 5% construction contingency.
     goldSow = await require('../lib/rehab-budget').checkGoldSow(req.params.id, payload);
   }
   // Status: a matching SOW → 'received'; a budget mismatch OR a missing Gold 5%
   // contingency WITH content → 'issue' (visible, not cleared); an empty draft
   // (opened + exited) → leave the status untouched. Non-rehab tools → 'received'.
-  const rbTotal = Number(payload && payload.total);
+  // toNum (comma/"$"-tolerant) — same parser as the gate (audit finding 6).
+  const rbTotal = require('../lib/rehab-budget').toNum(payload && payload.total);
   const sowOpen = !!sowMismatch || !goldSow.ok;
-  const toolStatus = sowOpen ? (isFinite(rbTotal) && rbTotal > 0 ? 'issue' : null) : 'received';
+  const toolStatus = sowOpen ? (rbTotal != null && rbTotal > 0 ? 'issue' : null) : 'received';
   await db.query(
     `UPDATE checklist_items SET tool_payload=$2, tool_state=COALESCE($3,tool_state), status=COALESCE($4,status), updated_at=now()
       WHERE id=$1`,
@@ -1447,14 +1448,11 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
      payload && typeof payload.state === 'object' ? JSON.stringify(payload.state) : null, toolStatus]);
   // Populate the condition with a plain-language note about the match state, on
   // BOTH a mismatch and a match — visible to every party. '[auto]' notes are ours
-  // to overwrite; a staff-typed note is never clobbered.
+  // to overwrite; a staff-typed note is never clobbered. The note reuses the
+  // gate's own cent-precise message (audit finding 1: it used to re-round the
+  // figures to whole dollars, hiding the very gap it reported).
   if (it.rows[0].tool_key === 'rehab_budget') {
-    const rbMoney = require('../lib/rehab-budget').money;
-    const note = sowMismatch
-      ? `[auto] Scope of Work (line items ${rbMoney(rbTotal)}) does not match the file's rehab budget ${rbMoney(sowMismatch.required)} — this condition stays open for all parties until the first-page construction budget AND the line items each total exactly ${rbMoney(sowMismatch.required)}.`
-      : (!goldSow.ok
-        ? `[auto] ${require('../lib/rehab-budget').GOLD_CONTINGENCY_MSG}`
-        : `[auto] Scope of Work totals ${rbMoney(rbTotal)} and matches the file's rehab budget — ready to clear.`);
+    const note = require('../lib/rehab-budget').sowAutoNote(sowMismatch && sowMismatch.message, goldSow.ok, payload && payload.total);
     try { await db.query(`UPDATE checklist_items SET notes=CASE WHEN notes IS NULL OR notes LIKE '[auto]%' THEN $2 ELSE notes END, updated_at=now() WHERE id=$1`, [req.params.itemId, note]); } catch (_) {}
   }
   // The Scope of Work NEVER writes the file's rehab budget (owner-directed — the

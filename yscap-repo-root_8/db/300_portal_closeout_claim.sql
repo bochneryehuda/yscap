@@ -1,4 +1,4 @@
--- 297_portal_closeout_claim.sql
+-- 300_portal_closeout_claim.sql
 -- Idempotent. Phase-4 audit hardening: the historical close-out gets a LEASE claim so
 -- overlapping drivers (approval reaction, desk button, reconcile re-drive, writeback
 -- sweep) can never double-create the Sitewire draw. A crashed claim self-releases

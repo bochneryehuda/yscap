@@ -219,6 +219,15 @@ module.exports = {
   // OFF by default.
   ssnAutoclearEnabled: process.env.SSN_AUTOCLEAR_ENABLED === '1',
 
+  // Auto-clear the "Executed purchase contract" condition (rtl_p1_contract) once PILOT has
+  // read the purchase contract (and, on an assignment, the assignment agreement) on this file
+  // AND its economics reconcile — no open FATAL contract/assignment finding remains (price,
+  // address, buyer entity, assignment fee, and seller/underlying price all tie out to the loan).
+  // Stricter than a blind clear, symmetric (self-reopens when a re-read or an economics change
+  // no longer reconciles), never a false-clear. See src/lib/underwriting/contract-autoclear.js.
+  // OFF by default.
+  contractAutoclearEnabled: process.env.CONTRACT_AUTOCLEAR_ENABLED === '1',
+
   // --- document storage ---
   storageProvider: process.env.STORAGE_PROVIDER || 'local', // 'local' | 's3' | 'sharepoint'
   // On Render, set STORAGE_DIR to a mounted persistent disk (e.g. /var/data/uploads)

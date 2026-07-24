@@ -144,7 +144,7 @@ async function linkToSitewireIntake(appId, tpDrawRow) {
             AND ABS(COALESCE(total_requested_cents,0) - $2) <= 100
             -- a Sitewire draw already claimed by ANOTHER administered draw is off the
             -- table (audit-5 #3: a double-pointed draw silently loses the second
-            -- draw's money mirror) — db/298's unique index is the backstop
+            -- draw's money mirror) — db/301's unique index is the backstop
             AND NOT EXISTS (SELECT 1 FROM trustpoint_draws t2 WHERE t2.sitewire_draw_id = sitewire_draws.sitewire_draw_id)`,
         [appId, tpDrawRow.requested_cents])).rows;
       if (cand.length === 1) {

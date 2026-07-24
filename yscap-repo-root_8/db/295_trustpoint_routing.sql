@@ -1,4 +1,4 @@
--- 292_trustpoint_routing.sql
+-- 295_trustpoint_routing.sql
 -- Idempotent. Physical-draw workflow phase 1 (owner-directed 2026-07-24; blueprint
 -- docs/TRUSTPOINT-PHYSICAL-DRAW-WORKFLOW-BLUEPRINT.md).
 --
