@@ -446,7 +446,7 @@ async function gatherInvestorInputs(applicationId, db) {
   // never guessed either way, so the FATAL rule can't false-fire on an unknown.
   try {
     const f = await db.query(
-      `SELECT fema_flood_sfha, fema_flood_zone, flood_zone
+      `SELECT fema_flood_sfha, fema_flood_zone, flood_zone, nbhd_location_type
          FROM appraisals WHERE application_id = $1 AND superseded = false
          ORDER BY imported_at DESC LIMIT 1`, [applicationId]);
     const r = f.rows[0];
@@ -459,8 +459,18 @@ async function gatherInvestorInputs(applicationId, db) {
         out.in_flood_zone = false;              // a real determination: checked / a stated non-A/V zone
       }
       // else: all NULL → not checked → leave OMITTED (unknown, never fabricated)
+
+      // appraisal_rural — feeds the all-buyers FATAL escalation isg_rural_property (fires only on
+      // appraisal_rural === true). The appraiser's UAD neighborhood location type is a parser-extracted,
+      // enum-constrained field (appraisals.nbhd_location_type ∈ {Urban, Suburban, Rural}; extract.js from
+      // MISMO PropertyNeighborhoodLocationType). true = Rural; a stated Urban/Suburban = false (harmless —
+      // the rule stays silent); NULL / unread = OMITTED (never guessed), so the FATAL rule can't false-fire.
+      const loc = String(r.nbhd_location_type == null ? '' : r.nbhd_location_type).trim().toLowerCase();
+      if (loc === 'rural') out.appraisal_rural = true;
+      else if (loc === 'urban' || loc === 'suburban') out.appraisal_rural = false;
+      // else: null/blank/unrecognized → OMIT (unknown, never fabricated)
     }
-  } catch (_) { /* fema_flood_* columns optional in some envs → omit in_flood_zone */ }
+  } catch (_) { /* fema_flood_* / nbhd_location_type columns optional in some envs → omit those signals */ }
 
   // Claimed vs verified experience — feeds the FATAL isg_experience_claimed_over_verified
   // (fires only when claimed_exp > verified_exp, both present). NEVER-FALSE-FIRE discipline:

@@ -51,9 +51,9 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
     // 2. A current appraisal in a FEMA Special Flood Hazard Area → appraisal_present true
     //    AND in_flood_zone true (proven), reading the real db/150 flood columns.
     const apprInsert = (extra) => pool.query(
-      `INSERT INTO appraisals (application_id, superseded, imported_at, fema_flood_sfha, fema_flood_zone, flood_zone)
-         VALUES ($1, false, now(), $2, $3, $4) RETURNING id`,
-      [aId, extra.sfha, extra.femaZone, extra.statedZone]);
+      `INSERT INTO appraisals (application_id, superseded, imported_at, fema_flood_sfha, fema_flood_zone, flood_zone, nbhd_location_type)
+         VALUES ($1, false, now(), $2, $3, $4, $5) RETURNING id`,
+      [aId, extra.sfha, extra.femaZone, extra.statedZone, extra.loc == null ? null : extra.loc]);
 
     let apprId = (await apprInsert({ sfha: true, femaZone: 'AE', statedZone: 'AE' })).rows[0].id;
     {
@@ -82,6 +82,22 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
       assert.strictEqual(out.appraisal_present, true, 'appraisal still present');
       assert.ok(!('in_flood_zone' in out), 'a not-checked appraisal omits in_flood_zone (never fabricated)');
       ok('a not-checked appraisal keeps appraisal_present but omits in_flood_zone');
+    }
+
+    // 4b. APPRAISAL_RURAL (#254) — from the current appraisal's UAD neighborhood location type.
+    await pool.query(`UPDATE appraisals SET superseded = true WHERE application_id = $1 AND superseded = false`, [aId]);
+    await apprInsert({ sfha: null, femaZone: null, statedZone: null, loc: 'Rural' });
+    {
+      const out = await gatherInvestorInputs(aId, db);
+      assert.strictEqual(out.appraisal_rural, true, 'a Rural neighborhood → appraisal_rural true');
+      ok('a Rural appraisal sets appraisal_rural true (real nbhd_location_type column)');
+    }
+    await pool.query(`UPDATE appraisals SET superseded = true WHERE application_id = $1 AND superseded = false`, [aId]);
+    await apprInsert({ sfha: null, femaZone: null, statedZone: null, loc: 'Suburban' });
+    {
+      const out = await gatherInvestorInputs(aId, db);
+      assert.strictEqual(out.appraisal_rural, false, 'a Suburban neighborhood → appraisal_rural false');
+      ok('a Suburban appraisal sets appraisal_rural false (escalation stays silent)');
     }
 
     // 5. CLAIMED vs VERIFIED EXPERIENCE (#251) — reuses experience.js against the REAL
