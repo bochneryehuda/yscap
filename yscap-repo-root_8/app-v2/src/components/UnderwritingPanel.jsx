@@ -618,7 +618,47 @@ const AUTH_STYLES = {
   unreadable:  { color: 'var(--muted,#4B585C)', bg: 'var(--paper,#F6F3EC)', label: 'Not readable as PDF' },
 };
 
-function Completeness({ completeness, documentsOnFile = [] }) {
+// The note-buyer "what to look for on this document" checklist, fetched on demand for
+// one document type. Advisory guidance from the investor-guideline specs (CorrFirst /
+// Blue Lake) — what this note buyer needs confirmed on that kind of document.
+function DocReviewGuide({ appId, docType, label, onClose }) {
+  const [state, setState] = useState({ loading: true, items: [], noteBuyer: null });
+  useEffect(() => {
+    let live = true;
+    if (!appId || !docType) return undefined;
+    api.documentReviewGuide(appId, docType)
+      .then((r) => { if (live) setState({ loading: false, items: (r && r.items) || [], noteBuyer: (r && r.noteBuyer) || null }); })
+      .catch(() => { if (live) setState({ loading: false, items: [], noteBuyer: null }); });
+    return () => { live = false; };
+  }, [appId, docType]);
+  return (
+    <div style={{ marginTop: 10, border: '1px solid var(--gold,#AE8746)', borderRadius: 10, background: 'rgba(174,135,70,.06)', padding: '10px 14px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+        <span style={{ fontSize: 12.5, fontWeight: 800 }}>What to look for on the {label || String(docType).replace(/_/g, ' ')}</span>
+        {state.noteBuyer && <span style={{ fontSize: 11, color: 'var(--muted,#4B585C)' }}>· {state.noteBuyer}</span>}
+        <button className="btn ghost small" style={{ marginLeft: 'auto' }} onClick={onClose}>Hide</button>
+      </div>
+      {state.loading && <div className="muted" style={{ fontSize: 12 }}>Loading…</div>}
+      {!state.loading && state.items.length === 0 && (
+        <div className="muted" style={{ fontSize: 12 }}>No note-buyer checklist applies to this document type.</div>
+      )}
+      {!state.loading && state.items.map((it, i) => (
+        <div key={i} style={{ marginBottom: 8 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700 }}>{it.condition}{it.noteBuyerSpecific ? <span style={{ fontSize: 10.5, color: 'var(--gold,#AE8746)', fontWeight: 800 }}> · this buyer</span> : null}</div>
+          {it.required_evidence && <div style={{ fontSize: 11.5, color: 'var(--muted,#4B585C)', marginTop: 1 }}>{it.required_evidence}</div>}
+          {Array.isArray(it.checks) && it.checks.length > 0 && (
+            <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+              {it.checks.map((c, j) => <li key={j} style={{ fontSize: 11.5, marginBottom: 2 }}>{c}</li>)}
+            </ul>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Completeness({ completeness, documentsOnFile = [], appId = null }) {
+  const [openGuideType, setOpenGuideType] = useState(null);
   if (!completeness || !completeness.stipulations || !completeness.stipulations.length) return null;
   const c = completeness;
   // docType -> full doc rows on file, so a stipulation that's "on file" can
@@ -653,6 +693,12 @@ function Completeness({ completeness, documentsOnFile = [] }) {
                 <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: st.fg, background: st.bg, padding: '2px 7px', borderRadius: 6 }}>{st.label}</span>
                 <span style={{ fontSize: 10.5, color: 'var(--muted,#4B585C)' }}>{OWNER_LABEL[s.owner] || s.owner} · {s.gating}</span>
               </div>
+              {appId && (
+                <button onClick={() => setOpenGuideType((t) => t === s.docType ? null : s.docType)}
+                  style={{ background: 'none', border: 'none', color: 'var(--teal-deep,#256168)', cursor: 'pointer', fontSize: 10.5, padding: '3px 0 0', textDecoration: 'underline' }}>
+                  {openGuideType === s.docType ? 'Hide what to check' : 'What to look for'}
+                </button>
+              )}
               {(filesByType[s.docType] || []).length > 0 && s.status !== 'missing' && (
                 <div style={{ fontSize: 10.5, color: 'var(--muted,#4B585C)', marginTop: 4, overflowWrap: 'anywhere' }} title={filesByType[s.docType].join(', ')}>
                   📎 {filesByType[s.docType][0]}{filesByType[s.docType].length > 1 ? ` +${filesByType[s.docType].length - 1}` : ''}
@@ -678,6 +724,11 @@ function Completeness({ completeness, documentsOnFile = [] }) {
           );
         })}
       </div>
+      {openGuideType && appId && (
+        <DocReviewGuide appId={appId} docType={openGuideType}
+          label={(c.stipulations.find((s) => s.docType === openGuideType) || {}).label}
+          onClose={() => setOpenGuideType(null)} />
+      )}
     </div>
   );
 }
@@ -2920,7 +2971,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
       <RiskScore risk={risk} />
 
       {/* file completeness — what's still needed to close */}
-      <Completeness completeness={completeness} documentsOnFile={documentsOnFile} />
+      <Completeness completeness={completeness} documentsOnFile={documentsOnFile} appId={appId} />
 
       {/* conditions coverage — ties every document back to the checklist */}
       <ConditionCoverage coverage={coverage} />

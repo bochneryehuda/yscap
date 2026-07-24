@@ -486,6 +486,8 @@ export const api = {
   similarOpenFindings:       (appId, findingId) => req('GET', `/api/underwriting/${appId}/findings/${findingId}/similar-open`),
   // R5.17 — the grounded evidence behind one finding (exact OCR quote + page), fetched on demand.
   findingEvidence:           (appId, findingId) => req('GET', `/api/underwriting/${appId}/findings/${findingId}/evidence`),
+  // "What to look for" — the note-buyer checklist for a document type (fetched on demand).
+  documentReviewGuide:       (appId, docType) => req('GET', `/api/underwriting/${appId}/document-review-guide?docType=${encodeURIComponent(docType || '')}`),
   bulkResolveFindings:       (appId, findingIds, action, note) => req('POST', `/api/underwriting/${appId}/findings/similar/bulk-resolve`, { findingIds, action, note: note || undefined }),
   fileAvmConsensus:          (appId) => req('GET', `/api/underwriting/${appId}/avm-consensus`),
   // #197 — whole-loan run cockpit (decision + run-diff + next-actions + findings digest).
