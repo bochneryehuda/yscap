@@ -147,7 +147,11 @@ function computeBankFindings(statement, subject, opts = {}) {
     // matches one of the borrower's entities, so it counts, but that entity's LLC section isn't
     // complete/verified on the file. Suggest opening the LLC-section condition (operating agreement +
     // formation + EIN) so the entity — and its funds — are fully established.
-    if (isBusinessHolder && !entityHolderIsVerified(holder, subject)) {
+    // Never fabricate: only assert "unverified" when the caller ACTUALLY supplies verification status
+    // (verified_entity_names present as an array — the file-view loader always does, even if empty).
+    // When the caller can't tell (property absent), stay silent rather than flag every business account.
+    const knowsVerification = Array.isArray(subject && subject.verified_entity_names);
+    if (isBusinessHolder && knowsVerification && !entityHolderIsVerified(holder, subject)) {
       out.push(finding({ code: 'bank_business_entity_unverified', severity: 'warning', field: 'account_holder',
         docValue: holder, fileValue: (subject && subject.borrower_name) || null,
         title: 'Business bank account — the entity is on file but not yet verified',
