@@ -44,9 +44,10 @@ function verdictFor(complete, contradicted, signedOff) {
     if (complete) return VERDICT.AGREE;
     return null;                       // can't confirm — but no positive contradiction → silent
   }
-  if (complete) return VERDICT.READY;
-  if (contradicted) return VERDICT.NOT_READY;
-  return null;                          // open, no basis to advise yet
+  // Open. PILOT only runs an evaluator for a condition it CAN judge, so an open condition
+  // that reaches here always gets an advisory (owner-directed: advise on EVERY condition):
+  // verified → ready, otherwise → not_ready ("PILOT hasn't confirmed this yet").
+  return complete ? VERDICT.READY : VERDICT.NOT_READY;
 }
 
 /**

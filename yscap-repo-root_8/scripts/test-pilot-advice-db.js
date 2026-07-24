@@ -62,14 +62,18 @@ async function row(itemId) {
   const f = await seedFile();
   const contract = await attach(f.appId, 'rtl_p1_contract');
   const title = await attach(f.appId, 'rtl_cond_title');   // PILOT has no evaluator for title
+  const govid = await attach(f.appId, 'rtl_p1_id');        // open, no ID doc → PILOT can't verify yet
   await insertContractExtraction(f.appId);                  // contract read + no fatal → complete
 
-  // 1) OPEN + verified → 'ready'; no-evaluator condition → no advice.
+  // 1) OPEN + verified → 'ready'; OPEN + unverified (evaluable) → 'not_ready';
+  //    a no-evaluator condition → no advice.
   await engine.runFileAdvice(db, f.appId);
   let c = await row(contract);
   ok(c.pilot_advice === 'ready' && c.pilot_advice_at, 'open + verified contract → advice "ready"');
   ok(c.status === 'outstanding' && c.signed_off_by === null, '…and the advisory did NOT sign it off (status still open)');
   ok((c.pilot_advice_note || '').length > 0, 'the ready advice carries a plain-language note');
+  const g = await row(govid);
+  ok(g.pilot_advice === 'not_ready', 'open + unverified gov-ID (PILOT can judge it) → advice "not_ready"');
   const t = await row(title);
   ok(t.pilot_advice === null, 'a condition PILOT can\'t evaluate (title) gets NO advice');
 
