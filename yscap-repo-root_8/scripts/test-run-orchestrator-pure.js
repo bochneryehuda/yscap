@@ -141,4 +141,21 @@ const h2 = build().sourceHash;
 assert.strictEqual(h1, h2, 'same inputs → same run hash');
 ok('the run source hash is reproducible');
 
+// --- investor signals are folded into the source hash (#257) ---
+// A change to a wired investor signal that does NOT move the canonical context (e.g. a flood
+// determination added to an existing appraisal) MUST change source_hash, so the deduped
+// auto-trigger (skipIfUnchanged) can't return a stale run that omits the new investor finding.
+const hNoInv = build().sourceHash;
+const hFlood = build(null, null, { investorInputs: { in_flood_zone: true } }).sourceHash;
+assert.notStrictEqual(hFlood, hNoInv, 'adding in_flood_zone changes the run hash');
+ok('an investor signal (in_flood_zone) is folded into the source hash — a signal-only change forces a fresh run');
+
+const hFlood2 = build(null, null, { investorInputs: { in_flood_zone: true } }).sourceHash;
+assert.strictEqual(hFlood, hFlood2, 'same investor signals → same hash (still reproducible)');
+ok('the investor-signal hash is reproducible (no churn without a real change)');
+
+const hRural = build(null, null, { investorInputs: { in_flood_zone: true, appraisal_rural: true } }).sourceHash;
+assert.notStrictEqual(hRural, hFlood, 'a second signal (appraisal_rural) further changes the hash');
+ok('each distinct investor signal moves the hash — a verified/flood/cash-out change re-runs');
+
 console.log(`\nR6.14 run-orchestrator pure — ${passed} checks passed`);

@@ -236,7 +236,7 @@ function assembleRun(inputs) {
     staleRun: false, // a fresh run is never stale
   });
 
-  const sourceVersions = buildSourceVersions(ctx, reg, i.trigger);
+  const sourceVersions = buildSourceVersions(ctx, reg, i.trigger, i.investorInputs || {});
   const sourceHash = hashSourceVersions(sourceVersions, ctx.sourceHash);
 
   return {
@@ -257,11 +257,23 @@ function assembleRun(inputs) {
 }
 
 // The frozen source-version bundle — proves which state of the world was run.
-function buildSourceVersions(ctx, reg, trigger) {
+function buildSourceVersions(ctx, reg, trigger, investorInputs) {
+  const inv = investorInputs || {};
   return {
     trigger: trigger || 'manual_run',
     applicationId: ctx.applicationId || null,
     contextHash: ctx.sourceHash || null,
+    // The gathered investor-guideline signals (credit FICO, flood / rural / mid-construction,
+    // cash-out, claimed-vs-verified experience, stale exit) are folded into the source-version
+    // bundle so a material change to ANY of them changes source_hash. Without this, the deduped
+    // auto-trigger (maybeRunWholeLoan skipIfUnchanged) returned the STALE run when only an
+    // investor signal moved — e.g. a flood determination added to an existing appraisal, or a
+    // track-record line getting verified, or a credit pull — none of which move the canonical
+    // context hash — so the freshly-wired investor findings never surfaced until an unrelated
+    // context change forced a run. Sorted `key=value` strings over the PRESENT signals only
+    // (absent ones are omitted, consistent with never-fabricate; a present→absent change still
+    // changes the set → the hash), so it's deterministic and never churns without a real change.
+    investorSignals: Object.keys(inv).filter((k) => inv[k] != null).sort().map((k) => `${k}=${inv[k]}`),
     registrationId: reg ? reg.id : null,
     registrationCreatedAt: reg && reg.created_at ? String(reg.created_at) : null,
     registrationStale: reg ? !!reg.stale : null,
