@@ -88,6 +88,16 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
   const [simPicked, setSimPicked] = useState({});
   const [simAction, setSimAction] = useState('dismiss');
   const [simNote, setSimNote] = useState('');
+  const [evidence, setEvidence] = useState(null); // R5.17: { loading, spans } | null — grounded quote(s) behind this finding
+  const loadEvidence = async () => {
+    if (!f.id) return;
+    if (evidence) { setEvidence(null); return; }   // toggle closed
+    setEvidence({ loading: true, spans: [] });
+    try {
+      const r = await api.findingEvidence(appId, f.id);
+      setEvidence({ loading: false, spans: (r && r.spans) || [] });
+    } catch (_e) { setEvidence({ loading: false, spans: [] }); }
+  };
   const loadSimilar = async () => {
     if (!f.id) return;
     setSimBusy(true); setSimOpen(true);
@@ -219,10 +229,31 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
         </div>
       )}
       {docId && (
-        <div style={{ fontSize: 12, margin: '4px 0 6px' }}>
+        <div style={{ fontSize: 12, margin: '4px 0 6px', display: 'flex', gap: 14, flexWrap: 'wrap' }}>
           <a href="#" onClick={openSourceDoc} style={{ color: 'var(--teal-deep,#256168)', textDecoration: 'underline' }}>
             Open the source document{pageNumber ? ` (page ${pageNumber})` : ''}
           </a>
+          <a href="#" onClick={(e) => { e.preventDefault(); loadEvidence(); }} style={{ color: 'var(--teal-deep,#256168)', textDecoration: 'underline' }}>
+            {evidence ? 'Hide where we saw this' : 'Where we saw this'}
+          </a>
+        </div>
+      )}
+      {evidence && (
+        <div style={{ margin: '2px 0 8px' }}>
+          {evidence.loading && <div className="muted" style={{ fontSize: 11.5 }}>Loading…</div>}
+          {!evidence.loading && evidence.spans.length === 0 && (
+            <div className="muted" style={{ fontSize: 11.5 }}>No exact quote was recorded for this finding.</div>
+          )}
+          {!evidence.loading && evidence.spans.slice(0, 4).map((sp, i) => (
+            <div key={i} style={{ fontSize: 11.5, color: 'var(--muted,#4B585C)', borderLeft: '2px solid var(--gold,#AE8746)', paddingLeft: 8, marginTop: 3 }}>
+              <span style={{ fontStyle: 'italic', overflowWrap: 'anywhere' }}>“{sp.quote}”</span>
+              {sp.pageNumber != null && (
+                <span> · {sp.documentId
+                  ? <a href={`#/staff/documents/${sp.documentId}`} style={{ color: 'var(--teal-deep,#256168)' }}>page {sp.pageNumber}</a>
+                  : `page ${sp.pageNumber}`}</span>
+              )}
+            </div>
+          ))}
         </div>
       )}
       {openableCompare.length >= 2 && (
