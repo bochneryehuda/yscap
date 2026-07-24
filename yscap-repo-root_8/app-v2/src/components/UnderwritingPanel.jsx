@@ -22,6 +22,10 @@ const DOC_LABEL = {
   contract_amendment: 'Contract amendment', scope_of_work: 'Scope of work', payoff_statement: 'Payoff statement',
   voided_check: 'Voided check', plans_permits: 'Plans & permits', signed_term_sheet: 'Signed term sheet',
   signed_application: 'Signed application', investor_structure: 'Investor structure',
+  // Investor-specific guideline findings (folded into this ONE review, owner-directed 2026-07-24)
+  // carry these sources — label them clearly so they read as "investor-specific" in the one list.
+  investor_guideline: 'Investor-specific guideline', investor_guideline_desk: 'Investor-specific guideline',
+  investor_guideline_ai: 'Investor-specific guideline (AI)',
 };
 const label = (t) => DOC_LABEL[t] || String(t || '').replace(/_/g, ' ');
 
