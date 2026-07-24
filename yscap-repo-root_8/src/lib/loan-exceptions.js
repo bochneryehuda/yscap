@@ -795,7 +795,7 @@ async function metrics(client = db) {
       client.query(
         `SELECT COALESCE(su.full_name, CASE WHEN e.requested_by_kind='borrower' THEN 'Borrower requests' ELSE 'Unknown' END) AS requester,
                 count(*)::int AS n,
-                count(*) FILTER (WHERE e.status='approved')::int AS approved,
+                count(*) FILTER (WHERE e.status IN ('approved','expired'))::int AS approved,
                 count(*) FILTER (WHERE e.status='denied')::int AS denied
            FROM loan_exceptions e
            LEFT JOIN staff_users su ON su.id = e.requested_by

@@ -122,7 +122,7 @@ Types after Wave 1:
 
 ### 3.4 The decision desk (UI)
 `/internal/exceptions`: register-report strip (open, past-target, oldest, approval rate,
-median time-to-decision), **type filter chips**, status chips incl. Expired, **Export
+decided-weighted typical decision time), **type filter chips**, status chips incl. Expired, **Export
 register** (xlsx — the diligence artifact: EX-n, type, quantified picture, factors, decision
 trail, drift), aging chips (overdue in red), per-type decide flows (esign keeps its live-gate
 waive pickers; approvals on expirable types get an optional **"valid until"** date).
@@ -190,11 +190,11 @@ attestation's "exceptions granted" promise is finally true.
 ## 6. Verification
 
 - `db/295` applied twice (idempotent) on a fresh chain of all 295 migrations.
-- `scripts/test-exception-register-db.js` (NEW, in `npm test`): 60 assertions — registry,
+- `scripts/test-exception-register-db.js` (NEW, in `npm test`): 63 assertions — registry,
   SLA/due_at, factors sanitize, drift, request/deny/re-request chain, withdraw stamps,
-  clear-of-open refusal, expiry validation + sweep semantics (guaranty immune), borrower-kind
-  requests, issuance-override never-throws, register/list filters/metrics/aging, updated_at
-  trigger.
+  clear-of-open refusal, expiry validation + sweep semantics (guaranty immune) + read-time
+  fail-closed presentation, borrower-kind requests, issuance-override never-throws,
+  register/list filters/metrics/aging, updated_at trigger.
 - `scripts/test-loan-exceptions.js` updated for the tightened clear semantics (59 assertions).
 - `test-esign-before-ctc-pure.js` (48), `test-esign-gate.js` (27, DB),
   `test-pricing-exception-escalation.js` — all green, proving the esign gate and frozen

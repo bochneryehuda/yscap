@@ -1097,7 +1097,7 @@ router.post('/applications/:id/pricing/request-exception', async (req, res) => {
     try {
       const already = await loanExceptions.openForApp(appId, 'pricing_exception');
       if (!already) {
-        const prior = await loanExceptions.latestForApp(appId, 'pricing_exception');
+        const prior = loanExceptions.presentExpiry(await loanExceptions.latestForApp(appId, 'pricing_exception'));
         const client = await db.getClient();
         try {
           await client.query('BEGIN');

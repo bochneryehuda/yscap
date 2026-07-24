@@ -2044,7 +2044,7 @@ router.post('/applications/:id/pricing/request-exception', async (req, res) => {
 
     // A fresh ask after a denial/withdrawal links back to the prior attempt so
     // the reviewer sees the chain (industry-standard re-request trail).
-    const prior = await loanExceptions.latestForApp(appId, 'pricing_exception');
+    const prior = loanExceptions.presentExpiry(await loanExceptions.latestForApp(appId, 'pricing_exception'));
     const reRequestOf = prior && ['denied', 'withdrawn', 'expired'].includes(prior.status) ? prior.id : null;
 
     const client = await db.getClient();
@@ -2146,7 +2146,7 @@ router.post('/applications/:id/exceptions/guaranty-waiver', async (req, res) => 
     if (!reasonNote) return res.status(400).json({ error: 'Add a short note explaining why the co-borrower’s guaranty should be waived.' });
 
     // A fresh ask after a denial links back to the prior attempt (re-request chain).
-    const prior = await loanExceptions.latestForApp(appId, 'guaranty_waiver');
+    const prior = loanExceptions.presentExpiry(await loanExceptions.latestForApp(appId, 'guaranty_waiver'));
     const reRequestOf = prior && ['denied', 'withdrawn', 'expired'].includes(prior.status) ? prior.id : null;
 
     const client = await db.getClient();
@@ -2248,7 +2248,7 @@ router.post('/applications/:id/exceptions/esign-before-ctc', async (req, res) =>
     };
 
     // A fresh ask after a denial links back to the prior attempt (re-request chain).
-    const prior = await loanExceptions.latestForApp(appId, 'esign_before_ctc');
+    const prior = loanExceptions.presentExpiry(await loanExceptions.latestForApp(appId, 'esign_before_ctc'));
     const reRequestOf = prior && ['denied', 'withdrawn', 'expired'].includes(prior.status) ? prior.id : null;
 
     const client = await db.getClient();
