@@ -141,7 +141,11 @@ async function linkToSitewireIntake(appId, tpDrawRow) {
         `SELECT sitewire_draw_id FROM sitewire_draws
           WHERE application_id=$1 AND COALESCE(historical,false)=false
             AND status IN ('inspecting','pending','pending_capital_partner')
-            AND ABS(COALESCE(total_requested_cents,0) - $2) <= 100`,
+            AND ABS(COALESCE(total_requested_cents,0) - $2) <= 100
+            -- a Sitewire draw already claimed by ANOTHER administered draw is off the
+            -- table (audit-5 #3: a double-pointed draw silently loses the second
+            -- draw's money mirror) — db/298's unique index is the backstop
+            AND NOT EXISTS (SELECT 1 FROM trustpoint_draws t2 WHERE t2.sitewire_draw_id = sitewire_draws.sitewire_draw_id)`,
         [appId, tpDrawRow.requested_cents])).rows;
       if (cand.length === 1) {
         // one draw = ONE cycle both ways (audit-4 #2): a portal-tied draw must never
@@ -257,16 +261,25 @@ function feeLinesCents(fees) {
   let arr = fees;
   if (typeof arr === 'string') { try { arr = JSON.parse(arr); } catch (_) { return null; } }
   if (!Array.isArray(arr) || !arr.length) return null;
+  // money can only arrive as a number or a decimal string — a boolean/array/object in an
+  // amount slot is garbage, never $1.00 (audit-5 #4: Number(true)===1, Number([7])===7)
+  const moneyish = (v) => (typeof v === 'number' || typeof v === 'string') ? client.centsFromTp(v) : null;
   const out = [];
   for (const f of arr) {
     if (f == null) continue;
-    if (typeof f === 'number' || typeof f === 'string') { const c = client.centsFromTp(f); if (c != null) out.push(c); continue; }
-    if (typeof f !== 'object') continue;
-    const v = f.amount ?? f.fee_amount ?? f.value ?? f.total ?? f.fee ?? null;
-    const c = client.centsFromTp(v);
+    if (typeof f === 'number' || typeof f === 'string') { const c = moneyish(f); if (c != null) out.push(c); continue; }
+    if (typeof f !== 'object' || Array.isArray(f)) continue;
+    const c = moneyish(f.amount) ?? moneyish(f.fee_amount) ?? moneyish(f.value) ?? moneyish(f.total) ?? moneyish(f.fee);
     if (c != null) out.push(c);
   }
   return out.length ? out : null;
+}
+
+// The calendar DAY of a wire, in the office timezone — never UTC (a 9pm ET wire is
+// that evening's date, not tomorrow's; house rule: dates are calendar strings).
+function nyDay(ts) {
+  try { return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ts)); }
+  catch (_) { return null; }
 }
 
 /**
@@ -293,8 +306,12 @@ async function mirrorDisbursement(appId, row, { baseline = false, addr = 'the pr
     // else approved − fees. Their numbers, mirrored — never re-derived when they speak.
     const net = row.to_disburse_cents != null ? Number(row.to_disburse_cents)
       : (disbursedCents != null && disbursedCents > 0 ? disbursedCents : Math.max(0, approved - feeSum));
-    const relDate = row.disbursed_at ? new Date(row.disbursed_at).toISOString().slice(0, 10) : null;
-    const feesJson = ((x) => (x && x.length <= 20000 ? x : null))(JSON.stringify(row.fees ?? null));
+    const relDate = row.disbursed_at ? nyDay(row.disbursed_at) : null;
+    const feesJson = row.fees == null ? null : ((x) => (x && x.length <= 20000 ? x : null))(JSON.stringify(row.fees));
+    // Go-forward (audit-5 #2): a wire that went out well before PILOT was watching this
+    // draw is HISTORY — record the row for the ledger, tell no one (a "your money is on
+    // its way, 1–2 business days" email about a weeks-old wire would be nonsense).
+    const stale = row.disbursed_at != null && (Date.now() - new Date(row.disbursed_at).getTime() > 14 * 86400000);
     const ins = (await db.query(
       `INSERT INTO draw_disbursements (application_id, sitewire_draw_id, trustpoint_draw_id, approved_cents, fee_cents,
           retainage_held_cents, net_release_cents, release_date, funded_status, kind, source, fees, note)
@@ -303,17 +320,51 @@ async function mirrorDisbursement(appId, row, { baseline = false, addr = 'the pr
        ON CONFLICT DO NOTHING RETURNING id`,
       [appId, swDrawId, row.tp_draw_id, approved, feeSum, net, relDate, feesJson])).rows[0];
     if (!ins) {
-      // Already recorded (an earlier pass, or a staff manual entry that claimed the
-      // per-draw slot): adopt the linkage — never a duplicate row, never a re-announce.
+      // A row already exists — an earlier mirror pass, or a staff manual entry that
+      // claimed the per-draw slot. REPAIR the linkage (audit-5 #1/#3), never duplicate,
+      // never re-announce, and never leave a split-ledger silently.
       if (swDrawId != null) {
-        await db.query(
-          `UPDATE draw_disbursements SET trustpoint_draw_id=COALESCE(trustpoint_draw_id,$2), fees=COALESCE(fees,$3::jsonb), updated_at=now()
-            WHERE sitewire_draw_id=$1 AND kind='draw' AND trustpoint_draw_id IS NULL`, [swDrawId, row.tp_draw_id, feesJson]).catch(() => {});
+        // (a) an earlier UNTIED mirror row (tie landed late): retro-tie it to the draw
+        const retro = (await db.query(
+          `UPDATE draw_disbursements SET sitewire_draw_id=$2, updated_at=now()
+            WHERE trustpoint_draw_id=$1 AND sitewire_draw_id IS NULL
+              AND NOT EXISTS (SELECT 1 FROM draw_disbursements x WHERE x.sitewire_draw_id=$2 AND x.kind='draw')
+            RETURNING id`, [row.tp_draw_id, swDrawId]).catch(() => ({ rows: [] }))).rows[0];
+        if (!retro) {
+          // (b) a manual staff row holds the draw slot: adopt it (stamp the tp linkage)
+          let adopted = null;
+          try {
+            adopted = (await db.query(
+              `UPDATE draw_disbursements SET trustpoint_draw_id=$2, fees=COALESCE(fees,$3::jsonb), updated_at=now()
+                WHERE sitewire_draw_id=$1 AND kind='draw' AND trustpoint_draw_id IS NULL RETURNING id`,
+              [swDrawId, row.tp_draw_id, feesJson])).rows[0];
+          } catch (e) {
+            // 23505 = the tp id already lives on ANOTHER row → a mirror row AND a manual
+            // row both exist for this one wire (split ledger, double-counted money)
+            adopted = null;
+          }
+          if (!adopted) {
+            const mine = (await db.query(
+              `SELECT count(*)::int c FROM draw_disbursements
+                WHERE kind='draw' AND (trustpoint_draw_id=$1 OR sitewire_draw_id=$2)`, [row.tp_draw_id, swDrawId])).rows[0];
+            if (Number(mine.c) > 1) {
+              const orchestrator = require('../sitewire/orchestrator');
+              await orchestrator.park({
+                appId, dedupe: `tpdup:${row.tp_draw_id}`,
+                reason: `sitewire_money_duplicate: draw ${swDrawId} has BOTH a mirrored release from the administrator and a hand-recorded release — the same wire is in the money ledger twice. Delete the hand-entered duplicate on the draw desk.`,
+              }).catch(() => {});
+            }
+          }
+        }
+      } else {
+        // No Sitewire draw known and the insert still conflicted: the tp id row exists
+        // (fine — already recorded), OR nothing carries this tp id at all (impossible via
+        // the uq claim) — either way there is nothing to repair without a draw to tie to.
       }
       return { skipped: 'already_recorded' };
     }
-    await audit(appId, row.tp_draw_id, 'draw', row.tp_draw_id, 'disbursement_mirrored', null, String(net), !baseline);
-    if (baseline) return { ok: true, silent: true };
+    await audit(appId, row.tp_draw_id, 'draw', row.tp_draw_id, 'disbursement_mirrored', null, String(net), !(baseline || stale));
+    if (baseline || stale) return { ok: true, silent: true };
     try { await verifyPartnerFee(appId, row); } catch (_) {}   // straight-to-completed draws still get the fee check
     // The dormant markup knob (D9): when the note buyer later allows a YS markup, it is
     // deducted from what reaches the borrower — the shown NET honors it the day it's set.
@@ -353,7 +404,17 @@ async function verifyPartnerFee(appId, row) {
     if (row.fee_check_at) return { skipped: 'checked' };
     const rp = await require('../sitewire/routing').resolveFilePlatform(appId);
     if (!rp || rp.platform !== 'trustpoint' || !rp.rule) return { skipped: 'not_applicable' };
-    const expected = rp.rule.fee_cents_physical != null ? Number(rp.rule.fee_cents_physical) : null;
+    // The expected fee is what the file actually charges: the resolved method's fee with
+    // the coordinator's per-file override honored (audit-5 #5) — falling back to the
+    // rule's physical fee when the resolution can't run.
+    let expected = null;
+    try {
+      const orchestrator = require('../sitewire/orchestrator');
+      const link = await orchestrator.getLink(appId);
+      const insp = orchestrator.resolveInspection(link, rp.rule);
+      if (insp && Number.isFinite(Number(insp.feeCents))) expected = Number(insp.feeCents);
+    } catch (_) {}
+    if (expected == null) expected = rp.rule.fee_cents_physical != null ? Number(rp.rule.fee_cents_physical) : null;
     if (expected == null || !Number.isFinite(expected)) return { skipped: 'no_expected_fee' };
     const fees = feeLinesCents(row.fees);
     if (fees == null) return { skipped: 'no_fee_data' };

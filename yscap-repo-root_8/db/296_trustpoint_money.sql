@@ -14,7 +14,8 @@ ALTER TABLE draw_disbursements ADD COLUMN IF NOT EXISTS source text NOT NULL DEF
 ALTER TABLE draw_disbursements ADD COLUMN IF NOT EXISTS fees jsonb;
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_dd_source') THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                  WHERE conname = 'chk_dd_source' AND conrelid = 'draw_disbursements'::regclass) THEN
     ALTER TABLE draw_disbursements ADD CONSTRAINT chk_dd_source CHECK (source IN ('pilot','trustpoint'));
   END IF;
 END $$;

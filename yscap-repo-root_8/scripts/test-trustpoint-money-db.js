@@ -182,6 +182,44 @@ async function seedTpDraw(app, over = {}) {
     await cleanup(app, bor, lo);
   }
 
+  // ============ 8. audit-5 hardening: stale history, late-tie repair, split-ledger park ============
+  {
+    const { app, bor, lo } = await seedFile(RULE);
+    // a weeks-old wire is HISTORY — the row lands, nobody is emailed
+    const old = await seedTpDraw(app, { number: 7, disbursed_at: new Date(Date.now() - 30 * 86400000).toISOString() });
+    const rOld = await mirror.mirrorDisbursement(app, old, {});
+    ok('a weeks-old wire records silently (no borrower email)', rOld.ok === true && rOld.silent === true
+      && (await notesFor(app, 'borrower')).length === 0
+      && (await db.query(`SELECT 1 FROM draw_disbursements WHERE trustpoint_draw_id=$1`, [old.tp_draw_id])).rows.length === 1);
+
+    // a LATE tie retro-ties the SAME mirror row — never a second row
+    const sw2 = 955000000 + crypto.randomBytes(2).readUInt16BE(0);
+    await db.query(`INSERT INTO sitewire_draws (application_id, sitewire_draw_id, number, status) VALUES ($1,$2,8,'approved')`, [app, sw2]);
+    const late = await seedTpDraw(app, { number: 8 });
+    await mirror.mirrorDisbursement(app, late, {});
+    await db.query(`UPDATE trustpoint_draws SET sitewire_draw_id=$2 WHERE tp_draw_id=$1`, [late.tp_draw_id, sw2]);
+    const r2 = await mirror.mirrorDisbursement(app, (await db.query(`SELECT * FROM trustpoint_draws WHERE tp_draw_id=$1`, [late.tp_draw_id])).rows[0], {});
+    const rows2 = (await db.query(`SELECT * FROM draw_disbursements WHERE trustpoint_draw_id=$1`, [late.tp_draw_id])).rows;
+    ok('late tie retro-ties the SAME mirror row (one row, now draw-linked)',
+      r2.skipped === 'already_recorded' && rows2.length === 1 && Number(rows2[0].sitewire_draw_id) === sw2);
+
+    // a manual row holding the draw slot + an untied mirror row = split ledger → parked for review
+    const sw3 = 956000000 + crypto.randomBytes(2).readUInt16BE(0);
+    await db.query(`INSERT INTO sitewire_draws (application_id, sitewire_draw_id, number, status) VALUES ($1,$2,9,'approved')`, [app, sw3]);
+    await db.query(
+      `INSERT INTO draw_disbursements (application_id, sitewire_draw_id, approved_cents, fee_cents, net_release_cents, funded_status, kind)
+       VALUES ($1,$2,75000,25000,50000,'released','draw')`, [app, sw3]);
+    const dup = await seedTpDraw(app, { number: 9 });
+    await mirror.mirrorDisbursement(app, dup, {});   // lands untied (no sw known yet)
+    await db.query(`UPDATE trustpoint_draws SET sitewire_draw_id=$2 WHERE tp_draw_id=$1`, [dup.tp_draw_id, sw3]);
+    await mirror.mirrorDisbursement(app, (await db.query(`SELECT * FROM trustpoint_draws WHERE tp_draw_id=$1`, [dup.tp_draw_id])).rows[0], {});
+    const parked = (await db.query(
+      `SELECT 1 FROM sync_review_queue WHERE task_id LIKE 'sitewire:' || $1 || ':sitewire_money_duplicate%' AND status='open'`, [app])).rows;
+    ok('a split ledger (mirror + manual rows for one wire) parks a review row', parked.length === 1);
+    await db.query(`UPDATE sync_review_queue SET status='dismissed' WHERE task_id LIKE 'sitewire:' || $1 || '%'`, [app]).catch(() => {});
+    await cleanup(app, bor, lo);
+  }
+
   await db.query(`DELETE FROM sitewire_inspection_rules WHERE partner_label=$1`, [RULE]).catch(() => {});
   console.log(`test-trustpoint-money-db: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

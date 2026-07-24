@@ -556,12 +556,18 @@ async function trustpointUnreleasedOnce() {
   let rows = [];
   try {
     rows = (await db.query(
-      `SELECT t.application_id, count(*)::int AS n, min(COALESCE(t.approved_at, t.updated_at)) AS oldest
+      `SELECT t.application_id, count(*)::int AS n, min(COALESCE(t.approved_at, t.first_seen_at)) AS oldest
          FROM trustpoint_draws t
          JOIN applications a ON a.id=t.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
         WHERE t.status='APPROVED' AND t.disbursed_at IS NULL
-          AND COALESCE(t.approved_at, t.updated_at) < now() - ($1 || ' days')::interval
+          -- first_seen_at, never updated_at: PILOT's own stamps (fee check, write-back)
+          -- bump updated_at and would keep restarting the clock (audit-5 #9)
+          AND COALESCE(t.approved_at, t.first_seen_at) < now() - ($1 || ' days')::interval
           AND NOT EXISTS (SELECT 1 FROM draw_disbursements dd WHERE dd.trustpoint_draw_id = t.tp_draw_id)
+          -- a finished / paid-off project is intentionally done — no chasing (audit-5 #6)
+          AND NOT EXISTS (SELECT 1 FROM sitewire_property_links pl
+                            WHERE pl.application_id = t.application_id
+                              AND COALESCE(pl.lifecycle_state,'active') <> 'active')
         GROUP BY t.application_id
         LIMIT 200`, [String(days)])).rows;
   } catch (_) { return 0; }

@@ -58,10 +58,10 @@ async function retainagePctFor(appId) {
     // D7 (phase 5): on a TrustPoint-administered file the ADMINISTRATOR owns retainage —
     // PILOT holding its own % on top would double-withhold from the borrower. Zero here
     // kills the computation at the one chokepoint every caller (release + overview) uses.
-    try {
-      const rp = await require('../sitewire/routing').resolveFilePlatform(appId);
-      if (rp && rp.platform === 'trustpoint') return 0;
-    } catch (_) { /* fall through to the normal resolution */ }
+    // FAIL CLOSED on an unresolvable platform (resolved:false): holding too little on one
+    // manual release is recoverable; double-withholding takes the borrower's money.
+    const rp = await require('../sitewire/routing').resolveFilePlatform(appId);
+    if (rp && (rp.platform === 'trustpoint' || rp.resolved === false)) return 0;
     const clamp = (n) => Math.min(100, Math.max(0, Number(n) || 0));
     const link = (await db.query(`SELECT retainage_pct FROM sitewire_property_links WHERE application_id=$1`, [appId])).rows[0];
     if (link && link.retainage_pct != null) return clamp(link.retainage_pct);
@@ -1176,6 +1176,14 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
   // belt-and-suspenders). A duplicate would double-count into the retainage pool.
   const dup = await db.query(`SELECT 1 FROM draw_disbursements WHERE sitewire_draw_id=$1 AND kind='draw'`, [drawId]);
   if (dup.rowCount) return res.status(409).json({ error: 'A release is already recorded for this draw — correct the existing entry instead of adding another.' });
+  // Phase 5 (audit-5 #1b): the administrator's observed release may have mirrored BEFORE
+  // the draw tie landed — that row carries the TrustPoint draw id but no sitewire_draw_id
+  // yet. A hand-recorded second row for the same wire would double-count the ledger.
+  const dupTp = await db.query(
+    `SELECT 1 FROM draw_disbursements dd JOIN trustpoint_draws t ON t.tp_draw_id = dd.trustpoint_draw_id
+      WHERE dd.kind='draw' AND (t.sitewire_draw_id=$1
+         OR t.portal_draw_request_id IN (SELECT id FROM portal_draw_requests WHERE sitewire_draw_id=$1))`, [drawId]);
+  if (dupTp.rowCount) return res.status(409).json({ error: 'This draw\'s release was already recorded automatically from the draw administrator — there is nothing to enter by hand.' });
   try {
     // retainage: hold a % of the approved amount; net = approved − fee − retainage held
     const pct = await retainagePctFor(application_id);

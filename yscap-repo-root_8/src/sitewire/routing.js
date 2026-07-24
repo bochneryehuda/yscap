@@ -44,15 +44,17 @@ async function resolveFilePlatform(appId) {
   try {
     const orchestrator = require('./orchestrator');
     const a = await orchestrator.loadFile(appId);
-    if (!a) return { platform: 'sitewire', method: null, rule: null };
+    if (!a) return { platform: 'sitewire', method: null, rule: null, resolved: true };
     const program = /gold/i.test(String(a.registered_program || '')) ? 'gold' : 'standard';
     const cp = await orchestrator.resolveCapitalPartnerId(a.lender);
     const rule = await orchestrator.resolveRule(a.lender, cp && cp.id, program);
     const link = await orchestrator.getLink(appId);
     const insp = orchestrator.resolveInspection(link, rule);
-    return { platform: platformOf(rule), method: (insp && insp.method) || null, rule };
+    return { platform: platformOf(rule), method: (insp && insp.method) || null, rule, resolved: true };
   } catch (_) {
-    return { platform: 'sitewire', method: null, rule: null };
+    // resolved:false = "could not actually look" — callers making a MONEY decision must
+    // treat this differently from a real 'sitewire' answer (never fail open on money).
+    return { platform: 'sitewire', method: null, rule: null, resolved: false };
   }
 }
 
