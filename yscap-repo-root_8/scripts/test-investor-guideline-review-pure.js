@@ -119,6 +119,28 @@ console.log('investor-guideline-review pure tests');
   ok('price-vs-value compares the recognized (loan-sized) price, not the gross contract price');
 }
 
+// 7c — note-buyer KEYING CONTRACT: a buyer-specific rule matches the canonical dropdown
+// label regardless of spacing/casing (the shared normNoteBuyer key), and does NOT match a
+// different buyer — a Blue Lake escalation must never fire on a CorrFirst (or unknown) file.
+{
+  // Every spelling of the canonical label resolves to the Blue Lake audience.
+  for (const label of ['Blue Lake', 'blue lake', 'BLUELAKE', 'Blue  Lake']) {
+    const f = g.review({ note_buyer: label, property_state: 'NY' });
+    assert.ok(byCode(f, 'isg_bl_ny_loan'), `Blue Lake NY rule fires for lender label "${label}"`);
+  }
+  // A different buyer never triggers the Blue Lake escalation (no cross-buyer over-fire).
+  const cf = g.review({ note_buyer: 'CorrFirst', property_state: 'NY' });
+  assert.ok(!byCode(cf, 'isg_bl_ny_loan'), 'Blue Lake NY rule does NOT fire on a CorrFirst file');
+  // An unknown/blank buyer never triggers a buyer-specific rule (needs a known buyer).
+  const unknown = g.review({ note_buyer: '', property_state: 'NY' });
+  assert.ok(!byCode(unknown, 'isg_bl_ny_loan'), 'a buyer-specific rule needs a known note buyer');
+  // buyerMatches keys with the SHARED normalizer (agrees with the engine/desk keying).
+  assert.strictEqual(g.buyerMatches('bluelake', 'Blue Lake'), true, 'canonical label matches its audience');
+  assert.strictEqual(g.buyerMatches('bluelake', 'CorrFirst'), false, 'a different buyer does not match');
+  assert.strictEqual(g.buyerMatches('all', 'anything'), true, "the 'all' audience always matches");
+  ok('note-buyer keying: canonical labels match their audience; no cross-buyer over-fire');
+}
+
 // 8 — null-safe / never throws on hostile input.
 {
   for (const bad of [null, undefined, 42, 'x', [], { note_buyer: {} }]) {
