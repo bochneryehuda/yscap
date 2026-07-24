@@ -446,7 +446,7 @@ async function gatherInvestorInputs(applicationId, db) {
   // never guessed either way, so the FATAL rule can't false-fire on an unknown.
   try {
     const f = await db.query(
-      `SELECT fema_flood_sfha, fema_flood_zone, flood_zone, nbhd_location_type
+      `SELECT fema_flood_sfha, fema_flood_zone, flood_zone, nbhd_location_type, condition_of_appraisal
          FROM appraisals WHERE application_id = $1 AND superseded = false
          ORDER BY imported_at DESC LIMIT 1`, [applicationId]);
     const r = f.rows[0];
@@ -469,6 +469,17 @@ async function gatherInvestorInputs(applicationId, db) {
       if (loc === 'rural') out.appraisal_rural = true;
       else if (loc === 'urban' || loc === 'suburban') out.appraisal_rural = false;
       // else: null/blank/unrecognized → OMIT (unknown, never fabricated)
+
+      // appraisal_mid_construction — feeds the Blue Lake FATAL escalation isg_bl_mid_construction
+      // (fires only on === true). The UAD appraisal condition SubjectToCompletion is the PRECISE,
+      // parser-extracted value for a property appraised subject to completion of construction — i.e.
+      // NOT yet complete = mid-construction. It is deliberately distinct from SubjectToRepairs (a rehab)
+      // and SubjectToInspection (a final inspection) and AsIs, which are NOT mid-construction and set
+      // false. NULL / no appraisal → OMITTED (never guessed), so the FATAL escalation can't false-fire.
+      const cond = String(r.condition_of_appraisal == null ? '' : r.condition_of_appraisal).trim();
+      if (cond === 'SubjectToCompletion') out.appraisal_mid_construction = true;
+      else if (cond === 'AsIs' || cond === 'SubjectToRepairs' || cond === 'SubjectToInspection') out.appraisal_mid_construction = false;
+      // else: null/blank/unrecognized enum → OMIT (unknown, never fabricated)
     }
   } catch (_) { /* fema_flood_* / nbhd_location_type columns optional in some envs → omit those signals */ }
 

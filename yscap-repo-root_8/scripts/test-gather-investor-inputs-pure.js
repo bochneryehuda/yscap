@@ -115,6 +115,18 @@ function mkDb({ fico, apprPresent, flood, expApp, trackAgg, staleExit, throwOn }
     ok('nbhd_location_type NULL → appraisal_rural omitted (never guessed)', !('appraisal_rural' in outRuralNull));
     const outRuralNoAppr = await gatherInvestorInputs('app-rx', mkDb({ apprPresent: false }));
     ok('no appraisal row → appraisal_rural omitted', !('appraisal_rural' in outRuralNoAppr));
+
+    // appraisal_mid_construction (#255) — SubjectToCompletion is the precise UAD "not yet complete"
+    // condition; feeds the FATAL isg_bl_mid_construction (fires only on === true).
+    const midOf = async (cond) => (await gatherInvestorInputs('app-m', mkDb({ apprPresent: true, flood: { condition_of_appraisal: cond } }))).appraisal_mid_construction;
+    ok('SubjectToCompletion → appraisal_mid_construction true', (await midOf('SubjectToCompletion')) === true);
+    ok('SubjectToRepairs → appraisal_mid_construction false (a rehab, not construction)', (await midOf('SubjectToRepairs')) === false);
+    ok('SubjectToInspection → appraisal_mid_construction false', (await midOf('SubjectToInspection')) === false);
+    ok('AsIs → appraisal_mid_construction false', (await midOf('AsIs')) === false);
+    const outMidNull = await gatherInvestorInputs('app-mn', mkDb({ apprPresent: true, flood: { condition_of_appraisal: null } }));
+    ok('NULL condition → appraisal_mid_construction omitted (never guessed)', !('appraisal_mid_construction' in outMidNull));
+    const outMidNoAppr = await gatherInvestorInputs('app-mx', mkDb({ apprPresent: false }));
+    ok('no appraisal row → appraisal_mid_construction omitted', !('appraisal_mid_construction' in outMidNoAppr));
   }
 
   // 7. CLAIMED vs VERIFIED EXPERIENCE (#251) — the FATAL isg_experience_claimed_over_verified
