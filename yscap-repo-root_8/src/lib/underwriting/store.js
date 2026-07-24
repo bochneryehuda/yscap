@@ -367,6 +367,16 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
     }
   } catch (_) { /* auto-clear is additive — never blocks the extraction */ }
 
+  // Step 10 (owner-directed 2026-07-24): refresh PILOT's ADVISORY on every Condition
+  // Center condition. PILOT never signs a condition off itself — it only lays a "ready /
+  // agrees / revisit" advisory on top of the human layer (pilot-advice-engine + db/294).
+  // Runs after ANY document is read so the advisory reflects the fresh file state.
+  // Gated ON by default (PILOT_READY_STAMP) inside the engine; best-effort — the advisory
+  // clears nothing and must never block the extraction from persisting.
+  try {
+    if (appId) await require('./pilot-advice-engine').runFileAdvice(client, appId);
+  } catch (_) { /* advisory is additive — never blocks the extraction */ }
+
   return { extractionId, findingIds };
 }
 

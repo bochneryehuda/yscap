@@ -607,6 +607,10 @@ router.get('/:appId', async (req, res, next) => {
           await step(() => require('../lib/underwriting/party-collusion').checkDoublePledgeAndRecord(c, {
             applicationId: app.id,
           }));
+          // PILOT advisory overlay (owner-directed 2026-07-24): lay PILOT's "ready /
+          // agrees / revisit" advisory on top of the human layer for every Condition
+          // Center condition it can judge. Never signs anything off — advisory only.
+          await step(() => require('../lib/underwriting/pilot-advice-engine').runFileAdvice(c, app.id));
           await c.query('COMMIT');
         } catch (_) { await c.query('ROLLBACK').catch(() => {}); }
         finally { c.release(); }
