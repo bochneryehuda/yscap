@@ -82,6 +82,32 @@ const has = (r, code) => r.findings.some((f) => f.code === code);
   assert.ok(!has(ok, 'assignment_math_unreconciled'), 'a reconciled assignment is quiet');
 }
 
+// ---- Assignment file missing the seller price / fee (15% cap unenforceable) ----
+{
+  // Marked as an assignment but BOTH seller price and fee absent → flagged.
+  const both = assessReasonability({ today: TODAY, economics: { isAssignment: true, purchasePrice: 300000 } });
+  assert.ok(has(both, 'assignment_fields_missing'), 'assignment with no seller price / fee flagged');
+  assert.strictEqual(both.findings.find((f) => f.code === 'assignment_fields_missing').severity, 'warning');
+  // Only the fee missing → still flagged, field points at the fee.
+  const feeOnly = assessReasonability({ today: TODAY, economics: { isAssignment: true, underlyingPrice: 100000 } });
+  assert.ok(has(feeOnly, 'assignment_fields_missing'), 'assignment missing just the fee flagged');
+  assert.strictEqual(feeOnly.findings.find((f) => f.code === 'assignment_fields_missing').field, 'assignment_fee');
+  // Both present → quiet.
+  const ok = assessReasonability({ today: TODAY, economics: { isAssignment: true, underlyingPrice: 100000, assignmentFee: 15000 } });
+  assert.ok(!has(ok, 'assignment_fields_missing'), 'a complete assignment is quiet');
+  // NOT an assignment + missing fields → never flagged.
+  const notAsg = assessReasonability({ today: TODAY, economics: { purchasePrice: 300000 } });
+  assert.ok(!has(notAsg, 'assignment_fields_missing'), 'a non-assignment file is never flagged');
+}
+
+// ---- Purchase price above the after-repair value ----
+{
+  const bad = assessReasonability({ today: TODAY, economics: { purchasePrice: 600000, arv: 500000 } });
+  assert.ok(has(bad, 'purchase_exceeds_arv'), 'purchase over ARV flagged');
+  const ok = assessReasonability({ today: TODAY, economics: { purchasePrice: 400000, arv: 500000 } });
+  assert.ok(!has(ok, 'purchase_exceeds_arv'), 'purchase ≤ ARV is quiet');
+}
+
 // ---- Future-dated document (an "as of" date), NOT a legitimately-future date ----
 {
   const r = assessReasonability({ today: TODAY, extractions: [

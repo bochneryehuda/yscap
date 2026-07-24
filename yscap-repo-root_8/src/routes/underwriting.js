@@ -498,7 +498,8 @@ router.get('/:appId', async (req, res, next) => {
     const reasonability = assessReasonability({
       extractions: exts.rows, today: todayISO(),
       economics: { purchasePrice: a.purchase_price, loanAmount: a.loan_amount, asIsValue: a.as_is_value,
-        arv: a.arv, rehabBudget: a.rehab_budget, assignmentFee: a.assignment_fee, underlyingPrice: a.underlying_contract_price },
+        arv: a.arv, rehabBudget: a.rehab_budget, assignmentFee: a.assignment_fee, underlyingPrice: a.underlying_contract_price,
+        isAssignment: a.is_assignment },
     });
 
     const perDoc = ff.findings.map(decorate);
