@@ -17,7 +17,7 @@ function ok(name, cond) { assert.ok(cond, name); console.log('  ok  ' + name); p
 // ([] = no appraisal row → in_flood_zone stays unknown/omitted).
 // `expApp` = the applications row the experience read returns ([]=no row → omit). `trackAgg`
 // = the rows the reused countBorrowersExperience GROUP BY returns ([{deal_type,n}]) → verified count.
-function mkDb({ fico, apprPresent, flood, expApp, trackAgg, throwOn } = {}) {
+function mkDb({ fico, apprPresent, flood, expApp, trackAgg, staleExit, throwOn } = {}) {
   return {
     query: async (sql) => {
       if (throwOn && sql.includes(throwOn)) throw new Error('boom');
@@ -29,6 +29,9 @@ function mkDb({ fico, apprPresent, flood, expApp, trackAgg, throwOn } = {}) {
       }
       if (sql.includes('requested_exp_flips')) {   // the applications experience read
         return { rows: expApp === undefined ? [] : [expApp] };
+      }
+      if (sql.includes('isg_stale_exit')) {        // the stale-exit probe (marked query)
+        return { rows: staleExit ? [{ '?column?': 1 }] : [] };
       }
       if (sql.includes('track_records')) {         // countBorrowersExperience GROUP BY
         return { rows: trackAgg || [] };
@@ -134,6 +137,17 @@ function mkDb({ fico, apprPresent, flood, expApp, trackAgg, throwOn } = {}) {
     // An experience-read error omits both and never throws.
     const outErr2 = await gatherInvestorInputs('app-x', mkDb({ expApp: app3, throwOn: 'requested_exp_flips' }));
     ok('an experience query error omits claimed/verified (no throw)', !('claimed_exp' in outErr2) && !('verified_exp' in outErr2));
+
+    // has_stale_exit (#252) — a WARNING that fires only when a claimed exit is older than 3 years.
+    // Gated on a real claim (claim > 0). true when a stale exit exists; false when checked-and-none;
+    // OMITTED when there's no claim or on error.
+    const outStale = await gatherInvestorInputs('app-x', mkDb({ expApp: app3, trackAgg: [{ deal_type: 'flip', n: 1 }], staleExit: true }));
+    ok('a claimed exit older than 3 years → has_stale_exit true', outStale.has_stale_exit === true);
+    const outFresh = await gatherInvestorInputs('app-x', mkDb({ expApp: app3, trackAgg: [{ deal_type: 'flip', n: 1 }], staleExit: false }));
+    ok('claim with no stale exit → has_stale_exit false (checked)', outFresh.has_stale_exit === false);
+    const noClaim2 = { borrower_id: 'b1', co_borrower_id: null, requested_exp_flips: 0, requested_exp_holds: 0, requested_exp_ground: 0 };
+    const outNoClaimStale = await gatherInvestorInputs('app-x', mkDb({ expApp: noClaim2, staleExit: true }));
+    ok('no claim → has_stale_exit omitted (never nags a file that does not rely on experience)', !('has_stale_exit' in outNoClaimStale));
   }
 
   console.log(`\ngatherInvestorInputs (#232 data-source wiring) pure — ${passed} checks passed`);
