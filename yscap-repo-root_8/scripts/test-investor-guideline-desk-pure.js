@@ -243,4 +243,26 @@ const cond = (over) => Object.assign({ cond_no: 9001, name: 'Test', domain: 'oth
   ok('coverage-gap collapse: many requirements → one PILOT condition → ONE gap covering all N');
 }
 
+// 11. appraisal-disposition RURAL (cond 3345) surfaces ONLY once the appraisal is in AND it proves
+//     the property is rural — SILENT before the appraisal, and never fabricated from an Urban/Suburban
+//     determination. (The desk's DB layer now feeds appraisal_present + appraisal_rural from the
+//     current appraisal; this proves the disposition gate they drive.)
+{
+  const rural = spec.CONDITIONS.find((x) => x.cond_no === 3345); // disposition 'appraisal', concern_field 'appraisal_rural'
+  assert.strictEqual(rural.disposition, 'appraisal');
+  assert.strictEqual(rural.concern_field, 'appraisal_rural');
+  const surface = (signals) => desk.assess({ conditions: [rural], existingByCode: new Map(), signals, noteBuyerKey: 'corrfirst' }).unhappy;
+  // appraisal in + rural proven → surfaces as a concern.
+  const yes = surface({ appraisal_present: true, appraisal_rural: true });
+  assert.strictEqual(yes.length, 1, 'a rural appraisal surfaces the rural-property verification');
+  assert.strictEqual(yes[0].flag, 'appraisal_review', 'it surfaces under the appraisal-review flag');
+  // appraisal in + explicitly NOT rural → silent (never fabricated).
+  assert.strictEqual(surface({ appraisal_present: true, appraisal_rural: false }).length, 0, 'a stated non-rural appraisal → silent');
+  // appraisal not in yet → silent even if a rural flag leaked in (the gate holds).
+  assert.strictEqual(surface({ appraisal_rural: true }).length, 0, 'no appraisal in yet → the rural condition stays silent');
+  // nothing known → silent.
+  assert.strictEqual(surface({}).length, 0, 'no signals → silent');
+  ok('rural-property verification surfaces only once the appraisal proves rural (silent before / when not rural) [#275]');
+}
+
 console.log(`\ninvestor-guideline desk pure — ${passed} checks passed`);
