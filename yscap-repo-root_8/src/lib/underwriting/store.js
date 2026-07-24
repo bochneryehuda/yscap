@@ -355,6 +355,18 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
     }
   } catch (_) { /* auto-clear is additive — never blocks the extraction */ }
 
+  // Step 9 (IG-W7): after the purchase contract — or, on an assignment, the assignment
+  // agreement — is AI-read, try to auto-clear the "Executed purchase contract" condition
+  // (rtl_p1_contract). Only clears when the contract is read AND its economics reconcile
+  // (no open fatal contract/assignment finding); reopens a prior auto-clear that has gone
+  // dirty. Gated OFF by default (CONTRACT_AUTOCLEAR_ENABLED); best-effort — never blocks
+  // the extraction from persisting.
+  try {
+    if ((docType === 'purchase_contract' || docType === 'assignment') && appId) {
+      await require('./contract-autoclear').autoClearContractCondition(client, appId);
+    }
+  } catch (_) { /* auto-clear is additive — never blocks the extraction */ }
+
   return { extractionId, findingIds };
 }
 

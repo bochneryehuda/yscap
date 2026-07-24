@@ -1,6 +1,6 @@
 'use strict';
 /**
- * DB test — db/292: the CURRENT registration's stored inputs.address/city
+ * DB test — db/293: the CURRENT registration's stored inputs.address/city
  * re-sync from the FILE on every boot (owner-reported 2026-07-24 follow-up:
  * the file said "392-394 Columbia Ave" but term-sheet surfaces kept the
  * registration-era "392 Columbia Ave"; #717 fixed the write paths, this heals
@@ -26,7 +26,7 @@ const R = path.resolve(__dirname, '..');
 (async () => {
   if (!process.env.DATABASE_URL) { console.log('  ~~ SKIP registration-address heal DB test (no DATABASE_URL)'); return; }
   const db = require(R + '/src/db');
-  const SQL = fs.readFileSync(path.join(R, 'db', '292_registration_address_sync.sql'), 'utf8');
+  const SQL = fs.readFileSync(path.join(R, 'db', '293_registration_address_sync.sql'), 'utf8');
   let pass = 0, fail = 0;
   const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', m); } };
   const rnd = () => 'addrheal' + Math.random() + '@e.com';
