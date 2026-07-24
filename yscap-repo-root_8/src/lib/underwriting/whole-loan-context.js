@@ -48,6 +48,8 @@ const CONTEXT_FIELDS = Object.freeze([
   { key: 'underlying_contract_price', required: false },
   { key: 'borrower_name', required: false },
   { key: 'entity_name', required: false },
+  { key: 'property_state', required: false },
+  { key: 'note_buyer', required: false },   // the capital partner (applications.lender) — STAFF-ONLY, drives the investor-guideline review
 ]);
 const REQUIRED_KEYS = Object.freeze(CONTEXT_FIELDS.filter((f) => f.required).map((f) => f.key));
 
@@ -162,6 +164,8 @@ function candidatesFor(sources) {
 
   add('borrower_name', appFact(str(app.borrower_name)));
   add('entity_name', appFact(str(app.entity_name || app.vesting_entity)));
+  add('property_state', appFact(str(app.property_state)));
+  add('note_buyer', appFact(str(app.lender)));   // capital partner; drives the investor-guideline review (staff-only)
 
   return map;
 }
