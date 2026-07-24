@@ -185,6 +185,19 @@ function sowContingency(payload) {
   return { subtotal, contingency, cont };
 }
 
+// PURE — the SOW contingency as a PERCENT of the construction subtotal (one
+// decimal), or null when it can't be computed (no/zero subtotal, or an
+// unknowable amount-mode legacy payload). Used by the investor-guideline overlay
+// to evaluate a note buyer's contingency-CAP guideline (which checks a MAX %)
+// against the file's actual SOW instead of falling back to "to verify". Never throws.
+function sowContingencyPct(payload) {
+  try {
+    const { subtotal, contingency } = sowContingency(payload);
+    if (subtotal == null || !(subtotal > 0) || contingency == null) return null;
+    return Math.round((contingency / subtotal) * 1000) / 10;
+  } catch (_e) { return null; }
+}
+
 // True when the SOW carries a >= 5% contingency. A pct-mode contingency of >= 5
 // is 5%-of-subtotal by definition; otherwise compare the amounts (½-dollar
 // tolerance for float noise). Unknowable composition → false (fail closed).
@@ -264,7 +277,7 @@ const enforceGoldSowContingency = enforceSowContingency;
 
 module.exports = {
   requiredRehabBudget, checkSowBudget, firstPageBudget, money, eqCents, toNum,
-  sowContingency, goldContingencyOk,
+  sowContingency, sowContingencyPct, goldContingencyOk,
   sowContingencyRequired, checkSowContingency, enforceSowContingency,
   checkGoldSow, enforceGoldSowContingency,
   SOW_CONTINGENCY_PCT, SOW_CONTINGENCY_MSG,
