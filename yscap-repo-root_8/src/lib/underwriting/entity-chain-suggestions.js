@@ -126,7 +126,10 @@ async function syncChainsToSuggestions(client, appId, { entityChain, sellerChain
           fields: { code: f.code, severity: f.severity, title: f.title, howTo: f.howTo, source: 'chain_of_title',
                     opensCondition: f.opens_condition || f.opensCondition || null },
         },
-        dedupeKey: `chain_of_title:${f.code}:${(f.field || '')}`,
+        // Include the docValue so two DISTINCT per-assignment breaks that share a code+field (e.g.
+        // cot_assignor_never_held_title on assignment 1 and assignment 2) don't collapse into one
+        // suggestion — mirrors the entity-chain key above.
+        dedupeKey: `chain_of_title:${f.code}:${(f.field || '')}:${(f.docValue || '').toString().slice(0, 40)}`,
       });
     }
   }
