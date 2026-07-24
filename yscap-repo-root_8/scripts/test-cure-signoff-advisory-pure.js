@@ -56,4 +56,27 @@ check('NEGATIVE set is the three non-satisfied outcomes', () => {
   assert.ok(upper && upper.severity === 'warning', 'case-insensitive result match');
 });
 
+// 5 — noEvidenceWarning: a document-required condition cleared with zero evidence → warning.
+check('document condition, no docs → cleared-with-nothing warning', () => {
+  const w = a.noEvidenceWarning({ id: 'x1', label: 'Insurance binder', item_kind: 'document' }, 0);
+  assert.ok(w, 'raised');
+  assert.strictEqual(w.severity, 'warning');
+  assert.strictEqual(w.important, false);
+  assert.match(w.title, /no document is on file/);
+  assert.match(w.body, /Insurance binder/);
+  assert.strictEqual(w.evidence.code, 'cure_signoff_no_evidence');
+  assert.strictEqual(w.proposedAction.type, 'reopen_condition');
+  assert.strictEqual(w.dedupeKey, 'cure-signoff-noevidence:x1');
+});
+
+// 6 — a document IS on the item → no warning; non-document kinds → no warning; bad input → null.
+check('noEvidenceWarning is conservative', () => {
+  assert.strictEqual(a.noEvidenceWarning({ id: 'x2', item_kind: 'document' }, 1), null, 'has a doc → silent');
+  assert.strictEqual(a.noEvidenceWarning({ id: 'x3', item_kind: 'info' }, 0), null, 'info kind → silent');
+  assert.strictEqual(a.noEvidenceWarning({ id: 'x4', item_kind: 'task' }, 0), null, 'task kind → silent');
+  assert.strictEqual(a.noEvidenceWarning({ id: 'x5', item_kind: 'condition' }, 0), null, 'condition kind → silent');
+  assert.strictEqual(a.noEvidenceWarning({ item_kind: 'document' }, 0), null, 'no id → null');
+  assert.strictEqual(a.noEvidenceWarning(null, 0), null, 'null item → null, no throw');
+});
+
 console.log(`\ncure-signoff-advisory: ${n} checks passed`);

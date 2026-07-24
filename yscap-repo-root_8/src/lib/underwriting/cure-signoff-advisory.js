@@ -59,32 +59,82 @@ function proofToWarning(proof, itemId) {
 }
 
 /**
+ * noEvidenceWarning(item, docCount) → ai-suggestions payload | null (PURE, never throws).
+ * The "cleared with nothing" false-clear: a condition that REQUIRES a document (item_kind
+ * 'document') was signed off "satisfied" with NO cure proof AND NO document on file (docCount 0).
+ * Info/task/condition kinds are excluded — they don't require an uploaded document (an info slot,
+ * a tool task, or an internally-verified condition can legitimately clear without a doc). Advisory
+ * only — the AI never blocks; it asks the reviewer to confirm WHY it cleared.
+ */
+function noEvidenceWarning(item, docCount) {
+  try {
+    const it = item || {};
+    if (!it.id) return null;
+    if (String(it.item_kind || '') !== 'document') return null; // only document-required conditions
+    if (Number(docCount) > 0) return null;                      // there IS a document → not this case
+    const label = it.label || 'this condition';
+    return {
+      source: SOURCE, kind: 'finding',
+      severity: 'warning', important: false,
+      title: 'Signed off, but no document is on file to support it',
+      body: `"${label}" was signed off "satisfied", but there is no document uploaded to it and PILOT `
+        + `has no read (cure proof) to point to. A document condition normally clears against a document. `
+        + `Please confirm WHY this was cleared (e.g. it was satisfied elsewhere), or reopen and collect the document.`,
+      evidence: { code: 'cure_signoff_no_evidence', checklistItemId: it.id, documentsOnItem: 0 },
+      proposedAction: { type: 'reopen_condition', checklistItemId: it.id,
+        reason: 'Cleared with no document and no cure proof on file.' },
+      dedupeKey: `cure-signoff-noevidence:${it.id}`,
+    };
+  } catch (_e) { return null; }
+}
+
+/**
  * warnOnWeakProofSignoff(client, itemId, opts?) → { raised } (DB, best-effort).
- * Reads the latest cure proof for the just-signed-off item; if it is negative,
- * records ONE advisory ai_suggestion (dedupe-keyed per item). Resolves the file's
- * application_id from the item (or opts.applicationId). NEVER throws.
+ * At sign-off, raises at most ONE advisory (dedupe-keyed per item):
+ *   · the latest cure proof is NEGATIVE (the document doesn't prove the requirement), OR
+ *   · there is NO proof AND the condition REQUIRES a document but none is on file ("cleared with
+ *     nothing" — the false-clear the owner asked us to catch: "verify WHY each sign-off cleared").
+ * Resolves the file's application_id from the item (or opts.applicationId). NEVER throws / blocks.
  */
 async function warnOnWeakProofSignoff(client, itemId, opts) {
   const o = opts || {};
   try {
     if (!client || !itemId) return { raised: 0 };
-    const cure = require('./cure');
-    const proof = await cure.latestProofForItem(itemId, client).catch(() => null);
-    if (!proof) return { raised: 0 };
-    // Resolve appId + a human label for the condition (best-effort).
+    // Resolve appId + label + kind for the condition (best-effort).
     let appId = o.applicationId || null;
-    let label = null;
+    let label = null; let itemKind = null;
     try {
       const r = await client.query(
-        `SELECT application_id, label FROM checklist_items WHERE id=$1`, [itemId]);
-      if (r.rows[0]) { appId = appId || r.rows[0].application_id; label = r.rows[0].label; }
+        `SELECT application_id, label, item_kind FROM checklist_items WHERE id=$1`, [itemId]);
+      if (r.rows[0]) { appId = appId || r.rows[0].application_id; label = r.rows[0].label; itemKind = r.rows[0].item_kind; }
     } catch (_e) { /* fall through — appId may still be set from opts */ }
     if (!appId) return { raised: 0 };
-    const payload = proofToWarning(Object.assign({ condition_label: label }, proof), itemId);
+
+    const cure = require('./cure');
+    const proof = await cure.latestProofForItem(itemId, client).catch(() => null);
+
+    // 1. Negative proof → the existing false-clear warning.
+    if (proof) {
+      const payload = proofToWarning(Object.assign({ condition_label: label }, proof), itemId);
+      if (payload) {
+        await aiSug.record(client, Object.assign({ applicationId: appId, checklistItemId: itemId }, payload));
+        return { raised: 1 };
+      }
+      return { raised: 0 }; // a SATISFIED proof — the document backs it; nothing to warn about.
+    }
+
+    // 2. No proof at all → "cleared with nothing" for a document-required condition.
+    let docCount = 0;
+    try {
+      const d = await client.query(
+        `SELECT COUNT(*)::int AS n FROM documents WHERE checklist_item_id=$1`, [itemId]);
+      docCount = (d.rows[0] && d.rows[0].n) || 0;
+    } catch (_e) { docCount = 1; } // fail SAFE: on a count error assume evidence exists (don't false-warn)
+    const payload = noEvidenceWarning({ id: itemId, label, item_kind: itemKind }, docCount);
     if (!payload) return { raised: 0 };
     await aiSug.record(client, Object.assign({ applicationId: appId, checklistItemId: itemId }, payload));
     return { raised: 1 };
   } catch (_e) { return { raised: 0 }; }
 }
 
-module.exports = { proofToWarning, warnOnWeakProofSignoff, SOURCE, NEGATIVE };
+module.exports = { proofToWarning, noEvidenceWarning, warnOnWeakProofSignoff, SOURCE, NEGATIVE };
