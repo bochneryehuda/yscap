@@ -125,7 +125,25 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
       ok('once the old exit is gone, has_stale_exit is a real false');
     }
 
-    console.log(`\ngatherInvestorInputs (#250 flood + #251 experience + #252 stale-exit + #232) db — ${passed} checks passed`);
+    // 6. CASH-OUT (#253) — is_cash_out from the ECONOMIC classification (refinance_economic_type),
+    //    cash_out_proceeds from verified/estimated (real db/267 columns).
+    await pool.query(
+      `UPDATE applications SET refinance_economic_type='cash_out', verified_cash_out=300000, estimated_cash_out=999999 WHERE id=$1`, [aId]);
+    {
+      const out = await gatherInvestorInputs(aId, db);
+      assert.strictEqual(out.is_cash_out, true, 'economic cash_out → is_cash_out true');
+      assert.strictEqual(out.cash_out_proceeds, 300000, 'cash_out_proceeds reads the verified number');
+      ok('an economic cash-out surfaces is_cash_out + verified cash_out_proceeds (real db/267 columns)');
+    }
+    await pool.query(`UPDATE applications SET refinance_economic_type='rate_term' WHERE id=$1`, [aId]);
+    {
+      const out = await gatherInvestorInputs(aId, db);
+      assert.strictEqual(out.is_cash_out, false, 'rate_term → is_cash_out false');
+      assert.ok(!('cash_out_proceeds' in out), 'rate_term → cash_out_proceeds omitted');
+      ok('a rate-and-term refi → is_cash_out false, proceeds omitted (escalation stays silent)');
+    }
+
+    console.log(`\ngatherInvestorInputs (#250 flood + #251 exp + #252 stale + #253 cash-out + #232) db — ${passed} checks passed`);
   } finally {
     if (aId) await pool.query(`DELETE FROM applications WHERE id=$1`, [aId]).catch(() => {}); // cascades appraisals + credit_reports
     if (bId) await pool.query(`DELETE FROM borrowers WHERE id=$1`, [bId]).catch(() => {});
