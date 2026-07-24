@@ -197,4 +197,27 @@ const cond = (over) => Object.assign({ cond_no: 9001, name: 'Test', domain: 'oth
   ok('overlay: surfaces ONLY not-happy items (conflict + missing-required coverage gap); happy+silent otherwise; null-safe');
 }
 
+// 10. coverage-gap COLLAPSE — the guideline→PILOT crosswalk is many-to-one, so several
+//     note-buyer requirements that all map to the SAME missing PILOT condition must surface as
+//     ONE coverage gap (covering all N), not N identical "post this condition" rows.
+{
+  const conds = [
+    cond({ cond_no: 7001, name: 'TITLE COMMITMENT', pilot_template_code: 'rtl_cond_title', match_quality: 'exact' }),
+    cond({ cond_no: 7002, name: 'PAYOFF / PRELIM', pilot_template_code: 'rtl_cond_title', match_quality: 'exact' }),
+    cond({ cond_no: 7003, name: 'VESTING CHECK', pilot_template_code: 'rtl_cond_title', match_quality: 'exact' }),
+    cond({ cond_no: 7004, name: 'FLOOD CERT', pilot_template_code: 'rtl_cond_flood', match_quality: 'exact' }),
+  ];
+  // none of these PILOT conditions are on the file → each row is a gap.
+  const res = desk.assess({ conditions: conds, existingByCode: new Map(), signals: {}, noteBuyerKey: 'corrfirst', noteBuyerName: 'CorrFirst' });
+  const gaps = res.unhappy.filter((u) => u.flag === 'coverage_gap');
+  assert.strictEqual(gaps.length, 2, 'three title requirements + one flood collapse to TWO gaps (one per PILOT code)');
+  const title = gaps.find((g) => g.gapKey === 'rtl_cond_title');
+  assert.ok(title, 'the title gap is keyed on its PILOT code');
+  assert.strictEqual(title.coveredCount, 3, 'the one title gap covers all three title requirements');
+  assert.strictEqual(title.coveredConditions.length, 3);
+  const flood = gaps.find((g) => g.gapKey === 'rtl_cond_flood');
+  assert.ok(flood && flood.coveredCount === 1, 'the flood gap is its own single item');
+  ok('coverage-gap collapse: many requirements → one PILOT condition → ONE gap covering all N');
+}
+
 console.log(`\ninvestor-guideline desk pure — ${passed} checks passed`);
