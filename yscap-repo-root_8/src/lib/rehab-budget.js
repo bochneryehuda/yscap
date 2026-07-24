@@ -22,6 +22,26 @@ const db = require('../db');
 const money = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('en-US');
 const eqCents = (a, b) => Math.round((Number(a) || 0) * 100) === Math.round((Number(b) || 0) * 100);
 
+// Money formatted EXACTLY as the gates compare it — to the cent. A mismatch
+// message must never round away the very difference it is complaining about
+// (owner-reported 2026-07-24: the gate refused while all four budgets displayed
+// "$120,000" — the real gap was cents, hidden by the dollar-rounded `money()`).
+// Every budget-mismatch message below uses THIS, never `money()`.
+const moneyExact = (n) => {
+  const cents = Math.round((Number(n) || 0) * 100) || 0;   // `|| 0` also kills "-0.00" for sub-cent negatives
+  return '$' + (cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
+
+// Plain-language size+direction of the gap between two amounts, at cent
+// precision: gapPhrase(119999.99, 120000) → "$0.01 lower". Never returns an
+// empty gap for values the gates consider unequal (both use the same cent
+// rounding), so the message always names a visible difference.
+function gapPhrase(value, versus) {
+  const diff = Math.round((Number(value) || 0) * 100) - Math.round((Number(versus) || 0) * 100);
+  const abs = moneyExact(Math.abs(diff) / 100);
+  return diff < 0 ? `${abs} lower` : `${abs} higher`;
+}
+
 // Parse a possibly-formatted money value ("75,000", "$75000.50", 75000) → number
 // or null when there's nothing usable.
 function toNum(v) {
@@ -87,23 +107,80 @@ async function checkSowBudget(appId, totalOrPayload, client = db) {
   const targetOk = !targetSet || eqCents(target, required);
 
   if (!totalOk || !targetOk) {
+    // Cent-exact values + the exact gap, so a cents-level difference is VISIBLE
+    // in the message instead of four identical dollar-rounded figures.
     let message;
     if (!totalOk && targetSet && !targetOk) {
-      message = `The Scope of Work does not match the file's required rehab budget ${money(required)}. `
-        + `Your first-page construction budget is ${money(target)} and the line items total ${money(total)} — `
-        + `both must equal ${money(required)} EXACTLY before this condition can clear. `
+      message = `The Scope of Work does not match the file's required rehab budget ${moneyExact(required)}. `
+        + `Your first-page construction budget is ${moneyExact(target)} (${gapPhrase(target, required)} than required) `
+        + `and the line items total ${moneyExact(total)} (${gapPhrase(total, required)} than required) — `
+        + `both must equal ${moneyExact(required)} EXACTLY, to the cent, before this condition can clear. `
         + `The Scope of Work cannot change the loan's budget.`;
     } else if (!totalOk) {
-      message = `The Scope of Work line-item total ${money(total)} does not match the file's required rehab budget ${money(required)}. `
-        + `They must match EXACTLY — adjust the line items to total ${money(required)}. `
+      message = `The Scope of Work line-item total ${moneyExact(total)} is ${gapPhrase(total, required)} than the file's required rehab budget ${moneyExact(required)}. `
+        + `They must match EXACTLY, to the cent — adjust the line items to total ${moneyExact(required)}. `
         + `The Scope of Work cannot change the loan's budget.`;
     } else {
-      message = `The first-page construction budget ${money(target)} does not match the file's required rehab budget ${money(required)}. `
-        + `It must equal ${money(required)} EXACTLY — the number you start at must match the loan's budget before this condition can clear.`;
+      message = `The first-page construction budget ${moneyExact(target)} is ${gapPhrase(target, required)} than the file's required rehab budget ${moneyExact(required)}. `
+        + `It must equal ${moneyExact(required)} EXACTLY, to the cent — the number you start at must match the loan's budget before this condition can clear.`;
     }
     return { ok: false, required, total, target, message };
   }
   return { ok: true, seed: false, required, total, target };
+}
+
+/**
+ * The SIGN-OFF gate's budget agreement check (owner rule: first-page
+ * construction budget, Scope of Work line-item total, file budget and
+ * registered product budget must ALL agree to the cent before the rehab-budget
+ * condition can be signed off). Centralized here (pure — no DB) so the
+ * comparison, the PARSER and the message can never drift apart again:
+ *   · every value is parsed with toNum (comma/"$"-tolerant — the sign-off gate
+ *     used a raw Number() while the submit gate used toNum, so a formatted
+ *     stored total could false-fire one gate and not the other);
+ *   · the message prints every value AT CENT PRECISION and names exactly which
+ *     number disagrees and by how much (owner-reported 2026-07-24: a cents-level
+ *     gap displayed four identical "$120,000" figures with a mismatch error).
+ * Returns null when everything agrees (or nothing is comparable yet), else the
+ * plain-language refusal message.
+ */
+function budgetSignoffCheck(toolPayload, appRehabBudget, regInputs) {
+  const sowTotal = toolPayload && toolPayload.total != null ? toNum(toolPayload.total) : null;
+  if (sowTotal == null) return 'The Scope of Work / rehab budget has not been submitted yet.';
+  const appParsed = toNum(appRehabBudget);
+  const appBudget = appParsed != null ? appParsed : 0;
+  const regBudget = regInputs && regInputs.rehabBudget != null ? toNum(regInputs.rehabBudget) : null;
+  const fpTarget = firstPageBudget(toolPayload);
+  const fpSet = fpTarget != null && fpTarget > 0;
+
+  // Name each disagreeing pair explicitly, with the exact gap.
+  const problems = [];
+  if (!eqCents(sowTotal, appBudget)) problems.push(`the Scope of Work line-item total ${moneyExact(sowTotal)} is ${gapPhrase(sowTotal, appBudget)} than the file budget ${moneyExact(appBudget)}`);
+  if (regBudget != null && !eqCents(appBudget, regBudget)) problems.push(`the file budget ${moneyExact(appBudget)} is ${gapPhrase(appBudget, regBudget)} than the registered product budget ${moneyExact(regBudget)}`);
+  if (fpSet && !eqCents(fpTarget, appBudget)) problems.push(`the first-page construction budget ${moneyExact(fpTarget)} is ${gapPhrase(fpTarget, appBudget)} than the file budget ${moneyExact(appBudget)}`);
+  if (!problems.length) return null;
+
+  return `Budgets do not match to the cent — ${problems.join('; ')}. `
+    + `Right now: first-page construction budget ${fpSet ? moneyExact(fpTarget) : '—'} · Scope of Work line-item total ${moneyExact(sowTotal)} · file budget ${moneyExact(appBudget)}${regBudget != null ? ` · registered product budget ${moneyExact(regBudget)}` : ''}. `
+    + `They must ALL agree to the cent before sign-off: adjust the Scope of Work (start total + line items) or re-register the product so the numbers match.`;
+}
+
+/**
+ * The durable [auto] note every SOW save stamps on the rehab-budget condition
+ * (staff SOW tool, generic staff tool-submit, borrower submit — all three used
+ * to hand-build this note with the whole-DOLLAR money() helper, so a cents-level
+ * mismatch stamped a note showing identical figures on the condition card even
+ * after the live refusal message was made cent-precise; audit finding 1 on the
+ * 2026-07-24 cent-blind message fix). Built from the SAME cent-precise submit
+ * message, so the note can never round away the gap it reports.
+ *   mismatchMessage — checkSowBudget's message when it refused, else null/undefined
+ *   contingencyOk   — checkSowContingency/checkGoldSow ok flag
+ *   totalRaw        — the payload's line-item total (toNum-parsed here)
+ */
+function sowAutoNote(mismatchMessage, contingencyOk, totalRaw) {
+  if (mismatchMessage) return '[auto] ' + mismatchMessage;
+  if (!contingencyOk) return '[auto] ' + SOW_CONTINGENCY_MSG;
+  return `[auto] Scope of Work totals ${moneyExact(toNum(totalRaw))} and matches the file's rehab budget — ready to clear.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -277,6 +354,7 @@ const enforceGoldSowContingency = enforceSowContingency;
 
 module.exports = {
   requiredRehabBudget, checkSowBudget, firstPageBudget, money, eqCents, toNum,
+  moneyExact, gapPhrase, budgetSignoffCheck, sowAutoNote,
   sowContingency, sowContingencyPct, goldContingencyOk,
   sowContingencyRequired, checkSowContingency, enforceSowContingency,
   checkGoldSow, enforceGoldSowContingency,

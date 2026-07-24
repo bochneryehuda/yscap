@@ -25,6 +25,15 @@ function usd(cents) {
   return '$' + Math.round(c / 100).toLocaleString('en-US');
 }
 
+// Display for a message that reports an EXACT-cents comparison (park reasons,
+// drift/exceedance alerts). Whole-dollar `usd()` in those messages hid the very
+// gap being reported — a one-cent drift printed "$120,000 != $120,000" (same
+// class as the 2026-07-24 budget-gate finding). Always shows cents.
+function usdExact(cents) {
+  const c = Math.round(Number(cents) || 0) || 0;   // `|| 0` kills "-0"
+  return '$' + (c / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 // Deterministic exploded-line names (the stability contract — see research doc §4.2).
 function unitLineName(base, unitIndex) { return `Unit ${unitIndex} - ${base}`; }
 function sectionLineName(section, base) {
@@ -133,7 +142,7 @@ function isoDay(iso) {
 }
 
 module.exports = {
-  num, dollarsToCents, centsToDollars, usd,
+  num, dollarsToCents, centsToDollars, usd, usdExact,
   unitLineName, sectionLineName, slugify,
   addressForSitewire, developmentType, constructionType, feeKindFor,
   findJsonUnsafe, splitEven, stableHash, idempotencyKey, isoDay,
