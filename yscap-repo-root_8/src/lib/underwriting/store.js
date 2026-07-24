@@ -321,6 +321,19 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
     }
   } catch (_) { /* assignment fraud is additive — never blocks the extraction */ }
 
+  // 6. Government-ID condition auto-clear (IG-W3, owner-directed 2026-07-24). Now
+  // that this ID's extraction + findings are persisted for this file, re-evaluate
+  // the file's gov-ID condition(s): clear one that is now AI-verified clean, or
+  // reopen a prior auto-clear that has gone dirty. Gated OFF by default
+  // (GOVID_AUTOCLEAR_ENABLED) inside the helper; never a false-clear (it requires a
+  // clean per-file read with no open ID finding); best-effort — never blocks the
+  // extraction from persisting.
+  try {
+    if (docType === 'government_id' && appId) {
+      await require('./gov-id-autoclear').autoClearGovIdConditions(client, appId);
+    }
+  } catch (_) { /* auto-clear is additive — never blocks the extraction */ }
+
   return { extractionId, findingIds };
 }
 
