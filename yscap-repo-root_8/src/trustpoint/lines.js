@@ -67,12 +67,16 @@ async function deriveLines(appId, tpDrawId) {
   const draw = (await db.query(`SELECT * FROM trustpoint_draws WHERE tp_draw_id=$1`, [tpDrawId])).rows[0];
   if (!draw || draw.approved_cents == null) return { derived: false, reason: 'no_approved_total' };
   const post = (await db.query(
-    `SELECT * FROM trustpoint_milestone_snapshots WHERE tp_draw_id=$1 AND phase='post' ORDER BY taken_at DESC LIMIT 1`, [tpDrawId])).rows[0];
+    `SELECT * FROM trustpoint_milestone_snapshots WHERE tp_draw_id=$1 AND phase='post' ORDER BY taken_at DESC, id DESC LIMIT 1`, [tpDrawId])).rows[0];
   if (!post) return { derived: false, reason: 'no_post_snapshot' };
+  // id is the tiebreak: two snapshots can land in the SAME microsecond (fast machine,
+  // consecutive autocommits share a clock tick) and "strictly earlier" alone would then
+  // see no pre-snapshot at all — insertion order is authoritative when time ties.
   const pre = (await db.query(
     `SELECT * FROM trustpoint_milestone_snapshots
-      WHERE tp_project_id=$1 AND taken_at < $2 ORDER BY taken_at DESC LIMIT 1`,
-    [draw.tp_project_id, post.taken_at])).rows[0];
+      WHERE tp_project_id=$1 AND (taken_at < $2 OR (taken_at = $2 AND id < $3))
+      ORDER BY taken_at DESC, id DESC LIMIT 1`,
+    [draw.tp_project_id, post.taken_at, post.id])).rows[0];
   if (!pre) return { derived: false, reason: 'no_pre_snapshot' };
 
   const preBy = new Map();

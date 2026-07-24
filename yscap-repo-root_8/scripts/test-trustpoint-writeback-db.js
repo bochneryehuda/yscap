@@ -132,7 +132,7 @@ const cleanup = async (app, bor) => { await db.query(`DELETE FROM applications W
                  { id: `ms2-${tpDrawId}`, completed_work_amount: 0.0, remaining_work_amount: 3000.0 }];
     const post = [{ id: `ms1-${tpDrawId}`, completed_work_amount: 600.0, remaining_work_amount: 4400.0 },
                   { id: `ms2-${tpDrawId}`, completed_work_amount: 250.0, remaining_work_amount: 2750.0 }];
-    await db.query(`INSERT INTO trustpoint_milestone_snapshots (application_id, tp_project_id, tp_draw_id, phase, lines) VALUES ($1,$2,$3,'pre',$4::jsonb)`, [app, tpp, tpDrawId, JSON.stringify(pre)]);
+    await db.query(`INSERT INTO trustpoint_milestone_snapshots (application_id, tp_project_id, tp_draw_id, phase, lines, taken_at) VALUES ($1,$2,$3,'pre',$4::jsonb, now() - interval '1 minute')`, [app, tpp, tpDrawId, JSON.stringify(pre)]);
     await db.query(`INSERT INTO trustpoint_milestone_snapshots (application_id, tp_project_id, tp_draw_id, phase, lines) VALUES ($1,$2,$3,'post',$4::jsonb)`, [app, tpp, tpDrawId, JSON.stringify(post)]);
     const d = await lines.deriveLines(app, tpDrawId);
     ok('derivation accepted (Σ exact: 500+250=750)', d.derived === true && d.lines.length === 2);
@@ -142,13 +142,31 @@ const cleanup = async (app, bor) => { await db.query(`DELETE FROM applications W
     await cleanup(app, bor);
   }
   {
+    // IDENTICAL timestamps (a fast machine can land both snapshots in one microsecond —
+    // the CI flake of 2026-07-24): insertion order (id) must break the tie, never "no pre".
+    const { app, bor, swDrawId, tpDrawId } = await seed();
+    const tpp = `tpp-${tag}`;   // must match seed()'s draw.tp_project_id — the pre-lookup is BY PROJECT
+    await db.query(
+      `INSERT INTO trustpoint_milestone_links (application_id, tp_project_id, tp_milestone_id, name, amount_cents, sitewire_job_item_id, sow_line_key, matched_by)
+       VALUES ($1,$2,$3,'Unit 1 - Kitchen',500000,$4,'k1','name'), ($1,$2,$5,'Unit 1 - Roof',300000,$6,'k2','name')`,
+      [app, tpp, `msq1-${tpDrawId}`, swDrawId + 1, `msq2-${tpDrawId}`, swDrawId + 2]);
+    const t0 = (await db.query(`SELECT now() AS t`)).rows[0].t;
+    await db.query(`INSERT INTO trustpoint_milestone_snapshots (application_id, tp_project_id, tp_draw_id, phase, lines, taken_at) VALUES ($1,$2,$3,'pre',$4::jsonb,$5)`,
+      [app, tpp, tpDrawId, JSON.stringify([{ id: `msq1-${tpDrawId}`, completed_work_amount: 0 }, { id: `msq2-${tpDrawId}`, completed_work_amount: 0 }]), t0]);
+    await db.query(`INSERT INTO trustpoint_milestone_snapshots (application_id, tp_project_id, tp_draw_id, phase, lines, taken_at) VALUES ($1,$2,$3,'post',$4::jsonb,$5)`,
+      [app, tpp, tpDrawId, JSON.stringify([{ id: `msq1-${tpDrawId}`, completed_work_amount: 500.0 }, { id: `msq2-${tpDrawId}`, completed_work_amount: 250.0 }]), t0]);
+    const d = await lines.deriveLines(app, tpDrawId);
+    ok('same-microsecond snapshots still derive (id breaks the tie)', d.derived === true && d.lines.length === 2);
+    await cleanup(app, bor);
+  }
+  {
     // inexact Σ → discarded, never guessed
     const { app, bor, swDrawId, tpDrawId } = await seed({ approved: 75000 });
     const tpp = `tpp-${tag}`;
     await db.query(
       `INSERT INTO trustpoint_milestone_links (application_id, tp_project_id, tp_milestone_id, name, amount_cents, sitewire_job_item_id, sow_line_key, matched_by)
        VALUES ($1,$2,$3,'Unit 1 - Kitchen',500000,$4,'k1','name_amount')`, [app, tpp, `ms3-${tpDrawId}`, swDrawId + 1]);
-    await db.query(`INSERT INTO trustpoint_milestone_snapshots (application_id, tp_project_id, tp_draw_id, phase, lines) VALUES ($1,$2,$3,'pre',$4::jsonb)`, [app, tpp, tpDrawId, JSON.stringify([{ id: `ms3-${tpDrawId}`, completed_work_amount: 0 }])]);
+    await db.query(`INSERT INTO trustpoint_milestone_snapshots (application_id, tp_project_id, tp_draw_id, phase, lines, taken_at) VALUES ($1,$2,$3,'pre',$4::jsonb, now() - interval '1 minute')`, [app, tpp, tpDrawId, JSON.stringify([{ id: `ms3-${tpDrawId}`, completed_work_amount: 0 }])]);
     await db.query(`INSERT INTO trustpoint_milestone_snapshots (application_id, tp_project_id, tp_draw_id, phase, lines) VALUES ($1,$2,$3,'post',$4::jsonb)`, [app, tpp, tpDrawId, JSON.stringify([{ id: `ms3-${tpDrawId}`, completed_work_amount: 500.0 }])]);
     const d = await lines.deriveLines(app, tpDrawId);
     ok('inexact Σ discarded', d.derived === false && /sum_mismatch/.test(d.reason));
