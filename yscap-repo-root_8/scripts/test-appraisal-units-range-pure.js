@@ -58,7 +58,13 @@ ok(ptm && ptm.severity === 'fatal', 'sfr file + 3-unit appraisal → property_ty
 ok(ptm && /3 units/.test(ptm.title) && /sfr/.test(ptm.title), 'the fatal reports the unit count, not a raw category string');
 
 f = computeFindings(A('FNM1025', 2), F('multi_5_plus', null));   // 5+ file, appraisal 2 units
-ok(byCode(f, 'property_type_mismatch'), 'multi_5_plus file + 2-unit appraisal → fatal (2 < 5)');
+const m5f = byCode(f, 'property_type_mismatch');
+ok(!!m5f, 'multi_5_plus file + 2-unit appraisal → fatal (2 < 5)');
+// The property-type fatal must NOT offer replace/custom — the appraisal can't supply a
+// valid property_type category, so writing it back would corrupt the enum (audit issue 1).
+ok(m5f && !m5f.actions.includes('replace') && !m5f.actions.includes('custom'),
+  'property_type_mismatch offers NO replace/custom (appraisal has no valid category to write back)');
+ok(m5f && !m5f.reprices, 'property_type_mismatch is not a reprice action');
 
 f = computeFindings(A('FNM1025', 5), F('multi_2_4', null));   // 2–4 file, appraisal 5 units
 ok(byCode(f, 'property_type_mismatch'), 'multi_2_4 file + 5-unit appraisal → fatal (5 > 4)');
@@ -73,6 +79,15 @@ f = computeFindings(A('FNM1073', 1), F('sfr', 1));   // condo form vs sfr file, 
 ok(!byCode(f, 'property_type_mismatch'), 'sfr file + condo(1073) form, both 1 unit → NO fatal (unit-count agrees)');
 const style = byCode(f, 'property_style_note');
 ok(style && style.severity === 'warning' && style.blocksCtc === false, 'sfr vs condo (same 1 unit) → non-blocking property_style_note advisory');
+ok(style && !style.actions.includes('replace') && !style.actions.includes('custom'),
+  'property_style_note offers NO replace/custom either (no valid category to write back)');
+
+// ── twin bucketing: appraisal's specific type agrees with the file's range category ──
+const { canonPropertyType } = require('../src/lib/underwriting/facts');
+ok(canonPropertyType('Two Family') === 'multi_2_4' && canonPropertyType('Multi 2-4') === 'multi_2_4',
+  'canonPropertyType buckets "Two Family" and "Multi 2-4" to the same class (twin no longer disputes multi-family)');
+ok(canonPropertyType('Duplex') === 'multi_2_4' && canonPropertyType('Single Family Detached') === 'sfr',
+  'canonPropertyType buckets duplex→multi_2_4 and detached→sfr');
 
 // ── never guesses: unknown property_type or missing appraisal count = silent ──
 f = computeFindings(A('FNM1025', 2), F('mixed_use', null));   // mixed-use = no unit constraint

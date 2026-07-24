@@ -164,8 +164,11 @@ function computeFindings(appraisal, file, opts = {}) {
     out.push(finding({ code: 'property_type_mismatch', severity: 'fatal', field: 'property_type',
       appraisalValue: `${apprUnitCount} unit${apprUnitCount === 1 ? '' : 's'}`, fileValue: file.property_type,
       title: `Property type disagrees — appraisal shows ${apprUnitCount} unit${apprUnitCount === 1 ? '' : 's'}, file property type is ${file.property_type} (${rangeText})`,
-      howTo: 'The appraisal\'s unit count is outside the range for the file\'s property type. Confirm which is right — a wrong type changes the program and eligibility.',
-      actions: ['replace', 'keep', 'custom', 'dismiss', 'decline'], reprices: true }));
+      howTo: 'The appraisal\'s unit count is outside the range for the file\'s property type. Confirm which is right — a wrong type changes the program and eligibility. Fix the property type on the application (the appraisal can\'t supply a valid category).',
+      // No replace/custom: the appraisal gives a unit count, not a portal property_type
+      // category, so it can't be written back to the file's property_type (that would
+      // corrupt the enum). Keep/dismiss here; correct the type on the application form.
+      actions: ['keep', 'dismiss', 'decline'] }));
   } else {
     // Same-unit-count STYLE difference (SFR vs Condo — both 1-unit dwelling styles). A real
     // but non-blocking distinction: surface as an ADVISORY, never a CTC-blocking fatal (the
@@ -177,8 +180,9 @@ function computeFindings(appraisal, file, opts = {}) {
       out.push(finding({ code: 'property_style_note', severity: 'warning', field: 'property_type',
         appraisalValue: A.formType, fileValue: file.property_type,
         title: `Property style differs — appraisal is a ${styleForm === 'sfr' ? 'single-family (1004)' : 'condo (1073)'} form, file property type is ${file.property_type}`,
-        howTo: 'Same unit count but a different dwelling style (single-family vs condo). Confirm the program allows it — not a blocker.',
-        actions: ['keep', 'custom', 'dismiss'] }));
+        howTo: 'Same unit count but a different dwelling style (single-family vs condo). Confirm the program allows it — not a blocker. Correct the property type on the application if needed.',
+        // keep/dismiss only — the appraisal form code is not a portal property_type category.
+        actions: ['keep', 'dismiss'] }));
     }
   }
 
