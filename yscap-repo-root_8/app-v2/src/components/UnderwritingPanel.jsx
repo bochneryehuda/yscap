@@ -874,6 +874,49 @@ function SellerChain({ sellerChain }) {
   );
 }
 
+// CHAIN OF TITLE — the ordered, multi-hop ownership trace: owner of record → contract seller →
+// contract buyer → each assignment's assignor/assignee → the vesting entity. Each connector is
+// colored by whether that same-party link reconciled (ok) or broke, or is a legitimate transfer.
+const COT_HOP = {
+  ok: { fg: 'var(--good,#3F7A5B)', arrow: '→', title: 'names match' },
+  break: { fg: 'var(--crit,#B4483C)', arrow: '⤫', title: 'names do NOT match' },
+  transfer: { fg: 'var(--muted,#4B585C)', arrow: '⇒', title: 'ownership transfer' },
+  unknown: { fg: 'var(--amber,#B7791F)', arrow: '⋯', title: 'could not confirm' },
+};
+function ChainOfTitle({ chainOfTitle }) {
+  if (!chainOfTitle || !(chainOfTitle.ownershipPath || []).length) return null;
+  const st = CHAIN[chainOfTitle.status] || CHAIN.incomplete;
+  const path = chainOfTitle.ownershipPath || [];
+  const hops = chainOfTitle.hops || [];
+  return (
+    <div style={{ marginBottom: 22 }}>
+      <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px' }}>Chain of title — does ownership line up at every step?</h4>
+      <div style={{ marginBottom: 10 }}>
+        <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.05em', textTransform: 'uppercase', color: st.fg }}>{st.label}</span>
+        {chainOfTitle.reachesVesting === true ? <span style={{ marginLeft: 10, fontSize: 11.5, color: 'var(--good,#3F7A5B)' }}>reaches the vesting entity</span> : null}
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 4, overflowX: 'auto' }}>
+        {path.map((n, i) => {
+          // Pair each node with the hop that ENDS at it (hops are in path order).
+          const h = i > 0 ? (hops[i - 1] || {}) : null;
+          const kindKey = h ? (h.kind === 'transfer' ? 'transfer' : (h.verdict === 'ok' ? 'ok' : h.verdict === 'break' ? 'break' : 'unknown')) : null;
+          const g = kindKey ? COT_HOP[kindKey] : null;
+          return (
+            <div key={`${n.role}-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              {i > 0 && g ? <span title={g.title} style={{ color: g.fg, fontWeight: 800, fontSize: 17, minWidth: 18, textAlign: 'center' }}>{g.arrow}</span> : null}
+              <div style={{ border: '1px solid var(--line,#E4DECF)', borderRadius: 8, padding: '7px 10px', minWidth: 118, background: 'var(--card,#fff)' }}>
+                <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)' }}>{n.role}</div>
+                <div style={{ fontSize: 13, fontWeight: 700 }}>{n.name || '—'}</div>
+                {n.source ? <div style={{ fontSize: 10.5, color: 'var(--muted,#4B585C)' }}>{n.source}</div> : null}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // Bank liquidity — sum every account's ending balance and show it against the cash this deal needs.
 // The per-account table makes clear WHAT was counted (and what was excluded because it sits in an
 // account that isn't the borrower's / a verified entity's).
@@ -2714,6 +2757,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
   const metrics = data && data.metrics;
   const entityChain = data && data.entityChain;
   const sellerChain = data && data.sellerChain;
+  const chainOfTitle = data && data.chainOfTitle;
   const bankLiquidity = data && data.bankLiquidity;
   const experience = data && data.experience;
   const completeness = data && data.completeness;
@@ -2992,6 +3036,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
 
       {/* entity-resolution chain */}
       <SellerChain sellerChain={sellerChain} />
+      <ChainOfTitle chainOfTitle={chainOfTitle} />
       <EntityChain entityChain={entityChain} />
       <BankLiquidity bankLiquidity={bankLiquidity} />
       <Experience experience={experience} appId={appId} onChange={load} readOnly={readOnly || !canWaive} />

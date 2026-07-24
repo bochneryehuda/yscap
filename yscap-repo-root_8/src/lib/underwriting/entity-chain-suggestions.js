@@ -36,7 +36,7 @@ const EDGE_TITLES = {
  * @param {{entityChain?:object, sellerChain?:object}} chains
  * @returns {Promise<{recorded:number, deduped:number, failed:number}>}
  */
-async function syncChainsToSuggestions(client, appId, { entityChain, sellerChain } = {}) {
+async function syncChainsToSuggestions(client, appId, { entityChain, sellerChain, chainOfTitle } = {}) {
   const suggestions = [];
 
   // 1. Broken entity-chain edges — each becomes a "chain break" suggestion.
@@ -101,6 +101,35 @@ async function syncChainsToSuggestions(client, appId, { entityChain, sellerChain
                     opensCondition: f.opens_condition || f.opensCondition || null },
         },
         dedupeKey: `seller_chain:${f.code}:${(f.field || '')}`,
+      });
+    }
+  }
+
+  // 4. Chain-of-title findings — the ORDERED multi-hop ownership reconciliation (contract seller ≠
+  // record owner, an assignor who never held the contract, the final buyer ≠ the vesting entity).
+  // Advisory; a human converts to a condition / requests a document.
+  if (chainOfTitle && Array.isArray(chainOfTitle.findings)) {
+    for (const f of chainOfTitle.findings) {
+      if (!f || !f.code) continue;
+      suggestions.push({
+        applicationId: appId,
+        source: 'entity_chain', kind: 'finding',
+        title: f.title || `Chain of title finding: ${f.code}`,
+        body: f.howTo || null,
+        severity: f.severity || 'warning',
+        evidence: {
+          code: f.code, field: f.field, docValue: f.docValue, fileValue: f.fileValue,
+          source: f.source, subFrom: 'chain_of_title',
+        },
+        proposedAction: {
+          type: 'create_finding',
+          fields: { code: f.code, severity: f.severity, title: f.title, howTo: f.howTo, source: 'chain_of_title',
+                    opensCondition: f.opens_condition || f.opensCondition || null },
+        },
+        // Include the docValue so two DISTINCT per-assignment breaks that share a code+field (e.g.
+        // cot_assignor_never_held_title on assignment 1 and assignment 2) don't collapse into one
+        // suggestion — mirrors the entity-chain key above.
+        dedupeKey: `chain_of_title:${f.code}:${(f.field || '')}:${(f.docValue || '').toString().slice(0, 40)}`,
       });
     }
   }
