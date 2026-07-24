@@ -124,6 +124,12 @@ module.exports = {
   // "just hit reply" always reach a human, so no email is ever a dead end.
   // Defaults to the company sales inbox; override with REPLY_TO.
   replyToDefault: (process.env.REPLY_TO || 'sales@yscapgroup.com').trim() || null,
+  // The SALES desk inbox — the To: recipient for marketing-site activity that
+  // has no routed officer (track record / rehab budget / contact submissions)
+  // and for every term-sheet event (generated / emailed / exception request).
+  // A plain routing address like SUBSCRIBE_NOTIFY_TO, not a secret; set
+  // SALES_NOTIFY_TO="" to fall back to the admin desk fan-out instead.
+  salesNotifyTo: (process.env.SALES_NOTIFY_TO != null ? process.env.SALES_NOTIFY_TO : 'sales@yscapgroup.com').trim() || null,
   // Owner-directed 2026-07-20: silently BCC the file's assigned loan officer on
   // every BORROWER notification email, so the LO sees in real time exactly what
   // their borrower received. BCC (not CC) — the borrower's inbox stays clean and

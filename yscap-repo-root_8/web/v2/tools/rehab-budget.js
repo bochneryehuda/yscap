@@ -97,6 +97,20 @@ const RB = (function(){
       {n:"Chaya Gruber",r:"Loan Setup",e:"Chaya@yscapgroup.com"},
       {n:"Lisa Katz",r:"Draw Coordinator",e:"Lisa@yscapgroup.com"} ]}
   ];
+  /* Live roster (falls back to the static list above): the same /api/roster the
+     loan application uses, so new team members appear without a site deploy. */
+  let TEAM_LIVE=null;
+  (function loadRoster(){
+    try{
+      fetch("/api/roster").then(r=>r.ok?r.json():null).then(d=>{
+        if(!d||!Array.isArray(d.groups)||!d.groups.length) return;
+        const gs=d.groups.map(g=>({ g:g.label||g.department||"Team",
+          people:(g.people||[]).filter(p=>p&&p.email&&p.name).map(p=>({n:p.name,r:p.title||"",e:p.email})) }))
+          .filter(g=>g.people.length);
+        if(gs.length) TEAM_LIVE=gs;
+      }).catch(()=>{});
+    }catch(e){}
+  })();
 
   /* ---------- Smart Scope templates (auto-select line items) ---------- */
   // each include entry is "catId:index"; cont sets a suggested contingency %
@@ -617,7 +631,7 @@ const RB = (function(){
       '<div class="rb-catbar" style="margin-top:1.4rem">'+
         '<button class="rb-btn primary" onclick="RB.exportXlsx(this)">Export Excel ⤓</button>'+
         '<button class="rb-btn" onclick="RB.exportPdf(this)">Export branded PDF ⤓</button>'+
-        '<button class="rb-btn" onclick="RB.emailLO(this)">Email to loan officer ✉</button>'+
+        '<button class="rb-btn" onclick="RB.emailLO(this)">Send to YS Capital →</button>'+
         '<button class="rb-btn" onclick="RB.share(this)">Copy share link 🔗</button></div>'+
       '<p class="rb-underwrite-note"><b>To underwrite your rehab budget, YS needs the Excel file — not the PDF.</b> The PDF is a branded copy for your records; our team underwrites from the Excel export. “Email to loan officer” sends both.</p>'+
       '<p class="rb-note">Your link already saved this scope of work — bookmark it to come back, or send it to your loan officer. The Excel export can be re-imported here to keep editing. <b>Email to loan officer</b> lets you pick the exact person on the YS team and sends it to them <b>with both files attached</b>: on a phone it uses the share sheet, and on a computer it goes straight through our system — no draft to open or files to fumble with.</p>'+
@@ -1015,7 +1029,8 @@ const RB = (function(){
 
   /* ---------- email to loan officer (team picker) ---------- */
   let _emailFiles=null;
-  function emailBody(person){ const addr=S.address||"(property)"; const first=(person.n||"").split(" ")[0];
+  function emailBody(person){ const addr=S.address||"(property)";
+    const first=person&&person.e?(person.n||"").split(" ")[0]:"team";
     return [ "Hi "+first+",", "", "Here is my scope of work for "+addr+".", "",
       "Transaction: "+(S.txn==="refi"?"Refinance":"Purchase"),
       "Property: "+(isMulti()?(unitCount()+" units"):"Single-family"),
@@ -1036,11 +1051,16 @@ const RB = (function(){
   function openEmailPicker(){
     let ov=document.getElementById("rb-emailov"); if(ov) ov.remove();
     ov=document.createElement("div"); ov.id="rb-emailov"; ov.className="rb-ov";
-    const groups=TEAM.map(g=>'<div class="rb-ov-group">'+esc(g.g)+'</div><div class="rb-ov-people">'+
+    const roster=TEAM_LIVE||TEAM;
+    // "General" first (owner-directed 2026-07-24): with no specific pick the
+    // submission goes straight to the YS Capital sales desk.
+    const general='<div class="rb-ov-group">Not sure who?</div><div class="rb-ov-people">'+
+      '<button class="rb-ov-person" data-e="" data-n="the YS Capital sales desk"><span class="rb-ov-nm">General — YS Capital sales desk</span><span class="rb-ov-rl">We\'ll route it for you</span></button></div>';
+    const groups=general+roster.map(g=>'<div class="rb-ov-group">'+esc(g.g)+'</div><div class="rb-ov-people">'+
       g.people.map(p=>'<button class="rb-ov-person" data-e="'+esc(p.e)+'" data-n="'+esc(p.n)+'"><span class="rb-ov-nm">'+esc(p.n)+'</span><span class="rb-ov-rl">'+esc(p.r)+'</span></button>').join("")+'</div>').join("");
     ov.innerHTML='<div class="rb-ov-box"><button class="rb-ov-x" aria-label="Close">✕</button>'+
-      '<h3>Email your scope of work</h3>'+
-      '<p>Add your details so we can send it straight to your loan officer with the PDF &amp; Excel attached — they\'ll follow up with you.</p>'+
+      '<h3>Send your scope of work</h3>'+
+      '<p>Add your details, then pick who to send it to — it goes straight to our team with the PDF &amp; Excel attached, and they\'ll follow up with you.</p>'+
       '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px">'+
         '<input id="rb-em-name" placeholder="Your name" autocomplete="name" style="flex:1;min-width:140px;padding:10px 12px;border:1px solid var(--line,#d8d2c4);border-radius:8px;font-size:16px">'+
         '<input id="rb-em-email" type="email" placeholder="Your email" autocomplete="email" style="flex:1;min-width:140px;padding:10px 12px;border:1px solid var(--line,#d8d2c4);border-radius:8px;font-size:16px">'+
@@ -1052,70 +1072,50 @@ const RB = (function(){
     document.addEventListener("keydown",onKey);
     ov.addEventListener("click",e=>{ if(e.target===ov) close(); });
     ov.querySelector(".rb-ov-x").onclick=close;
-    // Capture the visitor's contact BEFORE close() removes the overlay.
+    // Capture the visitor's contact BEFORE close() removes the overlay. The
+    // email is required — the submission is server-side and the team needs a
+    // way to reach back (no more silent .eml hand-offs).
     ov.querySelectorAll(".rb-ov-person").forEach(b=> b.onclick=()=>{
       const nm=((ov.querySelector("#rb-em-name")||{}).value||"").trim();
-      const em=((ov.querySelector("#rb-em-email")||{}).value||"").trim();
+      const emEl=ov.querySelector("#rb-em-email");
+      const em=((emEl||{}).value||"").trim();
+      if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)){
+        flash("Add your email first — so our team can follow up with you.");
+        if(emEl){ emEl.style.borderColor="#a33"; emEl.focus(); }
+        return;
+      }
       close(); emailTo({n:b.dataset.n,e:b.dataset.e}, nm, em);
     });
   }
-  // Called synchronously off the person click so navigator.share keeps its gesture.
+  // Sends SERVER-SIDE to the picked team member (or the sales desk when no one
+  // specific was picked). No .eml, no mail client — a failure keeps the work on
+  // the page and shows a clear retry message.
   function emailTo(person, name, vemail){
     const f=_emailFiles||{}; const files=[f.pdf,f.xls].filter(Boolean);
     const subj="Scope of Work — "+(S.address||"property"); const body=emailBody(person);
-    // Phone: the native share sheet attaches the real files — keep it (not an .eml).
-    if(files.length && navigator.canShare && navigator.canShare({files:files})){
-      navigator.share({ files:files, title:subj, text:body })
-        .then(function(){ flash("Pick Mail in the share sheet — the PDF & Excel are attached."); })
-        .catch(function(err){ if(!(err&&err.name==="AbortError")) backendOrEml(person,name,vemail,subj,body,files); });
-      return;
-    }
-    // Computer: send it SERVER-SIDE straight to the officer (no ugly .eml).
-    backendOrEml(person,name,vemail,subj,body,files);
-  }
-  // #99: POST to the backend so the officer gets a real branded email with the
-  // PDF + Excel attached — no .eml the visitor has to open and send. Falls back to
-  // the .eml/mailto draft only when offline or the visitor gave no email.
-  function backendOrEml(person,name,vemail,subj,body,files){
-    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(vemail||"")){ emailFallback(person,subj,body,files); return; }
+    flash("Sending…");
     sendViaBackend(person,name,vemail,subj,body,files)
-      .then(function(){ flash("Sent to "+person.n+" — they have your scope of work (PDF & Excel) and will follow up."); })
-      .catch(function(e){ if(window.console) console.error(e); emailFallback(person,subj,body,files); });
+      .then(function(){ flash(person.e ? ("Sent to "+person.n+" — they have your scope of work (PDF & Excel) and will follow up.")
+                                       : "Sent — the YS Capital sales desk has your scope of work (PDF & Excel) and will follow up."); })
+      .catch(function(e){ if(window.console) console.error(e);
+        flash("We couldn't send this right now — your work is saved on this page. Please try again in a moment, or call 718-831-2168."); });
   }
   async function sendViaBackend(person,name,vemail,subj,body,files){
     const atts=[];
     for(let i=0;i<files.length;i++){ const fl=files[i]; atts.push({ filename:fl.name, contentType:fl.type||"application/octet-stream", dataBase64: await fileToB64(fl) }); }
-    const code=String(person.e||"").split("@")[0];
+    // A specific pick routes to that person; no pick (the "General" option)
+    // sends no officerCode, and the backend routes it to the sales desk.
+    const code=person&&person.e?String(person.e).split("@")[0]:"";
     const r=await fetch("/api/leads",{ method:"POST", headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({ tool:"rehab_budget", officerCode:code, name:name||undefined, email:vemail,
+      body:JSON.stringify({ tool:"rehab_budget", officerCode:code||undefined, name:name||undefined, email:vemail,
         subject:subj, message:body, attachments:atts,
-        payload:{ address:S.address, total:grand(), contingency:contingency(), gcFee:gcFeeAmt() } }) });
+        payload:{ address:S.address, total:grand(), contingency:contingency(), gcFee:gcFeeAmt(),
+          metaRows:[ {label:"Property",value:S.address||""}, {label:"Total scope of work",value:money(grand())},
+                     {label:"Contingency",value:money(contingency())}, {label:"GC fee",value:gcFeeAmt()>0?money(gcFeeAmt()):""} ] } }) });
     if(!r.ok) throw new Error("send "+r.status);
     return r.json();
   }
-  async function emailFallback(person,subj,body,files){
-    if(files.length){
-      try{ await downloadEml(person,subj,body,files); flash("Draft (.eml) downloaded for "+person.n+" — open it and both files are already attached."); return; }
-      catch(e){ if(window.console) console.error(e); }
-    }
-    files.forEach(function(f){ downloadBlob(f,f.name,f.type); });
-    window.location.href="mailto:"+encodeURIComponent(person.e)+"?subject="+encodeURIComponent(subj)+"&body="+encodeURIComponent(body+"\n\n(The PDF & Excel just downloaded — please attach them.)");
-    flash("Draft opened to "+person.n+".");
-  }
   function fileToB64(file){ return new Promise(function(res,rej){ const r=new FileReader(); r.onload=function(){ const s=String(r.result); res(s.slice(s.indexOf(",")+1)); }; r.onerror=rej; r.readAsDataURL(file); }); }
-  // Build a real RFC-822 .eml draft (X-Unsent:1 → opens in compose mode in classic
-  // Outlook / Apple Mail / Thunderbird) with the PDF + Excel embedded as attachments.
-  async function downloadEml(person,subj,body,files){
-    const B="=_YSCAP_"+Date.now()+"_=";
-    const wrap=function(s){ return s.replace(/(.{1,76})/g,"$1\r\n"); };
-    let eml="To: "+person.e+"\r\nSubject: "+subj+"\r\nX-Unsent: 1\r\nDate: "+new Date().toUTCString()+"\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\""+B+"\"\r\n\r\n";
-    eml+="--"+B+"\r\nContent-Type: text/plain; charset=\"utf-8\"\r\nContent-Transfer-Encoding: base64\r\n\r\n"+wrap(btoa(unescape(encodeURIComponent(body))))+"\r\n";
-    for(let i=0;i<files.length;i++){ const fl=files[i]; const b64=await fileToB64(fl);
-      eml+="--"+B+"\r\nContent-Type: "+(fl.type||"application/octet-stream")+"; name=\""+fl.name+"\"\r\nContent-Transfer-Encoding: base64\r\nContent-Disposition: attachment; filename=\""+fl.name+"\"\r\n\r\n"+wrap(b64)+"\r\n"; }
-    eml+="--"+B+"--\r\n";
-    const blob=new Blob([eml],{type:"message/rfc822"});
-    const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=fileBase()+".eml"; document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); },1500);
-  }
 
   /* ---------- prefill from the portal ----------
      When the borrower opens this tool from a loan file, the portal passes the

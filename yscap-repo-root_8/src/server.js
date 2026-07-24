@@ -59,6 +59,7 @@ app.use(express.json({ limit: `${JSON_LIMIT_MB}mb` }));
 const { rateLimit } = require('./lib/rate-limit');
 app.use('/auth', rateLimit({ bucket: 'auth', windowMs: 60000, max: 30 }));   // login/register/mfa/reset
 app.use('/api/intake', rateLimit({ bucket: 'intake', windowMs: 60000, max: 20 }));
+app.use('/api/apply', rateLimit({ bucket: 'apply', windowMs: 60000, max: 10 }));   // public application submit (creates real files)
 app.use('/api/leads', rateLimit({ bucket: 'leads', windowMs: 60000, max: 20 }));
 // #75 guest chat is magic-link (key) authenticated + public — rate-limit it.
 app.use('/api/guest', rateLimit({ bucket: 'guest', windowMs: 60000, max: 90 }));
@@ -193,6 +194,10 @@ app.use('/api/address', require('./routes/address')); // address autocomplete/ve
 app.use('/api/leads', require('./routes/leads'));     // public marketing-tool submissions (saved + emailed server-side)
 app.use('/api/guest', require('./routes/guest-chat')); // #75 magic-link guest chat (key-authenticated, public)
 app.use('/api/intake', require('./routes/intake'));
+// The site's OWN application submit (public, bot-defended with the shared form
+// token + honeypot) — same intake core as /api/intake, plus the immediate
+// create-your-login step. No more mail-client fallbacks on the marketing site.
+app.use('/api/apply', require('./routes/apply'));
 // Public e-signature bounce endpoint (/api/esign/return) — where a signer lands
 // after signing; resolves the real destination from our DB and 302s into the
 // portal. The Connect webhook (/api/esign/webhook) is mounted above, pre-JSON.
