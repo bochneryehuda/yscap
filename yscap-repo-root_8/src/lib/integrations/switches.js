@@ -17,6 +17,7 @@ const flags = require('../flags');
 const SWITCHES = [
   { key: 'SITEWIRE_ENABLED', integration: 'sitewire', label: 'Sitewire sync (reading)', dangerous: false, resume: true, envDefault: () => cfg.sitewireEnabled },
   { key: 'SITEWIRE_OUTBOUND_ENABLED', integration: 'sitewire', label: 'Sitewire writing (push to Sitewire)', dangerous: true, envDefault: () => cfg.sitewireOutboundEnabled },
+  { key: 'TRUSTPOINT_ENABLED', integration: 'trustpoint', label: 'TrustPoint mirror (reading + webhooks)', dangerous: false, resume: true, envDefault: () => cfg.trustpointEnabled },
   { key: 'CLICKUP_SYNC_ENABLED', integration: 'clickup', label: 'ClickUp sync', dangerous: false, resume: true, envDefault: () => cfg.clickupSyncEnabled },
   { key: 'CLICKUP_OUTBOUND_ENABLED', integration: 'clickup', label: 'ClickUp writing (push to ClickUp)', dangerous: true, envDefault: () => cfg.clickupOutboundEnabled },
   { key: 'CLICKUP_INBOUND_CREATE_FILES', integration: 'clickup', label: 'Create loan files from ClickUp tasks', dangerous: true, envDefault: () => cfg.clickupInboundCreateFiles },

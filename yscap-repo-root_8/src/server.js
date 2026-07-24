@@ -211,6 +211,11 @@ app.use('/api/staff', require('./routes/staff'));
 // Sitewire construction-draw desk + admin. The router applies requireAuth +
 // requireStaff + per-route capability gates (manage_draws / platform_setup) itself.
 app.use('/api/sitewire', require('./routes/sitewire'));
+
+// TrustPoint mirror (physical-draw workflow phase 2): the PUBLIC webhook receiver
+// (token-authenticated inline, no session) + the staff linking desk / per-file
+// mirror reads (per-route capability gates inside the router, like Sitewire's).
+app.use('/api/trustpoint', require('./routes/trustpoint'));
 // Appraisal desk: import the appraisal XML, reconcile it against the file, and resolve
 // PILOT findings. The router applies requireAuth + requireStaff + per-file scoping itself.
 app.use('/api/appraisal', require('./routes/appraisal'));
@@ -559,6 +564,11 @@ if (require.main === module) {
     // Self-gated by SITEWIRE_ENABLED (+ SITEWIRE_OUTBOUND_ENABLED for writes); inert
     // otherwise. Manages ONLY properties PILOT created (only-ours rule).
     try { require('./sync/sitewire-sync').start(); } catch (e) { console.warn('sitewire sync not started:', e.message); }
+    // TrustPoint mirror poller (physical-draw workflow phase 2): webhook inbox drain +
+    // draw watermark poll + project discovery sweep. Self-gated by TRUSTPOINT_ENABLED
+    // + the API key; read-only toward TrustPoint (webhook registration is the one
+    // journaled write, and it only happens from the admin route).
+    try { require('./trustpoint/poller').start(); } catch (e) { console.warn('trustpoint poller not started:', e.message); }
     // Encompass READ-ONLY pull worker (owner-directed 2026-07-22). Self-gates on
     // ENCOMPASS_ENABLED=1 + ENCOMPASS_* env creds. Never writes to Encompass
     // (structurally impossible via src/lib/integrations/encompass.js); writes ONLY

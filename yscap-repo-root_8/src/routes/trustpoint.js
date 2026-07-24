@@ -1,0 +1,166 @@
+'use strict';
+/**
+ * TrustPoint routes (phase 2 — blueprint §4).
+ *   PUBLIC:  POST /api/trustpoint/webhook — the receiver TrustPoint delivers to.
+ *            Auth = the shared token PILOT issued at registration (Bearer / X-Api-Key /
+ *            Api-Key forms). 2xx-in-30s contract: INSERT into the inbox + return;
+ *            a setImmediate drain (plus the 30s poller backstop) processes.
+ *   STAFF:   status, the linking desk (platform_setup), per-file mirror reads
+ *            (manage_draws + file scope), webhook registration (platform_setup —
+ *            the one outbound write, journaled + dry-run honored).
+ * STAFF-ONLY SURFACES: TrustPoint/note-buyer names never reach a borrower here.
+ */
+
+const crypto = require('crypto');
+const router = require('../lib/safe-router')();
+const db = require('../db');
+const cfg = require('../config');
+const { requirePermission } = require('../auth');
+const { can, assigneeExistsSql } = require('../lib/permissions');
+const client = require('../trustpoint/client');
+const mirror = require('../trustpoint/mirror');
+const discovery = require('../trustpoint/discovery');
+
+const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || ''));
+async function canSeeFile(req, appId) {
+  if (!isUuid(appId)) return false;
+  if (can(req.actor, 'see_all_files')) {
+    const r = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId]);
+    return r.rowCount > 0;
+  }
+  const r = await db.query(`SELECT 1 FROM applications a WHERE a.id=$1 AND a.deleted_at IS NULL AND ${assigneeExistsSql('a', '$2')}`, [appId, req.actor.id]);
+  return r.rowCount > 0;
+}
+
+// ---- PUBLIC webhook receiver (mounted WITHOUT auth middleware in server.js) ----
+// Token check in constant time; wrong/missing token → 401 (TrustPoint does NOT retry
+// non-2xx, but an unauthenticated caller must never be able to enqueue fake events).
+function tokenOk(req) {
+  const expect = cfg.trustpointWebhookToken;
+  if (!expect) return false;   // fail CLOSED: no token configured = receiver off
+  const h = req.headers || {};
+  const raw = h['x-api-key'] || String(h.authorization || '').replace(/^(Bearer|Api-Key)\s+/i, '');
+  if (!raw) return false;
+  const a = Buffer.from(String(raw)), b = Buffer.from(String(expect));
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+router.post('/webhook', async (req, res) => {
+  try {
+    if (!tokenOk(req)) return res.status(401).json({ error: 'unauthorized' });
+    const p = req.body || {};
+    const event = String(p.event || p.event_type || '').toUpperCase().replace(/\s+/g, '_');
+    if (!event) return res.status(400).json({ error: 'missing event' });
+    const data = p.data && typeof p.data === 'object' ? p.data : p;
+    const payload = JSON.stringify(data).slice(0, 100000);
+    const hash = crypto.createHash('sha256').update(event + '|' + payload).digest('hex');
+    // Delivery ids are a fresh uuid per retry — dedupe on (event, payload hash).
+    await db.query(
+      `INSERT INTO trustpoint_webhook_events (event, tp_project_id, tp_draw_id, tp_service_order_id, loan_id, payload, payload_hash)
+       VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7)
+       ON CONFLICT (event, payload_hash) DO NOTHING`,
+      [event, data.project_id != null ? String(data.project_id) : null,
+       data.draw_id != null ? String(data.draw_id) : null,
+       data.service_order_id != null ? String(data.service_order_id) : null,
+       data.loan_id != null ? String(data.loan_id) : null, payload, hash]);
+    res.json({ ok: true });                       // 2xx fast — processing is decoupled
+    setImmediate(() => { mirror.drainInbox().catch(() => {}); });
+  } catch (e) {
+    console.warn('[trustpoint] webhook receive failed:', e && e.message);
+    // 500 → TrustPoint drops it (non-2xx never retried) — the watermark poll recovers it.
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+// ---- staff: status ----
+router.get('/status', requirePermission('manage_draws'), async (req, res) => {
+  try {
+    const counts = (await db.query(`SELECT
+        (SELECT count(*)::int FROM trustpoint_project_links WHERE application_id IS NOT NULL) AS linked,
+        (SELECT count(*)::int FROM trustpoint_project_links WHERE application_id IS NULL) AS unlinked,
+        (SELECT count(*)::int FROM trustpoint_draws) AS draws,
+        (SELECT count(*)::int FROM trustpoint_webhook_events WHERE processed_at IS NULL) AS inbox_pending`)).rows[0];
+    res.json({ enabled: client.enabled(), configured: client.available(), dryrun: cfg.trustpointDryrun,
+      webhook_receiver: !!cfg.trustpointWebhookToken, ...counts });
+  } catch (e) { console.warn('[trustpoint] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+// ---- staff: the linking desk ----
+router.get('/projects', requirePermission('platform_setup'), async (req, res) => {
+  try {
+    const rows = (await db.query(
+      `SELECT l.tp_project_id, l.application_id, l.matched_by, l.match_detail, l.candidate_reason,
+              l.loan_external_id, l.project_name, l.address_text, l.tp_status, l.discarded, l.updated_at,
+              a.ys_loan_number, a.property_address->>'oneLine' AS file_addr
+         FROM trustpoint_project_links l
+         LEFT JOIN applications a ON a.id = l.application_id
+        ORDER BY (l.application_id IS NULL) DESC, l.updated_at DESC
+        LIMIT 500`)).rows;
+    res.json({ projects: rows });
+  } catch (e) { console.warn('[trustpoint] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+router.post('/projects/:tpId/link', requirePermission('platform_setup'), async (req, res) => {
+  try {
+    const appId = req.body && req.body.application_id;
+    if (!isUuid(appId)) return res.status(400).json({ error: 'application_id required' });
+    const app = (await db.query(`SELECT 1 FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0];
+    if (!app) return res.status(404).json({ error: 'file not found' });
+    const r = await discovery.linkProject(String(req.params.tpId), appId, { matchedBy: 'manual', staffId: req.actor.id });
+    res.json({ ok: true, ...r });
+  } catch (e) {
+    if (e.code === 'already_linked' || e.code === 'file_taken') return res.status(409).json({ error: e.message });
+    console.warn('[trustpoint] link error:', e && e.message); res.status(500).json({ error: 'server error' });
+  }
+});
+router.post('/projects/:tpId/unlink', requirePermission('platform_setup'), async (req, res) => {
+  try { res.json({ ok: true, ...(await discovery.unlinkProject(String(req.params.tpId), req.actor.id)) }); }
+  catch (e) { console.warn('[trustpoint] unlink error:', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+router.post('/sweep', requirePermission('platform_setup'), async (req, res) => {
+  try { res.json({ ok: true, ...(await discovery.sweep()) }); }
+  catch (e) { console.warn('[trustpoint] sweep error:', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+// ---- staff: per-file mirror (the read-only desk panel) ----
+router.get('/files/:id/overview', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const link = (await db.query(`SELECT * FROM trustpoint_project_links WHERE application_id=$1`, [appId])).rows[0] || null;
+    const draws = link ? (await db.query(
+      `SELECT tp_draw_id, number, name, status, draw_type, requested_cents, approved_cents, disbursed_cents,
+              to_disburse_cents, fees, retainage, contingency, inspector_allowance_rate, inspector_recommendation_rate,
+              coordinator_name, submitted_at, approved_at, completed_at, disbursed_at, estimated_reimbursement_date,
+              sitewire_draw_id, report_document_id, updated_at
+         FROM trustpoint_draws WHERE application_id=$1 ORDER BY COALESCE(number, 0), tp_created_at`, [appId])).rows : [];
+    const serviceOrders = link ? (await db.query(
+      `SELECT tp_service_order_id, tp_draw_id, service_type, status, service_number, ordered_at, scheduled_at, completed_at, cancelled_at, inspector_allowance_rate
+         FROM trustpoint_service_orders WHERE application_id=$1 ORDER BY COALESCE(ordered_at, completed_at) DESC NULLS LAST`, [appId])).rows : [];
+    const milestones = link ? (await db.query(
+      `SELECT tp_milestone_id, name, amount_cents, sow_line_key, matched_by FROM trustpoint_milestone_links WHERE application_id=$1 ORDER BY id`, [appId])).rows : [];
+    res.json({ linked: !!link, link, draws, service_orders: serviceOrders, milestones });
+  } catch (e) { console.warn('[trustpoint] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+// ---- staff: webhook registration (the ONE outbound write — journaled, dry-run honored) ----
+router.post('/register-webhook', requirePermission('platform_setup'), async (req, res) => {
+  try {
+    if (!client.available()) return res.status(422).json({ error: 'TrustPoint API key is not configured yet.' });
+    if (!cfg.trustpointWebhookToken) return res.status(422).json({ error: 'Set TRUSTPOINT_WEBHOOK_TOKEN first — it is the password PILOT gives TrustPoint to authenticate deliveries.' });
+    const companyPk = req.body && req.body.company_pk;
+    if (!companyPk) return res.status(400).json({ error: 'company_pk required (from GET /companies on TrustPoint)' });
+    const endpoint = `${String(cfg.appUrl || '').replace(/\/+$/, '')}/api/trustpoint/webhook`;
+    const body = { endpoint, auth_type: 'BEARER_TOKEN', credentials: { token: cfg.trustpointWebhookToken } };
+    let resp = null, ok = false, err = null;
+    try { resp = await client.createWebhook(String(companyPk), body); ok = true; }
+    catch (e) { err = e; resp = { status: e.status, body: e.body }; }
+    await db.query(
+      `INSERT INTO trustpoint_write_log (endpoint, method, body, response, ok)
+       VALUES ($1,'POST',$2::jsonb,$3::jsonb,$4)`,
+      [`/companies/${companyPk}/webhooks/`, JSON.stringify({ ...body, credentials: { token: '***' } }), JSON.stringify(resp).slice(0, 20000), ok]);
+    if (!ok) return res.status(err && err.status === 403 ? 403 : 502).json({ error: `TrustPoint refused the registration (${err && err.status || 'network'}) — check the key's permissions.` });
+    res.json({ ok: true, dryrun: !!(resp && resp.__dryrun), endpoint });
+  } catch (e) { console.warn('[trustpoint] register-webhook error:', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+module.exports = router;

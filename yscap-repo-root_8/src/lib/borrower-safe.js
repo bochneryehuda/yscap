@@ -55,6 +55,9 @@ const PARTNER_PATTERNS = [
   partnerRe(['corr', 'first']),
   partnerRe(['kiavi']),
   partnerRe(['roc'], { acronym: true }),
+  // TrustPoint is the note buyer's draw administrator (2026-07-24 physical-draw workflow) —
+  // a platform name, but naming it to a borrower reveals the buyer relationship. Staff-only.
+  partnerRe(['trust', 'point']),
 ];
 
 /**
