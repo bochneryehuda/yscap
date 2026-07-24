@@ -1170,7 +1170,9 @@
       // a generated term sheet too. Only for a priced deal (no noise for a
       // half-filled scenario); best-effort, never blocks the export.
       try {
-        var dX = (chosenProgram === "gold") ? (calcGold() || calc()) : calc();
+        // Skip entirely in the embedded portal studio (notifyGeneration would
+        // refuse anyway — this just avoids serializing the workbook for nothing).
+        var dX = EMBEDDED ? null : ((chosenProgram === "gold") ? (calcGold() || calc()) : calc());
         if (dX && (dX.pricingReady || dX.totalLoan > 0)) {
           notifyGeneration(dX, "Term sheet (Excel)", {
             dataBase64: X.write(wb, { bookType: "xlsx", type: "base64" }),

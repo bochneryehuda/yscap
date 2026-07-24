@@ -197,7 +197,7 @@ router.post('/', async (req, res) => {
     // with no front-end change. Never overwrites anything the tool sent.
     const payloadObj = b.payload ? redactPII(b.payload) : {};
     const fromUrl = String(req.get('referer') || '').slice(0, 300);
-    if (fromUrl && payloadObj && typeof payloadObj === 'object' && !payloadObj._submittedFrom) payloadObj._submittedFrom = fromUrl;
+    if (fromUrl && payloadObj && typeof payloadObj === 'object' && !Array.isArray(payloadObj) && !payloadObj._submittedFrom) payloadObj._submittedFrom = fromUrl;
     const payloadJson = (b.payload || fromUrl) ? JSON.stringify(payloadObj) : null;
     const ins = await db.query(
       `INSERT INTO leads (tool,name,email,phone,officer_code,officer_id,subject,message,payload,ip_address,user_agent)
