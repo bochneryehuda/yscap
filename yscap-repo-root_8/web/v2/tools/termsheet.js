@@ -1775,7 +1775,10 @@
      itself). No contact info is required for that; we ask for it right after,
      and it is never a requirement. The anti-bot form token is fetched at page
      load so it carries the human dwell the server checks. */
-  var FORM_TOKEN = { t: null };
+  var FORM_TOKEN = { t: null, at: 0 };
+  // The server accepts a token for ~2h; a studio tab often stays open longer.
+  // Treat a held token older than ~100 minutes as stale and re-fetch.
+  var TOKEN_FRESH_MS = 100 * 60 * 1000;
   // The SAME page is embedded inside the PILOT portal (TermSheetStudio iframe)
   // for staff/borrower work — those internal generations must NOT ping the
   // sales desk as "a visitor generated a term sheet." Public visitors open the
@@ -1783,7 +1786,7 @@
   var EMBEDDED = (function () { try { return window.self !== window.top; } catch (e) { return true; } })();
   function fetchFormToken() {
     return fetch("/api/leads/token").then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (d) { if (d && d.t) FORM_TOKEN.t = d.t; return FORM_TOKEN.t; })
+      .then(function (d) { if (d && d.t) { FORM_TOKEN.t = d.t; FORM_TOKEN.at = Date.now(); } return FORM_TOKEN.t; })
       .catch(function () { return null; });
   }
   function dealMetaRows(d, kind) {
@@ -1827,8 +1830,8 @@
             if (resp && resp.leadId && resp.contactToken) { _lastGen = { leadId: resp.leadId, contactToken: resp.contactToken }; offerContactAsk(); }
           }).catch(function () {});
       };
-      if (FORM_TOKEN.t) doSend();
-      else fetchFormToken().then(function (t) { if (t) setTimeout(doSend, 3300); });
+      if (FORM_TOKEN.t && (Date.now() - FORM_TOKEN.at) < TOKEN_FRESH_MS) doSend();
+      else fetchFormToken().then(function (t) { if (t) setTimeout(doSend, 3400); });
     } catch (e) {}
   }
   function offerContactAsk() {

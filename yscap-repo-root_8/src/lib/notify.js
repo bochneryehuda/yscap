@@ -679,8 +679,11 @@ async function notifyAdmins(opts) {
     `SELECT id, email FROM staff_users WHERE role IN ('admin','super_admin') AND is_active = true`);
   const ids = [];
   for (const a of rows) ids.push(await notifyStaff(a.id, { ...opts, emailTo: a.email }));
-  // also copy the configured NOTIFY_ADMINS inbox list, if any (branded)
-  if (cfg.notifyAdmins.length) {
+  // also copy the configured NOTIFY_ADMINS inbox list, if any (branded).
+  // An explicitly in-app-only fan-out (e.g. an unrouted marketing lead whose
+  // email went to the sales desk) must not email this list either — the whole
+  // point of inAppOnly is "rows yes, emails no" (audit 2026-07-24).
+  if (cfg.notifyAdmins.length && opts.inAppOnly !== true) {
     const msg = buildEmail(opts, 'staff');
     email.sendMail({ to: cfg.notifyAdmins, subject: msg.subject, text: msg.text, html: msg.html,
       replyTo: opts.replyTo || fileReplyTo(opts.applicationId) || cfg.replyToDefault || null }).catch(() => {});

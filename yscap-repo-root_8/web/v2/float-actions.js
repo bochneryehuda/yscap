@@ -163,12 +163,13 @@
   // sales@ text links) are left alone — only CTA buttons are upgraded. ----------
   function openQuoteModal(ctx) {
     var old = document.getElementById("ysQuoteOv"); if (old) old.remove();
+    var heading = (ctx && ctx.heading) || "Get a quote";
     var ov = document.createElement("div");
     ov.id = "ysQuoteOv";
     ov.style.cssText = "position:fixed;inset:0;background:rgba(8,11,14,.6);z-index:150;display:flex;align-items:center;justify-content:center;padding:16px";
     ov.innerHTML = '<div style="background:var(--card,#fff);color:var(--ivory,#141B22);max-width:480px;width:100%;max-height:88vh;overflow:auto;border-radius:14px;padding:18px 20px;position:relative;border:1px solid var(--line,#d8d2c4)">' +
       '<button type="button" id="ysQuoteX" aria-label="Close" style="position:absolute;top:10px;right:12px;border:0;background:none;font-size:1.05rem;cursor:pointer;color:inherit">✕</button>' +
-      '<h3 style="margin:0 0 6px;font-size:1.15rem">Get a quote</h3>' +
+      '<h3 style="margin:0 0 6px;font-size:1.15rem"></h3>' +
       '<p style="margin:0 0 12px;opacity:.75;font-size:.92rem">Tell us how to reach you — your request goes straight to the YS Capital sales desk and a specialist will follow up.</p>' +
       '<input id="ysQuoteName" placeholder="Your name" autocomplete="name" style="width:100%;margin:0 0 6px;padding:10px 12px;border:1px solid var(--line,#d8d2c4);border-radius:8px;font-size:16px;background:transparent;color:inherit">' +
       '<input id="ysQuoteEmail" type="email" placeholder="Your email" autocomplete="email" style="width:100%;margin:0 0 6px;padding:10px 12px;border:1px solid var(--line,#d8d2c4);border-radius:8px;font-size:16px;background:transparent;color:inherit">' +
@@ -177,6 +178,9 @@
       '<p id="ysQuoteErr" style="display:none;color:#b8604a;margin:0 0 8px;font-size:.9rem"></p>' +
       '<button type="button" id="ysQuoteSend" class="btn btn-solid" style="width:100%;padding:11px 14px;border-radius:8px;border:0;background:var(--teal,#2F7F86);color:#fff;font-weight:700;cursor:pointer">Send my request →</button></div>';
     document.body.appendChild(ov);
+    // Title mirrors the CTA the visitor clicked ("Get a Quote" / "Ask our
+    // team" / "Ask about prepay") — set as text, never HTML.
+    try { ov.querySelector("h3").textContent = heading; } catch (e) {}
     document.body.style.overflow = "hidden";
     var close = function () { ov.remove(); document.body.style.overflow = ""; };
     ov.addEventListener("click", function (e) { if (e.target === ov) close(); });
@@ -196,7 +200,7 @@
       fetch("/api/leads", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ tool: "quote_request", officerCode: lo || undefined,
           name: nm || undefined, email: em || undefined, phone: ph || undefined,
-          subject: "Quote request — " + (ctx && ctx.page || document.title),
+          subject: heading + " — " + ((ctx && ctx.page) || document.title),
           message: (msg || "A visitor asked for a quote.") + "\n\nSent from: " + location.href,
           payload: { page: location.pathname, title: document.title } }) })
         .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
@@ -216,7 +220,8 @@
       if (a.closest && (a.closest(".contact-pop") || a.closest(".sf-meta"))) continue;
       a.addEventListener("click", function (e) {
         e.preventDefault();
-        openQuoteModal({ page: document.title });
+        var label = (this.textContent || "").replace(/\s+/g, " ").trim().slice(0, 60);
+        openQuoteModal({ page: document.title, heading: label || "Get a quote" });
         return false;
       });
     }

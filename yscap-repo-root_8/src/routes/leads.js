@@ -210,11 +210,15 @@ router.post('/', async (req, res) => {
     meta.push({ label: 'Tool', value: label });
     // The tools may pass display rows (e.g. the exact term-sheet terms: program,
     // loan amount, rate, LTC/ARV…) so the sales/officer email shows the deal at
-    // a glance. Sanitized + capped — this is public input headed into an email.
+    // a glance. Sanitized + capped — this is public input headed into an email —
+    // and value-scrubbed for SSN/card patterns (audit 2026-07-24: redactPII is
+    // key-based, so a number typed into free text would otherwise ride along).
     if (b.payload && Array.isArray(b.payload.metaRows)) {
+      const pii = require('../lib/pii-guard');
       for (const r of b.payload.metaRows.slice(0, 14)) {
         if (r && r.label && r.value != null && String(r.value).trim() !== '') {
-          meta.push({ label: String(r.label).slice(0, 48), value: String(r.value).slice(0, 160) });
+          meta.push({ label: pii.scan(String(r.label).slice(0, 48)).redacted,
+                      value: pii.scan(String(r.value).slice(0, 160)).redacted });
         }
       }
     }
@@ -343,17 +347,26 @@ router.post('/contact', async (req, res) => {
       !cryptoLib.timingSafeEqual(h(signContactToken(leadId, Number(m[1]))), h(String(b.contactToken)))) {
     return res.status(400).json({ error: 'invalid request' });
   }
+  // Same per-IP hourly cap as submissions — this endpoint sends email too
+  // (audit 2026-07-24: a valid token must not become a 2-hour replay bomb).
+  if (rateLimited(req.ip)) return res.status(429).json({ error: 'too many submissions — please try again later' });
   const email = b.email ? String(b.email).trim().slice(0, 200) : null;
   const phone = b.phone ? String(b.phone).slice(0, 40) : null;
   const name = b.name ? String(b.name).slice(0, 200) : null;
   if (!email && !phone) return res.status(400).json({ error: 'email or phone required' });
   if (email && !EMAIL_RE.test(email)) return res.status(400).json({ error: 'invalid email' });
   try {
-    const r = await db.query(
-      `UPDATE leads SET name=COALESCE(name,$2), email=COALESCE(email,$3), phone=COALESCE(phone,$4)
-        WHERE id=$1 RETURNING id, tool, subject, officer_id`, [leadId, name, email, phone]);
-    const lead = r.rows[0];
-    if (!lead) return res.status(404).json({ error: 'not found' });
+    const cur = (await db.query(
+      `SELECT id, tool, subject, officer_id, name, email, phone FROM leads WHERE id=$1`, [leadId])).rows[0];
+    if (!cur) return res.status(404).json({ error: 'not found' });
+    // Fill BLANKS only, and notify with the values ACTUALLY stored. A replay
+    // (or a call that changes nothing) stores nothing and re-notifies no one.
+    const finalName = cur.name || name, finalEmail = cur.email || email, finalPhone = cur.phone || phone;
+    const changed = finalName !== cur.name || finalEmail !== cur.email || finalPhone !== cur.phone;
+    if (!changed) return res.json({ ok: true, unchanged: true });
+    await db.query(`UPDATE leads SET name=$2, email=$3, phone=$4 WHERE id=$1`,
+      [leadId, finalName, finalEmail, finalPhone]);
+    const lead = cur;
     // Tell the same people who saw the generation that the visitor is reachable now.
     try {
       const label = TOOL_LABEL[lead.tool] || lead.tool;
@@ -362,9 +375,9 @@ router.post('/contact', async (req, res) => {
         title: `Visitor left contact info — ${label.toLowerCase()}`,
         body: `The visitor behind "${lead.subject || label}" left their contact details.`,
         meta: [
-          ...(name ? [{ label: 'Name', value: name }] : []),
-          ...(email ? [{ label: 'Email', value: email }] : []),
-          ...(phone ? [{ label: 'Phone', value: phone }] : []),
+          ...(finalName ? [{ label: 'Name', value: finalName }] : []),
+          ...(finalEmail ? [{ label: 'Email', value: finalEmail }] : []),
+          ...(finalPhone ? [{ label: 'Phone', value: finalPhone }] : []),
         ],
         link: '/internal/leads', ctaLabel: 'Open leads',
       };
@@ -377,7 +390,7 @@ router.post('/contact', async (req, res) => {
         const built = notify.buildEmail(notifyOpts, 'staff');
         await require('../lib/email').sendMail({
           to: [cfg.salesNotifyTo], subject: built.subject, text: built.text, html: built.html,
-          replyTo: email || null, _ctx: { type: 'new_lead', audience: 'staff' } }).catch(() => {});
+          replyTo: finalEmail || null, _ctx: { type: 'new_lead', audience: 'staff' } }).catch(() => {});
       }
     } catch (_) { /* best-effort */ }
     res.json({ ok: true });

@@ -1970,10 +1970,15 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
    * Track Record is next. If /api/apply is unreachable we fall back to the
    * /api/leads capture (still fully server-side). There is NO mail-client
    * handoff anywhere anymore \u2014 a failure shows a clear retry message instead. */
-  var FORM_TOKEN = { t: null };
+  var FORM_TOKEN = { t: null, at: 0 };
+  // The server accepts a token for ~2 hours. This long form is often filled
+  // slowly (or resumed the next morning from the autosaved state), so treat a
+  // token older than ~100 minutes as stale and fetch a fresh one before
+  // submitting — otherwise the server would drop the submission as bot-like.
+  var TOKEN_FRESH_MS = 100 * 60 * 1000;
   function fetchFormToken() {
     return fetch("/api/leads/token").then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (d) { if (d && d.t) FORM_TOKEN.t = d.t; return FORM_TOKEN.t; })
+      .then(function (d) { if (d && d.t) { FORM_TOKEN.t = d.t; FORM_TOKEN.at = Date.now(); } return FORM_TOKEN.t; })
       .catch(function () { return null; });
   }
   function applyBody() {
@@ -2017,16 +2022,25 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
     var off = selectedOfficer();
     var btn = el("submitBtn"), oo = btn ? btn.textContent : "";
     if (btn) { btn.textContent = "Submitting\u2026"; btn.disabled = true; }
-    var haveToken = FORM_TOKEN.t ? Promise.resolve(FORM_TOKEN.t)
-      // Token missing (page loaded offline?) \u2014 fetch one and give it the human
-      // dwell the server checks for before submitting.
-      : fetchFormToken().then(function (t) { return t ? new Promise(function (res) { setTimeout(function () { res(t); }, 3300); }) : null; });
+    var tokenFresh = FORM_TOKEN.t && (Date.now() - FORM_TOKEN.at) < TOKEN_FRESH_MS;
+    var haveToken = tokenFresh ? Promise.resolve(FORM_TOKEN.t)
+      // Token missing (page loaded offline?) or stale (form filled over hours)
+      // \u2014 fetch a fresh one and give it the human dwell the server checks for.
+      : fetchFormToken().then(function (t) { return t ? new Promise(function (res) { setTimeout(function () { res(t); }, 3400); }) : null; });
     haveToken
       .then(function () {
         return fetch("/api/apply", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(applyBody()) });
       })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
-      .then(function (resp) { finish(off, resp); })
+      .then(function (resp) {
+        // A response WITHOUT an applicationId means the server dropped the
+        // submission as bot-like (its anti-bot answers look like success on
+        // purpose). For a real visitor that must never become a false
+        // "received" screen \u2014 hand the submission to the lead pipeline, which
+        // needs no token and still lands + emails server-side.
+        if (resp && resp.applicationId) finish(off, resp);
+        else legacyLeadSubmit(off, btn, oo);
+      })
       .catch(function () { legacyLeadSubmit(off, btn, oo); })
       .finally(function () { if (btn) { btn.textContent = oo; btn.disabled = false; } });
   }

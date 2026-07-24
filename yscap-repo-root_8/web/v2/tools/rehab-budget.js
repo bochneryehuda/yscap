@@ -633,8 +633,8 @@ const RB = (function(){
         '<button class="rb-btn" onclick="RB.exportPdf(this)">Export branded PDF ⤓</button>'+
         '<button class="rb-btn" onclick="RB.emailLO(this)">Send to YS Capital →</button>'+
         '<button class="rb-btn" onclick="RB.share(this)">Copy share link 🔗</button></div>'+
-      '<p class="rb-underwrite-note"><b>To underwrite your rehab budget, YS needs the Excel file — not the PDF.</b> The PDF is a branded copy for your records; our team underwrites from the Excel export. “Email to loan officer” sends both.</p>'+
-      '<p class="rb-note">Your link already saved this scope of work — bookmark it to come back, or send it to your loan officer. The Excel export can be re-imported here to keep editing. <b>Email to loan officer</b> lets you pick the exact person on the YS team and sends it to them <b>with both files attached</b>: on a phone it uses the share sheet, and on a computer it goes straight through our system — no draft to open or files to fumble with.</p>'+
+      '<p class="rb-underwrite-note"><b>To underwrite your rehab budget, YS needs the Excel file — not the PDF.</b> The PDF is a branded copy for your records; our team underwrites from the Excel export. “Send to YS Capital” sends both.</p>'+
+      '<p class="rb-note">Your link already saved this scope of work — bookmark it to come back anytime. The Excel export can be re-imported here to keep editing. <b>Send to YS Capital</b> delivers it straight to your loan officer (or our sales desk) <b>with both files attached</b>, through our own system — no email draft to open or files to fumble with.</p>'+
       '<p class="rb-note" style="margin-top:.6rem">Already closed this loan with YS? Once your renovation is underway, <a href="https://portal.sitewire.co/login/YSCapitalGroup" target="_blank" rel="noopener">request a draw →</a> to be reimbursed from your rehab holdback as work is completed and verified.</p>'+
     '</div>';
   }
