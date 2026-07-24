@@ -535,6 +535,19 @@ async function runInvestorGuidelineDesk(appId, client) {
     }
   } catch (_e) { /* twin unavailable — numeric checks stay to_verify */ }
 
+  // #241 — the note buyer's "email address for borrower" guideline is FILE_DATA, not a document
+  // condition (owner-directed 2026-07-24): read the borrower's email off the file and surface ONLY
+  // a genuinely EMPTY slot — never open a condition when the email is already on file. Set the
+  // signal to the trimmed email (present → the file_data check stays silent) or '' (known-empty →
+  // a lightweight "fill this in" item). On any error leave it ABSENT so the check stays silent
+  // (never fabricate a missing-email flag we can't prove).
+  try {
+    const er = await db.query(
+      'SELECT b.email FROM applications a JOIN borrowers b ON b.id = a.borrower_id WHERE a.id = $1', [appId]);
+    const email = er.rows[0] && er.rows[0].email;
+    signals.borrower_email = email ? String(email).trim() : '';
+  } catch (_e) { /* email unreadable — leave absent so the email check stays silent */ }
+
   // SOW-contingency % bridge (2026-07-24): a note buyer's contingency-CAP guideline
   // (e.g. Blue Lake cond 2193) checks a MAX contingency %, but no twin fact carries
   // it — so the numeric check fell back to "to verify" on every file. The amount is
