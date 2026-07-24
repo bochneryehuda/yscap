@@ -15,6 +15,28 @@
  * Output: { columns, matrix, discrepancies, summary }
  */
 const { FACTS, factMatch, display, present, claimsFor, carries } = require('./facts');
+const { num } = require('./compare');
+
+// On an ASSIGNMENT deal a document may legitimately report the seller's underlying price OR the
+// fee-inclusive total the borrower pays — both tie out to the file. So for the purchase_price fact
+// on an assignment file, a document value that matches EITHER the file total OR the seller's
+// underlying price is AGREEMENT, not a mismatch (owner-directed 2026-07-24 — this is what fired a
+// false tie-out fatal from the appraisal/settlement, which report the seller price). Returns the
+// same true/false/null contract as factMatch. Only special-cases purchase_price on an assignment;
+// every other fact and a straight purchase are unchanged.
+function priceAwareMatch(ctx, kind, factKey, fileVal, docVal) {
+  const base = factMatch(kind, fileVal, docVal);
+  if (base === true) return true;
+  const app = ctx && ctx.app;
+  if (factKey === 'purchase_price' && app && app.is_assignment && num(app.underlying_contract_price) != null) {
+    const mUnder = factMatch('money', app.underlying_contract_price, docVal);
+    if (mUnder === true) return true;
+    // Agreement with neither → a real mismatch; uncomparable (missing) → null.
+    if (base === false && mUnder === false) return false;
+    return null;
+  }
+  return base;
+}
 
 const LABEL = {
   government_id: 'ID', purchase_contract: 'Purchase contract', title: 'Title report', appraisal: 'Appraisal',
@@ -109,12 +131,16 @@ function buildTieout(fileCtx, sources = []) {
       if (!present(v)) { cells.push({ source: s.id, label: s.label, status: 'missing', value: null }); continue; }
       let status = 'noref';
       if (conflictNoTruth) { status = 'disagree'; }               // docs disagree, no file anchor → flag each
-      else if (hasRef && present(truth)) { const m = factMatch(fact.kind, truth, v); status = m === true ? 'agree' : m === false ? 'disagree' : 'unknown'; }
+      else if (hasRef && present(truth)) { const m = priceAwareMatch(ctx, fact.kind, fact.key, truth, v); status = m === true ? 'agree' : m === false ? 'disagree' : 'unknown'; }
       cells.push({ source: s.id, label: s.label, status, value: display(fact.kind, v) });
     }
 
-    // Row status.
-    const anyDisagree = cells.some((c) => c.status === 'disagree') || cons.conflict;
+    // Row status. For the purchase_price fact on an assignment, documents legitimately differ
+    // (seller's underlying price vs the fee-inclusive total) — the price-aware cell statuses above
+    // already flag any GENUINE disagreement, so a raw doc-vs-doc consensus conflict here is not a
+    // real mismatch and must not turn the row red.
+    const asgPriceFact = fact.key === 'purchase_price' && isAssignment;
+    const anyDisagree = cells.some((c) => c.status === 'disagree') || (cons.conflict && !asgPriceFact);
     const rowStatus = anyDisagree ? 'mismatch'
       : (withVal.length === 0 ? 'none'
         : (fileHas || withVal.length > 1 ? 'ok' : 'single'));
@@ -125,7 +151,7 @@ function buildTieout(fileCtx, sources = []) {
       // A source whose own per-document check already compares this fact to the file is EXCLUDED
       // here — that mismatch is raised once by the per-doc check; the tie-out avoids the duplicate
       // (the matrix cell still shows the disagreement). Sources with no dedicated check stay.
-      const bad = withVal.filter((c) => factMatch(fact.kind, fileVal, c.value) === false && !perDocCovers(c.docType, fact.key, isAssignment));
+      const bad = withVal.filter((c) => priceAwareMatch(ctx, fact.kind, fact.key, fileVal, c.value) === false && !perDocCovers(c.docType, fact.key, isAssignment));
       if (bad.length) {
         discrepancies.push(finding({
           code: `tieout_${fact.key}`, severity: fact.severity, field: fact.key,
