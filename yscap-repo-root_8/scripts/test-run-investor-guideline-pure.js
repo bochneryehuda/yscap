@@ -35,9 +35,9 @@ function assemble(appOver, opts) {
 const igFindings = (out) => out.findings.filter((f) => f.category === 'investor_guideline');
 const codes = (out) => igFindings(out).map((f) => f.code).sort();
 
-// 1 — the note buyer + property_state flow into the canonical context values.
+// 1 — the note buyer + property_state (from property_address.state, NOT a phantom column) flow into the canonical context values.
 {
-  const context = wlc.assembleContext({ application: { ...baseApp, property_state: 'NY', lender: 'Blue Lake' }, registration: baseReg });
+  const context = wlc.assembleContext({ application: { ...baseApp, property_address: { state: 'NY' }, lender: 'Blue Lake' }, registration: baseReg });
   assert.strictEqual(context.values.property_state, 'NY');
   assert.strictEqual(context.values.note_buyer, 'Blue Lake');
   ok('property_state + note_buyer resolve into the canonical whole-loan context values');
@@ -45,7 +45,7 @@ const codes = (out) => igFindings(out).map((f) => f.code).sort();
 
 // 2 — a Blue Lake NY loan folds the escalation findings INTO the one run, categorized.
 {
-  const out = assemble({ property_state: 'NY', lender: 'Blue Lake', loan_amount: 2000000 });
+  const out = assemble({ property_address: { state: 'NY' }, lender: 'Blue Lake', loan_amount: 2000000 });
   const c = codes(out);
   assert.ok(c.includes('isg_bl_ny_loan'), 'NY loan escalation is in the run');
   const ny = igFindings(out).find((f) => f.code === 'isg_bl_ny_loan');
@@ -60,7 +60,7 @@ const codes = (out) => igFindings(out).map((f) => f.code).sort();
 
 // 3 — the SAME file with no note buyer set fires NO buyer-specific ISG finding (never fabricates).
 {
-  const out = assemble({ property_state: 'NY', loan_amount: 2000000 }); // no lender
+  const out = assemble({ property_address: { state: 'NY' }, loan_amount: 2000000 }); // no lender
   assert.ok(!codes(out).some((x) => x.startsWith('isg_bl_')), 'no Blue-Lake rule without a known note buyer');
   ok('no note buyer → no buyer-specific ISG finding folded in (never fabricated)');
 }

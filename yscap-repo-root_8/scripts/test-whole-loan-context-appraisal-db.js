@@ -28,8 +28,12 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
     const b = (await client.query(
       `INSERT INTO borrowers (first_name,last_name,email,date_of_birth)
          VALUES ('Appr','Ctx',$1,'1985-03-10') RETURNING id`, [email])).rows[0];
+    // property_address is a jsonb blob; the subject STATE lives inside it — there is NO
+    // applications.property_state column (the #259 phantom-column bug read that non-existent
+    // column, leaving ctx.values.property_state null → the Blue Lake NY escalation could never fire).
     const app = (await client.query(
-      `INSERT INTO applications (borrower_id) VALUES ($1) RETURNING id`, [b.id])).rows[0];
+      `INSERT INTO applications (borrower_id, property_address)
+         VALUES ($1, '{"state":"NY","city":"Brooklyn"}'::jsonb) RETURNING id`, [b.id])).rows[0];
 
     // 1. No appraisal on file → the appraisal-sourced values are null (never fabricated).
     let ctx = await buildWholeLoanContext(app.id, client);
@@ -37,6 +41,12 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
     assert.strictEqual(ctx.values.as_is_value, null, 'no appraisal → as_is_value null');
     assert.strictEqual(ctx.values.arv, null, 'no appraisal → arv null');
     ok('with no appraisal on file, the appraisal-sourced values are null');
+
+    // 1b. #259 — the subject state surfaces from property_address.state (normalized to the USPS
+    //     2-letter code), NOT from a phantom applications.property_state column. This is the guard
+    //     a pure test can't provide: it proves buildWholeLoanContext reads the REAL jsonb column.
+    assert.strictEqual(ctx.values.property_state, 'NY', 'property_state surfaces from property_address.state (was always null before the fix)');
+    ok('the subject state surfaces from property_address.state — the Blue Lake NY rule can now fire');
 
     // 2. A CURRENT appraisal (superseded=false) → its as_is_value/arv now surface.
     //    Before the column fix this query threw (is_current/created_at don't exist),
