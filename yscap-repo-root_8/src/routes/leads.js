@@ -192,13 +192,20 @@ router.post('/', async (req, res) => {
     }
 
     const label = TOOL_LABEL[tool] || tool;
+    // Record WHICH page sent the submission (the browser's Referer header) in
+    // the stored payload — free marketing/source attribution for every tool,
+    // with no front-end change. Never overwrites anything the tool sent.
+    const payloadObj = b.payload ? redactPII(b.payload) : {};
+    const fromUrl = String(req.get('referer') || '').slice(0, 300);
+    if (fromUrl && payloadObj && typeof payloadObj === 'object' && !payloadObj._submittedFrom) payloadObj._submittedFrom = fromUrl;
+    const payloadJson = (b.payload || fromUrl) ? JSON.stringify(payloadObj) : null;
     const ins = await db.query(
       `INSERT INTO leads (tool,name,email,phone,officer_code,officer_id,subject,message,payload,ip_address,user_agent)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
       [tool, name, email, phone, code || null, officerId,
        b.subject ? String(b.subject).slice(0, 240) : `${label} — ${name || email || 'new lead'}`,
        b.message ? String(b.message).slice(0, 4000) : null,
-       b.payload ? JSON.stringify(redactPII(b.payload)) : null,
+       payloadJson,
        req.ip, (req.get('user-agent') || '').slice(0, 400)]);
     const leadId = ins.rows[0].id;
 
@@ -269,7 +276,11 @@ router.post('/', async (req, res) => {
     try {
       const mailer = require('../lib/email');
       const salesTo = cfg.salesNotifyTo;
-      const wantsSales = !!salesTo && !officerId && !LOW_SIGNAL_TOOLS.has(tool);
+      // Owner-directed 2026-07-24 (round 2): the DSCR waitlist follows the same
+      // "nothing picked → sales desk" rule as every content tool (it's a real
+      // lead with contact info). Only the newsletter subscription keeps its own
+      // quiet pilot@ inbox. All the waitlist's bot defenses stay untouched.
+      const wantsSales = !!salesTo && !officerId && tool !== 'subscribe';
       if (officerId) { await notify.notifyStaff(officerId, { ...notifyOpts, emailTo: officerRow.email }); }
       if (wantsSales) {
         const built = notify.buildEmail(notifyOpts, 'staff');

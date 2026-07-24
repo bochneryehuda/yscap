@@ -202,7 +202,12 @@
           name: nm || undefined, email: em || undefined, phone: ph || undefined,
           subject: heading + " — " + ((ctx && ctx.page) || document.title),
           message: (msg || "A visitor asked for a quote.") + "\n\nSent from: " + location.href,
-          payload: { page: location.pathname, title: document.title } }) })
+          // Attach the visitor's ACTUAL scenario: every calculator page exposes
+          // its working numbers via YS.collectState(), so the team sees the deal
+          // they built — not just "a visitor asked for a quote".
+          payload: { page: location.pathname, title: document.title,
+            referrer: document.referrer || undefined,
+            state: (function () { try { return (window.YS && typeof window.YS.collectState === "function") ? window.YS.collectState() : undefined; } catch (e) { return undefined; } })() } }) })
         .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
         .then(function () {
           ov.firstChild.innerHTML = '<h3 style="margin:0 0 6px">Sent ✓</h3><p style="margin:0;opacity:.8">Thanks — the YS Capital sales desk has your request and will follow up shortly.</p>';
