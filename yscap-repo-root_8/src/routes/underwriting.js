@@ -1083,6 +1083,43 @@ router.get('/:appId/investor-guidelines', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ISG AI satisfaction-quality check (owner-directed: "each investor guideline built
+// in an AI way to understand documents / conditions / the file"). For the file's
+// SATISFIED note-buyer conditions, asks the grounded GPT brain (grounded on the
+// canonical Loan File Primer) whether the CLEARED evidence actually meets the
+// investor's EXACT rule, and records an advisory if not. ON DEMAND only (a human
+// clicks) so GPT spend stays controlled; env-gated (Azure OpenAI) + per-file
+// cost-capped; ADVISORY only — records ai_suggestions, blocks/clears nothing.
+// Returns immediately and runs the (bounded) checks in the background; the
+// advisories appear in the AI panel on its next refresh. Best-effort.
+router.post('/:appId/investor-guidelines/ai-verify', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    if (!require('../lib/ai/azure-openai').available()) {
+      return res.json({ ok: false, reason: 'AI analyzer not configured', started: false });
+    }
+    const deskMod = require('../lib/underwriting/investor-guidelines/desk');
+    const desk = await deskMod.runInvestorGuidelineDesk(app.id, db).catch(() => null);
+    const satisfied = ((desk && Array.isArray(desk.verdicts)) ? desk.verdicts : [])
+      .filter((v) => v && v.verdict === 'satisfied');
+    res.json({ ok: true, started: true, satisfiedTotal: satisfied.length });
+    setImmediate(() => {
+      (async () => {
+        const verify = require('../lib/underwriting/investor-guidelines/ai-guideline-verify');
+        for (const v of satisfied.slice(0, 12)) {
+          const r = await verify.verifySatisfiedCondition(db, {
+            applicationId: app.id,
+            condition: { name: v.name, required_evidence: v.required_evidence, checks: v.checks, cond_no: v.cond_no },
+            db,
+          }).catch(() => null);
+          if (r && r.reason === 'cost cap reached') break;   // stop at the per-file spend cap
+        }
+      })().catch(() => { /* additive best-effort — never affects the request */ });
+    });
+  } catch (e) { next(e); }
+});
+
 // #197 — whole-loan run cockpit. Reads the latest immutable underwriting run
 // (schema db/266) for the file and folds it into ONE staff panel: the current
 // decision (status + the three gates), what CHANGED since the previous run
