@@ -233,6 +233,8 @@ async function reactDraw(appId, row, prev, { baseline = false, addrText = null }
       body: `Draw #${nLabel} for ${addr} (${usd(row.requested_cents)}) is now in TrustPoint's review pipeline.`,
       badge: { text: 'TrustPoint', tone: 'gold' }, applicationId: appId, link, inAppOnly: true,
     }).catch(() => {});
+    // PRE-approval milestone snapshot — the derivation's "before" picture (phase 3 §6).
+    try { await require('./lines').snapshotMilestones(appId, row.tp_project_id, tpDrawId, 'pre'); } catch (_) {}
   } else if (newStatus === 'APPROVED') {
     await notify.notifyAppStaff(appId, {
       type: 'draw_inbound', title: 'Draw approved on TrustPoint',
@@ -247,6 +249,10 @@ async function reactDraw(appId, row, prev, { baseline = false, addrText = null }
       applicationId: appId, link: `/app/${appId}`,
     }).catch(() => {});
     await archiveReport(appId, row.tp_project_id, tpDrawId).catch(() => {});
+    // Phase 3 §5A/§6: POST-approval snapshot → per-line derivation → Sitewire write-back.
+    // Fully best-effort; each stage records why it waited (writeback_note) when it can't run.
+    try { await require('./lines').snapshotMilestones(appId, row.tp_project_id, tpDrawId, 'post'); } catch (_) {}
+    try { await require('./writeback').onTrustpointApproval(appId, tpDrawId); } catch (_) {}
   } else if (newStatus === 'COMPLETED') {
     await notify.notifyAppStaff(appId, {
       type: 'draw_inbound', title: 'Draw completed on TrustPoint',

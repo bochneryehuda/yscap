@@ -88,7 +88,19 @@ async function maybeOpenImportTask(appId, { drawId, drawNumber, status, addrText
     // overlapping polls serialize on the row lock — exactly one wins, the other sees
     // 0 rows and skips. Emails go out only after COMMIT (best-effort, never re-sent
     // for this draw because the stamp is durable).
-    const noteLines = lines.slice(0, 12).map((l) => `${l.name}: ${usd(l.requested_cents)}`).join(' · ');
+    // The line table can be legitimately EMPTY on the first sight (the per-draw detail
+    // read failed that poll) — say so instead of shipping a $0.00 table (audit #9).
+    const noteLines = lines.length
+      ? lines.slice(0, 12).map((l) => `${l.name}: ${usd(l.requested_cents)}`).join(' · ')
+      : 'Line amounts are not mirrored yet — open the draw in Sitewire for the line-by-line figures.';
+    // submitItem supersedes any live same-type hand-off on the file — if one exists, the
+    // replaced draw may still be unentered; point the coordinator at the desk (audit #6).
+    let supersedeNote = '';
+    try {
+      const live = await db.query(
+        `SELECT 1 FROM workflow_items WHERE application_id=$1 AND submission_type='trustpoint_import' AND status IN ('open','in_progress') LIMIT 1`, [appId]);
+      if (live.rows[0]) supersedeNote = ' This replaces an earlier entry task on this file — check the draw desk for any other submitted draw still to enter.';
+    } catch (_) {}
     const client = await db.getClient();
     let item = null;
     try {
@@ -101,7 +113,7 @@ async function maybeOpenImportTask(appId, { drawId, drawNumber, status, addrText
       item = await workflow.submitItem(client, {
         appId, submissionType: 'trustpoint_import', fromStaffId: null,
         toStaffId, toRole: 'draw_coordinator', priority: 1, auto: true,
-        note: `Draw #${nLabel} (${usd(total)} requested) needs to be entered into TrustPoint as a REGULAR workflow draw — never their "imported/historical draw" option. ${noteLines}`.slice(0, 1000),
+        note: `Draw #${nLabel} (${usd(total)} requested) needs to be entered into TrustPoint as a REGULAR workflow draw — never their "imported/historical draw" option.${supersedeNote} ${noteLines}`.slice(0, 1000),
       });
       await client.query('COMMIT');
     } catch (e) { try { await client.query('ROLLBACK'); } catch (_) {} throw e; }
@@ -135,12 +147,22 @@ async function maybeOpenImportTask(appId, { drawId, drawNumber, status, addrText
           drawNumber: nLabel, propertyLabel: row.addr || addrText || null,
           loanNumber: row.ys_loan_number || null, lines, totalCents: total,
         }),
-        ['draws@yscapgroup.com'], { replyTo: fileReplyTo(appId) });
+        ['draws@yscapgroup.com'], { replyTo: fileReplyTo(appId), applicationId: appId, type: 'trustpoint_import', audience: 'staff' });
     } catch (_) {}
 
     return { opened: true, itemId: item && item.id, lines: lines.length };
   } catch (e) {
-    console.warn('[sitewire] trustpoint-intake failed (will not retry this draw automatically):', e && e.message);
+    // The stamp+task transaction rolled back, so the stamp is still NULL — the reconcile
+    // sweep (reconcileOne's trustpoint pass) retries on the next poll. Park a deduped
+    // review row too, so a REPEATEDLY failing open is a visible card, never a silent
+    // console line (never-silently-drop; phase-1 audit #3).
+    console.warn('[sitewire] trustpoint-intake failed (the reconcile sweep will retry):', e && e.message);
+    try {
+      await require('./orchestrator').park({
+        appId, dedupe: `tpimport:${drawId}`,
+        reason: `sitewire_reconcile_draw_error: could not open the TrustPoint entry task for draw ${drawId} — ${String(e && e.message).slice(0, 160)}. It retries automatically each poll; if this card persists, open the task by hand from the Workflow screen.`,
+      });
+    } catch (_) {}
     return { skipped: 'error' };
   }
 }

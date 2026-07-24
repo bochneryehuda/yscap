@@ -45,7 +45,7 @@ export default function StaffWorkflow() {
   const [note, setNote] = useState('');
 
   const OUTCOMES = ['Finished processing', 'Finished loan setup', 'Finished CTC', 'Cleared conditions',
-    'Added conditions', 'Cleared exception', 'Finished closing', 'Finished draw setup', 'Reviewed', 'Sent back — needs more'];
+    'Added conditions', 'Cleared exception', 'Finished closing', 'Finished draw setup', 'Entered in TrustPoint', 'Reviewed', 'Sent back — needs more'];
 
   const reload = useCallback(() => {
     setRows(null);

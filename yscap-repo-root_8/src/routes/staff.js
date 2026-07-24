@@ -7004,9 +7004,13 @@ router.get('/my-exceptions/count', async (req, res) => {
 // PICK UP an item (start working it). Only the person it's routed to (or an admin).
 router.post('/workflow/:itemId/pickup', async (req, res) => {
   try {
-    const it = (await db.query(`SELECT to_staff_id, status FROM workflow_items WHERE id=$1`, [req.params.itemId])).rows[0];
+    const it = (await db.query(`SELECT to_staff_id, to_role, status FROM workflow_items WHERE id=$1`, [req.params.itemId])).rows[0];
     if (!it) return res.status(404).json({ error: 'not found' });
-    if (String(it.to_staff_id || '') !== String(req.actor.id) && !isAdmin(req)) return res.status(403).json({ error: 'this item is not in your workflow' });
+    // Mine, OR an UNASSIGNED role-inbox item addressed to my role (listQueue shows those to
+    // every member of the role — pickup must accept the same set, else a non-admin coordinator
+    // sees an item they can never claim; phase-1 audit finding #2), OR an admin.
+    const roleInboxMine = it.to_staff_id == null && it.to_role && it.to_role === req.actor.role;
+    if (String(it.to_staff_id || '') !== String(req.actor.id) && !roleInboxMine && !isAdmin(req)) return res.status(403).json({ error: 'this item is not in your workflow' });
     const client = await db.getClient();
     let item;
     try { await client.query('BEGIN'); item = await workflow.pickItem(client, req.params.itemId, req.actor.id); await client.query('COMMIT'); }
@@ -7022,9 +7026,11 @@ router.post('/workflow/:itemId/return', async (req, res) => {
   const note = req.body && req.body.note;
   if (!outcomeLabel) return res.status(400).json({ error: 'pick an outcome (what you finished / did)' });
   try {
-    const it = (await db.query(`SELECT application_id, to_staff_id, from_staff_id, submission_type, status FROM workflow_items WHERE id=$1`, [req.params.itemId])).rows[0];
+    const it = (await db.query(`SELECT application_id, to_staff_id, to_role, from_staff_id, submission_type, status FROM workflow_items WHERE id=$1`, [req.params.itemId])).rows[0];
     if (!it) return res.status(404).json({ error: 'not found' });
-    if (String(it.to_staff_id || '') !== String(req.actor.id) && !isAdmin(req)) return res.status(403).json({ error: 'this item is not in your workflow' });
+    // Same role-inbox acceptance as pickup (an unassigned item addressed to my role is mine to finish).
+    const roleInboxMine = it.to_staff_id == null && it.to_role && it.to_role === req.actor.role;
+    if (String(it.to_staff_id || '') !== String(req.actor.id) && !roleInboxMine && !isAdmin(req)) return res.status(403).json({ error: 'this item is not in your workflow' });
     if (!['open', 'in_progress'].includes(it.status)) return res.status(409).json({ error: 'this item is already finished' });
     const client = await db.getClient();
     let item;

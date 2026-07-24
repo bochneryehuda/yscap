@@ -58,7 +58,7 @@ const HELP = {
   stale: 'A draw with no update for this many days is flagged as “stale” on the portfolio, so nothing slips.',
   no_draw: 'A funded file with no draw activity for this many days is flagged, so an idle project gets a nudge.',
   partner: 'Which capital partner (note buyer) this rule applies to — the list is every note buyer we use, matched to the file\'s note-buyer field. “Global default” covers every file that doesn\'t have its own rule.',
-  handled: 'Turn this on for a capital partner that runs its OWN draw process (in their system, not Sitewire). PILOT will never send those files to Sitewire — it just records them here. Use this for note buyers who don\'t want us managing their draws.',
+  handled: 'Which platform administers this partner\u2019s draws. Sitewire = we run everything here (default). TrustPoint = the file still gets its full Sitewire setup for intake, but approvals happen in TrustPoint (physical files) and a coordinator task enters each submitted draw there. External = the partner runs its own draws; never pushed to Sitewire.',
   program: 'Optional — apply this rule only to one loan program (for example, gold). Leave blank to apply to all.',
   auto_method: 'How a new file is set up automatically: Virtual (a phone-guided inspection) or On-site (an inspector visits).',
   fee: 'What we charge the borrower per draw for each inspection method.',

@@ -1319,7 +1319,7 @@ router.post('/rules', requirePermission('platform_setup'), async (req, res) => {
   // fixes it here. This applies to 'trustpoint' rules too — those files STILL push to Sitewire,
   // so the partner must resolve. Only 'external' rules (no push at all) skip the requirement.
   if (partnerLabel && !cpId && !handledExternally) {
-    return res.status(400).json({ error: `We couldn't find "${partnerLabel}" in the Sitewire capital-partner directory. Either link it to a Sitewire partner on the Partners page, or check "Handled externally" if this partner isn't in Sitewire.` });
+    return res.status(400).json({ error: `We couldn't find "${partnerLabel}" in the Sitewire capital-partner directory. Either link it to a Sitewire partner on the Partners page, or set the "Draws administered on" choice to External if this partner isn\'t in Sitewire.` });
   }
   // Dormant markup knob (owner D9 2026-07-24): stored only; no code charges it yet. Integer
   // cents 0..$100k; blank/garbage → null (no markup), matching the physical-fee handling.

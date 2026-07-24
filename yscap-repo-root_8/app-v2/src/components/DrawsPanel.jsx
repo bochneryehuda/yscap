@@ -146,6 +146,7 @@ export default function DrawsPanel({ appId }) {
             </div>
           )}
           <StartDrawCard appId={appId} onStarted={load} />
+          <TrustpointPanel appId={appId} />
           {/* Send the DocuSign Draw Request & Wire Instructions form right from the start-draw screen. */}
           <DrawRequestCard appId={appId} />
           {/* The draw email center is visible on the construction-draw screen even BEFORE the file is
@@ -155,6 +156,7 @@ export default function DrawsPanel({ appId }) {
       ) : (
         <>
           {msg && <div className="dd-card" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)' }}>{msg}</div>}
+          <TrustpointPanel appId={appId} />
 
           {/* Redesigned draw desk: a sticky left section rail (like the loan file) + collapsible sections,
               so the whole draw process is scannable without endless scrolling. Each section opens on demand;
@@ -818,6 +820,122 @@ function CheckRow({ ok, label }) {
     <div className="row" style={{ gap: 9, alignItems: 'center', padding: '4px 0' }}>
       <span style={{ display: 'inline-grid', placeItems: 'center', width: 18, height: 18, borderRadius: 999, flex: '0 0 auto', fontSize: 11, fontWeight: 800, background: ok ? 'var(--success-soft)' : 'var(--ink-3)', color: ok ? 'var(--success)' : 'var(--text-soft)' }}>{ok ? '✓' : '·'}</span>
       <span className={ok ? '' : 'muted'} style={{ fontSize: 14 }}>{label}</span>
+    </div>
+  );
+}
+
+// ---- TrustPoint mirror panel (physical-draw workflow phases 2-3; STAFF-ONLY surface) ----
+// Renders only when the file is linked to a TrustPoint project. Read-mostly: shows the
+// mirrored draws + inspection orders; the one action surface is the coordinator's
+// per-line entry (transcribed from TrustPoint's console) + the push-to-Sitewire button.
+function TrustpointPanel({ appId }) {
+  const [ov, setOv] = useState(null);
+  const [openLines, setOpenLines] = useState(null);   // tp_draw_id whose entry form is open
+  const [lineData, setLineData] = useState(null);
+  const [amounts, setAmounts] = useState({});
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const usd = (c) => c == null ? '—' : '$' + (Number(c) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
+  const load = useCallback(() => {
+    api.get(`/api/trustpoint/files/${appId}/overview`).then(setOv).catch(() => setOv(null));
+  }, [appId]);
+  useEffect(() => { load(); }, [load]);
+  if (!ov || !ov.linked) return null;
+  async function openEntry(d) {
+    setMsg(''); setOpenLines(d.tp_draw_id); setLineData(null);
+    try {
+      const r = await api.get(`/api/trustpoint/files/${appId}/draws/${d.tp_draw_id}/lines`);
+      setLineData(r);
+      const init = {};
+      for (const l of (r.lines || [])) init[l.sitewire_job_item_id] = String(Math.round(Number(l.approved_cents) / 100));
+      setAmounts(init);
+    } catch (e) { setMsg(e?.data?.error || e.message); }
+  }
+  async function saveEntry(d) {
+    setBusy(true); setMsg('');
+    try {
+      const entries = Object.entries(amounts)
+        .filter(([, v]) => String(v).trim() !== '')
+        .map(([jid, v]) => ({ sitewire_job_item_id: Number(jid), approved_cents: Math.round(Number(v) * 100) }));
+      const r = await api.post(`/api/trustpoint/files/${appId}/draws/${d.tp_draw_id}/lines`, { entries });
+      setMsg(r.writeback && r.writeback.ok ? 'Saved — and the approval was pushed into Sitewire.' :
+        r.writeback && r.writeback.skipped ? `Saved. Sitewire push is waiting (${r.writeback.skipped.replace(/_/g, ' ')}).` : 'Saved.');
+      setOpenLines(null); load();
+    } catch (e) { setMsg(e?.data?.error || e.message || "That didn't work."); }
+    finally { setBusy(false); }
+  }
+  async function pushNow(d) {
+    setBusy(true); setMsg('');
+    try {
+      const r = await api.post(`/api/trustpoint/files/${appId}/draws/${d.tp_draw_id}/push-sitewire`, {});
+      setMsg(r.ok ? 'Approval pushed into Sitewire.' : `Not pushed — ${(r.skipped || r.parked || 'see the draw desk').replace(/_/g, ' ')}.`);
+      load();
+    } catch (e) { setMsg(e?.data?.error || e.message); }
+    finally { setBusy(false); }
+  }
+  const STATUS_LABEL = { DRAFT: 'Draft', IN_REVIEW: 'In review', APPROVED: 'Approved', COMPLETED: 'Completed', DELETED: 'Deleted' };
+  return (
+    <div className="dd-card" style={{ marginTop: 12 }}>
+      <div className="dd-card-h" style={{ justifyContent: 'space-between' }}>
+        <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+          <span className="dd-card-ic"><SdIcon name="ext" /></span>
+          <div>
+            <h3>Administered draws (TrustPoint)</h3>
+            <div className="dd-sub" style={{ marginTop: 1 }}>Mirrored from the note buyer's draw administrator. Approvals happen there; PILOT records them and pushes the numbers back into Sitewire.</div>
+          </div>
+        </div>
+        <span className="dd-chip warn"><span className="dot" />TrustPoint</span>
+      </div>
+      {msg && <div className="small" style={{ marginTop: 8, fontWeight: 600 }}>{msg}</div>}
+      {(ov.draws || []).length === 0 && <div className="muted small" style={{ marginTop: 10 }}>No draws mirrored yet.</div>}
+      {(ov.draws || []).map((d) => (
+        <div key={d.tp_draw_id} style={{ marginTop: 10, padding: '10px 12px', border: '1px solid var(--line)', borderRadius: 10 }}>
+          <div className="row" style={{ gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+            <b>Draw #{d.number == null ? '—' : d.number}</b>
+            <span className="pill sw-insp">{STATUS_LABEL[d.status] || d.status || '—'}</span>
+            <span className="small muted">Requested {usd(d.requested_cents)} · Approved {usd(d.approved_cents)}{d.to_disburse_cents != null ? ` · Net ${usd(d.to_disburse_cents)}` : ''}</span>
+            {d.writeback_at ? <span className="small" style={{ color: 'var(--success)' }}>✓ In Sitewire</span>
+              : d.writeback_note ? <span className="small muted">{d.writeback_note}</span> : null}
+          </div>
+          <div className="row" style={{ gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+            {(d.status === 'APPROVED' || d.status === 'COMPLETED') && !d.writeback_at && (
+              <>
+                <button className="btn btn-sm ghost" disabled={busy} onClick={() => openEntry(d)}>Enter line-by-line amounts</button>
+                <button className="btn btn-sm ghost" disabled={busy} onClick={() => pushNow(d)}>Push approval to Sitewire</button>
+              </>
+            )}
+            <button className="btn btn-sm ghost" disabled={busy} onClick={() => { const w = window.open('', '_blank'); api.trustpointDrawReport(appId, d.tp_draw_id, 'staff', w).catch((e) => setMsg(e?.data?.error || e.message)); }}>Report (PDF)</button>
+          </div>
+          {openLines === d.tp_draw_id && lineData && (
+            <div style={{ marginTop: 10, padding: '10px 12px', background: 'var(--ink-2)', borderRadius: 8 }}>
+              <div className="small" style={{ fontWeight: 600 }}>Copy the approved amount per line from TrustPoint (must add up to {usd(lineData.draw.approved_cents)} exactly):</div>
+              {(lineData.budget_lines || []).map((b) => (
+                <label key={b.sitewire_job_item_id} className="row small" style={{ gap: 8, marginTop: 6, alignItems: 'center' }}>
+                  <span style={{ flex: 1, minWidth: 0 }}>{b.name}</span>
+                  <span className="muted">$</span>
+                  <input className="input" style={{ width: 110 }} inputMode="decimal" value={amounts[b.sitewire_job_item_id] || ''}
+                    onChange={(e) => setAmounts({ ...amounts, [b.sitewire_job_item_id]: e.target.value })} placeholder="0" />
+                </label>
+              ))}
+              <div className="row" style={{ gap: 8, marginTop: 10 }}>
+                <button className="btn btn-sm primary" disabled={busy} onClick={() => saveEntry(d)}>{busy ? 'Saving…' : 'Save amounts'}</button>
+                <button className="btn btn-sm ghost" disabled={busy} onClick={() => setOpenLines(null)}>Cancel</button>
+              </div>
+            </div>
+          )}
+        </div>
+      ))}
+      {(ov.service_orders || []).length > 0 && (
+        <div style={{ marginTop: 12 }}>
+          <div className="dd-field-l" style={{ textTransform: 'uppercase', letterSpacing: '.06em', fontSize: 11 }}>Inspections &amp; services</div>
+          {(ov.service_orders || []).slice(0, 8).map((so) => (
+            <div key={so.tp_service_order_id} className="small muted" style={{ marginTop: 4 }}>
+              {(so.service_type || 'service').toLowerCase().replace(/_/g, ' ')} · {(so.status || '—').toLowerCase().replace(/_/g, ' ')}
+              {so.scheduled_at ? ` · scheduled ${String(so.scheduled_at).slice(0, 10)}` : ''}{so.completed_at ? ` · completed ${String(so.completed_at).slice(0, 10)}` : ''}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

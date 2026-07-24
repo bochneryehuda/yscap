@@ -142,6 +142,75 @@ router.get('/files/:id/overview', requirePermission('manage_draws'), async (req,
   } catch (e) { console.warn('[trustpoint] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
+// ---- staff: per-line amounts + Sitewire write-back + branded report (phase 3) ----
+async function ownDraw(req, res) {
+  const appId = req.params.id, tpDrawId = String(req.params.tpDrawId || '');
+  if (!(await canSeeFile(req, appId))) { res.status(403).json({ error: 'forbidden' }); return null; }
+  const d = (await db.query(`SELECT * FROM trustpoint_draws WHERE tp_draw_id=$1 AND application_id=$2`, [tpDrawId, appId])).rows[0];
+  if (!d) { res.status(404).json({ error: 'draw not found on this file' }); return null; }
+  return { appId, tpDrawId, draw: d };
+}
+
+router.get('/files/:id/draws/:tpDrawId/lines', requirePermission('manage_draws'), async (req, res) => {
+  try {
+    const own = await ownDraw(req, res); if (!own) return;
+    const lines = require('../trustpoint/lines');
+    const current = await lines.linesFor(own.tpDrawId);
+    // The pickable budget lines (the file's operative per-line ledger) for the entry form.
+    const budget = (await db.query(
+      `SELECT sitewire_job_item_id, name, budgeted_cents FROM sitewire_job_item_links
+        WHERE application_id=$1 AND sitewire_job_item_id IS NOT NULL AND is_media_item=false AND (state IS NULL OR state<>'deleted')
+        ORDER BY name`, [own.appId])).rows;
+    res.json({ draw: { tp_draw_id: own.tpDrawId, number: own.draw.number, status: own.draw.status,
+      requested_cents: own.draw.requested_cents, approved_cents: own.draw.approved_cents,
+      writeback_at: own.draw.writeback_at, writeback_note: own.draw.writeback_note, sitewire_draw_id: own.draw.sitewire_draw_id },
+      lines: current, budget_lines: budget });
+  } catch (e) { console.warn('[trustpoint] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/files/:id/draws/:tpDrawId/lines', requirePermission('manage_draws'), async (req, res) => {
+  try {
+    const own = await ownDraw(req, res); if (!own) return;
+    const lines = require('../trustpoint/lines');
+    const r = await lines.saveManualLines(own.appId, own.tpDrawId, (req.body && req.body.entries) || [], req.actor.id);
+    // A completed line set immediately attempts the Sitewire write-back (guarded; the
+    // result explains a wait — e.g. writes off / not approved yet — without failing).
+    const wb = await require('../trustpoint/writeback').pushApprovalToSitewire(own.appId, own.tpDrawId, { actorId: req.actor.id });
+    res.json({ ok: true, ...r, writeback: wb });
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    console.warn('[trustpoint] lines error:', e && e.message); res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.post('/files/:id/draws/:tpDrawId/push-sitewire', requirePermission('manage_draws'), async (req, res) => {
+  try {
+    const own = await ownDraw(req, res); if (!own) return;
+    const wb = await require('../trustpoint/writeback').pushApprovalToSitewire(own.appId, own.tpDrawId, { actorId: req.actor.id });
+    res.json({ ok: !wb.parked, ...wb });
+  } catch (e) { console.warn('[trustpoint] push error:', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+router.get('/files/:id/draws/:tpDrawId/report', requirePermission('manage_draws'), async (req, res) => {
+  try {
+    const own = await ownDraw(req, res); if (!own) return;
+    const report = require('../trustpoint/report');
+    const mode = req.query.mode === 'borrower' ? 'borrower' : 'staff';
+    const r = await report.buildOrGetReport(own.appId, own.tpDrawId, mode);
+    let bytes = r.bytes;
+    if (!bytes) {
+      const storage = require('../lib/storage');
+      const doc = (await db.query(`SELECT storage_ref FROM documents WHERE id=$1`, [r.documentId])).rows[0];
+      bytes = await storage.read(doc.storage_ref);
+    }
+    res.setHeader('Content-Disposition', `inline; filename="${r.filename}"`);
+    res.type('application/pdf').send(Buffer.from(bytes));
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    console.warn('[trustpoint] report error:', e && e.message); res.status(500).json({ error: 'server error' });
+  }
+});
+
 // ---- staff: webhook registration (the ONE outbound write — journaled, dry-run honored) ----
 router.post('/register-webhook', requirePermission('platform_setup'), async (req, res) => {
   try {

@@ -228,7 +228,9 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText, f
     if (won) {
       await recordInboundChange(appId, drawId, 'draw', drawId, 'new_draw', null, newStatus, true);
       const nextStep = ctx.platform === 'trustpoint'
-        ? 'This file\'s draws are administered on TrustPoint — a task will open for the draw coordinator once it is submitted.'
+        ? (tpIntake.SUBMITTED_STATUSES.has(String(newStatus))
+            ? 'This file\'s draws are administered on TrustPoint — a task was opened for the draw coordinator to enter it there.'
+            : 'This file\'s draws are administered on TrustPoint — a task will open for the draw coordinator once it is submitted.')
         : ctx.method === 'traditional' ? 'Review it and arrange the on-site inspection.' : 'Review it and start the inspection.';
       await notify.notifyAppStaff(appId, {
         type: 'draw_inbound', title: 'A new draw request came in', badge: { text: 'New draw', tone: 'gold' },
@@ -457,6 +459,24 @@ async function reconcileOne(appId) {
      try { await require('./orchestrator').park({ appId, dedupe: `drawrow:${d && d.id}`, reason: `sitewire_reconcile_draw_error: could not mirror Sitewire draw ${d && d.id} — ${String(emsg).slice(0, 200)}. It won't appear on the desk until reconciled by hand.` }); } catch (_) {}
    }
   }
+  // TrustPoint import-task SWEEP (phase-1 audit #3/#5): on a trustpoint-routed file, any
+  // SUBMITTED, non-historical draw whose task never opened (stamp NULL — a failed open
+  // rolled back, or the file was cut over to TrustPoint mid-draw so no transition fired)
+  // gets its coordinator task opened now. Idempotent via the same atomic stamp claim.
+  if (fileCtx.platform === 'trustpoint' && !firstReconcile) {
+    try {
+      const unopened = (await db.query(
+        `SELECT sitewire_draw_id, number, status FROM sitewire_draws
+          WHERE application_id=$1 AND COALESCE(historical,false)=false AND tp_import_task_opened_at IS NULL
+            AND status = ANY($2::text[])`, [appId, [...tpIntake.SUBMITTED_STATUSES]])).rows;
+      for (const u of unopened) {
+        await tpIntake.maybeOpenImportTask(appId, {
+          drawId: u.sitewire_draw_id, drawNumber: u.number, status: u.status, addrText, platform: 'trustpoint',
+        }).catch(() => {});
+      }
+    } catch (_) { /* best-effort — next poll retries */ }
+  }
+
   // Auto-adopt Sitewire-seeded MANDATORY MEDIA items (Video Walkthrough, External Pictures,
   // …) that PILOT never pushed, so a draw against them stops parking as unknown. Runs BEFORE
   // assessAndStoreRisk so rollup.unknown sees the newly-bound ids and never flags them.
