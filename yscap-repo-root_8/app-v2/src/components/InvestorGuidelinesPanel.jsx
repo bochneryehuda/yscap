@@ -83,8 +83,6 @@ export default function InvestorGuidelinesPanel({ appId }) {
   const [loading, setLoading] = useState(false);
   const [desk, setDesk] = useState(null);
   const [showMet, setShowMet] = useState(false);
-  const [aiChecking, setAiChecking] = useState(false);
-  const [aiMsg, setAiMsg] = useState(null);
 
   const load = useCallback(() => {
     if (!appId) return Promise.resolve();
@@ -96,26 +94,10 @@ export default function InvestorGuidelinesPanel({ appId }) {
   }, [appId]);
   useEffect(() => { load(); }, [load]);
 
-  // On-demand grounded AI satisfaction check. Kicks off the bounded, cost-capped GPT read of
-  // the SATISFIED note-buyer conditions on the backend; any advisory it raises shows up in the
-  // AI suggestions panel. Advisory only — it blocks/clears nothing here.
-  const runAiCheck = useCallback(() => {
-    if (!appId || aiChecking) return;
-    setAiChecking(true); setAiMsg(null);
-    api.aiVerifyInvestorGuidelines(appId)
-      .then((r) => {
-        if (r && r.started) {
-          const n = r.satisfiedTotal || 0;
-          setAiMsg(n > 0
-            ? `AI is reviewing the ${n} met guideline${n === 1 ? '' : 's'} — any concern will appear in AI suggestions.`
-            : 'No met guidelines to AI-check yet.');
-        } else {
-          setAiMsg((r && r.reason) || 'AI analyzer is not available right now.');
-        }
-      })
-      .catch(() => setAiMsg('Could not start the AI check.'))
-      .finally(() => setAiChecking(false));
-  }, [appId, aiChecking]);
+  // No separate "AI-check" button here (owner-directed 2026-07-24): the investor-guideline review
+  // now runs as PART of the one whole-loan document-review run — not a second AI pass. This panel
+  // shows the deterministic overlay (what the note buyer is/ isn't happy about); its findings live
+  // in the ONE findings list above.
 
   const d = desk;
   const verdicts = (d && Array.isArray(d.verdicts)) ? d.verdicts : [];
@@ -137,19 +119,8 @@ export default function InvestorGuidelinesPanel({ appId }) {
           quiet unless the note buyer would <strong>not</strong> be happy with the file as it stands — a value that conflicts
           with their rules, or a requirement with no condition on the file at all. Advisory; it decides nothing.
         </p>
-        {!nothing && (
-          <button className="btn ghost small" disabled={aiChecking} onClick={runAiCheck} title="Ask the AI to read the cleared evidence on the met guidelines and flag any that may not truly meet this note buyer's rule.">
-            {aiChecking ? 'Starting…' : 'AI-check the met guidelines'}
-          </button>
-        )}
         <button className="btn ghost small" disabled={loading} onClick={load}>{loading ? '…' : 'Refresh'}</button>
       </div>
-
-      {aiMsg && (
-        <div style={{ fontSize: 11.5, color: 'var(--muted,#4B585C)', background: 'var(--paper,#F6F3EC)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 8, padding: '6px 10px', marginBottom: 10 }}>
-          {aiMsg}
-        </div>
-      )}
 
       {loading && !d && <div className="muted" style={{ fontSize: 12 }}>Loading…</div>}
 

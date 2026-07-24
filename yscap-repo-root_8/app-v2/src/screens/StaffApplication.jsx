@@ -2856,7 +2856,6 @@ export default function StaffApplication() {
     { id: 'sec-appraisal', label: 'Appraisal & findings', group: 'Application & pricing', badge: apprSummary && apprSummary.fatal ? `${apprSummary.fatal} ⚠` : '' },
     { id: 'sec-underwriting', label: 'Document review', group: 'Application & pricing', badge: uwSummary && uwSummary.fatal ? `${uwSummary.fatal} ⚠` : '' },
     { id: 'sec-conditions', label: 'Conditions', group: 'Conditions', badge: nCondOpen || '' },
-    { id: 'sec-investor-guidelines', label: 'Investor guidelines', group: 'Conditions' },
     { id: 'sec-esign', label: 'E-signatures', group: 'Signing & documents' },
     { id: 'sec-orders', label: 'Orders (title & insurance)', group: 'Signing & documents',
       badge: (() => { const n = docs.filter(d => ['title_order_return', 'insurance_order_return'].includes(d.doc_kind) && !d.slot_label && d.is_current !== false).length; return n ? `${n} to assign` : ''; })() },
@@ -3140,6 +3139,12 @@ export default function StaffApplication() {
         info="PILOT reads every uploaded document (government ID, purchase contract, title, bank statement and more), understands it, and checks it against the loan file — flagging anything that doesn't match on the document itself AND anything that disagrees across documents (the seller, price, and property address must be the same on the contract, title, and appraisal). Choose a document and the type it is, and PILOT reads and checks it. Each finding is yours to resolve: post a condition, request a document, fix the file, clear it, grant an exception, dismiss, or decline. Nothing is ever written onto the loan file automatically."
         badge={uwSummary ? (uwSummary.fatal ? `${uwSummary.fatal} fatal` : (uwSummary.warning ? `${uwSummary.warning} warning` : 'Reviewed ✓')) : ''}>
         <UnderwritingPanel appId={id} docs={docs} onSummary={onUwSummary} canResolve={can('sign_off_conditions')} canWaive={can('waive_conditions')} />
+        {/* Investor-specific guidelines live INSIDE the one document review (owner-directed 2026-07-24):
+            not a separate section, not a separate AI pass — the same review, one place. */}
+        <div style={{ marginTop: 20, paddingTop: 16, borderTop: '2px solid var(--line,#E7E1D3)' }}>
+          <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--ink,#141B22)', marginBottom: 4 }}>Investor-specific guidelines</div>
+          <InvestorGuidelinesPanel appId={id} />
+        </div>
       </Section>
 
       {/* ONE Conditions hub with tabs (owner-directed cleanup): the borrower's
@@ -3261,10 +3266,9 @@ export default function StaffApplication() {
       </>}
       </Section>
 
-      <Section id="sec-investor-guidelines" title="Investor guidelines" defaultOpen={false}
-        info="How this file measures up against the note buyer's own condition guidelines — what's met, what's still needed, and anything that conflicts with their rules. Advisory only; it decides nothing on its own.">
-      <InvestorGuidelinesPanel appId={id} />
-      </Section>
+      {/* The standalone "Investor guidelines" section was RETIRED (owner-directed 2026-07-24):
+          the investor-specific guidelines are now a subsection of "Document review & PILOT findings"
+          above — one review, one place, no separate AI pass. */}
 
       <Section id="sec-esign" title="E-signatures" defaultOpen={false}
         info="Send and track the term-sheet package and Heter Iska, with live per-signer status, resend, void, re-issue and downloads.">
