@@ -27,6 +27,7 @@
 const crypto = require('crypto');
 const prov = require('./provenance');
 const sourcePriority = require('./source-priority');
+const fieldRegistry = require('../conditions/field-registry');
 
 // The structure facts the whole-loan context governs. `required` fields, when
 // absent from EVERY source, make the context NOT_READY (never assume a value).
@@ -167,7 +168,14 @@ function candidatesFor(sources) {
 
   add('borrower_name', appFact(str(app.borrower_name)));
   add('entity_name', appFact(str(app.entity_name || app.vesting_entity)));
-  add('property_state', appFact(str(app.property_state)));
+  // Property state — the subject property's state, from the property_address jsonb (there is NO
+  // applications.property_state column, so the old `app.property_state` was ALWAYS undefined →
+  // ctx.values.property_state stayed null → the Blue Lake FATAL New-York-escalation rule
+  // (isg_bl_ny_loan) could never fire; #248 phantom-column class). Normalized to the 2-letter
+  // USPS code the SAME way the conditions engine does (registry.normState — codes pass through,
+  // full names map, unknowns → null so the rule stays silent rather than false-firing).
+  const _propAddr = app.property_address || {};
+  add('property_state', appFact(fieldRegistry.normState(_propAddr.state)));
   add('note_buyer', appFact(str(app.lender)));   // capital partner; drives the investor-guideline review (staff-only)
 
   return map;
