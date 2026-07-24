@@ -559,6 +559,28 @@ async function runInvestorGuidelineDesk(appId, client) {
     signals.borrower_email = email ? String(email).trim() : '';
   } catch (_e) { /* email unreadable — leave absent so the email check stays silent */ }
 
+  // Appraisal-derived signals — the appraisal-disposition conditions (rural, transferred) stay
+  // SILENT until the appraisal is in; then a proven concern surfaces the condition. Read from the
+  // CURRENT appraisal (superseded=false, latest imported_at) — the SAME proven columns the
+  // whole-loan run uses (run.js gatherInvestorInputs; db/137/158). `appraisal_present` unblocks the
+  // appraisal-disposition gate; `appraisal_rural` = the UAD neighborhood location type is Rural
+  // (cond 3345). NEVER fabricated: no appraisal → both absent (conditions stay silent); a stated
+  // Urban/Suburban → appraisal_rural=false (silent); NULL/unread → omitted.
+  try {
+    const ar = await db.query(
+      `SELECT nbhd_location_type FROM appraisals
+         WHERE application_id = $1 AND superseded = false
+         ORDER BY imported_at DESC LIMIT 1`, [appId]);
+    const row = ar.rows[0];
+    if (row) {
+      signals.appraisal_present = true;
+      const loc = String(row.nbhd_location_type == null ? '' : row.nbhd_location_type).trim().toLowerCase();
+      if (loc === 'rural') signals.appraisal_rural = true;
+      else if (loc === 'urban' || loc === 'suburban') signals.appraisal_rural = false;
+      // else: null/blank/unrecognized → OMIT (unknown, never fabricated)
+    }
+  } catch (_e) { /* appraisals unreadable → leave appraisal signals absent (conditions stay silent) */ }
+
   // SOW-contingency % bridge (2026-07-24): a note buyer's contingency-CAP guideline
   // (e.g. Blue Lake cond 2193) checks a MAX contingency %, but no twin fact carries
   // it — so the numeric check fell back to "to verify" on every file. The amount is
