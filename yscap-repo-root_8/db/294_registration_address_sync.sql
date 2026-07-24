@@ -1,4 +1,4 @@
--- 293 — Keep the CURRENT registration's stored address in lock-step with the
+-- 294 — Keep the CURRENT registration's stored address in lock-step with the
 -- FILE (owner-reported 2026-07-24, follow-up to #717: the file said "392-394
 -- Columbia Ave" but the term-sheet surfaces kept the registration-era
 -- "392 Columbia Ave").
