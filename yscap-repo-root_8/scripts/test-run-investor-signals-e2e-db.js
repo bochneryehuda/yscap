@@ -34,7 +34,11 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
     bId = (await pool.query(
       `INSERT INTO borrowers (first_name,last_name,email,date_of_birth)
          VALUES ('ISG','E2E',$1,'1985-01-01') RETURNING id`, [email])).rows[0].id;
-    aId = (await pool.query(`INSERT INTO applications (borrower_id) VALUES ($1) RETURNING id`, [bId])).rows[0].id;
+    // Claim 2 flips of experience but leave NONE verified (no track_records) → claimed_exp(2) >
+    // verified_exp(0), which fires the all-buyers isg_experience_claimed_over_verified. This
+    // covers a DIFFERENT gather path than the appraisal columns — the experience.js reuse (#258).
+    aId = (await pool.query(
+      `INSERT INTO applications (borrower_id, requested_exp_flips) VALUES ($1, 2) RETURNING id`, [bId])).rows[0].id;
 
     // A current appraisal that is BOTH in a Special Flood Hazard Area AND Rural.
     await pool.query(
@@ -57,7 +61,12 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
       `expected isg_rural_property in the run findings, got: ${codes.join(', ') || '(none)'}`);
     ok('the rural appraisal surfaces isg_rural_property in the persisted run (full chain)');
 
-    console.log(`\nISG signals end-to-end (#256) db — ${passed} checks passed`);
+    // #258 — the experience.js reuse path (claimed 2, verified 0) also reaches the registry.
+    assert.ok(codes.includes('isg_experience_claimed_over_verified'),
+      `expected isg_experience_claimed_over_verified in the run findings, got: ${codes.join(', ') || '(none)'}`);
+    ok('claimed-over-verified experience surfaces isg_experience_claimed_over_verified (experience.js path, full chain)');
+
+    console.log(`\nISG signals end-to-end (#256/#258) db — ${passed} checks passed`);
   } finally {
     if (aId) {
       await pool.query(`DELETE FROM shadow_decisions WHERE application_id=$1`, [aId]).catch(() => {});
