@@ -93,7 +93,10 @@ function candidatesFor(sources) {
   const regId = reg && reg.id ? reg.id : null;
   const regVer = reg && reg.created_at ? String(reg.created_at) : null;
   const apprId = appr && appr.id ? appr.id : null;
-  const apprVer = appr && appr.created_at ? String(appr.created_at) : null;
+  // The appraisal's version stamp is imported_at (its only timestamp; the appraisals
+  // table has no created_at). Fall back to created_at for a synthetic appraisal object
+  // a caller/test injects with one.
+  const apprVer = appr && (appr.imported_at || appr.created_at) ? String(appr.imported_at || appr.created_at) : null;
 
   const map = {};
   const add = (field, cand) => {
@@ -275,7 +278,11 @@ async function buildWholeLoanContext(applicationId, db, opts) {
   const a = await db.query(
     `SELECT a.*,
             NULLIF(GREATEST(COALESCE(b.fico,0), COALESCE(cb.fico,0)), 0) AS fico,
-            b.full_name AS borrower_name,
+            -- borrowers has first_name/last_name, NOT full_name (that column lives on
+            -- staff_users). The old b.full_name threw "column does not exist" on EVERY
+            -- buildWholeLoanContext call — silently caught upstream, so the whole-loan
+            -- run returned null every time. Compose the name the way the rest of the repo does.
+            NULLIF(TRIM(COALESCE(b.first_name,'') || ' ' || COALESCE(b.last_name,'')), '') AS borrower_name,
             -- Fix 2026-07-23 (#209): registered_program is a JOIN alias everywhere
             -- in this codebase, never an applications column. Without it the
             -- assembler fell back to a.program (STRATEGY text like "Fix & Flip
@@ -303,10 +310,15 @@ async function buildWholeLoanContext(applicationId, db, opts) {
   let appraisal = null;
   try {
     const ap = await db.query(
-      `SELECT id, as_is_value, arv_value, appraised_value, created_at
+      // The current appraisal is superseded=false and its timestamp is imported_at
+      // (db/137/188) — NOT `is_current` / `created_at`, neither of which exists on
+      // this table. The old query referenced BOTH phantom columns, threw, and this
+      // catch silently nulled the appraisal, so the context's appraisal-sourced
+      // as_is_value/arv were always dark. Matches every other appraisal query in the repo.
+      `SELECT id, as_is_value, arv_value, appraised_value, imported_at
          FROM appraisals
-        WHERE application_id = $1 AND is_current = true
-        ORDER BY created_at DESC LIMIT 1`, [applicationId]);
+        WHERE application_id = $1 AND superseded = false
+        ORDER BY imported_at DESC LIMIT 1`, [applicationId]);
     appraisal = ap.rows[0] || null;
   } catch (_e) { appraisal = null; } // appraisals table optional in some envs
 
