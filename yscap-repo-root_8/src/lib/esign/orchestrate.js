@@ -885,16 +885,18 @@ async function sendPackage(applicationId, purpose, actor, opts = {}) {
   // are enforced by the route + validateGenerated.
   if (!spec.skipAppraisalGate) {
     const g = await gate.esignSendGate(applicationId, { db, purpose });
-    // sendAllowed honors an APPROVED "send before clear-to-close" exception (which
-    // waives only the clear-to-close-readiness blockers) — the floor is always
-    // enforced. If it's not allowed, report the blockers that actually matter: the
-    // FLOOR if the floor isn't met (an exception can't help until it is), otherwise
-    // the remaining readiness plus a pointer to the exception path.
+    // sendAllowed honors an APPROVED "send before clear-to-close" exception, which
+    // waives EXACTLY the blocker codes the super-admin named (legacy approvals:
+    // the readiness tier only) — every requirement NOT waived is still enforced
+    // here. If it's not allowed, report precisely the blockers that still apply
+    // (never the waived ones) plus the right next step.
     if (!g.sendAllowed) {
-      const blockers = g.floorMet ? g.ctcOutstanding : g.floorOutstanding;
-      const list = (blockers.length ? blockers : g.outstanding).map((o) => o.label).join('; ');
-      const hint = g.floorMet && !(g.exception && g.exception.status === 'approved')
-        ? ' A super-admin can approve an exception to send this before clear-to-close.' : '';
+      const blockers = g.unwaivedOutstanding && g.unwaivedOutstanding.length ? g.unwaivedOutstanding : g.outstanding;
+      const list = blockers.map((o) => o.label).join('; ');
+      const approved = !!(g.exception && g.exception.status === 'approved');
+      const hint = approved
+        ? ' The approved exception does not cover these — complete them or request a fresh exception.'
+        : ' A super-admin can approve an exception that waives specific requirements.';
       const e = new Error(`Not ready to send: ${list}.${hint}`);
       e.code = 'DOCUSIGN_GATE_NOT_READY'; e.retryable = false; e.outstanding = g.outstanding; throw e;
     }

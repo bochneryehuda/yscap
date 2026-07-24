@@ -2,6 +2,7 @@
 
 const PRODUCT_CONDITION_TYPE = 'product_registration';
 const { syncExperienceChecklistForApplication } = require('./experience');
+const { termWritebackText } = require('./term-text');
 
 function num(v) { const n = Number(v); return isFinite(n) ? n : 0; }
 function money(v) { return '$' + Math.round(num(v)).toLocaleString('en-US'); }
@@ -111,8 +112,9 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
        FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`, [appId])).rows[0] || null;
   // Capture the loan amount BEFORE this registration overwrites it — the caller
   // auto-clears a signed Heter Iska when the loan amount actually moves (the ISKA
-  // is tied to the loan amount). owner-directed 2026-07-22.
-  const prevLoanRow = (await client.query(`SELECT loan_amount FROM applications WHERE id=$1`, [appId])).rows[0];
+  // is tied to the loan amount). owner-directed 2026-07-22. Also capture the
+  // file's current TERM text so the write-back below can preserve its spelling.
+  const prevLoanRow = (await client.query(`SELECT loan_amount, term FROM applications WHERE id=$1`, [appId])).rows[0];
   const prevLoanAmount = prevLoanRow ? Number(prevLoanRow.loan_amount) : null;
   const newKey = borrowerTermsKey({ program, productLabel: quote.productLabel, noteRate: quote.noteRate, totalLoan: total, quote, inputs });
   const prevKey = prev ? borrowerTermsKey({ program: prev.program, productLabel: prev.product_label, noteRate: prev.note_rate, totalLoan: prev.total_loan, quote: prev.quote, inputs: prev.inputs }) : null;
@@ -195,7 +197,13 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
       num(inputs.expHolds),
       num(inputs.expGround),
       num(inputs.rehabBudget),
-      inputs.term ? String(inputs.term) : null,
+      // Preserve the file's existing term SPELLING when it already means the
+      // registered month count ("12 Months" stays "12 Months", never rewritten to
+      // the bare "12") — the cosmetic rewrite is what kept re-tripping the
+      // pricing-change detectors on every ClickUp echo (owner-reported
+      // 2026-07-24, "Term: 12 → 12 Months"). A REAL term change still writes
+      // the new value, in the ClickUp-friendly "<n> Months" form.
+      termWritebackText(prevLoanRow && prevLoanRow.term, inputs.term),
       num(inputs.irMonths),
       num(inputs.arv) || null,
       isAssign,

@@ -3,13 +3,19 @@
 /**
  * Loan policy EXCEPTIONS — the super-admin review box (owner-directed 2026-07-22).
  * Mounted at /api/admin/exceptions behind requireAuth + requireStaff (server.js).
- * Today the only exception type is a co-borrower GUARANTY WAIVER.
+ * Two exception types: the co-borrower GUARANTY WAIVER and the e-sign
+ * SEND-BEFORE-CLEAR-TO-CLOSE exception (per-requirement waivers, 2026-07-24).
  *
  *   • GET  /             — list exceptions (manage_pricing: admins + super-admins).
  *   • GET  /count        — open count for the nav badge.
- *   • POST /:id/decide   — SUPER-ADMIN ONLY (approve | deny). Approve flips
- *                          applications.co_borrower_pg_waived so the term sheet
- *                          reflects it; deny leaves both borrowers guaranteeing.
+ *   • GET  /:id/gate     — the esign exception's CLEAR VIEW: live ✓/✗ requirements
+ *                          picture + request snapshot + which codes were waived.
+ *   • POST /:id/decide   — SUPER-ADMIN ONLY (approve | deny). Guaranty: approve
+ *                          flips applications.co_borrower_pg_waived so the term
+ *                          sheet reflects it. E-sign: approve records EXACTLY the
+ *                          blocker codes being waived (waivedCodes, validated
+ *                          against the LIVE gate); everything not waived is still
+ *                          enforced at send time.
  *
  * Segregation of duties: the approver cannot be the requester (enforced here).
  * Requesting + withdrawing are file-scoped and live in staff.js so they run
@@ -71,17 +77,56 @@ router.post('/:id/decide', requireRole('super_admin'), async (req, res) => {
     }
 
     const isGuaranty = exc.exception_type === 'guaranty_waiver';
+    const isEsign = exc.exception_type === 'esign_before_ctc';
+
+    // Per-requirement waivers (owner-directed 2026-07-24): an esign approval names
+    // EXACTLY which outstanding blockers it waives. Validate against the LIVE gate
+    // (never the client's list): a submitted code that is no longer outstanding is
+    // dropped (it resolved — good news); an empty result refuses the approval. The
+    // decision also snapshots the live picture so the gate can pin each waiver to
+    // the exact blocker state that was approved. A legacy client that sends no
+    // waivedCodes keeps the old meaning (waives the readiness tier only).
+    let waivedCodes;               // undefined = legacy; array = explicit waivers
+    let decidedGate = null;
+    let liveGate = null;
+    let waivedItems = [], stillRequired = [];
+    if (isEsign && decision === 'approved') {
+      liveGate = await require('../lib/esign/gate').esignSendGate(exc.application_id, { db });
+      decidedGate = {
+        at: new Date().toISOString(),
+        outstanding: (liveGate.outstanding || []).map((o) => ({ code: o.code, label: o.label, reason: o.reason || null, tier: o.tier })),
+      };
+      if (req.body && Array.isArray(req.body.waivedCodes)) {
+        const liveByCode = {};
+        for (const o of liveGate.outstanding || []) if (!(o.code in liveByCode)) liveByCode[o.code] = o;
+        waivedCodes = [...new Set(req.body.waivedCodes.map(String))].filter((c) => c in liveByCode);
+        if (!waivedCodes.length) {
+          return res.status(400).json({
+            error: 'None of the selected requirements is still outstanding — refresh the picture and pick at least one requirement to waive (or deny the request).',
+            outstanding: decidedGate.outstanding,
+          });
+        }
+        waivedItems = waivedCodes.map((c) => liveByCode[c]);
+        stillRequired = (liveGate.outstanding || []).filter((o) => !waivedCodes.includes(o.code));
+      } else {
+        // Legacy approve (no explicit selection): the readiness (ctc) tier only.
+        waivedItems = (liveGate.ctcOutstanding || []);
+        stillRequired = (liveGate.floorOutstanding || []);
+      }
+    }
+
     const client = await db.getClient();
     let row;
     try {
       await client.query('BEGIN');
-      row = await loanExceptions.decideException(req.params.id, decision, req.actor.id, note, client);
+      row = await loanExceptions.decideException(req.params.id, decision, req.actor.id, note, client,
+        { waivedCodes, decidedGate });
       if (!row) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'This exception was already decided or no longer exists.' }); }
       // Guaranty waiver: Approve → waive the co-borrower's personal guaranty (the
       // term-sheet display flag); Deny → both borrowers guarantee (the default).
       // esign_before_ctc: no application-column change — the APPROVED loan_exceptions
-      // row itself is what the e-sign send-gate reads to allow sending the term-sheet
-      // package before clear-to-close (the floor is always re-checked at send time).
+      // row (with its waived_codes) is what the e-sign send-gate reads; every
+      // requirement NOT waived is still re-checked at send time.
       if (isGuaranty) {
         await client.query(
           `UPDATE applications SET co_borrower_pg_waived=$2, updated_at=now() WHERE id=$1`,
@@ -94,7 +139,11 @@ router.post('/:id/decide', requireRole('super_admin'), async (req, res) => {
     } finally { client.release(); }
 
     auditSafe(req.actor.id, isGuaranty ? 'guaranty_exception_decided' : 'esign_before_ctc_exception_decided',
-      'application', row.application_id, { exceptionId: row.id, exceptionType: exc.exception_type, decision, note: String(note).slice(0, 200) });
+      'application', row.application_id, {
+        exceptionId: row.id, exceptionType: exc.exception_type, decision, note: String(note).slice(0, 200),
+        waivedCodes: waivedCodes || undefined,
+        stillRequired: isEsign && decision === 'approved' ? stillRequired.map((o) => o.code) : undefined,
+      });
 
     // Tell the file's team the verdict (best-effort). An approval reminds them what
     // it unlocked; a denial reminds them the default policy stands.
@@ -117,12 +166,16 @@ router.post('/:id/decide', requireRole('super_admin'), async (req, res) => {
         const ctx = await notify.fileContext(row.application_id, [
           { label: 'Send before clear-to-close', value: decision === 'approved' ? 'Approved' : 'Denied' },
         ]);
+        // Name exactly what was waived and what is STILL required, so the team
+        // never has to guess which items the approval covered.
+        const waivedList = waivedItems.map((o) => o.label).join('; ');
+        const requiredList = stillRequired.map((o) => o.label).join('; ');
         await notify.notifyAppStaff(row.application_id, {
           type: 'esign_before_ctc_exception_decided',
           title: decision === 'approved' ? 'Send-before-clear-to-close approved' : 'Send-before-clear-to-close denied',
           body: decision === 'approved'
-            ? `A super-admin APPROVED sending the term-sheet package on ${ctx ? ctx.label : 'the file'} before it is ready for clear-to-close${note ? ` — ${String(note).slice(0, 200)}` : ''}. You can send it now — the appraisal/pricing/closing-date/registration prerequisites are still enforced.`
-            : `A super-admin DENIED sending the term-sheet package on ${ctx ? ctx.label : 'the file'} before clear-to-close${note ? ` — ${String(note).slice(0, 200)}` : ''}. Finish the outstanding items, then it can be sent.`,
+            ? `A super-admin APPROVED an exception on ${ctx ? ctx.label : 'the file'}${note ? ` — ${String(note).slice(0, 200)}` : ''}. Waived: ${waivedList || 'nothing (already resolved)'}.${requiredList ? ` STILL REQUIRED before the package can send: ${requiredList}.` : ' Every other requirement is met — the package can be sent now.'}`
+            : `A super-admin DENIED sending the term-sheet package on ${ctx ? ctx.label : 'the file'} early${note ? ` — ${String(note).slice(0, 200)}` : ''}. Finish the outstanding items, then it can be sent.`,
           meta: (ctx && ctx.meta) || undefined, applicationId: row.application_id,
           link: `/internal/app/${row.application_id}#sec-esign`, ctaLabel: 'Open the loan file',
         });
@@ -208,6 +261,37 @@ router.post('/:id/comments', async (req, res) => {
     if (e && e.status === 400) return res.status(400).json({ error: e.message });
     res.status(500).json({ error: 'could not post the comment' });
   }
+});
+
+// The CLEAR VIEW for a send-before-clear-to-close exception (owner-directed
+// 2026-07-24): the LIVE requirements picture (every ✓ done / ✗ outstanding, with
+// tiers + waive warnings), the snapshot taken at request time, and — once
+// decided — which codes the approval waived. The super-admin decides from this;
+// the requester reads the same picture. Same participant gate as comments.
+router.get('/:id/gate', async (req, res) => {
+  try {
+    const exc = await loanExceptions.getById(req.params.id);
+    if (!exc) return res.status(404).json({ error: 'That exception no longer exists.' });
+    if (exc.exception_type !== 'esign_before_ctc') return res.status(400).json({ error: 'This exception has no send-gate view.' });
+    if (!canParticipate(exc, req.actor)) return res.status(403).json({ error: 'You don’t have access to this exception.' });
+    const g = await require('../lib/esign/gate').esignSendGate(exc.application_id, { db });
+    res.json({
+      applicationId: exc.application_id,
+      status: exc.status,
+      live: {
+        ready: g.ready,
+        sendAllowed: g.sendAllowed,
+        floorMet: g.floorMet,
+        checks: g.checks || [],
+        outstanding: g.outstanding || [],
+      },
+      requestSnapshot: exc.gate_snapshot || null,
+      decidedGate: exc.decided_gate || null,
+      waivedCodes: Array.isArray(exc.waived_codes) ? exc.waived_codes : null,
+      canDecide: req.actor.role === 'super_admin' && exc.status === 'requested'
+        && !(exc.requested_by && exc.requested_by === req.actor.id),
+    });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
 // The conditions / document-requests tagged to this exception, each with the

@@ -148,9 +148,10 @@ export default function EsignFileSection({ appId, role, onChanged }) {
     const { blob, filename } = await api.staffDownloadDoc(doc.documentId);
     saveBlob(blob, filename || doc.filename);
   });
-  // Request a super-admin exception to send the term-sheet package before the file
-  // is ready for clear-to-close. The server refuses unless the hard floor (appraisal
-  // back · re-priced · closing date · registration current) is already met.
+  // Request a super-admin exception to send the term-sheet package now. May be
+  // requested whenever the package can't send (owner-directed 2026-07-24) — the
+  // reviewing super-admin sees the full done/outstanding picture and picks
+  // exactly which requirements to waive; everything not waived still applies.
   const requestException = () => act('exc:req', async () => {
     const r = await api.requestEsignBeforeCtc(appId, { reasonCode: excReason, reasonNote: excNote });
     if (!r || !r.ok) throw new Error((r && r.error) || 'Could not send the request.');
@@ -163,18 +164,19 @@ export default function EsignFileSection({ appId, role, onChanged }) {
 
   if (data == null) return <p className="muted small">Loading…</p>;
   // Defaults keep the component safe against an older server payload that lacks the
-  // send-before-clear-to-close fields (sendAllowed falls back to ready).
+  // exception fields (sendAllowed falls back to ready; waived flags to false).
   const gate = data.gate || { ready: false, outstanding: [] };
   const sendAllowed = gate.sendAllowed !== undefined ? gate.sendAllowed : gate.ready;
-  const floorOutstanding = gate.floorOutstanding || (gate.ready ? [] : gate.outstanding || []);
-  const ctcOutstanding = gate.ctcOutstanding || [];
-  const floorMet = gate.floorMet !== undefined ? gate.floorMet : gate.ready;
+  const outstanding = gate.outstanding || [];               // every blocker, with tier + waived flags
+  const waivedOutstanding = gate.waivedOutstanding || outstanding.filter((o) => o.waived);
   const exc = gate.exception || null;                       // latest esign_before_ctc exception (any status)
   const excApproved = !!(exc && exc.status === 'approved');
   const excRequested = !!(exc && exc.status === 'requested');
+  // Request-anytime (owner-directed 2026-07-24): whenever the package can't send
+  // and no request is pending — the floor being unmet no longer blocks ASKING.
   const canRequestException = gate.canRequestException !== undefined
     ? gate.canRequestException
-    : (!gate.ready && floorMet && !excRequested && !excApproved);
+    : (!gate.ready && !sendAllowed && !excRequested);
   const reasonOpts = data.exceptionReasonCodes || {};
   const envelopes = data.envelopes || [];
   const hasLoanNumber = !!(data.loanNumber && String(data.loanNumber).trim());
@@ -309,8 +311,8 @@ export default function EsignFileSection({ appId, role, onChanged }) {
         <div className="row" style={{ alignItems: 'baseline' }}>
           <h4 style={{ margin: 0 }}>Ready to send?</h4>
           <div className="spacer" />
-          <span className={`pill ${gate.ready ? 'ok' : excApproved ? 'warn' : 'muted'}`}>
-            {gate.ready ? 'All prerequisites met' : excApproved ? 'Cleared by exception' : 'Not yet'}
+          <span className={`pill ${gate.ready ? 'ok' : sendAllowed ? 'warn' : 'muted'}`}>
+            {gate.ready ? 'All prerequisites met' : sendAllowed ? 'Cleared by exception' : 'Not yet'}
           </span>
         </div>
         {gate.ready ? (
@@ -319,58 +321,69 @@ export default function EsignFileSection({ appId, role, onChanged }) {
           </ul>
         ) : (
           <>
-            {/* The four term-sheet-CORRECTNESS prerequisites — a hard floor that an
-                exception can never waive (they make the signed term sheet correct). */}
-            {floorOutstanding.length > 0 && (
+            {/* Every outstanding requirement in ONE list. A blocker a super-admin
+                waived shows as ✓ "waived"; everything else still blocks. Items that
+                make the signed term sheet itself correct carry a tag. */}
+            {outstanding.length > 0 && (
               <ul className="esign-gate">
-                {floorOutstanding.map((o) => (
-                  <li key={o.code} className="bad"><span className="esign-gate-ic">✗</span> <strong>{o.label}</strong> — <span className="muted small">{o.reason}</span></li>
-                ))}
-              </ul>
-            )}
-            {/* Clear-to-close readiness — a super-admin can waive these with an
-                exception so the package can go out before clear-to-close. */}
-            {ctcOutstanding.length > 0 && (
-              <ul className="esign-gate">
-                {ctcOutstanding.map((o) => (
-                  <li key={o.code} className={excApproved ? 'ok' : 'bad'}>
-                    <span className="esign-gate-ic">{excApproved ? '✓' : '✗'}</span> <strong>{o.label}</strong> — <span className="muted small">{excApproved ? 'waived by approved exception' : o.reason}</span>
+                {outstanding.map((o) => (
+                  <li key={o.code} className={o.waived ? 'ok' : 'bad'}>
+                    <span className="esign-gate-ic">{o.waived ? '✓' : '✗'}</span> <strong>{o.label}</strong>
+                    {' '}— <span className="muted small">{o.waived ? 'waived by an approved super-admin exception' : o.reason}</span>
+                    {!o.waived && o.tier === 'floor' ? (
+                      <span className="ts-badge warn" style={{ marginLeft: 6 }} title="This requirement makes the signed term sheet itself correct.">term-sheet correctness</span>
+                    ) : null}
                   </li>
                 ))}
               </ul>
             )}
 
-            {/* Send-before-clear-to-close: the super-admin exception path. */}
-            {excApproved ? (
+            {/* The super-admin exception path (owner-directed 2026-07-24): can be
+                REQUESTED whenever the package can't send — the reviewer sees the
+                full done/outstanding picture and picks exactly what to waive. */}
+            {excApproved && sendAllowed ? (
               <div className="notice ok" style={{ margin: '2px 0 10px' }}>
-                <strong>Approved to send before clear-to-close.</strong> A super-admin approved sending this early{exc.decision_note ? ` — ${exc.decision_note}` : ''}. The prerequisites above are still enforced.
+                <strong>Approved to send by super-admin exception.</strong>
+                {' '}{waivedOutstanding.length
+                  ? <>Waived: {waivedOutstanding.map((o) => o.label).join('; ')}.</>
+                  : 'Every requirement is otherwise met.'}
+                {exc.decision_note ? ` — ${exc.decision_note}` : ''}
+              </div>
+            ) : excApproved && !sendAllowed ? (
+              <div className="notice err" style={{ margin: '2px 0 10px' }}>
+                <strong>The approved exception no longer covers everything.</strong> The picture changed since the
+                approval — the item(s) marked ✗ above still block the send. Complete them, or request a fresh
+                exception below.
               </div>
             ) : excRequested ? (
               <div className="notice info" style={{ margin: '2px 0 10px' }}>
                 <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <span className="ts-badge warn">Exception requested — awaiting super-admin approval</span>
+                  <span className="ts-badge warn">Exception requested — awaiting super-admin review</span>
                   <button className="btn ghost btn-sm" disabled={busy === 'exc:wd'} onClick={() => withdrawException(exc.id)}>Withdraw request</button>
                 </div>
+                <div className="muted small" style={{ marginTop: 4 }}>
+                  The super-admin sees everything that’s done and still outstanding, and chooses exactly which
+                  requirements to waive — anything not waived still applies.
+                </div>
               </div>
-            ) : !floorMet ? (
-              <div className="notice info" style={{ margin: '2px 0 10px' }}>
-                An exception to send before clear-to-close can be requested once the prerequisites above are done.
-              </div>
-            ) : canRequestException ? (
+            ) : null}
+            {canRequestException ? (
               <div style={{ margin: '2px 0 10px' }}>
                 {exc && exc.status === 'denied' && (
                   <div className="muted small" style={{ marginBottom: 6 }}>A previous exception request was denied{exc.decision_note ? ` — ${exc.decision_note}` : ''}.</div>
                 )}
                 {!excOpen ? (
                   <button className="btn ghost btn-sm" onClick={() => { setExcOpen(true); setErr(''); }}>
-                    Request an exception to send before clear-to-close
+                    Request a super-admin exception to send now
                   </button>
                 ) : (
                   <div style={{ padding: 10, background: 'rgba(174,135,70,0.08)', border: '1px solid #AE8746', borderRadius: 8 }}>
                     <div className="muted small" style={{ marginBottom: 6 }}>
-                      Ask a super-admin to approve sending the term-sheet package before the file is clear-to-close. The
-                      appraisal / pricing / closing-date / registration prerequisites still apply — this waives only the
-                      remaining readiness. It goes to the Exceptions box; the package can be sent only if it’s approved.
+                      Ask a super-admin to approve sending the term-sheet package now. They’ll see the full picture —
+                      what’s already done and what’s still outstanding — and tick exactly which requirements to waive
+                      (for example: “this sign-off is waived, but you still must re-register the product”). Anything
+                      they don’t waive still applies before the package can go out. Use this too when a system flag is
+                      blocking the send in error.
                     </div>
                     <label className="muted small">Reason</label>
                     <select className="input" value={excReason} onChange={(e) => setExcReason(e.target.value)} style={{ width: '100%', marginBottom: 6 }}>
@@ -378,7 +391,7 @@ export default function EsignFileSection({ appId, role, onChanged }) {
                       {Object.entries(reasonOpts).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                     </select>
                     <textarea className="input" rows={2} style={{ width: '100%' }}
-                      placeholder="Explain why this needs to go out before clear-to-close…"
+                      placeholder="Explain why this needs to go out now…"
                       value={excNote} onChange={(e) => setExcNote(e.target.value)} />
                     <div className="row" style={{ gap: 8, marginTop: 8 }}>
                       <button className="btn primary btn-sm" disabled={busy === 'exc:req' || !excNote.trim()} onClick={requestException}>
@@ -420,7 +433,7 @@ export default function EsignFileSection({ appId, role, onChanged }) {
             const blocked = !sendAllowed || needsLoan || already;
             const title = already ? 'This package is already started — manage it on its envelope below (Resend / Void / Re-issue)'
               : needsLoan ? 'Enter the YS loan number above first'
-              : (sendAllowed ? (gate.ready ? p.hint : `${p.hint} (approved to send before clear-to-close)`) : 'Complete the prerequisites above first — or request a super-admin exception');
+              : (sendAllowed ? (gate.ready ? p.hint : `${p.hint} (approved by super-admin exception)`) : 'Complete the outstanding requirements above first — or request a super-admin exception to send now');
             return (
               <button key={p.purpose} className="btn primary btn-sm" disabled={blocked || busy === `send:${p.purpose}`}
                 title={title} onClick={() => send(p.purpose)}>
