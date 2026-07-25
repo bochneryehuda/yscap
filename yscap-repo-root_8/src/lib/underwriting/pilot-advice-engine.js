@@ -28,6 +28,7 @@ const { ssnCompleteness } = require('./ssn-autoclear');
 const { assetsCompleteness } = require('./assets-autoclear');
 const { fraudCompleteness } = require('./fraud-autoclear');
 const { creditCompleteness } = require('../credit/completeness');
+const { floodCompleteness } = require('./flood-advisory');
 
 // Count OPEN fatal document_findings for a file across the given sources (the "positive
 // contradiction" signal that turns a signed-off condition into a DISPUTE).
@@ -80,6 +81,12 @@ const NOTES = {
     agree: 'PILOT read the background report and it\'s clear.',
     dispute: 'PILOT sees a background/OFAC issue that isn\'t resolved. Worth another look.',
   },
+  flood: {
+    ready: 'PILOT read the flood determination and the flood zone is confirmed (with flood insurance where the zone requires it).',
+    not_ready: 'PILOT has not been able to confirm the flood determination for the property yet.',
+    agree: 'PILOT read the flood determination and it lines up.',
+    dispute: 'PILOT sees a flood issue that isn\'t resolved — the property is in a flood zone and a flood policy isn\'t on file. Worth another look.',
+  },
 };
 
 // Registry: condition template code (or the co-borrower gov-ID marker field_key) → evaluator.
@@ -130,6 +137,13 @@ const EVALUATORS = {
       const c = await fraudCompleteness(client, appId, item.id);
       const contradicted = await hasOpenFatal(client, appId, ['background_report']);
       return { complete: !!c.complete, contradicted };
+    },
+  },
+  rtl_cond_flood: {
+    domain: 'flood',
+    async evaluate(client, appId) {
+      const c = await floodCompleteness(client, appId);
+      return { complete: !!c.complete, contradicted: (c.openFatal || 0) > 0 };
     },
   },
 };
