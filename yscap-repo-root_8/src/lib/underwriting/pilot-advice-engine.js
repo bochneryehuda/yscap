@@ -29,6 +29,7 @@ const { assetsCompleteness } = require('./assets-autoclear');
 const { fraudCompleteness } = require('./fraud-autoclear');
 const { creditCompleteness } = require('../credit/completeness');
 const { floodCompleteness } = require('./flood-advisory');
+const { experienceCompleteness } = require('./experience-advisory');
 
 // Count OPEN fatal document_findings for a file across the given sources (the "positive
 // contradiction" signal that turns a signed-off condition into a DISPUTE).
@@ -86,6 +87,12 @@ const NOTES = {
     not_ready: 'PILOT has not been able to confirm the flood determination for the property yet.',
     agree: 'PILOT read the flood determination and it lines up.',
     dispute: 'PILOT sees a flood issue that isn\'t resolved — the property is in a flood zone and a flood policy isn\'t on file. Worth another look.',
+  },
+  experience: {
+    ready: 'PILOT checked the track record and the experience this loan needs is verified.',
+    not_ready: 'PILOT is still waiting on enough verified past deals to cover the experience this loan needs.',
+    agree: 'PILOT checked the track record and the experience this loan needs is verified.',
+    dispute: 'PILOT can\'t confirm enough verified past deals for the experience this loan needs. Worth another look.',
   },
 };
 
@@ -146,6 +153,18 @@ const EVALUATORS = {
       return { complete: !!c.complete, contradicted: (c.openFatal || 0) > 0 };
     },
   },
+  rtl_p3_reo: {
+    domain: 'experience',
+    async evaluate(client, appId) {
+      const c = await experienceCompleteness(client, appId);
+      // No experience required on this file → nothing to judge; lay no advisory.
+      if (!c.hasRequirement) return null;
+      // Experience has no "positive contradiction" signal — a verified shortfall is the
+      // absence of a (human) verification step, not evidence the experience is wrong — so
+      // contradicted is always false (never a false DISPUTE). ready/not_ready/agree only.
+      return { complete: !!c.complete, contradicted: false };
+    },
+  },
 };
 // The co-borrower gov-ID marker item (field_key='cob_gov_id') shares the gov-ID evaluator.
 const CO_GOV_ID_MARKER = 'cob_gov_id';
@@ -184,7 +203,7 @@ async function runFileAdvice(client, appId) {
       `SELECT ${ITEM_COLS}
          FROM checklist_items ci
          LEFT JOIN checklist_templates t ON t.id = ci.template_id
-        WHERE ci.application_id=$1 AND ci.item_kind IN ('document','condition')`, [appId]);
+        WHERE ci.application_id=$1 AND ci.item_kind IN ('document','condition','task')`, [appId]);
     for (const item of conds.rows) {
       // eslint-disable-next-line no-await-in-loop
       await adviseOne(client, appId, item).catch(() => {});
