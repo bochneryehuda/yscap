@@ -90,7 +90,7 @@ Types after Wave 1:
   hard-warning (both status doors + TPR/MISMO exports) now also lands in the register as a
   born-approved record (best-effort — can never block the status change it documents).
 
-### 3.2 Governance columns (db/295 — additive, idempotent, NULL = legacy behavior)
+### 3.2 Governance columns (db/296 — additive, idempotent, NULL = legacy behavior)
 - `compensating_factors jsonb` — structured `[{code, note}]` from the shared
   `COMPENSATING_FACTORS` taxonomy (FICO strength, liquidity, low leverage, experience,
   guarantor strength, rate premium, paydown, repeat sponsor).
@@ -189,7 +189,7 @@ attestation's "exceptions granted" promise is finally true.
 
 ## 6. Verification
 
-- `db/295` applied twice (idempotent) on a fresh chain of all 295 migrations.
+- `db/296` applied twice (idempotent) on a fresh chain of all migrations (renumbered from 295 after a parallel session landed db/295_pilot_ready_stamp on main).
 - `scripts/test-exception-register-db.js` (NEW, in `npm test`): 63 assertions — registry,
   SLA/due_at, factors sanitize, drift, request/deny/re-request chain, withdraw stamps,
   clear-of-open refusal, expiry validation + sweep semantics (guaranty immune) + read-time

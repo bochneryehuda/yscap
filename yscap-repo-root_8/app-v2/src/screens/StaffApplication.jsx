@@ -585,6 +585,54 @@ function Badge({ children, tone }) {
   return <span className="pill" style={tone === 'gold' ? { borderColor: 'var(--gold)', color: 'var(--gold)' } : undefined}>{children}</span>;
 }
 
+/* PILOT ADVISORY stamp (owner-directed 2026-07-24). PILOT lays an advisory ON TOP
+   of the human layer for EVERY condition it can judge, and NEVER clears a Condition
+   Center condition itself — the human still signs off. Four verdicts:
+     ready      — open, PILOT verified it's met → ready for a human to clear
+     not_ready  — open, PILOT hasn't confirmed it yet
+     agree      — signed off, PILOT confirms it was cleared correctly
+     dispute    — signed off, but PILOT found evidence it should be revisited
+   The note explains why. Purely presentational — reads it.pilot_advice/_note/_at. */
+const PILOT_ADVICE = {
+  ready:     { label: 'PILOT: ready to clear', fg: '#1f7a4d', bg: '#e7f5ec', bd: '#bfe3cd', dot: '#22a35d' },
+  not_ready: { label: 'PILOT: not ready yet',  fg: '#8a5a00', bg: '#fbf1de', bd: '#eeddb6', dot: '#d99518' },
+  agree:     { label: 'PILOT: agrees',         fg: '#1d6a70', bg: '#e4f2f3', bd: '#bfe0e3', dot: '#2f7f86' },
+  dispute:   { label: 'PILOT: revisit',        fg: '#a5342b', bg: '#fbe9e7', bd: '#f1c7c2', dot: '#d1453b' },
+};
+function PilotAdvice({ it }) {
+  const v = it && it.pilot_advice;
+  const spec = v && PILOT_ADVICE[v];
+  if (!spec) return null;
+  const note = (it.pilot_advice_note || '').trim();
+  const when = it.pilot_advice_at ? new Date(it.pilot_advice_at).toLocaleDateString() : '';
+  const title = [note, when && `PILOT looked at this on ${when}`].filter(Boolean).join('\n');
+  return (
+    <span
+      title={title || undefined}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 6, padding: '2px 9px',
+        borderRadius: 999, fontSize: 11.5, fontWeight: 700, lineHeight: 1.6,
+        color: spec.fg, background: spec.bg, border: `1px solid ${spec.bd}`,
+        whiteSpace: 'nowrap', letterSpacing: .1,
+      }}>
+      <span style={{ width: 7, height: 7, borderRadius: '50%', background: spec.dot, flex: '0 0 auto' }} />
+      {spec.label}
+    </span>
+  );
+}
+/* The plain-language note under the row, so the reason is visible without hovering. */
+function PilotAdviceNote({ it }) {
+  const v = it && it.pilot_advice;
+  const note = (it.pilot_advice_note || '').trim();
+  if (!v || !note) return null;
+  const dispute = v === 'dispute';
+  return (
+    <div className="small" style={{ marginTop: 4, color: dispute ? 'var(--danger)' : 'var(--muted)' }}>
+      <strong>PILOT’s note:</strong> {note}
+    </div>
+  );
+}
+
 // Completing / signing off is the PROCESSOR's call (admins too); a loan
 // officer marks conditions REVIEWED instead — mirrored server-side. This is a
 // UI hint by role default; the server enforces the sign_off_conditions
@@ -627,6 +675,7 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
           : it.status === 'satisfied' ? <Badge tone="gold">satisfied</Badge>
           : it.reviewed_at ? <Badge>done ✓ awaiting sign-off</Badge>
           : <Badge>{it.status}</Badge>}
+        <PilotAdvice it={it} />
         <button className="btn link small" onClick={(e) => { e.stopPropagation(); setExpandOverride(true); }}>Expand</button>
       </div>
     );
@@ -655,7 +704,9 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
             {it.is_milestone && <Badge tone="gold">milestone</Badge>}
             {it.tool_key && <Badge tone="gold">{it.tool_submitted ? 'borrower submitted' : 'borrower task'}</Badge>}
             {!signed && it.reviewed_at && <Badge>done ✓ awaiting sign-off</Badge>}
+            <PilotAdvice it={it} />
           </div>
+          <PilotAdviceNote it={it} />
           {it.hint && <div className="muted small" style={{ marginTop: 4 }}>{it.hint}</div>}
           {it.assignee_name && <div className="muted small">Assigned to {it.assignee_name}</div>}
           {signed && (it.waived_at
@@ -2001,6 +2052,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
               <span className="dot done" />
               <div style={{ flex: 1, minWidth: 0, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.label}</div>
               {signed ? <Badge tone="gold">signed off</Badge> : <Badge tone="gold">satisfied</Badge>}
+              <PilotAdvice it={it} />
               <button className="btn link small" onClick={(e) => { e.stopPropagation(); toggleCond(it.id); }}>Expand</button>
             </div>
           );
@@ -2025,6 +2077,10 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                   )}
                   {rowDone && <button className="btn link small" style={{ marginLeft: 8 }} onClick={() => toggleCond(it.id)}>Collapse</button>}
                 </div>
+                {it.pilot_advice && (
+                  <div style={{ marginTop: 5 }}><PilotAdvice it={it} /></div>
+                )}
+                <PilotAdviceNote it={it} />
                 <div className="muted small">
                   {it.tool_key === 'info_field' ? (() => {
                       const p = it.tool_payload || {};
