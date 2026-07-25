@@ -599,6 +599,30 @@ async function runInvestorGuidelineDesk(appId, client) {
     }
   } catch (_e) { /* appraisals unreadable → leave appraisal signals absent (conditions stay silent) */ }
 
+  // Non-arms-length CONCERN signal (#281, IG-W17): the non-arms-length condition (cond 3333)
+  // is disposition 'concern' — NEVER posted by default; it surfaces ONLY when a real concern
+  // is present. Its PRODUCER is PILOT's own detectors: an OPEN party-collusion (#199) or
+  // assignment-fraud finding means PILOT has POSITIVE evidence the buyer/seller (or an
+  // assignor/assignee) may not be arm's-length. NEVER fabricated — no such open finding →
+  // the signal stays ABSENT and the condition stays silent (the desk's concern branch
+  // `continue`s on an absent signal). Best-effort; the concern check stays silent on error.
+  // Count a collusion/fraud finding as a live signal in ANY non-terminal state — not only
+  // 'open'. A staffer who ESCALATES, notes, marks-important, or asks-admin about the finding
+  // engages HARDER with it (ai-suggestions statuses escalated/noted/marked_important/
+  // asked_admin), and that must NOT silently un-surface the derived non-arms-length concern.
+  // Only a real DISPOSITION stops it: dismissed (false positive), converted_to_condition/task
+  // (now a tracked item), or answered (admin resolved the question). Excluding the terminal
+  // set (rather than allow-listing) keeps the concern surfacing if a new active status is ever
+  // added — the fail-safe direction for an advisory.
+  try {
+    const cr = await db.query(
+      `SELECT 1 FROM ai_suggestions
+        WHERE application_id = $1
+          AND status NOT IN ('dismissed', 'converted_to_condition', 'converted_to_task', 'answered')
+          AND source IN ('party_collusion', 'assignment_fraud') LIMIT 1`, [appId]);
+    if (cr.rows[0]) signals.non_arms_length_concern = true;
+  } catch (_e) { /* suggestions unreadable → leave the concern signal absent (condition stays silent) */ }
+
   // SOW-contingency % bridge (2026-07-24): a note buyer's contingency-CAP guideline
   // (e.g. Blue Lake cond 2193) checks a MAX contingency %, but no twin fact carries
   // it — so the numeric check fell back to "to verify" on every file. The amount is

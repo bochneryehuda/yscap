@@ -75,20 +75,23 @@ async function seedSpec(db, spec) {
     await db.query(
       `INSERT INTO note_buyer_conditions
          (guideline_version_id, product, cond_no, name, domain, scope, investor_id, lifecycle,
-          trigger, required_evidence, checks, clears_by, pilot_template_code, match_quality, source_row, meta)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11::jsonb,$12,$13,$14,$15,$16::jsonb)
+          trigger, required_evidence, checks, clears_by, pilot_template_code, match_quality, source_row, meta,
+          disposition, concern_field, data_field)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11::jsonb,$12,$13,$14,$15,$16::jsonb,$17,$18,$19)
        ON CONFLICT (guideline_version_id, cond_no) DO UPDATE SET
          name = EXCLUDED.name, domain = EXCLUDED.domain, scope = EXCLUDED.scope,
          investor_id = EXCLUDED.investor_id, lifecycle = EXCLUDED.lifecycle, trigger = EXCLUDED.trigger,
          required_evidence = EXCLUDED.required_evidence, checks = EXCLUDED.checks,
          clears_by = EXCLUDED.clears_by, pilot_template_code = EXCLUDED.pilot_template_code,
          match_quality = EXCLUDED.match_quality, source_row = EXCLUDED.source_row,
-         meta = EXCLUDED.meta, active = true, updated_at = now()`,
+         meta = EXCLUDED.meta, disposition = EXCLUDED.disposition,
+         concern_field = EXCLUDED.concern_field, data_field = EXCLUDED.data_field,
+         active = true, updated_at = now()`,
       [verId, c.product || spec.PRODUCT, c.cond_no, c.name, c.domain || null, c.scope, rowInvestor,
        c.lifecycle, JSON.stringify(c.trigger || {}), c.required_evidence || null,
        JSON.stringify(Array.isArray(c.checks) ? c.checks : []), c.clears_by || null,
        c.pilot_template_code || null, c.match_quality || null, (c.source_row != null ? c.source_row : (c.source_page != null ? c.source_page : null)),
-       JSON.stringify(c.meta || {})]);
+       JSON.stringify(c.meta || {}), c.disposition || null, c.concern_field || null, c.data_field || null]);
     n += 1;
   }
   return { ok: true, note_buyer: spec.NOTE_BUYER, investorId, versionId: verId, conditions: n };

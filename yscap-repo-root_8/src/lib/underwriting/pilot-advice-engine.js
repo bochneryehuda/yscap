@@ -31,6 +31,8 @@ const { creditCompleteness } = require('../credit/completeness');
 const { floodCompleteness } = require('./flood-advisory');
 const { experienceCompleteness } = require('./experience-advisory');
 const { appraisalCompleteness } = require('./appraisal-advisory');
+const { signedTermSheetCompleteness } = require('./signed-term-sheet-advisory');
+const { contactCompleteness, TITLE_TYPES, INSURANCE_TYPES } = require('./contact-advisory');
 
 // Count OPEN fatal document_findings for a file across the given sources (the "positive
 // contradiction" signal that turns a signed-off condition into a DISPUTE).
@@ -100,6 +102,24 @@ const NOTES = {
     not_ready: 'PILOT has not been able to read a clean appraisal for this property yet.',
     agree: 'PILOT read the appraisal and everything lines up.',
     dispute: 'PILOT sees an appraisal issue that isn\'t resolved — something about the property, the value, or the report doesn\'t line up. Worth another look.',
+  },
+  signed_term_sheet: {
+    ready: 'PILOT sees the borrower-signed term sheet on file.',
+    not_ready: 'PILOT is still waiting on the borrower-signed term sheet.',
+    agree: 'PILOT sees the borrower-signed term sheet on file.',
+    dispute: 'PILOT can\'t find a current signed term sheet on file. Worth another look.',
+  },
+  title_contact: {
+    ready: 'PILOT sees the title company contact on file.',
+    not_ready: 'PILOT is still waiting on the title company contact.',
+    agree: 'PILOT sees the title company contact on file.',
+    dispute: 'PILOT can\'t find the title company contact on file. Worth another look.',
+  },
+  insurance_contact: {
+    ready: 'PILOT sees the insurance contact on file.',
+    not_ready: 'PILOT is still waiting on the insurance contact.',
+    agree: 'PILOT sees the insurance contact on file.',
+    dispute: 'PILOT can\'t find the insurance contact on file. Worth another look.',
   },
 };
 
@@ -181,6 +201,36 @@ const EVALUATORS = {
       return { complete: !!c.complete, contradicted: (c.openFatal || 0) > 0 };
     },
   },
+  rtl_cond_signedts: {
+    domain: 'signed_term_sheet',
+    async evaluate(client, appId, item) {
+      const c = await signedTermSheetCompleteness(client, item.id);
+      // A term sheet has no "positive contradiction" finding, and a stale/changed term sheet
+      // is REOPENED (un-signed) by the economics/experience triggers, so a signed-off
+      // condition never coexists with a stale one — contradicted is always false (never a
+      // false DISPUTE). ready/not_ready/agree only.
+      return { complete: !!c.complete, contradicted: false };
+    },
+  },
+  rtl_p1_titlec: {
+    domain: 'title_contact',
+    async evaluate(client, appId, item) {
+      // Mirror the sign-off gate: an OPTIONAL (is_required=false) contact condition is
+      // signable empty, so PILOT lays no advisory. A contact has no findings source, so
+      // contradicted is always false (ready/not_ready/agree only, never a false dispute).
+      if (item.is_required === false) return null;
+      const c = await contactCompleteness(client, appId, TITLE_TYPES);
+      return { complete: !!c.complete, contradicted: false };
+    },
+  },
+  rtl_p1_insc: {
+    domain: 'insurance_contact',
+    async evaluate(client, appId, item) {
+      if (item.is_required === false) return null;
+      const c = await contactCompleteness(client, appId, INSURANCE_TYPES);
+      return { complete: !!c.complete, contradicted: false };
+    },
+  },
 };
 // The co-borrower gov-ID marker item (field_key='cob_gov_id') shares the gov-ID evaluator.
 const CO_GOV_ID_MARKER = 'cob_gov_id';
@@ -206,7 +256,7 @@ async function adviseOne(client, appId, item) {
   return verdict;
 }
 
-const ITEM_COLS = `ci.id, ci.status, ci.signed_off_by, ci.field_key, COALESCE(t.code,'') AS template_code`;
+const ITEM_COLS = `ci.id, ci.status, ci.signed_off_by, ci.field_key, ci.is_required, COALESCE(t.code,'') AS template_code`;
 
 /**
  * Run PILOT's advisory over EVERY condition on a file. Best-effort; never throws.

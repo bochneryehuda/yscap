@@ -90,7 +90,7 @@ Types after Wave 1:
   hard-warning (both status doors + TPR/MISMO exports) now also lands in the register as a
   born-approved record (best-effort — can never block the status change it documents).
 
-### 3.2 Governance columns (db/303 — additive, idempotent, NULL = legacy behavior)
+### 3.2 Governance columns (db/305 — additive, idempotent, NULL = legacy behavior)
 - `compensating_factors jsonb` — structured `[{code, note}]` from the shared
   `COMPENSATING_FACTORS` taxonomy (FICO strength, liquidity, low leverage, experience,
   guarantor strength, rate premium, paydown, repeat sponsor).
@@ -189,7 +189,7 @@ attestation's "exceptions granted" promise is finally true.
 
 ## 6. Verification
 
-- `db/303` applied twice (idempotent) on a fresh chain of all migrations (renumbered from 295 → 296 → 303 as parallel sessions landed db/295_pilot_ready_stamp and the db/296–302 TrustPoint wave on main).
+- `db/305` applied twice (idempotent) on a fresh chain of all migrations (renumbered 295 → 296 → 303 → 305 as parallel sessions kept landing migrations on main; the number is claimed at merge time per the house renumber rule).
 - `scripts/test-exception-register-db.js` (NEW, in `npm test`): 63 assertions — registry,
   SLA/due_at, factors sanitize, drift, request/deny/re-request chain, withdraw stamps,
   clear-of-open refusal, expiry validation + sweep semantics (guaranty immune) + read-time
