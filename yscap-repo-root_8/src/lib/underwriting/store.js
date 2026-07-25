@@ -367,6 +367,26 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
     }
   } catch (_) { /* auto-clear is additive — never blocks the extraction */ }
 
+  // Step 10 (owner-directed 2026-07-24): refresh PILOT's ADVISORY on every Condition
+  // Center condition. PILOT never signs a condition off itself — it only lays a "ready /
+  // agrees / revisit" advisory on top of the human layer (pilot-advice-engine + db/295).
+  // Runs after ANY document is read so the advisory reflects the fresh file state.
+  // Gated ON by default (PILOT_READY_STAMP) inside the engine; best-effort — the advisory
+  // clears nothing and must never block the extraction from persisting.
+  // SAVEPOINT-wrapped (mirrors the evidence-ledger pass above): runFileAdvice swallows its
+  // own errors, but a swallowed PG error would leave THIS transaction aborted and silently
+  // roll back the whole document analysis on COMMIT. The savepoint contains any such abort
+  // so the extraction always persists — honouring "the advisory never blocks the extraction".
+  if (appId) {
+    try {
+      await client.query('SAVEPOINT pilot_advice');
+      await require('./pilot-advice-engine').runFileAdvice(client, appId);
+      await client.query('RELEASE SAVEPOINT pilot_advice');
+    } catch (_) {
+      await client.query('ROLLBACK TO SAVEPOINT pilot_advice').catch(() => {});
+    }
+  }
+
   return { extractionId, findingIds };
 }
 

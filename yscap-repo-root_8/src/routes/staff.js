@@ -2504,6 +2504,10 @@ router.get('/applications/:id/checklist', async (req, res) => {
             ci.phase, ci.role_scope, ci.hint, ci.is_gate, ci.is_milestone, ci.sort_order,
             ci.due_date, ci.notes, ci.created_by_kind, ci.created_at,
             ci.field_key, ci.category, ci.origin_kind, ci.origin_detail, ci.esign_doc, ci.borrower_label,
+            -- PILOT's advisory overlay (owner-directed 2026-07-24): its "ready / not_ready /
+            -- agree / dispute" verdict + note on this condition, ON TOP of the human status.
+            -- Advisory only — PILOT never signs a condition off (that stays a human action).
+            ci.pilot_advice, ci.pilot_advice_note, ci.pilot_advice_at,
             -- The borrower-facing hint carries an "accept + request another document"
             -- ask ("Still needed: …") — staff must see what was requested, not only
             -- the borrower (#125). Rendered on the staff borrower-conditions panel.
