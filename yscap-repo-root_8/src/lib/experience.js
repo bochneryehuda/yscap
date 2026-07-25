@@ -302,6 +302,8 @@ module.exports = {
   backfillCoBorrowerExperience,
   fileBorrowerIds,
   requestedFromApp,
+  hasRequirement,
+  requirementMet,
   syncExperienceChecklistForApplication,
   syncExperienceChecklistForBorrower,
   RECENT_EXIT_SQL,
