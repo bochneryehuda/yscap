@@ -117,4 +117,36 @@ check('collapsed coverage gap → one suggestion keyed on the PILOT code', () =>
   assert.deepStrictEqual(s.evidence.coveredConditions, ['TITLE COMMITMENT', 'PAYOFF/PRELIM', 'VESTING CHECK']);
 });
 
+// 7 — a disposition:'concern' item (e.g. non-arms-length, IG-W17) maps to an advisory
+// warning FINDING (never a coverage_gap — there is nothing to post), keyed isg-concern.
+check('concern flag → advisory finding (never a coverage gap)', () => {
+  const out = ds.deskToSuggestions({
+    noteBuyer: { name: 'CorrFirst' },
+    unhappy: [{
+      cond_no: 3333, name: 'NON ARMS LENGTH TRANSACTION', domain: 'non_arms_length',
+      flag: 'concern', severity: 'warning', concern_field: 'non_arms_length_concern',
+      required_evidence: 'Underwriter verifies the relationship between the parties.',
+    }],
+  });
+  assert.strictEqual(out.length, 1, 'the concern surfaces as one suggestion');
+  const s = out[0];
+  assert.strictEqual(s.kind, 'finding', 'a concern is a finding, not a condition to post');
+  assert.strictEqual(s.severity, 'warning', 'concern is advisory (warning), never fatal here');
+  assert.strictEqual(s.dedupeKey, 'isg-concern:3333', 'keyed isg-concern:<cond_no>');
+  assert.strictEqual(s.proposedAction.type, 'review_guideline_concern', 'action is review, not attach_condition');
+  assert.strictEqual(s.evidence.flag, 'concern');
+  assert.strictEqual(s.evidence.concern_field, 'non_arms_length_concern');
+  assert.match(s.body, /verifies the relationship/i, 'body carries what to confirm');
+});
+
+// 8 — a concern item is NEVER produced without the concern flag: a plain unhappy row with
+// no recognized flag yields nothing (the desk only surfaces a concern when its signal fired).
+check('an unhappy row with no recognized flag yields no suggestion', () => {
+  const out = ds.deskToSuggestions({
+    noteBuyer: { name: 'CorrFirst' },
+    unhappy: [{ cond_no: 3333, name: 'NON ARMS LENGTH TRANSACTION', domain: 'non_arms_length' }],
+  });
+  assert.strictEqual(out.length, 0, 'no flag → nothing surfaces');
+});
+
 console.log(`\ndesk-sync: ${n} checks passed`);
