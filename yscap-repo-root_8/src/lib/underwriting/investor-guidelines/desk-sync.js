@@ -14,6 +14,10 @@
  *     at all. FATAL for a construction feasibility report on a ground-up / heavy
  *     rehab file (the owner's "pop up something big"); a warning otherwise.
  *   - conflict — a value on the file is outside the note buyer's guideline.
+ *   - concern — a disposition:'concern' guideline (e.g. a non-arms-length
+ *     transaction) that is NEVER raised proactively and surfaces ONLY when a real
+ *     concern signal fired (a party-collusion / assignment-fraud detector). A
+ *     warning finding for a human to verify — there is no document to post.
  * An OPEN condition (the document just hasn't arrived) is FINE and is never raised.
  *
  * ADVISORY ONLY — records ai_suggestions, never blocks, never posts/clears a
@@ -80,6 +84,22 @@ function deskToSuggestions(desk) {
           evidence: { code, domain: u.domain || null, cond_no: u.cond_no, noteBuyer: nb, flag: 'conflict', conflicts },
           proposedAction: { type: 'review_guideline_conflict', fields: { code, cond_no: u.cond_no } },
           dedupeKey: `isg-conflict:${u.cond_no}`,
+        });
+      } else if (u.flag === 'concern') {
+        // A disposition:'concern' item (e.g. a non-arms-length transaction) is NEVER raised
+        // proactively — the desk surfaced it ONLY because a real concern signal is present
+        // (a party-collusion / assignment-fraud detector fired). Forward it as an advisory
+        // warning finding for a human to verify — there is no condition to "post" (concern
+        // conditions clear by internal verification, not a document), so this is a finding,
+        // never a coverage_gap.
+        out.push({
+          source: SOURCE, kind: 'finding', severity: sev, important: sev === 'fatal',
+          title: `Possible ${(u.name || 'guideline').toLowerCase()} concern — ${nb} needs it verified`,
+          body: (u.reason || `PILOT sees a possible concern on this file that ${nb} would want checked before taking the loan.`)
+            + (u.required_evidence ? ` What to confirm: ${u.required_evidence}` : ''),
+          evidence: { code, domain: u.domain || null, cond_no: u.cond_no, noteBuyer: nb, flag: 'concern', concern_field: u.concern_field || null },
+          proposedAction: { type: 'review_guideline_concern', fields: { code, cond_no: u.cond_no } },
+          dedupeKey: `isg-concern:${u.cond_no}`,
         });
       }
     }
