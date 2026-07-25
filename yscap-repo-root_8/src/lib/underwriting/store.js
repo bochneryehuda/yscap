@@ -321,51 +321,16 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
     }
   } catch (_) { /* assignment fraud is additive — never blocks the extraction */ }
 
-  // 6. Government-ID condition auto-clear (IG-W3, owner-directed 2026-07-24). Now
-  // that this ID's extraction + findings are persisted for this file, re-evaluate
-  // the file's gov-ID condition(s): clear one that is now AI-verified clean, or
-  // reopen a prior auto-clear that has gone dirty. Gated OFF by default
-  // (GOVID_AUTOCLEAR_ENABLED) inside the helper; never a false-clear (it requires a
-  // clean per-file read with no open ID finding); best-effort — never blocks the
-  // extraction from persisting.
-  try {
-    if (docType === 'government_id' && appId) {
-      await require('./gov-id-autoclear').autoClearGovIdConditions(client, appId);
-    }
-  } catch (_) { /* auto-clear is additive — never blocks the extraction */ }
-
-  // 7. Background/OFAC condition auto-clear (IG-W12, owner-directed 2026-07-24). Now
-  // that this background report's extraction + findings are persisted, re-evaluate
-  // the file's fraud/OFAC condition: clear it when the report is AI-read clean, or
-  // reopen a prior auto-clear that has gone dirty. Gated OFF by default
-  // (FRAUD_AUTOCLEAR_ENABLED) inside the helper; never a false-clear (it requires a
-  // clean read with no open background finding); best-effort — never blocks the
-  // extraction from persisting.
-  try {
-    if (docType === 'background_report' && appId) {
-      await require('./fraud-autoclear').autoClearFraudCondition(client, appId);
-    }
-  } catch (_) { /* auto-clear is additive — never blocks the extraction */ }
-
-  // Step 8 (IG-W5): after a bank statement is AI-read, try to auto-clear the liquid-assets
-  // condition — only when the statements prove the deal's required liquidity is covered.
-  try {
-    if (docType === 'bank_statement' && appId) {
-      await require('./assets-autoclear').autoClearAssetsCondition(client, appId);
-    }
-  } catch (_) { /* auto-clear is additive — never blocks the extraction */ }
-
-  // Step 9 (IG-W7): after the purchase contract — or, on an assignment, the assignment
-  // agreement — is AI-read, try to auto-clear the "Executed purchase contract" condition
-  // (rtl_p1_contract). Only clears when the contract is read AND its economics reconcile
-  // (no open fatal contract/assignment finding); reopens a prior auto-clear that has gone
-  // dirty. Gated OFF by default (CONTRACT_AUTOCLEAR_ENABLED); best-effort — never blocks
-  // the extraction from persisting.
-  try {
-    if ((docType === 'purchase_contract' || docType === 'assignment') && appId) {
-      await require('./contract-autoclear').autoClearContractCondition(client, appId);
-    }
-  } catch (_) { /* auto-clear is additive — never blocks the extraction */ }
+  // Steps 6–9 RETIRED (owner-directed 2026-07-24). PILOT used to auto-SIGN-OFF the
+  // gov-ID / background-OFAC / liquid-assets / purchase-contract conditions once its
+  // AI read them clean (gated OFF by default via the *_AUTOCLEAR_ENABLED flags). The
+  // owner reversed that design: PILOT must NEVER sign off a Condition Center condition
+  // — a human always clears it. The per-domain auto-clear passes are no longer called
+  // from here, so the sign-off can never fire even if a flag were flipped. Their
+  // read-only *Completeness() helpers survive and now feed the ADVISORY overlay below
+  // (Step 10), which lays a "ready / agrees / revisit" stamp on the human layer without
+  // ever touching status or sign-off. (A follow-up removes the now-dead sign-off
+  // functions + their config flags entirely; the completeness helpers stay.)
 
   // Step 10 (owner-directed 2026-07-24): refresh PILOT's ADVISORY on every Condition
   // Center condition. PILOT never signs a condition off itself — it only lays a "ready /

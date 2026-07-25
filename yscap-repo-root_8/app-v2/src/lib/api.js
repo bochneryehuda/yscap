@@ -423,6 +423,12 @@ export const api = {
     try { const { blob, filename } = await download(`/api/sitewire/files/${appId}/report${mode === 'borrower' ? '?mode=borrower' : ''}`); openBlob(blob, filename, win); }
     catch (e) { try { if (win && !win.closed) win.close(); } catch { /* ignore */ } throw e; }
   },
+  // PILOT-branded report for a TrustPoint-administered draw (staff; mode borrower = the
+  // borrower-safe copy). Opens in a tab (win pre-opened in the click handler).
+  trustpointDrawReport: async (appId, tpDrawId, mode, win) => {
+    try { const { blob, filename } = await download(`/api/trustpoint/files/${appId}/draws/${tpDrawId}/report${mode === 'borrower' ? '?mode=borrower' : ''}`); openBlob(blob, filename, win); }
+    catch (e) { try { if (win && !win.closed) win.close(); } catch { /* ignore */ } throw e; }
+  },
   // Borrower's OWN branded inspection report (always borrower-safe; server enforces own-file). drawId
   // optional → that draw; omitted → whole-project. Opens in a tab (win pre-opened in the click handler).
   borrowerDrawReport: async (appId, drawId, win) => {

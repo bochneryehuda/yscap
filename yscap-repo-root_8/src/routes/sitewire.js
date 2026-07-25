@@ -25,6 +25,7 @@ const rollupMod = require('../sitewire/rollup');
 const { planReallocation } = require('../sitewire/reallocation');
 const M = require('../sitewire/mapper');
 const T = require('../sitewire/transforms');
+const routing = require('../sitewire/routing');
 const rehab = require('../lib/rehab-budget');
 const { sanitizeDateOnly } = require('../lib/fields'); // strict YYYY-MM-DD validation for date inputs
 const notify = require('../lib/notify');
@@ -54,6 +55,13 @@ const drawWire = require('../lib/esign/draw-wire');
 // Clamped to [0,100] so a nonsensical setting can't distort the client-side net preview either.
 async function retainagePctFor(appId) {
   try {
+    // D7 (phase 5): on a TrustPoint-administered file the ADMINISTRATOR owns retainage —
+    // PILOT holding its own % on top would double-withhold from the borrower. Zero here
+    // kills the computation at the one chokepoint every caller (release + overview) uses.
+    // FAIL CLOSED on an unresolvable platform (resolved:false): holding too little on one
+    // manual release is recoverable; double-withholding takes the borrower's money.
+    const rp = await require('../sitewire/routing').resolveFilePlatform(appId);
+    if (rp && (rp.platform === 'trustpoint' || rp.resolved === false)) return 0;
     const clamp = (n) => Math.min(100, Math.max(0, Number(n) || 0));
     const link = (await db.query(`SELECT retainage_pct FROM sitewire_property_links WHERE application_id=$1`, [appId])).rows[0];
     if (link && link.retainage_pct != null) return clamp(link.retainage_pct);
@@ -677,11 +685,15 @@ router.get('/files/:id/draw-setup', requirePermission('manage_draws'), async (re
       requires: { sitewire_inspector: !!(rule && rule.require_sitewire_inspector), capital_partner_approval: !!(rule && rule.require_capital_partner_approval) },
       // disagree only once a SOW exists (before that, sowUnits defaults to 1 and would falsely flag)
       units: { file: fileUnits || null, sow: hasSow ? sowUnits : null, physical: physicalUnits, disagree: hasSow && fileUnits > 0 && fileUnits !== sowUnits },
+      // Routing (phase 1, 2026-07-24): which platform administers this file's draws.
+      // 'external' = the legacy handled-externally semantics (PILOT does nothing);
+      // 'trustpoint' = full Sitewire setup as intake+mirror, approvals run in TrustPoint.
+      draw_platform: routing.platformOf(rule),
       // handled externally = this capital partner runs draws in its own system; PILOT never pushes it.
-      handled_externally: !!(rule && rule.handled_externally),
+      handled_externally: routing.isExternal(rule),
       prereqs,
       open_reviews: openReviews,
-      can_start: !(rule && rule.handled_externally) && Object.values(prereqs).every(Boolean),
+      can_start: !routing.isExternal(rule) && Object.values(prereqs).every(Boolean),
       switches: { enabled: switches.on('SITEWIRE_ENABLED'), outbound: switches.on('SITEWIRE_OUTBOUND_ENABLED'), dryrun: cfg.sitewireDryrun },
     });
   } catch (e) { console.warn('[sitewire] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
@@ -701,9 +713,10 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
     const program = /gold/i.test(String(a.registered_program || '')) ? 'gold' : 'standard';
     const cp = await orchestrator.resolveCapitalPartnerId(a.lender);
     const rule = await orchestrator.resolveRule(a.lender, cp.id, program);
-    // HANDLED EXTERNALLY: this capital partner runs its draws in its own system — the file is never
-    // pushed to Sitewire, so there is nothing to start here (never guess around the owner's rule).
-    if (rule && rule.handled_externally) {
+    // Routing (phase 1, 2026-07-24): only the legacy 'external' platform blocks the start —
+    // a 'trustpoint' file gets the FULL Sitewire setup (Sitewire is its borrower intake +
+    // mirror; approvals run in TrustPoint via the coordinator import-task flow).
+    if (routing.isExternal(rule)) {
       return res.status(422).json({ error: 'This capital partner is handled externally — its draws run in the partner\'s own system and are not pushed to Sitewire.' });
     }
     // validate a coordinator-chosen method against what the file's rule allows (never guess)
@@ -774,6 +787,105 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
       return res.status(202).json({ ok: true, started: true, queued: true, note: 'Draw setup saved. Sitewire is briefly unavailable — the push will retry automatically.' });
     }
   } catch (e) { if (e.status === 422) return res.status(422).json({ error: e.message }); console.warn('[sitewire] start-draw error:', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+// ---- Portal draw requests (phase 4 — blueprint §2 Path B/C, §5B): the staff composer + desk ----
+// A PORTAL request is a draw cycle born on OUR website (staff here; the borrower on their
+// draws screen) on a physical-inspection file. GET = composer state + pickable lines +
+// history + Trinity orders; POST = create (staff may deliberately pass allow_over /
+// allow_parallel); then cancel / close-out retry / Trinity actions are the desk's levers.
+const intId = (v) => { const n = Number(v); return Number.isInteger(n) && n > 0 ? n : null; };
+router.get('/files/:id/portal-draws', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const portalDraws = require('../lib/portal-draws');
+    const state = await portalDraws.composerState(appId);
+    const lines = state.set_up ? await portalDraws.composerLines(appId) : [];
+    const history = (await db.query(
+      `SELECT id, source, status, platform, lines, total_requested_cents, approved_cents, note,
+              tp_draw_id, sitewire_draw_id, cancelled_reason, created_at, updated_at
+         FROM portal_draw_requests WHERE application_id=$1 ORDER BY created_at DESC LIMIT 50`, [appId])).rows;
+    const trinity = (await db.query(
+      `SELECT id, portal_draw_request_id, sitewire_draw_id, status, ordered_at, note, created_at
+         FROM trinity_inspection_orders WHERE application_id=$1 ORDER BY created_at DESC LIMIT 50`, [appId])).rows;
+    res.json({ state, lines, history, trinity_orders: trinity });
+  } catch (e) { console.warn('[sitewire] portal-draws error:', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/files/:id/portal-draws', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const portalDraws = require('../lib/portal-draws');
+    const b = req.body || {};
+    const row = await portalDraws.createRequest(appId, Array.isArray(b.entries) ? b.entries : [], {
+      source: 'staff', staffId: req.actor.id,
+      allowOver: b.allow_over === true, allowParallel: b.allow_parallel === true,
+      note: b.note ? String(b.note) : null,
+    });
+    res.json({ ok: true, request: row });
+  } catch (e) {
+    if (e && e.status) return res.status(e.status).json({ error: e.message });
+    console.warn('[sitewire] portal-draw create error:', e && e.message); res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.post('/files/:id/portal-draws/:prId/cancel', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id, prId = intId(req.params.prId);
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  if (!prId) return res.status(400).json({ error: 'bad request id' });
+  try {
+    const row = await require('../lib/portal-draws').cancelRequest(appId, prId, {
+      staffId: req.actor.id, reason: req.body && req.body.reason ? String(req.body.reason) : null,
+    });
+    res.json({ ok: true, request: row });
+  } catch (e) {
+    if (e && e.status) return res.status(e.status).json({ error: e.message });
+    console.warn('[sitewire] portal-draw cancel error:', e && e.message); res.status(500).json({ error: 'server error' });
+  }
+});
+
+// Retry the historical close-out (it also runs by itself on the TrustPoint approval).
+router.post('/files/:id/portal-draws/:prId/close-out', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id, prId = intId(req.params.prId);
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  if (!prId) return res.status(400).json({ error: 'bad request id' });
+  try {
+    const r = await require('../lib/portal-draws').historicalCloseOut(appId, prId);
+    res.json({ ok: !!r.ok, ...r });
+  } catch (e) { console.warn('[sitewire] portal-draw close-out error:', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+// The Trinity decision: per-line approved amounts → approved + close-out attempt.
+router.post('/files/:id/portal-draws/:prId/approve-trinity', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id, prId = intId(req.params.prId);
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  if (!prId) return res.status(400).json({ error: 'bad request id' });
+  try {
+    const b = req.body || {};
+    const r = await require('../lib/portal-draws').approveTrinityRequest(appId, prId, Array.isArray(b.entries) ? b.entries : [], { staffId: req.actor.id });
+    res.json({ ok: true, ...r });
+  } catch (e) {
+    if (e && e.status) return res.status(e.status).json({ error: e.message });
+    console.warn('[sitewire] trinity approve error:', e && e.message); res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.post('/files/:id/trinity-orders/:orderId/advance', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id, orderId = intId(req.params.orderId);
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  if (!orderId) return res.status(400).json({ error: 'bad order id' });
+  try {
+    const b = req.body || {};
+    const row = await require('../lib/portal-draws').advanceTrinityOrder(appId, orderId, String(b.action || ''), {
+      staffId: req.actor.id, note: b.note ? String(b.note) : null,
+    });
+    res.json({ ok: true, order: row });
+  } catch (e) {
+    if (e && e.status) return res.status(e.status).json({ error: e.message });
+    console.warn('[sitewire] trinity advance error:', e && e.message); res.status(500).json({ error: 'server error' });
+  }
 });
 
 // ---- GET /files/:id/draw-request — draw-request form status + captured wire instructions ----
@@ -1064,6 +1176,14 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
   // belt-and-suspenders). A duplicate would double-count into the retainage pool.
   const dup = await db.query(`SELECT 1 FROM draw_disbursements WHERE sitewire_draw_id=$1 AND kind='draw'`, [drawId]);
   if (dup.rowCount) return res.status(409).json({ error: 'A release is already recorded for this draw — correct the existing entry instead of adding another.' });
+  // Phase 5 (audit-5 #1b): the administrator's observed release may have mirrored BEFORE
+  // the draw tie landed — that row carries the TrustPoint draw id but no sitewire_draw_id
+  // yet. A hand-recorded second row for the same wire would double-count the ledger.
+  const dupTp = await db.query(
+    `SELECT 1 FROM draw_disbursements dd JOIN trustpoint_draws t ON t.tp_draw_id = dd.trustpoint_draw_id
+      WHERE dd.kind='draw' AND (t.sitewire_draw_id=$1
+         OR t.portal_draw_request_id IN (SELECT id FROM portal_draw_requests WHERE sitewire_draw_id=$1))`, [drawId]);
+  if (dupTp.rowCount) return res.status(409).json({ error: 'This draw\'s release was already recorded automatically from the draw administrator — there is nothing to enter by hand.' });
   try {
     // retainage: hold a % of the approved amount; net = approved − fee − retainage held
     const pct = await retainagePctFor(application_id);
@@ -1288,23 +1408,38 @@ router.post('/rules', requirePermission('platform_setup'), async (req, res) => {
   if (partnerLabel && !cpId) {
     try { const m = await orchestrator.resolveCapitalPartnerId(partnerLabel); cpId = m.id || null; } catch (_) { cpId = null; }
   }
-  const handledExternally = !!b.handled_externally;
-  // "Handled externally" must NAME a partner. A global-default rule (no partner_label) marked
-  // handled-externally would make resolveRule's last-resort fallback return handled_externally for
-  // EVERY unmatched file — silently stopping all Sitewire pushes portfolio-wide with no park/alert.
-  // Never allow that (owner's never-guess / never-silently-drop rule); reject it up front.
-  if (handledExternally && !partnerLabel) {
-    return res.status(400).json({ error: 'Pick a specific capital partner before marking a rule “handled externally” — the global default can’t be handled externally.' });
+  // Routing (phase 1, 2026-07-24): the rule now names WHICH PLATFORM administers the
+  // partner's draws — 'sitewire' (default), 'trustpoint' (Blue Lake physical: full
+  // Sitewire setup as intake+mirror, approvals in TrustPoint), or 'external' (the legacy
+  // handled_externally semantics). Back-compat: an absent draw_platform falls back to the
+  // old handled_externally checkbox; handled_externally is derived and kept in lock-step.
+  const rawPlatform = b.draw_platform != null ? String(b.draw_platform).trim() : null;
+  if (rawPlatform && !['sitewire', 'trustpoint', 'external'].includes(rawPlatform)) {
+    return res.status(400).json({ error: 'draw_platform must be sitewire, trustpoint, or external' });
+  }
+  const drawPlatform = rawPlatform || (b.handled_externally ? 'external' : 'sitewire');
+  const handledExternally = drawPlatform === 'external';
+  // A NON-Sitewire platform must NAME a partner. A global-default rule (no partner_label)
+  // marked external/trustpoint would make resolveRule's last-resort fallback apply it to
+  // EVERY unmatched file — silently rerouting/stopping all Sitewire pushes portfolio-wide
+  // with no park/alert. Never allow that (owner's never-guess / never-silently-drop rule).
+  if (drawPlatform !== 'sitewire' && !partnerLabel) {
+    return res.status(400).json({ error: 'Pick a specific capital partner before routing a rule to TrustPoint or marking it “handled externally” — the global default must stay on Sitewire.' });
   }
   // Audit finding B-9 (2026-07-21): a rule for a partner_label that DOESN'T map to a Sitewire
-  // capital_partner_id (either directory-exact or an owner-confirmed link) AND isn't marked
-  // handled_externally used to save cp_id=NULL. Every push for that label then paused at bind-time
-  // with `sitewire_capital_partner_unmatched` — a silent trap. Reject at POST time so the coordinator
-  // fixes it here: either pick a partner from the directory / confirm a link on the /partners page,
-  // or mark the rule handled externally. Global defaults (no partner_label) don't need a cp_id.
+  // capital_partner_id (either directory-exact or an owner-confirmed link) AND isn't external
+  // used to save cp_id=NULL. Every push for that label then paused at bind-time with
+  // `sitewire_capital_partner_unmatched` — a silent trap. Reject at POST time so the coordinator
+  // fixes it here. This applies to 'trustpoint' rules too — those files STILL push to Sitewire,
+  // so the partner must resolve. Only 'external' rules (no push at all) skip the requirement.
   if (partnerLabel && !cpId && !handledExternally) {
-    return res.status(400).json({ error: `We couldn't find "${partnerLabel}" in the Sitewire capital-partner directory. Either link it to a Sitewire partner on the Partners page, or check "Handled externally" if this partner isn't in Sitewire.` });
+    return res.status(400).json({ error: `We couldn't find "${partnerLabel}" in the Sitewire capital-partner directory. Either link it to a Sitewire partner on the Partners page, or set the "Draws administered on" choice to External if this partner isn't in Sitewire.` });
   }
+  // Dormant markup knob (owner D9 2026-07-24): stored only; no code charges it yet. Integer
+  // cents 0..$100k; blank/garbage → null (no markup), matching the physical-fee handling.
+  const mkRaw = b.markup_cents;
+  const mkNum = Number(mkRaw);
+  const markupCents = mkRaw == null || mkRaw === '' || !Number.isFinite(mkNum) || mkNum < 0 || mkNum > 10000000 ? null : Math.round(mkNum);
   const method = b.inspection_method === 'traditional' ? 'traditional' : 'mobile';
   // allow_virtual / allow_physical say which methods this program MAY use (both = coordinator can switch).
   // Default each to true when absent. Never let a rule forbid its own default method — that would leave a
@@ -1326,11 +1461,11 @@ router.post('/rules', requirePermission('platform_setup'), async (req, res) => {
   const feePhysical = pRaw == null || pRaw === '' || !Number.isFinite(pFee) || pFee < 0 ? null : Math.round(pFee);
   try {
     const row = (await db.query(
-      `INSERT INTO sitewire_inspection_rules (capital_partner_id, partner_label, program, inspection_method, require_sitewire_inspector, require_capital_partner_approval, allow_reallocation, fee_cents_virtual, fee_cents_physical, allow_virtual, allow_physical, handled_externally)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-       ON CONFLICT (regexp_replace(lower(COALESCE(partner_label,'')), '[^a-z0-9]+', '', 'g'), COALESCE(program,'')) DO UPDATE SET capital_partner_id=EXCLUDED.capital_partner_id, partner_label=COALESCE(EXCLUDED.partner_label, sitewire_inspection_rules.partner_label), inspection_method=EXCLUDED.inspection_method, require_sitewire_inspector=EXCLUDED.require_sitewire_inspector, require_capital_partner_approval=EXCLUDED.require_capital_partner_approval, allow_reallocation=EXCLUDED.allow_reallocation, fee_cents_virtual=EXCLUDED.fee_cents_virtual, fee_cents_physical=EXCLUDED.fee_cents_physical, allow_virtual=EXCLUDED.allow_virtual, allow_physical=EXCLUDED.allow_physical, handled_externally=EXCLUDED.handled_externally, updated_at=now()
+      `INSERT INTO sitewire_inspection_rules (capital_partner_id, partner_label, program, inspection_method, require_sitewire_inspector, require_capital_partner_approval, allow_reallocation, fee_cents_virtual, fee_cents_physical, allow_virtual, allow_physical, handled_externally, draw_platform, markup_cents)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+       ON CONFLICT (regexp_replace(lower(COALESCE(partner_label,'')), '[^a-z0-9]+', '', 'g'), COALESCE(program,'')) DO UPDATE SET capital_partner_id=EXCLUDED.capital_partner_id, partner_label=COALESCE(EXCLUDED.partner_label, sitewire_inspection_rules.partner_label), inspection_method=EXCLUDED.inspection_method, require_sitewire_inspector=EXCLUDED.require_sitewire_inspector, require_capital_partner_approval=EXCLUDED.require_capital_partner_approval, allow_reallocation=EXCLUDED.allow_reallocation, fee_cents_virtual=EXCLUDED.fee_cents_virtual, fee_cents_physical=EXCLUDED.fee_cents_physical, allow_virtual=EXCLUDED.allow_virtual, allow_physical=EXCLUDED.allow_physical, handled_externally=EXCLUDED.handled_externally, draw_platform=EXCLUDED.draw_platform, markup_cents=EXCLUDED.markup_cents, updated_at=now()
        RETURNING *`,
-      [cpId, partnerLabel, b.program || null, method, b.require_sitewire_inspector !== false, !!b.require_capital_partner_approval, !!b.allow_reallocation, feeVirtual, feePhysical, allowVirtual, allowPhysical, handledExternally])).rows[0];
+      [cpId, partnerLabel, b.program || null, method, b.require_sitewire_inspector !== false, !!b.require_capital_partner_approval, !!b.allow_reallocation, feeVirtual, feePhysical, allowVirtual, allowPhysical, handledExternally, drawPlatform, markupCents])).rows[0];
     res.json({ ok: true, rule: row });
   } catch (e) { console.warn('[sitewire] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
@@ -2352,3 +2487,5 @@ router.get('/change-requests/:crId/export', requirePermission('manage_draws'), a
 });
 
 module.exports = router;
+// test hook (never used by production code): the D7 retainage chokepoint
+module.exports._retainagePctFor = retainagePctFor;

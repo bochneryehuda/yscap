@@ -28,7 +28,6 @@ const provider = require('./provider');
 const { parseCreditXml } = require('./parse');
 const store = require('./store');
 const coCondition = require('./co-condition');
-const { maybeAutoSatisfyCredit } = require('./completeness');
 
 const PULL_TYPES = ['soft', 'hard'];
 const REQUEST_TYPES = ['reissue', 'new'];
@@ -299,24 +298,11 @@ async function importCredit(appId, opts = {}) {
     coConditionOpened = !!(r && (r.created || r.updated || r.itemId));
   }
 
-  // Auto-clear the credit condition(s) once every borrower they cover has a report
-  // + PDF on file (IG-W2). Gated by CREDIT_AUTOCLEAR_ENABLED (default OFF) inside
-  // the helper; a false-clear is impossible (creditCompleteness requires a current,
-  // non-rejected PDF per covered borrower). Best-effort — never throws, never blocks
-  // the import result. Covers BOTH the file-level condition and a split-out
-  // co-borrower condition; each self-checks whether it is complete.
-  try {
-    const conds = await db.query(
-      `SELECT id, field_key FROM checklist_items
-        WHERE application_id=$1
-          AND template_id = (SELECT id FROM checklist_templates WHERE code='rtl_cond_credit')`,
-      [appId]);
-    for (const row of conds.rows) {
-      await maybeAutoSatisfyCredit(db, appId, row.id, row.field_key);
-    }
-  } catch (e) {
-    console.error('[credit] auto-clear pass failed (import continues):', (e && e.message) || e);
-  }
+  // Credit-condition auto-sign-off RETIRED (owner-directed 2026-07-24). PILOT used to
+  // auto-clear the credit condition(s) once every covered borrower had a report + PDF
+  // (gated OFF by default). PILOT no longer signs off a Condition Center condition
+  // itself — a human clears it; creditCompleteness() now feeds the ADVISORY overlay
+  // instead (pilot-advice-engine). The sign-off pass is no longer called here.
 
   const primaryResult = results.find((r) => r.role === 'primary' && r.ok !== false)
     || results.find((r) => r.ok !== false) || results[0] || {};

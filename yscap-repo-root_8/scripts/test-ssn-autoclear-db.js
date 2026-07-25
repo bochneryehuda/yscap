@@ -192,8 +192,12 @@ async function condRow(itemId) {
     parsed: parseCreditXml(XML), xml: XML, request: { pullType: 'soft', requestType: 'reissue',
       bureaus: ['Equifax', 'Experian', 'TransUnion'], version: '3.4' }, actorId: staff.id, source: 'upload' });
   const r8 = await condRow(f8.itemId);
-  ok(r8.status === 'satisfied' && r8.signed_off_by === null,
-    'the credit-import hook auto-clears the SSN condition live (CorrFirst + matching report)');
+  // Auto-sign-off RETIRED (owner-directed 2026-07-24): the credit import no longer
+  // signs off the SSN condition — PILOT never clears a Condition Center condition
+  // itself, a human does. The import still lands the matching report (so the advisory
+  // overlay can mark the condition ready); the condition itself stays open for a human.
+  ok(r8.status !== 'satisfied' && r8.signed_off_by === null,
+    'the credit import does NOT auto-sign-off the SSN condition (PILOT advises; a human clears it)');
 
   // cleanup (throwaway DB, but tidy)
   cfg.ssnAutoclearEnabled = false;

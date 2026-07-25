@@ -345,6 +345,21 @@ module.exports = {
   // "website robot"): it authenticates, does the confirmed 3-step upload, and attaches the blob.
   // Staged like every other write: OFF by default, still gated by SITEWIRE_OUTBOUND_ENABLED +
   // SITEWIRE_DRYRUN. Credentials live in Render env ONLY, never committed, never pasted in chat.
+  // ---- TrustPoint (the note buyer's draw administrator — Blue Lake physical files; ----
+  // ---- blueprint docs/TRUSTPOINT-PHYSICAL-DRAW-WORKFLOW-BLUEPRINT.md). Read-mostly:  ----
+  // ---- phase 2 is a mirror (GET + webhooks); the ONLY write is webhook registration. ----
+  trustpointEnabled:    process.env.TRUSTPOINT_ENABLED === '1',       // master switch (default off)
+  trustpointDryrun:     process.env.TRUSTPOINT_DRYRUN === '1',        // log intended calls, send nothing
+  trustpointApiKey:     process.env.TRUSTPOINT_API_KEY || null,       // 'Authorization: Api-Key <key>' — Render env ONLY
+  trustpointBaseUrl:    (process.env.TRUSTPOINT_BASE_URL || 'https://api.trustpoint.ai').replace(/\/+$/, ''),
+  // Spec paths use /public-api/, prose uses /v1/ — verify on sandbox; configurable so a flip is env-only.
+  trustpointPathPrefix: process.env.TRUSTPOINT_PATH_PREFIX || '/public-api',
+  trustpointPollSec:    parseInt(process.env.TRUSTPOINT_POLL_SEC || '300', 10),      // draw watermark poll
+  trustpointSweepSec:   parseInt(process.env.TRUSTPOINT_SWEEP_SEC || '1800', 10),    // project discovery sweep
+  // The shared token PILOT issues to TrustPoint at webhook registration; inbound deliveries
+  // must present it (Authorization: Bearer <token> or X-Api-Key). Render env ONLY.
+  trustpointWebhookToken: process.env.TRUSTPOINT_WEBHOOK_TOKEN || null,
+
   sitewireDocsEnabled:  process.env.SITEWIRE_DOCS_ENABLED === '1',   // master switch for the doc-push workaround (default off)
   sitewireWebBaseUrl:   (process.env.SITEWIRE_WEB_BASE_URL || process.env.SITEWIRE_BASE_URL || 'https://app.sitewire.co').replace(/\/+$/, ''),
   // Preferred (durable): PILOT logs itself in and refreshes its own session — a lender_owner web login.
