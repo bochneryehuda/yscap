@@ -168,15 +168,11 @@ async function storeImport({ file, borrower, parsed, xml, pdfBase64, request, ac
     }
   }
 
-  // 5) Auto-clear the SSN-verification condition (CorrFirst only). Best-effort:
-  //    the SSN on file now has a matching credit report, which is exactly how
-  //    CorrFirst verifies the SSN. Gated on SSN_AUTOCLEAR_ENABLED (default OFF),
-  //    scoped to CorrFirst, never a false-clear, never throws.
-  try {
-    await require('../underwriting/ssn-autoclear').autoClearSsnCondition(db, appId);
-  } catch (e) {
-    console.error('[credit] SSN auto-clear (import continues):', (e && e.message) || e);
-  }
+  // 5) SSN-verification auto-sign-off RETIRED (owner-directed 2026-07-24). PILOT used
+  //    to auto-clear the CorrFirst SSN condition once a matching credit report landed
+  //    (gated OFF by default). PILOT no longer signs off a Condition Center condition
+  //    itself — a human clears it; the ssnCompleteness() helper now feeds the ADVISORY
+  //    overlay below instead. The sign-off pass is no longer called here.
 
   // Refresh PILOT's ADVISORY overlay across the file's conditions (SSN + credit both change
   // on a credit import). PILOT never signs a condition off itself — advisory only. Gated ON

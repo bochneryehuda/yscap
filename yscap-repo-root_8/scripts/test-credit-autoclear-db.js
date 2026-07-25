@@ -153,8 +153,15 @@ async function condRow(itemId) {
   cfg.creditAutoclearEnabled = true;
   const f6 = await seedFile(staff.id, 'Reopen', '123456789');
   await credit.importCredit(f6.appId, { xml: XML, pdfBase64: PDF_B64, actorId: staff.id });
+  // Auto-sign-off RETIRED (owner-directed 2026-07-24): the credit IMPORT no longer
+  // auto-signs-off the condition — PILOT never clears a Condition Center condition
+  // itself, a human does. So the import leaves it open; establish the SYSTEM [auto]
+  // clear directly via the (retained) completeness helper so the db/286 reopen trigger
+  // — which only reopens a system [auto] clear, never a human sign-off — can be exercised.
+  ok((await condRow(f6.itemId)).status !== 'satisfied', 'baseline: the credit import does NOT auto-sign-off (a human clears it)');
+  await maybeAutoSatisfyCredit(db, f6.appId, f6.itemId, null);
   const r6a = await condRow(f6.itemId);
-  ok(r6a.status === 'satisfied' && r6a.signed_off_by === null, 'baseline: single-borrower file auto-cleared');
+  ok(r6a.status === 'satisfied' && r6a.signed_off_by === null, 'a system [auto] clear can still be established (for the reopen test)');
   const co6 = (await db.query(
     `INSERT INTO borrowers (first_name,last_name,email) VALUES ('Co6','Autoclear',$1) RETURNING id`,
     [`ac_co6_${process.pid}@example.com`])).rows[0];
