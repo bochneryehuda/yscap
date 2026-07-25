@@ -133,6 +133,26 @@ async function reconcileOnce() {
       await reconcile.syncStaffUsers().catch(() => {});
     }
     await reconcile.reconcileAll();
+    // Approved portal draw requests whose historical close-out hasn't landed (transient
+    // park, writes off at the time, crash mid-chain) re-drive here — every gate inside
+    // historicalCloseOut is idempotent, so a re-attempt is free (phase 4). A PERSISTENT
+    // data skip (line Σ ≠ approved / no lines) is surfaced as a deduped park after 30
+    // minutes so the stall is never invisible (audit-4 #9).
+    try {
+      const stuck = (await db.query(
+        `SELECT application_id, id, updated_at FROM portal_draw_requests
+          WHERE status='approved' AND sitewire_draw_id IS NULL ORDER BY updated_at LIMIT 20`)).rows;
+      for (const s of stuck) {
+        const r = await require('../lib/portal-draws').historicalCloseOut(s.application_id, Number(s.id)).catch(() => null);
+        if (r && (r.skipped === 'sum_mismatch' || r.skipped === 'no_lines')
+            && new Date(s.updated_at).getTime() < Date.now() - 30 * 60000) {
+          await orchestrator.park({
+            appId: s.application_id, dedupe: `pdrstall:${s.id}`,
+            reason: `sitewire_approve_failed: portal draw request #${s.id} is approved but can't close out into Sitewire — ${r.skipped === 'no_lines' ? 'no per-line approved amounts are on file yet' : 'the per-line amounts do not add up to the approved total'}. Enter/correct the line amounts on the draw desk.`,
+          }).catch(() => {});
+        }
+      }
+    } catch (_) {}
   } catch (e) { console.warn('[sitewire] reconcile error:', e.message); }
   finally { reconciling = false; }
 }

@@ -16,6 +16,8 @@ const T = require('./transforms');
 const rollupMod = require('./rollup');
 const risk = require('./risk');
 const M = require('./mapper');
+const routing = require('./routing');
+const tpIntake = require('./trustpoint-intake');
 
 /**
  * Auto-adopt Sitewire-seeded MANDATORY MEDIA items that PILOT never pushed.
@@ -153,25 +155,61 @@ async function recordInboundChange(appId, drawId, entity, entityId, field, oldV,
 
 // The inbound status transitions worth telling the team about. Keyed on the NEW Sitewire status;
 // intermediate/no-op statuses are intentionally omitted so the poll doesn't turn into noise.
+// Phase-1 routing (2026-07-24): the `pending` copy is METHOD/PLATFORM-AWARE — the old
+// static "was inspected" wording was wrong for a physical (traditional) file, where a
+// submitted draw reaches `pending` with NO Sitewire inspection at all, and doubly wrong
+// for a TrustPoint-administered file, where the next step is the coordinator's manual
+// TrustPoint entry (the import task), not a PILOT approval.
 const REACT_STATUS = {
-  pending: { title: 'A draw was inspected — ready for your review', tone: 'gold',
-    body: (n, addr) => `Draw #${n} for ${addr} was inspected in Sitewire and is awaiting your review. Set the approved amounts and approve it, or deliver the findings to the borrower.` },
-  pending_capital_partner: { title: 'A draw is awaiting capital-partner approval', tone: 'gold',
+  pending: {
+    tone: 'gold',
+    title: (ctx) => (ctx && ctx.platform === 'trustpoint')
+      ? 'A draw was submitted — enter it into TrustPoint'
+      : (ctx && ctx.method === 'traditional')
+        ? 'A draw was submitted — arrange the on-site inspection'
+        : 'A draw was inspected — ready for your review',
+    body: (n, addr, ctx) => (ctx && ctx.platform === 'trustpoint')
+      ? `Draw #${n} for ${addr} was submitted in Sitewire. This file's draws are administered on TrustPoint — a task was opened for the draw coordinator to enter it there.`
+      : (ctx && ctx.method === 'traditional')
+        ? `Draw #${n} for ${addr} was submitted in Sitewire and is awaiting review. This is a physical-inspection file — arrange the on-site inspection, then set the approved amounts and approve it.`
+        : `Draw #${n} for ${addr} was inspected in Sitewire and is awaiting your review. Set the approved amounts and approve it, or deliver the findings to the borrower.`,
+  },
+  pending_capital_partner: { tone: 'gold',
+    title: () => 'A draw is awaiting capital-partner approval',
     body: (n, addr) => `Draw #${n} for ${addr} is now awaiting capital-partner approval in Sitewire.` },
-  approved: { title: 'A draw was approved in Sitewire', tone: 'positive',
+  approved: { tone: 'positive',
+    title: () => 'A draw was approved in Sitewire',
     body: (n, addr) => `Draw #${n} for ${addr} was approved in Sitewire. You can deliver the inspection findings to the borrower and record the release.` },
 };
+// Resolve the (title, tone, body) for a reacted status with the file's routing context.
+function reactFor(status, n, addr, ctx) {
+  const r = REACT_STATUS[status];
+  if (!r) return null;
+  return { title: r.title(ctx), tone: r.tone, body: r.body(n, addr, ctx) };
+}
 
 // Given the prior mirror row and the freshly-pulled draw, notify the team of a genuine inbound
 // transition and audit the change. GO-FORWARD: a draw seen for the first time after the watermark
 // was added (or on a file's first-ever reconcile) is BASELINED silently — we only react to changes
 // that happen while PILOT is watching, never to history. Staff-facing (notifyAppStaff) — the borrower
 // keeps getting the designed findings/release emails from the human deliver/release flows, unchanged.
-async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText) {
+async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText, fileCtx) {
   const notify = require('../lib/notify');
+  const ctx = fileCtx || { platform: 'sitewire', method: null };
   const drawId = draw.sitewire_draw_id;
   const newStatus = draw.status || null;
   const newAppr = Number(draw.total_approved_cents) || 0;
+  // TrustPoint import-task hook (phase 1, 2026-07-24): a LIVE inbound submission on a
+  // trustpoint-routed file opens the coordinator's manual-entry task. GO-FORWARD by
+  // construction — called only from the live reaction branches below, never from silent
+  // baselines of history; idempotent per draw via the tp_import_task_opened_at claim.
+  // A HISTORICAL draw is PILOT's own phase-4 close-out artifact — never re-imported.
+  const maybeImportTask = () => {
+    if (draw.historical) return;
+    tpIntake.maybeOpenImportTask(appId, {
+      drawId, drawNumber: draw.number, status: newStatus, addrText, platform: ctx.platform,
+    }).catch(() => {});
+  };
 
   // A draw with no prior mirror row. ATOMIC claim: set the watermark only if still unset, and notify
   // only if THIS pass won it — so two overlapping reconcile passes can never double-notify (audit LOW-2).
@@ -188,11 +226,20 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText) {
     // A property PILOT created can only gain a draw AFTER we set it up, so a first-seen draw on an
     // already-reconciled file is genuinely a new borrower submission — tell the coordinator.
     if (won) {
+      // …unless it is PILOT's OWN just-created historical close-out draw racing its mirror
+      // row (audit-4 #11): a historical draw is never a borrower submission.
+      if (draw.historical === true) { await recordInboundChange(appId, drawId, 'draw', drawId, 'new_draw_historical', null, newStatus, false); return; }
       await recordInboundChange(appId, drawId, 'draw', drawId, 'new_draw', null, newStatus, true);
+      const nextStep = ctx.platform === 'trustpoint'
+        ? (tpIntake.SUBMITTED_STATUSES.has(String(newStatus))
+            ? 'This file\'s draws are administered on TrustPoint — a task was opened for the draw coordinator to enter it there.'
+            : 'This file\'s draws are administered on TrustPoint — a task will open for the draw coordinator once it is submitted.')
+        : ctx.method === 'traditional' ? 'Review it and arrange the on-site inspection.' : 'Review it and start the inspection.';
       await notify.notifyAppStaff(appId, {
         type: 'draw_inbound', title: 'A new draw request came in', badge: { text: 'New draw', tone: 'gold' },
-        body: `A new draw request (Draw #${draw.number == null ? '—' : draw.number}) came in for ${addrText} through Sitewire. Review it and start the inspection.`,
+        body: `A new draw request (Draw #${draw.number == null ? '—' : draw.number}) came in for ${addrText} through Sitewire. ${nextStep}`,
         applicationId: appId, link: `/internal/app/${appId}/draws` }).catch(() => {});
+      maybeImportTask();
     }
     return;
   }
@@ -214,14 +261,15 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText) {
       return;
     }
     if (won) {
-      const r = REACT_STATUS[newStatus];
+      const r = reactFor(newStatus, draw.number == null ? '—' : draw.number, addrText, ctx);
       await recordInboundChange(appId, drawId, 'draw', drawId, 'first_status', null, newStatus, !!r);
       if (r) {
         await notify.notifyAppStaff(appId, {
           type: 'draw_inbound', title: r.title, badge: { text: 'Sitewire update', tone: r.tone },
-          body: r.body(draw.number == null ? '—' : draw.number, addrText),
+          body: r.body,
           applicationId: appId, link: `/internal/app/${appId}/draws` }).catch(() => {});
       }
+      maybeImportTask();
     }
     return;
   }
@@ -232,14 +280,15 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText) {
   if (newStatus && newStatus !== prev.status_synced) {
     const won = (await db.query(`UPDATE sitewire_draws SET status_synced=$2 WHERE sitewire_draw_id=$1 AND status_synced IS DISTINCT FROM $2 RETURNING sitewire_draw_id`, [drawId, newStatus])).rowCount === 1;
     if (won) {
-      const r = REACT_STATUS[newStatus];
+      const r = reactFor(newStatus, draw.number == null ? '—' : draw.number, addrText, ctx);
       await recordInboundChange(appId, drawId, 'draw', drawId, 'status', prev.status_synced, newStatus, !!r);
       if (r) {
         await notify.notifyAppStaff(appId, {
           type: 'draw_inbound', title: r.title, badge: { text: 'Sitewire update', tone: r.tone },
-          body: r.body(draw.number == null ? '—' : draw.number, addrText),
+          body: r.body,
           applicationId: appId, link: `/internal/app/${appId}/draws` }).catch(() => {});
       }
+      maybeImportTask();
     }
   }
 
@@ -338,6 +387,11 @@ async function reconcileOne(appId) {
   const firstReconcile = !link.last_reconciled_at;
   const addr = (await db.query(`SELECT property_address->>'oneLine' AS a FROM applications WHERE id=$1`, [appId])).rows[0];
   const addrText = (addr && addr.a) || 'the property';
+  // Phase-1 routing context (2026-07-24): the file's draw platform + effective inspection
+  // method, resolved ONCE per reconcile — drives method-aware inbound copy and the
+  // TrustPoint import-task hook. Best-effort: an unresolvable file behaves exactly as before.
+  let fileCtx = { platform: 'sitewire', method: null };
+  try { const rp = await routing.resolveFilePlatform(appId); fileCtx = { platform: rp.platform, method: rp.method }; } catch (_) {}
   let n = 0;
   for (const d of draws) {
    // A poison draw (null id, bad cents, a constraint violation) must skip to the NEXT draw — not throw
@@ -400,7 +454,7 @@ async function reconcileOne(appId) {
     }
     // React to any inbound status transition on this draw (notify the team + audit the change).
     // Fully best-effort + self-guarded: it never throws out of the per-draw try, never blocks the mirror.
-    try { await reactToInboundDraw(appId, { sitewire_draw_id: d.id, number: d.number, status: d.status, total_approved_cents: d.total_approved_cents || 0 }, prevDraw, firstReconcile, addrText); } catch (_) {}
+    try { await reactToInboundDraw(appId, { sitewire_draw_id: d.id, number: d.number, status: d.status, total_approved_cents: d.total_approved_cents || 0, historical: !!d.historical }, prevDraw, firstReconcile, addrText, fileCtx); } catch (_) {}
     n++;
    } catch (drawErr) {
      const emsg = db.describeError ? db.describeError(drawErr) : (drawErr && drawErr.message) || String(drawErr);
@@ -408,6 +462,24 @@ async function reconcileOne(appId) {
      try { await require('./orchestrator').park({ appId, dedupe: `drawrow:${d && d.id}`, reason: `sitewire_reconcile_draw_error: could not mirror Sitewire draw ${d && d.id} — ${String(emsg).slice(0, 200)}. It won't appear on the desk until reconciled by hand.` }); } catch (_) {}
    }
   }
+  // TrustPoint import-task SWEEP (phase-1 audit #3/#5): on a trustpoint-routed file, any
+  // SUBMITTED, non-historical draw whose task never opened (stamp NULL — a failed open
+  // rolled back, or the file was cut over to TrustPoint mid-draw so no transition fired)
+  // gets its coordinator task opened now. Idempotent via the same atomic stamp claim.
+  if (fileCtx.platform === 'trustpoint' && !firstReconcile) {
+    try {
+      const unopened = (await db.query(
+        `SELECT sitewire_draw_id, number, status FROM sitewire_draws
+          WHERE application_id=$1 AND COALESCE(historical,false)=false AND tp_import_task_opened_at IS NULL
+            AND status = ANY($2::text[])`, [appId, [...tpIntake.SUBMITTED_STATUSES]])).rows;
+      for (const u of unopened) {
+        await tpIntake.maybeOpenImportTask(appId, {
+          drawId: u.sitewire_draw_id, drawNumber: u.number, status: u.status, addrText, platform: 'trustpoint',
+        }).catch(() => {});
+      }
+    } catch (_) { /* best-effort — next poll retries */ }
+  }
+
   // Auto-adopt Sitewire-seeded MANDATORY MEDIA items (Video Walkthrough, External Pictures,
   // …) that PILOT never pushed, so a draw against them stops parking as unknown. Runs BEFORE
   // assessAndStoreRisk so rollup.unknown sees the newly-bound ids and never flags them.
@@ -621,7 +693,12 @@ async function assessAndStoreRisk(appId) {
     } catch (_) { /* best-effort */ }
   }
   const s = await settingsMap();
-  const opts = { frontLoadPct: Number(s.front_load_pct) || 40, firstDrawMaxPct: Number(s.first_draw_max_pct) || 30 };
+  // Physical-aware risk (phase 1, 2026-07-24): on a traditional-method file the absence of
+  // Sitewire inspection photos is the EXPECTED state (the on-site inspection happens outside
+  // Sitewire — TrustPoint/Trinity), so risk.assessDraw suppresses the no_inspection flag.
+  let inspectionMethod = null;
+  try { inspectionMethod = (await routing.resolveFilePlatform(appId)).method; } catch (_) {}
+  const opts = { frontLoadPct: Number(s.front_load_pct) || 40, firstDrawMaxPct: Number(s.first_draw_max_pct) || 30, inspectionMethod };
   const draws = (await db.query(
     `SELECT sitewire_draw_id, number, status, total_requested_cents, total_approved_cents, historical FROM sitewire_draws WHERE application_id=$1`, [appId])).rows;
   let assessed = 0;
@@ -820,4 +897,4 @@ async function persistDrawFindings(appId, sitewireDrawId, deliveredTo = null) {
     preserved_dispute_status: !promotable };
 }
 
-module.exports = { syncCapitalPartners, syncStaffUsers, reconcileOne, reconcileAll, fetchDrawFindings, deriveTimes, assessAndStoreRisk, persistDrawFindings, settingsMap, verifyBudgetDrift };
+module.exports = { syncCapitalPartners, syncStaffUsers, reconcileOne, reconcileAll, fetchDrawFindings, deriveTimes, assessAndStoreRisk, persistDrawFindings, settingsMap, verifyBudgetDrift, _reactFor: reactFor };

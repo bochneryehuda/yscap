@@ -50,6 +50,9 @@ app.use('/api/inbound/file-email', require('./routes/inbound-file-email'));
 // DocuSign Connect webhook — RAW body for the base64 HMAC verification, mounted
 // BEFORE the JSON parser for the same reason as the ClickUp/inbound webhooks.
 app.use('/api/esign/webhook', require('./routes/esign-webhook'));
+// TrustPoint webhook — its OWN small JSON parser + rate limit (never the global 32MB
+// parser: unauthenticated callers must not force huge parses), token-authenticated.
+app.use('/api/trustpoint/webhook', require('./routes/trustpoint-webhook'));
 app.use(express.json({ limit: `${JSON_LIMIT_MB}mb` }));
 
 // Rate limits (IP-based, in-memory) on the sensitive/unauthenticated surface.
@@ -211,6 +214,10 @@ app.use('/api/staff', require('./routes/staff'));
 // Sitewire construction-draw desk + admin. The router applies requireAuth +
 // requireStaff + per-route capability gates (manage_draws / platform_setup) itself.
 app.use('/api/sitewire', require('./routes/sitewire'));
+
+// TrustPoint mirror (physical-draw workflow phases 2-3): the STAFF router (auth wall
+// + per-route capability gates). The public webhook is mounted earlier, pre-parser.
+app.use('/api/trustpoint', require('./routes/trustpoint'));
 // Appraisal desk: import the appraisal XML, reconcile it against the file, and resolve
 // PILOT findings. The router applies requireAuth + requireStaff + per-file scoping itself.
 app.use('/api/appraisal', require('./routes/appraisal'));
@@ -559,6 +566,11 @@ if (require.main === module) {
     // Self-gated by SITEWIRE_ENABLED (+ SITEWIRE_OUTBOUND_ENABLED for writes); inert
     // otherwise. Manages ONLY properties PILOT created (only-ours rule).
     try { require('./sync/sitewire-sync').start(); } catch (e) { console.warn('sitewire sync not started:', e.message); }
+    // TrustPoint mirror poller (physical-draw workflow phase 2): webhook inbox drain +
+    // draw watermark poll + project discovery sweep. Self-gated by TRUSTPOINT_ENABLED
+    // + the API key; read-only toward TrustPoint (webhook registration is the one
+    // journaled write, and it only happens from the admin route).
+    try { require('./trustpoint/poller').start(); } catch (e) { console.warn('trustpoint poller not started:', e.message); }
     // Encompass READ-ONLY pull worker (owner-directed 2026-07-22). Self-gates on
     // ENCOMPASS_ENABLED=1 + ENCOMPASS_* env creds. Never writes to Encompass
     // (structurally impossible via src/lib/integrations/encompass.js); writes ONLY

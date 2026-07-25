@@ -46,9 +46,9 @@ async function main() {
     VALUES (19,'Fidelis',NULL,'mobile',true,false,true,29900,49900,true,true,false)
     ON CONFLICT ${RULE_CONFLICT} DO UPDATE SET capital_partner_id=19,allow_virtual=true,allow_physical=true,fee_cents_physical=49900,handled_externally=false`);
   // a "handled externally" note buyer (NOT in the Sitewire directory) — files with this lender are never pushed
-  await db.query(`INSERT INTO sitewire_inspection_rules (capital_partner_id,partner_label,program,inspection_method,require_sitewire_inspector,fee_cents_virtual,handled_externally)
-    VALUES (NULL,'Churchill',NULL,'mobile',true,29900,true)
-    ON CONFLICT ${RULE_CONFLICT} DO UPDATE SET handled_externally=true`);
+  await db.query(`INSERT INTO sitewire_inspection_rules (capital_partner_id,partner_label,program,inspection_method,require_sitewire_inspector,fee_cents_virtual,handled_externally,draw_platform)
+    VALUES (NULL,'Churchill',NULL,'mobile',true,29900,true,'external')
+    ON CONFLICT ${RULE_CONFLICT} DO UPDATE SET handled_externally=true,draw_platform='external'`);
   for (const [k, v] of [['variance_pct', '10'], ['stale_days', '30'], ['no_draw_days', '45'], ['wire_turnaround_hours', '48']]) {
     await db.query(`INSERT INTO sitewire_settings (key,value) VALUES ($1,$2::jsonb) ON CONFLICT (key) DO UPDATE SET value=$2::jsonb`, [k, JSON.stringify(v)]);
   }

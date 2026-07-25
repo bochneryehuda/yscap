@@ -22,12 +22,17 @@ const SEV_RANK = { high: 3, medium: 2, low: 1 };
  * @param requests [{ sitewire_job_item_id, requested_cents, approved_cents, inspection_count }]
  * @param links    crosswalk rows [{ sitewire_job_item_id, sow_line_key, name, budgeted_cents, is_media_item, unit_index }]
  * @param rollup   output of rollup.computeRollup (line.remaining/drawn/budgeted EXCLUDING this pending draw), project totals
- * @param opts     { frontLoadPct=40, firstDrawMaxPct=30 }
+ * @param opts     { frontLoadPct=40, firstDrawMaxPct=30, inspectionMethod=null }
+ *                 inspectionMethod 'traditional' = a PHYSICAL-inspection file: the on-site
+ *                 inspection happens OUTSIDE Sitewire (TrustPoint/Trinity), so zero Sitewire
+ *                 inspection photos is the expected state — the no_inspection flag is
+ *                 suppressed (phase 1, 2026-07-24). 'mobile'/null keep the flag.
  * @returns        { flags:[{code,severity,message,key?}], level:'high'|'medium'|'low'|'clear', score }
  */
 function assessDraw({ draw = {}, requests = [], links = [], rollup = null, opts = {} } = {}) {
   const frontLoadPct = Number.isFinite(Number(opts.frontLoadPct)) ? Number(opts.frontLoadPct) : 40;
   const firstDrawMaxPct = Number.isFinite(Number(opts.firstDrawMaxPct)) ? Number(opts.firstDrawMaxPct) : 30;
+  const physicalFile = opts.inspectionMethod === 'traditional';
   const flags = [];
   const add = (code, severity, message, key) => flags.push({ code, severity, message, key: key || null });
 
@@ -59,7 +64,7 @@ function assessDraw({ draw = {}, requests = [], links = [], rollup = null, opts 
     const isMedia = !!l.is_media_item || String(l.sow_line_key).indexOf('__media__') === 0;
     if (isMedia) { if (req > 0) add('money_on_media_line', 'medium', `Money (${fmt(req)}) was requested against a photo/media line ("${l.name}"), which carries no budget.`, l.sow_line_key); continue; }
     if (appr > req) add('approved_exceeds_requested', 'high', `"${l.name}" was approved for ${fmt(appr)} but only ${fmt(req)} was requested.`, l.sow_line_key);
-    if (req > 0 && N(r.inspection_count) === 0) add('no_inspection', 'high', `"${l.name}" is requesting ${fmt(req)} with no inspection photos attached — the work isn't verified.`, l.sow_line_key);
+    if (req > 0 && N(r.inspection_count) === 0 && !physicalFile) add('no_inspection', 'high', `"${l.name}" is requesting ${fmt(req)} with no inspection photos attached — the work isn't verified.`, l.sow_line_key);
     const agg = reqByLine.get(l.sow_line_key) || { requested: 0, approved: 0, label: rollup && lineByKey.get(l.sow_line_key) ? lineByKey.get(l.sow_line_key).label : l.name };
     agg.requested += req; agg.approved += appr;
     reqByLine.set(l.sow_line_key, agg);

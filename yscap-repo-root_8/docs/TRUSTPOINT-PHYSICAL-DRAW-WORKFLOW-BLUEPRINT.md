@@ -123,6 +123,18 @@ TrustPoint's **draw** schemas return aggregates only — per-milestone draw amou
 
 ## 10. Build phases
 
+**BUILD STATUS (2026-07-24): all five phases are BUILT and merged into this branch, each with a pre-merge audit pass** (findings fixed in the same batch). What ships per phase, with the landing commits:
+
+| Phase | Status | Where it landed |
+|---|---|---|
+| **1. Routing + import tasks** | ✅ built + audited | db/295, `src/sitewire/routing.js`, `trustpoint-intake.js`, reconcile/risk method-aware fixes, StaffDrawRules "Draws administered on", DrawsPanel chip; tests `test-trustpoint-routing` (23) + `test-trustpoint-intake` (15) |
+| **2. TrustPoint mirror** | ✅ built + audited | db/296, `src/trustpoint/{client,matcher,mirror,discovery,poller}.js`, staff router `/api/trustpoint` + public webhook receiver `trustpoint-webhook.js`, config/switches, borrower-safe scrub; tests `test-trustpoint-matcher-pure` (24) + `test-trustpoint-mirror-db` (20) |
+| **3. Write-backs + report** | ✅ built + audited | db/297, `src/trustpoint/{lines,writeback,report}.js` (+ retry sweep), desk panel per-line entry + push + PDF; tests `test-trustpoint-writeback-db` (18) |
+| **4. Portal composer + close-outs** | ✅ built + audited | db/298, `src/lib/portal-draws.js`, staff desk routes + borrower composer routes/UI, Trinity order lifecycle + staff decision, historical close-out + re-drive sweep; tests `test-portal-draws-db` (43) |
+| **5. Money mirror** | ✅ built + audited | db/299–301, `mirror.js` mirrorDisbursement/verifyPartnerFee, retainage precedence chokepoint, `trustpointUnreleasedOnce` digest, Released chip; tests `test-trustpoint-money-db` (22) |
+
+Everything is staged OFF behind `TRUSTPOINT_ENABLED` (+ `SITEWIRE_*` switches); turning it on is provisioning (§8) + data entry, not a build.
+
 | Phase | Contents | External dependency |
 |---|---|---|
 | **1. Routing + import tasks** | `draw_platform` column + Blue Lake rule; start-draw stops 422ing → routes; coordinator `trustpoint_import` task + email on Sitewire-submitted draws (per-line table from the existing mirror); method-aware notification/risk fixes | **None — immediate value** |

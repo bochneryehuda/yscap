@@ -116,8 +116,8 @@ export default function BorrowerDraws({ appId }) {
       {/* whole-project inspection report (PDF) — all draws in one branded, borrower-safe document */}
       {findings.length > 0 && <ProjectReportButton appId={appId} />}
 
-      {/* Eligibility preview + guided hand-off to Sitewire (where draws are submitted) */}
-      {eligibility && <EligibilityCard e={eligibility} />}
+      {/* Eligibility preview + the in-PILOT composer (physical files) or the Sitewire hand-off */}
+      {eligibility && <EligibilityCard e={eligibility} appId={appId} onChanged={load} />}
 
       {findings.map((f) => <FindingCard key={f.id} finding={f} appId={appId} onChanged={load} />)}
     </div>
@@ -158,10 +158,18 @@ function DrawStepper({ finding }) {
 }
 
 /* "Can I request another draw?" — an honest, guided preview: how much budget is left, whether anything is
-   holding a new draw, and the steps to submit one in Sitewire (where borrowers submit + photograph draws). */
-function EligibilityCard({ e }) {
+   holding a new draw, and the steps to submit one in Sitewire (where borrowers submit + photograph draws).
+   On a physical-inspection file the borrower can ALSO compose the draw line-by-line right here (e.composer). */
+function EligibilityCard({ e, appId, onChanged }) {
   const eligible = !!e.eligible;
   const url = e.sitewire_portal_url || 'https://app.sitewire.co';
+  const composer = e.composer || null;
+  const openReq = composer && composer.open_request;
+  const OPEN_REQ_LABEL = {
+    submitted: 'Received — being set up for inspection',
+    entered: 'In review with the inspection team',
+    approved: 'Approved — your release is being processed',
+  };
   return (
     <div className="dd-card">
       <div className="dd-card-h" style={{ justifyContent: 'space-between' }}>
@@ -197,7 +205,24 @@ function EligibilityCard({ e }) {
         </div>
       )}
 
-      {eligible && (
+      {/* an in-flight portal request: plain status, no second submission */}
+      {openReq && (
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--line)' }}>
+          <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span className="pill sw-insp">Draw request in progress</span>
+            <span className="small" style={{ fontWeight: 600 }}>{usd(openReq.total_requested_cents)}</span>
+            <span className="small muted">{OPEN_REQ_LABEL[openReq.status] || 'In progress'}</span>
+          </div>
+        </div>
+      )}
+
+      {/* physical-inspection files: compose the draw right here, line by line */}
+      {eligible && composer && composer.can_compose && !openReq && (
+        <BorrowerComposer appId={appId} composer={composer} onChanged={onChanged} sitewireUrl={url} />
+      )}
+
+      {/* everyone else (and as the photo-friendly alternative): submit in Sitewire */}
+      {eligible && !(composer && composer.can_compose && !openReq) && !openReq && (
         <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--line)' }}>
           <div className="small" style={{ fontWeight: 700, marginBottom: 6 }}>How to submit your next draw</div>
           <ol className="small" style={{ margin: 0, paddingLeft: 18, color: 'var(--text-muted)', lineHeight: 1.6 }}>
@@ -209,6 +234,85 @@ function EligibilityCard({ e }) {
           <a className="btn btn-sm primary" href={url} target="_blank" rel="noreferrer" style={{ marginTop: 12, display: 'inline-block' }}>Open Sitewire to submit a draw ↗</a>
         </div>
       )}
+    </div>
+  );
+}
+
+/* The in-PILOT line-item draw composer (physical-inspection files). Pick the lines you've
+   finished, enter an amount for each (up to what's remaining), and submit — your team takes
+   it from there and the site inspection is arranged. Server-validated; borrower-safe. */
+function BorrowerComposer({ appId, composer, onChanged, sitewireUrl }) {
+  const [open, setOpen] = useState(false);
+  const [amounts, setAmounts] = useState({});
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const lines = Array.isArray(composer.lines) ? composer.lines : [];
+  const cents = (v) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? Math.round(n * 100) : 0; };
+  const totalCents = lines.reduce((s, l) => s + cents(amounts[l.sitewire_job_item_id]), 0);
+  const overLine = lines.find((l) => cents(amounts[l.sitewire_job_item_id]) > Number(l.remaining_cents || 0));
+  async function submit() {
+    if (busy) return;
+    setBusy(true); setErr('');
+    try {
+      const entries = lines
+        .map((l) => ({ sitewire_job_item_id: l.sitewire_job_item_id, requested_cents: cents(amounts[l.sitewire_job_item_id]) }))
+        .filter((x) => x.requested_cents > 0);
+      await api.post(`/api/borrower/draws/${appId}/request`, note.trim() ? { entries, note: note.trim() } : { entries });
+      setOpen(false); setAmounts({}); setNote('');
+      onChanged && onChanged();
+    } catch (e2) { setErr(e2?.data?.error || e2.message || 'That didn’t work — please try again.'); }
+    finally { setBusy(false); }
+  }
+  return (
+    <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--line)' }}>
+      <div className="small" style={{ fontWeight: 700, marginBottom: 6 }}>Request your next draw here</div>
+      <div className="small" style={{ color: 'var(--text-muted)', lineHeight: 1.5 }}>
+        Enter an amount for each line of work you’ve completed. Your team reviews it, a site inspection is
+        arranged, and you can track every step on this page.
+      </div>
+      {!open && (
+        <button className="btn btn-sm primary" style={{ marginTop: 10 }} onClick={() => { setErr(''); setOpen(true); }}>
+          Start a draw request
+        </button>
+      )}
+      {open && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ overflowX: 'auto' }}>
+            <table className="tbl">
+              <thead><tr><th>Line of work</th><th className="num">Available</th><th className="num" style={{ width: 130 }}>Request ($)</th></tr></thead>
+              <tbody>
+                {lines.map((l) => (
+                  <tr key={l.sitewire_job_item_id}>
+                    <td>{l.name}</td>
+                    <td className="num muted">{usd2(l.remaining_cents)}</td>
+                    <td className="num">
+                      <input type="number" min="0" step="0.01" inputMode="decimal" value={amounts[l.sitewire_job_item_id] ?? ''}
+                        onChange={(ev) => setAmounts((a) => ({ ...a, [l.sitewire_job_item_id]: ev.target.value }))}
+                        style={{ width: 110, textAlign: 'right' }} placeholder="0.00" />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <textarea className="small" rows={2} value={note} onChange={(ev) => setNote(ev.target.value)}
+            placeholder="Anything your team should know about this draw (optional)" style={{ width: '100%', marginTop: 8 }} maxLength={500} />
+          <div className="row" style={{ gap: 10, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
+            <span className="small" style={{ fontWeight: 700 }}>Total: {usd2(totalCents)}</span>
+            {overLine && <span className="small" style={{ color: 'var(--warning, #b8860b)' }}>“{overLine.name}” only has {usd2(overLine.remaining_cents)} left.</span>}
+            <span style={{ flex: 1 }} />
+            <button className="btn btn-sm ghost" disabled={busy} onClick={() => { setOpen(false); setErr(''); }}>Cancel</button>
+            <button className="btn btn-sm primary" disabled={busy || totalCents <= 0 || !!overLine} onClick={submit}>
+              {busy ? 'Submitting…' : 'Submit draw request'}
+            </button>
+          </div>
+          {err && <div className="small" style={{ marginTop: 6, color: 'var(--danger, #b3261e)' }}>{err}</div>}
+        </div>
+      )}
+      <div className="small muted" style={{ marginTop: 10 }}>
+        Prefer the construction portal (with progress photos)? <a href={sitewireUrl} target="_blank" rel="noreferrer">Submit there instead ↗</a>
+      </div>
     </div>
   );
 }

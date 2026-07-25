@@ -404,6 +404,36 @@ function drawRequest({ borrowerName, propertyLabel, loanNumber } = {}) {
   });
 }
 
+// The coordinator "enter this draw into TrustPoint" desk email (physical-draw workflow
+// phase 1, 2026-07-24). STAFF-ONLY — TrustPoint/note-buyer names never reach a borrower
+// surface; this goes to the draws desk + coordinator only. Carries the copy-ready
+// per-line table so the manual TrustPoint entry takes minutes.
+function trustpointImport({ drawNumber, propertyLabel, loanNumber, lines = [], totalCents = 0 } = {}) {
+  const usd = (c) => '$' + (Number(c || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const meta = [];
+  if (propertyLabel) meta.push({ label: 'Property', value: propertyLabel });
+  if (loanNumber) meta.push({ label: 'Loan #', value: loanNumber });
+  meta.push({ label: 'Draw', value: `#${drawNumber == null ? '—' : drawNumber}` });
+  meta.push({ label: 'Total requested', value: usd(totalCents) });
+  for (const l of lines.slice(0, 40)) meta.push({ label: l.name, value: usd(l.requested_cents) });
+  if (lines.length > 40) meta.push({ label: 'More lines', value: `+${lines.length - 40} more — see the file's draw desk` });
+  return render({
+    audience: 'staff',
+    title: `Draw #${drawNumber == null ? '—' : drawNumber} needs to be entered into TrustPoint`,
+    subjectTag: fileTag(loanNumber, propertyLabel),
+    badge: { text: 'Enter in TrustPoint', tone: 'gold' },
+    replyable: true,
+    preheader: 'A submitted draw on a TrustPoint-administered file needs manual entry.',
+    intro: 'A draw was just submitted on this file. Its draws are administered on TrustPoint, so it needs to be entered there by hand — the line-by-line amounts are below, ready to copy over.',
+    lines: [
+      'Enter it in TrustPoint as a REGULAR workflow draw — never TrustPoint’s “imported draw” option (imported draws send no updates back, which would blind the follow-up tracking).',
+      'Once it’s entered, mark the Workflow item done (“Entered in TrustPoint”).',
+    ],
+    meta,
+    note: 'Reply to this email to reach the draws desk and the loan team together.',
+  });
+}
+
 /** Admin-triggered password reset for a staff member: a single set-a-new-password
  *  link to the console (works whether or not they already had a login). */
 function staffPasswordReset({ fullName, url, days = 7 } = {}) {
@@ -426,7 +456,7 @@ function staffPasswordReset({ fullName, url, days = 7 } = {}) {
 const builders = {
   welcome, verifyEmail, loginCode,
   passwordReset, passwordChanged, mfaEnabled, newSignIn,
-  staffInvite, staffWelcome, staffPasswordReset, leadReceived, coBorrowerInvite, borrowerInvite, drawRequest,
+  staffInvite, staffWelcome, staffPasswordReset, leadReceived, coBorrowerInvite, borrowerInvite, drawRequest, trustpointImport,
   esignReadyToSign, drawWireReadyToSign,
 };
 
