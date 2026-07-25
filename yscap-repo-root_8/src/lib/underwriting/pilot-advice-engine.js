@@ -31,6 +31,7 @@ const { creditCompleteness } = require('../credit/completeness');
 const { floodCompleteness } = require('./flood-advisory');
 const { experienceCompleteness } = require('./experience-advisory');
 const { appraisalCompleteness } = require('./appraisal-advisory');
+const { signedTermSheetCompleteness } = require('./signed-term-sheet-advisory');
 
 // Count OPEN fatal document_findings for a file across the given sources (the "positive
 // contradiction" signal that turns a signed-off condition into a DISPUTE).
@@ -100,6 +101,12 @@ const NOTES = {
     not_ready: 'PILOT has not been able to read a clean appraisal for this property yet.',
     agree: 'PILOT read the appraisal and everything lines up.',
     dispute: 'PILOT sees an appraisal issue that isn\'t resolved — something about the property, the value, or the report doesn\'t line up. Worth another look.',
+  },
+  signed_term_sheet: {
+    ready: 'PILOT sees the borrower-signed term sheet on file.',
+    not_ready: 'PILOT is still waiting on the borrower-signed term sheet.',
+    agree: 'PILOT sees the borrower-signed term sheet on file.',
+    dispute: 'PILOT can\'t find a current signed term sheet on file. Worth another look.',
   },
 };
 
@@ -179,6 +186,17 @@ const EVALUATORS = {
       // An open FATAL blocks_ctc appraisal finding is POSITIVE contradicting evidence (the
       // SAME signal the human gate reads), so appraisal — like flood — supports DISPUTE.
       return { complete: !!c.complete, contradicted: (c.openFatal || 0) > 0 };
+    },
+  },
+  rtl_cond_signedts: {
+    domain: 'signed_term_sheet',
+    async evaluate(client, appId, item) {
+      const c = await signedTermSheetCompleteness(client, item.id);
+      // A term sheet has no "positive contradiction" finding, and a stale/changed term sheet
+      // is REOPENED (un-signed) by the economics/experience triggers, so a signed-off
+      // condition never coexists with a stale one — contradicted is always false (never a
+      // false DISPUTE). ready/not_ready/agree only.
+      return { complete: !!c.complete, contradicted: false };
     },
   },
 };
