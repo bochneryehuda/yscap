@@ -30,6 +30,7 @@ const { fraudCompleteness } = require('./fraud-autoclear');
 const { creditCompleteness } = require('../credit/completeness');
 const { floodCompleteness } = require('./flood-advisory');
 const { experienceCompleteness } = require('./experience-advisory');
+const { appraisalCompleteness } = require('./appraisal-advisory');
 
 // Count OPEN fatal document_findings for a file across the given sources (the "positive
 // contradiction" signal that turns a signed-off condition into a DISPUTE).
@@ -93,6 +94,12 @@ const NOTES = {
     not_ready: 'PILOT is still waiting on enough verified past deals to cover the experience this loan needs.',
     agree: 'PILOT checked the track record and the experience this loan needs is verified.',
     dispute: 'PILOT can\'t confirm enough verified past deals for the experience this loan needs. Worth another look.',
+  },
+  appraisal: {
+    ready: 'PILOT read the appraisal and everything checks out — the property, the value, and the report all line up.',
+    not_ready: 'PILOT has not been able to read a clean appraisal for this property yet.',
+    agree: 'PILOT read the appraisal and everything lines up.',
+    dispute: 'PILOT sees an appraisal issue that isn\'t resolved — something about the property, the value, or the report doesn\'t line up. Worth another look.',
   },
 };
 
@@ -163,6 +170,15 @@ const EVALUATORS = {
       // absence of a (human) verification step, not evidence the experience is wrong — so
       // contradicted is always false (never a false DISPUTE). ready/not_ready/agree only.
       return { complete: !!c.complete, contradicted: false };
+    },
+  },
+  appraisal_review_cleared: {
+    domain: 'appraisal',
+    async evaluate(client, appId) {
+      const c = await appraisalCompleteness(client, appId);
+      // An open FATAL blocks_ctc appraisal finding is POSITIVE contradicting evidence (the
+      // SAME signal the human gate reads), so appraisal — like flood — supports DISPUTE.
+      return { complete: !!c.complete, contradicted: (c.openFatal || 0) > 0 };
     },
   },
 };
