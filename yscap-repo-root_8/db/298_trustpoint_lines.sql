@@ -1,4 +1,4 @@
--- 297_trustpoint_lines.sql
+-- 298_trustpoint_lines.sql
 -- Idempotent. Physical-draw workflow phase 3 (blueprint §5A/§6): per-line approved
 -- amounts for TrustPoint-administered draws + the Sitewire write-back state.
 --

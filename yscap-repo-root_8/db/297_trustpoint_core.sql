@@ -1,4 +1,4 @@
--- 296_trustpoint_core.sql
+-- 297_trustpoint_core.sql
 -- Idempotent. Physical-draw workflow phase 2 (owner-directed 2026-07-24; blueprint
 -- docs/TRUSTPOINT-PHYSICAL-DRAW-WORKFLOW-BLUEPRINT.md §4): the TrustPoint MIRROR.
 -- TrustPoint (the note buyer's draw administrator — Blue Lake physical files) creates

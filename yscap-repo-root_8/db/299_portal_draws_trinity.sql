@@ -1,4 +1,4 @@
--- 298_portal_draws_trinity.sql
+-- 299_portal_draws_trinity.sql
 -- Idempotent. Physical-draw workflow phase 4 (blueprint §2 Path B/C, §5B):
 -- the PILOT-portal draw composer + the Trinity inspection-order desk.
 --
@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS trinity_inspection_orders (
 CREATE INDEX IF NOT EXISTS idx_tio_app ON trinity_inspection_orders (application_id, created_at DESC);
 
 -- Widen the Workflow submission-type allow-list with the Trinity order hand-off
--- (same replace pattern as db/295 — the stably-named constraint is re-created once).
+-- (same replace pattern as db/296 — the stably-named constraint is re-created once).
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_workflow_submission_type')

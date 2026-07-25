@@ -1,4 +1,4 @@
--- 299_trustpoint_money.sql
+-- 300_trustpoint_money.sql
 -- Idempotent. Physical-draw workflow phase 5 (blueprint §5C/D/E — the money mirror).
 -- D2: Blue Lake/TrustPoint wires administered draws DIRECTLY; PILOT never moves this
 -- money. The ledger row is a MIRROR of an observed release (poll-detected), so the
