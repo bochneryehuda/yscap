@@ -2855,6 +2855,25 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusFindingId, _allFindingsForFocus.length]);
 
+  // The set of finding CODES already shown in the "Open findings" list below. Detectors like the
+  // chain-of-title / seller-chain / bank / tie-out desks surface here AND get bridged into the AI
+  // Findings panel (same evidence.code), so the identical issue was appearing twice (owner-reported
+  // 2026-07-24: "so many duplicates"). We pass these codes into the AI panel so it hides the bridged
+  // repeats by default — nothing is lost, each is still fully actionable in "Open findings".
+  //
+  // THIS HOOK MUST STAY ABOVE THE `loading` EARLY RETURN. A hook after a conditional return runs on
+  // some renders and not others, and React aborts the whole tree the moment the count changes
+  // ("Rendered more hooks than during the previous render"). That is exactly what crashed this
+  // section for every user: first paint returned early at `loading`, the second paint reached the
+  // useMemo, and the file page died in the ErrorBoundary. Every hook in this component belongs
+  // before the first `return`.
+  const _allFindings = (data && data.allFindings) || [];
+  const shownFindingCodes = React.useMemo(() => {
+    const s = new Set();
+    for (const f of _allFindings) { if (f && f.code) s.add(String(f.code).trim().toLowerCase()); }
+    return s;
+  }, [_allFindings]);
+
   if (loading) return <p style={{ color: 'var(--muted,#4B585C)' }}>Loading the underwriting review…</p>;
 
   const sum = (data && data.summary) || { fatal: 0, warning: 0, info: 0, blocksCtc: false };
@@ -2876,17 +2895,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
   // Every open finding across the WHOLE file in one list — the exact set the summary counts, so the
   // "2 warnings" chip maps to two visible items (owner-reported: "it says 2 warnings and I can't see
   // them"). Shown once, at the top; the per-section finding lists below were removed so nothing repeats.
-  const allFindings = (data && data.allFindings) || [];
-  // The set of finding CODES already shown in the "Open findings" list below. Detectors like the
-  // chain-of-title / seller-chain / bank / tie-out desks surface here AND get bridged into the AI
-  // Findings panel (same evidence.code), so the identical issue was appearing twice (owner-reported
-  // 2026-07-24: "so many duplicates"). We pass these codes into the AI panel so it hides the bridged
-  // repeats by default — nothing is lost, each is still fully actionable in "Open findings".
-  const shownFindingCodes = React.useMemo(() => {
-    const s = new Set();
-    for (const f of allFindings) { if (f && f.code) s.add(String(f.code).trim().toLowerCase()); }
-    return s;
-  }, [allFindings]);
+  const allFindings = _allFindings;   // hoisted above the early return with its memo (see above)
   const apprFindings = (appr && appr.findings) || [];
   const apprSum = (appr && appr.summary) || { fatal: 0, warning: 0, info: 0 };
   const exts = (data && data.extractions) || [];

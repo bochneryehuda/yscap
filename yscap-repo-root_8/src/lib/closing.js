@@ -28,7 +28,7 @@ const WAREHOUSES = [
   'CorrFirst',
 ];
 
-// The closing document conditions the closer uploads into (seeded by db/313).
+// The closing document conditions the closer uploads into (seeded by db/315).
 const CLOSING_CONDITION_CODES = ['closing_hud_final', 'closing_pkg_signed', 'closing_tracking_label'];
 
 // Document quick-link groups → the checklist template code(s) that own each kind.

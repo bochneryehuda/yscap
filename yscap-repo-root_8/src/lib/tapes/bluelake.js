@@ -36,6 +36,14 @@ const SELLER_NAME = 'YS Capital Group';
 const n = (v) => { if (v == null || v === '') return null; const x = Number(v); return isFinite(x) ? x : null; };
 const toFraction = (v) => { const x = n(v); if (x == null) return null; return x > 1 ? x / 100 : x; };
 const yn = (b) => (b ? 'Y' : 'N');
+// Cached-value helpers for the Bid Tape's per-row FORMULA columns. The formula
+// still ships (Excel recomputes it on open); the cached value we compute here from
+// the SAME inputs the formula references makes the ratio/total DISPLAY in viewers
+// that don't recalculate (Google Sheets/Quick Look/Numbers). `ratio` returns null
+// when the denominator is missing/zero, so we never pre-cache a #DIV/0! — the cell
+// keeps just its formula in that edge case.
+const ratio = (num, den) => { const a = n(num); const b = n(den); return (a != null && b) ? a / b : null; };
+const sum2 = (a, b) => { const x = n(a); const y = n(b); return (x == null && y == null) ? null : (x || 0) + (y || 0); };
 
 function strategyOf(loan) { return reg.normStrategy([loan.app.program, loan.app.loan_type, loan.app.rehab_type].filter(Boolean).join(' ')); }
 function isNewConstruction(loan) { return strategyOf(loan) === 'ground_up'; }
@@ -161,18 +169,22 @@ const COLUMNS = [
   ['AB', 'n', null, (l, e) => (l.seasoning ? l.seasoning.currentBalance : e.totalDisbursed)],        // Total Loan Amount Disbursed
   ['AC', 'n', null, (l, e) => (l.seasoning ? l.seasoning.interestBearing : e.interestBearing)],      // Interest Bearing Balance
   ['AD', 'n', null, (l, e) => (l.seasoning ? l.seasoning.currentBalance : e.upb)],                   // UPB (current balance)
-  ['AE', 'f', null, () => 'IFERROR(X{r}/U{r},"")'],                                // Completion Percentage (formula)
+  ['AE', 'f', null, (l, e) => ({ f: 'IFERROR(X{r}/U{r},"")', v: ratio(l.seasoning ? l.seasoning.disbursedHoldback : e.disbursedHoldback, e.holdback) })], // Completion % (disbursed ÷ total holdback)
   ['AF', 'n', null, (l, e) => e.purchasePrice],                                   // Purchase Price
   ['AG', 'd', null, (l) => l.app.acquisition_date || l.app.actual_closing || l.app.est_closing_date], // Purchase Date
   ['AH', 'n', null, (l, e) => e.rehabBudget],                                     // Rehab Budget
   ['AI', 'n', null, () => null],                                                  // Cost Incurred to Date — blank for now (owner-directed). This is for REFINANCES where renovation is already partly complete; we don't populate it yet.
-  ['AJ', 'f', null, () => 'AF{r}+AH{r}'],                                          // Total Project Costs (formula)
+  ['AJ', 'f', null, (l, e) => ({ f: 'AF{r}+AH{r}', v: sum2(e.purchasePrice, e.rehabBudget) })],   // Total Project Costs (purchase + rehab)
   ['AK', 'n', null, (l, e) => e.aiv],                                             // AIV
   ['AL', 'n', null, (l, e) => e.arv],                                             // ARV
   ['AM', 'd', null, (l) => (l.appraisal && (l.appraisal.effective_date || l.appraisal.report_signed_date)) || null], // Appraisal Date
-  ['AN', 'f', null, () => 'T{r}/AK{r}'],                                           // LTAIV (formula)
-  ['AO', 'f', null, () => 'W{r}/AJ{r}'],                                           // LTC (formula)
-  ['AP', 'f', null, () => 'W{r}/AL{r}'],                                           // LTARV (formula)
+  // The three underwriting ratios — Blue Lake's own formulas, now WITH a cached
+  // value so the actual Initial LTV / LTC / Final (after-repair) LTV show even in a
+  // viewer that doesn't recalculate (owner-reported 2026-07-26 "missing the actual
+  // initial LTV, LTC, final LTC"). Excel still recomputes them on open.
+  ['AN', 'f', null, (l, e) => ({ f: 'T{r}/AK{r}', v: ratio(e.day1, e.aiv) })],            // LTAIV — Initial LTV (day-1 loan ÷ As-Is Value)
+  ['AO', 'f', null, (l, e) => ({ f: 'W{r}/AJ{r}', v: ratio(e.totalLoan, sum2(e.purchasePrice, e.rehabBudget)) })], // LTC (total loan ÷ total cost)
+  ['AP', 'f', null, (l, e) => ({ f: 'W{r}/AL{r}', v: ratio(e.totalLoan, e.arv) })],        // LTARV — Final LTV (total loan ÷ ARV)
   ['AQ', 'n', null, (l) => (n(l.app.sqft_pre) != null ? n(l.app.sqft_pre) : (l.appraisal && n(l.appraisal.gla)))], // Pre-Rehab Sqft
   ['AR', 'n', null, (l) => n(l.app.sqft_post)],                                   // Post-Rehab Sqft
   ['AS', 'n', null, (l) => termMonths(l)],                                        // Term (months)
