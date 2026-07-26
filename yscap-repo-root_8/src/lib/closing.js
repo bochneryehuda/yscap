@@ -285,6 +285,19 @@ async function readChecklists(appId, client) {
   return lists.map((l) => ({ ...l, items: items.filter((i) => String(i.checklist_id) === String(l.id)) }));
 }
 
+// Check / un-check ONE closer checklist item. Lives here (not inline in the
+// route) so the regression test exercises the SHIPPED statement — the `$3::uuid`
+// cast is load-bearing: a bare param inside CASE WHEN…THEN resolves to text and
+// the uuid column write throws (a 500 on every check-off).
+async function setChecklistItemChecked(client, itemId, checked, actorId) {
+  const c = client || db;
+  await c.query(
+    `UPDATE closing_checklist_items SET checked=$2,
+        checked_by = CASE WHEN $2 THEN $3::uuid ELSE NULL END,
+        checked_at = CASE WHEN $2 THEN now() ELSE NULL END WHERE id=$1`,
+    [itemId, !!checked, actorId || null]);
+}
+
 async function readNotes(appId, client) {
   const c = client || db;
   const r = await c.query(
@@ -355,5 +368,6 @@ module.exports = {
   readClosingConditions,
   readChecklists,
   readNotes,
+  setChecklistItemChecked,
   getClosingWorkspace,
 };
