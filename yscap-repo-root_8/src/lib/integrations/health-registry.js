@@ -208,6 +208,37 @@ const INTEGRATIONS = [
     },
   },
   {
+    key: 'object_storage', name: 'Cloudflare R2 (document storage)', group: 'workflow',
+    purpose: 'Where every uploaded document actually lives. Shared storage is what lets the website and the background document reader reach the same files.',
+    direction: 'Outbound', auth: 'S3 access key + secret',
+    env: [{ name: 'STORAGE_PROVIDER', required: false }, { name: 'S3_BUCKET', required: true },
+      { name: 'S3_ENDPOINT', required: true }, { name: 'S3_ACCESS_KEY_ID', required: true },
+      { name: 'S3_SECRET_ACCESS_KEY', required: true }, { name: 'S3_REGION', required: false }],
+    switches: [], liveProbe: true,
+    async probe() {
+      // Delegates to the shared storage-health reader, so this card and /api/health can never
+      // disagree. `fresh:true` — a human pressing "Test now" wants a real round-trip, not the
+      // few-second cache that keeps the public /api/health endpoint cheap.
+      try {
+        const storage = require('../storage');
+        const card = await timebox(require('../storage-health').readStorageHealth(storage, cfg.storageProvider, { fresh: true }));
+        if (!card.configured) {
+          return { configured: false, live: null, detail: card.reason || 'Bucket, endpoint, or access keys are not set.' };
+        }
+        // The local disk has no remote endpoint — report it honestly rather than as "reachable".
+        if (card.reachable === null) {
+          return { configured: true, live: null, detail: `Documents are stored on the server disk (${card.base || 'local'}) — there is nothing remote to reach.` };
+        }
+        if (card.reachable === true) {
+          return { configured: true, live: true, detail: `Reached the document bucket (${card.base || 'object storage'}) and it answered.` };
+        }
+        return { configured: true, live: false, detail: card.reason || 'The document bucket did not answer — new uploads would fail.' };
+      } catch (e) {
+        return { configured: true, live: false, detail: e.message === 'timed out' ? 'Timed out reaching the document bucket.' : (e.message || 'Not reachable.') };
+      }
+    },
+  },
+  {
     key: 'sharepoint', name: 'SharePoint (document mirror)', group: 'workflow',
     purpose: 'Copies every saved document into the team SharePoint site (one-way; it never deletes anything).',
     direction: 'One-way (write)', auth: 'Microsoft Graph app (certificate or secret)',

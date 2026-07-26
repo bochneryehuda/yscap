@@ -125,7 +125,9 @@ app.get('/api/health', async (req, res) => {
   try {
     storageCard = await require('./lib/storage-health')
       .readStorageHealth(require('./lib/storage'), cfg.storageProvider);
-  } catch (e) { storageCard = { provider: cfg.storageProvider, reachable: null, reason: 'unavailable' }; }
+    // Shape parity on failure: return the canonical 8-field card (all-null) rather than a partial
+    // object, so a consumer reading e.g. `.configured` never gets `undefined`.
+  } catch (e) { storageCard = require('./lib/storage-health').buildStorageCard({ provider: cfg.storageProvider }); }
   // Missing-conditions tripwire (owner-directed 2026-07-14, after the breach):
   // a LIVE file sitting at zero checklist items, or an RTL file without its
   // purchase-contract condition, must be impossible — if it ever happens again

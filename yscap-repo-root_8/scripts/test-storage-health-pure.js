@@ -43,15 +43,34 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
   ok(noReason.reachable === false && !!noReason.reason, 'unreachable with no ping reason → a reason is still supplied');
 
   // Local disk: there is nothing remote to reach — must be null, never a fabricated true.
+  // NOTE the fixture shape: the REAL local provider returns `configured` as an absolute PATH
+  // STRING (src/lib/storage.js probe()), not a boolean. A fixture that omits the field (or fakes
+  // a boolean) would prove nothing about production — the exact trap CLAUDE.md logs under
+  // #248/#259. So this mirrors the real shape.
   const localCard = SH.buildStorageCard({
     provider: 'local',
-    probe: { ok: true, base: '/var/data/uploads', persistent: true },
+    probe: { ok: true, base: '/var/data/uploads', configured: '/var/data/uploads', persistent: true },
     ping: null,
   });
   ok(localCard.reachable === null, 'local: reachable null (no remote endpoint) — never fabricated');
   ok(localCard.dualReadFallback === false, 'local: no dual-read fallback');
-  ok(localCard.configured === true, 'local: configured falls back to writability (no `configured` field)');
+  ok(localCard.configured === true, 'local: a non-boolean `configured` path falls back to writability (true here)');
   ok(/local disk/i.test(localCard.reason || ''), 'local: reason explains why there is no reachability check');
+
+  // A NOT-IMPLEMENTED provider stub also returns `configured: <path string>` (truthy) with ok:false.
+  // A bare !!p.configured would call it "configured"; it must report NOT configured.
+  const stub = SH.buildStorageCard({
+    provider: 'sharepoint',
+    probe: { ok: false, base: null, configured: '/var/data/uploads', persistent: false, error: 'sharepoint not configured' },
+    ping: null,
+  });
+  ok(stub.configured === false, 'stub provider: a path-string `configured` must NOT read as configured');
+  ok(stub.writable === false, 'stub provider: not writable');
+  ok(/not configured/i.test(stub.reason || ''), 'stub provider: the probe error is surfaced as the reason');
+
+  // A probe ERROR must always be explained (previously it produced a card with reason:null).
+  const errProbe = SH.buildStorageCard({ provider: 'local', probe: { ok: false, error: 'disk unresolvable' }, ping: null });
+  ok(/disk unresolvable/.test(errProbe.reason || ''), 'probe error is surfaced in the reason');
 
   // An unconfigured S3 (vars missing) must not claim to be writable.
   const unconfigured = SH.buildStorageCard({
@@ -84,6 +103,9 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
   ok(throwProbe && throwProbe.writable === false, 'readStorageHealth: throwing probe() → degraded card, no throw');
 
   // A THROWING ping must degrade to unreachable with a reason.
+  // Reset first: these cases exercise the PING path, and the cache above is keyed on
+  // provider+base — without a reset they would be served the earlier healthy verdict.
+  SH._resetCache();
   const throwPing = await SH.readStorageHealth({
     probe: () => s3Probe,
     ping: async () => { throw new Error('socket hang up'); },
@@ -91,6 +113,7 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
   ok(throwPing.reachable === false && /hang up/.test(throwPing.reason || ''), 'readStorageHealth: throwing ping() → reachable false + reason');
 
   // A HANGING ping must be abandoned at the timeout — /api/health can never block on storage.
+  SH._resetCache();
   const t0 = Date.now();
   const hung = await SH.readStorageHealth({
     probe: () => s3Probe,
@@ -100,6 +123,54 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
   ok(hung.reachable === false, 'hanging ping: reachable false (fails honest, not stuck)');
   ok(/no answer within/i.test(hung.reason || ''), 'hanging ping: reason names the timeout');
   ok(elapsed < 2000, `hanging ping: abandoned quickly (took ${elapsed}ms) — health never blocks`);
+
+  // ---------- ping CACHING (health is public + polled by every tab; it must stay O(1)) ----------
+  // /api/health is unauthenticated, un-rate-limited, and the stale-build watchdog polls it from
+  // every open staff/borrower tab every 5 min and on window focus. A live signed round-trip per
+  // request would hammer R2, add latency to Render's own health check, and leak a pending socket
+  // per timed-out call. So the verdict is cached and concurrent callers share one round-trip.
+  SH._resetCache();
+  let pings = 0;
+  const counting = { probe: () => s3Probe, ping: async () => { pings++; return { ok: true, reason: 'reachable' }; } };
+  await SH.readStorageHealth(counting, 's3');
+  await SH.readStorageHealth(counting, 's3');
+  await SH.readStorageHealth(counting, 's3');
+  ok(pings === 1, `cache: 3 sequential health calls → 1 round-trip (saw ${pings})`);
+
+  // Concurrent callers (many tabs at once, cold cache) must SHARE one in-flight request.
+  SH._resetCache();
+  pings = 0;
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const slow = { probe: () => s3Probe, ping: async () => { pings++; await gate; return { ok: true, reason: 'reachable' }; } };
+  const all = Promise.all([1, 2, 3, 4, 5].map(() => SH.readStorageHealth(slow, 's3')));
+  release();
+  const cards = await all;
+  ok(pings === 1, `cache: 5 concurrent health calls → 1 shared round-trip (saw ${pings})`);
+  ok(cards.every((c) => c.reachable === true), 'cache: every concurrent caller gets the real verdict');
+
+  // An expired TTL re-checks — a revoked token must surface, not be cached forever.
+  SH._resetCache();
+  pings = 0;
+  await SH.readStorageHealth(counting, 's3', { ttlMs: 0 });
+  await SH.readStorageHealth(counting, 's3', { ttlMs: 0 });
+  ok(pings === 2, `cache: expired TTL re-checks (saw ${pings}) — a revoked key still surfaces`);
+
+  // `fresh:true` (the admin "Test now" button) always bypasses the cache.
+  SH._resetCache();
+  pings = 0;
+  await SH.readStorageHealth(counting, 's3');
+  await SH.readStorageHealth(counting, 's3', { fresh: true });
+  ok(pings === 2, `cache: fresh:true bypasses the cache (saw ${pings})`);
+
+  // Re-pointing at a DIFFERENT bucket must not serve the previous bucket's verdict.
+  SH._resetCache();
+  pings = 0;
+  await SH.readStorageHealth(counting, 's3');
+  const otherBucket = { probe: () => ({ ...s3Probe, base: 's3://a-different-bucket' }), ping: counting.ping };
+  await SH.readStorageHealth(otherBucket, 's3');
+  ok(pings === 2, `cache: a different bucket re-checks rather than reusing the verdict (saw ${pings})`);
+  SH._resetCache();
 
   console.log(`test-storage-health-pure: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
