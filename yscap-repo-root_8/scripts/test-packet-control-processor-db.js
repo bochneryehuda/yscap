@@ -3,7 +3,7 @@
  * Pipeline V2 (owner-directed 2026-07-26) — packet-control processor against a REAL Postgres +
  * the durable worker's runOnce. Proves the whole machine end-to-end in SHADOW:
  * enqueue a job → worker claims + runs the packet-control processor → the stage manifest is
- * persisted in document_pipeline_stages (intake completed, packet_control completed, read stages
+ * persisted in document_pipeline_stages (intake completed, route_plan completed, read stages
  * not_applicable), a document_processing_routes row is recorded (planned), and the job completes.
  *
  *   node scripts/test-packet-control-processor-db.js
@@ -49,7 +49,7 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
     const stages = (await q(`SELECT stage_key, status FROM document_pipeline_stages WHERE job_id=$1`, [jobId])).rows;
     const byKey = {}; stages.forEach((s) => { byKey[s.stage_key] = s.status; });
     ok(byKey.intake === 'completed', 'intake stage completed');
-    ok(byKey.packet_control === 'completed', 'packet_control stage completed');
+    ok(byKey.route_plan === 'completed', 'route_plan stage completed');
     ok(byKey.ocr_layout === 'not_applicable', 'shadow: ocr_layout not_applicable');
     ok(byKey.classification === 'not_applicable', 'shadow: classification not_applicable');
 

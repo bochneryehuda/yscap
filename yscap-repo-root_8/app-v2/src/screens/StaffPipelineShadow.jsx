@@ -23,7 +23,7 @@ function money(cents) {
 }
 
 const STAGE_LABEL = {
-  intake: 'Intake', packet_control: 'Packet control', ocr_layout: 'Reading (OCR)',
+  intake: 'Intake', route_plan: 'Route plan', ocr_layout: 'Reading (OCR)',
   classification: 'Sorting', extraction: 'Extract', grounding: 'Grounding',
 };
 

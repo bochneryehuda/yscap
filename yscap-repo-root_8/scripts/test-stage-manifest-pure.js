@@ -3,7 +3,7 @@
  * Pipeline V2 (owner-directed 2026-07-26) — VSLICE-5 stage manifest + fail-closed gate
  * (src/pipeline/stage-manifest.js). Pure: no DB, no network.
  *
- * Proves: a shadow job needs only intake+packet_control; a READ job also needs ocr_layout to have
+ * Proves: a shadow job needs only intake+route_plan; a READ job also needs ocr_layout to have
  * COMPLETED (a not_applicable/failed/missing read → incomplete → fail closed — the "completed but
  * nothing was read" defect); classification is never required (not yet wired); never throws; fails
  * closed on garbage.
@@ -15,29 +15,29 @@ let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', m); } };
 
 (function main() {
-  // ---- shadow mode: intake + packet_control complete → complete; ocr_layout not required ----
+  // ---- shadow mode: intake + route_plan complete → complete; ocr_layout not required ----
   {
     const r = SM.evaluateManifest([
       { stage_key: 'intake', status: 'completed' },
-      { stage_key: 'packet_control', status: 'completed' },
+      { stage_key: 'route_plan', status: 'completed' },
       { stage_key: 'ocr_layout', status: 'not_applicable' },
       { stage_key: 'classification', status: 'not_applicable' },
     ], { mode: 'shadow' });
-    ok(r.complete === true, 'shadow: intake+packet_control completed → complete (ocr not required)');
+    ok(r.complete === true, 'shadow: intake+route_plan completed → complete (ocr not required)');
     ok(r.mode === 'shadow', 'mode echoed');
   }
 
-  // ---- shadow mode: packet_control missing → incomplete (fail closed) ----
+  // ---- shadow mode: route_plan missing → incomplete (fail closed) ----
   {
     const r = SM.evaluateManifest([{ stage_key: 'intake', status: 'completed' }], { mode: 'shadow' });
-    ok(r.complete === false && r.missing.includes('packet_control'), 'shadow: missing packet_control → incomplete');
+    ok(r.complete === false && r.missing.includes('route_plan'), 'shadow: missing route_plan → incomplete');
   }
 
   // ---- READ mode: the read MUST have completed ----
   {
     const done = SM.evaluateManifest([
       { stage_key: 'intake', status: 'completed' },
-      { stage_key: 'packet_control', status: 'completed' },
+      { stage_key: 'route_plan', status: 'completed' },
       { stage_key: 'ocr_layout', status: 'completed' },
       { stage_key: 'classification', status: 'pending' },
     ], { mode: 'read' });
@@ -45,7 +45,7 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
 
     const notRead = SM.evaluateManifest([
       { stage_key: 'intake', status: 'completed' },
-      { stage_key: 'packet_control', status: 'completed' },
+      { stage_key: 'route_plan', status: 'completed' },
       { stage_key: 'ocr_layout', status: 'not_applicable' },
     ], { mode: 'read' });
     ok(notRead.complete === false, 'read: ocr_layout not_applicable → INCOMPLETE (nothing was read → fail closed)');
@@ -53,14 +53,14 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
 
     const failedRead = SM.evaluateManifest([
       { stage_key: 'intake', status: 'completed' },
-      { stage_key: 'packet_control', status: 'completed' },
+      { stage_key: 'route_plan', status: 'completed' },
       { stage_key: 'ocr_layout', status: 'failed_retryable' },
     ], { mode: 'read' });
     ok(failedRead.complete === false, 'read: ocr_layout failed → incomplete');
 
     const missingRead = SM.evaluateManifest([
       { stage_key: 'intake', status: 'completed' },
-      { stage_key: 'packet_control', status: 'completed' },
+      { stage_key: 'route_plan', status: 'completed' },
     ], { mode: 'read' });
     ok(missingRead.complete === false && missingRead.missing.includes('ocr_layout'), 'read: no ocr_layout row → missing → incomplete');
   }
@@ -73,7 +73,7 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
 
   // ---- accepts a plain {key:status} map ----
   {
-    const r = SM.evaluateManifest({ intake: 'completed', packet_control: 'completed' }, { mode: 'shadow' });
+    const r = SM.evaluateManifest({ intake: 'completed', route_plan: 'completed' }, { mode: 'shadow' });
     ok(r.complete === true, 'accepts a {key:status} map');
   }
 

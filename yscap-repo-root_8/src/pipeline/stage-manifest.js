@@ -3,7 +3,7 @@
  * Pipeline V2 (owner-directed 2026-07-26) — VSLICE-5: the full STAGE MANIFEST + fail-closed gate.
  *
  * A document-processing job records a stage manifest (document_pipeline_stages): intake →
- * packet_control → ocr_layout → classification. The owner's review flagged a real defect: the
+ * route_plan → ocr_layout → classification. The owner's review flagged a real defect: the
  * job was being marked COMPLETED even when no document was actually read. This module is the
  * single source of truth for "did this job actually finish the stages it was supposed to?" —
  * and it FAILS CLOSED: a required stage that is missing or did not reach 'completed' means the
@@ -14,7 +14,7 @@
  *
  * MODE-AWARE required sets:
  *   - 'shadow' (no real read adapters injected): the read stages are legitimately not-applicable,
- *     so only intake + packet_control are required. A shadow job that planned a route IS complete.
+ *     so only intake + route_plan are required. A shadow job that planned a route IS complete.
  *   - 'read'   (real adapters injected → a real vendor read was attempted): the read MUST have
  *     completed. ocr_layout is required; a job whose read was skipped/failed/not-applicable is
  *     INCOMPLETE → fail closed (the "completed but nothing was read" defect).
@@ -25,15 +25,15 @@
 
 const STAGE = Object.freeze({
   INTAKE: 'intake',
-  PACKET_CONTROL: 'packet_control',
+  ROUTE_PLAN: 'route_plan',   // was mis-named 'packet_control' (defect #4): this stage PLANS the read route
   OCR_LAYOUT: 'ocr_layout',
   CLASSIFICATION: 'classification',
 });
 
 // The stages that MUST reach 'completed' for a job to count as a complete run, per mode.
 const REQUIRED = Object.freeze({
-  shadow: [STAGE.INTAKE, STAGE.PACKET_CONTROL],
-  read: [STAGE.INTAKE, STAGE.PACKET_CONTROL, STAGE.OCR_LAYOUT],
+  shadow: [STAGE.INTAKE, STAGE.ROUTE_PLAN],
+  read: [STAGE.INTAKE, STAGE.ROUTE_PLAN, STAGE.OCR_LAYOUT],
 });
 
 function requiredStages(mode) {
