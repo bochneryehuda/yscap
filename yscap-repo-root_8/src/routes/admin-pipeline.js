@@ -51,4 +51,36 @@ router.get('/health', async (_req, res) => {
   }
 });
 
+// ── Shadow comparison (Phase 2, owner-directed 2026-07-26) ──────────────────────────────
+// A read-only view of what the new (V2) pipeline did to each document it processed in SHADOW,
+// so an admin can compare V2 vs the current V1 read BEFORE promoting a document family. Reads
+// ONLY the additive V2 tables; exposes no V2 underwriting DECISION and no borrower PII. Never 500s.
+const shadowReport = require('../pipeline/shadow-report');
+const db = require('../db');
+
+// GET /shadow — most recent shadow jobs (optionally ?loanId=...&limit=...), each with its stage
+// manifest progress + the routing decision that was recorded.
+router.get('/shadow', async (req, res) => {
+  try {
+    const report = await shadowReport.listShadowJobs(db, { limit: req.query.limit, loanId: req.query.loanId || null });
+    const summary = await shadowReport.shadowSummary(db);
+    return res.json({ flags: flagSnapshot(), summary, ...report });
+  } catch (e) {
+    console.warn('[admin-pipeline] shadow list error:', (e && e.message) || e);
+    return res.json({ flags: flagSnapshot(), summary: { total: 0, byFamily: [], byStatus: [] }, jobs: [] });
+  }
+});
+
+// GET /shadow/:jobId — full detail for one shadow job: the stage manifest + every routing decision.
+router.get('/shadow/:jobId', async (req, res) => {
+  try {
+    const detail = await shadowReport.shadowJobDetail(db, req.params.jobId);
+    if (!detail) return res.status(404).json({ error: 'not found' });
+    return res.json(detail);
+  } catch (e) {
+    console.warn('[admin-pipeline] shadow detail error:', (e && e.message) || e);
+    return res.status(404).json({ error: 'not found' });
+  }
+});
+
 module.exports = router;
