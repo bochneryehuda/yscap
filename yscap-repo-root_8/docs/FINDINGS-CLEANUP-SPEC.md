@@ -86,8 +86,18 @@ SILENT. Per-rule dispositions the owner dictated:
 6. **Risk score 55/100 must explain itself** — what specifically drives it, not just code names.
 7. **Mortgage lates finding must list WHICH mortgage, WHEN, and the most recent late** + a link
    straight into the credit report.
-8. **Langfuse "AI reasoning trace →" link 404s** ("trace not found"). Either point it at a real
-   trace or remove the link. A dead link on every finding erodes trust in all of them.
+8. ~~**Langfuse "AI reasoning trace →" link 404s** ("trace not found"). Either point it at a real
+   trace or remove the link. A dead link on every finding erodes trust in all of them.~~ **DONE.**
+   Root cause: the link was built out of `LANGFUSE_PROJECT`, a human LABEL (default
+   `pilot-underwriting`), while Langfuse addresses a trace by an opaque project IDENTIFIER — so
+   every link ever written pointed at a project that does not exist. Fixed at the shape rather than
+   the spot: `src/lib/ai/langfuse.js` looks the identifier up once from Langfuse's own API with the
+   keys we already hold (or takes `LANGFUSE_PROJECT_ID` when an admin sets it), and `url()` returns
+   NULL until it is known — so a link is only ever rendered when it can actually resolve. `db/317`
+   clears the dead links already stored on existing findings, scoped to project segments that are
+   provably not identifiers, so a link that might work is left alone. The AI stack health row now
+   says which state it is in ("recording · finding links live" vs "…not available yet") instead of
+   letting the link quietly disappear.
 9. **Insurance/title mortgagee-address findings must say WHICH document** they refer to (one is
    insurance, one is title) and should auto-clear when an address is present.
 

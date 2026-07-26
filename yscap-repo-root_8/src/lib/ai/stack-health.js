@@ -85,7 +85,13 @@ const COMPONENTS = Object.freeze([
     role: 'Records every AI call for audit + debugging', provider: 'Langfuse',
     probe: () => {
       const c = require('./langfuse');
-      return { active: c.enabled(), model: null };
+      if (!c.enabled()) return { active: false, model: null };
+      // Say OUT LOUD whether findings can actually link to their trace. Recording works the moment
+      // the keys are set, but the "AI reasoning trace" link needs Langfuse's own project identifier
+      // — so this distinguishes "recording, links live" from "recording, no link yet" rather than
+      // letting a link quietly go missing (or, as before, quietly 404).
+      return { active: true,
+        model: c.projectId() ? 'recording · finding links live' : 'recording · finding links not available yet' };
     },
   },
 ]);

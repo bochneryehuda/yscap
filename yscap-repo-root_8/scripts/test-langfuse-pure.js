@@ -16,7 +16,12 @@ for (const k of Object.keys(require.cache)) if (/\/(lib\/ai\/langfuse|src\/confi
 
 const captured = [];
 const origFetch = global.fetch;
+// The project lookup (a GET, no body) is answered separately from the ingestion POSTs.
+// `projectsReply` is what /api/public/projects returns; tests swap it to exercise each outcome.
+let projectsReply = { ok: false, status: 401, json: async () => ({}) };
+let projectsCalls = 0;
 global.fetch = async (url, opts) => {
+  if (String(url).includes('/api/public/projects')) { projectsCalls++; return projectsReply; }
   captured.push({ url, body: JSON.parse(opts.body) });
   return { ok: true, status: 200, json: async () => ({}) };
 };
@@ -98,6 +103,78 @@ const lf = require('../src/lib/ai/langfuse');
   await lf2.flushNow();
   assert.strictEqual(captured.length, 0, 'no HTTP made when disabled');
 
+  // ---- 5. THE TRACE LINK MUST NEVER BE A DEAD LINK (owner-reported 2026-07-26) ----
+  // "The 'AI reasoning trace →' link 404s. A dead link on every finding erodes trust in all of
+  // them." The link was built from LANGFUSE_PROJECT — a human LABEL — while Langfuse addresses a
+  // trace by an opaque project IDENTIFIER, so every link ever written pointed at nothing.
+  const fresh = () => {
+    for (const k of Object.keys(require.cache)) if (/\/(lib\/ai\/langfuse|src\/config)\.js$/.test(k)) delete require.cache[k];
+    return require('../src/lib/ai/langfuse');
+  };
+  process.env.LANGFUSE_PUBLIC_KEY = 'pk-lf-test';
+  process.env.LANGFUSE_SECRET_KEY = 'sk-lf-test';
+  process.env.LANGFUSE_PROJECT = 'pilot-underwriting';   // the label that produced the 404s
+  delete process.env.LANGFUSE_PROJECT_ID;
+
+  // (a) No identifier known → NO link at all. Showing nothing is the whole point: the UI only
+  // renders the link when a URL is present, so this is what removes the dead one.
+  projectsReply = { ok: false, status: 401, json: async () => ({}) };
+  let lfA = fresh();
+  const ta = lfA.trace({ name: 'no-project-id' });
+  assert.strictEqual(ta.url(), null, 'with no project identifier the trace URL is null, not a guess');
+  assert.strictEqual(lfA.projectId(), null, 'and no identifier is invented');
+  await new Promise((r) => setTimeout(r, 20));
+  assert.strictEqual(ta.url(), null, 'a failed lookup still yields no link rather than a broken one');
+
+  // (b) The human label is NEVER used as the identifier — that was the entire bug.
+  assert.ok(!String(ta.url() || '').includes('pilot-underwriting'), 'the project LABEL never appears in a trace URL');
+
+  // (c) Looked up from Langfuse's own API → a real, resolvable link.
+  projectsReply = { ok: true, status: 200, json: async () => ({ data: [{ id: 'cm4realprojectid00000001', name: 'PILOT' }] }) };
+  const lfB = fresh();
+  const tb = lfB.trace({ name: 'lookup' });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.strictEqual(lfB.projectId(), 'cm4realprojectid00000001', 'the identifier is read from Langfuse itself');
+  assert.strictEqual(tb.url(), 'https://us.cloud.langfuse.com/project/cm4realprojectid00000001/traces/' + tb.id,
+    'and the link points at the real project + this trace');
+  // A trace created BEFORE the lookup finished still links once it has — url() reads at call time.
+  const tb2 = lfB.trace({ name: 'after' });
+  assert.ok(String(tb2.url()).includes('cm4realprojectid00000001'), 'later traces link too');
+  // The lookup is not repeated on every trace.
+  const before = projectsCalls;
+  lfB.trace({ name: 'again' }); lfB.trace({ name: 'again2' });
+  assert.strictEqual(projectsCalls, before, 'the identifier is looked up once, not per trace');
+
+  // (d) An explicitly configured identifier short-circuits the lookup entirely.
+  process.env.LANGFUSE_PROJECT_ID = 'cmadminsetthisone0000001';
+  projectsReply = { ok: false, status: 500, json: async () => ({}) };
+  const lfC = fresh();
+  const callsC = projectsCalls;
+  const tc = lfC.trace({ name: 'explicit' });
+  assert.strictEqual(lfC.projectId(), 'cmadminsetthisone0000001', 'an admin-set identifier is used as-is');
+  assert.ok(String(tc.url()).includes('cmadminsetthisone0000001'), 'and the link uses it');
+  assert.strictEqual(projectsCalls, callsC, 'with it set, Langfuse is never asked');
+  delete process.env.LANGFUSE_PROJECT_ID;
+
+  // (e) A malformed API answer is treated as "unknown", never as an identifier.
+  for (const bad of [{ data: [] }, { data: [{ name: 'no id' }] }, { data: [{ id: '   ' }] }, {}]) {
+    projectsReply = { ok: true, status: 200, json: async () => bad };
+    const lfD = fresh();
+    lfD.trace({ name: 'bad-shape' });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.strictEqual(lfD.projectId(), null, `a malformed projects answer (${JSON.stringify(bad)}) yields no identifier`);
+  }
+
+  // (f) Tracing itself keeps working throughout — an unavailable link never costs us the record.
+  projectsReply = { ok: false, status: 503, json: async () => ({}) };
+  captured.length = 0;
+  const lfE = fresh();
+  const te = lfE.trace({ name: 'still-records' });
+  te.end({ output: { ok: true } });
+  await lfE.flushNow();
+  assert.ok(captured.flatMap((c) => c.body.batch).some((e) => e.type === 'trace-create'),
+    'the AI call is still recorded even when no link can be offered');
+
   global.fetch = origFetch;
-  console.log('test-langfuse-pure: trace + generation + span + PII redaction + wrap + off-mode all pass');
+  console.log('test-langfuse-pure: trace + generation + span + PII redaction + wrap + off-mode + never-a-dead-trace-link all pass');
 })().catch(e => { console.error(e); process.exit(1); });

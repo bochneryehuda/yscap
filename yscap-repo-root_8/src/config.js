@@ -645,7 +645,13 @@ module.exports = {
     publicKey: (process.env.LANGFUSE_PUBLIC_KEY || '').trim(),
     secretKey: (process.env.LANGFUSE_SECRET_KEY || '').trim(),
     host:      (process.env.LANGFUSE_HOST || 'https://us.cloud.langfuse.com').trim().replace(/\/+$/, ''),
+    // A human-readable LABEL only — attached to trace metadata so traces are easy to find.
     project:   (process.env.LANGFUSE_PROJECT || 'pilot-underwriting').trim(),
+    // The OPAQUE project identifier Langfuse itself generates, which its web URLs are addressed by.
+    // Optional: when unset it is looked up from Langfuse's own API using the keys above. Never
+    // guessed from the label — building a link out of the label is what made every "AI reasoning
+    // trace" link 404 (owner-reported 2026-07-26).
+    projectId: (process.env.LANGFUSE_PROJECT_ID || '').trim(),
   },
 
   // --- Azure Document Intelligence Custom models (owner-directed 2026-07-22).

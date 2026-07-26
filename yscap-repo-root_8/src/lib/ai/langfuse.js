@@ -106,6 +106,63 @@ async function flushNow() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// THE TRACE LINK, AND WHY IT IS SOMETIMES ABSENT (owner-reported 2026-07-26)
+//
+// The owner: *"the 'AI reasoning trace →' link 404s — trace not found. Either point it at a real
+// trace or remove the link. A dead link on every finding erodes trust in all of them."*
+//
+// Root cause: Langfuse's web UI addresses a trace as /project/<PROJECT ID>/traces/<trace id>, where
+// the project id is an opaque identifier Langfuse itself generates. We were building the link out of
+// LANGFUSE_PROJECT — a human-readable LABEL, defaulting to "pilot-underwriting" — which is not, and
+// can never be, a project id. So every link ever written pointed at a project that does not exist.
+//
+// The shape that makes the whole class impossible: never render a URL we cannot prove resolves. The
+// id is looked up ONCE from Langfuse's own API with the keys we already hold, cached for the life of
+// the process, and url() returns NULL until it is known. No id → no link, ever — rather than a link
+// that lies. LANGFUSE_PROJECT_ID short-circuits the lookup when an admin sets it explicitly.
+// LANGFUSE_PROJECT stays what it always was: a label attached to trace metadata.
+let _projectId = null;
+let _projectLookup = null;
+let _projectTried = 0;
+const PROJECT_RETRY_MS = 5 * 60 * 1000;   // a failed lookup is retried, not hammered
+
+/** The resolved Langfuse project id, or null while unknown. Never throws. */
+function projectId() {
+  if (!_projectId && cfg.langfuse && cfg.langfuse.projectId) _projectId = cfg.langfuse.projectId;
+  return _projectId || null;
+}
+
+/** Best-effort, fire-and-forget resolve. Safe to call on every trace — it self-throttles. */
+function resolveProjectId() {
+  if (projectId() || !enabled() || _projectLookup) return;
+  const now = Date.now();
+  if (_projectTried && now - _projectTried < PROJECT_RETRY_MS) return;
+  _projectTried = now;
+  _projectLookup = (async () => {
+    try {
+      const auth = 'Basic ' + Buffer.from(cfg.langfuse.publicKey + ':' + cfg.langfuse.secretKey).toString('base64');
+      const ac = new AbortController();
+      const to = setTimeout(() => ac.abort(), FETCH_TIMEOUT_MS);
+      let r;
+      try {
+        r = await fetch(cfg.langfuse.host + '/api/public/projects', {
+          headers: { authorization: auth, accept: 'application/json' }, signal: ac.signal,
+        });
+      } finally { clearTimeout(to); }
+      if (!r || !r.ok) return;
+      const j = await r.json();
+      // The key belongs to exactly one project; take the first entry and accept it only if it is a
+      // non-empty string id. Anything else leaves us with no link, which is the safe outcome.
+      const first = j && Array.isArray(j.data) ? j.data[0] : null;
+      if (first && typeof first.id === 'string' && first.id.trim()) _projectId = first.id.trim();
+    } catch (_) {
+      // Observability must never break the main path, and an unknown project id must never become
+      // a guessed one — we simply show no link.
+    } finally { _projectLookup = null; }
+  })();
+}
+
 // --- No-op trace + generation returned when Langfuse is off, so call sites are agnostic ---
 const NOOP_GENERATION = { id: null, end: () => {}, event: () => {}, span: () => NOOP_SPAN, generation: () => NOOP_GENERATION };
 const NOOP_SPAN = { id: null, end: () => {}, event: () => {}, generation: () => NOOP_GENERATION };
@@ -120,6 +177,7 @@ const NOOP_TRACE = { id: null, end: () => {}, event: () => {}, span: () => NOOP_
  */
 function trace(a = {}) {
   if (!enabled()) return NOOP_TRACE;
+  resolveProjectId();          // fire-and-forget; self-throttled, never awaited, never throws
   const id = newId();
   const startedAt = nowIso();
   enqueue({
@@ -145,7 +203,12 @@ function trace(a = {}) {
     },
   });
 
-  const url = () => `${cfg.langfuse.host}/project/${encodeURIComponent(cfg.langfuse.project)}/traces/${id}`;
+  // Read at CALL time, not now — a trace created a moment before the project lookup finished still
+  // produces a working link when its url() is read afterwards.
+  const url = () => {
+    const p = projectId();
+    return p ? `${cfg.langfuse.host}/project/${encodeURIComponent(p)}/traces/${id}` : null;
+  };
 
   return {
     id,
@@ -315,4 +378,4 @@ if (typeof process !== 'undefined' && process.on) {
   process.on('beforeExit', () => { flushNow().catch(() => {}); });
 }
 
-module.exports = { enabled, trace, wrap, flushNow, _redact: redact };
+module.exports = { enabled, trace, wrap, flushNow, projectId, resolveProjectId, _redact: redact };
