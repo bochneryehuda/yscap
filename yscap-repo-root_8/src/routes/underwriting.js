@@ -519,26 +519,22 @@ router.get('/:appId', async (req, res, next) => {
     // metric warnings + reasonability data-integrity flags + seller-chain advisories into the same
     // fatal/warning gate (all warning-only → never change the CTC-blocking fatal count, but they
     // surface in the roll-up).
-    // The chain-of-title `cot_final_buyer_not_vesting` (warning) is the more informative twin of
-    // seller-chain's `chain_vesting_not_reached` (info) — when the richer one fires, drop the info so
-    // the desk shows the vesting-gap once.
     const cotFindings = (chainOfTitle.findings || []).filter(Boolean);
-    const cotSuppressesVestingInfo = cotFindings.some((f) => f.code === 'cot_final_buyer_not_vesting');
-    const sellerChainFindings = (sellerChain.findings || [])
-      .filter((f) => !(cotSuppressesVestingInfo && f && f.code === 'chain_vesting_not_reached'));
+    const sellerChainFindings = (sellerChain.findings || []).filter(Boolean);
     const openRaw = [...perDoc, ...cross, ...staleness.findings, ...metrics.findings, ...amendments.findings,
       ...(entityChain ? entityChain.findings : []), ...reasonability.findings, ...sellerChainFindings,
       ...cotFindings, ...bankLiquidity.findings, ...(experience ? experience.findings : [])];
-    // De-duplicate the few FILE-economic findings that legitimately appear on more than one document
-    // — the assignment fee over the cap shows on BOTH the purchase contract and the assignment, but
-    // the desk should count/show it ONCE.
-    const DEDUP_ONCE = new Set(['assignment_fee_over_cap']);
-    const seenDup = new Set();
-    const openAll = openRaw.filter((f) => {
-      if (!f || !DEDUP_ONCE.has(f.code)) return true;
-      if (seenDup.has(f.code)) return false;
-      seenDup.add(f.code); return true;
-    });
+    // ONE finding per real-world ISSUE (owner-reported 2026-07-26: the contract-buyer/vesting
+    // mismatch appeared SIX times on one file, the entity-OFAC gap three times).
+    //
+    // Several desks independently and correctly notice the same fact and each names it with its own
+    // code, so keying on the code — which is all the old one-entry DEDUP_ONCE set and the bespoke
+    // chain-of-title-vs-seller-chain suppression did — never collapsed them. Dedupe now keys on the
+    // CLAIM (what the finding asserts), so every desk that agrees merges into the single most
+    // informative finding, carrying `mergedFrom` so nothing is lost. Adding a desk that re-notices an
+    // existing fact means adding its code to a family in finding-claims.js — never another
+    // hand-written suppression here.
+    const openAll = require('../lib/underwriting/finding-claims').dedupeByClaim(openRaw);
 
     // Sync computed chain + bank findings → ai_suggestions (owner-directed 2026-07-22,
     // HARD RULE). Best-effort, fired AFTER the response so file view stays fast; dedupe
