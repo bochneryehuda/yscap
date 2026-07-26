@@ -315,6 +315,14 @@ export const api = {
   staffVestingLlcOwners: (id) => req('GET', `/api/staff/applications/${id}/vesting-llc-owners`),
   staffSetVestingLlcOwners: (id, owners) => req('POST', `/api/staff/applications/${id}/vesting-llc-owners`, { owners }),
   staffChecklist:   (id) => req('GET', `/api/staff/applications/${id}/checklist`),
+
+  // Encompass sync (READ-ONLY per-file reconcile). status = summary; findings =
+  // the full field-by-field comparison (live data); refresh = re-pull read-only;
+  // replace = pull one Encompass value into our column (any assigned staff).
+  encompassStatus:   (id) => req('GET', `/api/staff/applications/${id}/encompass/status`),
+  encompassFindings: (id) => req('GET', `/api/staff/applications/${id}/encompass/findings`),
+  encompassRefresh:  (id) => req('POST', `/api/staff/applications/${id}/encompass/refresh`),
+  encompassReplace:  (id, fieldKey) => req('POST', `/api/staff/applications/${id}/encompass/replace`, { fieldKey }),
   // Credit report (Xactus import) — the internal Credit report condition.
   staffCredit:        (id) => req('GET', `/api/staff/applications/${id}/credit`),
   staffCreditPreview: (id) => req('GET', `/api/staff/applications/${id}/credit/preview`),
