@@ -1763,6 +1763,38 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const f = await loadFileForPricing(appId);
     if (!f) return res.status(404).json({ error: 'not found' });
 
+    // WO-E — a term sheet cannot be ISSUED while this file has OPEN blocking
+    // Encompass mismatches. Dormant until Encompass is live + a loan is pulled
+    // (no pulled loan → never blocks). An admin (see_all_files) may override with
+    // a logged reason; the gate fails OPEN on any reconcile error. When overridden
+    // here, the flag rides to sendBorrowerTerms so the chokepoint gate lets it out.
+    let encompassOverridden = false;
+    {
+      const encGate = await require('../encompass/reconcile').issuanceGate(appId);
+      if (encGate.block) {
+        const ovr = String(b.encompassOverrideReason || '').trim();
+        if (!seesAll(req)) return refuse(422, {
+          error: `Encompass and this file don’t agree yet — ${encGate.openBlocking} field(s) don’t match. Clear the Encompass sync (or ask an admin to override) before issuing a term sheet.`,
+          code: 'encompass_findings_open', openFields: encGate.openBlockingKeys,
+        }, 'encompass_findings_open', { openBlocking: encGate.openBlocking });
+        if (!ovr) return refuse(422, {
+          error: `Encompass has ${encGate.openBlocking} unmatched field(s). As an admin you can override — provide a reason to issue the term sheet anyway.`,
+          code: 'encompass_override_reason_required', openFields: encGate.openBlockingKeys,
+        }, 'encompass_override_reason_required', { openBlocking: encGate.openBlocking });
+        await audit(req, 'encompass_gate_override', 'application', appId, { reason: ovr.slice(0, 500), openBlocking: encGate.openBlocking, openFields: encGate.openBlockingKeys });
+        encompassOverridden = true;
+        // Record it in the policy-exception register (issuance_override) so the
+        // override is diligence-visible — best-effort, never blocks the issue.
+        try {
+          await require('../lib/loan-exceptions').recordIssuanceOverride({
+            appId, staffId: req.actor && req.actor.id,
+            note: `encompass_gate: ${ovr.slice(0, 400)}`,
+            snapshot: { encompass_open_blocking: encGate.openBlocking, encompass_open_fields: encGate.openBlockingKeys },
+          });
+        } catch (_) { /* register write is best-effort */ }
+      }
+    }
+
     // Optimistic concurrency on the FILE-owned pricing basis: the studio sends
     // back the econVersion it prefilled from; if the file's economics changed
     // since (form edit, ClickUp inbound, another staffer), refuse rather than
@@ -2111,7 +2143,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       // the borrower ONLY after a super-admin approves the escalation; see
       // admin-manual-programs.js). The team's own notice above always fires.
       if (economicsChanged && !needsEscalation) {
-        try { await require('../lib/terms-notify').sendBorrowerTerms(appId, { quote, total, termMonths: inputs && inputs.term }); }
+        try { await require('../lib/terms-notify').sendBorrowerTerms(appId, { quote, total, termMonths: inputs && inputs.term, encompassOverride: encompassOverridden }); }
         catch (_) { /* borrower terms email is best-effort */ }
       }
     } catch (_) { /* notification is best-effort */ }
@@ -2405,6 +2437,18 @@ router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
     if (esc.status !== 'countered') return res.status(409).json({ error: 'This escalation is not in counter-offer state — nothing to accept.' });
     const f = await loadFileForPricing(appId);
     if (!f) return res.status(404).json({ error: 'not found' });
+
+    // WO-E — the Encompass issuance gate also applies to accepting a counter (it
+    // re-issues the term sheet). This one-click path has no override-reason input;
+    // to override, an admin registers from the Term Sheet Studio. Dormant until
+    // Encompass is live + a loan is pulled; fails OPEN on any reconcile error.
+    {
+      const encGate = await require('../encompass/reconcile').issuanceGate(appId);
+      if (encGate.block) return res.status(409).json({
+        error: `Encompass and this file don’t agree yet — ${encGate.openBlocking} field(s) don’t match. Clear the Encompass sync first (or an admin can register from the Term Sheet Studio with an override).`,
+        code: 'encompass_findings_open', openFields: encGate.openBlockingKeys,
+      });
+    }
 
     // Build overrides: start with the ORIGINAL manual-review overrides (stored
     // structural keys on the escalation), then overlay the super-admin's counter
@@ -6545,8 +6589,66 @@ router.post('/applications/:id/loan-number', async (req, res) => {
     if (!upd.rows.length) return res.status(404).json({ error: 'application not found' });
     await audit(req, 'set_loan_number', 'application', req.params.id, { from: existing || null, to: ln });
     enqueueClickupPush(req.params.id, ['ys_loan_number']).catch(() => {});   // keep ClickUp/LOS in sync (self-gates; no-op when unmapped/unlinked)
+    // A newly-numbered file syncs from Encompass at once (READ-ONLY pull; the
+    // match is by this loan number). Best-effort + fire-and-forget — a pull
+    // failure is stamped into encompass_last_error and shown in the sync panel;
+    // it must never break setting the loan number. The require is wrapped so even
+    // a module-load failure can't turn the already-committed write into a 500.
+    try { require('../encompass/reconcile').onLoanNumberSet(req.params.id).catch(() => {}); } catch (_) { /* sync hook is best-effort */ }
     res.json({ ok: true, loanNumber: upd.rows[0].ys_loan_number });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// ── Encompass sync (READ-ONLY per-file reconcile) — WO-C ─────────────────────
+// All four live under the `/applications/:id` middleware (line ~272), so any
+// staff assigned to the file may read the comparison, refresh it, or pull a
+// value into our column (owner-directed: not admin-only). None of these ever
+// writes to Encompass — /refresh does a READ-ONLY pull; /replace writes exactly
+// one of OUR columns.
+router.get('/applications/:id/encompass/status', async (req, res) => {
+  try {
+    const c = await require('../encompass/reconcile').computeFindings(req.params.id);
+    if (!c.found) return res.status(404).json({ error: 'application not found' });
+    res.json({ hasLoan: c.hasLoan, guid: c.guid, loanNumber: c.loanNumber, pulledAt: c.pulledAt, lastError: c.lastError, priced: c.priced, summary: c.summary });
+  } catch (e) { console.warn('[staff] encompass status:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+router.get('/applications/:id/encompass/findings', async (req, res) => {
+  try {
+    const c = await require('../encompass/reconcile').computeFindings(req.params.id);
+    if (!c.found) return res.status(404).json({ error: 'application not found' });
+    res.json(c);
+  } catch (e) { console.warn('[staff] encompass findings:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/applications/:id/encompass/refresh', async (req, res) => {
+  try {
+    const c = await require('../encompass/reconcile').refresh(req.params.id);
+    if (!c.found) return res.status(404).json({ error: 'application not found' });
+    await audit(req, 'encompass_refresh', 'application', req.params.id, { pulled: !!(c.pull && c.pull.ok), reason: (c.pull && c.pull.reason) || null });
+    res.json(c);
+  } catch (e) { console.warn('[staff] encompass refresh:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/applications/:id/encompass/replace', async (req, res) => {
+  try {
+    const fieldKey = String((req.body || {}).fieldKey || '').trim();
+    if (!fieldKey) return res.status(400).json({ error: 'fieldKey is required' });
+    const r = await require('../encompass/reconcile').replaceField(req.params.id, fieldKey, req.actor && req.actor.id);
+    if (!r.ok) {
+      const msg = {
+        not_writable: 'This field can’t be pulled from Encompass directly.',
+        not_found: 'Application not found.',
+        no_loan: 'No Encompass loan has been pulled for this file yet.',
+        unknown_field: 'Unknown field.',
+        no_encompass_value: 'Encompass has no value for this field.',
+        uncoercible: 'The Encompass value could not be read into our field.',
+      }[r.reason] || 'Could not pull this value.';
+      return res.status(r.reason === 'not_found' ? 404 : 400).json({ error: msg, reason: r.reason });
+    }
+    await audit(req, 'encompass_field_replace', 'application', req.params.id, { field: fieldKey, column: r.column, from: r.before, to: r.wrote });
+    res.json(r);
+  } catch (e) { console.warn('[staff] encompass replace:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Nudge the borrower with a friendly reminder of what's still outstanding on

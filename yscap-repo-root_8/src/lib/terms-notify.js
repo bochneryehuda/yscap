@@ -18,8 +18,24 @@
  * own deal numbers, and the notify chokepoint scrubs note-buyer names again.
  */
 
-async function sendBorrowerTerms(appId, { quote, total, termMonths } = {}) {
+async function sendBorrowerTerms(appId, { quote, total, termMonths, encompassOverride } = {}) {
   if (!appId || !quote) return;
+  // WO-E — the term-sheet issuance gate, at the CHOKEPOINT: withhold the "your
+  // terms are ready" email while the file has OPEN blocking Encompass mismatches,
+  // so EVERY issuance path (register, accept-counter, AND the super-admin
+  // escalation approval) is covered at one point — fail-safe for any future
+  // caller too. An explicit `encompassOverride` (an admin who already overrode at
+  // the register route) bypasses it. Dormant until Encompass is live + a loan is
+  // pulled; fails OPEN (never withholds) on any reconcile error.
+  if (!encompassOverride) {
+    try {
+      const g = await require('../encompass/reconcile').issuanceGate(appId);
+      if (g.block) {
+        console.warn('[terms] term sheet WITHHELD — Encompass findings open on', appId, '(', g.openBlocking, 'field(s))');
+        return { withheld: true, reason: 'encompass_findings_open', openBlocking: g.openBlocking };
+      }
+    } catch (_) { /* fail open — a reconcile error must never withhold a term sheet */ }
+  }
   const db = require('../db');
   const notify = require('./notify');
   const email = require('./email');
