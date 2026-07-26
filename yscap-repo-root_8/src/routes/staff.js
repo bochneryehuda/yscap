@@ -218,7 +218,7 @@ const VISIBLE_BORROWER_SQL = (alias, p) =>
   ` WHERE (a2.borrower_id=${alias}.id OR a2.co_borrower_id=${alias}.id) AND a2.deleted_at IS NULL` +
   ` AND ${VISIBLE_OFFICERS_SQL('a2', p)}))`;
 
-// An ENCOMPASS review row (db/326) hangs on a BORROWER and never on a file, and
+// An ENCOMPASS review row (db/328) hangs on a BORROWER and never on a file, and
 // the borrower it is about may have no loan file at all — a DSCR-only client the
 // officer closed with in ClickUp. Scoping it the file way would hide the card
 // from the ONE person who can answer it. It follows the borrower scope instead,
@@ -2686,7 +2686,12 @@ router.post('/applications/:id/rehab-budget', async (req, res) => {
   const appId = req.params.id;
   const payload = (req.body && typeof req.body.payload === 'object') ? req.body.payload : null;
   if (!payload) return res.status(400).json({ error: 'payload required' });
-  const locked = await require('../lib/file-lock').structuralLockReason(appId, db, { actor: req.actor });   // #84
+  // #84 + the Scope-of-Work reallocation exclusion (owner-directed 2026-07-26):
+  // sowLockReason is structuralLockReason PLUS the one carve-out — a save that
+  // leaves the construction budget total exactly where it is may go through
+  // while a term sheet is out for signature (it can't make the sent term sheet
+  // disagree with the file). Clear-to-Close / Funded stays frozen.
+  const locked = await require('../lib/file-lock').sowLockReason(appId, payload, db, { actor: req.actor });
   if (locked) return res.status(409).json({ error: locked });
   try {
     let it = await db.query(`SELECT id FROM checklist_items WHERE application_id=$1 AND tool_key='rehab_budget' LIMIT 1`, [appId]);
@@ -2753,10 +2758,6 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
     [req.params.itemId, req.params.id]);
   if (!it.rows[0]) return res.status(404).json({ error: 'tool task not found' });
   const toolKey = it.rows[0].tool_key;
-  if (toolKey === 'rehab_budget') {   // #84 — rehab budget is loan structure, frozen at CTC
-    const locked = await require('../lib/file-lock').structuralLockReason(req.params.id, db, { actor: req.actor });
-    if (locked) return res.status(409).json({ error: locked, fatal: true });
-  }
   const rawPayload = (req.body && typeof req.body.payload === 'object') ? req.body.payload : { submitted: true };
   const attachments = (Array.isArray(rawPayload.attachments) ? rawPayload.attachments : []).slice(0, 4)
     .map((a) => ({
@@ -2773,6 +2774,13 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   // plain-language note until the line items total the budget exactly.
   let sowMismatch = null, goldSow = { ok: true };
   if (toolKey === 'rehab_budget') {
+    // #84 — the rehab budget is loan structure, frozen at CTC. The check moved
+    // BELOW the payload build (owner-directed 2026-07-26) because it now needs
+    // to SEE the payload: a save that leaves the construction budget total
+    // exactly where it is is a line-item reallocation, and that is allowed while
+    // a term sheet is out for signature. Nothing is written above this point.
+    const locked = await require('../lib/file-lock').sowLockReason(req.params.id, payload, db, { actor: req.actor });
+    if (locked) return res.status(409).json({ error: locked, fatal: true });
     const chk = await require('../lib/rehab-budget').checkSowBudget(req.params.id, payload);
     if (!chk.ok) sowMismatch = { required: chk.required, total: require('../lib/rehab-budget').toNum(payload && payload.total), message: chk.message };
     goldSow = await require('../lib/rehab-budget').checkGoldSow(req.params.id, payload);
@@ -10715,7 +10723,7 @@ router.post('/sync-reviews/:id/resolve', async (req, res) => {
   try {
     const winner = String((req.body && req.body.winner) || '');
     // 'encompass' is the winner name on a row the READ-ONLY Encompass enrichment
-    // pass raised (db/326) — the resolver refuses the wrong name for the row's
+    // pass raised (db/328) — the resolver refuses the wrong name for the row's
     // source, so a mixed-up client gets a clear message instead of a bad write.
     if (!['clickup', 'portal', 'custom', 'encompass'].includes(winner)) return res.status(400).json({ error: "winner must be 'clickup', 'portal', 'encompass', or 'custom' (with a value)" });
     const row = await loadReviewFor(req, res);

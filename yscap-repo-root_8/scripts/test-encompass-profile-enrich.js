@@ -123,6 +123,19 @@ const I = enrich._internals;
   ok(updates.length === 1 && /current_address IS NULL OR current_address::text IN/.test(updates[0]),
     'the ONLY borrowers UPDATE is the fill-only home address — enrichment never overwrites a populated field');
 
+  // main's rule (#800): what we STORE is the mailing one-line ClickUp's picker
+  // shows, never a geocoder display name. Encompass gives structured fields so
+  // our own build is already correct — but a loan carrying one long provider
+  // string must not slip a display name onto the profile through this path.
+  ok(/compactFormattedAddress/.test(src),
+    'the Encompass address write goes through the shared mailing-one-line compactor');
+  const AD = require('../src/lib/address');
+  const longForm = '26, South 10th Street, Williamsburg, Brooklyn, Kings County, New York, 11249, United States';
+  ok(/^26 S 10th St, Brooklyn, NY 11249/.test(AD.compactFormattedAddress(longForm)),
+    'and that compactor really does turn a geocoder display name into the mailing form');
+  ok(AD.compactFormattedAddress('9 Recent Road, Monsey, NY 10952') === '9 Recent Road, Monsey, NY 10952',
+    'while an address already in mailing form passes through untouched');
+
   const worker = fs.readFileSync(path.join(__dirname, '..', 'src', 'sync', 'encompass-sync.js'), 'utf8');
   ok(/ENCOMPASS_ENRICH_DAYS', 7\)/.test(worker), 'the pass runs WEEKLY by default, as asked');
   ok(/enrichEnabled = \(\) => _flagOn\('ENCOMPASS_ENRICH_ENABLED'\)/.test(worker),

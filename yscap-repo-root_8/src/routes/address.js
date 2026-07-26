@@ -14,25 +14,14 @@
 const express = require('express');
 const router = require('../lib/safe-router')();
 const cfg = require('../config');
-const { parseAddress, normalizeAddress, splitUnit } = require('../lib/address');
+const ADDR = require('../lib/address');
+const { parseAddress, normalizeAddress, splitUnit } = ADDR;
+// (the state map + 2-letter abbreviation live in lib/address.js — one copy)
+// Borough preference + OSM component mapping + the canonical mailing one-line
+// live in lib/address.js so the autocomplete, the geocoder, the ClickUp sync and
+// the repair pass all agree on what an address looks like (2026-07-26).
+const { preferBorough, osmComponentsToAddress, compactFormattedAddress } = ADDR;
 
-const US_STATE_ABBR = { alabama:'AL',alaska:'AK',arizona:'AZ',arkansas:'AR',california:'CA',colorado:'CO',connecticut:'CT',delaware:'DE','district of columbia':'DC',florida:'FL',georgia:'GA',hawaii:'HI',idaho:'ID',illinois:'IL',indiana:'IN',iowa:'IA',kansas:'KS',kentucky:'KY',louisiana:'LA',maine:'ME',maryland:'MD',massachusetts:'MA',michigan:'MI',minnesota:'MN',mississippi:'MS',missouri:'MO',montana:'MT',nebraska:'NE',nevada:'NV','new hampshire':'NH','new jersey':'NJ','new mexico':'NM','new york':'NY','north carolina':'NC','north dakota':'ND',ohio:'OH',oklahoma:'OK',oregon:'OR',pennsylvania:'PA','rhode island':'RI','south carolina':'SC','south dakota':'SD',tennessee:'TN',texas:'TX',utah:'UT',vermont:'VT',virginia:'VA',washington:'WA','west virginia':'WV',wisconsin:'WI',wyoming:'WY' };
-const stateAbbr = (s) => !s ? '' : (s.length === 2 ? s.toUpperCase() : (US_STATE_ABBR[s.toLowerCase()] || s));
-
-// NYC quirk (#93): geocoders label ALL FIVE boroughs with the municipality
-// "New York" (Google `locality`, OSM `city`), but USPS — and residents — use the
-// BOROUGH as the mailing city: Brooklyn, Bronx, Staten Island, Queens. The one
-// exception is Manhattan, whose mailing city really is "New York". So when the
-// municipality is New York and a distinct borough component is present, prefer the
-// borough (stripping a leading "The " from "The Bronx"); otherwise keep the city.
-// Narrowly gated on locality === "New York", so no ordinary city is affected.
-function preferBorough(locality, borough) {
-  const city = String(locality || '').trim();
-  const b = String(borough || '').replace(/^the\s+/i, '').trim();
-  if (!city) return b;                                    // no municipality → borough/sublocality fallback
-  if (/^(city of )?new york$/i.test(city) && b && !/^manhattan$/i.test(b)) return b;
-  return city;
-}
 
 // small TTL cache + a min-interval throttle (Nominatim asks for <=1 req/sec)
 const cache = new Map();
@@ -67,18 +56,9 @@ async function fetchJson(url, opts = {}) {
 }
 
 // ---- OpenStreetMap Nominatim (keyless) ----
-function osmAddress(a = {}) {
-  const line1 = [a.house_number, a.road].filter(Boolean).join(' ');
-  return normalizeAddress({
-    line1: line1 || a.neighbourhood || '',
-    unit: '',
-    city: preferBorough(a.city || a.town || a.village || a.hamlet || '', a.borough || a.city_district || a.suburb),
-    state: stateAbbr(a.state || ''),
-    zip: a.postcode || '',
-    county: (a.county || '').replace(/\s+County$/i, ''),  // kept for backend only
-    country: (a.country_code || 'us').toUpperCase(),
-  });
-}
+// Component mapping (borough preference, mailing city name, 2-letter state) is
+// the shared one in lib/address.js — never re-implement it here.
+const osmAddress = osmComponentsToAddress;
 // A clean, tight label — street, city, ST ZIP — so the borrower isn't shown the
 // county / country / raw provider noise in the suggestion list.
 function cleanLabel(addr) {
@@ -92,7 +72,11 @@ async function osmSuggest(q) {
   }));
   return (rows || []).map((r) => {
     const address = osmAddress(r.address);
-    return { id: 'osm:' + r.place_id, label: cleanLabel(address) || r.display_name, address };
+    // Fallback label is COMPACTED, never the raw display_name — picking a
+    // suggestion copies the label into the field, and that is one of the ways
+    // the long "…, Kings County, New York, 11249, United States" form got into
+    // files in the first place (2026-07-26).
+    return { id: 'osm:' + r.place_id, label: cleanLabel(address) || compactFormattedAddress(r.display_name), address };
   });
 }
 
@@ -114,9 +98,9 @@ async function googleDetails(placeId) {
   return normalizeAddress({
     line1: [num && num.long_name, route && route.long_name].filter(Boolean).join(' '),
     unit: (get('subpremise') || {}).long_name || '',
-    city: preferBorough((get('locality') || {}).long_name || '',
+    city: ADDR.normalizeCityName(preferBorough((get('locality') || {}).long_name || '',
       (get('sublocality_level_1') || get('sublocality') || {}).long_name)
-      || (get('postal_town') || {}).long_name || '',
+      || (get('postal_town') || {}).long_name || ''),
     state: (get('administrative_area_level_1') || {}).short_name || '',
     zip: (get('postal_code') || {}).long_name || '',
     county: ((get('administrative_area_level_2') || {}).long_name || '').replace(/\s+County$/i, ''),

@@ -187,7 +187,7 @@ async function journalResolveWrite(appId, taskId, fieldId, fieldKey, oldVal, new
 
 /**
  * Resolve a review row that came from the READ-ONLY Encompass enrichment pass
- * (db/326). Deliberately small and separate from the ClickUp resolver: there is
+ * (db/328). Deliberately small and separate from the ClickUp resolver: there is
  * no second system to write, so the only question is what PILOT should hold.
  *
  *   winner 'encompass' → adopt the value Encompass holds (stored on the row —
@@ -211,7 +211,11 @@ async function applyEncompassWinner(row, winner, custom, borrowerId, appId) {
   if (!borrowerId) throw httpError(422, 'no borrower on this review');
   if (winner === 'portal') return { fieldKey: row.field_key, winner, value: row.portal_value || null, wrote: false };
 
-  const text = String(winner === 'custom' ? custom : (row.proposed_value || row.clickup_value || '')).trim();
+  const raw = String(winner === 'custom' ? custom : (row.proposed_value || row.clickup_value || '')).trim();
+  // The stored value is the MAILING one-line, never a geocoder display name —
+  // a reviewer can paste anything, so it goes through the same compactor every
+  // other address write uses (a pass-through when it is already correct).
+  const text = require('./address').compactFormattedAddress(raw) || raw;
   if (!text) throw httpError(422, 'that side has no readable address — keep PILOT’s value, or type the correct one');
   await db.query(
     `UPDATE borrowers SET current_address=$2::jsonb, updated_at=now() WHERE id=$1`,
@@ -255,7 +259,7 @@ async function applyReviewWinner(row, winner, customValue) {
   const custom = winner === 'custom' ? String(customValue == null ? '' : customValue).trim() : null;
   if (winner === 'custom' && !custom) throw httpError(400, 'a value is required to resolve with a custom value');
 
-  // ---- ENCOMPASS-sourced rows (db/326) are settled FIRST and never fall
+  // ---- ENCOMPASS-sourced rows (db/328) are settled FIRST and never fall
   // through to the ClickUp branches below. The row's `task_id` is a namespaced
   // `encompass:<loanGuid>`, not a ClickUp task — handing it to `clickup.getTask`
   // would 404 and make the row permanently unresolvable. Encompass is READ-ONLY

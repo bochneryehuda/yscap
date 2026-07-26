@@ -351,7 +351,13 @@ async function addContactIfAbsent(dbc, borrowerId, kind, value, sourceTag) {
  *     goes to the manual review queue with both values, and a human picks.
  */
 async function verifyPrimaryAddress(dbc, borrowerId, addr, meta) {
-  const encStr = addrString(addr);
+  // Store the MAILING one-line, never a geocoder display name (main's rule, and
+  // `compactFormattedAddress` is a pass-through for anything that is already in
+  // that form). Encompass gives us structured fields, so `partyAddress` already
+  // builds the mailing form — this is belt-and-suspenders for a loan whose
+  // address arrived as one long provider string.
+  const ADDR = require('../lib/address');
+  const encStr = ADDR.compactFormattedAddress(addrString(addr)) || addrString(addr);
   const encKey = normAddr(addr);
   if (!encStr || !encKey) return { checked: false, reason: 'no_address' };
   const b = (await dbc.query(`SELECT current_address FROM borrowers WHERE id=$1`, [borrowerId])).rows[0];

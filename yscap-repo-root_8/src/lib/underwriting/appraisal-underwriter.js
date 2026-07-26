@@ -18,6 +18,7 @@
  */
 
 const { propertyTypeUnitRange } = require('../mismo/enums');
+const { appraisalFormExpectation, propertyTypeCompareKey } = require('../property-type');
 
 function num(v) {
   if (v == null || String(v).trim() === '' || !Number.isFinite(Number(v))) return null;
@@ -132,6 +133,40 @@ function underwriteAppraisal(inputs) {
     findings.push(mk('appraisal_units_mismatch', 'warning', 'collateral', 'Appraisal unit count differs from application',
       `Application units ${v.units}; appraisal units ${appr.units}.`,
       { field: 'units', expected_value: v.units, actual_value: appr.units }));
+  }
+
+  // --- THE FORM ITSELF IS EVIDENCE (owner-directed 2026-07-26) ---
+  // "If it's a 1025 appraisal it must match with property type 2–4; if it's a 1073 then condo; if
+  // it's a 1004 then single family." The form number is the most reliable property-type fact on
+  // the document and we were not using it at all: an appraiser cannot report a duplex on a 1004 or
+  // a condo on a 1025, because the forms are written for a category and the agencies will not
+  // accept them otherwise. That makes it a HARD statement, unlike the free-text style word
+  // ("Detached"), which is decorative and is compared against nothing.
+  //
+  // Two DIFFERENT claims come out of one form, so they are checked separately and worded
+  // separately — collapsing them would tell an underwriter the wrong thing to go fix:
+  const formExp = appraisalFormExpectation(appr.form_type);
+  if (formExp) {
+    // (a) the form vs the FILE's property type.
+    const fileKey = propertyTypeCompareKey(v.property_type);
+    if (fileKey && fileKey !== formExp.propertyKey) {
+      findings.push(mk('appraisal_form_property_type_mismatch', 'warning', 'collateral',
+        'The appraisal form does not match the file\'s property type',
+        `The appraisal is a ${String(appr.form_type).trim()}, which is the form for ${formExp.label} — but the file is registered as ${v.property_type}. One of the two is wrong: either the property type on the file, or the form the appraisal was written on. A form written for the wrong category cannot support the collateral, so settle which is correct before this value is relied on.`,
+        { field: 'property_type', expected_value: formExp.label, actual_value: v.property_type }));
+    }
+    // (b) the form vs the appraisal's OWN unit count — an internal contradiction in one document,
+    //     which says the reading is wrong or the report is, and is worth knowing on its own.
+    const au2 = num(appr.units);
+    if (au2 != null && (au2 < formExp.minUnits || au2 > formExp.maxUnits)) {
+      const expects = formExp.minUnits === formExp.maxUnits
+        ? `exactly ${formExp.minUnits} unit${formExp.minUnits === 1 ? '' : 's'}`
+        : `${formExp.minUnits}–${formExp.maxUnits} units`;
+      findings.push(mk('appraisal_form_units_mismatch', 'warning', 'collateral',
+        'The appraisal form does not match its own unit count',
+        `The appraisal is a ${String(appr.form_type).trim()} (${formExp.label}, ${expects}) but reports ${au2} unit${au2 === 1 ? '' : 's'} on the subject property. The document contradicts itself — check whether the unit count was read correctly, then whether the right form was used.`,
+        { field: 'units', expected_value: expects, actual_value: au2 }));
+    }
   }
 
   // --- condition of appraisal (subject-to) makes the value contingent ---

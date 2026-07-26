@@ -90,6 +90,43 @@ function call(server, method, path, token, body) {
     assert(r2.status === 200, 'after the package is cleared (voided), PATCH /details succeeds');
     assert(Number((await db.query(`SELECT purchase_price FROM applications WHERE id=$1`, [appId])).rows[0].purchase_price) === 555000, 'the edit persisted once unfrozen');
 
+    // ---- The SCOPE-OF-WORK RE-ALLOCATION EXCLUSION, end to end (owner-directed
+    // 2026-07-26). The freeze exists so a SENT term sheet can't disagree with the
+    // file. Moving money BETWEEN line items leaves the construction budget total
+    // untouched, so it can't cause that disagreement and must go through; moving
+    // the TOTAL still can, so it must not. Proven through the REAL staff route,
+    // not just the lock function — the matrix itself is covered by the pure test
+    // scripts/test-sow-reallocation-lock-pure.js.
+    await db.query(`UPDATE applications SET rehab_budget=126000 WHERE id=$1`, [appId]);
+    await setEnv('sent');
+    const saveSow = (total, items) => call(server, 'POST', `/api/staff/applications/${appId}/rehab-budget`, superTok,
+      { payload: { total, state: { target: 126000, items } } });
+    // The owner's case: $126,000 stays $126,000, $100 just moves between two lines.
+    const before = [{ name: 'Kitchen', amount: 60000 }, { name: 'Baths', amount: 66000 }];
+    const after = [{ name: 'Kitchen', amount: 59900 }, { name: 'Baths', amount: 66100 }];
+    const sowA = await saveSow(126000, before);
+    assert(sowA.status === 200, 'term-sheet SENT: a Scope of Work totalling the frozen budget SAVES (no longer a 409)');
+    const sowB = await saveSow(126000, after);
+    assert(sowB.status === 200, 'term-sheet SENT: money MOVED between line items, same $126,000 total → saves');
+    const stored = (await db.query(`SELECT tool_payload FROM checklist_items WHERE application_id=$1 AND tool_key='rehab_budget' LIMIT 1`, [appId])).rows[0];
+    assert(!!stored && Number(stored.tool_payload.state.items[0].amount) === 59900,
+      'the reallocated line items actually persisted on the condition');
+    assert(Number((await db.query(`SELECT rehab_budget FROM applications WHERE id=$1`, [appId])).rows[0].rehab_budget) === 126000,
+      'the file’s rehab budget is untouched by the Scope of Work (it never writes it)');
+    // Changing the TOTAL is still refused, and the refusal explains the allowance.
+    const sowC = await saveSow(130000, [{ name: 'Kitchen', amount: 130000 }]);
+    assert(sowC.status === 409, 'term-sheet SENT: a Scope of Work that CHANGES the total is still frozen (409)');
+    assert(/move money BETWEEN Scope of Work line items/i.test((sowC.body && sowC.body.error) || ''),
+      'the refusal tells staff that a same-total reallocation is what is allowed');
+    // Past Clear to Close the same neutral save is frozen again — the scope has
+    // gone to the investor, so it goes through the change-request workflow.
+    await db.query(`UPDATE applications SET status='clear_to_close' WHERE id=$1`, [appId]);
+    const sowD = await saveSow(126000, before);
+    assert(sowD.status === 409, 'Clear to Close: even a same-total reallocation is frozen');
+    assert(/change request/i.test((sowD.body && sowD.body.error) || ''),
+      'the Clear-to-Close refusal points at the Scope of Work change request');
+    await db.query(`UPDATE applications SET status='processing' WHERE id=$1`, [appId]);
+
     console.log(failures ? `\n${failures} assertion(s) failed` : '\nALL term-sheet-freeze assertions passed');
   } catch (e) {
     console.error('ERROR', e); failures++;
