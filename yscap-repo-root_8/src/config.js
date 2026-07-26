@@ -661,4 +661,24 @@ module.exports = {
     labelStorageSasToken:    (process.env.AZURE_DOCAI_LABEL_SAS_TOKEN || '').trim(),
     labelStorageAccountKey:  (process.env.AZURE_DOCAI_LABEL_ACCOUNT_KEY || '').trim(),
   },
+
+  // ── Pipeline V2 (owner-directed 2026-07-26) — the durable, evidence-first document
+  // pipeline restructure. ADDITIVE + OFF by default: with these env vars unset, everyone
+  // stays on Pipeline V1 and the background worker does nothing. The owner flips them on in
+  // Render one document family at a time after shadow testing proves the new path is better.
+  // Accepts '1' or 'true' (the owner's Render checklist uses =true).
+  pipeline: (() => {
+    const on = (v) => { const s = String(v || '').trim().toLowerCase(); return s === '1' || s === 'true'; };
+    const csv = (v) => String(v || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+    return {
+      version:           (process.env.UNDERWRITING_PIPELINE_VERSION || 'v1').trim(),  // v1 | v2 (the exposed pipeline)
+      v2Enabled:         on(process.env.UW_PIPELINE_V2_ENABLED),   // build/run v2 at all (default OFF)
+      v2Shadow:          on(process.env.UW_PIPELINE_V2_SHADOW),    // run v2 beside v1, never expose (default OFF)
+      v2Families:        csv(process.env.UW_PIPELINE_V2_FAMILIES), // families promoted to v2, e.g. bank_statement,insurance
+      workerEnabled:     on(process.env.UW_WORKER_ENABLED),        // start the durable-job background worker (default OFF)
+      workerConcurrency: Math.max(1, parseInt(process.env.UW_WORKER_CONCURRENCY || '2', 10) || 2),
+      jobMaxAttempts:    Math.max(1, parseInt(process.env.UW_JOB_MAX_ATTEMPTS || '5', 10) || 5),
+      jobLeaseSeconds:   Math.max(30, parseInt(process.env.UW_JOB_LEASE_SECONDS || '300', 10) || 300),
+    };
+  })(),
 };
