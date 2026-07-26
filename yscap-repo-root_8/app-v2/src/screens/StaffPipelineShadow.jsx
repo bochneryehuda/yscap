@@ -179,6 +179,27 @@ export default function StaffPipelineShadow() {
                           })}
                           {(!detail.evidence || detail.evidence.length === 0) && <div className="muted">Nothing read on the new line yet.</div>}
                         </div>
+                        <div>
+                          <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                            Verified facts
+                            {detail.canonicalFacts && detail.canonicalFacts.contestedCount > 0
+                              ? <span className="pill pill-warn" style={{ marginLeft: 6 }}>{detail.canonicalFacts.contestedCount} disagree</span>
+                              : null}
+                          </div>
+                          {((detail.canonicalFacts && detail.canonicalFacts.facts) || []).map((f, i) => {
+                            const s = EVIDENCE_STATUS[f.status] || { label: f.status, cls: 'pill-muted' };
+                            return (
+                              <div key={i} className="muted" style={{ fontSize: 13, maxWidth: 480 }}>
+                                <b>{f.fieldLabel || f.fieldKey}</b>: {f.value || '—'}
+                                {' '}<span className={`pill ${s.cls}`}>{s.label}</span>
+                                {f.pageNumber ? <span> · p.{f.pageNumber}</span> : null}
+                                {f.contested ? <span className="pill pill-warn" style={{ marginLeft: 4 }}>reader disagreement</span> : null}
+                                {f.alternativesCount > 0 ? <span> · {f.alternativesCount} other read{f.alternativesCount === 1 ? '' : 's'}</span> : null}
+                              </div>
+                            );
+                          })}
+                          {(!detail.canonicalFacts || !detail.canonicalFacts.facts || detail.canonicalFacts.facts.length === 0) && <div className="muted">No settled facts yet.</div>}
+                        </div>
                       </div>
                     )}
                   </td></tr>
