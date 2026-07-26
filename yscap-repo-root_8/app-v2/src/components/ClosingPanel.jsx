@@ -406,8 +406,9 @@ function SignoffSection({ appId, cw, rec, isCloser, busy, run }) {
             <ReconCell k="Encompass" v={rec.encStatus === 'na' ? 'Not in Encompass' : day(rec.encompass)} status={rec.encStatus} />
           </div>
           {recOk
-            ? <div className="notice ok" style={{ marginTop: 8 }}>All systems agree on the funded date.</div>
+            ? <div className="notice ok" style={{ marginTop: 8 }}>PILOT and ClickUp agree on the funded date{rec.encStatus === 'match' ? ' (Encompass too)' : ''}.</div>
             : <div className="notice warn" style={{ marginTop: 8 }}>{rec.reason || 'The funded date does not match across systems yet.'}</div>}
+          {rec.advisory && <div className="muted small" style={{ marginTop: 6 }}>Note: {rec.advisory}</div>}
           {isCloser && cw.stage && cw.stage !== 'fully_reconciled' && cw.stage !== 'in_purchasing' && (
             <button className="btn primary small" style={{ marginTop: 8 }} disabled={busy === 'recon' || !recOk}
               onClick={() => run('recon', () => api.advanceClosing(appId, 'fully_reconciled'), 'Marked fully reconciled.')}>
