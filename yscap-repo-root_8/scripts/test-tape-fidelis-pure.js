@@ -212,6 +212,19 @@ ok(/<dimension ref="A1:AV4"\/>/.test(bulkXml), 'bulk dimension covers all rows')
   ok(cellOf(ncFilled, 'AU').value === 120000, 'AU lot price filled from supplemental');
   ok(cellOf(ncFilled, 'AV').value === '2026-03-01', 'AV lot date filled from supplemental');
 
+  // Getter gating: a NON-new-construction loan with stray supplemental stored
+  // (e.g. it was ground-up when answered, then reclassified) still leaves AR–AV
+  // blank — the fill is gated on new construction, not just on empty storage.
+  const ffWithSupp = synthLoan(); // fix & flip
+  ffWithSupp.supplemental = { asset_purchased: 'Land', entitlement_status: 'Fully Entitled', build_status: 'Framing', lot_purchase_price: 99999, lot_purchase_date: '2026-01-01' };
+  ok(fidelis.isNewConstruction(ffWithSupp) === false, 'reclassified loan is not new construction');
+  ok(cellOf(ffWithSupp, 'AR').value === '' && cellOf(ffWithSupp, 'AT').value === '', 'AR/AT blank on non-NC loan despite stored supplemental');
+  ok(cellOf(ffWithSupp, 'AU').value == null && cellOf(ffWithSupp, 'AV').value == null, 'AU/AV blank on non-NC loan despite stored supplemental');
+
+  // Date validation rejects an impossible calendar day (would else roll over).
+  ok(!('lot_purchase_date' in fidelis.sanitizeSupplemental({ lot_purchase_date: '2026-13-45' })), 'impossible calendar date is rejected');
+  ok(fidelis.sanitizeSupplemental({ lot_purchase_date: '2026-02-28' }).lot_purchase_date === '2026-02-28', 'a valid calendar date is kept');
+
   // Partial answers → only the remaining ones are still asked.
   const ncPartial = synthLoan();
   ncPartial.app.program = 'Ground-Up Construction'; ncPartial.app.rehab_type = 'ground';

@@ -171,14 +171,26 @@ function sanitizeSupplemental(answers) {
     if (v == null || v === '') continue;
     if (f.type === 'select') { if (f.options.includes(String(v))) out[f.key] = String(v); }
     else if (f.type === 'number') { const num = Number(v); if (isFinite(num)) out[f.key] = num; }
-    else if (f.type === 'date') { const m = String(v).match(/^\d{4}-\d{2}-\d{2}/); if (m) out[f.key] = m[0]; }
-    else out[f.key] = String(v);
+    else if (f.type === 'date') {
+      // Real calendar day only — reject a well-formed-but-impossible date like
+      // 2026-13-45 (which would otherwise silently roll over to a wrong serial).
+      const m = String(v).match(/^(\d{4})-(\d{2})-(\d{2})/);
+      if (m) {
+        const y = +m[1], mo = +m[2], d = +m[3];
+        const dt = new Date(Date.UTC(y, mo - 1, d));
+        if (dt.getUTCFullYear() === y && dt.getUTCMonth() === mo - 1 && dt.getUTCDate() === d) out[f.key] = `${m[1]}-${m[2]}-${m[3]}`;
+      }
+    } else out[f.key] = String(v);
   }
   return out;
 }
 
 // Read a stored supplemental value (blank string when unset) for a getter.
 function sup(loan, key) { const s = (loan && loan.supplemental) || {}; return s[key] == null ? '' : s[key]; }
+// New-Construction-gated read: the NC-only columns fill ONLY for a new
+// construction loan, so a loan later reclassified away from ground-up (or any
+// stale/crafted supplemental) never leaks NC columns onto a non-NC tape.
+function ncSup(loan, key) { return isNewConstruction(loan) ? sup(loan, key) : ''; }
 
 // ---- derived economics -----------------------------------------------------
 function economics(loan) {
@@ -259,12 +271,12 @@ const COLUMNS = [
   ['AP', 's', null, () => ''],                                // multi-property flag — not tracked
   ['AQ', 's', null, () => ''],                                // cross-collateralized flag — not tracked
   // New-Construction-only — filled from the staff questionnaire answers stored
-  // on the loan (blank for any non-new-construction loan).
-  ['AR', 's', null, (l) => sup(l, 'asset_purchased')],
-  ['AS', 's', null, (l) => sup(l, 'entitlement_status')],
-  ['AT', 's', null, (l) => sup(l, 'build_status')],
-  ['AU', 'n', S.CURRENCY, (l) => n(sup(l, 'lot_purchase_price'))],
-  ['AV', 'd', S.DATE, (l) => sup(l, 'lot_purchase_date') || null],
+  // on the loan, and ONLY for a new-construction loan (blank otherwise).
+  ['AR', 's', null, (l) => ncSup(l, 'asset_purchased')],
+  ['AS', 's', null, (l) => ncSup(l, 'entitlement_status')],
+  ['AT', 's', null, (l) => ncSup(l, 'build_status')],
+  ['AU', 'n', S.CURRENCY, (l) => (isNewConstruction(l) ? n(sup(l, 'lot_purchase_price')) : null)],
+  ['AV', 'd', S.DATE, (l) => (isNewConstruction(l) ? sup(l, 'lot_purchase_date') : '') || null],
 ];
 
 function buildRow(loan) {

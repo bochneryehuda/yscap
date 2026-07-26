@@ -100,6 +100,13 @@ async function main() {
     const q3 = await tapes.tapeQuestions(fidelisApp, 'fidelis', db);
     assert.ok(q3.newConstruction === false && q3.questions.length === 0, 'a non-NC loan needs no questionnaire');
 
+    // Persist is gated: a non-new-construction loan can't accrue NC supplemental
+    // even if answers are posted (a crafted request), and nothing is written.
+    const skip = await tapes.persistSupplemental(fidelisApp, 'fidelis', { asset_purchased: 'Land', build_status: 'Framing' }, db);
+    assert.ok(Object.keys(skip).length === 0, 'persist skips a non-new-construction loan');
+    const stored = (await db.query('SELECT tape_supplemental FROM applications WHERE id=$1', [fidelisApp])).rows[0].tape_supplemental;
+    assert.ok(!stored || Object.keys(stored).length === 0, 'non-NC loan has no supplemental written');
+
     console.log('test-tape-export-db: OK');
   } finally {
     await db.query('DELETE FROM applications WHERE id = ANY($1::uuid[])', [created.apps]).catch(() => {});

@@ -114,15 +114,23 @@ async function tapeQuestions(appId, tapeKey, db) {
 // Merge validated questionnaire answers into the loan's stored supplemental data
 // so the tape fills correctly now AND future exports don't re-ask. Returns the
 // sanitized answers actually stored (unknown/invalid dropped).
+//
+// The write is gated to a loan that (a) exists & isn't soft-deleted, (b) matches
+// the tape's capital provider, and (c) actually needs these fields (new
+// construction). So a crafted request, a wrong-buyer loan, or a loan reclassified
+// away from ground-up can never accrue supplemental it shouldn't have.
 async function persistSupplemental(appId, tapeKey, answers, db) {
   const tape = registry.getTape(tapeKey);
   if (!tape) throw new TapeNotFoundError(tapeKey);
   const clean = tape.sanitizeSupplemental ? tape.sanitizeSupplemental(answers) : {};
-  if (Object.keys(clean).length) {
-    await db.query(
-      `UPDATE applications SET tape_supplemental = COALESCE(tape_supplemental, '{}'::jsonb) || $2::jsonb WHERE id = $1`,
-      [appId, JSON.stringify(clean)]);
-  }
+  if (!Object.keys(clean).length) return {};
+  const loan = await assembleTapeLoan(appId, db);
+  if (!loan.found) return {};
+  if (!buyerMatches(loan, tape)) return {};
+  if (tape.isNewConstruction && !tape.isNewConstruction(loan)) return {};
+  await db.query(
+    `UPDATE applications SET tape_supplemental = COALESCE(tape_supplemental, '{}'::jsonb) || $2::jsonb WHERE id = $1`,
+    [appId, JSON.stringify(clean)]);
   return clean;
 }
 
