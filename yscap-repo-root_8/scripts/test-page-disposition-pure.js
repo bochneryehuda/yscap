@@ -30,7 +30,16 @@ function assertTotals(res, m) {
   ok(res.pages.every((p) => Object.values(DISPOSITION).includes(p.disposition)), `${m}: every disposition is one of the three`);
 }
 
-const page = (n, text) => (text === undefined ? { pageNumber: n } : { pageNumber: n, text });
+// Page fixtures in the REAL adapter shape. `docint.js` / `docai-mistral.js` both build `text` by
+// joining the page's lines and emit '' when there are none, so a page they could not read is
+// text:'' — NOT text:undefined. A fixture that omits `text` therefore tests a shape no adapter can
+// produce, which is how the first version of this module came to treat every image-only page as
+// blank while its tests said otherwise.
+const page = (n, text) => ({ pageNumber: n, text: text === undefined ? '' : text, lines: [{ }] });
+/** A page the adapter LOOKED at and found nothing on: empty text AND an empty lines array. */
+const blankPage = (n) => ({ pageNumber: n, text: '', lines: [] });
+/** A page the adapter could not read: empty text, no report of what it found. Unknown, not blank. */
+const unreadPage = (n) => ({ pageNumber: n, text: '' });
 
 // ── 1. the ordinary case: one segment covers the whole document ──────────────────────────────
 {
@@ -48,7 +57,7 @@ const page = (n, text) => (text === undefined ? { pageNumber: n } : { pageNumber
 // ── 2. a real PACKET: two documents plus a blank separator sheet ─────────────────────────────
 {
   const res = pd.dispositionPages({
-    pages: [page(1, 'contract'), page(2, 'contract'), page(3, '   '), page(4, 'statement')],
+    pages: [page(1, 'contract'), page(2, 'contract'), blankPage(3), page(4, 'statement')],
     segments: [
       { docType: 'purchase_contract', confidence: 0.88, pages: [1, 2] },
       { docType: 'bank_statement', confidence: 0.8, pages: [4] },
@@ -80,10 +89,11 @@ const page = (n, text) => (text === undefined ? { pageNumber: n } : { pageNumber
 // An image-only scan reads as no text. Calling it blank would drop a real page out of the packet.
 {
   const res = pd.dispositionPages({
-    pages: [page(1, 'x'), page(2) /* no text property at all */],
+    pages: [page(1, 'x'), unreadPage(2)],
     segments: [{ docType: 'purchase_contract', confidence: 0.9, pages: [1] }],
   });
-  eq(res.pages[1].disposition, DISPOSITION.MANUAL_REVIEW, 'a page with no reported text is NOT assumed blank');
+  eq(res.pages[1].disposition, DISPOSITION.MANUAL_REVIEW,
+    'a page the adapter could NOT read (empty text, no lines report) is NOT assumed blank — this is the shape both real adapters emit for an image-only scan');
   eq(res.counts.excluded, 0, 'nothing was excluded on an assumption');
   assertTotals(res, 'no text reported');
 }
@@ -151,7 +161,7 @@ const page = (n, text) => (text === undefined ? { pageNumber: n } : { pageNumber
 // Excluding it would silently shorten a bank statement by a page.
 {
   const res = pd.dispositionPages({
-    pages: [page(1, 'a'), page(2, ''), page(3, 'c')],
+    pages: [page(1, 'a'), blankPage(2), page(3, 'c')],
     segments: [{ docType: 'bank_statement', confidence: 0.9, pages: [1, 2, 3] }],
   });
   eq(res.counts.assigned, 3, 'the blank interior page stays with its document');
@@ -221,6 +231,68 @@ const page = (n, text) => (text === undefined ? { pageNumber: n } : { pageNumber
   const res = pd.dispositionPages({ pages: [page(1, 'a')], segments: [{ docType: 'x', pages: [0, -4, NaN] }] });
   eq(res.counts.assigned, 0, 'a segment citing only impossible page numbers assigns nothing');
   eq(res.counts.manual_review, 1, 'so the real page goes to a person');
+}
+
+// ── 13. AUDIT REGRESSIONS (2026-07-26) — the ways a page vanished before ─────────────────────
+{
+  // (a) THE BIG ONE. Both production adapters emit text:'' for a page they could not read, so
+  // inferring "blank" from empty text excluded every image-only page from the packet AND reported
+  // "every page was placed". Blank now needs positive evidence.
+  const imageOnly = pd.dispositionPages({
+    pages: [page(1, 'a'), page(2, 'b'), { pageNumber: 3, text: '', lines: [{}] }, page(4, 'd')],
+    segments: [{ docType: 'purchase_contract', confidence: 0.9, pages: [1, 2, 4] }],
+  });
+  eq(imageOnly.counts.excluded, 0, 'an unreadable page is NEVER excluded as blank');
+  eq(imageOnly.status, OUTCOME.MANUAL_REQUIRED, 'it makes the packet need a person');
+  ok(imageOnly.manualPages.includes(3), 'and names the page');
+
+  // (b) the read is a SLICE — the adapter numbers its pages 5,6,7 and the classifier agrees.
+  const sliced = pd.dispositionPages({
+    pages: [page(5, 'a'), page(6, 'b'), page(7, 'c')],
+    segments: [{ docType: 'bank_statement', confidence: 0.9, pages: [5, 6, 7] }],
+  });
+  eq(sliced.counts.assigned, 3, 'a sliced read lines up with the classifier instead of being renumbered 1..3');
+  eq(sliced.outOfRange.length, 0, 'and the classifier is not falsely reported as disagreeing');
+  ok(sliced.pages.map((p) => p.page).join() === '5,6,7', 'the real page numbers are what gets recorded');
+
+  // (c) a 0-indexed classifier. The disagreement must be VISIBLE, not swallowed.
+  const zeroIdx = pd.dispositionPages({
+    pages: [page(1, 'a'), page(2, 'b'), page(3, 'c')],
+    segments: [{ docType: 'x', confidence: 0.9, pages: [0, 1, 2] }],
+  });
+  ok(zeroIdx.outOfRange.some((o) => o.page === 0), 'a claim BELOW the page range is recorded, not silently dropped');
+  eq(zeroIdx.status, OUTCOME.MANUAL_REQUIRED, 'and forces a human look');
+
+  // (d) page 0 from a 0-indexed ADAPTER is a real page, not an alias of page 1.
+  const zeroPage = pd.dispositionPages({
+    pages: [{ pageNumber: 0, text: 'real content', lines: [{}] }, blankPage(1)],
+    segments: [{ docType: 'x', confidence: 0.9, pages: [0] }],
+  });
+  eq(zeroPage.pageCount, 2, 'page 0 and page 1 are two pages, never merged into one');
+  eq(zeroPage.pages[0].disposition, DISPOSITION.ASSIGNED, 'and page 0 keeps its own disposition');
+
+  // (e) ONE segment listing a page twice is a sloppy list, not two documents disagreeing.
+  const dupInSeg = pd.dispositionPages({
+    pages: [page(1, 'a'), page(2, 'b')],
+    segments: [{ docType: 'bank_statement', confidence: 0.9, pages: [1, 2, 2] }],
+  });
+  eq(dupInSeg.counts.assigned, 2, 'a repeated page within one segment is deduped');
+  eq(dupInSeg.status, OUTCOME.COMPLETED, 'and is NOT reported as a disputed boundary against itself');
+
+  // (f) an explicit pageCount may not override what the read actually returned — in either
+  // direction. Over-stating invented assigned pages; under-stating left real pages undispositioned
+  // while still reporting success.
+  const over = pd.dispositionPages({
+    pages: [page(1, 'a'), page(2, 'b')], pageCount: 6,
+    segments: [{ docType: 'x', confidence: 0.9, pages: [1, 2, 3, 4, 5, 6] }],
+  });
+  eq(over.pageCount, 2, 'an over-stated pageCount cannot invent pages the read never returned');
+  const under = pd.dispositionPages({
+    pages: [page(1, 'a'), page(2, 'b'), page(3, 'c'), page(4, 'd'), page(5, 'e')], pageCount: 2,
+    segments: [],
+  });
+  eq(under.pageCount, 5, 'an under-stated pageCount cannot hide pages the read DID return');
+  assertTotals(under, 'under-stated pageCount');
 }
 
 console.log(`test-page-disposition-pure: ${pass} passed, ${fail} failed`);

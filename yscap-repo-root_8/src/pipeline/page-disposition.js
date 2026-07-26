@@ -100,18 +100,54 @@ function num(v) { return (typeof v === 'number' && Number.isFinite(v)) ? v : nul
  */
 function readPages(pages) {
   const list = Array.isArray(pages) ? pages : [];
+  const numbers = [];
   const blank = new Set();
   list.forEach((p, idx) => {
-    // Page numbers are 1-indexed. Prefer the page's own number when the adapter supplies one, so a
-    // sliced or re-ordered read still lines up with the classifier's page references.
-    const n = int(p && (p.pageNumber != null ? p.pageNumber : p.page)) || (idx + 1);
-    const t = p && (p.text != null ? p.text : p.content);
-    // ONLY a string we were actually given counts. `undefined` means the adapter did not report the
-    // page's text — that is silence, not emptiness, and guessing 'blank' from it would exclude real
-    // pages of an image-only scan from the packet without anyone being told.
-    if (typeof t === 'string' && t.trim() === '') blank.add(n);
+    // Page numbers come from the ADAPTER when it supplies one, so a sliced or re-ordered read still
+    // lines up with the classifier's page references. `!= null` rather than a truthiness check:
+    // page 0 from a 0-indexed adapter is a real page number, and `||` would alias it onto page 1 —
+    // silently merging two pages into one and letting the second overwrite the first's disposition.
+    const raw = p && (p.pageNumber != null ? p.pageNumber : p.page);
+    const n = Number.isFinite(raw) ? Math.trunc(raw) : (idx + 1);
+    numbers.push(n);
+    if (isProvablyBlank(p)) blank.add(n);
   });
-  return { pageCount: list.length, blank };
+  return { numbers, blank };
+}
+
+/**
+ * PURE — is this page PROVABLY blank, as opposed to merely unread?
+ *
+ * AUDIT 2026-07-26, and the most important correction in this module. The first version treated
+ * `text === ''` as proof of blankness, on the reasoning that a page whose text we HELD and which was
+ * empty is genuinely empty, while an unread page would arrive with no `text` property at all.
+ *
+ * That reasoning is sound and the premise is false. NEITHER production adapter can express silence:
+ * `docint.js` builds `text` by joining the page's lines and emits `''` when there are none, and
+ * `docai-mistral.js` falls back to `''` the same way. So an image-only scan, a signature page, a
+ * photo page and a page the vendor declined to OCR all arrive as `text: ''` — indistinguishable, to
+ * this function, from a genuinely empty separator sheet. Every one of them would have been EXCLUDED
+ * from the packet, with the stage reporting "every page was placed". A real page dropped out of the
+ * accounting under an affirmative all-clear: the exact defect this module exists to prevent, caused
+ * by the module itself. (The pure test that "proved" the guarantee used a page object with no `text`
+ * property — a shape no adapter emits — so it was validating a contract that does not exist.)
+ *
+ * So emptiness is no longer inferred from absence. A page is blank only on POSITIVE evidence:
+ *   - an explicit flag from an upstream page-quality pass (`blank: true`), or
+ *   - the adapter reporting that it looked and found no content — an EMPTY `lines`/`words` array
+ *     alongside empty text, which is a different statement from "there is no text property".
+ * Anything else is unknown, and unknown goes to a person. Excluding fewer pages costs a human a
+ * glance; excluding a real page costs a document nobody knows is missing.
+ */
+function isProvablyBlank(p) {
+  if (!p || typeof p !== 'object') return false;
+  if (p.blank === true || p.isBlank === true) return true;
+  const t = p.text != null ? p.text : p.content;
+  if (typeof t !== 'string' || t.trim() !== '') return false;
+  // Empty text AND the adapter's own report that it found no lines/words on the page.
+  const looked = (Array.isArray(p.lines) && p.lines.length === 0)
+              || (Array.isArray(p.words) && p.words.length === 0);
+  return looked;
 }
 
 /**
@@ -131,8 +167,15 @@ function dispositionPages(argsIn = {}) {
   // `= {}` only defaults `undefined`. An explicit null is a real call shape (a caller passing a
   // variable that turned out empty), and this module's contract is that it never throws.
   const args = (argsIn && typeof argsIn === 'object') ? argsIn : {};
-  const { pageCount: rawCount, blank } = readPages(args.pages);
-  const pageCount = int(args.pageCount) != null && int(args.pageCount) > 0 ? int(args.pageCount) : rawCount;
+  const { numbers, blank } = readPages(args.pages);
+  // The pages the read ACTUALLY returned, in order, deduped. `args.pageCount` may no longer override
+  // this (audit 2026-07-26): an over-stated count invented pages that were never read and recorded
+  // them ASSIGNED with a real confidence, and an under-stated one left pages the read DID return
+  // undispositioned while the identity still reported success — a skipped page under a clean
+  // verdict, which is the one outcome this module exists to make impossible. The count is what we
+  // saw, full stop.
+  const pageNums = [...new Set(numbers)].sort((a, b) => a - b);
+  const pageCount = pageNums.length;
   const classified = args.classified !== false;
   const floor = num(args.minConfidence) != null ? num(args.minConfidence) : DEFAULT_MIN_CONFIDENCE;
   const segments = Array.isArray(args.segments) ? args.segments : [];
@@ -168,22 +211,31 @@ function dispositionPages(argsIn = {}) {
   // the disagreement is the most valuable thing on the page.
   const claims = new Map();      // page number -> [{ type, confidence }]
   const outOfRange = [];
+  const pageSet = new Set(pageNums);
   for (const seg of segments) {
     if (!seg || typeof seg !== 'object') continue;
     const type = seg.docType || seg.rawLabel || null;
     const conf = num(seg.confidence);
-    const segPages = Array.isArray(seg.pages) ? seg.pages : [];
+    // DEDUPE WITHIN the segment. One segment listing a page twice is a sloppy list, not two
+    // documents disagreeing — and reporting it as a disputed boundary tells a person to go and
+    // adjudicate between a segment and itself.
+    const segPages = [...new Set(Array.isArray(seg.pages) ? seg.pages : [])];
     for (const raw of segPages) {
       const n = int(raw);
-      if (n == null || n < 1) continue;
-      if (n > pageCount) { outOfRange.push({ page: n, type }); continue; }
+      // A claim the read cannot match is RECORDED, never quietly dropped — in EITHER direction.
+      // The first version recorded only `n > pageCount` and `continue`d on anything below 1 or
+      // unusable, so a 0-indexed classifier claiming [0,1,2] on a 3-page read reported an empty
+      // outOfRange and blamed the last page on "nobody claimed it". A numbering disagreement is a
+      // real inconsistency and the whole point is that it reaches a person.
+      if (n == null) { outOfRange.push({ page: null, type, claimed: String(raw).slice(0, 20) }); continue; }
+      if (!pageSet.has(n)) { outOfRange.push({ page: n, type }); continue; }
       if (!claims.has(n)) claims.set(n, []);
       claims.get(n).push({ type, confidence: conf });
     }
   }
 
   const out = [];
-  for (let n = 1; n <= pageCount; n += 1) {
+  for (const n of pageNums) {
     const cs = claims.get(n) || [];
     if (cs.length > 1) {
       // Two segments both say this page is theirs. The classifier is contradicting itself about

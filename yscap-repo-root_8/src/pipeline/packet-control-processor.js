@@ -283,7 +283,13 @@ function makePacketControlProcessor(opts = {}) {
           const readPages = (routed && routed.result && Array.isArray(routed.result.pages)) ? routed.result.pages : [];
           const disp = pageDisposition.dispositionPages({
             pages: readPages,
-            segments: (clsSummary.artifact && clsSummary.artifact.segments) || [],
+            // The classifier's OWN segment list, not the artifact's. `summarizeClassification`
+            // truncates the artifact to 50 segments so a huge packet cannot bloat one audit row —
+            // a display cap, not a semantic one. Feeding that to the accounting made every page
+            // beyond the 50th segment come back "no segment claims this page", so a correctly
+            // classified 60-document packet reported ten pages needing a person and no indication
+            // anywhere that anything had been truncated (audit 2026-07-26).
+            segments: Array.isArray(cls && cls.segments) ? cls.segments : [],
             // Only a classification that actually reached a verdict gives a basis to ASSIGN. When it
             // did not (switched off, untrained, vendor error) the honest answer is not-applicable —
             // marking a whole packet 'manual_review' because a switch is off would bury the pages
