@@ -80,6 +80,26 @@ async function download(path) {
   const m = /filename="([^"]+)"/.exec(cd);
   return { blob: await res.blob(), filename: m ? m[1] : 'document' };
 }
+// Like download(), but POSTs a JSON body first (for exports that take a selection,
+// e.g. a bulk tape). On error the server's JSON `{error,message,...}` rides along
+// on err.data so the caller can show the exact reason (e.g. a buyer mismatch).
+async function downloadPost(path, body) {
+  const t = getToken();
+  const res = await resilientFetch(path, {
+    method: 'POST',
+    headers: Object.assign({ 'Content-Type': 'application/json' }, t ? { Authorization: `Bearer ${t}` } : {}),
+    body: body != null ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    let data = null; try { data = await res.json(); } catch { /* empty */ }
+    const err = new Error((data && data.message) || friendlyError(res.status, data));
+    err.status = res.status; err.data = data;
+    throw err;
+  }
+  const cd = res.headers.get('Content-Disposition') || '';
+  const m = /filename="([^"]+)"/.exec(cd);
+  return { blob: await res.blob(), filename: m ? m[1] : 'document' };
+}
 export function saveBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -442,6 +462,13 @@ export const api = {
   staffExportMismo:  (appId) => download(`/api/staff/applications/${appId}/export/mismo`),
   staffMismoPreview: (xml) => req('POST', '/api/staff/mismo/preview', { xml }),
   staffMismoCreate:  (xml) => req('POST', '/api/staff/mismo/create', { xml }),
+  // Capital-provider data tapes. A loan can only export the tape of the provider
+  // it is currently assigned to (staffTapesForApp says which, and why not).
+  staffTapesList:    () => req('GET', '/api/staff/tapes'),
+  staffTapesForApp:  (appId) => req('GET', `/api/staff/applications/${appId}/tapes`),
+  staffTapeExport:   (appId, tapeKey) => download(`/api/staff/applications/${appId}/export/tape/${tapeKey}`),
+  staffTapeLoans:    (tapeKey) => req('GET', `/api/staff/tapes/${tapeKey}/loans`),
+  staffTapeBulkExport: (tapeKey, applicationIds) => downloadPost(`/api/staff/tapes/${tapeKey}/export/bulk`, { applicationIds }),
   staffSaveRehabBudget: (appId, payload) => req('POST', `/api/staff/applications/${appId}/rehab-budget`, { payload }),
   // #152 — export the current pipeline VIEW (same filter params as staffApplications).
   staffExportPipeline: (params) => download(`/api/staff/applications/export${qs(params)}`),
