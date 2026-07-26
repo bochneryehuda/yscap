@@ -32,12 +32,12 @@
  *    tests exercise it with fakes, no vendors, no network.
  */
 
-const STAGE = Object.freeze({
-  INTAKE: 'intake',
-  ROUTE_PLAN: 'route_plan',
-  OCR_LAYOUT: 'ocr_layout',
-  CLASSIFICATION: 'classification',
-});
+// The stage keys come from stage-manifest, which is also what EVALUATES them. This file used to
+// keep its own frozen copy of the same list, and the two drifted the moment a stage was added: the
+// manifest gained `evidence` and required it, while this file's copy did not have the key, so
+// every `safeStage(STAGE.EVIDENCE, …)` recorded under `undefined` and the required stage looked
+// missing on a job that had in fact done the work. One list, one owner.
+const { STAGE } = require('./stage-manifest');
 
 /**
  * PURE — build a COMPACT summary of what a real read produced, for the shadow surface + audit
@@ -180,14 +180,42 @@ function makePacketControlProcessor(opts = {}) {
           // record them into the Stage-5 ledger (evidence-first canonical truth). Advisory:
           // writes only document_pipeline_evidence; makes no decision, clears no condition.
           // Best-effort + never throws (a recording failure never fails the read).
+          //
+          // RS-1 (2026-07-26): this is NO LONGER best-effort. Reading a document and recording
+          // nothing is the same defect as not reading it at all, one step later — and it used to be
+          // invisible, because the swallow-everything catch below meant a failed or empty write
+          // still let the job report 'completed'. The outcome is now recorded as a real stage and
+          // goes through the same fail-closed manifest gate as the read itself.
+          //
+          // The three outcomes are deliberately NOT collapsed, because they need different
+          // handling: a throw is transient and worth retrying, whereas a read that genuinely
+          // yielded nothing extractable will yield nothing again on the tenth attempt.
           if (okRead && routed && routed.result) {
+            let recorded = 0;
             try {
               const candidates = require('./read-to-evidence').readToEvidence(routed.result, {
                 jobId, documentId, loanId, family: features.docType || null,
               });
               const ec = require('./evidence-candidate');
-              for (const cand of candidates) { await ec.recordCandidate(db, cand); }
-            } catch (_e) { /* evidence recording is best-effort */ }
+              for (const cand of candidates) { await ec.recordCandidate(db, cand); recorded += 1; }
+              await safeStage(STAGE.EVIDENCE, recorded > 0 ? 'completed' : 'failed', {
+                recorded,
+                note: recorded > 0
+                  ? 'read turned into recorded evidence'
+                  : 'the read produced no evidence candidates — nothing extractable was found, so this job has no result to report',
+              });
+            } catch (e) {
+              // A THROW is transient (a DB blip, a lock) — retryable, unlike an empty read.
+              await safeStage(STAGE.EVIDENCE, 'failed_retryable', {
+                recorded,
+                error: (e && e.message) ? String(e.message).slice(0, 300) : 'evidence recording threw',
+              });
+            }
+          } else {
+            // The read did not complete, so there was never anything to turn into evidence. Say
+            // that plainly rather than leaving the stage unrecorded — a missing stage and a stage
+            // that had nothing to do are different facts, and the manifest reports both honestly.
+            await safeStage(STAGE.EVIDENCE, 'not_applicable', { note: 'no completed read to turn into evidence' });
           }
           // VSLICE-6 — record a durable snapshot of the V1-vs-V2 result difference for this document
           // (what the existing pipeline extracted vs what V2 read), as a `v1_v2_diff` artifact for
@@ -202,6 +230,7 @@ function makePacketControlProcessor(opts = {}) {
       } else {
         await safeStage(STAGE.OCR_LAYOUT, 'not_applicable', { note: 'shadow: read not run' });
         await safeStage(STAGE.CLASSIFICATION, 'not_applicable', { note: 'shadow: read not run' });
+        await safeStage(STAGE.EVIDENCE, 'not_applicable', { note: 'shadow: read not run' });
       }
 
       // VSLICE-5 — evaluate the full stage MANIFEST and FAIL CLOSED. In 'read' mode (real adapters

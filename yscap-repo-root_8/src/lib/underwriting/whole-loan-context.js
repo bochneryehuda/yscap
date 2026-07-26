@@ -323,7 +323,14 @@ async function buildWholeLoanContext(applicationId, db, opts) {
       // this table. The old query referenced BOTH phantom columns, threw, and this
       // catch silently nulled the appraisal, so the context's appraisal-sourced
       // as_is_value/arv were always dark. Matches every other appraisal query in the repo.
-      `SELECT id, as_is_value, arv_value, appraised_value, imported_at
+      // form_type / units / property_type added 2026-07-26 (owner-directed). The appraisal desk
+      // has always had a unit-count check and a form-vs-type check to run, but this query never
+      // SELECTED the columns they read, so `appraisal.units` was permanently undefined and both
+      // checks were dark on every real file — they could only ever fire in a test that hand-built
+      // the object. The columns exist on db/137 and the importer fills them from the XML
+      // (LivingUnitCount and AppraisalFormType); they were simply never asked for.
+      `SELECT id, as_is_value, arv_value, appraised_value, imported_at,
+              form_type, units, property_type
          FROM appraisals
         WHERE application_id = $1 AND superseded = false
         ORDER BY imported_at DESC LIMIT 1`, [applicationId]);
