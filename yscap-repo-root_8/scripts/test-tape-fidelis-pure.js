@@ -84,6 +84,12 @@ ok(cellOf(loan, 'AM').value === 'Fix and Flip', 'AM loan type coerced');
 ok(cellOf(loan, 'AN').value === 'Sale', 'AN exit strategy for flip');
 ok(cellOf(loan, 'AO').value === 'US Citizen', 'AO citizenship coerced');
 ok(cellOf(loan, 'V').value === '1004 Appraisal', 'V appraisal type from FNM1004');
+// A 1025 (2-4 unit income property) is its OWN label — NOT folded into 2055
+// (owner-directed 2026-07-26). Each form maps to its own value.
+ok(cellOf(synthLoan({ appraisal: { form_type: 'FNM 1025' } }), 'V').value === '1025 Appraisal', 'V: a 1025 says "1025 Appraisal" (not 2055)');
+ok(cellOf(synthLoan({ appraisal: { form_type: '2055' } }), 'V').value === '2055 Appraisal', 'V: a 2055 still says "2055 Appraisal"');
+ok(cellOf(synthLoan({ appraisal: { form_type: '1073' } }), 'V').value === '1073 Appraisal', 'V: a 1073 says "1073 Appraisal"');
+ok(cellOf(synthLoan({ appraisal: null }), 'V').value === '', 'V: no appraisal → blank (not a default)');
 ok(fidelis.buildRow(loan).length === 48, 'exactly 48 columns mapped (A..AV)');
 
 // note-rate already a fraction stays a fraction; a percent value is divided
