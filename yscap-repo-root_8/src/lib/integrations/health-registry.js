@@ -208,6 +208,59 @@ const INTEGRATIONS = [
     },
   },
   {
+    key: 'object_storage',
+    // Provider-aware: on the server disk the four S3 vars are IGNORED (config.js reads them only
+    // when STORAGE_PROVIDER=s3), so naming the card after R2 and marking them "required" would tell
+    // an admin to go set credentials that nothing would read.
+    name: cfg.storageProvider === 's3' ? 'Cloudflare R2 (document storage)' : 'Document storage (server disk)',
+    group: 'workflow',
+    purpose: 'Where every uploaded document actually lives. Shared storage is what lets the website and the background document reader reach the same files.',
+    direction: 'Outbound', auth: 'S3 access key + secret',
+    env: [{ name: 'STORAGE_PROVIDER', required: false },
+      { name: 'S3_BUCKET', required: cfg.storageProvider === 's3' },
+      { name: 'S3_ENDPOINT', required: cfg.storageProvider === 's3' },
+      { name: 'S3_ACCESS_KEY_ID', required: cfg.storageProvider === 's3' },
+      { name: 'S3_SECRET_ACCESS_KEY', required: cfg.storageProvider === 's3' },
+      { name: 'S3_REGION', required: false }],
+    switches: [], liveProbe: true,
+    async probe() {
+      // Delegates to the shared storage-health reader, so this card and /api/health can never
+      // disagree. `fresh:true` — a human pressing "Test now" wants a real round-trip, not the
+      // few-second cache that keeps the public /api/health endpoint cheap.
+      try {
+        const storage = require('../storage');
+        const card = await timebox(require('../storage-health').readStorageHealth(storage, cfg.storageProvider, { fresh: true }));
+        if (!card.configured) {
+          return { configured: false, live: null, detail: card.reason || 'Bucket, endpoint, or access keys are not set.' };
+        }
+        // The local disk has no remote endpoint — report it honestly rather than as "reachable".
+        // But NOT persistent means the storage fell back to a TEMPORARY folder (storage.js does
+        // that, loudly, when STORAGE_DIR can't be written). Every uploaded document is then wiped
+        // on the next deploy. That is the single most urgent thing this card can say, so it must
+        // never render as a calm "configured" — it reports NOT LIVE with the consequence spelled out.
+        if (card.reachable === null) {
+          if (card.persistent === false) {
+            return { configured: true, live: false, detail: `Documents are being saved to a TEMPORARY folder (${card.base || 'unknown'}) — the permanent disk is not mounted, so every uploaded document is LOST on the next deploy.` };
+          }
+          return { configured: true, live: null, detail: `Documents are stored on the server disk (${card.base || 'local'}) — there is nothing remote to reach.` };
+        }
+        if (card.reachable === true) {
+          return { configured: true, live: true, detail: `Reached the document bucket (${card.base || 'object storage'}) and it answered.` };
+        }
+        return { configured: true, live: false, detail: card.reason || 'The document bucket did not answer — new uploads would fail.' };
+      } catch (e) {
+        // The reader never got far enough to say whether storage is configured, so don't ASSERT it
+        // is (a hardcoded `configured: true` would paint a green-ish "Configured" card for an
+        // account with nothing set up at all). Fall back to the one thing knowable without the
+        // probe: whether the object-store settings are actually present in the environment.
+        const configured = cfg.storageProvider === 's3'
+          ? !!(cfg.s3 && cfg.s3.bucket && cfg.s3.endpoint && cfg.s3.accessKeyId && cfg.s3.secretAccessKey)
+          : null;
+        return { configured, live: configured === false ? null : false, detail: e.message === 'timed out' ? 'Timed out reaching the document bucket.' : (e.message || 'Not reachable.') };
+      }
+    },
+  },
+  {
     key: 'sharepoint', name: 'SharePoint (document mirror)', group: 'workflow',
     purpose: 'Copies every saved document into the team SharePoint site (one-way; it never deletes anything).',
     direction: 'One-way (write)', auth: 'Microsoft Graph app (certificate or secret)',

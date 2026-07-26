@@ -66,8 +66,9 @@ function pull(entry) {
 //             derive / none). Documentation for WO-B; this module never reads it.
 const REGISTRY = Object.freeze([
   // ── Identity / program / vesting ──────────────────────────────────────────
-  pull({ key: 'ys_loan_number', encompassFieldId: '364', loanPath: 'loanNumber', type: 'text', category: 'program', compare: 'reference', gate: GATE.REFERENCE, our: 'column:ys_loan_number', note: 'Loan number — the natural key we match on (already equal by construction)' }),
-  pull({ key: 'property_type', encompassFieldId: '1041', loanPath: 'property.propertyType', altFieldId: 'CX.PROPERTYTYPE', type: 'enum', compare: 'enum', gate: GATE.ADVISORY, valueMap: 'propertyType', our: 'column:property_type', note: 'Subject property type (std 1041; CX.PROPERTYTYPE is the tenant cross-check). Advisory: our range-category (SFR / Multi 2-4 / Multi 5+ / Condo / Townhouse / Mixed Use) vs Encompass wording is lossy — value-mapped, never a hard block' }),
+  pull({ key: 'ys_loan_number', encompassFieldId: '364', loanPath: 'loanNumber', type: 'text', category: 'program', compare: 'text', gate: GATE.BLOCK, our: 'column:ys_loan_number', note: 'Loan number — the natural key; MATCHED (must equal Encompass Loan.LoanNumber, field 364)' }),
+  pull({ key: 'property_type', encompassFieldId: '1041', loanPath: 'property.propertyType', altFieldId: 'CX.PROPERTYTYPE', type: 'enum', compare: 'enum', gate: GATE.ADVISORY, valueMap: 'propertyType', our: 'column:property_type', note: 'Subject property type (std 1041; CX.PROPERTYTYPE is the tenant cross-check). Our range-category (SFR / Multi 2-4 / Multi 5+ / Condo / Townhouse / Mixed Use) vs Encompass wording is lossy — value-mapped' }),
+  pull({ key: 'units', encompassFieldId: '16', loanPath: ['property.financedNumberOfUnits', 'property.numberOfUnits', 'property.financedUnits'], type: 'int', category: 'program', compare: 'int', verified: false, our: 'column:units', note: 'Number of units — EXACT match (owner-directed 2026-07-26). Encompass standard field 16 ("No. of Units"). loanPath candidates need live confirmation against the tenant loan JSON; if it reads blank the field shows "no data to compare" (staff must enter it in Encompass)' }),
   pull({ key: 'deal_type', encompassFieldId: 'CX.DEALPROJECTTYPE', type: 'enum', compare: 'enum', gate: GATE.ADVISORY, valueMap: 'dealType', our: 'derive from applications.program + loan_type (no deal_type column)', note: 'Deal/project type — value-mapped (§6). Advisory: our side is derived heuristically from program/loan_type, so a disagreement surfaces but never hard-blocks' }),
   pull({ key: 'exit_plan', encompassFieldId: 'CX.EXITPLAN', type: 'enum', compare: 'reference', gate: GATE.REFERENCE, valueMap: 'exitPlan', our: 'none (no column; inferable from deal_type)', note: 'Exit plan — reference only (owner: advisory, no matching); value map kept for context' }),
   pull({ key: 'loan_to_be_vested', encompassFieldId: 'CX.LOANTOBEVESTED', type: 'enum', compare: 'enum', gate: GATE.ADVISORY, valueMap: 'vesting', our: 'derive(applications.llc_id present → entity)', note: 'Entity vs individual vesting flag' }),
@@ -106,12 +107,18 @@ const REGISTRY = Object.freeze([
   pull({ key: 'term_months', encompassFieldId: '4', loanPath: 'loanAmortizationTermMonths', type: 'int', category: 'loan', compare: 'int', our: 'column:term (text → int)', note: 'Term in months' }),
   pull({ key: 'maturity_date', encompassFieldId: '78', loanPath: 'maturityDate', type: 'date', category: 'loan', compare: 'date', our: 'column:maturity_date', note: 'Maturity date — read from full loan (maturityDate), not pipeline' }),
   // Funded date — the closing-workflow 3-system reconciliation reads this (field
-  // 1401 Funded Date; docs/ENCOMPASS-DATA-MAPPING.md §3G). ADVISORY read-only: it
-  // never blocks term-sheet issuance, and the reconcile gate only enforces the
-  // Encompass leg when a value is actually present (graceful N/A otherwise). The
-  // standard loanPath is closingDocument.fundingDate — verify the tenant populates
-  // it against a live funded loan before promoting the leg to a hard block.
-  pull({ key: 'funded_date', encompassFieldId: '1401', loanPath: 'closingDocument.fundingDate', type: 'date', category: 'loan', compare: 'date', gate: GATE.ADVISORY, our: 'column:funded_date', note: 'Funded date — read-only, advisory; used by the closing reconciliation gate' }),
+  // 1401 Funded Date; docs/ENCOMPASS-DATA-MAPPING.md §3G). REFERENCE only for the
+  // per-file term-sheet comparison: it is DISPLAYED (Encompass's funded date) but
+  // NEVER gates term-sheet issuance. It must not, because a funded date only
+  // exists AFTER the loan funds — long after the term sheet is issued — so under
+  // the owner-directed match-all gate (2026-07-26: advisory + "no data" both hold
+  // the term sheet) a naturally-empty funded_date would wrongly block every
+  // pre-funding file. extractFields still returns the value (compare type does not
+  // affect extraction), so closing.js `readEncompassFundedDate` + the closing
+  // reconciliation gate (#773) keep working unchanged. loanPath is
+  // closingDocument.fundingDate — verify the tenant populates it on a live funded
+  // loan before the closing gate treats a present value as authoritative.
+  pull({ key: 'funded_date', encompassFieldId: '1401', loanPath: 'closingDocument.fundingDate', type: 'date', category: 'loan', compare: 'reference', gate: GATE.REFERENCE, our: 'column:funded_date', note: 'Funded date — read-only reference; shown for info, never gates the term sheet (empty until funding); the closing reconciliation gate reads the value separately' }),
 
   // ── Experience / rehab-type / accrual (enum + int, advisory) ──────────────
   pull({ key: 'total_experience_deals', encompassFieldId: 'CX.TOTALEXPERIENCEDEALS', type: 'int', category: 'experience', compare: 'int', gate: GATE.ADVISORY, our: 'derive(requested_exp_flips/holds/ground + verified track record)', note: 'Verified experience count used to qualify' }),
@@ -119,7 +126,8 @@ const REGISTRY = Object.freeze([
   pull({ key: 'accrual_type', encompassFieldId: 'CX.ACCRUALTYPE', type: 'enum', category: 'interest', compare: 'enum', gate: GATE.ADVISORY, valueMap: 'accrual', our: 'column:accrual_type', note: 'Accrual basis — advisory; Drawn/Non-Dutch → non_dutch, Note/Dutch → dutch' }),
 
   // ── Reference-only (owner: "reference this with no check with no matching") ─
-  pull({ key: 'ref_pitia', encompassFieldId: 'CX.PITIA', type: 'money', category: 'cost', compare: 'reference', gate: GATE.REFERENCE, our: 'none', note: 'PITIA — reference only' }),
+  // PITIA removed (owner-directed 2026-07-26): the CX.PITIA field was the wrong
+  // Encompass field for our purposes — do NOT reference it in the comparison.
   pull({ key: 'ref_cash_to_close', encompassFieldId: 'CX.RTLCASHTOCLOSEESTIMAT', type: 'money', category: 'cost', compare: 'reference', gate: GATE.REFERENCE, our: 'none', note: 'Estimated cash to close — reference only' }),
   pull({ key: 'ref_down_payment', encompassFieldId: 'CX.RTLDOWNPAYMENT', type: 'money', category: 'cost', compare: 'reference', gate: GATE.REFERENCE, our: 'none', note: 'Down payment — reference only' }),
   pull({ key: 'ref_table_funder', encompassFieldId: 'CX.TABLEFUNDER', type: 'text', category: 'program', compare: 'reference', gate: GATE.REFERENCE, our: 'none', note: 'Table funder flag — reference only (staff-internal)' }),

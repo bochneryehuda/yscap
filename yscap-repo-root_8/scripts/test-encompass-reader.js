@@ -154,6 +154,19 @@ async function main() {
   assert.strictEqual(stored.applications[0].borrower.taxIdentificationIdentifier, undefined, 'borrower SSN scrubbed');
   assert.strictEqual(stored.applications[0].coBorrower.taxIdentificationIdentifier, undefined, 'coBorrower SSN scrubbed');
   assert.strictEqual(stored.applications[0].borrower.firstName, 'Jane', 'non-PII borrower data kept');
+  // The plaintext SSN is replaced by a PII-safe keyed HMAC + last-4 so the
+  // per-file screen can COMPARE the SSN without ever storing the raw number.
+  {
+    const idn = require('../src/clickup/identity');
+    const cfg2 = require('../src/config');
+    assert.strictEqual(stored.applications[0].borrower._ssnHash, idn.ssnHash('111-22-3333', cfg2.ssnMatchKey), 'borrower SSN stored as the keyed HMAC hash');
+    assert.strictEqual(stored.applications[0].borrower._ssnLast4, '3333', 'borrower SSN last-4 stored for masked display');
+    assert.strictEqual(stored.applications[0].coBorrower._ssnHash, idn.ssnHash('444-55-6666', cfg2.ssnMatchKey), 'coBorrower SSN stored as the keyed HMAC hash');
+    assert.strictEqual(stored.applications[0].coBorrower._ssnLast4, '6666', 'coBorrower SSN last-4 stored');
+    const storedStr = JSON.stringify(stored);
+    assert.ok(!storedStr.includes('111-22-3333') && !storedStr.includes('111223333'), 'the raw borrower SSN is never stored (any format)');
+    assert.ok(!storedStr.includes('444-55-6666') && !storedStr.includes('444556666'), 'the raw coBorrower SSN is never stored (any format)');
+  }
 
   // (4) pullLoanForApplication with a cached GUID skips the search.
   mockDb._appRows = [{ id: 'app-2', ys_loan_number: 'YS-888', encompass_loan_guid: 'guid-xyz-456' }];
