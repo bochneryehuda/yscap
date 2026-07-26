@@ -84,6 +84,17 @@ ok('couldn’t-compute: unconfigured stays dormant, configured fails CLOSED (str
     assert.strictEqual(live.block, false, 'can’t-tell-if-configured → dormant, never locks export');
     assert.strictEqual(live.reason, 'not_configured');
     ok('live tapeGate: an integration-module error → dormant (deployment never locked out)');
+
+    // Encompass ON but the reconcile itself errors (DB failure) → FAIL CLOSED, live.
+    // computeFindings uses `dbc || require('../db')`, so a rejecting dbc drives the
+    // whole isClear→computeFindings path into tapeGate's second catch — the real
+    // wiring, not just the pure tapeGateError. Deterministic (never touches a real DB).
+    enc.configured = () => true;
+    const throwingDb = { query: () => Promise.reject(new Error('db boom')) };
+    live = await recon.tapeGate('00000000-0000-0000-0000-000000000000', throwingDb);
+    assert.strictEqual(live.block, true, 'configured + reconcile error → FAIL CLOSED (live)');
+    assert.strictEqual(live.reason, 'error', 'the live fail-closed path reports reason:error');
+    ok('live tapeGate: Encompass on + a DB error → fails CLOSED (can’t confirm the match → block)');
   } finally {
     enc.configured = origConfigured;
   }
