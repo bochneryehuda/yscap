@@ -7,9 +7,12 @@
 const express = require('express');
 const router = require('../lib/safe-router')();
 const db = require('../db');
-const { scrubText } = require('../lib/borrower-safe');
+const { scrubText, scrubTextExcept } = require('../lib/borrower-safe');
+const email = require('../lib/email');                    // Email Center: send staff replies
+const emailLog = require('../lib/email-log');             // Email Center: capture + on-demand body
 const C = require('../lib/crypto');
 const notify = require('../lib/notify');
+const { claimOncePerPeriod } = require('../lib/throttle-claim');
 const changeRequests = require('../lib/change-requests');
 const mail = require('../lib/email/catalog');
 const { fileReplyTo } = require('../lib/file-address');   // #68 per-file shared reply-to
@@ -20,20 +23,30 @@ const storage = require('../lib/storage');
 const { requireAuth, requireRole, issueEmailToken } = require('../auth');
 const pricing = require('../lib/pricing');
 const { persistProductRegistration } = require('../lib/product-registration');
+const manualProgram = require('../lib/manual-program');
+const loanExceptions = require('../lib/loan-exceptions');
+const termOpts = require('../lib/term-options');
+const workflow = require('../lib/workflow');
+const workflowAuto = require('../lib/workflow-automation');
 const { syncExperienceChecklistForApplication, RECENT_EXIT_SQL, EXIT_DATE_SQL } = require('../lib/experience');
 const { enqueueClickupPush, enqueueChecklistStatusPush } = require('../clickup/enqueue');
 const statusMap = require('../clickup/status');
 const llcLib = require('../lib/llc');
 const conditionEngine = require('../lib/conditions/engine');
+const issuanceBackstop = require('../lib/underwriting/issuance-backstop'); // R6.18 (#202) issuance HARD-WARNING backstop
 const conditionRules = require('../lib/conditions/rules');
 const conditionRegistry = require('../lib/conditions/field-registry');
 const { CONDITION_TYPES, TOOLS, CATEGORIES, conditionTypeOf } = require('../lib/conditions/types');
+const { strayConditionReason, strayConditionMessage } = require('../lib/conditions/label-sanity');
 const { raiseEntityIssue } = require('../lib/raise-issue');
 
 const { can } = require('../lib/permissions');
 // Every staff persona reaches the console; per-file scoping + capability gates
 // (below) decide what each can see and do.
-router.use(requireAuth, requireRole('admin', 'loan_officer', 'processor', 'underwriter', 'loan_coordinator', 'software_setup'));
+// draw_coordinator + closer are here so they can reach their OWN personal
+// Workflow queue (/api/staff/workflow) and the files handed to them; every route
+// still applies its own per-route capability / see_all_files / file-scope gate.
+router.use(requireAuth, requireRole('admin', 'loan_officer', 'processor', 'underwriter', 'loan_coordinator', 'draw_coordinator', 'closer', 'software_setup'));
 // Who sees every file vs. only their assigned ones — now a capability, so an
 // admin can grant "see all files" to a coordinator without a code change.
 const seesAll = (req) => can(req.actor, 'see_all_files');
@@ -118,10 +131,22 @@ function intField(v) {
 }
 
 async function audit(req, action, entity_type, entity_id, detail) {
-  await db.query(
-    `INSERT INTO audit_log (actor_kind,actor_id,action,entity_type,entity_id,ip_address,user_agent,detail)
-     VALUES ('staff',$1,$2,$3,$4,$5,$6,$7)`,
-    [req.actor.id, action, entity_type, entity_id || null, req.ip, req.get('user-agent') || null, detail || null]);
+  // `detail` lands in a jsonb column. pg serializes a JS OBJECT to valid JSON, but
+  // a bare scalar (string/number/bool) is handed to jsonb verbatim and rejected
+  // ("invalid input syntax for type json"), which would turn an otherwise-successful
+  // action into a failed request. Wrap any scalar so a logging write can never do that.
+  let d = detail;
+  if (d != null && typeof d !== 'object') d = { note: String(d) };
+  // Best-effort: a logging write must NEVER fail an otherwise-completed action
+  // (esp. after an irreversible DocuSign send/resend/void). Swallow + warn.
+  try {
+    await db.query(
+      `INSERT INTO audit_log (actor_kind,actor_id,action,entity_type,entity_id,ip_address,user_agent,detail)
+       VALUES ('staff',$1,$2,$3,$4,$5,$6,$7)`,
+      [req.actor.id, action, entity_type, entity_id || null, req.ip, req.get('user-agent') || null, d || null]);
+  } catch (e) {
+    console.warn(`[audit] failed to log ${action}: ${db.describeError ? db.describeError(e) : e.message}`);
+  }
 }
 // officers/processors only see their files; admins/super-admins/underwriters see all.
 // PLUS: a staffer may be granted access to specific loan officers' files (their
@@ -137,7 +162,13 @@ const VISIBLE_OFFICERS_SQL = (alias, p) =>
   `(${alias}.loan_officer_id=${p} OR ${alias}.processor_id=${p}` +
   ` OR ${alias}.loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=${p})` +
   ` OR EXISTS (SELECT 1 FROM application_assignees aa` +
-  ` WHERE aa.application_id=${alias}.id AND aa.staff_id=${p} AND aa.removed_at IS NULL))`;
+  ` WHERE aa.application_id=${alias}.id AND aa.staff_id=${p} AND aa.removed_at IS NULL)` +
+  // The Workflow (owner-directed 2026-07-21): a person a file was SUBMITTED to
+  // (an open/in-progress hand-off routed to them) can open + work it — e.g. an
+  // exception sent to a processor/closer who isn't otherwise on the file. Access
+  // ends when they send it back (status leaves open/in_progress).
+  ` OR EXISTS (SELECT 1 FROM workflow_items wi` +
+  ` WHERE wi.application_id=${alias}.id AND wi.to_staff_id=${p} AND wi.status IN ('open','in_progress')))`;
 function scopeClause(req, alias = 'a') {
   if (seesAll(req)) return { where: '', params: [] };
   return { where: `AND ${VISIBLE_OFFICERS_SQL(alias, '$SCOPE')}`, params: [req.actor.id] };
@@ -537,7 +568,18 @@ router.get('/applications', async (req, res) => {
                         b.first_name,b.last_name,b.email,
                         (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id) AS total_items,
                         (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id
-                           AND (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')) AS done_items
+                           AND (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')) AS done_items,
+                        (SELECT count(*)::int FROM ai_suggestions s
+                           WHERE s.application_id=a.id AND s.severity='fatal'
+                             AND s.status IN ('open','marked_important','escalated','asked_admin')) AS open_fatal_ai,
+                        (SELECT EXTRACT(EPOCH FROM (now() - MIN(s.created_at)))/86400 FROM ai_suggestions s
+                           WHERE s.application_id=a.id AND s.severity='fatal'
+                             AND s.status IN ('open','marked_important','escalated','asked_admin')) AS open_fatal_ai_oldest_days,
+                        LEAST(100, COALESCE((SELECT
+                            SUM(CASE severity WHEN 'fatal' THEN 25 WHEN 'warning' THEN 8 WHEN 'info' THEN 2 ELSE 4 END)::int
+                          FROM ai_suggestions s
+                          WHERE s.application_id=a.id
+                            AND s.status IN ('open','marked_important','escalated','asked_admin')),0)) AS ai_risk_score
                  FROM applications a JOIN borrowers b ON b.id=a.borrower_id
                  WHERE ${where.join(' AND ')} ORDER BY ${orderBy}
                  LIMIT ${add(limit)} OFFSET ${add(offset)}`;
@@ -833,8 +875,16 @@ router.post('/applications', async (req, res) => {
       const o = await db.query(`SELECT id,full_name FROM staff_users WHERE id=$1 AND is_active=true`, [b.loanOfficerId]);
       if (o.rows[0]) { officerId = o.rows[0].id; officerName = o.rows[0].full_name; }
     }
-    if (!officerId && req.actor.role === 'loan_officer') {
-      const meRow = await db.query(`SELECT id,full_name FROM staff_users WHERE id=$1`, [req.actor.id]);
+    // Self-assign default (owner-directed 2026-07-20): the staffer OPENING the
+    // file is put on it automatically — they never have to pick, and it never
+    // falls to Lead Capture — as long as they hold an officer-eligible role
+    // (loan_officer / admin / super_admin; those are exactly the roles the
+    // new-file officer dropdown offers). A processor/underwriter creator is not a
+    // valid LO, so they fall through to borrower stickiness / Lead Capture. An
+    // explicit pick above still wins (an admin opening on behalf of an LO just
+    // picks them).
+    if (!officerId && ['loan_officer', 'admin', 'super_admin'].includes(req.actor.role)) {
+      const meRow = await db.query(`SELECT id,full_name FROM staff_users WHERE id=$1 AND is_active=true`, [req.actor.id]);
       if (meRow.rows[0]) { officerId = meRow.rows[0].id; officerName = meRow.rows[0].full_name; }
     }
     // #98 LO stickiness: an admin/processor creating a file for an EXISTING
@@ -857,10 +907,11 @@ router.post('/applications', async (req, res) => {
     }
     // NO automatic processor assignment (owner-directed 2026-07-14): a file's
     // processor is set ONLY by an explicit pick (the dropdown above) or by the
-    // ClickUp Processor Email field mirroring in. The old "a processor who
-    // opens a file is assigned to it" default is exactly how Lisa Katz (role
-    // processor, but the DRAW coordinator) ended up auto-assigned on a file
-    // she merely created — that must never happen.
+    // ClickUp Processor Email field mirroring in (the sync stays bidirectional).
+    // The old "a processor who opens a file is assigned to it" default is exactly
+    // how Lisa Katz (role processor, but the DRAW coordinator) ended up
+    // auto-assigned on a file she merely created — that must never happen. This
+    // create path never sets a default processor; assignment is explicit only.
 
     // Assignment purchases: capture the underlying price + fee (like the
     // borrower path) so leverage/pricing size off seller price + fee and the
@@ -873,6 +924,9 @@ router.post('/applications', async (req, res) => {
     // has ONE definition and can never drift between staff and borrower surfaces.
     const { isAssignment, underlying, assignFee, purchasePrice } =
       require('../lib/fields').assignmentFields(b);
+    // sqft only applies to a square-footage / ground-up rehab — null it otherwise
+    // so a stale value can't force the pricing sqftAddition flag.
+    const sqf = require('../lib/fields').sqftForType(b.rehabType, intField(b.sqftPre) || null, intField(b.sqftPost) || null);
 
     const ins = await db.query(
       `INSERT INTO applications
@@ -885,7 +939,7 @@ router.post('/applications', async (req, res) => {
       [borrowerId, JSON.stringify(addr), b.propertyType || null, b.units || null,
        b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), purchasePrice, b.asIsValue || null,   // #95: never a program
        b.arv || null, b.rehabBudget || null, officerId, officerName,
-       b.rehabType || null, intField(b.sqftPre) || null, intField(b.sqftPost) || null,
+       b.rehabType || null, sqf.sqftPre, sqf.sqftPost,
        intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
        processorId, isAssignment, underlying, assignFee, intField(b.requestedExpReo)]);   // #97: General REO slot
     const appId = ins.rows[0].id;
@@ -899,6 +953,26 @@ router.post('/applications', async (req, res) => {
       console.error('[staff-origination] checklist failed:', db.describeError(e));
       try { await audit(req, 'conditions_generation_failed', 'application', appId, { error: String(e.message || e).slice(0, 300) }); } catch (_) {}
     }
+    // Vesting entity (owner-directed 2026-07-20): persist which LLC the property is
+    // purchased under, straight from the new-file form. A picked llcId owned by
+    // this borrower wins; otherwise a typed entity name is resolved-or-created on
+    // the borrower. All wiring (llc_id + LLC doc checklist + condition + re-eval)
+    // goes through the vesting chokepoint — never a raw UPDATE. Best-effort: a
+    // vesting hiccup never fails the already-created file.
+    try {
+      let vestLlcId = null;
+      if (b.llcId) {
+        const o = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, borrowerId]);
+        if (o.rows[0]) vestLlcId = b.llcId;
+      }
+      if (!vestLlcId && b.entityName && String(b.entityName).trim()) {
+        const nm = String(b.entityName).trim();
+        const ex = await db.query(`SELECT id FROM llcs WHERE borrower_id=$1 AND lower(llc_name)=lower($2) LIMIT 1`, [borrowerId, nm]);
+        vestLlcId = ex.rows[0] ? ex.rows[0].id
+          : (await db.query(`INSERT INTO llcs (borrower_id, llc_name) VALUES ($1,$2) RETURNING id`, [borrowerId, nm])).rows[0].id;
+      }
+      if (vestLlcId) await require('../lib/vesting').setVestingLlc(appId, vestLlcId, { source: 'staff', actor: req.actor.id });
+    } catch (e) { console.error('[staff-origination] vesting failed:', db.describeError(e)); }
     // Optionally add a CO-BORROWER right at creation (#98) — same identity-graph
     // linking as adding one later. A bad co-borrower payload must not fail the
     // whole file (it's already created); surface it as a soft warning instead.
@@ -934,7 +1008,7 @@ router.post('/applications', async (req, res) => {
       ok: true, applicationId: appId, ysLoanNumber: ins.rows[0].ys_loan_number,
       borrowerId, borrowerCreated: br.rows[0].created, invited,
       coBorrowerId, coBorrowerWarning: coBorrowerWarning || undefined });
-  } catch (e) { res.status(500).json({ error: db.describeError(e) }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Invite the file's borrower to the portal (they need not have signed up yet).
@@ -1097,19 +1171,37 @@ router.get('/applications/:id', async (req, res) => {
             pr.program AS registered_program, pr.product_label AS registered_product_label,
             pr.status AS registered_product_status, pr.note_rate AS registered_note_rate,
             pr.total_loan AS registered_total_loan, pr.quote AS registered_quote,
+            pr.stale AS registered_stale, pr.stale_reason AS registered_stale_reason,
             pr.created_at AS registered_at
      FROM applications a JOIN borrowers b ON b.id=a.borrower_id
      LEFT JOIN llcs l ON l.id=a.llc_id
      LEFT JOIN borrowers cb ON cb.id=a.co_borrower_id
      LEFT JOIN LATERAL (
-       SELECT program, product_label, status, note_rate, total_loan, quote, created_at
+       SELECT program, product_label, status, note_rate, total_loan, quote, stale, stale_reason, created_at
          FROM product_registrations
         WHERE application_id=a.id AND is_current
         ORDER BY created_at DESC LIMIT 1
      ) pr ON true
      WHERE a.id=$1`, [req.params.id]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
-  res.json(r.rows[0]);
+  const fileRow = r.rows[0];
+  // Flag the overview when the CURRENT registration is stale — the leverage %/loan
+  // amount on the snapshot are "as last registered" until a re-price, so they must
+  // not read as live numbers next to freshly-edited economics (audit 2026-07-19).
+  // Use the authoritative, trigger-maintained flag: product_registrations.stale is
+  // set true by db/096+126 whenever ANY pricing input on the file changes after it
+  // was registered (ARV/rehab/purchase/term/program/rehab-type/sq-ft/co-borrower/
+  // FICO/assignment/…), and cleared on re-register — so this covers every driver and
+  // avoids fetching the registered inputs (which carry the internal per-file markup).
+  // (The raw applications.file_markup_* columns still ride a.* here as before; keeping
+  // those off non-admin staff clients is a separate pre-existing follow-up.)
+  fileRow.pricing_stale = !!(fileRow.registered_quote && fileRow.registered_stale);
+  // The plain-language "why you must re-register" (which number changed, old → new).
+  // Only meaningful when the registration is actually stale.
+  fileRow.pricing_stale_reason = fileRow.pricing_stale ? (fileRow.registered_stale_reason || null) : null;
+  delete fileRow.registered_stale;
+  delete fileRow.registered_stale_reason;
+  res.json(fileRow);
 });
 
 // Resolve-or-create a co-borrower from an identity payload and bind it to a
@@ -1140,6 +1232,15 @@ async function attachCoBorrowerToApp(appId, primaryBorrowerId, b) {
       if (m.rows[0]) coId = m.rows[0].id;
     }
     if (!coId) {
+      // N-2 (round-2): never silently adopt a DIFFERENT existing borrower who
+      // shares this email (family emails are common) — that would grant them
+      // access to this file's PII. If the email is on record under a conflicting
+      // name, stop and make staff resolve it (same guard the primary paths use).
+      const conflict = await emailAdoptionConflict(email, first, last);
+      if (conflict) {
+        const e = new Error(`That email is already on file for a different borrower (${(conflict.first_name || '').trim()} ${(conflict.last_name || '').trim()}). Use a different email or resolve the match first.`);
+        e.status = 409; throw e;
+      }
       const ins = await db.query(
         `INSERT INTO borrowers (first_name,last_name,email,cell_phone,date_of_birth,ssn_encrypted,ssn_last4,ssn_hash,origin)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'co_borrower')
@@ -1191,6 +1292,10 @@ router.post('/applications/:id/co-borrower', async (req, res) => {
     if (b.unlink === true) {
       await db.query(`UPDATE applications SET co_borrower_id=NULL, updated_at=now() WHERE id=$1`, [appId]);
       try { await require('../lib/co-borrower').ensureCoBorrowerIdCondition(appId, null); } catch (_) {}
+      // Drop a split-out co-borrower CREDIT condition so a required condition for a
+      // borrower no longer on the file can't block sign-off (kept only if a report
+      // was already imported on it — that's real history).
+      try { if (app.co_borrower_id) await require('../lib/credit/co-condition').removeCoBorrowerCreditCondition(appId, app.co_borrower_id); } catch (_) {}
       // Also drop the co-borrower's ownership link on the file's vesting LLC (#81).
       try { if (app.llc_id && app.co_borrower_id) await require('../lib/llc-borrowers').unlinkBorrower(app.llc_id, app.co_borrower_id); } catch (_) {}
       await audit(req, 'unlink_co_borrower', 'application', appId, {});
@@ -1210,7 +1315,8 @@ router.post('/applications/:id/co-borrower', async (req, res) => {
     res.json({ ok: true, coBorrowerId: coId });
   } catch (e) {
     if (e.status) return res.status(e.status).json({ error: e.message });
-    res.status(500).json({ error: 'server error', detail: e.message });
+    console.warn('[staff] handler error:', db.describeError(e));
+    res.status(500).json({ error: 'server error' });
   }
 });
 
@@ -1255,7 +1361,7 @@ router.post('/applications/:id/co-borrower-fields', async (req, res) => {
     await audit(req, 'complete_co_borrower_fields', 'application', req.params.id,
       { fields: sets.filter((s) => !s.startsWith('updated_at')).map((s) => s.split('=')[0]), coBorrowerId: coId });
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // #81 — the subject vesting LLC's borrower-owners and each one's ownership %.
@@ -1290,7 +1396,7 @@ router.post('/applications/:id/vesting-llc-owners', async (req, res) => {
     }
     await audit(req, 'set_vesting_llc_owners', 'application', req.params.id, { count: owners.length });
     res.json({ ok: true, owners: await lb.getOwners(a.llc_id) });
-  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // The entities that are VERIFIABLE from inside this file — NOT the borrower's
@@ -1351,7 +1457,7 @@ router.get('/applications/:id/verify-llcs', async (req, res) => {
     // Vesting entity first, then the rest by name for a stable order.
     out.sort((a2, b2) => (b2.vesting - a2.vesting) || String(a2.llc_name || '').localeCompare(String(b2.llc_name || '')));
     res.json({ vestingLlcId: app.llc_id || null, llcs: out });
-  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Set (or change) the file's vesting entity — staff parity with the borrower's
@@ -1382,7 +1488,7 @@ router.post('/applications/:id/vesting-llc', async (req, res) => {
     try { await require('../lib/vesting').setVestingLlc(req.params.id, b.llcId, { source: 'staff', actor: req.actor, force: true }); } catch (_) {}
     await audit(req, 'link_llc', 'application', req.params.id, { llcId: b.llcId, previous });
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 /* ---------------- Product registration / term sheet ----------------
@@ -1502,7 +1608,7 @@ router.post('/applications/:id/pricing/quote', async (req, res) => {
       return res.status(403).json({ error: 'Manual rate/leverage and experience overrides need an admin — clear the admin pricing fields to quote as your role.' });
     const out = pricing.quoteAll(f.app, f.exp, overrides);
     res.json({ ...out, experience: f.exp });
-  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Current registered product + history, plus a fresh default quote for the panel.
@@ -1512,17 +1618,32 @@ router.get('/applications/:id/pricing', async (req, res) => {
     if (!f) return res.status(404).json({ error: 'not found' });
     const hist = await db.query(
       `SELECT r.id, r.program, r.product_label, r.status, r.note_rate, r.total_loan, r.target_ltc,
-              r.is_current, r.created_at, r.inputs, r.quote, s.full_name AS registered_by_name
+              r.is_current, r.created_at, r.inputs, r.quote, r.is_manual, r.asset_months, r.term_options, s.full_name AS registered_by_name
          FROM product_registrations r LEFT JOIN staff_users s ON s.id=r.registered_by
         WHERE r.application_id=$1 ORDER BY r.created_at DESC`, [req.params.id]);
     const current = hist.rows.find((x) => x.is_current) || null;
     let quote = null;
     if (pricing.enginesReady()) { try { quote = pricing.quoteAll(f.app, f.exp); quote.experience = f.exp; } catch (_) {} }
+    // Manual-product state: the current escalation (pending / decided) + the
+    // company default liquidity months so the studio can prefill the asset-months
+    // field it must collect before registering a manual product.
+    let manualEscalation = null, manualDefaults = null;
+    try { manualEscalation = await manualProgram.pendingForApp(req.params.id); } catch (_) {}
+    if (!manualEscalation) {
+      try {
+        const d = await db.query(
+          `SELECT status, asset_months, decided_at, decision_note FROM manual_program_escalations
+            WHERE application_id=$1 ORDER BY created_at DESC LIMIT 1`, [req.params.id]);
+        manualEscalation = d.rows[0] || null;
+      } catch (_) {}
+    }
+    try { const ms = await manualProgram.loadSettings(); manualDefaults = { assetMonths: ms.assetMonths, isActive: ms.isActive, maxAcqLtv: ms.maxAcqLtv, maxArvLtv: ms.maxArvLtv, maxLtc: ms.maxLtc }; } catch (_) {}
     // The studio echoes econVersion back on register; a mismatch means the
     // file's economics moved underneath the open sheet (409, never a silent
     // stale re-register).
-    res.json({ current, history: hist.rows, quote, enginesReady: pricing.enginesReady(), econVersion: pricing.econVersionFor(f.app) });
-  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+    res.json({ current, history: hist.rows, quote, enginesReady: pricing.enginesReady(),
+      econVersion: pricing.econVersionFor(f.app), manualEscalation, manualDefaults });
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Register a product: recompute authoritatively, persist as the current terms,
@@ -1538,10 +1659,10 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
   };
   try {
     if (!pricing.enginesReady()) return res.status(503).json({ error: 'pricing engines unavailable', detail: pricing.loadErr() });
-    const locked = await require('../lib/file-lock').structuralLockReason(appId);   // #84
+    const locked = await require('../lib/file-lock').structuralLockReason(appId, db, { actor: req.actor });   // #84
     if (locked) return refuse(409, { error: locked }, 'structural_lock');
     const b = req.body || {};
-    const program = b.program === 'gold' ? 'gold' : 'standard';
+    const requestedProgram = b.program === 'gold' ? 'gold' : 'standard';
     const f = await loadFileForPricing(appId);
     if (!f) return res.status(404).json({ error: 'not found' });
 
@@ -1565,7 +1686,53 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const { overrides, strippedAdminKeys } = sanitizeOverrides(req, b.overrides || {});
     if (strippedAdminKeys)
       return refuse(403, { error: 'Manual rate/leverage and experience overrides need an admin — ask an admin to register these terms, or clear the admin pricing fields and re-register.' }, 'admin_override_stripped');
+    // MANUAL PRODUCT: a structural override of the deal leverage (acquisition LTV /
+    // after-repair LTV / loan-to-cost) is NOT a Standard/Gold registration — it
+    // becomes its own "Manual Program" (priced on the Standard/Fidelis engine),
+    // needs the registrant to state how many months of liquidity the file must
+    // show, and goes to the super-admin escalation box. A markup/points/fee/rate
+    // override alone is manual PRICING, not a manual product, and keeps the
+    // requested program. (Structural override keys are already admin-only via
+    // sanitizeOverrides, so only an admin/super-admin ever reaches manual here.)
+    const program = manualProgram.resolveProgram(requestedProgram, overrides);
+    const isManual = program === 'manual';
+    let assetMonths = null;
+    if (isManual) {
+      const settings = await manualProgram.loadSettings();
+      const raw = b.assetMonths != null && b.assetMonths !== '' ? Number(b.assetMonths) : NaN;
+      assetMonths = Number.isFinite(raw) ? Math.round(raw) : NaN;
+      if (!Number.isFinite(assetMonths) || assetMonths < 1 || assetMonths > 24) {
+        return refuse(422, {
+          error: 'This is a manual product (you changed the LTV, LTC or ARV structure). Enter how many months of assets/liquidity this file must show before registering it.',
+          code: 'manual_asset_months_required',
+          suggestedAssetMonths: settings.assetMonths,
+        }, 'manual_asset_months_required', { program });
+      }
+    }
     const inputs = pricing.buildInputs(f.app, f.exp, overrides);
+    // Term-sheet options (owner-directed 2026-07-22) — DISPLAY / record only, never
+    // engine math. The min-interest default follows the resolved program (manual
+    // ON, Standard/Gold OFF) unless the admin explicitly set it; the key dates are
+    // derived from the estimated closing date + the priced term.
+    const rawTermOptions = (b.termOptions && typeof b.termOptions === 'object') ? b.termOptions : {};
+    // Derive the key dates from the effective closing date — the one the studio
+    // sent, else the one already on the file — so a re-register that doesn't
+    // re-enter the date never WIPES it, and the dates re-derive when the term moves.
+    const closingForDates = rawTermOptions.estClosingDate || f.app.est_closing_date || f.app.expected_closing || null;
+    const kd = termOpts.keyDates(closingForDates, inputs.term);
+    const resolvedTermOptions = {
+      accrualType: termOpts.resolveAccrual(rawTermOptions.accrualType),
+      minInterestEnabled: termOpts.resolveMinInterest(program, rawTermOptions.minInterestEnabled),
+      deferredOrigPct: termOpts.resolveDeferredOrigPct(rawTermOptions.deferredOrigPct),
+      estClosing: kd.estClosing, firstPayment: kd.firstPayment, maturity: kd.maturity,
+      // The co-borrower guaranty waiver is a super-admin-APPROVED file flag, never a
+      // studio input — snapshot the file's REAL value (ignore any client-sent value).
+      coBorrowerPgWaived: !!f.app.co_borrower_pg_waived,
+    };
+    // A manual product overrides the guidelines by design — always force-price it
+    // so a leverage override that lands "ineligible" against the Standard caps is
+    // sized/registered as MANUAL (with the escalation), never bounced.
+    if (isManual) inputs.forcePrice = true;
     // S3-06: this endpoint writes arv back onto the file and sizes the loan off
     // both the arv and the as-is value, so a raised arv/as-is OVERRIDE here is the
     // same higher-leverage raise the /details + /complete-fields gates forbid. On a
@@ -1585,12 +1752,45 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const quote = pricing.quoteProgram(program, inputs);
     // Gold Standard renovation cannot finance an interest reserve — never persist a
     // requested reserve on the registered scenario for that program.
-    if (program === 'gold' && quote.kind === 'reno') inputs.irMonths = 0;
+    // Gold renovation finances NO interest reserve — zero BOTH request forms so a
+    // leftover amount can't silently finance a reserve if the file later moves to the
+    // Standard program, and the registered scenario never carries a phantom request
+    // (audit findings #14/#34/#40/#49, 2026-07-17).
+    if (program === 'gold' && quote.kind === 'reno') { inputs.irMonths = 0; inputs.irAmount = 0; }
     if (quote.status === 'INELIGIBLE' && !overrides.forcePrice) {
       return refuse(422, { error: 'ineligible', reasons: quote.reasons, quote }, 'ineligible', { program });
     }
     const total = quote.sizing ? quote.sizing.totalLoan : 0;
     if (!(total > 0)) return refuse(422, { error: 'no loan sized', quote }, 'no_loan_sized', { program });
+
+    // Owner-directed 2026-07-21: a MANUAL result is NOT eligible as-is. Every
+    // manual-review scenario — below the $100,000 minimum, over the program
+    // maximum, a FICO waiver, a city/exit/heavy-budget/term exception, anything the
+    // frozen engine flags MANUAL — is a manual-review EXCEPTION that must be (1)
+    // explicitly SUBMITTED as an exception request and (2) APPROVED by a super-admin
+    // before any terms are confirmed. So a plain register of a MANUAL scenario is
+    // BLOCKED here (the studio then offers "Submit exception request"); a Manual
+    // Program (structural LTV/LTC/ARV override) is itself a deliberate exception and
+    // is not blocked — it always escalates below.
+    const submitException = !!b.submitException;
+    const manualReasons = (quote.reasons || [])
+      .filter((r) => r && r.level === 'MANUAL').map((r) => r.msg).filter(Boolean);
+    if (quote.status === 'MANUAL' && !isManual && !submitException) {
+      return refuse(422, {
+        error: 'exception_required',
+        code: 'exception_required',
+        message: `This scenario isn’t eligible as-is on the ${pricing.PROGRAM_LABEL[program]}. It needs a manual-review exception: ${manualReasons.join('; ') || 'a guideline exception'}. Submit an exception request — a super-admin reviews it, and the borrower is not sent terms unless it’s approved.`,
+        reasons: quote.reasons, quote,
+        exceptionRequired: true, manualReasons,
+      }, 'exception_required', { program, manualReasons });
+    }
+
+    // A registration that reaches here as MANUAL (exception submitted) OR a Manual
+    // Program must go through the super-admin escalation box and must NEVER confirm
+    // terms to the borrower until approved. A clean ELIGIBLE Standard/Gold
+    // registration is unaffected (confirms immediately, as before). Shared
+    // definition in manual-program.js.
+    const needsEscalation = manualProgram.needsSuperAdminApproval({ program, status: quote.status });
 
     // The superseded terms, captured before the new row lands — the audit trail
     // (and Activity feed) shows exactly what a reprice changed.
@@ -1601,11 +1801,55 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
 
     const client = await db.getClient();
     let regId;
+    let economicsChanged = true;   // first registration always notifies the borrower
+    let loanAmountChanged = false;   // loan amount moved → auto-clear a signed Heter Iska
     try {
       await client.query('BEGIN');
-      regId = await persistProductRegistration(client, {
+      const reg = await persistProductRegistration(client, {
         appId, program, inputs, quote, registeredByStaffId: req.actor.id,
+        isManual, assetMonths, termOptions: resolvedTermOptions,
       });
+      regId = reg.id;
+      economicsChanged = reg.economicsChanged;
+      loanAmountChanged = reg.loanAmountChanged;
+      // Needs manual review → open a super-admin escalation in the same
+      // transaction. The file registers now, but the product stays "pending
+      // super-admin approval" until the escalation is decided (db/207), and the
+      // borrower is NOT sent confirmed terms until then. Superseding any prior
+      // pending row is handled inside openEscalation. Covers both a Manual Program
+      // (structural override) AND a Standard/Gold registration the engine flagged
+      // MANUAL (below minimum, over maximum, or any other manual-review reason).
+      if (needsEscalation) {
+        // Escalation is REQUIRED — if it can't open, the throw rolls back the
+        // whole registration (never an un-escalated manual-review file).
+        await manualProgram.openEscalation(client, {
+          appId, registrationId: regId, assetMonths,
+          overrides,
+          summary: {
+            kind: isManual ? 'manual_product' : 'manual_review',
+            program, productLabel: quote.productLabel || null,
+            status: quote.status,
+            totalLoan: total, noteRate: quote.noteRate,
+            acqLtvPct: quote.sizing ? quote.sizing.acqLtvPct : null,
+            arvPct: quote.sizing ? quote.sizing.arvPct : null,
+            ltcPct: quote.sizing ? quote.sizing.ltcPct : null,
+            assetMonths,
+            manualReasons,
+            // Owner-directed 2026-07-22: the super-admin approval must state whether
+            // the 3-month minimum earned interest was left on (its default for a
+            // manual product) or turned off, plus the accrual type.
+            minInterest: resolvedTermOptions.minInterestEnabled,
+            minInterestDefault: termOpts.defaultMinInterest(program),
+            accrual: resolvedTermOptions.accrualType,
+          },
+          requestedBy: req.actor.id,
+        });
+      } else {
+        // Re-registered as a clean, auto-eligible product: close any stale pending
+        // escalation so the super-admin box doesn't keep showing an approval for a
+        // file that no longer needs one.
+        await manualProgram.closePendingForApp(client, appId);
+      }
       // #101: STICK an explicit per-file markup override to the file so it re-applies
       // to every future quote — the borrower's self-service pricing can then never
       // reprice below it. Only touch a column the caller explicitly set: a blank/
@@ -1619,9 +1863,38 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         await client.query(`UPDATE applications SET file_markup_gold_pct=$2 WHERE id=$1`, [appId, stickyMk(overrides.markupGoldPct)]);
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK'); throw e; }
+
+    // Vesting LLC on register (owner-directed 2026-07-21): if the staffer typed
+    // an entity name on the Products & Pricing / Term Sheet Studio screen and
+    // the file has no vesting LLC yet, persist the typed name as the subject-
+    // property LLC — resolve-or-create it under this borrower and route through
+    // the vesting chokepoint (llc_id + LLC condition + doc slots + re-eval). A
+    // file that already carries a vesting LLC is untouched (never renamed).
+    // Best-effort: a vesting hiccup never fails the just-committed register.
+    try {
+      const typed = String((b.overrides && b.overrides.entityName) || b.entityName || '').trim();
+      if (typed && !f.app.llc_id) {
+        const borrowerId = f.app.borrower_id;
+        const ex = await db.query(`SELECT id FROM llcs WHERE borrower_id=$1 AND lower(llc_name)=lower($2) LIMIT 1`, [borrowerId, typed]);
+        const vestLlcId = ex.rows[0] ? ex.rows[0].id
+          : (await db.query(`INSERT INTO llcs (borrower_id, llc_name) VALUES ($1,$2) RETURNING id`, [borrowerId, typed])).rows[0].id;
+        if (vestLlcId) await require('../lib/vesting').setVestingLlc(appId, vestLlcId, { source: 'staff', actor: req.actor.id });
+      }
+    } catch (e) { console.error('[staff-register] vesting from studio failed:', db.describeError(e)); }
     finally { client.release(); }
     // Registration rewrites loan amount / rate / program — re-run condition rules.
     try { await conditionEngine.evaluateApplication(appId, { actor: req.actor, reason: 'product_registered' }); } catch (_) {}
+
+    // Loan amount moved → auto-clear a signed Heter Iska (its terms are tied to the
+    // loan amount). The db/280 trigger already reopened the ISKA condition; this
+    // voids the live package + supersedes the signed doc so a fresh one can be sent.
+    if (loanAmountChanged) {
+      try {
+        await require('../lib/esign/iska-autoclear').autoClearIskaOnLoanChange({
+          appId, actorId: req.actor.id, db, docusign: require('../lib/integrations/docusign'),
+        });
+      } catch (e) { console.warn('[staff-register] ISKA auto-clear failed:', db.describeError(e)); }
+    }
 
     await audit(req, 'register_product', 'application', appId,
       { program, status: quote.status, noteRate: quote.noteRate, totalLoan: total, productLabel: quote.productLabel || null,
@@ -1629,7 +1902,51 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         origPct: quote.origPct != null ? quote.origPct : undefined,
         cashToClose: quote.cashToClose != null ? quote.cashToClose : undefined,
         liquidity: (quote.liquidity ?? quote.liquidityRequired) != null ? (quote.liquidity ?? quote.liquidityRequired) : undefined,
-        previous: prev ? { program: prev.program, totalLoan: Number(prev.total_loan), noteRate: Number(prev.note_rate), productLabel: prev.product_label } : undefined });
+        previous: prev ? { program: prev.program, totalLoan: Number(prev.total_loan), noteRate: Number(prev.note_rate), productLabel: prev.product_label } : undefined,
+        isManual, assetMonths: assetMonths != null ? assetMonths : undefined });
+
+    // Needs manual review → tell the admins/super-admins it's waiting in the
+    // escalation box (they alone approve it). Audited separately so the escalation
+    // is diagnosable, and the team notification above already fired for the
+    // register. Covers a Manual Program AND a Standard/Gold MANUAL registration.
+    if (needsEscalation) {
+      try { await audit(req, 'manual_program_escalated', 'application', appId, { kind: isManual ? 'manual_product' : 'manual_review', status: quote.status, assetMonths, totalLoan: total, noteRate: quote.noteRate, manualReasons }); } catch (_) {}
+      try {
+        const dollars = '$' + Math.round(total).toLocaleString('en-US');
+        const productDesc = isManual ? 'Manual Program (custom LTV/LTC/ARV)'
+          : `${pricing.PROGRAM_LABEL[program]} — manual review`;
+        const ectx = await notify.fileContext(appId, [
+          { label: 'Requested product', value: productDesc },
+          { label: 'Loan amount', value: dollars },
+          isManual ? { label: 'Liquidity months stated', value: `${assetMonths} month${assetMonths === 1 ? '' : 's'}` } : null,
+          manualReasons.length ? { label: 'Why manual review', value: manualReasons.join(' · ') } : null,
+        ].filter(Boolean));
+        const why = isManual
+          ? `A Manual Program (custom LTV/LTC/ARV) was registered on ${ectx ? ectx.label : 'a file'} and is waiting for super-admin approval in the Escalations box. Loan amount ${dollars} · ${assetMonths} month${assetMonths === 1 ? '' : 's'} of liquidity required.`
+          : `A ${pricing.PROGRAM_LABEL[program]} registration on ${ectx ? ectx.label : 'a file'} needs manual review (${manualReasons.join('; ') || 'guideline exception'}) and is waiting for super-admin approval in the Escalations box. The borrower is NOT sent terms until it's approved. Loan amount ${dollars}.`;
+        await notify.notifyAdmins({
+          type: 'manual_escalation',
+          title: isManual ? 'Manual product needs approval' : 'Registration needs super-admin approval',
+          body: why,
+          meta: (ectx && ectx.meta) || undefined, applicationId: appId,
+          link: '/internal/escalations', ctaLabel: 'Open the Escalations box',
+        });
+      } catch (_) { /* notification is best-effort */ }
+      // …and raise it DIRECTLY into the super-admin Workflow (with the file link,
+      // the reason, and a pointer to the Escalations box). Best-effort.
+      try {
+        const dollars = '$' + Math.round(total).toLocaleString('en-US');
+        const wfNote = (isManual
+          ? `Manual Program (custom LTV/LTC/ARV) — ${dollars}.`
+          : `${pricing.PROGRAM_LABEL[program]} — manual-review exception: ${manualReasons.join('; ') || 'guideline exception'}. ${dollars}.`)
+          + ' Review the exception and approve/decline it in the Escalations box.';
+        await workflowAuto.onEscalationOpened(appId, { fromStaffId: req.actor.id, note: wfNote });
+      } catch (_) { /* best-effort */ }
+    } else {
+      // Clean, auto-eligible (re-)registration → clear any lingering escalation
+      // hand-off from the super-admin Workflow.
+      workflowAuto.closeEscalationWorkflow(appId, 'Re-registered as eligible').catch(() => {});
+    }
 
     // Registering (or RE-registering) the product REOPENS the "Products & pricing"
     // condition for re-verification: a new registration changes the structure, so
@@ -1649,7 +1966,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // (#59 — writing the priced experience back onto the application and
     // repopulating the track-record condition is handled inside
     // persistProductRegistration above.)
-    try { await require('../lib/liquidity').syncLiquidityCondition(appId, quote); } catch (_) {}
+    try { await require('../lib/liquidity').syncLiquidityCondition(appId, quote, db, isManual ? { program, assetMonths } : {}); } catch (_) {}
     // Gold Standard Program requires a 5% SOW contingency: if the file just
     // registered Gold and the saved Scope of Work doesn't carry it, REOPEN the
     // rehab-budget condition (even if it was already signed off) with a FATAL note.
@@ -1678,44 +1995,430 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       ].filter(Boolean));
       const body = `${pricing.PROGRAM_LABEL[program]} · ${dollars} @ ${pctRate}${quote.status !== 'ELIGIBLE' ? ' (' + quote.status.toLowerCase() + ')' : ''} on ${ctx ? ctx.label : 'the file'} · cash to close ${money2(quote.cashToClose)} · liquidity ${money2(quote.liquidity ?? quote.liquidityRequired)}`;
       await notify.notifyAppStaff(appId, {   // #113: whole team (primary + assistants), minus the actor
-          type: 'product_registered', title: 'Product registered on ' + (row.ys_loan_number || 'a file'),
+          type: 'product_registered', title: 'Product registered',   // file identity (loan# · borrower · property) rides in the subject tag — never in the title (no double loan number)
           body, meta: (ctx && ctx.meta) || undefined, applicationId: appId,
           link: `/internal/app/${appId}`, ctaLabel: 'Open the loan file', exceptStaffId: req.actor.id });
 
-      // #150 — the CLIENT gets their loan-terms email too, branded to (and
-      // From) their assigned loan officer — recurring business stays with the
-      // officer's name, not a faceless company sender. Borrower-safe copy only
-      // (program label + the same terms the borrower portal already shows);
-      // type 'term_sheet' is in the borrower MAJOR-email allowlist (#88).
-      try {
-        let officer = null;
-        if (row.loan_officer_id) {
-          const o = await db.query(`SELECT full_name, title, email, phone, cell, nmls FROM staff_users WHERE id=$1`, [row.loan_officer_id]);
-          if (o.rows[0]) officer = { name: o.rows[0].full_name, title: o.rows[0].title, email: o.rows[0].email, phone: o.rows[0].cell || o.rows[0].phone, nmls: o.rows[0].nmls };
-        }
-        const officerLine = officer
-          ? `${officer.name}${officer.title ? ' · ' + officer.title : ''}${officer.nmls ? ' · NMLS #' + officer.nmls : ''}${officer.phone || officer.email ? ' · ' + [officer.phone, officer.email].filter(Boolean).join(' · ') : ''}`
-          : null;
-        await notify.notifyAppBorrowers(appId, {
-          type: 'term_sheet',
-          title: 'Your updated loan terms are ready',
-          body: `${pricing.PROGRAM_LABEL[program]} · ${dollars} @ ${pctRate} · estimated cash to close ${money2(quote.cashToClose)}. Open your portal to review the full term sheet${officer ? ` — or reach out to ${officer.name} with any questions` : ''}.`,
-          meta: [
-            { label: 'Program', value: pricing.PROGRAM_LABEL[program] },
-            { label: 'Loan amount', value: `${dollars} @ ${pctRate}` },
-            quote.cashToClose != null ? { label: 'Estimated cash to close', value: money2(quote.cashToClose) } : null,
-            officerLine ? { label: 'Your loan officer', value: officerLine } : null,
-          ].filter(Boolean),
-          applicationId: appId,
-          link: `/app/${appId}`, ctaLabel: 'Review your terms',
-          from: officer ? require('../lib/email').fromWithName(officer.name) : null,
-          replyTo: officer ? officer.email : null,
-        });
-      } catch (_) { /* borrower terms email is best-effort */ }
+      // #150 / owner-directed 2026-07-20 — the CLIENT gets the SAME rich,
+      // borrower-safe loan-terms email the team's own notice is built from (full
+      // structure breakdown, not a thin one-liner), branded to (and From) their
+      // assigned loan officer so recurring business stays with the officer's name.
+      // Borrower-safe copy only (program label + the borrower's own deal numbers);
+      // type 'term_sheet' is in the borrower MAJOR-email allowlist (#88), and the
+      // subject line auto-carries the file (loan # · property) via notify.js.
+      // Send the borrower their "terms are ready" email ONLY when (a) a headline
+      // number actually changed (owner-directed 2026-07-20 — an internal
+      // re-register with the SAME numbers must not nudge them again) AND (b) the
+      // registration does NOT need super-admin approval (owner-directed
+      // 2026-07-21 — a manual-review / manual-program registration is confirmed to
+      // the borrower ONLY after a super-admin approves the escalation; see
+      // admin-manual-programs.js). The team's own notice above always fires.
+      if (economicsChanged && !needsEscalation) {
+        try { await require('../lib/terms-notify').sendBorrowerTerms(appId, { quote, total, termMonths: inputs && inputs.term }); }
+        catch (_) { /* borrower terms email is best-effort */ }
+      }
     } catch (_) { /* notification is best-effort */ }
 
-    res.status(201).json({ ok: true, registrationId: regId, quote });
-  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+    res.status(201).json({ ok: true, registrationId: regId, quote, pendingApproval: needsEscalation });
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// Request an EXCEPTION to a guideline that the deal otherwise follows — e.g. to
+// finance MORE of an assignment fee than the 15% cap (a bigger loan), or any
+// other over-guideline ask (owner-directed 2026-07-21; redesigned 2026-07-24).
+// This does NOT change the registered product. It now writes a FIRST-CLASS
+// pricing_exception record into the loan_exceptions register (previously this
+// was a dead-end: a workflow hand-off + a notification and NO reviewable
+// record), AND still raises the escalation into the super-admin Workflow box —
+// both surfaces survive. A super-admin decides the record in the Exceptions
+// box; the GRANT itself remains the existing studio action (the relevant admin
+// override, e.g. the approved effective purchase price, then re-register) —
+// nothing here touches a frozen pricing-engine number.
+router.post('/applications/:id/pricing/request-exception', async (req, res) => {
+  const appId = req.params.id;
+  try {
+    const note = String((req.body && req.body.note) || '').slice(0, 1000).trim();
+    if (!note) return res.status(400).json({ error: 'Describe the exception you’re requesting.' });
+    const already = await loanExceptions.openForApp(appId, 'pricing_exception');
+    if (already) return res.status(409).json({ error: 'A pricing exception is already awaiting super-admin review on this file — add to it in the Exceptions box instead of filing a second one.' });
+
+    // A fresh ask after a denial/withdrawal links back to the prior attempt so
+    // the reviewer sees the chain (industry-standard re-request trail).
+    const prior = loanExceptions.presentExpiry(await loanExceptions.latestForApp(appId, 'pricing_exception'));
+    const reRequestOf = prior && ['denied', 'withdrawn', 'expired'].includes(prior.status) ? prior.id : null;
+
+    const client = await db.getClient();
+    let row;
+    try {
+      await client.query('BEGIN');
+      row = await loanExceptions.requestPricingException(client, {
+        appId,
+        reasonCode: req.body && req.body.reasonCode,
+        reasonNote: note,
+        requestedBy: req.actor.id,
+        compensatingFactors: loanExceptions.sanitizeCompensatingFactors(req.body && req.body.compensatingFactors),
+        reRequestOf,
+      });
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+
+    const ctx = await notify.fileContext(appId);
+    const wfNote = `Exception request: ${note}`;
+    await workflowAuto.onEscalationOpened(appId, { fromStaffId: req.actor.id, note: wfNote });
+    try {
+      await notify.notifyAdmins({
+        type: 'pricing_exception',
+        title: 'Pricing exception needs super-admin review',
+        body: `${req.actor.name || 'A team member'} requested a pricing/guideline exception on ${ctx ? ctx.label : 'a file'}: ${note}`,
+        meta: (ctx && ctx.meta) || undefined, applicationId: appId,
+        link: `/internal/exceptions?app=${appId}`, ctaLabel: 'Open the Exceptions box',
+      });
+    } catch (_) { /* best-effort */ }
+    await audit(req, 'pricing_exception_requested', 'application', appId, { exceptionId: row.id, reasonCode: row.reason_code, note });
+    res.json({ ok: true, exception: row });
+  } catch (e) {
+    // Two staff submitting at once race on the uq_loan_exc_open_per_app partial
+    // index; the loser's INSERT is a unique violation — that's the "already
+    // pending" case, not a server error (same handling as the esign request).
+    if (e && e.code === '23505') return res.status(409).json({ error: 'A pricing exception is already awaiting super-admin review on this file.' });
+    console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
+  }
+});
+
+// ---- Co-borrower GUARANTY WAIVER exception (owner-directed 2026-07-22) ----
+// By default a term sheet is full recourse and BOTH borrowers personally
+// guarantee it. Any staff member may REQUEST that the co-borrower's personal
+// guaranty be waived (they stay a member of the borrowing entity but are not a
+// guarantor); a SUPER-ADMIN approves it in the Exceptions box, which flips
+// applications.co_borrower_pg_waived so the term sheet reflects it. These three
+// routes (state / request / withdraw) are file-scoped; the decide lives in
+// /api/admin/exceptions (super-admin only).
+
+// The file's exception state — the guaranty-waiver card fields (back-compat)
+// PLUS the full per-file exception REGISTER (every type, every status — the
+// "what deviations does this loan carry" answer) and the per-type reason maps.
+router.get('/applications/:id/exceptions', async (req, res) => {
+  const appId = req.params.id;
+  try {
+    const a = (await db.query(
+      `SELECT a.co_borrower_id, a.co_borrower_pg_waived,
+              cb.first_name AS cb_first, cb.last_name AS cb_last
+         FROM applications a
+         LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id
+        WHERE a.id=$1`, [appId])).rows[0] || {};
+    const [latest, register] = await Promise.all([
+      loanExceptions.latestForApp(appId, 'guaranty_waiver'),
+      loanExceptions.registerForApp(appId),
+    ]);
+    const reasonCodesByType = {};
+    for (const t of Object.keys(loanExceptions.EXCEPTION_TYPES)) reasonCodesByType[t] = loanExceptions.reasonCodesFor(t);
+    res.json({
+      hasCoBorrower: !!a.co_borrower_id,
+      coBorrowerName: [a.cb_first, a.cb_last].filter(Boolean).join(' ') || null,
+      coBorrowerPgWaived: !!a.co_borrower_pg_waived,
+      guarantyWaiver: latest || null,
+      reasonCodes: loanExceptions.REASON_CODES,
+      register,
+      reasonCodesByType,
+      typeLabels: Object.fromEntries(Object.entries(loanExceptions.EXCEPTION_TYPES).map(([k, v]) => [k, v.label])),
+      compensatingFactors: loanExceptions.COMPENSATING_FACTORS,
+      pricingReasonCodes: loanExceptions.PRICING_EXCEPTION_REASONS,
+    });
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// Request a co-borrower guaranty waiver.
+router.post('/applications/:id/exceptions/guaranty-waiver', async (req, res) => {
+  const appId = req.params.id;
+  try {
+    const a = (await db.query(
+      `SELECT a.co_borrower_id, a.co_borrower_pg_waived,
+              cb.first_name AS cb_first, cb.last_name AS cb_last
+         FROM applications a
+         LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id
+        WHERE a.id=$1`, [appId])).rows[0];
+    if (!a) return res.status(404).json({ error: 'file not found' });
+    if (!a.co_borrower_id) return res.status(400).json({ error: 'This file has no co-borrower, so there is no co-borrower guaranty to waive.' });
+    if (a.co_borrower_pg_waived) return res.status(409).json({ error: 'The co-borrower’s personal guaranty is already waived on this file.' });
+    const reasonCode = req.body && req.body.reasonCode;
+    const reasonNote = String((req.body && req.body.reasonNote) || '').slice(0, 2000).trim();
+    if (!reasonNote) return res.status(400).json({ error: 'Add a short note explaining why the co-borrower’s guaranty should be waived.' });
+
+    // A fresh ask after a denial links back to the prior attempt (re-request chain).
+    const prior = loanExceptions.presentExpiry(await loanExceptions.latestForApp(appId, 'guaranty_waiver'));
+    const reRequestOf = prior && ['denied', 'withdrawn', 'expired'].includes(prior.status) ? prior.id : null;
+
+    const client = await db.getClient();
+    let row;
+    try {
+      await client.query('BEGIN');
+      row = await loanExceptions.requestGuarantyWaiver(client, {
+        appId, subjectBorrowerId: a.co_borrower_id, reasonCode, reasonNote, requestedBy: req.actor.id,
+        compensatingFactors: loanExceptions.sanitizeCompensatingFactors(req.body && req.body.compensatingFactors),
+        reRequestOf,
+      });
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+
+    const coName = [a.cb_first, a.cb_last].filter(Boolean).join(' ') || 'the co-borrower';
+    try {
+      const ctx = await notify.fileContext(appId);
+      await notify.notifyAdmins({
+        type: 'guaranty_exception',
+        title: 'Guaranty-waiver exception needs super-admin review',
+        body: `${req.actor.name || 'A team member'} requested waiving ${coName}'s personal guaranty on ${ctx ? ctx.label : 'a file'}: ${reasonNote}`,
+        meta: (ctx && ctx.meta) || undefined, applicationId: appId,
+        link: '/internal/exceptions', ctaLabel: 'Open the Exceptions box',
+      });
+    } catch (_) { /* best-effort */ }
+    await audit(req, 'guaranty_exception_requested', 'application', appId, { exceptionId: row.id, reasonCode: row.reason_code });
+    res.json({ ok: true, exception: row });
+  } catch (e) {
+    // Concurrent double-submit races on uq_loan_exc_open_per_app — the loser's
+    // INSERT is a unique violation, i.e. "already pending", not a server error
+    // (same mapping as the esign + pricing request routes).
+    if (e && e.code === '23505') return res.status(409).json({ error: 'A guaranty-waiver request is already awaiting super-admin review on this file.' });
+    console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
+  }
+});
+
+// Withdraw an OPEN exception request — the REQUESTER or an admin/super-admin
+// only (file-scoped). Previously any staffer with file access could withdraw
+// anyone's request; this enforces the stated intent. Works for every type.
+router.post('/applications/:id/exceptions/:eid/withdraw', async (req, res) => {
+  const appId = req.params.id;
+  try {
+    const exc = await loanExceptions.getById(req.params.eid);
+    if (!exc || exc.application_id !== appId) return res.status(404).json({ error: 'That exception was not found on this file.' });
+    if (exc.status !== 'requested') return res.status(409).json({ error: 'That exception is not open, so it can’t be withdrawn.' });
+    const isAdmin = req.actor.role === 'super_admin' || req.actor.role === 'admin';
+    const isRequester = exc.requested_by && exc.requested_by === req.actor.id;
+    if (!isAdmin && !isRequester) {
+      return res.status(403).json({ error: 'Only the person who requested this exception (or an admin) can withdraw it.' });
+    }
+    const row = await loanExceptions.withdrawException(req.params.eid, req.actor.id);
+    if (!row) return res.status(409).json({ error: 'That exception is no longer open.' });
+    const WITHDRAW_ACTION = {
+      guaranty_waiver: 'guaranty_exception_withdrawn',
+      esign_before_ctc: 'esign_before_ctc_exception_withdrawn',
+      pricing_exception: 'pricing_exception_withdrawn',
+    };
+    await audit(req, WITHDRAW_ACTION[exc.exception_type] || 'loan_exception_withdrawn', 'application', appId,
+      { exceptionId: row.id, exceptionType: exc.exception_type });
+    res.json({ ok: true, exception: row });
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// Request a super-admin exception to send the term-sheet package for signature
+// BEFORE the file is ready for clear-to-close (owner-directed 2026-07-23;
+// request-ANYTIME + per-requirement waivers 2026-07-24). The request may be made
+// whenever the package can't send — floor met or NOT — so a system flag stuck in
+// error can never leave the team with no path. The request snapshots the FULL
+// requirements picture (done + outstanding) for the reviewing super-admin, who
+// then picks exactly which outstanding blockers to waive in the Exceptions box;
+// the e-sign send-gate enforces everything not waived. File-scoped; the decide
+// lives in /api/admin/exceptions (super-admin only).
+router.post('/applications/:id/exceptions/esign-before-ctc', async (req, res) => {
+  const appId = req.params.id;
+  try {
+    const esignGate = require('../lib/esign/gate');
+    const a = (await db.query(`SELECT id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0];
+    if (!a) return res.status(404).json({ error: 'file not found' });
+
+    const g = await esignGate.esignSendGate(appId, { db });
+    if (g.ready) return res.status(409).json({ error: 'This file already meets every prerequisite — the package can be sent without an exception.' });
+    // An approval that still covers every outstanding blocker means the package
+    // can already send — nothing to request. An approval that NO LONGER covers
+    // (the picture changed / new blockers) may be superseded by a fresh request.
+    if (g.sendAllowed) return res.status(409).json({ error: 'An approved exception already lets this package send — no new request is needed.' });
+    if (g.exception && g.exception.status === 'requested') return res.status(409).json({ error: 'An exception is already awaiting super-admin review on this file.' });
+
+    const reasonCode = req.body && req.body.reasonCode;
+    const reasonNote = String((req.body && req.body.reasonNote) || '').slice(0, 2000).trim();
+    if (!reasonNote) return res.status(400).json({ error: 'Add a short note explaining why this needs to go out before clear-to-close.' });
+
+    // Snapshot the full ✓/✗ picture the requester was looking at — the reviewing
+    // super-admin sees what was DONE and what was OUTSTANDING at request time.
+    const gateSnapshot = {
+      at: new Date().toISOString(),
+      checks: (g.checks || []).map((c) => ({ code: c.code, label: c.label, ok: c.ok, reason: c.reason || null, tier: c.tier })),
+      outstanding: (g.outstanding || []).map((o) => ({ code: o.code, label: o.label, reason: o.reason || null, tier: o.tier })),
+    };
+
+    // A fresh ask after a denial links back to the prior attempt (re-request chain).
+    const prior = loanExceptions.presentExpiry(await loanExceptions.latestForApp(appId, 'esign_before_ctc'));
+    const reRequestOf = prior && ['denied', 'withdrawn', 'expired'].includes(prior.status) ? prior.id : null;
+
+    const client = await db.getClient();
+    let row;
+    try {
+      await client.query('BEGIN');
+      row = await loanExceptions.requestEsignBeforeCtc(client, {
+        appId, reasonCode, reasonNote, requestedBy: req.actor.id, gateSnapshot,
+        compensatingFactors: loanExceptions.sanitizeCompensatingFactors(req.body && req.body.compensatingFactors),
+        reRequestOf,
+      });
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+
+    try {
+      const ctx = await notify.fileContext(appId);
+      const outList = (g.outstanding || []).map((o) => o.label).join('; ') || 'nothing';
+      await notify.notifyAdmins({
+        type: 'esign_before_ctc_exception',
+        title: 'Send-before-clear-to-close exception needs super-admin review',
+        body: `${req.actor.name || 'A team member'} requested sending the term-sheet package on ${ctx ? ctx.label : 'a file'} before every send requirement is met: ${reasonNote}\n\nStill outstanding right now: ${outList}. In the Exceptions box you can see the full done/outstanding picture and choose exactly which requirements to waive — everything you don't waive still applies.`,
+        meta: (ctx && ctx.meta) || undefined, applicationId: appId,
+        link: '/internal/exceptions', ctaLabel: 'Open the Exceptions box',
+      });
+    } catch (_) { /* best-effort */ }
+    await audit(req, 'esign_before_ctc_exception_requested', 'application', appId,
+      { exceptionId: row.id, reasonCode: row.reason_code, outstanding: (g.outstanding || []).map((o) => o.code) });
+    res.json({ ok: true, exception: row });
+  } catch (e) {
+    // Two staff submitting at once race on the uq_loan_exc_open_per_app partial
+    // index; the loser's INSERT is a unique violation. That's the "already pending"
+    // case, not a server error — report it as such (the supersede+insert keeps the
+    // one-open-per-file invariant either way).
+    if (e && e.code === '23505') return res.status(409).json({ error: 'An exception is already awaiting super-admin review on this file.' });
+    console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
+  }
+});
+
+// Loan officer's ONE-CLICK accept of a super-admin's counter-offer (owner-directed
+// 2026-07-21, Task #6). The counter's numeric terms were AUTHORED by a super-admin
+// on the escalations page (manual_program_escalations.counter_terms). Accepting
+// them re-registers the file at those terms — no need for the LO to retype them.
+// The route runs the same guarded pricing + persist path a normal register uses,
+// then marks the escalation APPROVED (the LO's accept IS the approval) and
+// notifies the super-admin who authored the counter. Because the counter came
+// from a super-admin, the admin-only override keys are already authorized — they
+// bypass sanitizeOverrides which would strip them for a non-admin LO.
+router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
+  const appId = req.params.id;
+  try {
+    if (!pricing.enginesReady()) return res.status(503).json({ error: 'pricing engines unavailable', detail: pricing.loadErr() });
+    // The file's currently OPEN escalation (pending or countered). We only accept
+    // when it's actually a counter — plain pending has nothing to accept.
+    const esc = await manualProgram.pendingForApp(appId);
+    if (!esc) return res.status(409).json({ error: 'No open escalation on this file.' });
+    if (esc.status !== 'countered') return res.status(409).json({ error: 'This escalation is not in counter-offer state — nothing to accept.' });
+    const f = await loadFileForPricing(appId);
+    if (!f) return res.status(404).json({ error: 'not found' });
+
+    // Build overrides: start with the ORIGINAL manual-review overrides (stored
+    // structural keys on the escalation), then overlay the super-admin's counter
+    // terms. counter_terms holds fractions (0.925 = 92.5%) so they feed the engine's
+    // ovr* keys directly.
+    const rawCt = esc.counter_terms || {};
+    const ct = typeof rawCt === 'string' ? JSON.parse(rawCt) : rawCt;
+    const rawOv = esc.overrides || {};
+    const overrides = { ...(typeof rawOv === 'string' ? JSON.parse(rawOv) : rawOv) };
+    if (ct.maxAcqLtv != null) overrides.ovrAcqLTV = Number(ct.maxAcqLtv);
+    if (ct.maxArvLtv != null) overrides.ovrARLTV = Number(ct.maxArvLtv);
+    if (ct.maxLtc    != null) overrides.ovrLTC   = Number(ct.maxLtc);
+    if (ct.noteRate  != null) overrides.ovrRate  = Number(ct.noteRate);
+    if (ct.origPct   != null) {
+      const pctVal = Number(ct.origPct) * 100;
+      overrides.origStdPct = pctVal;
+      overrides.origGoldPct = pctVal;
+    }
+    // Force-price so a scenario ineligible under the standard caps still sizes
+    // and registers as MANUAL (the counter TERMS are the approval — we don't want
+    // an under-cap engine bounce). A super-admin authored these terms, so the
+    // authorization is already in place.
+    overrides.forcePrice = true;
+
+    const inputs = pricing.buildInputs(f.app, f.exp, overrides);
+    inputs.forcePrice = true;
+    const requestedProgram = (esc.summary && esc.summary.program) === 'gold' ? 'gold' : 'standard';
+    const program = manualProgram.resolveProgram(requestedProgram, overrides);
+    const quote = pricing.quoteProgram(program, inputs);
+    const total = Number(quote && quote.totalLoan) || 0;
+
+    // Persist + mark the escalation approved in ONE transaction so an accept
+    // never half-lands (registered without the escalation closing, or vice versa).
+    const client = await db.getClient();
+    let regId;
+    let loanAmountChanged = false;   // loan amount moved → auto-clear a signed Heter Iska
+    try {
+      await client.query('BEGIN');
+      const reg = await persistProductRegistration(client, {
+        appId, program, inputs, quote, registeredByStaffId: req.actor.id,
+        isManual: program === 'manual', assetMonths: esc.asset_months,
+      });
+      regId = reg.id;
+      loanAmountChanged = reg.loanAmountChanged;
+      // The LO's accept IS the approval. Mark THIS row 'approved' (persistProductRegistration
+      // may have opened a NEW escalation for the re-register — that's a separate row and stays
+      // pending only if the new scenario is itself manual-review, which is fine). The status
+      // guard makes the UPDATE strict — a parallel super-admin decide/counter that landed a
+      // millisecond earlier won't get clobbered here.
+      await client.query(
+        `UPDATE manual_program_escalations
+            SET status='approved', decided_by=$2, decided_at=now(),
+                decision_note=COALESCE(decision_note,'Loan officer accepted the counter-offer'),
+                updated_at=now()
+          WHERE id=$1 AND status='countered'`,
+        [esc.id, req.actor.id]);
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK'); throw e; }
+    finally { client.release(); }
+
+    // Post-register rule re-evaluation — the accept-counter path RE-REGISTERS the file with
+    // new economics, so the same downstream re-evaluations the normal /register endpoint runs
+    // (rule-driven conditions like liquidity months, the EMD condition on note-buyer changes,
+    // the Blue Lake 5% SOW contingency) must run here too. Otherwise a countered file lands
+    // with stale conditions. All best-effort (they never break the accept).
+    try { await conditionEngine.evaluateApplication(appId, { actor: req.actor, reason: 'counter_accepted' }); } catch (_) {}
+    try { await require('../lib/liquidity').syncLiquidityCondition(appId, quote, db, program === 'manual' ? { program, assetMonths: esc.asset_months } : {}); } catch (_) {}
+    try { await require('../lib/rehab-budget').enforceGoldSowContingency(appId); } catch (_) {}
+    // Loan amount moved on the re-register → auto-clear a signed Heter Iska.
+    if (loanAmountChanged) {
+      try {
+        await require('../lib/esign/iska-autoclear').autoClearIskaOnLoanChange({
+          appId, actorId: req.actor.id, db, docusign: require('../lib/integrations/docusign'),
+        });
+      } catch (e) { console.warn('[counter-accept] ISKA auto-clear failed:', db.describeError(e)); }
+    }
+    // Push the new economics to ClickUp so the task mirrors the accepted terms.
+    try { require('../clickup/orchestrator').pushApplication(appId).catch(() => {}); } catch (_) {}
+
+    await audit(req, 'manual_program_counter_accepted', 'application', appId,
+      { escalationId: esc.id, registrationId: regId, counterTerms: ct, totalLoan: total });
+
+    // Notify the super-admin who authored the counter — their proposal went through.
+    try {
+      if (esc.countered_by) {
+        const ctx = await notify.fileContext(appId, [{ label: 'Counter-offer', value: 'Accepted by the loan officer' }]);
+        await notify.notifyStaff(esc.countered_by, {
+          type: 'manual_escalation_decided',
+          title: 'Your counter-offer was accepted',
+          body: `The loan officer accepted your counter-offer on ${ctx ? ctx.label : 'the file'} and the file has been re-registered with the countered terms. The borrower will be sent their confirmed terms.`,
+          meta: (ctx && ctx.meta) || undefined, applicationId: appId,
+          link: `/internal/app/${appId}`, ctaLabel: 'Open the loan file',
+        });
+      }
+    } catch (_) { /* best-effort */ }
+
+    // Take the escalation hand-off off the super-admin Workflow (mirrors decide).
+    try { await require('../lib/workflow-automation').closeEscalationWorkflow(appId, 'Counter accepted'); } catch (_) {}
+
+    // Send the borrower their confirmed terms — same email the plain-approval path sends.
+    try {
+      await require('../lib/terms-notify').sendBorrowerTerms(appId, {
+        quote, total, termMonths: inputs && inputs.term,
+      });
+    } catch (_) { /* best-effort */ }
+
+    res.json({ ok: true, registrationId: regId, totalLoan: total });
+  } catch (e) {
+    console.warn('[staff] accept-counter error:', db.describeError(e));
+    res.status(500).json({ error: 'could not accept the counter-offer' });
+  }
 });
 
 // Staff build/adjust a file's rehab budget (scope of work) — for staff-run
@@ -1725,7 +2428,7 @@ router.post('/applications/:id/rehab-budget', async (req, res) => {
   const appId = req.params.id;
   const payload = (req.body && typeof req.body.payload === 'object') ? req.body.payload : null;
   if (!payload) return res.status(400).json({ error: 'payload required' });
-  const locked = await require('../lib/file-lock').structuralLockReason(appId);   // #84
+  const locked = await require('../lib/file-lock').structuralLockReason(appId, db, { actor: req.actor });   // #84
   if (locked) return res.status(409).json({ error: locked });
   try {
     let it = await db.query(`SELECT id FROM checklist_items WHERE application_id=$1 AND tool_key='rehab_budget' LIMIT 1`, [appId]);
@@ -1740,18 +2443,18 @@ router.post('/applications/:id/rehab-budget', async (req, res) => {
     // saves (never refused) and NEVER changes the file's rehab budget (frozen). The
     // exact-match rule is a CONDITION gate only — the condition stays open with a
     // plain-language note until the line items total the budget exactly.
-    const total = Number(payload.total);
-    const chk = await require('../lib/rehab-budget').checkSowBudget(appId, payload);
+    const RBsow = require('../lib/rehab-budget');
+    // toNum (comma/"$"-tolerant) everywhere — the same parser the gate compares
+    // with, so the status flip and the note can never disagree with the check.
+    const total = RBsow.toNum(payload.total);
+    const chk = await RBsow.checkSowBudget(appId, payload);
     const mismatch = chk.ok ? null : { required: chk.required, total, message: chk.message };
-    const goldSow = await require('../lib/rehab-budget').checkGoldSow(appId, payload);
-    const st = (mismatch || !goldSow.ok) ? (isFinite(total) && total > 0 ? 'issue' : null) : 'received';
+    const goldSow = await RBsow.checkGoldSow(appId, payload);
+    const st = (mismatch || !goldSow.ok) ? (total != null && total > 0 ? 'issue' : null) : 'received';
     await db.query(`UPDATE checklist_items SET tool_payload=$2, status=COALESCE($3,status), updated_at=now() WHERE id=$1`, [itemId, JSON.stringify(payload), st]);
-    const rbMoney = require('../lib/rehab-budget').money;
-    const note = mismatch
-      ? `[auto] Scope of Work (line items ${rbMoney(total)}) does not match the file's rehab budget ${rbMoney(mismatch.required)} — this condition stays open for all parties until the first-page construction budget AND the line items each total exactly ${rbMoney(mismatch.required)}.`
-      : (!goldSow.ok
-        ? `[auto] ${require('../lib/rehab-budget').GOLD_CONTINGENCY_MSG}`
-        : `[auto] Scope of Work totals ${rbMoney(total)} and matches the file's rehab budget — ready to clear.`);
+    // The durable note reuses the gate's own cent-precise message (audit
+    // finding 1: this note used to re-round the figures to whole dollars).
+    const note = RBsow.sowAutoNote(mismatch && mismatch.message, goldSow.ok, payload.total);
     try { await db.query(`UPDATE checklist_items SET notes=CASE WHEN notes IS NULL OR notes LIKE '[auto]%' THEN $2 ELSE notes END, updated_at=now() WHERE id=$1`, [itemId, note]); } catch (_) {}
     await audit(req, 'save_rehab_budget', 'application', appId, { total: isFinite(total) ? total : null });
     try { await conditionEngine.evaluateApplication(appId, { actor: req.actor, reason: 'rehab_budget_saved' }); } catch (_) {}
@@ -1793,7 +2496,7 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   if (!it.rows[0]) return res.status(404).json({ error: 'tool task not found' });
   const toolKey = it.rows[0].tool_key;
   if (toolKey === 'rehab_budget') {   // #84 — rehab budget is loan structure, frozen at CTC
-    const locked = await require('../lib/file-lock').structuralLockReason(req.params.id);
+    const locked = await require('../lib/file-lock').structuralLockReason(req.params.id, db, { actor: req.actor });
     if (locked) return res.status(409).json({ error: locked, fatal: true });
   }
   const rawPayload = (req.body && typeof req.body.payload === 'object') ? req.body.payload : { submitted: true };
@@ -1813,22 +2516,19 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   let sowMismatch = null, goldSow = { ok: true };
   if (toolKey === 'rehab_budget') {
     const chk = await require('../lib/rehab-budget').checkSowBudget(req.params.id, payload);
-    if (!chk.ok) sowMismatch = { required: chk.required, total: Number(payload && payload.total), message: chk.message };
+    if (!chk.ok) sowMismatch = { required: chk.required, total: require('../lib/rehab-budget').toNum(payload && payload.total), message: chk.message };
     goldSow = await require('../lib/rehab-budget').checkGoldSow(req.params.id, payload);
   }
-  const rbTotal = Number(payload && payload.total);
-  const toolStatus = (sowMismatch || !goldSow.ok) ? (isFinite(rbTotal) && rbTotal > 0 ? 'issue' : null) : 'received';
+  // toNum (comma/"$"-tolerant) — same parser as the gate (audit finding 6).
+  const rbTotal = require('../lib/rehab-budget').toNum(payload && payload.total);
+  const toolStatus = (sowMismatch || !goldSow.ok) ? (rbTotal != null && rbTotal > 0 ? 'issue' : null) : 'received';
   await db.query(
     `UPDATE checklist_items SET tool_payload=$2, tool_state=COALESCE($3,tool_state), status=COALESCE($4,status), updated_at=now() WHERE id=$1`,
     [req.params.itemId, JSON.stringify(payload),
      payload && typeof payload.state === 'object' ? JSON.stringify(payload.state) : null, toolStatus]);
   if (toolKey === 'rehab_budget') {
-    const rbMoney = require('../lib/rehab-budget').money;
-    const note = sowMismatch
-      ? `[auto] Scope of Work (line items ${rbMoney(rbTotal)}) does not match the file's rehab budget ${rbMoney(sowMismatch.required)} — this condition stays open for all parties until the first-page construction budget AND the line items each total exactly ${rbMoney(sowMismatch.required)}.`
-      : (!goldSow.ok
-        ? `[auto] ${require('../lib/rehab-budget').GOLD_CONTINGENCY_MSG}`
-        : `[auto] Scope of Work totals ${rbMoney(rbTotal)} and matches the file's rehab budget — ready to clear.`);
+    // Durable note = the gate's own cent-precise message (audit finding 1).
+    const note = require('../lib/rehab-budget').sowAutoNote(sowMismatch && sowMismatch.message, goldSow.ok, payload && payload.total);
     try { await db.query(`UPDATE checklist_items SET notes=CASE WHEN notes IS NULL OR notes LIKE '[auto]%' THEN $2 ELSE notes END, updated_at=now() WHERE id=$1`, [req.params.itemId, note]); } catch (_) {}
     try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'rehab_budget_saved' }); } catch (_) {}
   }
@@ -1883,6 +2583,10 @@ router.get('/applications/:id/checklist', async (req, res) => {
             ci.phase, ci.role_scope, ci.hint, ci.is_gate, ci.is_milestone, ci.sort_order,
             ci.due_date, ci.notes, ci.created_by_kind, ci.created_at,
             ci.field_key, ci.category, ci.origin_kind, ci.origin_detail, ci.esign_doc, ci.borrower_label,
+            -- PILOT's advisory overlay (owner-directed 2026-07-24): its "ready / not_ready /
+            -- agree / dispute" verdict + note on this condition, ON TOP of the human status.
+            -- Advisory only — PILOT never signs a condition off (that stays a human action).
+            ci.pilot_advice, ci.pilot_advice_note, ci.pilot_advice_at,
             -- The borrower-facing hint carries an "accept + request another document"
             -- ask ("Still needed: …") — staff must see what was requested, not only
             -- the borrower (#125). Rendered on the staff borrower-conditions panel.
@@ -1909,13 +2613,32 @@ router.get('/applications/:id/checklist', async (req, res) => {
        LEFT JOIN staff_users wv  ON wv.id  = ci.waived_by
       WHERE ci.application_id=$1
       ORDER BY ci.sort_order, ci.created_at`, [req.params.id]);
-  res.json(r.rows);
+  // #191 activation 2 — condition AGING (advisory, additive): each row gains
+  // daysOpen / agingBucket / overdue / overdueBy from the pure ager. The
+  // response stays a bare array (no shape change for the UI); an ager hiccup
+  // degrades to the un-aged rows, never breaks the panel.
+  try {
+    const aged = require('../lib/underwriting/condition-aging').ageConditions(r.rows, { now: new Date() });
+    const byId = new Map((aged.conditions || []).map((c) => [c.id, c]));
+    return res.json(r.rows.map((row) => {
+      const a = byId.get(row.id);
+      return a ? { ...row, daysOpen: a.daysOpen, agingBucket: a.bucket, overdue: a.overdue, overdueBy: a.overdueBy } : row;
+    }));
+  } catch (_) { return res.json(r.rows); }
 });
 
 // add a borrower-facing document request
 router.post('/applications/:id/checklist', async (req, res) => {
   const b = req.body || {};
   if (!b.label) return res.status(400).json({ error: 'label required' });
+  // Stray-value guard (2026-07-22 root cause) — this label is borrower-facing, so
+  // a stray "08759" would read "08759 was added to your conditions" to the borrower.
+  {
+    const stray = strayConditionReason(b.label);
+    if (stray && b.confirmStrayLabel !== true) {
+      return res.status(409).json({ error: strayConditionMessage(stray, b.label), code: 'stray_condition_label', reason: stray, needsConfirm: true });
+    }
+  }
   // This IS a borrower-facing request — the typed label is what the borrower
   // should see, so it doubles as the borrower_label. Without it the borrower
   // portal would show the generic "An item your loan team needs" (#78).
@@ -1925,16 +2648,16 @@ router.post('/applications/:id/checklist', async (req, res) => {
   const r = await db.query(
     `INSERT INTO checklist_items (scope,application_id,label,borrower_label,audience,item_kind,is_required,due_date,created_by_kind,created_by_id)
      VALUES ('application',$1,$2,$3,$4,'document',$5,$6,'staff',$7) RETURNING id`,
-    [req.params.id, b.label, borrowerLabel, audience, b.isRequired !== false, b.dueDate || null, req.actor.id]);
+    [req.params.id, b.label, borrowerLabel, audience, b.isRequired !== false, require('../lib/fields').normalizeTypedDate(b.dueDate), req.actor.id]);  // WO-6 (F-M11): year-0026-proof due date
   const app = await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [req.params.id]);
   // Only tell the borrower when the item is actually borrower-facing, and show
   // them the BORROWER-facing wording (never the internal label). (S2-02)
   if (app.rows[0] && audience !== 'staff') {
     const ctx = await notify.fileContext(req.params.id);
     await notify.notifyBorrower(app.rows[0].borrower_id, {
-      type: 'condition_added', title: 'New document requested on your file',
+      type: 'condition_added', title: 'New document requested on your file', badge: { text: 'Action needed', tone: 'action' },
       body: `"${borrowerLabel || b.label}" was added to your conditions on ${ctx ? ctx.label : 'your file'}.`,
-      meta: (ctx && ctx.meta) || undefined,
+      meta: (ctx && ctx.borrowerMeta) || undefined,
       applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Open your conditions' });
   }
   await audit(req, 'add_checklist_item', 'application', req.params.id, { label: b.label });
@@ -1945,6 +2668,16 @@ router.post('/applications/:id/checklist', async (req, res) => {
 router.post('/applications/:id/conditions', async (req, res) => {
   const b = req.body || {};
   if (!b.label) return res.status(400).json({ error: 'label required' });
+  // Guard against a stray value (a ZIP like "08759", a phone number, "asdf")
+  // being saved as a real internal condition — the 2026-07-22 root cause. A
+  // caller that genuinely means an odd-looking label passes confirmStrayLabel:true
+  // (an inline "add anyway" confirm on the box).
+  {
+    const stray = strayConditionReason(b.label);
+    if (stray && b.confirmStrayLabel !== true) {
+      return res.status(409).json({ error: strayConditionMessage(stray, b.label), code: 'stray_condition_label', reason: stray, needsConfirm: true });
+    }
+  }
   const r = await db.query(
     `INSERT INTO checklist_items (scope,application_id,label,audience,item_kind,is_required,notes,created_by_kind,created_by_id)
      VALUES ('application',$1,$2,$3,'condition',$4,$5,'staff',$6) RETURNING id`,
@@ -1989,6 +2722,11 @@ router.post('/applications/:id/conditions/custom', async (req, res) => {
   if (!type) return res.status(400).json({ error: 'pick a condition type' });
   const label = String(b.label || '').trim();
   if (!label) return res.status(400).json({ error: 'label required' });
+  // Same stray-value guard as the quick add box (2026-07-22 root cause).
+  const strayLabel = strayConditionReason(label);
+  if (strayLabel && b.confirmStrayLabel !== true) {
+    return res.status(409).json({ error: strayConditionMessage(strayLabel, label), code: 'stray_condition_label', reason: strayLabel, needsConfirm: true });
+  }
   const audience = ['borrower', 'staff', 'both'].includes(b.audience) ? b.audience
     : (type === 'internal_task' || type === 'internal_condition' ? 'staff' : 'borrower');
   let toolKey = CONDITION_TYPES[type].toolKey;
@@ -2007,11 +2745,20 @@ router.post('/applications/:id/conditions/custom', async (req, res) => {
   if ((type === 'internal_task' || type === 'internal_condition') && audience !== 'staff') {
     return res.status(400).json({ error: 'internal items must have an internal audience' });
   }
+  // Optionally TAG this condition to a loan exception (owner-directed 2026-07-22) —
+  // the condition still lives on the file's checklist; the tag lets the exception
+  // detail show its conditions + documents. Validate it belongs to THIS file.
+  let loanExceptionId = null;
+  if (b.loanExceptionId) {
+    const le = await db.query(`SELECT 1 FROM loan_exceptions WHERE id=$1 AND application_id=$2`, [b.loanExceptionId, req.params.id]);
+    if (!le.rows[0]) return res.status(400).json({ error: 'that exception is not on this file' });
+    loanExceptionId = b.loanExceptionId;
+  }
   const r = await db.query(
     `INSERT INTO checklist_items
        (scope,application_id,label,borrower_label,hint,borrower_hint,audience,item_kind,tool_key,field_key,
-        esign_doc,category,is_required,due_date,notes,created_by_kind,created_by_id,origin_kind)
-     VALUES ('application',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'staff',$15,'manual_custom')
+        esign_doc,category,is_required,due_date,notes,created_by_kind,created_by_id,origin_kind,loan_exception_id)
+     VALUES ('application',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'staff',$15,$16,$17)
      RETURNING id`,
     [req.params.id, label.slice(0, 300),
      scrubText(String(b.borrowerLabel || '').trim().slice(0, 300)) || null,
@@ -2019,20 +2766,21 @@ router.post('/applications/:id/conditions/custom', async (req, res) => {
      scrubText(String(b.borrowerHint || '').trim().slice(0, 2000)) || null,
      audience, CONDITION_TYPES[type].itemKind, toolKey || null, fieldKey,
      type === 'esign' ? (String(b.esignDoc || '').trim().slice(0, 300) || null) : null,
-     category, b.isRequired !== false, b.dueDate || null,
-     String(b.notes || '').trim().slice(0, 2000) || null, req.actor.id]);
-  await audit(req, 'add_condition_custom', 'application', req.params.id, { label, type, audience });
+     category, b.isRequired !== false, require('../lib/fields').normalizeTypedDate(b.dueDate),  // WO-6 (F-M11): year-0026-proof due date
+     String(b.notes || '').trim().slice(0, 2000) || null, req.actor.id,
+     loanExceptionId ? 'exception' : 'manual_custom', loanExceptionId]);
+  await audit(req, 'add_condition_custom', 'application', req.params.id, { label, type, audience, loanExceptionId });
   if (audience !== 'staff') {
     try {
       const ctx = await notify.fileContext(req.params.id);
       await notify.notifyAppBorrowers(req.params.id, {
-        type: 'condition_added', title: 'A new item was added to your file',
+        type: 'condition_added', title: 'A new item was added to your file', badge: { text: 'Action needed', tone: 'action' },
         // Never interpolate the internal label — it can carry underwriting /
         // capital-partner (note-buyer) context. Borrower wording or a generic line.
         body: b.borrowerLabel
           ? `"${b.borrowerLabel}" was added to your conditions on ${ctx ? ctx.label : 'your file'}.`
           : `A new item was added to your conditions on ${ctx ? ctx.label : 'your file'}.`,
-        meta: (ctx && ctx.meta) || undefined,
+        meta: (ctx && ctx.borrowerMeta) || undefined,
         applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Open your conditions' });
     } catch (_) { /* best-effort */ }
   }
@@ -2060,12 +2808,12 @@ router.post('/applications/:id/conditions/attach', async (req, res) => {
     try {
       const ctx = await notify.fileContext(req.params.id);
       await notify.notifyAppBorrowers(req.params.id, {
-        type: 'condition_added', title: 'A new item was added to your file',
+        type: 'condition_added', title: 'A new item was added to your file', badge: { text: 'Action needed', tone: 'action' },
         // Borrower wording only — never fall back to the internal tpl.label.
         body: tpl.borrower_label
           ? `"${tpl.borrower_label}" was added to your conditions on ${ctx ? ctx.label : 'your file'}.`
           : `A new item was added to your conditions on ${ctx ? ctx.label : 'your file'}.`,
-        meta: (ctx && ctx.meta) || undefined,
+        meta: (ctx && ctx.borrowerMeta) || undefined,
         applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Open your conditions' });
     } catch (_) { /* best-effort */ }
   }
@@ -2115,6 +2863,18 @@ router.patch('/post-closing/:pid', async (req, res) => {
 // document set with a manifest. Staff-only (path middleware already scoped it).
 router.get('/applications/:id/export/tpr', async (req, res) => {
   try {
+    // R6.18 (#181) — issuance backstop on the EXPORT path: don't hand a note-buyer
+    // tape out for a file with a CONFIRMED fatal without a super-admin. Fails OPEN
+    // (no current run → advisory → proceed); a super-admin ALWAYS proceeds (recorded
+    // as an override). Never an un-overridable block; touches no frozen number.
+    const issuance = await issuanceBackstop.backstopForRun(req.params.id, 'term_sheet', db, { actorRole: req.actor.role, overrideReason: req.query && req.query.overrideReason });
+    if (issuance.hardWarning && !issuance.proceed) {
+      return res.status(409).json({ error: 'blocked', action: 'export_tpr', issuance });
+    }
+    if (issuance.override && issuance.override.applied) {
+      await audit(req, 'issuance_override', 'application', req.params.id, { action: 'export_tpr', tier: issuance.tier, reason: issuance.override.reason });
+      await loanExceptions.recordIssuanceOverride({ appId: req.params.id, staffId: req.actor.id, note: `export_tpr: ${issuance.override.reason || 'no reason given'}`, snapshot: { action: 'export_tpr', tier: issuance.tier || null, at: new Date().toISOString() } });
+    }
     const { zip, filename } = await require('../lib/tpr-export').buildTprExport(req.params.id);
     await audit(req, 'export_tpr', 'application', req.params.id, { bytes: zip.length });
     // Owner-directed (2026-07-13): every export is also kept on the file and
@@ -2146,61 +2906,980 @@ router.get('/applications/:id/export/tpr/preview', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
+// ============================ MISMO 3.4 import / export ======================
+// MISMO is the mortgage industry's shared file format. Export turns one of our
+// loan files into a MISMO v3.4 XML document any other system can read; import
+// reads such a file back into a new portal loan file. The heavy lifting lives in
+// src/lib/mismo/ (a dependency-free XML engine + field crosswalk).
+
+// EXPORT — download this loan file as a MISMO 3.4 XML document. Under the
+// /applications/:id path scope, so only assigned staff / see-all can pull it.
+// The file carries PII (incl. SSN, a core MISMO field), so the download is
+// audited exactly like the TPR export.
+router.get('/applications/:id/export/mismo', async (req, res) => {
+  try {
+    // R6.18 (#181) — issuance backstop on the EXPORT path (parity with the TPR
+    // export): a confirmed-fatal file is a super-admin-overridable HARD WARNING
+    // before its loan data leaves in MISMO XML. Fails OPEN on no run; a super-admin
+    // always proceeds (recorded). Never an un-overridable block.
+    const issuance = await issuanceBackstop.backstopForRun(req.params.id, 'term_sheet', db, { actorRole: req.actor.role, overrideReason: req.query && req.query.overrideReason });
+    if (issuance.hardWarning && !issuance.proceed) {
+      return res.status(409).json({ error: 'blocked', action: 'export_mismo', issuance });
+    }
+    if (issuance.override && issuance.override.applied) {
+      await audit(req, 'issuance_override', 'application', req.params.id, { action: 'export_mismo', tier: issuance.tier, reason: issuance.override.reason });
+      await loanExceptions.recordIssuanceOverride({ appId: req.params.id, staffId: req.actor.id, note: `export_mismo: ${issuance.override.reason || 'no reason given'}`, snapshot: { action: 'export_mismo', tier: issuance.tier || null, at: new Date().toISOString() } });
+    }
+    const mismo = require('../lib/mismo');
+    const xml = await mismo.exportApplicationXml(req.params.id);
+    if (!xml) return res.status(404).json({ error: 'application not found' });
+    const row = (await db.query(
+      'SELECT a.ys_loan_number, b.last_name FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1',
+      [req.params.id])).rows[0] || {};
+    const filename = mismo.exportFilename(row.ys_loan_number, row.last_name);
+    await audit(req, 'export_mismo', 'application', req.params.id, { bytes: Buffer.byteLength(xml) });
+    res.set('Content-Type', 'application/xml; charset=utf-8');
+    res.set('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(xml);
+  } catch (e) {
+    console.error('[mismo] export failed:', db.describeError ? db.describeError(e) : e.message);
+    res.status(500).json({ error: 'export failed' });
+  }
+});
+
+// A tiny masker so a PREVIEW never surfaces a full SSN — staff see only the
+// last four, exactly as everywhere else PII is shown before it's stored.
+function maskMismoPreview(parsed) {
+  const clone = JSON.parse(JSON.stringify(parsed || {}));
+  for (const key of ['borrower', 'coBorrower']) {
+    const p = clone[key];
+    if (p && p.ssn) p.ssn = '•••-••-' + String(p.ssn).slice(-4);
+  }
+  return clone;
+}
+
+// IMPORT — PREVIEW. Parse an uploaded MISMO file and return exactly what would be
+// imported. This NEVER writes to the database, so staff always see the contents
+// before a single row is created (the repo's "never silently apply" posture).
+router.post('/mismo/preview', async (req, res) => {
+  const xml = req.body && req.body.xml;
+  if (!xml || typeof xml !== 'string') return res.status(400).json({ error: 'no MISMO XML provided' });
+  try {
+    const parsed = require('../lib/mismo').previewImport(xml);
+    res.json({ ok: true, preview: maskMismoPreview(parsed), warnings: parsed.warnings || [] });
+  } catch (e) {
+    res.status(422).json({ error: e.userMessage || 'this file could not be read as a MISMO 3.4 file' });
+  }
+});
+
+// IMPORT — CREATE. Re-parse the SAME XML server-side (never trust a client-edited
+// object — the SSN and every field are re-read from the file here) and create a
+// new loan file from it. The importing loan officer is assigned to it; anyone
+// else leaves it in Lead Capture.
+router.post('/mismo/create', async (req, res) => {
+  const xml = req.body && req.body.xml;
+  if (!xml || typeof xml !== 'string') return res.status(400).json({ error: 'no MISMO XML provided' });
+  try {
+    const mismo = require('../lib/mismo');
+    const parsed = mismo.previewImport(xml);
+    if (!parsed.borrower) return res.status(422).json({ error: 'this file has no borrower, so a loan file can’t be created from it' });
+    const officerId = req.actor.role === 'loan_officer' ? req.actor.id : null;
+    const { borrowerId, applicationId } = await mismo.createFromParsed(parsed, { officerId });
+    await audit(req, 'import_mismo', 'application', applicationId, { borrowerId, warnings: (parsed.warnings || []).length });
+    res.status(201).json({ ok: true, applicationId, borrowerId, warnings: parsed.warnings || [] });
+  } catch (e) {
+    console.error('[mismo] import create failed:', db.describeError ? db.describeError(e) : e.message);
+    res.status(500).json({ error: e.userMessage || 'could not create a file from this MISMO import' });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// CREDIT REPORT — Xactus import (owner-directed 2026-07-22). The internal Credit
+// report condition (rtl_cond_credit) gets an "Import credit" button that opens a
+// review screen (the borrower info that will be sent + soft/hard, reissue/new,
+// always tri-merge, interface v3.4) and then pulls/reissues via ONE shared
+// company login — files the PDF + the source XML on the condition, parses the
+// XML into a full credit-details section, and writes the middle score back to
+// the borrower (FICO → Products & Pricing via the db/126 trigger). These sit
+// under the /applications/:id path scope, so file authorization is automatic.
+// ════════════════════════════════════════════════════════════════════════════
+
+// The stored credit-details section for a file (latest report + history).
+// `canImport` reflects the REAL server gate (sign_off_conditions — includes
+// closers + per-person capability grants) so the button matches the API exactly.
+router.get('/applications/:id/credit', async (req, res) => {
+  try {
+    const out = await require('../lib/credit').fileCredit(req.params.id);
+    out.canImport = can(req.actor, 'sign_off_conditions');
+    res.json(out);
+  } catch (e) { res.status(e.status || 500).json({ error: e.userMessage || 'server error' }); }
+});
+
+// The review screen data: exactly what will be sent + the defaults + provider readiness.
+router.get('/applications/:id/credit/preview', async (req, res) => {
+  try { res.json(await require('../lib/credit').preview(req.params.id)); }
+  catch (e) { res.status(e.status || 500).json({ error: e.userMessage || 'server error' }); }
+});
+
+// Pull / reissue (or import a downloaded XML+PDF). Gated on sign_off_conditions:
+// pulling a live credit report is a regulated, billable action (processor /
+// underwriter / admin). Every field is re-read server-side — the client is never trusted.
+router.post('/applications/:id/credit/import', async (req, res) => {
+  if (!can(req.actor, 'sign_off_conditions')) return res.status(403).json({ error: 'You don’t have permission to pull credit on this file.' });
+  const b = req.body || {};
+  try {
+    const out = await require('../lib/credit').importCredit(req.params.id, {
+      pullType: b.pullType, requestType: b.requestType,   // version is server-frozen (ignored if sent)
+      reissueReportId: typeof b.reissueReportId === 'string' ? b.reissueReportId : undefined,
+      xml: typeof b.xml === 'string' ? b.xml : undefined,
+      pdfBase64: typeof b.pdfBase64 === 'string' ? b.pdfBase64 : undefined,
+      // Which borrower(s) to pull. Default (absent) = every borrower on the file
+      // in one action; a subset drops one from this pull (and opens their own
+      // credit condition). `borrowerId` targets a single borrower for an upload.
+      borrowerIds: Array.isArray(b.borrowerIds) ? b.borrowerIds.filter((x) => typeof x === 'string') : undefined,
+      borrowerId: typeof b.borrowerId === 'string' ? b.borrowerId : undefined,
+      consent: b.consent === true,
+      actorId: req.actor.id,
+    });
+    await audit(req, 'credit_import', 'application', req.params.id, {
+      source: out.source, pullType: out.pullType, requestType: out.requestType,
+      consentAttested: out.consentAttested, middleScore: out.middleScore, ficoWritten: out.ficoWritten,
+      ficoMismatch: out.ficoMismatch, ficoUnverified: out.ficoUnverified || undefined,
+      bureaus: out.bureausReturned, parseError: out.parseError || undefined,
+      pulled: out.pulled, coConditionOpened: out.coConditionOpened || undefined,
+      borrowers: Array.isArray(out.results)
+        ? out.results.map((r) => ({ role: r.role, ok: r.ok !== false, middleScore: r.middleScore, error: r.error || undefined }))
+        : undefined,
+    });
+    res.json(out);
+  } catch (e) {
+    console.error('[credit] import failed:', db.describeError ? db.describeError(e) : (e && e.message));
+    res.status(e.status || 422).json({ error: e.userMessage || 'Could not import the credit report.' });
+  }
+});
+
 // Full file activity feed (staff sees everything, including internal).
 router.get('/applications/:id/activity', async (req, res) => {
   try { res.json(await require('../lib/activity').fileActivity(req.params.id, false)); }
   catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
-// #80 — per-file EMAIL NOTIFICATION MONITOR. Every notification we wrote for this
-// file (to any party — the borrower, co-borrower, and each assigned staffer) with
-// its EMAIL delivery status, so the team can see at a glance exactly what has been
-// sent, to whom, and whether the email actually went out (sent / in-app only /
-// error). Reads the notifications table we already fan out through; scoped to
-// anyone who can touch the file. Inbound REPLIES (#68) are interleaved as
-// direction:'inbound' rows so the monitor shows both sides of the thread.
+// ════════════════════════════════════════════════════════════════════════════
+// EMAIL CENTER (owner-directed 2026-07-20) — a Gmail/Outlook-style history on
+// every file: every email that went out (to the borrower, co-borrower, each
+// assigned staffer, external partners) with its FULL designed body, exactly whom
+// it reached and when, the delivery status (so a failed send can be troubleshot),
+// the inbound replies WITH their body, and a reply box. Reads the email_messages
+// store (db/185) which src/lib/email-log.js captures every send + reply into; the
+// prior history is backdated in by the boot backfill. Staff-only, file-scoped.
+// ════════════════════════════════════════════════════════════════════════════
+
+// Shape one email_messages row for the client (used by the file view + mailbox).
+function emailRowShape(r) {
+  return {
+    id: r.id,
+    direction: r.direction,
+    type: r.msg_type,
+    category: r.category,
+    subject: r.subject || '(no subject)',
+    preview: r.preview || '',
+    from_email: r.from_email,
+    from_name: r.from_name,
+    to: Array.isArray(r.to_emails) ? r.to_emails : [],
+    cc: Array.isArray(r.cc_emails) ? r.cc_emails : [],
+    reply_to: r.reply_to,
+    recipient_kind: r.recipient_kind,
+    recipient_name: r.recipient_name || null,
+    audience: r.audience,
+    status: r.status,
+    error: r.error,
+    attachments: Array.isArray(r.attachments) ? r.attachments : [],
+    meta: r.meta || null,
+    reconstructed: r.reconstructed,
+    has_body: r.has_body,
+    thread_key: r.thread_key,
+    occurred_at: r.occurred_at,
+    // file identity (present on the global mailbox rows)
+    application_id: r.application_id || null,
+    loan_no: r.ys_loan_number || null,
+    file_label: r.file_label || null,
+    // every recipient this exact email reached (filled by consolidateEmailRows)
+    recipients: r.recipients || null,
+    recipient_count: r.recipient_count || null,
+    // open tracking (whether/when this recipient opened it)
+    opened_at: r.opened_at || null,
+    open_count: r.open_count || 0,
+  };
+}
+
+// Recipients of a single row → [{email,name,kind,status}]. A notify fan-out
+// writes one row per recipient, so this is usually one entry; consolidation
+// merges the whole fan-out below.
+function recipientsOfRow(r) {
+  const to = Array.isArray(r.to_emails) ? r.to_emails : [];
+  if (!to.length) return r.recipient_name ? [{ email: null, name: r.recipient_name, kind: r.recipient_kind, status: r.status, opened_at: r.opened_at || null }] : [];
+  return to.map((t, i) => ({
+    email: t.email || null,
+    name: (i === 0 ? r.recipient_name : null) || t.name || null,
+    kind: r.recipient_kind || null,
+    status: r.status,
+    opened_at: r.opened_at || null,
+  }));
+}
+const _STATUS_RANK = { error: 3, no_recipients: 3, failed_permanent: 3, skipped: 2, received: 1, forwarded: 1, sent: 1 };
+const worseStatus = (a, b) => ((_STATUS_RANK[b] || 0) > (_STATUS_RANK[a] || 0) ? b : a);
+
+// Consolidate a notify FAN-OUT (the same email sent to many people as one row
+// each) into ONE message that lists everyone it reached with each recipient's
+// delivery status — so opening it reads like a real email ("To: A, B, C"), not
+// N near-identical rows. Rows are grouped by file+thread+type+audience+subject
+// within the same minute (a single fan-out). Inbound replies never consolidate.
+function consolidateEmailRows(rows) {
+  const groups = new Map();
+  const out = [];
+  for (const r of rows) {
+    const shaped = emailRowShape(r);
+    if (r.direction !== 'outbound') { shaped.recipients = recipientsOfRow(r); shaped.recipient_count = shaped.recipients.length; out.push(shaped); continue; }
+    const minute = r.occurred_at ? new Date(r.occurred_at).toISOString().slice(0, 16) : '';
+    const key = [r.thread_key || '', r.msg_type || '', r.audience || '', r.subject || '', minute].join('|');
+    let g = groups.get(key);
+    if (!g) { g = shaped; g.recipients = []; groups.set(key, g); out.push(g); }
+    g.recipients.push(...recipientsOfRow(r));
+    // prefer a representative row that actually stored a body, so opening it shows
+    // the full designed email (a fan-out stores an identical body on each row).
+    if (r.has_body && !g.has_body) { g.id = r.id; g.has_body = true; }
+    g.status = worseStatus(g.status, r.status);
+    if (r.error && !g.error) g.error = r.error;
+    if (new Date(r.occurred_at) > new Date(g.occurred_at)) g.occurred_at = r.occurred_at;
+  }
+  for (const g of out) {
+    if (Array.isArray(g.recipients)) {
+      // de-dupe recipients on email, cap for display
+      const seen = new Set();
+      g.recipients = g.recipients.filter((x) => { const k = x.email || x.name; if (!k || seen.has(k)) return false; seen.add(k); return true; }).slice(0, 60);
+      g.recipient_count = g.recipients.length;
+      g.to = g.recipients.map((x) => ({ email: x.email, name: x.name }));
+    }
+  }
+  return out;
+}
+
+// The DRAW email center folds in two sources beyond PILOT's own emails so the coordinator sees
+// EVERYTHING that happened on the draws in one place (owner-directed 2026-07-20): (1) the DocuSign
+// "Draw Request & Wire Instructions" form's send/sign lifecycle, and (2) Sitewire's OWN activity events
+// (inspector assigned, inspection completed, borrower submitted, lender approved). Sitewire's API does
+// NOT expose the actual emails it sends (to the inspector/borrower) — only lifecycle EVENTS with an
+// actor + timestamp — so those render as clearly-labeled "From Sitewire" activity rows (the fullest
+// their system allows). Returns rows already in the frontend email-row shape, tagged kind:'event'.
+const SW_DRAW_EVENT = {
+  created: 'Borrower started a draw request',
+  submit: 'Borrower submitted a draw request',
+  delegate_submit: 'A draw request was submitted',
+  inspector_assigned: 'An inspector was assigned',
+  inspector_approve: 'The inspection was completed',
+  lender_approve: 'The draw was approved',
+};
+function drawEventRow({ id, source, subject, preview, occurredAt, toName, body }) {
+  return {
+    id, kind: 'event', source, direction: 'event', type: `${source}_event`,
+    subject: subject || '(activity)', preview: preview || '', category: 'draws',
+    from_email: null, from_name: source === 'docusign' ? 'DocuSign' : 'Sitewire',
+    to: toName ? [{ email: null, name: toName }] : [], reply_to: null,
+    recipient_kind: null, recipient_name: toName || null, audience: 'staff',
+    status: 'event', error: null, attachments: [], meta: null, reconstructed: false,
+    has_body: false, body: body || preview || '', thread_key: id, occurred_at: occurredAt,
+    application_id: null,
+    recipients: toName ? [{ email: null, name: toName, kind: null, status: 'event' }] : [],
+    recipient_count: toName ? 1 : 0, opened_at: null, open_count: 0,
+  };
+}
+async function assembleDrawEventRows(appId) {
+  const rows = [];
+  const iso = (v) => { try { return new Date(v).toISOString(); } catch (_) { return null; } };
+  // (1) DocuSign draw-request/wire form send + sign lifecycle.
+  try {
+    const envs = (await db.query(
+      `SELECT e.id, e.status, e.sent_at, e.delivered_at, e.completed_at, e.declined_at, e.voided_at,
+              (SELECT r.name FROM esign_recipients r WHERE r.envelope_row_id = e.id AND r.role = 'borrower'
+                ORDER BY r.routing_order LIMIT 1) AS borrower_name
+         FROM esign_envelopes e WHERE e.application_id = $1 AND e.purpose = 'draw_request'`, [appId])).rows;
+    for (const e of envs) {
+      const who = e.borrower_name || 'the borrower';
+      if (e.sent_at) rows.push(drawEventRow({ id: `ds:${e.id}:sent`, source: 'docusign', occurredAt: iso(e.sent_at), toName: who, subject: 'Draw Request & Wire Instructions form sent for signature', preview: `Sent to ${who} via DocuSign`, body: `The Draw Request & Wire Instructions form was sent to ${who} for signature through DocuSign.` }));
+      if (e.delivered_at) rows.push(drawEventRow({ id: `ds:${e.id}:viewed`, source: 'docusign', occurredAt: iso(e.delivered_at), toName: who, subject: 'Borrower opened the draw request form', preview: `${who} opened the form` }));
+      if (e.completed_at) rows.push(drawEventRow({ id: `ds:${e.id}:signed`, source: 'docusign', occurredAt: iso(e.completed_at), toName: who, subject: 'Borrower signed the draw request form', preview: `${who} finished signing — wire instructions captured`, body: `${who} signed the Draw Request & Wire Instructions form. The signed form and the typed wire instructions were captured to the file.` }));
+      if (e.declined_at) rows.push(drawEventRow({ id: `ds:${e.id}:declined`, source: 'docusign', occurredAt: iso(e.declined_at), toName: who, subject: 'Borrower declined the draw request form', preview: `${who} declined to sign` }));
+      if (e.voided_at) rows.push(drawEventRow({ id: `ds:${e.id}:voided`, source: 'docusign', occurredAt: iso(e.voided_at), subject: 'Draw request form was voided', preview: 'The signing request was voided' }));
+    }
+  } catch (_) { /* esign tables optional */ }
+  // (2) Sitewire's OWN activity events (from the pulled draw_events jsonb).
+  try {
+    const draws = (await db.query(`SELECT number, sitewire_draw_id, events FROM sitewire_draws WHERE application_id = $1`, [appId])).rows;
+    for (const d of draws) {
+      const evs = Array.isArray(d.events) ? d.events : [];
+      evs.forEach((e, i) => {
+        if (!e || !e.occurred_at) return;
+        const label = SW_DRAW_EVENT[e.event] || String(e.event || 'activity').replace(/_/g, ' ');
+        const actor = String(e.actor_role || e.actor || '').replace(/_/g, ' ').trim();
+        rows.push(drawEventRow({
+          id: `sw:${d.sitewire_draw_id}:${i}`, source: 'sitewire', occurredAt: iso(e.occurred_at),
+          subject: `Draw #${d.number == null ? '—' : d.number} — ${label}`,
+          preview: actor ? `From Sitewire · ${actor}` : 'From Sitewire',
+          body: `Sitewire activity on draw #${d.number == null ? '—' : d.number}: ${label}.${actor ? ` (by ${actor})` : ''} Sitewire shares the activity it recorded, not the exact email it sent to the inspector or borrower.`,
+        }));
+      });
+    }
+  } catch (_) { /* sitewire tables optional */ }
+  return rows.filter((r) => r.occurred_at);
+}
+
+// Per-file email history (newest first), grouped into threads client-side by
+// thread_key. Backfills THIS file's prior history on read so it's always complete.
 router.get('/applications/:id/emails', async (req, res) => {
   if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   try {
+    await emailLog.ensureFileBackfilled(req.params.id).catch(() => {});
+    // scope=draw → the DRAW email center: only draw/scope-of-work alerts (draw%, sow_%)
+    // plus every message in those same conversation THREADS (so borrower replies and
+    // coordinator follow-ups on a draw email stay attached), AND — folded in below — the
+    // DocuSign draw-request form lifecycle + Sitewire's own activity events. The unscoped
+    // call returns the file's whole email history (the regular file Email Center) — byte-identical.
+    // Order-scoped inbox (#orders): scope=title / scope=insurance shows just that order's
+    // emails (order + follow-ups + the vendor's replies), by msg_type prefix + same threads.
+    const rawScope = String(req.query.scope || '');
+    const drawScope = rawScope === 'draw';
+    const orderScope = (rawScope === 'title' || rawScope === 'insurance') ? rawScope : null;
+    let scopeSql = '';
+    if (drawScope) {
+      scopeSql = `AND (em.msg_type LIKE 'draw%' OR em.msg_type LIKE 'sow_%'
+             OR (em.thread_key IS NOT NULL AND em.thread_key IN (
+                   SELECT thread_key FROM email_messages
+                    WHERE application_id = $1 AND thread_key IS NOT NULL
+                      AND (msg_type LIKE 'draw%' OR msg_type LIKE 'sow_%'))))`;
+    } else if (orderScope) {
+      scopeSql = `AND (em.msg_type LIKE '${orderScope}\\_%'
+             OR (em.thread_key IS NOT NULL AND em.thread_key IN (
+                   SELECT thread_key FROM email_messages
+                    WHERE application_id = $1 AND thread_key IS NOT NULL
+                      AND msg_type LIKE '${orderScope}\\_%')))`;
+    }
     const r = await db.query(
-      `SELECT n.id, n.type, n.title, n.body, n.recipient_kind, n.email_status, n.emailed_at, n.created_at,
-              CASE WHEN n.recipient_kind='staff'
-                   THEN su.full_name
-                   ELSE NULLIF(TRIM(COALESCE(bo.first_name,'') || ' ' || COALESCE(bo.last_name,'')), '') END AS recipient_name,
-              CASE WHEN n.recipient_kind='staff' THEN su.email ELSE bo.email END AS recipient_email
-         FROM notifications n
+      `SELECT em.id, em.direction, em.msg_type, em.category, em.subject, em.preview,
+              em.from_email, em.from_name, em.to_emails, em.reply_to, em.recipient_kind,
+              em.audience, em.status, em.error, em.attachments, em.meta, em.reconstructed,
+              (em.body_html IS NOT NULL) AS has_body, em.thread_key, em.occurred_at, em.application_id,
+              eo.first_opened_at AS opened_at, eo.open_count,
+              COALESCE(su.full_name,
+                       NULLIF(TRIM(COALESCE(bo.first_name,'') || ' ' || COALESCE(bo.last_name,'')), '')) AS recipient_name
+         FROM email_messages em
+         LEFT JOIN email_opens eo ON eo.notification_id = em.notification_id
+         LEFT JOIN notifications n ON n.id = em.notification_id
          LEFT JOIN staff_users su ON su.id = n.staff_id
          LEFT JOIN borrowers   bo ON bo.id = n.borrower_id
-        WHERE n.application_id = $1
-        ORDER BY n.created_at DESC
-        LIMIT 300`, [req.params.id]);
-    let inbound = [];
-    try {
-      const inb = await db.query(
-        `SELECT id, from_email, subject, status, forwarded_count, received_at, processed_at
-           FROM inbound_file_emails
-          WHERE application_id = $1 OR app_results ? $2
-          ORDER BY received_at DESC
-          LIMIT 100`, [req.params.id, String(req.params.id)]);
-      inbound = inb.rows.map((row) => ({
-        id: `in-${row.id}`,
-        direction: 'inbound',
-        type: 'inbound_reply',
-        title: row.subject ? `Reply: ${row.subject}` : 'Reply on this file',
-        body: null,
-        recipient_kind: 'inbound',
-        recipient_name: null,
-        recipient_email: row.from_email || null,   // shown as the SENDER on inbound rows
-        email_status: row.status,
-        emailed_at: row.processed_at,
-        created_at: row.received_at,
-        forwarded_count: row.forwarded_count,
-      }));
-    } catch (_) { /* inbound history is additive — never break the monitor over it */ }
-    const merged = r.rows.concat(inbound)
-      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-      .slice(0, 300);
-    res.json(merged);
+        WHERE em.application_id = $1 ${scopeSql}
+        ORDER BY em.occurred_at DESC
+        LIMIT 500`, [req.params.id]);
+    let out = consolidateEmailRows(r.rows);
+    if (drawScope) {
+      // Fold in the DocuSign wire-form lifecycle + Sitewire's own activity events, newest first,
+      // so the draw email center is the ONE place that shows everything that happened on the draws.
+      const extra = await assembleDrawEventRows(req.params.id).catch(() => []);
+      out = out.concat(extra).sort((a, b) => new Date(b.occurred_at || 0) - new Date(a.occurred_at || 0));
+    }
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Who a reply on this file will reach — the borrower(s) + active assignees, minus
+// the viewer. Lets the composer show recipient chips before sending. Declared
+// BEFORE /emails/:msgId so 'reply-recipients' isn't read as a message id.
+router.get('/applications/:id/emails/reply-recipients', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const meEmail = String(((await db.query(`SELECT lower(email) AS email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {}).email || '').toLowerCase();
+    const r = await db.query(
+      `SELECT lower(bo.email) AS email, NULLIF(TRIM(COALESCE(bo.first_name,'')||' '||COALESCE(bo.last_name,'')),'') AS name, 'borrower' AS kind
+         FROM applications a JOIN borrowers bo ON bo.id IN (a.borrower_id, a.co_borrower_id)
+        WHERE a.id=$1 AND bo.email IS NOT NULL AND btrim(bo.email)<>''
+       UNION
+       SELECT lower(su.email) AS email, su.full_name AS name, 'staff' AS kind
+         FROM application_assignees aa JOIN staff_users su ON su.id=aa.staff_id
+        WHERE aa.application_id=$1 AND aa.removed_at IS NULL AND su.is_active=true
+          AND su.email IS NOT NULL AND btrim(su.email)<>''`, [req.params.id]);
+    res.json(r.rows.filter((p) => p.email && p.email !== meEmail));
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Full body of one message. Stored body wins; a lightweight/historical row's body
+// is rendered on demand from its linked notification. Scoped to the file.
+router.get('/applications/:id/emails/:msgId', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const r = await db.query(
+      `SELECT em.*, (em.body_html IS NOT NULL) AS has_body,
+              COALESCE(su.full_name,
+                       NULLIF(TRIM(COALESCE(bo.first_name,'') || ' ' || COALESCE(bo.last_name,'')), '')) AS recipient_name
+         FROM email_messages em
+         LEFT JOIN notifications n ON n.id = em.notification_id
+         LEFT JOIN staff_users su ON su.id = n.staff_id
+         LEFT JOIN borrowers   bo ON bo.id = n.borrower_id
+        WHERE em.id = $1 AND em.application_id = $2`, [req.params.msgId, req.params.id]);
+    const row = r.rows[0];
+    if (!row) return res.status(404).json({ error: 'not found' });
+    const out = emailRowShape({ ...row, has_body: true });
+    out.body_html = row.body_html || null;
+    out.body_text = row.body_text || null;
+    // Historical/lightweight outbound row → re-render the branded body on demand.
+    if (!out.body_html && row.direction === 'outbound' && row.notification_id) {
+      const built = await emailLog.renderHistoricalBody(row.notification_id).catch(() => null);
+      if (built) { out.body_html = built.html; out.body_text = built.text; out.rendered = true; }
+    }
+    if (!out.body_html && !out.body_text) {
+      out.body_unavailable = row.direction === 'inbound'
+        ? 'This reply predates archiving — its body was not stored. Newer replies show in full.'
+        : 'The full body for this message was not stored.';
+    }
+    // Mark which attachments have their BYTES stored (the #442 sent_emails capture),
+    // so the reader can offer a real download link. Best-effort.
+    if (Array.isArray(out.attachments) && out.attachments.length && row.notification_id) {
+      try {
+        const se = (await db.query(
+          `SELECT attachments FROM sent_emails WHERE notification_id=$1 AND application_id=$2 ORDER BY created_at DESC LIMIT 1`,
+          [row.notification_id, req.params.id])).rows[0];
+        const bytes = se && Array.isArray(se.attachments) ? se.attachments : [];
+        out.attachments = out.attachments.map((a, i) => ({ ...a, downloadable: !!(bytes[i] && bytes[i].storage_ref) }));
+      } catch (_) { /* best-effort */ }
+    }
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Download one attachment's bytes (stored by the #442 sent_emails capture), keyed
+// through the email_messages row → its notification → sent_emails. Staff-scoped.
+router.get('/applications/:id/emails/:msgId/attachments/:idx', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  if (!/^[0-9a-f-]{36}$/i.test(String(req.params.msgId)) || !/^\d{1,3}$/.test(String(req.params.idx))) return res.status(404).json({ error: 'not found' });
+  try {
+    const m = (await db.query(`SELECT notification_id FROM email_messages WHERE id=$1 AND application_id=$2`, [req.params.msgId, appId])).rows[0];
+    if (!m || !m.notification_id) return res.status(404).json({ error: 'not found' });
+    const e = (await db.query(
+      `SELECT attachments FROM sent_emails WHERE notification_id=$1 AND application_id=$2 ORDER BY created_at DESC LIMIT 1`,
+      [m.notification_id, appId])).rows[0];
+    const a = e && Array.isArray(e.attachments) ? e.attachments[Number(req.params.idx)] : null;
+    if (!a || !a.storage_ref) return res.status(404).json({ error: 'attachment not available' });
+    let buf; try { buf = await storage.read(a.storage_ref); } catch (_) { buf = null; }
+    if (!buf) return res.status(404).json({ error: 'attachment bytes missing' });
+    // Sanitize the stored content-type before it becomes a response header (defense
+    // in depth — a header with illegal chars would otherwise throw a 500).
+    const ct = String(a.content_type || a.contentType || 'application/octet-stream').replace(/[^\w.+/-]/g, '').slice(0, 100) || 'application/octet-stream';
+    res.setHeader('Content-Type', ct);
+    res.setHeader('Content-Disposition', `attachment; filename="${String(a.filename || 'attachment').replace(/[^\w.\- ]+/g, '_')}"`);
+    res.send(buf);
+  } catch (err) { res.status(500).json({ error: 'Could not download this attachment.' }); }
+});
+
+// Resend a FILE email — troubleshoot a failed/in-app-only send by re-delivering the
+// exact rendered email to its original recipients (re-attaching stored bytes when
+// available). Outbound only; captured into the history as a fresh message.
+router.post('/applications/:id/emails/:msgId/resend', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const row = (await db.query(`SELECT * FROM email_messages WHERE id=$1 AND application_id=$2`, [req.params.msgId, appId])).rows[0];
+    if (!row) return res.status(404).json({ error: 'not found' });
+    if (row.direction !== 'outbound') return res.status(400).json({ error: 'Only an outgoing email can be resent.' });
+    const to = (Array.isArray(row.to_emails) ? row.to_emails : []).map((t) => t && t.email).filter(Boolean);
+    if (!to.length) return res.status(400).json({ error: 'This message has no recipient to resend to.' });
+    let html = row.body_html, text = row.body_text, subject = row.subject;
+    if (!html && row.notification_id) {
+      const built = await emailLog.renderHistoricalBody(row.notification_id).catch(() => null);
+      if (built) { html = built.html; text = built.text; subject = subject || built.subject; }
+    }
+    if (!html && !text) return res.status(400).json({ error: 'The full email could not be rebuilt to resend.' });
+    // Re-attach the original bytes when the #442 capture stored them.
+    let attachments = [];
+    if (row.notification_id) {
+      try {
+        const se = (await db.query(`SELECT attachments FROM sent_emails WHERE notification_id=$1 AND application_id=$2 ORDER BY created_at DESC LIMIT 1`, [row.notification_id, appId])).rows[0];
+        for (const a of (se && Array.isArray(se.attachments) ? se.attachments : [])) {
+          if (!a || !a.storage_ref) continue;
+          try { const buf = await storage.read(a.storage_ref); if (buf) attachments.push({ filename: a.filename, contentType: a.content_type || a.contentType, content: buf.toString('base64') }); } catch (_) { /* skip */ }
+        }
+      } catch (_) { /* best-effort */ }
+    }
+    await email.sendMail({
+      to, subject, html, text, attachments,
+      replyTo: fileReplyTo(appId) || cfg.replyToDefault || null,
+      _ctx: { applicationId: appId, type: 'resend', audience: row.audience || 'staff' },
+    });
+    await audit(req, 'email_resent', 'application', appId, { to: to.length, subject });
+    res.json({ ok: true, sent_to: to });
+  } catch (e) { res.status(500).json({ error: 'Could not resend this email.' }); }
+});
+
+// Reply from the Email Center. Sends a branded email to the file's parties (the
+// borrower(s) + the other active assignees, minus the sender) — or an explicit
+// recipient list — on the shared file thread, and captures it into the history.
+router.post('/applications/:id/emails/reply', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const bodyText = String((req.body && req.body.body) || '').trim();
+  if (!bodyText) return res.status(400).json({ error: 'Type a message to send.' });
+  try {
+    const ctx = await notify.fileContext(appId).catch(() => null);
+    // The acting staffer's own email/name (req.actor carries only id/role/perms).
+    const meRow = (await db.query(`SELECT lower(email) AS email, full_name FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
+    // Recipient set: an explicit list (validated as file parties) or the default
+    // fan-out = borrower(s) + active assignees, minus the acting staffer.
+    const partyRows = await db.query(
+      `SELECT lower(bo.email) AS email, 'borrower' AS kind
+         FROM applications a
+         JOIN borrowers bo ON bo.id IN (a.borrower_id, a.co_borrower_id)
+        WHERE a.id=$1 AND bo.email IS NOT NULL AND btrim(bo.email)<>''
+       UNION
+       SELECT lower(su.email) AS email, 'staff' AS kind
+         FROM application_assignees aa
+         JOIN staff_users su ON su.id=aa.staff_id
+        WHERE aa.application_id=$1 AND aa.removed_at IS NULL AND su.is_active=true
+          AND su.email IS NOT NULL AND btrim(su.email)<>''`, [appId]);
+    const meEmail = String(meRow.email || '').trim().toLowerCase();
+    const parties = partyRows.rows.filter((p) => p.email && p.email !== meEmail);
+    let recipients = parties;
+    if (Array.isArray(req.body.to) && req.body.to.length) {
+      const want = new Set(req.body.to.map((e) => String(e).trim().toLowerCase()));
+      recipients = parties.filter((p) => want.has(p.email));   // only ever real file parties
+    }
+    if (!recipients.length) return res.status(400).json({ error: 'No one on this file to send to. Add the borrower or an assignee first.' });
+    const toEmails = recipients.map((r) => r.email);
+    const anyBorrower = recipients.some((r) => r.kind === 'borrower');
+    const audience = anyBorrower ? 'borrower' : 'staff';
+    // Borrower-safe (frozen rule): the reply builds the borrower email directly
+    // (not via notifyBorrower), so we scrub a note-buyer/capital-partner name a
+    // staffer might type in the SUBJECT *and* the body before it can reach a
+    // borrower. Protect the file's own clean data from the scrub using the
+    // BORROWER-safe meta (borrowerMeta already scrubs the program label) — never
+    // the staff `meta`, whose raw program value could shield a partner name.
+    const protectSrc = anyBorrower ? (ctx && ctx.borrowerMeta) : (ctx && ctx.meta);
+    const protect = Array.isArray(protectSrc) ? protectSrc.map((m) => m && m.value).filter((v) => typeof v === 'string') : [];
+    const safeBody = anyBorrower ? scrubTextExcept(bodyText, protect) : bodyText;
+    const rawSubject = String((req.body && req.body.subject) || '').trim();
+    const safeSubject = anyBorrower ? scrubTextExcept(rawSubject, protect) : rawSubject;
+    const subject = (safeSubject || (ctx ? `Re: ${ctx.loanNo}` : 'Re: your loan file')).slice(0, 200);
+    // Split the typed reply into paragraphs: the first is the intro (body), the
+    // rest render as additional lines — never both, so the text isn't duplicated.
+    const paras = safeBody.split(/\n{2,}/).map((s) => s.trim()).filter(Boolean);
+    const built = notify.buildEmail({
+      title: subject.replace(/^\s*re:\s*/i, '') || 'A message from your loan team',
+      body: paras[0] || safeBody,
+      lines: paras.slice(1),
+      applicationId: appId,
+      subjectTag: ctx ? ctx.subjectTag : '',
+      link: audience === 'borrower' ? `/app/${appId}` : `/internal/app/${appId}`,
+      ctaLabel: audience === 'borrower' ? 'Open your file' : 'Open the loan file',
+      replyable: true,
+    }, audience);
+    // From the officer by name so the reply reads as a person, not a robot.
+    const fromName = email.fromWithName ? email.fromWithName(meRow.full_name || meRow.email) : null;
+    // A reply/compose sent FROM the draw email center is tagged 'draw_message' so it
+    // stays visible in that draw-scoped inbox (which filters on draw%/sow_% types);
+    // a normal file reply keeps 'staff_reply'. Cosmetic tag only — same delivery.
+    const scopeIn = String((req.body && req.body.scope) || '');
+    const replyType = scopeIn === 'draw' ? 'draw_message'
+      : scopeIn === 'title' ? 'title_message'
+      : scopeIn === 'insurance' ? 'insurance_message'
+      : 'staff_reply';
+    await email.sendMail({
+      to: toEmails, subject: built.subject, html: built.html, text: built.text,
+      replyTo: fileReplyTo(appId) || cfg.replyToDefault || null,
+      from: fromName || undefined,
+      _ctx: { applicationId: appId, type: replyType, audience },
+    });
+    await audit(req, 'email_reply_sent', 'application', appId, { to: toEmails.length, subject });
+    res.json({ ok: true, sent_to: toEmails });
+  } catch (e) { res.status(500).json({ error: 'Could not send the reply.' }); }
+});
+
+/* ═══════════════════════════════ ORDERS DESK (#orders) ═══════════════════════
+   Title + insurance orders for a file. An order can only be placed once the file
+   has its LOAN NUMBER (the mortgagee clause needs it) and a vendor CONTACT (the
+   title company / insurance agent). The order emails the vendor with the
+   borrower, loan officer and processor CC'd and a unique per-order reply-to, so
+   the vendor's reply + any returned documents route back to the right order.
+   A follow-up is a separate message on the same thread; the order itself won't
+   re-send unless the caller forces it. Returned documents land as unassigned
+   documents for the team to classify. Uses the orders lib for all email building.
+   ═══════════════════════════════════════════════════════════════════════════ */
+const orders = require('../lib/orders');
+const { orderReplyTo } = require('../lib/file-address');
+const ORDER_RETURN_KIND = { title: 'title_order_return', insurance: 'insurance_order_return' };
+const ORDER_SLOTS = {
+  title: ['Title Commitment', 'CPL', 'Tax Certificate', 'Wiring Instructions', 'Preliminary Settlement Statement', 'Other'],
+  insurance: ['Binder', 'Invoice', 'Quote', 'Declaration Page', 'Other'],
+};
+
+function isOrderKind(k) { return k === 'title' || k === 'insurance'; }
+
+// The whole Orders section for a file: both orders' state, whether each can be
+// placed (blockers), the vendor on file, and the returned documents waiting to be
+// classified. One call powers the panel.
+router.get('/applications/:id/orders', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const data = await orders.getOrderData(req.params.id);
+    if (!data) return res.status(404).json({ error: 'not found' });
+    const rows = (await db.query(
+      `SELECT order_type, status, vendor_name, vendor_email, ordered_at, last_followup_at,
+              followup_count, send_count
+         FROM file_orders WHERE application_id=$1`, [req.params.id])).rows;
+    const orderOf = (k) => rows.find((r) => r.order_type === k) || null;
+    // Returned documents per order (unassigned = no slot_label yet).
+    const docs = (await db.query(
+      `SELECT id, doc_kind, filename, slot_label, review_status, is_current, size_bytes, created_at
+         FROM documents
+        WHERE application_id=$1 AND doc_kind = ANY($2::text[])
+        ORDER BY created_at DESC`,
+      [req.params.id, Object.values(ORDER_RETURN_KIND)])).rows;
+    const docsFor = (k) => docs.filter((d) => d.doc_kind === ORDER_RETURN_KIND[k] && d.is_current !== false);
+    // The real document condition each order files into (rtl_cond_title /
+    // rtl_cond_insurance) — so the panel can show where returned docs land + its
+    // current status.
+    const CONDITION_CODE = { title: 'rtl_cond_title', insurance: 'rtl_cond_insurance' };
+    const conds = (await db.query(
+      `SELECT ci.id, ci.status, t.code, t.label
+         FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
+        WHERE ci.application_id=$1 AND t.code = ANY($2::text[])`,
+      [req.params.id, Object.values(CONDITION_CODE)])).rows;
+    const condOf = (k) => conds.find((c) => c.code === CONDITION_CODE[k]) || null;
+
+    const shape = (k) => {
+      const row = orderOf(k);
+      const vendor = data.vendors[k];
+      const cond = condOf(k);
+      return {
+        orderType: k,
+        status: row ? row.status : 'not_ordered',
+        blockers: orders.blockers(k, data),
+        vendor: vendor ? { id: vendor.id, name: vendor.company_name || vendor.contact_name, email: vendor.email, phone: vendor.phone, contactName: vendor.contact_name } : null,
+        orderedAt: row ? row.ordered_at : null,
+        lastFollowupAt: row ? row.last_followup_at : null,
+        followupCount: row ? row.followup_count : 0,
+        sendCount: row ? row.send_count : 0,
+        slots: ORDER_SLOTS[k],
+        condition: cond ? { label: cond.label, status: cond.status } : null,
+        returnedDocs: docsFor(k),
+      };
+    };
+    // Who an order will reach, so the panel can show it before sending.
+    const recipientsPreview = (k) => {
+      const { to, cc } = orders.recipientsFor(k, data);
+      return { to, cc };
+    };
+    res.json({
+      file: {
+        loanNumber: data.loanNumber, hasLoanNumber: data.hasLoanNumber,
+        propertyLine: data.propertyLine, borrowerName: data.borrowerName,
+        borrowerEmail: data.borrowerEmail, coBorrowerEmail: data.coBorrowerEmail,
+        officer: data.officer, processor: data.processor,
+      },
+      orders: {
+        title: { ...shape('title'), recipients: recipientsPreview('title') },
+        insurance: { ...shape('insurance'), recipients: recipientsPreview('insurance') },
+      },
+    });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Place (send) an order. Gated on loan number + vendor contact. Re-sending an
+// already-placed order requires ?force / {force:true} so a stray double-click
+// never re-blasts the vendor + whole CC chain.
+router.post('/applications/:id/orders/:kind/place', async (req, res) => {
+  const appId = req.params.id;
+  const kind = req.params.kind;
+  if (!isOrderKind(kind)) return res.status(400).json({ error: 'unknown order type' });
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const data = await orders.getOrderData(appId);
+    if (!data) return res.status(404).json({ error: 'not found' });
+    const blk = orders.blockers(kind, data);
+    if (blk.includes('loan_number')) return res.status(400).json({ error: 'Add the file’s loan number first — it prints in the mortgage clause.', code: 'loan_number' });
+    if (blk.includes('contact')) return res.status(400).json({ error: `Add the ${kind === 'title' ? 'title company' : 'insurance agent'} contact first.`, code: 'contact' });
+
+    const existing = (await db.query(`SELECT status, send_count FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
+    const force = req.body && (req.body.force === true || req.body.force === 'true');
+    if (existing && existing.status !== 'not_ordered' && existing.status !== 'cancelled' && !force) {
+      return res.status(409).json({ error: `This ${kind} order was already sent. Use Follow-up, or force a re-send.`, code: 'already_ordered' });
+    }
+
+    const built = orders.buildOrderEmail(kind, data, {});
+    const { to, cc, replyTo } = orders.recipientsFor(kind, data);
+    const meRow = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
+    await email.sendMail({
+      to, cc,
+      subject: built.subject, html: built.html, text: built.text,
+      replyTo: replyTo || fileReplyTo(appId) || cfg.replyToDefault || null,
+      from: email.fromWithName ? email.fromWithName(meRow.full_name || meRow.email) : undefined,
+      _ctx: { applicationId: appId, type: `${kind}_order`, audience: 'staff' },
+    });
+    const vendor = data.vendors[kind];
+    await db.query(
+      `INSERT INTO file_orders (application_id, order_type, status, vendor_contact_id, vendor_email, vendor_name, subject, ordered_at, ordered_by, send_count)
+       VALUES ($1,$2,'ordered',$3,$4,$5,$6,now(),$7,1)
+       ON CONFLICT (application_id, order_type)
+       DO UPDATE SET status='ordered', vendor_contact_id=EXCLUDED.vendor_contact_id, vendor_email=EXCLUDED.vendor_email,
+                     vendor_name=EXCLUDED.vendor_name, subject=EXCLUDED.subject, ordered_at=now(),
+                     ordered_by=EXCLUDED.ordered_by, send_count=file_orders.send_count+1, updated_at=now()`,
+      [appId, kind, vendor ? vendor.id : null, (vendor && vendor.email) || null,
+       (vendor && (vendor.company_name || vendor.contact_name)) || null, built.subject, req.actor.id]);
+    await audit(req, 'order_placed', 'application', appId, { kind, to: to.length, cc: cc.length, force: !!force });
+    res.json({ ok: true, sent_to: to, cc });
+  } catch (e) { res.status(500).json({ error: 'Could not send the order.' }); }
+});
+
+// Send a follow-up on an existing order (same thread, to the vendor + CC chain).
+// Never the first contact — the order must already be placed.
+router.post('/applications/:id/orders/:kind/followup', async (req, res) => {
+  const appId = req.params.id;
+  const kind = req.params.kind;
+  if (!isOrderKind(kind)) return res.status(400).json({ error: 'unknown order type' });
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const row = (await db.query(`SELECT status FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
+    if (!row || row.status === 'not_ordered' || row.status === 'cancelled') {
+      return res.status(400).json({ error: 'Place the order before following up.', code: 'not_ordered' });
+    }
+    const data = await orders.getOrderData(appId);
+    if (!data) return res.status(404).json({ error: 'not found' });
+    if (!data.vendors[kind] || !data.vendors[kind].email) return res.status(400).json({ error: 'The vendor contact is missing.', code: 'contact' });
+    const note = String((req.body && req.body.message) || '').trim().slice(0, 4000);
+    const built = orders.buildOrderEmail(kind, data, { followup: true, note });
+    const { to, cc, replyTo } = orders.recipientsFor(kind, data);
+    const meRow = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
+    await email.sendMail({
+      to, cc,
+      subject: built.subject, html: built.html, text: built.text,
+      replyTo: replyTo || fileReplyTo(appId) || cfg.replyToDefault || null,
+      from: email.fromWithName ? email.fromWithName(meRow.full_name || meRow.email) : undefined,
+      _ctx: { applicationId: appId, type: `${kind}_followup`, audience: 'staff' },
+    });
+    await db.query(
+      `UPDATE file_orders SET followup_count=followup_count+1, last_followup_at=now(), updated_at=now()
+        WHERE application_id=$1 AND order_type=$2`, [appId, kind]);
+    await audit(req, 'order_followup', 'application', appId, { kind, to: to.length });
+    res.json({ ok: true, sent_to: to, cc });
+  } catch (e) { res.status(500).json({ error: 'Could not send the follow-up.' }); }
+});
+
+// Classify a returned document (assign it to a slot: binder / invoice / …) — the
+// "assign what came back" step. slot_label='' clears it back to unassigned.
+router.post('/applications/:id/orders/:kind/documents/:docId/classify', async (req, res) => {
+  const appId = req.params.id;
+  const kind = req.params.kind;
+  if (!isOrderKind(kind)) return res.status(400).json({ error: 'unknown order type' });
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  if (!UUID_RE.test(String(req.params.docId))) return res.status(404).json({ error: 'not found' });
+  try {
+    const slotRaw = String((req.body && req.body.slot) || '').trim().slice(0, 80);
+    const allowed = new Set(ORDER_SLOTS[kind]);
+    // Empty clears back to unassigned; anything else must be one of this order's
+    // known slots (Binder / Invoice / Title Commitment / …) — an unknown label is
+    // rejected rather than stored as free text.
+    if (slotRaw && !allowed.has(slotRaw)) return res.status(400).json({ error: 'Choose one of the listed document types.', code: 'bad_slot' });
+    const slot = slotRaw || null;
+    const upd = await db.query(
+      `UPDATE documents SET slot_label=$4
+        WHERE id=$1 AND application_id=$2 AND doc_kind=$3 RETURNING id`,
+      [req.params.docId, appId, ORDER_RETURN_KIND[kind], slot]);
+    if (!upd.rows[0]) return res.status(404).json({ error: 'not found' });
+    await audit(req, 'order_doc_classified', 'application', appId, { kind, slot: slot || 'unassigned' });
+    res.json({ ok: true, slot });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Cancel an order (or reopen a cancelled one). Cancelling frees it to be
+// re-ordered from scratch (the place gate treats 'cancelled' like 'not_ordered').
+router.post('/applications/:id/orders/:kind/cancel', async (req, res) => {
+  const appId = req.params.id;
+  const kind = req.params.kind;
+  if (!isOrderKind(kind)) return res.status(400).json({ error: 'unknown order type' });
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const reopen = req.body && (req.body.reopen === true || req.body.reopen === 'true');
+    const next = reopen ? 'ordered' : 'cancelled';
+    const upd = await db.query(
+      `UPDATE file_orders SET status=$3, updated_at=now()
+        WHERE application_id=$1 AND order_type=$2 RETURNING status`, [appId, kind, next]);
+    if (!upd.rows[0]) return res.status(404).json({ error: 'This order has not been created yet.' });
+    await audit(req, reopen ? 'order_reopened' : 'order_cancelled', 'application', appId, { kind });
+    res.json({ ok: true, status: upd.rows[0].status });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// GLOBAL ORDERS QUEUE — every title/insurance order across the files the viewer
+// can see, so a processor can track all orders (and what's waiting to be
+// classified) in one place. Scoped like every other cross-file view.
+router.get('/orders', async (req, res) => {
+  try {
+    const params = [];
+    let scopeSql = '';
+    if (!seesAll(req)) { params.push(req.actor.id); scopeSql = `AND ${VISIBLE_OFFICERS_SQL('a', '$1')}`; }
+    const r = await db.query(
+      `SELECT a.id AS application_id, a.ys_loan_number, a.property_address, a.status AS file_status,
+              b.first_name, b.last_name,
+              o.order_type, o.status, o.vendor_name, o.ordered_at, o.last_followup_at, o.followup_count,
+              COALESCE(dc.unassigned, 0)::int AS unassigned_docs, COALESCE(dc.total, 0)::int AS returned_docs
+         FROM file_orders o
+         JOIN applications a ON a.id = o.application_id AND a.deleted_at IS NULL
+         JOIN borrowers b ON b.id = a.borrower_id
+         LEFT JOIN LATERAL (
+           SELECT count(*) FILTER (WHERE slot_label IS NULL) AS unassigned, count(*) AS total
+             FROM documents d
+            WHERE d.application_id = o.application_id AND d.is_current = true
+              AND d.doc_kind = CASE o.order_type WHEN 'title' THEN 'title_order_return' ELSE 'insurance_order_return' END
+         ) dc ON true
+        WHERE o.status <> 'cancelled' ${scopeSql}
+        ORDER BY (COALESCE(dc.unassigned, 0) > 0) DESC, o.ordered_at DESC NULLS LAST`, params);
+    // Group into one row per file with a title + insurance sub-object.
+    const byFile = new Map();
+    for (const row of r.rows) {
+      if (!byFile.has(row.application_id)) {
+        byFile.set(row.application_id, {
+          applicationId: row.application_id, loanNumber: row.ys_loan_number,
+          propertyAddress: row.property_address, fileStatus: row.file_status,
+          borrowerName: [row.first_name, row.last_name].filter(Boolean).join(' '),
+          title: null, insurance: null,
+        });
+      }
+      const f = byFile.get(row.application_id);
+      f[row.order_type] = {
+        status: row.status, vendorName: row.vendor_name, orderedAt: row.ordered_at,
+        lastFollowupAt: row.last_followup_at, followupCount: row.followup_count,
+        unassignedDocs: row.unassigned_docs, returnedDocs: row.returned_docs,
+      };
+    }
+    res.json([...byFile.values()]);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// A short "which file" label for a mailbox row (loan# · street · borrower).
+function fileLabelOf(r) {
+  const pa = r.property_address || {};
+  const street = pa.street || pa.line1 || (typeof pa.oneLine === 'string' ? pa.oneLine.split(',')[0] : '') || '';
+  const borrower = [r.b_first, r.b_last].filter(Boolean).join(' ');
+  return [r.ys_loan_number, street, borrower].filter(Boolean).join(' · ') || null;
+}
+
+// GLOBAL MAILBOX — every email across the files the viewer can see (admins /
+// underwriters: all; loan officers / processors: only their assigned files).
+// This is the portal-wide audit view the owner asked for: filter by delivery
+// status (troubleshoot failures), direction, category, or a text search over
+// subject / sender / recipients. Newest first, paginated.
+router.get('/emails/stats', async (req, res) => {
+  try {
+    const params = [];
+    let scope = '';
+    if (!seesAll(req)) {
+      params.push(req.actor.id);
+      scope = `WHERE em.application_id IS NOT NULL AND EXISTS (SELECT 1 FROM applications a
+                 WHERE a.id=em.application_id AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$1')})`;
+    }
+    const r = await db.query(
+      `SELECT
+         count(*)::int AS total,
+         count(*) FILTER (WHERE em.direction='outbound' AND em.status='sent')::int AS sent,
+         count(*) FILTER (WHERE em.direction='outbound' AND em.status='skipped')::int AS in_app_only,
+         count(*) FILTER (WHERE em.direction='outbound' AND em.status='error')::int AS failed,
+         count(*) FILTER (WHERE em.direction='inbound')::int AS inbound,
+         count(*) FILTER (WHERE em.occurred_at > now() - interval '7 days')::int AS last_7d
+       FROM email_messages em ${scope}`, params);
+    res.json(r.rows[0] || {});
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+router.get('/emails', async (req, res) => {
+  try {
+    const params = [];
+    const where = [];
+    if (!seesAll(req)) {
+      params.push(req.actor.id);
+      where.push(`em.application_id IS NOT NULL AND EXISTS (SELECT 1 FROM applications a
+                    WHERE a.id=em.application_id AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$' + params.length)})`);
+    }
+    const dir = String(req.query.direction || '');
+    if (dir === 'inbound' || dir === 'outbound') { params.push(dir); where.push(`em.direction=$${params.length}`); }
+    const status = String(req.query.status || '');
+    if (status === 'sent' || status === 'skipped' || status === 'error') { params.push(status); where.push(`em.status=$${params.length}`); }
+    else if (status === 'issues') { where.push(`em.status IN ('error','no_recipients','failed_permanent','retrieval_failed','forward_failed','lookup_failed')`); }
+    const category = String(req.query.category || '');
+    if (category) { params.push(category); where.push(`em.category=$${params.length}`); }
+    const q = String(req.query.q || '').trim();
+    if (q) {
+      params.push('%' + q.replace(/[%_]/g, (m) => '\\' + m) + '%');
+      const i = params.length;
+      where.push(`(em.subject ILIKE $${i} OR em.preview ILIKE $${i} OR em.from_email ILIKE $${i} OR em.to_emails::text ILIKE $${i})`);
+    }
+    const limit = Math.min(200, intField(req.query.limit) || 60);
+    const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+    params.push(limit); const limIdx = params.length;
+    params.push(offset); const offIdx = params.length;
+    const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
+    const r = await db.query(
+      `SELECT em.id, em.direction, em.msg_type, em.category, em.subject, em.preview,
+              em.from_email, em.from_name, em.to_emails, em.reply_to, em.recipient_kind,
+              em.audience, em.status, em.error, em.attachments, em.meta, em.reconstructed,
+              (em.body_html IS NOT NULL) AS has_body, em.thread_key, em.occurred_at, em.application_id,
+              eo.first_opened_at AS opened_at, eo.open_count,
+              a.ys_loan_number, a.property_address, b.first_name AS b_first, b.last_name AS b_last,
+              COALESCE(su.full_name,
+                       NULLIF(TRIM(COALESCE(bo.first_name,'') || ' ' || COALESCE(bo.last_name,'')), '')) AS recipient_name
+         FROM email_messages em
+         LEFT JOIN applications a ON a.id = em.application_id
+         LEFT JOIN borrowers   b ON b.id = a.borrower_id
+         LEFT JOIN email_opens eo ON eo.notification_id = em.notification_id
+         LEFT JOIN notifications n ON n.id = em.notification_id
+         LEFT JOIN staff_users su ON su.id = n.staff_id
+         LEFT JOIN borrowers   bo ON bo.id = n.borrower_id
+         ${whereSql}
+        ORDER BY em.occurred_at DESC
+        LIMIT $${limIdx} OFFSET $${offIdx}`, params);
+    res.json(consolidateEmailRows(r.rows.map((row) => ({ ...row, file_label: fileLabelOf(row) }))));
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Full body of one message from the GLOBAL mailbox (scoped to a file the viewer
+// can see). Renders a historical row's body on demand, same as the per-file view.
+router.get('/emails/:msgId', async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT em.*, a.ys_loan_number, a.property_address, b.first_name AS b_first, b.last_name AS b_last,
+              COALESCE(su.full_name,
+                       NULLIF(TRIM(COALESCE(bo.first_name,'') || ' ' || COALESCE(bo.last_name,'')), '')) AS recipient_name
+         FROM email_messages em
+         LEFT JOIN applications a ON a.id = em.application_id
+         LEFT JOIN borrowers   b ON b.id = a.borrower_id
+         LEFT JOIN notifications n ON n.id = em.notification_id
+         LEFT JOIN staff_users su ON su.id = n.staff_id
+         LEFT JOIN borrowers   bo ON bo.id = n.borrower_id
+        WHERE em.id = $1`, [req.params.msgId]);
+    const row = r.rows[0];
+    if (!row) return res.status(404).json({ error: 'not found' });
+    // Authorize: a file-scoped message requires touch access; a non-file (system)
+    // message is admins-only.
+    if (row.application_id) { if (!(await canTouchApp(req, row.application_id))) return res.status(403).json({ error: 'forbidden' }); }
+    else if (!seesAll(req)) return res.status(403).json({ error: 'forbidden' });
+    const out = { ...emailRowShape(row), file_label: fileLabelOf(row) };
+    out.body_html = row.body_html || null;
+    out.body_text = row.body_text || null;
+    if (!out.body_html && row.direction === 'outbound' && row.notification_id) {
+      const built = await emailLog.renderHistoricalBody(row.notification_id).catch(() => null);
+      if (built) { out.body_html = built.html; out.body_text = built.text; out.rendered = true; }
+    }
+    if (!out.body_html && !out.body_text) {
+      out.body_unavailable = row.direction === 'inbound'
+        ? 'This reply predates archiving — its body was not stored. Newer replies show in full.'
+        : 'The full body for this message was not stored.';
+    }
+    res.json(out);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
@@ -2214,11 +3893,29 @@ router.get('/applications/:id/conditions', async (req, res) => {
        LEFT JOIN staff_users xb ON xb.id=c.cleared_by
        LEFT JOIN staff_users rb ON rb.id=c.reviewed_by
       WHERE c.application_id=$1 ORDER BY (c.status='open') DESC, c.created_at DESC`, [req.params.id]);
-  res.json(r.rows);
+  // #191 activation 2 — same additive aging as the checklist endpoint.
+  try {
+    const aged = require('../lib/underwriting/condition-aging').ageConditions(r.rows, { now: new Date() });
+    const byId = new Map((aged.conditions || []).map((c) => [c.id, c]));
+    return res.json(r.rows.map((row) => {
+      const a = byId.get(row.id);
+      return a ? { ...row, daysOpen: a.daysOpen, agingBucket: a.bucket, overdue: a.overdue, overdueBy: a.overdueBy } : row;
+    }));
+  } catch (_) { return res.json(r.rows); }
 });
 router.post('/applications/:id/loan-conditions', async (req, res) => {
   const b = req.body || {};
   if (!b.title && !b.borrowerTitle) return res.status(400).json({ error: 'title required' });
+  // Stray-value guard (2026-07-22 root cause) — flag if EITHER the staff title or
+  // the borrower-facing title is a stray value (a caller could send a real title
+  // alongside a stray borrowerTitle that the borrower would then see).
+  {
+    const stray = strayConditionReason(b.title) || strayConditionReason(b.borrowerTitle);
+    if (stray && b.confirmStrayLabel !== true) {
+      const bad = strayConditionReason(b.title) ? b.title : b.borrowerTitle;
+      return res.status(409).json({ error: strayConditionMessage(stray, bad), code: 'stray_condition_label', reason: stray, needsConfirm: true });
+    }
+  }
   const audience = ['staff', 'borrower', 'both'].includes(b.audience) ? b.audience : 'staff';
   const severity = ['standard', 'prior_to_docs', 'prior_to_funding', 'post_closing'].includes(b.severity) ? b.severity : 'standard';
   try {
@@ -2233,7 +3930,7 @@ router.post('/applications/:id/loan-conditions', async (req, res) => {
       if (a.rows[0]?.borrower_id) {
         try {
           await notify.notifyAppBorrowers(req.params.id, {
-            type: 'condition_added', title: 'A new item needs your attention',
+            type: 'condition_added', title: 'A new item needs your attention', badge: { text: 'Action needed', tone: 'action' },
             // Never surface the internal title to the borrower — use the
             // borrower-facing wording, or a generic prompt if none was given.
             body: b.borrowerTitle || 'Your loan team added an item to your file — sign in to see what we need.',
@@ -2328,6 +4025,18 @@ router.post('/change-requests/:cid/approve', async (req, res) => {
     if (!cr) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'not found' }); }
     if (!(await canTouchApp(req, cr.application_id))) { await client.query('ROLLBACK'); return res.status(403).json({ error: 'forbidden' }); }
     if (cr.status !== 'pending') { await client.query('ROLLBACK'); return res.status(409).json({ error: `this request is already ${cr.status}` }); }
+    // #84 — once a file is clear-to-close / funded its economics are frozen, so even
+    // an APPROVED change may not be written onto it (a super_admin can unlock the
+    // file to make the correction). Without this the CR-approve path is another door
+    // around the funded freeze.
+    // The funded / clear-to-close structural freeze is ECONOMICS-only. A personal
+    // identity correction (name / DOB / SSN / phone / …) is not loan structure, so it
+    // must NOT be blocked by it — only an applications-entity (economics) change
+    // re-checks the freeze here.
+    if (cr.target_table !== 'borrowers') {
+      const crLock = await require('../lib/file-lock').structuralLockReason(cr.application_id, client, { actor: req.actor });
+      if (crLock) { await client.query('ROLLBACK'); return res.status(409).json({ error: crLock, locked: true }); }
+    }
     const applied = await changeRequests.applyRequest(client, cr, req.actor.id, note);
     await client.query('COMMIT');
     // Propagate the approved value to ClickUp (#86). The governed economics fields
@@ -2338,7 +4047,22 @@ router.post('/change-requests/:cid/approve', async (req, res) => {
     // multiple times"). Every other governed-field write path already enqueues
     // its touched columns; the CR-approve path was the one that forgot. Must run
     // AFTER COMMIT so the sync worker reads the committed value, not the stale one.
-    enqueueClickupPush(cr.application_id, [applied.field]).catch(() => {});
+    if (applied.entity === 'borrowers') {
+      // A personal change updates the SHARED borrower row — propagate to EVERY file
+      // where this borrower is the PRIMARY (their personal fields map to that task's
+      // primary-borrower fields), and a DOB rides as a HUMAN edit so the outbound DOB
+      // gate honors this explicit staff approval rather than treating it as an
+      // automated overwrite it would park for review.
+      try {
+        const bfiles = await db.query(
+          `SELECT id FROM applications WHERE borrower_id=$1 AND deleted_at IS NULL AND clickup_pipeline_task_id IS NOT NULL`,
+          [applied.borrowerId]);
+        const pushOpts = applied.field === 'date_of_birth' ? { humanEditKeys: ['date_of_birth'] } : {};
+        for (const row of bfiles.rows) enqueueClickupPush(row.id, [applied.field], pushOpts).catch(() => {});
+      } catch (_) { /* best-effort propagation */ }
+    } else {
+      enqueueClickupPush(cr.application_id, [applied.field]).catch(() => {});
+    }
     // The change is already committed — never let the audit/notify below turn a
     // successful apply into a 500.
     try {
@@ -2350,7 +4074,7 @@ router.post('/change-requests/:cid/approve', async (req, res) => {
     try {
       const change = changeRequests.describeChange(cr);
       await notify.notifyAppBorrowers(cr.application_id, {
-        type: 'change_request', title: 'Your requested change was approved',
+        type: 'change_request', title: 'Your requested change was approved', badge: { text: 'Approved', tone: 'positive' },
         body: `Your loan team approved your update to ${cr.field_label}. ${change} is now on file.`,
         applicationId: cr.application_id, link: `/app/${cr.application_id}`, ctaLabel: 'Open your file' });
     } catch (_) {}
@@ -2381,7 +4105,7 @@ router.post('/change-requests/:cid/reject', async (req, res) => {
     try {
       const change = changeRequests.describeChange(cr);
       await notify.notifyAppBorrowers(cr.application_id, {
-        type: 'change_request', title: 'Update on your requested change',
+        type: 'change_request', title: 'Update on your requested change', badge: { text: 'Reviewed', tone: 'neutral' },
         body: `Your loan team reviewed your requested change (${change}) and it was not applied${note ? `: ${note}` : '. Reach out if you have questions.'}`,
         applicationId: cr.application_id, link: `/app/${cr.application_id}`, ctaLabel: 'Open your file' });
     } catch (_) {}
@@ -2399,7 +4123,7 @@ router.post('/change-requests/:cid/reject', async (req, res) => {
 //                     verify more, until they agree).
 async function signOffGate(itemId, actor) {
   const it = await db.query(
-    `SELECT ci.application_id, ci.tool_key, ci.tool_payload, ci.item_kind, ci.is_required,
+    `SELECT ci.application_id, ci.borrower_id, ci.field_key, ci.tool_key, ci.tool_payload, ci.item_kind, ci.is_required,
             (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code
        FROM checklist_items ci WHERE ci.id=$1`, [itemId]);
   const item = it.rows[0];
@@ -2411,35 +4135,101 @@ async function signOffGate(itemId, actor) {
   const isInsurance = code === 'rtl_cond_insurance';
   const isTitle = code === 'rtl_cond_title';
   const isFraud = code === 'rtl_cond_fraud';
+  const isAppraisalDocs = code === 'rtl_cond_appraisaldocs';   // two slots: XML + PDF
+  const isCredit = code === 'rtl_cond_credit';                 // requires an IMPORTED credit report (not a bare PDF)
+  const isAppraisalReview = code === 'appraisal_review_cleared'; // CTC gate: no open fatal finding
+  const isUnderwritingReview = code === 'underwriting_review_cleared'; // CTC gate: no open fatal document finding
+  // Structured-DATA conditions — the borrower/staff enter DATA (not a document):
+  // the appraisal payment card, and the title / insurance contact forms.
+  const isApprCard = item.tool_key === 'appraisal_card' || code === 'rtl_p1_apprcard';
+  const isTitleContact = item.tool_key === 'title_contact' || code === 'rtl_p1_titlec';
+  const isInsContact = item.tool_key === 'insurance_contact' || code === 'rtl_p1_insc';
 
-  // EMERGENCY doc-gate (owner-directed): a DOCUMENT-upload condition can never be
-  // signed off with ZERO documents on it — the sign-off would attest to a file
-  // that isn't there. Applies to everyone (LO, processor, underwriter, admin,
-  // semi-admin); ONLY a super_admin may override. Tool-backed conditions
-  // (product / budget / experience / appraisal card) are verified by their own
-  // rules below, and the entity-fulfilled LLC condition is verified from the
-  // linked LLC — those are exempt. Insurance/title/fraud have stricter slot
-  // rules handled just below (and return before reaching here).
+  // Doc-gate: a REQUIRED document-upload condition can never be signed off with
+  // ZERO documents on it — the sign-off would attest to a file that isn't there.
+  // Applies to EVERYONE with no exception (owner-directed 2026-07-20: an admin
+  // signing off the government-ID condition with nothing uploaded is a "major
+  // fatal" — the previous super_admin override is REMOVED; no role may bypass a
+  // required condition's fulfillment). Tool-backed conditions (product / budget /
+  // experience / appraisal card / title+insurance contact) are verified by their
+  // own rules below, and the entity-fulfilled LLC condition is verified from the
+  // linked LLC — those are exempt. Insurance/title/fraud have stricter slot rules
+  // handled just below (and return before reaching here).
   // An OPTIONAL document condition (is_required=false — e.g. the Investor
-  // Structure Printout) may be signed off with nothing uploaded: "optional"
-  // means the file can complete without the document, so demanding one before
-  // sign-off contradicted the flag (owner-reported 2026-07-16). Required
-  // document conditions keep the gate exactly as before.
+  // Structure Printout) may still be signed off with nothing uploaded: "optional"
+  // means the file can complete without it (matches the Waive affordance).
+  // Credit report condition: cannot be signed off until a report was actually
+  // IMPORTED (the import files the PDF + XML AND reads the scores). A bare PDF
+  // upload is NOT enough (owner-directed 2026-07-23). Credit is required for EVERY
+  // borrower on the file. A credit condition is application-scoped (chk_one_owner
+  // forbids a borrower_id on it), so the co-borrower's OWN condition is the one
+  // marked field_key='cob_credit' — it needs the co-borrower's report; the
+  // file-level condition needs the PRIMARY and any co-borrower that doesn't have
+  // their own (marked) condition (the default "pull both" files both reports here,
+  // so signing it off attests to both). Report↔borrower is credit_reports.borrower_id.
+  if (isCredit) {
+    const af = (await db.query(
+      'SELECT borrower_id, co_borrower_id FROM applications WHERE id=$1', [item.application_id])).rows[0] || {};
+    const need = [];
+    if (item.field_key === 'cob_credit') {
+      if (af.co_borrower_id) need.push(af.co_borrower_id);
+    } else {
+      if (af.borrower_id) need.push(af.borrower_id);
+      if (af.co_borrower_id) {
+        const coOwn = await db.query(
+          `SELECT 1 FROM checklist_items WHERE application_id=$1 AND field_key='cob_credit' LIMIT 1`,
+          [item.application_id]);
+        if (!coOwn.rows[0]) need.push(af.co_borrower_id);
+      }
+    }
+    for (const bid of need) {
+      const imported = (await db.query(
+        `SELECT 1 FROM credit_reports
+          WHERE application_id=$1 AND borrower_id=$2 AND status='completed' LIMIT 1`,
+        [item.application_id, bid])).rows[0];
+      if (!imported) {
+        const isCo = af.co_borrower_id && String(bid) === String(af.co_borrower_id);
+        const who = isCo ? 'the co-borrower’s ' : (need.length > 1 ? 'the primary borrower’s ' : '');
+        return `Import ${who}credit report before signing off — a report must be imported here (that files the PDF + data file and reads the scores). Uploading a PDF by itself is not enough.`;
+      }
+    }
+    return null;
+  }
+
   if (item.item_kind === 'document' && !item.tool_key && item.is_required !== false
-      && code !== 'rtl_p1_llc' && !isInsurance && !isTitle && !isFraud) {
-    if (!actor || actor.role !== 'super_admin') {
-      const has = await db.query(
-        `SELECT 1 FROM documents WHERE checklist_item_id=$1 AND is_current
-           AND COALESCE(review_status,'') <> 'rejected' LIMIT 1`, [itemId]);
-      if (!has.rows.length)
-        return 'Upload a document to this condition before signing it off — a document-based condition cannot be completed with nothing uploaded. (Only a super-admin can override this.)';
+      && code !== 'rtl_p1_llc' && !isInsurance && !isTitle && !isFraud && !isAppraisalDocs && !isCredit) {
+    const has = await db.query(
+      `SELECT 1 FROM documents WHERE checklist_item_id=$1 AND is_current
+         AND COALESCE(review_status,'') <> 'rejected' LIMIT 1`, [itemId]);
+    if (!has.rows.length) {
+      // Government-ID REUSE exception: the photo ID is collected ONCE on the
+      // borrower profile and reused across every file (borrower.js). On files
+      // other than the one it was uploaded to, this condition carries NO document
+      // linked to its own item — the ID lives on borrowers.photo_id_document_id,
+      // and the reuse logic marks the item 'received' without a per-file doc. So a
+      // strict "must have a doc on THIS item" gate would falsely block a reused
+      // gov-ID. Accept the borrower's on-file photo ID as fulfillment (mirrors the
+      // reuse rule, which keys off the file's borrower's photo_id_document_id).
+      if (code === 'rtl_p1_id' || code === 'gov_id') {
+        // The on-file photo ID must itself be a CURRENT, non-rejected document —
+        // a rejected/superseded ID pointer is not fulfillment (the pointer is only
+        // cleared by FK-on-delete, so reject alone leaves it dangling).
+        const pid = await db.query(
+          `SELECT 1 FROM borrowers b
+             JOIN documents d ON d.id = b.photo_id_document_id
+            WHERE d.is_current AND COALESCE(d.review_status,'') <> 'rejected'
+              AND (b.id = $1 OR b.id = (SELECT borrower_id FROM applications WHERE id = $2))
+            LIMIT 1`, [item.borrower_id || null, item.application_id || null]);
+        if (pid.rows.length) return null;
+      }
+      return 'Upload a document to this condition before signing it off — a document-based condition cannot be completed with nothing uploaded.';
     }
   }
 
   // Document-gated conditions: cannot be signed off until the required upload(s)
   // are present on the item (current, non-rejected versions). slot_label carries
   // the slot key/label, so a case-insensitive substring identifies each slot.
-  if (isInsurance || isTitle || isFraud) {
+  if (isInsurance || isTitle || isFraud || isAppraisalDocs) {
     const docs = await db.query(
       `SELECT lower(coalesce(slot_label,'')) AS slot FROM documents
         WHERE checklist_item_id=$1 AND is_current AND COALESCE(review_status,'') <> 'rejected'`, [itemId]);
@@ -2448,6 +4238,20 @@ async function signOffGate(itemId, actor) {
     if (isInsurance) {
       if (!hasSlot('binder') || !hasSlot('invoice'))
         return 'Upload BOTH the insurance binder and the insurance invoice before signing off — this condition cannot be completed without both documents.';
+      return null;
+    }
+    if (isAppraisalDocs) {
+      if (!hasSlot('xml') || !hasSlot('pdf'))
+        return 'Upload BOTH the appraisal data file (XML) and the appraisal report (PDF) before signing off — this condition cannot be completed without both.';
+      // The XML must have actually IMPORTED. If PILOT could not read the dropped file as a valid
+      // appraisal, no `appraisal_review_cleared` condition is ever materialized — and without it the
+      // whole PILOT findings engine (the fatal-finding clear-to-close gate) is silently skipped for
+      // this file. A successful import always creates a current appraisals row AND that condition,
+      // so require the row to exist before letting this document condition be signed off.
+      const imported = (await db.query(
+        `SELECT 1 FROM appraisals WHERE application_id=$1 AND superseded=false LIMIT 1`, [item.application_id])).rows[0];
+      if (!imported)
+        return 'The appraisal data file (XML) has not been read as a valid appraisal yet, so the PILOT appraisal review has not run. Re-upload a valid MISMO appraisal XML (PILOT imports it automatically) before signing off this condition.';
       return null;
     }
     if (isTitle) {
@@ -2465,6 +4269,67 @@ async function signOffGate(itemId, actor) {
     }
   }
 
+  // Appraisal review cleared — the clear-to-close gate. It cannot be signed off while ANY fatal
+  // PILOT appraisal finding is still open (wrong property, value below purchase, expired license,
+  // C6/Q6, stale date, …). This is the safety guarantee the whole findings engine exists for.
+  if (isAppraisalReview) {
+    const n = (await db.query(
+      `SELECT count(*)::int AS n FROM appraisal_findings
+        WHERE application_id=$1 AND status='open' AND severity='fatal' AND blocks_ctc=true`, [item.application_id])).rows[0].n;
+    if (n > 0)
+      return `Resolve the ${n} open fatal appraisal finding${n === 1 ? '' : 's'} first — the appraisal review cannot be cleared while a fatal PILOT finding is open. Open the appraisal to replace, keep, or grant an exception on each.`;
+    return null;
+  }
+
+  // Document-underwriting review cleared — the CTC gate for the document-underwriting engine. It
+  // cannot be signed off while ANY fatal document finding is open: the stored per-document fatals
+  // (document_findings) OR the derived tie-out fatals (a fact that doesn't agree across the file's
+  // documents). Same computation the desk uses, so the gate and the badge never disagree.
+  if (isUnderwritingReview) {
+    const { fileFatalCount } = require('../lib/underwriting/file-review');
+    const { total } = await fileFatalCount(db, item.application_id);
+    if (total > 0)
+      return `Resolve the ${total} open fatal document finding${total === 1 ? '' : 's'} first — document underwriting cannot be cleared while a fatal PILOT finding is open. Open the Document Review section to post a condition, request a document, fix the file, or grant an exception on each.`;
+    return null;
+  }
+
+  // Structured-DATA conditions (owner-directed 2026-07-20): these collect DATA,
+  // not a document, so the doc-gate above never saw them and they could be signed
+  // off empty — the reported "signed off the credit-card / title / insurance
+  // condition with nothing entered" hole. A REQUIRED one now needs its data
+  // present; an OPTIONAL one (is_required=false) may still be completed empty.
+  if (isApprCard || isTitleContact || isInsContact) {
+    if (item.is_required === false) return null;
+    if (isApprCard) {
+      const has = await db.query(`SELECT 1 FROM application_payment_cards WHERE application_id=$1 LIMIT 1`, [item.application_id]);
+      if (!has.rows.length)
+        return 'Enter the credit card for the appraisal before signing this off — this condition cannot be completed until the card is on file.';
+      return null;
+    }
+    const types = isTitleContact ? ['title_company'] : ['insurance_agent', 'flood_insurance'];
+    const has = await db.query(
+      `SELECT 1 FROM application_service_contacts WHERE application_id=$1 AND contact_type = ANY($2::text[]) LIMIT 1`,
+      [item.application_id, types]);
+    if (!has.rows.length)
+      return `Enter the ${isTitleContact ? 'title company' : 'insurance'} contact before signing this off — this condition cannot be completed without it.`;
+    return null;
+  }
+
+  // Vesting-entity (LLC) condition (owner-directed 2026-07-20: "EVERY condition
+  // required unless optional"). rtl_p1_llc is a required condition fulfilled by
+  // VERIFYING the file's linked LLC (the LLC-verify route auto-signs it off on
+  // verification). It's exempt from the plain document gate above (its documents
+  // live on the LLC's own sub-conditions, not on this item), so without this it
+  // could be signed off empty. Block a manual sign-off until the vesting LLC is
+  // actually linked AND verified.
+  if (code === 'rtl_p1_llc') {
+    const v = (await db.query(
+      `SELECT l.is_verified FROM applications a JOIN llcs l ON l.id = a.llc_id WHERE a.id=$1`, [item.application_id])).rows[0];
+    if (!v) return 'Link the vesting entity (LLC) to this file, then verify it, before signing this off.';
+    if (!v.is_verified) return 'Verify the vesting entity (LLC) — its details, ownership, and all its documents — before signing this off.';
+    return null;
+  }
+
   if (!isProduct && !isBudget && !isExp) return null;
 
   const ar = await db.query(
@@ -2478,10 +4343,6 @@ async function signOffGate(itemId, actor) {
   const reg = (await db.query(
     `SELECT inputs, quote, program FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`,
     [item.application_id])).rows[0] || null;
-  const money = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('en-US');
-  // Exact match to the cent (owner-directed): the Scope of Work must equal the
-  // file budget and the registered product budget EXACTLY, not just to the dollar.
-  const eq = (a, c) => Math.round((Number(a) || 0) * 100) === Math.round((Number(c) || 0) * 100);
 
   if (isProduct) {
     if (!reg) return 'Register a product first — this condition can only be signed off once a product is registered on the file in the Term Sheet Studio.';
@@ -2489,25 +4350,24 @@ async function signOffGate(itemId, actor) {
   }
   if (isBudget) {
     if (!reg) return 'Register a product first — the rehab budget must match the registered product before this can be signed off.';
-    const sowTotal = item.tool_payload && item.tool_payload.total != null ? Number(item.tool_payload.total) : null;
-    if (sowTotal == null) return 'The Scope of Work / rehab budget has not been submitted yet.';
-    const appBudget = Number(app.rehab_budget) || 0;
-    const regBudget = reg.inputs && reg.inputs.rehabBudget != null ? Number(reg.inputs.rehabBudget) : null;
-    // The FIRST-PAGE construction budget on the SOW (state.target) — prefilled
-    // from the application ("the total you start at originally"). When set it must
-    // ALSO equal the budget exactly, so the number you start at, the line-item
-    // total, the file budget and the product budget all agree (owner-directed
-    // 2026-07-10 belt-and-suspenders).
-    const fpTarget = require('../lib/rehab-budget').firstPageBudget(item.tool_payload);
-    const fpSet = fpTarget != null && fpTarget > 0;
-    if (!eq(sowTotal, appBudget) || (regBudget != null && !eq(appBudget, regBudget)) || (fpSet && !eq(fpTarget, appBudget))) {
-      return `Budgets do not match — first-page construction budget ${fpSet ? money(fpTarget) : '—'}, Scope of Work line-item total ${money(sowTotal)}, file budget ${money(appBudget)}${regBudget != null ? `, registered product budget ${money(regBudget)}` : ''}. They must ALL agree to the cent before sign-off: adjust the Scope of Work (start total + line items) or re-register the product so the numbers match.`;
-    }
-    // Gold Standard Program: the Scope of Work must carry a >= 5% construction
-    // contingency (owner-directed 2026-07-12). The budget still matches exactly
-    // above — this is a composition requirement on top of it.
-    if (/gold/i.test(String(reg.program || '')) && !require('../lib/rehab-budget').goldContingencyOk(item.tool_payload)) {
-      return require('../lib/rehab-budget').GOLD_CONTINGENCY_MSG;
+    // First-page construction budget, SOW line-item total, file budget and the
+    // registered product budget must ALL agree to the cent (owner-directed
+    // 2026-07-10 belt-and-suspenders). The comparison, the comma/"$"-tolerant
+    // parsing AND the cent-precise mismatch message (which names exactly which
+    // number is off and by how much) live in ONE place — rehab-budget.js
+    // budgetSignoffCheck — so the check and its explanation can never use
+    // different precision again (owner-reported 2026-07-24: a cents-level gap
+    // printed four identical dollar-rounded "$120,000" figures).
+    const budgetMsg = require('../lib/rehab-budget').budgetSignoffCheck(item.tool_payload, app.rehab_budget, reg.inputs);
+    if (budgetMsg) return budgetMsg;
+    // 5% construction contingency requirement (owner-directed 2026-07-12; extended
+    // 2026-07-20): the Scope of Work must carry a >= 5% contingency when the file
+    // is registered Gold OR its note buyer is Blue Lake. The budget still matches
+    // exactly above — this is a composition requirement on top of it.
+    const RB = require('../lib/rehab-budget');
+    const contReq = await RB.sowContingencyRequired(item.application_id);
+    if (contReq.required && !RB.goldContingencyOk(item.tool_payload)) {
+      return RB.SOW_CONTINGENCY_MSG;
     }
     return null;
   }
@@ -2574,10 +4434,23 @@ router.patch('/checklist/:itemId', async (req, res) => {
   // so it needs the same capability as a sign-off, and only an OPTIONAL condition
   // may be waived — a required condition must actually be satisfied.
   if (b.waived === true) {
-    if (!canComplete) return res.status(403).json({ error: 'Only a processor or underwriter can waive a condition.' });
-    const cur = await db.query(`SELECT is_required FROM checklist_items WHERE id=$1`, [req.params.itemId]);
+    const cur = await db.query(
+      `SELECT ci.is_required, ci.tool_key, t.code AS template_code
+         FROM checklist_items ci LEFT JOIN checklist_templates t ON t.id = ci.template_id
+        WHERE ci.id=$1`, [req.params.itemId]);
     if (!cur.rows[0]) return res.status(404).json({ error: 'not found' });
-    if (cur.rows[0].is_required !== false) return res.status(422).json({ error: 'Only an optional condition can be waived — make it optional first, then waive.' });
+    // The appraisal credit-card condition may ALSO be waived by the loan officer
+    // (owner-directed): "The credit-card-for-appraisal condition should have a
+    // waive button… the super admin should be able to waive the condition, the
+    // loan officer should also be able to waive the condition." Every other
+    // condition still needs sign-off authority to waive.
+    const isApprCard = cur.rows[0].tool_key === 'appraisal_card' || cur.rows[0].template_code === 'rtl_p1_apprcard';
+    const mayWaive = canComplete || (isApprCard && can(req.actor, 'review_conditions'));
+    if (!mayWaive) return res.status(403).json({ error: 'Only a processor or underwriter can waive a condition.' });
+    // Normally only an OPTIONAL condition may be waived. The appraisal credit-card
+    // condition is an explicit exception (owner-directed): it is waivable directly
+    // even though it's a required task — the appraisal may simply be paid another way.
+    if (!isApprCard && cur.rows[0].is_required !== false) return res.status(422).json({ error: 'Only an optional condition can be waived — make it optional first, then waive.' });
   }
   // Push-back / reject / reopen: send a condition back to the borrower with a
   // BORROWER-VISIBLE reason (owner-directed 2026-07-12, LOS-grade management). One
@@ -2662,13 +4535,29 @@ router.patch('/checklist/:itemId', async (req, res) => {
   // self-gating no-op for unmapped items / unlinked files).
   enqueueChecklistStatusPush(req.params.itemId).catch(() => {});
 
+  // Non-blocking false-clear guard (owner-directed): when a condition is signed
+  // off, if PILOT's read of the cleared document (the cure proof) says it does
+  // NOT actually satisfy the requirement, raise an advisory so the reviewer can
+  // confirm or reopen. NEVER blocks the sign-off (the human action already
+  // happened) — the AI never blocks. Best-effort, deferred, dedupe-keyed.
+  if (b.signedOff === true || b.status === 'satisfied') {
+    const _itemId = req.params.itemId;
+    setImmediate(() => {
+      require('../lib/underwriting/cure-signoff-advisory')
+        .warnOnWeakProofSignoff(db, _itemId).catch(() => {});
+    });
+  }
+
   // Push-back: audit it and tell the borrower what needs fixing (only for
   // borrower-facing conditions — a staff-only item has no borrower to notify).
   if (b.pushBack === true) {
     try { await audit(req, 'push_back_condition', 'checklist_item', req.params.itemId, { reason: String(b.issueReason).slice(0, 500) }); } catch (_) {}
     try {
       const it = await db.query(
-        `SELECT ci.application_id, ci.audience, COALESCE(ci.borrower_label, ci.label) AS label, a.borrower_id
+        `SELECT ci.application_id, ci.audience,
+                -- BORROWER wording only (leak fix 2026-07-23): the internal
+                -- label can carry capital-partner context — never email it.
+                COALESCE(NULLIF(ci.borrower_label,''), 'An item on your file') AS label, a.borrower_id
            FROM checklist_items ci LEFT JOIN applications a ON a.id=ci.application_id WHERE ci.id=$1`,
         [req.params.itemId]);
       const row = it.rows[0];
@@ -2677,12 +4566,55 @@ router.patch('/checklist/:itemId', async (req, res) => {
         await notify.notifyBorrower(row.borrower_id, {
           type: 'doc_rejected',
           title: `"${row.label}" needs your attention`,
-          body: `Your loan team sent "${row.label}" back${ctx ? ` (${ctx.label})` : ''}: ${String(b.issueReason).slice(0, 180)}`,
-          meta: (ctx && ctx.meta) || undefined,
+          badge: { text: 'Action needed', tone: 'action' },
+          body: `Your loan team reviewed "${row.label}" and sent it back so it can be corrected.`,
+          callout: { title: 'What we need', body: String(b.issueReason).slice(0, 300), tone: 'action' },
+          meta: (ctx && ctx.borrowerMeta) || undefined,
           applicationId: row.application_id,
           link: row.application_id ? `/app/${row.application_id}` : '/profile',
-          ctaLabel: 'Review the condition' });
+          ctaLabel: 'Fix this item' });
       }
+    } catch (_) { /* best-effort */ }
+  }
+  // "You're all caught up" (owner-directed 2026-07-20): when a borrower-visible
+  // condition is signed off / waived and it was the LAST open item on the file,
+  // reassure the borrower there's nothing left for them to do right now. Gated to
+  // once per file per ~day (audit_log) so a batch of sign-offs sends ONE note, not
+  // one per item. Only when the file truly has zero outstanding borrower items.
+  if (b.signedOff === true || b.waived === true) {
+    try {
+      const it = await db.query(
+        `SELECT ci.application_id, ci.audience, a.borrower_id
+           FROM checklist_items ci LEFT JOIN applications a ON a.id=ci.application_id WHERE ci.id=$1`,
+        [req.params.itemId]);
+      const row = it.rows[0];
+      if (row && row.borrower_id && row.application_id && row.audience !== 'staff') {
+        const open = await require('../lib/reminders').outstandingItems(row.application_id);
+        if (open.length === 0) {
+          // Atomically CLAIM the 20h slot so two conditions clearing the last item
+          // on the same file in the same instant can't both email (advisory-locked
+          // shared helper — a plain INSERT…WHERE NOT EXISTS is not atomic).
+          const claimId = await claimOncePerPeriod({ action: 'all_caught_up_emailed', entityId: row.application_id, interval: '20 hours' });
+          if (claimId) {
+            await notify.notifyAppBorrowers(row.application_id, {
+              type: 'all_caught_up',
+              title: 'You’re all caught up',
+              hero: { label: 'Nothing needed right now', value: '✓ All caught up', tone: 'positive' },
+              badge: { text: 'All clear', tone: 'positive' },
+              body: 'Great news — you’ve completed everything your loan team needs from you at the moment, so there’s nothing left for you to do right now.',
+              lines: ['We’ll email you the moment a new item needs your attention. In the meantime, you can always check your file in the portal.'],
+              applicationId: row.application_id, link: `/app/${row.application_id}`, ctaLabel: 'View your file' });
+          }
+        }
+      }
+    } catch (_) { /* best-effort */ }
+  }
+  // The Workflow, phase two: a sign-off / waive may have made the file ready for
+  // its next step — nudge the loan officer (throttled, best-effort).
+  if (b.signedOff === true || b.waived === true) {
+    try {
+      const ar = await db.query(`SELECT application_id FROM checklist_items WHERE id=$1`, [req.params.itemId]);
+      if (ar.rows[0] && ar.rows[0].application_id) await suggestNextStep(ar.rows[0].application_id, req.actor.id);
     } catch (_) { /* best-effort */ }
   }
   res.json({ ok: true });
@@ -2697,9 +4629,15 @@ router.post('/applications/:id/assign', async (req, res) => {
     // ONLY claim a currently-EMPTY slot for THEMSELVES — never take over a file
     // already assigned to another officer/processor. Admins may (re)assign
     // freely. The audit records both the previous and new owner.
-    const cur = await db.query(`SELECT loan_officer_id, processor_id FROM applications WHERE id=$1`, [req.params.id]);
+    const cur = await db.query(`SELECT loan_officer_id, processor_id, status, deleted_at FROM applications WHERE id=$1`, [req.params.id]);
     if (!cur.rows[0]) return res.status(404).json({ error: 'application not found' });
     const admin = isAdmin(req);
+    // A borrower "meet your loan officer, guiding your loan to closing" email only
+    // makes sense on a LIVE, borrower-visible file — never on a lead-capture file
+    // the borrower hasn't accepted, a terminal (declined/withdrawn/funded) file, or
+    // an archived one (owner-reported audit 2026-07-20).
+    const fileLiveForBorrower = !cur.rows[0].deleted_at &&
+      !['file_intake', 'declined', 'withdrawn', 'funded'].includes(cur.rows[0].status);
     if (loanOfficerId) {
       const selfClaimEmpty = !cur.rows[0].loan_officer_id && String(loanOfficerId) === String(req.actor.id);
       if (!admin && !selfClaimEmpty) {
@@ -2712,9 +4650,47 @@ router.post('/applications/:id/assign', async (req, res) => {
       const u = await db.query(`UPDATE applications SET loan_officer_id=$2, loan_officer_name=$3, updated_at=now() WHERE id=$1`,
         [req.params.id, loanOfficerId, off.rows[0].full_name]);
       if (u.rowCount === 0) return res.status(404).json({ error: 'application not found' });
-      await notify.notifyStaff(loanOfficerId, {
-        type: 'assignment', title: 'Application assigned to you', applicationId: req.params.id,
-        link: `/internal/app/${req.params.id}` });
+      const officerChanged = String(cur.rows[0].loan_officer_id || '') !== String(loanOfficerId);
+      // Invalidate the LO-notification-gate's cache for this file so the very
+      // next notification routes to the NEW LO's prefs (not the previous holder's).
+      try { require('../lib/lo-notification-gate').invalidateFile(req.params.id); } catch (_) { /* best-effort */ }
+      // Only email the officer on a REAL change — re-saving the assignment panel
+      // with the same officer is a no-op and must not re-send "You are the loan
+      // officer on a file" every time (round-2 audit N3).
+      if (officerChanged) {
+        await notify.notifyStaff(loanOfficerId, {
+          type: 'assignment', title: 'You are the loan officer on a file',
+          body: `${req.actor.name || 'An admin'} assigned this file to you as loan officer. The file details are below — open it to get started.`,
+          applicationId: req.params.id, ctaLabel: 'Open the loan file',
+          link: `/internal/app/${req.params.id}` });
+      }
+      // "Meet your loan officer" (owner-directed 2026-07-20): when the officer
+      // CHANGES to a new person, introduce them to the borrower so the
+      // relationship is personal and they know exactly who to reach (fileContext
+      // now auto-adds the officer's contact card to every borrower email, so the
+      // copy just needs to be the warm intro). Fires once per real change — and
+      // only on a live, borrower-visible file (not a lead/terminal/archived one).
+      if (fileLiveForBorrower && String(cur.rows[0].loan_officer_id || '') !== String(loanOfficerId)) {
+        try {
+          const o = await db.query(`SELECT full_name, title, email, phone, cell FROM staff_users WHERE id=$1`, [loanOfficerId]);
+          const oa = o.rows[0] || {};
+          const oname = oa.full_name || 'Your loan officer';
+          const reach = [oa.cell || oa.phone, oa.email].filter(Boolean).join(' or ');
+          await notify.notifyAppBorrowers(req.params.id, {
+            type: 'officer_assigned',
+            title: `${oname} is your loan officer`,
+            body: `${oname}${oa.title ? `, ${oa.title},` : ''} will be your point of contact at YS Capital Group, guiding your loan from here through closing.`,
+            lines: [
+              reach ? `You can reach ${oname.split(' ')[0]} directly at ${reach} — or just reply to this email and it goes straight to your loan team.`
+                    : `Just reply to this email any time and it goes straight to your loan team.`,
+              'Your loan officer and their contact details are always shown at the bottom of these emails and in your portal.',
+            ],
+            applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Open your file',
+            from: require('../lib/email').fromWithName(oname),
+            replyTo: oa.email || null,
+          });
+        } catch (_) { /* intro email is best-effort */ }
+      }
       await audit(req, 'assign_application', 'application', req.params.id, { from: cur.rows[0].loan_officer_id || null, to: loanOfficerId });
     }
     if (processorId) {
@@ -2729,14 +4705,20 @@ router.post('/applications/:id/assign', async (req, res) => {
       const u = await db.query(`UPDATE applications SET processor_id=$2, updated_at=now() WHERE id=$1`,
         [req.params.id, processorId]);
       if (u.rowCount === 0) return res.status(404).json({ error: 'application not found' });
-      await notify.notifyStaff(processorId, {
-        type: 'assignment', title: 'File assigned to you for processing', applicationId: req.params.id,
-        link: `/internal/app/${req.params.id}` });
+      // Only email the processor on a REAL change (round-2 audit N3) — a no-op
+      // re-assign must not re-send "You are the processor on a file".
+      if (String(cur.rows[0].processor_id || '') !== String(processorId)) {
+        await notify.notifyStaff(processorId, {
+          type: 'assignment', title: 'You are the processor on a file',
+          body: `${req.actor.name || 'An admin'} assigned this file to you for processing. The file details are below — open it to get started.`,
+          applicationId: req.params.id, ctaLabel: 'Open the loan file',
+          link: `/internal/app/${req.params.id}` });
+      }
       await audit(req, 'assign_processor', 'application', req.params.id, { from: cur.rows[0].processor_id || null, to: processorId });
     }
     enqueueClickupPush(req.params.id, ['officer', 'processor']).catch(() => {}); // propagate officer/processor to ClickUp promptly
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // ---------------- multi-assignee team (#64): full-access assistants ----------------
@@ -2779,11 +4761,12 @@ router.post('/applications/:id/assignees', async (req, res) => {
       `INSERT INTO application_assignees (application_id, staff_id, role, is_primary, added_by) VALUES ($1,$2,$3,false,$4)`,
       [req.params.id, staffId, role, req.actor.id]);
     await notify.notifyStaff(staffId, {
-      type: 'assignment', title: 'You were added to a file',
-      applicationId: req.params.id, link: `/internal/app/${req.params.id}` });
+      type: 'assignment', title: `You were added to a file as ${role === 'processor' ? 'a processor' : 'a loan officer'}`,
+      body: `${req.actor.name || 'A teammate'} added you to this file with full access. The file details are below.`,
+      applicationId: req.params.id, ctaLabel: 'Open the loan file', link: `/internal/app/${req.params.id}` });
     await audit(req, 'add_assignee', 'application', req.params.id, { staffId, role });
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 router.delete('/applications/:id/assignees/:staffId', async (req, res) => {
@@ -2799,7 +4782,7 @@ router.delete('/applications/:id/assignees/:staffId', async (req, res) => {
       [req.params.id, role, req.params.staffId]);
     await audit(req, 'remove_assignee', 'application', req.params.id, { staffId: req.params.staffId, role });
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // ---------------- borrower profile view + SSN reveal (audited) ----------------
@@ -2862,7 +4845,7 @@ router.post('/applications/:id/appraisal-card', async (req, res) => {
       number: v.number, cvc: v.cvc, expMonth: v.expMonth, expYear: v.expYear, zip: v.zip });
     await audit(req, 'save_appraisal_card', 'application', req.params.id, { last4, enteredByStaff: true });
     res.status(201).json({ ok: true, last4, brand });
-  } catch (e) { res.status(500).json({ error: db.describeError(e) }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 // Borrower name typeahead for staff origination (StaffNewFile): match prior
 // borrowers by name so a new file can LINK to the existing borrower instead of
@@ -2954,7 +4937,7 @@ router.post('/borrowers/:id/portal-invite', async (req, res) => {
     if (!app) return res.status(400).json({ error: 'this borrower has no active file to invite them to' });
     const out = await inviteBorrowerToFile({ appId: app.id, borrowerId: b.id, email: b.email, firstName: b.first_name, req });
     res.json({ ok: true, ...out });
-  } catch (e) { res.status(500).json({ error: e.message || 'server error' }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Email the borrower a password-reset link (staff never see the password).
@@ -2970,7 +4953,7 @@ router.post('/borrowers/:id/reset-password', async (req, res) => {
     await mail.send('passwordReset', b.email, { firstName: b.first_name, resetUrl: mail.link('/reset?token=' + token), minutes: 60 });
     await audit(req, 'borrower_reset_password_email', 'borrower', b.id, {});
     res.json({ ok: true, emailed: true });
-  } catch (e) { res.status(500).json({ error: e.message || 'server error' }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Set a borrower's password directly (LO-assisted). Creates the login row if the
@@ -3002,7 +4985,7 @@ router.post('/borrowers/:id/set-password', async (req, res) => {
     await audit(req, 'borrower_set_password', 'borrower', b.id, {});
     try { if (b.email) await mail.send('passwordChanged', b.email, { firstName: b.first_name }); } catch (_) {}
     res.json({ ok: true, set: true, hadAccount: !!existing.rows[0] });
-  } catch (e) { res.status(500).json({ error: e.message || 'server error' }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 // (A borrower's entities live at GET /borrowers/:id/llcs below — the full
 // review bundle; its rows carry id/llc_name/is_verified for the track-record
@@ -3108,6 +5091,12 @@ router.patch('/borrowers/:id', async (req, res) => {
 router.get('/borrowers/:id/applications', async (req, res) => {
   try {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    // A scoped loan officer must not see the existence/loan#/address/amount of the
+    // borrower's OTHER files they aren't assigned to (round-2 audit F7); admins/
+    // underwriters/processors keep the borrower-wide view.
+    const params = [req.params.id];
+    let scope = '';
+    if (!seesAllBorrowers(req)) { params.push(req.actor.id); scope = `AND ${VISIBLE_OFFICERS_SQL('a', '$2')}`; }
     const r = await db.query(
       `SELECT a.id, a.ys_loan_number, a.program, a.loan_type, a.status, a.internal_status,
               a.property_address, a.loan_amount, a.created_at, a.expected_closing, a.actual_closing,
@@ -3116,10 +5105,10 @@ router.get('/borrowers/:id/applications', async (req, res) => {
          FROM applications a
          LEFT JOIN staff_users off ON off.id = a.loan_officer_id
          LEFT JOIN llcs l ON l.id = a.llc_id
-        WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND a.deleted_at IS NULL
-        ORDER BY a.created_at DESC`, [req.params.id]);
+        WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND a.deleted_at IS NULL ${scope}
+        ORDER BY a.created_at DESC`, params);
     res.json(r.rows);
-  } catch (e) { res.status(500).json({ error: 'server error' }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Open conditions/tasks-to-clear rolled up across ALL of the borrower's files —
@@ -3127,16 +5116,25 @@ router.get('/borrowers/:id/applications', async (req, res) => {
 router.get('/borrowers/:id/conditions', async (req, res) => {
   try {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    // Scope to files the actor is assigned to — a shared borrower must not expose
+    // the conditions (with property address + loan number) of a file the officer
+    // isn't on (round-2 audit N4).
+    const params = [req.params.id];
+    let scope = '';
+    // seesAllBorrowers (admin/underwriter/processor) keep the borrower-wide view
+    // — only a genuinely file-scoped loan officer is restricted to assigned files
+    // (matches the canSeeBorrower gate; round-2 audit F6).
+    if (!seesAllBorrowers(req)) { params.push(req.actor.id); scope = `AND ${VISIBLE_OFFICERS_SQL('a', '$2')}`; }
     const r = await db.query(
       `SELECT c.id, c.application_id, c.title, c.status, c.audience, c.severity, c.created_at,
               a.ys_loan_number, a.property_address
          FROM conditions c
          JOIN applications a ON a.id = c.application_id
         WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND a.deleted_at IS NULL
-          AND c.status IN ('open','borrower_responded')
-        ORDER BY c.created_at DESC`, [req.params.id]);
+          AND c.status IN ('open','borrower_responded') ${scope}
+        ORDER BY c.created_at DESC`, params);
     res.json(r.rows);
-  } catch (e) { res.status(500).json({ error: 'server error' }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Reminders + tasks across the borrower's files (the #93 system, rolled up per
@@ -3145,6 +5143,10 @@ router.get('/borrowers/:id/conditions', async (req, res) => {
 router.get('/borrowers/:id/reminders', async (req, res) => {
   try {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    // Scope reminders/tasks to the actor's files for a scoped loan officer (F7).
+    const params = [req.params.id];
+    let scope = '';
+    if (!seesAllBorrowers(req)) { params.push(req.actor.id); scope = `AND ${VISIBLE_OFFICERS_SQL('a', '$2')}`; }
     const r = await db.query(
       `SELECT r.id, r.application_id, r.kind, r.title, r.body, r.due_at, r.status,
               r.assignee_staff_id, r.completed_at, r.created_at,
@@ -3153,10 +5155,10 @@ router.get('/borrowers/:id/reminders', async (req, res) => {
          FROM reminders r
          JOIN applications a ON a.id = r.application_id
          LEFT JOIN staff_users asg ON asg.id = r.assignee_staff_id
-        WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND a.deleted_at IS NULL
-        ORDER BY (r.status='scheduled') DESC, r.due_at ASC`, [req.params.id]);
+        WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND a.deleted_at IS NULL ${scope}
+        ORDER BY (r.status='scheduled') DESC, r.due_at ASC`, params);
     res.json(r.rows);
-  } catch (e) { res.status(500).json({ error: 'server error' }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 router.post('/borrowers/:id/reminders', async (req, res) => {
   try {
@@ -3185,17 +5187,31 @@ router.post('/borrowers/:id/reminders', async (req, res) => {
 router.get('/borrowers/:id/documents', async (req, res) => {
   try {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    // An APPLICATION document is authorized solely by assignment to its own file —
+    // a shared borrower must not expose the filenames/loan numbers of a file the
+    // officer isn't on (round-2 audit N4; mirrors canSeeDocument). Borrower/entity-
+    // level docs (no application) keep the borrower-wide view they already have.
+    const params = [req.params.id];
+    let appVisible;
+    if (seesAllBorrowers(req)) {   // admin/underwriter/processor keep the borrower-wide view (F6)
+      appVisible = `SELECT id FROM applications WHERE (borrower_id=$1 OR co_borrower_id=$1) AND deleted_at IS NULL`;
+    } else {
+      params.push(req.actor.id);
+      appVisible = `SELECT a.id FROM applications a WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND a.deleted_at IS NULL
+                      AND ${VISIBLE_OFFICERS_SQL('a', '$2')}`;
+    }
     const r = await db.query(
       `SELECT d.id, d.filename, d.content_type, d.size_bytes, d.doc_kind, d.created_at,
               d.application_id, d.llc_id, d.track_record_id,
               a.ys_loan_number
          FROM documents d
          LEFT JOIN applications a ON a.id = d.application_id
-        WHERE d.borrower_id=$1
-           OR d.application_id IN (SELECT id FROM applications WHERE (borrower_id=$1 OR co_borrower_id=$1) AND deleted_at IS NULL)
-           OR d.llc_id IN (SELECT id FROM llcs WHERE borrower_id=$1)
-           OR d.track_record_id IN (SELECT id FROM track_records WHERE borrower_id=$1)
-        ORDER BY d.created_at DESC LIMIT 500`, [req.params.id]);
+        WHERE (d.application_id IS NOT NULL AND d.application_id IN (${appVisible}))
+           OR (d.application_id IS NULL AND (
+                 d.borrower_id=$1
+                 OR d.llc_id IN (SELECT id FROM llcs WHERE borrower_id=$1)
+                 OR d.track_record_id IN (SELECT id FROM track_records WHERE borrower_id=$1)))
+        ORDER BY d.created_at DESC LIMIT 500`, params);
     res.json(r.rows);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -3205,6 +5221,17 @@ router.get('/borrowers/:id/documents', async (req, res) => {
 router.get('/borrowers/:id/activity', async (req, res) => {
   try {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    // Scope the file audit trail (SSN reveals, edits, downloads) to files the actor
+    // is assigned to — a shared borrower must not expose the audit history of a file
+    // the officer isn't on (round-2 audit N4). Borrower/entity-level entries stay.
+    const params = [req.params.id];
+    let appVisible;
+    if (seesAllBorrowers(req)) {   // admin/underwriter/processor keep the borrower-wide view (F6)
+      appVisible = `SELECT id FROM applications WHERE (borrower_id=$1 OR co_borrower_id=$1)`;
+    } else {
+      params.push(req.actor.id);
+      appVisible = `SELECT a.id FROM applications a WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND ${VISIBLE_OFFICERS_SQL('a', '$2')}`;
+    }
     const r = await db.query(
       `SELECT g.id, g.action, g.entity_type, g.entity_id, g.detail, g.created_at,
               g.actor_kind, su.full_name AS actor_name
@@ -3213,10 +5240,10 @@ router.get('/borrowers/:id/activity', async (req, res) => {
         WHERE (g.entity_type='borrower' AND g.entity_id=$1)
            OR (g.entity_type IN ('application','document','track_record','llc')
                AND g.entity_id IN (
-                 SELECT id FROM applications WHERE (borrower_id=$1 OR co_borrower_id=$1)
+                 ${appVisible}
                  UNION SELECT id FROM llcs WHERE borrower_id=$1
                  UNION SELECT id FROM track_records WHERE borrower_id=$1))
-        ORDER BY g.created_at DESC LIMIT 200`, [req.params.id]);
+        ORDER BY g.created_at DESC LIMIT 200`, params);
     res.json(r.rows);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -3372,7 +5399,7 @@ router.put('/borrowers/:id/track-record/snapshot', async (req, res) => {
       html: b.html, filename: b.filename, uploadedByKind: 'staff', uploadedById: req.actor.id,
     });
     res.json({ ok: true, ...out });
-  } catch (e) { res.status(e.status || 500).json({ error: e.message || 'could not save the snapshot' }); }
+  } catch (e) { if (!e.status) console.warn('[staff] snapshot error:', db.describeError(e)); res.status(e.status || 500).json({ error: e.status ? e.message : 'could not save the snapshot' }); }
 });
 router.get('/borrowers/:id/track-record/snapshot', async (req, res) => {
   if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
@@ -3443,7 +5470,10 @@ router.get('/borrowers/:id/ssn', async (req, res) => {
     const r = await db.query(`SELECT ssn_encrypted FROM borrowers WHERE id=$1`, [req.params.id]);
     if (!r.rows[0]?.ssn_encrypted) return res.status(404).json({ error: 'no ssn on file' });
     await audit(req, 'view_ssn', 'borrower', req.params.id);
-    res.json({ ssn: C.decryptSSN(r.rows[0].ssn_encrypted) });
+    // Reveal in the REAL SSN format XXX-XX-XXXX (owner-directed 2026-07-20) — stored
+    // as bare digits, presented dashed. The edit input re-formats on change, so a
+    // dashed reveal round-trips cleanly.
+    res.json({ ssn: require('../lib/fields').formatSsn(C.decryptSSN(r.rows[0].ssn_encrypted)) });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
@@ -3547,7 +5577,7 @@ router.get('/llcs/:id', async (req, res) => {
     const bundle = await llcLib.getLlcBundle(req.params.id);
     if (!bundle) return res.status(404).json({ error: 'not found' });
     res.json({ ...bundle, read_only: false });
-  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Staff upload of an entity document into a specific LLC checklist slot, WITHOUT a
@@ -3604,7 +5634,7 @@ router.post('/llcs/:id/documents', async (req, res) => {
     try { await llcLib.syncLlcConditions(req.params.id); } catch (_) { /* best-effort */ }
     await audit(req, 'upload_document', 'document', r.rows[0].id, { filename: b.filename, llcId: req.params.id });
     res.status(201).json({ ok: true, documentId: r.rows[0].id });
-  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 router.patch('/llcs/:id', async (req, res) => {
@@ -3621,6 +5651,8 @@ router.patch('/llcs/:id', async (req, res) => {
   if (b.llcName !== undefined && !String(b.llcName).trim()) return res.status(400).json({ error: 'llcName cannot be empty' });
   const sets = [], vals = []; let i = 1;
   const map = { llcName: 'llc_name', ein: 'ein', formationState: 'formation_state', formationDate: 'formation_date', ownershipPct: 'ownership_pct' };
+  // WO-6 (F-M11): normalize a mid-typed formation date so year-0026 can't persist.
+  if (b.formationDate !== undefined) b.formationDate = require('../lib/fields').normalizeTypedDate(b.formationDate);
   for (const [k, col] of Object.entries(map)) if (b[k] !== undefined) { sets.push(`${col}=$${i++}`); vals.push(b[k] === '' ? null : b[k]); }
   if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
   if (b.ownershipPct !== undefined && b.ownershipPct !== '' && b.ownershipPct != null) {
@@ -3714,7 +5746,7 @@ router.post('/llcs/:id/verify', async (req, res) => {
   } catch (e) { console.warn('[llc-revoke] chain revoke failed:', e.message); }
   try {
     await notify.notifyBorrower(own.rows[0].borrower_id, {
-      type: 'llc_unverified', title: 'Your LLC needs attention',
+      type: 'llc_unverified', title: 'Your LLC needs attention', badge: { text: 'Action needed', tone: 'action' },
       body: `Verification of "${own.rows[0].llc_name}" was revoked${reason ? `: ${reason}` : ''}.`
         + (revokedChildren.length ? ` Because it owns ${revokedChildren.map(n => `"${n}"`).join(', ')}, verification there was reopened too.` : '')
         + ' Please review the details and documents on your profile.',
@@ -3794,7 +5826,7 @@ router.post('/track-records/:id/verify', async (req, res) => {
     const addr = (tr.rows[0].property_address && (tr.rows[0].property_address.oneLine || tr.rows[0].property_address.line1)) || 'a property';
     try {
       await notify.notifyBorrower(tr.rows[0].borrower_id, {
-        type: 'track_record_unverified', title: 'A track-record project needs attention',
+        type: 'track_record_unverified', title: 'A track-record project needs attention', badge: { text: 'Action needed', tone: 'action' },
         body: `Verification of your project at ${addr} was revoked: ${reason}. Please review it and its documents on your track record.`,
         link: '/track-record', ctaLabel: 'Review your track record' });
     } catch (_) { /* best-effort */ }
@@ -3881,21 +5913,146 @@ router.post('/llcs/:id/raise-issue', async (req, res) => {
 
 // ---------------- advance application status ----------------
 const APP_STATUS = ['file_intake', 'new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'declined', 'withdrawn'];
-const STATUS_LABEL = { file_intake: 'File intake', new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', declined: 'Declined', withdrawn: 'Withdrawn' };
-// #88: the DECISION milestones a borrower should be emailed about. Every status
-// change still posts in-app; only these also email (the in-between progress moves —
-// in_review / processing / underwriting — are in-app only, to keep the inbox quiet).
-const MAJOR_STATUSES = new Set(['approved', 'clear_to_close', 'funded', 'declined', 'withdrawn']);
+// Borrower-facing status labels, the DECISION-milestone email set, the
+// plain-language explanations, and the journey path all live in ONE shared
+// module (src/lib/status-notify.js) so the borrower sees identical copy whether
+// a status change originates in the portal OR directly in ClickUp (the inbound
+// sync reuses the same builder). Imported here (not redefined) to stay in sync.
+const { STATUS_LABEL, MAJOR_STATUSES, borrowerStatusOpts } = require('../lib/status-notify');
+// Announce a borrower-facing status transition to the borrower + the team.
+// Extracted so BOTH doors into the borrower-facing bucket notify IDENTICALLY:
+// the PATCH /:id status route AND the POST /:id/internal-status door (the
+// 38-status ClickUp workflow the team also drives). Previously only PATCH
+// notified, so funding/approving a file via the internal-status dropdown gave
+// the borrower NO email — a real parity gap (owner-directed 2026-07-20). Only
+// call this when the borrower-facing bucket ACTUALLY changed (from !== to): the
+// internal door often moves between two internal statuses that map to the SAME
+// external bucket, and re-announcing an unchanged status would be a wrong-time /
+// duplicate email. A soft-deleted file is skipped (it's out of the pipeline —
+// "your loan is now …" would be a wrong-time send). Best-effort; never throws.
+// (A status change made directly in ClickUp is handled by the inbound sync via
+// statusNotify.notifyInboundStatusChange, sharing borrowerStatusOpts below.)
+// Which internal statuses trigger an AUTO-ISSUE of a Sovereign signed
+// snapshot (owner-directed 2026-07-22, R2.4). Every material milestone
+// gets an immutable snapshot the moment the file reaches it — so a later
+// audit can prove the state PILOT made the decision on. Best-effort:
+// a snapshot failure never blocks the status change or its notifications.
+const CERT_MILESTONE_BY_STATUS = { clear_to_close: 'clear_to_close', funded: 'pre_funding' };
+
+async function notifyStatusTransition(appId, fromStatus, toStatus, opts = {}) {
+  try {
+    const live = await db.query(`SELECT deleted_at FROM applications WHERE id=$1`, [appId]);
+    if (!live.rows[0] || live.rows[0].deleted_at) return;
+    const label = STATUS_LABEL[toStatus] || toStatus;
+    const fromLabel = STATUS_LABEL[fromStatus] || fromStatus;
+    // Borrower half — identical copy to the inbound (ClickUp-driven) path.
+    await notify.notifyAppBorrowers(appId, borrowerStatusOpts(appId, fromStatus, toStatus));
+    await notify.notifyAppStaff(appId, {   // #113: whole team (primary + assistants), minus the actor
+      type: 'status_change', title: `File moved to ${label}`,
+      body: `This file moved from "${fromLabel}" to "${label}"${opts.forced ? ' (advanced with an admin override)' : ''}.`,
+      applicationId: appId, link: `/internal/app/${appId}`, exceptStaffId: opts.actorId,
+      // Owner-directed 2026-07-20: the team gets an EMAIL only on DECISION
+      // milestones (approved / clear-to-close / funded / declined / withdrawn).
+      // Routine working moves (in review, processing, underwriting) post in-app
+      // only — no inbox bombardment when a file advances a step.
+      inAppOnly: !MAJOR_STATUSES.has(toStatus) });
+    // R2.4 — Sovereign signed-snapshot AUTO-ISSUE on milestone moves. Fires only
+    // when the transition is INTO a milestone that carries a certificate meaning
+    // (clear_to_close → 'clear_to_close' cert; funded → 'pre_funding' cert),
+    // never on a lateral / backward move. Best-effort per pattern.
+    const milestone = CERT_MILESTONE_BY_STATUS[toStatus];
+    if (milestone && toStatus !== fromStatus) {
+      try {
+        const cert = require('../lib/underwriting/certificate');
+        const client = await db.pool.connect();
+        try {
+          await client.query('BEGIN');
+          await cert.issueCertificate(client, {
+            appId, milestone, staffId: opts.actorId || null,
+            reason: `auto-issued on transition to ${label}`,
+          });
+          await client.query('COMMIT');
+        } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+        finally { client.release(); }
+      } catch (e) { console.error('[cert] auto-issue', appId, milestone, e && e.message); }
+    }
+    // #200 — close the calibration loop: when a file reaches a HUMAN-owned
+    // terminal state (funded = cleared & closed; declined/withdrawn = not), stamp
+    // the realized outcome onto its open whole-loan shadow decision so the
+    // reliability report can score the AI/engine's would-be call against reality.
+    // Best-effort + no-op on any non-terminal move; never breaks the transition.
+    if (toStatus !== fromStatus) {
+      try {
+        await require('../lib/underwriting/shadow-capture')
+          .ingestStatusOutcome(db, { applicationId: appId, status: toStatus });
+      } catch (_) { /* additive, never blocks */ }
+    }
+  } catch (_) { /* notify best-effort */ }
+}
 // Conditions-to-close gating. Reaching "clear to close" requires every open
 // prior-to-docs (and standard) condition cleared/waived and every gate item
 // signed off; "funded" additionally requires prior-to-funding conditions.
 // post_closing conditions never block. An admin may force past blockers.
 const CTC_SEVERITIES = ['standard', 'prior_to_docs'];
 const FUND_SEVERITIES = ['standard', 'prior_to_docs', 'prior_to_funding'];
+// Closing-stage checklist categories are collected DURING the closing process — they
+// are due before funding, not before clear-to-close. The first-class `conditions` rows
+// already stage this by severity (a `prior_to_funding` condition blocks funding, not
+// CTC — see FUND_SEVERITIES above); this mirrors that for the document/condition
+// checklist items via their category (owner-directed IG-W8, 2026-07-24: "Title & Tax —
+// push to closing, do NOT hold CTC"). A condition in one of these categories (title,
+// insurance, ISKA, and any future closing/funding-stage doc) still HARD-blocks funding —
+// it is only excluded from the clear-to-close gate. Everything pre-close (core `none`,
+// `prior_to_approval`, `prior_to_docs`) keeps holding CTC exactly as before.
+const CLOSING_STAGE_CATEGORIES = ['prior_to_closing', 'prior_to_funding', 'at_closing', 'post_closing'];
+const SEV_LABEL = { standard: 'Standard', prior_to_docs: 'Prior to docs', prior_to_funding: 'Prior to funding', post_closing: 'Post-closing' };
+// Which file SECTION resolves a given blocker — so the "clear to close"
+// outstanding list can link each item straight to where you fix it (the section
+// expands + scrolls). Keyed on tool_key / template_code / audience. Anything we
+// don't recognize points at the shared "Conditions to close" section.
+function sectionForBlocker(row) {
+  const tk = row.tool_key || '';
+  const code = row.template_code || '';
+  // Pricing + appraisal blockers keep their own sections; EVERYTHING condition-ish
+  // (borrower conditions, underwriting conditions, internal staff conditions, LLC)
+  // now lives in the single tabbed "Conditions" hub — condTabForBlocker picks the tab.
+  if (tk === 'product_pricing' || code === 'rtl_p1_product') return 'sec-pricing';
+  if (code === 'appraisal_review_cleared' || code === 'rtl_p3_apprreview' || code === 'rtl_cond_appraisaldocs' || tk === 'appraisal_review') return 'sec-appraisal';
+  if (tk === 'esign') return 'sec-esign';
+  return 'sec-conditions';
+}
+// Which tab inside the Conditions hub a blocker belongs to (only meaningful when
+// section === 'sec-conditions').
+function condTabForBlocker(row) {
+  const code = row.template_code || '';
+  if (row.source === 'underwriting') return 'underwriting';
+  if (code === 'rtl_p1_llc') return 'llc';
+  if (row.audience === 'staff') return 'internal';
+  return 'borrower';
+}
+// A short, plain-language "why this is still outstanding" for the list.
+function blockerReason(row) {
+  if (row.kind === 'gate') return 'A gate — it must be signed off before this file can clear to close.';
+  if (row.severity) return `${SEV_LABEL[row.severity] || row.severity} condition — clear or waive it.`;
+  if (row.status === 'received') return 'A document is in — it just needs a final sign-off.';
+  if (row.status === 'issue') return 'Sent back to the borrower — waiting on a corrected item.';
+  if (String(row.hint || '').trim()) return String(row.hint).trim();
+  return 'Not completed and signed off yet.';
+}
+function decorateBlocker(row, kind) {
+  const r = { ...row, kind, title: row.title || row.label };
+  // A blocker may pin its OWN destination + explanation (e.g. the underwriting
+  // dealbreaker points at the findings desk, not the conditions hub, and carries
+  // the actual finding text). Otherwise fall back to the derived section/reason.
+  r.section = row.section || sectionForBlocker(r);
+  if (r.section === 'sec-conditions') r.condTab = condTabForBlocker(r);
+  r.reason = row.reason || blockerReason(r);
+  return r;
+}
 async function advancementBlockers(appId, target) {
   const sevs = target === 'funded' ? FUND_SEVERITIES : CTC_SEVERITIES;
   const conds = await db.query(
-    `SELECT id, COALESCE(borrower_title, title) AS title, severity
+    `SELECT id, COALESCE(borrower_title, title) AS title, severity, audience
        FROM conditions
       WHERE application_id=$1 AND status IN ('open','borrower_responded') AND severity = ANY($2::text[])
       ORDER BY severity, created_at`, [appId, sevs]);
@@ -3906,32 +6063,107 @@ async function advancementBlockers(appId, target) {
   // Gate items are counted separately below, so exclude them here to avoid a
   // double count. Internal checklist TASKS are workflow, not conditions, so they
   // don't gate here (their milestone subset is captured by is_gate).
+  // For the clear-to-close gate, exclude closing/funding-stage conditions (title,
+  // insurance, ISKA, …) — they are due at closing, not to be cleared-to-close, and are
+  // re-included for the funding gate below. The effective category is the per-item
+  // override if set, else the template's. A closing-stage condition still blocks funding.
+  const excludeClosingStage = target !== 'funded';
   const checklistConds = await db.query(
-    `SELECT ci.id, COALESCE(ci.label, ci.borrower_label, 'Condition') AS title
+    `SELECT ci.id, COALESCE(ci.label, ci.borrower_label, 'Condition') AS title,
+            ci.tool_key, t.code AS template_code, ci.audience, ci.status, ci.hint
        FROM checklist_items ci
+       LEFT JOIN checklist_templates t ON t.id = ci.template_id
       WHERE ci.application_id=$1
         AND ci.item_kind IN ('document','condition')
         AND COALESCE(ci.is_required, true) = true
         AND COALESCE(ci.is_gate, false) = false
         AND NOT (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')
-      ORDER BY ci.sort_order, ci.created_at`, [appId]);
+        AND ($3::boolean = false
+             OR COALESCE(NULLIF(ci.category,''), t.category) IS NULL
+             OR COALESCE(NULLIF(ci.category,''), t.category) <> ALL($2::text[]))
+      ORDER BY ci.sort_order, ci.created_at`, [appId, CLOSING_STAGE_CATEGORIES, excludeClosingStage]);
   const gates = await db.query(
-    `SELECT id, label FROM checklist_items
-      WHERE application_id=$1 AND is_gate=true AND NOT (signed_off_at IS NOT NULL OR status='satisfied')
-      ORDER BY sort_order, created_at`, [appId]);
-  return { conditions: [...conds.rows, ...checklistConds.rows], gates: gates.rows };
+    `SELECT ci.id, ci.label, ci.tool_key, t.code AS template_code, ci.audience, ci.status
+       FROM checklist_items ci
+       LEFT JOIN checklist_templates t ON t.id = ci.template_id
+      WHERE ci.application_id=$1 AND ci.is_gate=true AND NOT (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')
+      ORDER BY ci.sort_order, ci.created_at`, [appId]);
+  // Tag the first-class `conditions`-table rows so navigation sends them to the
+  // Underwriting-conditions panel (which renders them) rather than a checklist section.
+  const underwriting = conds.rows.map(r => ({ ...r, source: 'underwriting' }));
+  // Underwriting DEALBREAKERS gate clear-to-close AND funding directly — whether or not the
+  // `underwriting_review_cleared` condition was ever materialized. A derived tie-out (cross-
+  // document) fatal has NO stored condition row, so the checklist queries above are blind to it;
+  // relying on the materialized gate item alone let a file with an open cross-document fatal
+  // (e.g. a settlement price that disagrees with the file) advance to clear-to-close (audit
+  // 2026-07-20). fileFatalCount is the authoritative count — stored per-document fatals PLUS the
+  // derived tie-out fatals — computed live, so this covers previous AND future files with no
+  // backfill. Best-effort: a tie-out compute error must never silently OPEN the gate, so a
+  // failure leaves the stored-fatal count in place (fileFatalCount already swallows tie-out
+  // errors and still returns the stored count). Tagged source:'underwriting' so it decorates +
+  // navigates to the underwriting-conditions panel like the other first-class conditions.
+  let underwritingFatals = [];
+  try {
+    const { fileFatalDetails } = require('../lib/underwriting/file-review');
+    // Pull the ACTUAL findings (title + what disagrees), not just a count — a loan
+    // officer needs to know WHAT the dealbreaker is, and "Go fix →" must land on the
+    // Document-review desk where the finding actually lives (not the conditions hub,
+    // where a derived tie-out/experience fatal has no row to show — that was the
+    // dead "Go fix" + vague "1 open dealbreaker finding" the LO reported).
+    const details = await fileFatalDetails(db, appId);
+    if (details.length) {
+      const first = details[0];
+      const more = details.length - 1;
+      const cap = (v, n) => String(v == null ? '' : v).trim().slice(0, n);
+      const title = details.length === 1
+        ? `Underwriting dealbreaker: ${cap(first.title, 140)}`
+        : `${details.length} underwriting dealbreakers to resolve`;
+      const bits = [];
+      const dv = cap(first.docValue, 120);
+      const fv = cap(first.fileValue, 120);
+      if (dv && fv) bits.push(`The document says “${dv}”, but our file says “${fv}”.`);
+      else if (first.howTo) bits.push(cap(first.howTo, 300));
+      if (more > 0) bits.push(`Plus ${more} more finding${more === 1 ? '' : 's'}.`);
+      bits.push('Open the “Document review & PILOT findings” section to fix it or grant an exception.');
+      underwritingFatals = [{
+        id: 'underwriting_fatal', title, label: title, source: 'underwriting',
+        section: 'sec-underwriting', reason: bits.join(' '),
+      }];
+    }
+  } catch (_) { /* never break advancement gating on a tie-out compute error */ }
+  // R3.17 — AI fraud/authenticity fatal suggestions surface here as ADVISORY
+  // blockers so a reviewer sees them on the readiness widget before moving to
+  // clear-to-close. Per HARD RULE the AI never blocks the transition itself
+  // — the client's "Advance" action may still confirm past them. Best-effort:
+  // a load failure never breaks the readiness view.
+  let aiAdvisories = [];
+  try {
+    const fa = require('../lib/underwriting/fraud-alert');
+    const signals = await fa.openMajorSignals(appId, db);
+    aiAdvisories = signals.map(s => ({
+      id: `ai:${s.id}`, title: `AI advisory: ${s.title}`, source: 'ai_suggestion',
+      section: 'sec-underwriting',
+      reason: `A ${s.source.replace(/_/g, ' ')} signal is open on the AI Findings panel. Review or dismiss before moving to clear-to-close.`,
+    }));
+  } catch (_) { aiAdvisories = []; }
+  return {
+    conditions: [...underwriting, ...checklistConds.rows, ...underwritingFatals, ...aiAdvisories].map(r => decorateBlocker(r, 'condition')),
+    gates: gates.rows.map(r => decorateBlocker(r, 'gate')),
+  };
 }
 
 // Readiness for the gated transitions — powers the "conditions to close" widget.
 router.get('/applications/:id/gating', async (req, res) => {
   try {
-    const [ctc, fund] = await Promise.all([
+    const [ctc, fund, cleared] = await Promise.all([
       advancementBlockers(req.params.id, 'clear_to_close'),
       advancementBlockers(req.params.id, 'funded'),
+      workflow.conditionsClearedPct(req.params.id),   // powers the condition-clearing submit + helper text
     ]);
     res.json({
       clear_to_close: { ready: !ctc.conditions.length && !ctc.gates.length, ...ctc },
       funded: { ready: !fund.conditions.length && !fund.gates.length, ...fund },
+      conditions_cleared: cleared,
     });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -3952,6 +6184,19 @@ router.get('/applications/:id/status-history', async (req, res) => {
 // file's Activity feed shows exactly what changed.
 router.patch('/applications/:id/details', async (req, res) => {
   const b = req.body || {};
+  // #84 — a clear-to-close / funded file's loan structure is FROZEN for everyone,
+  // super_admin included. This economics editor is one of the write paths that
+  // used to skip the freeze (it could rewrite a funded loan's numbers). A
+  // super_admin can UNLOCK the file first to correct a mistake, then re-lock.
+  const detailsLock = await require('../lib/file-lock').structuralLockReason(req.params.id, db, { actor: req.actor });
+  if (detailsLock) return res.status(409).json({ error: detailsLock, locked: true });
+  // sqft only applies to a square-footage / ground-up rehab. When the rehab type
+  // is being changed to something else, null any stale sqft in the SAME update so
+  // it can't keep flipping the pricing engine's sqftAddition flag (its
+  // `sqft_post > sqft_pre` clause). The forms always send both together.
+  if ('rehabType' in b && !require('../lib/fields').sqftRelevantType(b.rehabType)) {
+    b.sqftPre = null; b.sqftPost = null;
+  }
   const NUM = { units: 'units', purchasePrice: 'purchase_price', asIsValue: 'as_is_value',
     arv: 'arv', rehabBudget: 'rehab_budget', sqftPre: 'sqft_pre', sqftPost: 'sqft_post',
     requestedExpFlips: 'requested_exp_flips', requestedExpHolds: 'requested_exp_holds', requestedExpGround: 'requested_exp_ground',
@@ -3980,6 +6225,16 @@ router.patch('/applications/:id/details', async (req, res) => {
   }
   if ('isAssignment' in b) { sets.push(`is_assignment=$${i++}`); vals.push(!!b.isAssignment); touchedCols.push('is_assignment'); }
   if (b.propertyAddress !== undefined) { sets.push(`property_address=$${i++}`); vals.push(b.propertyAddress ? JSON.stringify(b.propertyAddress) : null); touchedCols.push('property_address'); }
+  // Couple units to a property_type change when the caller didn't send units
+  // explicitly (a direct API call, or the completeness panel) — mirrors the
+  // intake form's unitsForType so a single-family type auto-fills "1 unit" and a
+  // switch to multi doesn't keep a stale single "1".
+  if ('propertyType' in b && !('units' in b)) {
+    const curU = (await db.query(`SELECT units FROM applications WHERE id=$1`, [req.params.id])).rows[0];
+    const prevUnits = curU ? curU.units : null;
+    const nextUnits = require('../lib/units').unitsForPropertyType(b.propertyType, prevUnits);
+    if (nextUnits !== prevUnits) { sets.push(`units=$${i++}`); vals.push(nextUnits); touchedCols.push('units'); }
+  }
   if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
   sets.push('updated_at=now()'); vals.push(req.params.id);
   try {
@@ -4027,9 +6282,90 @@ router.patch('/applications/:id/details', async (req, res) => {
     if (Object.keys(changes).length) {
       try { conditions = await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'details_edited' }); }
       catch (_) { /* best-effort */ }
+      // Loan Digital Twin (Sovereign 1/4): the same-write also feeds the twin so
+      // the LOS-side value shows up as an observation next to any document-sourced
+      // observations for the same fact. Best-effort.
+      try {
+        const row = (await db.query(
+          `SELECT loan_amount, purchase_price, as_is_value, arv, rehab_budget, assignment_fee,
+                  underlying_contract_price, property_type, units, property_address, program, loan_type
+             FROM applications WHERE id=$1`, [req.params.id])).rows[0];
+        if (row) {
+          const client = await db.getClient();
+          try {
+            await client.query('BEGIN');
+            await require('../lib/underwriting/twin').recordLosFieldFacts(client, req.params.id, row);
+            await client.query('COMMIT');
+          } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+          finally { client.release(); }
+        }
+      } catch (_) { /* twin capture is additive */ }
     }
     res.json({ ok: true, changed: Object.keys(changes), conditions });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Backfill / set the file's YS loan number. Needed at send time: the term-sheet
+// package prints the loan number on the business-purpose disclosure, so a file
+// missing it can't send — staff enter it right where the send failed. RULES
+// (owner-directed 2026-07-20): must start with "YSCAP" and be UNIQUE across files
+// (never a duplicate of another file's number). Filling a BLANK is open to anyone
+// who can touch the file; CHANGING an existing number is an admin action (it's a key
+// already shared with the LOS/ClickUp — a stray edit must never clobber it). Rides
+// the /applications/:id scope guard for access control.
+router.post('/applications/:id/loan-number', async (req, res) => {
+  const { sanitizeLoanNumber } = require('../lib/fields');
+  const ln = sanitizeLoanNumber((req.body || {}).loanNumber);
+  if (!ln) return res.status(400).json({ error: 'A YS loan number must start with “YSCAP” (for example YSCAP258134628).' });
+  try {
+    const cur = await db.query(`SELECT ys_loan_number FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id]);
+    if (!cur.rows.length) return res.status(404).json({ error: 'application not found' });
+    const existing = cur.rows[0].ys_loan_number;
+    if (existing && String(existing).toUpperCase() === ln) return res.json({ ok: true, loanNumber: existing, unchanged: true });
+    if (existing && !seesAll(req)) return res.status(403).json({ error: 'This file already has a loan number — only an admin can change it.' });
+    // Uniqueness across BOTH our own files AND every ClickUp file — including a
+    // data-only (e.g. DSCR) task we pull for data but never turn into a loan file
+    // (owner-directed 2026-07-20). The db/048 partial-unique index is the final
+    // backstop for our own files; this is the friendly, ClickUp-wide front door.
+    // ANY collision is ALSO parked to manual review so nothing "bumping" is silent.
+    const loanNumber = require('../lib/loan-number');
+    const collision = await loanNumber.findLoanNumberCollision(ln, { excludeAppId: req.params.id });
+    if (collision) {
+      let queued = false;
+      try {
+        // Show WHICH side already carries the number — never both. The number was
+        // REJECTED here (never saved to this file), so "In PILOT"/"In ClickUp"
+        // must reflect the OTHER file that owns it, not this rejected entry. The
+        // collision detail (other file / task) rides raw_value for the reviewer.
+        queued = await require('../lib/sync-review').queueReview({
+          applicationId: req.params.id, direction: 'outbound', fieldKey: 'ys_loan_number',
+          reason: 'loan_number_duplicate_entered', proposedValue: ln,
+          portalValue: collision.where === 'our_file' ? ln : null,
+          clickupValue: collision.where === 'clickup_file' ? ln : null,
+          rawValue: JSON.stringify({
+            number: ln, where: collision.where,
+            ofApplication: collision.applicationId || null, taskName: collision.taskName || null,
+          }),
+          suppressIfRejected: true,
+        });
+      } catch (_) { /* review is best-effort; the reject below is the hard stop */ }
+      const msg = loanNumber.collisionMessage(collision, ln)
+        + (queued ? ' It’s been flagged for manual review.' : '');
+      return res.status(409).json({ error: msg, duplicate: true });
+    }
+    let upd;
+    try {
+      upd = await db.query(`UPDATE applications SET ys_loan_number=$1, updated_at=now() WHERE id=$2 AND deleted_at IS NULL RETURNING ys_loan_number`, [ln, req.params.id]);
+    } catch (e) {
+      // Partial-unique index caught a race (two files grabbing the same number at once).
+      if (e && e.code === '23505') return res.status(409).json({ error: 'That loan number was just taken by another file — loan numbers must be unique.' });
+      throw e;
+    }
+    if (!upd.rows.length) return res.status(404).json({ error: 'application not found' });
+    await audit(req, 'set_loan_number', 'application', req.params.id, { from: existing || null, to: ln });
+    enqueueClickupPush(req.params.id, ['ys_loan_number']).catch(() => {});   // keep ClickUp/LOS in sync (self-gates; no-op when unmapped/unlinked)
+    res.json({ ok: true, loanNumber: upd.rows[0].ys_loan_number });
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Nudge the borrower with a friendly reminder of what's still outstanding on
@@ -4052,12 +6388,21 @@ router.post('/applications/:id/nudge', async (req, res) => {
     const list = [...items.rows.map(r => r.label), ...conds.rows.map(r => r.title)].filter(Boolean);
     if (!list.length) return res.status(400).json({ error: 'nothing outstanding to remind about' });
     const shown = list.slice(0, 8).join('; ') + (list.length > 8 ? `; +${list.length - 8} more` : '');
+    // Anti-double-send (round-2 audit N2): a "Remind" is a deliberate reach-out,
+    // but repeated/accidental clicks must not email the borrower several times in
+    // a row. Block a repeat nudge to the SAME file within a short window; a
+    // genuine later reminder still goes through.
+    // Atomically CLAIM the 30-min nudge slot (stamp-first): this ONE INSERT both
+    // records the audit event AND enforces the throttle, so two simultaneous
+    // "Remind" clicks can't both pass a SELECT and both email the borrower. The
+    // loser gets the 429. (Old shape SELECTed then stamped after send — a race.)
+    const nudgeClaimId = await claimOncePerPeriod({ action: 'nudge_borrower', entityId: req.params.id, interval: '30 minutes', actorKind: 'staff', actorId: req.actor.id, detail: { count: list.length } });
+    if (!nudgeClaimId) return res.status(429).json({ error: 'This borrower was already reminded on this file in the last 30 minutes — please wait before sending another.' });
     await notify.notifyAppBorrowers(req.params.id, {
       type: 'reminder', title: 'A friendly reminder on your loan file',
       body: `Still needed to keep things moving: ${shown}.`,
       applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Complete your items',
       major: true });   // #88: the staff "Remind" nudge is an explicit reach-out — it emails
-    await audit(req, 'nudge_borrower', 'application', req.params.id, { count: list.length });
     res.json({ ok: true, count: list.length });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -4153,13 +6498,28 @@ router.post('/applications/:id/closing-date', async (req, res) => {
     // Propagate the new expected closing to ClickUp right away (scoped push —
     // only this field). actual_closing is pull-only (ClickUp owns it).
     if ('expectedClosing' in b) enqueueClickupPush(req.params.id, ['expected_closing']).catch(() => {});
+    // Keep the term-sheet closing date + its derived first-payment/maturity dates
+    // in lock-step with the canonical closing date (owner-directed 2026-07-22): the
+    // final term sheet's dates must stay correct when the closing date is edited
+    // here, not only when a product is re-registered. Best-effort; a null clears them.
+    if ('expectedClosing' in b) {
+      try {
+        const termOpts = require('../lib/term-options');
+        const trow = (await db.query(`SELECT term FROM applications WHERE id=$1`, [req.params.id])).rows[0] || {};
+        const termMonths = require('../lib/pricing').parseTermMonths(trow.term);
+        const kd = termOpts.keyDates(normExpected, termMonths);
+        await db.query(
+          `UPDATE applications SET est_closing_date=$2, first_payment_date=$3, maturity_date=$4, updated_at=now() WHERE id=$1`,
+          [req.params.id, kd.estClosing, kd.firstPayment, kd.maturity]);
+      } catch (e) { console.error('[set-closing] term-sheet date mirror failed:', db.describeError(e)); }
+    }
     if (b.expectedClosing) {
       const a = await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [req.params.id]);
       if (a.rows[0] && a.rows[0].borrower_id) {
         const nice = new Date(normExpected + 'T00:00:00').toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
         await notify.notifyAppBorrowers(req.params.id, {
-          type: 'closing_date', title: 'Estimated closing date set',
-          body: `Your loan is now targeting ${nice}. We'll keep you posted as it approaches.`,
+          type: 'closing_date', title: `Estimated closing date: ${nice}`,
+          body: `Your loan is now targeting a closing date of ${nice}. We'll keep you posted as it approaches — reach out any time with questions.`,
           applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'View your file' });
       }
     }
@@ -4172,7 +6532,12 @@ router.post('/applications/:id/closing-date', async (req, res) => {
 // SSN has its own secure reveal/enter flow and is NEVER set here. App-field
 // changes enqueue a scoped ClickUp push. Behind the /applications/:id guard.
 const COMPLETE_APP_FIELDS = { program: 'text', loan_type: 'text', property_type: 'text',
-  purchase_price: 'money', as_is_value: 'money', arv: 'money', rehab_budget: 'money' };
+  purchase_price: 'money', as_is_value: 'money', arv: 'money', rehab_budget: 'money',
+  // Note buyer / capital partner (applications.lender). Normally fed from ClickUp,
+  // but staff can fill/correct it here when ClickUp doesn't feed it or is empty —
+  // it's part of application completeness (owner-directed 2026-07-20). STAFF-ONLY;
+  // never offered on the borrower completeness panel.
+  lender: 'text' };
 const COMPLETE_BORROWER_FIELDS = { cell_phone: 'text', date_of_birth: 'date', fico: 'int', citizenship: 'text' };
 async function completeFields(req, res, borrowerScoped) {
   const b = req.body || {};
@@ -4201,9 +6566,46 @@ async function completeFields(req, res, borrowerScoped) {
         return res.status(403).json({ error: `Only an underwriter or admin can raise ${raised.join(' and ')} on a priced file.` });
     }
     if (appSets.length) {
+      // #84 — this staff completeness path writes the SAME frozen economics fields
+      // as PATCH /details (program / loan_type / property_type / price / as-is / ARV
+      // / rehab budget), so it must honor the clear-to-close / funded freeze too — a
+      // super_admin can unlock the file to correct it. The NOTE BUYER (lender) is
+      // pure staff metadata (not a frozen economics field), so a lender-only edit
+      // is allowed even on a locked file; the freeze only guards economics.
+      if (appKeys.some((k) => k !== 'lender')) {
+        const lock = await require('../lib/file-lock').structuralLockReason(req.params.id, db, { actor: req.actor });
+        if (lock) return res.status(409).json({ error: lock, locked: true });
+      }
       appSets.push('updated_at=now()');
       await db.query(`UPDATE applications SET ${appSets.join(', ')} WHERE id=$1`, appVals);
       enqueueClickupPush(req.params.id, appKeys).catch(() => {});
+      // Filling a rule-driven field here (most importantly the NOTE BUYER) may
+      // attach/retract a condition — e.g. the CorrFirst EMD verification — and can
+      // flip the 5% SOW-contingency requirement (a Blue Lake note buyer). Re-run
+      // the Condition Center engine and enforce the contingency, exactly like the
+      // details edit path does. Best-effort — never blocks the save.
+      try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'completeness_edited' }); } catch (_) {}
+      try { await require('../lib/rehab-budget').enforceSowContingency(req.params.id); } catch (_) {}
+      // Loan Digital Twin (Sovereign 1/4, owner-directed 2026-07-21): every LOS
+      // field write is a fresh observation of the underlying canonical facts
+      // (loan.amount, property.address, etc.). Feeds the twin so the completeness
+      // edit shows up in the "canonical facts" cockpit alongside every document-
+      // sourced observation. Best-effort — never blocks the save.
+      try {
+        const row = (await db.query(
+          `SELECT loan_amount, purchase_price, as_is_value, arv, rehab_budget, assignment_fee,
+                  underlying_contract_price, property_type, units, property_address, program, loan_type
+             FROM applications WHERE id=$1`, [req.params.id])).rows[0];
+        if (row) {
+          const client = await db.getClient();
+          try {
+            await client.query('BEGIN');
+            await require('../lib/underwriting/twin').recordLosFieldFacts(client, req.params.id, row);
+            await client.query('COMMIT');
+          } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+          finally { client.release(); }
+        }
+      } catch (_) { /* twin capture is additive */ }
     }
     const brVals = [bid]; const brSets = []; const brKeys = [];
     for (const [k, t] of Object.entries(COMPLETE_BORROWER_FIELDS)) {
@@ -4235,15 +6637,137 @@ async function completeFields(req, res, borrowerScoped) {
     }
     if (!borrowerScoped) await audit(req, 'complete_fields', 'application', req.params.id, { app: appKeys, borrower: brKeys, before: brBefore || undefined });
     res.json({ ok: true, appFields: appKeys.length, borrowerFields: brSets.length });
-  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 }
 router.post('/applications/:id/complete-fields', (req, res) => completeFields(req, res, false));
+
+// All note buyers available to pick in the completeness panel — every value from
+// the ClickUp note-buyer dropdown, PLUS the confirmed registry set and anything
+// already on a file (owner-directed 2026-07-20). Staff-only (this whole router is
+// staff-gated) — a note buyer name is never exposed to a borrower.
+router.get('/note-buyers', async (req, res) => {
+  try {
+    const noteBuyers = await require('../lib/note-buyers').listNoteBuyers();
+    res.json({ noteBuyers });
+  } catch (e) { console.warn('[staff] note-buyers error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
 
 // S3-05: DECISION-grade statuses are an underwriting call — only roles with
 // see_all_files authority (admin / underwriter / loan_coordinator) may move a file
 // into one. A loan officer or processor can advance a file through the working
 // statuses but cannot approve, clear-to-close, fund, or decline it.
 const DECISION_STATUSES = new Set(['approved', 'clear_to_close', 'funded', 'declined']);
+
+// Shared status DOOR (owner-directed 2026-07-21). Set the EXACT ClickUp internal
+// status, re-derive the borrower-facing bucket, mirror to ClickUp, record the
+// transition on the file timeline, seed post-closing on funded, re-run the
+// condition rule engine, and announce the transition to borrower + team. BOTH the
+// internal-status route AND the new WORKFLOW submit path call this — so a
+// workflow button click drives the status + ClickUp card automatically (the
+// workflow drives the status, not the other way around). The caller audits (audit
+// needs the request); this returns everything the caller needs to log it.
+//   opts: { actorId, canDecide (see_all_files), force, allowForce (isAdmin) }
+//   returns one of:
+//     { unchanged:true, internal_status, status }
+//     { forbidden:true, reason }                         — decision-grade + not canDecide
+//     { blocked:true, target, blockers }                 — conditions/gates outstanding + not forced
+//     { ok:true, internal_status, status, fromStatus, forced }
+async function applyInternalStatus(appId, internalStatus, opts = {}) {
+  if (!statusMap.isKnownInternal(internalStatus)) { const e = new Error('unknown internal status'); e.code = 'unknown_status'; throw e; }
+  const external = statusMap.externalFor(internalStatus);
+  const cur = await db.query(`SELECT status, internal_status FROM applications WHERE id=$1`, [appId]);
+  if (!cur.rows[0]) { const e = new Error('not found'); e.code = 'not_found'; throw e; }
+  if (statusMap.norm(cur.rows[0].internal_status) === statusMap.norm(internalStatus))
+    return { unchanged: true, internal_status: internalStatus, status: external };
+  if (DECISION_STATUSES.has(external) && !opts.canDecide)
+    return { forbidden: true, reason: 'Only an underwriter or admin can move a file to this status.' };
+  let forced = false;
+  if (external === 'clear_to_close' || external === 'funded') {
+    const blockers = await advancementBlockers(appId, external);
+    // AI suggestions are ADVISORY per the HARD RULE (and this fold's own R3.17
+    // comment): they show on the readiness widget / in the blocked payload but
+    // never gate the transition themselves (fix 2026-07-23 — the doors were
+    // counting them, contradicting the documented contract).
+    const enforceable = blockers.conditions.filter((c) => c && c.source !== 'ai_suggestion');
+    if (enforceable.length || blockers.gates.length) {
+      if (!(opts.force && opts.allowForce)) return { blocked: true, target: external, blockers };
+      forced = true;
+    }
+  }
+  // R6.18 (#202) — the ISSUANCE BACKSTOP. The whole-loan underwriting decision is a
+  // super-admin-overridable HARD WARNING on the two irreversible actions (CTC /
+  // funding), NEVER an un-overridable block: a super-admin always proceeds (recorded
+  // as an override); anyone else escalates. It fails OPEN (advisory → proceed) on no
+  // run / any error, so it only ever warns on a CURRENT run's CONFIRMED grounded
+  // fatal. Advisory-only — it touches no frozen pricing number.
+  let issuance = null;
+  const bsAction = issuanceBackstop.actionForStatus(external);
+  if (bsAction) {
+    issuance = await issuanceBackstop.backstopForRun(appId, bsAction, db, {
+      actorRole: opts.actorRole || null,
+      override: !!opts.force,
+      overrideReason: opts.overrideReason || null,
+    });
+    if (issuance.hardWarning && !issuance.proceed) {
+      // a confirmed fatal + not a super-admin → escalate (a super-admin can always proceed).
+      return { blocked: true, target: external, blockers: { conditions: [], gates: [], issuance } };
+    }
+    if (issuance.override && issuance.override.applied) forced = true;
+  }
+  await db.query(
+    // status_notified_external tracks the announced status (db/187) so a ClickUp
+    // echo of this change never re-notifies the borrower.
+    `UPDATE applications SET internal_status=$2, status=$3, status_notified_external=$3, status_changed_at=now(), updated_at=now() WHERE id=$1`,
+    [appId, internalStatus, external]);
+  enqueueClickupPush(appId, ['internal_status']).catch(() => {}); // push the ClickUp task status + the mirror
+  await db.query(
+    `INSERT INTO application_status_history (application_id, from_status, to_status, changed_by, forced)
+     VALUES ($1,$2,$3,$4,$5)`, [appId, cur.rows[0].status, external, opts.actorId || null, forced]);
+  if (external === 'funded') {
+    try { await seedPostClosing(appId); } catch (_) {}
+    // The Workflow, phase two: a freshly-funded file auto-hands off to the draw
+    // coordinator (best-effort — never breaks the status move).
+    try { await workflowAuto.onFunded(appId, opts.actorId); } catch (_) {}
+  }
+  try { await conditionEngine.evaluateApplication(appId, { actor: opts.actorId ? { id: opts.actorId } : undefined, reason: 'status_change' }); } catch (_) {}
+  // Announce only when the BORROWER-FACING bucket actually changed (many internal
+  // statuses map to the same external bucket — re-announcing would be a wrong email).
+  if (external !== cur.rows[0].status) {
+    await notifyStatusTransition(appId, cur.rows[0].status, external, { forced, actorId: opts.actorId });
+  }
+  return { ok: true, internal_status: internalStatus, status: external, fromStatus: cur.rows[0].status, forced, issuance };
+}
+
+// The Workflow, phase two: after conditions move, gently nudge the loan officer
+// when the file has just become READY for its next step (condition-clearing
+// threshold reached, or clear-to-close ready). Throttled per file+step to at most
+// once / ~day so it never spams. Advisory only — it never moves the file itself.
+async function suggestNextStep(appId, actorId) {
+  try {
+    const app = (await db.query(`SELECT status, loan_officer_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0];
+    if (!app || !app.loan_officer_id) return;
+    const [cleared, ctc, hasCC, hasCtc] = await Promise.all([
+      workflow.conditionsClearedPct(appId),
+      advancementBlockers(appId, 'clear_to_close'),
+      workflowAuto.hasLiveItem(appId, 'condition_clearing'),
+      workflowAuto.hasLiveItem(appId, 'clear_to_close'),
+    ]);
+    const suggestions = workflowAuto.nextStepSuggestions({
+      status: app.status, clearedPct: cleared.pct,
+      ctcReady: !ctc.conditions.length && !ctc.gates.length,
+      hasLiveConditionClearing: hasCC, hasLiveClearToClose: hasCtc, threshold: 0.80,
+    });
+    for (const s of suggestions) {
+      const claimId = await claimOncePerPeriod({ action: `wf_ready_${s.type}`, entityId: appId, interval: '20 hours' });
+      if (!claimId) continue;   // already nudged for this step recently
+      await notify.notifyStaff(app.loan_officer_id, {
+        type: 'workflow_ready', title: 'This file is ready for its next step',
+        body: s.message, applicationId: appId, ctaLabel: 'Open the loan file', link: `/internal/app/${appId}`,
+      }).catch(() => {});
+    }
+  } catch (_) { /* best-effort — a suggestion must never break a sign-off */ }
+}
+
 router.patch('/applications/:id', async (req, res) => {
   const { status } = req.body || {};
   const force = !!(req.body && req.body.force);
@@ -4259,35 +6783,62 @@ router.patch('/applications/:id', async (req, res) => {
     let forced = false;
     if (status === 'clear_to_close' || status === 'funded') {
       const blockers = await advancementBlockers(req.params.id, status);
-      if (blockers.conditions.length || blockers.gates.length) {
+      // AI suggestions are ADVISORY (HARD RULE + the fold's own R3.17 comment):
+      // surfaced in the payload, never counted as a gate (fix 2026-07-23).
+      const enforceable = blockers.conditions.filter((c) => c && c.source !== 'ai_suggestion');
+      if (enforceable.length || blockers.gates.length) {
         if (!(force && isAdmin(req))) return res.status(409).json({ error: 'blocked', target: status, blockers });
         forced = true;
       }
     }
-    await db.query(`UPDATE applications SET status=$2, status_changed_at=now(), updated_at=now() WHERE id=$1`,
+    // R6.18 (#202) — the ISSUANCE BACKSTOP: the whole-loan decision as a
+    // super-admin-overridable HARD WARNING on CTC / funding. NEVER an un-overridable
+    // block (a super-admin always proceeds, recorded); fails OPEN on no run / error.
+    let issuance = null;
+    const bsAction2 = issuanceBackstop.actionForStatus(status);
+    if (bsAction2) {
+      issuance = await issuanceBackstop.backstopForRun(req.params.id, bsAction2, db, {
+        actorRole: req.actor.role, override: force, overrideReason: req.body && req.body.overrideReason,
+      });
+      if (issuance.hardWarning && !issuance.proceed) {
+        return res.status(409).json({ error: 'blocked', target: status, blockers: { conditions: [], gates: [], issuance } });
+      }
+      if (issuance.override && issuance.override.applied) forced = true;
+    }
+    // Advance the go-forward notification watermark in lock-step with the status
+    // we're about to announce, so a later ClickUp ECHO of this same change is
+    // recognized as already-notified and does not re-notify (db/187).
+    await db.query(`UPDATE applications SET status=$2, status_notified_external=$2, status_changed_at=now(), updated_at=now() WHERE id=$1`,
       [req.params.id, status]);
     enqueueClickupPush(req.params.id, ['status']).catch(() => {}); // propagate ONLY the status change to ClickUp promptly
     // Record the transition on the file's timeline.
     await db.query(
       `INSERT INTO application_status_history (application_id, from_status, to_status, changed_by, forced)
        VALUES ($1,$2,$3,$4,$5)`, [req.params.id, cur.rows[0].status, status, req.actor.id, forced]);
-    // Funding seeds the post-closing trailing-doc checklist.
-    if (status === 'funded') { try { await seedPostClosing(req.params.id); } catch (_) {} }
+    // Funding seeds the post-closing trailing-doc checklist + auto-hands off to
+    // the draw coordinator (best-effort).
+    if (status === 'funded') {
+      try { await seedPostClosing(req.params.id); } catch (_) {}
+      try { await workflowAuto.onFunded(req.params.id, req.actor.id); } catch (_) {}
+    }
     await audit(req, 'status_change', 'application', req.params.id, { from: cur.rows[0].status, to: status, forced: forced || undefined });
+    // R6.18 (#202) — a super-admin proceeding past a confirmed-fatal issuance hard
+    // warning is recorded as an explicit override (parity with the internal-status door).
+    if (issuance && issuance.override && issuance.override.applied) {
+      await audit(req, 'issuance_override', 'application', req.params.id,
+        { action: issuance.action, tier: issuance.tier, reason: issuance.override.reason });
+      // Exception-register record (2026-07-24): the override also lands in the
+      // loan_exceptions register (born approved) so the file's exception history
+      // and the diligence export show it. Best-effort — never blocks the status.
+      await loanExceptions.recordIssuanceOverride({ appId: req.params.id, staffId: req.actor.id, note: `${issuance.action}: ${issuance.override.reason || 'no reason given'}`, snapshot: { action: issuance.action, tier: issuance.tier || null, at: new Date().toISOString() } });
+    }
     // Status is a rule-engine field (e.g. "when the file reaches underwriting").
     try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'status_change' }); } catch (_) {}
-    const label = STATUS_LABEL[status] || status;
-    try {
-      await notify.notifyAppBorrowers(req.params.id, {
-        type: 'status_change', title: `Your loan status: ${label}`,
-        body: `Your application has moved to "${label}". Sign in to see the latest.`,
-        applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'View your file',
-        major: MAJOR_STATUSES.has(status) });   // #88: only decision statuses email the borrower
-      await notify.notifyAppStaff(req.params.id, {   // #113: whole team (primary + assistants), minus the actor
-          type: 'status_change', title: `File moved to ${label}`,
-          applicationId: req.params.id, link: `/internal/app/${req.params.id}`, exceptStaffId: req.actor.id });
-    } catch (_) { /* notify best-effort */ }
-    res.json({ ok: true, status });
+    // Announce the transition to the borrower + team (shared with the
+    // internal-status door so both notify identically). The bucket always
+    // changed here (guarded by the unchanged-status early return above).
+    await notifyStatusTransition(req.params.id, cur.rows[0].status, status, { forced, actorId: req.actor.id });
+    res.json({ ok: true, status, issuance: issuance || undefined });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
@@ -4298,29 +6849,376 @@ router.patch('/applications/:id', async (req, res) => {
 router.post('/applications/:id/internal-status', async (req, res) => {
   const internalStatus = req.body && req.body.internalStatus;
   if (!statusMap.isKnownInternal(internalStatus)) return res.status(400).json({ error: 'unknown internal status' });
-  const external = statusMap.externalFor(internalStatus);
   try {
-    const cur = await db.query(`SELECT status, internal_status FROM applications WHERE id=$1`, [req.params.id]);
-    if (!cur.rows[0]) return res.status(404).json({ error: 'not found' });
-    if (statusMap.norm(cur.rows[0].internal_status) === statusMap.norm(internalStatus))
-      return res.json({ ok: true, unchanged: true, internal_status: internalStatus, status: external });
-    // S3-05: the internal-status path re-derives the borrower-facing status, so it
-    // is a second door into the decision-grade buckets — gate it the same way.
-    if (DECISION_STATUSES.has(external) && !seesAll(req))
-      return res.status(403).json({ error: 'Only an underwriter or admin can move a file to this status.' });
-    await db.query(
-      `UPDATE applications SET internal_status=$2, status=$3, status_changed_at=now(), updated_at=now() WHERE id=$1`,
-      [req.params.id, internalStatus, external]);
-    enqueueClickupPush(req.params.id, ['status']).catch(() => {}); // push ONLY the status (task status + borrower_portal_status mirror)
-    // Record the (borrower-facing) transition on the file's timeline, like PATCH /:id.
-    await db.query(
-      `INSERT INTO application_status_history (application_id, from_status, to_status, changed_by, forced)
-       VALUES ($1,$2,$3,$4,$5)`, [req.params.id, cur.rows[0].status, external, req.actor.id, false]);
+    const before = await db.query(`SELECT internal_status FROM applications WHERE id=$1`, [req.params.id]);
+    // The shared status door does all the work (re-derive external, gate, push,
+    // history, seed post-closing, re-run conditions, announce). This route just
+    // maps its verdict to the right HTTP response + audits.
+    const r = await applyInternalStatus(req.params.id, internalStatus, {
+      actorId: req.actor.id, canDecide: seesAll(req),
+      force: !!(req.body && req.body.force), allowForce: isAdmin(req),
+      actorRole: req.actor.role, overrideReason: req.body && req.body.overrideReason,
+    });
+    if (r.forbidden) return res.status(403).json({ error: r.reason });
+    if (r.blocked) return res.status(409).json({ error: 'blocked', target: r.target, blockers: r.blockers });
+    if (r.unchanged) return res.json({ ok: true, unchanged: true, internal_status: r.internal_status, status: r.status });
     await audit(req, 'internal_status_change', 'application', req.params.id,
-      { from: cur.rows[0].internal_status, to: internalStatus, external });
-    // Status is a rule-engine field — re-run conditions on the new external bucket.
-    try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'status_change' }); } catch (_) {}
-    res.json({ ok: true, internal_status: internalStatus, status: external });
+      { from: before.rows[0] ? before.rows[0].internal_status : null, to: internalStatus, external: r.status, forced: r.forced || undefined });
+    // R6.18 (#202) — a super-admin proceeding past a confirmed-fatal issuance hard
+    // warning is recorded as an explicit override.
+    if (r.issuance && r.issuance.override && r.issuance.override.applied) {
+      await audit(req, 'issuance_override', 'application', req.params.id,
+        { action: r.issuance.action, tier: r.issuance.tier, reason: r.issuance.override.reason });
+      await loanExceptions.recordIssuanceOverride({ appId: req.params.id, staffId: req.actor.id, note: `${r.issuance.action}: ${r.issuance.override.reason || 'no reason given'}`, snapshot: { action: r.issuance.action, tier: r.issuance.tier || null, at: new Date().toISOString() } });
+    }
+    res.json({ ok: true, internal_status: r.internal_status, status: r.status, issuance: r.issuance || undefined });
+  } catch (e) {
+    if (e && e.code === 'not_found') return res.status(404).json({ error: 'not found' });
+    if (e && e.code === 'unknown_status') return res.status(400).json({ error: 'unknown internal status' });
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+// ===========================================================================
+// THE WORKFLOW (owner-directed 2026-07-21) — submission hand-offs + personal
+// work queues. A plain Submit button inside a file drops it onto the right
+// downstream person's queue AND sets the file's status automatically (the
+// workflow drives the status). Every recipient has their own ordered "up next"
+// list + a "what I finished / sent back" history. The pure data logic lives in
+// src/lib/workflow.js; this is the HTTP layer + the gating (which reuses the
+// existing completeness / advancementBlockers / status-door machinery).
+// ===========================================================================
+
+// "Application completeness" for the Loan Setup gate — the file's core product +
+// borrower identity must be filled before it can be set up. Returns the missing
+// items in plain language so the Submit panel can show exactly what's needed.
+async function applicationCompleteness(appId) {
+  const r = await db.query(
+    `SELECT a.program, a.loan_type, a.property_type, b.cell_phone, b.date_of_birth, b.fico
+       FROM applications a JOIN borrowers b ON b.id = a.borrower_id WHERE a.id = $1`, [appId]);
+  const row = r.rows[0] || {};
+  const need = [
+    [row.program, 'Program'], [row.loan_type, 'Loan type'], [row.property_type, 'Property type'],
+    [row.cell_phone, 'Borrower phone'], [row.date_of_birth, 'Borrower date of birth'], [row.fico, 'Borrower FICO score'],
+  ];
+  const missing = need.filter(([v]) => v == null || v === '').map(([, label]) => label);
+  return { complete: missing.length === 0, missing };
+}
+const COND_CLEAR_THRESHOLD = 0.80;   // "once 80–90% of conditions are cleared" (owner)
+
+// The data behind the file's Submit panel: which people each type routes to (the
+// already-assigned person or the list to pick from), what's already in someone's
+// queue, and the gating status per type so a button can disable + explain itself.
+router.get('/applications/:id/workflow/options', async (req, res) => {
+  const appId = req.params.id;
+  try {
+    const app = (await db.query(
+      `SELECT a.id, a.status, a.processor_id, a.closer_id, a.underwriter_id, a.loan_officer_id, a.expected_closing,
+              p.full_name AS processor_name, c.full_name AS closer_name, u.full_name AS underwriter_name
+         FROM applications a
+         LEFT JOIN staff_users p ON p.id = a.processor_id
+         LEFT JOIN staff_users c ON c.id = a.closer_id
+         LEFT JOIN staff_users u ON u.id = a.underwriter_id
+        WHERE a.id = $1 AND a.deleted_at IS NULL`, [appId])).rows[0];
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const [completeness, cleared, live, ctc, procs, closers, draws, sadmins, everyone] = await Promise.all([
+      applicationCompleteness(appId),
+      workflow.conditionsClearedPct(appId),
+      workflow.fileLiveItems(appId),
+      advancementBlockers(appId, 'clear_to_close'),
+      workflow.candidatesForRole('processor'),
+      workflow.candidatesForRole('closer'),
+      workflow.candidatesForRole('draw_coordinator'),
+      workflow.candidatesForRole('super_admin'),
+      workflow.allActiveStaff(),
+    ]);
+    res.json({
+      types: workflow.TYPES,
+      appStatus: app.status,
+      funded: app.status === 'funded',
+      assigned: {
+        processor: app.processor_id ? { id: app.processor_id, name: app.processor_name } : null,
+        closer: app.closer_id ? { id: app.closer_id, name: app.closer_name } : null,
+        underwriter: app.underwriter_id ? { id: app.underwriter_id, name: app.underwriter_name } : null,
+      },
+      candidates: { processor: procs, closer: closers, draw_coordinator: draws, super_admin: sadmins, all: everyone },
+      completeness,
+      conditionsCleared: cleared,
+      conditionsThreshold: COND_CLEAR_THRESHOLD,
+      ctcReady: !ctc.conditions.length && !ctc.gates.length,
+      ctcHardBlockers: ctc.conditions.filter((c) => c.source === 'underwriting'),
+      live,
+      outcomeLabels: workflow.OUTCOME_LABELS,
+      expectedClosing: app.expected_closing || null,
+    });
+  } catch (e) { console.warn('[workflow] options error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// The file's Workflow timeline (every hand-off event) for the file page.
+router.get('/applications/:id/workflow/timeline', async (req, res) => {
+  try { res.json(await workflow.fileTimeline(req.params.id)); }
+  catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// SUBMIT a file into the workflow. Body: { submissionType, toStaffId?, note?,
+// priority?, estClosingDate? }. Gates per type, resolves the recipient (assigned
+// person, else the chosen one), records the hand-off + event, opens the closing
+// sub-workflow for a closing submit, then DRIVES the status via the shared door.
+router.post('/applications/:id/workflow/submit', async (req, res) => {
+  const appId = req.params.id;
+  const b = req.body || {};
+  const cfg = workflow.typeConfig(b.submissionType);
+  if (!cfg) return res.status(400).json({ error: 'unknown submission type' });
+  try {
+    const app = (await db.query(
+      `SELECT id, status, processor_id, closer_id, underwriter_id, loan_officer_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0];
+    if (!app) return res.status(404).json({ error: 'not found' });
+
+    // ---- GATE per submission type (reuses the existing engines) ----
+    if (cfg.gate === 'completeness') {
+      const c = await applicationCompleteness(appId);
+      if (!c.complete) return res.status(409).json({ error: 'incomplete', missing: c.missing });
+    } else if (cfg.gate === 'conditions') {
+      const cc = await workflow.conditionsClearedPct(appId);
+      if (cc.pct < COND_CLEAR_THRESHOLD) return res.status(409).json({ error: 'conditions_not_ready', ...cc, threshold: COND_CLEAR_THRESHOLD });
+    } else if (cfg.gate === 'ctc') {
+      // The LO marks his side done but does NOT sign off — the CTC handler signs
+      // off in the workflow. So only HARD underwriting dealbreakers block the
+      // SUBMIT; open sign-offs are expected and do not block.
+      const blk = await advancementBlockers(appId, 'clear_to_close');
+      const fatal = blk.conditions.filter((c) => c.source === 'underwriting');
+      if (fatal.length) return res.status(409).json({ error: 'blocked', blockers: { conditions: fatal, gates: [] } });
+    } else if (cfg.gate === 'funded') {
+      if (app.status !== 'funded') return res.status(409).json({ error: 'not_funded' });
+    } else if (cfg.gate === 'recipient') {
+      if (!b.toStaffId) return res.status(400).json({ error: 'pick_recipient', role: null });
+    }
+
+    // ---- RESOLVE the recipient: assigned person, else the submitter's pick ----
+    let toStaffId = null, setPointer = false;
+    if (cfg.pointer && app[cfg.pointer]) {
+      toStaffId = app[cfg.pointer];
+    } else if (b.toStaffId) {
+      toStaffId = b.toStaffId;
+      setPointer = !!(cfg.pointer && cfg.assigns);
+    } else if (cfg.role) {
+      const cands = await workflow.candidatesForRole(cfg.role);
+      if (cands.length === 1) { toStaffId = cands[0].id; setPointer = !!(cfg.pointer && cfg.assigns); }
+      else return res.status(400).json({ error: 'pick_recipient', role: cfg.role, candidates: cands });
+    } else {
+      return res.status(400).json({ error: 'pick_recipient', role: null });
+    }
+    const recipient = (await db.query(`SELECT id, full_name, role FROM staff_users WHERE id=$1 AND is_active=true`, [toStaffId])).rows[0];
+    if (!recipient) return res.status(400).json({ error: 'recipient not found or inactive' });
+
+    // ---- estimated closing date (closing only) ----
+    let estClosing = null;
+    if (cfg.needsEstClosing) {
+      estClosing = b.estClosingDate ? require('../lib/fields').normalizeTypedDate(b.estClosingDate) : null;
+      if (!estClosing) return res.status(400).json({ error: 'Enter an estimated closing date (a real YYYY-MM-DD date).' });
+    }
+
+    // ---- transaction: assign the pointer (if picking a new person), insert the
+    //      hand-off + event, open the closing row for a closing submit ----
+    const client = await db.getClient();
+    let item;
+    try {
+      await client.query('BEGIN');
+      if (setPointer && cfg.pointer) await client.query(`UPDATE applications SET ${cfg.pointer}=$2, updated_at=now() WHERE id=$1`, [appId, toStaffId]);
+      item = await workflow.submitItem(client, {
+        appId, submissionType: b.submissionType, fromStaffId: req.actor.id, toStaffId, toRole: recipient.role,
+        note: b.note, priority: Number(b.priority), estClosingDate: estClosing,
+      });
+      if (b.submissionType === 'closing') await workflow.openClosing(client, { appId, workflowItemId: item.id, estClosingDate: estClosing, actorId: req.actor.id });
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+
+    // ---- side effects (outside the tx) ----
+    // A newly-picked processor is mirrored to ClickUp (processor syncs both ways);
+    // the db/103 trigger already granted the person file access via the pointer.
+    if (setPointer && cfg.pointer === 'processor_id') enqueueClickupPush(appId, ['processor']).catch(() => {});
+    // Closing writes the estimated closing date onto the file too (borrower-facing).
+    if (b.submissionType === 'closing' && estClosing) {
+      try { await db.query(`UPDATE applications SET expected_closing=$2, updated_at=now() WHERE id=$1`, [appId, estClosing]); enqueueClickupPush(appId, ['expected_closing']).catch(() => {}); } catch (_) {}
+    }
+    // DRIVE the status automatically (the workflow drives the status). The
+    // workflow is the authorized path, so it may set decision-grade statuses
+    // (canDecide:true); it is BEST-EFFORT — the hand-off already landed, so a
+    // status gate/decline never fails the submit (the status catches up later).
+    let statusResult = null;
+    if (cfg.internalStatus) {
+      try {
+        statusResult = await applyInternalStatus(appId, cfg.internalStatus, { actorId: req.actor.id, canDecide: true, force: isAdmin(req), allowForce: isAdmin(req) });
+      } catch (_) { statusResult = null; }
+    }
+    // Notify the recipient it's in their Workflow (best-effort — the hand-off
+    // already committed, so a notify hiccup must never fail the submit).
+    await notify.notifyStaff(toStaffId, {
+      type: 'workflow_submitted', title: `New in your Workflow: ${cfg.label}`,
+      body: `${req.actor.name || 'A team member'} submitted this file to you for ${cfg.label}.${b.note ? ' Note: ' + String(b.note).slice(0, 300) : ''}`,
+      applicationId: appId, ctaLabel: 'Open my Workflow', link: '/internal/workflow',
+    }).catch(() => {});
+    await audit(req, 'workflow_submit', 'application', appId, { submissionType: b.submissionType, toStaffId, itemId: item.id, statusApplied: statusResult && statusResult.ok ? statusResult.status : undefined });
+    res.json({ ok: true, item, status: statusResult && statusResult.ok ? statusResult.status : undefined, statusBlocked: statusResult && statusResult.blocked ? true : undefined });
+  } catch (e) { console.warn('[workflow] submit error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// MY personal workflow. ?tab=next|history &sort=received|priority|aging &type=…
+router.get('/workflow', async (req, res) => {
+  try {
+    const rows = await workflow.listQueue(req.actor.id, { tab: req.query.tab, sort: req.query.sort, type: req.query.type });
+    res.json(rows);
+  } catch (e) { console.warn('[workflow] list error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// Counts for the nav badge + KPI tiles.
+router.get('/workflow/count', async (req, res) => {
+  try { res.json(await workflow.queueCounts(req.actor.id)); }
+  catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// The staffer's OWN exceptions (owner-directed 2026-07-22) — a loan officer's
+// personal queue of exception requests they raised, across ALL their files (not
+// file-scoped). Lets them track/comment/withdraw a pending exception without
+// digging into each file. `status`: open (default) | all-active | approved | denied | cleared | all.
+router.get('/my-exceptions', async (req, res) => {
+  try {
+    const status = ['open', 'all-active', 'approved', 'denied', 'withdrawn', 'expired', 'cleared', 'all'].includes(req.query.status) ? req.query.status : 'open';
+    const [rows, openCount] = await Promise.all([
+      loanExceptions.listForRequester(req.actor.id, { status }),
+      loanExceptions.requesterOpenCount(req.actor.id),
+    ]);
+    const reasonCodesByType = {};
+    for (const t of Object.keys(loanExceptions.EXCEPTION_TYPES)) reasonCodesByType[t] = loanExceptions.reasonCodesFor(t);
+    res.json({
+      exceptions: rows, openCount,
+      reasonCodes: loanExceptions.REASON_CODES, reasonCodesByType,
+      typeLabels: Object.fromEntries(Object.entries(loanExceptions.EXCEPTION_TYPES).map(([k, v]) => [k, v.label])),
+      compensatingFactors: loanExceptions.COMPENSATING_FACTORS,
+    });
+  } catch (e) { console.warn('[my-exceptions] list error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+router.get('/my-exceptions/count', async (req, res) => {
+  try { res.json({ openCount: await loanExceptions.requesterOpenCount(req.actor.id) }); }
+  catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// PICK UP an item (start working it). Only the person it's routed to (or an admin).
+router.post('/workflow/:itemId/pickup', async (req, res) => {
+  try {
+    const it = (await db.query(`SELECT to_staff_id, to_role, status FROM workflow_items WHERE id=$1`, [req.params.itemId])).rows[0];
+    if (!it) return res.status(404).json({ error: 'not found' });
+    // Mine, OR an UNASSIGNED role-inbox item addressed to my role (listQueue shows those to
+    // every member of the role — pickup must accept the same set, else a non-admin coordinator
+    // sees an item they can never claim; phase-1 audit finding #2), OR an admin.
+    const roleInboxMine = it.to_staff_id == null && it.to_role && it.to_role === req.actor.role;
+    if (String(it.to_staff_id || '') !== String(req.actor.id) && !roleInboxMine && !isAdmin(req)) return res.status(403).json({ error: 'this item is not in your workflow' });
+    const client = await db.getClient();
+    let item;
+    try { await client.query('BEGIN'); item = await workflow.pickItem(client, req.params.itemId, req.actor.id); await client.query('COMMIT'); }
+    catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; } finally { client.release(); }
+    res.json({ ok: true, item });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// RETURN an item — finished; send it back to whoever submitted it, with an
+// outcome label + optional note. Leaves the live queue, stays in history.
+router.post('/workflow/:itemId/return', async (req, res) => {
+  const outcomeLabel = req.body && req.body.outcomeLabel;
+  const note = req.body && req.body.note;
+  if (!outcomeLabel) return res.status(400).json({ error: 'pick an outcome (what you finished / did)' });
+  try {
+    const it = (await db.query(`SELECT application_id, to_staff_id, to_role, from_staff_id, submission_type, status FROM workflow_items WHERE id=$1`, [req.params.itemId])).rows[0];
+    if (!it) return res.status(404).json({ error: 'not found' });
+    // Same role-inbox acceptance as pickup (an unassigned item addressed to my role is mine to finish).
+    const roleInboxMine = it.to_staff_id == null && it.to_role && it.to_role === req.actor.role;
+    if (String(it.to_staff_id || '') !== String(req.actor.id) && !roleInboxMine && !isAdmin(req)) return res.status(403).json({ error: 'this item is not in your workflow' });
+    if (!['open', 'in_progress'].includes(it.status)) return res.status(409).json({ error: 'this item is already finished' });
+    const client = await db.getClient();
+    let item;
+    try { await client.query('BEGIN'); item = await workflow.returnItem(client, req.params.itemId, req.actor.id, outcomeLabel, note); await client.query('COMMIT'); }
+    catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; } finally { client.release(); }
+    // Tell the person who submitted it that it's been finished + sent back.
+    if (it.from_staff_id && String(it.from_staff_id) !== String(req.actor.id)) {
+      const label = (workflow.typeConfig(it.submission_type) || {}).label || it.submission_type;
+      await notify.notifyStaff(it.from_staff_id, {
+        type: 'workflow_returned', title: `${req.actor.name || 'A team member'} finished ${label}: ${outcomeLabel}`,
+        body: `Your ${label} submission was finished and sent back to you.${note ? ' Note: ' + String(note).slice(0, 300) : ''}`,
+        applicationId: it.application_id, ctaLabel: 'Open the loan file', link: `/internal/app/${it.application_id}`,
+      }).catch(() => {});
+    }
+    // The Workflow, phase two: the outcome can DRIVE the status forward (e.g.
+    // "Finished CTC" → clear-to-close). Best-effort — the hand-off already
+    // returned, so a status hiccup never fails the send-back.
+    let statusApplied;
+    const action = workflowAuto.outcomeAction(outcomeLabel);
+    if (action && action.internalStatus) {
+      try {
+        const r = await applyInternalStatus(it.application_id, action.internalStatus,
+          { actorId: req.actor.id, canDecide: true, force: isAdmin(req), allowForce: isAdmin(req) });
+        if (r && r.ok) statusApplied = r.status;
+      } catch (_) { /* status is best-effort */ }
+    }
+    await audit(req, 'workflow_return', 'application', it.application_id, { itemId: req.params.itemId, outcomeLabel, statusApplied });
+    res.json({ ok: true, item, status: statusApplied });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Advance the closing sub-workflow. Body: { stage }. fully_closed → funded (the
+// owner's "fully closed links funded"), done via the shared status door.
+router.post('/applications/:id/closing-workflow', async (req, res) => {
+  const stage = req.body && req.body.stage;
+  if (!workflow.CLOSING_STAGES.includes(stage)) return res.status(400).json({ error: 'unknown closing stage' });
+  try {
+    const client = await db.getClient();
+    let out;
+    try { await client.query('BEGIN'); out = await workflow.advanceClosing(client, req.params.id, stage, req.actor.id); await client.query('COMMIT'); }
+    catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; } finally { client.release(); }
+    // Drive the matching ClickUp status (fully_closed → funded) best-effort.
+    let statusResult = null;
+    if (out.internalStatus) {
+      try { statusResult = await applyInternalStatus(req.params.id, out.internalStatus, { actorId: req.actor.id, canDecide: true, force: isAdmin(req), allowForce: isAdmin(req) }); } catch (_) {}
+    }
+    await audit(req, 'closing_workflow_stage', 'application', req.params.id, { stage, statusApplied: statusResult && statusResult.ok ? statusResult.status : undefined });
+    res.json({ ok: true, closing: out.row, status: statusResult && statusResult.ok ? statusResult.status : undefined, statusBlocked: statusResult && statusResult.blocked ? true : undefined });
+  } catch (e) {
+    if (e && e.code === 'bad_stage') return res.status(400).json({ error: 'unknown closing stage' });
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+// The closing sub-workflow state for the file page.
+router.get('/applications/:id/closing-workflow', async (req, res) => {
+  try { res.json(await workflow.getClosing(req.params.id) || { stage: null }); }
+  catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// #84 — super-admin STRUCTURAL UNLOCK. A clear-to-close / funded file's loan
+// structure (price, loan amount, pricing, budget, vesting, program) is frozen for
+// EVERYONE, super_admin included. A super_admin may deliberately UNLOCK a specific
+// file to correct a genuine mistake, then re-lock it — every toggle is audited.
+// Only a super_admin (not a regular admin) may do this.
+router.post('/applications/:id/structural-lock', async (req, res) => {
+  if (!(req.actor && req.actor.role === 'super_admin'))
+    return res.status(403).json({ error: 'Only a super-admin can unlock a frozen file.' });
+  const unlock = !!(req.body && req.body.unlocked);
+  const reason = req.body && req.body.reason ? String(req.body.reason).slice(0, 500) : null;
+  try {
+    const cur = await db.query(`SELECT status FROM applications WHERE id=$1`, [req.params.id]);
+    if (!cur.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (unlock) {
+      await db.query(
+        `UPDATE applications SET structural_unlocked_at=now(), structural_unlocked_by=$2, structural_unlock_reason=$3, updated_at=now() WHERE id=$1`,
+        [req.params.id, req.actor.id, reason]);
+    } else {
+      await db.query(
+        `UPDATE applications SET structural_unlocked_at=NULL, structural_unlocked_by=NULL, structural_unlock_reason=NULL, updated_at=now() WHERE id=$1`,
+        [req.params.id]);
+    }
+    await audit(req, unlock ? 'structural_unlock' : 'structural_relock', 'application', req.params.id, { reason });
+    res.json({ ok: true, unlocked: unlock });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
@@ -4978,12 +7876,34 @@ router.post('/leads/:id/convert', async (req, res) => {
     const exConflict = await emailAdoptionConflict(email, firstName, lastName);
     if (exConflict) return emailAdoptionError(res, exConflict, email);
 
+    // Carry the economics the applicant actually entered on the public loan
+    // application (payload = collectState() → { v:{by input id}, c:{checkboxes} }),
+    // so the created file's Term Sheet Studio opens PREFILLED instead of empty and
+    // staff never re-key from memory (and never miss the assignment flag, which
+    // would mis-price on the fee-inclusive total). loan_amount is intentionally
+    // excluded — it's set by the pricing engine on registration (audit #23).
+    // collectState() (web/*/suite.js) buckets inputs by kind: text/select in .v,
+    // checkboxes in .c, RADIOS in .rad. Read each field from the right bucket under
+    // its REAL loan-application id (verified against the tool): the rehab budget is
+    // `rehab` (not "construction"), and loan purpose is the `purpose` radio.
+    const pl = (lead.tool === 'loan_application' && lead.payload) ? lead.payload : {};
+    const pv = (pl && pl.v) || {}, pc = (pl && pl.c) || {}, pr = (pl && pl.rad) || {};
+    const numv = (x) => { const n = Number(String(x == null ? '' : x).replace(/,/g, '')); return isFinite(n) && n > 0 ? n : null; };
+    const econIsAssign = !!pc.isAssign;
+    const econPrice = numv(pv.price);
+    const econSeller = econIsAssign ? numv(pv.origPrice) : null;
+    const econFee = (econIsAssign && econPrice && econSeller) ? Math.max(0, econPrice - econSeller) : null;
+    const econReserveOn = !!pc.finReserve;
+    const econFico = (() => { const n = Number(pv.fico); return isFinite(n) && n >= 300 && n <= 850 ? Math.round(n) : null; })();
+    const econLoanType = /refi/i.test(String(pr.purpose || '')) ? 'Refinance' : 'Purchase';
+
     const br = await db.query(
-      `INSERT INTO borrowers (first_name,last_name,email,cell_phone)
-       VALUES ($1,$2,$3,$4)
-       ON CONFLICT (email) DO UPDATE SET cell_phone=COALESCE(borrowers.cell_phone, EXCLUDED.cell_phone), updated_at=now()
+      `INSERT INTO borrowers (first_name,last_name,email,cell_phone,fico)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (email) DO UPDATE SET cell_phone=COALESCE(borrowers.cell_phone, EXCLUDED.cell_phone),
+                                         fico=COALESCE(borrowers.fico, EXCLUDED.fico), updated_at=now()
        RETURNING id`,
-      [firstName, lastName || '', email, lead.phone || null]);
+      [firstName, lastName || '', email, lead.phone || null, econFico]);
     const borrowerId = br.rows[0].id;
 
     // Owner: the lead's officer, else the acting officer, else unassigned.
@@ -4996,11 +7916,24 @@ router.post('/leads/:id/convert', async (req, res) => {
     // product registration, exactly like a normal new staff file. The lead's
     // estimate stays on the lead; it must not seed the priced pipeline amount.
     const ins = await db.query(
-      `INSERT INTO applications (borrower_id,property_address,property_type,program,loan_officer_id,loan_officer_name,source,status,submitted_at)
-       VALUES ($1,$2,$3,$4,$5,$6,'staff','new',now())
+      `INSERT INTO applications
+         (borrower_id,property_address,property_type,program,loan_officer_id,loan_officer_name,source,status,submitted_at,
+          loan_type,purchase_price,as_is_value,arv,rehab_budget,term,
+          requested_ir_months,requested_ir_amount,is_assignment,underlying_contract_price,assignment_fee,
+          requested_exp_flips,requested_exp_holds,requested_exp_ground)
+       VALUES ($1,$2,$3,$4,$5,$6,'staff','new',now(),
+          $7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
        RETURNING id, ys_loan_number`,
-      [borrowerId, JSON.stringify(addr), b.propertyType || lead.property_type || null,
-        b.program || lead.program || null, officerId, officerName]);
+      [borrowerId, JSON.stringify(addr),
+        b.propertyType || pv.propType || lead.property_type || null,
+        b.program || pv.dealType || lead.program || null, officerId, officerName,
+        econLoanType,
+        econPrice, numv(pv.asIs), numv(pv.arv), numv(pv.rehab),
+        pv.termMonths ? String(parseInt(pv.termMonths, 10) || '') || null : null,
+        (econReserveOn ? (parseInt(pv.resMonths, 10) || null) : null),
+        (econReserveOn ? numv(pv.resAmount) : null),
+        econIsAssign, econSeller, econFee,
+        (parseInt(pv.expFlips, 10) || null), (parseInt(pv.expBrrrr, 10) || null), (parseInt(pv.expGround, 10) || null)]);
     const appId = ins.rows[0].id;
 
     try { await require('../lib/conditions/ensure').ensureFileConditions(appId, { reason: 'lead_convert' }); }
@@ -5150,7 +8083,10 @@ router.post('/applications/:id/documents', async (req, res) => {
           AND ($3::text IS NOT NULL OR $4::uuid IS NULL)
           AND ($3::text IS NULL OR slot_label IS NOT DISTINCT FROM $3)`,
       [b.checklistItemId, r.rows[0].id, slot, b.replaceDocumentId || null]);
-    await db.query(`UPDATE checklist_items SET status='received', updated_at=now() WHERE id=$1`, [b.checklistItemId]);
+    // A superseding upload replaces the reviewed evidence with a new UNREVIEWED
+    // file, so a prior sign-off no longer matches what's on the item — drop it so
+    // the new version is re-reviewed before the file can clear-to-close.
+    await require('../lib/checklist-evidence').reopenConditionEvidence(db, b.checklistItemId, 'received');
     enqueueChecklistStatusPush(b.checklistItemId).catch(() => {}); // mapped conditions → ClickUp dropdown
     // The shared list works both ways — tell the borrower their team added it.
     // Staff-only (internal) conditions are never surfaced or emailed to them.
@@ -5160,7 +8096,7 @@ router.post('/applications/:id/documents', async (req, res) => {
         await notify.notifyBorrower(borrowerId, {
           type: 'doc_uploaded', title: `Your loan team added a document to "${itemLabel}"`,
           body: `"${b.filename}" was uploaded to ${llcId ? 'your entity documents' : `condition "${itemLabel}"`}${slot ? ` (${slot})` : ''}${ctx ? ` on ${ctx.label}` : ''} on your behalf.`,
-          meta: (ctx && ctx.meta) || undefined,
+          meta: (ctx && ctx.borrowerMeta) || undefined,
           applicationId: llcId ? null : req.params.id, link: llcId ? '/entities' : `/app/${req.params.id}` });
       } catch (_) { /* best-effort */ }
     }
@@ -5168,9 +8104,102 @@ router.post('/applications/:id/documents', async (req, res) => {
   // An LLC-slot upload re-drives the umbrella LLC condition on every open file
   // vesting in the entity (all slots present → received; etc).
   if (llcId) { try { await llcLib.syncLlcConditions(llcId); } catch (_) { /* best-effort */ } }
+
+  // Auto-import: an appraisal XML dropped on the appraisal-documents condition's XML slot
+  // imports the appraisal right there (builds the property report + PILOT findings + the two
+  // internal conditions) — the officer never has to use the separate import screen, though it
+  // still works. Best-effort: a bad/unparseable XML notes the failure on the condition and
+  // never breaks the upload.
+  let apprImport = null;   // surfaced in the response so the UI can show the findings immediately
+  if (b.checklistItemId && !llcId && /xml/i.test(slot || '')) {
+    try {
+      const tc = (await db.query(
+        `SELECT t.code FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id WHERE ci.id=$1`,
+        [b.checklistItemId])).rows[0];
+      if (tc && tc.code === 'rtl_cond_appraisaldocs') {
+        const xml = buf.toString('utf8');
+        const pdfDoc = (await db.query(
+          `SELECT id FROM documents WHERE checklist_item_id=$1 AND is_current
+             AND lower(coalesce(slot_label,'')) LIKE '%pdf%' ORDER BY created_at DESC LIMIT 1`,
+          [b.checklistItemId])).rows[0];
+        const out = await require('../lib/appraisal/desk').runAppraisalImport({
+          appId: req.params.id, xml, importedBy: req.actor.id,
+          xmlDocumentId: r.rows[0].id, pdfDocumentId: pdfDoc && pdfDoc.id,
+        });
+        if (out && out.ok) {
+          // Surface the result so the upload UI can announce "findings built" and
+          // refresh the appraisal panel — no separate re-import into the findings.
+          apprImport = { ok: true, appraisalId: out.appraisalId, summary: out.summary };
+          await audit(req, 'appraisal_import', 'application', req.params.id,
+            { via: 'condition_slot', appraisalId: out.appraisalId, findings: out.summary });
+        } else {
+          apprImport = { ok: false, error: (out && out.error) || 'the appraisal XML could not be imported' };
+          // Never silent: tell the officer the XML didn't import and why.
+          try {
+            await db.query(
+              `UPDATE checklist_items SET notes=CASE WHEN notes IS NULL OR notes LIKE '[auto]%' THEN $2 ELSE notes END, updated_at=now() WHERE id=$1`,
+              [b.checklistItemId, `[auto] The uploaded appraisal XML could not be imported${out && out.error ? ` (${out.error})` : ''}. Please confirm it is the appraisal DATA file (XML), not the PDF.`]);
+          } catch (_) { /* best-effort */ }
+        }
+      }
+    } catch (e) { console.error('[appraisal] condition auto-import failed (non-fatal):', e && e.message); }
+  }
+
   await audit(req, 'upload_document', 'document', r.rows[0].id, { filename: b.filename, docKind, checklistItemId: b.checklistItemId || null, llcId });
   try { require('../lib/sharepoint-backup').kick(); } catch (_) {}
-  res.status(201).json({ ok: true, documentId: r.rows[0].id });
+
+  // AI classifier auto-hook (R3.13, owner-directed 2026-07-22, HARD RULE — never
+  // moves the document itself; never clears/reopens a condition). When the Azure
+  // Custom Classifier is trained, run it against the uploaded bytes and post AI
+  // suggestions to the file: (a) wrong-condition if the classifier says the doc
+  // belongs to a different condition than where it was filed, (b) splitter if the
+  // document looks like a combined package. Fires in setImmediate so upload stays
+  // fast; every step is best-effort and never blocks the response.
+  const uploadedDocId = r.rows[0].id;
+  const appIdForAi = llcId ? null : req.params.id;
+  if (appIdForAi && buf && buf.length) setImmediate(() => {
+    (async () => {
+      const azc = require('../lib/ai/azure-custom');
+      if (!azc.classifierConfigured()) return;   // dormant until classifier trained
+      const client = await db.pool.connect();
+      try {
+        // For classification we only need the bytes; classify+suggest are separate DB
+        // writes but share one connection so a rollback of one doesn't hurt the other.
+        const classifier = await azc.classify({ buffer: buf, appId: appIdForAi, documentId: uploadedDocId });
+        if (!classifier.ok || !classifier.segments || !classifier.segments.length) return;
+        await client.query('BEGIN');
+        // (a) Wrong-condition detector: only when filed under a specific checklist item.
+        if (b.checklistItemId) {
+          const wc = require('../lib/underwriting/wrong-condition');
+          const tc = (await client.query(
+            `SELECT t.code, COALESCE(t.borrower_label, t.label) AS label
+               FROM checklist_items ci JOIN checklist_templates t ON t.id = ci.template_id
+              WHERE ci.id = $1`, [b.checklistItemId])).rows[0];
+          if (tc && tc.code) {
+            // Pick the highest-confidence segment as the document's dominant type.
+            const dominant = classifier.segments.slice().sort((a, b2) => (b2.confidence || 0) - (a.confidence || 0))[0];
+            await wc.analyzeAndRecord(client, {
+              applicationId: appIdForAi, documentId: uploadedDocId, checklistItemId: b.checklistItemId,
+              conditionCode: tc.code, conditionLabel: tc.label,
+              classifier: { docType: dominant.docType, confidence: dominant.confidence, pages: dominant.pages },
+            });
+          }
+        }
+        // (b) Splitter suggest: only meaningful for PDFs with 2+ distinct doc types.
+        const ss = require('../lib/underwriting/splitter-suggest');
+        // pageCount from the classifier segments' max page number as a floor.
+        const maxPage = Math.max(...classifier.segments.flatMap(s => s.pages || [0]).map(Number).filter(Number.isFinite));
+        await ss.suggestSplit(client, {
+          applicationId: appIdForAi, documentId: uploadedDocId, buffer: buf, pageCount: maxPage,
+          staffId: req.actor.id,
+        });
+        await client.query('COMMIT');
+      } catch (_) { await client.query('ROLLBACK').catch(() => {}); }
+      finally { client.release(); }
+    })().catch(() => {});
+  });
+
+  res.status(201).json({ ok: true, documentId: r.rows[0].id, ...(apprImport ? { appraisal: apprImport } : {}) });
 });
 
 // Approve or reject an uploaded document. Rejection requires a reason, keeps the
@@ -5179,6 +8208,26 @@ router.post('/applications/:id/documents', async (req, res) => {
 // Acceptance marks the item RECEIVED (not satisfied) — the condition stays open
 // until a reviewer signs it off (#135). Only accepted+current docs count for the
 // file (see getApprovedDocuments / TPR export).
+// A tool submission (Scope of Work, track record, term sheet…) saves the SAME
+// logical document in SEVERAL formats — HTML + XML + PDF — as separate `documents`
+// rows on ONE checklist item. A verdict (reject / request-more) on that item was
+// firing the borrower email once PER FORMAT (owner-reported 2026-07-20: three
+// identical "needs a new document" emails for one Scope of Work). Send ONE
+// borrower notification per checklist item per verdict: atomically CLAIM a short
+// window (the export formats are decided within seconds of each other, whether by
+// one cascading action or three quick clicks) — the first format's verdict
+// notifies, the sibling formats update silently. Returns true if THIS call should
+// notify. No checklist item to key on (LLC/profile doc) → always notify.
+async function claimItemVerdictEmail(checklistItemId, action) {
+  if (!checklistItemId) return true;   // no logical item to key on → always notify
+  // Use the shared ATOMIC claim (pg_advisory_xact_lock in its own statement) —
+  // a plain INSERT…WHERE NOT EXISTS is NOT race-safe under READ COMMITTED, so two
+  // of the export formats' parallel reject calls could both win and re-send. The
+  // helper also FAILS CLOSED on a DB error (returns null → no email) instead of
+  // throwing a 500 out of the handler after the review already committed.
+  const { claimOncePerPeriod } = require('../lib/throttle-claim');
+  return (await claimOncePerPeriod({ action, entityId: checklistItemId, interval: '5 minutes', entityType: 'checklist_item' })) != null;
+}
 router.post('/documents/:id/review', async (req, res) => {
   const b = req.body || {};
   const action = b.action;
@@ -5225,10 +8274,11 @@ router.post('/documents/:id/review', async (req, res) => {
         const newHint = moreNote ? (baseHint ? `${baseHint} · Still needed: ${moreNote}` : `Still needed: ${moreNote}`) : null;
         await db.query(
           `UPDATE checklist_items SET status='outstanding',
+                  signed_off_at=NULL, signed_off_by=NULL, reviewed_at=NULL, reviewed_by=NULL,
                   notes=CASE WHEN $2 <> '' THEN $2 ELSE notes END,
                   borrower_hint=COALESCE($3, borrower_hint), updated_at=now() WHERE id=$1`,
           [doc.checklist_item_id, moreNote ? `Still needed: ${moreNote}` : '', newHint]);
-      } else {
+      } else if (action === 'accept') {
         // Accepting a document only marks the condition RECEIVED — NOT satisfied
         // (owner-directed 2026-07-12). The condition stays open on the list until
         // a reviewer explicitly SIGNS IT OFF (which routes through signOffGate and
@@ -5236,9 +8286,16 @@ router.post('/documents/:id/review', async (req, res) => {
         // criminal report, insurance binder AND invoice). This prevents a
         // multi-document condition from "flying away" the moment ONE of its
         // documents is accepted, and keeps accept (doc is good) distinct from
-        // sign-off (the whole condition is complete). Reject -> issue.
-        await db.query(`UPDATE checklist_items SET status=$2, updated_at=now() WHERE id=$1`,
-          [doc.checklist_item_id, action === 'accept' ? 'received' : 'issue']);
+        // sign-off (the whole condition is complete).
+        await db.query(`UPDATE checklist_items SET status='received', updated_at=now() WHERE id=$1`,
+          [doc.checklist_item_id]);
+      } else {
+        // Reject -> issue, AND drop any prior sign-off: the rejected document was
+        // the evidence the sign-off attested to, so the condition must re-open
+        // (otherwise a signed-off condition stays "cleared" for the clear-to-close
+        // gate with rejected/zero evidence). Same class as the LLC/track-record
+        // reject-revokes-verification handling below.
+        await require('../lib/checklist-evidence').reopenConditionEvidence(db, doc.checklist_item_id, 'issue');
       }
       enqueueChecklistStatusPush(doc.checklist_item_id).catch(() => {}); // mapped conditions → ClickUp dropdown
     }
@@ -5247,7 +8304,7 @@ router.post('/documents/:id/review', async (req, res) => {
 
     // Tell the borrower another document is needed on this condition — the
     // accepted file is kept; this is an "and also", not a rejection.
-    if (requestMore && doc.borrower_id) {
+    if (requestMore && doc.borrower_id && await claimItemVerdictEmail(doc.checklist_item_id, 'doc_requested_emailed')) {
       try {
         let condLabel = '';
         if (doc.checklist_item_id) {
@@ -5258,13 +8315,26 @@ router.post('/documents/:id/review', async (req, res) => {
         await notify.notifyBorrower(doc.borrower_id, {
           type: 'doc_requested',
           title: condLabel ? `"${condLabel}" needs one more document` : 'One more document is needed',
-          body: `"${doc.filename}" was accepted ✓${condLabel ? ` — but condition "${condLabel}" needs one more document` : ''}${moreNote ? `: ${moreNote}` : '.'}${ctx ? ` (${ctx.label})` : ''}`,
-          meta: (ctx && ctx.meta) || undefined,
+          badge: { text: 'Action needed', tone: 'action' },
+          body: `Good news — "${doc.filename}" was accepted. To finish this item, your loan team needs one more document.`,
+          callout: moreNote ? { title: 'What we still need', body: moreNote, tone: 'action' } : undefined,
+          meta: (ctx && ctx.borrowerMeta) || undefined,
           applicationId: doc.application_id,
           link: doc.application_id ? `/app/${doc.application_id}` : '/profile',
           ctaLabel: 'Upload the document' });
       } catch (_) { /* best-effort */ }
     }
+
+    // Plain accept → the borrower is NOT notified at all (owner-directed
+    // 2026-07-20 evening: "nobody needs to be aware when somebody is accepting
+    // something internally — the borrower does not need to be aware"). A staff
+    // member accepting a document is an INTERNAL workflow step, not a borrower
+    // milestone: no email AND no in-app ping. The borrower can still see a
+    // document is accepted in their checklist if they look, and the events that
+    // DO reach them are unchanged — a REJECTED / REQUESTED document (they must
+    // redo it, below) and real milestones (a status decision). We previously sent
+    // an "Accepted" confirmation here (throttled email + in-app); that whole
+    // notification is removed.
 
     // An LLC document verdict changes the entity's state everywhere: rejecting
     // a document of a VERIFIED LLC revokes the verification (its clean doc set
@@ -5300,7 +8370,7 @@ router.post('/documents/:id/review', async (req, res) => {
 
     // On rejection, tell the borrower what to fix. LLC documents live on the
     // borrower profile, not on a file — send the borrower there instead.
-    if (action === 'reject' && doc.borrower_id) {
+    if (action === 'reject' && doc.borrower_id && await claimItemVerdictEmail(doc.checklist_item_id, 'doc_rejected_emailed')) {
       try {
         let condLabel = '';
         if (doc.checklist_item_id) {
@@ -5310,8 +8380,10 @@ router.post('/documents/:id/review', async (req, res) => {
         const ctx = doc.application_id ? await notify.fileContext(doc.application_id) : null;
         await notify.notifyBorrower(doc.borrower_id, {
           type: 'doc_rejected', title: condLabel ? `"${condLabel}" needs a new document` : 'A document needs to be re-uploaded',
-          body: `"${doc.filename}"${condLabel ? ` on condition "${condLabel}"` : ''}${ctx ? ` (${ctx.label})` : ''} couldn't be accepted: ${String(b.reason).slice(0, 180)}`,
-          meta: (ctx && ctx.meta) || undefined,
+          badge: { text: 'Action needed', tone: 'action' },
+          body: `"${doc.filename}"${condLabel ? ` on "${condLabel}"` : ''} couldn't be accepted this time, so please upload a new version.`,
+          callout: { title: 'Why it was sent back', body: String(b.reason).slice(0, 300), tone: 'action' },
+          meta: (ctx && ctx.borrowerMeta) || undefined,
           applicationId: doc.application_id,
           link: doc.application_id ? `/app/${doc.application_id}` : '/profile',
           ctaLabel: 'Upload a new version' });
@@ -5497,12 +8569,38 @@ router.get('/team', async (req, res) => {
 // platform, tagged by type. Admins curate it: enrich, correct, or delete bad
 // entries — borrowers then autocomplete against the cleaned-up records.
 const VENDOR_TYPES = ['title_company', 'insurance_agent', 'attorney', 'contractor', 'other'];
+// Normalize an email for dedup / matching — lowercased + whitespace stripped.
+// Returns '' for blank / non-string input. Used by the vendor merge suggester +
+// the mergeArrays helper below (case-only duplicates collapse to one entry).
+function vendorNormEmail(v) { return String(v == null ? '' : v).trim().toLowerCase(); }
+// Digits-only phone form for dedup (formatting differences don't split rows).
+function vendorNormPhone(v) { return String(v == null ? '' : v).replace(/\D+/g, ''); }
+// Alphanumeric lowercased vendor name key for duplicate detection.
+function vendorNormName(v) { return String(v == null ? '' : v).toLowerCase().replace(/[^a-z0-9]+/g, ''); }
+// De-dupe an array by a normalizer, preserving first-seen order + trimming.
+function dedupBy(arr, norm) {
+  const seen = new Set(), out = [];
+  for (const raw of (arr || [])) {
+    const s = String(raw == null ? '' : raw).trim();
+    if (!s) continue;
+    const k = norm(s);
+    if (!k || seen.has(k)) continue;
+    seen.add(k); out.push(s);
+  }
+  return out;
+}
+
 router.get('/vendors', async (req, res) => {
   if (!can(req.actor, 'manage_vendors')) return res.status(403).json({ error: 'you do not have permission to manage vendors' });
   const type = VENDOR_TYPES.includes(req.query.type) ? req.query.type : null;
+  // Merged rows are hidden by default — the merge target absorbs them. Pass
+  // ?includeMerged=1 to include them (for an audit view / history panel).
+  const includeMerged = String(req.query.includeMerged || '') === '1';
   const r = await db.query(
-    `SELECT sc.id, sc.contact_type, sc.company_name, sc.contact_name, sc.email, sc.phone, sc.address,
+    `SELECT sc.id, sc.contact_type, sc.company_name, sc.contact_name,
+            sc.email, sc.phone, sc.emails, sc.phones, sc.address,
             sc.notes, sc.created_at, sc.updated_at, sc.last_used_at,
+            sc.merged_into_id, sc.merged_at,
             b.first_name || ' ' || b.last_name AS added_by_borrower,
             s.full_name AS added_by_staff,
             (SELECT count(*)::int FROM application_service_contacts x WHERE x.service_contact_id=sc.id) AS files_used
@@ -5510,19 +8608,59 @@ router.get('/vendors', async (req, res) => {
        LEFT JOIN borrowers b ON b.id=sc.borrower_id
        LEFT JOIN staff_users s ON s.id=sc.added_by_staff_id
       WHERE ($1::text IS NULL OR sc.contact_type=$1)
-      ORDER BY sc.contact_type, lower(coalesce(sc.company_name, sc.contact_name, sc.email, ''))`, [type]);
-  res.json(r.rows);
+        AND ($2::boolean OR sc.merged_into_id IS NULL)
+      ORDER BY sc.contact_type, lower(coalesce(sc.company_name, sc.contact_name, sc.email, ''))`, [type, includeMerged]);
+  // Duplicate detection: group vendors of the same type that share ANY signal —
+  // normalized company name, any email (case-insensitive), or any phone (digits).
+  // Returns a `duplicate_group` id per candidate cluster so the UI can offer a
+  // merge without a second round-trip. Runs in-memory (small dataset).
+  const rows = r.rows.map((v) => ({ ...v,
+    emails: Array.isArray(v.emails) ? v.emails : (v.email ? [v.email] : []),
+    phones: Array.isArray(v.phones) ? v.phones : (v.phone ? [v.phone] : []),
+  }));
+  const parent = new Map();
+  const find = (x) => { let p = x; while (parent.get(p) && parent.get(p) !== p) p = parent.get(p); return p; };
+  const union = (a, b) => { const pa = find(a), pb = find(b); if (pa !== pb) parent.set(pa, pb); };
+  for (const v of rows) parent.set(v.id, v.id);
+  const byKey = new Map();   // key -> first vendor id seen
+  const addKey = (key, vid) => {
+    if (!key) return;
+    const seen = byKey.get(key);
+    if (seen) union(seen, vid); else byKey.set(key, vid);
+  };
+  for (const v of rows) {
+    if (v.merged_into_id) continue;
+    const t = v.contact_type || '';
+    const nk = vendorNormName(v.company_name || v.contact_name || '');
+    if (nk) addKey(`${t}|n|${nk}`, v.id);
+    for (const em of v.emails) { const k = vendorNormEmail(em); if (k) addKey(`${t}|e|${k}`, v.id); }
+    for (const ph of v.phones) { const k = vendorNormPhone(ph); if (k && k.length >= 7) addKey(`${t}|p|${k}`, v.id); }
+  }
+  // Only stamp a group id when 2+ vendors joined the same cluster.
+  const groupSize = new Map();
+  for (const v of rows) { const g = find(v.id); groupSize.set(g, (groupSize.get(g) || 0) + 1); }
+  for (const v of rows) {
+    const g = find(v.id);
+    v.duplicate_group = (groupSize.get(g) || 0) > 1 ? g : null;
+  }
+  res.json(rows);
 });
 router.post('/vendors', async (req, res) => {
   if (!can(req.actor, 'manage_vendors')) return res.status(403).json({ error: 'you do not have permission to manage vendors' });
   const b = req.body || {};
   const type = VENDOR_TYPES.includes(b.contactType) ? b.contactType : 'other';
-  if (!b.companyName && !b.contactName && !b.email && !b.phone)
+  const emailsRaw = Array.isArray(b.emails) ? b.emails : (b.email ? [b.email] : []);
+  const phonesRaw = Array.isArray(b.phones) ? b.phones : (b.phone ? [b.phone] : []);
+  const emails = dedupBy(emailsRaw, vendorNormEmail);
+  const phones = dedupBy(phonesRaw, vendorNormPhone);
+  if (!b.companyName && !b.contactName && !emails.length && !phones.length)
     return res.status(400).json({ error: 'enter at least one contact detail' });
   const r = await db.query(
-    `INSERT INTO service_contacts (contact_type,company_name,contact_name,email,phone,address,notes,added_by_staff_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-    [type, b.companyName || null, b.contactName || null, b.email || null, b.phone || null,
+    `INSERT INTO service_contacts (contact_type,company_name,contact_name,email,phone,emails,phones,address,notes,added_by_staff_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+    [type, b.companyName || null, b.contactName || null,
+     emails[0] || null, phones[0] || null,
+     emails.length ? emails : null, phones.length ? phones : null,
      b.address || null, b.notes || null, req.actor.id]);
   await audit(req, 'add_vendor', 'service_contact', r.rows[0].id, { type });
   res.status(201).json({ ok: true, vendorId: r.rows[0].id });
@@ -5530,12 +8668,27 @@ router.post('/vendors', async (req, res) => {
 router.patch('/vendors/:id', async (req, res) => {
   if (!can(req.actor, 'manage_vendors')) return res.status(403).json({ error: 'you do not have permission to manage vendors' });
   const b = req.body || {};
-  const map = { companyName: 'company_name', contactName: 'contact_name', email: 'email',
+  const map = { companyName: 'company_name', contactName: 'contact_name',
                 phone: 'phone', address: 'address', notes: 'notes' };
   const sets = [], vals = []; let i = 1;
   for (const [k, col] of Object.entries(map))
     if (b[k] !== undefined) { sets.push(`${col}=$${i++}`); vals.push(b[k] === '' ? null : b[k]); }
   if (b.contactType && VENDOR_TYPES.includes(b.contactType)) { sets.push(`contact_type=$${i++}`); vals.push(b.contactType); }
+  // Emails / phones — accept either an ARRAY (full replacement, deduped) or a
+  // legacy scalar (goes into the primary column). When an array is given, the
+  // scalar email/phone is set to the first entry so the display stays consistent.
+  if (Array.isArray(b.emails)) {
+    const arr = dedupBy(b.emails, vendorNormEmail);
+    sets.push(`emails=$${i++}`); vals.push(arr.length ? arr : null);
+    sets.push(`email=$${i++}`); vals.push(arr[0] || null);
+  } else if (b.email !== undefined) {
+    sets.push(`email=$${i++}`); vals.push(b.email === '' ? null : b.email);
+  }
+  if (Array.isArray(b.phones)) {
+    const arr = dedupBy(b.phones, vendorNormPhone);
+    sets.push(`phones=$${i++}`); vals.push(arr.length ? arr : null);
+    sets.push(`phone=$${i++}`); vals.push(arr[0] || null);
+  }
   if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
   sets.push('updated_at=now()'); vals.push(req.params.id);
   const r = await db.query(`UPDATE service_contacts SET ${sets.join(',')} WHERE id=$${i} RETURNING id`, vals);
@@ -5549,6 +8702,99 @@ router.delete('/vendors/:id', async (req, res) => {
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
   await audit(req, 'delete_vendor', 'service_contact', req.params.id);
   res.json({ ok: true });
+});
+
+// Manual vendor merge (owner-directed 2026-07-21). The survivor absorbs the
+// loser's field values PER-FIELD (fieldPicks tells us which side wins each
+// scalar); their emails/phones arrays UNION (dedup); every application link
+// re-points to the survivor; the loser is soft-marked merged_into_id (never
+// deleted, so audit trails still resolve). Body:
+//   { survivorId, mergedId, picks: { companyName, contactName, address, notes,
+//                                    contactType, primaryEmail, primaryPhone },
+//     emails: [...], phones: [...] }
+// Every pick is optional — omitted → keep the survivor's current value.
+router.post('/vendors/merge', async (req, res) => {
+  if (!can(req.actor, 'manage_vendors')) return res.status(403).json({ error: 'you do not have permission to manage vendors' });
+  const b = req.body || {};
+  const survivorId = b.survivorId, mergedId = b.mergedId;
+  if (!survivorId || !mergedId || survivorId === mergedId)
+    return res.status(400).json({ error: 'pick two different vendors to merge' });
+  const client = await db.getClient();
+  try {
+    await client.query('BEGIN');
+    const sv = (await client.query(`SELECT * FROM service_contacts WHERE id=$1 FOR UPDATE`, [survivorId])).rows[0];
+    const md = (await client.query(`SELECT * FROM service_contacts WHERE id=$1 FOR UPDATE`, [mergedId])).rows[0];
+    if (!sv || !md) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'vendor not found' }); }
+    if (sv.merged_into_id || md.merged_into_id) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'one of the vendors is already merged' }); }
+    const picks = b.picks || {};
+    // Per-scalar-field pick: value not provided → keep the survivor's current.
+    const pick = (k, cur) => (picks[k] === undefined ? cur : (picks[k] === '' ? null : picks[k]));
+    const type = VENDOR_TYPES.includes(picks.contactType) ? picks.contactType : sv.contact_type;
+    // Union both sides' email/phone arrays, then honor the caller's explicit
+    // list if they sent one (an admin de-selecting a bad email during merge).
+    const svEmails = Array.isArray(sv.emails) ? sv.emails : (sv.email ? [sv.email] : []);
+    const mdEmails = Array.isArray(md.emails) ? md.emails : (md.email ? [md.email] : []);
+    const svPhones = Array.isArray(sv.phones) ? sv.phones : (sv.phone ? [sv.phone] : []);
+    const mdPhones = Array.isArray(md.phones) ? md.phones : (md.phone ? [md.phone] : []);
+    const emails = Array.isArray(b.emails) ? dedupBy(b.emails, vendorNormEmail) : dedupBy([...svEmails, ...mdEmails], vendorNormEmail);
+    const phones = Array.isArray(b.phones) ? dedupBy(b.phones, vendorNormPhone) : dedupBy([...svPhones, ...mdPhones], vendorNormPhone);
+    // Primary email/phone = the caller's pick if present AND actually kept in
+    // the final array (post-merge-review 2026-07-21: the UI let a user pick a
+    // primary and then uncheck that same value from the list — the primary
+    // would then point at an email the vendor no longer carries). Fall back to
+    // the FIRST of the merged array so the primary is always a real, retained
+    // value — never blank when there IS an entry available.
+    const emailKeys = new Set(emails.map(vendorNormEmail));
+    const phoneKeys = new Set(phones.map(vendorNormPhone));
+    const primaryEmail = (picks.primaryEmail !== undefined && picks.primaryEmail
+      && emailKeys.has(vendorNormEmail(picks.primaryEmail)))
+      ? picks.primaryEmail : (emails[0] || null);
+    const primaryPhone = (picks.primaryPhone !== undefined && picks.primaryPhone
+      && phoneKeys.has(vendorNormPhone(picks.primaryPhone)))
+      ? picks.primaryPhone : (phones[0] || null);
+    await client.query(
+      `UPDATE service_contacts
+          SET contact_type=$2, company_name=$3, contact_name=$4, address=$5, notes=$6,
+              email=$7, phone=$8, emails=$9, phones=$10, updated_at=now()
+        WHERE id=$1`,
+      [survivorId, type,
+       pick('companyName', sv.company_name), pick('contactName', sv.contact_name),
+       pick('address', sv.address), pick('notes', sv.notes),
+       primaryEmail, primaryPhone,
+       emails.length ? emails : null, phones.length ? phones : null]);
+    // Re-point every application link. The (application_id, service_contact_id)
+    // unique index (db/078) collides if the SAME file already had BOTH vendors
+    // linked — in that case keep the survivor's existing link and drop the
+    // loser's link row (the survivor already covers the file).
+    try {
+      await client.query(
+        `UPDATE application_service_contacts SET service_contact_id=$2
+          WHERE service_contact_id=$1
+            AND NOT EXISTS (
+              SELECT 1 FROM application_service_contacts x
+               WHERE x.application_id = application_service_contacts.application_id
+                 AND x.service_contact_id = $2
+            )`,
+        [mergedId, survivorId]);
+    } catch (e) {
+      // Fall back on 23505 by dropping conflicting rows explicitly.
+      if (!e || e.code !== '23505') throw e;
+    }
+    await client.query(
+      `DELETE FROM application_service_contacts WHERE service_contact_id=$1`,
+      [mergedId]);
+    // Soft-mark the loser — bytes stay for audit; the listing hides it.
+    await client.query(
+      `UPDATE service_contacts SET merged_into_id=$2, merged_at=now(), updated_at=now() WHERE id=$1`,
+      [mergedId, survivorId]);
+    await client.query('COMMIT');
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    console.warn('[vendor-merge] failed:', db.describeError(e));
+    return res.status(500).json({ error: 'merge failed' });
+  } finally { client.release(); }
+  await audit(req, 'merge_vendors', 'service_contact', survivorId, { mergedId });
+  res.json({ ok: true, survivorId, mergedId });
 });
 
 // ---------------- GENERAL FILE CONTACTS — staff side (#144) ----------------
@@ -5818,6 +9064,168 @@ router.get('/audit-log/facets', async (req, res) => {
   }
 });
 
+// ---------------- request-audit (automatic HTTP firehose) -------------------
+// Companion to /audit-log: this feed is the AUTOMATIC log written by
+// src/lib/request-audit.js — ONE row per HTTP request the server answered,
+// regardless of whether the handler chose to journal a semantic action. Same
+// permission gate (view_audit_log) — this is a whole-company operational log,
+// not a per-file view — so only admins hold it by default.
+//
+// Filter shape mirrors /audit-log: q (free-text over path/method/actor/route),
+// actorKind, actorId, method, status (integer OR '2xx'/'4xx'/'5xx' bucket),
+// path (substring), route (exact), from/to dates, limit/offset.
+router.get('/request-audit', async (req, res) => {
+  if (!can(req.actor, 'view_audit_log')) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const q = String(req.query.q || '').trim();
+    const actorKindRaw = String(req.query.actorKind || '').trim();
+    const actorKind = ['staff', 'borrower', 'anon', 'system'].includes(actorKindRaw) ? actorKindRaw : '';
+    const actorIdRaw = String(req.query.actorId || '').trim();
+    const actorId = UUID_RE.test(actorIdRaw) ? actorIdRaw : '';
+    const method = String(req.query.method || '').trim().toUpperCase().slice(0, 10);
+    const statusRaw = String(req.query.status || '').trim();
+    const pathQ = String(req.query.path || '').trim();
+    const route = String(req.query.route || '').trim();
+    const fromRaw = String(req.query.from || '').trim();
+    const from = /^\d{4}-\d{2}-\d{2}$/.test(fromRaw) ? fromRaw : '';
+    const toRaw = String(req.query.to || '').trim();
+    const to = /^\d{4}-\d{2}-\d{2}$/.test(toRaw) ? toRaw : '';
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 500);
+    const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+
+    const params = [];
+    const where = [];
+    const P = (v) => { params.push(v); return '$' + params.length; };
+
+    if (actorKind) where.push(`ra.actor_kind = ${P(actorKind)}`);
+    if (actorId) where.push(`ra.actor_id = ${P(actorId)}::uuid`);
+    if (method && /^[A-Z]+$/.test(method)) where.push(`ra.method = ${P(method)}`);
+    if (pathQ) where.push(`ra.path ILIKE ${P('%' + pathQ + '%')}`);
+    if (route) where.push(`ra.route = ${P(route)}`);
+    if (from) where.push(`ra.at >= ${P(from)}::date`);
+    if (to) where.push(`ra.at < (${P(to)}::date + 1)`);
+    if (statusRaw) {
+      if (/^\d{3}$/.test(statusRaw)) where.push(`ra.status = ${P(parseInt(statusRaw, 10))}`);
+      else if (/^[2345]xx$/i.test(statusRaw)) {
+        const bucket = parseInt(statusRaw[0], 10) * 100;
+        where.push(`ra.status >= ${P(bucket)} AND ra.status < ${P(bucket + 100)}`);
+      } else if (statusRaw === 'error') where.push(`ra.status >= 400`);
+    }
+    if (q) {
+      const like = P('%' + q + '%');
+      where.push(`(ra.path ILIKE ${like} OR ra.route ILIKE ${like} OR ra.method ILIKE ${like}
+                    OR ra.user_agent ILIKE ${like} OR ra.referer ILIKE ${like}
+                    OR ra.actor_email ILIKE ${like} OR ra.error ILIKE ${like}
+                    OR s.full_name ILIKE ${like}
+                    OR (bo.first_name || ' ' || bo.last_name) ILIKE ${like})`);
+    }
+
+    const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
+    const lim = P(limit), off = P(offset);
+    const sql = `
+      SELECT ra.id, ra.at, ra.request_id,
+             ra.actor_kind, ra.actor_id, ra.actor_email, ra.actor_role,
+             ra.method, ra.path, ra.route, ra.query, ra.status, ra.duration_ms,
+             ra.ip::text AS ip, ra.user_agent, ra.referer,
+             ra.entity_type, ra.entity_id, ra.body_summary, ra.error, ra.bytes_out,
+             CASE WHEN ra.actor_kind = 'staff' THEN s.full_name
+                  WHEN ra.actor_kind = 'borrower' THEN NULLIF(btrim(coalesce(bo.first_name,'')||' '||coalesce(bo.last_name,'')), '')
+                  ELSE NULL END AS actor_name
+        FROM request_audit_log ra
+        LEFT JOIN staff_users s ON ra.actor_kind='staff' AND s.id = ra.actor_id
+        LEFT JOIN borrowers bo  ON ra.actor_kind='borrower' AND bo.id = ra.actor_id
+        ${whereSql}
+       ORDER BY ra.at DESC, ra.id DESC
+       LIMIT ${lim} OFFSET ${off}`;
+    const r = await db.query(sql, params);
+    const rows = r.rows.map((row) => ({
+      id: String(row.id),
+      at: row.at,
+      requestId: row.request_id,
+      actor: {
+        kind: row.actor_kind,
+        id: row.actor_id,
+        role: row.actor_role,
+        email: row.actor_email,
+        name: row.actor_name || (row.actor_kind === 'anon' ? 'Anonymous' : row.actor_kind === 'system' ? 'System' : null),
+      },
+      method: row.method,
+      path: row.path,
+      route: row.route,
+      query: row.query,
+      status: row.status,
+      durationMs: row.duration_ms,
+      ip: row.ip,
+      userAgent: row.user_agent,
+      referer: row.referer,
+      entity: row.entity_type ? { type: row.entity_type, id: row.entity_id } : null,
+      bodySummary: row.body_summary,
+      error: row.error,
+      bytesOut: row.bytes_out,
+    }));
+    res.json({ rows, limit, offset, hasMore: rows.length === limit });
+  } catch (e) {
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+// Summary counters for the request-audit dashboard header — small,
+// bounded scans across the recent window so a filter panel + a
+// "requests-per-minute" strip can render off ONE call.
+router.get('/request-audit/summary', async (req, res) => {
+  if (!can(req.actor, 'view_audit_log')) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const hours = Math.min(Math.max(parseInt(req.query.hours, 10) || 24, 1), 168);
+    const [totals, byMethod, byStatus, topPaths, topActors] = await Promise.all([
+      db.query(
+        `SELECT count(*)::int AS n,
+                count(*) FILTER (WHERE status >= 500)::int AS errors_5xx,
+                count(*) FILTER (WHERE status >= 400 AND status < 500)::int AS errors_4xx,
+                round(avg(duration_ms))::int AS avg_ms,
+                percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms)::int AS p95_ms
+           FROM request_audit_log
+          WHERE at >= now() - make_interval(hours => $1)`, [hours]),
+      db.query(
+        `SELECT method, count(*)::int AS n
+           FROM request_audit_log
+          WHERE at >= now() - make_interval(hours => $1)
+          GROUP BY method ORDER BY n DESC`, [hours]),
+      db.query(
+        `SELECT status, count(*)::int AS n
+           FROM request_audit_log
+          WHERE at >= now() - make_interval(hours => $1) AND status IS NOT NULL
+          GROUP BY status ORDER BY n DESC LIMIT 20`, [hours]),
+      db.query(
+        `SELECT COALESCE(route, path) AS p, count(*)::int AS n,
+                round(avg(duration_ms))::int AS avg_ms
+           FROM request_audit_log
+          WHERE at >= now() - make_interval(hours => $1)
+          GROUP BY p ORDER BY n DESC LIMIT 25`, [hours]),
+      db.query(
+        `SELECT ra.actor_kind, ra.actor_id, count(*)::int AS n,
+                CASE WHEN ra.actor_kind='staff' THEN s.full_name
+                     WHEN ra.actor_kind='borrower' THEN NULLIF(btrim(coalesce(bo.first_name,'')||' '||coalesce(bo.last_name,'')), '')
+                     ELSE ra.actor_kind END AS name
+           FROM request_audit_log ra
+           LEFT JOIN staff_users s ON ra.actor_kind='staff' AND s.id = ra.actor_id
+           LEFT JOIN borrowers bo  ON ra.actor_kind='borrower' AND bo.id = ra.actor_id
+          WHERE ra.at >= now() - make_interval(hours => $1)
+          GROUP BY ra.actor_kind, ra.actor_id, name
+          ORDER BY n DESC LIMIT 20`, [hours]),
+    ]);
+    res.json({
+      windowHours: hours,
+      totals: totals.rows[0] || {},
+      byMethod: byMethod.rows,
+      byStatus: byStatus.rows,
+      topPaths: topPaths.rows,
+      topActors: topActors.rows,
+    });
+  } catch (e) {
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
 // ---------------- per-file observability timeline (#147) --------------------
 // ONE cross-system "what happened to this file" feed, time-ordered, merging every
 // event stream the platform already journals: the portal audit trail (audit_log),
@@ -5951,7 +9359,7 @@ router.get('/sync-reviews', async (req, res) => {
         ORDER BY q.created_at DESC LIMIT 500`,
       scoped ? [status, req.actor.id] : [status]);
     res.json({ reviews: r.rows });
-  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Lightweight open-row count for the sidebar badge — same scope as the list,
@@ -6013,16 +9421,26 @@ router.post('/sync-reviews/:id/approve', async (req, res) => {
       if (!v || !/^\d{4}-\d{2}-\d{2}$/.test(String(v))) return res.status(422).json({ error: 'no valid proposed value to apply' });
       if (row.field_key === 'date_of_birth') {
         if (!row.borrower_id) return res.status(422).json({ error: 'no borrower on this review' });
+        // WO-6 (F-M12): the shape-only regex above lets year-0026 AND a child's
+        // DOB through — this legacy path wrote them unvalidated. Route through the
+        // same adult-plausibility guard every other DOB write uses; reject the
+        // implausible so it's fixed at the source, never blind-written.
+        const dob = require('../lib/fields').sanitizeDob(v);
+        if (!dob) return res.status(422).json({ error: 'not a valid adult date of birth — fix it at the source, then re-sync' });
         const before = (await db.query(`SELECT date_of_birth FROM borrowers WHERE id=$1`, [row.borrower_id])).rows[0];
-        await db.query(`UPDATE borrowers SET date_of_birth=$2::date, updated_at=now() WHERE id=$1`, [row.borrower_id, v]);
+        await db.query(`UPDATE borrowers SET date_of_birth=$2::date, updated_at=now() WHERE id=$1`, [row.borrower_id, dob]);
         await audit(req, 'sync_review_apply', 'borrower', row.borrower_id,
-          { reviewId: row.id, field: 'date_of_birth', from: before && before.date_of_birth, to: v, reason: row.reason });
+          { reviewId: row.id, field: 'date_of_birth', from: before && before.date_of_birth, to: dob, reason: row.reason });
       } else if (REVIEW_APP_COLS.has(row.field_key)) {
         if (!row.application_id) return res.status(422).json({ error: 'no application on this review' });
+        // WO-6 (F-M12): year-window the date (0026 → 2026, garbage → reject) —
+        // the shape regex above let a mid-typed year through to a ::date write.
+        const d = require('../lib/fields').normalizeTypedDate(v);
+        if (!d) return res.status(422).json({ error: 'not a valid date — fix it at the source, then re-sync' });
         const before = (await db.query(`SELECT ${row.field_key} FROM applications WHERE id=$1`, [row.application_id])).rows[0];
-        await db.query(`UPDATE applications SET ${row.field_key}=$2::date, updated_at=now() WHERE id=$1`, [row.application_id, v]);
+        await db.query(`UPDATE applications SET ${row.field_key}=$2::date, updated_at=now() WHERE id=$1`, [row.application_id, d]);
         await audit(req, 'sync_review_apply', 'application', row.application_id,
-          { reviewId: row.id, field: row.field_key, from: before && before[row.field_key], to: v, reason: row.reason });
+          { reviewId: row.id, field: row.field_key, from: before && before[row.field_key], to: d, reason: row.reason });
       } else {
         return res.status(422).json({ error: `unsupported field ${row.field_key}` });
       }
@@ -6070,7 +9488,8 @@ router.post('/sync-reviews/:id/resolve', async (req, res) => {
 function sendReviewActionError(res, e) {
   if (e && e.status && e.expose) return res.status(e.status).json({ error: e.message });
   if (e && e.status) return res.status(502).json({ error: `ClickUp did not accept the request (upstream ${e.status}) — nothing was changed; try again shortly` });
-  return res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' });
+  console.warn('[staff] review-action error:', db.describeError(e));
+  return res.status(500).json({ error: 'server error' });
 }
 
 // FILE-LEVEL resolution (owner-directed 2026-07-15 night): a stuck FILE's
@@ -6089,6 +9508,14 @@ router.post('/sync-reviews/:id/resolve-file', async (req, res) => {
     const out = await SFR.applyFileReviewAction({
       row, action,
       targetApplicationId: (req.body && req.body.targetApplicationId) || null,
+      // relink_task (dead/unlinked file → move an existing ClickUp card onto it)
+      // carries a card id/link + an explicit move confirmation. It is ADMIN-ONLY
+      // (moving a card is the same privileged action as the direct relink
+      // endpoint); the action layer enforces it with this flag, since this
+      // route itself is LO-reachable for the other (non-privileged) actions.
+      targetTaskId: (req.body && req.body.targetTaskId) || null,
+      confirmMove: !!(req.body && req.body.confirmMove),
+      isAdmin: isAdmin(req),
       actorId: req.actor.id,
     });
     await db.query(
@@ -6098,7 +9525,65 @@ router.post('/sync-reviews/:id/resolve-file', async (req, res) => {
     await audit(req, 'sync_review_resolve_file', row.application_id || out.applicationId ? 'application' : 'borrower',
       row.application_id || out.applicationId || row.borrower_id, { reviewId: row.id, reason: row.reason, action, note: out.note });
     res.json({ ok: true, ...out });
+  } catch (e) {
+    // relink_task on a held card asks the reviewer to confirm the move first.
+    if (e && e.needsConfirm) return res.status(409).json({ error: e.message, needsConfirm: true, holder: e.holder || null });
+    return sendReviewActionError(res, e);
+  }
+});
+
+// ---------------- ADMIN manual ClickUp link / unlink ----------------
+// Owner-directed 2026-07-19 (the Pinches Lichtman / 129 Carlisle St incident):
+// the sync bound the live ClickUp card to the near-empty twin file while the
+// real, worked file was orphaned. A REAL ADMIN (admin/super_admin ONLY — never a
+// processor/loan_officer/underwriter, and NOT via a grantable capability) can
+// detach a file from its card and move a card onto the correct file. The heavy
+// lifting + all data-safety guards live in the single chokepoint
+// src/clickup/relink.js; these routes are thin, role-gated wrappers.
+//
+// requireRole('admin') admits admin AND super_admin only (super_admin satisfies
+// every gate). The /applications/:id path middleware (above) already ran and
+// admitted the actor (admins are seesAll), so req.params.id is a file the actor
+// may touch; the role gate then narrows to real admins.
+
+// Preview a move for the confirm dialog: does the pasted card exist, and is it
+// currently linked to another file? Never changes anything.
+router.get('/applications/:id/clickup/relink-preview', requireRole('admin'), async (req, res) => {
+  try {
+    const out = await require('../clickup/relink').relinkPreview({ appId: req.params.id, taskInput: req.query.taskId });
+    res.json({ ok: true, ...out });
   } catch (e) { return sendReviewActionError(res, e); }
+});
+
+// Detach this file from its ClickUp card. Pure portal-side unlink — the card is
+// left untouched; the file parks in 'manual_review' so it won't get an auto
+// re-created card and stays visible for follow-up.
+router.post('/applications/:id/clickup/unlink', requireRole('admin'), async (req, res) => {
+  try {
+    const out = await require('../clickup/relink').unlinkFileFromTask({
+      appId: req.params.id, actorId: req.actor.id, note: (req.body && req.body.note) || null });
+    await audit(req, 'clickup_manual_unlink', 'application', req.params.id, { previousTaskId: out.previousTaskId });
+    res.json({ ok: true, ...out });
+  } catch (e) { return sendReviewActionError(res, e); }
+});
+
+// Link this file to a ClickUp card (admin override). Moves the card off any
+// current holder ONLY when confirmMove is set; without it, a held card returns
+// 409 { needsConfirm:true, holder } so the UI can ask first.
+router.post('/applications/:id/clickup/relink', requireRole('admin'), async (req, res) => {
+  try {
+    const out = await require('../clickup/relink').relinkFileToTask({
+      appId: req.params.id,
+      taskInput: (req.body && (req.body.taskId != null ? req.body.taskId : req.body.taskInput)) || '',
+      confirmMove: !!(req.body && req.body.confirmMove),
+      actorId: req.actor.id });
+    await audit(req, 'clickup_manual_relink', 'application', req.params.id, { taskId: out.taskId, movedFrom: out.movedFrom || null });
+    res.json({ ok: true, ...out });
+  } catch (e) {
+    // A held-card conflict carries the holder detail so the UI can confirm the move.
+    if (e && e.needsConfirm) return res.status(409).json({ error: e.message, needsConfirm: true, holder: e.holder || null });
+    return sendReviewActionError(res, e);
+  }
 });
 
 // BULK resolution (mega-audit enhancement #4): boot heal passes can queue
@@ -6163,12 +9648,298 @@ router.post('/sync-reviews/:id/reject', async (req, res) => {
     await audit(req, 'sync_review_reject', row.application_id ? 'application' : 'borrower',
       row.application_id || row.borrower_id, { reviewId: row.id, field: row.field_key, reason: row.reason });
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// RE-CHECK — "look again" (owner-directed 2026-07-22). Re-runs the underlying
+// comparison in the backend and AUTO-CLOSES the row only if the current data
+// PROVES the disagreement is gone (someone already fixed it on either side) —
+// never a blind dismiss. A row that still genuinely differs stays open, stamped
+// "checked just now". Scoped like the other resolve endpoints (the file's LO can
+// re-check their own rows).
+router.post('/sync-reviews/:id/recheck', async (req, res) => {
+  try {
+    const row = await loadReviewFor(req, res);
+    if (!row) return;
+    const out = await require('../lib/sync-review-recheck').recheckReview(row);
+    if (out.outcome === 'closed') {
+      await audit(req, 'sync_review_recheck_closed', row.application_id ? 'application' : 'borrower',
+        row.application_id || row.borrower_id, { reviewId: row.id, field: row.field_key, reason: out.reason });
+    }
+    res.json({ ok: true, ...out });
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// ---------------- e-signature (DocuSign) tracking — read model --------------
+// The internal "our own DocuSign" dashboard + the per-file section. Read-only
+// monitoring; management actions (send/resend/void) are added with the send
+// orchestration. Access: the cross-file dashboard is officer-scoped; the
+// per-file route rides the /applications/:id scope guard above.
+const esignTracking = require('../lib/esign/tracking');
+
+router.get('/esign/dashboard', async (req, res) => {
+  try {
+    const scope = seesAll(req)
+      ? { where: '', params: [] }
+      : { where: `AND ${VISIBLE_OFFICERS_SQL('a', '$1')}`, params: [req.actor.id] };
+    res.json(await esignTracking.dashboard(db, scope));
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// ---- e-signature CONNECTION + MODE status (admin) ---------------------------
+// The plain-English "are we live?" readout so an admin can see exactly what still
+// keeps DocuSign in test mode. Reveals no secrets — just the mode flags and, if the
+// credentials authenticate, which DocuSign ACCOUNT we're bound to (practice vs live).
+// `liveToBorrowers` is the single yes/no: will a REAL borrower actually be emailed?
+router.get('/esign/connection', requireRole('admin'), async (req, res) => {
+  const ds = require('../lib/integrations/docusign');
+  const c = cfg.docusign;
+  const out = {
+    configured: ds.configured(),
+    demo: ds.isDemoHost(),                 // true = DocuSign PRACTICE/sandbox world
+    oauthHost: c.oauthBase || null,
+    sendEnabled: require('../lib/integrations/switches').on('DOCUSIGN_SEND_ENABLED'), // master switch (runtime override ?? DOCUSIGN_SEND_ENABLED env)
+    testMode: !!c.testMode,                // gates sends to the allow-list on ANY host
+    allowlist: c.testEmailAllowlist || [], // the only emails reachable while in test mode
+    reachable: null,
+  };
+  if (out.configured) {
+    // Best-effort live auth check — never throws (bad/absent creds just report not-reachable),
+    // and time-boxed so the page can't hang on a slow DocuSign.
+    try {
+      const p = await Promise.race([
+        ds.ping(),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('timed out reaching DocuSign')), 8000)),
+      ]);
+      out.reachable = true;
+      out.demo = !!p.demo;                 // authoritative from the live host
+      out.accountName = p.accountName || null;
+      out.accountId = p.accountId || null;
+      out.userName = p.name || null;
+      out.userEmail = p.email || null;
+    } catch (e) { out.reachable = false; out.reachError = e.message; }
+  }
+  // Real borrowers are emailed ONLY when: configured + credentials reach a LIVE (non-demo)
+  // account + the master switch is on + test mode is off.
+  out.liveToBorrowers = !!(out.configured && out.reachable && !out.demo && out.sendEnabled && !out.testMode);
+  res.json(out);
+});
+
+router.get('/applications/:id/esign', async (req, res) => {
+  try {
+    res.json(await esignTracking.fileEsign(db, req.params.id));
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// ---------------- e-signature management actions ----------------------------
+// Send / resend / void / mint the admin counter-sign view. Every action is
+// gated (DOCUSIGN_SEND_ENABLED off => sending refused, in the route AND the send
+// engine) and audited. In TEST mode the engine's allow-list is the final backstop;
+// once LIVE (test mode off) that backstop is gone by design — the appraisal gate,
+// validateGenerated, roster completeness, and the stale-document guard protect the
+// real borrower instead.
+const esignOrchestrate = require('../lib/esign/orchestrate');
+const esignWebhook = require('../lib/esign/webhook');
+const docusignLib = require('../lib/integrations/docusign');
+
+// Map a thrown orchestration error to an HTTP status + safe message.
+function esignErrStatus(e) {
+  if (e && e.code === 'DOCUSIGN_SEND_DISABLED') return 409;
+  if (e && e.code === 'DOCUSIGN_GATE_NOT_READY') return 409;
+  if (e && e.retryable === false) return 400;
+  return 500;
+}
+// Send an esign orchestration error safely: mapped 4xx/409 keep their curated
+// message; an unknown 500 logs the detail server-side and returns generic — never
+// leak raw pg/JS text to the client (round-2 audit F2).
+function sendEsignError(res, e, extra = {}) {
+  const st = esignErrStatus(e);
+  if (st >= 500) { console.warn('[staff] esign error:', db.describeError(e)); return res.status(st).json({ error: 'server error' }); }
+  return res.status(st).json({ error: e.message, ...extra });
+}
+
+// Load an envelope row and confirm the actor may see its file (the /esign/:rowId
+// routes are NOT under the /applications/:id scope guard, so we check here).
+async function loadEsignEnvelope(req, rowId) {
+  const r = await db.query(`SELECT * FROM esign_envelopes WHERE id = $1`, [rowId]);
+  const row = r.rows[0];
+  if (!row) return { status: 404, error: 'not found' };
+  if (row.is_test) {   // test envelopes are admin-created (app-less) — only an admin may resend/void one
+    if (!isAdmin(req)) return { status: 403, error: 'admins only for test envelopes' };
+    return { row };
+  }
+  if (!seesAll(req)) {
+    const vis = await db.query(
+      `SELECT 1 FROM applications a WHERE a.id = $1 AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$2')} LIMIT 1`,
+      [row.application_id, req.actor.id]);
+    if (!vis.rows.length) return { status: 403, error: 'forbidden' };
+  }
+  return { row };
+}
+
+// Admin "send myself a test envelope": confirms DocuSign renders our generated
+// documents + the signing flow, without a real loan file passing the send-gate.
+// Reuses the send-once engine's guards — refuses unless DOCUSIGN_SEND_ENABLED is
+// on, and only ever reaches an allow-listed address in test mode.
+router.post('/esign/test-send', requireRole('admin'), async (req, res) => {
+  try {
+    const out = await require('../lib/esign/test-send').sendTestEnvelope({ actorId: req.actor.id, db, docusign: docusignLib });
+    await audit(req, 'esign_test_send', 'esign_test', null, { to: out.to, envelopeId: out.envelopeId });
+    res.json({ ok: true, ...out });
+  } catch (e) { sendEsignError(res, e); }
+});
+
+// Send a package for a file. Rides the /applications/:id scope guard.
+router.post('/applications/:id/esign/send', async (req, res) => {
+  const purpose = String((req.body && req.body.purpose) || '');
+  if (!esignOrchestrate.PACKAGES[purpose]) return res.status(400).json({ error: 'unknown package' });
+  const reissue = !!(req.body && req.body.reissue);
+  try {
+    const out = await esignOrchestrate.sendPackage(req.params.id, purpose, req.actor, { db, docusign: docusignLib, reissue });
+    await audit(req, 'esign_send', 'application', req.params.id, { purpose, reissue });
+    // Return the REAL outcome — never a false "Sent for signature." toast. ok mirrors
+    // sendPackage's ok (a genuine send / already-sent). Every non-success disposition
+    // gets its OWN plain-language reason so staff always know the true state:
+    //   terminal — a prior envelope is finished; a plain re-send is a no-op → use Re-issue
+    //   dead     — permanently failed (missing document, recipient off the pre-go-live
+    //              allow-list, validation error)
+    //   queued   — claimed but not delivered yet; the retry engine will send it
+    //   retry    — a transient failure; it will auto-retry
+    //   paused   — the master send switch is off right now
+    //   gone     — the envelope row vanished (deleted/superseded) — refresh
+    const r = out.result || {};
+    const reason =
+        out.terminal ? 'This package was already sent for this file. Use “Re-issue” on the envelope below to send a fresh one.'
+      : r.dead ? (r.error || 'The document could not be sent.')
+      : r.queued ? 'Not delivered yet — the send is queued and will retry automatically. Refresh in a minute.'
+      : (r.held || r.disposition === 'paused') ? 'Sending is paused right now (the master switch is off). Try again once it’s back on.'
+      : r.retry ? 'Not delivered yet — a temporary hiccup; it will retry automatically. Refresh in a minute.'
+      : r.disposition === 'gone' ? 'That envelope is no longer on the file — refresh and try again.'
+      : (out.ok ? undefined : 'The document could not be sent — check the file and try again.');
+    res.json({
+      ok: out.ok, envelopeRowId: out.envelopeRowId, result: r,
+      dead: !!r.dead, queued: !!r.queued, terminal: !!out.terminal,
+      error: reason,
+    });
+  } catch (e) {
+    sendEsignError(res, e, { outstanding: e.outstanding });
+  }
+});
+
+// Resend (nudge) the current pending recipient(s).
+router.post('/esign/:rowId/resend', async (req, res) => {
+  try {
+    const { row, status, error } = await loadEsignEnvelope(req, req.params.rowId);
+    if (!row) return res.status(status).json({ error });
+    if (!row.envelope_id) return res.status(409).json({ error: 'envelope not sent yet' });
+    if (['completed', 'declined', 'voided'].includes(row.status)) return res.status(409).json({ error: `envelope already ${row.status}` });
+    // Resend is a real borrower email — the master kill-switch must gate it too. Read the RUNTIME
+    // switch (override ?? env) so flipping DocuSign off on the API Health page stops resends immediately.
+    if (!require('../lib/integrations/switches').on('DOCUSIGN_SEND_ENABLED')) return res.status(409).json({ error: 'Sending is paused right now. Turn sending back on before resending.' });
+    // A resend can only re-notify the address DocuSign baked into the envelope at
+    // send time — it cannot re-address. If the file's borrower email changed since,
+    // a resend would nudge the STALE address. Refuse and steer staff to void +
+    // re-issue so the new address is used. (Test envelopes are app-less — no file
+    // borrower to compare against, so they skip this check.)
+    if (row.application_id) {
+      const cur = (await db.query(
+        `SELECT b.email AS file_email, r.email AS env_email
+           FROM applications a JOIN borrowers b ON b.id = a.borrower_id
+           LEFT JOIN esign_recipients r ON r.envelope_row_id = $1 AND r.role = 'borrower'
+          WHERE a.id = $2
+          ORDER BY r.id DESC NULLS LAST
+          LIMIT 1`, [row.id, row.application_id])).rows[0];
+      const fileEmail = cur && cur.file_email && String(cur.file_email).trim().toLowerCase();
+      const envEmail = cur && cur.env_email && String(cur.env_email).trim().toLowerCase();
+      if (fileEmail && envEmail && fileEmail !== envEmail) {
+        return res.status(409).json({ error: 'The borrower’s email on file changed since this package was sent. A resend can’t update the address — void this package and re-issue it so the new email is used.' });
+      }
+    }
+    await docusignLib.resendEnvelope(row.envelope_id);
+    await audit(req, 'esign_resend', 'application', row.application_id, { purpose: row.purpose });
+    res.json({ ok: true });
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// Void a still-open envelope (reason required by DocuSign).
+router.post('/esign/:rowId/void', async (req, res) => {
+  const reason = String((req.body && req.body.reason) || '').trim();
+  if (!reason) return res.status(400).json({ error: 'a void reason is required' });
+  try {
+    const { row, status, error } = await loadEsignEnvelope(req, req.params.rowId);
+    if (!row) return res.status(status).json({ error });
+    if (!row.envelope_id) return res.status(409).json({ error: 'envelope not sent yet' });
+    if (['completed', 'declined', 'voided'].includes(row.status)) return res.status(409).json({ error: `envelope already ${row.status}` });
+    await docusignLib.voidEnvelope(row.envelope_id, reason);
+    await db.query(
+      `UPDATE esign_envelopes SET status='voided', voided_at=now(), void_reason=$2, updated_at=now() WHERE id=$1`,
+      [row.id, reason]);
+    await audit(req, 'esign_void', 'application', row.application_id, { purpose: row.purpose, reason });
+    res.json({ ok: true });
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// CLEAR a package (owner-directed 2026-07-22): void it (if still out for
+// signature), supersede the signed document(s), and reopen exactly the
+// condition(s) this package satisfied — so a fresh package can be sent with
+// updated details. Handles a COMPLETED (signed) package too, which Void cannot.
+// The UI warns first that this can't be undone. Reuses loadEsignEnvelope's
+// file-visibility check.
+router.post('/esign/:rowId/clear', async (req, res) => {
+  try {
+    const { row, status, error } = await loadEsignEnvelope(req, req.params.rowId);
+    if (!row) return res.status(status).json({ error });
+    const reason = String((req.body && req.body.reason) || '').trim() || undefined;
+    const out = await require('../lib/esign/clear').clearPackage({ rowId: row.id, actorId: req.actor.id, reason, db, docusign: docusignLib });
+    await audit(req, 'esign_clear', 'application', row.application_id,
+      { purpose: row.purpose, voided: out.voided, docsCleared: out.docsCleared, conditionsReopened: (out.conditionsReopened || []).length });
+    res.json({ ok: true, ...out });
+  } catch (e) {
+    if (e && e.status && e.expose) return res.status(e.status).json({ error: e.message });
+    console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
+  }
+});
+
+// Mint an embedded signing URL for the ADMIN counter-signer to sign from the
+// cockpit ("Sign now"). Admin-only; DocuSign errors if it isn't the admin's turn.
+router.post('/esign/:rowId/countersign-view', async (req, res) => {
+  if (!isAdmin(req)) return res.status(403).json({ error: 'only an admin can counter-sign' });
+  try {
+    const { row, status, error } = await loadEsignEnvelope(req, req.params.rowId);
+    if (!row) return res.status(status).json({ error });
+    if (!row.envelope_id) return res.status(409).json({ error: 'envelope not sent yet' });
+    const rec = (await db.query(
+      `SELECT recipient_id_ds, name, email, client_user_id FROM esign_recipients
+        WHERE envelope_row_id=$1 AND role='admin' LIMIT 1`, [row.id])).rows[0];
+    if (!rec) return res.status(409).json({ error: 'this envelope has no counter-signer' });
+    const returnUrl = `${cfg.appUrl}/api/esign/return?app=${encodeURIComponent(row.application_id)}&env=${encodeURIComponent(row.envelope_id)}&dest=staff`;
+    const url = await docusignLib.createRecipientView(row.envelope_id, {
+      returnUrl, email: rec.email, userName: rec.name,
+      clientUserId: rec.client_user_id, recipientId: rec.recipient_id_ds,
+    });
+    await audit(req, 'esign_countersign_view', 'application', row.application_id, { purpose: row.purpose });
+    res.json({ url });
+  } catch (e) { sendEsignError(res, e); }
+});
+
+// Admin: manually drain the inbound event inbox + the send queue (ops button).
+router.post('/esign/drain', async (req, res) => {
+  if (!isAdmin(req)) return res.status(403).json({ error: 'admin only' });
+  try {
+    const inbox = await esignWebhook.drainInbox({ db, docusign: docusignLib });
+    res.json({ ok: true, inbox });
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // ---------------- chat v3: conversations, receipts, presence ----------------
 // Mounted last so the /applications/:id scope guard above still covers the
 // application-scoped chat routes (create chat / export).
 router.use(require('./staff-chat'));
+router.use(require('./staff-notif-center'));
 
 module.exports = router;
+// exported for tests (the draw email center's DocuSign + Sitewire activity fold-in)
+module.exports.assembleDrawEventRows = assembleDrawEventRows;
+// exported for the IG-W8 test: closing-stage conditions (title/insurance/ISKA) hold
+// funding but NOT clear-to-close.
+module.exports.advancementBlockers = advancementBlockers;

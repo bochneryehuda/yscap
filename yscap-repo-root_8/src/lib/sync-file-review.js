@@ -36,7 +36,16 @@ const REASON_ACTIONS = {
   // An outbound push exhausted its retry budget (dead-lettered).
   push_dead_lettered: ['retry_push'],
   // A portal file older than the auto-recovery window with no ClickUp task.
-  file_unlinked_no_task: ['create_task'],
+  // relink_task lets an admin point it at an EXISTING card (when one already
+  // exists for the deal) instead of always minting a fresh one.
+  file_unlinked_no_task: ['relink_task', 'create_task'],
+  // A file that went DEAD / orphaned and lost its ClickUp card while it is still
+  // a live file (owner-directed 2026-07-19, Pinches Lichtman: the real worked
+  // file was orphaned while its card stuck to the empty twin). The fix is
+  // usually relink_task — move the correct existing card onto this file (an
+  // admin action; moving a held card asks for confirmation). Otherwise give it
+  // a fresh card, archive it, or keep it as-is.
+  file_dead_unlinked: ['relink_task', 'create_task', 'archive_file', 'keep_file'],
   // The SharePoint mirror filed somewhere it wasn't SURE about (ambiguous
   // fuzzy match / officer-less Unfiled). Fix the folders IN SharePoint (the
   // mirror never moves or renames anything), then re-match.
@@ -59,7 +68,32 @@ const REASON_ACTIONS = {
   // of them their own email) stays: edit the email on the borrower screen and
   // the card closes itself.
   shared_email_needs_reassignment: ['allow_shared_email'],
+  // TWO of the borrower's ClickUp tasks carry the SAME YS loan number (the duplicate-a-task workflow
+  // copies it) — a number belongs to exactly one loan. The reviewer decides WHICH of the two bumping
+  // files owns it: assign it to THIS file (and take it off the other in PILOT), or confirm THIS file is
+  // the copy and keep it on the other deal. PILOT does its own side; the human then deletes the leftover
+  // copy on the LOSING file's ClickUp card (PILOT never erases a ClickUp box — the hard no-clear rule).
+  copied_loan_number_needs_assignment: ['loan_number_assign_here', 'loan_number_keep_other'],
+  // ClickUp changed a loan FIGURE while the file is FROZEN (a sent term sheet,
+  // or Clear-to-Close / Funded), so it was not applied. Keep PILOT's frozen
+  // figures and push them back to ClickUp so the two agree; the other option
+  // (accept the change) is the human clearing the term-sheet package / a
+  // super-admin unlock + re-register, which lifts the freeze on its own.
+  economics_frozen_conflict: ['keep_frozen_figures'],
 };
+
+// The OTHER bumping file, read out of the review's forensic raw_value (queued by the ingest layer as
+// { number, ofApplication, boundToTask } — the file/task that legitimately carries the loan number).
+function otherFileFromRow(row) {
+  let raw = null;
+  try { raw = row && row.raw_value ? JSON.parse(row.raw_value) : null; } catch (_) { raw = null; }
+  const d = raw && (raw.ofApplication ? raw : (raw.detail || null));
+  return {
+    otherId: (d && d.ofApplication) || null,
+    otherTask: (d && d.boundToTask) || null,
+    number: (raw && raw.number) || (row && row.clickup_value) || null,
+  };
+}
 
 // Rows with no ClickUp task (an unlinked FILE) still need a dedup identity in
 // the queue's per-task unique index — coalesce(task_id,'') would otherwise
@@ -98,7 +132,7 @@ async function audit(action, entityId, actorId, detail) {
  * invalid input and lets 5xx bubbles surface as-is. Marking the row resolved
  * is the CALLER's job (shared with the other resolve endpoints).
  */
-async function applyFileReviewAction({ row, action, targetApplicationId, actorId }) {
+async function applyFileReviewAction({ row, action, targetApplicationId, targetTaskId, confirmMove, actorId, isAdmin }) {
   if (!isActionAllowed(row.reason, action)) {
     throw httpError(400, `action '${action}' is not available for this row`);
   }
@@ -383,6 +417,39 @@ async function applyFileReviewAction({ row, action, targetApplicationId, actorId
     return { note: `shared email allowed for ${names} — the profiles are linked; a login on either now sees both people's files (nothing was merged; each keeps their own profile and officer)`, applicationId: row.application_id };
   }
 
+  if (action === 'relink_task') {
+    // Move an EXISTING ClickUp card onto this orphaned file — the twin-file fix
+    // (the correct card is stuck on the wrong file). Reuses the single admin
+    // relink chokepoint (src/clickup/relink.js): it validates the card, moves it
+    // off any current holder (only with confirmMove), binds it here, then
+    // re-ingests (COALESCE fill) and re-stamps the card at this file. A held card
+    // without confirmMove bubbles a needsConfirm 409 the route relays.
+    // ADMIN ONLY (owner-directed 2026-07-19; pre-merge audit B1). relink_task
+    // MOVES a ClickUp card between files (it can pull a card off another file),
+    // the same privileged override as the direct /clickup/relink endpoint — so
+    // it must NEVER be reachable by a processor / loan_officer / underwriter /
+    // loan_coordinator, including one granted the see_all_files capability. The
+    // review-queue route (resolve-file) is NOT role-gated (LOs resolve their own
+    // rows), so the gate lives HERE, at the action chokepoint, fed the caller's
+    // real admin role. Checked FIRST — authorization before any other work.
+    if (!isAdmin) throw httpError(403, 'Only an admin can move a ClickUp card between files.');
+    if (!row.application_id) throw httpError(409, 'this row has no portal file to link');
+    if (!targetTaskId) throw httpError(400, 'a ClickUp card id or link is required to relink');
+    let out;
+    try {
+      out = await require('../clickup/relink').relinkFileToTask({
+        appId: row.application_id, taskInput: targetTaskId, confirmMove: !!confirmMove, actorId });
+    } catch (e) {
+      if (e && e.needsConfirm) { const err = httpError(409, e.message); err.needsConfirm = true; err.holder = e.holder || null; throw err; }
+      throw e;
+    }
+    await audit('sync_review_relink_task', row.application_id, actorId, { taskId: out.taskId, movedFrom: out.movedFrom || null, reviewId: row.id });
+    return {
+      note: out.alreadyLinked ? `already linked to ClickUp card ${out.taskId}`
+        : `linked to ClickUp card ${out.taskId}${out.movedFrom ? ' (moved from the file that was wrongly holding it)' : ''}`,
+      applicationId: row.application_id };
+  }
+
   if (action === 'create_task') {
     // Give a long-unlinked file its ClickUp task via the one true create path.
     if (!row.application_id) throw httpError(409, 'this row has no portal file');
@@ -391,6 +458,78 @@ async function applyFileReviewAction({ row, action, targetApplicationId, actorId
     if (!out || !out.taskId) throw httpError(409, 'ClickUp task creation did not complete — check outbound sync settings and retry');
     await audit('sync_review_create_task', row.application_id, actorId, { taskId: out.taskId, reviewId: row.id });
     return { note: `ClickUp task ${out.taskId} created for the file`, applicationId: row.application_id };
+  }
+
+  if (action === 'loan_number_assign_here') {
+    // "This deal owns the number — the OTHER file has it by mistake." Give the number to THIS file and
+    // take it off every other active file in PILOT, then record a DURABLE human ownership decision so the
+    // automated older-task-wins adjudicator never silently flips it back. PILOT does NOT (and cannot)
+    // clear the losing card in ClickUp — the reviewer does that by hand; we push the number to THIS
+    // file's card (a fill — allowed) and tell them which card to clean up.
+    if (!row.application_id) throw httpError(409, 'this row has no portal file');
+    const info = otherFileFromRow(row);
+    const number = info.number;
+    if (!number) throw httpError(409, 'this row does not carry the contested loan number');
+    // free the number from every OTHER active file FIRST (avoids the partial-unique-index collision),
+    // then assign it here. Case/space-insensitive match mirrors the ingest adjudicator.
+    await db.query(
+      `UPDATE applications SET ys_loan_number=NULL, updated_at=now()
+        WHERE id<>$1 AND deleted_at IS NULL AND lower(btrim(ys_loan_number))=lower(btrim($2))`,
+      [row.application_id, number]);
+    await db.query(
+      `UPDATE applications SET ys_loan_number=$2, updated_at=now() WHERE id=$1 AND deleted_at IS NULL`,
+      [row.application_id, number]);
+    await audit('loan_number_owner_decided', row.application_id, actorId, { number, reviewId: row.id, tookFrom: info.otherId || null });
+    // keep this file's card in step (fill — the card almost always already shows the copied number), and
+    // close any stale copy-flag rows on THIS file (it now legitimately holds the number).
+    try { await require('../clickup/enqueue').enqueueClickupPush(row.application_id, ['ys_loan_number']); } catch (_) { /* best-effort */ }
+    try { await require('./sync-review').closeStaleReviews({ applicationId: row.application_id, fieldKey: 'ys_loan_number', note: 'auto-closed — a reviewer assigned this loan number to this file' }); } catch (_) { /* best-effort */ }
+    const other = info.otherId ? `the other deal (file ${info.otherId})` : 'the other deal';
+    return { note: `loan number ${number} now belongs to this file; it was removed from ${other} in PILOT. Delete the leftover loan number on ${other}'s ClickUp card so the two stop clashing (PILOT never erases a ClickUp box).`, applicationId: row.application_id };
+  }
+
+  if (action === 'loan_number_keep_other') {
+    // "This file is the copy — the OTHER deal keeps the number." Ensure this file does NOT hold the
+    // contested number in PILOT (it usually already doesn't — the ingest strips a copied number), and
+    // record a durable decision that the OTHER file owns it. The reviewer then deletes the leftover copy
+    // on THIS file's ClickUp card by hand.
+    if (!row.application_id) throw httpError(409, 'this row has no portal file');
+    const info = otherFileFromRow(row);
+    const number = info.number;
+    if (number) {
+      await db.query(
+        `UPDATE applications SET ys_loan_number=NULL, updated_at=now()
+          WHERE id=$1 AND lower(btrim(ys_loan_number))=lower(btrim($2))`,
+        [row.application_id, number]);
+      if (info.otherId) await audit('loan_number_owner_decided', info.otherId, actorId, { number, reviewId: row.id, copyIs: row.application_id });
+    }
+    const other = info.otherId ? `the other deal (file ${info.otherId})` : 'the other deal';
+    return { note: `confirmed — this file is the copy; ${other} keeps loan number ${number || ''}. Delete the leftover loan number on THIS file's ClickUp card so the two stop clashing (PILOT never erases a ClickUp box).`, applicationId: row.application_id };
+  }
+
+  if (action === 'keep_frozen_figures') {
+    // The file is FROZEN (a sent term sheet, or Clear-to-Close / Funded) and
+    // ClickUp carried different economics, which the inbound guard held back.
+    // Keep PILOT's frozen figures and push them BACK to ClickUp so the two agree
+    // (economics fields sync both ways — a no-op if ClickUp already matches). To
+    // ACCEPT the ClickUp change instead, the LO clears the term-sheet package (or
+    // a super-admin unlocks a CTC/Funded file) and re-registers: the freeze lifts
+    // and the change flows in on the next sync.
+    if (!row.application_id) throw httpError(409, 'this row has no portal file');
+    const { FROZEN_KEYS } = require('./inbound-economics-freeze');
+    let fields = [];
+    try {
+      const raw = row.raw_value ? JSON.parse(row.raw_value) : null;
+      fields = ((raw && raw.changes) || []).map((c) => c && c.field).filter(Boolean);
+    } catch (_) { /* raw_value is forensic — unparseable falls through */ }
+    fields = [...new Set(fields)].filter((f) => FROZEN_KEYS.includes(f));
+    if (!fields.length) throw httpError(409, 'this row does not list the frozen figures to restore');
+    try { await require('../clickup/enqueue').enqueueClickupPush(row.application_id, fields); } catch (_) { /* re-sync ClickUp; no-op if already equal */ }
+    await audit('sync_review_keep_frozen_figures', row.application_id, actorId, { fields, reviewId: row.id });
+    return {
+      note: `kept the file's frozen figures and re-pushed them to ClickUp so the two agree (${fields.join(', ')}). ` +
+        `To accept the ClickUp change instead, clear the term-sheet package (or have a super-admin unlock a Clear-to-Close / Funded file) and re-register.`,
+      applicationId: row.application_id };
   }
 
   throw httpError(400, `unknown action '${action}'`);

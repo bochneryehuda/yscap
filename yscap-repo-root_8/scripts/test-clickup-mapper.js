@@ -43,7 +43,7 @@ eq('build rtl as-is', byId[F.SYNC.rtlAsIsValue], '425000');
 eq('build LTV pushed', byId[F.PIPELINE.ltv], '90');
 eq('build rate pushed', byId[F.EXTRA.ratePct], '11.5');
 eq('build name', byId[F.SHARED.borrowerName], 'Dov Steiner');
-eq('build SSN', byId[F.SHARED.borrowerSSN], '066889965');
+eq('build SSN pushed in the real dashed format', byId[F.SHARED.borrowerSSN], '066-88-9965');
 eq('build marital YES', byId[F.EXTRA.maritalStatus], 'M-YES');
 eq('build borrower status mirror', byId[F.SYNC.borrowerPortalStatus], 'BPS-PROC');
 eq('build officer users', byId[F.SHARED.loanOfficer], { add: [120151948] });

@@ -5,16 +5,25 @@ import { useSubmitGate } from '../lib/useSubmitGate.js';
 /* Pick a vesting entity / LLC from the borrower's reusable LLC database, or
    create a new one inline. Creating a new LLC materializes its required
    documents (EIN letter, formation docs, operating agreement) via the backend.
-   `value` = current LLC name; onPick({ id, name }) fires on select/create. */
-export default function LlcPicker({ value, onPick, placeholder }) {
+   `value` = current LLC name; onPick({ id, name }) fires on select/create.
+   Staff mode (owner-directed 2026-07-20): pass `staff` + `borrowerId` to list and
+   create against a SPECIFIC borrower's LLC library (staff endpoints) instead of
+   the logged-in borrower's own. With no borrowerId yet (a brand-new borrower on
+   the staff new-file form) it still captures a typed entity name via onPick — the
+   server resolves/creates the LLC once the borrower exists. */
+export default function LlcPicker({ value, onPick, placeholder, staff = false, borrowerId = null }) {
   const [name, setName] = useState(value || '');
   const [llcs, setLlcs] = useState([]);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const box = useRef(null);
+  const canCreate = !staff || !!borrowerId;   // staff need a borrower to create an LLC
 
   useEffect(() => { setName(value || ''); }, [value]);
-  useEffect(() => { api.llcs().then(setLlcs).catch(() => {}); }, []);
+  useEffect(() => {
+    const load = staff ? (borrowerId ? api.staffBorrowerLlcs(borrowerId) : Promise.resolve([])) : api.llcs();
+    load.then(setLlcs).catch(() => setLlcs([]));
+  }, [staff, borrowerId]);
   useEffect(() => {
     const onDoc = (e) => { if (box.current && !box.current.contains(e.target)) setOpen(false); };
     document.addEventListener('mousedown', onDoc);
@@ -32,10 +41,10 @@ export default function LlcPicker({ value, onPick, placeholder }) {
     if (!nm || busy || !gate.enter()) return;   // guard against a double-tap creating two LLCs
     setBusy(true);
     try {
-      const r = await api.createLlc({ llcName: nm });
-      const fresh = await api.llcs().catch(() => llcs); setLlcs(fresh);
+      const r = staff ? await api.staffCreateLlc(borrowerId, { llcName: nm }) : await api.createLlc({ llcName: nm });
+      const fresh = await (staff ? api.staffBorrowerLlcs(borrowerId) : api.llcs()).catch(() => llcs); setLlcs(fresh);
       setOpen(false);
-      onPick && onPick({ id: r.llcId, name: nm });
+      onPick && onPick({ id: r.llcId || r.id, name: nm });
     } catch { /* leave as typed text */ }
     finally { setBusy(false); gate.leave(); }
   }
@@ -56,7 +65,7 @@ export default function LlcPicker({ value, onPick, placeholder }) {
               </span>
             </div>
           ))}
-          {q && !exact && (
+          {q && !exact && canCreate && (
             <div role="option" className="addr-item" onMouseDown={e => { e.preventDefault(); create(); }} style={{ color: 'var(--teal)' }}>
               <span className="addr-pin">＋</span><span>{busy ? 'Creating…' : `Create new LLC “${name.trim()}”`}</span>
             </div>

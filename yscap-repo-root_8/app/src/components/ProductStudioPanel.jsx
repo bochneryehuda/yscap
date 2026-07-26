@@ -16,6 +16,11 @@ import TermSheetStudio, {
    and re-registering any number of times is the intended workflow. */
 
 const money = (n) => (n == null || n === '' ? '—' : '$' + Math.round(Number(n)).toLocaleString('en-US'));
+// Exact-cents formatter for fee / cash-to-close / reserve / liquidity rows so the
+// V1 read-back matches V2 and the term sheet to the penny (owner-directed
+// 2026-07-16; audit 2026-07-19). Loan amount / advance / holdback stay on money()
+// (whole-dollar floored — the frozen loan-rounding rule is untouched).
+const money2 = (n) => (n == null || n === '' ? '—' : '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
 const pct = (f, d = 2) => (f == null || f === '' ? '—' : (Number(f) * 100).toFixed(d) + '%');
 const when = (t) => (t ? new Date(t).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : '');
 
@@ -78,7 +83,10 @@ export function overridesFromSnapshot(snap, mode) {
   const d = snap.d || {};
   const base = compact({
     targetLTC: d.inp && d.inp.targetLTC ? d.inp.targetLTC : null,
-    irMonths: f.irMonths === '' ? null : f.irMonths,
+    // A BLANK months is sent as 0 (not null) so it actively CLEARS a previously-
+    // registered reserve — null is dropped by compact(), leaving the stale reserve
+    // to stick on re-register (mirrors irAmount below; final audit 2026-07-17).
+    irMonths: f.irMonths === '' ? 0 : f.irMonths,
     // Interest reserve may instead be an exact dollar amount (owner-directed
     // 2026-07-12) — carried through to the frozen engine, which honors it over
     // months and fits it under the same caps. A BLANK amount is sent as 0 (not
@@ -105,7 +113,6 @@ export function overridesFromSnapshot(snap, mode) {
       asIsValue: f.asIs,
       arv: f.arv,
       rehabBudget: f.construction,
-      markupStdPct: f.tsYspStd, markupGoldPct: f.tsYspGold,
       origStdPct: f.tsOrigStd, origGoldPct: f.tsOrigGold,
       lenderFee: f.tsFeeUW, creditFee: f.tsFeeCredit, appraisalFee: f.tsFeeAppr,
       titleFee: f.tsFeeTitle,
@@ -121,6 +128,14 @@ export function overridesFromSnapshot(snap, mode) {
     heavyRehab: f.rehabScope === 'heavy',
     sqftAddition: !!f.sqft,
     manualPricing: !!f.tsManualOn,
+    // Markup: an EXPLICITLY blanked field sends '' — the server drops the sticky
+    // per-file markup and re-prices at the company default. These MUST sit outside
+    // compact() (which discards ''); inside it a cleared markup box sent nothing,
+    // so the old sticky markup silently re-applied and the file registered at a
+    // rate DIFFERENT from the rate the studio showed and printed (audit 2026-07-19,
+    // FATAL; mirrors the V2 fix). An untouched/absent field still sends nothing.
+    ...(f.tsYspStd === '' ? { markupStdPct: '' } : f.tsYspStd != null ? { markupStdPct: f.tsYspStd } : {}),
+    ...(f.tsYspGold === '' ? { markupGoldPct: '' } : f.tsYspGold != null ? { markupGoldPct: f.tsYspGold } : {}),
   };
 }
 
@@ -168,24 +183,32 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
           <Row k="Loan-to-ARV" v={pct(s.arvPct, 1)} />
           {reg.target_ltc > 0 && <Row k="Selected leverage (LTC target)" v={pct(reg.target_ltc, 1)} />}
           {s.binding && <Row k="Binding limit" v={s.binding} />}
-          {caps && <Row k="Program max — LTC / ARV / as-is" v={`${pct(caps.maxLtc, 1)} / ${pct(caps.maxArvLtv, 1)} / ${pct(caps.maxAcqLtv, 1)}`} />}
+          {caps && ((q.kind === 'bridge' || caps.maxLtc >= 1 || caps.maxArvLtv >= 1)
+            // Bridge / no-cap products have no LTC/ARV ceiling (100% sentinel) —
+            // show only the real as-is advance cap, not a fake 100% (audit #12).
+            ? <Row k="Program max — as-is" v={pct(caps.maxAcqLtv, 1)} />
+            : <Row k="Program max — LTC / ARV / as-is" v={`${pct(caps.maxLtc, 1)} / ${pct(caps.maxArvLtv, 1)} / ${pct(caps.maxAcqLtv, 1)}`} />)}
         </div>
         <div>
           <p className="muted small" style={{ margin: '0 0 4px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Fees & cash to close</p>
-          <Row k={`Origination (${q.origPct != null ? (q.origPct * 100).toFixed(3).replace(/\.?0+$/, '') + '%' : '—'})`} v={money(q.origination)} />
-          <Row k="UW / processing / legal" v={money(cc.lenderFee)} />
-          <Row k="Credit report" v={money(cc.creditFee)} />
-          <Row k="Title / escrow (est.)" v={money(cc.titleAndSettlement)} />
-          <Row k="Appraisal (est., POC)" v={money(cc.appraisalPoc)} />
-          <Row k="Closing costs due at closing" v={money(cc.dueAtClosing)} />
-          <Row k="Estimated cash to close" v={<strong>{money(q.cashToClose)}</strong>} />
-          <Row k={`Reserve to show${q.reserveBasis ? ` (${q.reserveBasis})` : ''}`} v={money(q.reserveRequirement)} />
-          <Row k="Liquidity to verify" v={<strong>{money(q.liquidity ?? q.liquidityRequired)}</strong>} />
+          <Row k={`Origination (${q.origPct != null ? (q.origPct * 100).toFixed(3).replace(/\.?0+$/, '') + '%' : '—'})`} v={money2(q.origination)} />
+          <Row k="UW / processing / legal" v={money2(cc.lenderFee)} />
+          <Row k="Credit report" v={money2(cc.creditFee)} />
+          <Row k="Title / escrow (est.)" v={money2(cc.titleAndSettlement)} />
+          {Array.isArray(cc.extraFees) && cc.extraFees.map((f, i) => (
+            <Row key={i} k={f.name} v={money2(f.amount)} />
+          ))}
+          <Row k="Appraisal (est., POC)" v={money2(cc.appraisalPoc)} />
+          <Row k="Closing costs due at closing" v={money2(cc.dueAtClosing)} />
+          <Row k="Estimated cash to close" v={<strong>{money2(q.cashToClose)}</strong>} />
+          <Row k={`Reserve to show${q.reserveBasis ? ` (${q.reserveBasis})` : ''}`} v={money2(q.reserveRequirement)} />
+          <Row k="Liquidity to verify" v={<strong>{money2(q.liquidity ?? q.liquidityRequired)}</strong>} />
           <p className="muted small" style={{ margin: '10px 0 4px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Scenario as registered</p>
           <Row k="Strategy / purpose" v={`${inp.strategy || '—'} · ${inp.loanType || '—'}${inp.cashOut ? ' (cash-out)' : ''}`} />
           <Row k="Purchase price" v={money(inp.purchasePrice)} />
           {inp.isAssignment && <Row k="Seller price / assignment fee" v={`${money(inp.sellerPrice)} / ${money(Math.max(0, (inp.purchasePrice || 0) - (inp.sellerPrice || 0)))}`} />}
-          {inp.isAssignment && q.assignment && q.assignment.overLimit && <Row k="Effective purchase price (fee capped at 15%)" v={money(q.assignment.recognizedPrice)} />}
+          {inp.isAssignment && q.assignment && (q.assignment.overLimit || q.assignment.overridden) &&
+            <Row k={`Effective purchase price ${q.assignment.overridden ? '(admin exception)' : q.assignment.dollarCap ? '(fee capped at the program limit)' : '(fee capped at 15%)'}`} v={money(q.assignment.recognizedPrice)} />}
           <Row k="As-is value / ARV" v={`${money(inp.asIsValue)}${inp.asIsDefaulted ? ' (= purchase, defaulted)' : ''} / ${money(inp.arv)}`} />
           <Row k="Rehab budget" v={money(inp.rehabBudget)} />
           <Row k="FICO / experience" v={`${inp.fico || '—'} · ${inp.expFlips || 0} flips / ${inp.expHolds || 0} holds / ${inp.expGround || 0} ground-up`} />
@@ -381,10 +404,18 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
 
   // Borrowers can price/choose but never change the file's deal economics
   // from here — those change through the loan team. Staff edit everything.
-  const lockedIds = useMemo(() => (isStaff ? [] : [
-    'propAddr', 'addrTBD', 'propState', 'propType', 'dealPurpose', 'dealType',
-    'price', 'isAssign', 'origPrice', 'asIs', 'arv', 'construction', 'rehabScope', 'sqft',
-  ]), [isStaff]);
+  const lockedIds = useMemo(() => (isStaff
+    // Staff: purchase price & as-is are not written back on register (owned by the
+    // application form) — lock them so a studio edit can't size a loan the file
+    // never persists and then snap back on reopen (audit #24).
+    ? ['price', 'asIs']
+    : [
+      'propAddr', 'addrTBD', 'propState', 'propType', 'dealPurpose', 'dealType',
+      'price', 'isAssign', 'origPrice', 'asIs', 'arv', 'construction', 'rehabScope', 'sqft',
+      // Sizing prices off the CLAIM of record; a studio experience edit is stripped
+      // on register, so lock it — the claim is edited on the application form (#44).
+      'expFlips', 'expBrrrr', 'expGround',
+    ]), [isStaff]);
 
   const d = snap && snap.d;
   const canRegister = !!(snap && snap.ready && snap.program && d && d.status !== 'INELIGIBLE' && d.totalLoan > 0);

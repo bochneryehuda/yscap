@@ -2,6 +2,7 @@
 
 const PRODUCT_CONDITION_TYPE = 'product_registration';
 const { syncExperienceChecklistForApplication } = require('./experience');
+const { termWritebackText } = require('./term-text');
 
 function num(v) { const n = Number(v); return isFinite(n) ? n : 0; }
 function money(v) { return '$' + Math.round(num(v)).toLocaleString('en-US'); }
@@ -71,14 +72,60 @@ async function replaceProductConditions(client, { appId, registrationId, quote, 
   }
 }
 
-async function persistProductRegistration(client, { appId, program, inputs, quote, registeredByStaffId }) {
+// The borrower's own headline loan terms — the "real numbers" a borrower would
+// notice. Two registrations with the same key mean the borrower's DEAL is
+// unchanged (an internal re-register for the same stuff), so the borrower should
+// NOT get another "your terms are ready" nudge (owner-directed 2026-07-20). Uses
+// the stable priced OUTPUTS (loan amount, rate, cash-to-close, term, program) —
+// not noisy internal fields — so a genuine change (any of these) re-notifies and
+// a no-op re-register stays silent.
+function borrowerTermsKey({ program, productLabel, noteRate, totalLoan, quote, inputs }) {
+  const q = quote || {}; const i = inputs || {}; const s = q.sizing || {};
+  return JSON.stringify([
+    program || '',
+    productLabel || '',
+    Math.round(num(totalLoan)),
+    noteRate == null ? null : Number(noteRate).toFixed(5),
+    i.term == null ? null : String(i.term),
+    q.cashToClose == null ? null : Math.round(num(q.cashToClose)),
+    // Also the money the borrower actually RECEIVES at closing vs. holds back —
+    // a split change (same total loan, different advance/holdback) is a real
+    // borrower-facing number even when cash-to-close is unchanged, so it must
+    // re-notify ("ANY number that really changed", owner-directed 2026-07-20).
+    s.initialAdvance == null ? null : Math.round(num(s.initialAdvance)),
+    s.rehabHoldback == null ? null : Math.round(num(s.rehabHoldback)),
+  ]);
+}
+
+async function persistProductRegistration(client, { appId, program, inputs, quote, registeredByStaffId, isManual, assetMonths, termOptions }) {
   const s = quote.sizing || {};
   const total = num(s.totalLoan);
+  // Term-sheet options (owner-directed 2026-07-22) — DISPLAY / record only,
+  // resolved by the caller (min-interest default by program, accrual, deferred
+  // fee, and the key dates derived from the estimated closing date). Never
+  // affects any sized number. Absent => leave the file's existing values as-is.
+  const to = termOptions && typeof termOptions === 'object' ? termOptions : null;
+  // Snapshot the PREVIOUS current registration BEFORE we supersede it, so we can
+  // tell the borrower email whether their deal actually changed.
+  const prev = (await client.query(
+    `SELECT program, product_label, note_rate, total_loan, quote, inputs
+       FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`, [appId])).rows[0] || null;
+  // Capture the loan amount BEFORE this registration overwrites it — the caller
+  // auto-clears a signed Heter Iska when the loan amount actually moves (the ISKA
+  // is tied to the loan amount). owner-directed 2026-07-22. Also capture the
+  // file's current TERM text so the write-back below can preserve its spelling.
+  const prevLoanRow = (await client.query(`SELECT loan_amount, term FROM applications WHERE id=$1`, [appId])).rows[0];
+  const prevLoanAmount = prevLoanRow ? Number(prevLoanRow.loan_amount) : null;
+  const newKey = borrowerTermsKey({ program, productLabel: quote.productLabel, noteRate: quote.noteRate, totalLoan: total, quote, inputs });
+  const prevKey = prev ? borrowerTermsKey({ program: prev.program, productLabel: prev.product_label, noteRate: prev.note_rate, totalLoan: prev.total_loan, quote: prev.quote, inputs: prev.inputs }) : null;
+  // First registration (no prev) always notifies; a re-register notifies only
+  // when a headline number actually moved.
+  const economicsChanged = prevKey == null || prevKey !== newKey;
   await client.query(`UPDATE product_registrations SET is_current=false WHERE application_id=$1 AND is_current`, [appId]);
   const ins = await client.query(
     `INSERT INTO product_registrations
-       (application_id, program, product_label, status, note_rate, total_loan, target_ltc, inputs, quote, is_current, registered_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,$10) RETURNING id`,
+       (application_id, program, product_label, status, note_rate, total_loan, target_ltc, inputs, quote, is_current, registered_by, is_manual, asset_months, term_options)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,$10,$11,$12,$13) RETURNING id`,
     [
       appId,
       program,
@@ -90,6 +137,9 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
       JSON.stringify(inputs),
       JSON.stringify(quote),
       registeredByStaffId || null,
+      !!isManual || program === 'manual',
+      (assetMonths != null && isFinite(Number(assetMonths))) ? Math.round(Number(assetMonths)) : null,
+      to ? JSON.stringify(to) : null,
     ]);
   const registrationId = ins.rows[0].id;
   // Registration COMMITS the priced scenario onto the file. Beyond loan amount /
@@ -147,7 +197,13 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
       num(inputs.expHolds),
       num(inputs.expGround),
       num(inputs.rehabBudget),
-      inputs.term ? String(inputs.term) : null,
+      // Preserve the file's existing term SPELLING when it already means the
+      // registered month count ("12 Months" stays "12 Months", never rewritten to
+      // the bare "12") — the cosmetic rewrite is what kept re-tripping the
+      // pricing-change detectors on every ClickUp echo (owner-reported
+      // 2026-07-24, "Term: 12 → 12 Months"). A REAL term change still writes
+      // the new value, in the ClickUp-friendly "<n> Months" form.
+      termWritebackText(prevLoanRow && prevLoanRow.term, inputs.term),
       num(inputs.irMonths),
       num(inputs.arv) || null,
       isAssign,
@@ -156,9 +212,131 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
       ratePct != null ? ratePct.toFixed(3) : null,   // desired_rate is TEXT; mirror the registered rate
       num(inputs.irAmount) || null,                   // $16 — exact interest-reserve amount (null = months path)
     ]);
+  // Term-sheet options onto the file (owner-directed 2026-07-22) — only when the
+  // caller supplied them, so a path that doesn't touch them leaves the file's
+  // existing values alone. min_interest_enabled stores the RESOLVED boolean (the
+  // route already applied the program default). The key dates are DERIVED from
+  // the estimated closing date + term; an empty closing date clears all three.
+  if (to) {
+    await client.query(
+      `UPDATE applications
+          SET accrual_type = COALESCE($2, accrual_type),
+              min_interest_enabled = $3,
+              deferred_orig_pct = COALESCE($4, deferred_orig_pct),
+              est_closing_date = $5,
+              -- Keep the canonical closing date (expected_closing, ClickUp-synced +
+              -- staff-editable) in lock-step with the term-sheet closing date: fill
+              -- it when the studio supplies one, never clobber an existing value.
+              expected_closing = COALESCE($5, expected_closing),
+              first_payment_date = $6,
+              maturity_date = $7,
+              updated_at = now()
+        WHERE id=$1`,
+      [
+        appId,
+        to.accrualType || null,
+        (to.minInterestEnabled === true || to.minInterestEnabled === false) ? to.minInterestEnabled : null,
+        (to.deferredOrigPct != null && to.deferredOrigPct !== '') ? Number(to.deferredOrigPct) : null,
+        to.estClosing || null,
+        to.firstPayment || null,
+        to.maturity || null,
+      ]);
+  }
   await replaceProductConditions(client, { appId, registrationId, quote, registeredByStaffId });
   await syncExperienceChecklistForApplication(appId, client);
-  return registrationId;
+  // The applications write-back above trips the db/096 economics trigger, which
+  // flags the CURRENT registration stale ("fatal") — but the row it flags is the
+  // one we are registering right now. Registration IS the re-verification that flag
+  // asks for, so clear it on the fresh row (do it LAST, after the experience sync,
+  // so nothing re-flags it). Leaving it set silently disabled the experience-drop
+  // fatality guard, which filters `is_current AND NOT stale` (audit #4/#9/#13).
+  await client.query(
+    `UPDATE product_registrations SET stale=false, stale_reason=NULL WHERE id=$1`, [registrationId]);
+  // Did the loan amount actually move? Compare on the EXACT stored value vs the
+  // value we just wrote — the same basis as the db/280 trigger's IS DISTINCT
+  // FROM — so the app-layer auto-clear can never lag the trigger's condition
+  // reopen. In practice both are whole dollars (the engine floors the loan).
+  const loanAmountChanged = Number(prevLoanAmount || 0) !== Number(total);
+  return { id: registrationId, economicsChanged, loanAmountChanged };
 }
 
-module.exports = { persistProductRegistration };
+/**
+ * Build the BORROWER-facing "your loan terms are ready" notification for a
+ * product registration — the same rich, borrower-safe layout on BOTH register
+ * paths (staff registers, or the borrower self-registers), so the borrower is
+ * no longer left with a thin note while the loan team gets the full picture
+ * (owner-directed 2026-07-20). Returns notify opts (the caller adds
+ * `applicationId`). NEVER exposes a note-buyer / capital-partner name — it uses
+ * only the borrower program label + the borrower's own deal numbers, and the
+ * notify chokepoint scrubs again as defense-in-depth.
+ *
+ * @param {object} p
+ * @param {object} p.ctx        notify.fileContext(appId) result (for property/loan# identity) — optional
+ * @param {object} p.quote      the pricing quote
+ * @param {number} p.total      the sized total loan (whole dollars)
+ * @param {number} [p.termMonths] loan term in months (from inputs.term)
+ * @param {object} [p.officer]  { name, title, email, phone, nmls } assigned LO — for From/branding
+ */
+function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOptions } = {}) {
+  quote = quote || {};
+  const s = quote.sizing || {};
+  const cc = quote.closingCosts || {};
+  const rate = quote.noteRate != null ? (quote.noteRate * 100).toFixed(2) + '%' : null;
+  const programLabel = quote.programLabel || 'your program';
+  // Term-sheet options (owner-directed 2026-07-22): only surface what applies.
+  const to = termOptions && typeof termOptions === 'object' ? termOptions : {};
+  const minInterestOn = to.minInterestEnabled === true;
+  const accrualNice = to.accrualType === 'dutch' ? 'Dutch / Full-Boat' : 'Non-Dutch / As-Drawn';
+  const prettyDate = (ymd) => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(ymd || ''));
+    if (!m) return null;
+    return new Date(+m[1], +m[2] - 1, +m[3]).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  };
+  const officerLine = officer && officer.name
+    ? `${officer.name}${officer.title ? ' · ' + officer.title : ''}${officer.nmls ? ' · NMLS #' + officer.nmls : ''}`
+      + (officer.phone || officer.email ? ' · ' + [officer.phone, officer.email].filter(Boolean).join(' · ') : '')
+    : null;
+  const hasHoldback = num(s.rehabHoldback) > 0;
+  const meta = [
+    ctx ? { label: 'Property', value: ctx.addr } : null,
+    ctx && ctx.hasLoanNo ? { label: 'Loan #', value: ctx.loanNo } : null,
+    { label: 'Program', value: programLabel },
+    { label: 'Loan amount', value: money(total != null ? total : s.totalLoan) },
+    rate ? { label: 'Note rate', value: rate } : null,
+    termMonths ? { label: 'Term', value: `${termMonths} months` } : null,
+    num(s.monthlyPayment) > 0 ? { label: 'Monthly payment (interest only)', value: money(s.monthlyPayment) } : null,
+    hasHoldback ? { label: 'Initial advance at closing', value: money(s.initialAdvance) } : null,
+    hasHoldback ? { label: 'Rehab holdback (drawn as work completes)', value: money(s.rehabHoldback) } : null,
+    num(s.financedReserve) > 0 ? { label: 'Financed interest reserve', value: money(s.financedReserve) } : null,
+    quote.cashToClose != null ? { label: 'Estimated cash to close', value: money(quote.cashToClose) } : null,
+    (quote.liquidityRequired ?? quote.liquidity) != null ? { label: 'Reserves to verify', value: money(quote.liquidityRequired ?? quote.liquidity) } : null,
+    { label: 'Guaranty', value: to.coBorrowerPgWaived === true
+        ? 'Full recourse — co-borrower’s personal guarantee waived (approved exception)'
+        : 'Full recourse — personal guarantee required' },
+    { label: 'Interest accrual', value: accrualNice },
+    to.firstPayment && prettyDate(to.firstPayment) ? { label: 'First payment date (estimated)', value: prettyDate(to.firstPayment) } : null,
+    to.maturity && prettyDate(to.maturity) ? { label: 'Maturity date (estimated)', value: prettyDate(to.maturity) } : null,
+    Number(to.deferredOrigPct) > 0 ? { label: 'Deferred origination fee (paid at payoff)', value: Number(to.deferredOrigPct) + '%' } : null,
+    officerLine ? { label: 'Your loan officer', value: officerLine } : null,
+  ].filter(Boolean);
+  const lines = [
+    'This reflects the structure your loan team registered. Open your portal to review the full term sheet, including all estimated closing costs.',
+  ];
+  if (minInterestOn) lines.push('Minimum earned interest: 3 months. If the loan pays off before three full months, the remainder of the three-month minimum interest is still due — this is a minimum earned-interest provision, not a prepayment penalty.');
+  if (to.firstPayment && to.maturity && prettyDate(to.firstPayment)) lines.push('The first payment and maturity dates shown are estimates based on the estimated closing date and will be confirmed on your loan documents.');
+  if (officer && officer.name) lines.push(`Questions? Reach out to ${officer.name} directly — you can also just reply to this email.`);
+  return {
+    type: 'term_sheet',
+    title: 'Your loan terms are ready',
+    // Hero: the loan amount is the one number the borrower is looking for — lead
+    // with it, big, with the rate as the sub-line.
+    hero: { label: 'Your loan amount', value: money(total != null ? total : s.totalLoan), sub: rate ? `at ${rate}${termMonths ? ` · ${termMonths}-month term` : ''}` : (termMonths ? `${termMonths}-month term` : ''), tone: 'gold' },
+    badge: { text: 'Terms ready', tone: 'gold' },
+    body: `Your ${programLabel} is registered. Here are your current terms — the full term sheet, with every estimated closing cost, is in your portal.`,
+    lines,
+    meta,
+    ctaLabel: 'Review your full term sheet',
+  };
+}
+
+module.exports = { persistProductRegistration, borrowerTermsEmail, borrowerTermsKey, money, productName };

@@ -87,6 +87,22 @@ export function saveBlob(blob, filename) {
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1500);
 }
+// Open a fetched blob in a browser tab (for a PDF the user wants to VIEW, not download). Because the fetch
+// happens AFTER the click, a `window.open` here is outside the user gesture and popup-blockers reject it —
+// so the caller SHOULD pass a `win` it opened synchronously in the click handler (`window.open('','_blank')`)
+// and we just navigate it. Falls back to opening/downloading if no live window was handed in, so the report
+// is never lost. SECURITY: only ever hand this a blob whose type is server-controlled + trusted (our
+// application/pdf reports/images) — a blob: URL opened this way runs with the portal's origin, so untrusted
+// HTML/SVG bytes here would be a stored-XSS vector.
+export function openBlob(blob, filename, win) {
+  const url = URL.createObjectURL(blob);
+  if (win && !win.closed) { try { win.location.href = url; } catch { window.open(url, '_blank'); } }
+  else {
+    const w = window.open(url, '_blank');
+    if (!w) { const a = document.createElement('a'); a.href = url; a.download = filename || 'document'; document.body.appendChild(a); a.click(); a.remove(); }
+  }
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
 
 // Normalize any upload payload: the backend stores raw base64 (dataBase64), so
 // if a caller passes a full `data:` URL we strip the prefix here. This keeps a
@@ -161,6 +177,7 @@ async function req(method, path, body) {
 export const api = {
   get:  (p) => req('GET', p),
   post: (p, b) => req('POST', p, b),
+  patch:(p, b) => req('PATCH', p, b),
   put:  (p, b) => req('PUT', p, b),
   del:  (p) => req('DELETE', p),
 
@@ -183,6 +200,10 @@ export const api = {
   forgotPassword:     (email, scope) => req('POST', '/auth/borrower/forgot', scope ? { email, scope } : { email }),
   resetPassword:      (token, password) => req('POST', '/auth/borrower/reset', { token, password }),
   acceptInvite:       (b) => req('POST', '/auth/accept', b),                   // {token,password,fullName?}
+  // E-sign magic-link session handoff: exchange the one-time login code (from the
+  // /api/esign/return redirect) for a real borrower session, so a borrower who
+  // signed from PILOT's branded email lands back inside their file already logged in.
+  claimEsignSession:  (li) => req('POST', '/api/esign/claim-session', { li }),
 
   profile:      () => req('GET', '/api/borrower/profile'),
   saveProfile:  (b) => req('PUT', '/api/borrower/profile', b),
@@ -190,11 +211,15 @@ export const api = {
   applications: () => req('GET', '/api/borrower/applications'),
   application:  (id) => req('GET', `/api/borrower/applications/${id}`),
   fileOfficer:  (id) => req('GET', `/api/borrower/applications/${id}/officer`),
+  // Cross-file "Action needed" — everything the borrower must do right now (documents
+  // to provide, fixes, signatures) in ONE call, so the home shows it instantly.
+  actionItems: () => req('GET', '/api/borrower/action-items'),
   inviteCoBorrowerToFile: (id, b) => req('POST', `/api/borrower/applications/${id}/co-borrower`, b),
   requestDraw:  (id) => req('POST', `/api/borrower/applications/${id}/request-draw`),
   borrowerPricing:      (appId) => req('GET', `/api/borrower/applications/${appId}/pricing`),
   borrowerPricingQuote: (appId, overrides) => req('POST', `/api/borrower/applications/${appId}/pricing/quote`, { overrides }),
-  borrowerRegisterProduct: (appId, program, overrides, adminKey, econVersion) => req('POST', `/api/borrower/applications/${appId}/pricing/register`, { program, overrides, adminKey, econVersion }),
+  borrowerRegisterProduct: (appId, program, overrides, adminKey, econVersion, submitException, termOptions) => req('POST', `/api/borrower/applications/${appId}/pricing/register`, { program, overrides, adminKey, econVersion, submitException, termOptions }),
+  borrowerRequestException: (appId, note) => req('POST', `/api/borrower/applications/${appId}/pricing/request-exception`, { note }),
   checklist:    (id) => req('GET', `/api/borrower/applications/${id}/checklist`),
   conditions:   (id) => req('GET', `/api/borrower/applications/${id}/conditions`),
   // Borrower change-request sandbox (S5-03) — borrower side. List their requests,
@@ -290,6 +315,10 @@ export const api = {
   staffVestingLlcOwners: (id) => req('GET', `/api/staff/applications/${id}/vesting-llc-owners`),
   staffSetVestingLlcOwners: (id, owners) => req('POST', `/api/staff/applications/${id}/vesting-llc-owners`, { owners }),
   staffChecklist:   (id) => req('GET', `/api/staff/applications/${id}/checklist`),
+  // Credit report (Xactus import) — the internal Credit report condition.
+  staffCredit:        (id) => req('GET', `/api/staff/applications/${id}/credit`),
+  staffCreditPreview: (id) => req('GET', `/api/staff/applications/${id}/credit/preview`),
+  staffCreditImport:  (id, b) => req('POST', `/api/staff/applications/${id}/credit/import`, b),
   // #147 — the cross-system observability timeline for a file (portal + ClickUp +
   // SharePoint + sync-review events, time-ordered). Scoped by the file's access.
   staffObservability: (id, opts = {}) => req('GET', `/api/staff/applications/${id}/observability`
@@ -304,6 +333,9 @@ export const api = {
   // #83 — loan-officer borrower management
   staffBorrowers:   () => req('GET', '/api/staff/borrowers'),
   staffBorrowerInvite: (id) => req('POST', `/api/staff/borrowers/${id}/portal-invite`),
+  // Change WHICH email the Sitewire borrower invite goes to (borrower / GC / partner). Replaces the
+  // pending invite (Sitewire keeps one email per property) + stores it so the push/resend honor it.
+  setDrawInviteEmail: (appId, email) => req('POST', `/api/sitewire/files/${appId}/invite-email`, { email }),
   staffBorrowerResetPassword: (id) => req('POST', `/api/staff/borrowers/${id}/reset-password`),
   staffBorrowerSetPassword: (id, password) => req('POST', `/api/staff/borrowers/${id}/set-password`, { password }),
   staffBorrower:    (id) => req('GET', `/api/staff/borrowers/${id}`),
@@ -346,18 +378,182 @@ export const api = {
   staffAddCondition:(appId, b) => req('POST', `/api/staff/applications/${appId}/conditions`, b),
   staffConditions:  (appId) => req('GET', `/api/staff/applications/${appId}/conditions`),
   staffActivity:    (appId) => req('GET', `/api/staff/applications/${appId}/activity`),
-  staffAppEmails:   (appId) => req('GET', `/api/staff/applications/${appId}/emails`),   // #80 per-file email monitor
+  // ---- Email Center (per-file history + global mailbox + reply) ----
+  staffAppEmails:   (appId, scope) => req('GET', `/api/staff/applications/${appId}/emails` + (scope ? `?scope=${encodeURIComponent(scope)}` : '')),   // per-file email history (scope='draw' → draw inbox)
+  staffAppEmailMsg: (appId, msgId) => req('GET', `/api/staff/applications/${appId}/emails/${msgId}`),   // full body of one message
+  staffAppEmailReply: (appId, body) => req('POST', `/api/staff/applications/${appId}/emails/reply`, body),
+  staffAppReplyRecipients: (appId) => req('GET', `/api/staff/applications/${appId}/emails/reply-recipients`),
+  staffEmails:      (params) => req('GET', '/api/staff/emails' + qs(params)),            // global mailbox (all visible files)
+  staffEmailMsg:    (msgId) => req('GET', `/api/staff/emails/${msgId}`),                 // full body from the global mailbox
+  staffEmailStats:  () => req('GET', '/api/staff/emails/stats'),
+  staffAppEmailResend: (appId, msgId) => req('POST', `/api/staff/applications/${appId}/emails/${msgId}/resend`),
+  staffAppEmailAttachment: (appId, msgId, idx) => download(`/api/staff/applications/${appId}/emails/${msgId}/attachments/${idx}`),
+  // Orders desk (#orders) — title + insurance orders on a file.
+  staffOrders:        (appId) => req('GET', `/api/staff/applications/${appId}/orders`),
+  staffPlaceOrder:    (appId, kind, body) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/place`, body || {}),
+  staffOrderFollowup: (appId, kind, body) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/followup`, body || {}),
+  staffClassifyOrderDoc: (appId, kind, docId, slot) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/documents/${docId}/classify`, { slot }),
+  staffCancelOrder:   (appId, kind, reopen) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/cancel`, reopen ? { reopen: true } : {}),
+  staffAllOrders:     () => req('GET', '/api/staff/orders'),   // global orders queue (all visible files)
+  staffSetLoanNumber: (appId, loanNumber) => req('POST', `/api/staff/applications/${appId}/loan-number`, { loanNumber }),
   staffPostClosing: (appId) => req('GET', `/api/staff/applications/${appId}/post-closing`),
   staffSeedPostClosing: (appId) => req('POST', `/api/staff/applications/${appId}/post-closing/seed`),
   staffPatchPostClosing: (pid, b) => req('PATCH', `/api/staff/post-closing/${pid}`, b),
+  // Sitewire draw desk: authenticated Excel export of a SOW reallocation (Version 1 vs 2).
+  sitewireExportReallocation: async (crId) => { const { blob, filename } = await download(`/api/sitewire/change-requests/${crId}/export`); saveBlob(blob, filename); },
+  // Sitewire draw desk: authenticated Excel export of a file's draw audit trail.
+  sitewireExportActivity: async (appId) => { const { blob, filename } = await download(`/api/sitewire/files/${appId}/activity/export`); saveBlob(blob, filename); },
+  // Sitewire draw desk: authenticated GL/accounting Excel export of the release ledger.
+  sitewireExportGl: async (appId) => { const { blob, filename } = await download(`/api/sitewire/files/${appId}/gl-export`); saveBlob(blob, filename); },
+  sitewireMessageAttachment: async (appId, nid, idx) => { const { blob, filename } = await download(`/api/sitewire/files/${appId}/messages/${nid}/attachments/${idx}`); saveBlob(blob, filename); },
+  // Authed blob fetch for an <img>/tab (an <img src> can't carry the Bearer token). Used to show
+  // borrower dispute-evidence photos on the staff draw desk. Returns the Blob.
+  authedBlob: async (path) => (await download(path)).blob,
+  sitewireOpenDisputeMedia: async (lineId, idx, win) => { const { blob, filename } = await download(`/api/sitewire/findings/lines/${lineId}/dispute-media/${idx}`); openBlob(blob, filename, win); },
+  // Sitewire draw desk: authenticated per-draw packet (schedule of values + findings + waivers).
+  sitewireExportPacket: async (appId, drawId) => { const { blob, filename } = await download(`/api/sitewire/files/${appId}/draws/${drawId}/packet`); saveBlob(blob, filename); },
+  // PILOT-branded inspection report (phase 2b) — opens the PDF in a tab (`win` is opened synchronously in the
+  // click handler so the popup blocker doesn't eat it; closed here on error). mode 'staff' (full) | 'borrower'
+  // (borrower-safe: no partner name / fee / net / GPS). Per-draw and whole-project variants.
+  sitewireDrawReport: async (appId, drawId, mode, win) => {
+    try { const { blob, filename } = await download(`/api/sitewire/files/${appId}/draws/${drawId}/report${mode === 'borrower' ? '?mode=borrower' : ''}`); openBlob(blob, filename, win); }
+    catch (e) { try { if (win && !win.closed) win.close(); } catch { /* ignore */ } throw e; }
+  },
+  sitewireProjectReport: async (appId, mode, win) => {
+    try { const { blob, filename } = await download(`/api/sitewire/files/${appId}/report${mode === 'borrower' ? '?mode=borrower' : ''}`); openBlob(blob, filename, win); }
+    catch (e) { try { if (win && !win.closed) win.close(); } catch { /* ignore */ } throw e; }
+  },
+  // PILOT-branded report for a TrustPoint-administered draw (staff; mode borrower = the
+  // borrower-safe copy). Opens in a tab (win pre-opened in the click handler).
+  trustpointDrawReport: async (appId, tpDrawId, mode, win) => {
+    try { const { blob, filename } = await download(`/api/trustpoint/files/${appId}/draws/${tpDrawId}/report${mode === 'borrower' ? '?mode=borrower' : ''}`); openBlob(blob, filename, win); }
+    catch (e) { try { if (win && !win.closed) win.close(); } catch { /* ignore */ } throw e; }
+  },
+  // Borrower's OWN branded inspection report (always borrower-safe; server enforces own-file). drawId
+  // optional → that draw; omitted → whole-project. Opens in a tab (win pre-opened in the click handler).
+  borrowerDrawReport: async (appId, drawId, win) => {
+    try { const { blob, filename } = await download(`/api/borrower/draws/${appId}/report${drawId ? `?drawId=${drawId}` : ''}`); openBlob(blob, filename, win); }
+    catch (e) { try { if (win && !win.closed) win.close(); } catch { /* ignore */ } throw e; }
+  },
   staffTprPreview:  (appId) => req('GET', `/api/staff/applications/${appId}/export/tpr/preview`),
   staffTprExport:   (appId) => download(`/api/staff/applications/${appId}/export/tpr`),
+  // MISMO 3.4 — the mortgage industry's shared file format. Export downloads the
+  // file as MISMO XML; import parses (preview, no writes) then creates a new file.
+  staffExportMismo:  (appId) => download(`/api/staff/applications/${appId}/export/mismo`),
+  staffMismoPreview: (xml) => req('POST', '/api/staff/mismo/preview', { xml }),
+  staffMismoCreate:  (xml) => req('POST', '/api/staff/mismo/create', { xml }),
   staffSaveRehabBudget: (appId, payload) => req('POST', `/api/staff/applications/${appId}/rehab-budget`, { payload }),
   // #152 — export the current pipeline VIEW (same filter params as staffApplications).
   staffExportPipeline: (params) => download(`/api/staff/applications/export${qs(params)}`),
   staffPricing:      (appId) => req('GET', `/api/staff/applications/${appId}/pricing`),
   staffPricingQuote: (appId, overrides) => req('POST', `/api/staff/applications/${appId}/pricing/quote`, { overrides }),
-  staffRegisterProduct: (appId, program, overrides, econVersion) => req('POST', `/api/staff/applications/${appId}/pricing/register`, { program, overrides, econVersion }),
+  staffRegisterProduct: (appId, program, overrides, econVersion, assetMonths, submitException, termOptions) => req('POST', `/api/staff/applications/${appId}/pricing/register`, { program, overrides, econVersion, assetMonths, submitException, termOptions }),
+  // Redesign 2026-07-24: the pricing exception is a first-class register record —
+  // the request now carries an optional structured reason + compensating factors.
+  staffRequestException: (appId, note, reasonCode, compensatingFactors) => req('POST', `/api/staff/applications/${appId}/pricing/request-exception`, { note, reasonCode, compensatingFactors }),
+  // Manual Program admin config + the super-admin escalation box.
+  manualProgramSettings:     () => req('GET', '/api/admin/manual-programs/settings'),
+  saveManualProgramSettings: (b) => req('PUT', '/api/admin/manual-programs/settings', b),
+  manualEscalations:         (status) => req('GET', `/api/admin/manual-programs/escalations${status ? `?status=${status}` : ''}`),
+  manualEscalationsCount:    () => req('GET', '/api/admin/manual-programs/escalations/count'),
+  decideManualEscalation:    (id, decision, note) => req('POST', `/api/admin/manual-programs/escalations/${id}/decide`, { decision, note }),
+  counterManualEscalation:   (id, counterTerms, counterNote) => req('POST', `/api/admin/manual-programs/escalations/${id}/counter`, { counterTerms, counterNote }),
+  acceptCounterOffer:        (appId) => req('POST', `/api/staff/applications/${appId}/pricing/accept-counter`, {}),
+  // Co-borrower guaranty-waiver exceptions (owner-directed 2026-07-22). File-scoped
+  // request/withdraw/state (any staff) + the super-admin review box (decide = super-admin).
+  fileExceptions:            (appId) => req('GET', `/api/staff/applications/${appId}/exceptions`),
+  requestGuarantyWaiver:     (appId, body) => req('POST', `/api/staff/applications/${appId}/exceptions/guaranty-waiver`, body || {}),
+  requestEsignBeforeCtc:     (appId, body) => req('POST', `/api/staff/applications/${appId}/exceptions/esign-before-ctc`, body || {}),
+  withdrawException:         (appId, eid) => req('POST', `/api/staff/applications/${appId}/exceptions/${eid}/withdraw`, {}),
+  loanExceptions:            (status, type) => req('GET', `/api/admin/exceptions${qs({ status, type })}`),
+  loanExceptionsCount:       () => req('GET', '/api/admin/exceptions/count'),
+  // The register report (counts, approval rate, time-to-decision, aging) and the
+  // diligence-ready xlsx export of the register (redesign 2026-07-24).
+  loanExceptionMetrics:      () => req('GET', '/api/admin/exceptions/metrics'),
+  exportExceptionRegister:   async (status, type) => { const { blob, filename } = await download(`/api/admin/exceptions/export.xlsx${qs({ status, type })}`); saveBlob(blob, filename); },
+  // decide: `waivedCodes` (esign_before_ctc approvals, 2026-07-24) names EXACTLY
+  // which outstanding requirements the super-admin waives; omitted → legacy meaning.
+  // `expiresAt` (redesign) sets an approval validity on expirable types.
+  decideLoanException:       (id, decision, note, waivedCodes, expiresAt) => req('POST', `/api/admin/exceptions/${id}/decide`, { decision, note, ...(waivedCodes ? { waivedCodes } : {}), ...(expiresAt ? { expiresAt } : {}) }),
+  clearLoanException:        (id, note) => req('POST', `/api/admin/exceptions/${id}/clear`, { note }),
+  // The esign exception's clear view: live ✓/✗ requirements + request snapshot + waived codes.
+  exceptionGate:             (id) => req('GET', `/api/admin/exceptions/${id}/gate`),
+  exceptionComments:         (id) => req('GET', `/api/admin/exceptions/${id}/comments`),
+  addExceptionComment:       (id, body) => req('POST', `/api/admin/exceptions/${id}/comments`, { body }),
+  exceptionConditions:       (id) => req('GET', `/api/admin/exceptions/${id}/conditions`),
+  // The loan officer's own cross-file exception queue.
+  myExceptions:              (status) => req('GET', `/api/staff/my-exceptions${status ? `?status=${status}` : ''}`),
+  myExceptionsCount:         () => req('GET', '/api/staff/my-exceptions/count'),
+  runCommitteeReview:        (appId, findingId, all = false) => req('POST', `/api/underwriting/${appId}/findings/${findingId}/committee-review`, { all: !!all }),
+  trainingProposals:         (status = 'pending') => req('GET', `/api/admin/training/proposals${status ? `?status=${status}` : ''}`),
+  trainingProposalsRun:      () => req('POST', '/api/admin/training/run', {}),
+  trainingProposalsDecide:   (id, decision, note) => req('POST', `/api/admin/training/proposals/${id}/decide`, { decision, note }),
+  // Azure Custom labeling console (R3.3 — owner-directed 2026-07-22).
+  labelingExamples:          () => req('GET', '/api/admin/labeling/examples'),
+  labelingAddExample:        (b) => req('POST', '/api/admin/labeling/examples', normalizeUpload(b)),
+  labelingDeleteExample:     (id) => req('DELETE', `/api/admin/labeling/examples/${id}`),
+  labelingTrainingRuns:      () => req('GET', '/api/admin/labeling/training-runs'),
+  labelingRequestTraining:   (b) => req('POST', '/api/admin/labeling/training-runs', b),
+  fileCertificates:          (appId) => req('GET', `/api/underwriting/${appId}/certificate`),
+  fileCertificateIssue:      (appId, milestone, reason) => req('POST', `/api/underwriting/${appId}/certificate/issue`, { milestone, reason: reason || undefined }),
+  fileCertificateSurvey:     (appId) => req('POST', `/api/underwriting/${appId}/certificate/survey`, {}),
+  fileStructuring:           (appId) => req('GET', `/api/underwriting/${appId}/structuring`),
+  factHistory:               (appId, factKey) => req('GET', `/api/underwriting/${appId}/twin/fact/${encodeURIComponent(factKey)}`),
+  confirmFact:               (appId, factKey, value, reason) => req('POST', `/api/underwriting/${appId}/twin/fact/${encodeURIComponent(factKey)}/confirm`, { value, reason: reason || undefined }),
+  similarOpenFindings:       (appId, findingId) => req('GET', `/api/underwriting/${appId}/findings/${findingId}/similar-open`),
+  // R5.17 — the grounded evidence behind one finding (exact OCR quote + page), fetched on demand.
+  findingEvidence:           (appId, findingId) => req('GET', `/api/underwriting/${appId}/findings/${findingId}/evidence`),
+  // Grounded back-and-forth reasoning chat: ask PILOT "why?" about a file; history is client-held.
+  aiReason:                  (appId, question, history) => req('POST', `/api/underwriting/${appId}/reason`, { question, history: history || [] }),
+  // "What to look for" — the note-buyer checklist for a document type (fetched on demand).
+  documentReviewGuide:       (appId, docType) => req('GET', `/api/underwriting/${appId}/document-review-guide?docType=${encodeURIComponent(docType || '')}`),
+  bulkResolveFindings:       (appId, findingIds, action, note) => req('POST', `/api/underwriting/${appId}/findings/similar/bulk-resolve`, { findingIds, action, note: note || undefined }),
+  fileAvmConsensus:          (appId) => req('GET', `/api/underwriting/${appId}/avm-consensus`),
+  // #197 — whole-loan run cockpit (decision + run-diff + next-actions + findings digest).
+  fileUnderwritingRun:       (appId) => req('GET', `/api/underwriting/${appId}/underwriting-run`),
+  // #179 (R6.16) — plain-language "Why this decision?" explanation of the latest whole-loan run.
+  fileUnderwritingWhy:       (appId) => req('GET', `/api/underwriting/${appId}/underwriting-run/why`),
+  // #179 (R6.16) — download the latest whole-loan run findings as a CSV (auth'd fetch → browser save).
+  fileUnderwritingFindingsCsv: async (appId) => { const { blob, filename } = await download(`/api/underwriting/${appId}/underwriting-run/findings.csv`); saveBlob(blob, filename); },
+  // #136 (R5.39) — advisory guideline evaluation (per-rule verdicts + plain citations + investor-fit "A vs B").
+  fileGuidelineEvaluation:   (appId) => req('GET', `/api/underwriting/${appId}/guideline-evaluation`),
+  // ISG — Investor-Specific Soft Guidelines desk (per note-buyer condition verdicts + conflicts).
+  fileInvestorGuidelines:    (appId) => req('GET', `/api/underwriting/${appId}/investor-guidelines`),
+  // ISG AI satisfaction-quality check — asks the grounded GPT brain whether each SATISFIED
+  // note-buyer condition's cleared evidence actually meets the investor's exact rule. On-demand
+  // (staff clicks), env-gated + cost-capped, advisory only. Returns immediately; advisories land
+  // in the AI suggestions panel on its next refresh.
+  aiVerifyInvestorGuidelines: (appId) => req('POST', `/api/underwriting/${appId}/investor-guidelines/ai-verify`, {}),
+  fileAvmConsensusVerify:    (appId) => req('POST', `/api/underwriting/${appId}/avm-consensus/verify`, {}),
+  // AI Suggestions panel (R3.5/R3.6 — owner-directed 2026-07-22).
+  aiSuggestionsList:      (appId, params = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return req('GET', `/api/underwriting/${appId}/ai-suggestions${qs ? '?' + qs : ''}`);
+  },
+  aiSuggestionsDecide:    (appId, id, decision) => req('POST', `/api/underwriting/${appId}/ai-suggestions/${id}/decide`, decision),
+  aiSuggestionAddNote:    (appId, id, text) => req('POST', `/api/underwriting/${appId}/ai-suggestions/${id}/note`, { text }),
+  aiAdminQuestions:       (appId) => req('GET', `/api/underwriting/ai-admin/questions${appId ? `?appId=${appId}` : ''}`),
+  aiAdminAnswer:          (questionId, answer) => req('POST', `/api/underwriting/ai-admin/questions/${questionId}/answer`, { answer }),
+  aiCostForFile:          (appId) => req('GET', `/api/underwriting/${appId}/ai-cost`),
+  aiRiskScore:            (appId) => req('GET', `/api/underwriting/${appId}/ai-risk-score`),
+  similarLoans:           (appId) => req('GET', `/api/underwriting/${appId}/similar-loans`),
+  aiDismissAllOnFile:     (appId, reason) => req('POST', `/api/underwriting/${appId}/ai-suggestions/dismiss-all`, { reason }),
+  aiRerunChecks:          (appId) => req('POST', `/api/underwriting/${appId}/ai-suggestions/rerun-checks`, {}),
+  askAdminAboutFile:      (appId, question) => req('POST', `/api/underwriting/${appId}/ask-admin`, { question }),
+  aiCrossDocCheck:        (appId) => req('POST', `/api/underwriting/${appId}/ai-crossdoc`, {}),
+  fraudBannerSnooze:      (appId, hours = 24, note) => req('POST', `/api/underwriting/${appId}/fraud-banner/snooze`, { hours, note }),
+  fileKnowledgeGraph:     (appId) => req('GET', `/api/underwriting/${appId}/knowledge-graph`),
+  insightsDashboard:      () => req('GET', '/api/admin/insights'),
+  insightsAiCostTrend:    () => req('GET', '/api/admin/insights/ai-cost-trend'),
+  insightsAiStack:        () => req('GET', '/api/admin/insights/ai-stack'),
+  aiSilencedCodesList:    () => req('GET', '/api/admin/insights/silenced-codes'),
+  aiSilencedCodesAdd:     (code, reason) => req('POST', '/api/admin/insights/silenced-codes', { code, reason }),
+  aiSilencedCodesRemove:  (code) => req('DELETE', `/api/admin/insights/silenced-codes/${encodeURIComponent(code)}`),
+  aiSilencedCodesHistory: () => req('GET', '/api/admin/insights/silenced-codes/history'),
+  insightsFilesWithSuggestion: (params = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return req('GET', `/api/admin/insights/files-with-suggestion${qs ? '?' + qs : ''}`);
+  },
   staffUploadAppDoc: (appId, b) => coalesceUpload('appDoc:' + appId, b, () => req('POST', `/api/staff/applications/${appId}/documents`, normalizeUpload(b))),
   staffAddLoanCondition: (appId, b) => req('POST', `/api/staff/applications/${appId}/loan-conditions`, b),
   staffClearCondition:   (cid) => req('POST', `/api/staff/loan-conditions/${cid}/clear`),
@@ -378,9 +574,20 @@ export const api = {
   staffInternalStatuses: () => req('GET', '/api/staff/clickup/internal-statuses'),
   staffSetInternalStatus: (id, internalStatus) => req('POST', '/api/staff/applications/' + id + '/internal-status', { internalStatus }),
   staffGating:      (appId) => req('GET', `/api/staff/applications/${appId}/gating`),
+  // The Workflow (owner-directed 2026-07-21) — submission hand-offs + personal queues.
+  workflowOptions:   (appId) => req('GET', `/api/staff/applications/${appId}/workflow/options`),
+  workflowTimeline:  (appId) => req('GET', `/api/staff/applications/${appId}/workflow/timeline`),
+  workflowSubmit:    (appId, b) => req('POST', `/api/staff/applications/${appId}/workflow/submit`, b),
+  workflowQueue:     (params) => req('GET', `/api/staff/workflow${params ? '?' + new URLSearchParams(params).toString() : ''}`),
+  workflowCount:     () => req('GET', '/api/staff/workflow/count'),
+  workflowPickup:    (itemId) => req('POST', `/api/staff/workflow/${itemId}/pickup`),
+  workflowReturn:    (itemId, outcomeLabel, note) => req('POST', `/api/staff/workflow/${itemId}/return`, { outcomeLabel, note }),
+  closingWorkflow:   (appId) => req('GET', `/api/staff/applications/${appId}/closing-workflow`),
+  advanceClosing:    (appId, stage) => req('POST', `/api/staff/applications/${appId}/closing-workflow`, { stage }),
   staffStatusHistory: (appId) => req('GET', `/api/staff/applications/${appId}/status-history`),
   staffSetClosingDate: (appId, b) => req('POST', `/api/staff/applications/${appId}/closing-date`, b),
   staffEditApplication: (appId, b) => req('PATCH', `/api/staff/applications/${appId}/details`, b),
+  staffSetStructuralLock: (appId, unlocked, reason) => req('POST', `/api/staff/applications/${appId}/structural-lock`, { unlocked, reason }),
   staffNudge:          (appId) => req('POST', `/api/staff/applications/${appId}/nudge`),
   // Reminders + task management (#93). staffReminders returns { reminders,
   // contacts, outstanding } so the composer is populated in one round-trip.
@@ -433,6 +640,15 @@ export const api = {
   adminIntegrations:() => req('GET', '/api/admin/integrations'),
 
   // ---- ClickUp Control Center (admin / platform_setup) ----
+  // API Health — status of every external API / integration.
+  integrationsHealth: () => req('GET', '/api/admin/integrations/health'),
+  integrationTest:    (key) => req('POST', `/api/admin/integrations/${encodeURIComponent(key)}/test`),
+  // Read-only Sitewire TEST-environment capability explorer (super_admin). Lists every field/button
+  // Sitewire exposes so new integrations use confirmed names. Uses SITEWIRE_TEST_* creds; never writes.
+  sitewireExplore:    (opts) => req('POST', '/api/admin/integrations/sitewire/explore', opts || {}),
+  integrationSwitches: () => req('GET', '/api/admin/integrations/switches'),
+  integrationToggleSwitch: (key, enabled, confirm) => req('POST', `/api/admin/integrations/switches/${encodeURIComponent(key)}`, { enabled, confirm }),
+  integrationResetSwitch:  (key) => req('POST', `/api/admin/integrations/switches/${encodeURIComponent(key)}/reset`),
   clickupHealth:    () => req('GET', '/api/admin/clickup/health'),
   clickupActivity:  () => req('GET', '/api/admin/clickup/activity'),
   clickupBackfill:  (mode, sample) => req('POST', '/api/admin/clickup/backfill', { mode, sample }),
@@ -444,6 +660,12 @@ export const api = {
   clickupResolveManualReview: (appId, action) => req('POST', `/api/admin/clickup/manual-review/${appId}/resolve`, { action }),
   // self-serve: pull my own ClickUp pipeline folder into the portal
   staffSyncMyClickup: () => req('POST', '/api/staff/clickup/sync-mine'),
+
+  // ---- ADMIN manual ClickUp link / unlink (admin/super_admin only; server
+  // enforces requireRole('admin')) ----
+  clickupRelinkPreview: (appId, taskId) => req('GET', `/api/staff/applications/${appId}/clickup/relink-preview?taskId=${encodeURIComponent(taskId)}`),
+  clickupUnlink:        (appId) => req('POST', `/api/staff/applications/${appId}/clickup/unlink`),
+  clickupRelink:        (appId, taskId, confirmMove) => req('POST', `/api/staff/applications/${appId}/clickup/relink`, { taskId, confirmMove: !!confirmMove }),
 
   // ---- chat v3: conversations (staff) ----
   staffConversations:      () => req('GET', '/api/staff/chat/conversations'),
@@ -488,6 +710,9 @@ export const api = {
   staffAddVendor:    (b) => req('POST', '/api/staff/vendors', b),
   staffUpdateVendor: (id, b) => req('PATCH', `/api/staff/vendors/${id}`, b),
   staffDeleteVendor: (id) => req('DELETE', `/api/staff/vendors/${id}`),
+  // Manual vendor merge (owner-directed 2026-07-21). Body: { survivorId, mergedId,
+  // picks:{...}, emails:[...], phones:[...] }.
+  staffMergeVendors: (body) => req('POST', '/api/staff/vendors/merge', body),
   // general file contacts (#144) — staff side + a borrower's whole vendor list
   staffFileContacts:   (appId) => req('GET', `/api/staff/applications/${appId}/file-contacts`),
   staffAddFileContact: (appId, b) => req('POST', `/api/staff/applications/${appId}/file-contacts`, b),
@@ -496,6 +721,33 @@ export const api = {
   staffBorrowerContacts: (borrowerId) => req('GET', `/api/staff/borrowers/${borrowerId}/contacts`),
   staffAppraisalCard:(appId) => req('GET', `/api/staff/applications/${appId}/appraisal-card`),
   staffSaveAppraisalCard:(appId, b) => req('POST', `/api/staff/applications/${appId}/appraisal-card`, b),
+
+  // ---- Appraisal desk: import the appraisal XML, read the property profile, resolve findings ----
+  appraisalGet:            (appId) => req('GET', `/api/appraisal/${appId}`),
+  appraisalImport:         (appId, b) => req('POST', `/api/appraisal/${appId}/import`, b),
+  appraisalUndoImport:     (appId) => req('POST', `/api/appraisal/${appId}/undo-import`),
+  appraisalResolveFinding: (appId, fid, b) => req('POST', `/api/appraisal/${appId}/findings/${fid}/resolve`, b),
+  appraisalRefreshPhotos:  (appId) => req('POST', `/api/appraisal/${appId}/photos/refresh`, {}),
+  // Borrower READ-ONLY view of the same appraisal report + findings (no actions).
+  appraisalGetBorrower:    (appId) => req('GET', `/api/borrower/applications/${appId}/appraisal`),
+  // Fetch an appraisal photo's bytes (blob) for inline display — staff vs borrower channel.
+  appraisalPhotoBlob:      async (docId) => (await download(`/api/staff/documents/${docId}/download?inline=1`)).blob,
+  appraisalPhotoBlobBorrower: async (docId) => (await download(`/api/borrower/documents/${docId}/download?inline=1`)).blob,
+
+  // ---- Document-underwriting desk: read + understand each document, resolve findings ----
+  underwritingGet:            (appId) => req('GET', `/api/underwriting/${appId}`),
+  underwritingAnalyze:        (appId, docId, b) => req('POST', `/api/underwriting/${appId}/documents/${docId}/analyze`, b),
+  underwritingAutoRead:       (appId) => req('POST', `/api/underwriting/${appId}/auto-read`),
+  underwritingClassify:       (appId, docId) => req('POST', `/api/underwriting/${appId}/documents/${docId}/classify`),
+  underwritingResolveFinding: (appId, fid, b) => req('POST', `/api/underwriting/${appId}/findings/${fid}/resolve`, b),
+  underwritingExperienceException: (appId, b) => req('POST', `/api/underwriting/${appId}/experience-exception`, b),
+  // Per-finding escalation to the super-admin / processor / underwriter workload (Items 7+12).
+  underwritingEscalateFinding: (appId, b) => req('POST', `/api/underwriting/${appId}/findings/escalate`, b),
+  findingEscalations:         (status) => req('GET', `/api/underwriting/escalations${status ? `?status=${status}` : ''}`),
+  findingEscalationsCount:    () => req('GET', '/api/underwriting/escalations/count'),
+  decideFindingEscalation:    (id, decision, note) => req('POST', `/api/underwriting/escalations/${id}/decide`, { decision, note }),
+  // Portfolio-wide "training" report: which finding types turned out real vs false alarms.
+  underwritingFeedback:       () => req('GET', '/api/underwriting/insights/feedback'),
 
   // ---- admin: team / staff management ----
   adminStaff:        () => req('GET', '/api/admin/staff'),
@@ -536,4 +788,25 @@ export const api = {
   // ---- Pricing Admin Center (manage_pricing): company-wide markup/fee defaults ----
   adminPricingGet: () => req('GET', '/api/admin/pricing'),
   adminPricingPut: (b) => req('PUT', '/api/admin/pricing', b),
+
+  // ---- Loan-Officer Notification Center: per-notification prefs + draft queue ----
+  loNotifCatalog:      () => req('GET',  '/api/staff/notification-center/catalog'),
+  loNotifPrefs:        () => req('GET',  '/api/staff/notification-center/prefs'),
+  loNotifSavePref:     (key, body) => req('PUT', `/api/staff/notification-center/prefs/${encodeURIComponent(key)}`, body),
+  loNotifBulkSave:     (changes) => req('POST', '/api/staff/notification-center/prefs/bulk', { changes }),
+  loNotifDrafts:       (params) => req('GET',  '/api/staff/notification-center/drafts' + qs(typeof params === 'string' ? { status: params } : (params || {}))),
+  loNotifDraftCount:   () => req('GET',  '/api/staff/notification-center/drafts/count'),
+  loNotifDraftPreview: (id) => req('GET',  `/api/staff/notification-center/drafts/${id}/preview`),
+  loNotifDraftSend:    (id, edits) => req('POST', `/api/staff/notification-center/drafts/${id}/send`, edits || {}),
+  loNotifDraftDiscard: (id) => req('POST', `/api/staff/notification-center/drafts/${id}/discard`),
+  loNotifDraftSchedule:(id, at) => req('POST', `/api/staff/notification-center/drafts/${id}/schedule`, { at }),
+  loNotifDraftSnooze:  (id, minutes) => req('POST', `/api/staff/notification-center/drafts/${id}/snooze`, { minutes }),
+  loNotifDraftsBulk:   (ids, action, extra) => req('POST', '/api/staff/notification-center/drafts/bulk', { ids, action, ...(extra || {}) }),
+  loNotifRulesGet:     () => req('GET',  '/api/staff/notification-center/rules'),
+  loNotifRulesPut:     (b) => req('PUT',  '/api/staff/notification-center/rules', b),
+  loNotifOverrides:    (appId) => req('GET',  `/api/staff/notification-center/overrides?applicationId=${encodeURIComponent(appId)}`),
+  loNotifSaveOverride: (b) => req('PUT',  '/api/staff/notification-center/overrides', b),
+  loNotifClearOverride:(appId, key) => req('DELETE', `/api/staff/notification-center/overrides?applicationId=${encodeURIComponent(appId)}&key=${encodeURIComponent(key)}`),
+  loNotifCompose:      (b) => req('POST', '/api/staff/notification-center/compose', b),
+  loNotifAnalytics:    (days) => req('GET',  `/api/staff/notification-center/analytics${days ? `?days=${days}` : ''}`),
 };

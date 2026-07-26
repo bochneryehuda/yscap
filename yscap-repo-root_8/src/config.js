@@ -62,14 +62,17 @@ function resolveEmailProvider() {
 }
 
 // The public base URL used for EVERY link that leaves the system (emails, reset
-// links, redirects). NEVER emit an onrender.com link — the custom domain
-// (yscapgroup.com) is live (owner-directed 2026-07-14). If APP_URL is still
-// pointed at the onrender subdomain (e.g. a stale Render dashboard var that
-// overrides render.yaml), rewrite it to the custom domain so nothing external
-// ever shows onrender.
+// links, redirects) AND for server-to-server callbacks (the DocuSign Connect
+// webhook + the embedded-signing return bounce). NEVER emit an onrender.com link —
+// the custom domain (yscapgroup.com) is live (owner-directed 2026-07-14). If APP_URL
+// is still pointed at the onrender subdomain (e.g. a stale Render dashboard var that
+// overrides render.yaml), rewrite it to the custom domain so nothing external ever
+// shows onrender. Use the APEX host (yscapgroup.com): `www.` 301/307-redirects to
+// the apex, and a redirect on a server-to-server POST (the DocuSign webhook) is not
+// reliably followed — so the callback must hit the canonical host DIRECTLY.
 function publicBaseUrl() {
-  let u = (process.env.APP_URL || 'https://www.yscapgroup.com').replace(/\/+$/, '');
-  if (/onrender\.com/i.test(u)) u = 'https://www.yscapgroup.com';
+  let u = (process.env.APP_URL || 'https://yscapgroup.com').replace(/\/+$/, '');
+  if (/onrender\.com/i.test(u)) u = 'https://yscapgroup.com';
   return u;
 }
 
@@ -111,7 +114,30 @@ module.exports = {
   //   nothing / EMAIL_PROVIDER=none -> none (logs only; in-app still works)
   // An explicit EMAIL_PROVIDER always wins.
   emailProvider: resolveEmailProvider(),
-  notifyFrom:    process.env.NOTIFY_FROM || 'YS Capital Group <no-reply@yscapgroup.com>',
+  // Owner-directed 2026-07-20: our notification emails ARE repliable, so the
+  // sender must not pretend otherwise. Default the From to a real, monitored
+  // address (no "no-reply"). For Resend only the DOMAIN must be verified; for
+  // Graph this must be a real mailbox UPN in the tenant.
+  notifyFrom:    process.env.NOTIFY_FROM || 'PILOT by YS Capital <notifications@yscapgroup.com>',
+  // A guaranteed Reply-To for every notification when no more-specific one is
+  // set (a per-file file+<id>@ address, or an officer's own inbox). This makes
+  // "just hit reply" always reach a human, so no email is ever a dead end.
+  // Defaults to the company sales inbox; override with REPLY_TO.
+  replyToDefault: (process.env.REPLY_TO || 'sales@yscapgroup.com').trim() || null,
+  // The SALES desk inbox — the To: recipient for every marketing-site
+  // submission that has NO routed loan officer (owner-directed 2026-07-24: a
+  // branded ?lo= link or an explicit pick always goes to that officer INSTEAD;
+  // nothing picked → sales). Covers applications, term-sheet events, track
+  // record, rehab budget, quote/contact. A plain routing address like
+  // SUBSCRIBE_NOTIFY_TO, not a secret; set SALES_NOTIFY_TO="" to fall back to
+  // the admin desk fan-out instead.
+  salesNotifyTo: (process.env.SALES_NOTIFY_TO != null ? process.env.SALES_NOTIFY_TO : 'sales@yscapgroup.com').trim() || null,
+  // Owner-directed 2026-07-20: silently BCC the file's assigned loan officer on
+  // every BORROWER notification email, so the LO sees in real time exactly what
+  // their borrower received. BCC (not CC) — the borrower's inbox stays clean and
+  // the officer's address isn't exposed. On by default; set CC_LO_ON_BORROWER=0
+  // to turn off.
+  ccLoanOfficerOnBorrowerEmail: process.env.CC_LO_ON_BORROWER !== '0',
   // #75 external chat guests: the domain a unique per-participant reply-to is
   // built on (e.g. "reply.yscapgroup.com" → chat+<key>@reply.yscapgroup.com).
   // When UNSET, external guests still receive chat emails but with no reply-to,
@@ -155,6 +181,62 @@ module.exports = {
   // Hosted card-OCR (appraisal "scan a photo"): OCR.space. Get a free key at
   // https://ocr.space/ocrapi; unset falls back to the public demo key.
   ocrSpaceApiKey: process.env.OCR_SPACE_API_KEY,
+
+  // FEMA flood cross-check (appraisal zone vs the official FEMA map, via the free Census
+  // geocoder + FEMA NFHL — no signup/key). Off by default: it makes outbound calls to
+  // government APIs, so it must be enabled once the environment's network policy allows egress
+  // to geocoding.geo.census.gov + hazards.fema.gov.
+  appraisalFloodCheckEnabled: process.env.APPRAISAL_FLOOD_CHECK_ENABLED === '1',
+
+  // Auto-clear the "Credit report" condition once every borrower on the file has a
+  // report imported AND its PDF filed (never a false-clear — see src/lib/credit/completeness.js).
+  // OFF by default: clearing a condition without a human sign-off is a sensitive action,
+  // so it stays a deliberate opt-in per environment.
+  creditAutoclearEnabled: process.env.CREDIT_AUTOCLEAR_ENABLED === '1',
+
+  // Auto-clear the "Government-issued ID" condition once PILOT has AI-READ the ID on
+  // this file and every checked field lines up (no open ID finding). Never a
+  // false-clear — see src/lib/underwriting/gov-id-autoclear.js. OFF by default:
+  // clearing an identity condition without a human is sensitive, so it's opt-in.
+  govIdAutoclearEnabled: process.env.GOVID_AUTOCLEAR_ENABLED === '1',
+
+  // Auto-clear the "Background check / OFAC" condition once PILOT has AI-read the
+  // background report on the file and it comes back clean (no open background/OFAC
+  // finding). Never a false-clear — see src/lib/underwriting/fraud-autoclear.js.
+  // OFF by default: OFAC/BSA-AML is compliance-sensitive, so it's opt-in.
+  fraudAutoclearEnabled: process.env.FRAUD_AUTOCLEAR_ENABLED === '1',
+
+  // Auto-clear the "Bank statements / liquid assets" condition once PILOT has AI-read
+  // the statements on the file AND the borrower's (and verified entity's) liquid assets
+  // provably cover what the registered deal requires — stricter than the human gate,
+  // never a false-clear. See src/lib/underwriting/assets-autoclear.js. OFF by default.
+  assetsAutoclearEnabled: process.env.ASSETS_AUTOCLEAR_ENABLED === '1',
+
+  // Auto-clear the "SSN verification" condition (rtl_p1_ssn) — CorrFirst note buyer ONLY —
+  // once an imported credit report's SSN provably matches the SSN on file for every
+  // borrower. Note-buyer-specific (CorrFirst verifies the SSN off the credit report),
+  // stricter than a blind clear, never a false-clear. See src/lib/underwriting/ssn-autoclear.js.
+  // OFF by default.
+  ssnAutoclearEnabled: process.env.SSN_AUTOCLEAR_ENABLED === '1',
+
+  // "PILOT verified — ready to clear" advisory STAMP (owner-directed 2026-07-24). When a
+  // per-domain completeness check (credit / gov-ID / SSN / assets / purchase-contract /
+  // background) verifies a Condition Center condition is met, PILOT does NOT sign it off —
+  // it puts an advisory stamp on the condition (the pilot_advice / pilot_advice_note /
+  // pilot_advice_at columns, db/295) and a human still clears it. The stamp is safe (it never
+  // clears anything), so it is ON by default; set PILOT_READY_STAMP=0 to turn the advisory off
+  // entirely. This is the go-forward replacement for the old per-domain *_AUTOCLEAR_ENABLED
+  // flags below, which stay OFF by default (=== '1'); a follow-up removes those sign-off paths.
+  pilotReadyStampEnabled: process.env.PILOT_READY_STAMP !== '0',
+
+  // Auto-clear the "Executed purchase contract" condition (rtl_p1_contract) once PILOT has
+  // read the purchase contract (and, on an assignment, the assignment agreement) on this file
+  // AND its economics reconcile — no open FATAL contract/assignment finding remains (price,
+  // address, buyer entity, assignment fee, and seller/underlying price all tie out to the loan).
+  // Stricter than a blind clear, symmetric (self-reopens when a re-read or an economics change
+  // no longer reconciles), never a false-clear. See src/lib/underwriting/contract-autoclear.js.
+  // OFF by default.
+  contractAutoclearEnabled: process.env.CONTRACT_AUTOCLEAR_ENABLED === '1',
 
   // --- document storage ---
   storageProvider: process.env.STORAGE_PROVIDER || 'local', // 'local' | 's3' | 'sharepoint'
@@ -231,6 +313,78 @@ module.exports = {
   clickupInboundCreateFiles: process.env.CLICKUP_INBOUND_CREATE_FILES === '1',
   clickupRunAudit:           process.env.CLICKUP_RUN_AUDIT === '1',   // boot: log data-coverage/assignment audit
 
+  // --- Sitewire draw-management integration (server-side token only) ---
+  // Auth is a 3-header token pair (access-token + client + uid), created in the
+  // Sitewire API tab. Secrets live ONLY here (Render env), never in source. The
+  // integration manages ONLY properties PILOT created (the "only-ours" rule) and
+  // is BORN on the funded + Request-a-draw click. Staged rollout, all default off:
+  //   SITEWIRE_ENABLED         master switch  — read/reconcile loops
+  //   SITEWIRE_OUTBOUND_ENABLED separate gate — portal -> Sitewire WRITES
+  //   SITEWIRE_DRYRUN           print the exact push bodies to logs, send nothing
+  sitewireBaseUrl:      (process.env.SITEWIRE_BASE_URL || 'https://app.sitewire.co').replace(/\/+$/, ''),
+  sitewireAccessToken:  process.env.SITEWIRE_ACCESS_TOKEN,
+  sitewireClient:       process.env.SITEWIRE_CLIENT,
+  sitewireUid:          process.env.SITEWIRE_UID,
+  sitewireLenderId:     parseInt(process.env.SITEWIRE_LENDER_ID || '236', 10),
+  sitewireEnabled:      process.env.SITEWIRE_ENABLED === '1',           // master switch (default off)
+  sitewireOutboundEnabled: process.env.SITEWIRE_OUTBOUND_ENABLED === '1', // gate portal -> Sitewire writes
+  sitewireDryrun:       process.env.SITEWIRE_DRYRUN === '1',            // validate-only, no network writes
+  sitewirePollSec:      parseInt(process.env.SITEWIRE_POLL_SEC || '300', 10),
+  sitewireDefaultCoordinatorId: parseInt(process.env.SITEWIRE_DEFAULT_COORDINATOR_ID || '16146', 10), // Lisa Katz
+  sitewireDefaultChecklistTemplateId: parseInt(process.env.SITEWIRE_CHECKLIST_TEMPLATE_ID || '84', 10),
+  sitewireMaxWrites10min: parseInt(process.env.SITEWIRE_MAX_WRITES_10MIN || '300', 10), // volume circuit breaker
+  // Go-live for the PILOT draw system (owner-directed 2026-07-20): PILOT follows the draw process ONLY for
+  // properties IT pushed to Sitewire from this date forward. Pre-existing Sitewire properties are never
+  // adopted or followed. Informational (the born-on-push design already makes management go-forward-only).
+  sitewireGoLiveDate:   process.env.SITEWIRE_GO_LIVE_DATE || '2026-07-20',
+  // --- Sitewire DOCUMENT push (website workaround — no API upload endpoint exists) ---
+  // Sitewire's API v2 has NO document-upload endpoint (confirmed against the official swagger).
+  // The only way to place a document in a property's Documents tab is the WEBSITE's Rails
+  // ActiveStorage direct-upload flow, which needs a logged-in browser SESSION + a CSRF token —
+  // things the API token cannot provide. src/sitewire/web-client.js acts as that browser (a
+  // "website robot"): it authenticates, does the confirmed 3-step upload, and attaches the blob.
+  // Staged like every other write: OFF by default, still gated by SITEWIRE_OUTBOUND_ENABLED +
+  // SITEWIRE_DRYRUN. Credentials live in Render env ONLY, never committed, never pasted in chat.
+  // ---- TrustPoint (the note buyer's draw administrator — Blue Lake physical files; ----
+  // ---- blueprint docs/TRUSTPOINT-PHYSICAL-DRAW-WORKFLOW-BLUEPRINT.md). Read-mostly:  ----
+  // ---- phase 2 is a mirror (GET + webhooks); the ONLY write is webhook registration. ----
+  trustpointEnabled:    process.env.TRUSTPOINT_ENABLED === '1',       // master switch (default off)
+  trustpointDryrun:     process.env.TRUSTPOINT_DRYRUN === '1',        // log intended calls, send nothing
+  trustpointApiKey:     process.env.TRUSTPOINT_API_KEY || null,       // 'Authorization: Api-Key <key>' — Render env ONLY
+  trustpointBaseUrl:    (process.env.TRUSTPOINT_BASE_URL || 'https://api.trustpoint.ai').replace(/\/+$/, ''),
+  // Spec paths use /public-api/, prose uses /v1/ — verify on sandbox; configurable so a flip is env-only.
+  trustpointPathPrefix: process.env.TRUSTPOINT_PATH_PREFIX || '/public-api',
+  trustpointPollSec:    parseInt(process.env.TRUSTPOINT_POLL_SEC || '300', 10),      // draw watermark poll
+  trustpointSweepSec:   parseInt(process.env.TRUSTPOINT_SWEEP_SEC || '1800', 10),    // project discovery sweep
+  // The shared token PILOT issues to TrustPoint at webhook registration; inbound deliveries
+  // must present it (Authorization: Bearer <token> or X-Api-Key). Render env ONLY.
+  trustpointWebhookToken: process.env.TRUSTPOINT_WEBHOOK_TOKEN || null,
+
+  sitewireDocsEnabled:  process.env.SITEWIRE_DOCS_ENABLED === '1',   // master switch for the doc-push workaround (default off)
+  sitewireWebBaseUrl:   (process.env.SITEWIRE_WEB_BASE_URL || process.env.SITEWIRE_BASE_URL || 'https://app.sitewire.co').replace(/\/+$/, ''),
+  // Preferred (durable): PILOT logs itself in and refreshes its own session — a lender_owner web login.
+  sitewireWebEmail:     process.env.SITEWIRE_WEB_EMAIL || null,
+  sitewireWebPassword:  process.env.SITEWIRE_WEB_PASSWORD || null,
+  // Fallback (for when MFA/SSO blocks an automated login): a session cookie the owner copies from
+  // their browser's logged-in Sitewire tab. Expires — the automated login above is preferred.
+  sitewireWebCookie:    process.env.SITEWIRE_WEB_COOKIE || null,
+  // Sitewire's real login route (confirmed from a live login capture 2026-07-21): POST /login with
+  // authenticity_token + password_step=true + user[email] + user[password]. Overridable if it ever changes.
+  sitewireWebSignInPath: process.env.SITEWIRE_WEB_SIGNIN_PATH || '/login',
+  sitewireWebTimeoutMs: Math.max(5000, parseInt(process.env.SITEWIRE_WEB_TIMEOUT_MS || '45000', 10) || 45000),
+  // --- Sitewire TEST-environment explorer (read-only field discovery) ---
+  // A SEPARATE credential set so we can safely READ the Sitewire test system and
+  // enumerate every field/button it exposes, WITHOUT ever touching the production
+  // creds above or writing anything. The explorer (src/sitewire/test-explorer.js)
+  // is GET-only and refuses to run unless these test-specific vars are set — a
+  // pasted-in-chat key is never used; the owner sets these in Render. Base URL
+  // falls back to the prod base only if the test system shares the same host.
+  sitewireTestBaseUrl:     (process.env.SITEWIRE_TEST_BASE_URL || process.env.SITEWIRE_BASE_URL || 'https://app.sitewire.co').replace(/\/+$/, ''),
+  sitewireTestAccessToken: process.env.SITEWIRE_TEST_ACCESS_TOKEN,
+  sitewireTestClient:      process.env.SITEWIRE_TEST_CLIENT,
+  sitewireTestUid:         process.env.SITEWIRE_TEST_UID,
+  sitewireTestLenderId:    parseInt(process.env.SITEWIRE_TEST_LENDER_ID || process.env.SITEWIRE_LENDER_ID || '236', 10),
+
   // --- address autocomplete / verification (server-side proxy) ---
   // The frontend calls OUR /api/address/*; any real key lives only here, never
   // in the public site bundle. Provider auto-detects: Google if a key is set,
@@ -254,9 +408,35 @@ module.exports = {
     integrationKey: process.env.DOCUSIGN_INTEGRATION_KEY,   // OAuth client id
     userId:         process.env.DOCUSIGN_USER_ID,           // impersonated user GUID
     accountId:      process.env.DOCUSIGN_ACCOUNT_ID,
-    privateKey:     process.env.DOCUSIGN_PRIVATE_KEY,       // RSA private key (PEM)
+    // RSA private key (PEM). M-9: normalize literal "\n" escapes some env UIs
+    // introduce — crypto.sign() needs REAL newlines or it throws a decode error.
+    privateKey:     (process.env.DOCUSIGN_PRIVATE_KEY || '').replace(/\\n/g, '\n') || undefined,
     baseUri:        process.env.DOCUSIGN_BASE_URI  || 'https://demo.docusign.net/restapi',
     oauthBase:      process.env.DOCUSIGN_OAUTH_BASE || 'account-d.docusign.com', // account.docusign.com in prod
+    // Connect webhook HMAC key(s), base64-verified. Comma-separated to support
+    // zero-downtime key rotation (DocuSign sends X-DocuSign-Signature-1..N).
+    connectHmacKeys: (process.env.DOCUSIGN_CONNECT_HMAC_SECRET || '')
+                      .split(',').map(s => s.trim()).filter(Boolean),
+    brandId:        process.env.DOCUSIGN_BRAND_ID || null,   // PILOT sending brand (optional)
+    // Master send switch — OFF by default. Sending real signature requests is
+    // gated behind this so nothing mails a borrower until we deliberately enable it.
+    sendEnabled:    process.env.DOCUSIGN_SEND_ENABLED === '1',
+    // M-13: only these emails may actually be sent to (comma-separated allow-list).
+    testEmailAllowlist: (process.env.DOCUSIGN_TEST_EMAIL_ALLOWLIST || '')
+                      .split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
+    // Test mode gates sending to the allow-list ON ANY host (incl. production), so
+    // switching to live creds can't mail a real borrower during testing. Fail-safe:
+    // defaults ON — must be EXPLICITLY set to '0' at true go-live to reach anyone.
+    testMode:       process.env.DOCUSIGN_TEST_MODE !== '0',
+    httpTimeoutMs:  parseInt(process.env.DOCUSIGN_HTTP_TIMEOUT_MS || '30000', 10),
+    tokenCacheSec:  parseInt(process.env.DOCUSIGN_TOKEN_CACHE_SEC || '3300', 10), // 55 min (< 1h token life)
+    // DB-backed send circuit breaker: more than this many envelopes sent in a
+    // rolling 10 min opens the breaker (a runaway loop mailing borrowers stops hard).
+    maxSends10min:  parseInt(process.env.DOCUSIGN_MAX_SENDS_10MIN || '100', 10),
+    // The admin counter-signer on the term-sheet package (routingOrder 2, signs
+    // LAST — the envelope is binding only after this signature). Owner-directed.
+    countersignEmail: (process.env.DOCUSIGN_COUNTERSIGN_EMAIL || 'yehuda@yscapgroup.com').toLowerCase(),
+    countersignName:  process.env.DOCUSIGN_COUNTERSIGN_NAME || 'YS Capital Group — Lender',
   },
   // Plaid (bank / asset verification):
   plaid: {
@@ -270,5 +450,215 @@ module.exports = {
     password: process.env.XACTUS_PASSWORD,
     clientId: process.env.XACTUS_CLIENT_ID,
     endpoint: process.env.XACTUS_ENDPOINT,   // your assigned API base URL
+  },
+  // USPS Addresses API v3 (OAuth2 client-credentials). Free with a USPS
+  // developer account (developer.usps.com) — add the two keys to activate real
+  // USPS address standardization + ZIP+4.
+  usps: {
+    clientId:     process.env.USPS_CLIENT_ID,
+    clientSecret: process.env.USPS_CLIENT_SECRET,
+    baseUrl:      (process.env.USPS_API_BASE || 'https://apis.usps.com').replace(/\/+$/, ''),
+  },
+  // Encompass (ICE Mortgage Technology / Ellie Mae) — the loan-origination
+  // system. OAuth2 via Developer Connect; access is per-instance, so the field
+  // mapping is finalized against YOUR Encompass instance once credentials exist.
+  encompass: {
+    clientId:     process.env.ENCOMPASS_CLIENT_ID,
+    clientSecret: process.env.ENCOMPASS_CLIENT_SECRET,
+    instanceId:   process.env.ENCOMPASS_INSTANCE_ID,     // your Encompass instance / smart-client id
+    username:     process.env.ENCOMPASS_USERNAME,        // some grants need a user login too
+    password:     process.env.ENCOMPASS_PASSWORD,
+    baseUrl:      (process.env.ENCOMPASS_API_BASE || 'https://api.elliemae.com').replace(/\/+$/, ''),
+  },
+
+  // --- document underwriting: OCR reader + AI analyzer (add keys to activate) ---
+  // Microsoft Azure AI Document Intelligence — the "reads even scanned/blurry
+  // documents" OCR engine (src/lib/ai/docint.js), running in the owner's existing
+  // Azure account. Just an endpoint + resource key (no JWT/SDK). Everything stays
+  // dormant until both are set. Default model 'prebuilt-read' = pure OCR.
+  docint: {
+    endpoint:   (process.env.AZURE_DOCINT_ENDPOINT || '').trim().replace(/\/+$/, ''),
+    key:        process.env.AZURE_DOCINT_KEY,
+    model:      (process.env.AZURE_DOCINT_MODEL || 'prebuilt-read').trim(),
+    apiVersion: (process.env.AZURE_DOCINT_API_VERSION || '2024-11-30').trim(),
+  },
+  // Microsoft Azure OpenAI (GPT-5) — the AI document analyzer / underwriting brain
+  // (src/lib/ai/azure-openai.js), in the owner's existing Azure account. Endpoint +
+  // key + the deployment name you give the GPT-5 model. Raw HTTPS via fetch (no SDK).
+  azureOpenai: {
+    endpoint:   (process.env.AZURE_OPENAI_ENDPOINT || '').trim().replace(/\/+$/, ''),
+    key:        process.env.AZURE_OPENAI_KEY,
+    deployment: (process.env.AZURE_OPENAI_DEPLOYMENT || '').trim(),
+    apiVersion: (process.env.AZURE_OPENAI_API_VERSION || '2025-04-01-preview').trim(),
+    // GPT-5 reasoning depth for extraction — 'minimal'|'low'|'medium'|'high'. Low keeps
+    // hidden reasoning from consuming the output budget; raise only if accuracy needs it.
+    reasoningEffort: (process.env.AZURE_OPENAI_REASONING_EFFORT || 'low').trim(),
+  },
+  // Anthropic Claude — the INDEPENDENT SECOND reasoning provider for the review
+  // committee (#215). A committee that verifies a finding with the SAME model that
+  // produced it is not truly independent; a different provider catches what the
+  // first one's blind spots miss. OFF until ANTHROPIC_API_KEY is set (Render env
+  // only, never source) — the committee runs all-Azure until then, unchanged. Raw
+  // HTTPS via fetch (no SDK), same as every other integration.
+  anthropic: {
+    key: process.env.ANTHROPIC_API_KEY,
+    model: (process.env.ANTHROPIC_MODEL || 'claude-sonnet-5').trim(),
+    apiVersion: (process.env.ANTHROPIC_API_VERSION || '2023-06-01').trim(),
+    baseUrl: (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').trim().replace(/\/+$/, ''),
+  },
+  // Google Cloud Document AI — the INDEPENDENT SECOND OCR engine (owner-directed
+  // 2026-07-21). Runs as a fallback when Azure Document Intelligence returns no
+  // text / very short text / an error. Different failure modes than Azure, so it
+  // catches what Azure misses (rotated scans, faxes, low-quality PDFs).
+  // Authentication is a service-account JWT → OAuth2 access token (no SDK; pure
+  // fetch + Node's built-in crypto). Everything stays dormant until the four
+  // Render env vars are set.
+  //   GOOGLE_DOCAI_KEY_JSON      the full service-account JSON (the private key
+  //                              lives inside it — never commit, only Render env)
+  //   GOOGLE_DOCAI_PROJECT_ID    e.g. yscap-docai
+  //   GOOGLE_DOCAI_LOCATION      us | eu (matches the processor's region)
+  //   GOOGLE_DOCAI_PROCESSOR_ID  the alphanumeric ID of the "Enterprise Document OCR" processor
+  docai: {
+    keyJson:     process.env.GOOGLE_DOCAI_KEY_JSON || '',
+    projectId:   (process.env.GOOGLE_DOCAI_PROJECT_ID || '').trim(),
+    location:    (process.env.GOOGLE_DOCAI_LOCATION || 'us').trim(),
+    processorId: (process.env.GOOGLE_DOCAI_PROCESSOR_ID || '').trim(),
+  },
+  // Mistral OCR — the THIRD OCR engine (owner-directed 2026-07-21). Used only
+  // when Azure AND Google disagree or both fail on a hard document (dense
+  // tables, signatures, multi-column layouts). Single API key, pay-as-you-go.
+  //   MISTRAL_API_KEY  the key from console.mistral.ai
+  mistralOcr: {
+    key:      process.env.MISTRAL_API_KEY || '',
+    endpoint: (process.env.MISTRAL_OCR_ENDPOINT || 'https://api.mistral.ai').trim().replace(/\/+$/, ''),
+    model:    (process.env.MISTRAL_OCR_MODEL || 'mistral-ocr-latest').trim(),
+  },
+  // Direct-source verification connectors (Sovereign, blueprint sec. 9) — each
+  // one, when configured, feeds the loan digital twin `api_verification`
+  // observations that OUTRANK document observations for the same facts. All
+  // three ship as stubs today; wiring real HTTP is a one-file change per
+  // connector when the vendor accounts are in place.
+  //   Plaid — bank account owner + ending balance (assets)
+  plaid: {
+    clientId: process.env.PLAID_CLIENT_ID || '',
+    secret:   process.env.PLAID_SECRET || '',
+    env:      (process.env.PLAID_ENV || 'sandbox').trim(),
+  },
+  //   Property data (CoreLogic / DataTree / ATTOM) — recorded address / units / year built / liens / AVM
+  propertyData: {
+    provider: (process.env.PROPERTY_DATA_PROVIDER || '').trim(),   // 'corelogic' | 'datatree' | 'attom'
+    key:      process.env.PROPERTY_DATA_KEY || '',
+  },
+  //   Xactus (formerly CreditPlus) — FICO + OFAC/background/fraud
+  xactus: {
+    account:  process.env.XACTUS_ACCOUNT || '',
+    user:     process.env.XACTUS_USER || '',
+    password: process.env.XACTUS_PASSWORD || '',
+  },
+  // Xactus — SHARED PRODUCTION credit login (owner-directed 2026-07-22). The
+  // "Import credit" button (internal Credit report condition) pulls/reissues a
+  // tri-merge report using ONE company login stored HERE (Render env) — NOT a
+  // per-user credential. This block is deliberately SEPARATE from the two legacy
+  // `xactus` blocks above (the per-user framework), which are left in place and
+  // dormant in case we return to that model. Consumed by src/lib/credit/provider.js.
+  //   XACTUS_API_URL          the FULL Credit ReportX request URL Xactus gave you
+  //                           to POST reports to (the exact endpoint, NOT a base
+  //                           host — the code POSTs to this address verbatim)
+  //   XACTUS_API_USERNAME     the one shared login user
+  //   XACTUS_API_PASSWORD     the one shared login password
+  //   XACTUS_API_ACCOUNT      optional account / subscriber id (if Xactus needs it)
+  //   XACTUS_API_CLIENT_ID    optional client id (if Xactus needs it)
+  //   XACTUS_INTERFACE_VERSION default report interface version (default '3.4')
+  xactusProd: {
+    endpoint: (process.env.XACTUS_API_URL || '').trim().replace(/\/+$/, ''),
+    username: process.env.XACTUS_API_USERNAME || '',   // Xactus Operator ID / login
+    password: process.env.XACTUS_API_PASSWORD || '',   // Xactus login password
+    account:  process.env.XACTUS_API_ACCOUNT || '',
+    clientId: process.env.XACTUS_API_CLIENT_ID || '',
+    version:  (process.env.XACTUS_INTERFACE_VERSION || '3.4').trim(),
+    // RequestingParty name printed in the MISMO request (informational).
+    requestingParty: (process.env.XACTUS_REQUESTING_PARTY || 'YS Capital Group').trim(),
+    // Auth: 'basic' (HTTP Basic header, the documented default) or 'query'
+    // (LoginAccountIdentifier/LoginAccountPassword query params, the Postman-
+    // collection style). Flip to 'query' only if your Xactus endpoint needs it.
+    authMode: /^query$/i.test((process.env.XACTUS_AUTH_MODE || 'basic').trim()) ? 'query' : 'basic',
+  },
+  //   HouseCanary — AVM + Rent AVM (independent value + rent triangulation)
+  houseCanary: {
+    key:      process.env.HOUSECANARY_KEY || '',
+    secret:   process.env.HOUSECANARY_SECRET || '',
+    endpoint: (process.env.HOUSECANARY_ENDPOINT || 'https://api.housecanary.com').trim().replace(/\/+$/, ''),
+  },
+  //   Clear Capital ClearAVM — third independent AVM source (ATTOM + HouseCanary + Clear Capital → real triangulation)
+  clearCapital: {
+    key:      process.env.CLEARCAPITAL_KEY || '',
+    endpoint: (process.env.CLEARCAPITAL_ENDPOINT || 'https://api.clearcapital.com').trim().replace(/\/+$/, ''),
+    // The ClearAVM value endpoint PATH — env-overridable so the exact contract path
+    // can be confirmed against Clear Capital's docs at onboarding without a code change.
+    avmPath:  (process.env.CLEARCAPITAL_AVM_PATH || '/uve/v1.0.0/avm').trim(),
+  },
+  //   ATTOM Data Solutions — AVM source + property intelligence
+  attom: {
+    key:      process.env.ATTOM_API_KEY || '',
+    endpoint: (process.env.ATTOM_ENDPOINT || 'https://api.gateway.attomdata.com').trim().replace(/\/+$/, ''),
+  },
+
+  // --- AI autonomy master switch (owner-directed 2026-07-22, HARD RULE):
+  // FALSE by default. When false, every AI agent (cure, committee, twin,
+  // promoted-rules, entity chain, assignment fraud, wrong-condition, etc.)
+  // routes its output to the ai_suggestions store — a human clicks to
+  // escalate / add a note / convert to condition / convert to task /
+  // mark important / dismiss / ask super-admin. The AI never writes
+  // conditions, never changes file status, never overrides anything.
+  // Set AI_AUTONOMOUS_MODE=1 ONLY if the owner explicitly re-opts in.
+  aiAutonomousMode: process.env.AI_AUTONOMOUS_MODE === '1',
+  // Gate the periodic auto-committee sweep (a scheduled digest run of the
+  // multi-model panel over unreviewed findings). Even when the master
+  // switch is off, super-admins can still run the committee on demand
+  // from the file view. Default OFF (2026-07-22).
+  aiAutoCommittee: process.env.AI_AUTO_COMMITTEE === '1',
+
+  // --- Langfuse (owner-directed 2026-07-22): AI observability, free hobby tier.
+  // Every AI call in PILOT (Azure OpenAI extraction, committee, docint OCR, azure-custom
+  // classification/extraction) is TRACED — prompt + input + output + confidence + cost + latency —
+  // and viewable in the Langfuse cloud UI so staff can audit every finding's reasoning.
+  // Dormant until the two keys are set. Everything is best-effort + fire-and-forget: a Langfuse
+  // outage never blocks a request, never adds latency (batched flush), and never throws.
+  //   LANGFUSE_PUBLIC_KEY  starts with pk-lf-
+  //   LANGFUSE_SECRET_KEY  starts with sk-lf-
+  //   LANGFUSE_HOST        the cloud region base (us or eu). Default US.
+  langfuse: {
+    publicKey: (process.env.LANGFUSE_PUBLIC_KEY || '').trim(),
+    secretKey: (process.env.LANGFUSE_SECRET_KEY || '').trim(),
+    host:      (process.env.LANGFUSE_HOST || 'https://us.cloud.langfuse.com').trim().replace(/\/+$/, ''),
+    project:   (process.env.LANGFUSE_PROJECT || 'pilot-underwriting').trim(),
+  },
+
+  // --- Azure Document Intelligence Custom models (owner-directed 2026-07-22).
+  // Uses the SAME endpoint + key as `docint` above (single resource, single bill). Custom
+  // Classification IDENTIFIES which of PILOT's document types each page-range of a combined
+  // PDF is (bank_statement / insurance_dec / operating_agreement / drivers_license /
+  // settlement / purchase_contract), and Custom Neural pulls STRUCTURED FIELDS from each
+  // document type (holder name, coverage $, LLC members, etc.) with bounding boxes + confidence
+  // per field for the "highlight the page section" finding UI. Dormant until a classifier and/or
+  // per-type extractor id is set — each model id is the project name in Doc Intelligence Studio.
+  //   AZURE_DOCINT_CLASSIFIER_ID     model id of the trained classifier (e.g. 'pilot-doc-splitter')
+  //   AZURE_DOCINT_EXTRACT_*         per-type extractor ids
+  azureCustom: {
+    classifierId:            (process.env.AZURE_DOCINT_CLASSIFIER_ID || '').trim(),
+    extractorBankStatement:  (process.env.AZURE_DOCINT_EXTRACT_BANK_STATEMENT || '').trim(),
+    extractorInsurance:      (process.env.AZURE_DOCINT_EXTRACT_INSURANCE || '').trim(),
+    extractorOperatingAgmt:  (process.env.AZURE_DOCINT_EXTRACT_OPERATING_AGREEMENT || '').trim(),
+    extractorDriversLicense: (process.env.AZURE_DOCINT_EXTRACT_DRIVERS_LICENSE || '').trim(),
+    extractorSettlement:     (process.env.AZURE_DOCINT_EXTRACT_SETTLEMENT || '').trim(),
+    extractorPurchaseContract:(process.env.AZURE_DOCINT_EXTRACT_PURCHASE_CONTRACT || '').trim(),
+    // Blob storage container that Doc Intelligence trains from + reads labeled data out of.
+    // Created 2026-07-22 as pilotdocailabels / pilot-doc-ai-labels in East US.
+    labelStorageAccount:     (process.env.AZURE_DOCAI_LABEL_STORAGE_ACCOUNT || 'pilotdocailabels').trim(),
+    labelContainer:          (process.env.AZURE_DOCAI_LABEL_CONTAINER || 'pilot-doc-ai-labels').trim(),
+    // Azure Blob SAS token OR account key so the labeling console can PUT bytes into the container.
+    // Prefer a SAS token scoped to the container (least privilege); the account key works too.
+    labelStorageSasToken:    (process.env.AZURE_DOCAI_LABEL_SAS_TOKEN || '').trim(),
+    labelStorageAccountKey:  (process.env.AZURE_DOCAI_LABEL_ACCOUNT_KEY || '').trim(),
   },
 };

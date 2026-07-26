@@ -125,6 +125,17 @@ ok('delete webhook allowed', () => client.guardNoTaskDeletion('DELETE', '/webhoo
   eq('scope: portal_stamp -> file id', stamp.cuIds.has(F.SYNC.portalFileId), true);
   eq('scope: portal_stamp -> file link', stamp.cuIds.has(F.SYNC.portalFileLink), true);
   eq('scope: portal_stamp maps nothing else', stamp.cuIds.size, 2);
+  // WO-16 (F-M1): a borrower-facing 'status' change pushes ONLY the portal-owned
+  // MIRROR field — it must NOT flag the ClickUp-owned task status (internalStatus
+  // false), or a stale mirror reverts ClickUp's live status.
+  const bf = mapper.resolveOnly(['status']);
+  eq('scope: status -> mirror field', bf.cuIds.has(F.SYNC.borrowerPortalStatus), true);
+  eq('scope: status does NOT push the task status', bf.internalStatus, false);
+  eq('scope: status sets the mirror flag', bf.status, true);
+  // A DELIBERATE internal-status change pushes BOTH the mirror and the task status.
+  const is = mapper.resolveOnly(['internal_status']);
+  eq('scope: internal_status -> mirror field', is.cuIds.has(F.SYNC.borrowerPortalStatus), true);
+  eq('scope: internal_status DOES push the task status', is.internalStatus, true);
 }
 
 // ---- 6. the PII shield covers the borrower identity set ---------------------
@@ -183,6 +194,29 @@ eq('garbage still rejected', normalizeTypedDate('26'), null);
   eq('users: already assigned = no-op', feq(USERS, [{ id: 81537660 }], { add: [81537660] }), true);
   eq('users: new assignee NOT equivalent', feq(USERS, [{ id: 111 }], { add: [81537660] }), false);
   eq('unknown object shape always writes', feq('f1', 'old', { some: 'thing' }), false);
+  // EMAIL: case-only difference is the SAME address (owner-reported 2026-07-20,
+  // Shloimy Friedman) — must be equivalent so no repush/review fires.
+  const EMAIL = F.SHARED.borrowerEmail;
+  eq('email: case-only difference equivalent', feq(EMAIL, 'Shloimy6125@gmail.com', 'shloimy6125@gmail.com'), true);
+  eq('email: surrounding whitespace equivalent', feq(EMAIL, ' a@b.com ', 'a@b.com'), true);
+  eq('email: genuinely different NOT equivalent', feq(EMAIL, 'a@b.com', 'c@b.com'), false);
+  eq('email: normalization applies to officer/processor emails too',
+     feq(F.EXTRA.processorEmail, 'Lisa.Katz@YS.com', 'lisa.katz@ys.com'), true);
+  // SSN: PILOT pushes 9 bare digits; ClickUp holds dashed — same number, must be
+  // equivalent (both mask ✱✱✱-✱✱-4776). A different SSN still writes/reviews.
+  const SSN = F.SHARED.borrowerSSN;
+  eq('ssn: digits-vs-dashed same number equivalent', feq(SSN, '123-45-4776', '123454776'), true);
+  eq('ssn: dashed-vs-dashed same number equivalent', feq(SSN, '123-45-4776', '123-45-4776'), true);
+  eq('ssn: different SSN NOT equivalent', feq(SSN, '123-45-4776', '999999999'), false);
+  eq('ssn: short/garbled falls through (not equivalent to a full ssn)', feq(SSN, '4776', '123454776'), false);
+  // We now PUSH the real dashed format; a ClickUp value that is dash-less is still
+  // the same number, so the push is suppressed (no false conflict). formatSsn is
+  // the exact format we push.
+  const { formatSsn } = require('../src/lib/fields');
+  eq('ssn: formatSsn dashes 9 digits', formatSsn('066889965'), '066-88-9965');
+  eq('ssn: formatSsn is idempotent on an already-dashed value', formatSsn('066-88-9965'), '066-88-9965');
+  eq('ssn: our pushed dashed value is equivalent to ClickUp dash-less (no conflict)',
+     feq(SSN, formatSsn('066889965'), '066889965'), true);
 }
 
 // ---- 10. a DOB is a human decision and belongs to an adult -------------------

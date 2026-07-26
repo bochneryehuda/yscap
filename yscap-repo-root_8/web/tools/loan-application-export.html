@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Business-Purpose Loan Application — export (DRAFT)</title>
+<!--
+  DRAFT application-export generator (v1 preview, 2026-07-17).
+  Self-contained jsPDF generator that renders a branded "Business-Purpose Loan
+  Application" matching the term-sheet look (INK/TEAL/GOLD palette, Times titles,
+  Helvetica body, NMLS footer). Emits invisible DocuSign anchor strings for the
+  borrower + co-borrower signature/date slots (/app_b1_sig/, /app_b2_sig/, …).
+
+  NOT wired into the portal yet (owner said don't merge). The real version will be
+  fed the file's data (applications/borrowers) instead of this sample form, ship in
+  web/tools + web/v2/tools, and store its bytes via POST /applications/:id/documents
+  with docKind='application_export'. This preview uses SAMPLE data so it renders now.
+-->
+<style>
+  :root{--ink:#0b1014;--teal:#1f3a40;--gold:#967b44;--paper:#f6f3ec;--line:#e4e0d6;--muted:#5b6770;}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:'Hanken Grotesk',system-ui,Segoe UI,Roboto,Arial,sans-serif;color:#141b22;background:var(--paper)}
+  header.top{background:var(--ink);color:#f3efe6;padding:16px 22px;border-bottom:2.2px solid var(--gold);display:flex;justify-content:space-between;align-items:center}
+  header.top .mark{font-family:'Fraunces',Georgia,'Times New Roman',serif;font-weight:700;font-size:22px;letter-spacing:.5px}
+  header.top .mark small{font-weight:400;font-size:12px;opacity:.8;margin-left:8px}
+  header.top .doc{font-family:'Fraunces',Georgia,serif;font-size:15px;color:#c9a86a}
+  .wrap{max-width:960px;margin:22px auto;padding:0 18px}
+  .card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin-bottom:16px;box-shadow:0 1px 2px rgba(20,27,34,.04)}
+  h2{font-family:'Fraunces',Georgia,serif;font-size:16px;margin:0 0 12px;color:var(--teal)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px 16px}
+  label{display:block;font-size:12px;color:var(--muted);margin-bottom:3px}
+  input,select{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-size:15px;background:#fff}
+  .row-check{display:flex;align-items:center;gap:8px;margin:6px 0 2px}
+  .actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:6px 0 22px}
+  button{background:var(--teal);color:#fff;border:0;border-radius:9px;padding:11px 18px;font-size:15px;font-weight:600;cursor:pointer}
+  button.secondary{background:#fff;color:var(--teal);border:1px solid var(--teal)}
+  .hint{font-size:12.5px;color:var(--muted)}
+  .banner{background:#fff8e8;border:1px solid var(--gold);border-radius:10px;padding:10px 14px;font-size:13px;color:#6b5626;margin-bottom:16px}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="mark">PILOT<small>by YS Capital</small></div>
+  <div class="doc">Business-Purpose Loan Application</div>
+</header>
+
+<div class="wrap">
+  <div class="banner"><b>Draft preview.</b> These are <b>sample values</b> so you can see the branded output. The real version fills every field straight from the loan file. Edit anything below and press <b>Generate PDF</b>.</div>
+
+  <div class="actions">
+    <button id="gen">Generate PDF</button>
+    <label class="row-check" style="margin:0"><input type="checkbox" id="hasCo" checked style="width:auto"> Include co-borrower (guarantor)</label>
+    <span class="hint">Signature slots appear for the borrower, and for the co-borrower when included.</span>
+  </div>
+
+  <div class="card"><h2>Borrower</h2><div class="grid">
+    <div><label>Full legal name</label><input id="b_name" value="Jonathan A. Weiss"></div>
+    <div><label>Date of birth</label><input id="b_dob" value="03/12/1985"></div>
+    <div><label>Social Security number</label><input id="b_ssn" value="123-45-6789"></div>
+    <div><label>Phone</label><input id="b_phone" value="(718) 555-0147"></div>
+    <div><label>Email</label><input id="b_email" value="jweiss@example.com"></div>
+    <div><label>Primary / mailing address</label><input id="b_addr" value="88 Maple Ave, Brooklyn, NY 11211"></div>
+  </div></div>
+
+  <div class="card" id="coCard"><h2>Co-Borrower / Guarantor</h2><div class="grid">
+    <div><label>Full legal name</label><input id="c_name" value="Rachel M. Weiss"></div>
+    <div><label>Date of birth</label><input id="c_dob" value="07/22/1987"></div>
+    <div><label>Social Security number</label><input id="c_ssn" value="987-65-4321"></div>
+    <div><label>Email</label><input id="c_email" value="rweiss@example.com"></div>
+  </div></div>
+
+  <div class="card"><h2>Borrowing entity</h2><div class="grid">
+    <div><label>Entity (LLC) name</label><input id="e_name" value="Maple Ridge Holdings LLC"></div>
+    <div><label>Entity type</label><input id="e_type" value="Limited Liability Company"></div>
+    <div><label>State of formation</label><input id="e_state" value="New York"></div>
+    <div><label>EIN</label><input id="e_ein" value="88-1234567"></div>
+    <div><label>Vesting</label><input id="e_vesting" value="Maple Ridge Holdings LLC, a NY LLC"></div>
+  </div></div>
+
+  <div class="card"><h2>Subject property</h2><div class="grid">
+    <div><label>Address</label><input id="p_addr" value="742 Evergreen Terrace"></div>
+    <div><label>City / State / ZIP</label><input id="p_csz" value="Springfield, NY 11211"></div>
+    <div><label>Property type</label><input id="p_type" value="2–4 Unit Residential"></div>
+    <div><label>Units</label><input id="p_units" value="3"></div>
+    <div><label>Occupancy</label><input id="p_occ" value="Non-owner-occupied (investment)"></div>
+  </div></div>
+
+  <div class="card"><h2>Loan request &amp; structure</h2><div class="grid">
+    <div><label>Program</label><input id="l_prog" value="Gold Standard Program"></div>
+    <div><label>Loan purpose / type</label><input id="l_type" value="Fix &amp; Flip — purchase + rehab"></div>
+    <div><label>Loan amount applied for</label><input id="l_amt" value="$487,500"></div>
+    <div><label>Term</label><input id="l_term" value="12 months"></div>
+    <div><label>Note rate</label><input id="l_rate" value="10.99%"></div>
+    <div><label>Purchase price</label><input id="l_price" value="$600,000"></div>
+    <div><label>As-is value</label><input id="l_asis" value="$600,000"></div>
+    <div><label>After-repair value (ARV)</label><input id="l_arv" value="$850,000"></div>
+    <div><label>Rehab budget</label><input id="l_rehab" value="$120,000"></div>
+    <div><label>Loan-to-cost (LTC)</label><input id="l_ltc" value="85%"></div>
+    <div><label>Loan-to-ARV</label><input id="l_ltv" value="57%"></div>
+    <div><label>Financed interest reserve</label><input id="l_ir" value="6 months"></div>
+  </div></div>
+
+  <div class="card"><h2>Loan officer (branding)</h2><div class="grid">
+    <div><label>Loan officer name</label><input id="o_name" value="David Klein"></div>
+    <div><label>Title</label><input id="o_title" value="Senior Loan Officer"></div>
+    <div><label>Phone</label><input id="o_phone" value="(718) 635-0277"></div>
+    <div><label>Email</label><input id="o_email" value="dklein@yscapgroup.com"></div>
+    <div><label>NMLS #</label><input id="o_nmls" value="1234567"></div>
+  </div>
+  <p class="hint" style="margin:10px 2px 0">In the portal this fills automatically from the file's assigned loan officer (the same source the term sheet uses).</p>
+  </div>
+</div>
+
+<script src="vendor/jspdf.umd.min.js" onerror="window.__jspdfFailed=1"></script>
+<script>
+(function(){
+  var LENDER = { name:"YS Capital Group", nmls:"2609746", addr:"5 New Montrose Avenue, Brooklyn, NY 11211", phone:"(718) 635-0277" };
+  function el(id){ return document.getElementById(id); }
+  function v(id){ var e=el(id); return e ? e.value : ""; }
+  function pdfSafe(s){ return String(s==null?"":s).replace(/[‘’]/g,"'").replace(/[“”]/g,'"').replace(/[–—]/g,"-").replace(/•/g,"*").replace(/[^\x00-\xFF]/g,""); }
+  // Single-line truncation so long officer/vesting/address values can't overflow or overlap.
+  function fit(s,max){ s=String(s==null?"":s); return s.length>max ? s.slice(0,max)+"..." : s; }
+  // NOTE (build item): jsPDF's core font is Latin-1 only, so a fully non-Latin (e.g. Hebrew) legal
+  // name strips to empty and its row is omitted rather than drawn blank. The production version must
+  // embed a Unicode TTF to render non-Latin borrower names. (Hebrew docs like the Heter Iska are handled
+  // by DocuSign Document Generation from the Word template, not this jsPDF path.)
+
+  function gather(){
+    var hasCo = el("hasCo").checked;
+    return {
+      hasCo:hasCo,
+      loanNo:"YS-10432",  issued:new Date(),
+      b:{ name:v("b_name"), dob:v("b_dob"), ssn:v("b_ssn"), phone:v("b_phone"), email:v("b_email"), addr:v("b_addr") },
+      c:hasCo?{ name:v("c_name"), dob:v("c_dob"), ssn:v("c_ssn"), email:v("c_email") }:null,
+      e:{ name:v("e_name"), type:v("e_type"), state:v("e_state"), ein:v("e_ein"), vesting:v("e_vesting") },
+      p:{ addr:v("p_addr"), csz:v("p_csz"), type:v("p_type"), units:v("p_units"), occ:v("p_occ") },
+      l:{ prog:v("l_prog"), type:v("l_type"), amt:v("l_amt"), term:v("l_term"), rate:v("l_rate"), price:v("l_price"),
+          asis:v("l_asis"), arv:v("l_arv"), rehab:v("l_rehab"), ltc:v("l_ltc"), ltv:v("l_ltv"), ir:v("l_ir") },
+      o:{ name:v("o_name"), title:v("o_title"), phone:v("o_phone"), email:v("o_email"), nmls:v("o_nmls") }
+    };
+  }
+
+  function build(returnBase64){
+    if (!window.jspdf || !window.jspdf.jsPDF) throw new Error("PDF engine not loaded");
+    var jsPDF = window.jspdf.jsPDF;
+    var doc = new jsPDF({ unit:"pt", format:"letter", orientation:"portrait" });
+    var W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 40;
+    var INK=[11,16,20], TEAL=[31,58,64], GOLD=[150,123,68], GRAY=[91,103,112], DARK=[19,32,28], LINE=[228,224,214];
+    var d = gather();
+    var fmtD = function(dt){ return dt.toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"}); };
+    var y = 92;
+
+    function header(){
+      doc.setFillColor.apply(doc, INK); doc.rect(0,0,W,76,"F");
+      doc.setFillColor.apply(doc, GOLD); doc.rect(0,76,W,2.2,"F");
+      doc.setTextColor(243,239,230); doc.setFont("times","bold"); doc.setFontSize(20); doc.text("PILOT", M, 40);
+      doc.setFont("helvetica","normal"); doc.setFontSize(8); doc.setTextColor(201,168,106); doc.text("by YS Capital", M+62, 40);
+      doc.setTextColor(243,239,230); doc.setFont("times","bold"); doc.setFontSize(16); doc.text("Business-Purpose Loan Application", W-M, 34, {align:"right"});
+      doc.setFont("times","italic"); doc.setFontSize(9.5); doc.setTextColor(201,168,106); doc.text("Investment / business-purpose mortgage loan", W-M, 50, {align:"right"});
+      doc.setFont("helvetica","normal"); doc.setFontSize(7.5); doc.setTextColor(170,178,182);
+      doc.text(LENDER.name+" · NMLS "+LENDER.nmls+" · Loan #"+d.loanNo+" · "+fmtD(d.issued), W-M, 65, {align:"right"});
+    }
+    function footer(){
+      var o=d.o;
+      if (o && (o.name||o.phone||o.email)){
+        doc.setFontSize(7.6); doc.setFont("helvetica","bold"); doc.setTextColor(60,66,72);
+        doc.text(pdfSafe(fit("Your loan officer: "+o.name+(o.title?", "+o.title:"")+(o.phone?"  ·  "+o.phone:"")+(o.email?"  ·  "+o.email:"")+(o.nmls?"  ·  NMLS "+o.nmls:""), 118)), M, H-52);
+      }
+      doc.setFontSize(7); doc.setTextColor(150,158,162); doc.setFont("helvetica","normal");
+      doc.text(pdfSafe(LENDER.name+" · NMLS "+LENDER.nmls+" · "+LENDER.addr+" · "+LENDER.phone), M, H-40, {maxWidth:W-2*M});
+      doc.text(pdfSafe("This loan is applied for solely for business, commercial, or investment purposes and not for personal, family, or household use. Indicative application only — not a commitment to lend. Subject to underwriting, appraisal, title and final credit approval."), M, H-26, {maxWidth:W-2*M});
+    }
+    function brk(need){ if (y+need > H-56){ footer(); doc.addPage(); header(); y=92; } }
+    function band(t){ brk(30); doc.setFillColor.apply(doc, TEAL); doc.roundedRect(M,y,W-2*M,17,2.5,2.5,"F"); doc.setFont("helvetica","bold"); doc.setFontSize(8.2); doc.setTextColor(255,255,255); doc.text(pdfSafe(t.toUpperCase()), M+7, y+11.5); y+=23; }
+    function rowFull(k,val,opts){ opts=opts||{}; var sv=pdfSafe(fit(String(val==null?"":val),64)); if(val==null||val===""||!/\S/.test(sv)) return; brk(16); doc.setFont("helvetica","normal"); doc.setFontSize(8.4); doc.setTextColor.apply(doc,GRAY); doc.text(pdfSafe(k), M+3, y+8); doc.setFont("helvetica","bold"); doc.setFontSize(8.6); doc.setTextColor.apply(doc, opts.accent?GOLD:DARK); doc.text(sv, W-M-3, y+8, {align:"right"}); y+=15; doc.setDrawColor.apply(doc,LINE); doc.setLineWidth(0.4); doc.line(M+3,y-3.5,W-M-3,y-3.5); }
+    function para(t,size){ var ls=doc.splitTextToSize(pdfSafe(t), W-2*M-6); brk(ls.length*10.5+4); doc.setFont("helvetica","normal"); doc.setFontSize(size||8); doc.setTextColor(70,78,82); doc.text(ls, M+3, y+8); y+=ls.length*10.5+8; }
+
+    // Invisible DocuSign anchor: white, tiny, machine-readable only.
+    function anchor(tag,x,yy){ var ps=doc.getFontSize(); doc.setTextColor(255,255,255); doc.setFontSize(4); doc.text(tag,x,yy); doc.setFontSize(ps); doc.setTextColor.apply(doc,DARK); }
+
+    function sigBlock(x, who, role, prefix){
+      var w = (W-2*M-24)/2;
+      doc.setDrawColor.apply(doc, GRAY); doc.setLineWidth(0.6);
+      doc.line(x, y+34, x+w, y+34);
+      anchor("/"+prefix+"_sig/", x+2, y+30);                 // signature slot
+      doc.setFont("helvetica","normal"); doc.setFontSize(7.6); doc.setTextColor.apply(doc, GRAY);
+      doc.text(pdfSafe(role), x, y+44);
+      doc.setFont("helvetica","bold"); doc.setFontSize(8.6); doc.setTextColor.apply(doc, DARK);
+      var nm=pdfSafe(fit(who,42)); if(/\S/.test(nm)) doc.text(nm, x, y+57);
+      doc.setDrawColor.apply(doc, GRAY); doc.line(x, y+78, x+w, y+78);
+      anchor("/"+prefix+"_dt/", x+2, y+74);                  // date slot
+      doc.setFont("helvetica","normal"); doc.setFontSize(7.6); doc.setTextColor.apply(doc, GRAY);
+      doc.text("Date", x, y+88);
+    }
+
+    header();
+    (function(){ var o=d.o; if(!(o&&(o.name||o.phone))) return;
+      doc.setFillColor(246,243,236); doc.rect(0,78.2,W,19,"F");
+      doc.setDrawColor.apply(doc,LINE); doc.setLineWidth(0.5); doc.line(0,97.2,W,97.2);
+      doc.setFont("helvetica","bold"); doc.setFontSize(8); doc.setTextColor.apply(doc,TEAL);
+      doc.text(pdfSafe(fit("Prepared by "+o.name+(o.title?", "+o.title:""), 52)), M, 91);
+      doc.setFont("helvetica","normal"); doc.setTextColor.apply(doc,GRAY);
+      doc.text(pdfSafe(fit((o.phone||"")+(o.email?"   ·   "+o.email:"")+(o.nmls?"   ·   NMLS "+o.nmls:""), 50)), W-M, 91, {align:"right"});
+    })();
+    y = 108;
+
+    band("Borrower");
+    rowFull("Full legal name", d.b.name);
+    rowFull("Date of birth", d.b.dob);
+    rowFull("Social Security number", d.b.ssn);
+    rowFull("Phone", d.b.phone);
+    rowFull("Email", d.b.email);
+    rowFull("Primary / mailing address", d.b.addr);
+
+    if (d.c){
+      band("Co-Borrower / Guarantor");
+      rowFull("Full legal name", d.c.name);
+      rowFull("Date of birth", d.c.dob);
+      rowFull("Social Security number", d.c.ssn);
+      rowFull("Email", d.c.email);
+    }
+
+    band("Borrowing Entity");
+    rowFull("Entity (LLC) name", d.e.name, {accent:true});
+    rowFull("Entity type", d.e.type);
+    rowFull("State of formation", d.e.state);
+    rowFull("EIN", d.e.ein);
+    rowFull("Vesting", d.e.vesting);
+
+    band("Subject Property");
+    rowFull("Address", d.p.addr);
+    rowFull("City / State / ZIP", d.p.csz);
+    rowFull("Property type", d.p.type);
+    rowFull("Units", d.p.units);
+    rowFull("Occupancy", d.p.occ);
+
+    band("Loan Request & Structure");
+    rowFull("Program", d.l.prog, {accent:true});
+    rowFull("Loan purpose / type", d.l.type);
+    rowFull("Loan amount applied for", d.l.amt, {accent:true});
+    rowFull("Term", d.l.term);
+    rowFull("Note rate", d.l.rate);
+    rowFull("Purchase price", d.l.price);
+    rowFull("As-is value", d.l.asis);
+    rowFull("After-repair value (ARV)", d.l.arv);
+    rowFull("Rehab budget", d.l.rehab);
+    rowFull("Loan-to-cost (LTC)", d.l.ltc);
+    rowFull("Loan-to-ARV", d.l.ltv);
+    rowFull("Financed interest reserve", d.l.ir);
+
+    brk(84);
+    band("Business-Purpose Acknowledgment");
+    para("The undersigned applies for the above loan solely for business, commercial, or investment purposes and not for personal, family, or household use. The subject property is and will remain non-owner-occupied. The undersigned certifies that the information provided in this application is true, complete, and correct.", 8);
+
+    brk(140);   // reserve band + both signature blocks up front so the header can't orphan at a page bottom
+    band("Signatures");
+    sigBlock(M, d.b.name, "Borrower signature", "app_b1");
+    if (d.c) sigBlock(M + (W-2*M-24)/2 + 24, d.c.name, "Co-Borrower / Guarantor signature", "app_b2");
+    y += 100;
+
+    footer();   // H-1 fix: the last/only page (the signature page) MUST carry the NMLS + business-purpose disclosure
+    if (returnBase64) return doc.output("datauristring").split(",")[1];
+    var stem=String(d.b.name||"Applicant").replace(/[^A-Za-z0-9]+/g,"_").replace(/^_+|_+$/g,"")||"Applicant";
+    doc.save("YS_Business_Purpose_Application_"+stem+".pdf");
+  }
+
+  el("hasCo").addEventListener("change", function(){ el("coCard").style.display = this.checked ? "" : "none"; });
+  el("gen").addEventListener("click", function(){ try{ build(false); }catch(e){ alert("Could not generate the PDF: "+e.message); } });
+
+  // Headless-render hook: window.APPEXPORT.generate(true) -> base64 PDF; .ready() gates it.
+  window.APPEXPORT = { generate: build, ready: function(){ return !!(window.jspdf && window.jspdf.jsPDF); } };
+})();
+</script>
+</body>
+</html>

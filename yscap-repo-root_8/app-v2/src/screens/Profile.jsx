@@ -94,6 +94,10 @@ export default function Profile() {
   const { status, save: queueSave } = useAutosave((payload) => api.saveProfile(payload), 1000);
   useEffect(() => {
     if (!p || !edited.current) return;
+    // Locked borrower (has an accepted file): identity edits are approval-gated, so
+    // we do NOT silently autosave — a request is created only when they press Save,
+    // and one team notice covers the whole set (no per-keystroke request spam).
+    if (p.locked) return;
     queueSave(buildPayload());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [p, phys, mail, mailDiff, ssn]);
@@ -101,11 +105,13 @@ export default function Profile() {
   async function save() {
     setBusy(true); setErr('');
     try {
-      await api.saveProfile(buildPayload());
+      const res = await api.saveProfile(buildPayload());
       setSsn('');
       const fresh = await api.profile(); setP(fresh);
       edited.current = false;
-      flash('Profile saved ✓');
+      const cr = (res && res.changeRequested) || [];
+      if (cr.length) flash('Sent to your loan team for approval: ' + cr.map((c) => c.label).join(', '));
+      else flash('Profile saved ✓');
     } catch (e) { setErr(e.message || 'Could not save your profile'); }
     finally { setBusy(false); }
   }
@@ -129,13 +135,22 @@ export default function Profile() {
       <div className="row" style={{ marginBottom: 14 }}>
         <div><h1>Your profile</h1><p className="muted small">Your personal information lives here and prefills every loan application, so you never enter it twice.</p></div>
         <div className="spacer" />
-        <span className="savechip" style={{ marginRight: 10 }}>
-          <span className={`dot ${status === 'saved' ? 'done' : status === 'error' ? '' : status === 'saving' ? 'outstanding' : ''}`} />
-          {status === 'saving' ? 'Saving…' : status === 'saved' ? 'All changes saved' : status === 'error' ? 'Save failed — retrying' : ''}
-        </span>
-        <button className="btn primary" onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save profile'}</button>
+        {!p.locked && (
+          <span className="savechip" style={{ marginRight: 10 }}>
+            <span className={`dot ${status === 'saved' ? 'done' : status === 'error' ? '' : status === 'saving' ? 'outstanding' : ''}`} />
+            {status === 'saving' ? 'Saving…' : status === 'saved' ? 'All changes saved' : status === 'error' ? 'Save failed — retrying' : ''}
+          </span>
+        )}
+        <button className="btn primary" onClick={save} disabled={busy}>{busy ? 'Saving…' : (p.locked ? 'Request changes' : 'Save profile')}</button>
       </div>
 
+      {p.locked && (
+        <div className="notice" style={{ background: 'var(--paper,#F6F3EC)', border: '1px solid var(--line,#E7E1D3)' }}>
+          Your loan is set up, so your personal details are locked. You can still edit them here and press
+          <b> Request changes</b> — your loan team reviews and approves each change before it takes effect.
+          Your home address and housing details still save normally.
+        </div>
+      )}
       {msg && <div className="notice ok">{msg}</div>}
       {err && <div role="alert" className="notice err">{err}</div>}
 

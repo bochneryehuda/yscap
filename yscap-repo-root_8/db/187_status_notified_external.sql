@@ -1,0 +1,17 @@
+-- Go-forward watermark for borrower status-change notifications driven by the
+-- ClickUp INBOUND sync (owner-directed 2026-07-20). The team changes a file's
+-- status directly in ClickUp as well as in the portal, and a ClickUp-originated
+-- change was giving the borrower NO "your loan is now Funded" email (the portal
+-- doors notified; the inbound sync did not).
+--
+-- `status_notified_external` records the last borrower-facing status the borrower
+-- was NOTIFIED about. The inbound sync notifies only when the pulled status
+-- DIFFERS from it, and SILENTLY BASELINES (writes the watermark, sends nothing)
+-- the first time it sees a file — so previously-drifted files are never blasted
+-- with historical transitions on the first reconcile after this ships. The
+-- portal status doors (PATCH /applications/:id and POST /internal-status) set it
+-- in lock-step with the status they already notify, so a ClickUp ECHO of a
+-- portal change never re-notifies. NULL = not yet baselined (the next inbound
+-- pull baselines it). Deliberately NO backfill: leaving existing rows NULL is
+-- what makes the rollout go-forward-only.
+ALTER TABLE applications ADD COLUMN IF NOT EXISTS status_notified_external text;

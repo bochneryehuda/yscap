@@ -56,5 +56,16 @@ eq('failed pass with no prior bookmark stays 0 (re-scan default next time)',
   ok('a restart resumes near the last pass, not 24h back', resumeSince >= NOW - 5 * 60 * 1000);
 }
 
+// ---- WO-4b: the orphan-resolution safety breaker (preserved semantics) -----
+// The breaker must skip archiving/merging when a 404 storm looks like an outage,
+// so bounding the sweep to a slice can never cause a wrongful mass-archive.
+const skip = (a) => sync.shouldSkipOrphanResolution(a);
+eq('no orphans → nothing to skip', skip({ orphanCount: 0, checked: 150, liveCount: 150 }), false);
+eq('nothing resolved live (total outage) → SKIP', skip({ orphanCount: 3, checked: 0, liveCount: 0 }), true);
+eq('a few orphans among many live → resolve (real deletions)', skip({ orphanCount: 2, checked: 150, liveCount: 148 }), false);
+eq('majority of the slice 404d → SKIP (outage, not deletions)', skip({ orphanCount: 100, checked: 50, liveCount: 50 }), true);
+eq('small absolute count still resolves under the floor', skip({ orphanCount: 4, checked: 4, liveCount: 4 }), false);
+eq('over the floor and over half → SKIP', skip({ orphanCount: 6, checked: 5, liveCount: 5 }), true);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -1,0 +1,1508 @@
+
+===== PAGE 1 =====
+RTL Loan Program 
+Underwriting and Credit Guidelines 
+
+Conﬁdential Document 
+
+As of April 20, 2026
+
+© 2026 Blue Lake Capital, LLC All Rights reserved 
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+
+===== PAGE 2 =====
+Table of Contents 
+
+I. Overview............................................................................................................................................................................ 3 
+A. Purpose.............................................................................................................................................................3 
+B. Deﬁnitions.......................................................................................................................................................3 
+II. Eligible Loan Terms.................................................................................................................................................. 4 
+A. Single Family Properties (1-4 units)...............................................................................................4 
+B. Required Reports.......................................................................................................................................5 
+C. Additional Loan Eligibility Requirements..................................................................................5 
+FAQs - Eligible Loan Terms......................................................................................................................12 
+III. Sponsor Underwriting......................................................................................................................................... 13 
+A. Sponsor Tiering................................................................................................................................................. 13 
+B. Credit/ Background........................................................................................................................................ 13 
+C. Experience............................................................................................................................................................14 
+D. Liquidity..................................................................................................................................................................15 
+D. Entity Review...................................................................................................................................................... 15 
+E. Additional Sponsor Eligibility Requirements................................................................................16 
+FAQs - Sponsor Underwriting....................................................................................................................... 17 
+IV. Escalation Process................................................................................................................................................. 18 
+A. Loans Requiring Escalation...................................................................................................................... 18 
+FAQs - Escalation Process................................................................................................................................18 
+Appendix A........................................................................................................................................................................ 19 
+Approved Construction Feasibility Report Vendors...............................................................19 
+Appendix B.......................................................................................................................................................................20 
+Valuation Report Requirements................................................................................................................20 
+Appendix C.........................................................................................................................................................................21 
+Title Insurance Requirements.......................................................................................................................21 
+Appendix D....................................................................................................................................................................... 22 
+Property Insurance Requirements........................................................................................................... 23 
+Appendix E........................................................................................................................................................................25 
+Construction and Fund Control Requirements....................................................................... 25 
+Appendix F........................................................................................................................................................................27 
+Required Documentation.......................................................................................................................27 
+
+________________________________________________________________________ 
+Lenders@BlueLakeCapital.com ◦ Incline Village, NV | Austin, TX 
+All the information hereof along with all communications related hereto shall be subject to the conﬁdentiality terms set forth in the MLPA. © 2026 Blue Lake Capital, LLC. 
+
+2 
+
+ 
+ 
+
+===== PAGE 3 =====
+I. Overview   
+
+A. Purpose  
+
+This Underwriting Guideline document serves as a reference point for loan 
+originators in Blue Lake’s Correspondent Loan Program. The purpose of these 
+Underwriting Guidelines is to outline Blue Lake’s expectations around 
+prudent underwriting standards. Effective risk management is a priority, and 
+these Underwriting Guidelines are designed to enable prudent risk taking 
+within reasonable risk/return, regulatory, and legal parameters.  
+
+These Underwriting Guidelines are not intended to be a comprehensive 
+guide for all potential situations. Rather, this document is intended to be a 
+useful reference guide for partners to understand Blue Lake’s credit 
+philosophy. Blue Lake retains the right to accept or reject loans for purchase, 
+regardless of compliance with the guidelines in this document. 
+
+B. Deﬁnitions 
+
+Cash-out Reﬁnance: A loan in which the cash disbursed to the borrower at 
+closing is greater than the lesser of $20,000 or 2% of the total loan 
+commitment. Cash disbursed at closing will be adjusted to include 
+non-customary fees and charges being paid through the closing of the loan. 
+These include past due taxes, non-mortgage lien payoffs, equity partner 
+buyouts, etc. If these fees or charges are paid off through the loan, it will be 
+considered as cash proceeds. Alternatively, the borrower can pay these fees 
+and charges out of pocket. 
+
+Cash-out Reﬁnance transactions are allowed for properties where work has 
+been completed. Loan amounts will be limited to the lesser of the applicable 
+LTV on the product and pricing sheet, or 100% of veriﬁed hard costs.  
+
+Construction Loan: A loan which meets any of the following criteria 
+
+●  More than one structural wall is being demolished 
+● 
+
+Includes the construction of a new home on vacant land or the 
+reﬁnance of a construction loan where the subject property is not 
+through the drywall phase 
+
+Heavy Rehab Loan: A loan that is not considered a Construction Loan and 
+meets any of the following criteria 
+
+●  The rehab budget is 50% or greater of the purchase price or AIV 
+
+________________________________________________________________________ 
+Lenders@BlueLakeCapital.com ◦ Incline Village, NV | Austin, TX 
+All the information hereof along with all communications related hereto shall be subject to the conﬁdentiality terms set forth in the MLPA. © 2026 Blue Lake Capital, LLC. 
+
+3 
+
+ 
+
+===== PAGE 4 =====
+●  The scope of work involves the construction of, or conversion to, an ADU 
+●  There is an expansion of GLA by more than 250 sqft 
+●  The current property use or type is being changed 
+●  A modiﬁcation or removal of load bearing structures is included in the 
+
+scope of work 
+
+Loan to Cost (LTC): Total loan amount divided by the Total Cost Basis. 
+
+Total Cost Basis: For all loans, the sum of the purchase price, any veriﬁed 
+costs to date, and any approved rehab budget amount. For Construction 
+Loans, the interest reserve is also included. Interest reserves for Renovation 
+and Heavy Rehab loans may not be included in the total cost basis. 
+
+II. Eligible Loan Terms  
+
+A. 
+
+Single Family Properties (1-4 units)  
+
+The terms outlined below serve as the maximum allowable across all loan 
+products and borrower tiers. See the most recent Express Product and Pricing 
+Sheet for maximum allowable terms by product and borrower tier.  
+
+Term 
+Borrowing Entity 
+Lien 
+Loan Term - 
+non-Construction 
+Loan Term - 
+Construction 
+Recourse 
+Amortization 
+Min Loan Size 
+Max Loan Size 
+Min FICO 
+
+Description 
+An approved LLC, S Corp, or C Corp 
+First liens only 
+18 months max initial term 
+
+24 months max initial term 
+
+Full repayment guaranty  
+Interest Only 
+$100,000 
+$3,000,000 
+660 – See Credit/Background section below for further 
+details 
+
+Sponsor Experience  Minimum of 2 completed transactions in the previous 
+
+Sponsor Liquidity 
+
+Loan to Cost (LTC) 
+Loan to Value 
+(LTAIV) 
+
+36 months 
+Cash to close plus 5% of the total loan amount; See 
+Liquidity section below for further details 
+93% 
+90% 
+
+________________________________________________________________________ 
+Lenders@BlueLakeCapital.com ◦ Incline Village, NV | Austin, TX 
+All the information hereof along with all communications related hereto shall be subject to the conﬁdentiality terms set forth in the MLPA. © 2026 Blue Lake Capital, LLC. 
+
+4 
+
+ 
+ 
+
+===== PAGE 5 =====
+Loan to ARV 
+(LTARV) 
+Max Sponsor Loan 
+Exposure 
+Interest Reserve 
+
+75% 
+
+$9,999,999 
+
+Full term required for Tier 2 & 3 Construction Loans 
+
+Eligible States 
+
+Alabama 
+
+Colorado 
+
+Connecticut 
+
+District of Columbia  Georgia 
+
+Kansas 
+
+Michigan 
+
+Kentucky 
+
+Missouri 
+
+North Carolina 
+
+Ohio 
+
+Rhode Island 
+
+South Carolina 
+
+Illinois 
+
+Maryland 
+
+Nevada 
+
+Oklahoma 
+
+Tennessee 
+
+Utah 
+
+Virginia 
+
+Washington 
+
+Delaware 
+
+Indiana 
+
+Massachusetts 
+
+New Jersey 
+
+Pennsylvania 
+
+Texas 
+
+B. Required Reports 
+
+Appraisal/ Valuation 
+
+A valuation report is required for every loan to be eligible for purchase. The 
+appraisal must be dated within 90 days of closing, or within 120 days of 
+closing with a recertiﬁcation of value provided by the original appraiser. All 
+valuation reports must be from an approved vendor and meet the 
+requirements laid out in Appendix B.  
+
+If a property has been listed in the previous 6 months, the lower of the 
+appraised value or the lowest list price will be used.  
+
+Construction Feasibility Report 
+
+For any loan that is a Heavy Rehab Loan or a Construction Loan, a third-party 
+project feasibility report will be required. This report must conﬁrm the 
+feasibility of the project and include a site inspection with photos along with 
+an assessment of the budget, identifying any line items amounts that may be 
+too high or low. Line items in the budget must be within a 10% variance to the 
+feasibility report. For reports that don't include a variance, all line items should 
+be deemed acceptable. The feasibility report must come from an approved 
+vendor (see Appendix A). 
+
+C. Additional Loan Eligibility Requirements 
+
+Loan Aging 
+
+Loans must have been originated within 30 days of submission in order to be 
+considered eligible for purchase. 
+
+________________________________________________________________________ 
+Lenders@BlueLakeCapital.com ◦ Incline Village, NV | Austin, TX 
+All the information hereof along with all communications related hereto shall be subject to the conﬁdentiality terms set forth in the MLPA. © 2026 Blue Lake Capital, LLC. 
+
+5 
+
+ 
+ 
+ 
+
+===== PAGE 6 =====
+Aggregation of Multiple Loans by Project 
+
+When multiple loans are part of a broader real estate investment initiative, 
+the loans will be evaluated in aggregate for eligibility and determining 
+whether escalation review is required.  
+
+A Real Estate Investment Project (“Project”) is deﬁned as any set of loans 
+that share: 
+
+●  The same individual guarantor(s) or principal ownership, with ≥50% 
+
+common control across entities 
+
+●  Properties located on contiguous lots or very closely situated as part of 
+
+a uniﬁed investment strategy 
+
+●  The same investment approach (Construction, Renovation, or Bridge) 
+
+and the same exit strategy (for sale or for rent) 
+
+●  Closing dates within a 60-day period  
+
+When these criteria are met, the loans will be treated as one Project and 
+eligibility or escalation will be assessed based on the total cumulative 
+exposure, deﬁned as committed plus outstanding loan amounts.  
+
+Any Project involving more than one loan will require escalation review, 
+during which Blue Lake will evaluate the overall feasibility, alignment with 
+guidelines, sponsor capability, and consolidated risk proﬁle of the Project.  
+Note that any Project encompassing more than 4 loans will be ineligible for 
+purchase. 
+
+Correspondents are expected to identify and communicate when loans are 
+part of a Project and coordinate with Blue Lake to initiate escalation review as 
+needed. 
+
+Rural Properties 
+
+Rural properties present increased risk due to the property having lower 
+market demand and often a lack of appropriate sales comps to determine 
+value. A property will be considered rural if it meets any of the following 
+criteria. 
+
+●  They are classiﬁed as rural on the appraisal 
+●  Area around the subject property is zoned agricultural 
+●  Property is solely accessed by a gravel or dirt road 
+●  Two (2) of the three (3) appraisal comparables are more than ﬁve (5) 
+
+miles away from the subject property 
+
+●  Subject property and/or appraisal comparables have lot sizes greater 
+
+than 10 acres 
+
+________________________________________________________________________ 
+Lenders@BlueLakeCapital.com ◦ Incline Village, NV | Austin, TX 
+All the information hereof along with all communications related hereto shall be subject to the conﬁdentiality terms set forth in the MLPA. © 2026 Blue Lake Capital, LLC. 
+
+6 
+
+ 
+
+===== PAGE 7 =====
+●  Subject property and/or appraisal comparables have outbuildings or 
+
+large storage sheds 
+
+The list above is not intended to encompass all qualiﬁcations for properties to 
+be classiﬁed as rural. Loans meeting these criteria will be considered ineligible 
+for purchase. As part of the purchaser's review, best judgment along with 
+consideration for the borrower’s experience will be used to make the 
+determination. 
+
+Market Considerations 
+
+It is our goal to target markets that exhibit good price stability and prospects 
+for future growth. Certain markets have a history of increased price volatility 
+and low growth prospects. In order to compensate for increased market risk, 
+these markets will require a 5% reduction in LTC, LTAIV, and LTARV. MSAs 
+requiring this adjustment are listed below. 
+
+●  Detroit-Warren-Dearborn, MI 
+●  Chicago-Naperville-Joliet, IL-IN-WI 
+●  Philadelphia-Camden-Wilmington, PA-NJ-DE-MD 
+●  Baltimore-Columbia-Towson, MD 
+●  Memphis, TN-MS-AR 
+
+The list above is subject to change based on periodic review of market 
+conditions. Future versions of these guidelines will be updated accordingly, 
+however this list may be changed at any time and communicated to the 
+seller, without the issuance of updated guidelines.  
+
+Property Condition 
+
+For any bridge loan, where there is no construction work being ﬁnanced, the 
+property must have a condition of C4 or better, as determined by the 
+appraisal.   
+
+Exit Strategy 
+
+For all loans, a stated exit strategy will be required at the time of origination. 
+
+Interested Party Contributions 
+
+Interested party contributions are any contribution or credit at closing to the 
+purchase price of a property by any party with an interest in the transaction. 
+This includes brokers, realtors, and sellers. These contributions are limited to 
+3% of the total loan amount. Any amount above this threshold will be 
+deducted from the purchase price for the purposes of loan structuring.  
+
+________________________________________________________________________ 
+Lenders@BlueLakeCapital.com ◦ Incline Village, NV | Austin, TX 
+All the information hereof along with all communications related hereto shall be subject to the conﬁdentiality terms set forth in the MLPA. © 2026 Blue Lake Capital, LLC. 
+
+7 
+
+ 
+ 
+
+===== PAGE 8 =====
+Purchase Contracts and Assignments 
+
+As part of the review process, all purchase contracts, addendums, and 
+assignments must be provided.   
+
+Purchase contract assignments and assignment fees are permitted. 
+Assignment fee amounts that are allowed to be included in the cost basis are 
+limited to the lesser of $75,000 or 15% of the purchase price. For assignment 
+fees to be included in ﬁnancing, the appraised as-is value must be greater 
+than or equal to the purchase price and assignment fee. The purchase 
+agreement between the original two parties must be provided along with the 
+assignment. 
+
+Any loan containing an assignment of contract and/or an assignment fee will 
+need to be escalated for review prior to purchase. If there is a sign of potential 
+non-arm's length transactions occurring between the 3 parties, the loan will 
+be considered ineligible. 
+
+Delayed Purchase Transactions 
+
+A reﬁnance of a property purchased using cash within 180 days of loan closing 
+is considered a delayed purchase transaction. These will follow the 
+underwriting guidelines and leverage limits of a purchase transaction, 
+however the cash out at closing is limited to 85% of the purchase price.  
+
+Non-Arm’s Length Transactions 
+
+A non-arm's length transaction occurs when the buyer and seller have a 
+pre-existing relationship that could inﬂuence the terms of the deal. This could 
+be between family members, business partners, or other afﬁliated parties. 
+Because these transactions might not reﬂect true market value, they are not 
+eligible for ﬁnancing. 
+
+Initial Basis 
+
+In some cases, it may be appropriate to give credit to value created in excess 
+of the project costs. This would be captured by utilizing AIV rather than 
+project costs for the structuring of a loan. 
+
+● 
+
+● 
+
+If a property has been owned for more than 12 months, the as-is value 
+will be used in place of costs to date. 
+If the property has been owned for a period of 6 to 12 months, and work 
+has been completed on the property, the as-is value may be considered 
+as an exception that’s approved at the discretion of the purchaser.  
+
+________________________________________________________________________ 
+Lenders@BlueLakeCapital.com ◦ Incline Village, NV | Austin, TX 
+All the information hereof along with all communications related hereto shall be subject to the conﬁdentiality terms set forth in the MLPA. © 2026 Blue Lake Capital, LLC. 
+
+8 
+
+ 
+
+===== PAGE 9 =====
+Exceptions will be considered for loans reﬁnancing a completed rehab or 
+construction project.  
+
+Interest Reserves 
+
+All Construction loans are required to have a full-term interest reserve. Tier 1 
+sponsors, as deﬁned by the current product and pricing sheet, can elect to 
+not include interest reserves in their loan.  This will be limited to loans less 
+than $1,500,000.  Additionally, Construction loans that do not include IR will 
+be limited to a total loan amount of $5,000,000 per sponsor.  The minimum 
+required amount will be equal to 75% of the projected interest due over the 
+full term of the loan, based on the total loan amount. The calculation is shown 
+below. 
+
+Interest Reserve = Total loan amount * Rate * (Term/12) * 75% 
+
+Renovation and Heavy Rehab loans may also include interest reserves; 
+however, this amount is not included in the total cost basis as allowed for 
+construction loans. In these scenarios, interest reserves would come out of 
+the initial proceeds of the total loan amount and capped by LTC or LTARV 
+leverage restrictions. 
+
+Holdback or Funds Held in Escrow 
+
+Eligible loans are limited to those that accrue interest on outstanding 
+balances only. Loans with funds held back that accrue interest, or Dutch 
+Loans, are ineligible.  
+
+Short Term Vacation Rentals 
+
+Bridge, rehab or construction loans that are intended to be used as a vacation 
+rental are ineligible for purchase.  
+
+Loan Proﬁtability 
+
+Loans must demonstrate a proﬁtable business plan and will be measured for 
+any loan that contains a renovation or construction component. If the total 
+costs exceed the ARV for the property, the loan will be ineligible for purchase. 
+
+Mid Construction Loans 
+
+Mid-construction loans are any loan where the property was previously 
+owned by the borrower and work is in progress at the time of origination. 
+These loans are considered ineligible for purchase. Loans where there is no 
+current lender, or it is a reﬁnance of loan owned by the purchaser, will remain 
+eligible for purchase. 
+
+________________________________________________________________________ 
+Lenders@BlueLakeCapital.com ◦ Incline Village, NV | Austin, TX 
+All the information hereof along with all communications related hereto shall be subject to the conﬁdentiality terms set forth in the MLPA. © 2026 Blue Lake Capital, LLC. 
+
+9 
+
+ 
+
+===== PAGE 10 =====
+Stagnant Internal Reﬁnances 
+
+Reﬁnances of loans held on an originator's balance sheet for borrowers who 
+have not made progress on a project are ineligible. This includes bridge to 
+bridge reﬁnances, and projects where borrowers have failed to draw 
+construction funds. Reﬁnances of loans used to purchase and permit land for 
+Ground up Construction are allowed.   
+
+Property Use Conversion 
+
+A property use conversion is any loan where the property type or use is being 
+changed during the term of the loan. In addition to requiring escalation 
+review, these loans will require conﬁrmation from the appraiser that the 
+change will meet zoning requirements. For condo conversions, the condos 
+must have been approved by the jurisdiction prior to origination. If the condo 
+conversion is not yet approved, the property will be evaluated as a rental. Only 
+conversions from one residential type to another will be permitted. 
+Commercial conversions, such as hotel to residential or ofﬁce to residential, 
+will not be eligible for purchase. 
+
+Default Interest 
+
+On reﬁnance transactions that are paying off a third-party lender, the payoff 
+demand will be reviewed to ensure that there are no signs of default on the 
+existing loan. Any default interest, legal fee, or any other line item that may 
+imply that the borrower is in default will result in the loan being ineligible for 
+purchase.  
+
+ACH 
+
+A completed ACH setup form is required for all purchased loans. This form 
+should be signed by the borrower and authorize the automated payment of 
+interest on their loan. 
+
+Property Use 
+
+Properties with the following uses will not be eligible 
+
+●  Single room occupancy (SRO) – Any property that is intended to be 
+
+rented per bedroom to individual tenants. 
+
+●  Rehab or care facilities – A property that has an intended commercial 
+use including, but not limited to rehabilitative care, long-term care, 
+substance abuse treatment, or any other medical use. 
+
+●  Hospitality – Any property being used with the commercial purpose of 
+
+providing short-term lodging to multiple parties, beyond typical 
+
+________________________________________________________________________ 
+Lenders@BlueLakeCapital.com ◦ Incline Village, NV | Austin, TX 
+All the information hereof along with all communications related hereto shall be subject to the conﬁdentiality terms set forth in the MLPA. © 2026 Blue Lake Capital, LLC. 
+
+10 
+
+ 
+
+===== PAGE 11 =====
+short-term vacation rentals. Examples would include bed & breakfasts, 
+hostels, and similar business plans. 
+
+Occupancy 
+
+Owner occupied properties are strictly prohibited. This applies to borrowers, 
+equitable owners (both direct and indirect), and their immediate families. 
+Additionally, properties that were previously occupied by the borrower are 
+also not eligible. 
+
+Property Type 
+
+To be eligible for purchase, the subject property must be 4 units or less, 
+non-owner occupied, be used for residential purposes, and be one of the 
+eligible property types listed below.  
+
+●  Single family residence 
+●  2-4 unit property 
+●  Warrantable condo 
+●  Planned Unit Development (PUD) 
+●  Townhome 
+
+The following property types will not be eligible for purchase. 
+
+●  Properties with 5 or more units 
+●  Owner-occupied homes 
+●  Mobile or manufactured homes 
+●  Agricultural, farm, or industrial properties 
+●  Co-Ops 
+●  Timeshares 
+●  Vacant land (unless being used for ground up construction during the 
+
+loan term) 
+●  Log cabins 
+●  Geodesic domes 
+●  Condotels or resort properties 
+●  Properties subject to a ground lease 
+●  Properties with known adverse environmental conditions 
+●  Earthen homes 
+●  Properties currently in litigation 
+●  Properties with zoning violations 
+●  Properties subject to purchase options (lease to own, tenancy at will, 
+
+etc.) 
+
+●  Fractional ownership 
+
+________________________________________________________________________ 
+Lenders@BlueLakeCapital.com ◦ Incline Village, NV | Austin, TX 
+All the information hereof along with all communications related hereto shall be subject to the conﬁdentiality terms set forth in the MLPA. © 2026 Blue Lake Capital, LLC. 
+
+11 
+
+ 
+
+===== PAGE 12 =====
+●  Unique properties 
+●  Assisted living or non-proﬁt facilities 
+●  Properties on native American land 
+●  Condos in buildings over 6 stories 
+●  Rural properties  
+●  Short-term rentals 
+
+FAQs - Eligible Loan Terms 
+
+Can loans be originated in an individual borrower’s name? 
+No. All loans must be originated in the name of a legally formed entity (LLC, S 
+Corp, or C Corp) that is in good standing and properly registered to do 
+business in the property’s state. 
+
+Are owner-occupied properties eligible? 
+No. Properties that are or were recently occupied by the borrower, guarantors, 
+their immediate family, or afﬁliates are ineligible. 
+
+What is the approved geographic footprint? 
+Loans are only eligible in the states listed in Section II.A. Properties outside 
+those jurisdictions are ineligible. 
+
+Are land-only loans permitted? 
+Only if the loan is structured for ground-up construction during the loan 
+term. Otherwise, vacant land is ineligible. 
+
+Are short-term vacation rental business plans permitted? 
+No. Loans with a stated exit strategy involving short-term or vacation rentals 
+are ineligible. 
+
+What constitutes a rural property? 
+Properties are deemed rural if they meet any of the criteria outlined in 
+Section II.C (e.g., rural designation on appraisal, zoned agricultural, comps >5 
+miles away, dirt road access, lot >10 acres). Rural properties are ineligible. 
+
+Can unique or specialty properties (e.g., log cabins, geodesic domes) be 
+considered? 
+ A: No. Properties must fall within approved types listed in Section II.C (1–4 
+units, warrantable condo, PUD, townhome). 
+
+________________________________________________________________________ 
+Lenders@BlueLakeCapital.com ◦ Incline Village, NV | Austin, TX 
+All the information hereof along with all communications related hereto shall be subject to the conﬁdentiality terms set forth in the MLPA. © 2026 Blue Lake Capital, LLC. 
+
+12 
+
+ 
+
+===== PAGE 13 =====
+Can assignment fees be included in the cost basis? 
+Assignment fees may be included up to the lesser of $75,000 or 10% of the 
+purchase price, subject to the appraised as-is value supporting purchase price 
+plus assignment fee. 
+
+How are delayed purchase transactions treated? 
+Delayed purchase transactions (cash acquisitions reﬁnanced within 180 days) 
+are underwritten as purchases. Cash-out is capped at 70% of the purchase 
+price. 
+
+Are cross-collateralized loans eligible for the program? 
+All loans must be secured by a single parcel; cross-collateralized loans are not 
+permitted under this program. Partial releases are also not allowed. If a 
+property is subdivided into multiple parcels during the term of the loan, the 
+obligation must be repaid in full through a single payoff. 
+
+III. Sponsor Underwriting 
+
+A. Sponsor Tiering 
+
+Borrower tiering is determined using a combination of FICO and experience. 
+The current borrower tiering can be found on the Product and Pricing sheet 
+that is distributed on a regular basis. An example of this is shown below. 
+
+Min FICO 
+Min Experience 
+
+Tier 1 
+680 
+10 
+
+Tier 2 
+680 
+5 
+
+Tier 3 
+700 
+2 
+
+In the example above, a sponsor would need to meet both the experience 
+and FICO requirements to qualify for a tier. For tier 1, the minimum 
+requirement is a 680 FICO and 10 completed transactions in the previous 36 
+months. 
+
+B. Credit/ Background 
+
+For each guarantor on a loan, a tri-merge credit report dated within 180 days 
+of closing and a minimum of 2 scores is required. FICO scores for each 
+guarantor will be determined using the middle of the 3 scores or the lower if 
+only 2 scores are available.  
+
+________________________________________________________________________ 
+Lenders@BlueLakeCapital.com ◦ Incline Village, NV | Austin, TX 
+All the information hereof along with all communications related hereto shall be subject to the conﬁdentiality terms set forth in the MLPA. © 2026 Blue Lake Capital, LLC. 
+
+13 
+
+ 
+ 
+ 
+ 
+
+===== PAGE 14 =====
+Eligibility and sponsor tiering are determined using the highest mid-score for 
+all guarantors. For example, if there are two guarantors on a loan with 
+mid-scores of 680 & 720, the score used for tiering and eligibility would be 
+720. All guarantors are required to have a minimum FICO of 660. Guarantors 
+also must not have had foreclosure, bankruptcy, deed in lieu, or short sale 
+within the past 48 months.  
+
+A background report, dated within 180 days of closing, from a reputable 
+vendor will be required for each guarantor. Loans with background reports 
+showing any tax liens or any lien or judgement greater than $5,000 will 
+require that the liens or judgements be paid at closing or evidence of release. 
+Any open or previous litigation will require an LOE and purchaser approval. 
+Felonies within the previous 15 years, ﬁnancial crimes, or loans or judgments 
+that could supersede a mortgage are ineligible. 
+
+In addition to the background report, an OFAC search will be required for 
+each guarantor or entity member with 25% or more ownership as well as for 
+the borrowing entity. The OFAC search must show that the guarantor or entity 
+are not on the sanctioned party list.  
+
+C. Experience 
+
+Sponsor experience will be determined by using the track records for any 
+guarantors on a loan. To be considered a completed project, the property 
+must have been either sold or stabilized as a rental property. The sale date of a 
+project on the track record will be used to determine whether it occurred 
+within the previous 36 months. Active rentals held for at least 36 months are 
+also counted towards experience for qualiﬁcation purposes if the sponsor has 
+relevant rehab or construction experience. 
+
+For a ground up construction loan, the sponsor’s experience needs to qualify 
+based on meeting the minimum number of completed ground up 
+construction projects. 
+
+Veriﬁcation of ownership must be provided for each project to be counted 
+towards sponsor experience. In order for a guarantor’s experience to be 
+counted, they must have held at least 20% equity interest or been a 
+managing member of the entity. Public property records are required to verify 
+the ownership entity. Veriﬁcation of non-borrower entities will require the 
+operating agreement to verify ownership.  
+
+________________________________________________________________________ 
+Lenders@BlueLakeCapital.com ◦ Incline Village, NV | Austin, TX 
+All the information hereof along with all communications related hereto shall be subject to the conﬁdentiality terms set forth in the MLPA. © 2026 Blue Lake Capital, LLC. 
+
+14 
+
+ 
+
+===== PAGE 15 =====
+For any loan involving a construction or rehabilitation budget, the borrower 
+must have prior experience with projects that are comparable in size and 
+budget to the subject property, and located within a reasonably proximate 
+geographic area. 
+
+D. Liquidity 
+
+In order for a loan to be considered eligible, there must be proof of liquidity 
+submitted as part of the underwriting ﬁle. The minimum amount required is 
+the cash to close plus 5% of the total loan amount. If the seller has sold 
+multiple loans from the same sponsor, liquidity must cover the cash to close 
+for the loan being considered, plus 5% of the total loan amount sold in the 
+past 12 months. 
+
+Proof of liquidity must be provided in the form of complete statements dated 
+within 60 days of the note/closing date. Accounts may be in the name of the 
+borrowing entity, the guarantor(s), or another entity in which the guarantor(s) 
+have control (as veriﬁed through entity docs). Liquidity can be provided in the 
+form of cash (100%), brokerage accounts with standard equity or ﬁxed income 
+holdings (80%), or vested retirement accounts (60%). Cashout proceeds will 
+not be considered as applicable liquidity. Inclusion of any other type of 
+account, or the use of current account balances in place of statements, will be 
+considered on an exception basis.  
+
+D. Entity Review 
+
+Borrowing entities are required to be legally formed and registered to do 
+business in the state where the subject property is located. Borrowing entities 
+are required to meet the requirements below. 
+
+LLCs 
+
+●  A valid, fully executed operating agreement including all amendments 
+
+and exhibits. 
+
+o  This should clearly state which individuals or entities are 
+
+authorized to make decisions and sign on behalf of the entity. 
+o  Entity agreements will also be required for any other entities that 
+are members holding 25% or more ownership of the borrowing 
+entity. 
+
+●  Proof of good standing with the Secretary of State in the state where 
+
+the entity was formed. 
+
+________________________________________________________________________ 
+Lenders@BlueLakeCapital.com ◦ Incline Village, NV | Austin, TX 
+All the information hereof along with all communications related hereto shall be subject to the conﬁdentiality terms set forth in the MLPA. © 2026 Blue Lake Capital, LLC. 
+
+15 
+
+ 
+
+===== PAGE 16 =====
+● 
+
+If the subject property is in a different state from where the entity was 
+organized, articles of organization or certiﬁcate of formation from the 
+state where the subject property is located. 
+
+●  A certiﬁcate of formation or articles of organization from the state 
+
+where the entity was organized. 
+
+●  Any consents or resolutions currently in effect must be provided. 
+●  Borrowing entities must undergo a background check and check 
+
+against the OFAC Sanctioned Party list. 
+
+Corporations 
+
+●  Valid, fully executed bylaws including all amendments and exhibits. 
+o  This should clearly state which individuals or entities are 
+
+authorized to make decisions and sign on behalf of the entity. 
+o  Entity agreements will also be required for any other entities that 
+are members holding 25% or more ownership of the borrowing 
+entity. 
+
+●  Proof of good standing with the Secretary of State in the state where 
+
+the entity was formed. 
+
+●  The most recent ofﬁcer and director elections. 
+●  Minutes or copies of the issue stock certiﬁcates supporting the 
+
+● 
+
+ownership of the corporation. 
+If the subject property is in a different state from where the entity was 
+organized, a certiﬁcate of formation or articles of incorporation from the 
+state where the subject property is located. 
+
+●  A certiﬁcate of formation or articles of incorporation from the state 
+
+where the entity was organized. 
+
+o  Additionally, ﬁled articles of incorporation will be required for the 
+
+state in which the subject property is located, if different. 
+
+●  Any consents, resolutions, or minutes must be provided. 
+●  Borrowing entities must undergo a background check and check 
+
+against the OFAC Sanctioned Party list. 
+
+E. Additional Sponsor Eligibility Requirements 
+
+Guarantors 
+
+For borrowing entities with multiple members, any member holding 25% or 
+more ownership will be required to be a guarantor on the loan. If no member 
+
+________________________________________________________________________ 
+Lenders@BlueLakeCapital.com ◦ Incline Village, NV | Austin, TX 
+All the information hereof along with all communications related hereto shall be subject to the conﬁdentiality terms set forth in the MLPA. © 2026 Blue Lake Capital, LLC. 
+
+16 
+
+ 
+ 
+
+===== PAGE 17 =====
+holds 25% or more ownership, a combination of guarantors totaling 51% or 
+more ownership will be required.  
+
+For the avoidance of doubt, only guarantors will be used to qualify a sponsor 
+for eligibility and tiering. Any liquidity, track record, or credit score used for 
+underwriting must be tied to a guarantor on the loan. Only equity owners in 
+the borrowing entity will be permitted to be a guarantor.  
+
+Foreign Nationals 
+
+Any guarantor that is a non-permanent resident of the United States will be 
+considered a foreign national and any loans with foreign national guarantors 
+will be considered ineligible for purchase. 
+
+FAQs - Sponsor Underwriting 
+
+How is sponsor experience validated? 
+Completed projects must have been sold or stabilized as rentals within the 
+last 36 months. Veriﬁcation requires evidence of ≥20% ownership or 
+managing member role, supported by public records or operating 
+agreements. 
+
+Can non-guarantor experience be used to qualify a sponsor? 
+No. Only guarantors’ experience is considered for sponsor tiering and 
+eligibility. 
+
+What if a sponsor does not meet the minimum experience requirements? 
+Sponsor ineligibility may only be overcome via escalation review. Approval is 
+not guaranteed. 
+
+What forms of liquidity are acceptable? 
+Cash (100% credit), brokerage accounts with marketable securities (80%), and 
+vested retirement accounts (60%). Other asset classes require exception 
+review. 
+
+________________________________________________________________________ 
+Lenders@BlueLakeCapital.com ◦ Incline Village, NV | Austin, TX 
+All the information hereof along with all communications related hereto shall be subject to the conﬁdentiality terms set forth in the MLPA. © 2026 Blue Lake Capital, LLC. 
+
+17 
+
+ 
+ 
+
+===== PAGE 18 =====
+IV. Escalation Process 
+
+A. Loans Requiring Escalation 
+
+In addition to exceptions to these underwriting guidelines, certain loans will 
+be required to undergo escalated review prior to agreeing to purchase. These 
+scenarios are listed below. 
+
+●  Loans with a total loan amount greater than $1,500,000 
+●  Renovation loans with a budget greater than the AIV OR greater than 
+
+$250,000 
+
+●  Construction loans with a budget greater than $1,000,000 
+●  Adverse markets (See Market Considerations section) 
+●  Exceptions 
+●  Cash-out reﬁnance loans with cash proceeds to borrower greater than 
+
+$250,000 
+
+●  Any loan that includes a change of density or use, such as a conversion 
+
+FAQs - Escalation Process 
+
+Can exceptions be made to these Guidelines? 
+Exceptions require escalation review and explicit purchaser approval. 
+Exceptions are not automatically granted and must be supported by 
+compensating factors.
+
+________________________________________________________________________ 
+Lenders@BlueLakeCapital.com ◦ Incline Village, NV | Austin, TX 
+All the information hereof along with all communications related hereto shall be subject to the conﬁdentiality terms set forth in the MLPA. © 2026 Blue Lake Capital, LLC. 
+
+18 
+
+ 
+ 
+ 
+
+===== PAGE 19 =====
+Appendix A 
+
+Approved Construction Feasibility Report Vendors 
+
+Trinity 
+
+Granite 
+
+Buildzig 
+
+CFSI Loan Management 
+
+NVMS 
+
+________________________________________________________________________ 
+Lenders@BlueLakeCapital.com ◦ Incline Village, NV | Austin, TX 
+All the information hereof along with all communications related hereto shall be subject to the conﬁdentiality terms set forth in the MLPA. © 2026 Blue Lake Capital, LLC. 
+
+19 
+
+ 
+ 
+ 
+ 
+
+===== PAGE 20 =====
+Appendix B 
+
+Valuation Report Requirements 
+
+Acceptable valuation report types are based on the loan amount.   
+
+●  Loan amount <= $400,000: Full appraisal or hybrid/DVI appraisal.  If the 
+
+collateral property has a renovation or construction component of more 
+than 20% of the as is purchase price, a full appraisal is required.    
+
+●  Loan amount > $400,000: Full appraisal   
+
+Appraisals and hybrid/DVI appraisal reports must meet the following criteria.  
+
+●  Dated within 90 days of closing, or within 120 days of closing with a 
+
+recertiﬁcation of value provided by the original appraiser 
+
+●  USPAP & FIRREA Compliant  
+
+●  Cannot be a transferred or assigned appraisal  
+
+●  Provide an as-is market value with at least 3 sold comps  
+
+●  Provide an ARV (if applicable) with at least 3 sold comps  
+
+●  2 of the 3 sold comps must be located within 5 miles of the subject  
+
+●  3 primary sold comps date of sale within the previous 12 months  
+
+●  Net and gross adjustments less than 15% and 25%, respectively for at 
+
+least 2 of the 3 primary sold comps 
+
+●  Provide comment if the property is income producing  
+
+● 
+
+● 
+
+If proximate to an undesirable external inﬂuence (i.e., freeway, 
+commercial uses, etc.), it should be noted if there is any adverse impact 
+on marketability and/or appropriately considered within comparable 
+analysis/adjustments  
+
+If the property is located in a declining market, at least one sold comp 
+must have a date of sale within 90 days, with declining market 
+condition adjustments applied and/or considered for all sales   
+
+●  Note if the property is located in an age restricted community  
+
+● 
+
+If GLA listed is different from public records, provide an explanation  
+
+●  Must include a cost approach with site value, if applicable   
+
+________________________________________________________________________ 
+Lenders@BlueLakeCapital.com ◦ Incline Village, NV | Austin, TX 
+All the information hereof along with all communications related hereto shall be subject to the conﬁdentiality terms set forth in the MLPA. © 2026 Blue Lake Capital, LLC. 
+
+20 
+
+ 
+ 
+
+===== PAGE 21 =====
+Appendix C 
+
+Title Insurance Requirements 
+
+● 
+
+ISAOA/ATIMA or equivalent language allowing for coverage to be 
+assigned to the buyer. 
+
+●  An ALTA extended lenders policy with mechanic’s lien coverage will be 
+
+required. 
+
+●  Coverage amount should be equal to the maximum loan amount. 
+●  Schedule A Requirements 
+
+o  The title commitment should accurately reﬂect the following 
+
+items. 
+
+▪  Committed Loan Amount 
+▪  Loan Number 
+▪  Property Address (commonly known as) 
+▪ 
+▪  Complete Lenders vesting 
+o  Effective date within 90 days of funding 
+o  Current vested owner 
+o 
+
+ Complete Borrowers vesting 
+
+If a purchase loan, the current vested owner on title will need to 
+be the person executing the purchase contract, deed, and other 
+transaction documents. 
+If a reﬁnance loan, the current vested owner should be the 
+borrowing entity. 
+
+o 
+
+o  Legal description should match the other loan documents. 
+
+●  Schedule BI 
+
+o  Should be free from any non-standard requirements that 
+
+represent a risk to the priority of the mortgage. 
+
+o  All Schedule BI items will need to be removed from the ﬁnal title 
+
+report. 
+●  Schedule BII 
+
+o  Property must be free of any liens, fees or ﬁnes. 
+o  Property must be free of any disputes such as bankruptcy, 
+
+foreclosure, probate, or other situation involving third parties. 
+o  Taxes due within the next 60 days should be paid at closing (listed 
+
+on the HUD) 
+
+o  Customary recordings are ok including things like easements, 
+
+taxes not yet due, CC&R’s, and other standard local recordings.   
+
+________________________________________________________________________ 
+Lenders@BlueLakeCapital.com ◦ Incline Village, NV | Austin, TX 
+All the information hereof along with all communications related hereto shall be subject to the conﬁdentiality terms set forth in the MLPA. © 2026 Blue Lake Capital, LLC. 
+
+21 
+
+ 
+
+===== PAGE 22 =====
+●  Endorsements 
+
+o 
+
+Indemnity endorsement for any work performed prior to loan 
+closing (broken priority). Endorsement will vary by state. Most 
+common are endorsement 32 or ALTA 14. 
+
+o  Disbursement endorsements can also vary by state. Most 
+
+common are endorsement 33’s or title updates. 
+
+▪  Date downs/ endorsements will be required over the course 
+of the loan as funds are requested. Endorsement charges 
+should be charged at the time of loan closing.  
+
+●  Construction and Heavy Rehab loans – Required at 
+
+25%, 50%, 75%, and 100% of holdback disbursement.  
+
+●  Renovation loans - Required at 50% and 100% of 
+
+holdback disbursement or completion of project, 
+whichever comes ﬁrst. 
+
+________________________________________________________________________ 
+Lenders@BlueLakeCapital.com ◦ Incline Village, NV | Austin, TX 
+All the information hereof along with all communications related hereto shall be subject to the conﬁdentiality terms set forth in the MLPA. © 2026 Blue Lake Capital, LLC. 
+
+22 
+
+ 
+ 
+
+===== PAGE 23 =====
+Appendix D 
+
+Property Insurance Requirements 
+
+All loans will require evidence of acceptable coverage (detailed below) and 
+proof of premium being paid, if not included on the HUD. 
+
+Bridge or Renovation Loans 
+
+●  Hazard Insurance 
+
+o 
+
+ Dwelling coverage should equal the estimated replacement cost 
+as determined by the appraiser. 
+
+▪  Less than the appraiser’s estimated replacement cost is 
+
+acceptable if the agent provides a “100% replacement cost” 
+endorsement. 
+
+o 
+
+If appraisal is a hybrid report or DVI with no replacement cost, 
+then the coverage can be determined with the following 
+formulas. 
+
+▪  Bridge loans - 80% of the As Is value 
+▪  Renovation loans 80% of the ARV.   
+
+o  Mortgagee clause should include ISAOA/ATIMA to allow for the 
+
+assignment of rights to the buyer. 
+
+Heavy Rehab Loans 
+
+●  Add on to property within existing envelope 
+
+o  Hazard insurance coverage same as above. 
+●  Add on to property expanding existing envelope 
+
+o  Hazard insurance requirements same as above for existing 
+
+structure. 
+
+o  Builders risk coverage equal to the budgeted hard costs 
+o  Liability coverage equal to $1,000,000 per occurrence and 
+
+$2,000,000 aggregate 
+
+▪  $1,000,000 aggregate may be accepted as an exception in 
+circumstances where the agent cannot provide above that 
+amount.  
+
+Construction Loans 
+
+●  Builders Risk 
+
+o  Coverage equal to the budgeted hard costs. 
+
+________________________________________________________________________ 
+Lenders@BlueLakeCapital.com ◦ Incline Village, NV | Austin, TX 
+All the information hereof along with all communications related hereto shall be subject to the conﬁdentiality terms set forth in the MLPA. © 2026 Blue Lake Capital, LLC. 
+
+23 
+
+ 
+
+===== PAGE 24 =====
+o 
+
+If loan includes demolition of an existing dwelling, hazard 
+insurance is not required on the existing dwelling. 
+
+●  General Liability 
+
+o  Coverage equal to $1,000,000 per occurrence and $2,000,000 
+
+aggregate. 
+
+▪  $1,000,000 aggregate may be accepted as an exception in 
+circumstances where the agent cannot provide above that 
+amount. 
+
+________________________________________________________________________ 
+Lenders@BlueLakeCapital.com ◦ Incline Village, NV | Austin, TX 
+All the information hereof along with all communications related hereto shall be subject to the conﬁdentiality terms set forth in the MLPA. © 2026 Blue Lake Capital, LLC. 
+
+24 
+
+ 
+ 
+
+===== PAGE 25 =====
+Appendix E 
+
+Construction and Fund Control Requirements 
+
+Heavy Rehab and Construction Loans 
+
+●  All projects will require:  
+
+o  Budget  
+
+▪  The budget should be accompanied by a narrative 
+
+describing the scope of the project. 
+
+▪  Hard cost and soft costs to be broken out by line items, 
+
+such as framing, ﬂooring, rough plumbing, windows, etc.  
+
+▪  Contingency minimum of 7%. 
+▪ 
+
+If there will be an ADU in addition to renovation/ 
+construction, it should be broken out in the budget 
+separately. 
+
+▪  The budget must be provided in Excel (.xls) format 
+
+o  Timeline/Schedule  
+
+▪  Any construction loan or heavy rehab loan with a budget 
+
+over $500,000 requires a milestone timeline. 
+
+●  Permits, demo, foundation, framing, mechanicals, 
+
+drywall, C of O 
+
+▪  Rehab loans with budgets under $500,000 will require a 
+
+completion date or project duration. 
+
+● 
+
+If applicable, the following:  
+
+o  Plans (architectural, structural, MEP) 
+o  Permits 
+
+▪  For purchase transactions, permits may be obtained after 
+
+closing. No construction draws will be released until 
+permits are received.  
+
+Construction Underwriting Guidelines for Renovation Loans (not Heavy 
+Rehab or Construction):  
+
+●  All projects will require:  
+
+o  Budget  
+
+▪  The budget should be accompanied by a narrative 
+
+describing the scope of the project. 
+
+▪  Hard cost and soft costs to be broken out by line items  
+
+▪  Contingency minimum of 5%  
+
+▪  The budget must be provided in Excel (.xls) format 
+
+________________________________________________________________________ 
+Lenders@BlueLakeCapital.com ◦ Incline Village, NV | Austin, TX 
+All the information hereof along with all communications related hereto shall be subject to the conﬁdentiality terms set forth in the MLPA. © 2026 Blue Lake Capital, LLC. 
+
+25 
+
+ 
+ 
+
+===== PAGE 26 =====
+o  Timeline/Schedule  
+
+▪  Construction duration or end date 
+
+________________________________________________________________________ 
+Lenders@BlueLakeCapital.com ◦ Incline Village, NV | Austin, TX 
+All the information hereof along with all communications related hereto shall be subject to the conﬁdentiality terms set forth in the MLPA. © 2026 Blue Lake Capital, LLC. 
+
+26 
+
+ 
+ 
+
+===== PAGE 27 =====
+Appendix F 
+
+Required Documentation 
+
+●  Borrower Documents 
+
+o  Application or similar form documenting and attesting to the 
+
+beneﬁcial owners and controlling parties of the borrowing entity 
+
+o  Valid/ current government issued ID 
+o  Background report for each guarantor or owner with 25% or more 
+
+ownership 
+
+o  OFAC report for each guarantor or owner with 25% or more 
+
+ownership 
+
+o  Credit report for each guarantor 
+o  Liquidity statements 
+o  Track Record or SREO 
+
+●  Entity Documents 
+
+o  Operating Agreement or Bylaws 
+o  Articles of Organization 
+o  Certiﬁcate of Good Standing 
+o  EIN/ W9 Form 
+o  Any additional documents needed to verify legal formation and 
+
+beneﬁcial ownership 
+o  Entity background report 
+o  Entity OFAC report 
+
+●  Asset Documents 
+
+o  Appraisal 
+o  Purchase Agreement (if applicable), including all assignments 
+o  Proof of previous purchase price and date (HUD or Deed) 
+o  Evidence of Insurance 
+o  Flood Certiﬁcate 
+o  Budget (in Excel format) 
+o  Plans and Permits (if applicable) 
+o  Feasibility Report (if applicable) 
+
+●  Collateral Documents 
+
+o  Final HUD/ Settlement Statement 
+o  Promissory Note 
+o  Mortgage/ Deed of Trust 
+o  Guaranty 
+
+________________________________________________________________________ 
+Lenders@BlueLakeCapital.com ◦ Incline Village, NV | Austin, TX 
+All the information hereof along with all communications related hereto shall be subject to the conﬁdentiality terms set forth in the MLPA. © 2026 Blue Lake Capital, LLC. 
+
+27 
+
+ 
+
+===== PAGE 28 =====
+o  Loan Agreement 
+o  Environmental Indemnity 
+o  Title Commitment 
+o  Closing Protection Letter 
+o  Deed (if applicable) 
+o  Business Purpose Afﬁdavit 
+o  Completed ACH Form 
+
+________________________________________________________________________ 
+Lenders@BlueLakeCapital.com ◦ Incline Village, NV | Austin, TX 
+All the information hereof along with all communications related hereto shall be subject to the conﬁdentiality terms set forth in the MLPA. © 2026 Blue Lake Capital, LLC. 
+
+28 
+
+ 
+

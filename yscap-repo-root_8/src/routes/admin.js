@@ -428,7 +428,8 @@ router.post('/staff/:id/file-grants', async (req, res) => {
     try {
       await require('../lib/notify').notifyStaff(staffId, {
         type: 'assignment', title: 'You were given access to a file',
-        applicationId, link: `/internal/app/${applicationId}` });
+        body: 'An admin granted you full access to this file. The file details are below — open it to get started.',
+        applicationId, ctaLabel: 'Open the loan file', link: `/internal/app/${applicationId}` });
     } catch (_) { /* notification is best-effort */ }
     await adminAudit(req, 'grant_file_access', 'application', applicationId, { staffId, role });
     res.status(201).json({ ok: true });

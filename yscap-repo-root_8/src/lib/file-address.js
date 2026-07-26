@@ -49,4 +49,38 @@ function applicationIdFromRecipient(addr) {
   return UUID_RE.test(id) ? id : null;
 }
 
-module.exports = { fileReplyTo, applicationIdFromRecipient, UUID_RE };
+/**
+ * Per-ORDER reply-to address (#orders). A title / insurance order emails the
+ * vendor with a UNIQUE reply-to so the vendor's reply — and any documents they
+ * send back — land on the RIGHT order (title docs → the title order, insurance
+ * docs → the insurance order), not just the generic file inbox:
+ *   title+<applicationId>@<domain>   /   insurance+<applicationId>@<domain>
+ * Returns null under the same conditions as fileReplyTo (no domain / bad id / bad
+ * kind), so the order email still sends — just without order-scoped inbound.
+ */
+function orderReplyTo(applicationId, kind) {
+  if (!cfg.chatReplyDomain) return null;
+  const k = String(kind || '').trim().toLowerCase();
+  if (k !== 'title' && k !== 'insurance') return null;
+  const id = String(applicationId || '').trim().toLowerCase();
+  if (!UUID_RE.test(id)) return null;
+  return `${k}+${id}@${cfg.chatReplyDomain}`;
+}
+
+/**
+ * Parse a `title+<uuid>@<domain>` / `insurance+<uuid>@<domain>` recipient into
+ * { applicationId, orderType }, or null when it isn't a well-formed order address
+ * on the configured reply domain. Matched case-insensitively.
+ */
+function orderRefFromRecipient(addr) {
+  if (!cfg.chatReplyDomain) return null;
+  const m = String(addr || '').trim().toLowerCase().match(/^(title|insurance)\+([^@\s]+)@([^@\s]+)$/);
+  if (!m) return null;
+  const orderType = m[1];
+  const id = m[2];
+  const domain = m[3];
+  if (domain !== cfg.chatReplyDomain) return null;
+  return UUID_RE.test(id) ? { applicationId: id, orderType } : null;
+}
+
+module.exports = { fileReplyTo, applicationIdFromRecipient, orderReplyTo, orderRefFromRecipient, UUID_RE };

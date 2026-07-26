@@ -1,22 +1,27 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { useParams, useLocation, Link } from 'react-router-dom';
+import { useParams, useLocation, useNavigate, Link } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import { fmtDay } from '../lib/dates.js';
 import { formatSSN, cleanFICO, ficoValid } from '../lib/validators.js';
+import { ESIGN_RETURN_MSG } from '../lib/esign.js';
 import ChatThread from '../components/ChatThread.jsx';
 import { useAuth } from '../lib/auth.jsx';
 import PropertyPhoto from '../components/PropertyPhoto.jsx';
 import ActivityFeed from '../components/ActivityFeed.jsx';
 import StatusTimeline from '../components/StatusTimeline.jsx';
 import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
+import { programLabel, loanTypeLabel, propertyTypeLabel, officerLabel } from '../lib/labels.js';
 import ToolModal from '../components/ToolModal.jsx';
 import LlcPicker from '../components/LlcPicker.jsx';
 import LlcManager from '../components/LlcManager.jsx';
 import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
+import EsignBorrowerCard from '../components/EsignBorrowerCard.jsx';
 import { MoneyInput, PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
 import DocPreview from '../components/DocPreview.jsx';
 import FileContacts from '../components/FileContacts.jsx';
 import ChangeRequestPanel from '../components/ChangeRequestPanel.jsx';
+import BorrowerDraws from '../components/BorrowerDraws.jsx';
+import AppraisalPanel from '../components/AppraisalPanel.jsx';
 import { fileToBase64 } from '../lib/files.js';
 
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
@@ -288,10 +293,10 @@ function EsignCondition({ it }) {
       issue={it.status === 'issue'}
       title={it.label}
       subtitle={(it.esign_doc ? `Document: ${it.esign_doc}. ` : '') + (done
-        ? 'Signed — the executed copy is on your file.'
-        : (it.hint || 'You\'ll review and e-sign this document right here — electronic signing is being finalized. Your loan team will let you know the moment it\'s ready.'))}
+        ? 'Signed — the executed copy is on your file automatically.'
+        : (it.hint || 'Sign this in the “Sign your documents” box at the top of this section — or use the DocuSign email we sent you. Your signed copy is filed automatically, nothing to upload.'))}
       status={done ? 'Signed' : 'Awaiting signature'}
-      action={<button className="btn ghost small" disabled title="Electronic signing is being finalized — this button will open the signing ceremony">Review & sign — coming soon</button>}
+      action={done ? null : <span className="muted small">Sign in the box above ↑</span>}
     />
   );
 }
@@ -465,6 +470,12 @@ function BorrowerCompleteness({ app, profile, appId, onSaved }) {
     { key: 'arv', label: 'ARV (estimate)', ok: app.arv != null, type: 'money' },
     { key: 'rehab_budget', label: 'Rehab budget', ok: app.rehab_budget != null, type: 'money' },
     { key: 'cell_phone', label: 'Your phone', ok: !!b.cell_phone, type: 'tel' },
+    // Primary home address — required for completeness (owner-directed 2026-07-21).
+    // The borrower fills their profile address on the Profile screen; here we just
+    // hint if it's missing (no inline picker — the address is a structured object).
+    { key: 'current_address', label: 'Your primary home address',
+      ok: !!(b.current_address && ['line1', 'city', 'state', 'zip'].some((k) => String(b.current_address[k] || '').trim())),
+      edit: false },
     { key: 'date_of_birth', label: 'Date of birth', ok: !!b.date_of_birth, type: 'date' },
     { key: 'fico', label: 'Estimated FICO', ok: b.fico != null, type: 'fico' },
     { key: 'citizenship', label: 'Citizenship', ok: !!b.citizenship, type: 'select', options: ['US Citizen', 'Permanent Resident', 'Foreign National'] },
@@ -531,6 +542,17 @@ export default function Application() {
   // the Messages section so the recipient lands ON the conversation instead of at
   // the top of the file (owner-reported 2026-07-14). Runs once the file paints.
   const wantsChat = /(?:^|[?&])chat=/.test(loc.search || '');
+  // A signer bouncing back from DocuSign's embedded view lands on …?esign=<state>.
+  // Show a friendly confirmation, then strip the param so a refresh doesn't re-show it.
+  const nav = useNavigate();
+  const esignReturn = new URLSearchParams(loc.search || '').get('esign');
+  const [esignMsg] = useState(() => ESIGN_RETURN_MSG[esignReturn] || null);
+  useEffect(() => {
+    if (!esignReturn) return;   // strip whenever the param is present, even if unmapped
+    const sp = new URLSearchParams(loc.search);
+    sp.delete('esign');
+    nav({ pathname: loc.pathname, search: sp.toString() ? `?${sp.toString()}` : '' }, { replace: true });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [app, setApp] = useState(null);
   const [items, setItems] = useState([]);
   const [uploads, setUploads] = useState([]);
@@ -539,6 +561,10 @@ export default function Application() {
   const [dlBusy, setDlBusy] = useState(null);
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
+  // Appraisal report presence — reported up by the (read-only) AppraisalPanel so the
+  // section only appears in the nav once an appraisal has actually been received.
+  const [apprPresent, setApprPresent] = useState(false);
+  const onApprSummary = useCallback((s) => setApprPresent(!!s), []);
   const fileRef = useRef(null);
   const studioRef = useRef(null);               // the Products & Pricing sheet
   const [target, setTarget] = useState(null);   // {itemId, slotBase|slot, replaceDocumentId, photoId}
@@ -725,6 +751,8 @@ export default function Application() {
     { id: 'sec-overview', label: 'Loan overview' },
     { id: 'sec-application', label: 'Application details' },
     { id: 'sec-pricing', label: 'Structure & pricing', badge: app.registered_program ? '✓' : '' },
+    { id: 'sec-appraisal', label: 'Appraisal report', badge: apprPresent ? '✓' : '' },
+    ...(app.status === 'funded' ? [{ id: 'sec-draws', label: 'Construction draws' }] : []),
     { id: 'sec-conditions', label: 'Conditions to close', badge: nOpen || '' },
     { id: 'sec-contacts', label: 'Contacts' },
     ...(uploads.length ? [{ id: 'sec-documents', label: 'Document history', badge: uploads.length }] : []),
@@ -741,7 +769,7 @@ export default function Application() {
         <Link to="/dashboard" className="btn link" style={{ flex: 'none' }}>← All loans</Link>
         <div className="file-top-main">
           <h1 className="file-top-addr">{addrLine(app.property_address)}</h1>
-          <span className="muted small">{app.ys_loan_number || 'Loan # pending'} · {app.program || '—'} · {app.loan_type || '—'}</span>
+          <span className="muted small">{app.ys_loan_number || 'Loan # pending'} · {programLabel(app.program, app.registered_product_label) || '—'} · {loanTypeLabel(app.loan_type) || '—'}</span>
         </div>
         {app.loan_amount != null && (
           <span className="file-top-amt">
@@ -752,6 +780,7 @@ export default function Application() {
         <span className={`pill ${app.status}`} style={{ flex: 'none' }}>{LABEL[app.status] || app.status}</span>
       </div>
 
+      {esignMsg && <div className={`notice ${esignMsg.tone}`} role="status">{esignMsg.text}</div>}
       {msg && <div className="notice ok">{msg}</div>}
       {err && <div role="alert" className="notice err">{err}</div>}
 
@@ -771,7 +800,7 @@ export default function Application() {
           expectedClosing={app.expected_closing} actualClosing={app.actual_closing} />
         <div className="panel" style={{ marginTop: 0 }}>
           <h3 style={{ marginBottom: 12 }}>Loan snapshot <InfoTip tip="The headline numbers your loan team works from. Ask your officer to update deal numbers — they flow into pricing automatically." /></h3>
-          <div className="metrow"><span className="k">Officer</span><span className="v">{app.loan_officer_name || 'Lead Capture'}{app.team_online && <span title="Your loan team is online now" style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#3fb950', marginLeft: 8, verticalAlign: 'middle' }} />}</span></div>
+          <div className="metrow"><span className="k">Officer</span><span className="v">{officerLabel(app.loan_officer_name)}{app.team_online && <span title="Your loan team is online now" style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#3fb950', marginLeft: 8, verticalAlign: 'middle' }} />}</span></div>
           <div className="metrow"><span className="k">Purchase price</span><span className="v">{money(app.purchase_price)}</span></div>
           <div className="metrow"><span className="k">As-is value</span><span className="v">
             {money(app.as_is_value ?? app.purchase_price)}
@@ -849,9 +878,9 @@ export default function Application() {
         <div className="panel" style={{ marginTop: 0 }}>
           <h3 style={{ marginBottom: 12 }}>Property & transaction</h3>
           <div className="metrow"><span className="k">Address</span><span className="v">{addrLine(app.property_address)}</span></div>
-          <div className="metrow"><span className="k">Property type</span><span className="v">{app.property_type || '—'}{app.units ? ` · ${app.units} unit${app.units > 1 ? 's' : ''}` : ''}</span></div>
-          <div className="metrow"><span className="k">Program</span><span className="v">{app.program || '—'}</span></div>
-          <div className="metrow"><span className="k">Transaction</span><span className="v">{app.loan_type || '—'}</span></div>
+          <div className="metrow"><span className="k">Property type</span><span className="v">{propertyTypeLabel(app.property_type) || '—'}{app.units ? ` · ${app.units} unit${app.units > 1 ? 's' : ''}` : ''}</span></div>
+          <div className="metrow"><span className="k">Program</span><span className="v">{programLabel(app.program, app.registered_product_label) || '—'}</span></div>
+          <div className="metrow"><span className="k">Transaction</span><span className="v">{loanTypeLabel(app.loan_type) || '—'}</span></div>
           {isRefi ? <>
             <div className="metrow"><span className="k">Payoff amount</span><span className="v">{money(app.payoff_amount)}</span></div>
             <div className="metrow"><span className="k">Original purchase price</span><span className="v">{money(app.original_purchase_price)}</span></div>
@@ -871,10 +900,23 @@ export default function Application() {
         toolItemId={(items.find(it => it.tool_key === 'product_pricing') || {}).id} /></div>
       </Section>
 
+      <Section id="sec-appraisal" title="Appraisal report"
+        info="Your property's appraisal at a glance — the valuation, the comparable sales, and the appraiser. Anything your loan team is still reviewing is shown here for your visibility; your team handles those items.">
+        <AppraisalPanel appId={id} readOnly onSummary={onApprSummary} />
+      </Section>
+
+      {app.status === 'funded' && (
+        <Section id="sec-draws" title="Construction draws"
+          info="Your construction budget vs. what's been released, and your inspection results — accept them to start your release, or dispute a line with the amount you expect.">
+          <BorrowerDraws appId={id} />
+        </Section>
+      )}
+
       {/* ================= CONDITIONS — one list, everything the file needs ================= */}
       <Section id="sec-conditions" title="Conditions to close"
         info="Every item your loan team needs before closing, in the order it's worked. Upload to a condition and it moves to review; your team accepts, or asks for a fix — you'll be notified either way."
         badge={`${nDone}/${items.length} complete`}>
+      <EsignBorrowerCard appId={id} />
       <div className="panel" style={{ marginTop: 0 }}>
         <div className="row" style={{ marginBottom: 6, gap: 8, flexWrap: 'wrap' }}>
           <h3>Your conditions</h3>
@@ -1218,7 +1260,7 @@ export default function Application() {
           <div className="rail-team">
             <span className="rail-ava" aria-hidden="true" />
             <div className="rail-who">
-              <div className="rail-n">{(officer && officer.full_name) || app.loan_officer_name || 'Lead Capture'}</div>
+              <div className="rail-n">{officerLabel((officer && officer.full_name) || app.loan_officer_name)}</div>
               <div className="rail-r muted small">{(officer && officer.title) || 'Loan Officer'}{officer && officer.nmls ? ` · NMLS #${officer.nmls}` : ''}</div>
             </div>
           </div>

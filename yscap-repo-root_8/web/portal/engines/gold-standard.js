@@ -4,8 +4,9 @@
    Second YS Capital program (separate from the Standard Program engine).
    IMPORTANT brand & pricing rules, mirroring the Standard engine:
      • The source program name is NEVER exposed anywhere user-facing.
-     • The borrower NOTE RATE = the sheet price + adjustments (NO markup). The
-       only borrower add-on is the 1% origination, same as the Standard Program.
+     • The borrower NOTE RATE = the sheet price + adjustments + the YS markup
+       (0.5%, except top-experience Tier 1 which is exempt). The only borrower
+       fee add-on is the 1.25% origination, same as the Standard Program.
    Distinct mechanics vs. the Standard Program (do not cross-wire):
      • Pricing is FLAT per product × tier — leverage does NOT change the
        rate. Leverage caps only limit the loan size.
@@ -26,8 +27,9 @@
   "use strict";
 
   /* ---------------- constants ---------------- */
-  // Gold Standard has NO rate markup — the sheet's price IS the borrower note rate.
-  // (The borrower's only add-on is the 1% origination, same as the Standard Program.)
+  // Gold Standard rate = sheet price + adjustments + 0.5% markup (top-experience
+  // Tier 1 is exempt — see markupFor()). The borrower's only fee add-on is the
+  // 1.25% origination, same as the Standard Program.
   var MARKUP = 0.005;            // base YS markup (0.5%); top-experience Tier 1 is exempt — see markupFor()
   var MARKUP_OVR = null;         // admin-set markup override (fraction); null = default
   function effMarkup() { return (MARKUP_OVR == null) ? MARKUP : MARKUP_OVR; }
@@ -107,7 +109,11 @@
     // purchase price or as-is value; plus ADU, GLA expansion > 250 sqft, change of use, or
     // modification/removal of load-bearing structures.
     var pp = num(input.purchasePrice), aiv = num(input.asIsValue), rehab = num(input.rehabBudget);
-    var basis = Math.min(pp > 0 ? pp : Infinity, aiv > 0 ? aiv : Infinity);
+    // Refinances have no purchase price in the deal — classify Heavy off the as-is
+    // value alone (mirrors standard-program.js heavyBasis); purchases use min(price, as-is).
+    var basis = (up(input.loanType) === "REFINANCE")
+      ? (aiv > 0 ? aiv : (pp > 0 ? pp : Infinity))
+      : Math.min(pp > 0 ? pp : Infinity, aiv > 0 ? aiv : Infinity);
     if (basis < Infinity && basis > 0 && rehab >= 0.50 * basis) return true;
     if (input.sqftAddition || input.aduAddition || input.changeOfUse || input.loadBearing) return true;
     return input.heavyRehab === true;   // otherwise honor an explicit escalation to Heavy; default Light
@@ -210,10 +216,17 @@
       ["ground lease","properties subject to a ground lease"], ["earthen","earthen homes"],
       ["assisted living","assisted-living or non-profit facilities"], ["non-profit","assisted-living or non-profit facilities"], ["nonprofit","assisted-living or non-profit facilities"],
       ["native american","properties on Native American land"], ["tribal","properties on Native American land"],
-      ["fractional","fractional-ownership properties"], ["unique","unique properties"]
+      ["fractional","fractional-ownership properties"], ["unique","unique properties"],
+      // Parity with the Standard engine's ineligible-property list + the normalized
+      // labels buildInputs emits (mixed-use / commercial / multifamily 5+). Without
+      // these Gold priced a mixed-use, commercial, or label-only 5+ building as
+      // eligible even though Standard blocks it (final audit 2026-07-17).
+      ["mixed","mixed-use properties"], ["commercial","commercial properties"]
     ];
     for (var _p = 0; _p < PT.length; _p++) { if (ptype.indexOf(PT[_p][0]) > -1) { add("INELIGIBLE", "This program does not lend on " + PT[_p][1] + "."); break; } }
-    if (num(input.units) >= 5) add("INELIGIBLE", "Properties with 5 or more units are not eligible — 1–4 unit residential only.");
+    // 5+ units by the numeric field OR by the property-type label ("multifamily 5+",
+    // "5+ units") — a label-only 5+ with a blank units field must still be blocked.
+    if (num(input.units) >= 5 || /5\s*\+|multifamily\s*5|5\s*or\s*more\s*unit/.test(ptype)) add("INELIGIBLE", "Properties with 5 or more units are not eligible — 1–4 unit residential only.");
     if (num(input.condoStories) > 6) add("INELIGIBLE", "Condos in buildings over 6 stories are not eligible.");
     if (input.shortTermRental === true || /short.?term|vacation rental|\bstr\b|airbnb/.test(ptype)) add("INELIGIBLE", "Short-term / vacation rentals are not eligible.");
     if (input.rural === true) add("INELIGIBLE", "Rural properties are not eligible on this program.");
@@ -364,14 +377,17 @@
     // ---- min / max loan → manual review ----
     var loanAmt = sizing.totalLoan || 0;
     if (loanAmt > 0 && loanAmt < MIN_LOAN) add("MANUAL", "The supported loan of " + dollars(loanAmt) + " is below the $100,000 minimum — submit for manual review.");
-    if (loanAmt > MAX_LOAN) add("MANUAL", "The supported loan exceeds the $3,000,000 maximum — submit for manual review.");
+    // Flag off the PRE-CAP demand: sizeLoan already caps the total at $3M, so the
+    // supported loan never exceeds it — the leverage-supported amount before the
+    // dollar ceiling is what tells us the borrower's demand blew past the max.
+    if ((sizing.preMaxTotal || loanAmt) > MAX_LOAN + 0.5) add("MANUAL", "The supported loan exceeds the $3,000,000 maximum — submit for manual review.");
     // rehab/construction budget larger than the program can finance (total capped at the max/ARV wall)
     if (sizing.rehabOverCap) add("MANUAL", "The rehab/construction budget exceeds what this program can finance — the loan is capped at " + dollars(sizing.totalLoan) + ", so the remaining budget would be funded out of pocket. Reduce the scope or use a larger facility.");
 
     // ---- loan profitability: for any loan with a renovation or construction component,
     //      if total project costs exceed the ARV the loan is INELIGIBLE for purchase. Bridge is exempt
     //      (acquisition-only, no rehab / ARV component).
-    var exitGap = (pr.kind === "bridge") ? 0 : YSP.exitShortfall(effPurchase, num(input.rehabBudget), input.arv);
+    var exitGap = (pr.kind === "bridge") ? 0 : YSP.exitShortfall(loanType === "Purchase" ? effPurchase : num(input.asIsValue), num(input.rehabBudget), input.arv);
     if (exitGap > 0) add("INELIGIBLE", "Total project costs exceed the after-repair value (short by " + dollars(exitGap) + ") — the business plan isn't profitable, so this loan is ineligible for purchase.");
 
     // ---- escalation triggers (Gold Standard Program): deal stays ELIGIBLE, but flagged for review ----

@@ -1,5 +1,14 @@
 # DocuSign Integration — Research Blueprint (owner-requested, 2026-07-13)
 
+> **EXTENDED (2026-07-17) by `docs/DOCUSIGN-INTEGRATION-BLUEPRINT.md`.** This document remains the
+> valid DocuSign-platform foundation (auth, envelopes/tabs, Connect, compliance, risks). The newer
+> blueprint goes the next level: it maps everything to the **actual YS Capital code** (file:line),
+> reconciles the **schema already pre-staged** for this (`esign_envelopes`, `esign_doc`,
+> `tool_key='esign'`, `term_sheet_signed` → `Term Sheet/Signed`), designs the **specific workflows**
+> (term sheet after product registration, application signing, and the **draw/wire-info scope flag**),
+> adds the **security / manual-review / anti-guessing guard model**, and lists **what the owner must
+> provide to start building**. Read this doc for fundamentals, the blueprint for the build design.
+
 _Research only — nothing is implemented. Produced by a 7-agent research sweep over official
 DocuSign documentation (auth, envelopes/tabs, Connect webhooks, signing experience, lending
 compliance, limits/SDK), synthesized and independently re-verified. No credentials appear in

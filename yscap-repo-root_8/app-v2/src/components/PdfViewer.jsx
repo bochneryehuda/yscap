@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
+import { findHighlightItems } from '../lib/pdfHighlight.js';
 
 /**
  * Feature-rich PDF preview powered by PDF.js (Mozilla's engine — the same one
@@ -14,18 +15,29 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
  * from a CDN — the strict CSP is honored.
  *
  * Props:
- *   data      ArrayBuffer of the PDF bytes (preferred — origin-independent)
- *   onError   () => void   called if the document can't be parsed
+ *   data        ArrayBuffer of the PDF bytes (preferred — origin-independent)
+ *   onError     () => void   called if the document can't be parsed
+ *   initialPage optional 1-based page to scroll to once rendered (findings
+ *               "open the source document to page N" — the page the finding
+ *               was raised from). Auto-jumps ONCE; the reader can then scroll.
+ *   highlight   optional string — the conflicting value to visually highlight
+ *               (findings "highlight the actual conflicting text in the PDF").
+ *               Best-effort: we search each page's text for the value (trying a
+ *               few money/name forms) and draw a soft box over the matching
+ *               words. No match → nothing drawn (the page still opens to
+ *               initialPage). Never selectable text — a pure visual cue.
  */
-export default function PdfViewer({ data, onError }) {
+export default function PdfViewer({ data, onError, initialPage, highlight }) {
   const [status, setStatus] = useState('loading');   // loading | ready | error
   const [numPages, setNumPages] = useState(0);
   const [page, setPage] = useState(1);
   const [scale, setScale] = useState(1.15);
   const pdfRef = useRef(null);
+  const pdfjsRef = useRef(null);       // the pdfjs module (for Util.transform when highlighting)
   const scrollRef = useRef(null);
   const pageRefs = useRef([]);          // one wrapper div per page
   const renderTokens = useRef(0);       // cancels stale re-renders on zoom
+  const jumpedRef = useRef(false);      // auto-jump to initialPage only once
 
   // Load the document once. Clone the ArrayBuffer because pdfjs transfers
   // (neuters) the buffer it's given, which would break a later re-open.
@@ -34,6 +46,7 @@ export default function PdfViewer({ data, onError }) {
     (async () => {
       try {
         const pdfjs = await import('pdfjs-dist');
+        pdfjsRef.current = pdfjs;
         const workerUrl = (await import('pdfjs-dist/build/pdf.worker.min.mjs?url')).default;
         pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
         const buf = data.slice(0);
@@ -73,10 +86,60 @@ export default function PdfViewer({ data, onError }) {
           canvas.style.height = Math.floor(viewport.height) + 'px';
           ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
           await pg.render({ canvasContext: ctx, viewport }).promise;
+          // Highlight the conflicting value on this page (best-effort). Clear any
+          // boxes from a previous render (zoom re-renders), then find the value's
+          // text items and draw a soft box over each, positioned with pdfjs'
+          // viewport transform. A parse/search failure just means no highlight.
+          wrap.querySelectorAll('.pdf-hl').forEach((el) => el.remove());
+          if (highlight && pdfjsRef.current) {
+            try {
+              const tc = await pg.getTextContent();
+              // A newer zoom may have superseded us during the await — if so, that
+              // render already cleared + redrew this page's boxes, so bail rather
+              // than append a duplicate stale set (cosmetic race; pre-merge audit).
+              if (token !== renderTokens.current) return;
+              const hits = findHighlightItems(tc.items, highlight);
+              for (const idx of hits) {
+                const it = tc.items[idx];
+                if (!it || !it.transform) continue;
+                const tx = pdfjsRef.current.Util.transform(viewport.transform, it.transform);
+                const fontH = Math.hypot(tx[2], tx[3]) || Math.hypot(tx[0], tx[1]) || 12;
+                const w = (Number(it.width) || 0) * viewport.scale;
+                const box = document.createElement('div');
+                box.className = 'pdf-hl';
+                box.style.cssText = `position:absolute;left:${tx[4]}px;top:${tx[5] - fontH}px;`
+                  + `width:${Math.max(w, 4)}px;height:${fontH * 1.15}px;`
+                  + 'background:rgba(255,213,0,0.40);border-radius:2px;pointer-events:none;mix-blend-mode:multiply;';
+                wrap.appendChild(box);
+              }
+            } catch (_) { /* highlighting is best-effort */ }
+          }
         } catch (_) { /* one bad page never kills the rest */ }
       }
     })();
-  }, [status, scale, numPages]);
+  }, [status, scale, numPages, highlight]);
+
+  // Auto-jump to a requested page once it has actually rendered (its wrapper has
+  // real height). Pages render sequentially + async, so poll a few frames until
+  // the target page is measurable, then scroll to it — once. A manual scroll or
+  // zoom afterward won't re-trigger it (jumpedRef).
+  useEffect(() => {
+    if (status !== 'ready' || !initialPage || initialPage < 1 || jumpedRef.current) return;
+    let raf = 0, tries = 0;
+    const tryScroll = () => {
+      const target = Math.min(numPages || 1, initialPage);
+      const w = pageRefs.current[target - 1];
+      if (w && w.offsetHeight > 60 && scrollRef.current) {
+        scrollRef.current.scrollTo({ top: Math.max(0, w.offsetTop - 8), behavior: 'auto' });
+        setPage(target);
+        jumpedRef.current = true;
+        return;
+      }
+      if (tries++ < 180) raf = requestAnimationFrame(tryScroll);   // ~3s at 60fps, then give up
+    };
+    raf = requestAnimationFrame(tryScroll);
+    return () => { if (raf) cancelAnimationFrame(raf); };
+  }, [status, numPages, initialPage]);
 
   // Track which page is centered so the toolbar counter is live.
   const onScroll = useCallback(() => {
@@ -122,7 +185,9 @@ export default function PdfViewer({ data, onError }) {
             // and the explicit minHeight overrides the default min-height:auto,
             // so without it multi-page PDFs get each wrapper squashed and the
             // fixed-height canvases overlap — the "top of the doc repeated" bug.
-            style={{ background: '#fff', boxShadow: '0 2px 10px rgba(0,0,0,0.4)', minHeight: 40, flexShrink: 0 }} />
+            // position:relative anchors the absolute highlight boxes (.pdf-hl) to
+            // this page's canvas.
+            style={{ background: '#fff', boxShadow: '0 2px 10px rgba(0,0,0,0.4)', minHeight: 40, flexShrink: 0, position: 'relative' }} />
         ))}
       </div>
     </div>

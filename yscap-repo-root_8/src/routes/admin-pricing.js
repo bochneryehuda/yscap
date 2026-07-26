@@ -17,7 +17,7 @@ router.get('/', async (req, res) => {
     const cur = await pricingSettings.load();
     const hist = await db.query(
       `SELECT cps.id, cps.markup_std_pct, cps.markup_gold_pct, cps.orig_std_pct, cps.orig_gold_pct,
-              cps.lender_fee, cps.credit_fee, cps.appraisal_fee, cps.title_fee, cps.note,
+              cps.lender_fee, cps.credit_fee, cps.appraisal_fee, cps.title_fee, cps.extra_fees, cps.note,
               cps.is_current, cps.created_at, s.full_name AS updated_by_name
          FROM company_pricing_settings cps
          LEFT JOIN staff_users s ON s.id = cps.updated_by
@@ -28,6 +28,20 @@ router.get('/', async (req, res) => {
 
 router.put('/', async (req, res) => {
   const b = req.body || {};
+  // Extra fees: clean + validate the admin-managed list ({name, amount, state}).
+  // A caller that does NOT send extraFees (e.g. the legacy V1 pricing screen)
+  // must PRESERVE the current list, never wipe it — only an explicit array
+  // replaces it. The V2 Pricing Admin Center always sends the full list.
+  let extraFees;
+  if (b.extraFees !== undefined) {
+    extraFees = pricingSettings.cleanExtraFees(b.extraFees);
+    for (const f of extraFees) {
+      if (f.amount < 0 || f.amount > 1000000) return res.status(400).json({ error: `fee "${f.name}" amount looks out of range` });
+      if (f.state && !/^[A-Z]{2}$/.test(f.state)) return res.status(400).json({ error: `fee "${f.name}" has an invalid state code` });
+    }
+  } else {
+    extraFees = pricingSettings.cleanExtraFees((await pricingSettings.load()).extraFees);
+  }
   const cols = {
     markup_std_pct: numOrNull(b.markupStdPct), markup_gold_pct: numOrNull(b.markupGoldPct),
     orig_std_pct: numOrNull(b.origStdPct), orig_gold_pct: numOrNull(b.origGoldPct),
@@ -41,6 +55,8 @@ router.put('/', async (req, res) => {
     if (/pct/.test(k) && (v < 0 || v > 100)) return res.status(400).json({ error: `${k} must be between 0 and 100` });
     if (/fee/.test(k) && (v < 0 || v > 1000000)) return res.status(400).json({ error: `${k} looks out of range` });
   }
+  // extra_fees is a jsonb column, appended after the scalar columns below.
+  cols.extra_fees = JSON.stringify(extraFees);
   const client = await db.getClient();
   try {
     await client.query('BEGIN');

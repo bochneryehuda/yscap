@@ -18,9 +18,48 @@
  */
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const db = require('./db');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ---- WO-13 (F-M19): migration ledger -------------------------------------
+// Every migration is still re-applied idempotently on every boot (belt-and-
+// suspenders). The ledger ADDS observability + a loud alarm: it records each
+// applied file's checksum, and if a file's content changed since it was last
+// applied, it warns that a migration was EDITED after being applied — a real
+// hazard, since an edit to an already-applied file may not re-apply cleanly, so
+// schema changes must be a NEW numbered file, never an edit to an old one.
+function migrationChecksum(sql) {
+  return crypto.createHash('sha256').update(String(sql), 'utf8').digest('hex');
+}
+/** Pure: has this file's content changed since it was last applied? */
+function isChecksumDrift(prevSha, curSha) {
+  return !!(prevSha && curSha && prevSha !== curSha);
+}
+async function ensureLedgerTable() {
+  await db.query(`CREATE TABLE IF NOT EXISTS schema_migrations (
+    filename    text PRIMARY KEY,
+    sha256      text NOT NULL,
+    applied_at  timestamptz NOT NULL DEFAULT now(),
+    last_seen   timestamptz NOT NULL DEFAULT now()
+  )`);
+}
+async function recordMigration(filename, sql) {
+  const sha = migrationChecksum(sql);
+  try {
+    const prev = (await db.query(`SELECT sha256 FROM schema_migrations WHERE filename=$1`, [filename])).rows[0];
+    if (isChecksumDrift(prev && prev.sha256, sha)) {
+      console.error(`[migrate] CHECKSUM DRIFT: ${filename} was EDITED after it was applied ` +
+        `(was ${prev.sha256.slice(0, 8)}…, now ${sha.slice(0, 8)}…). Schema changes must be a NEW numbered ` +
+        `migration, never an edit to an applied one — this edit may not have taken effect on existing databases.`);
+    }
+    await db.query(
+      `INSERT INTO schema_migrations (filename, sha256, applied_at, last_seen) VALUES ($1,$2,now(),now())
+       ON CONFLICT (filename) DO UPDATE SET sha256=EXCLUDED.sha256, last_seen=now()`,
+      [filename, sha]);
+  } catch (e) { console.warn(`[migrate] ledger record skipped for ${filename}: ${db.describeError(e)}`); }
+}
 
 /** Wait until the DB accepts a trivial query, with bounded backoff. */
 async function waitForDb({ attempts = 8, baseDelayMs = 1000 } = {}) {
@@ -73,6 +112,10 @@ async function ensureSchema() {
     hasBase = !!(r.rows[0] && r.rows[0].t);
   } catch (_) { /* treat as absent */ }
 
+  // WO-13 (F-M19): make sure the ledger table exists before we start recording.
+  // Best-effort — a failure here just means the boot proceeds without the ledger.
+  try { await ensureLedgerTable(); } catch (e) { console.warn('[migrate] ledger table unavailable:', db.describeError(e)); }
+
   const ran = [];
   for (const f of files) {
     // schema.sql is NOT idempotent (bare CREATE TABLE). Only run it on a truly
@@ -82,6 +125,7 @@ async function ensureSchema() {
     try {
       await db.query(sql);
       ran.push(f);
+      await recordMigration(f, sql);   // WO-13: ledger + checksum-drift alarm
       console.log(`[migrate] applied ${f}`);
     } catch (e) {
       // "already exists" style errors mean the file was applied before by hand;
@@ -89,6 +133,7 @@ async function ensureSchema() {
       // bad file can't block the rest / the boot.
       const msg = db.describeError(e);
       if (/already exists|duplicate/i.test(msg)) {
+        await recordMigration(f, sql);   // still applied — record it
         console.warn(`[migrate] ${f} already applied (${msg.split(' ')[0]}...) — continuing`);
       } else {
         console.error(`[migrate] ${f} FAILED: ${msg} — continuing`);
@@ -137,4 +182,5 @@ async function bootstrapAdmin() {
   }
 }
 
-module.exports = { ensureSchema, waitForDb, bootstrapAdmin };
+module.exports = { ensureSchema, waitForDb, bootstrapAdmin,
+  migrationChecksum, isChecksumDrift }; // WO-13: exported for the ledger test

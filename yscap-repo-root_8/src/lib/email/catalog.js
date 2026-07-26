@@ -21,6 +21,23 @@ const provider = require('./index');          // active email provider (.sendMai
 const { render } = require('./template');
 const cfg = require('../../config');
 
+// Short file identifier for the SUBJECT of a file-scoped catalog email
+// ("YS-1042 · 123 Main St"), so an invite / draw / sign email names its file in
+// the inbox the same way notify-routed emails do. Concise: loan# + a short
+// property, whichever are present.
+function fileTag(loanNumber, propertyLabel) {
+  const street = propertyLabel ? String(propertyLabel).split(',')[0].trim() : '';
+  return [loanNumber, street].filter(Boolean).join(' · ') || loanNumber || street || '';
+}
+// NOTE: these catalog builders take only TRUSTED structured data — a property
+// address, a staff/borrower name, a loan number, or a controlled label — none of
+// which ever carries a note-buyer / capital-partner name, so no scrub is applied
+// here. (Running the plain scrub over an address/name would WRONGLY mangle a legit
+// collision like "12 Churchill Lane" → "…Gold Standard program Lane"; that's why
+// the notify chokepoint uses scrubTextExcept with an address protect-list, not a
+// blanket scrub.) If a builder ever gains a STAFF-TYPED free-text field, scrub
+// THAT field with a protect-list like notifyBorrower does — never blanket-scrub.
+
 /* Absolute portal URL for a hash-route path, e.g. link('/verify?token=abc') ->
    https://host/portal/#/verify?token=abc . The SPA lives under cfg.portalPath
    ('/portal') with a HashRouter, so the path MUST be included or the link opens
@@ -83,6 +100,8 @@ function welcome({ firstName, verifyUrl } = {}) {
       'Tap the button below to activate your account — that’s it. The link is valid for 7 days.',
     ],
     cta: verifyUrl ? { label: 'Activate my account', url: verifyUrl } : null,
+    badge: { text: 'Portal ready', tone: 'positive' },
+    replyable: true,
     note: 'If you did not create this account, disregard this message and no action will be taken.',
   });
 }
@@ -97,6 +116,8 @@ function verifyEmail({ firstName, verifyUrl } = {}) {
     intro: 'Please confirm the email address on file for your YS Capital Group portal account.',
     lines: ['Tap the button below to confirm your email — no code to enter. The link is valid for 7 days.'],
     cta: verifyUrl ? { label: 'Confirm email address', url: verifyUrl } : null,
+    badge: { text: 'Confirm email', tone: 'gold' },
+    replyable: true,
     note: 'If you did not request this, you can safely ignore it.',
   });
 }
@@ -187,6 +208,8 @@ function leadReceived({ firstName, toolLabel, officerName } = {}) {
         : 'A member of our loan team will review it and follow up with you shortly to walk through next steps.',
       'If you need anything in the meantime, just reply to this email or call us.',
     ],
+    badge: { text: 'Received', tone: 'positive' },
+    replyable: true,
     note: 'You are receiving this because you submitted a request on yscapgroup.com.',
   });
 }
@@ -210,6 +233,8 @@ function coBorrowerInvite({ firstName, primaryName, acceptUrl, hasAccount, offic
   return render({
     audience: 'borrower',
     title: 'You have been added to a loan application',
+    badge: { text: 'Portal invite', tone: 'teal' },
+    replyable: true,
     preheader: 'Set up portal access to follow the file with ' + (primaryName || 'your co-borrower') + '.',
     greeting: greet(firstName),
     intro: (primaryName || 'Your co-borrower') + ' has named you as a co-borrower on a YS Capital Group loan application.',
@@ -235,6 +260,9 @@ function borrowerInvite({ firstName, propertyLabel, loanNumber, inviter, acceptU
   return render({
     audience: 'borrower',
     title: 'Your loan file is ready in the portal',
+    subjectTag: fileTag(loanNumber, propertyLabel),
+    badge: { text: 'Portal invite', tone: 'teal' },
+    replyable: true,
     preheader: 'Set up secure access to follow your loan with YS Capital Group.',
     greeting: greet(firstName),
     intro: (inviter ? inviter + ' at YS Capital Group' : 'Your loan team at YS Capital Group')
@@ -248,6 +276,56 @@ function borrowerInvite({ firstName, propertyLabel, loanNumber, inviter, acceptU
     cta: acceptUrl ? { label: hasAccount ? 'Sign in to the portal' : 'Set up your access', url: acceptUrl } : null,
     note: 'If you were not expecting this, you can disregard it and no access will be created.',
   });
+}
+
+/** PILOT's OWN "your documents are ready to sign" invitation (owner-directed
+ *  2026-07-20). The button (`signUrl`) takes the borrower STRAIGHT into their
+ *  secure signing session — no portal stop, no "Sign now" click — and returns them
+ *  to their loan file afterward. Borrower-safe by construction: only the loan #,
+ *  property, and package name (never a capital-partner / note-buyer name). This
+ *  rides ALONGSIDE DocuSign's own email (belt-and-suspenders — "both"). */
+function esignReadyToSign({ firstName, propertyLabel, loanNumber, packageLabel, signUrl, officer } = {}) {
+  const meta = [];
+  if (propertyLabel) meta.push({ label: 'Property', value: propertyLabel });
+  if (loanNumber) meta.push({ label: 'Loan #', value: loanNumber });
+  if (packageLabel) meta.push({ label: 'To sign', value: packageLabel });
+  officerMeta(meta, officer);
+  return render({
+    audience: 'borrower',
+    title: 'Your documents are ready to sign',
+    subjectTag: fileTag(loanNumber, propertyLabel),
+    badge: { text: 'Signature needed', tone: 'gold' },
+    replyable: true,
+    preheader: 'A secure electronic signature is needed on your loan documents.',
+    greeting: greet(firstName),
+    intro: 'Your ' + (packageLabel ? packageLabel.toLowerCase() : 'loan documents')
+      + ' ' + (packageLabel && !/s$/i.test(packageLabel) ? 'is' : 'are') + ' ready for your electronic signature with YS Capital Group.',
+    lines: [
+      'Tap the button below to review and sign securely — it opens your signing session right away, and brings you back to your loan file when you\'re done.',
+      'Your signature is handled through our e-signature partner (DocuSign). You may also receive a separate email directly from DocuSign for the same documents — either one takes you to the same place.',
+    ],
+    meta,
+    cta: signUrl ? { label: 'Review & sign', url: signUrl } : null,
+    note: 'If you were not expecting this, you can disregard it — nothing is signed until you review and approve it yourself.',
+  });
+}
+
+/* PILOT-branded DRAW wire-instructions signing invite (owner-directed 2026-07-21).
+   When the DocuSign "Draw Request & Wire Instructions" package goes out, PILOT sends
+   its OWN designed email with a DIRECT link into the signing session (magic link) —
+   emphasizing that wires release only after the form is signed and that the bank
+   details must be exact. Borrower-safe by construction (property + budget + loan #
+   only). Records to the DRAW email section (msg_type 'draw_request'). The magic
+   signUrl authenticates AS this borrower, so it is sent to the borrower ONLY —
+   never BCC'd to the desk/officer. */
+function drawWireReadyToSign({ firstName, propertyLabel, loanNumber, budgetCents, signUrl, portalUrl, officer } = {}) {
+  const { wireFormEmail } = require('./draw-setup-email');
+  const payload = wireFormEmail({
+    borrowerName: firstName, address: propertyLabel, budgetCents, signUrl, portalUrl, officer,
+  });
+  payload.subjectTag = fileTag(loanNumber, propertyLabel);
+  payload.preheader = 'Confirm your wire instructions so we can release your construction draw.';
+  return render(payload);
 }
 
 /* =====================================================================
@@ -267,6 +345,8 @@ function staffInvite({ fullName, role, acceptUrl, inviter, days = 7 } = {}) {
     lines: ['Set up your account below to begin receiving and working loan files. This invitation expires in ' + days + ' days.'],
     meta,
     cta: acceptUrl ? { label: 'Set up your account', url: acceptUrl } : null,
+    badge: { text: 'Team invite', tone: 'teal' },
+    replyable: true,
     note: 'If you were not expecting this invitation, you can disregard it.',
   });
 }
@@ -288,12 +368,17 @@ function staffWelcome({ fullName, role, url, hasLogin } = {}) {
     ],
     meta: [{ label: 'Role', value: roleLabel }],
     cta: url ? { label: hasLogin ? 'Sign in to the console' : 'Set up your access', url } : null,
+    badge: { text: 'Console ready', tone: 'positive' },
+    replyable: true,
     note: 'If you were not expecting this, contact your administrator.',
   });
 }
 
-/** A borrower on a FUNDED file requested draw setup. Goes to the draws desk and
- *  the assigned loan team so they can coordinate the construction draw process. */
+/** A borrower on a FUNDED file requested draw setup. This ONE message goes to
+ *  everyone on the file at once — the borrower, the draws desk, and the assigned
+ *  loan team — on a single shared thread (owner-directed 2026-07-20: keep everybody
+ *  in one chain, and word it as the kickoff of the draw process rather than an
+ *  internal "setup needed" task). Borrower-safe: property/borrower/loan# only. */
 function drawRequest({ borrowerName, propertyLabel, loanNumber } = {}) {
   const meta = [];
   if (propertyLabel) meta.push({ label: 'Property', value: propertyLabel });
@@ -301,11 +386,51 @@ function drawRequest({ borrowerName, propertyLabel, loanNumber } = {}) {
   if (loanNumber) meta.push({ label: 'Loan #', value: loanNumber });
   return render({
     audience: 'staff',
-    title: 'Draw setup needed — ' + (propertyLabel || 'funded file'),
-    preheader: 'A borrower requested draw setup on a funded file.',
-    intro: (borrowerName || 'The borrower') + ' is requesting to set up draws for this funded file. Please coordinate the draw process.',
+    title: 'Let’s get the draw process started — ' + (propertyLabel || 'your funded file'),
+    subjectTag: fileTag(loanNumber, propertyLabel),
+    badge: { text: 'Draw process', tone: 'gold' },
+    replyable: true,
+    preheader: 'Kicking off the construction draw process for this file.',
+    intro: 'We’re kicking off the construction draw process for this property. '
+      + 'Everyone who works on this file is on this same email — the draws desk and the loan team'
+      + (borrowerName ? ', along with ' + borrowerName : '')
+      + ' — so every draw can be coordinated together in one place.',
+    lines: [
+      'The draws desk will follow up right here with the next steps to get the first draw set up.',
+      'Please keep everything on this thread — just reply to this email and it reaches the whole team at once.',
+    ],
     meta,
-    note: 'Sent to the draws desk and the assigned loan team.',
+    note: 'Reply to this email to reach the draws desk and the loan team together.',
+  });
+}
+
+// The coordinator "enter this draw into TrustPoint" desk email (physical-draw workflow
+// phase 1, 2026-07-24). STAFF-ONLY — TrustPoint/note-buyer names never reach a borrower
+// surface; this goes to the draws desk + coordinator only. Carries the copy-ready
+// per-line table so the manual TrustPoint entry takes minutes.
+function trustpointImport({ drawNumber, propertyLabel, loanNumber, lines = [], totalCents = 0 } = {}) {
+  const usd = (c) => '$' + (Number(c || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const meta = [];
+  if (propertyLabel) meta.push({ label: 'Property', value: propertyLabel });
+  if (loanNumber) meta.push({ label: 'Loan #', value: loanNumber });
+  meta.push({ label: 'Draw', value: `#${drawNumber == null ? '—' : drawNumber}` });
+  meta.push({ label: 'Total requested', value: usd(totalCents) });
+  for (const l of lines.slice(0, 40)) meta.push({ label: l.name, value: usd(l.requested_cents) });
+  if (lines.length > 40) meta.push({ label: 'More lines', value: `+${lines.length - 40} more — see the file's draw desk` });
+  return render({
+    audience: 'staff',
+    title: `Draw #${drawNumber == null ? '—' : drawNumber} needs to be entered into TrustPoint`,
+    subjectTag: fileTag(loanNumber, propertyLabel),
+    badge: { text: 'Enter in TrustPoint', tone: 'gold' },
+    replyable: true,
+    preheader: 'A submitted draw on a TrustPoint-administered file needs manual entry.',
+    intro: 'A draw was just submitted on this file. Its draws are administered on TrustPoint, so it needs to be entered there by hand — the line-by-line amounts are below, ready to copy over.',
+    lines: [
+      'Enter it in TrustPoint as a REGULAR workflow draw — never TrustPoint’s “imported draw” option (imported draws send no updates back, which would blind the follow-up tracking).',
+      'Once it’s entered, mark the Workflow item done (“Entered in TrustPoint”).',
+    ],
+    meta,
+    note: 'Reply to this email to reach the draws desk and the loan team together.',
   });
 }
 
@@ -331,7 +456,8 @@ function staffPasswordReset({ fullName, url, days = 7 } = {}) {
 const builders = {
   welcome, verifyEmail, loginCode,
   passwordReset, passwordChanged, mfaEnabled, newSignIn,
-  staffInvite, staffWelcome, staffPasswordReset, leadReceived, coBorrowerInvite, borrowerInvite, drawRequest,
+  staffInvite, staffWelcome, staffPasswordReset, leadReceived, coBorrowerInvite, borrowerInvite, drawRequest, trustpointImport,
+  esignReadyToSign, drawWireReadyToSign,
 };
 
 /** Deliver an already-rendered { subject, html, text } to one/many recipients.
@@ -344,8 +470,13 @@ async function deliver(built, to, opts = {}) {
   try {
     // #150: opts.from carries an LO-branded From display name when the email
     // is sent on a specific officer's behalf (invites, registrations).
+    // Owner-directed 2026-07-20: default a monitored Reply-To so even auth /
+    // invite emails are repliable (never a dead-end no-reply).
     const r = await provider.sendMail({ to, subject: built.subject, html: built.html, text: built.text,
-      replyTo: opts.replyTo || null, from: opts.from || null });
+      replyTo: opts.replyTo || cfg.replyToDefault || null, from: opts.from || null,
+      // Email Center capture context (stripped by the provider wrapper). The file
+      // is derived from a file+<id>@ Reply-To when opts.applicationId is absent.
+      _ctx: { applicationId: opts.applicationId || null, type: opts.type || 'transactional', audience: opts.audience || 'borrower' } });
     if (r && r.skipped) console.log('[email] provider=none, skipped:', built.subject, '->', to);
     return { ok: !!(r && r.ok), id: r && r.id, skipped: r && r.skipped };
   } catch (e) {

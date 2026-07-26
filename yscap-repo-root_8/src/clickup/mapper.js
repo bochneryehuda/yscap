@@ -12,6 +12,7 @@
 const F = require('./fields');
 const X = require('./crosswalk');
 const T = require('./transforms');
+const { formatSsn } = require('../lib/fields');
 const ADDR = require('../lib/address');
 const checklist = require('./checklist');   // 5-state document-status ⇄ dropdown map
 
@@ -72,7 +73,14 @@ const FIELD_MAP = [
   { cu: F.PIPELINE.occupancy, t: 'a', col: 'occupancy', type: 'dropdown', enumKey: 'occupancy', dir: 'pull' }, // backend-only
   { cu: F.PIPELINE.term, t: 'a', col: 'term', type: 'dropdown', enumKey: 'term', dir: 'both' },
   { cu: F.PIPELINE.units, t: 'a', col: 'units', type: 'number', dir: 'both' },
-  { cu: F.PIPELINE.lender, t: 'a', col: 'lender', type: 'dropdown', dir: 'pull' },   // note buyer; free label; staff-only display
+  // Note buyer / capital partner. BIDIRECTIONAL (owner-directed 2026-07-20): the
+  // team picks it in EITHER place, so a note buyer set in PILOT now pushes UP to
+  // the ClickUp file list (it was pull-only, which stranded a note buyer entered
+  // here while ClickUp was blank). Free label → resolved to the live dropdown
+  // OPTION id by writeValue/dropdownLabelToId; a label with no matching ClickUp
+  // option no-ops safely (we never invent ClickUp dropdown options). Still
+  // staff-only display; the PII/no-clear/no-op guards apply unchanged.
+  { cu: F.PIPELINE.lender, t: 'a', col: 'lender', type: 'dropdown', dir: 'both' },   // note buyer; free label; staff-only display
   { cu: F.PIPELINE.channel, t: 'a', col: 'channel', type: 'dropdown', dir: 'pull' }, // backend-only
   { cu: F.PIPELINE.pppType, t: 'a', col: 'ppp', type: 'text', dir: 'both' },
   // --- application: economics ---
@@ -210,7 +218,11 @@ function buildTaskFields(ctx, options = {}, ysProgramFieldId = null) {
 
   // specials
   put(F.SHARED.borrowerName, T.joinName(borrower.first_name, borrower.last_name));
-  if (borrower.ssn) put(F.SHARED.borrowerSSN, String(borrower.ssn));  // orchestrator supplies decrypted
+  // Push the REAL SSN format XXX-XX-XXXX (owner-directed 2026-07-20). The orchestrator
+  // supplies the decrypted 9 digits; formatSsn dashes them. The no-op suppression
+  // compares SSNs digits-only (fieldValueEquivalent), so this never conflicts with a
+  // ClickUp value that is dash-less — it just makes the value we WRITE well-formatted.
+  if (borrower.ssn) put(F.SHARED.borrowerSSN, formatSsn(borrower.ssn));
   const bAddr = addressField(F.SHARED.borrowerAddress, borrower.current_address);
   if (bAddr) cf.push(bAddr);
   const sAddr = addressField(F.PIPELINE.subjectAddress, app.property_address);
@@ -238,7 +250,12 @@ function buildTaskFields(ctx, options = {}, ysProgramFieldId = null) {
   }
   // officer / processor users fields
   if (ctx.officerClickupId) put(F.SHARED.loanOfficer, { add: [ctx.officerClickupId] });
+  // Processor pushes BOTH fields so they always agree for the inbound agreement gate
+  // (owner-directed 2026-07-19): the "Processor" people-field AND the "Processor
+  // Email" text field. A Pilot pick therefore round-trips cleanly (both match); the
+  // no-clear write guard still prevents either from being emptied.
   if (ctx.processorClickupId) put(F.PIPELINE.processor, { add: [ctx.processorClickupId] });
+  if (ctx.processorEmail) put(F.EXTRA.processorEmail, ctx.processorEmail);
   // co-borrower summary flags on the parent (full profile lives in a subtask, §7.7)
   if (ctx.coBorrower) {
     put(F.PIPELINE.coBorrowerFlag, T.dropdownLabelToId(options[F.PIPELINE.coBorrowerFlag] || [], 'YES'));
@@ -287,7 +304,10 @@ function readValue(f, cf, options) {
       if (label == null) return undefined;
       return f.enumKey ? X.fromClickUpLabel(f.enumKey, label) : label;   // free dropdown -> raw label
     }
-    case 'currency': case 'number': return T.parseMoney(cf.value);
+    // N-3 (round-2): an unparseable money/number value (e.g. "N/A") yields null
+    // from parseMoney — return undefined so it's OMITTED from the patch and
+    // COALESCE keeps the real portal value instead of writing a stray 0.
+    case 'currency': case 'number': { const m = T.parseMoney(cf.value); return m == null ? undefined : m; }
     case 'date': return T.fromEpochMs(cf.value);
     case 'checkbox': return cf.value === true || cf.value === 'true';
     default: return typeof cf.value === 'string' ? cf.value : String(cf.value);
@@ -343,7 +363,7 @@ function readTaskFields(task, options = {}) {
   // field always wins when present.
   if (!out.borrower.first_name && task && task.name) {
     const head = String(task.name).split(' - ')[0].trim();
-    if (head && head.length <= 60 && !/\d/.test(head) && /[a-z]/i.test(head)
+    if (head && head.length <= 60 && !/\d/.test(head) && /\p{L}/u.test(head)
         && head.split(/\s+/).length >= 2 && !T.isPlaceholderName(head)) {
       const p = T.splitName(head);
       if (p.first && p.last) { out.borrower.first_name = p.first; out.borrower.last_name = p.last; }
@@ -429,16 +449,28 @@ for (const f of FIELD_MAP) { if (f.dir !== 'pull' && f.col) COL_TO_CU[f.col] = f
 function resolveOnly(onlyKeys) {
   const cuIds = new Set();
   const checklistFieldIds = new Set();   // `checklist:<fieldId>` keys — kept SEPARATE
-  let status = false;
+  let status = false;          // push the borrower-facing status MIRROR field (portal-owned, always safe)
+  let internalStatus = false;  // push the ClickUp-owned TASK status (updateTask) — ONLY a deliberate internal-status change
   for (const raw of onlyKeys || []) {
     const k = String(raw);
     switch (k) {
-      case 'status': case 'internal_status':
+      // WO-16 (F-M1): a borrower-facing status change ('status', from PATCH
+      // /applications/:id) pushes ONLY the portal-owned mirror field — it must
+      // NEVER re-assert the (pull-only) internal_status mirror onto the
+      // ClickUp-owned task status, or a stale mirror reverts ClickUp's live
+      // status. Only a DELIBERATE internal-status change ('internal_status',
+      // from POST /internal-status, which freshly writes internal_status) may
+      // move the task status.
+      case 'status':
         status = true; cuIds.add(F.SYNC.borrowerPortalStatus); break;
+      case 'internal_status':
+        status = true; internalStatus = true; cuIds.add(F.SYNC.borrowerPortalStatus); break;
       case 'officer': case 'loan_officer_id':
         cuIds.add(F.SHARED.loanOfficer); break;
       case 'processor': case 'processor_id':
-        cuIds.add(F.PIPELINE.processor); break;
+        // Push BOTH ClickUp processor fields so they agree (inbound agreement gate,
+        // owner-directed 2026-07-19): the people-field AND the Processor Email text.
+        cuIds.add(F.PIPELINE.processor); cuIds.add(F.EXTRA.processorEmail); break;
       case 'property_address':
         cuIds.add(F.PIPELINE.subjectAddress); break;
       case 'email':
@@ -468,11 +500,22 @@ function resolveOnly(onlyKeys) {
         } else if (COL_TO_CU[k]) cuIds.add(COL_TO_CU[k]);
     }
   }
-  return { cuIds, status, checklistFieldIds };
+  return { cuIds, status, internalStatus, checklistFieldIds };
 }
 
 // ---- write guardrails (2026-07-15 DOB incident) — pure, unit-testable -------
 const FIELD_TYPE = new Map(FIELD_MAP.map((f) => [f.cu, f.type]));
+
+// Every ClickUp field that holds an EMAIL address. Emails are case-insensitive in
+// practice (the domain always, the local part for every real-world mailbox), so
+// fieldValueEquivalent compares them case/whitespace-insensitively — otherwise a
+// pure-case difference ("Shloimy6125@gmail.com" vs "shloimy6125@gmail.com") reads
+// as an overwrite and the PII shield queues a pointless review (owner-reported
+// 2026-07-20). Same class as the phone/address normalizations below.
+const EMAIL_FIELD_IDS = new Set([
+  F.SHARED.borrowerEmail, F.SHARED.loanOfficerEmail, F.PIPELINE.secondBorrowerEmail,
+  F.EXTRA.processorEmail, F.EXTRA.underwriterEmail,
+]);
 
 /** Is the value already on the task equivalent to what we're about to write?
  *  Conservative: any doubt → NOT equivalent (the caller writes, preserving old
@@ -523,6 +566,22 @@ function fieldValueEquivalent(fieldId, oldVal, newVal, options) {
     if (fieldId === F.SHARED.borrowerCell || fieldId === F.PIPELINE.secondBorrowerCell || fieldId === F.CRM.phoneNumber) {
       const od = String(oldVal).replace(/\D/g, ''), nd = String(newVal == null ? '' : newVal).replace(/\D/g, '');
       if (od.length >= 10 && nd.length >= 10) return od.slice(-10) === nd.slice(-10);
+    }
+    // EMAIL fields: case- and whitespace-insensitive (owner-reported 2026-07-20 —
+    // a case-only difference was blocking a repush + queuing a review). Emails
+    // ALSO normalize on every OTHER sync surface (inbound heal / review applier);
+    // this closes the last gap, on the outbound no-op suppression.
+    if (EMAIL_FIELD_IDS.has(fieldId)) {
+      return String(oldVal).trim().toLowerCase() === String(newVal == null ? '' : newVal).trim().toLowerCase();
+    }
+    // SSN: PILOT now pushes the dashed "123-45-4776" (formatSsn) and stores 9 bare
+    // digits; ClickUp may hold either. Compare DIGITS-ONLY so a pure formatting
+    // difference is never read as an overwrite (both mask identically as
+    // ✱✱✱-✱✱-4776, which is exactly why such a review looked like "same SSN"). A
+    // garbled/short value falls through to the exact-string compare below.
+    if (fieldId === F.SHARED.borrowerSSN) {
+      const od = String(oldVal).replace(/\D/g, ''), nd = String(newVal == null ? '' : newVal).replace(/\D/g, '');
+      if (od.length === 9 && nd.length === 9) return od === nd;
     }
     return String(oldVal).trim() === String(newVal).trim();
   } catch (_) { return false; }

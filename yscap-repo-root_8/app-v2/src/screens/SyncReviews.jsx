@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { fmtDay } from '../lib/dates.js';
+import { useAuth } from '../lib/auth.jsx';
 
 /* Sync review queue — the human gate for PILOT ⇄ ClickUp disagreements
  * (2026-07-15). The auto-resolution engine settles the provable conflicts by
@@ -24,14 +25,41 @@ const REASON_COPY = {
   file_not_materialized_ambiguous: 'This ClickUp task could not be matched to a PILOT file — its identity signals (loan number / address / stamp) point at more than one existing file or at another borrower’s loan. Fix the conflicting value in ClickUp (usually a loan number copied by the duplicate-a-task workflow) and this row closes itself on a later sync — or resolve it right here: create it as its own new file, or link it to one of the candidate files below.',
   file_not_materialized_duplicate_pending: 'This task looks like a fresh ClickUp duplicate that still shows another ACTIVE deal’s address, so PILOT is deliberately waiting rather than creating a twin file. Update the task’s address in ClickUp and the file appears on the next sync — or, if this genuinely is a second deal at the same address, create it now. (When the earlier deal at this address is already funded or cancelled, the file is created automatically — no action needed.)',
   copied_loan_number_needs_assignment: 'Two of this borrower’s tasks carried the SAME YS loan number (the duplicate-a-task workflow copies it), and this file is the one holding a copy — a loan number belongs to exactly one loan, so it was not kept here. Fix it in ClickUp: enter this deal’s correct number on this task (it syncs in and this row closes itself), or clear the number on whichever task is the duplicate — the system automatically gives a contested number to the task that rightfully owns it (the older task, or the only one still carrying it).',
+  loan_number_duplicate_entered: 'Someone tried to put a loan number on this file that is already used somewhere else — either on another of our files or on a different file in ClickUp (even a data-only file we don’t build a loan from, like a DSCR file). A loan number belongs to exactly one file, so it was NOT saved. Enter a unique number for this file, or clear the number off whichever other file is the duplicate — then dismiss this row.',
   task_deleted_needs_decision: 'This file’s ClickUp task was DELETED and no live task for the same deal exists. Decide what the file should do: archive it (reversible, ClickUp untouched), or keep it in PILOT without a task.',
   push_dead_lettered: 'An update from PILOT could not reach ClickUp after every retry (the fields and the last error are shown above). Nothing was lost in PILOT. Retry the push once the cause is fixed — this row also closes itself when any later push for the file succeeds.',
-  file_unlinked_no_task: 'This PILOT file has NO ClickUp task, so it does not sync at all (it is older than the automatic recovery window). Create its ClickUp task now, or dismiss if this file intentionally lives outside ClickUp.',
+  file_unlinked_no_task: 'This PILOT file has NO ClickUp task, so it does not sync at all (it is older than the automatic recovery window). Link it to the correct existing ClickUp card, create a fresh ClickUp task, or dismiss if this file intentionally lives outside ClickUp.',
+  file_dead_unlinked: 'This is a LIVE file that lost its ClickUp card and went orphaned — it no longer syncs, and if another (often near-empty duplicate) file is holding the card, every update has been flowing into that wrong file. Fix it: paste the correct ClickUp card link/id to move the card onto THIS file (if the card is on another file, you’ll be asked to confirm the move), or give it a fresh card, archive it, or keep it as-is.',
   identity_mismatch_audit: 'The portfolio audit found the two systems carrying DIFFERENT values for this borrower-identity field. Nothing was changed anywhere (identity fields never overwrite silently) — compare the sides and adopt the correct one; it is applied to both systems. If both are fine (e.g. an old phone number), dismiss and this stays closed.',
   sharepoint_match_uncertain: 'The SharePoint mirror was NOT SURE which folder this file’s documents belong in (an ambiguous folder match, or no officer yet), so it filed into a safe, clearly-marked new folder — shown under “In PILOT”. If that is the wrong tree: merge or rename the folders IN SharePoint (the mirror never moves or renames anything itself), then click Re-match. Dismiss keeps the new folder.',
   sharepoint_mirror_failed: 'This document could NOT be mirrored to SharePoint after every automatic retry — the exact error is shown on the “Last error” line above. Fix the cause if it needs a human (a folder problem, an unreadable file), then Retry the document; if the folder match itself is wrong, use Re-match. Nothing is lost — the document is safe in PILOT.',
   borrower_identity_conflict: 'TWO DIFFERENT PEOPLE appear to share ONE borrower profile: this file’s ClickUp task and the PILOT profile disagree on identity (name, phone, or SSN), and the profile also belongs to another officer’s relationship (a lead or owned profile). This usually comes from a family-shared email + the family last name. Do NOT adopt either value — that would change the other person too. Click Split: the file’s person gets their OWN fresh profile (rebuilt from ClickUp), and the other person keeps the original profile untouched. Dismiss only if you are sure it is genuinely the same human.',
   shared_email_needs_reassignment: 'TWO BORROWER PROFILES are using ONE email address (shown under “In ClickUp”; the two people under “In PILOT”). Two ways to settle it: (1) if the sharing is RIGHT — spouses on the same deals, or the same person twice — click Allow: the two profiles are LINKED, whoever logs in with the email sees BOTH sets of files, and this never flags again (nothing is merged; each keeps their own profile and officer). (2) If they are unrelated people, give one of them their OWN email — edit it on their borrower screen in PILOT or on the ClickUp task — and this card closes itself. Until settled, the system deliberately refuses to link files by this email.',
+  economics_frozen_conflict: 'ClickUp carries different loan figures than PILOT (shown above), but this file is FROZEN — a term sheet has been sent for signature, or the file is Clear-to-Close / Funded — so the numbers can’t change on their own (they would no longer match the term sheet that already went out). PILOT kept its figures and did NOT apply the ClickUp change. Two ways to settle it: keep PILOT’s figures and push them back to ClickUp so both match; OR, to accept the ClickUp change, clear the term sheet package (or ask a super-admin to unlock a Clear-to-Close / Funded file) and re-register — the figures then update by themselves on the next sync. You can also simply set it back in ClickUp to match the file.',
+};
+// Sitewire draw-management parks (field_key='sitewire'). The stored reason is
+// "<class>: <detail>"; we key friendly copy by the class and show the detail beneath.
+// These are "fix the file, then it re-pushes" rows — never silently applied.
+const SITEWIRE_REASON_COPY = {
+  sitewire_missing_loan_number: 'This file has no YS loan number, so its construction draws can’t be set up in Sitewire. Add the loan number on the file, and the setup pushes automatically.',
+  sitewire_no_budget: 'No frozen construction budget is registered yet. Register the product first, then draws can be set up.',
+  sitewire_no_sow: 'There’s no saved Scope of Work to turn into a Sitewire budget. Have the borrower (or staff) complete the Scope of Work.',
+  sitewire_budget_mismatch: 'The Scope-of-Work line items don’t add up to the frozen construction budget to the penny, so nothing was pushed. Fix the Scope of Work so it matches the budget exactly.',
+  sitewire_capital_partner_unmatched: 'The file’s capital partner couldn’t be matched to a Sitewire partner, so the property wasn’t created. Set the correct capital partner, or add the rule, and it retries.',
+  sitewire_address_incomplete: 'The property address is missing part of the street / city / state / ZIP, so Sitewire can’t place it. Complete the address on the file.',
+  sitewire_property_rejected: 'Sitewire rejected the property (usually the address wouldn’t geocode). Fix the address and it retries — nothing was guessed.',
+  sitewire_loan_already_in_sitewire: 'This loan number is already on a property in Sitewire that PILOT did NOT create. PILOT only manages the draw process for properties it pushes itself, so it will not adopt or follow this one. To manage it here, delete that property in Sitewire and then push a fresh copy from this file (you’ll be warned first). Otherwise, keep them separate.',
+  sitewire_borrower_assign_failed: 'The borrower couldn’t be added to the Sitewire property by email. Check the borrower’s email on the file.',
+  sitewire_budget_drift: 'The construction budget in Sitewire no longer matches what PILOT set — someone may have edited it directly in Sitewire. Restore PILOT’s budget, or accept Sitewire’s.',
+  sitewire_release_drift: 'A draw you already released now shows a different approved amount in Sitewire. The money already wired — this is an alert to reconcile it by hand.',
+  sitewire_budget_rejected: 'Sitewire rejected the budget push. The exact reason is in the details below — fix it and it retries.',
+  sitewire_bind_missing: 'A budget line we created didn’t come back from Sitewire, so we couldn’t link it. This needs a quick manual check before draws reconcile.',
+  sitewire_bind_missing_property: 'Sitewire accepted the property but didn’t return the id we need to link it. Nothing was linked — a person should check the property in Sitewire before draws are set up.',
+  sitewire_bind_ambiguous: 'Two budget lines share the same name, so we couldn’t tell which Sitewire line is which. Rename one so every line is unique.',
+  sitewire_total_drift: 'After the push, Sitewire’s budget total didn’t match what we sent. Nothing else was changed — a person should reconcile it.',
+  sitewire_total_unverified: 'We saved the budget to Sitewire but couldn’t read it back to confirm it stuck (a temporary connection issue). Nothing is wrong yet — please re-check the budget in Sitewire.',
+  sitewire_dupe_check_failed: 'We couldn’t check whether this loan is already in Sitewire, so we did NOT create it (to avoid a duplicate). Try again once the connection is back, or check Sitewire by hand.',
+  sitewire_unknown_draw_line: 'A draw came in for a budget line PILOT doesn’t recognize (it wasn’t one we created). It was NOT auto-applied — a person needs to reconcile it by hand.',
 };
 // FILE-LEVEL resolution options per reason (mirrors REASON_ACTIONS in
 // src/lib/sync-file-review.js — the server validates; this only renders).
@@ -51,7 +79,14 @@ const REASON_FILE_ACTIONS = {
     { action: 'retry_push', label: 'Retry the push', title: 'Re-queue the failed update through the normal guarded push' },
   ],
   file_unlinked_no_task: [
+    { action: 'relink_task', label: 'Link an existing card', title: 'Move an existing ClickUp card onto this file (asks to confirm if the card is on another file). Admin only.', needsTaskInput: true, adminOnly: true },
     { action: 'create_task', label: 'Create its ClickUp task', title: 'Create the ClickUp task for this file via the normal create path' },
+  ],
+  file_dead_unlinked: [
+    { action: 'relink_task', label: 'Move the correct card here', title: 'Move an existing ClickUp card onto this file (asks to confirm if the card is currently on another file). Admin only.', needsTaskInput: true, adminOnly: true },
+    { action: 'create_task', label: 'Create a fresh card', title: 'Create a brand-new ClickUp task for this file' },
+    { action: 'archive_file', label: 'Archive the file', title: 'Soft-archive (reversible; ClickUp untouched)' },
+    { action: 'keep_file', label: 'Keep as-is', title: 'Keep it in PILOT without a ClickUp card' },
   ],
   sharepoint_match_uncertain: [
     { action: 'sp_rematch', label: 'Re-match folders now', title: 'Clear the folder match so the next document sync re-runs it — fix the folders in SharePoint first (the mirror never moves anything itself)' },
@@ -66,7 +101,25 @@ const REASON_FILE_ACTIONS = {
   shared_email_needs_reassignment: [
     { action: 'allow_shared_email', label: 'Allow — same email for both', title: 'Link the two profiles: whoever logs in with this email sees BOTH people’s files. Nothing is merged; each keeps their own profile and officer, and this pair never flags again' },
   ],
+  // Two of the borrower’s files carry the SAME loan number. Decide which one owns it; PILOT does its
+  // side and tells you which ClickUp card still has a leftover copy to delete (PILOT never erases a
+  // ClickUp box — that stays a human action in ClickUp).
+  copied_loan_number_needs_assignment: [
+    { action: 'loan_number_assign_here', label: 'This file owns the number', title: 'Give the loan number to THIS file and take it off the other file in PILOT. Then delete the leftover copy on the OTHER deal’s ClickUp card.' },
+    { action: 'loan_number_keep_other', label: 'The other file owns it — this is the copy', title: 'Keep the number on the other deal; this file stays blank. Then delete the leftover copy on THIS file’s ClickUp card.' },
+  ],
+  economics_frozen_conflict: [
+    { action: 'keep_frozen_figures', label: 'Keep PILOT’s figures (push to ClickUp)', title: 'Keep the file’s frozen loan figures and push them back to ClickUp so the two match. To accept the ClickUp change instead, clear the term sheet package (or have a super-admin unlock the file) and re-register.' },
+  ],
 };
+// The OTHER file that shares the contested loan number (from the row's forensic raw_value).
+function otherLoanFile(r) {
+  try {
+    const raw = r.raw_value ? JSON.parse(r.raw_value) : null;
+    const d = raw && (raw.ofApplication ? raw : (raw.detail || null));
+    return { otherId: (d && d.ofApplication) || null, number: (raw && raw.number) || r.clickup_value || null };
+  } catch { return { otherId: null, number: r.clickup_value || null }; }
+}
 // The ACTUAL recorded failure for a SharePoint document row (owner-reported
 // 2026-07-16: the card said "the last error is recorded on the row" without
 // SHOWING it, so every failure read as "a permissions problem"). The error
@@ -116,6 +169,8 @@ const FIELD_LABELS = {
   borrower_identity: 'Borrower identity — one profile, two people',
   co_borrower_identity: 'Co-borrower identity — one profile, two people',
   shared_email: 'Shared email — two borrowers',
+  sitewire: 'Construction draws (Sitewire)',
+  economics_frozen: 'Loan figures — frozen (term sheet sent / file locked)',
 };
 // Field keys the two-sided resolver can apply to BOTH systems today.
 // 'file_link' / 'ys_loan_number' rows are deliberately NOT here: they are
@@ -123,7 +178,75 @@ const FIELD_LABELS = {
 // force-create) and the row closes itself on the next sync.
 const RESOLVABLE = new Set(['date_of_birth', 'expected_closing', 'actual_closing', 'acquisition_date', 'ssn', 'status',
   'email', 'cell_phone', 'first_name', 'current_address']);
+// Advisory rows that are DISMISS-ONLY: there is nothing to "approve" — the value
+// was already rejected at entry and never saved, so the only action is to fix the
+// value on the file and close this reminder. A duplicate loan number a staffer
+// tried to type is one of these (it shows an Approve that would be a confusing
+// no-op otherwise).
+const DISMISS_ONLY = new Set(['loan_number_duplicate_entered']);
+// Re-check result copy, keyed by the backend outcome `reason` (src/lib/sync-review-recheck.js).
+// The engine now re-derives EVERY row type it can prove — value fields, the loan-number
+// clash, co-borrower fields, file status, a failed ClickUp push, a SharePoint document,
+// a shared-email pair, and a two-people-one-profile split — so each gets a plain line.
+const RECHECK_CLOSED_MSG = {
+  adopt: 'PILOT confirmed the correct value and cleared this review (applied to both systems).',
+  file_removed: 'the file was removed from the portal, so this no longer applies. Cleared.',
+  no_longer_duplicated: 'that loan number is no longer on any other file, so PILOT cleared this on its own.',
+  mirrored: 'the document is now saved to SharePoint, so PILOT cleared this.',
+  doc_gone: 'that document no longer exists, so there was nothing left to save. Cleared.',
+  linked: 'the two profiles are now linked (a login on either sees both), so PILOT cleared this.',
+  separate_emails: 'the two people now have their own separate emails, so PILOT cleared this.',
+  split_done: 'this file now points at a separate profile for that person, so PILOT cleared this.',
+  push_healthy: 'the update reached ClickUp — no failed pushes remain — so PILOT cleared this.',
+  no_co_borrower: 'this file no longer has a co-borrower, so PILOT cleared this.',
+};
+const RECHECK_OPEN_MSG = {
+  still_duplicated: 'that loan number is still on another file too, so this still needs you.',
+  not_mirrored: 'the document still hasn’t saved to SharePoint, so this still needs you.',
+  still_shared: 'the two profiles still share one email, so this still needs you.',
+  still_merged: 'this file still points at the shared profile, so this still needs you.',
+  push_pending: 'there are still failed or pending ClickUp updates for this file, so this still needs you.',
+};
+const RECHECK_UNSUPPORTED_MSG = {
+  sitewire_use_actions: 'Re-checked — a construction-draw setup clears when you fix the cause and use this card’s Retry (or Acknowledge) button; Re-check can’t settle a draw setup on its own.',
+  sharepoint_folder_use_actions: 'Re-checked — fix or merge the folders in SharePoint, then use this card’s Re-match; Re-check can’t settle a folder match on its own.',
+};
+// Which file SECTION each review is about — so the reviewer can jump straight to
+// where the value is edited (owner-directed 2026-07-22: "a button to open the
+// exact file section the review is about"). Borrower/co-borrower identity lives in
+// Application details; dates/status/loan-number on the Overview; draws in Draws;
+// SharePoint filing in Documents. A field not listed (a stuck-file row) shows no
+// jump button — its fix isn't at a single section.
+const FIELD_SECTION = {
+  // Primary-borrower identity is shown + inline-edited in the Overview "Borrower"
+  // panel (name / email / SSN / DOB), as are file status + the closing dates.
+  first_name: 'sec-overview', email: 'sec-overview', ssn: 'sec-overview', date_of_birth: 'sec-overview',
+  borrower_identity: 'sec-overview', shared_email: 'sec-overview',
+  status: 'sec-overview', expected_closing: 'sec-overview', actual_closing: 'sec-overview',
+  // Address, phone, the acquisition date, the loan number, and the whole
+  // co-borrower live in Application details (address panel / Completeness /
+  // co-borrower completeness / EditFileDetails).
+  current_address: 'sec-application', cell_phone: 'sec-application',
+  acquisition_date: 'sec-application', ys_loan_number: 'sec-application',
+  co_first_name: 'sec-application', co_cell_phone: 'sec-application', co_borrower_identity: 'sec-application',
+  sitewire: 'sec-draws',
+  sharepoint_folder: 'sec-documents', sharepoint_doc: 'sec-documents',
+};
 const showVal = (v) => (v && /^\d{4}-\d{2}-\d{2}$/.test(String(v)) ? fmtDay(v) : (v == null || v === '' ? '—' : String(v)));
+
+// Per-reason resolution actions for a Sitewire draw review (mirror of the server's map in
+// src/sitewire/review-actions.js — kept in exact sync, enforced by test-sitewire-review-actions.js):
+// an advisory note only "acknowledges" (never re-pushes — that looped); everything else, INCLUDING the
+// "loan already in Sitewire" collision, offers "retry" (for a collision, a warned "delete it in Sitewire
+// then push a fresh copy" — PILOT never adopts a pre-existing property) or dismiss.
+const SW_ADVISORY = new Set(['sitewire_units_note', 'sitewire_type_unmapped', 'sitewire_reconcile_draw_error', 'sitewire_unknown_op']);
+const SW_DUPE = 'sitewire_loan_already_in_sitewire';
+// Two-sided DRIFT reviews (bidirectional Phase 2): a PILOT-owned value diverged from Sitewire.
+const SW_DRIFT_RESTORABLE = new Set(['sitewire_budget_drift']);   // restore PILOT's value OR accept Sitewire's
+const SW_DRIFT_ALERT = new Set(['sitewire_release_drift']);       // money already moved → acknowledge only
+const swIsDrift = (rc) => SW_DRIFT_RESTORABLE.has(rc) || SW_DRIFT_ALERT.has(rc);
+const swReasonClass = (reason) => String(reason || '').split(':')[0];
+const usdMaybe = (v) => { const n = Number(v); return Number.isFinite(n) ? '$' + Math.round(n / 100).toLocaleString('en-US') : v; };
 
 // Two-sided values: rows written since the upgrade carry clickup_value /
 // portal_value explicitly; older rows derive them from direction (inbound:
@@ -135,14 +258,20 @@ function sides(r) {
 }
 
 export default function SyncReviews() {
+  const { role, can } = useAuth();
+  // relink_task (moving a ClickUp card between files) is admin-only — hide it
+  // from processors/LOs/underwriters (the server also enforces this).
+  const isAdmin = role === 'admin' || role === 'super_admin';
   const [status, setStatus] = useState('open');
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState('');
   const [busyId, setBusyId] = useState(null);
   const [linkTarget, setLinkTarget] = useState({});   // rowId -> chosen candidate application id
+  const [relinkInput, setRelinkInput] = useState({}); // rowId -> pasted ClickUp card link/id (relink_task)
   const [customVal, setCustomVal] = useState({});     // rowId -> reviewer-typed correct value
   const [selected, setSelected] = useState({});       // rowId -> checked (bulk actions)
   const [bulkMsg, setBulkMsg] = useState('');
+  const [recheckMsg, setRecheckMsg] = useState({});   // rowId -> "look again" result message
 
   async function bulk(action, winner) {
     const ids = Object.keys(selected).filter((id) => selected[id]);
@@ -171,6 +300,13 @@ export default function SyncReviews() {
   }, [status]);
   useEffect(() => { load(); }, [load]);
 
+  async function sitewireAct(id, action) {
+    setBusyId(id); setErr('');
+    try { await api.post(`/api/sitewire/reviews/${id}/${action}`, {}); await load(); }
+    catch (e) { setErr(e?.data?.error || e.message || 'That didn\'t work.'); }
+    finally { setBusyId(null); }
+  }
+
   async function act(id, verb, body) {
     setBusyId(id); setErr('');
     try { await api.post(`/api/staff/sync-reviews/${id}/${verb}`, body || {}); await load(); }
@@ -178,12 +314,70 @@ export default function SyncReviews() {
     finally { setBusyId(null); }
   }
 
+  // "Look again" — ask the backend to RE-RUN the underlying comparison (re-read
+  // both systems live) and clear this review by itself if the data was already
+  // fixed by hand. It never blind-dismisses: a row that still genuinely differs
+  // stays open. Owner-directed 2026-07-22.
+  async function recheck(id) {
+    setBusyId(id); setErr('');
+    setRecheckMsg((m) => ({ ...m, [id]: '' }));
+    try {
+      const out = await api.post(`/api/staff/sync-reviews/${id}/recheck`, {});
+      if (out.outcome === 'closed') {
+        // Each proven-resolved reason gets its own plain line (never claim "already
+        // fixed" when PILOT itself wrote the value); anything new falls back to the
+        // generic "the two sides already match" line.
+        setBulkMsg('✓ Re-checked — ' + (RECHECK_CLOSED_MSG[out.reason]
+          || 'the two sides already match, so PILOT cleared this review on its own.'));
+        await load();
+      } else if (out.outcome === 'still_open') {
+        setRecheckMsg((m) => ({ ...m, [id]: 'Checked just now — ' + (RECHECK_OPEN_MSG[out.reason]
+          || 'the two sides still don’t match, so this still needs you.') }));
+        await load();
+      } else if (out.outcome === 'error') {
+        setRecheckMsg((m) => ({ ...m, [id]: 'Couldn’t reach ClickUp to re-check just now — try again in a moment.' }));
+      } else {
+        // 'unsupported' — a row PILOT can't prove from a re-read. Draw + folder-match
+        // rows get a specific "use this card's actions" line; everything else points
+        // to the card's own options rather than dead-ending.
+        setRecheckMsg((m) => ({ ...m, [id]: RECHECK_UNSUPPORTED_MSG[out.reason]
+          || 'Re-checked — this one isn’t a simple value match, so PILOT can’t auto-clear it here. Use the options on this card to resolve it.' }));
+        await load();
+      }
+    } catch (e) { setErr(e.message || 'Could not re-check'); }
+    finally { setBusyId(null); }
+  }
+
+  // relink_task: move an EXISTING ClickUp card onto this orphaned file. If the
+  // card is currently on another file, the server returns needsConfirm + the
+  // holder so we can confirm the move (admin-only; enforced server-side).
+  async function relinkFromRow(id, confirmMove) {
+    const taskInput = (relinkInput[id] || '').trim();
+    if (!taskInput) { setErr('Paste the correct ClickUp card link or id first.'); return; }
+    setBusyId(id); setErr('');
+    try {
+      await api.post(`/api/staff/sync-reviews/${id}/resolve-file`, { action: 'relink_task', targetTaskId: taskInput, confirmMove: !!confirmMove });
+      await load();
+    } catch (e) {
+      if (e && e.data && e.data.needsConfirm) {
+        const h = e.data.holder || {};
+        const who = [h.borrower, h.address].filter(Boolean).join(' — ') || 'another file';
+        if (window.confirm(`That ClickUp card is currently linked to:\n\n${who}\n\nMove it to THIS file? The other file will be unlinked (nothing is deleted) and left for you to review.`)) {
+          setBusyId(null);
+          return relinkFromRow(id, true);
+        }
+        setErr('Move cancelled — nothing changed.');
+      } else { setErr(e.message || 'Could not link the card'); }
+    } finally { setBusyId(null); }
+  }
+
   return (
     <div className="page">
       <div className="row" style={{ alignItems: 'center', marginBottom: 14 }}>
         <h2>Sync review</h2>
         <div className="spacer" />
-        <select className="input" style={{ maxWidth: 180 }} value={status} onChange={(e) => setStatus(e.target.value)}
+        <select className="input" style={{ maxWidth: 180 }} value={status}
+          onChange={(e) => { setStatus(e.target.value); setRecheckMsg({}); setBulkMsg(''); }}
           aria-label="Filter by status">
           <option value="open">Needs review</option>
           <option value="resolved">Resolved</option>
@@ -224,7 +418,8 @@ export default function SyncReviews() {
         const sidesEqual = cu != null && p != null && String(cu) === String(p);
         const canResolve = RESOLVABLE.has(r.field_key) && !sidesEqual;
         const isDob = r.field_key === 'date_of_birth';
-        const fileActions = REASON_FILE_ACTIONS[r.reason] || null;
+        const isSitewire = r.field_key === 'sitewire';
+        const fileActions = (REASON_FILE_ACTIONS[r.reason] || null)?.filter((a) => !a.adminOnly || isAdmin) || null;
         const candidates = fileActions && fileActions.some((a) => a.needsTarget) ? linkCandidates(r) : [];
         return (
           <div className="panel" key={r.id} style={{ marginBottom: 10 }}>
@@ -234,23 +429,124 @@ export default function SyncReviews() {
                   onChange={(e) => setSelected((m) => ({ ...m, [r.id]: e.target.checked }))} />
               )}
               <strong>{FIELD_LABELS[r.field_key] || r.field_key}</strong>
-              <span className={`pill ${r.direction === 'outbound' ? '' : 'done'}`}>{r.direction === 'outbound' ? 'PILOT → ClickUp' : 'ClickUp → PILOT'}</span>
+              <span className={`pill ${r.direction === 'outbound' ? '' : 'done'}`}>{isSitewire ? 'PILOT → Sitewire' : (r.direction === 'outbound' ? 'PILOT → ClickUp' : 'ClickUp → PILOT')}</span>
               <span className="muted small">{new Date(r.created_at).toLocaleString()}</span>
               <div className="spacer" />
+              {status === 'open' && (
+                <button className="btn ghost btn-sm" disabled={busyId === r.id}
+                  title="Look again — re-run the check in the background and clear this review if it was already fixed on either side (nothing is written unless the data proves it resolved)"
+                  onClick={() => recheck(r.id)}>{busyId === r.id ? '…' : '↻ Re-check'}</button>
+              )}
               {r.application_id && <Link className="btn ghost btn-sm" to={`/internal/app/${r.application_id}`}>Open file</Link>}
+              {r.application_id && FIELD_SECTION[r.field_key]
+                // The Draws section only renders for staff with manage_draws, so a
+                // sitewire jump would silently no-op for anyone else — hide it there.
+                && (r.field_key !== 'sitewire' || can('manage_draws')) && (
+                <Link className="btn ghost btn-sm" to={`/internal/app/${r.application_id}#${FIELD_SECTION[r.field_key]}`}
+                  title="Open the file at the exact section this review is about">Jump to the section</Link>
+              )}
             </div>
+            {status === 'open' && (recheckMsg[r.id] || r.last_checked_at) && (
+              <p className="muted small" style={{ margin: '2px 0 0' }}>
+                {recheckMsg[r.id] || `Last re-checked ${new Date(r.last_checked_at).toLocaleString()} — still open.`}
+              </p>
+            )}
             <div className="metrow"><span className="k">Who</span><span className="v">{r.borrower_name || '—'}{r.property ? ` — ${r.property}` : ''}</span></div>
-            <div className="metrow"><span className="k">In ClickUp</span><span className="v"><strong>{showVal(cu)}</strong>{isDob ? <em className="muted small">{dobNote(cu)}</em> : null}</span></div>
-            <div className="metrow"><span className="k">In PILOT</span><span className="v"><strong>{showVal(p)}</strong>{isDob ? <em className="muted small">{dobNote(p)}</em> : null}</span></div>
+            {isSitewire ? (
+              (cu != null || p != null) && <div className="metrow"><span className="k">Details</span><span className="v">{p != null ? <>expected <strong>{showVal(p)}</strong></> : null}{p != null && cu != null ? ' · ' : ''}{cu != null ? <>found <strong>{showVal(cu)}</strong></> : null}</span></div>
+            ) : (
+              <>
+                <div className="metrow"><span className="k">In ClickUp</span><span className="v"><strong>{showVal(cu)}</strong>{isDob ? <em className="muted small">{dobNote(cu)}</em> : null}</span></div>
+                <div className="metrow"><span className="k">In PILOT</span><span className="v"><strong>{showVal(p)}</strong>{isDob ? <em className="muted small">{dobNote(p)}</em> : null}</span></div>
+              </>
+            )}
             {(r.field_key === 'sharepoint_doc' || r.field_key === 'sharepoint_folder') && spError(r) ? (
               <div className="metrow"><span className="k">Last error</span><span className="v"><em className="muted">{spError(r)}</em></span></div>
             ) : null}
+            {r.reason === 'copied_loan_number_needs_assignment' && (() => {
+              const o = otherLoanFile(r);
+              return (o.otherId || o.number) ? (
+                <div className="metrow"><span className="k">The clash</span><span className="v">
+                  {o.number ? <>loan number <strong>{o.number}</strong> is on both this file and </> : <>the same loan number is on both this file and </>}
+                  {o.otherId ? <Link className="btn ghost btn-sm" to={`/internal/app/${o.otherId}`}>the other file</Link> : <em className="muted">the other deal</em>}
+                </span></div>
+              ) : null;
+            })()}
             <p className="muted small" style={{ margin: '8px 0' }}>
-              {sidesEqual && r.reason === 'clickup_dob_differs_from_portal'
-                ? REASON_COPY.dob_same_but_impossible   /* legacy rows queued before the common-sense reasons */
-                : (REASON_COPY[r.reason] || r.reason)}
+              {isSitewire
+                ? (SITEWIRE_REASON_COPY[String(r.reason || '').split(':')[0]] || r.reason)
+                : (sidesEqual && r.reason === 'clickup_dob_differs_from_portal'
+                  ? REASON_COPY.dob_same_but_impossible   /* legacy rows queued before the common-sense reasons */
+                  : (REASON_COPY[r.reason] || r.reason))}
             </p>
-            {status === 'open' && canResolve && (
+            {isSitewire && String(r.reason || '').includes(':') && (
+              <p className="muted small" style={{ margin: '0 0 8px', fontStyle: 'italic' }}>{String(r.reason).split(':').slice(1).join(':').trim()}</p>
+            )}
+            {status === 'open' && isSitewire && swReasonClass(r.reason) === SW_DUPE && (
+              <div style={{ margin: '0 0 4px' }}>
+                <p className="muted small" style={{ margin: '0 0 8px' }}>
+                  PILOT manages the draw process only for properties it pushed itself, so it will <b>not</b> follow this
+                  pre-existing Sitewire property{r.current_value ? ` (#${r.current_value})` : ''}. Keep them separate, or —
+                  if you want PILOT to run the draws — delete that property in Sitewire first, then push a fresh copy.
+                </p>
+                <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <button className="btn btn-sm" disabled={busyId === r.id}
+                    title="Recommended: leave the existing Sitewire property alone; PILOT will not manage this file’s draws."
+                    onClick={() => sitewireAct(r.id, 'dismiss')}>Keep separate</button>
+                  <button className="btn ghost btn-sm" disabled={busyId === r.id} style={{ color: 'var(--bad,#b04a3f)' }}
+                    title="Only after you have DELETED the property in Sitewire — this pushes a brand-new copy PILOT will manage."
+                    onClick={() => { if (window.confirm(`Push a fresh copy to Sitewire?\n\nOnly do this if you have ALREADY deleted the existing property${r.current_value ? ` (#${r.current_value})` : ''} in Sitewire. Otherwise you will create a DUPLICATE.\n\nPILOT will then create and manage a brand-new property for this file.`)) sitewireAct(r.id, 'retry'); }}>
+                    {busyId === r.id ? '…' : 'I removed it in Sitewire — push a fresh copy'}</button>
+                </div>
+              </div>
+            )}
+            {status === 'open' && isSitewire && SW_ADVISORY.has(swReasonClass(r.reason)) && (
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <button className="btn primary btn-sm" disabled={busyId === r.id}
+                  title="This is an informational note — nothing to re-push. Acknowledge to clear it."
+                  onClick={() => sitewireAct(r.id, 'acknowledge')}>{busyId === r.id ? '…' : 'Acknowledge'}</button>
+                <button className="btn btn-sm" disabled={busyId === r.id}
+                  title="Close this without action" onClick={() => sitewireAct(r.id, 'dismiss')}>Dismiss</button>
+              </div>
+            )}
+            {/* Two-sided DRIFT: show BOTH systems' values, then the right resolution. */}
+            {isSitewire && swIsDrift(swReasonClass(r.reason)) && (r.portal_value != null || r.clickup_value != null) && (
+              <div className="row" style={{ gap: 14, flexWrap: 'wrap', margin: '2px 0 8px' }}>
+                <span className="small"><span className="muted">In PILOT: </span><b>{usdMaybe(r.portal_value)}</b></span>
+                <span className="small"><span className="muted">In Sitewire: </span><b style={{ color: 'var(--bad,#b04a3f)' }}>{usdMaybe(r.clickup_value)}</b></span>
+              </div>
+            )}
+            {status === 'open' && isSitewire && SW_DRIFT_RESTORABLE.has(swReasonClass(r.reason)) && (
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <button className="btn primary btn-sm" disabled={busyId === r.id}
+                  title="Re-push PILOT's budget to Sitewire, overwriting the change made there."
+                  onClick={() => { if (window.confirm('Restore PILOT’s budget in Sitewire?\n\nThis re-pushes the budget PILOT set, overwriting the change made directly in Sitewire.')) sitewireAct(r.id, 'restore'); }}>{busyId === r.id ? '…' : 'Restore PILOT’s budget'}</button>
+                <button className="btn btn-sm" disabled={busyId === r.id}
+                  title="Keep Sitewire's value — close this without pushing. Handle any downstream (e.g. re-register) yourself."
+                  onClick={() => sitewireAct(r.id, 'accept')}>Accept Sitewire’s value</button>
+                <button className="btn btn-sm" disabled={busyId === r.id}
+                  title="Close this without action" onClick={() => sitewireAct(r.id, 'dismiss')}>Dismiss</button>
+              </div>
+            )}
+            {status === 'open' && isSitewire && SW_DRIFT_ALERT.has(swReasonClass(r.reason)) && (
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <button className="btn primary btn-sm" disabled={busyId === r.id}
+                  title="The money already wired — this is an alert to reconcile it by hand. Acknowledge once you have."
+                  onClick={() => sitewireAct(r.id, 'acknowledge')}>{busyId === r.id ? '…' : 'Acknowledge — I’ll reconcile the wire'}</button>
+                <button className="btn btn-sm" disabled={busyId === r.id}
+                  title="Close this without action" onClick={() => sitewireAct(r.id, 'dismiss')}>Dismiss</button>
+              </div>
+            )}
+            {status === 'open' && isSitewire && swReasonClass(r.reason) !== SW_DUPE && !SW_ADVISORY.has(swReasonClass(r.reason)) && !swIsDrift(swReasonClass(r.reason)) && (
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <button className="btn primary btn-sm" disabled={busyId === r.id}
+                  title="Re-attempt the Sitewire push for this file (after fixing the cause above)"
+                  onClick={() => sitewireAct(r.id, 'retry')}>{busyId === r.id ? '…' : 'Retry push'}</button>
+                <button className="btn btn-sm" disabled={busyId === r.id}
+                  title="Close this without action" onClick={() => sitewireAct(r.id, 'dismiss')}>Dismiss</button>
+              </div>
+            )}
+            {status === 'open' && !isSitewire && canResolve && (
               <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                 <button className="btn primary btn-sm" disabled={busyId === r.id}
                   title="Apply ClickUp's current value to BOTH systems (re-read live, audited)"
@@ -275,11 +571,13 @@ export default function SyncReviews() {
                 </span>
               </div>
             )}
-            {status === 'open' && !canResolve && fileActions && (
+            {status === 'open' && !isSitewire && !canResolve && fileActions && (
               <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                 {fileActions.map((a) => {
                   const needsPick = a.needsTarget;
+                  const needsTask = a.needsTaskInput;
                   const picked = linkTarget[r.id] || '';
+                  const typed = (relinkInput[r.id] || '').trim();
                   if (needsPick && !candidates.length) return null;   // no linkable candidates surfaced
                   return (
                     <React.Fragment key={a.action}>
@@ -292,9 +590,16 @@ export default function SyncReviews() {
                           ))}
                         </select>
                       )}
+                      {needsTask && (
+                        <input className="input" style={{ maxWidth: 280 }} placeholder="Correct ClickUp card link or id…"
+                          value={relinkInput[r.id] || ''} aria-label="ClickUp card to link to this file"
+                          onChange={(e) => setRelinkInput((m) => ({ ...m, [r.id]: e.target.value }))} />
+                      )}
                       <button className="btn primary btn-sm" title={a.title}
-                        disabled={busyId === r.id || (needsPick && !picked)}
-                        onClick={() => act(r.id, 'resolve-file', { action: a.action, targetApplicationId: needsPick ? picked : undefined })}>
+                        disabled={busyId === r.id || (needsPick && !picked) || (needsTask && !typed)}
+                        onClick={() => needsTask
+                          ? relinkFromRow(r.id, false)
+                          : act(r.id, 'resolve-file', { action: a.action, targetApplicationId: needsPick ? picked : undefined })}>
                         {busyId === r.id ? '…' : a.label}
                       </button>
                     </React.Fragment>
@@ -305,11 +610,13 @@ export default function SyncReviews() {
                   onClick={() => act(r.id, 'reject')}>Dismiss</button>
               </div>
             )}
-            {status === 'open' && !canResolve && !fileActions && (
+            {status === 'open' && !isSitewire && !canResolve && !fileActions && (
               <div className="row" style={{ gap: 8 }}>
-                <button className="btn primary btn-sm" disabled={busyId === r.id || !r.proposed_value}
-                  title={r.proposed_value ? 'Apply the proposed value (audited)' : 'No valid proposal to apply — dismiss or fix manually'}
-                  onClick={() => act(r.id, 'approve')}>{busyId === r.id ? '…' : 'Approve'}</button>
+                {!DISMISS_ONLY.has(r.reason) && (
+                  <button className="btn primary btn-sm" disabled={busyId === r.id || !r.proposed_value}
+                    title={r.proposed_value ? 'Apply the proposed value (audited)' : 'No valid proposal to apply — dismiss or fix manually'}
+                    onClick={() => act(r.id, 'approve')}>{busyId === r.id ? '…' : 'Approve'}</button>
+                )}
                 <button className="btn ghost btn-sm" disabled={busyId === r.id} onClick={() => act(r.id, 'reject')}>Dismiss</button>
               </div>
             )}

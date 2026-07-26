@@ -24,13 +24,14 @@ try {
 
 function enginesReady() { return !!(YSP && GSP && YSTitle); }
 
-const PROGRAM_LABEL = { standard: 'Standard Program', gold: 'Gold Standard Program' };
+const PROGRAM_LABEL = { standard: 'Standard Program', gold: 'Gold Standard Program', manual: 'Manual Program' };
 // Hardcoded fee fallback (used only if the company-settings cache is stone
 // cold). Company defaults (Pricing Admin Center) override these for every
 // not-yet-registered file; a per-file adminPricing override still wins over
 // both. The engine MATH is untouched — this is the input/fee-default layer.
 const FEES = { lender: 2195, credit: 150, appraisal: 800 };
 const pricingSettings = require('./pricing-settings');
+const { parseAddress } = require('./address');   // city recovery from composed/string addresses
 
 /* ---- small coercers ---- */
 // Strips thousands-separator commas before parsing (#143): the studio's dollar
@@ -66,6 +67,31 @@ function engineStrategy(s) {
   return clean(s);
 }
 
+// Normalize a stored property-type label to the exact tokens the frozen engines'
+// ineligible-property list matches on. The engines match by EXACT string equality,
+// so portal labels like "Multi 5+" / "Mixed Use" would otherwise never match their
+// ineligible entries ("multifamily 5+" / "mixed-use") and a 5+/mixed-use building
+// would price as an eligible 1-4 unit deal (audit findings #5/#6, 2026-07-17).
+// Eligible types (SFR / 2-4 / condo / townhouse / PUD) pass through unchanged.
+function normPropertyType(v) {
+  const x = clean(v).toLowerCase();
+  if (!x) return clean(v);
+  if (/(^|[^0-9])5\s*\+|5\+\s*unit|multifamily\s*5|multi\s*5|5\s*or\s*more/.test(x)) return 'multifamily 5+';
+  if (/mixed[\s-]*use/.test(x)) return 'mixed-use';
+  if (/\bco[\s-]*op\b|cooperative/.test(x)) return 'co-op';
+  if (/mobile\s*home/.test(x)) return 'mobile home';
+  if (/manufactured/.test(x)) return 'manufactured';
+  if (/commercial/.test(x)) return 'commercial';
+  return clean(v);
+}
+// Is a normalized property type one the engines will (correctly) declare ineligible?
+const ENGINE_INELIGIBLE_PROPERTY = ['co-op', 'cooperative', 'mobile home', 'manufactured',
+  'mixed-use', 'mixed use', 'commercial', 'rural', 'agricultural', 'bed and breakfast',
+  'boarding house', 'half-way house', 'care facility', 'condemned', 'multifamily 5+', '5+ units'];
+function isIneligiblePropertyType(v) {
+  return ENGINE_INELIGIBLE_PROPERTY.indexOf(normPropertyType(v)) > -1;
+}
+
 // Refinance if the loan type mentions refi; cash-out if it says so.
 function loanTypeOf(app) {
   const lt = clean(app.loan_type).toLowerCase();
@@ -84,6 +110,20 @@ function isCashOut(app) {
 function buildInputs(app, experience, overrides) {
   app = app || {};
   const addr = app.property_address || {};
+  // property_address arrives in several historical shapes (object with line1 or
+  // street, object carrying only a composed oneLine/formatted string, or a bare
+  // JSON string). Recover the street text AND the CITY from whatever shape the
+  // file has: the frozen engines scan city+address text for the ineligible-city
+  // and adverse-market checks, so a recoverable city must never be dropped just
+  // because the file stored a composed string instead of components (audit
+  // 2026-07-24 on the file-owned-address fix).
+  const addrIsString = typeof app.property_address === 'string';
+  const fileLine1 = clean(addrIsString ? app.property_address : (addr.line1 || addr.address || addr.street || ''));
+  let fileCity = clean(addrIsString ? '' : addr.city);
+  if (!fileCity) {
+    const composed = clean(addrIsString ? app.property_address : (addr.oneLine || addr.formatted_address || addr.formatted || ''));
+    if (composed) { try { fileCity = clean(parseAddress(composed).city); } catch (_) { /* best-effort recovery */ } }
+  }
   const loanType = loanTypeOf(app);
 
   // Assignment purchases: leverage/pricing size off seller price + financeable fee.
@@ -98,9 +138,9 @@ function buildInputs(app, experience, overrides) {
     cashOut: loanType === 'Refinance' && isCashOut(app),
     strategy: engineStrategy(clean(app.program) || clean(app.loan_type)),
     state: clean(addr.state).toUpperCase(),
-    city: clean(addr.city),
-    address: clean(addr.line1 || addr.address || ''),
-    propertyType: clean(app.property_type),
+    city: fileCity,
+    address: fileLine1,
+    propertyType: normPropertyType(app.property_type),
     units: num(app.units) || 0,
     purchasePrice: totalPrice,
     sellerPrice,
@@ -154,6 +194,20 @@ function buildInputs(app, experience, overrides) {
     for (const k of NUMK) if (overrides[k] != null && overrides[k] !== '') out[k] = num(overrides[k]);
     for (const k of STRK) if (overrides[k] != null) out[k] = clean(overrides[k]);
     for (const k of BOOLK) if (overrides[k] != null) out[k] = !!overrides[k];
+    // The property ADDRESS and CITY are FILE-OWNED. A studio override may FILL
+    // them while the file has no address yet (address-TBD drafts), but may never
+    // OVERWRITE the file's current address: a stale studio snapshot kept
+    // re-registering — and the term sheet kept printing — an old address after
+    // the file was corrected (owner-reported 2026-07-24: file said "392-394
+    // Columbia Ave", the sheet still printed "392 Columbia Ave"). The file's
+    // address always wins here. NOTE (audit): these are NOT display-only — the
+    // frozen engines scan city+address text for the ineligible-city and
+    // adverse-market checks (the caps themselves key off state) — which is
+    // exactly why the property's REAL recorded location must govern that
+    // detection, never a stale studio snapshot; the city-recovery ladder above
+    // keeps the detection fed on every historical property_address shape.
+    if (base.address) out.address = base.address;
+    if (base.city) out.city = base.city;
     if (overrides.asIsValue != null && overrides.asIsValue !== '') out.asIsDefaulted = false;
     // Present-but-EMPTY means "clear it" (owner-reported 2026-07-16: a field the
     // user blanked in the studio must never silently revert to the previously-
@@ -165,14 +219,30 @@ function buildInputs(app, experience, overrides) {
     if (overrides.irMonths === '') out.irMonths = 0;
   }
   out.strategy = engineStrategy(out.strategy);   // override labels get the same normalization
-  if (out.manualPricing) {
-    out.forcePrice = true;
-    if (Object.prototype.hasOwnProperty.call(out, 'ovrAcqLTVPct')) out.ovrAcqLTV = num(out.ovrAcqLTVPct) / 100;
-    if (Object.prototype.hasOwnProperty.call(out, 'ovrARLTVPct')) out.ovrARLTV = num(out.ovrARLTVPct) / 100;
-    if (Object.prototype.hasOwnProperty.call(out, 'ovrLTCPct')) out.ovrLTC = num(out.ovrLTCPct) / 100;
-    if (Object.prototype.hasOwnProperty.call(out, 'ovrRatePct')) out.ovrRate = num(out.ovrRatePct) / 100;
-    if (Object.prototype.hasOwnProperty.call(out, 'ovrIrMonths')) out.irMonths = num(out.ovrIrMonths);
+  out.propertyType = normPropertyType(out.propertyType);   // override labels get normalized too
+  // The studio's property-type control only expresses "SFR (1 unit)" / "2-4 units",
+  // so it can never represent a 5+/mixed-use/commercial building. If the FILE's real
+  // recorded type is engine-ineligible, never let a studio-collapsed override launder
+  // it into an eligible 1-4 type — the real ineligible type wins (findings #5/#6).
+  if (isIneligiblePropertyType(app.property_type) && !isIneligiblePropertyType(out.propertyType)) {
+    out.propertyType = normPropertyType(app.property_type);
   }
+  // An admin's explicit percent override is converted to the engine's fraction
+  // form whenever it is PRESENT — NOT only under manualPricing. A manually entered
+  // note rate / leverage must ALWAYS be honored, never silently dropped so the deal
+  // re-prices at the AUTO rate. Root cause of "I typed a 10.25 note rate and the
+  // file shows 10.3 everywhere": 10.3 was the engine's auto-computed rate, and the
+  // typed override was reaching buildInputs without the manualPricing flag (a
+  // re-registered file whose stored inputs carried the override but not the flag),
+  // so this gate discarded it. Only an admin can reach here with these keys
+  // (sanitizeOverrides strips them for everyone else), so honoring a present value
+  // is safe. manualPricing still governs force-pricing an otherwise-INELIGIBLE deal.
+  if (Object.prototype.hasOwnProperty.call(out, 'ovrAcqLTVPct')) out.ovrAcqLTV = num(out.ovrAcqLTVPct) / 100;
+  if (Object.prototype.hasOwnProperty.call(out, 'ovrARLTVPct')) out.ovrARLTV = num(out.ovrARLTVPct) / 100;
+  if (Object.prototype.hasOwnProperty.call(out, 'ovrLTCPct')) out.ovrLTC = num(out.ovrLTCPct) / 100;
+  if (Object.prototype.hasOwnProperty.call(out, 'ovrRatePct')) out.ovrRate = num(out.ovrRatePct) / 100;
+  if (Object.prototype.hasOwnProperty.call(out, 'ovrIrMonths')) out.irMonths = num(out.ovrIrMonths);
+  if (out.manualPricing) out.forcePrice = true;
   return out;
 }
 
@@ -231,7 +301,12 @@ function normalize(program, input, ev, ladder) {
   const appraisalFee = numberOverride(input, 'appraisalFee', cd.appraisalFee != null ? cd.appraisalFee : FEES.appraisal);
   const origination = totalLoan > 0 ? round2(totalLoan * origPct) : 0;
   const assignmentExcess = num(s.assignmentExcessOOP) || num(ev.assignment && ev.assignment.excessOOP);
-  const closingDueAtClose = round2(origination + lenderFee + creditFee + titleTotal);
+  // Admin-managed extra closing fees (e.g. the NY settlement-agent fee) that apply
+  // to this file's state — a real closing cost, so it's part of what's due at
+  // close AND the liquidity to show (owner-directed 2026-07-17).
+  const extraFeeList = pricingSettings.extraFeesForState(cd.extraFees, state);
+  const extraFeesTotal = extraFeeList.reduce((a, f) => a + (num(f.amount) || 0), 0);
+  const closingDueAtClose = round2(origination + lenderFee + creditFee + titleTotal + extraFeesTotal);
   const cashToClose = round2(num(s.downPayment) + assignmentExcess + closingDueAtClose);
   let reserveRequirement = 0;
   let reserveBasis = '';
@@ -294,6 +369,7 @@ function normalize(program, input, ev, ladder) {
       lenderFee,
       creditFee,
       titleAndSettlement: titleTotal,
+      extraFees: extraFeeList.map((f) => ({ name: f.name, amount: round2(num(f.amount)) })),
       dueAtClosing: closingDueAtClose,
       appraisalPoc: appraisalFee,
       totalIncludingPoc: round2(closingDueAtClose + appraisalFee),
@@ -338,7 +414,12 @@ function normalize(program, input, ev, ladder) {
   return quote;
 }
 
-/* ---- quote one program (no persistence) ---- */
+/* ---- quote one program (no persistence) ----
+   The MANUAL program prices on the SAME frozen STANDARD (Fidelis) engine — the
+   manual leverage (ovrAcqLTV/ovrARLTV/ovrLTC) rides in on `input`, and the
+   reserve / markup / origination defaults follow the Standard program (the
+   normalize()/markup helpers all treat any non-'gold' program as Standard). Only
+   the program TAG and label differ, so the guidelines stay Standard's. */
 function quoteProgram(program, input) {
   if (!enginesReady()) throw new Error('pricing engines unavailable' + (loadErr ? ': ' + loadErr : ''));
   // Markup: per-file override → COMPANY default → engine's built-in markup.
@@ -370,7 +451,9 @@ function quoteProgram(program, input) {
         ladder = { maxLtc: pl.maxLtc, maxBucket: pl.maxBucket, binding: pl.binding, rows: pl.rows };
       }
     } catch (_) { /* ladder is best-effort */ }
-    return normalize('standard', input, ev, ladder);
+    // Tag with the real program ('standard' or 'manual') — a manual product
+    // prices on this Standard engine but is labeled/recorded as Manual.
+    return normalize(program === 'manual' ? 'manual' : 'standard', input, ev, ladder);
   } finally {
     if (m != null) setEngineMarkup(program, null);
   }

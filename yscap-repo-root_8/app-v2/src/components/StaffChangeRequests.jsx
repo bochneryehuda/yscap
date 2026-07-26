@@ -53,8 +53,8 @@ export default function StaffChangeRequests({ appId, onChanged }) {
         {pending.length > 0 && <span className="pill" style={{ marginLeft: 8 }}>{pending.length} pending</span>}
       </div>
       <p className="muted small" style={{ marginBottom: 10 }}>
-        The borrower proposed these changes to the priced deal. Approving applies the value to the
-        file and re-opens Products &amp; Pricing so it can be re-registered.
+        The borrower proposed these changes after the file was accepted. Approving applies the value;
+        an economics change also re-opens Products &amp; Pricing so the deal can be re-registered.
       </p>
       {err && <div role="alert" className="notice err" style={{ marginBottom: 8 }}>{err}</div>}
 

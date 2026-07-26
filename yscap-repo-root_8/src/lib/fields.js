@@ -22,6 +22,21 @@ function sanitizeSsnDigits(v) {
   return d.length === 9 ? d : null;
 }
 
+// The REAL Social-Security-number format, XXX-XX-XXXX (owner-directed 2026-07-20).
+// PILOT stores SSNs as 9 bare digits (the encryption layer consumes digits), but
+// wherever we PRESENT one — the ClickUp push, the staff reveal — it should read as
+// a properly-formatted SSN. Mirrors the frontend formatSSN (progressive dashing)
+// so a partial value never throws. Returns '' for empty input. This is a DISPLAY /
+// interchange format only; it never changes what we store, and the sync compares
+// SSNs DIGITS-ONLY (mapper.fieldValueEquivalent) so a dashed value and ClickUp's
+// dash-less one are still recognized as the same — no false conflict.
+function formatSsn(v) {
+  const d = String(v == null ? '' : v).replace(/\D/g, '').slice(0, 9);
+  if (d.length <= 3) return d;
+  if (d.length <= 5) return d.slice(0, 3) + '-' + d.slice(3);
+  return d.slice(0, 3) + '-' + d.slice(3, 5) + '-' + d.slice(5);
+}
+
 // A loan_type is a loan PURPOSE — Purchase or Refinance — never a program.
 // "Ground up"/"Ground-Up" is a program that was wrongly offered as a loan type
 // (#95); null it out at the write chokepoint so no surface (V1, V2, API, or a
@@ -43,13 +58,38 @@ function sanitizeLoanType(v) {
 // bind values the INSERTs use.
 function assignmentFields(b) {
   b = b || {};
-  const isAssignment = !!b.isAssignment;
+  // An assignment of contract is a PURCHASE concept. On a refinance it can never
+  // apply, so a stale/hand-rolled "isAssignment=true" on a refi file is forced
+  // off here — otherwise the stored purchase price would be miscomputed as
+  // underlying + fee and the (borrower-facing) assignment condition would be
+  // requested on a refinance. Mirrors pricing.js loanTypeOf (refi iff the loan
+  // type mentions "refi") and the db/173 condition trigger.
+  const isRefi = /refi/i.test(String(b.loanType || ''));
+  const isAssignment = !!b.isAssignment && !isRefi;
   const underlying = isAssignment ? (b.underlyingContractPrice || null) : null;
   const assignFee = isAssignment ? (b.assignmentFee || null) : null;
   const purchasePrice = isAssignment
     ? (Number(b.underlyingContractPrice || 0) + Number(b.assignmentFee || 0))
     : (b.purchasePrice || null);
   return { isAssignment, underlying, assignFee, purchasePrice };
+}
+
+// sqft_pre / sqft_post are only meaningful for a square-footage-adding or
+// ground-up rehab. The intake forms show those inputs only for such rehab types
+// but ALWAYS submit the fields, so switching the rehab type to e.g. "Cosmetic"
+// after entering square footage leaves stale values behind. The pricing engine
+// then flips sqftAddition on via its `sqft_post > sqft_pre` clause even though
+// the file is no longer an addition. Every write path routes sqft through this
+// so an irrelevant rehab type hard-nulls the pair (a blank/unknown type is left
+// alone — the file may just be incomplete). Mirrors the form's needsSqft plus
+// the pricing regex, so a legitimately sqft-relevant type is never nulled.
+function sqftRelevantType(rehabType) {
+  const rt = String(rehabType || '');
+  return !rt || /square|sf|addition|adding|ground/i.test(rt);
+}
+function sqftForType(rehabType, sqftPre, sqftPost) {
+  const ok = sqftRelevantType(rehabType);
+  return { sqftPre: ok ? sqftPre : null, sqftPost: ok ? sqftPost : null };
 }
 
 // A date-only value (DOB, closing, acquisition, track-record exit) → canonical
@@ -133,4 +173,44 @@ function dobProblem(v) {
   return null;
 }
 
-module.exports = { sanitizeFico, sanitizeSsnDigits, sanitizeLoanType, assignmentFields, sanitizeDateOnly, normalizeTypedDate, sanitizeDob, dobProblem };
+// YS loan-number rule (owner-directed 2026-07-20): every YS loan number starts
+// with "YSCAP" and is unique across files. This helper enforces the FORMAT only
+// (prefix + at least one trailing character); UNIQUENESS is a DB check the caller
+// does (there's a partial-unique index in db/048). Normalizes: trims, collapses
+// inner whitespace, uppercases (loan numbers are all-caps alphanumerics, and the
+// "YSCAP" prefix / uniqueness must be case-insensitive so "yscap123" can't slip in
+// as a second file). Returns the normalized string, or null if it doesn't fit.
+function sanitizeLoanNumber(v) {
+  if (v == null) return null;
+  const s = String(v).trim().replace(/\s+/g, '').toUpperCase();
+  if (!/^YSCAP.+/.test(s)) return null;   // must start with YSCAP and have more after it
+  if (s.length > 40) return null;         // guardrail — a real loan number is short
+  return s;
+}
+
+// Loose STORAGE normalizer: uppercase + trim ANY loan-number value so it is
+// stored in the professional all-caps form ("YSCAP258134769", never "yscap…"),
+// no matter how it was typed or where it came from (a value pulled off a ClickUp
+// field, an import, a legacy row). Unlike sanitizeLoanNumber it does NOT reject on
+// format — it never turns a value the system already holds into null; it only
+// capitalizes it. Use this at write chokepoints that aren't the strict staff-entry
+// path (which uses sanitizeLoanNumber). Returns null only for a null/blank value.
+function normalizeLoanNumber(v) {
+  if (v == null) return null;
+  const s = String(v).trim().toUpperCase();
+  return s === '' ? null : s;
+}
+
+// Plain-language reason a typed loan number is rejected (for inline UI copy).
+// Returns null when it's a well-formed YSCAP number, else a short sentence.
+function loanNumberProblem(v) {
+  const raw = v == null ? '' : String(v).trim();
+  if (!raw) return 'Enter the YS loan number.';
+  const up = raw.replace(/\s+/g, '').toUpperCase();
+  if (!up.startsWith('YSCAP')) return 'A YS loan number must start with "YSCAP".';
+  if (up === 'YSCAP') return 'Add the numbers after "YSCAP" (for example YSCAP258134628).';
+  if (up.length > 40) return 'That loan number is too long.';
+  return null;
+}
+
+module.exports = { sanitizeFico, sanitizeSsnDigits, formatSsn, sanitizeLoanType, assignmentFields, sqftRelevantType, sqftForType, sanitizeDateOnly, normalizeTypedDate, sanitizeDob, dobProblem, sanitizeLoanNumber, normalizeLoanNumber, loanNumberProblem };

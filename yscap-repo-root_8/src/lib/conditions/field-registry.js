@@ -106,6 +106,18 @@ function normOccupancy(raw) {
   return 'other';
 }
 
+// The note buyer / capital partner (applications.lender) arrives from ClickUp as
+// a FREE-TEXT dropdown label ("Blue Lake", "CorrFirst", "Corr First", "Fidelis").
+// Normalize it to a stable key — lowercased with every non-alphanumeric stripped
+// — so a rule ("note buyer is CorrFirst") matches regardless of spacing/casing.
+// This is the SAME normalization the Sitewire partner-link map uses
+// (sitewire_partner_links.label_norm), so the keys agree across systems
+// (bluelake, corrfirst, fidelis, …). Returns null for a blank/absent value.
+function normNoteBuyer(raw) {
+  const s = String(raw || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  return s || null;
+}
+
 const stateOptions = US_STATES.map((v) => ({ v, label: v }));
 
 // ---------------------------------------------------------------------------
@@ -114,8 +126,8 @@ const stateOptions = US_STATES.map((v) => ({ v, label: v }));
 const FIELDS = [
   // ---- Loan & program ----
   { key: 'registered_program', label: 'Program (registered product)', group: 'Loan & program', type: 'enum',
-    options: [{ v: 'standard', label: 'Standard Program' }, { v: 'gold', label: 'Gold Standard Program' }, { v: 'none', label: 'Not registered yet' }],
-    description: 'The product program registered in the Term Sheet Studio.' },
+    options: [{ v: 'standard', label: 'Standard Program' }, { v: 'gold', label: 'Gold Standard Program' }, { v: 'manual', label: 'Manual Program' }, { v: 'none', label: 'Not registered yet' }],
+    description: 'The product program registered in the Term Sheet Studio. "Manual Program" = a manual override of the deal structure (LTV/LTC/ARV).' },
   { key: 'program_strategy', label: 'Loan strategy (program)', group: 'Loan & program', type: 'enum',
     options: [
       { v: 'fix_flip', label: 'Fix & Flip' }, { v: 'fix_hold', label: 'Fix & Hold (BRRRR)' },
@@ -141,6 +153,28 @@ const FIELDS = [
   { key: 'requested_ir_amount', label: 'Interest reserve amount ($)', group: 'Loan & program', type: 'money', writable: true,
     borrowerLabel: 'Requested interest reserve (exact $ amount)', borrowerHint: 'Request an exact dollar interest reserve instead of months. Capped at the full loan term; leave blank to size from months.' },
   { key: 'is_assignment', label: 'Assignment purchase?', group: 'Loan & program', type: 'boolean' },
+  // Note buyer / capital partner (applications.lender, pulled from ClickUp).
+  // STAFF-ONLY — this is never writable from a borrower info-condition and its
+  // real name is never shown to a borrower. The stored values are normalized
+  // keys (normNoteBuyer); the labels are the human-facing note-buyer names. The
+  // option list is the known/confirmed note buyers — an admin can still author a
+  // rule against any of them, and a value not in the list still EVALUATES fine
+  // (the engine matches on the normalized ctx value, not on option membership).
+  // Drives note-buyer conditions: CorrFirst opens the borrower EMD condition
+  // (db/191), and Blue Lake / CorrFirst require the internal flood-certificate
+  // condition (rtl_cond_flood, db/281).
+  { key: 'note_buyer', label: 'Note buyer (capital partner)', group: 'Loan & program', type: 'enum',
+    options: [
+      { v: 'bluelake', label: 'Blue Lake' }, { v: 'corrfirst', label: 'CorrFirst' },
+      { v: 'fidelis', label: 'Fidelis' }],
+    description: 'The note buyer / capital partner the file is sold to (from ClickUp; staff-only, never shown to the borrower).' },
+  // YS loan number (applications.ys_loan_number). Referenced by the rule engine so
+  // the "loan number missing" internal condition can attach while it is blank and
+  // retract the moment it is filled. Not writable via an info-condition (staff set
+  // it through the dedicated loan-number entry, which enforces the YSCAP format +
+  // cross-file uniqueness); it is a rule/evaluation field only.
+  { key: 'ys_loan_number', label: 'YS loan number', group: 'Loan & program', type: 'text',
+    description: 'The YS loan number on the file (starts with YSCAP…). Blank triggers the "loan number missing" internal condition.' },
   { key: 'status', label: 'File status', group: 'Loan & program', type: 'enum',
     options: [
       { v: 'file_intake', label: 'File intake' },
@@ -164,6 +198,13 @@ const FIELDS = [
     options: [
       { v: 'investment', label: 'Investment' }, { v: 'primary', label: 'Primary' },
       { v: 'secondary', label: 'Secondary' }, { v: 'other', label: 'Other' }] },
+  // Known Special Flood Hazard Area — derived from the current appraisal (the
+  // FEMA SFHA flag, the FEMA-mapped zone, or the appraiser's stated zone; an A*
+  // or V* zone is an SFHA). Drives the flood-certificate condition (rtl_cond_flood):
+  // the cert is ALWAYS required when a flood zone is known, on top of the
+  // Gold/Manual program rule AND the Blue Lake / CorrFirst note-buyer rule (db/281).
+  { key: 'in_flood_zone', label: 'In a flood zone (SFHA)?', group: 'Property', type: 'boolean',
+    description: 'True when the current appraisal places the property in a FEMA Special Flood Hazard Area (zone A*/V*).' },
 
   // ---- Deal economics ----
   { key: 'purchase_price', label: 'Purchase price', group: 'Deal economics', type: 'money', writable: true,
@@ -324,5 +365,5 @@ module.exports = {
   FIELDS, BY_KEY, WRITE_TARGETS, US_STATES, publicFields, publicFieldsAll,
   allFields, fieldMap, loadCustomFields, bustCustomFields, isCustomKey, customFieldDef,
   normState, normStrategy, normLoanPurpose, normPropertyType, normRehabType,
-  normCitizenship, normOccupancy,
+  normCitizenship, normOccupancy, normNoteBuyer,
 };

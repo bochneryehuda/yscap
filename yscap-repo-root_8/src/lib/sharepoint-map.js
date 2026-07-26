@@ -144,6 +144,7 @@ function dlDistance(a, b) {
   a = String(a); b = String(b);
   if (a === b) return 0;
   if (Math.abs(a.length - b.length) > 1) return 2;   // capped — caller only tests <=1
+  if (Math.max(a.length, b.length) > 64) return 2;   // defensive: don't run O(n²) DP on pathological tokens (A-Z audit A3)
   const m = a.length, n = b.length;
   let prev2 = null, prev = Array.from({ length: n + 1 }, (_, j) => j);
   for (let i = 1; i <= m; i++) {
@@ -318,14 +319,19 @@ async function resolveSyncFolder(ctx) {
     const bm = pickMatch(borrowers, (n) => borrowerMatches(n, ctx.borrowerFirst, ctx.borrowerLast), borrowerName);
     let borrowerFolder = bm.hit;
     if (bm.ambiguous) details.flags.push('borrower-ambiguous');
-    // Typo fallback (#3): only when the exact rules found NOTHING (not even an
-    // ambiguous pair) and exactly one candidate is within one edit — and the
-    // resolution is flagged so it surfaces in sync review, never silent.
+    // Typo NEAR-MATCH (#3, hardened by A-Z audit A1 2026-07-20): a borrower-name
+    // typo has NO safety anchor like the address house-number, so "John"↔"Joan",
+    // "Cohen"↔"Kohen", "Levy"↔"Levi" all clear DL≤1 and could file a document
+    // into a DIFFERENT PERSON's existing folder. So we do NOT consume the matched
+    // folder — we CREATE A NEW one (below) and FLAG the near-match for a human to
+    // MERGE only if it is genuinely the same person. A duplicate folder for a
+    // real typo is cosmetic and human-fixable in SharePoint; a borrower's
+    // document sitting in the wrong person's folder is a data-privacy problem.
     if (!borrowerFolder && !bm.ambiguous) {
       const tm = pickMatch(borrowers, (n) => borrowerMatchesTypo(n, ctx.borrowerFirst, ctx.borrowerLast), borrowerName);
       if (tm.hit && !tm.ambiguous) {
-        borrowerFolder = tm.hit;
-        details.flags.push('borrower-typo-ambiguous-review');
+        details.flags.push('borrower-typo-nearmatch-ambiguous');   // 'ambiguous' → caught by the review filter
+        details.nearMatch = tm.hit.name;
       }
     }
     if (!borrowerFolder) {
@@ -404,7 +410,8 @@ async function resolveSyncFolder(ctx) {
         taskId: `sp:${ctx.scopeKey}`, direction: 'outbound', fieldKey: 'sharepoint_folder',
         reason: 'sharepoint_match_uncertain', suppressIfRejected: true,
         clickupValue: null, portalValue: String(fullPath).slice(0, 200),
-        rawValue: JSON.stringify({ scopeKey: ctx.scopeKey, flags: uncertain, created: details.created }).slice(0, 500) });
+        rawValue: JSON.stringify({ scopeKey: ctx.scopeKey, flags: uncertain, created: details.created,
+          nearMatch: details.nearMatch || undefined }).slice(0, 500) });
     } else {
       await review.closeStaleReviews({ taskId: `sp:${ctx.scopeKey}`, fieldKey: 'sharepoint_folder',
         note: `auto-closed — the folder match is now confident (${String(fullPath).slice(0, 120)})` });

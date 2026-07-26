@@ -1,5 +1,5 @@
 /**
- * ClickUp sync worker. Four loops, all gated by cfg.clickupSyncEnabled:
+ * ClickUp sync worker. Four loops, all gated by switches.on('CLICKUP_SYNC_ENABLED'):
  *   pushOutbox   — drain sync_queue outbound jobs → orchestrator.pushApplication
  *   processInbox — drain clickup_webhook_inbox → ingest (with materialization gate)
  *   reconcile    — periodic filtered poll to catch missed webhooks + hot duplicates
@@ -9,6 +9,7 @@
  */
 const db = require('../db');
 const cfg = require('../config');
+const switches = require('../lib/integrations/switches'); // runtime on/off (env default unless flipped)
 const clickup = require('../clickup/client');
 const registry = require('../clickup/registry');
 const ingest = require('../clickup/ingest');
@@ -26,9 +27,25 @@ const PIPELINE_FOLDERS = () => {
   return [...f];
 };
 
-// A task is "real enough" to materialize a portal file: >=2 identity fields and
-// past the scratch statuses. (§4.3/§4.4)
-const SCRATCH = new Set(['starting', 'prospect / pricing']);
+// A task is "real enough" to materialize a portal file: >=2 identity fields.
+//
+// 'starting' NO LONGER blocks materialization (owner-directed 2026-07-21). The
+// ClickUp 'starting' status maps 1:1 to the portal's FILE_INTAKE stage
+// (status.js EXTERNAL_FOR), so a task an officer creates DIRECTLY in ClickUp in
+// 'starting' now syncs in RIGHT AWAY as an intake file, correctly mapped. This
+// closes the gap behind the Moshe Spitzer / 76 Thompson St duplicate: an
+// officer's June 'starting' card stayed invisible to the portal (scratch-gated),
+// so when the same deal was later typed into the portal a SECOND ClickUp card
+// was minted — two RTL-purchase twins. Syncing 'starting' cards in immediately
+// means the deal already exists (and is task-linked) before anyone re-enters it,
+// so no duplicate is created.
+//
+// The >=2 identity-field threshold (identity.canMaterialize) STAYS as the junk
+// filter — a placeholder card with no real borrower ("h", "Miller", "mandel")
+// still does not create a file until it carries at least two identity fields.
+// 'prospect / pricing' (a softer, pre-file pricing prospect that may never
+// become a deal) remains a scratch status that does not auto-create a file.
+const SCRATCH = new Set(['prospect / pricing']);
 function canMaterialize(read) {
   const idObj = ingest.identityFrom(read);
   if (!identity.canMaterialize(idObj)) return false;
@@ -73,7 +90,22 @@ async function pushOutboxOnce() {
       // Keys a human typed directly into a portal form ride along so the DOB
       // gate can recognize the deliberate human decision it exists to demand.
       const humanEditKeys = job.payload && Array.isArray(job.payload.humanEditKeys) ? job.payload.humanEditKeys.filter(Boolean) : [];
-      if (only.length) await orchestrator.pushApplication(job.entity_id, { force: true, only, humanEditKeys });
+      if (only.length) {
+        // WO-4b (F-M15): heartbeat updated_at while the push runs, so the 5-min
+        // 'processing' reclaim floor can never catch a STILL-RUNNING push and
+        // double-run it (double journal + breaker double-count). WO-2's patient
+        // retries mean a throttled push can now exceed 5 min; this keeps the job
+        // claimed until it genuinely finishes.
+        const heartbeat = setInterval(() => {
+          db.query(`UPDATE sync_queue SET updated_at=now() WHERE id=$1 AND status='processing'`, [job.id]).catch(() => {});
+        }, 120000);
+        if (heartbeat.unref) heartbeat.unref();
+        try {
+          await orchestrator.pushApplication(job.entity_id, { force: true, only, humanEditKeys });
+        } finally {
+          clearInterval(heartbeat);
+        }
+      }
     }
     await db.query(`UPDATE sync_queue SET status='done', updated_at=now() WHERE id=$1`, [job.id]);
     // A push landing means the file's outbound path works again — any open
@@ -137,7 +169,7 @@ async function pushOutboxOnce() {
 // than 30 days, 50 files per boot. Idempotent: a successful create links the
 // file, dropping it from the next run's SELECT.
 async function recoverUnlinkedFilesOnce() {
-  if (!cfg.clickupOutboundEnabled) return 0;
+  if (!switches.on('CLICKUP_OUTBOUND_ENABLED')) return 0;
   const r = await db.query(
     `SELECT id FROM applications
       WHERE clickup_pipeline_task_id IS NULL AND deleted_at IS NULL
@@ -194,6 +226,51 @@ async function flagUnsyncableFilesOnce() {
     } catch (e) { console.warn('[clickup-sync] unsyncable-flag skipped', row.id, e.message); }
   }
   if (r.rows.length) console.log(`[clickup-sync] unsyncable-file sweep: ${queued}/${r.rows.length} review rows ensured`);
+  return queued;
+}
+
+// DEAD / ORPHANED-BUT-STILL-LIVE files → review queue WITH OPTIONS (owner-directed
+// 2026-07-19, the Pinches Lichtman / 129 Carlisle St incident: the real 73%-done
+// file lost its ClickUp card and went orphaned while its card stuck to the empty
+// twin). A file that carries NO card but is STILL a live file (deleted_at IS NULL)
+// and sits in 'dead' or 'manual_review' is invisible to flagUnsyncableFilesOnce
+// above — that sweep deliberately EXCLUDES those states and only covers
+// 'unlinked'/NULL portal-origin files. So these orphaned real files never
+// surfaced anywhere actionable. This boot one-shot queues a file_dead_unlinked
+// review row for each, offering relink_task (move the correct existing card onto
+// it — the twin fix), create_task, archive, or keep. The two sweeps' sync_state
+// sets are DISJOINT, so a file is flagged by exactly one of them. Bounded
+// (100/boot, 365-day lookback so an ancient archive can't flood the queue),
+// deduped by the synthetic app:<id> key, and a dismiss sticks (suppressIfRejected).
+async function flagDeadUnlinkedFilesOnce() {
+  const SFR = require('../lib/sync-file-review');
+  const review = require('../lib/sync-review');
+  const r = await db.query(
+    `SELECT id, borrower_id, sync_state, property_address->>'oneLine' AS one_line FROM applications a
+      WHERE clickup_pipeline_task_id IS NULL AND deleted_at IS NULL
+        AND sync_state IN ('dead','manual_review')
+        AND created_at > now() - interval '365 days'
+        -- Files that ALREADY have their row (open, or dismissed-for-good) must
+        -- not hold LIMIT slots — a backlog wider than one boot's cap would
+        -- otherwise starve the tail forever (mirrors flagUnsyncableFilesOnce).
+        AND NOT EXISTS (SELECT 1 FROM sync_review_queue q
+                         WHERE q.task_id = 'app:' || a.id::text
+                           AND q.field_key='file_link' AND q.status IN ('open','rejected'))
+      ORDER BY created_at DESC LIMIT 100`).catch(() => ({ rows: [] }));
+  let queued = 0;
+  for (const row of r.rows) {
+    try {
+      await review.queueReview({
+        applicationId: row.id, borrowerId: row.borrower_id || null,
+        taskId: SFR.syntheticTaskKey(row.id),
+        direction: 'outbound', fieldKey: 'file_link', reason: 'file_dead_unlinked',
+        suppressIfRejected: true,   // this sweep re-runs every boot — a dismiss must stick
+        clickupValue: null, portalValue: row.one_line || null,
+        rawValue: JSON.stringify({ applicationId: row.id, syncState: row.sync_state }) });
+      queued++;
+    } catch (e) { console.warn('[clickup-sync] dead-unlinked-flag skipped', row.id, e.message); }
+  }
+  if (r.rows.length) console.log(`[clickup-sync] dead-unlinked sweep: ${queued}/${r.rows.length} review rows ensured`);
   return queued;
 }
 
@@ -254,18 +331,42 @@ async function auditIdentityMismatchesOnce() {
   // is a real disagreement. Full canonicalization (Google place_id) is the
   // owner's follow-up project — this kills the formatting-noise class now.
   const STREET_ABBR = { avenue: 'ave', av: 'ave', street: 'st', road: 'rd', drive: 'dr', lane: 'ln', court: 'ct',
-    place: 'pl', boulevard: 'blvd', terrace: 'ter', highway: 'hwy', parkway: 'pkwy', circle: 'cir', square: 'sq', trail: 'trl' };
+    place: 'pl', boulevard: 'blvd', terrace: 'ter', highway: 'hwy', parkway: 'pkwy', circle: 'cir', square: 'sq', trail: 'trl',
+    way: 'way', route: 'rte', turnpike: 'tpke', expressway: 'expy', causeway: 'cswy', crescent: 'cres', alley: 'aly',
+    plaza: 'plz', loop: 'loop', bend: 'bnd', crossing: 'xing', ridge: 'rdg', run: 'run', walk: 'walk' };
+  // Post-normalization tokens that mean "street" — used to CUT the address at the street body
+  // so a trailing unit token like "e6" (no unit prefix, owner-reported 2026-07-21 endless
+  // re-flag on 4716 14th Ave e6 vs 4716 14th Ave) never becomes part of the street name.
+  const STREET_TYPES = new Set(['ave', 'st', 'rd', 'dr', 'ln', 'ct', 'pl', 'blvd', 'ter', 'hwy',
+    'pkwy', 'cir', 'sq', 'trl', 'way', 'rte', 'tpke', 'expy', 'cswy', 'cres', 'aly', 'plz',
+    'loop', 'bnd', 'xing', 'rdg', 'run', 'walk']);
   const addrParts = (t) => {
     const raw = String(t || '');
     if (!raw.trim()) return null;
     const s = raw.toLowerCase()
-      .replace(/\b(unit|apt|apartment|suite|ste)\s*#?\s*[\w-]+/g, ' ')
+      // Strip PREFIXED units (unit/apt/…) plus BARE forms — "#3B", "ste 4", "e-6", or a trailing
+      // ", e6" hanging off a street body — before we tokenize. A hyphenated unit stays one token.
+      .replace(/\b(unit|apt|apartment|suite|ste|room|rm|floor|fl|bldg|building)\s*#?\s*[\w-]+/g, ' ')
       .replace(/#\s*[\w-]+/g, ' ')
       .replace(/\b(village|town|city|borough|township)\s+of\b/g, ' ')
       .replace(/[^a-z0-9 ]+/g, ' ');
     const toks = s.split(/\s+/).filter(Boolean).map((w) => STREET_ABBR[w] || w);
-    const num = toks.find((w) => /^\d/.test(w)) || '';
-    const street = toks.filter((w) => /^[a-z]/.test(w)).slice(0, 2).join(' ');
+    // Find the house NUMBER, then the STREET-TYPE token after it. The street body is the
+    // tokens BETWEEN them (inclusive of the street type). Everything AFTER the street type
+    // (unit letter/number, city, state, country) is dropped — that's what stopped "e6" being
+    // treated as part of "ave". A locality-only address with no street-type falls back to the
+    // first two letter-starting tokens after the number (old behavior).
+    const numIdx = toks.findIndex((w) => /^\d/.test(w));
+    const num = numIdx >= 0 ? toks[numIdx] : '';
+    let street = '';
+    if (numIdx >= 0) {
+      const styIdx = toks.findIndex((w, i) => i > numIdx && STREET_TYPES.has(w));
+      if (styIdx > numIdx) {
+        street = toks.slice(numIdx + 1, styIdx + 1).join(' ');
+      } else {
+        street = toks.slice(numIdx + 1).filter((w) => /^[a-z]/.test(w)).slice(0, 2).join(' ');
+      }
+    }
     const zip = (raw.match(/\b(\d{5})(?:-\d{4})?\b(?!.*\b\d{5}\b)/) || [])[1] || '';
     return num && street ? { num, street, zip } : null;
   };
@@ -603,15 +704,23 @@ async function retryStuckTasksOnce() {
   // Without inbound creation the retry could only DEMOTE visibility (a re-
   // ingest that can't create resolves 'skipped', overwriting the ambiguous/
   // duplicate_pending flag that keeps the task in the manual-review queues).
-  if (!cfg.clickupInboundCreateFiles) { console.log('[clickup-sync] stuck-task retry skipped (inbound create OFF)'); return 0; }
+  if (!switches.on('CLICKUP_INBOUND_CREATE_FILES')) { console.log('[clickup-sync] stuck-task retry skipped (inbound create OFF)'); return 0; }
   // Oldest-first so a backlog wider than one boot's cap ROTATES instead of
   // starving the tail (a retried-but-still-stuck task refreshes snapshot_at,
   // sending it to the back of the line for the next boot).
+  // 'skipped' is INCLUDED (owner-reported class of silently-stuck tasks): a task
+  // ingested while inbound-create was OFF, or one that lacked enough identity data
+  // to materialize at ingest time, is stored 'skipped' and — unlike ambiguous/
+  // duplicate_pending — produced no review row. Re-driving it here (only ever with
+  // create ON, per the guard above) materializes it the moment it's eligible
+  // (switch flipped, or the task gained an address/loan#). Genuine-stuck rows
+  // (ambiguous/duplicate_pending) are ordered FIRST so a large skipped backlog
+  // can never starve them within one boot's cap.
   const r = await db.query(
     `SELECT task_id, match_status FROM clickup_task_index
-      WHERE match_status IN ('ambiguous','duplicate_pending')
+      WHERE match_status IN ('ambiguous','duplicate_pending','skipped')
         AND application_id IS NULL
-      ORDER BY snapshot_at ASC NULLS FIRST LIMIT 200`).catch(() => ({ rows: [] }));
+      ORDER BY (match_status='skipped') ASC, snapshot_at ASC NULLS FIRST LIMIT 200`).catch(() => ({ rows: [] }));
   if (!r.rows.length) return 0;
   let materialized = 0, still = 0, failed = 0;
   for (const row of r.rows) {
@@ -665,10 +774,45 @@ async function processInboxOnce() {
     await db.query(`UPDATE clickup_webhook_inbox SET status='done', processed_at=now() WHERE id=$1`, [row.id]);
   } catch (e) {
     const attempts = row.attempts + 1;
+    const terminal = attempts >= 6;
     await db.query(`UPDATE clickup_webhook_inbox SET status=$1, attempts=$2, last_error=$3 WHERE id=$4`,
-      [attempts >= 6 ? 'error' : 'received', attempts, String(e.message).slice(0, 500), row.id]);
+      [terminal ? 'error' : 'received', attempts, String(e.message).slice(0, 500), row.id]);
+    // WO-3 (F-M6): a terminal inbox failure used to be a SILENT drop — the row
+    // sat in 'error' and nothing ever looked at it, so a ClickUp update never
+    // reached the portal and no one knew. Make it traceable (audit_log, PII-free)
+    // so it surfaces in the evidence report; the boot re-drive
+    // (redriveInboxErrorsOnce) re-attempts error rows on the next deploy so a
+    // transient failure self-heals. (Phase 2: a visible review card + a
+    // webhook-health probe.)
+    if (terminal) {
+      try {
+        await db.query(
+          `INSERT INTO audit_log (actor_kind, action, entity_type, entity_id, detail)
+           VALUES ('system', 'clickup_ingest_failed', 'application', NULL, $1)`,
+          [JSON.stringify({ inboxId: row.id, taskId: row.task_id || null, error: String(e.message).slice(0, 300) })]);
+      } catch (_) { /* the row is already in 'error' with last_error; audit is the extra trace */ }
+    }
   }
   return true;
+}
+
+// WO-3 (F-M6): re-attempt terminally-failed inbox rows on boot so a transient
+// failure (a brief outage, a since-fixed bug) self-heals instead of sitting in
+// 'error' forever, silently dropping a ClickUp update. Bounded + newest-per-task
+// so a persistent failure can't spin; ingestOne is idempotent, so re-driving is
+// safe. attempts are NOT reset, so a still-broken row terminals again after one
+// more try (one retry per deploy, never an infinite loop).
+async function redriveInboxErrorsOnce() {
+  const sel = await db.query(
+    `SELECT DISTINCT ON (task_id) id FROM clickup_webhook_inbox
+      WHERE status='error' AND task_id IS NOT NULL AND received_at > now() - interval '7 days'
+      ORDER BY task_id, received_at DESC
+      LIMIT 100`).catch(() => ({ rows: [] }));
+  if (!sel.rows.length) return 0;
+  const ids = sel.rows.map((x) => x.id);
+  await db.query(`UPDATE clickup_webhook_inbox SET status='received' WHERE id = ANY($1) AND status='error'`, [ids]).catch(() => {});
+  console.log(`[clickup-sync] inbox re-drive: reset ${ids.length} terminal error row(s) to retry`);
+  return ids.length;
 }
 
 /** Fetch + ingest a single task by id, applying the materialization gate.
@@ -678,9 +822,9 @@ async function ingestOne(taskId, opts = {}) {
   const task = await clickup.getTask(taskId, { include: ['custom_fields'] });
   const options = await optionMap();
   const read = mapper.readTaskFields(task, options);
-  // Inbound new-file creation is gated (see cfg.clickupInboundCreateFiles) to
+  // Inbound new-file creation is gated (see switches.on('CLICKUP_INBOUND_CREATE_FILES')) to
   // avoid duplicating an existing unlinked portal app; linked files still update.
-  const createFile = (cfg.clickupInboundCreateFiles || opts.forceCreate === true) && canMaterialize(read);
+  const createFile = (switches.on('CLICKUP_INBOUND_CREATE_FILES') || opts.forceCreate === true) && canMaterialize(read);
   return ingest.ingestTask(task, options, { createFile, forceCreate: opts.forceCreate === true });
 }
 
@@ -751,7 +895,7 @@ async function reconcileOnce() {
     try {
       const full = t.custom_fields ? t : await clickup.getTask(t.id, { include: ['custom_fields'] });
       const read = mapper.readTaskFields(full, options);
-      await ingest.ingestTask(full, options, { createFile: cfg.clickupInboundCreateFiles && canMaterialize(read) });
+      await ingest.ingestTask(full, options, { createFile: switches.on('CLICKUP_INBOUND_CREATE_FILES') && canMaterialize(read) });
     } catch (e) { hadFailure = true; console.error('[clickup] reconcile task failed', t.id, e.message); }
   }
   const advanced = nextWatermark({ preQueryMs, hadFailure, current });
@@ -767,9 +911,13 @@ async function reconcileOnce() {
 // the whole portfolio). The reconcile circuit-breaker below is the second guard.
 function isTaskDeletedError(e) {
   if (!e) return false;
-  if (e.status === 404) return true;
-  const msg = (e.body && (e.body.err || e.body.error || e.body.ECODE)) || e.message || '';
-  return e.status === 401 && /not\s*found|does not exist|deleted/i.test(String(msg));
+  // WO-6 (F-M14): a genuinely deleted/nonexistent ClickUp task returns a hard
+  // 404. A 401 means an AUTH problem (a bad, missing, or ROTATING token) —
+  // ClickUp's "Authorization token not found" message previously matched the
+  // deleted-task regex here, so a token rotation could misclassify live files as
+  // orphans and (past the 50% breaker) archive them. Never treat a 401 as a
+  // deletion: require the 404. A real deletion is always a 404.
+  return e.status === 404;
 }
 
 // Best-effort system audit row (no request context; used by the sync worker).
@@ -850,7 +998,27 @@ async function resolveOrphans(orphans, liveTaskIds) {
   return { archived, merged, flagged };
 }
 
-// ---- program reconcile + orphan sweep (one-shot) --------------------------
+// ---- program reconcile + orphan sweep -------------------------------------
+// WO-4b (F-H4): this used to re-ingest EVERY linked file on every boot — the
+// other half of the deploy re-ingest storm (13 deploys/day × the whole
+// portfolio). Now it processes a BOUNDED slice per pass, OLDEST-SNAPSHOT-FIRST,
+// so the portfolio rotates through instead of being hammered all at once
+// (mirrors retryStuckTasksOnce). A slow periodic tick (see start()) keeps the
+// rotation going even when deploys are rare, and the client's token bucket (WO-2)
+// paces the ClickUp calls.
+const RECON_PROGRAMS_LIMIT = Math.max(1, parseInt(process.env.CLICKUP_RECONCILE_PROGRAMS_LIMIT || '150', 10) || 150);
+const RECON_PROGRAMS_INTERVAL_SEC = Math.max(0, parseInt(process.env.CLICKUP_RECONCILE_PROGRAMS_INTERVAL_SEC || '900', 10) || 900); // 0 disables the periodic tick
+
+/** Orphan-resolution safety breaker (preserves the prior inline semantics): a
+ *  large 404 fraction — or NOTHING resolving live — is almost certainly an
+ *  API/token outage, not mass task deletion, so we must NOT archive/merge this
+ *  pass. Pure — unit tested. */
+function shouldSkipOrphanResolution({ orphanCount, checked, liveCount }) {
+  if (!orphanCount) return false;                    // nothing to resolve
+  if (liveCount === 0) return true;                  // no task resolved live at all → outage, not deletions
+  return orphanCount > Math.max(5, checked * 0.5);   // majority of a bounded slice 404'd → outage
+}
+
 // Re-check every LINKED, non-descoped RTL file against its CURRENT ClickUp task:
 //   • program flipped to a non-RTL type (e.g. Short-Term Rehab → DSCR) → ingestTask
 //     descopes it (removed from the portal, ClickUp untouched).
@@ -865,9 +1033,11 @@ async function reconcileLinkedProgramsOnce() {
     `SELECT a.id, a.clickup_pipeline_task_id AS task_id, a.borrower_id,
             a.property_address->>'oneLine' AS one_line
        FROM applications a
+       LEFT JOIN clickup_task_index cti ON cti.task_id = a.clickup_pipeline_task_id
       WHERE a.clickup_pipeline_task_id IS NOT NULL AND a.deleted_at IS NULL
         AND a.sync_state NOT IN ('descoped','manual_review','dead')
-      ORDER BY a.updated_at DESC`);
+      ORDER BY cti.snapshot_at ASC NULLS FIRST
+      LIMIT $1`, [RECON_PROGRAMS_LIMIT]);   // WO-4b: bounded slice, least-recently-checked first (rotates)
   let checked = 0, descoped = 0;
   const orphans = [];               // files whose ClickUp task returned a hard 404
   const liveTaskIds = new Set();    // task ids confirmed present this run
@@ -883,7 +1053,7 @@ async function reconcileLinkedProgramsOnce() {
       // duplicate workflow). Enqueue the scoped stamp push once per boot pass;
       // the push's no-op suppression makes an already-correct stamp write-free,
       // so this converges to zero writes after the first healing pass.
-      if (cfg.clickupOutboundEnabled && res && res.applicationId) {
+      if (switches.on('CLICKUP_OUTBOUND_ENABLED') && res && res.applicationId) {
         try { await require('../clickup/enqueue').enqueueClickupPush(res.applicationId, ['portal_stamp']); } catch (_) {}
       }
     } catch (e) {
@@ -912,7 +1082,7 @@ async function reconcileLinkedProgramsOnce() {
   // Circuit-breaker: a large 404 fraction (or NO task resolving at all) is almost
   // certainly an API/token outage, not mass task deletion — do nothing this run.
   let orphan = { archived: 0, merged: 0, flagged: 0, skipped: 0 };
-  if (orphans.length && (liveTaskIds.size === 0 || orphans.length > Math.max(5, checked * 0.5))) {
+  if (shouldSkipOrphanResolution({ orphanCount: orphans.length, checked, liveCount: liveTaskIds.size })) {
     orphan.skipped = orphans.length;
     console.warn(`[clickup-sync] reconcile-programs: ${orphans.length}/${orphans.length + checked} tasks 404'd — treating as an API outage, skipping orphan resolution`);
   } else if (orphans.length) {
@@ -1188,7 +1358,7 @@ function start() {
     return; // validation-only boot; do not start the live loops
   }
 
-  if (!cfg.clickupSyncEnabled) { console.log('[clickup-sync] disabled (CLICKUP_SYNC_ENABLED!=1)'); return; }
+  if (!switches.on('CLICKUP_SYNC_ENABLED')) { console.log('[clickup-sync] disabled (CLICKUP_SYNC_ENABLED!=1)'); return; }
   console.log('[clickup-sync] worker started');
 
   // Warm the dropdown-option cache immediately so outbound pushes for already-
@@ -1197,6 +1367,11 @@ function start() {
   // pushes silently dropped dropdown fields).
   optionMap().then(() => console.log('[clickup-sync] option cache warmed'))
     .catch((e) => console.error('[clickup-sync] option cache warm failed', e.message));
+
+  // WO-4b (F-M16): prime the volume breaker from the durable write journal so a
+  // deploy/restart mid-storm doesn't reset it to zero. Best-effort, before any
+  // outbound drain starts.
+  orchestrator.seedBreakerFromDb().catch(() => {});
 
   // Link any not-yet-linked staff (esp. processors created after the db/045 backfill)
   // to their ClickUp user id by email, so their officer/processor assignment syncs
@@ -1250,12 +1425,20 @@ function start() {
     recoverUnlinkedFilesOnce()
       .catch((e) => console.error('[clickup-sync] unlinked-recovery', e.message))
       .then(() => flagUnsyncableFilesOnce())
-      .catch((e) => console.error('[clickup-sync] unsyncable sweep', e.message));
+      .catch((e) => console.error('[clickup-sync] unsyncable sweep', e.message))
+      // Orphaned-but-live files ('dead'/'manual_review', no card) → review queue
+      // with a relink option (the disjoint other half of the unsyncable sweep).
+      .then(() => flagDeadUnlinkedFilesOnce())
+      .catch((e) => console.error('[clickup-sync] dead-unlinked sweep', e.message));
     // And re-drive every NON-materialized task ('ambiguous'/'duplicate_pending')
     // through the current resolver, so a root-cause fix (like copied-loan-number
     // handling) heals the entire stuck backlog on deploy — not only the tasks
     // that happen to receive a new webhook.
     retryStuckTasksOnce().catch((e) => console.error('[clickup-sync] stuck-task retry', e.message));
+    // WO-3 (F-M6): re-attempt any terminally-failed inbound webhook rows so a
+    // transient/ since-fixed failure self-heals instead of silently dropping a
+    // ClickUp update forever.
+    redriveInboxErrorsOnce().catch((e) => console.error('[clickup-sync] inbox re-drive', e.message));
   }, cfg.clickupRunBackfill ? 120000 : 15000);
 
   // Review-queue upkeep (mega-audit enhancements #2/#5): the aging sweep
@@ -1274,16 +1457,23 @@ function start() {
   // Inbound loops (ClickUp → portal) always run when the master switch is on —
   // the portal is the mirror, so pulling is always safe.
   console.log('[clickup-sync] inbound ' +
-    (cfg.clickupInboundCreateFiles
+    (switches.on('CLICKUP_INBOUND_CREATE_FILES')
       ? 'materializes new RTL loan files (CLICKUP_INBOUND_CREATE_FILES=1)'
       : 'identity-graph + linked-file updates only — new-file creation OFF (CLICKUP_INBOUND_CREATE_FILES!=1)'));
   setInterval(() => tick(processInboxOnce, 'inbox'), 4000);
   setInterval(() => { reconcileOnce().catch((e) => console.error('[clickup-sync] reconcile', e.message)); }, (cfg.clickupPollSec || 300) * 1000);
+  // WO-4b: keep the bounded program reconcile ROTATING on a slow cadence, so
+  // bounding the boot pass doesn't leave the tail of the portfolio unchecked
+  // when deploys are rare. Each tick processes the next oldest-snapshot slice;
+  // the token bucket paces the ClickUp calls. Set the interval to 0 to disable.
+  if (RECON_PROGRAMS_INTERVAL_SEC > 0) {
+    setInterval(() => { reconcileLinkedProgramsOnce().catch((e) => console.error('[clickup-sync] reconcile-programs (periodic)', e.message)); }, RECON_PROGRAMS_INTERVAL_SEC * 1000).unref();
+  }
 
   // Stage 2 — outbound loops (portal → ClickUp writes) are gated separately so
   // inbound/backfill can run and be validated first, before the portal is
   // allowed to write to production ClickUp.
-  if (cfg.clickupOutboundEnabled) {
+  if (switches.on('CLICKUP_OUTBOUND_ENABLED')) {
     // SAFETY (post-incident): outbound pushes ONLY changes explicitly enqueued by a
     // staff edit in the portal (enqueue-on-write). The old "dirty sweep" auto-pushed
     // ANY file whose updated_at moved — including files just re-ingested FROM ClickUp
@@ -1297,5 +1487,7 @@ function start() {
   }
 }
 
-module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, ingestOne, reconcileOnce, reconcileLinkedProgramsOnce, recoverUnlinkedFilesOnce, retryStuckTasksOnce, flagUnsyncableFilesOnce, auditIdentityMismatchesOnce, sharedEmailReviewSweepOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, backfillMemberLinksOnce, canMaterialize, PIPELINE_FOLDERS,
-  reconcileSince, nextWatermark }; // WO-4: exported for the durable-watermark test
+module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, redriveInboxErrorsOnce, ingestOne, reconcileOnce, reconcileLinkedProgramsOnce, recoverUnlinkedFilesOnce, retryStuckTasksOnce, flagUnsyncableFilesOnce, flagDeadUnlinkedFilesOnce, auditIdentityMismatchesOnce, sharedEmailReviewSweepOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, backfillMemberLinksOnce, canMaterialize, PIPELINE_FOLDERS,
+  reconcileSince, nextWatermark, // WO-4: exported for the durable-watermark test
+  isTaskDeletedError, // WO-6: exported for the token-rotation-safety test
+  shouldSkipOrphanResolution }; // WO-4b: exported for the orphan-breaker test

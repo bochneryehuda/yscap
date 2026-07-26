@@ -92,5 +92,22 @@ eq('issue always applies over outstanding', CL.shouldApplyInbound('issue', 'outs
 eq('issue is sticky (satisfied does not overwrite issue)', CL.shouldApplyInbound('satisfied', 'issue'), false);
 eq('issue===issue skipped', CL.shouldApplyInbound('issue', 'issue'), false);
 
+// ---- 8) capInbound: the sync can never COMPLETE a required condition ----
+// Owner-directed root-cause fix: inbound ClickUp evidence lands at 'received' at
+// most; the terminal 'satisfied' sign-off only happens through signOffGate.
+eq('capInbound satisfied → received', CL.capInbound('satisfied'), 'received');
+eq('capInbound received passes through', CL.capInbound('received'), 'received');
+eq('capInbound requested passes through', CL.capInbound('requested'), 'requested');
+eq('capInbound outstanding passes through', CL.capInbound('outstanding'), 'outstanding');
+eq('capInbound issue passes through', CL.capInbound('issue'), 'issue');
+eq('capInbound null passes through', CL.capInbound(null), null);
+// End-to-end intent: an inbound "satisfied", once capped, cannot advance a
+// condition already at 'received' (it becomes a no-op), so ClickUp can't
+// complete it — a human must sign off through the gate.
+eq('capped satisfied does NOT advance a received condition',
+  CL.shouldApplyInbound(CL.capInbound('satisfied'), 'received'), false);
+eq('capped satisfied still advances an outstanding condition to received',
+  CL.shouldApplyInbound(CL.capInbound('satisfied'), 'outstanding'), true);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

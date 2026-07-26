@@ -3,7 +3,9 @@ import { useNavigate, Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
+import LlcPicker from '../components/LlcPicker.jsx';
 import { MoneyInput, PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
+import { unitsMode, unitsForType } from '../lib/enums.js';
 
 /* Staff-side file origination. An admin, loan officer, or operations user opens
    a mortgage file from their end — the borrower does NOT need to be signed up.
@@ -123,19 +125,123 @@ function CoBorrowerPicker({ value, onChange }) {
   );
 }
 
+/* Import a MISMO 3.4 file — the mortgage industry's shared format. Reads the
+   uploaded XML, shows a PREVIEW of exactly what will be imported (nothing is
+   saved yet), then creates a brand-new loan file from it on confirm. */
+function fmtMoney(n) { return n == null || n === '' ? '—' : '$' + Math.round(Number(n)).toLocaleString('en-US'); }
+function MismoImport() {
+  const nav = useNavigate();
+  const fileRef = useRef(null);
+  const [state, setState] = useState({ status: 'idle' }); // idle | reading | ready | creating
+  const [xml, setXml] = useState('');
+  const [preview, setPreview] = useState(null);
+  const [warnings, setWarnings] = useState([]);
+  const [err, setErr] = useState('');
+
+  async function onPick(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    setErr(''); setPreview(null); setWarnings([]); setState({ status: 'reading' });
+    try {
+      const text = await file.text();
+      setXml(text);
+      const r = await api.staffMismoPreview(text);
+      setPreview(r.preview || null);
+      setWarnings(r.warnings || []);
+      setState({ status: 'ready' });
+    } catch (e2) {
+      setErr(e2.message || 'This file could not be read as a MISMO 3.4 file.');
+      setState({ status: 'idle' });
+    }
+  }
+  async function create() {
+    setErr(''); setState({ status: 'creating' });
+    try {
+      const r = await api.staffMismoCreate(xml);
+      nav(`/internal/app/${r.applicationId}`);
+    } catch (e2) {
+      setErr(e2.message || 'Could not create a file from this import.');
+      setState({ status: 'ready' });
+    }
+  }
+  function reset() {
+    setState({ status: 'idle' }); setXml(''); setPreview(null); setWarnings([]); setErr('');
+    if (fileRef.current) fileRef.current.value = '';
+  }
+
+  const b = preview && preview.borrower;
+  const p = preview && preview.property;
+  const l = preview && preview.loan;
+  const addr = p && p.address ? [p.address.line1, p.address.city, p.address.state, p.address.zip].filter(Boolean).join(', ') : '—';
+
+  return (
+    <div className="panel" style={{ marginBottom: 16 }}>
+      <div className="panel-h"><div className="grp-h"><span className="n">★</span><h3>Import a MISMO 3.4 file</h3></div><span className="pill mut">Industry standard</span></div>
+      <div className="panel-b">
+        <p className="sub" style={{ marginTop: 0 }}>
+          Have a loan file from another system in MISMO format? Upload it here and PILOT will read it in — you'll see
+          exactly what it contains before anything is saved.
+        </p>
+        {err && <div role="alert" className="notice err" style={{ marginBottom: 10 }}>{err}</div>}
+        <div className="row" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <input ref={fileRef} type="file" accept=".xml,text/xml,application/xml" onChange={onPick}
+            disabled={state.status === 'reading' || state.status === 'creating'} />
+          {state.status === 'reading' && <span className="muted small">Reading the file…</span>}
+          {(preview || err) && <button type="button" className="btn btn-ghost btn-sm" onClick={reset}>Clear</button>}
+        </div>
+
+        {preview && (
+          <div style={{ marginTop: 12 }}>
+            <div className="notice" style={{ marginBottom: 10 }}>Nothing is saved yet — this is a preview of what the file contains.</div>
+            <div className="grid cols-2" style={{ gap: 8 }}>
+              <div className="metrow"><span className="k">Borrower</span><span className="v">{b ? `${b.firstName || ''} ${b.lastName || ''}`.trim() || '—' : '—'}</span></div>
+              <div className="metrow"><span className="k">Co-borrower</span><span className="v">{preview.coBorrower ? `${preview.coBorrower.firstName || ''} ${preview.coBorrower.lastName || ''}`.trim() : '—'}</span></div>
+              <div className="metrow"><span className="k">Property</span><span className="v">{addr}</span></div>
+              <div className="metrow"><span className="k">Vesting entity</span><span className="v">{preview.llc ? preview.llc.name : '—'}</span></div>
+              <div className="metrow"><span className="k">Loan amount</span><span className="v">{fmtMoney(l && l.loanAmount)}</span></div>
+              <div className="metrow"><span className="k">Loan purpose</span><span className="v">{(l && l.loanType) || '—'}</span></div>
+              <div className="metrow"><span className="k">Purchase price</span><span className="v">{fmtMoney(p && p.purchasePrice)}</span></div>
+              <div className="metrow"><span className="k">After-repair value</span><span className="v">{fmtMoney(preview.extras && preview.extras.arv)}</span></div>
+            </div>
+            {warnings.length > 0 && (
+              <div style={{ marginTop: 10 }}>
+                <span className="muted small">Notes about this file:</span>
+                <ul className="muted small" style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+                  {warnings.map((w, i) => <li key={i}>{w}</li>)}
+                </ul>
+              </div>
+            )}
+            <div className="row" style={{ marginTop: 12 }}>
+              <div className="spacer" />
+              <button type="button" className="btn primary" onClick={create} disabled={state.status === 'creating' || !b}>
+                {state.status === 'creating' ? 'Creating…' : 'Create loan file from this import'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function StaffNewFile() {
   const nav = useNavigate();
-  const { role } = useAuth();
+  const { role, actor } = useAuth();
   const seesAll = ['admin', 'super_admin', 'underwriter'].includes(role);
+  // The staffer opening the file is put on it by default (owner-directed
+  // 2026-07-20) — no need to pick, never Lead Capture — when they hold an
+  // officer-eligible role (the roles the officer dropdown offers). A
+  // processor/underwriter opener isn't a valid LO, so their default stays blank.
+  const selfOfficerId = (['loan_officer', 'admin', 'super_admin'].includes(role) && actor && actor.id) ? actor.id : '';
   const [team, setTeam] = useState([]);
   const _d = readNewFileDraft();   // restore any in-progress draft (lazy, once, pre-persist)
   const [f, setF] = useState({
     firstName: '', lastName: '', email: '', phone: '',
-    program: '', loanType: '', propertyType: '', units: '',
+    program: '', loanType: '', propertyType: '', units: '', entityName: '', llcId: '',
     purchasePrice: '', asIsValue: '', arv: '', rehabBudget: '', rehabType: '', sqftPre: '', sqftPost: '',
     isAssignment: false, underlyingContractPrice: '',
     requestedExpFlips: '', requestedExpHolds: '', requestedExpGround: '', requestedExpReo: '',
-    loanOfficerId: '', processorId: '', inviteBorrower: true,
+    loanOfficerId: selfOfficerId, processorId: '', inviteBorrower: true,
     ...(_d && _d.f ? _d.f : {}),
   });
   const [addr, setAddr] = useState({ street: '', unit: '', city: '', state: '', zip: '', ...(_d && _d.addr ? _d.addr : {}) });
@@ -160,6 +266,36 @@ export default function StaffNewFile() {
   const [co, setCo] = useState(_d && _d.co ? _d.co : { firstName: '', lastName: '', email: '', phone: '', borrowerId: null });
 
   useEffect(() => { api.staffTeam().then(setTeam).catch(() => {}); }, []);
+
+  // Prefill from ?borrowerId=<uuid> (owner-directed 2026-07-21) — the "+ New
+  // mortgage" action on the borrowers page passes the borrower so we can start
+  // their next deal without re-searching. Read the id from the HashRouter's
+  // querystring (hash: "#/internal/new?borrowerId=..."), look up the borrower's
+  // contact, and pre-link the file to them. Runs ONCE, only when no borrower is
+  // already linked (never clobbers an in-progress draft), and only when the
+  // form's name fields are empty (again — don't overwrite live typing). Best-
+  // effort: a missing/invalid id just leaves the form blank.
+  useEffect(() => {
+    if (borrowerId) return;
+    if ((f.firstName || '').trim() || (f.lastName || '').trim() || (f.email || '').trim()) return;
+    let bid = '';
+    try {
+      const hash = String((typeof window !== 'undefined' && window.location && window.location.hash) || '');
+      const q = hash.indexOf('?');
+      if (q >= 0) {
+        const sp = new URLSearchParams(hash.slice(q + 1));
+        bid = sp.get('borrowerId') || '';
+      }
+    } catch (_) { /* ignore */ }
+    if (!bid) return;
+    let live = true;
+    api.staffBorrower(bid).then((bo) => {
+      if (!live || !bo) return;
+      pickBorrower({ id: bo.id, first_name: bo.first_name, last_name: bo.last_name, email: bo.email, cell_phone: bo.cell_phone });
+    }).catch(() => {});
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Auto-save the in-progress form to localStorage on every change (no Save
   // button). Restored on mount via the lazy initializers above.
@@ -191,6 +327,11 @@ export default function StaffNewFile() {
   }, []);
 
   const set = (k, v) => setF(s => ({ ...s, [k]: v }));
+  // Property type drives the units control: single-unit types auto-fill 1 (and
+  // lock the field), "Multi 2–4" becomes a 2/3/4 dropdown, "Multi 5+" / "Mixed
+  // use" take a free number. Mirrors the borrower application so both sides
+  // behave identically (owner-reported: this wasn't happening on the staff side).
+  const setPropertyType = (v) => setF(s => ({ ...s, propertyType: v, units: unitsForType(v, s.units) }));
   // Borrower identity fields: a manual edit unlinks any picked borrower so the
   // name search re-enables and the file won't force-link the wrong record.
   const setBorrowerField = (k, v) => { if (borrowerId) setBorrowerId(null); setF(s => ({ ...s, [k]: v })); };
@@ -242,7 +383,13 @@ export default function StaffNewFile() {
         borrowerId: borrowerId || undefined,
         propertyAddress: buildAddress(),
         propertyType: f.propertyType || undefined,
-        units: f.units ? Number(f.units) : undefined,
+        // Single-unit types are always 1 even if a stale draft left units blank;
+        // otherwise use the entered/selected count (unitsForType returns '1'/'').
+        units: (() => { const u = unitsForType(f.propertyType, f.units); return u ? Number(u) : undefined; })(),
+        // Vesting entity: a picked LLC id, or a typed name the backend resolves /
+        // creates on the borrower after the file is made.
+        llcId: f.llcId || undefined,
+        entityName: (!f.llcId && f.entityName.trim()) ? f.entityName.trim() : undefined,
         program: f.program || undefined,
         loanType: f.loanType || undefined,
         purchasePrice: numOrNull(f.purchasePrice),
@@ -300,6 +447,8 @@ export default function StaffNewFile() {
       </div>
 
       {err && <div role="alert" className="notice err" style={{ marginBottom: 14 }}>{err}</div>}
+
+      <MismoImport />
 
       <form onSubmit={submit}>
         <div className="form-grid">
@@ -393,12 +542,36 @@ export default function StaffNewFile() {
           </div>
           <div className="grid cols-2">
             <div className="field"><label>Property type</label>
-              <select className="input" value={f.propertyType} onChange={e => set('propertyType', e.target.value)}>
+              <select className="input" value={f.propertyType} onChange={e => setPropertyType(e.target.value)}>
                 <option value="">Select…</option>{PROP_TYPES.map(p => <option key={p}>{p}</option>)}
               </select></div>
-            <div className="field"><label>Units</label>
-              <input className="input" type="number" min="1" value={f.units} onChange={e => set('units', e.target.value)} /></div>
+            {unitsMode(f.propertyType) === 'select24' ? (
+              <div className="field"><label>Units</label>
+                <select className="input" value={f.units || ''} onChange={e => set('units', e.target.value)}>
+                  <option value="">Select…</option><option>2</option><option>3</option><option>4</option>
+                </select></div>
+            ) : unitsMode(f.propertyType) === 'multi' ? (
+              <div className="field"><label>Units</label>
+                <input className="input" type="number" min="5" value={f.units || ''} onChange={e => set('units', e.target.value)} placeholder="5 or more" /></div>
+            ) : unitsMode(f.propertyType) === 'single' ? (
+              // Single-unit type (SFR / Condo / Townhouse): 1 unit, locked.
+              <div className="field"><label>Units</label>
+                <input className="input" value="1 unit" disabled readOnly /></div>
+            ) : (
+              // 'open' type (New Construction / Commercial) or no type yet —
+              // plain, editable entry; never locked or forced to 1.
+              <div className="field"><label>Units</label>
+                <input className="input" type="number" min="1" value={f.units} onChange={e => set('units', e.target.value)} /></div>
+            )}
           </div>
+          <div className="field"><label>Vesting entity / LLC (if any)</label>
+            <LlcPicker value={f.entityName} staff borrowerId={borrowerId}
+              placeholder={borrowerId ? 'Which LLC is this property purchased under?' : 'Type the LLC name (created once the borrower is saved)'}
+              onPick={({ id, name }) => setF(s => ({ ...s, entityName: name, llcId: id || '' }))} />
+            <p className="muted small" style={{ marginTop: 4 }}>
+              {borrowerId ? 'Pick one of this borrower’s LLCs or create a new one — we’ll ask for its EIN letter, formation docs, and operating agreement.'
+                : 'If the property vests in an LLC, type its name — it’s created on the borrower once the file is saved.'}
+            </p></div>
           </div>
         </div>
 

@@ -44,7 +44,8 @@ router.get('/health', async (req, res) => {
     ]);
     res.json({ ok: true, probe, sync: backup.health(), backlog: counts.rows[0], integrity: integrity.rows });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.warn('[admin-sharepoint] handler error:', db.describeError(e));
+    res.status(500).json({ error: 'server error' });
   }
 });
 
@@ -53,10 +54,33 @@ router.get('/health', async (req, res) => {
 router.get('/reconciliation', async (req, res) => {
   try {
     const recon = await backup.reconciliation();
-    await audit(req, 'sharepoint_reconciliation_viewed', { healthy: recon.healthy });
-    res.json({ ok: true, ...recon });
+    // Name the actual stuck documents (identity + real reason) so the report is
+    // interpretable — the SLO alert points here.
+    const stuck = await backup.stuckDocuments(50).catch(() => []);
+    await audit(req, 'sharepoint_reconciliation_viewed', { healthy: recon.healthy, stuck: stuck.length });
+    res.json({ ok: true, ...recon, stuck });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.warn('[admin-sharepoint] handler error:', db.describeError(e));
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+// Force the stuck-document escalation now (settle phantoms, card the rest) —
+// the same pass the SLO watchdog runs, on demand from the admin screen.
+router.post('/escalate-stuck', async (req, res) => {
+  try {
+    if (!backup.enabled()) return res.status(409).json({ error: 'SharePoint sync is not enabled on this server' });
+    // Fire-and-forget (like /verify and /mirror): escalation can force-attempt up
+    // to 50 docs (~90s each) — never hold the HTTP request open for minutes, and
+    // never race a concurrent drain synchronously from a blocking handler
+    // (A-Z audit C1). Progress shows on GET /reconciliation.
+    backup.escalateStuckDocs()
+      .then((result) => audit(req, 'sharepoint_escalate_stuck', result))
+      .catch((e) => console.warn('[sp-sync] escalate-stuck (admin) error:', e.message));
+    res.json({ ok: true, started: true });
+  } catch (e) {
+    console.warn('[admin-sharepoint] handler error:', db.describeError(e));
+    res.status(500).json({ error: 'server error' });
   }
 });
 
@@ -74,7 +98,8 @@ router.post('/verify', async (req, res) => {
     await audit(req, 'sharepoint_verify_started', { pending });
     res.json({ ok: true, started: true, toVerify: pending });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.warn('[admin-sharepoint] handler error:', db.describeError(e));
+    res.status(500).json({ error: 'server error' });
   }
 });
 
@@ -87,7 +112,8 @@ router.post('/mirror', async (req, res) => {
     await audit(req, 'sharepoint_mirror_kicked', {});
     res.json({ ok: true, started: true });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.warn('[admin-sharepoint] handler error:', db.describeError(e));
+    res.status(500).json({ error: 'server error' });
   }
 });
 
@@ -107,14 +133,58 @@ router.post('/retry-exhausted', async (req, res) => {
     await audit(req, 'sharepoint_retry_exhausted', { requeued: r.rowCount });
     res.json({ ok: true, requeued: r.rowCount });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.warn('[admin-sharepoint] handler error:', db.describeError(e));
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+// ---- State-machine (FSM) observability + dead-letter (Phase 3) --------------
+// Reads the explicit per-document mirror_status. Safe regardless of the
+// SHAREPOINT_MIRROR_FSM flag: the columns exist and are backfilled since Phase 1,
+// so the dashboard shows real state even before the FSM worker is enabled.
+const queue = require('../lib/sp-mirror-queue');
+
+// The correct-alerting dashboard: per-state counts, the dead-letter and
+// orphaned-lease counts (page-worthy), the dead-letter list (what the owner
+// manually reviews) and the leaked-lease list.
+router.get('/fsm', async (req, res) => {
+  try {
+    const [snapshot, deadLetter, expiredLeases] = await Promise.all([
+      queue.healthSnapshot(),
+      queue.deadLetterList(100),
+      queue.expiredLeaseList(100),
+    ]);
+    res.json({ ok: true, mode: queue.fsmMode(), snapshot, deadLetter, expiredLeases });
+  } catch (e) {
+    console.warn('[admin-sharepoint] handler error:', db.describeError(e));
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+// One-click requeue a dead-letter document (DEAD → PENDING, re-arms legacy too).
+// The Sync-review card auto-closes when it mirrors. Kicks a drain so it retries now.
+router.post('/fsm/doc/:id/requeue', async (req, res) => {
+  try {
+    if (!UUID_RE.test(String(req.params.id || ''))) return res.status(400).json({ error: 'invalid document id' });
+    const row = await queue.requeueDead(req.params.id);
+    if (!row) return res.status(404).json({ error: 'no dead-letter document with that id' });
+    try { backup.kick(); } catch (_) {}
+    await audit(req, 'sharepoint_fsm_requeue', { documentId: row.id, filename: row.filename });
+    res.json({ ok: true, documentId: row.id });
+  } catch (e) {
+    console.warn('[admin-sharepoint] handler error:', db.describeError(e));
+    res.status(500).json({ error: 'server error' });
   }
 });
 
 // Force ONE document to re-mirror (fresh copy uploaded, ref re-pointed).
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 router.post('/doc/:id/remirror', async (req, res) => {
   try {
     if (!backup.enabled()) return res.status(409).json({ error: 'SharePoint sync is not enabled on this server' });
+    // Validate the id shape so a malformed :id returns a clean 400 instead of a
+    // 500 leaking the raw Postgres "invalid input syntax for uuid" (A-Z audit C2).
+    if (!UUID_RE.test(String(req.params.id || ''))) return res.status(400).json({ error: 'invalid document id' });
     const r = await db.query(
       `UPDATE documents SET
           sharepoint_backed_up_at = NULL,
@@ -128,7 +198,8 @@ router.post('/doc/:id/remirror', async (req, res) => {
     await audit(req, 'sharepoint_doc_remirror', { documentId: req.params.id, filename: r.rows[0].filename });
     res.json({ ok: true, documentId: r.rows[0].id });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.warn('[admin-sharepoint] handler error:', db.describeError(e));
+    res.status(500).json({ error: 'server error' });
   }
 });
 

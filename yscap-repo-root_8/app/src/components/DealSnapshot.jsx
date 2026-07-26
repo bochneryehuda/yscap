@@ -8,6 +8,9 @@ import React from 'react';
    frozen pricing engine. */
 
 const money = (n) => n == null || n === '' ? '—' : '$' + Math.round(Number(n)).toLocaleString('en-US');
+// Exact cents for liquidity so V1 matches V2 and the term sheet to the penny
+// (audit 2026-07-19). Whole-dollar money() stays on the floored loan amount.
+const money2 = (n) => (n == null || n === '') ? '—' : '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const pctOf = (num, den) => (Number(num) > 0 && Number(den) > 0) ? (Number(num) / Number(den) * 100).toFixed(1) + '%' : null;
 const pct = (n) => Number(n) > 0 ? (Number(n) * 100).toFixed(1) + '%' : null;
 const addrLine = (a) => !a ? '—' : (a.oneLine || [a.line1 || a.street, a.city, a.state, a.zip].filter(Boolean).join(', ') || '—');
@@ -27,6 +30,10 @@ export default function DealSnapshot({ app, gating }) {
   const acqLtv = quote?.sizing?.acqLtvPct ? pct(quote.sizing.acqLtvPct) : null;
   const product = app.registered_product_label || (quote && [quote.programLabel, quote.productLabel].filter(Boolean).join(' · '));
   const priced = app.loan_amount != null && Number(app.loan_amount) > 0;
+  // The registered loan amount + leverage ratios are "as last registered" once any
+  // deal number moves before a re-price (audit 2026-07-19) — flag them so they don't
+  // read as live figures next to the freshly-edited economics beside them.
+  const stale = !!app.pricing_stale && priced;
   const g = gating && gating.clear_to_close;
 
   const cell = (k, v) => <div className="snap-cell"><span className="snap-k">{k}</span><span className="snap-v">{v}</span></div>;
@@ -37,6 +44,7 @@ export default function DealSnapshot({ app, gating }) {
         <div className="snap-term">
           <span className="snap-k">Loan amount</span>
           <span className="snap-term-v">{priced ? money(app.loan_amount) : 'Not yet priced'}</span>
+          {stale && <span className="snap-k" style={{ color: 'var(--warning)', marginTop: 2 }}>as last registered</span>}
         </div>
         <div className="snap-term">
           <span className="snap-k">Note rate</span>
@@ -51,6 +59,7 @@ export default function DealSnapshot({ app, gating }) {
           </div>
         )}
       </div>
+      {stale && <div style={{ fontSize: '.82em', color: 'var(--warning)', margin: '2px 2px 8px', lineHeight: 1.3 }}>A pricing detail changed since this product was registered — the loan amount and the leverage ratios (LTC / Initial LTV / Loan-to-ARV) below are as last registered. Re-price the product to update them.</div>}
       <div className="snap-grid">
         {cell('Borrower', [app.first_name, app.last_name].filter(Boolean).join(' ') || '—')}
         {app.co_borrower_id && cell('Co-borrower', [app.co_first_name, app.co_last_name].filter(Boolean).join(' ') || '—')}
@@ -66,7 +75,7 @@ export default function DealSnapshot({ app, gating }) {
         {cell('LTC', ltc || '—')}
         {cell('Initial LTV', acqLtv || '—')}
         {cell('Loan-to-ARV', arvLtv || '—')}
-        {quote && quote.liquidity != null ? cell('Liquidity required', money(quote.liquidity)) : null}
+        {quote && quote.liquidity != null ? cell('Liquidity required', money2(quote.liquidity)) : null}
         {cell('FICO', app.fico || '—')}
       </div>
     </div>

@@ -100,11 +100,24 @@ export function buildStudioState(x) {
     tsTerm: termDigits(x.termMonths || x.term),
     irMonths: rawNum(x.irMonths) || '',
     irAmount: rawNum(x.irAmount) || '',
+    // Term-sheet options (owner-directed 2026-07-22): carry the file's estimated
+    // closing date into the studio so it shows and re-registers without wiping.
+    estClosingDate: (x.estClosingDate && /^\d{4}-\d{2}-\d{2}/.test(String(x.estClosingDate))) ? String(x.estClosingDate).slice(0, 10) : '',
+    // Co-borrower personal-guaranty waiver (owner-directed 2026-07-22): a READ-ONLY
+    // flag set by an approved super-admin exception (applications.co_borrower_pg_waived).
+    // It drives the term sheet's guaranty wording; it is never editable in the studio
+    // and the server ignores any client value (it reads the real flag from the file).
+    coBorrowerPgWaived: (x.coBorrowerPgWaived === true || x.coBorrowerPgWaived === 1 ||
+      String(x.coBorrowerPgWaived).toLowerCase() === 'true' || String(x.coBorrowerPgWaived) === '1') ? 'true' : '',
   };
   const c = {
     isAssign,
     addrTBD: !x.address,
-    sqft: /square|addition/i.test(String(x.rehabType || '')),
+    // Mirror the server's buildInputs sq-ft-addition detection EXACTLY (rehab-type
+    // keyword OR an actual footprint increase) — the prefill dropped the
+    // sqft_post > sqft_pre signal, so a register lifted the 87.5% sq-ft LTC cap the
+    // server's own quote applies and over-lent (audit #22).
+    sqft: /square|sf|addition|ground/i.test(String(x.rehabType || '')) || (Number(x.sqftPost) || 0) > (Number(x.sqftPre) || 0),
   };
   return { v, c };
 }
@@ -121,6 +134,14 @@ function readSnapshot(win) {
   // strips defensively — belt and suspenders). Non-money fields (names/addresses)
   // keep val() untouched, since a comma can be meaningful there ("Smith, LLC").
   const moneyVal = (id) => val(id).replace(/,/g, '');
+  // Interest reserve months<->amount is ONE value shown two ways (owner-directed
+  // 2026-07-20). The field the user did NOT drive is a DERIVED mirror (data-derived="1")
+  // the tool fills for display only. The register/quote must send ONLY the source field,
+  // exactly as the studio priced it — sending the mirror instead would resize the loan
+  // off the rounded equivalent and diverge from the shown quote by a dollar or two. So a
+  // derived field is harvested as blank.
+  const derived = (id) => { const e = doc.getElementById(id); return !!(e && e.dataset && e.dataset.derived === '1'); };
+  const srcVal = (id) => derived(id) ? '' : val(id);
   const chk = (id) => { const e = doc.getElementById(id); return !!(e && e.checked); };
   const active = (id) => { const e = doc.getElementById(id); return !!(e && e.classList.contains('pcard-active')); };
   const program = active('pcardGold') ? 'gold' : active('pcardStd') ? 'standard' : null;
@@ -141,7 +162,7 @@ function readSnapshot(win) {
       asIs: moneyVal('asIs'), arv: moneyVal('arv'), construction: moneyVal('construction'),
       rehabScope: val('rehabScope'), sqft: chk('sqft'),
       fico: val('fico'), expFlips: val('expFlips'), expBrrrr: val('expBrrrr'), expGround: val('expGround'),
-      tsTerm: val('tsTerm'), irMonths: val('irMonths'), irAmount: moneyVal('irAmount'),
+      tsTerm: val('tsTerm'), irMonths: srcVal('irMonths'), irAmount: derived('irAmount') ? '' : moneyVal('irAmount'),
       tsEffPrice: moneyVal('tsEffPrice'),
       // admin pricing knobs (staff mode) — same names the staff pricing API takes
       tsYspStd: val('tsYspStd'), tsYspGold: val('tsYspGold'),
@@ -151,6 +172,10 @@ function readSnapshot(win) {
       tsManualOn: chk('tsManualOn'),
       tsMLtv: val('tsMLtv'), tsMArv: val('tsMArv'), tsMLtc: val('tsMLtc'),
       tsMRate: val('tsMRate'), tsMIr: val('tsMIr'),
+      // Term-sheet options (owner-directed 2026-07-22) — display/record only.
+      estClosingDate: val('estClosingDate'),
+      tsAccrual: val('tsAccrual'), tsDeferredOrig: val('tsDeferredOrig'),
+      tsMinIntStd: chk('tsMinIntStd'), tsMinIntGold: chk('tsMinIntGold'), tsMinIntManual: chk('tsMinIntManual'),
     },
   };
 }
@@ -194,7 +219,16 @@ export function adminStateFromEngineInputs(inp) {
   put('tsFeeAppr', inp.appraisalFee); put('tsFeeTitle', inp.titleFee);
   put('tsMLtv', inp.ovrAcqLTVPct); put('tsMArv', inp.ovrARLTVPct);
   put('tsMLtc', inp.ovrLTCPct); put('tsMRate', inp.ovrRatePct); put('tsMIr', inp.ovrIrMonths);
-  return { v, c: inp.manualPricing ? { tsManualOn: true } : {} };
+  // Re-arm the manual-scenario toggle whenever ANY manual override value was
+  // registered — not only when inp.manualPricing is set. Otherwise reopening a
+  // manually-priced file restores the rate VALUE into the (hidden) field but leaves
+  // the toggle off, so the studio ignores it and a re-register silently reverts to
+  // the AUTO rate (the "typed 10.25, file shows 10.3" report — 10.3 is the auto
+  // rate). Older/other-path registrations that stored the override without the flag
+  // are covered too. The server (buildInputs) honors a present override regardless.
+  const hasManualOverride = ['ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths']
+    .some((k) => inp[k] != null && inp[k] !== '');
+  return { v, c: (inp.manualPricing || hasManualOverride) ? { tsManualOn: true } : {} };
 }
 
 /* A compact, human-readable copy of the priced structure — stored on the
@@ -260,7 +294,7 @@ function loadPdfEngine(doc) {
   });
 }
 
-const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds = [], onState, showAdmin = false }, ref) {
+const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds = [], onState, showAdmin = false, officer = null }, ref) {
   const frameRef = useRef(null);
   const winRef = useRef(null);
   const adminStyleRef = useRef(null);   // the injected style hiding the admin zone
@@ -442,6 +476,18 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
         // pricing controls open; everyone else gets them hidden — togglable
         // later through the ref WITHOUT remounting (values persist hidden).
         applyAdminVisible(!!showAdmin);
+        // Loan-officer branding (owner-directed 2026-07-21): when this studio is
+        // opened on a file with an ASSIGNED loan officer, publish the officer to
+        // the tool's window.YSBRAND so the exported term-sheet PDF renders the LO
+        // signature block with the /ts_lo_sig/ + /ts_lo_dt/ anchors DocuSign uses
+        // to place the LO signer's tabs. No-op when no officer prop is given.
+        try {
+          if (officer && officer.name) {
+            win.YSBRAND = Object.assign({}, officer, {
+              code: officer.code || String(officer.email || officer.name || '').split('@')[0].toLowerCase(),
+            });
+          }
+        } catch (_) { /* cosmetic — falls back to no LO block */ }
         try { if (prefillRef.current) win.YS.applyState(prefillRef.current); } catch (_) { /* keep defaults */ }
         for (const id of lockedIds) {
           const e = doc.getElementById(id);

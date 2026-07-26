@@ -1,6 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
+import { scenarioToDraft, scenarioLabelFromState } from '../lib/scenario.js';
+import ActionNeeded from '../components/ActionNeeded.jsx';
+import { programLabel, loanTypeLabel, officerLabel } from '../lib/labels.js';
 
 // Files that are muted OUTSIDE the file (owner-directed): funded/terminal AND
 // ON-HOLD loans never nag in the cross-file "to complete" rollup or the per-loan
@@ -22,10 +25,11 @@ export default function Dashboard() {
   const [msg, setMsg] = useState('');
   const [unread, setUnread] = useState({});
   const [drawBusy, setDrawBusy] = useState(null);
-  const [outByLoan, setOutByLoan] = useState({});
   const [archived, setArchived] = useState([]);      // archived (hidden) drafts
   const [showArchived, setShowArchived] = useState(false);
   const [draftBusy, setDraftBusy] = useState(null);
+  const [scenarios, setScenarios] = useState([]);    // saved pricing scenarios
+  const [scenBusy, setScenBusy] = useState(null);
 
   const load = () => {
     // Each panel loads independently: a failing drafts/notifications call must
@@ -34,6 +38,7 @@ export default function Dashboard() {
     api.drafts().then(d => setDrafts(d || [])).catch(() => {});
     api.archivedDrafts().then(d => setArchived(d || [])).catch(() => {});
     api.notifications().then(n => setNotifs(n || [])).catch(() => {});
+    api.pricingScenarios().then(s => setScenarios(Array.isArray(s) ? s : [])).catch(() => {});
   };
 
   // Tidy in-progress applications. Delete is permanent (confirm first); archive
@@ -52,6 +57,26 @@ export default function Dashboard() {
     setDraftBusy(id);
     try { await api.deleteDraft(id); load(); } catch (e) { setErr(e.message || 'Could not delete'); } finally { setDraftBusy(null); }
   }
+
+  // Saved pricing scenarios (#119b): reopen one in the studio to reprice it,
+  // start a real application pre-filled from it, or delete it. Starting a loan
+  // from a scenario carries every number the borrower already priced (deal,
+  // property, economics, experience, FICO) into a new draft — the application
+  // then adds their personal profile on top, so only the missing details remain.
+  const reopenScenario = (s) => nav('/pricing', { state: { openScenarioId: s.id } });
+  async function startLoanFromScenario(s) {
+    setScenBusy(s.id);
+    try {
+      const data = scenarioToDraft(s.inputs || {});
+      const d = await api.createDraft({ label: s.label || scenarioLabelFromState(s.inputs) || 'New application', data, step: 1 });
+      nav(`/apply/${d.id}`);
+    } catch (e) { setErr(e.message || 'Could not start the loan'); setScenBusy(null); }
+  }
+  async function removeScenario(s) {
+    if (!window.confirm(`Delete the saved scenario "${s.label}"?`)) return;
+    setScenBusy(s.id);
+    try { await api.deletePricingScenario(s.id); load(); } catch (e) { setErr(e.message || 'Could not delete the scenario'); } finally { setScenBusy(null); }
+  }
   useEffect(() => {
     load();
     api.chatInbox().then(rows => {
@@ -60,20 +85,9 @@ export default function Dashboard() {
     }).catch(() => {});
   }, []);
 
-  // Pull each active loan's outstanding checklist items so the dashboard can
-  // show WHAT is still needed, grouped by loan — the loans list endpoint only
-  // returns per-file counts, not the item names.
-  useEffect(() => {
-    if (!apps) return;
-    let live = true;
-    const DONE = ['received', 'satisfied', 'waived', 'cleared', 'accepted'];
-    apps
-      .filter(a => !QUIET_STATUSES.includes(a.status) && (a.borrower_total || 0) > (a.borrower_done || 0))
-      .forEach(a => api.checklist(a.id)
-        .then(items => { if (live) setOutByLoan(m => ({ ...m, [a.id]: (items || []).filter(i => !DONE.includes(i.status)) })); })
-        .catch(() => {}));
-    return () => { live = false; };
-  }, [apps]);
+  // "What you still need to do" now loads in ONE call via the <ActionNeeded> card
+  // (GET /api/borrower/action-items) instead of a checklist fetch per file, so it
+  // paints instantly at the top — see the component below.
 
   const [creating, setCreating] = useState(false);
   async function newApplication() {
@@ -148,10 +162,10 @@ export default function Dashboard() {
         <span className="muted small">{a.ys_loan_number || 'Pending #'}</span>
       </div>
       <h3 style={{ marginBottom: 10 }}>{addrLine(a.property_address)}</h3>
-      <div className="metrow"><span className="k">Program</span><span className="v">{a.program || '—'}</span></div>
-      <div className="metrow"><span className="k">Loan type</span><span className="v">{a.loan_type || '—'}</span></div>
+      <div className="metrow"><span className="k">Program</span><span className="v">{programLabel(a.program, a.registered_product_label) || '—'}</span></div>
+      <div className="metrow"><span className="k">Loan type</span><span className="v">{loanTypeLabel(a.loan_type) || '—'}</span></div>
       <div className="metrow"><span className="k">Loan amount</span><span className="v ln-amount">{money(a.loan_amount)}</span></div>
-      <div className="metrow"><span className="k">Officer</span><span className="v">{a.loan_officer_name || 'Lead Capture'}</span></div>
+      <div className="metrow"><span className="k">Officer</span><span className="v">{officerLabel(a.loan_officer_name)}</span></div>
       {a.borrower_total > 0 && (
         <div style={{ marginTop: 12 }}>
           <div className="row" style={{ marginBottom: 4 }}>
@@ -193,6 +207,10 @@ export default function Dashboard() {
       {err && <div role="alert" className="notice err">{err}
         <button className="btn link small" onClick={() => { setErr(''); load(); }}>Retry</button></div>}
       {msg && <div className="notice ok">{msg}</div>}
+
+      {/* Lead with what the borrower must DO right now — signatures, fixes, documents
+          — pulled cross-file in one call so it paints immediately on login (#39). */}
+      <ActionNeeded />
 
       {drawConfirm && (
         <div className="cv-modal-back" onClick={() => setDrawConfirm(null)}>
@@ -269,6 +287,36 @@ export default function Dashboard() {
           </>
         )}
 
+      {scenarios.length > 0 && (
+        <div className="panel" style={{ marginBottom: 18 }}>
+          <h3 style={{ marginBottom: 4 }}>Saved scenarios</h3>
+          <p className="muted small" style={{ marginBottom: 12 }}>
+            Term sheets you priced and saved. Reopen one to reprice it, or start an
+            application straight from it — pre-filled with everything you already entered.
+          </p>
+          {scenarios.map(s => {
+            const v = (s.inputs && s.inputs.v) || {};
+            const sub = [v.dealType, v.dealPurpose].filter(Boolean).join(' · ');
+            return (
+              <div className="item" key={s.id}>
+                <div>
+                  <div className="ttl">{s.label || 'Pricing scenario'}</div>
+                  <div className="muted small">{sub ? sub + ' · ' : ''}Saved {dstr(s.updated_at || s.created_at)}</div>
+                </div>
+                <div className="row" style={{ gap: 6 }}>
+                  <button className="btn ghost small" disabled={scenBusy === s.id} onClick={() => reopenScenario(s)}
+                    title="Reopen this scenario in the pricer to reprice it">Reopen</button>
+                  <button className="btn primary small" disabled={scenBusy === s.id} onClick={() => startLoanFromScenario(s)}
+                    title="Start a loan application pre-filled from this scenario">{scenBusy === s.id ? 'Starting…' : 'Start loan →'}</button>
+                  <button className="btn ghost small" disabled={scenBusy === s.id} onClick={() => removeScenario(s)}
+                    title="Delete this saved scenario" style={{ color: 'var(--danger)' }}>Delete</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {(drafts.length > 0 || archived.length > 0) && (
         <div className="panel" style={{ marginBottom: 18 }}>
           <h3 style={{ marginBottom: 12 }}>Continue where you left off</h3>
@@ -310,38 +358,6 @@ export default function Dashboard() {
           )}
         </div>
       )}
-
-      {apps && (() => {
-        const groups = (apps || []).filter(a => (outByLoan[a.id] || []).length > 0);
-        if (!groups.length) return null;
-        const itemLabel = (it) => it.label || it.borrower_label || it.field_label || 'Item';
-        const st = (s) => s === 'issue' ? 'Needs attention' : s === 'received' ? 'In review' : 'To do';
-        return (
-          <div className="panel" style={{ marginBottom: 18 }}>
-            <h3 style={{ marginBottom: 4 }}>Outstanding documents &amp; items</h3>
-            <p className="muted small" style={{ marginBottom: 6 }}>Everything your loans still need, grouped by property. Click any item to open the file.</p>
-            {groups.map(a => (
-              <div key={a.id} style={{ marginTop: 12 }}>
-                <div className="row" style={{ marginBottom: 2 }}>
-                  <Link to={`/app/${a.id}`} style={{ fontWeight: 600 }}>{addrLine(a.property_address)}</Link>
-                  <div className="spacer" />
-                  <span className="muted small">{(outByLoan[a.id] || []).length} outstanding</span>
-                </div>
-                {(outByLoan[a.id] || []).map(it => (
-                  <Link to={`/app/${a.id}`} key={it.id} className="checkitem" style={{ textDecoration: 'none', color: 'inherit' }}>
-                    <span className="dot outstanding" style={it.status === 'issue' ? { background: 'var(--danger)' } : undefined} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontWeight: 500 }}>{itemLabel(it)}</div>
-                      {it.status === 'issue' && it.rejection_reason && <div className="small" style={{ color: 'var(--danger)' }}>Needs a fix: {it.rejection_reason}</div>}
-                    </div>
-                    <span className="muted small" style={{ whiteSpace: 'nowrap' }}>{st(it.status)}</span>
-                  </Link>
-                ))}
-              </div>
-            ))}
-          </div>
-        );
-      })()}
 
       {notifs.length > 0 && (
         <div className="panel" style={{ marginTop: 18 }}>

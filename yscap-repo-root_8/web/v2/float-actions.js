@@ -157,5 +157,104 @@
     }
   }
 
-  ready(function () { injectCSS(); injectChooser(); injectFloat(); });
+  // ---- 3b. "Get a quote" capture — button-styled mailto CTAs become a real,
+  // server-side quote request (owner-directed 2026-07-24: no more workflow dead
+  // ends into the visitor's mail client). Plain footer contact links (the small
+  // sales@ text links) are left alone — only CTA buttons are upgraded. ----------
+  function openQuoteModal(ctx) {
+    var old = document.getElementById("ysQuoteOv"); if (old) old.remove();
+    var heading = (ctx && ctx.heading) || "Get a quote";
+    var ov = document.createElement("div");
+    ov.id = "ysQuoteOv";
+    ov.style.cssText = "position:fixed;inset:0;background:rgba(8,11,14,.6);z-index:150;display:flex;align-items:center;justify-content:center;padding:16px";
+    ov.innerHTML = '<div style="background:var(--card,#fff);color:var(--ivory,#141B22);max-width:480px;width:100%;max-height:88vh;overflow:auto;border-radius:14px;padding:18px 20px;position:relative;border:1px solid var(--line,#d8d2c4)">' +
+      '<button type="button" id="ysQuoteX" aria-label="Close" style="position:absolute;top:10px;right:12px;border:0;background:none;font-size:1.05rem;cursor:pointer;color:inherit">✕</button>' +
+      '<h3 style="margin:0 0 6px;font-size:1.15rem"></h3>' +
+      '<p style="margin:0 0 12px;opacity:.75;font-size:.92rem">Tell us how to reach you — your request goes straight to the YS Capital sales desk and a specialist will follow up.</p>' +
+      '<input id="ysQuoteName" data-noshare placeholder="Your name" autocomplete="name" style="width:100%;margin:0 0 6px;padding:10px 12px;border:1px solid var(--line,#d8d2c4);border-radius:8px;font-size:16px;background:transparent;color:inherit">' +
+      '<input id="ysQuoteEmail" data-noshare type="email" placeholder="Your email" autocomplete="email" style="width:100%;margin:0 0 6px;padding:10px 12px;border:1px solid var(--line,#d8d2c4);border-radius:8px;font-size:16px;background:transparent;color:inherit">' +
+      '<input id="ysQuotePhone" data-noshare type="tel" placeholder="Your phone" autocomplete="tel" style="width:100%;margin:0 0 6px;padding:10px 12px;border:1px solid var(--line,#d8d2c4);border-radius:8px;font-size:16px;background:transparent;color:inherit">' +
+      '<textarea id="ysQuoteMsg" data-noshare rows="3" placeholder="What are you working on? (address, purchase price, timeline…)" style="width:100%;margin:0 0 8px;padding:10px 12px;border:1px solid var(--line,#d8d2c4);border-radius:8px;font-size:16px;background:transparent;color:inherit"></textarea>' +
+      '<p id="ysQuoteErr" style="display:none;color:#b8604a;margin:0 0 8px;font-size:.9rem"></p>' +
+      '<button type="button" id="ysQuoteSend" class="btn btn-solid" style="width:100%;padding:11px 14px;border-radius:8px;border:0;background:var(--teal,#2F7F86);color:#fff;font-weight:700;cursor:pointer">Send my request →</button></div>';
+    document.body.appendChild(ov);
+    // Title mirrors the CTA the visitor clicked ("Get a Quote" / "Ask our
+    // team" / "Ask about prepay") — set as text, never HTML.
+    try { ov.querySelector("h3").textContent = heading; } catch (e) {}
+    document.body.style.overflow = "hidden";
+    var close = function () { ov.remove(); document.body.style.overflow = ""; };
+    ov.addEventListener("click", function (e) { if (e.target === ov) close(); });
+    ov.querySelector("#ysQuoteX").onclick = close;
+    ov.querySelector("#ysQuoteSend").onclick = function () {
+      var nm = (ov.querySelector("#ysQuoteName").value || "").trim();
+      var em = (ov.querySelector("#ysQuoteEmail").value || "").trim();
+      var ph = (ov.querySelector("#ysQuotePhone").value || "").trim();
+      var msg = (ov.querySelector("#ysQuoteMsg").value || "").trim();
+      var err = ov.querySelector("#ysQuoteErr");
+      var warn = function (t) { err.style.display = ""; err.textContent = t; };
+      if (!em && !ph) return warn("Add your email or phone so we can get back to you.");
+      if (em && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) return warn("That email doesn't look right.");
+      var b = this; b.disabled = true; b.textContent = "Sending…";
+      var lo = "";
+      try { lo = (window.YSBRAND && window.YSBRAND.email) ? String(window.YSBRAND.email).split("@")[0].toLowerCase() : (new URLSearchParams(location.search).get("lo") || ""); } catch (e) {}
+      fetch("/api/leads", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tool: "quote_request", officerCode: lo || undefined,
+          name: nm || undefined, email: em || undefined, phone: ph || undefined,
+          subject: heading + " — " + ((ctx && ctx.page) || document.title),
+          message: (msg || "A visitor asked for a quote.") + "\n\nSent from: " + location.href,
+          // Attach the visitor's ACTUAL scenario: every calculator page exposes
+          // its working numbers via YS.collectState(), so the team sees the deal
+          // they built — not just "a visitor asked for a quote".
+          payload: { page: location.pathname, title: document.title,
+            referrer: document.referrer || undefined,
+            state: (function () { try { return (window.YS && typeof window.YS.collectState === "function") ? window.YS.collectState() : undefined; } catch (e) { return undefined; } })() } }) })
+        .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+        .then(function () {
+          ov.firstChild.innerHTML = '<h3 style="margin:0 0 6px">Sent ✓</h3><p style="margin:0;opacity:.8">Thanks — the YS Capital sales desk has your request and will follow up shortly.</p>';
+          setTimeout(close, 3000);
+        })
+        .catch(function () { warn("We couldn't send this right now — please try again, or call " + TELD + "."); b.disabled = false; b.textContent = "Send my request →"; });
+    };
+  }
+  function upgradeQuoteLinks() {
+    var links = document.querySelectorAll('a[href^="mailto:"]');
+    for (var i = 0; i < links.length; i++) {
+      var a = links[i];
+      // Only CTA-styled buttons; the small plain contact links stay simple mailtos.
+      if (!(a.classList && (a.classList.contains("btn") || a.classList.contains("rb-btn")))) continue;
+      if (a.closest && (a.closest(".contact-pop") || a.closest(".sf-meta"))) continue;
+      a.addEventListener("click", function (e) {
+        e.preventDefault();
+        var label = (this.textContent || "").replace(/\s+/g, " ").trim().slice(0, 60);
+        openQuoteModal({ page: document.title, heading: label || "Get a quote" });
+        return false;
+      });
+    }
+  }
+
+  // ---- 4. Route every static "Apply now" hardlink through the chooser --------
+  // Many tool pages shipped with the external DSCR-portal URL hardcoded on their
+  // "Apply now" buttons, which dumped fix&flip/RTL borrowers into the RENTAL
+  // application (owner-reported dead end). Upgrade every such link to open the
+  // chooser instead, so the visitor picks DSCR (external portal) or Fix&Flip
+  // (our own application). The chooser's own DSCR card and the floating Apply
+  // button keep their existing behavior.
+  function upgradeApplyLinks() {
+    var links = document.querySelectorAll('a[href*="mymortgage-online.com"]');
+    for (var i = 0; i < links.length; i++) {
+      var a = links[i];
+      if ((a.closest && a.closest(".apply-modal")) || a.id === "floatApplyBtn") continue;
+      a.addEventListener("click", function (e) { if (window.YSApply) return window.YSApply.open(e); });
+    }
+  }
+
+  ready(function () {
+    // Only inject the stylesheet when this script is actually adding chrome —
+    // a page that ships its own chooser + float actions (the home page) gets
+    // ONLY the link upgrades, so its finished design is never restyled.
+    var needChooser = !document.getElementById("applyModal");
+    var needFloat = !document.getElementById("floatActions");
+    if (needChooser || needFloat) injectCSS();
+    injectChooser(); injectFloat(); upgradeApplyLinks(); upgradeQuoteLinks();
+  });
 })();

@@ -100,4 +100,25 @@ function shouldApplyInbound(inbound, cur) {
   return forward || inbound === 'issue' || (cur === 'issue' && forward);
 }
 
-module.exports = { BY_FIELD, RANK, resolveOutbound, normalizeInbound, shouldApplyInbound };
+/**
+ * Cap an INBOUND (ClickUp → portal) status so the sync can never COMPLETE a
+ * condition. The portal is the system of record for the final sign-off: evidence
+ * arriving from ClickUp may advance a condition up to 'received' (we now have the
+ * evidence), but the terminal 'satisfied' transition must go through the portal's
+ * signOffGate, where fulfillment is actually verified.
+ *
+ * Owner-directed 2026-07-20 ("major fatal", root-cause-everywhere): NO required
+ * condition may be marked complete without its data. signOffGate closed the
+ * manual door; the inbound-sync door (applyChecklistStatuses) is a second,
+ * independent way to reach 'satisfied' with zero portal data — it bypasses the
+ * gate entirely. Capping inbound 'satisfied' → 'received' closes it and matches
+ * the existing e-sign-webhook / document-accept policy (evidence lands at
+ * 'received'; a human explicitly signs off). 'issue' and every lower status pass
+ * through unchanged. A condition already 'satisfied' by a human is untouched
+ * (shouldApplyInbound never downgrades).
+ */
+function capInbound(inbound) {
+  return inbound === 'satisfied' ? 'received' : inbound;
+}
+
+module.exports = { BY_FIELD, RANK, resolveOutbound, normalizeInbound, shouldApplyInbound, capInbound };

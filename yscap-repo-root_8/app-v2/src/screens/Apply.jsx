@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { formatSSN, cleanFICO, ficoValid } from '../lib/validators.js';
-import { CITIZENSHIP, MARITAL, HOUSING } from '../lib/enums.js';
+import { CITIZENSHIP, MARITAL, HOUSING, unitsMode, unitsForType } from '../lib/enums.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { useAutosave } from '../lib/useAutosave.js';
 import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
@@ -15,7 +15,18 @@ import TermSheetStudio, {
 
 const STEPS = ['Property', 'Loan', 'Borrower', 'Price & register'];
 // The property identity is step 1's job — everything else in the studio is editable.
-const STUDIO_LOCKED = ['propAddr', 'addrTBD', 'propState'];
+// Step 4 ("Price & register") prices and registers off the application's committed
+// economics — the borrower edits those on the earlier application steps, which
+// persist. Locking the full economics set here (matching the borrower file-page
+// ProductStudioPanel) stops a step-4 studio edit that the register can't keep from
+// silently diverging: the draft is closed at submit and the borrower register
+// whitelist drops these fields, so an unlocked edit showed a loan the file never
+// registered (audit #7). To change a number, the borrower steps back.
+const STUDIO_LOCKED = [
+  'propAddr', 'addrTBD', 'propState', 'propType', 'dealPurpose', 'dealType',
+  'price', 'isAssign', 'origPrice', 'asIs', 'arv', 'construction', 'rehabScope', 'sqft',
+  'expFlips', 'expBrrrr', 'expGround',
+];
 // Ground-Up is a PROGRAM (not a loan type/purpose). DSCR Rental is intentionally
 // not offered here for now.
 const PROGRAMS = ['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction', 'Not sure yet'];
@@ -41,13 +52,9 @@ const needsSqft = (rehabType) => /square|adding|ground/i.test(rehabType || '');
 const isPurchase = (loanType) => !loanType || /purchase/i.test(loanType);
 const isRefi = (loanType) => /refi/i.test(loanType || '');
 
-// Property type drives the unit-count control. Single-unit types default to 1
-// and never ask; 2–4 offers a dropdown; 5+ / mixed-use take a number.
-function unitsMode(propType) {
-  if (/2.?4/.test(propType || '')) return 'select24';
-  if (/5\+|mixed/i.test(propType || '')) return 'multi';
-  return 'single'; // SFR / Condo / Townhouse
-}
+// Property type drives the unit-count control (single → 1 locked; 2–4 → dropdown;
+// 5+ / mixed → free number). The logic lives once in ../lib/enums.js (unitsMode /
+// unitsForType) so the borrower application and the staff forms never diverge.
 const money = (n) => (n || n === 0) ? '$' + Number(n).toLocaleString() : '—';
 
 function SaveChip({ status }) {
@@ -66,6 +73,11 @@ export default function Apply() {
   const [busy, setBusy] = useState(false);
   const [officers, setOfficers] = useState([]);
   const [partners, setPartners] = useState([]);
+  // The borrower's OWNING officer (loan officer of record), if any. When set —
+  // a prior file's officer or the officer whose invite link they signed up
+  // through — the file is locked to that officer and the borrower cannot pick or
+  // change one (owner-directed 2026-07-20: keep loan-officer branding).
+  const [ownedOfficer, setOwnedOfficer] = useState(null);
   const [snap, setSnap] = useState(null);          // live Term Sheet Studio state (step 4)
   const [appId, setAppId] = useState(null);        // set the moment the application is submitted (step 4 entry)
   const [adminKey, setAdminKey] = useState('');    // admin pricing unlock (same gate as the static studio)
@@ -124,10 +136,14 @@ export default function Apply() {
           // officer of record) so a returning borrower's new file stays tied to
           // their LO, and default the "work with an officer?" answer to Yes.
           // Only when this draft hasn't already picked or answered.
-          if (p.owning_officer_email && !data.loanOfficerName && !data.loanOfficerEmail && data.worksWithOfficer == null) {
-            data.loanOfficerName = p.owning_officer_name || '';
-            data.loanOfficerEmail = p.owning_officer_email || '';
+          if (p.owning_officer_email) {
+            // Locked to the officer of record — always reflect it on the draft and
+            // remember it so the picker renders read-only (the backend enforces it
+            // too, so a stale draft pick can never override the owning officer).
+            data.loanOfficerName = p.owning_officer_name || data.loanOfficerName || '';
+            data.loanOfficerEmail = p.owning_officer_email;
             data.worksWithOfficer = true;
+            setOwnedOfficer({ name: p.owning_officer_name || '', email: p.owning_officer_email });
           }
         } catch { /* profile prefill is best-effort */ }
         setForm(data); setStep(stepN);
@@ -217,6 +233,16 @@ export default function Apply() {
     save({ data: patch });
     return { ...cur, ...patch };
   });
+  // Assignment of contract is a purchase concept — switching the loan type to a
+  // refinance clears any assignment so it can't linger on a refi (the server and
+  // the db/173 condition trigger enforce the same rule).
+  const setLoanType = (v) => setForm(f => {
+    const cur = f || {};
+    const patch = { loanType: v };
+    if (isRefi(v) && cur.isAssignment) { patch.isAssignment = false; patch.underlyingContractPrice = ''; patch.assignmentFee = ''; }
+    save({ data: patch });
+    return { ...cur, ...patch };
+  });
   const mergeAddr = (patch) => {
     setForm(f => {
       const address = { ...((f && f.propertyAddress) || {}), ...patch };
@@ -249,9 +275,7 @@ export default function Apply() {
   // borrower never has to answer "units" for a single-family / condo / townhouse.
   const setPropertyType = (v) => {
     setForm(f => {
-      const next = { ...(f || {}), propertyType: v };
-      if (unitsMode(v) === 'single') next.units = '1';
-      else if (String((f || {}).units) === '1') next.units = ''; // clear the auto value when switching to multi
+      const next = { ...(f || {}), propertyType: v, units: unitsForType(v, (f || {}).units) };
       save({ data: { propertyType: v, units: next.units } });
       return next;
     });
@@ -532,6 +556,12 @@ export default function Apply() {
                 <div className="field"><label>Number of units</label>
                   <input className="input" value="1 unit" disabled readOnly /></div>
               )}
+              {unitsMode(form.propertyType) === 'open' && form.propertyType && (
+                // Unrecognized type (e.g. a "New Construction" file from ClickUp):
+                // a free, editable count — never locked or forced to 1.
+                <div className="field"><label>Number of units *</label>
+                  <input className={'input' + errCls('units')} type="number" min="1" value={form.units || ''} onChange={e => set('units', e.target.value)} /></div>
+              )}
             </div>
             {!step1Ready && <p className={showErrors ? 'small' : 'muted small'} style={showErrors ? { color: 'var(--danger)', marginTop: 4 } : undefined}>
               Property address and type{unitsMode(form.propertyType) !== 'single' ? ', plus the number of units,' : ''} are required before you submit — you can still fill the other sections first.</p>}
@@ -547,7 +577,7 @@ export default function Apply() {
                   <option value="">Select…</option>{PROGRAMS.map(p => <option key={p}>{p}</option>)}
                 </select></div>
               <div className="field"><label>Loan type</label>
-                <select className="input" value={form.loanType || ''} onChange={e => set('loanType', e.target.value)}>
+                <select className="input" value={form.loanType || ''} onChange={e => setLoanType(e.target.value)}>
                   <option value="">Select…</option>{LOAN_TYPES.map(p => <option key={p}>{p}</option>)}
                 </select></div>
             </div>
@@ -587,7 +617,7 @@ export default function Apply() {
                 <span>This purchase is an <strong>assignment</strong> of contract</span>
               </label>
             )}
-            {form.isAssignment && (
+            {isPurchase(form.loanType) && form.isAssignment && (
               <>
                 <div className="grid cols-2">
                   <div className="field"><label>Original (underlying) purchase price</label>
@@ -768,7 +798,16 @@ export default function Apply() {
               <LlcPicker value={form.entityName || ''} placeholder="e.g. 1420 Bedford Holdings LLC"
                 onPick={({ id, name }) => setForm(f => { const next = { ...(f || {}), entityName: name, llcId: id }; save({ data: { entityName: name, llcId: id } }); return next; })} />
               <p className="muted small" style={{ marginTop: 4 }}>Reuse an LLC you've used before, or create a new one — we'll ask for its EIN letter, formation docs, and operating agreement once.</p></div>
-            {(() => {
+            {ownedOfficer ? (
+              // Locked to the officer of record — the borrower has worked with
+              // this officer before (or signed up through their invite link), so
+              // the file stays with them and cannot be changed (owner-directed
+              // 2026-07-20: keep loan-officer branding). The backend enforces this
+              // regardless of what the draft carries.
+              <div className="field"><label>Your loan officer</label>
+                <input className="input" value={ownedOfficer.name || ownedOfficer.email} disabled readOnly />
+                <p className="muted small" style={{ marginTop: 4 }}>Your file is handled by your loan officer{ownedOfficer.name ? `, ${ownedOfficer.name}` : ''} — it's linked to them automatically.</p></div>
+            ) : (() => {
               // Explicit officer question. OFF (default) → file routes to the
               // Lead Capture desk; the backend keys routing off a blank officer,
               // so "No" clears any prior pick. The answer persists on the draft.

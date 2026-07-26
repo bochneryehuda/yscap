@@ -24,6 +24,14 @@ eq('epoch->date', t.fromEpochMs('901872000000'), '1998-07-31');
 // money / numbers
 eq('parseMoney $', t.parseMoney('$468,750'), 468750);
 eq('parseMoney plain', t.parseMoney('90'), 90);
+// N-3 (round-2): non-numeric text must NOT become 0 (which would overwrite a real amount)
+eq('parseMoney N/A → null', t.parseMoney('N/A'), null);
+eq('parseMoney blank text → null', t.parseMoney('  '), null);
+eq('parseMoney dash → null', t.parseMoney('-'), null);
+eq('parseMoney dot → null', t.parseMoney('.'), null);
+eq('parseMoney explicit 0 stays 0', t.parseMoney('0'), 0);
+eq('parseMoney $0 stays 0', t.parseMoney('$0'), 0);
+eq('parseMoney null → null', t.parseMoney(null), null);
 eq('numToString', t.numToString(468750), '468750');
 
 // phone
@@ -189,6 +197,15 @@ eq('nameConflict: initial matches its full name -> no conflict',
 eq('nameConflict: placeholder never conflicts',
   id.nameConflict('Unknown', 'Unknown', 'Moshe', 'Cohen'), false);
 eq('nameConflict: blanks never conflict', id.nameConflict('', '', 'Moshe', 'Cohen'), false);
+// N-12: a compound surname is compared WHOLE, not just its first token — two
+// families that share the first surname word ("Cohen Katz" vs "Cohen Weiss") are
+// DIFFERENT people and must conflict (the old first-token compare missed this).
+eq('nameConflict: compound surname differs on second word -> conflict',
+  id.nameConflict('Moshe', 'Cohen Katz', 'Moshe', 'Cohen Weiss'), true);
+eq('nameConflict: same compound surname -> no conflict',
+  id.nameConflict('Moshe', 'Cohen Katz', 'moshe', 'cohen katz'), false);
+eq('nameConflict: hyphen/space surname noise on same family -> no conflict',
+  id.nameConflict('Sara', 'Ben  David', 'Sara', 'Ben David'), false);
 
 // RTL descope gate (I-A) — ONLY positively non-RTL labels may descope a live file
 eq('nonRtl dscr label', x.isNonRtlProgramLabel('Non-QM - DSCR Ratio'), true);

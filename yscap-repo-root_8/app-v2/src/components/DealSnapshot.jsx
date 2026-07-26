@@ -34,6 +34,10 @@ export default function DealSnapshot({ app, gating }) {
   const acqLtv = quote?.sizing?.acqLtvPct ? pct(quote.sizing.acqLtvPct) : null;
   const product = app.registered_product_label || (quote && [quote.programLabel, quote.productLabel].filter(Boolean).join(' · '));
   const priced = app.loan_amount != null && Number(app.loan_amount) > 0;
+  // The registered loan amount + leverage ratios are "as last registered" once any
+  // deal number moves before a re-price (audit 2026-07-19). Flag them so they don't
+  // read as live figures next to the freshly-edited economics right beside them.
+  const stale = !!app.pricing_stale && priced;
   const g = gating && gating.clear_to_close;
   const openCount = g ? ((g.conditions ? g.conditions.length : 0) + (g.gates ? g.gates.length : 0)) : 0;
 
@@ -55,19 +59,25 @@ export default function DealSnapshot({ app, gating }) {
         <div className="snap-stat">
           <span className="snap-stat-k">Loan amount</span>
           <span className="snap-stat-v">{priced ? money(app.loan_amount) : 'Not yet priced'}</span>
+          {stale && <span className="snap-stat-sub" style={{ color: 'var(--warning)' }}>as last registered</span>}
         </div>
         <div className="snap-stat">
           <span className="snap-stat-k">Note rate</span>
           <span className="snap-stat-v gold">{app.rate_pct != null ? Number(app.rate_pct).toFixed(2) + '%' : '—'}</span>
         </div>
         {g && (
-          <div className="snap-stat">
+          // Clickable (owner-directed): the count jumps to the "What's left to
+          // clear to close" list, which explains each item and links to the
+          // section that fixes it. Not-ready shows the count; ready shows "Ready".
+          <button type="button" className="snap-stat snap-stat-btn"
+            title={g.ready ? 'All prerequisites met — see the checklist' : `${openCount} item(s) to clear — click to see exactly what's left and jump to each`}
+            onClick={() => { const el = document.getElementById('ctc-outstanding'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}>
             <span className="snap-stat-k">Clear to close</span>
             <span className="snap-stat-v" style={{ color: g.ready ? 'var(--ok)' : 'var(--warning)' }}>
               {g.ready ? 'Ready' : openCount}
             </span>
-            {!g.ready && <span className="snap-stat-sub">to clear</span>}
-          </div>
+            <span className="snap-stat-sub">{g.ready ? 'view checklist →' : 'to clear — see what’s left →'}</span>
+          </button>
         )}
       </div>
 
@@ -99,7 +109,12 @@ export default function DealSnapshot({ app, gating }) {
         </div>
 
         <div className="snap-cluster">
-          <div className="snap-cluster-h">Leverage</div>
+          <div className="snap-cluster-h">Leverage{stale && <span style={{ color: 'var(--warning)', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}> · as last registered</span>}</div>
+          {stale && <div style={{ fontSize: '.8em', color: 'var(--warning)', margin: '2px 0 6px', lineHeight: 1.3 }}>
+            {app.pricing_stale_reason
+              ? <><strong>Re-register needed:</strong> {app.pricing_stale_reason.replace(/^\[auto\]\s*/, '')}</>
+              : 'A pricing detail changed since this product was registered — the loan amount and these ratios are as last registered. Re-price the product to update them.'}
+          </div>}
           {row('LTC', ltc || '—')}
           {row('Initial LTV', acqLtv || '—')}
           {row('Loan-to-ARV', arvLtv || '—')}

@@ -1,0 +1,102 @@
+
+===== PAGE 1 =====
+Required Documents List 
+
+Pre-close Review 
+
+Document  
+Loan Application/Term Sheet 
+Credit Report 
+Background Report 
+OFAC Entity 
+OFAC Member 
+ID 
+Track Record 
+Bank Statements 
+Articles of Incorporation 
+Operating Agreement/Bylaws 
+Certiﬁcate of Good Standing 
+W9/EIN 
+OFAC Entity 
+Entity Background Report 
+Appraisal 
+Purchase Agreement (if purchase) 
+Original HUD (if reﬁnance) 
+Hazard Insurance 
+Builders Risk Insurance (if applicable)1 
+General Liability Insurance (if applicable)2 
+Flood Cert 
+Flood Insurance (if applicable) 
+Repair Budget in Excel format (if applicable) 
+Plans and Permits (if applicable)3 
+Feasibility Report (if applicable)4 
+Title Commitment 
+Closing Protection Letter 
+
+Naming Convention 
+Loan Application_LoanID 
+Credit Report_Name_LoanID 
+Background_Name_LoanID 
+EntityOFAC_Entity Name_LoanID 
+OFAC_Name_LoanID 
+ID_Name_LoanID 
+Track Record_#of#_Type_LoanID 
+BankStatement_Acct#_Date_LoanID 
+AOI_Entity Name_LoanID 
+OA_Entity Name_LoanID 
+COG_Entity Name_LoanID 
+W9/EIN_Entity Name_LoanID 
+EntityOFAC_Entity Name_LoanID 
+EntityBackground_Name_LoanID 
+Appraisal_Address_LoanID 
+PurchAgrmt_Address_LoanID 
+OrigHUD_Address_Loan ID 
+Hazard_Address_LoanID 
+BuildersRisk_Address_LoanID 
+GL_Address_LoanID 
+Flood Cert_Address_LoanID 
+Flood Insurance_Address_LoanID 
+Repair Budget_Address_LoanID 
+Plans_Address_LoanID 
+Feasibility_Address_LoanID 
+Title_Address_LoanID 
+CPL_Address_LoanID 
+
+Post-close Review 
+
+Document  
+Final HUD 
+Note 
+Mortgage/Deed of Trust 
+Personal Guaranty 
+Loan Agreement 
+Environmental Indemnity 
+Title Policy 
+Business Purpose/Non-Owner occupancy 
+ACH Form 
+
+Naming Convention 
+HUD_LoanID 
+Note_LoanID 
+Mortgage_LoanID 
+Guaranty_Name_LoanID 
+Loan Agreement_LoanID 
+Environmental_LoanID 
+TitlePolicy_Address_LoanID 
+BusinessPurpose_LoanID 
+ACH_LoanID 
+
+1 Construction and Heavy Rehab, when adding onto existing envelope of the property 
+2 Construction and Heavy Rehab 
+3 Construction and Heavy Rehab. For purchase transactions, permits may be obtained after closing, prior to ﬁrst draw 
+4 Construction and Heavy Rehab 
+
+________________________________________________________________________ 
+Lenders@BlueLakeCapital.com ◦  Incline Village, NV | Austin, TX 
+
+All the information hereof along with all communications related hereto shall be subject to the conﬁdentiality terms set forth in the MLPA. © 2026 Blue Lake Capital, LLC. 
+
+ 
+ 
+ 
+

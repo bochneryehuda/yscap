@@ -37,6 +37,10 @@ const FIELD_LABELS = {
   // Two different people using ONE email address (owner-directed: the email
   // must be assigned to exactly one borrower; until then it never links files):
   shared_email: 'Shared email — two borrowers',
+  // ClickUp changed a loan FIGURE while the file was frozen (sent term sheet /
+  // Clear-to-Close / Funded) — the change was held so the sent term sheet stays
+  // in agreement with the file:
+  economics_frozen: 'Loan figures — frozen (term sheet sent / file locked)',
 };
 
 async function queueReview({ applicationId, borrowerId, taskId, direction, fieldKey,
@@ -51,7 +55,7 @@ async function queueReview({ applicationId, borrowerId, taskId, direction, field
         `SELECT 1 FROM sync_review_queue
           WHERE coalesce(task_id,'') = coalesce($1,'') AND field_key=$2 AND reason=$3
             AND status='rejected' LIMIT 1`, [taskId || null, fieldKey, reason]);
-      if (rej.rows[0]) return;
+      if (rej.rows[0]) return false;   // previously dismissed — nothing queued
     }
     // A DOB is a BORROWER-level fact: one open review per borrower + proposal,
     // not one per linked task (a borrower with three tasks was queueing three
@@ -63,7 +67,7 @@ async function queueReview({ applicationId, borrowerId, taskId, direction, field
           WHERE status='open' AND field_key='date_of_birth' AND borrower_id=$1
             AND coalesce(proposed_value,'') = coalesce($2,'') LIMIT 1`,
         [borrowerId, proposedValue == null ? null : String(proposedValue)]);
-      if (dup.rows[0]) return;
+      if (dup.rows[0]) return false;   // an identical open DOB review already exists
     }
     // Two-sided values: prefer explicit clickupValue/portalValue from the
     // caller; otherwise derive from direction (inbound: source=ClickUp is the
@@ -84,7 +88,11 @@ async function queueReview({ applicationId, borrowerId, taskId, direction, field
        rawValue == null ? null : String(rawValue), reason,
        cuV == null ? null : String(cuV), pV == null ? null : String(pV)]);
     if (ins.rows[0]) notifyLoanOfficer(ins.rows[0].id).catch(() => {});
-  } catch (e) { console.warn('[sync-review] queue insert skipped:', e.message); }
+    // Reached the insert without throwing → a row IS in the queue (freshly
+    // inserted, or an equal open row already there via ON CONFLICT). Callers that
+    // tell the user "flagged for review" rely on this to not over-promise.
+    return true;
+  } catch (e) { console.warn('[sync-review] queue insert skipped:', e.message); return false; }
 }
 
 /**
@@ -94,6 +102,44 @@ async function queueReview({ applicationId, borrowerId, taskId, direction, field
  * files (deduped). Falls back to nothing quietly — notification must never
  * break the sync. notified_at marks delivery so re-queues never double-send.
  */
+// A one-line property address for a Sitewire draw-review email subject (from applications.property_address).
+function shortAddress(a) {
+  if (!a) return null;
+  if (typeof a === 'string') { const s = a.trim(); return s || null; }   // legacy: a bare address string
+  if (typeof a !== 'object') return null;
+  if (a.oneLine && String(a.oneLine).trim()) return String(a.oneLine).trim(); // the stored one-line form wins
+  const street = a.line1 || a.street || a.street_with_unit || null;
+  const cityState = [a.city, a.state].filter(Boolean).join(', ');
+  const tail = [cityState, a.zip || a.postal].filter(Boolean).join(' ');
+  const parts = [street, tail].filter(Boolean);
+  return parts.length ? parts.join(', ') : null;
+}
+// Turn a coded Sitewire park reason ("sitewire_units_note: the file lists 2 unit(s)…") into the plain
+// human sentence for the email body — the WHOLE issue, never blank (owner-directed 2026-07-20).
+function humanizeSitewireReason(reason) {
+  const s = String(reason || '').trim();
+  if (!s) return 'A draw-setup step on this file needs your review.';
+  const m = /^sitewire_[a-z0-9_]+:\s*(.+)$/is.exec(s);
+  return (m ? m[1] : s).trim();
+}
+
+// A SharePoint document-mirror failure is NOT a value disagreement and NOT a file-link problem —
+// so it must NOT get the generic file-level copy ("create the file / link it to an existing one"),
+// which lists the wrong actions and confused LOs. It gets its own plain-language email naming the
+// specific document, that it could not be copied into the team drive, and the RIGHT next steps
+// (retry / re-check filing on the review screen, or ask for a re-upload if the saved copy is
+// damaged). Pure + exported so the copy is unit-tested without a DB. Owner-directed 2026-07-21.
+function sharepointDocEmail({ borrowerName, portalValue } = {}) {
+  const who = borrowerName ? ` for ${borrowerName}` : '';
+  const spec = portalValue ? `: ${String(portalValue).trim()}` : '';
+  return {
+    title: `A document couldn’t be saved to SharePoint${who}`,
+    body: `A document${who} couldn’t be copied into your SharePoint team drive${spec}. ` +
+      `PILOT keeps retrying on its own, but this one needs a look so the document isn’t missing from the drive. ` +
+      `Open the Sync review screen to retry it or re-check where it files — and if the document’s saved copy is damaged, ask the borrower to upload it again.`,
+  };
+}
+
 async function notifyLoanOfficer(reviewId) {
   const r = await db.query(
     `SELECT q.*, b.first_name || ' ' || b.last_name AS borrower_name
@@ -129,22 +175,54 @@ async function notifyLoanOfficer(reviewId) {
   const notify = require('./notify');
   const label = FIELD_LABELS[row.field_key] || row.field_key;
   const who = row.borrower_name ? ` for ${row.borrower_name}` : '';
+  // ---- Sitewire construction-draw reviews get their OWN email: the property ADDRESS anchors the subject
+  // and the row's REASON (the full, human issue text) is the body. NEVER the ClickUp two-sided copy — a
+  // Sitewire row has no ClickUp side, so that template rendered "In ClickUp: — / In PILOT: —" (blank +
+  // wrong system name). Owner-directed 2026-07-20. ----
+  const isSitewire = row.field_key === 'sitewire';
+  const isSharepointDoc = row.field_key === 'sharepoint_doc';
+  // A frozen-economics hold is neither a two-sided "pick a winner" nor a generic
+  // file-level stuck state — it needs its OWN email (pre-merge audit): PILOT held
+  // a ClickUp loan-figure change because the file is frozen, and the ONE action is
+  // keep-the-file's-figures (or clear the term sheet to accept the change).
+  const isEconomicsFrozen = row.field_key === 'economics_frozen';
+  let swAddress = null;
+  if (isSitewire && row.application_id) {
+    try { const ar = (await db.query(`SELECT property_address FROM applications WHERE id=$1`, [row.application_id])).rows[0]; swAddress = ar ? shortAddress(ar.property_address) : null; } catch (_) {}
+  }
   // FILE-LEVEL rows aren't a value disagreement — the email must say what the
   // situation is and that the review screen offers ACTIONS, not sides
   // (pre-merge audit #257 should-fix: the two-sided copy misdirected LOs).
-  const fileLevel = ['file_link', 'push_job', 'ys_loan_number', 'sharepoint_folder', 'sharepoint_doc', 'co_first_name', 'co_cell_phone', 'borrower_identity', 'co_borrower_identity', 'shared_email'].includes(row.field_key);
-  const body = fileLevel
-    ? `A file${who} needs a decision: ${label.toLowerCase()}` +
-      (row.clickup_value ? ` (${row.clickup_value})` : '') + '. ' +
-      `Open the Sync review screen — it explains what happened and offers the resolution options (create the file, link it to an existing one, retry the push, or dismiss).`
-    : `PILOT and ClickUp disagree on the ${label.toLowerCase()}${who}. ` +
-      `In ClickUp: ${row.clickup_value || '—'}. In PILOT: ${row.portal_value || '—'}. ` +
-      `Open the Sync review screen, compare both sides, and choose which value should win — it will be applied to both systems.`;
+  const fileLevel = ['file_link', 'push_job', 'ys_loan_number', 'sharepoint_folder', 'co_first_name', 'co_cell_phone', 'borrower_identity', 'co_borrower_identity', 'shared_email'].includes(row.field_key);
+  let title, body;
+  if (isSharepointDoc) {
+    ({ title, body } = sharepointDocEmail({ borrowerName: row.borrower_name, portalValue: row.portal_value }));
+  } else if (isEconomicsFrozen) {
+    title = `Sync review needed: loan figures held — the file is locked${who}`;
+    body = `A loan figure was changed in ClickUp, but this file is LOCKED — a term sheet has been sent for signature, or the file is Clear-to-Close / Funded — so PILOT did NOT change the file (the term sheet that already went out stays accurate).\n\n` +
+      `In ClickUp: ${row.clickup_value || '—'}\nOn the file (kept): ${row.portal_value || '—'}\n\n` +
+      `Open the Sync review screen. You can keep the file's figures and push them back to ClickUp so the two match. To ACCEPT the ClickUp change instead, clear the Term Sheet package (or ask a super-admin to unlock a Clear-to-Close / Funded file) and re-register — the figures then update on their own.`;
+  } else if (isSitewire) {
+    const place = swAddress || row.borrower_name || 'a construction-draw file';
+    title = `Draw review needed — ${place}`;
+    body = `A construction-draw (Sitewire) review needs your decision${who}${swAddress ? ` — ${swAddress}` : ''}:\n\n` +
+      `${humanizeSitewireReason(row.reason)}\n\n` +
+      `Open the Sync review screen to resolve it — the card shows the exact options for this review (for example: acknowledge the note, retry the push after fixing the cause, or dismiss).`;
+  } else {
+    title = `Sync review needed: ${label}${who}`;
+    body = fileLevel
+      ? `A file${who} needs a decision: ${label.toLowerCase()}` +
+        (row.clickup_value ? ` (${row.clickup_value})` : '') + '. ' +
+        `Open the Sync review screen — it explains what happened and offers the resolution options (create the file, link it to an existing one, retry the push, or dismiss).`
+      : `PILOT and ClickUp disagree on the ${label.toLowerCase()}${who}. ` +
+        `In ClickUp: ${row.clickup_value || '—'}. In PILOT: ${row.portal_value || '—'}. ` +
+        `Open the Sync review screen, compare both sides, and choose which value should win — it will be applied to both systems.`;
+  }
   for (const [staffId, o] of officers) {
     try {
       await notify.notifyStaff(staffId, {
         type: 'sync_review',
-        title: `Sync review needed: ${label}${who}`,
+        title,
         body,
         applicationId: row.application_id || o.appId || null,
         link: '/internal/sync-reviews',
@@ -242,9 +320,13 @@ async function remindStaleReviewsOnce() {
  */
 async function sendReviewDigestOnce() {
   try {
-    const already = await db.query(
-      `SELECT 1 FROM audit_log WHERE action='sync_review_digest_sent' AND created_at > now() - interval '6 days' LIMIT 1`);
-    if (already.rows[0]) return false;
+    // Atomically CLAIM the 6-day window so two overlapping passes / instances can't
+    // both pass the check and both email every admin (owner-reported duplicate sweep
+    // 2026-07-20). Uses the shared advisory-locked claim — a plain INSERT…WHERE NOT
+    // EXISTS is not atomic under READ COMMITTED (audit G4). Detail is enriched after
+    // we compute the stats.
+    const claimId = await require('./throttle-claim').claimOncePerPeriod({ action: 'sync_review_digest_sent', interval: '6 days' });
+    if (!claimId) return false;   // another pass already sent this week
     const stats = (await db.query(
       `SELECT
          count(*) FILTER (WHERE created_at > now() - interval '7 days') AS opened,
@@ -273,12 +355,13 @@ async function sendReviewDigestOnce() {
         });
       } catch (_) { /* per-admin best-effort */ }
     }
+    // Enrich the claim row with the stats for the audit trail (the throttle stamp
+    // was already written by the atomic claim above — never a second row).
     await db.query(
-      `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
-       VALUES ('system',NULL,'sync_review_digest_sent','application',NULL,$1)`,
-      [JSON.stringify(stats)]).catch(() => {});
+      `UPDATE audit_log SET detail=$1::jsonb WHERE id=$2`,
+      [JSON.stringify(stats), claimId]).catch(() => {});
     return true;
   } catch (e) { console.warn('[sync-review] digest skipped:', e.message); return false; }
 }
 
-module.exports = { queueReview, notifyLoanOfficer, closeStaleReviews, remindStaleReviewsOnce, sendReviewDigestOnce, FIELD_LABELS };
+module.exports = { queueReview, notifyLoanOfficer, closeStaleReviews, remindStaleReviewsOnce, sendReviewDigestOnce, FIELD_LABELS, sharepointDocEmail };

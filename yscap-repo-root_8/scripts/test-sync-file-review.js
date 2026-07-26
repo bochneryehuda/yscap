@@ -29,13 +29,14 @@ async function expectHttp(status, fn) {
 
 (async () => {
   // ---- contract shape ------------------------------------------------------
-  t('REASON_ACTIONS lists the nine stuck states', () => {
+  t('REASON_ACTIONS lists every stuck state', () => {
     const keys = Object.keys(SFR.REASON_ACTIONS).sort();
     assert.deepStrictEqual(keys, [
       'file_not_materialized_ambiguous', 'file_not_materialized_duplicate_pending',
-      'file_unlinked_no_task', 'push_dead_lettered', 'task_deleted_needs_decision',
+      'file_unlinked_no_task', 'file_dead_unlinked', 'push_dead_lettered', 'task_deleted_needs_decision',
       'sharepoint_match_uncertain', 'sharepoint_mirror_failed', 'borrower_identity_conflict',
-      'shared_email_needs_reassignment'].sort());
+      'shared_email_needs_reassignment', 'copied_loan_number_needs_assignment',
+      'economics_frozen_conflict'].sort());
     for (const k of keys) assert.ok(SFR.REASON_ACTIONS[k].length >= 1, `${k} has at least one action`);
   });
   await ta('allow_shared_email without the pair reference → 409', () =>
@@ -95,12 +96,36 @@ async function expectHttp(status, fn) {
     assert.strictEqual(SFR.isActionAllowed('task_deleted_needs_decision', 'archive_file'), true);
     assert.strictEqual(SFR.isActionAllowed('task_deleted_needs_decision', 'keep_file'), true);
     assert.strictEqual(SFR.isActionAllowed('file_unlinked_no_task', 'create_task'), true);
+    assert.strictEqual(SFR.isActionAllowed('file_unlinked_no_task', 'relink_task'), true);
+    assert.strictEqual(SFR.isActionAllowed('file_dead_unlinked', 'relink_task'), true);
+    assert.strictEqual(SFR.isActionAllowed('file_dead_unlinked', 'archive_file'), true);
+    assert.strictEqual(SFR.isActionAllowed('file_dead_unlinked', 'keep_file'), true);
+    assert.strictEqual(SFR.isActionAllowed('file_dead_unlinked', 'link_existing'), false, 'relink is via relink_task, not link_existing');
     assert.strictEqual(SFR.isActionAllowed('nonsense_reason', 'create_file'), false);
     assert.strictEqual(SFR.isActionAllowed('dob_change_blocked_pending_review', 'create_file'), false, 'field-value reasons offer no file actions');
   });
   t('syntheticTaskKey namespaces and never collides with a ClickUp id', () => {
     assert.strictEqual(SFR.syntheticTaskKey('abc-123'), 'app:abc-123');
     assert.ok(SFR.syntheticTaskKey('x').startsWith('app:'));
+  });
+
+  // ---- admin relink: the task-id/URL parser (pure; no DB) ------------------
+  t('relink.parseTaskId pulls the id out of a pasted ClickUp URL or bare id', () => {
+    const { parseTaskId } = require('../src/clickup/relink');
+    assert.strictEqual(parseTaskId('868abc123'), '868abc123', 'bare id passes through');
+    assert.strictEqual(parseTaskId('  868abc123  '), '868abc123', 'trims whitespace');
+    assert.strictEqual(parseTaskId('https://app.clickup.com/t/868abc123'), '868abc123', 'plain /t/ URL');
+    assert.strictEqual(parseTaskId('https://app.clickup.com/9006/v/li/x/t/868abc123?foo=1'), '868abc123', 'deep URL + query');
+    // CUSTOM-ID URL: /t/<workspace>/<CUSTOM-ID> → the CUSTOM id, never the
+    // workspace number (owner's real URL shape, FILLE-1911).
+    assert.strictEqual(parseTaskId('https://app.clickup.com/t/9011888435/FILLE-1911'), 'FILLE-1911', 'custom-id URL → custom id, not workspace');
+    assert.strictEqual(parseTaskId('https://app.clickup.com/t/9011888435/FILLE-1911?comment=5'), 'FILLE-1911', 'custom-id URL + query');
+    assert.strictEqual(parseTaskId('FILLE-1911'), 'FILLE-1911', 'bare custom id passes through');
+    assert.strictEqual(parseTaskId('fille-1911'), 'FILLE-1911', 'custom id folded to uppercase (case-sensitive lookup)');
+    assert.strictEqual(parseTaskId('86c5v9c20'), '86c5v9c20', 'internal id is NOT uppercased (case-sensitive)');
+    assert.strictEqual(parseTaskId('868abc123?comment=42'), '868abc123', 'strips trailing query on a bare id');
+    assert.strictEqual(parseTaskId(''), '', 'empty → empty');
+    assert.strictEqual(parseTaskId(null), '', 'null → empty (no invented id)');
   });
 
   // ---- terminal-status classification (the successor-deal exception) -------
@@ -164,6 +189,46 @@ async function expectHttp(status, fn) {
   await ta('create_task without a file → 409', () =>
     expectHttp(409, () => SFR.applyFileReviewAction({
       row: { reason: 'file_unlinked_no_task', application_id: null }, action: 'create_task' })));
+  // copied loan number: the two ownership decisions validate BEFORE any write.
+  t('copied_loan_number offers assign-here / keep-other only', () => {
+    assert.strictEqual(SFR.isActionAllowed('copied_loan_number_needs_assignment', 'loan_number_assign_here'), true);
+    assert.strictEqual(SFR.isActionAllowed('copied_loan_number_needs_assignment', 'loan_number_keep_other'), true);
+    assert.strictEqual(SFR.isActionAllowed('copied_loan_number_needs_assignment', 'create_file'), false);
+    assert.strictEqual(SFR.isActionAllowed('push_dead_lettered', 'loan_number_assign_here'), false, 'loan-number actions never leak onto other reasons');
+  });
+  await ta('loan_number_assign_here without a file → 409', () =>
+    expectHttp(409, () => SFR.applyFileReviewAction({
+      row: { reason: 'copied_loan_number_needs_assignment', application_id: null }, action: 'loan_number_assign_here' })));
+  await ta('loan_number_assign_here with no contested number → 409', () =>
+    expectHttp(409, () => SFR.applyFileReviewAction({
+      row: { reason: 'copied_loan_number_needs_assignment', application_id: 'a1', raw_value: 'not-json', clickup_value: null }, action: 'loan_number_assign_here' })));
+  await ta('loan_number_keep_other without a file → 409', () =>
+    expectHttp(409, () => SFR.applyFileReviewAction({
+      row: { reason: 'copied_loan_number_needs_assignment', application_id: null }, action: 'loan_number_keep_other' })));
+  // economics-frozen conflict: keep-frozen-figures validates BEFORE any write.
+  t('economics_frozen_conflict offers ONLY keep_frozen_figures', () => {
+    assert.strictEqual(SFR.isActionAllowed('economics_frozen_conflict', 'keep_frozen_figures'), true);
+    assert.strictEqual(SFR.isActionAllowed('economics_frozen_conflict', 'retry_push'), false);
+    assert.strictEqual(SFR.isActionAllowed('push_dead_lettered', 'keep_frozen_figures'), false, 'keep_frozen_figures never leaks onto other reasons');
+  });
+  await ta('keep_frozen_figures without a file → 409', () =>
+    expectHttp(409, () => SFR.applyFileReviewAction({
+      row: { reason: 'economics_frozen_conflict', application_id: null }, action: 'keep_frozen_figures' })));
+  await ta('keep_frozen_figures with no listed frozen fields → 409', () =>
+    expectHttp(409, () => SFR.applyFileReviewAction({
+      row: { reason: 'economics_frozen_conflict', application_id: 'a1', raw_value: 'not-json' }, action: 'keep_frozen_figures' })));
+  // relink_task is ADMIN-ONLY — the authorization check fires FIRST, before any
+  // field validation (pre-merge audit B1: the review-queue route is LO-reachable,
+  // so the action layer must refuse a non-admin even with valid inputs).
+  await ta('relink_task as a NON-admin → 403 (even with valid inputs)', () =>
+    expectHttp(403, () => SFR.applyFileReviewAction({
+      row: { reason: 'file_dead_unlinked', application_id: 'a1' }, action: 'relink_task', targetTaskId: '868xyz', isAdmin: false })));
+  await ta('relink_task without a file → 409 (admin)', () =>
+    expectHttp(409, () => SFR.applyFileReviewAction({
+      row: { reason: 'file_dead_unlinked', application_id: null }, action: 'relink_task', targetTaskId: '868xyz', isAdmin: true })));
+  await ta('relink_task without a target card → 400 (admin)', () =>
+    expectHttp(400, () => SFR.applyFileReviewAction({
+      row: { reason: 'file_dead_unlinked', application_id: 'a1' }, action: 'relink_task', targetTaskId: null, isAdmin: true })));
 
   // ---- custom-value resolution: validation fires BEFORE any write ----------
   const AR = require('../src/lib/sync-autoresolve');
@@ -191,7 +256,8 @@ async function expectHttp(status, fn) {
     const bundle = fs.readdirSync(assets).find((f) => /^index-.*\.js$/.test(f));
     assert.ok(bundle, 'no built bundle found');
     const js = fs.readFileSync(path.join(assets, bundle), 'utf8');
-    for (const marker of ['push_dead_lettered', 'task_deleted_needs_decision', 'file_unlinked_no_task', 'resolve-file']) {
+    for (const marker of ['push_dead_lettered', 'task_deleted_needs_decision', 'file_unlinked_no_task',
+      'file_dead_unlinked', 'relink_task', 'clickup/unlink', 'resolve-file']) {
       assert.ok(js.includes(marker), `built bundle missing '${marker}' — run: cd app-v2 && npm run build`);
     }
   });

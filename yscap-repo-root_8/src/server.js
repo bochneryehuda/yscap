@@ -19,6 +19,19 @@ const app = express();
 app.set('trust proxy', 1);
 // Baseline security headers on every response (nosniff, anti-clickjacking, HSTS…).
 app.use(require('./lib/security').securityHeaders);
+// Automatic request-level audit log — writes ONE row per HTTP request into
+// `request_audit_log` (see db/252_*.sql + src/lib/request-audit.js), captured
+// asynchronously so the request itself is never delayed. Complements the
+// semantic audit_log (business actions) with a full request firehose:
+// who called what, when, from where, with which status, in how many ms.
+// Mounted here so it wraps EVERY route below — webhooks, /auth, /api, /link,
+// the pixel, and SPA shell requests — with the redactor stripping tokens /
+// passwords / SSNs from query + body summaries.
+{
+  const ra = require('./lib/request-audit');
+  app.use(ra.middleware);
+  app.use(ra.attachAuditError);
+}
 // Body limit must comfortably exceed a max-size upload AFTER base64 inflation:
 // a MAX_UPLOAD_MB-byte file becomes ~1.37x that as base64 inside the JSON body,
 // plus envelope. A flat 25mb limit silently 413'd legitimate ~19-20MB uploads.
@@ -34,6 +47,12 @@ app.use('/api/inbound/chat', require('./routes/inbound-chat'));
 // Mounted BEFORE the JSON parser for the same raw-body reason as the chat/ClickUp
 // webhooks. Separate URL from /api/inbound/chat (which is unchanged).
 app.use('/api/inbound/file-email', require('./routes/inbound-file-email'));
+// DocuSign Connect webhook — RAW body for the base64 HMAC verification, mounted
+// BEFORE the JSON parser for the same reason as the ClickUp/inbound webhooks.
+app.use('/api/esign/webhook', require('./routes/esign-webhook'));
+// TrustPoint webhook — its OWN small JSON parser + rate limit (never the global 32MB
+// parser: unauthenticated callers must not force huge parses), token-authenticated.
+app.use('/api/trustpoint/webhook', require('./routes/trustpoint-webhook'));
 app.use(express.json({ limit: `${JSON_LIMIT_MB}mb` }));
 
 // Rate limits (IP-based, in-memory) on the sensitive/unauthenticated surface.
@@ -43,6 +62,7 @@ app.use(express.json({ limit: `${JSON_LIMIT_MB}mb` }));
 const { rateLimit } = require('./lib/rate-limit');
 app.use('/auth', rateLimit({ bucket: 'auth', windowMs: 60000, max: 30 }));   // login/register/mfa/reset
 app.use('/api/intake', rateLimit({ bucket: 'intake', windowMs: 60000, max: 20 }));
+app.use('/api/apply', rateLimit({ bucket: 'apply', windowMs: 60000, max: 10 }));   // public application submit (creates real files)
 app.use('/api/leads', rateLimit({ bucket: 'leads', windowMs: 60000, max: 20 }));
 // #75 guest chat is magic-link (key) authenticated + public — rate-limit it.
 app.use('/api/guest', rateLimit({ bucket: 'guest', windowMs: 60000, max: 90 }));
@@ -89,7 +109,11 @@ app.get('/api/health', async (req, res) => {
     ]);
   } catch (e) {
     dbStatus = 'down';
-    dbError = db.describeError(e);
+    // Log the full detail (host:port, pg message) server-side only; the health
+    // endpoint is publicly reachable, so the client body carries just a generic
+    // signal — never the DB host/port or pg internals.
+    console.warn('[health] db probe failed:', db.describeError(e));
+    dbError = 'database unreachable';
   }
   let storageInfo;
   try { storageInfo = require('./lib/storage').probe(); } catch (e) { storageInfo = { ok: false, error: e.message }; }
@@ -115,7 +139,7 @@ app.get('/api/health', async (req, res) => {
         new Promise((_, rej) => setTimeout(() => rej(new Error('guard timeout')), 2500)),
       ]);
       conditionsGuard = { filesZeroItems: g.rows[0].zero_items, rtlFilesMissingContract: g.rows[0].no_contract };
-    } catch (e) { conditionsGuard = { error: e.message }; }
+    } catch (e) { console.warn('[health] conditions guard failed:', db.describeError(e)); conditionsGuard = { error: 'unavailable' }; }
   }
   // Liveness: 200 unless the caller explicitly asked for a strict DB gate.
   const code = (strict && dbStatus !== 'up') ? 503 : 200;
@@ -140,6 +164,18 @@ app.get('/api/health', async (req, res) => {
     // SharePoint one-way sync status (config + last reconciliation pass; cheap —
     // no live Graph call on the health path).
     sharepointSync: (() => { try { return require('./lib/sharepoint-backup').health(); } catch (e) { return { enabled: false, error: e.message }; } })(),
+    // Document-AI (PILOT underwriting) reachability: whether the reader + analyzer are configured,
+    // plus each endpoint's circuit-breaker state (closed = healthy; open = paused after repeated
+    // failures — a sustained Azure outage or a bad key shows here instead of failing silently).
+    documentAi: (() => {
+      try {
+        return {
+          reader: require('./lib/ai/docint').configured(),
+          analyzer: require('./lib/ai/azure-openai').available(),
+          breakers: require('./lib/ai/resilience').snapshotBreakers(),
+        };
+      } catch (e) { return { error: e.message }; }
+    })(),
     ...(conditionsGuard ? { conditionsGuard } : {}),
     bundle: v2BundleHash(),   // deployed V2 bundle hash — the stale-build watchdog's truth
     ts: Date.now(),
@@ -161,8 +197,34 @@ app.use('/api/address', require('./routes/address')); // address autocomplete/ve
 app.use('/api/leads', require('./routes/leads'));     // public marketing-tool submissions (saved + emailed server-side)
 app.use('/api/guest', require('./routes/guest-chat')); // #75 magic-link guest chat (key-authenticated, public)
 app.use('/api/intake', require('./routes/intake'));
+// The site's OWN application submit (public, bot-defended with the shared form
+// token + honeypot) — same intake core as /api/intake, plus the immediate
+// create-your-login step. No more mail-client fallbacks on the marketing site.
+app.use('/api/apply', require('./routes/apply'));
+// Public e-signature bounce endpoint (/api/esign/return) — where a signer lands
+// after signing; resolves the real destination from our DB and 302s into the
+// portal. The Connect webhook (/api/esign/webhook) is mounted above, pre-JSON.
+app.use('/api/esign', require('./routes/esign-public'));
+// Public token-authenticated draw-findings accept (the one-click "Accept" link we email the
+// borrower — the reply_token is the capability; no login needed to release their own money).
+app.use('/api/public/draw-findings', rateLimit({ bucket: 'draw-public', windowMs: 60000, max: 60 }), require('./routes/draw-findings-public'));
 app.use('/api/borrower', require('./routes/borrower'));
+app.use('/api/borrower', require('./routes/borrower-draws')); // borrower draw status + findings accept/dispute + change requests
 app.use('/api/staff', require('./routes/staff'));
+// Sitewire construction-draw desk + admin. The router applies requireAuth +
+// requireStaff + per-route capability gates (manage_draws / platform_setup) itself.
+app.use('/api/sitewire', require('./routes/sitewire'));
+
+// TrustPoint mirror (physical-draw workflow phases 2-3): the STAFF router (auth wall
+// + per-route capability gates). The public webhook is mounted earlier, pre-parser.
+app.use('/api/trustpoint', require('./routes/trustpoint'));
+// Appraisal desk: import the appraisal XML, reconcile it against the file, and resolve
+// PILOT findings. The router applies requireAuth + requireStaff + per-file scoping itself.
+app.use('/api/appraisal', require('./routes/appraisal'));
+// Document-underwriting desk: read + understand each uploaded document (Azure Document
+// Intelligence + Azure OpenAI), raise per-document and cross-document findings, and let an
+// underwriter post conditions / request documents / clear them. Same auth + per-file scoping.
+app.use('/api/underwriting', require('./routes/underwriting'));
 // The Condition Center studio is gated by the manage_conditions capability (not
 // admin-only), so an underwriter or software-setup persona granted it can author
 // the library. Mounted before /api/admin so it isn't shadowed by requireRole.
@@ -181,6 +243,28 @@ app.use('/api/staff', require('./routes/staff'));
   // The router also applies its own requireAuth + platform_setup guards.
   app.use('/api/admin/clickup', requireAuth, requireStaff, require('./routes/admin-clickup'));
   app.use('/api/admin/sharepoint', requireAuth, requireStaff, require('./routes/admin-sharepoint'));
+  // API Health — the status of every external API / integration (config presence + live reach).
+  // The router applies its own requireAuth + platform_setup guards.
+  app.use('/api/admin/integrations', requireAuth, requireStaff, require('./routes/admin-integrations'));
+  // Encompass READ-ONLY admin routes (owner-directed 2026-07-22): the cached
+  // tenant field catalog + per-file cached raw loan JSON + refresh triggers.
+  // The router applies its own requireAuth + platform_setup guards, and every
+  // "pull" endpoint is structurally read-only (see src/lib/integrations/encompass.js).
+  app.use('/api/admin/encompass', requireAuth, requireStaff, require('./routes/admin-encompass'));
+  // Manual Program admin config + the super-admin escalation box. Each route
+  // adds its own capability/role gate (manage_pricing for settings, super_admin
+  // to decide an escalation).
+  app.use('/api/admin/manual-programs', requireAuth, requireStaff, require('./routes/admin-manual-programs'));
+  // Loan policy exceptions — the super-admin review box (owner-directed 2026-07-22).
+  // Today: co-borrower guaranty waivers. list/count = manage_pricing; decide = super_admin.
+  app.use('/api/admin/exceptions', requireAuth, requireStaff, require('./routes/admin-exceptions'));
+  // Sovereign 4/4 admin surface — training proposals queue (owner-directed 2026-07-21).
+  app.use('/api/admin/training', requireAuth, requireStaff, require('./routes/admin-training'));
+  // Azure Custom labeling console — super-admins tag past documents to train
+  // the classifier + neural extractors (owner-directed 2026-07-22, R3.3).
+  app.use('/api/admin/labeling', requireAuth, requireStaff, require('./routes/admin-labeling'));
+  // Sovereign Insights portfolio dashboard (owner-directed 2026-07-22, R2.6).
+  app.use('/api/admin/insights', requireAuth, requireStaff, require('./routes/admin-insights'));
   app.use('/api/admin', requireAuth, requireStaff, require('./routes/admin'));
 }
 // SSE stream (live chat/presence/receipts). Mounted OUTSIDE the authenticated
@@ -225,6 +309,39 @@ app.get('/link/:kind', (req, res, next) => {
   }
   const qs = params.toString();
   res.set('Location', `${portal}/#${route}${qs ? '?' + qs : ''}`).status(302).end();
+});
+
+// --- Email OPEN tracking pixel -----------------------------------------------
+// A per-recipient notification email embeds <img src="/e/o/<notificationId>.gif">.
+// When the recipient's email client loads it, we stamp the open (email_opens,
+// db/194) so the Email Center can show whether/when the borrower opened it.
+// PUBLIC + best-effort: it reveals nothing, always returns a 1x1 transparent GIF,
+// and the FK to notifications means a guessed/bogus id can't create a junk row.
+const OPEN_GIF = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
+// Generous per-IP cap so a pathological flood can't hammer the DB, but high enough
+// that a shared email-image proxy (Gmail routes many users' opens through a few
+// IPs) never suppresses a legitimate open. Best-effort: real open volume for this
+// shop is far below this.
+app.use('/e/o', rateLimit({ bucket: 'open-pixel', windowMs: 60000, max: 600 }));
+app.get('/e/o/:token', async (req, res) => {
+  const sendPixel = () => {
+    res.set('Content-Type', 'image/gif');
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.set('Pragma', 'no-cache');
+    res.end(OPEN_GIF);
+  };
+  const id = String(req.params.token || '').replace(/\.(gif|png|jpg|jpeg)$/i, '');
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return sendPixel();
+  try {
+    await require('./db').query(
+      `INSERT INTO email_opens (notification_id, first_opened_at, last_opened_at, open_count, first_ua, last_ip)
+       VALUES ($1, now(), now(), 1, $2, $3)
+       ON CONFLICT (notification_id)
+         DO UPDATE SET last_opened_at = now(), open_count = email_opens.open_count + 1,
+                       last_ip = EXCLUDED.last_ip`,
+      [id, String(req.get('user-agent') || '').slice(0, 300), String(req.ip || '').slice(0, 60)]);
+  } catch (_) { /* bogus/absent id (FK) or a DB blip — never fail the pixel */ }
+  sendPixel();
 });
 
 // --- Static site ---
@@ -387,6 +504,33 @@ if (require.main === module) {
         require('./lib/experience').backfillCoBorrowerExperience()
           .then((n) => n && console.log('[boot] co-borrower experience backfill:', n))
           .catch((e) => console.error('[boot] experience backfill failed:', e.message));
+        // Previous-files fix: appraisals imported before the photo feature (or before a PDF was
+        // available) have empty galleries. Re-extract photos from each current appraisal's
+        // recoverable PDF (embedded XML or the uploaded PDF slot). Bounded per boot, self-draining,
+        // idempotent, fire-and-forget.
+        require('./lib/appraisal/desk').backfillAppraisalPhotosOnce()
+          .then((r) => r && r.filled && console.log('[boot] appraisal photo backfill:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] appraisal photo backfill failed:', e.message));
+        // Previous-files fix: appraisals imported before the As-Is/ARV comp-grid split have every
+        // comp stored as 'unknown', so the report shows one mixed grid instead of two. Re-run the
+        // extractor on each pre-split appraisal's stored XML and write back the per-comp grid.
+        require('./lib/appraisal/desk').backfillAppraisalCompSplitOnce()
+          .then((r) => r && r.split && console.log('[boot] appraisal comp-split backfill:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] appraisal comp-split backfill failed:', e.message));
+        // Email Center history (owner-directed 2026-07-20): mirror the prior
+        // notification + inbound-reply history into the email_messages store so
+        // every file's new Email Center shows its BACKDATED history. Lightweight
+        // rows (body rendered on demand); bounded per boot, idempotent, self-
+        // resuming (WHERE NOT EXISTS + unique indexes) until fully drained.
+        require('./lib/email-log').backfillEmailHistoryOnce()
+          .then((r) => r && (r.notifs || r.inbound) && console.log('[boot] email history backfill:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] email history backfill failed:', e.message));
+        // Investor-Specific Soft Guidelines (ISG-2, owner-directed 2026-07-23): seed the
+        // per-note-buyer condition guidelines from the checked-in CorrFirst "Fix & Flip
+        // Purchase" spec into note_buyer_conditions. Idempotent (ON CONFLICT), never throws.
+        require('./lib/underwriting/investor-guidelines/seed').seedNoteBuyerConditions()
+          .then((r) => r && r.ok && console.log('[boot] note-buyer conditions seed:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] note-buyer conditions seed failed:', e.message));
       } catch (e) {
         console.error('[migrate] unexpected error (continuing):', require('./db').describeError(e));
       }
@@ -414,6 +558,42 @@ if (require.main === module) {
     // Self-gated by SHAREPOINT_BACKUP_ENABLED + MS_* creds; inert otherwise.
     // First run performs the full-history backfill (oldest-first).
     try { require('./lib/sharepoint-backup').start(); } catch (e) { console.warn('sharepoint sync not started:', e.message); }
+    // DocuSign e-sign heartbeat: drains the Connect event inbox + send queue and
+    // reconciles any in-flight envelope that went quiet (missed-webhook recovery).
+    // Self-gated — inert until the DocuSign credentials are configured.
+    try { require('./lib/esign/poller').start(); } catch (e) { console.warn('esign poller not started:', e.message); }
+    // Sitewire draw-management sync — drains the outbound queue + reconcile poll.
+    // Self-gated by SITEWIRE_ENABLED (+ SITEWIRE_OUTBOUND_ENABLED for writes); inert
+    // otherwise. Manages ONLY properties PILOT created (only-ours rule).
+    try { require('./sync/sitewire-sync').start(); } catch (e) { console.warn('sitewire sync not started:', e.message); }
+    // TrustPoint mirror poller (physical-draw workflow phase 2): webhook inbox drain +
+    // draw watermark poll + project discovery sweep. Self-gated by TRUSTPOINT_ENABLED
+    // + the API key; read-only toward TrustPoint (webhook registration is the one
+    // journaled write, and it only happens from the admin route).
+    try { require('./trustpoint/poller').start(); } catch (e) { console.warn('trustpoint poller not started:', e.message); }
+    // Encompass READ-ONLY pull worker (owner-directed 2026-07-22). Self-gates on
+    // ENCOMPASS_ENABLED=1 + ENCOMPASS_* env creds. Never writes to Encompass
+    // (structurally impossible via src/lib/integrations/encompass.js); writes ONLY
+    // to PILOT's own DB — encompass_field_catalog + applications.encompass_extra.
+    try { require('./sync/encompass-sync').start(); } catch (e) { console.warn('encompass sync not started:', e.message); }
+    // Scheduled notification digests (owner-directed 2026-07-20): weekly borrower
+    // "what's still needed", daily per-officer pipeline snapshot, stale-file
+    // alerts, and the Monday admin summary. Each self-gates via audit_log so it
+    // sends at most once per period; timed to the morning/business-hours window in
+    // the team's timezone. Kill-switch NOTIFY_DIGESTS_ENABLED=0.
+    // Runtime feature-flag cache (the API Health "working switches"): load overrides once, refresh
+    // periodically. Gates fall back to their env default until this loads, so it's safe if it lags.
+    try { require('./lib/flags').start(); } catch (e) { console.warn('flags cache not started:', e.message); }
+    try { require('./lib/notification-digests').start(); } catch (e) { console.warn('notification digests not started:', e.message); }
+    // Loan-officer Notification Center drainer — schedules parked drafts,
+    // auto-sends the untouched ones past the SLA, wakes snoozed rows. Kill-switch
+    // NOTIFY_WORKER_ENABLED=0.
+    try { require('./lib/lo-notification-worker').start(); } catch (e) { console.warn('lo notification worker not started:', e.message); }
+    // API Health down-alerts (owner-directed 2026-07-21): probe every integration on a
+    // schedule and email the admins when one that was reachable goes DOWN (and when it
+    // recovers). Alerts only on a real transition, never on intentional states. OFF by
+    // default — set INTEGRATIONS_MONITOR_ENABLED=1 to turn on.
+    try { require('./lib/integrations/monitor').start(); } catch (e) { console.warn('integrations monitor not started:', e.message); }
   });
 }
 module.exports = app;

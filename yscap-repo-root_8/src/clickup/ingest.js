@@ -778,7 +778,12 @@ async function applyChecklistStatuses(appId, task, options = {}) {
       if (!optId && checklist.normalizeInbound(fieldId, String(cf.value))) optId = String(cf.value);
       if (!optId) continue;
 
-      const inbound = checklist.normalizeInbound(fieldId, optId);
+      // Cap inbound so the sync can never COMPLETE a required condition:
+      // evidence from ClickUp lands at 'received' at most; the terminal
+      // 'satisfied' sign-off only happens through the portal's signOffGate,
+      // where fulfillment is verified (owner-directed root-cause fix — the
+      // inbound sync is a second door to 'satisfied' that bypasses the gate).
+      const inbound = checklist.capInbound(checklist.normalizeInbound(fieldId, optId));
       if (!inbound) continue;
 
       // Only mapped items are ever touched (clickup_field_id seeded by db/050).
@@ -791,9 +796,22 @@ async function applyChecklistStatuses(appId, task, options = {}) {
       const cur = row.rows[0].status;
       if (!checklist.shouldApplyInbound(inbound, cur)) continue;
 
-      await db.query(
-        `UPDATE checklist_items SET status=$2, clickup_option_id=$3, updated_at=now() WHERE id=$1`,
-        [row.rows[0].id, inbound, optId]);
+      // An inbound 'issue' is sticky and applies even over a signed-off condition
+      // (a real problem flagged in ClickUp) — so it must also DROP the sign-off,
+      // or the item lands at status='issue' with signed_off_at still set and the
+      // clear-to-close gate keeps counting it done. (Same "evidence/verification
+      // invalidated → clear the sign-off" rule as the document-review reject.)
+      if (inbound === 'issue') {
+        await db.query(
+          `UPDATE checklist_items SET status=$2, clickup_option_id=$3,
+                  signed_off_at=NULL, signed_off_by=NULL, reviewed_at=NULL, reviewed_by=NULL, updated_at=now()
+             WHERE id=$1`,
+          [row.rows[0].id, inbound, optId]);
+      } else {
+        await db.query(
+          `UPDATE checklist_items SET status=$2, clickup_option_id=$3, updated_at=now() WHERE id=$1`,
+          [row.rows[0].id, inbound, optId]);
+      }
     }
   } catch (_) { /* best-effort — a checklist glitch never breaks ingest */ }
 }
@@ -832,6 +850,20 @@ async function descopeFlipped(taskId) {
        VALUES ('system', NULL, 'clickup_descope_flip', 'application', $1, $2)`,
       [r.rows[0].id, JSON.stringify({ taskId, from: r.rows[0].program,
         reason: 'ClickUp program changed to an unsupported (non-RTL) type; removed from portal, ClickUp left untouched' })]).catch(() => {});
+    // A descoped file is OUT of the portal — close any open FILE-LEVEL sync-review
+    // findings it was carrying (they are unactionable now, and a copied-loan-number
+    // finding must not linger after the file it was about is gone — the exact
+    // dead-end the owner hit turning an RTL duplicate into a DSCR, 2026-07-22).
+    // Scoped to the file-level "action card" keys; a value disagreement (or a real
+    // issue) re-raises on the next ingest if the task ever flips back to RTL.
+    await db.query(
+      `UPDATE sync_review_queue
+          SET status='resolved', auto_resolved=true, resolved_at=now(),
+              resolution_note='auto-closed — the file was removed from the portal (its ClickUp program changed to a data-only, non-RTL type)'
+        WHERE status='open'
+          AND (application_id=$1 OR task_id=$2)
+          AND field_key IN ('ys_loan_number','file_link','push_job','sharepoint_folder','sharepoint_doc')`,
+      [r.rows[0].id, String(taskId)]).catch(() => {});
     return r.rows[0];
   } catch (_) { return null; }
 }
@@ -1154,6 +1186,14 @@ async function ingestTask(task, options = {}, opts = {}) {
   if (isRtl && applicationId) {
     await ensureRtlChecklist(applicationId);
     await applyChecklistStatuses(applicationId, task, options);
+    // Rule-driven conditions key off ClickUp-sourced fields too — most notably the
+    // note buyer (applications.lender), which is pull-only from ClickUp. Re-run the
+    // Condition Center engine so a note-buyer-gated condition (e.g. the CorrFirst
+    // EMD verification) attaches/retracts as the note buyer arrives or changes, and
+    // enforce the 5% SOW contingency for a Blue Lake note buyer. Best-effort — a
+    // failure here can NEVER break the ClickUp sync.
+    try { await require('../lib/conditions/engine').evaluateApplication(applicationId, { reason: 'clickup_ingest' }); } catch (_) {}
+    try { await require('../lib/rehab-budget').enforceSowContingency(applicationId); } catch (_) {}
   }
 
   // Preserve a MASKED snapshot of every task's mapped data — RTL and non-RTL
@@ -1182,11 +1222,43 @@ async function ingestTask(task, options = {}, opts = {}) {
  * UPDATES an existing file — only new-file creation is gated.
  * Returns { applicationId, matchStatus, detail }.
  */
+// Decide the inbound processor from ClickUp's two fields (the resolved staff id from
+// the people-picker, and from the "Processor Email" text field). Pure + unit-tested.
+// GRACE WINDOW (owner-directed 2026-07-20): adopt a one-sided people-picker (the
+// email field is filled a moment later by a ClickUp automation, so people-set/
+// email-empty is a fresh assignment lagging). Clear a portal processor ONLY when
+// both fields are set and name DIFFERENT people (the stale-duplicate signature). A
+// stale email alone (people empty, email set — the Lisa Katz artifact) never asserts
+// nor clears; both-empty is silence.
+function decideInboundProcessor(userId, emailId) {
+  if (userId && emailId) return userId === emailId ? { adopt: userId, conflict: false } : { adopt: null, conflict: true };
+  if (userId && !emailId) return { adopt: userId, conflict: false };
+  return { adopt: null, conflict: false };
+}
+
 async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) {
   const { allowCreate = false, forceCreate = false, folderId = null, loanOfficerEmail = null, processorEmail = null, coBorrowerId = null, coBorrowerTaskId = null } = ctx;
   const a = read.app || {};
   const lo = await resolveStaffByEmail(loanOfficerEmail);
-  const pr = await resolveStaffByEmail(processorEmail);
+  // PROCESSOR — two-field AGREEMENT gate (owner-directed 2026-07-19). ClickUp holds
+  // the processor in TWO places: the "Processor" people-field (the human pick) and a
+  // "Processor Email" text field an automation fills from it. Duplicating a task can
+  // leave the two DISAGREEING (e.g. the people-field cleared but the stale email left
+  // pointing at the old processor) — that stale email is exactly how Lisa Katz kept
+  // syncing in as a processor nobody chose.
+  // processorEmail was already translated to a staff email by routing.processorEmailFor.
+  const prByEmail = await resolveStaffByEmail(processorEmail);
+  const prByUser = await resolveStaffByClickupUserId(read.processorClickupId);
+  // GRACE WINDOW (owner-directed 2026-07-20, refines the two-field-agreement rule):
+  // a processor assigned the NORMAL way sets ClickUp's people-picker FIRST; the
+  // "Processor Email" text field is filled a few moments later by a ClickUp
+  // automation. So "people-field set, email empty" is a FRESH assignment whose email
+  // is still lagging — ADOPT it (the old strict rule refused it, and even cleared the
+  // portal, during that window). Only a genuine STALE-DUPLICATE signature — BOTH
+  // fields set but naming DIFFERENT people — clears a portal processor. A stale email
+  // ALONE (people-field empty, email still set = the Lisa Katz duplicate artifact)
+  // never asserts a processor NOR clears one; both-empty = silence = never clobber.
+  const { adopt: agreedProcessorId, conflict: processorConflict } = decideInboundProcessor(prByUser.id, prByEmail.id);
   // Underwriter comes from ClickUp's "Underwriter" users field (may hold several
   // users — take the first), matched to staff_users by clickup_user_id. Pull-only.
   const uw = await resolveStaffByClickupUserId(firstUserIdFromField(task, F.PIPELINE.underwriter));
@@ -1219,8 +1291,12 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     property_address: a.property_address ? JSON.stringify(a.property_address) : null,
     internal_status: internal, status: external,
     clickup_extra: Object.keys(read.extra).length ? JSON.stringify(read.extra) : null,
-    // Officer assignment (COALESCE on update: reassign when resolved, keep when not).
-    loan_officer_id: lo.id, loan_officer_name: lo.name, processor_id: pr.id,
+    // Officer + processor assignment (COALESCE on update: reassign when resolved,
+    // keep when not). Bidirectional: a real ClickUp processor flows in here
+    // (agreedProcessorId — the two fields agree, OR the people-picker is set with the
+    // email still lagging), and an explicit portal pick flows OUT via the outbound
+    // push (which writes BOTH ClickUp processor fields so they always agree).
+    loan_officer_id: lo.id, loan_officer_name: lo.name, processor_id: agreedProcessorId,
     // Underwriter assignment — same COALESCE semantics: set when resolved, keep when not.
     underwriter_id: uw.id,
     clickup_folder_id: folderId != null ? Number(folderId) : null,
@@ -1229,6 +1305,14 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     // once (COALESCE on update keeps it) and backfilled on the next reconcile.
     clickup_created_at: task && task.date_created ? new Date(Number(task.date_created)) : null,
   };
+
+  // Store the YS loan number in the professional all-caps form ("YSCAP258134769").
+  // A number typed lowercase in ClickUp ("yscap258…") would otherwise flow in
+  // verbatim and leak lowercase into every file surface (emails, exports, the
+  // outbound push back to ClickUp). Normalizing here (the single inbound write
+  // chokepoint) keeps STORAGE uppercase; the case-insensitive ownership matching
+  // just below still uses lower(btrim(…)), so this changes storage only.
+  cols.ys_loan_number = require('../lib/fields').normalizeLoanNumber(cols.ys_loan_number);
 
   // INBOUND YEAR GUARD (2026-07-15 incident): a ClickUp date whose year is out
   // of range (a mid-typing artifact, or a literal 2-digit year — "26" typed as
@@ -1328,6 +1412,19 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
           }
         } catch (e) { if (e && e.status === 404) reassign = true; /* holder's task deleted — claim gone; other errors: conservative */ }
       }
+      // Respect an explicit HUMAN ownership decision from the sync review ("this deal owns the number" /
+      // "this file is the copy", src/lib/sync-file-review.js). Once a person deliberately assigned the
+      // number to a file, the automated older-task-wins adjudication must NEVER silently flip it back off
+      // that file. FAIL-SAFE: any error here leaves the computed decision untouched.
+      if (reassign) {
+        try {
+          const decided = await db.query(
+            `SELECT 1 FROM audit_log WHERE action='loan_number_owner_decided' AND entity_id=$1
+               AND lower(btrim(detail->>'number'))=lower(btrim($2)) LIMIT 1`,
+            [holder.id, cols.ys_loan_number]);
+          if (decided.rowCount) reassign = false;
+        } catch (_) { /* fail-safe: keep the computed decision */ }
+      }
       if (reassign) {
         // Re-check the number in the WHERE so a concurrent ingest that just
         // gave the holder a DIFFERENT number can't be clobbered (audit nit).
@@ -1355,7 +1452,14 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
               taskId: holder.clickup_pipeline_task_id, direction: 'inbound',
               fieldKey: 'ys_loan_number', reason: 'copied_loan_number_needs_assignment',
               suppressIfRejected: true, clickupValue: cols.ys_loan_number, portalValue: null,
-              rawValue: JSON.stringify({ copiedFrom: task.id, reassignedToApplication: targetId || null }).slice(0, 300) });
+              // Emit the SAME parseable shape the primary producer uses ({number, ofApplication,
+              // boundToTask}) so the review UI can show the other file AND the "keep it on the other
+              // deal" action can record its durable loan_number_owner_decided stamp on the rightful
+              // owner (= targetId, the current task's file, which just took the number). Without this
+              // the holder-flag rows carried only {copiedFrom, reassignedToApplication}, which the
+              // parsers don't read — so keeping the number on the owner wasn't durably protected and a
+              // later ClickUp ingest could auto-reassign it again (the loop the guard exists to stop).
+              rawValue: JSON.stringify({ number: cols.ys_loan_number, ofApplication: targetId || null, boundToTask: task.id, reassignedToApplication: targetId || null }).slice(0, 300) });
           } catch (_) { /* best-effort */ }
         }
         // cols.ys_loan_number stays SET → imports onto the rightful file.
@@ -1373,27 +1477,43 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
   // lands before that push reaches ClickUp (a race, a lagging queue, or outbound
   // disabled), the raw ClickUp value would COALESCE-overwrite the just-approved one
   // — the borrower sees the old number, opens a NEW change request, and the request
-  // "re-appears" forever. Fix: for each governed field, if an APPROVED change_request
-  // is NEWER than the ClickUp task's last update, ClickUp is definitionally stale for
-  // that field — keep the portal value (cols[field]=null → COALESCE keeps it) and
-  // re-enqueue the push so ClickUp catches up. A genuinely newer ClickUp edit
-  // (date_updated > the approval) still wins, so this never blocks a real ClickUp
-  // change; and once our push lands, date_updated moves past the approval and the
-  // guard stops firing (no loop). Best-effort — never breaks the pull.
-  if (targetId && task && task.date_updated) {
+  // "re-appears" forever.
+  //
+  // Fix (audit 2026-07-20): decide staleness by VALUE + our own write journal, NOT
+  // by the task's whole-task `date_updated`. The old guard compared decided_at to
+  // task.date_updated, but that timestamp moves on ANY field edit — so an UNRELATED
+  // ClickUp change (a note, a status) would bump it past the approval and silently
+  // drop the protection, letting the stale value clobber the approved one. Instead:
+  // for each approved economics field whose value we have NOT yet confirmed landing
+  // in ClickUp (no successful outbound write journaled since the approval), if the
+  // pulled value still differs from the approved value, keep the portal value
+  // (cols[field]=null → COALESCE keeps it) and re-enqueue the push. Once our push
+  // lands (write journal) OR ClickUp already shows the approved value, protection
+  // stops — so a genuine later ClickUp edit still wins and there is no re-push loop.
+  // Best-effort — never breaks the pull.
+  if (targetId && task) {
     try {
       const CR = require('../lib/change-requests');
       const present = CR.GOVERNED_FIELDS.filter((k) => k in cols && cols[k] != null);
       if (present.length) {
-        const protectedCrs = await db.query(
-          `SELECT DISTINCT ON (field) field FROM change_requests
-            WHERE application_id=$1 AND status='approved' AND field = ANY($2)
-              AND decided_at > to_timestamp($3::bigint / 1000.0)
-            ORDER BY field, decided_at DESC`,
-          [targetId, present, String(task.date_updated)]);
-        if (protectedCrs.rows.length) {
-          const fields = protectedCrs.rows.map((r) => r.field);
-          for (const f of fields) cols[f] = null;   // COALESCE keeps the approved portal value
+        const approved = await db.query(
+          `SELECT DISTINCT ON (cr.field) cr.field, cr.new_value
+             FROM change_requests cr
+            WHERE cr.application_id=$1 AND cr.status='approved' AND cr.field = ANY($2)
+              AND NOT EXISTS (
+                SELECT 1 FROM clickup_write_log w
+                 WHERE w.application_id=cr.application_id AND w.field_key=cr.field
+                   AND w.changed=true AND w.blocked=false AND w.created_at > cr.decided_at)
+            ORDER BY cr.field, cr.decided_at DESC`,
+          [targetId, present]);
+        const fields = [];
+        for (const cr of approved.rows) {
+          // ClickUp already reflects the approved value → nothing to protect (adopt = no-op).
+          if (CR.normalizeValue(cr.field, cols[cr.field]) === CR.normalizeValue(cr.field, cr.new_value)) continue;
+          cols[cr.field] = null;   // COALESCE keeps the approved portal value
+          fields.push(cr.field);
+        }
+        if (fields.length) {
           try { await require('./enqueue').enqueueClickupPush(targetId, fields); } catch (_) { /* re-sync ClickUp; no-op if already equal */ }
           // Audit the protection (part of the cross-system change history).
           try {
@@ -1405,6 +1525,20 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
         }
       }
     } catch (_) { /* best-effort — a guard failure must never break the inbound pull */ }
+  }
+
+  // ECONOMICS FREEZE (owner-directed follow-up to the term-sheet-sent freeze):
+  // if this existing file is frozen — a Term Sheet DocuSign package is sent, or
+  // the file is Clear-to-Close / Funded — an inbound economics CHANGE must not
+  // silently overwrite the file (it would make the sent term sheet disagree with
+  // it). The guard strips the changed frozen-economics fields from `cols` (their
+  // COALESCE keeps the current value) and parks a review row for the loan officer.
+  // No-op on an unfrozen file, or when ClickUp already matches the frozen figures.
+  if (targetId && task) {
+    try {
+      await require('../lib/inbound-economics-freeze')
+        .applyInboundEconomicsFreeze({ appId: targetId, cols, taskId: task.id, borrowerId });
+    } catch (_) { /* best-effort — never breaks the inbound pull */ }
   }
 
   const vals = Object.values(cols);
@@ -1436,9 +1570,17 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
         }
       }
     } catch (_) { /* audit is best-effort — never blocks the pull */ }
-    for (const p of pendingYearReviews) {
-      await review.queueReview({ applicationId: targetId, borrowerId, taskId: task.id, direction: 'inbound',
-        fieldKey: p.fieldKey, proposedValue: p.proposed, rawValue: p.raw, reason: 'clickup_year_out_of_range' });
+    if (pendingYearReviews.length) {
+      // WO-6 (F-M8): show the card what PILOT actually holds (the year-guard kept
+      // it via COALESCE), so a blank "In PILOT" column can't mislead a reviewer
+      // into adopting ClickUp's bad-year value over a good portal date.
+      const cur = (await db.query(`SELECT expected_closing, actual_closing FROM applications WHERE id=$1`, [targetId])).rows[0] || {};
+      for (const p of pendingYearReviews) {
+        const portalVal = cur[p.fieldKey] ? String(cur[p.fieldKey]).slice(0, 10) : null;
+        await review.queueReview({ applicationId: targetId, borrowerId, taskId: task.id, direction: 'inbound',
+          fieldKey: p.fieldKey, currentValue: portalVal, proposedValue: p.proposed, rawValue: p.raw,
+          reason: 'clickup_year_out_of_range', clickupValue: p.proposed, portalValue: portalVal });
+      }
     }
     // Restore-on-reflip: if this file had been auto-descoped because its program
     // was previously changed to a non-RTL type, flipping it back to an RTL program
@@ -1450,6 +1592,33 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
               deleted_at = CASE WHEN sync_state='descoped' THEN NULL ELSE deleted_at END,
               clickup_last_synced_at=now(), updated_at=now() WHERE id=$1`,
       [targetId, ...vals, task.id]);
+    // If ClickUp supplied a NEW loan officer for this file, drop the LO-
+    // notification-gate's cached officer pointer so the very next borrower/
+    // staff notification routes to the new LO's prefs + drafts (mirrors the
+    // /assign path in staff.js — same class of cache invalidation).
+    try { require('../lib/lo-notification-gate').invalidateFile(targetId); } catch (_) { /* best-effort */ }
+    // Two-field PROCESSOR conflict → the ClickUp processor signal is untrustworthy
+    // (the stale-duplicate case). Clear any portal processor so the file returns to
+    // "no processor" per the agreement rule (owner-directed 2026-07-19). The COALESCE
+    // set above can only keep or set — never clear — so this explicit clear is what
+    // removes a stale processor (e.g. Lisa left in the Processor Email after a dup).
+    // The db/103 trigger retires her assignee ACCESS row in lock-step. Only fires on
+    // a genuine conflict (not on ClickUp silence), and only when something is set.
+    if (processorConflict) {
+      const clr = await db.query(
+        `UPDATE applications SET processor_id=NULL, updated_at=now()
+          WHERE id=$1 AND processor_id IS NOT NULL RETURNING 1`, [targetId]);
+      if (clr.rowCount) {
+        try {
+          await db.query(
+            `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+             VALUES ('system', NULL, 'clickup_processor_conflict_cleared', 'application', $1, $2)`,
+            [targetId, JSON.stringify({ taskId: task.id,
+              processorFromPeopleField: prByUser.id || null,
+              processorFromEmailField: prByEmail.id || null })]);
+        } catch (_) { /* audit best-effort */ }
+      }
+    }
     // Co-borrower: fill when the file has none yet — never clobber a link a
     // human set to a REAL person. ONE exception (root fix 2026-07-14): when the
     // current link points at a SYNC-CREATED PLACEHOLDER profile (shadow email,
@@ -1485,6 +1654,15 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     if (llcId) {
       try { await require('../lib/vesting').setVestingLlc(targetId, llcId, { source: 'clickup', push: false }); } catch (_) { /* best-effort */ }
     }
+    // A status change made DIRECTLY in ClickUp (the team drives statuses there as
+    // well as in the portal) was giving the borrower no "your loan is now …"
+    // notification — the portal doors notified, the inbound sync did not. Notify
+    // the borrower here, GO-FORWARD ONLY: the shared helper silently BASELINES a
+    // file the first time it's seen (so previously-drifted files are never blasted
+    // on the first reconcile), skips an ECHO of a portal change (the portal door
+    // already advanced the watermark to this status), and loops the loan officer
+    // in via the borrower email's BCC. Best-effort; never breaks the pull. (db/187)
+    try { await require('../lib/status-notify').notifyInboundStatusChange(targetId, external); } catch (_) { /* best-effort */ }
     return { applicationId: targetId, matchStatus, detail, copiedLoanNumber };
   }
   if (!allowCreate) return { applicationId: null, matchStatus: 'skipped' };
@@ -1527,8 +1705,11 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
   // Year-guard reviews for a BRAND-NEW file land immediately too (the update
   // branch has its own insert) — a bad year must never wait for the next pass.
   for (const p of pendingYearReviews) {
+    // WO-6 (F-M8): a brand-new file genuinely has no portal date yet, so "In
+    // PILOT" is honestly blank here — pass it explicitly for a clear two-sided card.
     await review.queueReview({ applicationId: newId, borrowerId, taskId: task.id, direction: 'inbound',
-      fieldKey: p.fieldKey, proposedValue: p.proposed, rawValue: p.raw, reason: 'clickup_year_out_of_range' });
+      fieldKey: p.fieldKey, currentValue: null, proposedValue: p.proposed, rawValue: p.raw,
+      reason: 'clickup_year_out_of_range', clickupValue: p.proposed, portalValue: null });
   }
   // A freshly-created file already carries llc_id (in the INSERT above), but its LLC
   // document slots + condition are not built until we run the wiring — do it now so
@@ -1541,5 +1722,6 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
 
 module.exports = {
   ingestTask, resolveBorrower, upsertLlc, upsertTrackRecord, linkOrCreateApplication,
-  applyChecklistStatuses, identityFrom, RTL_PROGRAMS,
+  applyChecklistStatuses, identityFrom, RTL_PROGRAMS, decideInboundProcessor,
+  descopeFlipped,
 };

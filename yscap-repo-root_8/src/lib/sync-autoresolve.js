@@ -29,6 +29,7 @@
  */
 
 const db = require('../db');
+const switches = require('./integrations/switches'); // runtime on/off (env default unless flipped)
 const T = require('../clickup/transforms');
 const F = require('../clickup/fields');
 const { sanitizeDob, sanitizeDateOnly } = require('./fields');
@@ -116,7 +117,7 @@ async function adoptDobEverywhere({ borrowerId, day, why, source = 'auto_resolve
   const apps = (await db.query(
     `SELECT id, clickup_pipeline_task_id AS task_id FROM applications
       WHERE borrower_id=$1 AND deleted_at IS NULL AND clickup_pipeline_task_id IS NOT NULL`, [borrowerId])).rows;
-  if (cfg.clickupOutboundEnabled) {
+  if (switches.on('CLICKUP_OUTBOUND_ENABLED')) {
     const epoch = T.dateOnlyToClickUpEpoch(day);
     for (const a of apps) {
       try {
@@ -251,7 +252,7 @@ async function applyReviewWinner(row, winner, customValue) {
     }
     const before = (await db.query(`SELECT ${fieldKey} FROM applications WHERE id=$1`, [appId])).rows[0];
     await db.query(`UPDATE applications SET ${fieldKey}=$2::date, updated_at=now() WHERE id=$1`, [appId, day]);
-    if (taskId && cfg.clickupOutboundEnabled) {
+    if (taskId && switches.on('CLICKUP_OUTBOUND_ENABLED')) {
       const epoch = T.dateOnlyToClickUpEpoch(day);
       if (epoch != null) {
         try {
@@ -278,7 +279,7 @@ async function applyReviewWinner(row, winner, customValue) {
       await db.query(
         `UPDATE borrowers SET ssn_encrypted=$2, ssn_last4=$3, ssn_hash=$4, updated_at=now() WHERE id=$1`,
         [borrowerId, C.encryptSSN(digits), digits.slice(-4), identity.ssnHash(digits, cfg.ssnMatchKey)]);
-      if (taskId && cfg.clickupOutboundEnabled) {
+      if (taskId && switches.on('CLICKUP_OUTBOUND_ENABLED')) {
         require('../clickup/orchestrator').circuitCheck(appId, taskId, 1);
         await clickup.setField(taskId, F.SHARED.borrowerSSN, digits);
         await journalResolveWrite(appId, taskId, F.SHARED.borrowerSSN, 'ssn', '✱✱✱', '✱✱✱', true);
@@ -299,7 +300,7 @@ async function applyReviewWinner(row, winner, customValue) {
       if (!b || !b.ssn_encrypted) throw httpError(422, 'PILOT has no SSN on file — adopt ClickUp’s value instead');
       try { digits = sanitizeSsnDigits(C.decryptSSN(b.ssn_encrypted)); } catch (_) { digits = null; }
       if (!digits) throw httpError(422, "PILOT's stored SSN could not be read — adopt ClickUp's value instead");
-      if (taskId && cfg.clickupOutboundEnabled) {
+      if (taskId && switches.on('CLICKUP_OUTBOUND_ENABLED')) {
         require('../clickup/orchestrator').circuitCheck(appId, taskId, 1);   // breaker-counted like every write
         await clickup.setField(taskId, F.SHARED.borrowerSSN, digits);
         await journalResolveWrite(appId, taskId, F.SHARED.borrowerSSN, 'ssn', '✱✱✱', '✱✱✱', true);

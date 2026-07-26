@@ -518,7 +518,7 @@ async function findOrCreateLlc(borrowerId, fields) {
       `INSERT INTO llcs (borrower_id,llc_name,ein,formation_state,formation_date,ownership_pct)
        VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
       [borrowerId, name, (fields.ein || null), (fields.formationState || null),
-        (fields.formationDate || null), (fields.ownershipPct || null)]);
+        require('./fields').normalizeTypedDate(fields.formationDate), (fields.ownershipPct || null)]);  // WO-6 (F-M11): year-0026-proof formation date
     return { id: r.rows[0].id, existed: false };
   } catch (e) {
     // Only reachable where uq_llcs_borrower_name exists: a concurrent create

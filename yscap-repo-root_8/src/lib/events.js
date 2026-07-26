@@ -127,7 +127,9 @@ function borrowerSafeEvent(data) {
       ? { ...m.reply_snippet, body: scrubText(m.reply_snippet.body) } : m.reply_snippet;
     const er = Array.isArray(m.entity_refs)
       ? m.entity_refs.map(r => (r && typeof r.label === 'string') ? { ...r, label: scrubText(r.label) } : r) : m.entity_refs;
-    if (body !== m.body || rs !== m.reply_snippet || er !== m.entity_refs) out = { ...out, message: { ...m, body, reply_snippet: rs, entity_refs: er } };
+    // staff-named attachment filenames are a partner-name vector too (leak fix 2026-07-23)
+    const an = typeof m.attachment_name === 'string' ? scrubText(m.attachment_name) : m.attachment_name;
+    if (body !== m.body || rs !== m.reply_snippet || er !== m.entity_refs || an !== m.attachment_name) out = { ...out, message: { ...m, body, reply_snippet: rs, entity_refs: er, attachment_name: an } };
   }
   return out;
 }
