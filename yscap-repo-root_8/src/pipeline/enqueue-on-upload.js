@@ -33,6 +33,10 @@ function shadowGate(family, pipelineCfg) {
   const f = fam(family);
   if (!f) return { on: false, reason: 'no_family' };
   const families = Array.isArray(p.v2Families) ? p.v2Families.map(fam) : [];
+  // "all" / "*" enrolls EVERY document family (owner-directed 2026-07-26: widen the shadow line to
+  // all document types). Still advisory + shadow-only — this only controls which families get a
+  // background copy processed; it changes no loan file. Set UW_PIPELINE_V2_FAMILIES=all to opt in.
+  if (families.includes('all') || families.includes('*')) return { on: true, reason: 'enrolled_all' };
   if (!families.includes(f)) return { on: false, reason: 'family_not_enrolled' };
   return { on: true, reason: 'enrolled' };
 }
