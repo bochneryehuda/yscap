@@ -1061,6 +1061,16 @@ async function ingestTask(task, options = {}, opts = {}) {
   // the resolved officer onto the profile itself (FILL-ONLY — an officer a human
   // already set is never stolen) makes the person theirs from the first card,
   // whatever the program. Best-effort: this can never break the sync.
+  //
+  // …and the relationship is MANY-TO-MANY (owner-directed 2026-07-26, follow-up):
+  // "he should see every borrower where he closed ANY file in the past." A single
+  // `primary_officer_id` cannot express that — it is fill-only (it must be;
+  // stealing an existing relationship would be worse), so whoever got there first
+  // owned the person and every OTHER officer they did business with stayed locked
+  // out. `borrower_officers` (db/322) records EVERY (borrower, officer) pair this
+  // sync sees, from EVERY card in EVERY status, and is what the staff borrower
+  // scope actually reads. `primary_officer_id` keeps its old meaning: the
+  // borrower's PRIMARY/CRM owner.
   const taskOfficer = await resolveStaffByEmail(loanOfficerEmail);
   if (taskOfficer.id) {
     for (const bid of [borrowerId, coBorrowerId]) {
@@ -1070,6 +1080,20 @@ async function ingestTask(task, options = {}, opts = {}) {
           `UPDATE borrowers SET primary_officer_id=$2, updated_at=now()
             WHERE id=$1 AND primary_officer_id IS NULL`, [bid, taskOfficer.id]);
       } catch (_) { /* best-effort */ }
+      try {
+        // Establish the relationship only — `deals` is NOT incremented here. A
+        // per-task counter cannot stay correct across re-syncs (the same card is
+        // ingested many times), so the closed-deal count is RECOMPUTED from the
+        // task index at the end of each profile-sweep cycle (`recountDeals`).
+        // Nothing gates access on it; it is display only.
+        await db.query(
+          `INSERT INTO borrower_officers (borrower_id, staff_id, source, first_task_id, last_seen)
+           VALUES ($1,$2,'clickup',$3,now())
+           ON CONFLICT (borrower_id, staff_id) DO UPDATE
+             SET last_seen = now(),
+                 first_task_id = COALESCE(borrower_officers.first_task_id, EXCLUDED.first_task_id)`,
+          [bid, taskOfficer.id, task.id]);
+      } catch (_) { /* best-effort — the relationship is additive, never critical */ }
     }
   }
 

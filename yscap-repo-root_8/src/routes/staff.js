@@ -198,9 +198,17 @@ function scopeClause(req, alias = 'a') {
 //     ClickUp sync now stamps from EVERY card, RTL or not (src/clickup/ingest),
 //     with the same visible_officer_ids delegation the file scope honors.
 // Requires the borrowers alias to expose id + primary_officer_id.
+// A borrower belongs to EVERY officer they have done business with, not just one
+// (owner-directed 2026-07-26 follow-up: "he should see every borrower where he
+// closed any file in the past in ClickUp"). `borrower_officers` (db/322) is the
+// many-to-many relationship the ClickUp sync records from EVERY card in EVERY
+// status; `primary_officer_id` stays the single CRM owner. Both are honored, plus
+// the visible_officer_ids delegation, plus any file the staffer can already see.
 const VISIBLE_BORROWER_SQL = (alias, p) =>
   `(${alias}.primary_officer_id=${p}` +
   ` OR ${alias}.primary_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=${p})` +
+  ` OR EXISTS (SELECT 1 FROM borrower_officers bo WHERE bo.borrower_id=${alias}.id` +
+  ` AND (bo.staff_id=${p} OR bo.staff_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=${p})))` +
   ` OR EXISTS (SELECT 1 FROM applications a2` +
   ` WHERE (a2.borrower_id=${alias}.id OR a2.co_borrower_id=${alias}.id) AND a2.deleted_at IS NULL` +
   ` AND ${VISIBLE_OFFICERS_SQL('a2', p)}))`;

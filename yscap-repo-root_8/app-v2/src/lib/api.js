@@ -718,6 +718,10 @@ export const api = {
   clickupRepush:    (appId) => req('POST', `/api/admin/clickup/file/${appId}/repush`),
   clickupRepull:    (appId) => req('POST', `/api/admin/clickup/file/${appId}/repull`),
   clickupSyncFolder:(folderId, createFiles) => req('POST', '/api/admin/clickup/sync-folder', { folderId, createFiles }),
+  // The borrower-profile sweep — reads every ClickUp card in every status to
+  // build PEOPLE (profile, entities, track record, officer link), never files.
+  clickupProfileSweep:      () => req('GET', '/api/admin/clickup/profile-sweep'),
+  clickupStartProfileSweep: (opts) => req('POST', '/api/admin/clickup/profile-sweep', opts || {}),
   clickupAudit:     () => req('GET', '/api/admin/clickup/audit'),
   clickupManualReview:        () => req('GET', '/api/admin/clickup/manual-review'),
   clickupResolveManualReview: (appId, action) => req('POST', `/api/admin/clickup/manual-review/${appId}/resolve`, { action }),
