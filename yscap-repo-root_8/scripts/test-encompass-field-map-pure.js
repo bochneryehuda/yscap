@@ -120,8 +120,30 @@ assert.strictEqual(m.compareField('maturity_date', '2027-06-22', '2027-06-22T00:
 assert.strictEqual(m.compareField('maturity_date', '2027-06-22', '2027-06-23').status, 'mismatch');
 ok('date compares to the day (tolerates a time component)');
 
+// ── Exit plan is now a REAL match (owner-directed 2026-07-26) ───────────────
+// fix & flip ≡ Sale; fix & hold / rental ≡ Rental/Refinance.
+assert.strictEqual(m.compareField('exit_plan', 'sell', 'Sale').status, 'match', 'flip → Sale matches');
+assert.strictEqual(m.compareField('exit_plan', 'hold', 'Refinance: Rental').status, 'match', 'hold → Rental matches');
+assert.strictEqual(m.compareField('exit_plan', 'sell', 'Refinance: Rental').status, 'mismatch', 'a real exit disagreement still mismatches');
+ok('exit plan is matched (flip→Sale, hold→Rental), no longer reference-only');
+
+// ── Empty ↔ zero is a MATCH on a numeric field (owner-directed 2026-07-26) ──
+assert.strictEqual(m.compareField('assignment_fee', null, 0).status, 'match', 'our blank vs Encompass 0 is a match');
+assert.strictEqual(m.compareField('assignment_fee', 0, null).status, 'match', 'our 0 vs Encompass blank is a match');
+assert.strictEqual(m.compareField('financed_interest_reserve', null, 0).status, 'match', 'blank vs 0 reserve matches');
+assert.strictEqual(m.compareField('assignment_fee', null, 25500).status, 'incomparable', 'blank vs a REAL number is still "no data"');
+assert.strictEqual(m.compareField('assignment_fee', null, null).status, 'incomparable', 'blank on both sides stays "no data"');
+ok('an empty value equals zero on money fields; blank-vs-a-real-number still defers');
+
+// ── Cosmetic AND Moderate both mean Encompass "Light rehab" ────────────────
+assert.strictEqual(m.compareField('rehab_type', 'Cosmetic', 'Light Rehab').status, 'match');
+assert.strictEqual(m.compareField('rehab_type', 'Moderate', 'Light Rehab').status, 'match', 'moderate collapses onto Encompass Light');
+assert.strictEqual(m.compareField('rehab_type', 'Heavy', 'Heavy Rehab').status, 'match');
+assert.strictEqual(m.compareField('rehab_type', 'expansion', 'Expansion').status, 'match');
+assert.strictEqual(m.compareField('rehab_type', 'Heavy', 'Light Rehab').status, 'mismatch');
+ok('rehab type maps onto Encompass Light / Heavy / Expansion');
+
 // ── Reference fields: surfaced, never compared; PITIA removed ───────────────
-assert.strictEqual(m.compareField('exit_plan', 'sell', 'Refinance: Rental').status, 'reference');
 assert.strictEqual(m.compareField('ref_cash_to_close', 1, 2).status, 'reference');
 assert.ok(!m.BY_KEY.ref_pitia, 'PITIA was removed from the registry (owner-directed 2026-07-26 — wrong field)');
 assert.ok(m.comparableKeys().every((k) => m.BY_KEY[k].compare !== 'reference'), 'comparableKeys excludes reference fields');
@@ -149,7 +171,8 @@ for (const k of ['actual_ltc', 'actual_arv_ltv', 'actual_initial_ltv', 'max_ltc'
 // lossy-vocabulary enums surface but never block
 assert.strictEqual(m.BY_KEY.property_type.gate, m.GATE.ADVISORY, 'property type is advisory (lossy category)');
 assert.strictEqual(m.BY_KEY.rehab_type.gate, m.GATE.ADVISORY, 'rehab type is advisory (5 buckets vs 3)');
-assert.strictEqual(m.BY_KEY.exit_plan.gate, m.GATE.REFERENCE);
+assert.strictEqual(m.BY_KEY.exit_plan.gate, m.GATE.ADVISORY, 'exit plan is now matched (advisory gate), no longer reference-only');
+assert.strictEqual(m.BY_KEY.exit_plan.compare, 'enum', 'exit plan is a real enum compare');
 ok('gate classification: money/date block; all actual/cap percents + lossy/derived enums advisory; leftovers reference');
 
 // ── property_type compares MEANING (value-mapped), not raw strings ──────────

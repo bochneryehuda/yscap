@@ -41,6 +41,31 @@ function deriveDealType(program, loanType) {
   return undefined;                                              // defer — never guess
 }
 
+// Exit plan implied by the deal type (owner-directed 2026-07-26). Fix & flip exits
+// by SALE; fix & hold and DSCR/rental exit by RENTAL (refinance into a rental).
+// A deal type we can't read confidently (bridge, ground-up, unknown) returns
+// undefined → the compare DEFERS it rather than guessing an exit we don't know.
+function exitPlanFor(dealType) {
+  if (dealType === 'flip') return 'sell';
+  if (dealType === 'fix-and-hold' || dealType === 'rental') return 'hold';
+  return undefined;
+}
+
+// Rehab type in ENCOMPASS's vocabulary (owner-directed 2026-07-26). Encompass has
+// Light / Heavy / Expansion only. Our Cosmetic + Moderate both mean LIGHT (handled
+// by the rehabType value map), Heavy means HEAVY, and a file adding SQUARE FOOTAGE
+// is an EXPANSION regardless of the bucket the file was typed as — the sqft flag is
+// the stronger statement about the work. Any of the repo's sqft-addition column
+// spellings counts; a file with none falls back to its own rehab_type.
+function rehabTypeFor(app) {
+  const a = app || {};
+  const sqft = a.sqft_addition === true || a.adding_sqft === true || a.is_sqft_addition === true
+    || a.square_footage_addition === true || a.sqft_expansion === true;
+  if (sqft) return 'expansion';
+  const v = a.rehab_type;
+  return (v === null || v === undefined || v === '') ? undefined : v;
+}
+
 // ── Pure: our-side values keyed by registry field key ───────────────────────
 // Reads from the application row, the current pricing quote (computed OUTPUTS —
 // initial advance, effective purchase, caps, actual leverage), and the vesting
@@ -53,6 +78,29 @@ function buildOurValues(app, quote, llcName) {
   const sizing = q.sizing || {};
   const caps = (q.guidelines && q.guidelines.caps) || {};
   const nz = (v) => (v === null || v === undefined || v === '' ? undefined : v);
+  // ROOT CAUSE FIX (owner-reported 2026-07-26: "our system says 0.67425 and
+  // Encompass says 67.425"). The frozen pricing engines express every leverage
+  // ratio as a FRACTION (ltcPct = totalLoan / ltcBasis; caps are multipliers used
+  // as `c.maxARLTV * arv`), while Encompass stores the same figure as a PERCENT.
+  // We were shipping the raw fraction into a percent-vs-percent compare, so EVERY
+  // leverage field (actual ARV-LTV, actual LTC, actual/max initial LTV, max ARV,
+  // max LTC) mismatched on every file. The engines are FROZEN — their math is
+  // untouched — so the conversion belongs here, at the comparison boundary, where
+  // we translate our vocabulary into Encompass's. `pctOf` is deliberately
+  // scale-TOLERANT: a value ≤ 1.5 is a fraction (a real leverage ratio is never
+  // 1.5% — the smallest meaningful LTC/LTV/ARV is double digits), anything larger
+  // is already a percent. That keeps it correct for engine fractions AND for any
+  // value that already arrives as a percent (e.g. applications.ltv, which
+  // product-registration stores as acqLtvPct*100), so the two can never diverge again.
+  const pctOf = (v) => {
+    const n = Number(v);
+    if (v === null || v === undefined || v === '' || !Number.isFinite(n)) return undefined;
+    if (Math.abs(n) > 1.5) return n;                       // already a percent
+    // ×100 in binary floating point leaves noise (0.921034*100 = 92.10340000000001).
+    // Round to 4 decimals — far finer than the 0.01-point compare tolerance, so it
+    // never masks a real difference, but it keeps the value clean for display.
+    return Math.round(n * 100 * 1e4) / 1e4;
+  };
   const claimedExp = (Number(a.requested_exp_flips) || 0) + (Number(a.requested_exp_holds) || 0) + (Number(a.requested_exp_ground) || 0);
 
   return {
@@ -61,7 +109,10 @@ function buildOurValues(app, quote, llcName) {
     property_type: nz(a.property_type),
     units: nz(a.units),
     deal_type: deriveDealType(a.program, a.loan_type),
-    exit_plan: undefined, // no column — reference-only
+    // Exit plan is DERIVED and now genuinely matched (owner-directed 2026-07-26):
+    // a fix & flip exits by SALE; a fix & hold / DSCR rental exits by RENTAL/refi.
+    // Anything we can't read confidently stays undefined → "no data", never a guess.
+    exit_plan: exitPlanFor(deriveDealType(a.program, a.loan_type)),
     loan_to_be_vested: a.llc_id ? 'Entity' : (a.borrower_id ? 'Individual' : undefined),
     vesting_llc: nz(llcName),
 
@@ -74,7 +125,16 @@ function buildOurValues(app, quote, llcName) {
 
     // purchase / assignment / cost (money)
     purchase_price: nz(a.purchase_price),
-    effective_purchase: nz(q.assignment && q.assignment.recognizedPrice),
+    // Owner-directed 2026-07-26: the effective (recognized) purchase price EQUALS the
+    // purchase price whenever there is no assignment haircut — a straight purchase,
+    // or an assignment whose fee is within the financeable cap. Encompass always
+    // carries a value in its effective-purchase field, so falling back to the
+    // purchase price makes those files a real MATCH instead of "no data to compare".
+    // The quote's recognizedPrice still WINS whenever it exists (that is the capped
+    // basis all frozen sizing math uses) — this only fills the no-assignment case.
+    effective_purchase: nz(q.assignment && q.assignment.recognizedPrice) !== undefined
+      ? q.assignment.recognizedPrice
+      : nz(a.purchase_price),
     contract_price: nz(a.underlying_contract_price) !== undefined ? a.underlying_contract_price : nz(a.purchase_price),
     assignment_fee: nz(a.assignment_fee),
     financed_interest_reserve: nz(sizing.financedReserve),
@@ -83,14 +143,14 @@ function buildOurValues(app, quote, llcName) {
     // valuation
     as_is_value: nz(a.as_is_value),
     arv: nz(a.arv),
-    actual_arv_ltv: nz(sizing.arvPct),
+    actual_arv_ltv: pctOf(sizing.arvPct),
 
-    // sizing / leverage (percent)
-    actual_ltc: nz(sizing.ltcPct),
-    actual_initial_ltv: nz(a.ltv) !== undefined ? a.ltv : nz(sizing.acqLtvPct),
-    max_initial_ltv: nz(caps.maxAcqLtv),
-    max_arv_ltv: nz(caps.maxArvLtv),
-    max_ltc: nz(caps.maxLtc),
+    // sizing / leverage (percent — see pctOf: engine fractions → Encompass percents)
+    actual_ltc: pctOf(sizing.ltcPct),
+    actual_initial_ltv: nz(a.ltv) !== undefined ? pctOf(a.ltv) : pctOf(sizing.acqLtvPct),
+    max_initial_ltv: pctOf(caps.maxAcqLtv),
+    max_arv_ltv: pctOf(caps.maxArvLtv),
+    max_ltc: pctOf(caps.maxLtc),
 
     // rate / origination / term
     note_rate: nz(a.rate_pct),
@@ -101,7 +161,7 @@ function buildOurValues(app, quote, llcName) {
 
     // experience / rehab-type / accrual
     total_experience_deals: claimedExp > 0 ? claimedExp : undefined,
-    rehab_type: nz(a.rehab_type),
+    rehab_type: rehabTypeFor(a),
     accrual_type: nz(a.accrual_type),
   };
 }
@@ -217,13 +277,28 @@ function summarize(fields) {
 // (added next). These rows are compare-only — we NEVER overwrite borrower PII
 // from a read — and BLOCK-gated (must match to pass). Pure — no DB.
 function _digits(v) { return String(v == null ? '' : v).replace(/\D/g, ''); }
+// A ZIP+4 is the SAME zip as its 5-digit form (owner-reported 2026-07-26: Encompass
+// carries 11230-1234 where we carry 11230 — "technically the same address"). Compare
+// on the 5-digit base so a formatting difference is never a mismatch; the extra 4
+// are a postal routing detail, not a different place.
+function _zip5(v) {
+  const d = String(v == null ? '' : v).replace(/\D/g, '');
+  return d ? d.slice(0, 5) : '';
+}
 function _addrStr(a) {
   if (a == null) return '';
   if (typeof a === 'string') return a.trim();
   if (typeof a !== 'object') return String(a);
+  // Prefer a structured build; fall back to a one-line/formatted string when the
+  // object only carries that (an Encompass/ClickUp formatted address), so a
+  // one-line-only side is compared instead of reading as "no data".
   const street = a.street || a.line1 || a.address1 || a.streetAddress || a.addressStreetLine1 || a.address || '';
-  const parts = [street, a.city, a.state, (a.zip || a.postalCode || a.zipCode || a.postal_code)];
-  return parts.map((x) => (x == null ? '' : String(x).trim())).filter((x) => x !== '').join(' ');
+  const zip = _zip5(a.zip || a.postalCode || a.zipCode || a.postal_code);
+  const parts = [street, a.city, a.state, zip];
+  const built = parts.map((x) => (x == null ? '' : String(x).trim())).filter((x) => x !== '').join(' ');
+  if (built) return built;
+  const oneLine = a.oneLine || a.formatted_address || a.formattedAddress || a.fullAddress || a.display || '';
+  return String(oneLine || '').trim();
 }
 function _named(p) { return !!(p && ((p.firstName && String(p.firstName).trim()) || (p.lastName && String(p.lastName).trim()))); }
 function compareIdentity(row, loan) {
@@ -244,10 +319,13 @@ function compareIdentity(row, loan) {
   const push = (key, label, compare, ours, theirs) => {
     const norm = (v) => {
       if (v == null || v === '') return null;
-      if (compare === 'name') return N.normName(v);
+      // Address joins `name` on the punctuation-insensitive normalizer so
+      // "12 Main St, Brooklyn NY" ≡ "12 Main St Brooklyn NY" (commas/periods are
+      // formatting, not a different address) — same spirit as the ZIP+4 fix.
+      if (compare === 'name' || compare === 'address') return N.normName(v);
       if (compare === 'date') return N.normDate(v);
       if (compare === 'phone') { const d = _digits(v); return d === '' ? null : d.slice(-10); }
-      return N.normText(v); // email / address / text
+      return N.normText(v); // email / text
     };
     const oursNorm = norm(ours);
     const theirsNorm = norm(theirs);
