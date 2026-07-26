@@ -764,6 +764,10 @@ export const api = {
   clickupRepush:    (appId) => req('POST', `/api/admin/clickup/file/${appId}/repush`),
   clickupRepull:    (appId) => req('POST', `/api/admin/clickup/file/${appId}/repull`),
   clickupSyncFolder:(folderId, createFiles) => req('POST', '/api/admin/clickup/sync-folder', { folderId, createFiles }),
+  // The borrower-profile sweep — reads every ClickUp card in every status to
+  // build PEOPLE (profile, entities, track record, officer link), never files.
+  clickupProfileSweep:      () => req('GET', '/api/admin/clickup/profile-sweep'),
+  clickupStartProfileSweep: (opts) => req('POST', '/api/admin/clickup/profile-sweep', opts || {}),
   clickupAudit:     () => req('GET', '/api/admin/clickup/audit'),
   clickupManualReview:        () => req('GET', '/api/admin/clickup/manual-review'),
   clickupResolveManualReview: (appId, action) => req('POST', `/api/admin/clickup/manual-review/${appId}/resolve`, { action }),
@@ -828,6 +832,13 @@ export const api = {
   staffEditFileContact:(linkId, b) => req('PATCH', `/api/staff/file-contacts/${linkId}`, b),
   staffDelFileContact: (linkId) => req('DELETE', `/api/staff/file-contacts/${linkId}`),
   staffBorrowerContacts: (borrowerId) => req('GET', `/api/staff/borrowers/${borrowerId}/contacts`),
+  // Duplicate borrower profiles: find, compare side by side, merge into one
+  // (owner-directed 2026-07-26). `choices` names the winning side for every field
+  // the two disagree on — the server REFUSES (409) a merge with any left undecided.
+  staffBorrowerDuplicates: (id) => req('GET', `/api/staff/borrowers/${id}/duplicates`),
+  staffBorrowerCompare:    (id, otherId) => req('GET', `/api/staff/borrowers/${id}/compare/${otherId}`),
+  staffBorrowerMerge:      (id, body) => req('POST', `/api/staff/borrowers/${id}/merge`, body),
+  staffBorrowerMerges:     (id) => req('GET', `/api/staff/borrowers/${id}/merges`),
   staffAppraisalCard:(appId) => req('GET', `/api/staff/applications/${appId}/appraisal-card`),
   staffSaveAppraisalCard:(appId, b) => req('POST', `/api/staff/applications/${appId}/appraisal-card`, b),
 

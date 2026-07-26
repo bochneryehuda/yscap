@@ -143,6 +143,14 @@ async function computeRecheck(row, opts) {
   let borrowerId = row.borrower_id || null;
   let taskId = row.task_id || null;
   const appId = row.application_id || null;
+  // An ENCOMPASS row (db/328) has a namespaced `encompass:<loanGuid>` in
+  // task_id, not a ClickUp task. "Look again" here would mean re-reading the
+  // weekly Encompass mirror, which this module has no business doing — and
+  // handing that string to `clickup.getTask` would fail every time. The next
+  // enrichment pass is the thing that re-checks it; until then a human decides.
+  if (row.source === 'encompass') {
+    return { outcome: 'unsupported', reason: 'encompass_source' };
+  }
   if (appId && (!taskId || !borrowerId)) {
     const a = (await db.query(`SELECT borrower_id, clickup_pipeline_task_id FROM applications WHERE id=$1`, [appId])).rows[0];
     if (a) { borrowerId = borrowerId || a.borrower_id; taskId = taskId || a.clickup_pipeline_task_id; }

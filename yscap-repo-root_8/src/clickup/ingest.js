@@ -303,6 +303,71 @@ async function healBorrowerFields(borrowerId, b, taskId) {
         [borrowerId, ssnStore.encrypted, ssnStore.last4, identity.ssnHash(b.ssn, cfg.ssnMatchKey)]);
     }
   } catch (e) { console.warn('[ingest] ssn fill skipped:', e.message); }
+
+  // ── A RENAMED CARD RENAMES THE PERSON (owner-reported 2026-07-26) ──────────
+  // "Somebody created a file and named the borrower with the nickname he calls
+  // him — AVI — which created a borrower profile 'Avi'. Then he renamed the task
+  // to the correct name, Abraham, and the profile did not update."
+  //
+  // Root cause: the heal below is strictly FILL-ONLY on the name — it writes a
+  // name only when the stored one is blank or a placeholder. That is right for
+  // an ordinary re-sync (a real stored name must not be clobbered by a stale
+  // card), but it means the FIRST value ever seen is frozen forever, so a
+  // nickname can never be corrected from ClickUp.
+  //
+  // The fix mirrors the DOB human-edit-wins rule exactly: the task's stored
+  // SNAPSHOT is the evidence. If ClickUp's name CHANGED since we last read this
+  // card, a human deliberately renamed it at the source, and that correction
+  // wins. Guarded so it can only ever fix a name, never swap in a stranger:
+  //   • the new name must be real (never a placeholder / "Unknown")
+  //   • a same-SURNAME change (Avi → Abraham Klein) is the nickname-correction
+  //     case → ADOPT, audited
+  //   • a WHOLE-name change is possibly a different human being → never guessed;
+  //     it queues the normal two-sided `first_name` sync review so a person
+  //     decides (that review type is already fully resolvable both ways).
+  // Our own pushes can't trip this: we push the name we already store, so the
+  // stored name equals the new one and nothing fires.
+  try {
+    const first = name(b.first_name), last = name(b.last_name);
+    const newFull = [first, last].filter(Boolean).join(' ').trim();
+    if (taskId && newFull && first) {
+      const cur = (await db.query(`SELECT first_name, last_name FROM borrowers WHERE id=$1`, [borrowerId])).rows[0] || {};
+      const curFull = [cur.first_name, cur.last_name].filter(Boolean).join(' ').trim();
+      const norm = (v) => String(v || '').trim().toLowerCase().replace(/\s+/g, ' ');
+      const isPlaceholder = ['', 'unknown', 'co-borrower', 'unknown unknown'].includes(norm(curFull));
+      if (curFull && !isPlaceholder && norm(curFull) !== norm(newFull)) {
+        const prev = (await db.query(`SELECT snapshot FROM clickup_task_index WHERE task_id=$1`, [taskId])).rows[0];
+        const sb = prev && prev.snapshot && prev.snapshot.borrower ? prev.snapshot.borrower : null;
+        const prevFull = sb ? [sb.first_name, sb.last_name].filter(Boolean).join(' ').trim() : null;
+        // A real rename AT THE SOURCE: the card said something else last time.
+        if (prevFull && norm(prevFull) !== norm(newFull)) {
+          const sameSurname = last && cur.last_name && norm(last) === norm(cur.last_name);
+          if (sameSurname) {
+            await db.query(
+              `UPDATE borrowers SET first_name=$2, last_name=$3, updated_at=now() WHERE id=$1`,
+              [borrowerId, first, last]);
+            await db.query(
+              `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+               VALUES ('system',NULL,'clickup_name_edited_at_source','borrower',$1,$2)`,
+              [borrowerId, JSON.stringify({ taskId, from: curFull, to: newFull, was: prevFull,
+                why: 'the ClickUp card was renamed at the source and the surname still matches — a corrected first name (nickname → real name)' })]).catch(() => {});
+            await review.closeStaleReviews({ borrowerId, fieldKey: 'first_name',
+              note: `auto-closed — ClickUp was renamed to "${newFull}" and PILOT adopted it` }).catch(() => {});
+          } else {
+            // Both names changed — that may be a different person on the card.
+            // Never guessed: a human picks the winner.
+            await review.queueReview({
+              borrowerId, taskId, direction: 'inbound', fieldKey: 'first_name',
+              reason: 'clickup_name_changed_at_source',
+              clickupValue: newFull, portalValue: curFull,
+              currentValue: curFull, proposedValue: newFull,
+            }).catch(() => {});
+          }
+        }
+      }
+    }
+  } catch (e) { console.warn('[ingest] name-change check skipped:', e.message); }
+
   try {
     await db.query(
       `UPDATE borrowers SET
@@ -1061,6 +1126,16 @@ async function ingestTask(task, options = {}, opts = {}) {
   // the resolved officer onto the profile itself (FILL-ONLY — an officer a human
   // already set is never stolen) makes the person theirs from the first card,
   // whatever the program. Best-effort: this can never break the sync.
+  //
+  // …and the relationship is MANY-TO-MANY (owner-directed 2026-07-26, follow-up):
+  // "he should see every borrower where he closed ANY file in the past." A single
+  // `primary_officer_id` cannot express that — it is fill-only (it must be;
+  // stealing an existing relationship would be worse), so whoever got there first
+  // owned the person and every OTHER officer they did business with stayed locked
+  // out. `borrower_officers` (db/327) records EVERY (borrower, officer) pair this
+  // sync sees, from EVERY card in EVERY status, and is what the staff borrower
+  // scope actually reads. `primary_officer_id` keeps its old meaning: the
+  // borrower's PRIMARY/CRM owner.
   const taskOfficer = await resolveStaffByEmail(loanOfficerEmail);
   if (taskOfficer.id) {
     for (const bid of [borrowerId, coBorrowerId]) {
@@ -1070,6 +1145,20 @@ async function ingestTask(task, options = {}, opts = {}) {
           `UPDATE borrowers SET primary_officer_id=$2, updated_at=now()
             WHERE id=$1 AND primary_officer_id IS NULL`, [bid, taskOfficer.id]);
       } catch (_) { /* best-effort */ }
+      try {
+        // Establish the relationship only — `deals` is NOT incremented here. A
+        // per-task counter cannot stay correct across re-syncs (the same card is
+        // ingested many times), so the closed-deal count is RECOMPUTED from the
+        // task index at the end of each profile-sweep cycle (`recountDeals`).
+        // Nothing gates access on it; it is display only.
+        await db.query(
+          `INSERT INTO borrower_officers (borrower_id, staff_id, source, first_task_id, last_seen)
+           VALUES ($1,$2,'clickup',$3,now())
+           ON CONFLICT (borrower_id, staff_id) DO UPDATE
+             SET last_seen = now(),
+                 first_task_id = COALESCE(borrower_officers.first_task_id, EXCLUDED.first_task_id)`,
+          [bid, taskOfficer.id, task.id]);
+      } catch (_) { /* best-effort — the relationship is additive, never critical */ }
     }
   }
 

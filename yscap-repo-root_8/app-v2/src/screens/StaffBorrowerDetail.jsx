@@ -43,7 +43,7 @@ const statusPill = (s) => {
   return <span className={`pill ${cls}`}>{(s || '—').replace(/_/g, ' ')}</span>;
 };
 
-const TABS = ['Overview', 'Files', 'Entities', 'Track record', 'Conditions', 'Tasks', 'Documents', 'Activity', 'Notes'];
+const TABS = ['Overview', 'Files', 'Entities', 'Track record', 'Conditions', 'Tasks', 'Documents', 'Duplicates', 'Activity', 'Notes'];
 
 export default function StaffBorrowerDetail() {
   const { id } = useParams();
@@ -74,6 +74,7 @@ export default function StaffBorrowerDetail() {
       {tab === 'Conditions' && <Conditions id={id} />}
       {tab === 'Tasks' && <Tasks id={id} />}
       {tab === 'Documents' && <Documents id={id} />}
+      {tab === 'Duplicates' && <Duplicates id={id} name={name} onMerged={load} />}
       {tab === 'Activity' && <Activity id={id} />}
       {tab === 'Notes' && <Notes id={id} />}
     </>
@@ -171,6 +172,7 @@ function Overview({ b, onChanged }) {
   // an error — the save offers to keep BOTH profiles rather than dead-ending.
   const [shareOffer, setShareOffer] = useState(false);
   const start = () => setF({
+    firstName: b.first_name || '', lastName: b.last_name || '',
     email: b.email || '', cellPhone: b.cell_phone || '', contactType: b.contact_type || '',
     maritalStatus: b.marital_status || '', citizenship: b.citizenship || '',
     dob: dayInputValue(b.date_of_birth) || '',
@@ -185,6 +187,11 @@ function Overview({ b, onChanged }) {
     setBusy(true); setErr('');
     try {
       await api.staffUpdateBorrower(b.id, {
+        // Send the NAME only when it actually changed — a correction here is a
+        // deliberate human decision, so it also goes out to every ClickUp card
+        // (otherwise the next sync would read the old name straight back).
+        ...(f.firstName !== (b.first_name || '') ? { firstName: f.firstName } : {}),
+        ...(f.lastName !== (b.last_name || '') ? { lastName: f.lastName } : {}),
         email: f.email, cellPhone: f.cellPhone, contactType: f.contactType,
         maritalStatus: f.maritalStatus, citizenship: f.citizenship,
         // Send the DOB only when it actually changed — setting it applies to
@@ -219,6 +226,14 @@ function Overview({ b, onChanged }) {
         <h3 style={{ marginTop: 0 }}>Edit contact & CRM details</h3>
         {err && <div role="alert" className="notice err">{err}</div>}
         <div className="ts-inputs">
+          {/* The legal name is correctable here (owner-directed 2026-07-26): a file
+              opened under a nickname created the profile under that nickname, and
+              there was nowhere to fix it. Saving pushes it to ClickUp too. */}
+          <label><span>First name</span><input className="input" value={f.firstName}
+            onChange={e => setF({ ...f, firstName: e.target.value })}
+            title="Their real legal first name. Saving updates the profile and every linked ClickUp card." /></label>
+          <label><span>Last name</span><input className="input" value={f.lastName}
+            onChange={e => setF({ ...f, lastName: e.target.value })} /></label>
           <label><span>Email</span><EmailInput value={f.email} onChange={v => setF({ ...f, email: v })} /></label>
           <label><span>Cell phone</span><PhoneInput value={f.cellPhone} onChange={v => setF({ ...f, cellPhone: v })} /></label>
           <label><span>Contact type</span>
@@ -670,6 +685,220 @@ function TrackRecord({ id }) {
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+/* ---------------- duplicate profiles: compare + merge ---------------- */
+// The sync deliberately OVER-SPLITS (an email it can't corroborate creates a
+// separate profile rather than risk hanging one person's loans and PII on
+// another), so genuine duplicates happen. This is where they are put back
+// together: pick a candidate, see the two side by side, choose a winner for every
+// field they disagree on, and merge. Emails, phones, entities and track records
+// are never a choice — they ADD UP.
+//
+// Merging is the most destructive thing here: it re-points every file, document,
+// condition and message and then removes a profile. So it takes two deliberate
+// clicks, the survivor is always THIS profile (never a surprise), and the whole
+// losing record is snapshotted server-side before anything moves.
+const CONF = { certain: { cls: 'ok', t: 'Certain' }, likely: { cls: '', t: 'Likely' }, possible: { cls: '', t: 'Possible' } };
+
+function Duplicates({ id, name, onMerged }) {
+  const [rows, err, reload] = useLoad(() => api.staffBorrowerDuplicates(id), [id]);
+  const [history] = useLoad(() => api.staffBorrowerMerges(id), [id]);
+  const [openId, setOpenId] = useState(null);
+
+  if (err) return <div className="notice err">{err}</div>;
+  if (!rows) return <Empty t="Looking for duplicate profiles…" />;
+
+  return (
+    <div>
+      <div className="panel" style={{ marginBottom: 12 }}>
+        <h3 style={{ marginTop: 0 }}>Possible duplicates of {name}</h3>
+        {!rows.length ? (
+          <p className="muted small" style={{ margin: 0 }}>
+            No other profile shares this person’s social, email, phone, or name and date of birth.
+          </p>
+        ) : (
+          <>
+            <p className="muted small" style={{ marginTop: 0 }}>
+              Merging keeps <strong>this</strong> profile and absorbs the other one into it. Every
+              loan file, document and condition follows the person; emails, phone numbers, entities
+              and track-record properties add up. Nothing is thrown away — the absorbed profile is
+              saved in full first.
+            </p>
+            <div style={{ overflowX: 'auto' }}>
+              <table className="tbl" style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead><tr style={{ textAlign: 'left' }}>
+                  {['Name', 'Email', 'Phone', 'SSN', 'Files', 'Why we think so', ''].map(h => <th key={h} style={{ padding: '10px 12px' }}>{h}</th>)}
+                </tr></thead>
+                <tbody>
+                  {rows.map(d => (
+                    <tr key={d.id} style={{ borderTop: '1px solid var(--line, rgba(127,169,176,.2))' }}>
+                      <td style={{ padding: '10px 12px' }}>
+                        <Link to={`/internal/borrowers/${d.id}`}>{`${d.first_name || ''} ${d.last_name || ''}`.trim() || '(no name)'}</Link>
+                        {' '}<span className={`pill ${CONF[d.confidence]?.cls || ''}`}>{CONF[d.confidence]?.t || d.confidence}</span>
+                      </td>
+                      <td style={{ padding: '10px 12px' }} className="small">{d.email || '—'}</td>
+                      <td style={{ padding: '10px 12px' }} className="small">{d.cell_phone || '—'}</td>
+                      <td style={{ padding: '10px 12px' }} className="small">{d.ssn_last4 ? `•••-••-${d.ssn_last4}` : '—'}</td>
+                      <td style={{ padding: '10px 12px' }}>{d.files}</td>
+                      <td style={{ padding: '10px 12px' }} className="small">
+                        {d.allowedShare
+                          // Somebody already decided these are two real people who
+                          // share a mailbox (husband and wife). Never present that
+                          // as a duplicate — say so plainly.
+                          ? <span className="muted">Confirmed as a different person sharing an email — do not merge</span>
+                          : (d.why || []).join(' · ')}
+                      </td>
+                      <td style={{ padding: '10px 12px' }}>
+                        <button className="btn ghost small" onClick={() => setOpenId(openId === d.id ? null : d.id)}>
+                          {openId === d.id ? 'Close' : 'Compare'}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </div>
+
+      {openId && (
+        <CompareMerge
+          key={openId} id={id} otherId={openId}
+          onDone={() => { setOpenId(null); reload(); onMerged && onMerged(); }}
+          onCancel={() => setOpenId(null)}
+        />
+      )}
+
+      {!!(history && history.length) && (
+        <div className="panel" style={{ marginTop: 12 }}>
+          <h3 style={{ marginTop: 0 }}>Already merged into this profile</h3>
+          {history.map(h => (
+            <div key={h.id} className="small" style={{ padding: '6px 0', borderTop: '1px solid var(--line, rgba(127,169,176,.2))' }}>
+              <strong>{h.merged_name || '(no name)'}</strong>{h.merged_email ? ` · ${h.merged_email}` : ''}
+              {' — '}<span className="muted">{fmtDateTime(h.created_at)}{h.merged_by_name ? ` by ${h.merged_by_name}` : ''}</span>
+              <div className="muted" style={{ marginTop: 2 }}>
+                {Object.entries(h.moved || {}).filter(([, n]) => n).map(([t, n]) => `${n} ${t.replace(/_/g, ' ')}`).join(' · ') || 'nothing had to move'}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CompareMerge({ id, otherId, onDone, onCancel }) {
+  const [cmp, err, reload] = useLoad(() => api.staffBorrowerCompare(id, otherId), [id, otherId]);
+  const [choices, setChoices] = useState({});
+  const [confirm, setConfirm] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [busy, setBusy] = useState(false);
+  // A merge is not idempotent — a double-click must not run it twice, and
+  // `disabled={busy}` is state that only lands on the NEXT render.
+  const gate = useSubmitGate();
+
+  if (err) return <div className="notice err">{err}</div>;
+  if (!cmp) return <div className="panel"><Empty t="Loading both profiles…" /></div>;
+
+  const conflicts = cmp.fields.filter(f => f.conflict);
+  const undecided = conflicts.filter(f => !choices[f.key]);
+  const gains = cmp.fields.filter(f => f.onlyMerged);
+  const show = (v) => (v == null || v === '' ? <span className="muted">— empty —</span>
+    : (typeof v === 'object' ? (v.oneLine || [v.line1, v.city, v.state].filter(Boolean).join(', ') || JSON.stringify(v)) : String(v)));
+
+  async function doMerge() {
+    if (!gate.enter()) return;
+    setMsg(''); setBusy(true);
+    try {
+      const out = await api.staffBorrowerMerge(id, { mergeId: otherId, choices });
+      const moved = Object.entries(out.moved || {}).filter(([, n]) => n)
+        .map(([t, n]) => `${n} ${t.replace(/_/g, ' ')}`).join(', ');
+      setMsg(`Merged. ${moved ? `Moved ${moved}.` : 'Nothing needed to move.'}`);
+      setTimeout(onDone, 1200);
+    } catch (e) {
+      // The server refuses a merge with an undecided conflict — surface exactly
+      // which fields it is still waiting on rather than a generic failure.
+      setMsg(e.message || 'Could not merge those profiles — nothing was changed.');
+      setConfirm(false); reload();
+    } finally { setBusy(false); gate.leave(); }
+  }
+
+  return (
+    <div className="panel" style={{ marginBottom: 12 }}>
+      <h3 style={{ marginTop: 0 }}>Compare and merge</h3>
+      <div className="row small" style={{ gap: 18, marginBottom: 10 }}>
+        <div><strong>Keeping:</strong> {cmp.survivor.name || '(no name)'} — {cmp.survivor.files} files, {cmp.survivor.llcs} entities, {cmp.survivor.trackRecords} properties, {cmp.survivor.documents} documents{cmp.survivor.hasLogin ? ', has a portal login' : ''}</div>
+        <div><strong>Absorbing:</strong> {cmp.merged.name || '(no name)'} — {cmp.merged.files} files, {cmp.merged.llcs} entities, {cmp.merged.trackRecords} properties, {cmp.merged.documents} documents{cmp.merged.hasLogin ? ', has a portal login' : ''}</div>
+      </div>
+
+      {!conflicts.length ? (
+        <p className="notice ok small">These two profiles do not contradict each other anywhere — nothing to decide.</p>
+      ) : (
+        <>
+          <p className="small" style={{ marginBottom: 6 }}>
+            <strong>{conflicts.length} field{conflicts.length === 1 ? '' : 's'} disagree.</strong> Choose which value the
+            one profile should keep. (The value you don’t pick is not lost for emails and phones —
+            both are kept as extra contacts.)
+          </p>
+          <div style={{ overflowX: 'auto' }}>
+            <table className="tbl" style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead><tr style={{ textAlign: 'left' }}>
+                {['Field', 'This profile', 'The other profile'].map(h => <th key={h} style={{ padding: '8px 12px' }}>{h}</th>)}
+              </tr></thead>
+              <tbody>
+                {conflicts.map(f => (
+                  <tr key={f.key} style={{ borderTop: '1px solid var(--line, rgba(127,169,176,.2))' }}>
+                    <td style={{ padding: '8px 12px' }}>{f.label}</td>
+                    {['survivor', 'merged'].map(side => (
+                      <td key={side} style={{ padding: '8px 12px' }}>
+                        <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer' }}>
+                          <input type="radio" name={`c-${f.key}`} checked={choices[f.key] === side}
+                            onChange={() => setChoices(c => ({ ...c, [f.key]: side }))} />
+                          <span>{show(f[side])}</span>
+                        </label>
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {!!gains.length && (
+        <p className="muted small" style={{ marginTop: 10 }}>
+          Filled in automatically from the other profile (this one is empty there):{' '}
+          {gains.map(f => f.label).join(', ')}.
+        </p>
+      )}
+
+      {msg && <div className={`notice ${/^Merged/.test(msg) ? 'ok' : 'err'} small`} style={{ marginTop: 10 }}>{msg}</div>}
+
+      <div className="row" style={{ gap: 8, marginTop: 12, alignItems: 'center' }}>
+        {!confirm ? (
+          <button className="btn" disabled={!!undecided.length} onClick={() => { setMsg(''); setConfirm(true); }}>
+            Merge into this profile
+          </button>
+        ) : (
+          <>
+            <span className="small">
+              This removes <strong>{cmp.merged.name || 'the other profile'}</strong> and moves its{' '}
+              {cmp.merged.files} file{cmp.merged.files === 1 ? '' : 's'} onto this one. It cannot be undone from the app.
+            </span>
+            <button className="btn danger" disabled={busy} onClick={doMerge}>{busy ? 'Merging…' : 'Yes, merge them'}</button>
+            <button className="btn ghost" disabled={busy} onClick={() => setConfirm(false)}>Back</button>
+          </>
+        )}
+        {!confirm && <button className="btn ghost" onClick={onCancel}>Cancel</button>}
+        {!!undecided.length && (
+          <span className="muted small">Still to decide: {undecided.map(f => f.label).join(', ')}</span>
+        )}
+      </div>
     </div>
   );
 }

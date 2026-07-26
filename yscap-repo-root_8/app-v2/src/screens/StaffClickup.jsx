@@ -53,16 +53,18 @@ export default function StaffClickup() {
   const [msg, setMsg] = useState('');
   const [appId, setAppId] = useState('');
   const [review, setReview] = useState(null);     // manual-review queue rows
+  const [sweep, setSweep] = useState(null);       // borrower-profile sweep progress
 
   const flash = (t) => { setMsg(t); setTimeout(() => setMsg(''), 4000); };
   const loadHealth = () => api.clickupHealth().then(setHealth).catch(e => setErr(e.message));
   const loadActivity = () => api.clickupActivity().then(r => setActivity(r.rows || [])).catch(() => {});
   const loadReview = () => api.clickupManualReview().then(r => setReview(r.rows || [])).catch(() => {});
+  const loadSweep = () => api.clickupProfileSweep().then(setSweep).catch(() => {});
 
   useEffect(() => {
     if (!isAdmin) return;
-    loadHealth(); loadActivity(); loadReview();
-    const t = setInterval(() => { loadHealth(); loadActivity(); loadReview(); }, 20000);
+    loadHealth(); loadActivity(); loadReview(); loadSweep();
+    const t = setInterval(() => { loadHealth(); loadActivity(); loadReview(); loadSweep(); }, 20000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAdmin]);
@@ -174,6 +176,37 @@ export default function StaffClickup() {
                 </tbody>
               </table>
             </div>}
+      </div>
+
+      {/* Borrower-profile sweep — the "who are my borrowers" import.
+          Separate from the backfill below on purpose: this one NEVER creates a
+          loan file, so it is always safe to run. */}
+      <div className="panel pad" style={{ marginTop: 14 }}>
+        <h3 style={{ marginTop: 0, color: '#141B22' }}>Borrower profiles from ClickUp</h3>
+        <p className="small" style={{ color: '#4B585C' }}>
+          Reads <b>every card in ClickUp, in every status</b> — including deals that closed long ago — and builds the
+          PERSON behind each one: name, email, phone, Social Security number, date of birth, home address, their
+          companies (LLCs), and the property from every closed deal into their track record. Each borrower is linked to
+          every loan officer they have done business with, so an officer sees all of their past clients — not only the
+          ones with a fix-and-flip file. <b>It never creates a loan file.</b>
+        </p>
+        <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <button className="btn primary" disabled={busy === 'sweep'}
+            onClick={async () => {
+              if (!window.confirm('Read every ClickUp card again and refresh every borrower profile? This adds people and details — it never creates a loan file and never changes anything in ClickUp.')) return;
+              setBusy('sweep'); setErr('');
+              try { await api.clickupStartProfileSweep({}); flash('Started — it works through ClickUp in the background.'); loadSweep(); }
+              catch (e) { setErr(e.message || 'Could not start'); }
+              finally { setBusy(''); }
+            }}>{busy === 'sweep' ? 'Starting…' : 'Re-import all borrower profiles'}</button>
+          <span className="small" style={{ color: '#4B585C' }}>
+            {!sweep || !sweep.started ? 'Has not run yet — it starts on its own shortly after the server boots.'
+              : sweep.done
+                ? `Last full pass finished ${sweep.finishedAt ? new Date(sweep.finishedAt).toLocaleString() : ''} — ${sweep.tasks} cards read, ${sweep.profiles} profiles built or refreshed.`
+                : `Working… pass ${sweep.cycle}, section ${sweep.folder + 1} of ${sweep.ofFolders || '?'} — ${sweep.tasks} cards read so far, ${sweep.profiles} profiles built or refreshed.`}
+            {sweep && sweep.errors ? ` (${sweep.errors} cards could not be read.)` : ''}
+          </span>
+        </div>
       </div>
 
       {/* backfill / dry-run */}

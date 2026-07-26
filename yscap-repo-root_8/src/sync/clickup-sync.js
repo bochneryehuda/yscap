@@ -1008,6 +1008,10 @@ async function resolveOrphans(orphans, liveTaskIds) {
 // paces the ClickUp calls.
 const RECON_PROGRAMS_LIMIT = Math.max(1, parseInt(process.env.CLICKUP_RECONCILE_PROGRAMS_LIMIT || '150', 10) || 150);
 const RECON_PROGRAMS_INTERVAL_SEC = Math.max(0, parseInt(process.env.CLICKUP_RECONCILE_PROGRAMS_INTERVAL_SEC || '900', 10) || 900); // 0 disables the periodic tick
+// How often the borrower-profile sweep takes its next bounded slice. Frequent
+// enough to work through the whole workspace in hours, slow enough to stay a
+// background task behind the live reconcile/webhook loops.
+const PROFILE_SWEEP_INTERVAL_SEC = Math.max(30, parseInt(process.env.CLICKUP_PROFILE_SWEEP_INTERVAL_SEC || '120', 10) || 120);
 
 /** Orphan-resolution safety breaker (preserves the prior inline semantics): a
  *  large 404 fraction — or NOTHING resolving live — is almost certainly an
@@ -1469,6 +1473,22 @@ function start() {
   if (RECON_PROGRAMS_INTERVAL_SEC > 0) {
     setInterval(() => { reconcileLinkedProgramsOnce().catch((e) => console.error('[clickup-sync] reconcile-programs (periodic)', e.message)); }, RECON_PROGRAMS_INTERVAL_SEC * 1000).unref();
   }
+  // BORROWER-PROFILE SWEEP (owner-directed 2026-07-26). The reconcile above is
+  // windowed on `date_updated`, so a deal that CLOSED months ago is never read
+  // again — which is why an officer's DSCR clients were missing from his
+  // borrower list entirely. This third loop walks EVERY card in EVERY status
+  // with no date window, a few pages at a time, resuming from a durable cursor,
+  // and cycles again a week after it finishes. Inbound + profile-only: it can
+  // never create a loan file, write to ClickUp, or delete anything.
+  // Off-switch: CLICKUP_PROFILE_SWEEP_DISABLED=1.
+  {
+    const profileSweep = require('./profile-sweep');
+    const sweepTick = () => profileSweep.sweepOnce()
+      .then((r) => { if (r && r.tasks && !r.idle && !r.skipped) console.log('[profile-sweep]', JSON.stringify(r)); })
+      .catch((e) => console.error('[clickup-sync] profile-sweep', e && e.message));
+    setTimeout(sweepTick, 90 * 1000).unref();                                   // let boot settle first
+    setInterval(sweepTick, PROFILE_SWEEP_INTERVAL_SEC * 1000).unref();
+  }
 
   // Stage 2 — outbound loops (portal → ClickUp writes) are gated separately so
   // inbound/backfill can run and be validated first, before the portal is
@@ -1488,6 +1508,7 @@ function start() {
 }
 
 module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, redriveInboxErrorsOnce, ingestOne, reconcileOnce, reconcileLinkedProgramsOnce, recoverUnlinkedFilesOnce, retryStuckTasksOnce, flagUnsyncableFilesOnce, flagDeadUnlinkedFilesOnce, auditIdentityMismatchesOnce, sharedEmailReviewSweepOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, backfillMemberLinksOnce, canMaterialize, PIPELINE_FOLDERS,
+  optionMapForSweep: optionMap,   // the profile sweep reuses the warmed dropdown-option cache
   reconcileSince, nextWatermark, // WO-4: exported for the durable-watermark test
   isTaskDeletedError, // WO-6: exported for the token-rotation-safety test
   shouldSkipOrphanResolution }; // WO-4b: exported for the orphan-breaker test

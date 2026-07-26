@@ -30,11 +30,13 @@ const REASON_COPY = {
   push_dead_lettered: 'An update from PILOT could not reach ClickUp after every retry (the fields and the last error are shown above). Nothing was lost in PILOT. Retry the push once the cause is fixed — this row also closes itself when any later push for the file succeeds.',
   file_unlinked_no_task: 'This PILOT file has NO ClickUp task, so it does not sync at all (it is older than the automatic recovery window). Link it to the correct existing ClickUp card, create a fresh ClickUp task, or dismiss if this file intentionally lives outside ClickUp.',
   file_dead_unlinked: 'This is a LIVE file that lost its ClickUp card and went orphaned — it no longer syncs, and if another (often near-empty duplicate) file is holding the card, every update has been flowing into that wrong file. Fix it: paste the correct ClickUp card link/id to move the card onto THIS file (if the card is on another file, you’ll be asked to confirm the move), or give it a fresh card, archive it, or keep it as-is.',
+  clickup_name_changed_at_source: 'The borrower’s name was CHANGED on the ClickUp card — and both the first AND last name are different from the profile, so this might be a different person rather than a corrected name. PILOT did not rename anybody. Compare the two and adopt the correct one (it is applied to both systems), or type the right name. (When only the FIRST name changes and the surname still matches — a nickname corrected to the real name, “Avi” → “Abraham” — PILOT adopts it automatically and you never see a card.)',
   identity_mismatch_audit: 'The portfolio audit found the two systems carrying DIFFERENT values for this borrower-identity field. Nothing was changed anywhere (identity fields never overwrite silently) — compare the sides and adopt the correct one; it is applied to both systems. If both are fine (e.g. an old phone number), dismiss and this stays closed.',
   sharepoint_match_uncertain: 'The SharePoint mirror was NOT SURE which folder this file’s documents belong in (an ambiguous folder match, or no officer yet), so it filed into a safe, clearly-marked new folder — shown under “In PILOT”. If that is the wrong tree: merge or rename the folders IN SharePoint (the mirror never moves or renames anything itself), then click Re-match. Dismiss keeps the new folder.',
   sharepoint_mirror_failed: 'This document could NOT be mirrored to SharePoint after every automatic retry — the exact error is shown on the “Last error” line above. Fix the cause if it needs a human (a folder problem, an unreadable file), then Retry the document; if the folder match itself is wrong, use Re-match. Nothing is lost — the document is safe in PILOT.',
   borrower_identity_conflict: 'TWO DIFFERENT PEOPLE appear to share ONE borrower profile: this file’s ClickUp task and the PILOT profile disagree on identity (name, phone, or SSN), and the profile also belongs to another officer’s relationship (a lead or owned profile). This usually comes from a family-shared email + the family last name. Do NOT adopt either value — that would change the other person too. Click Split: the file’s person gets their OWN fresh profile (rebuilt from ClickUp), and the other person keeps the original profile untouched. Dismiss only if you are sure it is genuinely the same human.',
   shared_email_needs_reassignment: 'TWO BORROWER PROFILES are using ONE email address (shown under “In ClickUp”; the two people under “In PILOT”). Two ways to settle it: (1) if the sharing is RIGHT — spouses on the same deals, or the same person twice — click Allow: the two profiles are LINKED, whoever logs in with the email sees BOTH sets of files, and this never flags again (nothing is merged; each keeps their own profile and officer). (2) If they are unrelated people, give one of them their OWN email — edit it on their borrower screen in PILOT or on the ClickUp task — and this card closes itself. Until settled, the system deliberately refuses to link files by this email.',
+  encompass_address_differs: 'The most recent ENCOMPASS file for this borrower carries a different home address than their PILOT profile. Nothing was changed — a person\u2019s address on file is real data that a stale loan must never overwrite. Encompass is read-only here, so whichever value you pick is written to the PILOT profile (and pushed on to their ClickUp cards); nothing is ever sent back to Encompass. If both are right because they moved, use the Encompass one; if the Encompass file is old, keep PILOT\u2019s.',
   economics_frozen_conflict: 'ClickUp carries different loan figures than PILOT (shown above), but this file is FROZEN — a term sheet has been sent for signature, or the file is Clear-to-Close / Funded — so the numbers can’t change on their own (they would no longer match the term sheet that already went out). PILOT kept its figures and did NOT apply the ClickUp change. Two ways to settle it: keep PILOT’s figures and push them back to ClickUp so both match; OR, to accept the ClickUp change, clear the term sheet package (or ask a super-admin to unlock a Clear-to-Close / Funded file) and re-register — the figures then update by themselves on the next sync. You can also simply set it back in ClickUp to match the file.',
 };
 // Sitewire draw-management parks (field_key='sitewire'). The stored reason is
@@ -419,6 +421,11 @@ export default function SyncReviews() {
         const canResolve = RESOLVABLE.has(r.field_key) && !sidesEqual;
         const isDob = r.field_key === 'date_of_birth';
         const isSitewire = r.field_key === 'sitewire';
+        // A row raised by the weekly READ-ONLY Encompass enrichment pass (db/324).
+        // There is no ClickUp task behind it and NOTHING is ever written back to
+        // Encompass — the only question is what PILOT should hold, so the labels
+        // and the buttons are different from a two-way ClickUp row.
+        const isEncompass = r.source === 'encompass';
         const fileActions = (REASON_FILE_ACTIONS[r.reason] || null)?.filter((a) => !a.adminOnly || isAdmin) || null;
         const candidates = fileActions && fileActions.some((a) => a.needsTarget) ? linkCandidates(r) : [];
         return (
@@ -429,10 +436,10 @@ export default function SyncReviews() {
                   onChange={(e) => setSelected((m) => ({ ...m, [r.id]: e.target.checked }))} />
               )}
               <strong>{FIELD_LABELS[r.field_key] || r.field_key}</strong>
-              <span className={`pill ${r.direction === 'outbound' ? '' : 'done'}`}>{isSitewire ? 'PILOT → Sitewire' : (r.direction === 'outbound' ? 'PILOT → ClickUp' : 'ClickUp → PILOT')}</span>
+              <span className={`pill ${r.direction === 'outbound' ? '' : 'done'}`}>{isSitewire ? 'PILOT → Sitewire' : isEncompass ? 'Encompass → PILOT (read-only)' : (r.direction === 'outbound' ? 'PILOT → ClickUp' : 'ClickUp → PILOT')}</span>
               <span className="muted small">{new Date(r.created_at).toLocaleString()}</span>
               <div className="spacer" />
-              {status === 'open' && (
+              {status === 'open' && !isEncompass && (
                 <button className="btn ghost btn-sm" disabled={busyId === r.id}
                   title="Look again — re-run the check in the background and clear this review if it was already fixed on either side (nothing is written unless the data proves it resolved)"
                   onClick={() => recheck(r.id)}>{busyId === r.id ? '…' : '↻ Re-check'}</button>
@@ -456,7 +463,7 @@ export default function SyncReviews() {
               (cu != null || p != null) && <div className="metrow"><span className="k">Details</span><span className="v">{p != null ? <>expected <strong>{showVal(p)}</strong></> : null}{p != null && cu != null ? ' · ' : ''}{cu != null ? <>found <strong>{showVal(cu)}</strong></> : null}</span></div>
             ) : (
               <>
-                <div className="metrow"><span className="k">In ClickUp</span><span className="v"><strong>{showVal(cu)}</strong>{isDob ? <em className="muted small">{dobNote(cu)}</em> : null}</span></div>
+                <div className="metrow"><span className="k">{isEncompass ? 'In Encompass' : 'In ClickUp'}</span><span className="v"><strong>{showVal(cu)}</strong>{isDob ? <em className="muted small">{dobNote(cu)}</em> : null}</span></div>
                 <div className="metrow"><span className="k">In PILOT</span><span className="v"><strong>{showVal(p)}</strong>{isDob ? <em className="muted small">{dobNote(p)}</em> : null}</span></div>
               </>
             )}
@@ -477,7 +484,10 @@ export default function SyncReviews() {
                 ? (SITEWIRE_REASON_COPY[String(r.reason || '').split(':')[0]] || r.reason)
                 : (sidesEqual && r.reason === 'clickup_dob_differs_from_portal'
                   ? REASON_COPY.dob_same_but_impossible   /* legacy rows queued before the common-sense reasons */
-                  : (REASON_COPY[r.reason] || r.reason))}
+                  // Some reasons carry a ':'-separated detail tail (the Encompass
+                  // rows do) — fall back to the slug before the colon so they
+                  // get real copy instead of the raw machine string.
+                  : (REASON_COPY[r.reason] || REASON_COPY[String(r.reason || '').split(':')[0]] || r.reason))}
             </p>
             {isSitewire && String(r.reason || '').includes(':') && (
               <p className="muted small" style={{ margin: '0 0 8px', fontStyle: 'italic' }}>{String(r.reason).split(':').slice(1).join(':').trim()}</p>
@@ -546,7 +556,33 @@ export default function SyncReviews() {
                   title="Close this without action" onClick={() => sitewireAct(r.id, 'dismiss')}>Dismiss</button>
               </div>
             )}
-            {status === 'open' && !isSitewire && canResolve && (
+            {status === 'open' && isEncompass && canResolve && (
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <p className="small" style={{ width: '100%', margin: '0 0 4px', color: '#3A4550' }}>
+                  Encompass is read-only — whichever you pick is written to the PILOT profile (and pushed
+                  on to the borrower’s ClickUp cards). Nothing is ever sent back to Encompass.
+                </p>
+                <button className="btn primary btn-sm" disabled={busyId === r.id}
+                  title="Put the address Encompass has on the borrower's PILOT profile"
+                  onClick={() => act(r.id, 'resolve', { winner: 'encompass' })}>{busyId === r.id ? '…' : 'Use the Encompass value'}</button>
+                <button className="btn primary btn-sm" disabled={busyId === r.id}
+                  title="Keep what PILOT already has — nothing is written anywhere"
+                  onClick={() => act(r.id, 'resolve', { winner: 'portal' })}>{busyId === r.id ? '…' : 'Keep the PILOT value'}</button>
+                <button className="btn ghost btn-sm" disabled={busyId === r.id}
+                  title="Close this without writing anything anywhere"
+                  onClick={() => act(r.id, 'reject')}>Dismiss</button>
+                <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                  <input className="input" style={{ maxWidth: 220 }} type="text"
+                    placeholder="Or type the correct address…" aria-label="Type the correct address"
+                    value={customVal[r.id] || ''} disabled={busyId === r.id}
+                    onChange={(e) => setCustomVal((m) => ({ ...m, [r.id]: e.target.value }))} />
+                  <button className="btn ghost btn-sm" disabled={busyId === r.id || !(customVal[r.id] || '').trim()}
+                    title="Put the typed address on the profile (validated, audited)"
+                    onClick={() => act(r.id, 'resolve', { winner: 'custom', value: customVal[r.id] })}>Apply typed</button>
+                </span>
+              </div>
+            )}
+            {status === 'open' && !isSitewire && !isEncompass && canResolve && (
               <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                 <button className="btn primary btn-sm" disabled={busyId === r.id}
                   title="Apply ClickUp's current value to BOTH systems (re-read live, audited)"
@@ -627,7 +663,7 @@ export default function SyncReviews() {
                     "fixed outside PILOT" still leaves a visible explanation. */}
                 {r.auto_resolved ? '✓ Resolved automatically — no clicks needed. ' :
                   r.winner === 'custom' ? 'A reviewer typed the correct value; it was applied to both systems. ' :
-                  r.winner ? `Adopted the ${r.winner === 'clickup' ? 'ClickUp' : 'PILOT'} value on both systems. ` : ''}
+                  r.winner ? `Adopted the ${r.winner === 'clickup' ? 'ClickUp' : r.winner === 'encompass' ? 'Encompass' : r.winner === 'custom' ? 'typed' : 'PILOT'} value${r.source === 'encompass' ? ' on the profile' : ' on both systems'}. ` : ''}
                 {r.resolution_note ? `${r.resolution_note}` : ''}
               </p>
             )}
