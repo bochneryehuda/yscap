@@ -15,9 +15,10 @@
  *
  * Why a bespoke check instead of a lint rule: eslint's `react-hooks/rules-of-hooks` catches a hook
  * inside an `if`/loop/callback, but it does NOT catch a hook that merely sits after an early return
- * — the one shape that actually broke production. Nor does the Vite build: this compiles perfectly
- * and only fails at render time (the same trap CLAUDE.md logs for undeclared identifiers — "a green
- * build does NOT mean the page renders").
+ * — the one shape that actually broke production. (There is also no eslint config in this repo, so
+ * this scanner is the only automated defense against the class.) Nor does the Vite build: this
+ * compiles perfectly and only fails at render time — the same trap CLAUDE.md logs for undeclared
+ * identifiers ("a green build does NOT mean the page renders").
  *
  * Pure: parses the source, no browser, no DB, no network.
  */
@@ -43,28 +44,76 @@ if (!parser) {
   process.exit(1);
 }
 
-const HOOK_NAME = /^use[A-Z]/;
+// BOTH front-ends. V1 (app/src) is frozen and served at /v1, but it is still real React with the
+// identical failure mode, and "fix the root, then every place it can surface" applies to the guard
+// as much as to the bug.
+const ROOTS = ['app-v2/src', 'app/src'];
 const FN = /Function(Declaration|Expression)|ArrowFunctionExpression/;
+
+// A call is a hook candidate if it is `useX(...)` or `Something.useX(...)`. That pattern also
+// matches ordinary methods (`cache.useEntry(id)`), so it is only TRUSTED inside a function that is
+// itself a component or a custom hook — see isComponentLike. Without that scoping the guard
+// false-fails on plain code, and because `npm test` gates the deploy job, a false failure would
+// block publishing over a non-bug.
+const HOOK_CALL = /^use[A-Z]/;
+// A React component (PascalCase) or a custom hook (useX) — the only places hook rules apply.
+const COMPONENT_LIKE = /^([A-Z]|use[A-Z])/;
 
 function sourceFiles(dir) {
   const out = [];
+  if (!fs.existsSync(dir)) return out;
   (function walk(d) {
     for (const e of fs.readdirSync(d, { withFileTypes: true })) {
       const p = path.join(d, e.name);
       if (e.isDirectory()) walk(p);
-      else if (/\.jsx?$/.test(e.name)) out.push(p);
+      else if (/\.(jsx?|tsx?)$/.test(e.name)) out.push(p);
     }
   })(dir);
   return out;
 }
 
-// Does this statement return on some path at its own top level? (`return x` or `if (…) return x`)
-function isEarlyReturn(st) {
-  if (st.type === 'ReturnStatement') return true;
-  if (st.type !== 'IfStatement' || !st.consequent) return false;
-  const c = st.consequent;
-  if (c.type === 'ReturnStatement') return true;
-  return c.type === 'BlockStatement' && c.body.some((s) => s.type === 'ReturnStatement');
+// The function's own name, including `const Foo = () => {}` / `const Foo = function () {}`.
+function functionName(node, parent) {
+  if (node.id && node.id.name) return node.id.name;
+  if (parent && parent.type === 'VariableDeclarator' && parent.id && parent.id.name) return parent.id.name;
+  if (parent && parent.type === 'Property' && parent.key && parent.key.name) return parent.key.name;
+  return null;
+}
+
+/**
+ * Does this statement return on SOME path, at this function's own level?
+ *
+ * The first version only understood `return` and `if (c) return` — which silently missed a return
+ * inside try/catch, an `else`, a `switch` case, a loop body, a labeled or bare block, and a nested
+ * `if (a) if (b) return`. Each of those produces exactly the same crash, so each is handled here.
+ * Function boundaries are never crossed: a `return` inside a callback belongs to the callback.
+ */
+function returnsAtThisLevel(node) {
+  if (!node || typeof node.type !== 'string') return false;
+  if (node.type === 'ReturnStatement') return true;
+  if (FN.test(node.type)) return false;                       // a nested function's return is its own
+  switch (node.type) {
+    case 'IfStatement':
+      return returnsAtThisLevel(node.consequent) || returnsAtThisLevel(node.alternate);
+    case 'BlockStatement':
+    case 'Program':
+      return node.body.some(returnsAtThisLevel);
+    case 'TryStatement':
+      return returnsAtThisLevel(node.block)
+        || (node.handler && returnsAtThisLevel(node.handler.body))
+        || returnsAtThisLevel(node.finalizer);
+    case 'SwitchStatement':
+      return node.cases.some((c) => c.consequent.some(returnsAtThisLevel));
+    case 'LabeledStatement':
+      return returnsAtThisLevel(node.body);
+    case 'ForStatement': case 'ForInStatement': case 'ForOfStatement':
+    case 'WhileStatement': case 'DoWhileStatement':
+      return returnsAtThisLevel(node.body);
+    case 'WithStatement':
+      return returnsAtThisLevel(node.body);
+    default:
+      return false;
+  }
 }
 
 // Hook calls belonging to THIS render pass — descend through the statement but stop at a nested
@@ -78,7 +127,7 @@ function hookCallsIn(node) {
       const c = n.callee;
       const name = c.type === 'Identifier' ? c.name
         : (c.type === 'MemberExpression' && c.property && c.property.name) || null;   // React.useMemo(…)
-      if (name && HOOK_NAME.test(name)) out.push({ name, line: n.loc.start.line });
+      if (name && HOOK_CALL.test(name)) out.push({ name, line: n.loc.start.line });
     }
     for (const k of Object.keys(n)) {
       const v = n[k];
@@ -90,40 +139,52 @@ function hookCallsIn(node) {
 }
 
 const violations = [];
-let scanned = 0;
+let scanned = 0, componentsChecked = 0;
 
-for (const file of sourceFiles(path.join(ROOT, 'app-v2/src'))) {
-  const src = fs.readFileSync(file, 'utf8');
-  let ast;
-  try {
-    ast = parser.parse(src, { sourceType: 'module', plugins: ['jsx'] });
-  } catch (e) {
-    violations.push(`${path.relative(ROOT, file)}: could not be parsed — ${e.message}`);
-    continue;
-  }
-  scanned++;
-  (function visit(n) {
-    if (!n || typeof n.type !== 'string') return;
-    if (FN.test(n.type) && n.body && n.body.type === 'BlockStatement') {
-      let returnedAt = null;
-      for (const st of n.body.body) {
-        if (isEarlyReturn(st)) { if (returnedAt == null) returnedAt = st.loc.start.line; continue; }
-        if (returnedAt != null) {
-          for (const h of hookCallsIn(st)) {
-            violations.push(
-              `${path.relative(ROOT, file)}:${h.line} — ${h.name}() is called AFTER an early return `
-              + `on line ${returnedAt}. Move every hook above the first return, or React will crash `
-              + `the page with "Rendered more hooks than during the previous render".`);
+for (const rel of ROOTS) {
+  for (const file of sourceFiles(path.join(ROOT, rel))) {
+    const src = fs.readFileSync(file, 'utf8');
+    let ast;
+    try {
+      ast = parser.parse(src, { sourceType: 'module', plugins: ['jsx', 'typescript'] });
+    } catch (e) {
+      violations.push(`${path.relative(ROOT, file)}: could not be parsed — ${e.message}`);
+      continue;
+    }
+    scanned++;
+    (function visit(n, parent) {
+      if (!n || typeof n.type !== 'string') return;
+      if (FN.test(n.type) && n.body && n.body.type === 'BlockStatement') {
+        // Only a component / custom hook is bound by the rules of hooks. This keeps an ordinary
+        // helper that happens to call `something.useEntry()` after a guard clause from failing CI.
+        const name = functionName(n, parent);
+        if (name && COMPONENT_LIKE.test(name)) {
+          componentsChecked++;
+          let returnedAt = null;
+          for (const st of n.body.body) {
+            // Scan the statement for hooks FIRST, then decide whether it returns. A returning
+            // statement can itself contain a hook (`return <div>{useMemo(...)}</div>`), which the
+            // first version skipped entirely by `continue`ing past every return.
+            if (returnedAt != null) {
+              for (const h of hookCallsIn(st)) {
+                violations.push(
+                  `${path.relative(ROOT, file)}:${h.line} — ${h.name}() is called AFTER an early `
+                  + `return on line ${returnedAt}, inside ${name}(). Move every hook above the first `
+                  + 'return, or React will crash the page with "Rendered more hooks than during the '
+                  + 'previous render".');
+              }
+            }
+            if (returnedAt == null && returnsAtThisLevel(st)) returnedAt = st.loc.start.line;
           }
         }
       }
-    }
-    for (const k of Object.keys(n)) {
-      const v = n[k];
-      if (Array.isArray(v)) v.forEach((c) => c && typeof c.type === 'string' && visit(c));
-      else if (v && typeof v.type === 'string') visit(v);
-    }
-  })(ast.program);
+      for (const k of Object.keys(n)) {
+        const v = n[k];
+        if (Array.isArray(v)) v.forEach((c) => c && typeof c.type === 'string' && visit(c, n));
+        else if (v && typeof v.type === 'string') visit(v, n);
+      }
+    })(ast.program, null);
+  }
 }
 
 if (violations.length) {
@@ -131,5 +192,6 @@ if (violations.length) {
   for (const v of violations) console.log('  FAIL: ' + v);
   process.exit(1);
 }
-console.log(`test-react-hook-order: ${scanned} files scanned, 0 hooks after an early return`);
+console.log(`test-react-hook-order: ${scanned} files scanned (${componentsChecked} components/hooks), `
+  + '0 hooks after an early return');
 process.exit(0);

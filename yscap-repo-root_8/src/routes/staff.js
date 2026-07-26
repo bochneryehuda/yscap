@@ -9643,6 +9643,24 @@ async function canSeeDocument(req, doc) {
       [doc.borrower_id, req.actor.id]);
     if (r.rows[0]) return true;
   }
+  if (doc.llc_id) {
+    // The file's own VESTING ENTITY (audit 2026-07-26). PILOT now reads the entity's operating
+    // agreement / EIN / articles for a file that vests into it, even when the entity is filed under
+    // a different borrower record — so a finding raised from those documents was appearing on the
+    // desk with an "open the source document" link that returned 403 for the very staff the fix was
+    // for (an assigned officer or processor; see-all roles were unaffected). A finding you cannot
+    // open is against the whole point of the findings surface.
+    //
+    // Scoped exactly like the read side: only an entity that a file THIS staffer is assigned to
+    // actually vests into. It grants nothing beyond the documents PILOT is already reading on their
+    // behalf, and no wider than the borrower branch above.
+    const r = await db.query(
+      `SELECT 1 FROM applications a WHERE a.llc_id=$1 AND a.deleted_at IS NULL
+          AND ${VISIBLE_OFFICERS_SQL('a', '$2')}
+        LIMIT 1`,
+      [doc.llc_id, req.actor.id]);
+    if (r.rows[0]) return true;
+  }
   return false;
 }
 

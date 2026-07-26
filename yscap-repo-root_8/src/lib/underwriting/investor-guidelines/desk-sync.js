@@ -131,8 +131,81 @@ async function syncInvestorGuidelineFindings(client, appId, opts) {
         if (p.severity === 'fatal') fatal += 1;
       } catch (_e) { /* one bad row never stops the rest */ }
     }
-    return { raised, fatal };
-  } catch (_e) { return { raised: 0, fatal: 0 }; }
+    // CONVERGE — close what the desk no longer says (owner-reported 2026-07-26).
+    //
+    // This sync only ever INSERTED. Nothing retracted a guideline finding when the rule stopped
+    // raising it, so every notice written before a rule was corrected stayed open on that file
+    // FOREVER. The owner reviewed a file on 2026-07-26 and saw blank "Blue Lake requires X"
+    // notices whose rules had been given their correct dispositions on 2026-07-24 — the fix was
+    // real and completely invisible, because the screen was showing history rather than the
+    // system's current judgement. That is also why they said "fix this also for all the previous
+    // files": append-only means every future rule fix has exactly the same problem.
+    //
+    // So the desk's output is now the AUTHORITY for its own rows: anything open under this source
+    // that is not in the current set is retracted.
+    // ...but ONLY when the desk demonstrably ASSESSED the file.
+    //
+    // `runInvestorGuidelineDesk` returns a well-formed EMPTY result on any internal failure — a
+    // require error, a loadRuleContext throw, a null load — indistinguishable in shape from a
+    // genuine "nothing applies". Retracting on that would mean a transient database blip during a
+    // file view silently CLOSES EVERY open guideline finding on the file. Wiping real findings on a
+    // hiccup is far worse than leaving a stale one visible for one more cycle, so retraction
+    // requires positive evidence the desk actually evaluated rules: at least one verdict.
+    //
+    // Cost of being conservative: a file whose rules genuinely all stopped applying keeps its stale
+    // rows until the desk has something to say. That is the right side to err on.
+    //
+    // ...and only when the desk saw the WHOLE file (audit 2026-07-26). `verdicts` is computed from
+    // the applicable RULES, before and independently of the signal loaders — and each of those
+    // loaders (conditions on file, twin facts, borrower email, appraisal, the concern signal, the
+    // SOW contingency) swallows its own error so a bad query can never break a file view. A failed
+    // appraisal read silently removes every appraisal item from `unhappy[]`; a failed concern read
+    // removes every concern item. `verdicts.length` stays healthy through all of that, so the guard
+    // below on its own would happily retract live findings and stamp them "the rule was corrected"
+    // — which would be a lie, and on the next good run they would be re-INSERTED, re-firing the
+    // fatal-notify email to the loan officer every cycle. So the desk now names the loaders that
+    // failed, and a degraded read retracts nothing.
+    const assessed = !!(desk && Array.isArray(desk.verdicts) && desk.verdicts.length);
+    const degraded = !!(desk && Array.isArray(desk.degraded) && desk.degraded.length);
+    const retracted = (assessed && !degraded)
+      ? await retractStale(client, appId, payloads.map((p) => p.dedupeKey))
+      : 0;
+    // Name the loaders, not just the fact — "the appraisal read failed" is actionable, "degraded"
+    // is not, and this is what the caller logs when a retraction is skipped.
+    return { raised, fatal, retracted, assessed, degraded,
+      degradedSources: degraded ? desk.degraded.slice() : [] };
+  } catch (_e) { return { raised: 0, fatal: 0, retracted: 0, assessed: false, degraded: false, degradedSources: [] }; }
 }
 
-module.exports = { deskToSuggestions, syncInvestorGuidelineFindings, SOURCE };
+/**
+ * Close every OPEN row from this desk whose dedupeKey the desk no longer raises.
+ *
+ * UNTOUCHED ROWS ONLY (`status='open'`). The moment a human escalates, notes, dismisses, converts
+ * to a condition or task, marks important, or asks an admin, the row stops being ours to withdraw —
+ * their decision is a record of a judgement made, and silently deleting it would be far worse than
+ * the noise this fixes. Those statuses are all excluded by the `status='open'` predicate.
+ *
+ * Marked `dismissed` with a status_reason naming the retraction, so the audit trail shows WHY it
+ * closed rather than it simply vanishing. Never throws — a failed retraction must not break the
+ * file view (worst case the stale row stays one more cycle).
+ */
+async function retractStale(client, appId, currentKeys) {
+  try {
+    const keys = (currentKeys || []).filter(Boolean);
+    const r = await client.query(
+      `UPDATE ai_suggestions
+          SET status = 'dismissed',
+              status_reason = 'Retracted automatically: the guideline desk no longer raises this for '
+                              || 'the file (the rule was corrected, or the file changed).',
+              updated_at = now()
+        WHERE application_id = $1
+          AND source = $2
+          AND status = 'open'
+          AND NOT (dedupe_key = ANY($3::text[]))
+        RETURNING id`,
+      [appId, SOURCE, keys]);
+    return r.rowCount || 0;
+  } catch (_e) { return 0; }
+}
+
+module.exports = { deskToSuggestions, syncInvestorGuidelineFindings, retractStale, SOURCE };

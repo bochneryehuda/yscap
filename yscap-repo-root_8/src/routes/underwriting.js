@@ -109,11 +109,14 @@ router.use(requireAuth, requireStaff);
 // Authorization: the file must exist AND the staffer must see it (see_all or assigned).
 async function fileFor(req, appId) {
   if (!isUuid(appId)) return null;
+  // llc_id comes back so `fileDoc` can resolve the file's OWN vesting-entity documents — see the
+  // note there. Without it a file whose LLC is filed under a different borrower record could never
+  // read its own operating agreement / EIN / articles.
   if (can(req.actor, 'see_all_files')) {
-    return (await db.query(`SELECT id, borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0] || null;
+    return (await db.query(`SELECT id, borrower_id, llc_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0] || null;
   }
   return (await db.query(
-    `SELECT a.id, a.borrower_id FROM applications a WHERE a.id=$1 AND a.deleted_at IS NULL AND ${assigneeExistsSql('a', '$2')}`,
+    `SELECT a.id, a.borrower_id, a.llc_id FROM applications a WHERE a.id=$1 AND a.deleted_at IS NULL AND ${assigneeExistsSql('a', '$2')}`,
     [appId, req.actor.id])).rows[0] || null;
 }
 
@@ -332,7 +335,7 @@ router.get('/:appId', async (req, res, next) => {
     // own (application_id), OR filed under one of THIS file's conditions (ci.application_id — catches
     // any doc whose denormalized owner differs), OR one of this file's ENTITY's documents (llc_id).
     const docsOnFile = await db.query(
-      `SELECT d.id, d.filename, d.doc_kind, d.checklist_item_id, t.code AS condition_code,
+      `SELECT d.id, d.filename, d.doc_kind, d.slot_label, d.checklist_item_id, t.code AS condition_code,
               COALESCE(t.label, t.code) AS condition_label, d.page_bounded,
               d.authenticity_score, d.authenticity_level, d.authenticity_signals
          FROM documents d
@@ -359,8 +362,13 @@ router.get('/:appId', async (req, res, next) => {
       // it's a real readable type, so a photo_id / term sheet never pollutes the on-file type set.
       // (A condition-derived type is kept as-is even if the reader doesn't own it — e.g. 'appraisal'
       // stays in the on-file set for completeness but is excluded from the read queue below.)
+      // …then the SLOT it was filed into — the LLC section can attach a document with a slot label
+      // and no checklist item, which leaves it with no condition and no doc_kind. Kept in lock-step
+      // with selectAutoReadQueue; if these two derivations drift, the desk's "documents on file"
+      // count and its read queue disagree and the count never clears.
       const expectedType = expectedDocTypeForCode(d.condition_code) ||
-        (d.doc_kind && registry.get(d.doc_kind) ? d.doc_kind : null);
+        (d.doc_kind && registry.get(d.doc_kind) ? d.doc_kind : null) ||
+        expectedDocTypeForCode(d.slot_label);
       const analyzed = analyzedDocIds.has(d.id);
       if (expectedType) attached.add(expectedType);
       const row = { documentId: d.id, filename: d.filename, conditionCode: d.condition_code || null,
@@ -448,7 +456,7 @@ router.get('/:appId', async (req, res, next) => {
       const contReq = await require('../lib/rehab-budget').sowContingencyRequired(app.id);
       sowContingencyReq = contReq && contReq.required;
     } catch (_) { sowContingencyReq = undefined; }
-    const programGuidelines = programGuidelineSnapshot(uwProgram, { assetMonths, sowContingencyRequired: sowContingencyReq });
+    const programGuidelines = programGuidelineSnapshot(uwProgram, { assetMonths, sowContingencyRequired: sowContingencyReq, noteBuyer: a.lender });
 
     const metrics = computeMetrics({
       loanAmount: a.loan_amount, initialAdvance: reg ? reg.initialAdvance : null,
@@ -519,26 +527,22 @@ router.get('/:appId', async (req, res, next) => {
     // metric warnings + reasonability data-integrity flags + seller-chain advisories into the same
     // fatal/warning gate (all warning-only → never change the CTC-blocking fatal count, but they
     // surface in the roll-up).
-    // The chain-of-title `cot_final_buyer_not_vesting` (warning) is the more informative twin of
-    // seller-chain's `chain_vesting_not_reached` (info) — when the richer one fires, drop the info so
-    // the desk shows the vesting-gap once.
     const cotFindings = (chainOfTitle.findings || []).filter(Boolean);
-    const cotSuppressesVestingInfo = cotFindings.some((f) => f.code === 'cot_final_buyer_not_vesting');
-    const sellerChainFindings = (sellerChain.findings || [])
-      .filter((f) => !(cotSuppressesVestingInfo && f && f.code === 'chain_vesting_not_reached'));
+    const sellerChainFindings = (sellerChain.findings || []).filter(Boolean);
     const openRaw = [...perDoc, ...cross, ...staleness.findings, ...metrics.findings, ...amendments.findings,
       ...(entityChain ? entityChain.findings : []), ...reasonability.findings, ...sellerChainFindings,
       ...cotFindings, ...bankLiquidity.findings, ...(experience ? experience.findings : [])];
-    // De-duplicate the few FILE-economic findings that legitimately appear on more than one document
-    // — the assignment fee over the cap shows on BOTH the purchase contract and the assignment, but
-    // the desk should count/show it ONCE.
-    const DEDUP_ONCE = new Set(['assignment_fee_over_cap']);
-    const seenDup = new Set();
-    const openAll = openRaw.filter((f) => {
-      if (!f || !DEDUP_ONCE.has(f.code)) return true;
-      if (seenDup.has(f.code)) return false;
-      seenDup.add(f.code); return true;
-    });
+    // ONE finding per real-world ISSUE (owner-reported 2026-07-26: the contract-buyer/vesting
+    // mismatch appeared SIX times on one file, the entity-OFAC gap three times).
+    //
+    // Several desks independently and correctly notice the same fact and each names it with its own
+    // code, so keying on the code — which is all the old one-entry DEDUP_ONCE set and the bespoke
+    // chain-of-title-vs-seller-chain suppression did — never collapsed them. Dedupe now keys on the
+    // CLAIM (what the finding asserts), so every desk that agrees merges into the single most
+    // informative finding, carrying `mergedFrom` so nothing is lost. Adding a desk that re-notices an
+    // existing fact means adding its code to a family in finding-claims.js — never another
+    // hand-written suppression here.
+    const openAll = require('../lib/underwriting/finding-claims').dedupeByClaim(openRaw);
 
     // Sync computed chain + bank findings → ai_suggestions (owner-directed 2026-07-22,
     // HARD RULE). Best-effort, fired AFTER the response so file view stays fast; dedupe
@@ -557,12 +561,18 @@ router.get('/:appId', async (req, res, next) => {
         // bridge's documentId, violating the ai_suggestions.document_id FK
         // (23503) on ANY file with a bank finding — so the whole post-view
         // detector sync recorded NOTHING on those files, every render.
+        // Returns what `fn` returned, so a step whose RESULT matters (the guideline sync reports
+        // whether it had to skip its retraction) can actually be inspected. It awaited but discarded
+        // the value before — which silently made that inspection dead code, the very same
+        // "return value goes nowhere" defect it was added to fix, one layer up. On a failed step the
+        // return is undefined, which every caller must tolerate.
         const step = async (fn) => {
           try {
             await c.query('SAVEPOINT view_sync');
-            await fn();
+            const out = await fn();
             await c.query('RELEASE SAVEPOINT view_sync');
-          } catch (_) { await c.query('ROLLBACK TO SAVEPOINT view_sync').catch(() => {}); }
+            return out;
+          } catch (_) { await c.query('ROLLBACK TO SAVEPOINT view_sync').catch(() => {}); return undefined; }
         };
         try {
           await c.query('BEGIN');
@@ -598,8 +608,18 @@ router.get('/:appId', async (req, res, next) => {
           // so they actually surface (a fatal notifies the LO/processor). The
           // desk stays quiet on OPEN conditions. Advisory: records ai_suggestions,
           // posts/clears nothing, touches no frozen number.
-          await step(() => require('../lib/underwriting/investor-guidelines/desk-sync')
+          const isgSync = await step(() => require('../lib/underwriting/investor-guidelines/desk-sync')
             .syncInvestorGuidelineFindings(c, app.id));
+          // A SKIPPED RETRACTION MUST LEAVE A TRACE (audit 2026-07-26). The retraction is what keeps
+          // a corrected rule from leaving stale notices open forever — the owner's original
+          // complaint — and it is now gated on the desk having read the file cleanly. That gate is
+          // the right call, but silent: if a loader started failing on every run, retraction would
+          // be globally dead and the owner would see the exact same stale findings again with
+          // nothing anywhere saying why. One line turns a silent regression into a visible one.
+          if (isgSync && isgSync.degraded) {
+            console.warn('[isg] retraction skipped for %s — the guideline desk could not read: %s',
+              app.id, (isgSync.degradedSources || []).join(', ') || 'unknown');
+          }
           // #199 — party collusion (independence-required parties sharing an
           // identity) + double-pledged collateral (this property on another live
           // loan). Advisory — records ai_suggestions, never auto-blocks.
@@ -708,6 +728,10 @@ router.get('/:appId', async (req, res, next) => {
       bankLiquidity: { requiredLiquidity: bankLiquidity.requiredLiquidity, qualifyingTotal: bankLiquidity.qualifyingTotal,
         excludedTotal: bankLiquidity.excludedTotal, shortfall: bankLiquidity.shortfall,
         accounts: bankLiquidity.accounts, statementsCount: bankLiquidity.statementsCount,
+        // Statements recognized as an account already on the table. Without this the assets table
+        // just quietly loses a row and the total drops with no stated reason — which is as confusing
+        // as the double-count it replaced, and on the very screen where the owner found that bug.
+        notCountedTwice: bankLiquidity.notCountedTwice,
         findings: bankLiquidity.findings.map(decorate) },
       experience: experience ? { demandTier: experience.demandTier, demandLabel: experience.demandLabel,
         requiredLabel: experience.requiredLabel, gated: experience.gated, hasVerifiedAnchor: experience.hasVerifiedAnchor,
@@ -768,12 +792,24 @@ router.get('/:appId', async (req, res, next) => {
 // — otherwise file B's document could be analyzed and mis-filed onto file A (same borrower). Only
 // the borrower is matched, not the file's LLC — the staff document picker is scoped the same way.
 async function fileDoc(app, documentId) {
+  // THE FILE'S OWN VESTING ENTITY IS A THIRD DOOR (owner-reported 2026-07-26, reproduced on a real
+  // database). The LLC section's documents carry `application_id NULL` + `llc_id`, and were resolved
+  // only through the borrower branch — so whenever the entity is filed under a DIFFERENT borrower
+  // record (a co-borrower's profile, a layered owning entity), all three LLC documents were queued
+  // for reading and then failed to resolve, every time. Nothing was ever read, so the desk reported
+  // "no operating agreement on file", "no EIN letter on file", "no good-standing certificate on
+  // file" while all of them sat in their slots. That is exactly what the owner saw.
+  //
+  // Scoped to THIS file's own llc_id — not the borrower's entities generally — so it opens nothing
+  // wider than the vesting entity the loan is actually closing into.
   return (await db.query(
     `SELECT id, application_id, borrower_id, filename, content_type, storage_provider, storage_ref, sha256, page_bounded
        FROM documents
       WHERE id=$1 AND is_current
-        AND (application_id=$2 OR (application_id IS NULL AND borrower_id IS NOT NULL AND borrower_id=$3))`,
-    [documentId, app.id, app.borrower_id])).rows[0] || null;
+        AND (application_id=$2
+             OR (application_id IS NULL AND borrower_id IS NOT NULL AND borrower_id=$3)
+             OR (application_id IS NULL AND llc_id IS NOT NULL AND llc_id=$4))`,
+    [documentId, app.id, app.borrower_id, app.llc_id || null])).rows[0] || null;
 }
 
 // Read + check ONE document — the SHARED core of the manual /analyze endpoint AND the auto-reader.
@@ -990,7 +1026,7 @@ async function buildAutoReadQueue(app) {
   const a0 = (await db.query(`SELECT llc_id FROM applications WHERE id=$1`, [app.id])).rows[0] || {};
   const [docs, exts] = await Promise.all([
     db.query(
-      `SELECT d.id, d.filename, d.doc_kind, d.page_bounded, t.code AS condition_code
+      `SELECT d.id, d.filename, d.doc_kind, d.slot_label, d.page_bounded, t.code AS condition_code
          FROM documents d
          LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
          LEFT JOIN checklist_templates t ON t.id = ci.template_id

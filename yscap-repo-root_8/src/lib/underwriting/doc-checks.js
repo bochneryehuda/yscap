@@ -11,8 +11,12 @@
  * subject/opts are injected by the route (opts.today = 'YYYY-MM-DD').
  */
 const { num, withinMoney, namesMatchLoose, entityMatch, daysBetween, toISODate, addrMatches, addrLine } = require('./compare');
-const { clauseNamesLender, clauseHasAddress, LENDER_MORTGAGEE_CLAUSE } = require('./lender');
+const { clauseNamesLender, clauseAddressState, LENDER_MORTGAGEE_CLAUSE } = require('./lender');
+const { provenAbsent, wrongDocument, affirmed } = require('./absence');
 const insLoanKey = (s) => String(s == null ? '' : s).toUpperCase().replace(/[^A-Z0-9]/g, '');
+// Loose text identity for matching one alert string against another (punctuation and spacing
+// drift between an alert's line in the alert table and its line in the cleared-variance table).
+const normText = (s) => String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
 function mk(source, f) {
   return Object.assign(
@@ -256,7 +260,27 @@ function computeFormationFindings(f, subject, opts = {}) {
 function computeInsuranceFindings(ins, subject, opts = {}) {
   const out = []; if (!ins) return out;
   if (unreadable('insurance', ins, ['namedInsured', 'dwellingCoverage', 'policyEffective'])) return [verify('insurance', 'insurance evidence')];
-  if (ins.mortgageeClausePresent === false) {
+  // ONLY A POLICY CARRIES A MORTGAGEE CLAUSE (owner-reported 2026-07-26).
+  //
+  // An insurance INVOICE filed under the policy slot reads perfectly well — named insured, carrier,
+  // premium all come back — and it honestly answers "mortgagee clause present? no", because an
+  // invoice never has one. That `false` was being turned into a FATAL accusation against the loan,
+  // while the real binder sitting on the same file DID carry our clause. The owner caught it:
+  // "you're looking on the wrong document."
+  //
+  // These markers are the ones ONLY a binder / dec page / ACORD evidence carries — an invoice or
+  // receipt has none of them. `false`/`0` count as real readings (a policy that says "builders risk:
+  // no" still proves we are holding a policy); null/blank do not.
+  const POLICY_MARKERS = [ins.dwellingCoverage, ins.policyEffective, ins.policyExpiration, ins.buildersRisk];
+  if (wrongDocument(ins.mortgageeClausePresent, POLICY_MARKERS)) {
+    // Not a defect in the loan — a defect in what we were handed. Ask for the real binder instead of
+    // accusing the file of being uninsured.
+    out.push(mk('insurance', { code: 'insurance_not_the_policy', severity: 'warning', field: 'document',
+      docValue: 'no policy dates or coverage amount on this document', fileValue: null,
+      title: 'This looks like an insurance invoice or receipt, not the policy',
+      howTo: 'The mortgagee clause lives on the binder / declarations page (ACORD evidence) — an invoice or paid receipt never carries it, so nothing can be confirmed from this document. Obtain the binder or dec page and file the invoice under the paid-premium slot.',
+      actions: ['request_document', 'post_condition', 'dismiss'] }));
+  } else if (provenAbsent(ins.mortgageeClausePresent, POLICY_MARKERS)) {
     out.push(mk('insurance', { code: 'insurance_no_mortgagee', severity: 'fatal', field: 'mortgagee_clause',
       title: 'The insurance does not name the lender as mortgagee',
       howTo: 'The policy must carry the lender\'s mortgagee clause (ISAOA/ATIMA) so the lender is protected and gets notice. Have the agent add the correct mortgagee clause.',
@@ -271,12 +295,26 @@ function computeInsuranceFindings(ins, subject, opts = {}) {
         title: 'The insurance mortgagee clause is not the lender\'s',
         howTo: `The policy's mortgagee/loss-payee clause must read exactly "${LENDER_MORTGAGEE_CLAUSE.replace(/\n/g, ', ')}" (ISAOA/ATIMA). Have the agent re-issue the policy with the correct mortgagee clause.`,
         actions: ['request_document', 'post_condition', 'dismiss'] }));
-    } else if (namesLender === true && clauseHasAddress(ins.mortgageeClause) === false) {
-      out.push(mk('insurance', { code: 'insurance_mortgagee_address', severity: 'info', field: 'mortgagee_clause',
-        docValue: ins.mortgageeClause, fileValue: LENDER_MORTGAGEE_CLAUSE,
-        title: 'Confirm the lender notice address on the insurance mortgagee clause',
-        howTo: `The policy names the lender but the notice address doesn't match "${LENDER_MORTGAGEE_CLAUSE.replace(/\n/g, ', ')}". Confirm the correct address so loss notices reach the lender.`,
-        actions: ['acknowledge', 'request_document', 'dismiss'] }));
+    } else if (namesLender === true) {
+      // An address worded differently ("Avenue" for "Ave", "Basement" for "#BSMT") is the same
+      // address, and nagging about it is exactly the noise that makes real notices get skipped —
+      // so 'ours' says nothing. The other two are not the same thing as each other and neither is
+      // silent: no address at all means notices have nowhere to go, and an address we cannot
+      // recognise means they may be going somewhere else.
+      const addrState = clauseAddressState(ins.mortgageeClause);
+      if (addrState === 'none') {
+        out.push(mk('insurance', { code: 'insurance_mortgagee_address', severity: 'info', field: 'mortgagee_clause',
+          docValue: ins.mortgageeClause, fileValue: LENDER_MORTGAGEE_CLAUSE,
+          title: 'The INSURANCE mortgagee clause has no notice address',
+          howTo: `On the insurance binder / declarations page, the mortgagee clause names the lender but prints no address under it. Loss notices have nowhere to go — ask the agent to add "${LENDER_MORTGAGEE_CLAUSE.replace(/\n/g, ', ')}". (This is about the insurance document; the title policy's clause is checked separately.)`,
+          actions: ['acknowledge', 'request_document', 'dismiss'] }));
+      } else if (addrState === 'present') {
+        out.push(mk('insurance', { code: 'insurance_mortgagee_address_unrecognized', severity: 'info', field: 'mortgagee_clause',
+          docValue: ins.mortgageeClause, fileValue: LENDER_MORTGAGEE_CLAUSE,
+          title: 'The INSURANCE mortgagee clause carries an address we do not recognise',
+          howTo: `The clause names the lender and does print a notice address, but not one we recognise as ours — it may simply be worded differently, or it may be someone else's (the borrower's, or a prior lender's), in which case loss notices would never reach us. Read the address on the binder and confirm it is "${LENDER_MORTGAGEE_CLAUSE.replace(/\n/g, ', ')}". If it is not, have the agent correct it. (This is about the insurance document; the title policy's clause is checked separately.)`,
+          actions: ['acknowledge', 'request_document', 'dismiss'] }));
+      }
     }
   }
   // The policy must be tied to OUR loan number.
@@ -379,12 +417,38 @@ function computeInsuranceInvoiceFindings(inv, subject, opts = {}) {
 function computeFloodFindings(fl, subject, opts = {}) {
   const out = []; if (!fl) return out;
   if (unreadable('flood', fl, ['floodZone', 'inSfha'])) return [verify('flood', 'flood determination')];
-  if (fl.inSfha === true && fl.policyPresent !== true) {
-    out.push(mk('flood', { code: 'flood_insurance_required', severity: 'fatal', field: 'flood_insurance',
-      docValue: fl.floodZone || 'SFHA', fileValue: null,
-      title: 'Flood insurance is required but not on file',
-      howTo: `The property is in a Special Flood Hazard Area (zone ${fl.floodZone || 'A/V'}). Federal law requires flood insurance — obtain a flood policy before closing.`,
-      actions: ['request_document', 'post_condition', 'dismiss'] }));
+  // SAME CLASS AS THE MORTGAGEE CLAUSE, at fatal severity (audit 2026-07-26). The old test was
+  // `policyPresent !== true`, so a NULL fired it — and a FEMA flood determination (the document this
+  // slot is for) does not report whether a flood POLICY exists anywhere, so `policyPresent` is null
+  // on essentially every one of them. The file was being told "flood insurance is not on file" by a
+  // document structurally incapable of knowing that.
+  //
+  // The flood ZONE itself is proven, and flood insurance in a Special Flood Hazard Area is a federal
+  // requirement — so this stays blocking either way. What changes is the claim: we only say "not on
+  // file" when the document actually said so, and otherwise ask for the confirmation we genuinely
+  // need. Same gate, honest wording.
+  // TRUST THE ZONE, NOT ONLY THE DERIVED FLAG (audit 2026-07-26). `inSfha` is something the reader
+  // is asked to DERIVE ("true for any zone starting with A or V"), and the same instructions say to
+  // use null when it cannot commit — so a determination that plainly prints "Zone AE" routinely
+  // comes back with the zone filled in and the boolean null, and the whole check went silent on a
+  // property that is demonstrably in a flood zone. The zone letter is the primary evidence; the flag
+  // is a convenience. Same derivation `run.js` uses for the investor-guideline flood signal, so the
+  // two desks agree on what "in a flood zone" means.
+  const zoneSaysSfha = /^[AV]/i.test(String(fl.floodZone || '').trim());
+  const inSfha = fl.inSfha === true || (fl.inSfha == null && zoneSaysSfha);
+  if (inSfha && fl.policyPresent !== true) {
+    const proven = fl.policyPresent === false;
+    out.push(mk('flood', proven
+      ? { code: 'flood_insurance_required', severity: 'fatal', field: 'flood_insurance',
+          docValue: fl.floodZone || 'SFHA', fileValue: null,
+          title: 'Flood insurance is required but not on file',
+          howTo: `The property is in a Special Flood Hazard Area (zone ${fl.floodZone || 'A/V'}). Federal law requires flood insurance — obtain a flood policy before closing.`,
+          actions: ['request_document', 'post_condition', 'dismiss'] }
+      : { code: 'flood_insurance_confirm', severity: 'fatal', field: 'flood_insurance',
+          docValue: fl.floodZone || 'SFHA', fileValue: null,
+          title: 'The property is in a flood zone — confirm the flood policy is on the file',
+          howTo: `The determination puts the property in a Special Flood Hazard Area (zone ${fl.floodZone || 'A/V'}), where federal law requires flood insurance. The determination itself does not say whether a policy exists, so confirm the flood policy is on the file before closing.`,
+          actions: ['request_document', 'post_condition', 'dismiss'] }));
   }
   return out;
 }
@@ -438,9 +502,47 @@ function computeCreditFindings(c, subject, opts = {}) {
       howTo: 'A judgment or tax lien can attach to property and cloud title. Confirm it is satisfied or will be paid at closing.' }));
   }
   if (c.mortgageLates === true) {
+    // WHICH mortgage, WHEN, and the most recent one (owner-reported 2026-07-26). "Credit shows
+    // recent mortgage lates" is not something an underwriter can act on, explain to a note buyer, or
+    // even find again in a 40-page report. When the reader captured the tradelines, name them; when
+    // it did not, say plainly that the detail has to be read by hand rather than dressing up the
+    // same bare fact.
+    //
+    // A tradeline only counts as captured if it NAMES a creditor. An entry with counts but no name
+    // sends an underwriter looking for an account we cannot identify, so the honest answer there is
+    // the same as having read nothing (audit 2026-07-26).
+    const lates = (Array.isArray(c.mortgageLateDetails) ? c.mortgageLateDetails.filter(Boolean) : [])
+      .filter((d) => String(d.creditorName == null ? '' : d.creditorName).trim());
+    const lateLine = (d) => {
+      const who = [String(d.creditorName).trim(), d.accountLast4 ? `••${String(d.accountLast4).slice(-4)}` : null].filter(Boolean).join(' ');
+      const counts = [d.count30 ? `${d.count30}×30-day` : null, d.count60 ? `${d.count60}×60-day` : null,
+        d.count90 ? `${d.count90}×90-day` : null].filter(Boolean).join(', ');
+      const when = d.mostRecentLate ? `most recent ${d.mostRecentLate}` : 'date of the most recent late not shown';
+      return `  · ${who}: ${counts || (d.worstLate ? `${d.worstLate}-day late` : 'late payments')} — ${when}`;
+    };
+    const worst = lates.reduce((m, d) => Math.max(m, Number(d.worstLate) || 0), 0);
+    // "Most recent" has to be a real comparison. A plain .sort() is lexicographic, so '2024-9' sorts
+    // ABOVE '2024-10' and the headline would name the wrong month; anything not written as YYYY-MM
+    // (a free-text month, a Date that stringified) is not comparable at all and is left out of the
+    // headline rather than printed as if it were the answer.
+    const monthKey = (s) => {
+      const m = /^\s*(\d{4})-(\d{1,2})\s*$/.exec(String(s == null ? '' : s));
+      if (!m) return null;
+      const mo = Number(m[2]);
+      return mo >= 1 && mo <= 12 ? `${m[1]}-${String(mo).padStart(2, '0')}` : null;
+    };
+    const recent = lates.map((d) => monthKey(d.mostRecentLate)).filter(Boolean).sort().pop() || null;
     out.push(mk('credit_report', { code: 'credit_mortgage_lates', severity: 'warning', field: 'mortgage_history',
-      title: 'Credit shows recent mortgage lates',
-      howTo: 'Recent mortgage late payments appear on the report. Confirm they meet the program\'s housing-history requirement.' }));
+      docValue: lates.length
+        ? `${lates.length} mortgage${lates.length === 1 ? '' : 's'} with lates${worst ? `, worst ${worst}-day` : ''}${recent ? `, most recent ${recent}` : ''}`
+        : 'lates reported, tradeline detail not captured',
+      title: lates.length
+        ? `Credit shows mortgage lates on ${lates.length} account${lates.length === 1 ? '' : 's'}${recent ? ` — most recent ${recent}` : ''}`
+        : 'Credit shows recent mortgage lates',
+      howTo: lates.length
+        ? `The report shows late mortgage payments on:\n${lates.map(lateLine).join('\n')}\n`
+          + `Open the credit report at the payment-history grid and confirm each of these against the tradeline itself before acting on them, then check this against the program's housing-history requirement and get a letter of explanation for the most recent one.`
+        : 'The report says there are recent mortgage late payments but does not break out which account or when. Open the credit report\'s payment-history grid and note the creditor, the number of 30/60/90-day lates, and the month of the most recent one, then check it against the program\'s housing-history requirement.' }));
   }
   // The loan was PRICED on an estimated FICO (Products & Pricing). The actual middle/representative
   // score on the pulled report must not come in BELOW that estimate — a lower real score can land in
@@ -495,11 +597,43 @@ function computeBackgroundFindings(b, subject, opts = {}) {
   // On an ENTITY deal, the borrowing entity must ALSO be screened (an LLC can itself be sanctioned).
   const en = subject && subject.entity_name;
   if (en) {
-    if (!b.entityName) {
+    // SEARCH THE WHOLE REPORT BEFORE SAYING THE ENTITY WASN'T SCREENED (owner-reported 2026-07-26).
+    // PILOT told the owner the borrowing entity was never screened while the report's own WATCH LIST
+    // section listed MW TRADING LLC by name, about 23 pages in. The check was reading a single
+    // `entityName` header field, which one report can only fill with one name — so a report that
+    // screens a person plus several entities looked, to this check, like a report that screened no
+    // entity at all. Their words: *"you can do a control F and search entity name."*
+    //
+    // So the entity now counts as screened if it appears ANYWHERE the report says it screened
+    // something — the header field OR the enumerated screened-parties list.
+    const screened = Array.isArray(b.screenedParties) ? b.screenedParties.filter(Boolean) : [];
+    const inList = screened.some((n) => entityMatch(n, en) === true);
+    const headerMatches = b.entityName && entityMatch(b.entityName, en) === true;
+    if (headerMatches || inList) {
+      // Screened. Nothing to raise.
+    } else if (!b.entityName && !screened.length) {
+      // Nothing in the header AND no screened-parties list was found. Whether the entity was screened
+      // is UNKNOWN, not absent — the same rule as everywhere else: an absence claim needs proof the
+      // document was the kind that would have shown it. `screenedPartiesComplete === false` is the
+      // reader explicitly saying it could not find such a list.
+      const searched = b.screenedPartiesComplete === true;
+      out.push(mk('background_report', searched
+        ? { code: 'background_entity_not_screened', severity: 'warning', field: 'entity',
+            docValue: '(no entity screened)', fileValue: en,
+            title: 'The borrowing entity was not screened',
+            howTo: `This is an entity deal (vesting entity "${en}"), but the background/OFAC report screened no entity. The borrowing LLC must be screened too — an entity can itself be on a sanctions list. Run the screen on "${en}" and add it to the file.`,
+            actions: ['request_document', 'post_condition', 'dismiss'] }
+        : { code: 'background_screened_parties_unreadable', severity: 'info', field: 'entity',
+            docValue: '(the list of screened parties could not be found)', fileValue: en,
+            title: `Confirm "${en}" is on the report's screened-party list`,
+            howTo: `The report's list of screened parties could not be located, so whether the borrowing entity "${en}" was screened cannot be confirmed from the reading. These reports carry it in a "Watch List" or "Subjects Searched" table that can sit deep in the document — check it by hand, or request a report that states the screened parties clearly.`,
+            actions: ['acknowledge', 'request_document', 'dismiss'] }));
+    } else if (screened.length && !inList && !b.entityName) {
+      // A list WAS read and the entity is not on it — a real, evidenced gap.
       out.push(mk('background_report', { code: 'background_entity_not_screened', severity: 'warning', field: 'entity',
-        docValue: '(no entity screened)', fileValue: en,
+        docValue: `screened: ${screened.slice(0, 6).join(', ')}`, fileValue: en,
         title: 'The borrowing entity was not screened',
-        howTo: `This is an entity deal (vesting entity "${en}"), but the background/OFAC report screened no entity. The borrowing LLC must be screened too — an entity can itself be on a sanctions list. Run the screen on "${en}" and add it to the file.`,
+        howTo: `The report lists the parties it screened (${screened.slice(0, 6).join(', ')}) and the vesting entity "${en}" is not among them. The borrowing LLC must be screened too — an entity can itself be on a sanctions list. Run the screen on "${en}" and add it to the file.`,
         actions: ['request_document', 'post_condition', 'dismiss'] }));
     } else if (entityMatch(b.entityName, en) === false) {
       out.push(mk('background_report', { code: 'background_entity_mismatch', severity: 'warning', field: 'entity',
@@ -514,12 +648,26 @@ function computeBackgroundFindings(b, subject, opts = {}) {
   // A fraud report can come back "clear" on OFAC yet carry HIGH alerts (SSN issued before DOB, ID
   // flagged, address is a known mail-drop, identity-theft alert). Any fraud flag has to be
   // adjudicated to zero before closing — surface them so none is silently accepted.
-  const flags = Array.isArray(b.fraudFlags) ? b.fraudFlags.filter((s) => String(s || '').trim()) : [];
+  // AN ALERT SOMEONE ALREADY CLEARED IS NOT AN OPEN ALERT (owner-reported 2026-07-26). PILOT kept
+  // telling the owner the fraud alerts "must be cleared" when an admin had already dispositioned
+  // them, with the reason printed on the following page — *"The borrower is a professional
+  // investor"*, *"backed by the appraisal"*. Reading only the alert table and never the Cleared
+  // Variance section turns finished work into an open item, which is the noise that made the
+  // findings surface unusable.
+  const cleared = Array.isArray(b.clearedVariances) ? b.clearedVariances.filter(Boolean) : [];
+  const clearedText = cleared.map((c) => normText(c && c.alert)).filter(Boolean);
+  const flags = (Array.isArray(b.fraudFlags) ? b.fraudFlags.filter((x) => String(x || '').trim()) : [])
+    // Belt-and-braces: the reader is told not to repeat a cleared alert in fraudFlags, but if it
+    // does, the disposition wins. An alert cannot be both open and resolved.
+    .filter((x) => !clearedText.includes(normText(x)));
   if (flags.length) {
+    const clearedNote = cleared.length
+      ? ` (${cleared.length} other alert${cleared.length === 1 ? '' : 's'} on this report ${cleared.length === 1 ? 'has' : 'have'} already been cleared and ${cleared.length === 1 ? 'is' : 'are'} not repeated here.)`
+      : '';
     out.push(mk('background_report', { code: 'background_fraud_alerts', severity: 'warning', field: 'fraud',
       docValue: flags.slice(0, 6).join(' | '), fileValue: null,
       title: 'The fraud report has alerts that must be cleared',
-      howTo: `The report returned ${flags.length} fraud alert(s): ${flags.slice(0, 6).join(' | ')}. Every high alert must be adjudicated and cleared (documented) before clear-to-close — an open fraud alert can indicate identity theft or a straw borrower.`,
+      howTo: `The report returned ${flags.length} fraud alert(s) that are still open: ${flags.slice(0, 6).join(' | ')}. Every high alert must be adjudicated and cleared (documented) before clear-to-close — an open fraud alert can indicate identity theft or a straw borrower.${clearedNote}`,
       actions: ['post_condition', 'request_document', 'grant_exception', 'dismiss'] }));
   }
   if (b.pepHit === true) {
@@ -769,7 +917,35 @@ function computeSignedApplicationFindings(a, subject, opts = {}) {
       howTo: 'The application must be signed by the borrower. Obtain the borrower-signed copy before clear-to-close.',
       actions: ['request_document', 'post_condition', 'dismiss'] }));
   }
-  if (a.businessPurposePresent === false) {
+  // THE CERTIFICATION COMES BACK WITH THE SIGNED PACKAGE — a blank 1003 is not evidence it is
+  // missing (owner-reported 2026-07-26: "it belongs to the term-sheet package, which hasn't been
+  // sent yet, and it's reading the wrong document regardless").
+  //
+  // Same class as the insurance-invoice case above: an UNSIGNED application honestly answers
+  // "business-purpose certification present? no" — because the borrower hasn't signed anything yet.
+  // Turning that into a FATAL accuses every file of a compliance defect during the window when the
+  // package is simply still out for signature. The signature is what proves this is the executed
+  // disclosure package and therefore the document that WOULD carry the certification; without it
+  // the honest finding is the one already raised above (`application_unsigned`), not a second one.
+  // A signature DATE is only proof of execution if the reader did not already say the document is
+  // UNSIGNED (audit 2026-07-26). `affirmed` correctly refuses to let "signed: no" count as proof —
+  // but a raw `signedDate` alongside it put the proof straight back, and a blank application form
+  // with a printed "Date: ____" line carries exactly that shape. The result was the original class
+  // all over again: a compliance FATAL raised off a document the reader had just said was not
+  // executed. An explicit "not signed" now vetoes the whole marker set.
+  const EXECUTED_MARKERS = a.signaturePresent === false ? [] : [affirmed(a.signaturePresent), a.signedDate];
+  if (wrongDocument(a.businessPurposePresent, EXECUTED_MARKERS)) {
+    // The reader says there is no certification AND nothing shows this document was ever executed —
+    // no signature, no signature date. That is a blank application form, or the wrong document in the
+    // slot, not a compliance defect in the loan. It must still SAY something: going silent here was a
+    // release blocker in the first version of this guard (a fatal that used to fire produced nothing
+    // at all when `signaturePresent` came back null, which the schema treats as an ordinary answer).
+    out.push(mk('signed_application', { code: 'application_not_the_signed_package', severity: 'warning', field: 'document',
+      docValue: 'no signature and no signature date on this document', fileValue: null,
+      title: 'This looks like a blank application, not the executed disclosure package',
+      howTo: 'The business-purpose / non-owner-occupied certification comes back with the SIGNED package — a blank or unexecuted application never carries it, so nothing can be confirmed from this document. Obtain the borrower-executed package (or file this copy under the application slot).',
+      actions: ['request_document', 'post_condition', 'dismiss'] }));
+  } else if (provenAbsent(a.businessPurposePresent, EXECUTED_MARKERS)) {
     // FATAL: the business-purpose / non-owner-occupied certification is the legal basis for this loan
     // being exempt from consumer-mortgage regulation (TILA/RESPA/ATR). Closing without it is a real
     // compliance exposure, so it blocks CTC — but it's a stored per-doc finding, so a senior can

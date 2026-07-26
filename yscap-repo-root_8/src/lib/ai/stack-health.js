@@ -85,7 +85,13 @@ const COMPONENTS = Object.freeze([
     role: 'Records every AI call for audit + debugging', provider: 'Langfuse',
     probe: () => {
       const c = require('./langfuse');
-      return { active: c.enabled(), model: null };
+      if (!c.enabled()) return { active: false, model: null };
+      // Findings link to their trace as soon as tracing is on. Say which FORM the links take: the
+      // direct one once Langfuse has told us its project identifier, otherwise Langfuse's own
+      // redirect, which resolves the project on its side. Both work — this is visibility, not a
+      // warning.
+      return { active: true,
+        model: c.projectId() ? 'recording · finding links direct' : 'recording · finding links via redirect' };
     },
   },
 ]);
