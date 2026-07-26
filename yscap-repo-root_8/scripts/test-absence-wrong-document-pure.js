@@ -196,5 +196,72 @@ ok(!has(unsignedWithDate, 'application_no_business_purpose'),
   `a document the reader says is UNSIGNED never raises the compliance FATAL, date or no date (got ${JSON.stringify(codes(unsignedWithDate))})`);
 ok(has(unsignedWithDate, 'application_unsigned'), 'the honest "it is not signed" finding is still raised');
 
+// ---------- the assignment: a missing signature PAGE is not an unexecuted assignment ----------
+// "assignorSigned: false" is equally true of a genuinely unsigned assignment and of a draft or a
+// scan whose signature page never made it. Both must STOP the file — an assignment we cannot
+// confirm is executed is a real reason not to close — but only one of them may be ASSERTED.
+const asgBase = { assigneeName: 'Maple LLC', originalPurchasePrice: 100000, assignmentFee: 5000,
+  totalPriceToAssignee: 105000, readable: true };
+
+// One party signed, the other did not: the signature block is in view, so the claim is earned.
+const oneSigned = DC.computeAssignmentFindings(
+  Object.assign({}, asgBase, { assignorSigned: true, assigneeSigned: false }), {}, {});
+ok(has(oneSigned, 'assignment_unsigned'), 'a visible signature block with one party missing is still the unsigned FATAL');
+ok(oneSigned.find((f) => f.code === 'assignment_unsigned').severity === 'fatal', 'and it is still fatal');
+ok(!has(oneSigned, 'assignment_execution_unconfirmed'), 'and it does not also hedge');
+
+// NOTHING signed and nothing to show a signature page was ever seen: a draft, or a partial scan.
+const noSignatures = DC.computeAssignmentFindings(
+  Object.assign({}, asgBase, { assignorSigned: false, assigneeSigned: false }), {}, {});
+ok(!has(noSignatures, 'assignment_unsigned'),
+  `we never assert the assignment is unexecuted off pages that show no signature block (got ${JSON.stringify(codes(noSignatures))})`);
+const unconf = noSignatures.find((f) => f.code === 'assignment_execution_unconfirmed');
+ok(!!unconf, 'we say instead that execution could not be confirmed');
+// THE UNDER-REACH GUARD. This is the half that matters: softening the claim must not soften the stop.
+ok(unconf && unconf.severity === 'fatal', 'and it is STILL fatal — the softer claim must not become a softer gate');
+ok(unconf && unconf.blocksCtc === true, 'and it STILL blocks clear-to-close');
+
+// A fully executed assignment raises neither.
+const executed = DC.computeAssignmentFindings(
+  Object.assign({}, asgBase, { assignorSigned: true, assigneeSigned: true }), {}, {});
+ok(!has(executed, 'assignment_unsigned') && !has(executed, 'assignment_execution_unconfirmed'),
+  `a signed assignment raises neither (got ${JSON.stringify(codes(executed))})`);
+
+// ---------- the operating agreement: articles of organization are not an unsigned OA ----------
+// Read under the OA schema, ARTICLES answer "signed: no" and "authorizes borrowing: no" perfectly
+// honestly — they are a state filing and carry neither. Both answers were accusations against the
+// borrower's actual agreement, one of them CTC-blocking.
+const realOA = { entityLegalName: 'Maple Grove Holdings LLC', managingMember: 'John Smith',
+  members: [{ name: 'John Smith', ownershipPct: 100, isManager: true }],
+  authorizesBorrowing: true, signed: true, readable: true };
+
+const oaUnsigned = DC.computeOperatingAgreementFindings(Object.assign({}, realOA, { signed: false }), {}, {});
+ok(has(oaUnsigned, 'oa_unsigned'), 'a real agreement that is unsigned is still the unsigned FATAL');
+ok(oaUnsigned.find((f) => f.code === 'oa_unsigned').severity === 'fatal', 'and still fatal');
+
+// Articles of organization in the OA slot: entity name and registered agent, but no members, no
+// ownership percentages, no management type.
+const articles = { entityLegalName: 'Maple Grove Holdings LLC', registeredAgent: 'CT Corporation',
+  principalOfficeAddress: '1 Main St', members: [], managementType: null,
+  authorizesBorrowing: false, signed: false, readable: true };
+const oaWrongDoc = DC.computeOperatingAgreementFindings(articles, {}, {});
+ok(!has(oaWrongDoc, 'oa_unsigned'),
+  `we never call the borrower's agreement unsigned off a document that is not the agreement (got ${JSON.stringify(codes(oaWrongDoc))})`);
+ok(!has(oaWrongDoc, 'oa_no_borrowing_authority'),
+  'and we do not separately accuse it of lacking borrowing authority — that is the same wrong document twice');
+const notOA = oaWrongDoc.find((f) => f.code === 'oa_not_the_operating_agreement');
+ok(!!notOA, 'we say instead that this does not look like the agreement');
+// THE UNDER-REACH GUARD again: the file still cannot close without a real executed OA.
+ok(notOA && notOA.severity === 'fatal', 'and it is STILL fatal');
+ok(notOA && notOA.blocksCtc === true, 'and it STILL blocks clear-to-close');
+
+// A real agreement that genuinely does not authorize borrowing is still raised.
+ok(has(DC.computeOperatingAgreementFindings(Object.assign({}, realOA, { authorizesBorrowing: false }), {}, {}),
+  'oa_no_borrowing_authority'), 'a real agreement missing the borrowing clause is still raised');
+// Management type alone is enough to prove it is the agreement, even with members unread.
+ok(has(DC.computeOperatingAgreementFindings(
+  { entityLegalName: 'X LLC', members: [], managementType: 'manager_managed', signed: false, readable: true }, {}, {}),
+  'oa_unsigned'), 'a stated management type alone proves we are holding the agreement');
+
 console.log(`test-absence-wrong-document-pure: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
