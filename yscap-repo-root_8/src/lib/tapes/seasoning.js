@@ -233,21 +233,39 @@ function seasoningInputs(loan, asOf) {
 function applySeasonedOverrides(snap, overrides) {
   const o = overrides || {};
   const out = Object.assign({}, snap);
-  const bal = num(o.current_balance);
-  if (bal != null && bal >= 0) {
-    out.currentBalance = bal;
+  const financed = num0(out.financedReserve);
+  const balOv = num(o.current_balance);
+  const resOv = num(o.current_reserve);
+  const haveBal = balOv != null && balOv >= 0;
+  const haveRes = resOv != null && resOv >= 0;
+
+  if (haveRes) {
+    const rem = Math.min(resOv, financed);
+    out.currentReserve = rem;
+    out.undisbursedReserve = rem;
+    out.disbursedReserve = Math.max(0, financed - rem);
+    out.overriddenReserve = true;
+    // Keep the disbursement columns tying (day1 + draws + reserve-used ==
+    // current balance): if the balance wasn't ALSO confirmed, derive it here.
+    if (!haveBal) {
+      out.currentBalance = num0(out.day1) + num0(out.disbursedHoldback) + out.disbursedReserve;
+      if (out.accrual !== 'dutch') out.interestBearing = out.currentBalance;
+    }
+  }
+  if (haveBal) {
+    out.currentBalance = balOv;
     // For as-drawn the whole current balance bears interest; for Dutch the
     // interest-bearing balance stays the whole note.
-    if (out.accrual !== 'dutch') out.interestBearing = bal;
+    if (out.accrual !== 'dutch') out.interestBearing = balOv;
     out.overriddenBalance = true;
-  }
-  const res = num(o.current_reserve);
-  if (res != null && res >= 0) {
-    const capped = Math.min(res, num0(out.financedReserve));
-    out.currentReserve = capped;
-    out.undisbursedReserve = capped;
-    out.disbursedReserve = Math.max(0, num0(out.financedReserve) - capped);
-    out.overriddenReserve = true;
+    // Back-solve the reserve split from the confirmed balance so the columns
+    // still tie — unless the reserve was separately confirmed (then honor both).
+    if (!haveRes) {
+      const disb = Math.max(0, Math.min(financed, balOv - num0(out.day1) - num0(out.disbursedHoldback)));
+      out.disbursedReserve = disb;
+      out.undisbursedReserve = financed - disb;
+      out.currentReserve = out.undisbursedReserve;
+    }
   }
   const due = o.next_due;
   if (due && parseYMD(due)) { out.nextDue = fmtYMD(parseYMD(due)); out.overriddenNextDue = true; }

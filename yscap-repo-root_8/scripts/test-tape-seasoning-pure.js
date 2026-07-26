@@ -110,4 +110,27 @@ ok(noRes.disbursedReserve === 0, 'no financed reserve -> nothing disbursed from 
 ok(noRes.currentBalance === 340000, 'balance = day1 + draws only when no reserve');
 ok(noRes.isSeasoned === true, 'seasoned via draws even without a reserve');
 
+// ---- 9. applySeasonedOverrides keeps the disbursement columns tying ---------
+const baseSnap = s.computeSeasoning({
+  day1: 275000, holdback: 75000, financedReserve: 20000, totalLoan: 370000,
+  rate: 0.12, accrual: 'non_dutch', fundingDate: '2026-01-01', firstPaymentDate: '2026-03-01',
+  asOf: '2026-07-01', releases: [{ date: '2026-04-01', amount: 25000 }],
+});
+const tie = (o) => Math.abs(o.currentBalance - (o.day1 + o.disbursedHoldback + o.disbursedReserve)) <= 0.5;
+// Override balance only → reserve split back-solves so the row ties.
+const obal = s.applySeasonedOverrides(baseSnap, { current_balance: 310000 });
+ok(obal.currentBalance === 310000, 'override balance applied');
+ok(tie(obal), 'override balance: day1 + draws + reserve-used == current balance');
+ok(obal.interestBearing === 310000, 'override balance: as-drawn interest-bearing tracks the confirmed balance');
+// Override reserve only → balance derives so the row ties.
+const ores = s.applySeasonedOverrides(baseSnap, { current_reserve: 8000 });
+ok(ores.currentReserve === 8000 && ores.disbursedReserve === 12000, 'override reserve: split recomputed');
+ok(tie(ores), 'override reserve: current balance derived so the row ties');
+// Reserve override is clamped to the financed reserve.
+const oclamp = s.applySeasonedOverrides(baseSnap, { current_reserve: 999999 });
+ok(oclamp.currentReserve === 20000 && oclamp.disbursedReserve === 0, 'override reserve clamped to financed reserve');
+// Next-due override.
+const odue = s.applySeasonedOverrides(baseSnap, { next_due: '2026-09-01' });
+ok(odue.nextDue === '2026-09-01', 'override next due applied');
+
 console.log(`test-tape-seasoning-pure: OK (${pass} assertions)`);

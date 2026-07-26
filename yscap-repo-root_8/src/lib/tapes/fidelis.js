@@ -214,13 +214,18 @@ function economics(loan) {
   }
   const financedIR = n(s.financedReserve) != null ? n(s.financedReserve) : n(a.requested_ir_amount);
   const initialAdvance = n(s.initialAdvance);
+  // Day-1 advance = the amount actually funded at closing (loan − holdback −
+  // reserve), NOT the whole loan; the holdback and reserve are advanced later.
+  // Matches seasoning.seasoningInputs so a fresh loan's current balance is the
+  // same whether or not a seasoning snapshot is attached.
+  const day1Fallback = loanAmount != null ? loanAmount - (financedRehab || 0) - (financedIR || 0) : null;
   return {
     loanAmount,
     financedRehab,
     totalRehab,
     oopRehab,
     financedIR,
-    currentBalance: initialAdvance != null ? initialAdvance : loanAmount,
+    currentBalance: initialAdvance != null ? initialAdvance : day1Fallback,
     purchasePrice: n(a.purchase_price) != null ? n(a.purchase_price)
       : (n(a.original_purchase_price) != null ? n(a.original_purchase_price) : n(a.underlying_contract_price)),
     asIs: n(a.as_is_value) != null ? n(a.as_is_value)
@@ -251,7 +256,7 @@ const COLUMNS = [
   ['J', 'n', S.CURRENCY, (l, e) => (l.seasoning ? l.seasoning.currentRehab : e.financedRehab)],
   ['K', 'n', S.CURRENCY, (l, e) => (l.seasoning ? l.seasoning.currentBalance : e.currentBalance)],
   ['L', 'n', S.CURRENCY, (l, e) => e.financedIR],
-  ['M', 'n', S.CURRENCY, (l, e) => (l.seasoning ? l.seasoning.currentReserve : e.financedIR)],
+  ['M', 'n', S.CURRENCY, (l, e) => (l.seasoning ? (n(l.seasoning.financedReserve) > 0 ? l.seasoning.currentReserve : null) : e.financedIR)],
   ['N', 'n', S.CURRENCY, (l, e) => e.oopRehab],
   ['O', 'n', S.CURRENCY, (l, e) => e.totalRehab],
   ['P', 'n', null, (l) => l.exp.total],

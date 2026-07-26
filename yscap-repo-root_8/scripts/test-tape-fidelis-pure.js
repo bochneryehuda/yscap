@@ -123,6 +123,21 @@ oloan.seasoning = seasoning.applySeasonedOverrides(
   { current_balance: 401234, next_due: '2026-08-01' });
 ok(cellOf(oloan, 'K').value === 401234, 'seasoned override: K uses the confirmed current balance');
 ok(cellOf(oloan, 'Y').value === '2026-08-01', 'seasoned override: Y uses the confirmed next due date');
+// A FRESH loan with a snapshot attached (the production path) must fill the
+// current columns IDENTICALLY to origination — including the no-registered-quote
+// path (economics falls back to the application's own loan amount / rehab / IR).
+for (const q of [undefined, { quote: {}, registration: {} }]) {
+  const freshNo = q ? synthLoan(q) : synthLoan();
+  const freshYes = q ? synthLoan(q) : synthLoan();
+  freshYes.app.actual_closing = '2026-08-15'; freshYes.app.first_payment_date = '2026-10-01';
+  freshYes.fundingDate = '2026-08-15'; freshYes.releases = [];
+  freshYes.seasoning = seasoning.computeSeasoning(seasoning.seasoningInputs(freshYes, '2026-08-20')); // before first payment
+  ok(freshYes.seasoning.isSeasoned === false, `fresh loan not seasoned (${q ? 'no-quote' : 'quote'})`);
+  for (const col of ['H', 'I', 'J', 'K', 'L', 'M', 'O']) {
+    ok(cellOf(freshYes, col).value === cellOf(freshNo, col).value,
+      `fresh loan ${col}: attached snapshot == origination (${q ? 'no-quote' : 'quote'})`);
+  }
+}
 
 // ---- 3. Template fidelity: only Data Tape + workbook calc flag change -------
 const single = fillXlsxTemplate(TEMPLATE, { sheetPart: SHEET, firstRow: 2, rows: [fidelis.buildRow(loan)], lastCol: 'AV' });
