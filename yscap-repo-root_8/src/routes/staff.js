@@ -10912,7 +10912,10 @@ router.post('/applications/:id/esign/send', async (req, res) => {
       const encGate = await require('../encompass/reconcile').issuanceGate(req.params.id);
       if (encGate.block) {
         const ovr = String((req.body && req.body.encompassOverrideReason) || '').trim();
-        if (!seesAll(req)) return res.status(422).json({
+        // ADMIN-only override — `seesAll` also grants underwriter / closer /
+        // coordinators, who must not be able to send a mismatched package.
+        // Matches the data-tape gate's `tapeAdmin` rule.
+        if (!tapeAdmin(req)) return res.status(422).json({
           error: `Encompass and this file don’t agree yet — ${encGate.openBlocking} field(s) don’t match. Clear the Encompass sync (or ask an admin to override) before sending the term sheet for signature.`,
           code: 'encompass_findings_open', openFields: encGate.openBlockingKeys,
         });
@@ -10920,7 +10923,11 @@ router.post('/applications/:id/esign/send', async (req, res) => {
           error: `Encompass has ${encGate.openBlocking} unmatched field(s). As an admin you can override — provide a reason to send the signing package anyway.`,
           code: 'encompass_override_reason_required', openFields: encGate.openBlockingKeys,
         });
-        await audit(req, 'encompass_gate_override', 'application', req.params.id, { reason: ovr.slice(0, 500), purpose, openBlocking: encGate.openBlocking, openFields: encGate.openBlockingKeys });
+        // Its OWN try — the outer fail-open catch must never swallow the audit of
+        // an override that actually happened.
+        try {
+          await audit(req, 'encompass_gate_override', 'application', req.params.id, { reason: ovr.slice(0, 500), purpose, openBlocking: encGate.openBlocking, openFields: encGate.openBlockingKeys });
+        } catch (_) { /* audit is best-effort but must not be silently lost to fail-open */ }
         try {
           await require('../lib/loan-exceptions').recordIssuanceOverride({
             appId: req.params.id, staffId: req.actor && req.actor.id,
