@@ -1,4 +1,4 @@
--- 327 — index audit_log for the (action, entity_id) throttle lookup.
+-- 329 — index audit_log for the (action, entity_id) throttle lookup.
 --
 -- WHY (audit finding, 2026-07-26): the scheduled digests now express their own throttle in SQL —
 -- "has this file been stamped with <action> inside <interval>?" — so an already-notified file does
