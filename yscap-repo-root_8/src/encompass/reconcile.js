@@ -59,6 +59,7 @@ function buildOurValues(app, quote, llcName) {
     // identity / program
     ys_loan_number: nz(a.ys_loan_number),
     property_type: nz(a.property_type),
+    units: nz(a.units),
     deal_type: deriveDealType(a.program, a.loan_type),
     exit_plan: undefined, // no column — reference-only
     loan_to_be_vested: a.llc_id ? 'Entity' : (a.borrower_id ? 'Individual' : undefined),
@@ -172,27 +173,94 @@ function compareAll(ours, theirs, resolutions) {
 }
 
 // Roll the fields up into the numbers the panel + the term-sheet gate need.
+// Owner-directed 2026-07-26: this section PASSES only when EVERY compared field
+// is an EXACT MATCH. So an advisory mismatch, a "no data to compare"
+// (incomparable — staff must enter it in Encompass), AND an accepted-but-still-
+// differing resolution ALL count as NOT PASSING and hold the term sheet.
+// Reference fields are the only ones never compared.
 function summarize(fields) {
   let compared = 0, matched = 0, mismatched = 0, incomparable = 0;
   let openBlocking = 0, openAdvisory = 0, resolved = 0;
-  const openBlockingKeys = [];
+  const notPassingKeys = [];
   for (const f of fields) {
     if (f.compare === 'reference' || f.status === 'reference') continue;
     compared += 1;
-    if (f.status === 'match') matched += 1;
-    else if (f.status === 'incomparable') incomparable += 1;
+    if (f.status === 'match') { matched += 1; continue; }
+    notPassingKeys.push(f.key);                    // anything that is not an exact match
+    if (f.status === 'incomparable') incomparable += 1;
     else if (f.status === 'mismatch') {
       mismatched += 1;
-      if (!f.open) resolved += 1;
-      else if (f.gate === map.GATE.BLOCK) { openBlocking += 1; openBlockingKeys.push(f.key); }
+      if (!f.open) resolved += 1;                  // accepted resolution (values still differ) — still not a match
       else if (f.gate === map.GATE.ADVISORY) openAdvisory += 1;
+      else openBlocking += 1;
     }
   }
   return {
     compared, matched, mismatched, incomparable, resolved,
-    openBlocking, openAdvisory, openBlockingKeys,
-    clear: openBlocking === 0, // the term-sheet gate (WO-E) reads this
+    openBlocking, openAdvisory,
+    notPassing: notPassingKeys.length,
+    notPassingKeys,
+    // Back-compat alias: the term-sheet gate + the register override now name
+    // EVERY not-passing field (mismatch, advisory, or no-data), not just the
+    // block-gate mismatches.
+    openBlockingKeys: notPassingKeys,
+    clear: matched === compared, // the term-sheet gate (WO-E) reads this — pass = everything matches
   };
+}
+
+// ── Identity + subject-address comparison (owner-directed 2026-07-26) ────────
+// Surface borrower identity (name / DOB / email / phone) + the subject PROPERTY
+// address in the SAME comparison, matched. Read from the stored Encompass loan
+// (encompass_extra) — which keeps name/DOB/email/phone/subject-address but
+// SCRUBS the SSN (PII governance), so SSN is a separate PII-safe hash compare
+// (added next). These rows are compare-only — we NEVER overwrite borrower PII
+// from a read — and BLOCK-gated (must match to pass). Pure — no DB.
+function _digits(v) { return String(v == null ? '' : v).replace(/\D/g, ''); }
+function _addrStr(a) {
+  if (a == null) return '';
+  if (typeof a === 'string') return a.trim();
+  if (typeof a !== 'object') return String(a);
+  const street = a.street || a.line1 || a.address1 || a.streetAddress || a.addressStreetLine1 || a.address || '';
+  const parts = [street, a.city, a.state, (a.zip || a.postalCode || a.zipCode || a.postal_code)];
+  return parts.map((x) => (x == null ? '' : String(x).trim())).filter((x) => x !== '').join(' ');
+}
+function compareIdentity(row, loan) {
+  const N = map._internals;
+  const app0 = loan && Array.isArray(loan.applications) ? loan.applications[0] : null;
+  const bor = (app0 && app0.borrower) ? app0.borrower : {};
+  const prop = (loan && loan.property) ? loan.property : {};
+  const out = [];
+  const push = (key, label, compare, ours, theirs) => {
+    const norm = (v) => {
+      if (v == null || v === '') return null;
+      if (compare === 'name') return N.normName(v);
+      if (compare === 'date') return N.normDate(v);
+      if (compare === 'phone') { const d = _digits(v); return d === '' ? null : d.slice(-10); }
+      return N.normText(v); // email / address / text
+    };
+    const oursNorm = norm(ours);
+    const theirsNorm = norm(theirs);
+    let status = 'incomparable';
+    if (oursNorm != null && oursNorm !== '' && theirsNorm != null && theirsNorm !== '') {
+      status = oursNorm === theirsNorm ? 'match' : 'mismatch';
+    }
+    out.push({
+      key, encompassFieldId: null, label, category: 'identity', compare,
+      gate: map.GATE.BLOCK,
+      ours: (ours == null || ours === '') ? null : String(ours),
+      theirs: (theirs == null || theirs === '') ? null : String(theirs),
+      oursNorm, theirsNorm, status,
+      writable: false, open: status === 'mismatch', resolution: null,
+    });
+  };
+  const ourName = [row.b_first_name, row.b_last_name].filter((x) => x && String(x).trim()).join(' ').trim();
+  const theirName = [bor.firstName, bor.lastName].filter((x) => x && String(x).trim()).join(' ').trim();
+  push('id_borrower_name', 'Borrower name', 'name', ourName || null, theirName || null);
+  push('id_dob', 'Date of birth', 'date', row.b_dob || null, bor.birthDate || null);
+  push('id_email', 'Email', 'email', row.b_email || null, bor.emailAddressText || null);
+  push('id_phone', 'Phone', 'phone', row.b_cell_phone || null, (bor.mobilePhone || bor.homePhoneNumber) || null);
+  push('id_property_address', 'Property address', 'address', _addrStr(row.property_address), _addrStr(prop));
+  return out;
 }
 
 // ── DB-backed: compute the live findings for one application ────────────────
@@ -207,10 +275,14 @@ async function computeFindings(appId, dbc) {
             a.loan_amount, a.purchase_price, a.underlying_contract_price, a.assignment_fee,
             a.rehab_budget, a.as_is_value, a.arv, a.ltv, a.rate_pct, a.term, a.maturity_date,
             a.program, a.loan_type, a.rehab_type, a.accrual_type, a.property_type,
+            a.units, a.property_address,
             a.requested_exp_flips, a.requested_exp_holds, a.requested_exp_ground,
-            l.llc_name AS llc_name
+            l.llc_name AS llc_name,
+            b.first_name AS b_first_name, b.last_name AS b_last_name,
+            b.date_of_birth AS b_dob, b.email AS b_email, b.cell_phone AS b_cell_phone
        FROM applications a
        LEFT JOIN llcs l ON l.id = a.llc_id
+       LEFT JOIN borrowers b ON b.id = a.borrower_id
       WHERE a.id = $1 AND a.deleted_at IS NULL
       LIMIT 1`, [appId])).rows[0];
   if (!row) return { found: false, hasLoan: false, fields: [], summary: summarize([]) };
@@ -228,7 +300,13 @@ async function computeFindings(appId, dbc) {
   const loan = row.encompass_extra || null;
   const theirs = loan ? map.extractFields(loan) : {};
   const ours = buildOurValues(row, quote ? quote.quote : null, row.llc_name);
-  const { fields, summary } = compareAll(ours, theirs, resolutions);
+  const { fields: econFields } = compareAll(ours, theirs, resolutions);
+  // Identity + subject-address rows (owner-directed 2026-07-26) — only when a
+  // loan is pulled. They are compare-only + BLOCK-gated and fold into the same
+  // summary so "everything matches" includes them.
+  const idFields = loan ? compareIdentity(row, loan) : [];
+  const fields = econFields.concat(idFields);
+  const summary = summarize(fields);
 
   // Attach the resolver metadata onto resolved fields for the panel.
   for (const f of fields) {

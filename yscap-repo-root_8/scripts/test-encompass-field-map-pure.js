@@ -120,12 +120,22 @@ assert.strictEqual(m.compareField('maturity_date', '2027-06-22', '2027-06-22T00:
 assert.strictEqual(m.compareField('maturity_date', '2027-06-22', '2027-06-23').status, 'mismatch');
 ok('date compares to the day (tolerates a time component)');
 
-// ── Reference fields: surfaced, never compared ──────────────────────────────
+// ── Reference fields: surfaced, never compared; PITIA removed ───────────────
 assert.strictEqual(m.compareField('exit_plan', 'sell', 'Refinance: Rental').status, 'reference');
-assert.strictEqual(m.compareField('ref_pitia', 1, 2).status, 'reference');
-assert.strictEqual(m.compareField('ys_loan_number', 'A', 'B').status, 'reference', 'the natural key is not a finding');
+assert.strictEqual(m.compareField('ref_cash_to_close', 1, 2).status, 'reference');
+assert.ok(!m.BY_KEY.ref_pitia, 'PITIA was removed from the registry (owner-directed 2026-07-26 — wrong field)');
 assert.ok(m.comparableKeys().every((k) => m.BY_KEY[k].compare !== 'reference'), 'comparableKeys excludes reference fields');
-ok('reference fields are surfaced but never produce a finding');
+ok('reference fields are surfaced but never produce a finding; PITIA is gone');
+
+// ── Loan number + units are now MATCHED (owner-directed 2026-07-26) ──────────
+assert.strictEqual(m.BY_KEY.ys_loan_number.gate, m.GATE.BLOCK, 'loan number is now a matched (block) field, not reference');
+assert.strictEqual(m.compareField('ys_loan_number', 'YSCAP1', 'YSCAP1').status, 'match', 'equal loan numbers match');
+assert.strictEqual(m.compareField('ys_loan_number', 'YSCAP1', 'YSCAP2').status, 'mismatch', 'different loan numbers mismatch');
+assert.ok(m.BY_KEY.units, 'units is now a registry field');
+assert.strictEqual(m.BY_KEY.units.encompassFieldId, '16', 'units maps to Encompass field 16');
+assert.strictEqual(m.compareField('units', 3, 3).status, 'match');
+assert.strictEqual(m.compareField('units', 2, 4).status, 'mismatch');
+ok('loan number + units (field 16) are matched fields now');
 
 // ── Gate classification (WO-E) ──────────────────────────────────────────────
 assert.strictEqual(m.BY_KEY.loan_amount.gate, m.GATE.BLOCK, 'money mismatch blocks the term sheet');
