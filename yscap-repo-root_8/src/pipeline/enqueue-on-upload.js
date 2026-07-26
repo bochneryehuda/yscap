@@ -71,4 +71,56 @@ async function maybeEnqueueUpload(db, { documentId = null, loanId = null, family
   }
 }
 
-module.exports = { maybeEnqueueUpload, shadowGate };
+/**
+ * VSLICE-7 — enqueue a shadow job for EVERY eligible UPLOAD, not just the docs V1 chose to
+ * auto-read. Called from the upload routes right after the `documents` row is created. It derives
+ * the document family at upload time the SAME way V1's auto-read does (no AI classification needed):
+ * the checklist item's template code → its expected doc type, else the `doc_kind` tag — then defers
+ * to `maybeEnqueueUpload` (gate + idempotent enqueue).
+ *
+ * Governing guarantees (identical to the rest of this module):
+ *  - INERT BY DEFAULT: with the shadow flags off it does ZERO db work and returns
+ *    { enqueued:false, reason:'disabled' } BEFORE any query — so wiring it into the live upload
+ *    path is behavior-identical to today until the owner flips UW_PIPELINE_V2_SHADOW on.
+ *  - NEVER THROWS: every step is caught; a family-lookup or enqueue error returns
+ *    { enqueued:false, reason:'error' } so a shadow enqueue can NEVER break a real upload.
+ *  - ADVISORY / SHADOW-ONLY: only ever WRITES a v2 job row; touches no V1 table, exposes no decision.
+ *  - IDEMPOTENT: `maybeEnqueueUpload` → job-queue.enqueue adopts an existing job per document+version,
+ *    so a re-upload never spawns a duplicate shadow job.
+ *
+ * @param {object} db     a pg pool/client with .query
+ * @param {object} opts   { documentId, loanId?, checklistItemId?, docKind?, pipelineCfg? }
+ */
+async function enqueueUploadedDocument(db, { documentId = null, loanId = null, checklistItemId = null, docKind = null, pipelineCfg = null } = {}) {
+  // Cheap gate FIRST — no db work at all when the shadow line is off (behavior-identical to today).
+  const p = pipelineCfg || cfg.pipeline || {};
+  if (!p.v2Shadow && !p.v2Enabled) return { enqueued: false, reason: 'disabled' };
+  if (!documentId) return { enqueued: false, reason: 'no_document' };
+  try {
+    // Derive the family exactly as src/lib/underwriting/auto-read.js does: the checklist item's
+    // template code → expected doc type takes precedence, else the doc_kind tag. A loose upload
+    // with neither has no family, and maybeEnqueueUpload returns { reason:'no_family' } (no job).
+    let family = null;
+    if (checklistItemId) {
+      try {
+        const r = await db.query(
+          `SELECT t.code AS condition_code
+             FROM checklist_items ci LEFT JOIN checklist_templates t ON t.id = ci.template_id
+            WHERE ci.id = $1`,
+          [checklistItemId]);
+        const code = r.rows[0] && r.rows[0].condition_code;
+        if (code) {
+          const mapped = require('../lib/underwriting/condition-map').expectedDocTypeForCode(code);
+          if (mapped) family = fam(mapped);
+        }
+      } catch (_) { /* fall back to the doc_kind family below */ }
+    }
+    if (!family) family = fam(docKind) || null;
+    return await maybeEnqueueUpload(db, { documentId, loanId, family, pipelineCfg });
+  } catch (e) {
+    try { console.warn('[enqueue-on-upload] enqueueUploadedDocument failed:', (e && e.message) || e); } catch (_) { /* ignore */ }
+    return { enqueued: false, reason: 'error' };
+  }
+}
+
+module.exports = { maybeEnqueueUpload, shadowGate, enqueueUploadedDocument };
