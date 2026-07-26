@@ -20,7 +20,7 @@ const routing = require('./routing');
 
 let _address = null;
 function geocoder() {
-  if (_address === null) { try { _address = require('../lib/address'); } catch { _address = false; } }
+  if (_address === null) { try { _address = require('../lib/address-canon'); } catch { _address = false; } }
   return _address || null;
 }
 
@@ -30,16 +30,50 @@ async function firstListId(folderId) {
   return r && r.lists && r.lists[0] ? r.lists[0].id : null;
 }
 
-/** Attach {lat,lng} to a portal address jsonb via our server-side geocoder. */
+/**
+ * Attach {lat,lng} + the canonical formatted address to a portal address jsonb.
+ *
+ * ROOT FIX (owner-reported 2026-07-26: "when we put in the subject property
+ * address in PILOT it doesn't sync to ClickUp — the ClickUp subject address
+ * stays blank"). A ClickUp `location` field REQUIRES real coordinates, so
+ * mapper.addressField() correctly refuses to write one without lat/lng — but
+ * this resolver called `require('../lib/address').geocode`, and that module has
+ * never exported a `geocode` function. `g.geocode` was therefore always
+ * undefined, no address ever gained coordinates, and BOTH location fields (the
+ * subject property AND the borrower's home address) were silently dropped from
+ * every push. Typing an address in PILOT could not reach ClickUp at all.
+ *
+ * The real resolver is `lib/address-canon.canonicalize` — Google Geocoding,
+ * permanently cached per input in `address_canon_cache` (db/115), degrading to
+ * null with no key / no network. Using it also solves the FORMATTING half of the
+ * complaint: ClickUp wants an address PICKED from Google's list, and what we now
+ * write is exactly that — Google's own `formatted_address` for a resolved
+ * `place_id`, with its coordinates — so the value lands as a properly selected
+ * ClickUp location instead of loose text.
+ *
+ * Best-effort throughout: an unresolvable address returns unchanged (the field
+ * is then skipped, exactly as before — never a bad or location-clearing write).
+ */
 async function withCoords(addr) {
   if (!addr || (addr.lat != null && addr.lng != null)) return addr;
   const g = geocoder();
-  const line = addr.oneLine || [addr.line1 || addr.street, addr.city, addr.state, addr.zip].filter(Boolean).join(', ');
-  if (!g || !line) return addr;
+  const line = addr.oneLine || addr.formatted_address
+    || [addr.line1 || addr.street, addr.city, addr.state, addr.zip].filter(Boolean).join(', ');
+  if (!g || !g.geocode || !line) return addr;
   try {
-    const hit = g.geocode ? await g.geocode(line) : null;
-    if (hit && hit.lat != null && hit.lng != null) return { ...addr, lat: hit.lat, lng: hit.lng, formatted_address: hit.formatted || line };
-  } catch (_) { /* best effort */ }
+    const hit = await g.geocode(line);
+    if (hit && hit.lat != null && hit.lng != null) {
+      return {
+        ...addr,
+        lat: Number(hit.lat), lng: Number(hit.lng),
+        // The provider's OWN formatted address is the string ClickUp's location
+        // picker produces for the same place — write that, not our reconstructed
+        // line, so the value lands as a properly selected location.
+        formatted_address: hit.formatted || addr.formatted_address || line,
+        place_id: hit.place_id || addr.place_id || undefined,
+      };
+    }
+  } catch (_) { /* best effort — an unresolvable address just isn't pushed */ }
   return addr;
 }
 
@@ -153,6 +187,28 @@ async function loadPushContext(appId) {
     portalFileLink: `${cfg.appUrl}${cfg.portalPath}/#/internal/app/${appId}`,
     _row: row,
   };
+  // Keep the resolved coordinates + canonical formatting ON the portal record.
+  // Fill-only (the write requires the stored address to still be missing lat), so
+  // it never rewrites an address a human or ClickUp owns — it just means the very
+  // next push, the property map, and every address comparison work from the same
+  // canonical value instead of re-resolving. Best-effort.
+  try {
+    const p = ctx.app.property_address;
+    if (p && p.lat != null && (!row.property_address || row.property_address.lat == null)) {
+      await db.query(
+        `UPDATE applications SET property_address=$2, updated_at=now()
+          WHERE id=$1 AND (property_address->>'lat') IS NULL`,
+        [appId, JSON.stringify(p)]);
+    }
+    const h = ctx.borrower.current_address;
+    if (h && h.lat != null && (!row.current_address || row.current_address.lat == null)) {
+      await db.query(
+        `UPDATE borrowers SET current_address=$2, updated_at=now()
+          WHERE id=$1 AND (current_address->>'lat') IS NULL`,
+        [row.borrower_id, JSON.stringify(h)]);
+    }
+  } catch (_) { /* best-effort — a cache write never blocks a push */ }
+
   // Phase B: mapped checklist condition statuses, for a possible SCOPED push to
   // their ClickUp dropdowns (only ever pushed when a checklist:<fieldId> key is
   // explicitly named in opts.only — see pushApplication).

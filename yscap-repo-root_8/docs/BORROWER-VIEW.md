@@ -59,7 +59,7 @@ envelope**:
 | `src/routes/borrower-view.js` | The five doors (`/eligible`, `/start`, `/session`, `/exit`, `/history`). Mounted **outside** `/api/staff` because `/session` and `/exit` are called while holding a borrower-kind token. |
 | `src/auth/index.js` | Dual-identity validation, the refresh that preserves the envelope, the presence-heartbeat skip, the `impersonation` block on `/auth/me`, `mintStaffSession`. |
 | `src/server.js` | Mounts the blocked-action guard **above `/auth`** and the router. |
-| `db/318_borrower_view_sessions.sql` | The register + the impersonator stamp on both audit trails. |
+| `db/320_borrower_view_sessions.sql` | The register + the impersonator stamp on both audit trails. |
 | `app-v2/src/lib/auth.jsx` | `startBorrowerView` / `exitBorrowerView` — owns the token swap in both directions. |
 | `app-v2/src/components/BorrowerViewBanner.jsx` | The pinned bar. |
 | `app-v2/src/components/BorrowerViewButton.jsx` | The reusable launcher (file header, borrower profile). |

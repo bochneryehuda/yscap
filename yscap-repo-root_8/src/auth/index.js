@@ -276,7 +276,7 @@ router.post('/borrower/register', async (req, res) => {
     const b = await client.query(
       `INSERT INTO borrowers (first_name,last_name,email,cell_phone)
        VALUES ($1,$2,$3,$4)
-       ON CONFLICT (email) DO UPDATE SET
+       ON CONFLICT (email) WHERE shares_email = false DO UPDATE SET
          -- The person typing their OWN name beats a placeholder row (e.g. a
          -- sync-created 'Unknown Unknown') — never a real stored name.
          first_name=CASE WHEN lower(btrim(coalesce(borrowers.first_name,''))) IN ('','unknown','co-borrower')
@@ -907,7 +907,7 @@ router.post('/accept', async (req, res, next) => {
     }
     const b = await db.query(
       `INSERT INTO borrowers (first_name,last_name,email) VALUES ($1,$2,$3)
-       ON CONFLICT (email) DO UPDATE SET
+       ON CONFLICT (email) WHERE shares_email = false DO UPDATE SET
          first_name=CASE WHEN lower(btrim(coalesce(borrowers.first_name,''))) IN ('','unknown','co-borrower')
                          THEN EXCLUDED.first_name ELSE borrowers.first_name END,
          last_name=CASE WHEN lower(btrim(coalesce(borrowers.last_name,''))) IN ('','unknown','co-borrower')

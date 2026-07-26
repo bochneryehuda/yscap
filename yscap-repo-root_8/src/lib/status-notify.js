@@ -19,7 +19,13 @@ const db = require('../db');
 const notify = require('./notify');
 
 // Borrower-facing status label (the 9 external buckets).
-const STATUS_LABEL = { file_intake: 'File intake', new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', declined: 'Declined', withdrawn: 'Withdrawn' };
+// on_hold (owner-directed 2026-07-26) is a real borrower-facing status — the
+// ClickUp "inactive / on hold" stage — and needs a human label here or every
+// surface built on this map prints the raw `on_hold`. It is NOT in
+// MAJOR_STATUSES (no decision email) and, because a held file is silenced at the
+// borrower fan-out chokepoint (notify.notifyAppBorrowers), it produces no
+// borrower message at all — the label exists for the staff-facing surfaces.
+const STATUS_LABEL = { file_intake: 'File intake', new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', on_hold: 'On hold', declined: 'Declined', withdrawn: 'Withdrawn' };
 // #88: the DECISION milestones a borrower should be EMAILED about. Every status
 // change still posts in-app; only these also email (the in-between progress moves —
 // in_review / processing / underwriting — are in-app only, to keep the inbox quiet).

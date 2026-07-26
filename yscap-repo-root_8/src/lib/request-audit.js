@@ -60,7 +60,7 @@ async function flush() {
       'method', 'path', 'route', 'query', 'status', 'duration_ms',
       'ip', 'user_agent', 'referer', 'entity_type', 'entity_id',
       'body_summary', 'error', 'bytes_out',
-      // BORROWER VIEW (db/318): while a staffer is inside a borrower's portal
+      // BORROWER VIEW (db/320): while a staffer is inside a borrower's portal
       // the actor columns describe the BORROWER (that is the identity the call
       // ran under); these two name the real human, so every click made in
       // someone else's portal stays attributable.

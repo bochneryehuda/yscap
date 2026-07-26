@@ -161,7 +161,7 @@ async function upsertBorrower(client, p, opts = {}) {
     `INSERT INTO borrowers (first_name, last_name, email, cell_phone, citizenship, marital_status,
                             dependents_count, current_address, prior_address, years_at_residence, employer)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-     ON CONFLICT (email) DO UPDATE SET
+     ON CONFLICT (email) WHERE shares_email = false DO UPDATE SET
        first_name = CASE WHEN lower(btrim(coalesce(borrowers.first_name,''))) IN ('','unknown','co-borrower')
                           AND coalesce(btrim(EXCLUDED.first_name),'') <> '' THEN EXCLUDED.first_name ELSE borrowers.first_name END,
        last_name  = CASE WHEN lower(btrim(coalesce(borrowers.last_name,''))) IN ('','unknown','co-borrower')

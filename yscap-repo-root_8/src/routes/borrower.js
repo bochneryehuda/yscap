@@ -3232,7 +3232,7 @@ async function inviteCoBorrower(appId, primaryName, co) {
   const cb = await db.query(
     `INSERT INTO borrowers (first_name,last_name,email,cell_phone,fico)
      VALUES ($1,$2,$3,$4,$5)
-     ON CONFLICT (email) DO UPDATE SET updated_at=now(), fico=COALESCE(borrowers.fico, EXCLUDED.fico) RETURNING id`,
+     ON CONFLICT (email) WHERE shares_email = false DO UPDATE SET updated_at=now(), fico=COALESCE(borrowers.fico, EXCLUDED.fico) RETURNING id`,
     [co.firstName || 'Co-Borrower', co.lastName || '', co.email, co.phone || null,
      require('../lib/fields').sanitizeFico(co.fico)]);
   const coId = cb.rows[0].id;
