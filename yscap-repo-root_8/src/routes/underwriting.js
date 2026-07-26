@@ -43,6 +43,10 @@ const { programGuidelineSnapshot } = require('../lib/underwriting/program-guidel
 const { classify } = require('../lib/underwriting/classify');
 const { conditionsForDoc, purposeForDoc, docReadiness, fileConditionCoverage, docTypesForCode, expectedDocTypeForCode } = require('../lib/underwriting/condition-map');
 const { selectAutoReadQueue } = require('../lib/underwriting/auto-read');
+// Pipeline V2 (owner-directed 2026-07-26) — the SHADOW feed. maybeEnqueueUpload is a guarded
+// no-op unless UW_PIPELINE_V2_SHADOW is on AND the family is enrolled; it enqueues a durable V2
+// job that the background worker drains through the packet-control processor, BESIDE Pipeline V1.
+const { maybeEnqueueUpload } = require('../pipeline/enqueue-on-upload');
 const { ANALYZER_VERSION, subjectHash } = require('../lib/underwriting/fingerprint');
 const { assessFile: assessStaleness } = require('../lib/underwriting/staleness');
 const { computeMetrics, capsFromRegistration } = require('../lib/underwriting/metrics');
@@ -1021,6 +1025,10 @@ router.post('/:appId/auto-read', async (req, res, next) => {
     const results = [];
     let read = 0, cached = 0, unreadable = 0;
     for (const item of batch) {
+      // Pipeline V2 SHADOW feed: also queue this document into the durable V2 pipeline when the
+      // shadow gate is open for its family. Best-effort + never throws + no-op by default, so it
+      // can never affect the V1 auto-read below or any borrower/staff-facing result.
+      await maybeEnqueueUpload(db, { documentId: item.id, loanId: app.id, family: item.expectedType });
       const doc = await fileDoc(app, item.id);
       if (!doc) { results.push({ documentId: item.id, filename: item.filename, docType: item.expectedType, ok: false, error: 'not_found', unreadable: false, findings: 0 }); continue; }
       const r = await analyzeOneDocument(app, doc, item.expectedType, { actorId: req.actor.id });
