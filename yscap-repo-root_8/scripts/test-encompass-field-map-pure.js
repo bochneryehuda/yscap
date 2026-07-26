@@ -155,6 +155,27 @@ assert.strictEqual(m.compareField('rehab_type', 'Adding square footage', 'Expans
 assert.strictEqual(m.compareField('rehab_type', 'Heavy / gut rehab', 'Light Rehab').status, 'mismatch');
 ok('every real rehab-type dropdown value resolves (heavy/gut + ground-up construction no longer dark)');
 
+// LIVE-VERIFIED 2026-07-26 against the tenant instance: vesting (1859) and
+// origination (388) live at these exact paths, and Encompass appends the entity's
+// LEGAL DESCRIPTION to the vesting name. Both were previously unreadable.
+{
+  const live = m.extractFields({
+    closingDocument: { finalVestingDescription: 'LAYBACK LLC, A LIMITED LIABILITY COMPANY' },
+    closingCost: { gfe2010: { loanOriginationPercentage: 2 } },
+  });
+  assert.strictEqual(live.vesting_llc, 'LAYBACK LLC, A LIMITED LIABILITY COMPANY', 'vesting reads from closingDocument.finalVestingDescription');
+  assert.strictEqual(live.origination_pct, 2, 'origination reads from closingCost.gfe2010.loanOriginationPercentage (already a percent)');
+  // A full loan with NO customFields[] must still resolve its standard fields.
+  assert.strictEqual(m.extractFields({ loanNumber: 'YS-1' }).ys_loan_number, 'YS-1');
+  // …and a flat {fields:{}} envelope is still read as-is (back-compat).
+  assert.strictEqual(m.extractFields({ fields: { '1109': { value: '450000' } } }).loan_amount, 450000);
+}
+// The appended legal description must not defeat the name match.
+assert.strictEqual(m.compareField('vesting_llc', 'Layback LLC', 'LAYBACK LLC, A LIMITED LIABILITY COMPANY').status, 'match');
+assert.strictEqual(m.compareField('vesting_llc', 'ABC Holdings LLC', 'ABC HOLDINGS LLC, A NEW YORK LIMITED LIABILITY COMPANY').status, 'match');
+assert.strictEqual(m.compareField('vesting_llc', 'Layback LLC', 'OTHER HOLDINGS LLC, A LIMITED LIABILITY COMPANY').status, 'mismatch', 'a genuinely different entity still mismatches');
+ok('vesting (1859) + origination (388) read from their LIVE-VERIFIED paths; the legal description never defeats the match');
+
 // A BLANK customFields cell must not shadow a good standard-field loanPath —
 // that is precisely how vesting (1859) / origination (388) read as "no data".
 {

@@ -87,7 +87,7 @@ const REGISTRY = Object.freeze([
   // loanPath, nothing else) could NEVER see it no matter what Encompass held. The
   // candidate paths below are tried in order; the first one present wins, and an
   // absent path still degrades to "no data" rather than a wrong value.
-  pull({ key: 'vesting_llc', encompassFieldId: '1859', loanPath: ['vesting.entityName', 'vesting.trustName', 'vesting.vestingEntityName', 'vestingEntityName', 'vesting.nameOfTrustOrEntity'], type: 'text', category: 'identity', compare: 'name', our: 'llcs.name via applications.llc_id', note: 'Subject LLC / vesting NAME — owner-confirmed standard field 1859 (matches our subject LLC vesting). Name-normalized compare (punctuation-insensitive); the authoritative match uses IDENTITY_MAP.nameEquals in WO-C' }),
+  pull({ key: 'vesting_llc', encompassFieldId: '1859', loanPath: ['closingDocument.finalVestingDescription', 'vesting.entityName', 'vesting.trustName', 'vestingEntityName'], type: 'text', category: 'identity', compare: 'entity', our: 'llcs.name via applications.llc_id', note: 'Subject LLC / vesting NAME — field 1859. VERIFIED LIVE 2026-07-26 against the tenant: the value lives at closingDocument.finalVestingDescription and reads like "LAYBACK LLC, A LIMITED LIABILITY COMPANY" — the entity name PLUS a legal description. compare:entity strips that trailing description so it equals our "Layback LLC"' }),
 
   // ── Loan amount / initial advance / rehab (money) ─────────────────────────
   pull({ key: 'loan_amount', encompassFieldId: '1109', loanPath: 'baseLoanAmount', type: 'money', category: 'loan', compare: 'money', our: 'column:loan_amount', note: 'Total loan amount (Borrower Requested Loan Amount)' }),
@@ -120,7 +120,7 @@ const REGISTRY = Object.freeze([
   pull({ key: 'note_rate', encompassFieldId: '3', loanPath: 'requestedInterestRatePercent', type: 'rate', category: 'interest', compare: 'percent', our: 'column:rate_pct', note: 'Interest rate — PERCENT on both sides. WO-B MUST source applications.rate_pct (a percent, e.g. 10.99), NOT the fractional whole-loan-context note_rate (0.1099), or every loan false-mismatches' }),
   // Same root cause as 1859 — a numbered STANDARD field with no loanPath could never
   // be read out of the loan JSON, so origination always showed "no data to compare".
-  pull({ key: 'origination_pct', encompassFieldId: '388', loanPath: ['originationFeePercent', 'closingCost.originationFeePercent', 'loanProductData.originationFeePercent', 'originationFeePercentage'], type: 'percent', category: 'cost', compare: 'percent', our: 'quote:origination % (e.g. 1.25)', note: 'Origination fee % (field 388: 1.0 = 1%)' }),
+  pull({ key: 'origination_pct', encompassFieldId: '388', loanPath: ['closingCost.gfe2010.loanOriginationPercentage', 'originationFeePercent', 'closingCost.originationFeePercentage'], type: 'percent', category: 'cost', compare: 'percent', our: 'quote:origination % (e.g. 1.25)', note: 'Origination fee % — field 388. VERIFIED LIVE 2026-07-26: the value lives at closingCost.gfe2010.loanOriginationPercentage and is already a PERCENT (2 = 2%), the same scale as our origPct*100' }),
   pull({ key: 'term_months', encompassFieldId: '4', loanPath: 'loanAmortizationTermMonths', type: 'int', category: 'loan', compare: 'int', our: 'column:term (text → int)', note: 'Term in months' }),
   pull({ key: 'maturity_date', encompassFieldId: '78', loanPath: 'maturityDate', type: 'date', category: 'loan', compare: 'date', our: 'column:maturity_date', note: 'Maturity date — read from full loan (maturityDate), not pipeline' }),
   // Funded date — the closing-workflow 3-system reconciliation reads this (field
@@ -341,7 +341,14 @@ function extractFields(encompassLoan, opts) {
   const o = opts || {};
   const src = encompassLoan || {};
   // A full loan (customFields[]) is flattened first; a flat/enveloped map is used as-is.
-  const enveloped = Array.isArray(src.customFields) ? flattenLoan(src) : src;
+  // A FULL loan is flattened first; a flat/enveloped id map is used as-is. Detect a
+  // full loan by customFields[] OR by any of the top-level sections our loanPaths
+  // read from — a tenant loan that carries no custom fields still has to have its
+  // standard fields (vesting, origination, …) resolved, not treated as a flat map.
+  const looksFullLoan = Array.isArray(src.customFields)
+    || (!src.fields && ['closingDocument', 'closingCost', 'property', 'applications', 'loanNumber', 'baseLoanAmount']
+      .some((k) => Object.prototype.hasOwnProperty.call(src, k)));
+  const enveloped = looksFullLoan ? flattenLoan(src) : src;
   const flat = enveloped.fields && typeof enveloped.fields === 'object' ? enveloped.fields : enveloped;
   const out = {};
   for (const e of REGISTRY) {
@@ -383,6 +390,18 @@ function normText(v) { return String(v == null ? '' : v).trim().toLowerCase().re
 // 'ABC Holdings, LLC' ≡ 'ABC Holdings LLC'. Deliberately does NOT strip entity
 // suffixes (llc/inc/corp) — that would wrongly equate distinct entities.
 function normName(v) { return String(v == null ? '' : v).toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim(); }
+// Encompass stores the vesting as the entity name PLUS its legal description —
+// VERIFIED LIVE: "LAYBACK LLC, A LIMITED LIABILITY COMPANY". Our llcs.llc_name is
+// just "Layback LLC". Drop a trailing ", A <...> COMPANY/CORPORATION/PARTNERSHIP/
+// TRUST" clause (and a bare "AN INDIVIDUAL") before the normal name compare, so the
+// two forms of the SAME entity match. Only a clause that clearly describes an
+// entity TYPE is removed — a real second name is never truncated.
+const ENTITY_DESC = /,\s*(an?\s+[a-z .]*?(limited liability company|limited partnership|general partnership|corporation|company|partnership|trust|llc|lp|inc)|an individual|its successors[^,]*|a[n]? [a-z]+ (corporation|llc|company))\s*\.?\s*$/i;
+function normEntityName(v) {
+  let s = String(v == null ? '' : v).trim();
+  for (let i = 0; i < 3 && ENTITY_DESC.test(s); i++) s = s.replace(ENTITY_DESC, '').trim();
+  return normName(s);
+}
 function normDate(v) {
   if (v == null || v === '') return null;
   const s = String(v).trim();
@@ -473,8 +492,9 @@ function compareField(entryOrKey, ourValue, encValue) {
     base.status = a === b ? 'match' : 'mismatch';
     return base;
   }
-  if (kind === 'name') {
-    const a = normName(ourValue); const b = normName(encValue);
+  if (kind === 'name' || kind === 'entity') {
+    const nm = kind === 'entity' ? normEntityName : normName;
+    const a = nm(ourValue); const b = nm(encValue);
     base.oursNorm = a; base.theirsNorm = b;
     if (a === '' || b === '') return base;
     base.status = a === b ? 'match' : 'mismatch';
