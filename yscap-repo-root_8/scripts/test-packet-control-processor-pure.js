@@ -80,9 +80,10 @@ function fakeRouter(plan, recorded) {
   {
     const jq = fakeJq(); const recorded = [];
     const plan = { primary: { provider: 'azure', service: 'document_intelligence', adapterKey: 'azure/document_intelligence' }, challenger: null, reason: 'r', materiality: 'high', specialHandling: [] };
-    // db.query is only ever called by evidence-candidate.recordCandidate (INSERT INTO document_pipeline_evidence).
+    // Count only the candidate INSERTs (evidence-candidate.recordCandidate). Other reads on the same
+    // table (e.g. VSLICE-6's diff SELECTs document_pipeline_evidence via listCandidates) must not count.
     const evidenceInserts = [];
-    const db = { query: async (sql, params) => { if (/document_pipeline_evidence/.test(sql)) evidenceInserts.push({ sql, params }); return { rows: [{ id: 'ev1' }] }; } };
+    const db = { query: async (sql, params) => { if (/INSERT INTO document_pipeline_evidence/.test(sql)) evidenceInserts.push({ sql, params }); return { rows: [{ id: 'ev1' }] }; } };
     const router = {
       ...fakeRouter(plan, recorded),
       routeDocument: async () => ({

@@ -186,6 +186,13 @@ function makePacketControlProcessor(opts = {}) {
               for (const cand of candidates) { await ec.recordCandidate(db, cand); }
             } catch (_e) { /* evidence recording is best-effort */ }
           }
+          // VSLICE-6 — record a durable snapshot of the V1-vs-V2 result difference for this document
+          // (what the existing pipeline extracted vs what V2 read), as a `v1_v2_diff` artifact for
+          // the shadow view. Best-effort + never throws; advisory (writes only the V2 artifact table).
+          try {
+            const diff = await require('./v1v2-diff').computeDiffForDocument(db, { documentId });
+            await safeArtifact('v1_v2_diff', diff);
+          } catch (_e) { /* diff artifact is best-effort */ }
           // Classification is deferred to a later phase even on the read path; mark pending.
           await safeStage(STAGE.CLASSIFICATION, 'pending', { note: 'classifier stage not yet wired' });
         }
