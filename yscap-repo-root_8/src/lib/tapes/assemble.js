@@ -117,6 +117,9 @@ async function assembleTapeLoan(appId, db) {
     exp,
     repeatBorrower,
     noteBuyerRaw: app.lender || null,
+    // Staff-entered answers for tape columns we can't derive (e.g. the Fidelis
+    // New-Construction-only fields). Keyed by tape field key; see db/309.
+    supplemental: app.tape_supplemental || {},
   };
 }
 

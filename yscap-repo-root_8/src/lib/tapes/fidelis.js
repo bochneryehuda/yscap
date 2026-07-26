@@ -131,6 +131,55 @@ function guarantorC(loan) {
   return [name, coName].filter(Boolean).join(' & ');
 }
 
+// ---- New-Construction-only supplemental fields (asked at export time) -------
+// These columns can't be derived from what we already store. For a ground-up
+// (New Construction) loan we ask staff a short questionnaire ONCE, persist the
+// answers on the loan (applications.tape_supplemental), and fill from them —
+// including on later exports, so we never ask twice. For any other loan type
+// these columns stay blank (no questions).
+const SUPPLEMENTAL_FIELDS = [
+  { key: 'asset_purchased', column: 'AR', label: 'Asset purchased', type: 'select',
+    options: ['Land', 'Finished Lot', 'Entitled Land', 'Unentitled Land', 'Teardown'] },
+  { key: 'entitlement_status', column: 'AS', label: 'Entitlement status', type: 'select',
+    options: ['Fully Entitled', 'Partially Entitled', 'Entitlements In Process', 'Not Entitled'] },
+  { key: 'build_status', column: 'AT', label: 'Build status', type: 'select',
+    options: ['Not Started', 'Pre-Construction', 'Foundation', 'Framing', 'Under Construction', 'Finishing', 'Completed'] },
+  { key: 'lot_purchase_price', column: 'AU', label: 'Lot purchase price ($)', type: 'number' },
+  { key: 'lot_purchase_date', column: 'AV', label: 'Lot purchase date', type: 'date' },
+];
+
+function isNewConstruction(loan) { return loanTypeAM(loan) === 'New Construction'; }
+
+// The supplemental fields that APPLY to this loan — all of them for a new
+// construction, none otherwise.
+function supplementalFieldsFor(loan) { return isNewConstruction(loan) ? SUPPLEMENTAL_FIELDS : []; }
+
+// The subset still UNANSWERED — exactly what the export questionnaire asks for.
+function missingSupplemental(loan) {
+  const s = (loan && loan.supplemental) || {};
+  return supplementalFieldsFor(loan).filter((f) => s[f.key] == null || s[f.key] === '');
+}
+
+// Clean a raw answers object to known fields, coerced/validated by type (a
+// select must be one of its options; a number must be finite; a date is an ISO
+// calendar day). Unknown keys and invalid values are dropped.
+function sanitizeSupplemental(answers) {
+  const out = {};
+  if (!answers || typeof answers !== 'object') return out;
+  for (const f of SUPPLEMENTAL_FIELDS) {
+    const v = answers[f.key];
+    if (v == null || v === '') continue;
+    if (f.type === 'select') { if (f.options.includes(String(v))) out[f.key] = String(v); }
+    else if (f.type === 'number') { const num = Number(v); if (isFinite(num)) out[f.key] = num; }
+    else if (f.type === 'date') { const m = String(v).match(/^\d{4}-\d{2}-\d{2}/); if (m) out[f.key] = m[0]; }
+    else out[f.key] = String(v);
+  }
+  return out;
+}
+
+// Read a stored supplemental value (blank string when unset) for a getter.
+function sup(loan, key) { const s = (loan && loan.supplemental) || {}; return s[key] == null ? '' : s[key]; }
+
 // ---- derived economics -----------------------------------------------------
 function economics(loan) {
   const q = loan.quote || {};
@@ -209,11 +258,13 @@ const COLUMNS = [
   ['AO', 's', null, (l) => citizenshipAO(l)],
   ['AP', 's', null, () => ''],                                // multi-property flag — not tracked
   ['AQ', 's', null, () => ''],                                // cross-collateralized flag — not tracked
-  ['AR', 's', null, () => ''],                                // asset purchased — new construction only
-  ['AS', 's', null, () => ''],                                // entitlement status — new construction only
-  ['AT', 's', null, () => ''],                                // build status — new construction only
-  ['AU', 'n', S.CURRENCY, () => null],                        // lot purchase price — new construction only
-  ['AV', 'd', S.DATE, () => null],                            // lot purchase date — new construction only
+  // New-Construction-only — filled from the staff questionnaire answers stored
+  // on the loan (blank for any non-new-construction loan).
+  ['AR', 's', null, (l) => sup(l, 'asset_purchased')],
+  ['AS', 's', null, (l) => sup(l, 'entitlement_status')],
+  ['AT', 's', null, (l) => sup(l, 'build_status')],
+  ['AU', 'n', S.CURRENCY, (l) => n(sup(l, 'lot_purchase_price'))],
+  ['AV', 'd', S.DATE, (l) => sup(l, 'lot_purchase_date') || null],
 ];
 
 function buildRow(loan) {
@@ -247,4 +298,10 @@ module.exports = {
   filename,
   bulkFilename,
   COLUMNS,
+  // Supplemental (questionnaire) interface — used by the export flow:
+  SUPPLEMENTAL_FIELDS,
+  isNewConstruction,
+  supplementalFieldsFor,
+  missingSupplemental,
+  sanitizeSupplemental,
 };

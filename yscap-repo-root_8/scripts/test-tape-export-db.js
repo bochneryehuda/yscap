@@ -75,6 +75,31 @@ async function main() {
     try { await tapes.buildTape(fidelisApp2, 'fidelis', db); } catch (e) { delErr = e; }
     assert.ok(delErr && delErr.code === 'loan_not_found', 'soft-deleted file is not exportable');
 
+    // 7) New-Construction questionnaire: a ground-up loan needs the 5 NC fields,
+    //    answering them persists + fills, and a later export doesn't re-ask.
+    const ncApp = uuid();
+    created.apps.push(ncApp);
+    await db.query(
+      `INSERT INTO applications (id,borrower_id,status,ys_loan_number,lender,property_address,program,loan_type,rehab_type,property_type,units,purchase_price,as_is_value,arv,loan_amount,rate_pct,term)
+       VALUES ($1,$2,'processing',$3,'Fidelis',$4,'Ground-Up Construction','Purchase','ground','Single Family',1,300000,150000,600000,420000,11,'18 months')`,
+      [ncApp, bId, `YSCAP-TP-${SUFFIX}-NC`, JSON.stringify({ line1: '1 Builder Rd', city: 'Newark', state: 'NJ', zip: '07104' })]);
+    const q1 = await tapes.tapeQuestions(ncApp, 'fidelis', db);
+    assert.ok(q1.newConstruction === true && q1.questions.length === 5, `ground-up loan asks 5 questions (got ${q1.questions.length})`);
+    assert.ok(q1.questions.some((f) => f.key === 'build_status' && Array.isArray(f.options)), 'a question is a dropdown with options');
+    // Answer them (with one invalid select to prove validation drops it) + export.
+    const saved = await tapes.persistSupplemental(ncApp, 'fidelis', { asset_purchased: 'Land', entitlement_status: 'BAD_VALUE', build_status: 'Framing', lot_purchase_price: '95000', lot_purchase_date: '2026-02-15', junk: 'x' }, db);
+    assert.ok(!('entitlement_status' in saved) && saved.build_status === 'Framing' && saved.lot_purchase_price === 95000, 'persist validates: drops out-of-list select, keeps valid');
+    const q2 = await tapes.tapeQuestions(ncApp, 'fidelis', db);
+    assert.ok(q2.questions.length === 1 && q2.questions[0].key === 'entitlement_status', 'only the still-unanswered field is re-asked');
+    const ncTape = await tapes.buildTape(ncApp, 'fidelis', db);
+    const ncSheet = unzip(ncTape.buf).find((p) => p.name === 'xl/worksheets/sheet5.xml').data.toString('utf8');
+    assert.ok(/<c r="AT2"[^>]*>[\s\S]*?Framing/.test(ncSheet), 'build status fills column AT');
+    assert.ok(ncSheet.indexOf('<v>95000</v>') > -1, 'lot purchase price fills column AU');
+
+    // A non-new-construction loan asks nothing.
+    const q3 = await tapes.tapeQuestions(fidelisApp, 'fidelis', db);
+    assert.ok(q3.newConstruction === false && q3.questions.length === 0, 'a non-NC loan needs no questionnaire');
+
     console.log('test-tape-export-db: OK');
   } finally {
     await db.query('DELETE FROM applications WHERE id = ANY($1::uuid[])', [created.apps]).catch(() => {});

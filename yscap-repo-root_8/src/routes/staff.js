@@ -3069,10 +3069,29 @@ router.get('/applications/:id/tapes', async (req, res) => {
   } catch (e) { console.error('[tape eligibility]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
+// Which extra questions (if any) this loan needs answered before its tape can be
+// filled — chiefly the New-Construction-only Fidelis fields. Returns the still-
+// unanswered ones (with dropdown options); the export UI asks these, then exports
+// with the answers. Empty for a loan whose tape needs nothing extra.
+router.get('/applications/:id/export/tape/:tapeKey/questions', async (req, res) => {
+  try {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.id)) return res.status(404).json({ error: 'not found' });
+    const tapes = require('../lib/tapes');
+    const q = await tapes.tapeQuestions(req.params.id, req.params.tapeKey, db);
+    res.json(q);
+  } catch (e) {
+    if (e && (e.code === 'loan_not_found' || e.code === 'tape_not_found')) return res.status(404).json({ error: e.message });
+    console.error('[tape questions]', e && e.message);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
 // Export ONE loan's tape for :tapeKey. Streams the provider's .xlsx. Scoped +
 // audited; the confirmed-fatal issuance backstop applies exactly as it does to
 // the TPR / MISMO exports (a note-buyer tape must not leave a fatal file without
 // a super-admin override). The capital-provider match is enforced in buildTape.
+// New-construction questionnaire answers ride in as query params and are saved
+// to the loan (so a later export doesn't re-ask) before the tape is built.
 router.get('/applications/:id/export/tape/:tapeKey', async (req, res) => {
   try {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.id)) return res.status(404).json({ error: 'not found' });
@@ -3087,8 +3106,11 @@ router.get('/applications/:id/export/tape/:tapeKey', async (req, res) => {
       await audit(req, 'issuance_override', 'application', req.params.id, { action: 'export_tape', tape: tape.key, tier: issuance.tier, reason: issuance.override.reason });
       await loanExceptions.recordIssuanceOverride({ appId: req.params.id, staffId: req.actor.id, note: `export_tape ${tape.key}: ${issuance.override.reason || 'no reason given'}`, snapshot: { action: 'export_tape', tape: tape.key, tier: issuance.tier || null, at: new Date().toISOString() } });
     }
+    // Persist any questionnaire answers (validated) BEFORE building, so the tape
+    // fills from them and a later export never re-asks. A no-op when none present.
+    const savedSupplemental = await tapes.persistSupplemental(req.params.id, req.params.tapeKey, req.query, db);
     const { buf, filename, contentType } = await tapes.buildTape(req.params.id, req.params.tapeKey, db);
-    await audit(req, 'export_tape', 'application', req.params.id, { tape: tape.key, bytes: buf.length });
+    await audit(req, 'export_tape', 'application', req.params.id, { tape: tape.key, bytes: buf.length, supplemental: Object.keys(savedSupplemental) });
     res.set('Content-Type', contentType);
     res.set('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(buf);

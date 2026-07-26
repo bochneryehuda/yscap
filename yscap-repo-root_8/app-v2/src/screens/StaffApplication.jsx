@@ -18,6 +18,7 @@ import InvestorGuidelinesPanel from '../components/InvestorGuidelinesPanel.jsx';
 import DealSnapshot from '../components/DealSnapshot.jsx';
 import ClearToClosePanel from '../components/ClearToClosePanel.jsx';
 import LoanProgress from '../components/LoanProgress.jsx';
+import TapeQuestionsModal from '../components/TapeQuestionsModal.jsx';
 import { CreditCondition } from '../components/CreditReport.jsx';
 import SubmitFilePanel from '../components/SubmitFilePanel.jsx';
 import FileNotificationOverrides from '../components/FileNotificationOverrides.jsx';
@@ -3705,10 +3706,21 @@ function TprExport({ appId }) {
 function TapeExport({ appId }) {
   const [state, setState] = useState(null);
   const [busy, setBusy] = useState(null);
+  const [pending, setPending] = useState(null); // { tapeKey, name, questions } — questionnaire modal
   useEffect(() => { api.staffTapesForApp(appId).then(setState).catch(() => setState({ tapes: [], currentBuyer: null, error: true })); }, [appId]);
-  async function download(tapeKey, name) {
+  // Click → check whether this loan needs extra details (New-Construction fields);
+  // if so, open the questionnaire; otherwise export straight away.
+  async function start(tapeKey, name) {
     setBusy(tapeKey);
-    try { const { blob, filename } = await api.staffTapeExport(appId, tapeKey); saveBlob(blob, filename || `${name}-tape.xlsx`); }
+    try {
+      const q = await api.staffTapeQuestions(appId, tapeKey);
+      if (q && q.questions && q.questions.length) { setPending({ tapeKey, name, questions: q.questions }); setBusy(null); return; }
+      await runExport(tapeKey, name, undefined);
+    } catch (e) { alert((e.data && e.data.message) || e.message || 'Export failed'); setBusy(null); }
+  }
+  async function runExport(tapeKey, name, answers) {
+    setBusy(tapeKey);
+    try { const { blob, filename } = await api.staffTapeExport(appId, tapeKey, answers); saveBlob(blob, filename || `${name}-tape.xlsx`); setPending(null); }
     catch (e) { alert((e.data && e.data.message) || e.message || 'Export failed'); }
     finally { setBusy(null); }
   }
@@ -3733,13 +3745,23 @@ function TapeExport({ appId }) {
           {state.tapes.map((t) => (
             <div key={t.key} className="row" style={{ alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
               <div style={{ minWidth: 140 }}><strong>{t.name}</strong> <span className="muted small">tape</span></div>
-              <button className="btn primary small" disabled={!t.available || busy === t.key} onClick={() => download(t.key, t.name)}>
+              <button className="btn primary small" disabled={!t.available || busy === t.key} onClick={() => start(t.key, t.name)}>
                 {busy === t.key ? 'Building…' : `Export ${t.name} tape (Excel)`}
               </button>
               {!t.available && <span className="muted small" style={{ color: 'var(--gold)' }}>{t.reason}</span>}
             </div>
           ))}
         </div>
+      )}
+      {pending && (
+        <TapeQuestionsModal
+          title={`${pending.name} tape — new construction details`}
+          subtitle="This is a ground-up loan. Fill these in and they'll be saved on the file, so we won't ask again."
+          questions={pending.questions}
+          busy={busy === pending.tapeKey}
+          onCancel={() => setPending(null)}
+          onSubmit={(answers) => runExport(pending.tapeKey, pending.name, answers)}
+        />
       )}
     </div>
   );

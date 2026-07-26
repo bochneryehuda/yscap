@@ -177,4 +177,47 @@ ok(/<dimension ref="A1:AV4"\/>/.test(bulkXml), 'bulk dimension covers all rows')
   ok((sx.match(/<\/row>/g) || []).length === 3, 'all three rows well-formed (no swallowed close tags)');
 }
 
+// ---- 8. New-Construction supplemental (questionnaire) fields ---------------
+{
+  // A non-new-construction loan: AR..AV blank, no questions.
+  ok(fidelis.isNewConstruction(loan) === false, 'fix&flip loan is not new construction');
+  ok(fidelis.missingSupplemental(loan).length === 0, 'no supplemental questions for a non-NC loan');
+  ok(cellOf(loan, 'AR').value === '' && cellOf(loan, 'AU').value == null, 'NC-only columns blank on a non-NC loan');
+
+  // A ground-up loan with NO answers yet: all 5 fields are asked.
+  const ncBare = synthLoan();
+  ncBare.app.program = 'Ground-Up Construction'; ncBare.app.rehab_type = 'ground'; ncBare.supplemental = {};
+  ok(fidelis.isNewConstruction(ncBare) === true, 'ground-up loan is new construction');
+  ok(cellOf(ncBare, 'AM').value === 'New Construction', 'AM coerces ground-up → New Construction');
+  const miss = fidelis.missingSupplemental(ncBare);
+  ok(miss.length === 5, `all 5 NC fields asked when unanswered (got ${miss.length})`);
+  ok(miss.every((f) => f.label && f.type), 'each question carries a label + type');
+  ok(miss.find((f) => f.key === 'build_status').type === 'select' && Array.isArray(miss.find((f) => f.key === 'build_status').options), 'build_status is a dropdown with options');
+  ok(miss.find((f) => f.key === 'lot_purchase_price').type === 'number', 'lot_purchase_price is a number field');
+  ok(miss.find((f) => f.key === 'lot_purchase_date').type === 'date', 'lot_purchase_date is a date field');
+
+  // sanitize: keep valid, drop out-of-list selects and unknown keys, coerce types.
+  const clean = fidelis.sanitizeSupplemental({ asset_purchased: 'Finished Lot', entitlement_status: 'NOPE', build_status: 'Framing', lot_purchase_price: '120000', lot_purchase_date: '2026-03-01T00:00:00Z', junk: 'x' });
+  assert.deepStrictEqual(clean, { asset_purchased: 'Finished Lot', build_status: 'Framing', lot_purchase_price: 120000, lot_purchase_date: '2026-03-01' }, 'sanitize keeps valid, drops invalid/unknown');
+  passed++;
+
+  // Once answered, the fields fill the tape and no questions remain.
+  const ncFilled = synthLoan();
+  ncFilled.app.program = 'Ground-Up Construction'; ncFilled.app.rehab_type = 'ground';
+  ncFilled.supplemental = { asset_purchased: 'Land', entitlement_status: 'Fully Entitled', build_status: 'Framing', lot_purchase_price: 120000, lot_purchase_date: '2026-03-01' };
+  ok(fidelis.missingSupplemental(ncFilled).length === 0, 'no questions once all answered');
+  ok(cellOf(ncFilled, 'AR').value === 'Land', 'AR filled from supplemental');
+  ok(cellOf(ncFilled, 'AS').value === 'Fully Entitled', 'AS filled from supplemental');
+  ok(cellOf(ncFilled, 'AT').value === 'Framing', 'AT filled from supplemental');
+  ok(cellOf(ncFilled, 'AU').value === 120000, 'AU lot price filled from supplemental');
+  ok(cellOf(ncFilled, 'AV').value === '2026-03-01', 'AV lot date filled from supplemental');
+
+  // Partial answers → only the remaining ones are still asked.
+  const ncPartial = synthLoan();
+  ncPartial.app.program = 'Ground-Up Construction'; ncPartial.app.rehab_type = 'ground';
+  ncPartial.supplemental = { build_status: 'Foundation' };
+  const miss2 = fidelis.missingSupplemental(ncPartial).map((f) => f.key);
+  ok(!miss2.includes('build_status') && miss2.length === 4, 'answered field drops out of the questionnaire');
+}
+
 console.log(`test-tape-fidelis-pure: OK (${passed} assertions)`);

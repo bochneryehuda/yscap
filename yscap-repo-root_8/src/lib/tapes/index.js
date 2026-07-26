@@ -91,9 +91,46 @@ async function buildBulkTape(tapeKey, appIds, db) {
   return { buf, filename: tape.bulkFilename(), contentType: tape.contentType, count: loans.length, missing };
 }
 
+// ---- supplemental questionnaire (e.g. New-Construction-only fields) ---------
+// Some tape columns can't be derived from what we store; a tape may declare
+// supplemental fields that apply under a condition (Fidelis: the New-Construction
+// -only columns). tapeQuestions returns the ones still UNANSWERED for a loan, so
+// the export UI can ask before producing the file.
+async function tapeQuestions(appId, tapeKey, db) {
+  const tape = registry.getTape(tapeKey);
+  if (!tape) throw new TapeNotFoundError(tapeKey);
+  const loan = await assembleTapeLoan(appId, db);
+  if (!loan.found) throw new LoanNotFoundError(appId);
+  const missing = tape.missingSupplemental ? tape.missingSupplemental(loan) : [];
+  return {
+    newConstruction: tape.isNewConstruction ? !!tape.isNewConstruction(loan) : false,
+    questions: missing.map((f) => ({
+      key: f.key, label: f.label, type: f.type, options: f.options || null,
+      current: (loan.supplemental && loan.supplemental[f.key] != null) ? loan.supplemental[f.key] : '',
+    })),
+  };
+}
+
+// Merge validated questionnaire answers into the loan's stored supplemental data
+// so the tape fills correctly now AND future exports don't re-ask. Returns the
+// sanitized answers actually stored (unknown/invalid dropped).
+async function persistSupplemental(appId, tapeKey, answers, db) {
+  const tape = registry.getTape(tapeKey);
+  if (!tape) throw new TapeNotFoundError(tapeKey);
+  const clean = tape.sanitizeSupplemental ? tape.sanitizeSupplemental(answers) : {};
+  if (Object.keys(clean).length) {
+    await db.query(
+      `UPDATE applications SET tape_supplemental = COALESCE(tape_supplemental, '{}'::jsonb) || $2::jsonb WHERE id = $1`,
+      [appId, JSON.stringify(clean)]);
+  }
+  return clean;
+}
+
 module.exports = {
   buildTape,
   buildBulkTape,
+  tapeQuestions,
+  persistSupplemental,
   tapeAvailability,
   buyerMatches,
   loanBuyerKey,

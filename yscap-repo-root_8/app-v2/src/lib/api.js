@@ -466,7 +466,10 @@ export const api = {
   // it is currently assigned to (staffTapesForApp says which, and why not).
   staffTapesList:    () => req('GET', '/api/staff/tapes'),
   staffTapesForApp:  (appId) => req('GET', `/api/staff/applications/${appId}/tapes`),
-  staffTapeExport:   (appId, tapeKey) => download(`/api/staff/applications/${appId}/export/tape/${tapeKey}`),
+  // Extra questions a loan needs before its tape can fill (e.g. New-Construction
+  // fields). Empty for most loans.
+  staffTapeQuestions:(appId, tapeKey) => req('GET', `/api/staff/applications/${appId}/export/tape/${tapeKey}/questions`),
+  staffTapeExport:   (appId, tapeKey, answers) => download(`/api/staff/applications/${appId}/export/tape/${tapeKey}${qs(answers)}`),
   staffTapeLoans:    (tapeKey) => req('GET', `/api/staff/tapes/${tapeKey}/loans`),
   staffTapeBulkExport: (tapeKey, applicationIds) => downloadPost(`/api/staff/tapes/${tapeKey}/export/bulk`, { applicationIds }),
   staffSaveRehabBudget: (appId, payload) => req('POST', `/api/staff/applications/${appId}/rehab-budget`, { payload }),

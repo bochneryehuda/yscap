@@ -104,9 +104,33 @@ All under `/api/staff` (staff auth + file scoping):
   ≤36-month exits), so the tape's tier matches our own pricing.
 - Fields we don't yet track are intentionally left blank rather than guessed:
   internal projects exited (AE), years of experience (AF), multi-property /
-  cross-collateralized flags (AP/AQ), and the New-Construction-only columns
-  (asset purchased / entitlement / build status / lot price+date, AR–AV). These are
-  the obvious next data sources to wire in.
+  cross-collateralized flags (AP/AQ). These are the obvious next data sources.
+
+## New-construction questionnaire (supplemental fields)
+
+The New-Construction-only columns (asset purchased AR, entitlement status AS,
+build status AT, lot purchase price AU, lot purchase date AV) can't be derived
+from what we store. So for a **ground-up loan only**, clicking Export first asks
+a short questionnaire for the ones not yet answered — dropdowns for AR/AS/AT, a
+number for AU, a date for AV. The answers are:
+
+- **validated** against each field's type (a dropdown value must be in its list;
+  a number must be numeric; a date is a calendar day) — invalid/unknown dropped,
+- **saved on the loan** (`applications.tape_supplemental` jsonb, `db/309`) so a
+  later export doesn't ask again — only still-missing fields are ever asked,
+- **used to fill** columns AR–AV.
+
+Any non-new-construction loan asks nothing and leaves AR–AV blank.
+
+Mechanics: a tape declares `SUPPLEMENTAL_FIELDS` + `isNewConstruction` /
+`missingSupplemental` / `sanitizeSupplemental` (see `fidelis.js`). The high-level
+`tapeQuestions(appId, tapeKey, db)` returns the unanswered fields;
+`persistSupplemental(appId, tapeKey, answers, db)` validates + merges them.
+Routes: `GET …/export/tape/:tapeKey/questions` (what to ask) and the export route
+persists any answer query params before building. UI: `TapeQuestionsModal` pops
+before the download on both the file screen and the bulk screen's per-row export.
+A future provider's tape gets the same behavior by declaring its own supplemental
+fields.
 
 ## Adding a new provider's tape
 

@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { api, saveBlob } from '../lib/api.js';
+import TapeQuestionsModal from '../components/TapeQuestionsModal.jsx';
 
 /* Data Tapes — the provider-centric export hub. Pick a capital provider, see
    every loan currently assigned to it (the tape can only carry loans set to that
@@ -22,6 +23,7 @@ export default function StaffTapes() {
   const [loadingLoans, setLoadingLoans] = useState(false);
   const [busyBulk, setBusyBulk] = useState(false);
   const [busyRow, setBusyRow] = useState(null);
+  const [pending, setPending] = useState(null); // { loanId, tapeName, questions } — questionnaire modal
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
 
@@ -51,12 +53,21 @@ export default function StaffTapes() {
     setSel((s) => (s.size === (loans || []).length ? new Set() : new Set((loans || []).map((l) => l.id))));
   }
 
-  async function exportRow(loanId, tapeName) {
+  async function startRow(loanId, tapeName) {
     setBusyRow(loanId); setErr(''); setMsg('');
     try {
-      const { blob, filename } = await api.staffTapeExport(loanId, active);
+      const q = await api.staffTapeQuestions(loanId, active);
+      if (q && q.questions && q.questions.length) { setPending({ loanId, tapeName, questions: q.questions }); setBusyRow(null); return; }
+      await exportRow(loanId, tapeName, undefined);
+    } catch (e) { setErr((e.data && e.data.message) || e.message || 'Export failed'); setBusyRow(null); }
+  }
+  async function exportRow(loanId, tapeName, answers) {
+    setBusyRow(loanId); setErr(''); setMsg('');
+    try {
+      const { blob, filename } = await api.staffTapeExport(loanId, active, answers);
       saveBlob(blob, filename);
       setMsg(`Exported ${tapeName} tape.`);
+      setPending(null);
     } catch (e) { setErr((e.data && e.data.message) || e.message || 'Export failed'); }
     finally { setBusyRow(null); }
   }
@@ -145,7 +156,7 @@ export default function StaffTapes() {
                           <td style={{ padding: '6px 8px' }}>{STATUS_LABEL[l.status] || l.status || '—'}</td>
                           <td style={{ padding: '6px 8px', textAlign: 'right' }}>{money(l.loan_amount)}</td>
                           <td style={{ padding: '6px 8px', textAlign: 'right' }}>
-                            <button className="btn small ghost" disabled={busyRow === l.id} onClick={() => exportRow(l.id, activeTape ? activeTape.name : 'tape')}>
+                            <button className="btn small ghost" disabled={busyRow === l.id} onClick={() => startRow(l.id, activeTape ? activeTape.name : 'tape')}>
                               {busyRow === l.id ? 'Building…' : 'Export'}
                             </button>
                           </td>
@@ -159,6 +170,16 @@ export default function StaffTapes() {
           </>
         )}
       </div>
+      {pending && (
+        <TapeQuestionsModal
+          title={`${activeTape ? activeTape.name : ''} tape — new construction details`}
+          subtitle="This is a ground-up loan. Fill these in and they'll be saved on the file, so we won't ask again."
+          questions={pending.questions}
+          busy={busyRow === pending.loanId}
+          onCancel={() => setPending(null)}
+          onSubmit={(answers) => exportRow(pending.loanId, pending.tapeName, answers)}
+        />
+      )}
     </div>
   );
 }
