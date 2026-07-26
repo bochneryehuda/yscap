@@ -19,6 +19,8 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
 const OFF = { v2Shadow: false, v2Enabled: false, v2Families: [] };
 const SHADOW = { v2Shadow: true, v2Enabled: false, v2Families: ['bank_statement', 'insurance'] };
 const FULLV2 = { v2Shadow: false, v2Enabled: true, v2Families: ['bank_statement'] };
+const ALL = { v2Shadow: true, v2Enabled: false, v2Families: ['all'] };
+const STAR = { v2Shadow: true, v2Enabled: false, v2Families: ['*'] };
 
 (async function main() {
   // ---- shadowGate (pure) ----
@@ -29,6 +31,14 @@ const FULLV2 = { v2Shadow: false, v2Enabled: true, v2Families: ['bank_statement'
   ok(EU.shadowGate('', SHADOW).on === false && EU.shadowGate('', SHADOW).reason === 'no_family', 'empty family → no_family');
   ok(EU.shadowGate('bank_statement', FULLV2).on === true, 'full-v2 (not shadow) + enrolled → open');
   ok(EU.shadowGate('insurance', FULLV2).on === false, 'full-v2 respects its own family list');
+
+  // ---- "all" / "*" enrollment: every family opts in (owner-directed 2026-07-26 widen) ----
+  ok(EU.shadowGate('bank_statement', ALL).on === true && EU.shadowGate('bank_statement', ALL).reason === 'enrolled_all', '"all" → any known family enrolled');
+  ok(EU.shadowGate('appraisal', ALL).on === true && EU.shadowGate('appraisal', ALL).reason === 'enrolled_all', '"all" → a previously-unlisted family is enrolled too');
+  ok(EU.shadowGate('anything_new', ALL).on === true, '"all" → even an unrecognized family enrolls');
+  ok(EU.shadowGate('appraisal', STAR).on === true && EU.shadowGate('appraisal', STAR).reason === 'enrolled_all', '"*" is an alias for "all"');
+  ok(EU.shadowGate('', ALL).on === false && EU.shadowGate('', ALL).reason === 'no_family', '"all" still needs a family on the document (empty → no_family)');
+  ok(EU.shadowGate('bank_statement', { v2Shadow: false, v2Enabled: false, v2Families: ['all'] }).on === false, '"all" is inert while shadow/v2 are both OFF');
 
   // ---- maybeEnqueueUpload gating (with an injected fake db) ----
   let enqueued = null;
