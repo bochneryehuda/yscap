@@ -264,11 +264,29 @@ async function healBorrowerFields(borrowerId, b, taskId) {
   try {
     const em = nn(b.email) ? String(b.email).trim().toLowerCase() : null;
     if (em && /@/.test(em) && !/@clickup\.local$/i.test(em)) {
-      await db.query(
-        `UPDATE borrowers SET email=$2, updated_at=now()
-          WHERE id=$1 AND email LIKE 'noemail+%@clickup.local'`, [borrowerId, em]);
+      try {
+        await db.query(
+          `UPDATE borrowers SET email=$2, updated_at=now()
+            WHERE id=$1 AND email LIKE 'noemail+%@clickup.local'`, [borrowerId, em]);
+      } catch (e) {
+        // 23505 = another profile already OWNS that address. Historically the
+        // placeholder just stayed forever, so the person kept a fake
+        // `@clickup.local` address on their profile and could never be emailed.
+        // Now that two people may share a mailbox (db/318, owner-directed
+        // 2026-07-26), give them the real address as a SHARED one instead —
+        // outside the partial unique index, so the owner is untouched. Only for
+        // a placeholder row with NO portal login (a login must stay pinned to
+        // exactly one profile per address).
+        if (e && e.code === '23505') {
+          await db.query(
+            `UPDATE borrowers SET email=$2, shares_email=true, updated_at=now()
+              WHERE id=$1 AND email LIKE 'noemail+%@clickup.local'
+                AND NOT EXISTS (SELECT 1 FROM borrower_auth ba WHERE ba.borrower_id=borrowers.id)`,
+            [borrowerId, em]).catch(() => {});
+        }
+      }
     }
-  } catch (_) { /* 23505: the real email belongs to another profile — keep the placeholder */ }
+  } catch (_) { /* never blocks the heal */ }
   // SSN fill-only, at the ONE heal chokepoint (owner-reported 2026-07-15
   // night, Shalom Elbaum: ClickUp carried the SSN but the file never got it —
   // the encrypted fill previously ran ONLY on the borrower-CREATE path, so a
@@ -333,31 +351,41 @@ async function resolveBorrower(read, taskId) {
   //      • no SSN either side                    -> merge ONLY if last name / phone
   //        (last 10) / DOB also agrees; else create a distinct profile.
   if (b.email) {
+    // EVERY profile on the address, not just one. Since two people may now
+    // legitimately share a mailbox (db/318), `LIMIT 1` would be a coin flip:
+    // re-ingesting a husband-and-wife task could land on the OTHER spouse's row,
+    // fail to corroborate, and mint a THIRD profile — on every single sync. The
+    // owner is checked first (it is the row every upsert resolves to), then the
+    // people deliberately sharing with them. Bounded; a mailbox never holds many.
     const r = await db.query(
-      `SELECT id, ssn_hash, first_name, last_name, cell_phone, date_of_birth FROM borrowers WHERE email=$1 LIMIT 1`,
+      `SELECT id, ssn_hash, first_name, last_name, cell_phone, date_of_birth, shares_email
+         FROM borrowers WHERE email=$1 ORDER BY shares_email, created_at LIMIT 10`,
       [String(b.email).toLowerCase().trim()]);
-    const ex = r.rows[0];
-    if (ex) {
-      const ssnConflict = ssnHash && ex.ssn_hash && ssnHash !== ex.ssn_hash;
-      const ssnAgree    = ssnHash && ex.ssn_hash && ssnHash === ex.ssn_hash;
-      // Corroboration requires phone / DOB / the FULL name — never the last
-      // name alone (a family-shared email + the family surname merged a loan
-      // officer's LEAD with a different real borrower, owner incident
-      // 2026-07-15 night — two people, one profile, wrong officer on the file).
-      const corroborated = identity.emailMatchCorroborated(
-        { firstName: b.first_name, lastName: b.last_name, phone: b.cell_phone, dob: b.date_of_birth },
-        { firstName: ex.first_name, lastName: ex.last_name, phone: ex.cell_phone, dob: ex.date_of_birth });
-      if (!ssnConflict && (ssnAgree || corroborated)) {
-        if (ssnHash) await db.query(`UPDATE borrowers SET ssn_hash=COALESCE(ssn_hash,$1) WHERE id=$2`, [ssnHash, ex.id]);
-        await healBorrowerFields(ex.id, b, taskId);
-        await recordContacts(ex.id, b, taskId);
-        return { borrowerId: ex.id, created: false };
+    if (r.rows[0]) {
+      let anyConflict = false;
+      for (const ex of r.rows) {
+        const ssnConflict = ssnHash && ex.ssn_hash && ssnHash !== ex.ssn_hash;
+        const ssnAgree    = ssnHash && ex.ssn_hash && ssnHash === ex.ssn_hash;
+        // Corroboration requires phone / DOB / the FULL name — never the last
+        // name alone (a family-shared email + the family surname merged a loan
+        // officer's LEAD with a different real borrower, owner incident
+        // 2026-07-15 night — two people, one profile, wrong officer on the file).
+        const corroborated = identity.emailMatchCorroborated(
+          { firstName: b.first_name, lastName: b.last_name, phone: b.cell_phone, dob: b.date_of_birth },
+          { firstName: ex.first_name, lastName: ex.last_name, phone: ex.cell_phone, dob: ex.date_of_birth });
+        if (!ssnConflict && (ssnAgree || corroborated)) {
+          if (ssnHash) await db.query(`UPDATE borrowers SET ssn_hash=COALESCE(ssn_hash,$1) WHERE id=$2`, [ssnHash, ex.id]);
+          await healBorrowerFields(ex.id, b, taskId);
+          await recordContacts(ex.id, b, taskId);
+          return { borrowerId: ex.id, created: false };
+        }
+        if (ssnConflict) anyConflict = true;
       }
       emailUnsafe = true;   // matched, but not the same person we can prove → don't reuse the email
       // A shared email with NO corroboration (and no SSN conflict) is a genuine
-      // "might be the same person" — flag it for human review. An SSN conflict is a
-      // confirmed DIFFERENT person, so it is not flagged.
-      if (!ssnConflict) possibleDupOfId = ex.id;
+      // "might be the same person" — flag it for human review against the address
+      // OWNER. An SSN conflict is a confirmed DIFFERENT person, so it is not flagged.
+      if (!anyConflict) possibleDupOfId = (r.rows.find((x) => !x.shares_email) || r.rows[0]).id;
     }
   }
   // 3) weak / none -> create a DISTINCT profile (never a blind single-field merge).
@@ -375,22 +403,42 @@ async function resolveBorrower(read, taskId) {
   }
   const first = b.first_name || 'Unknown', last = b.last_name || 'Unknown';
   // CRITICAL: if the email match was declined above (different person, or
-  // uncorroborated), do NOT reuse it here — the INSERT's ON CONFLICT (email) DO
-  // UPDATE would resolve to that other person's row and re-merge the two we just
-  // refused to merge (wrong loan/PII attachment). Use a synthetic unique email so
-  // a distinct profile is created.
-  const email = (b.email && !emailUnsafe) ? String(b.email).toLowerCase().trim() : `noemail+${taskId}@clickup.local`;
-  const ins = await db.query(
+  // uncorroborated), the new profile must NOT resolve back onto the row we just
+  // refused to merge with — an `ON CONFLICT (email) DO UPDATE` would re-merge the
+  // two (wrong loan/PII attachment). It used to be handed a synthetic
+  // `noemail+<task>@clickup.local` address purely because `borrowers.email`
+  // carried a blanket UNIQUE constraint.
+  //
+  // Owner-directed 2026-07-26 ("sometimes two borrowers — a husband and wife —
+  // use the same email address; we need to allow that"): the REAL address is now
+  // kept and the second profile is flagged `shares_email`, which sits outside the
+  // partial unique index (db/318). One mailbox, two real people, both reachable —
+  // and a whole class of nameless `@clickup.local` shadow profiles (exactly the
+  // kind that silently absorbed a borrower's SSN and then blocked a staffer from
+  // typing that SSN on the person's real profile) stops being created. The split
+  // is still recorded as a dedup/"shared email" review card below, so a human is
+  // always told; nothing is ever auto-merged.
+  const realEmail = b.email ? String(b.email).toLowerCase().trim() : null;
+  const shareEmail = !!(realEmail && emailUnsafe);
+  const email = realEmail || `noemail+${taskId}@clickup.local`;
+  const insCols = [first, last, email, b.cell_phone || null,
+    require('../lib/fields').sanitizeDob(b.date_of_birth),   // NEW-borrower path vets too: garbage/toddler DOBs never insert raw
+    b.citizenship || null,
+    require('../lib/fields').sanitizeFico(b.fico),   // #90: FICO 300–850 or null
+    b.current_address ? JSON.stringify(b.current_address) : null, b.marital_status || null,
+    b.employment_type || null, b.employer || null, ssnHash];
+  const INSERT_HEAD =
     `INSERT INTO borrowers (first_name,last_name,email,cell_phone,date_of_birth,citizenship,fico,current_address,
-                            marital_status,employment_type,employer,ssn_hash,origin)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'clickup_backfill')
-     ON CONFLICT (email) DO UPDATE SET updated_at=now() RETURNING id`,
-    [first, last, email, b.cell_phone || null,
-     require('../lib/fields').sanitizeDob(b.date_of_birth),   // NEW-borrower path vets too: garbage/toddler DOBs never insert raw
-     b.citizenship || null,
-     require('../lib/fields').sanitizeFico(b.fico),   // #90: FICO 300–850 or null
-     b.current_address ? JSON.stringify(b.current_address) : null, b.marital_status || null,
-     b.employment_type || null, b.employer || null, ssnHash]);
+                            marital_status,employment_type,employer,ssn_hash,origin,shares_email)`;
+  // A shared-email profile is outside the partial unique index, so it can never
+  // collide — plain INSERT. The address OWNER keeps the upsert semantics exactly
+  // as before (same row resolution, same heal-on-match afterwards).
+  const ins = shareEmail
+    ? await db.query(`${INSERT_HEAD}
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'clickup_backfill',true) RETURNING id`, insCols)
+    : await db.query(`${INSERT_HEAD}
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'clickup_backfill',false)
+     ON CONFLICT (email) WHERE shares_email = false DO UPDATE SET updated_at=now() RETURNING id`, insCols);
   const borrowerId = ins.rows[0].id;
   // The ON CONFLICT path returns a PRE-EXISTING row (same real email, or the
   // same task's shadow email on a re-sync) — heal it too, or the very row this
@@ -1003,6 +1051,28 @@ async function ingestTask(task, options = {}, opts = {}) {
   const loanOfficerEmail = routing.loanOfficerEmailFor(read, folderId);
   const processorEmail = routing.processorEmailFor(read);
 
+  // ── The officer OWNS the person, not just the RTL file (owner-directed
+  // 2026-07-26) ──────────────────────────────────────────────────────────────
+  // Every ClickUp card — RTL *and* DSCR / long-term — builds a full borrower
+  // profile here. Only an RTL card also builds a loan FILE, and an officer's
+  // "my borrowers" book was derived purely from files, so a client who has only
+  // ever done DSCR business with them was invisible: not in their borrower list,
+  // not in the name typeahead, no profile to auto-fill on a new file. Stamping
+  // the resolved officer onto the profile itself (FILL-ONLY — an officer a human
+  // already set is never stolen) makes the person theirs from the first card,
+  // whatever the program. Best-effort: this can never break the sync.
+  const taskOfficer = await resolveStaffByEmail(loanOfficerEmail);
+  if (taskOfficer.id) {
+    for (const bid of [borrowerId, coBorrowerId]) {
+      if (!bid) continue;
+      try {
+        await db.query(
+          `UPDATE borrowers SET primary_officer_id=$2, updated_at=now()
+            WHERE id=$1 AND primary_officer_id IS NULL`, [bid, taskOfficer.id]);
+      } catch (_) { /* best-effort */ }
+    }
+  }
+
   let applicationId = null, matchStatus = isRtl ? null : 'data_only', matchDetail = null;
   if (isRtl) {
     const res = await linkOrCreateApplication(task, read, borrowerId, llcId,
@@ -1201,17 +1271,23 @@ async function ingestTask(task, options = {}, opts = {}) {
   // materialize as loan files yet. SSN/card are masked; never cleartext here.
   const snapshot = buildMaskedSnapshot(read, { loanOfficerEmail, processorEmail });
   await db.query(
+    // loan_officer_id (db/318): the owning officer is recorded for EVERY task,
+    // so a DSCR / long-term card — which never becomes a loan file — still knows
+    // whose client it is. That is what lets the borrower profile list a person's
+    // non-RTL deals and what keeps the officer's borrower book complete.
     `INSERT INTO clickup_task_index (task_id, kind, program, ssn_hash, borrower_id, application_id, llc_id,
-        match_status, match_detail, snapshot, snapshot_at, task_name, folder_id, internal_status, last_seen)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now(),$11,$12,$13,now())
+        match_status, match_detail, snapshot, snapshot_at, task_name, folder_id, internal_status, loan_officer_id, last_seen)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now(),$11,$12,$13,$14,now())
      ON CONFLICT (task_id) DO UPDATE SET program=EXCLUDED.program, ssn_hash=EXCLUDED.ssn_hash,
         borrower_id=EXCLUDED.borrower_id, application_id=COALESCE(EXCLUDED.application_id, clickup_task_index.application_id),
         llc_id=EXCLUDED.llc_id, match_status=EXCLUDED.match_status, match_detail=EXCLUDED.match_detail,
         snapshot=EXCLUDED.snapshot, snapshot_at=now(), task_name=EXCLUDED.task_name, folder_id=EXCLUDED.folder_id,
-        internal_status=EXCLUDED.internal_status, last_seen=now()`,
+        internal_status=EXCLUDED.internal_status,
+        loan_officer_id=COALESCE(EXCLUDED.loan_officer_id, clickup_task_index.loan_officer_id), last_seen=now()`,
     [task.id, isRtl ? 'rtl_file' : 'data_only', program, identity.ssnHash(read.borrower.ssn, cfg.ssnMatchKey),
      borrowerId, applicationId, llcId, matchStatus, matchDetail ? JSON.stringify(matchDetail) : null,
-     JSON.stringify(snapshot), task.name || null, folderId ? String(folderId) : null, read.internalStatus || null]).catch(() => {});
+     JSON.stringify(snapshot), task.name || null, folderId ? String(folderId) : null, read.internalStatus || null,
+     taskOfficer.id || null]).catch(() => {});
 
   return { borrowerId, llcId, applicationId, isRtl, matchStatus };
 }

@@ -379,6 +379,13 @@ export const api = {
   staffAddBorrowerNote:      (id, body) => req('POST', `/api/staff/borrowers/${id}/notes`, { body }),
   staffDeleteBorrowerNote:   (id, nid) => req('DELETE', `/api/staff/borrowers/${id}/notes/${nid}`),
   staffBorrowerSsn: (id) => req('GET', `/api/staff/borrowers/${id}/ssn`),
+  // Set / correct the SSN on the PROFILE (owner-directed 2026-07-26 — it was
+  // only settable from inside a loan file). `resolveConflict:'same_person'`
+  // moves the number off a duplicate profile that is already holding it; the
+  // 409 that comes back without it names that profile so the staffer can look.
+  staffSetBorrowerSsn: (id, ssn, opts = {}) => req('POST', `/api/staff/borrowers/${id}/ssn`, { ssn, ...opts }),
+  staffAddBorrowerContact:     (id, b) => req('POST', `/api/staff/borrowers/${id}/contacts`, b),
+  staffSetPrimaryContact:      (id, b) => req('POST', `/api/staff/borrowers/${id}/contacts/primary`, b),
   staffBorrowerTrackRecords: (id) => req('GET', `/api/staff/borrowers/${id}/track-records`),
   staffTrackRecordSnapshot:  (id) => req('GET', `/api/staff/borrowers/${id}/track-record/snapshot`),
   staffBorrowerLlcs: (id) => req('GET', `/api/staff/borrowers/${id}/llcs`),
