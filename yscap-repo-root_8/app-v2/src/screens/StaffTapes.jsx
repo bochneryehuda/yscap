@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { api, saveBlob } from '../lib/api.js';
 import TapeQuestionsModal from '../components/TapeQuestionsModal.jsx';
+import { useAuth } from '../lib/auth.jsx';
 
 /* Data Tapes — the provider-centric export hub. Pick a capital provider, see
    every loan currently assigned to it (the tape can only carry loans set to that
@@ -16,6 +17,8 @@ const STATUS_LABEL = {
 };
 
 export default function StaffTapes() {
+  const { can } = useAuth();
+  const mayExport = can('export_data_tapes');
   const [tapes, setTapes] = useState(null);
   const [active, setActive] = useState(null);   // tapeKey
   const [loans, setLoans] = useState(null);
@@ -24,21 +27,23 @@ export default function StaffTapes() {
   const [busyBulk, setBusyBulk] = useState(false);
   const [busyRow, setBusyRow] = useState(null);
   const [pending, setPending] = useState(null); // { loanId, tapeName, questions } — questionnaire modal
+  const [adminOnly, setAdminOnly] = useState(false); // provider is admin-only for this user (e.g. parked Silver/EMCAP)
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
 
   useEffect(() => {
+    if (!mayExport) return;
     api.staffTapesList().then((d) => {
       setTapes(d.tapes || []);
       if ((d.tapes || []).length) setActive(d.tapes[0].key);
     }).catch((e) => setErr(e.message || 'Could not load tape types'));
-  }, []);
+  }, [mayExport]);
 
   const loadLoans = useCallback((tapeKey) => {
     if (!tapeKey) return;
-    setLoadingLoans(true); setLoans(null); setSel(new Set()); setErr(''); setMsg('');
+    setLoadingLoans(true); setLoans(null); setSel(new Set()); setErr(''); setMsg(''); setAdminOnly(false);
     api.staffTapeLoans(tapeKey)
-      .then((d) => setLoans(d.loans || []))
+      .then((d) => { setLoans(d.loans || []); setAdminOnly(!!d.adminOnly); })
       .catch((e) => { setLoans([]); setErr(e.message || 'Could not load loans'); })
       .finally(() => setLoadingLoans(false));
   }, []);
@@ -85,6 +90,20 @@ export default function StaffTapes() {
     finally { setBusyBulk(false); }
   }
 
+  if (!mayExport) {
+    return (
+      <div className="wrap">
+        <div className="dd-wrap">
+          <div className="dd-head"><div><h1 className="dd-title">Data tapes</h1></div></div>
+          <div className="empty" style={{ marginTop: 16 }}>
+            You don’t have access to capital-provider data tapes. Ask an admin to turn on
+            “Export capital-provider data tapes” for you on the Team screen.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="wrap">
       <div className="dd-wrap">
@@ -125,10 +144,15 @@ export default function StaffTapes() {
                 </button>
               </div>
 
-              {loadingLoans || loans == null ? <p className="muted small">Loading loans…</p> : loans.length === 0 ? (
+              {loadingLoans || loans == null ? <p className="muted small">Loading loans…</p> : adminOnly ? (
                 <p className="muted small">
-                  No loans are currently assigned to {activeTape ? activeTape.fullName : 'this provider'}. Set a loan's capital
-                  provider to {activeTape ? activeTape.name : 'this provider'} on its file to export its tape.
+                  {activeTape ? activeTape.name : 'This provider'} tapes are admin-only right now — its program isn’t live yet,
+                  so only an admin can export them. An admin can export from an individual loan file.
+                </p>
+              ) : loans.length === 0 ? (
+                <p className="muted small">
+                  No loans you can export are assigned to {activeTape ? activeTape.fullName : 'this provider'} yet. A loan appears
+                  here once it’s registered with the matching program and its capital provider is set to {activeTape ? activeTape.name : 'this provider'}.
                 </p>
               ) : (
                 <div style={{ overflowX: 'auto' }}>

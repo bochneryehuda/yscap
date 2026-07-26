@@ -83,15 +83,56 @@ signals gathered in `src/lib/underwriting/run.js` `gatherInvestorInputs`
 rent schedule). They fire only for EMCAP, only once the appraisal is in, and never
 fabricate a finding on missing data.
 
-## The rule (owner-directed)
+## Who can export, and the provider + program rule (owner-directed 2026-07-26)
 
-A loan can **only** export the tape of the capital provider it is **currently
-assigned to** (`applications.lender`). To export a different provider's tape, you
-must first switch the loan's capital provider on its file. This is enforced in one
-place — `src/lib/tapes/buyer-rule.js` — so every surface (per-file export, bulk
-export) behaves identically. The match is on the normalized note-buyer key
-(`normNoteBuyer`), the same key the conditions engine, investor-guideline desk,
-and Sitewire links use, so `Fidelis` / `fidelis` all resolve to one key.
+Data-tape export is governed by three layers, enforced in one place
+(`src/lib/tapes/buyer-rule.js` `exportGate` / `assertExportAllowed` + the route
+capability check) so every surface (per-file, bulk, the standalone Data Tapes
+screen) behaves identically.
+
+**1 — Access (who reaches the tapes at all).** A new capability
+`export_data_tapes` (`src/lib/permissions.js`) gates every tape route + UI. It is
+granted by default to **processor, underwriter, admin, super_admin** — **not** to a
+loan officer. An admin can grant it to an **individual** loan officer from the
+Team screen (the per-person permission toggle already renders every capability, so
+no new UI was needed). Without the capability, the routes return 403 and the nav
+link + file section are hidden.
+
+**2 — Admin bypass.** An **admin / super_admin** may export **any** provider's tape
+for any loan — the provider/program pairing below does not gate them.
+
+**3 — The provider + program gate (non-admins).** A non-admin (processor,
+underwriter, or a per-person-granted loan officer) may export a provider's tape
+only when the loan is **registered** and **both** line up:
+
+- the loan's **capital provider** (`applications.lender`, normalized via
+  `normNoteBuyer` — the same key the conditions engine / investor-guideline desk /
+  Sitewire links use, so `Fidelis` / `fidelis` resolve to one key) matches the
+  tape's provider, **and**
+- the loan's **registered program** (`product_registrations.program`) is the
+  correct one for that provider, per the pairing:
+
+  | Program  | Capital provider | Tape |
+  |----------|------------------|------|
+  | Gold     | Blue Lake        | `bluelake` |
+  | Standard | Fidelis          | `fidelis` |
+  | **Silver** (PARKED) | EMCAP | `emcap` |
+
+  The pairing lives in `src/lib/tapes/program-provider.js`. **Silver is parked**:
+  it is a recognized name wired to EMCAP so the system understands the pairing, but
+  it is **not** a live/registerable program yet (no register path / pricing / studio
+  card). Because no loan can carry `registered_program = 'silver'` today, an EMCAP
+  tape is effectively **admin-only** until the Silver program is built and activated.
+
+**Manual loans are admin-only.** A `manual` (admin-approved) loan's program is not
+locked to a provider, so **only an admin** may export a tape for a manual file —
+`manual` is intentionally absent from the pairing table.
+
+Failures are typed, each with a plain-language message the UI surfaces:
+`not_registered` (register the product first), `manual_admin_only` (403),
+`buyer_mismatch` (wrong provider), `program_mismatch` (right provider, wrong
+program). The prior "switch the capital provider first" behavior is the
+`buyer_mismatch` case within this larger gate.
 
 ## How it stays byte-for-byte faithful
 
@@ -117,7 +158,8 @@ changed parts are the Data Tape sheet and the workbook calc flag.
 | `templates/fidelis.xlsx` | The Fidelis workbook, kept byte-for-byte. |
 | `fidelis.js` | The Fidelis tape definition: the 48-column A–AV map (value + Excel type + style), with valid-value coercion to the sheet's own dropdowns. |
 | `assemble.js` | `assembleTapeLoan(appId, db)` — gathers one loan's facts (application row + pricing FICO, current registered `quote`, current appraisal, vesting entity, experience, repeat-borrower flag). Provider-agnostic. |
-| `buyer-rule.js` | The capital-provider rule + typed errors + per-loan availability. DB-free (unit-testable). |
+| `buyer-rule.js` | The full export gate (`exportGate`/`assertExportAllowed`): admin bypass, register-first, manual-admin-only, provider-match, program-match + typed errors + per-loan availability. DB-free (unit-testable). |
+| `program-provider.js` | The program↔provider pairing (Gold↔Blue Lake, Standard↔Fidelis, Silver↔EMCAP [parked]); `manual` excluded (admin-only). DB-free. |
 | `registry.js` | The list of known tapes. Adding a provider = registering one module here. |
 | `index.js` | Public entry: `buildTape` (one loan), `buildBulkTape` (many loans, one workbook), `tapeAvailability`. |
 
