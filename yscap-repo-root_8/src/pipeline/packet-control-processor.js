@@ -39,6 +39,7 @@
 // missing on a job that had in fact done the work. One list, one owner.
 const { STAGE } = require('./stage-manifest');
 const classifyDoc = require('./classify-document');
+const pageDisposition = require('./page-disposition');
 
 /**
  * PURE — build a COMPACT summary of what a real read produced, for the shadow surface + audit
@@ -166,6 +167,7 @@ function makePacketControlProcessor(opts = {}) {
           // than call the adapter with an empty request (which would look like a failed vendor read).
           await safeStage(STAGE.OCR_LAYOUT, 'not_applicable', { note: 'read skipped: document bytes unavailable' });
           await safeStage(STAGE.CLASSIFICATION, 'not_applicable', { note: 'read skipped: document bytes unavailable' });
+          await safeStage(STAGE.PAGE_DISPOSITION, 'not_applicable', { note: 'read skipped: no pages were seen, so there was nothing to account for' });
         } else {
           // Route the document through the primary adapter with the real bytes.
           const routed = await router.routeDocument({
@@ -261,11 +263,43 @@ function makePacketControlProcessor(opts = {}) {
           const clsSummary = classifyDoc.summarizeClassification(cls, { expectedFamily: features.docType || null });
           if (clsSummary.artifact) await safeArtifact('classification', clsSummary.artifact);
           await safeStage(STAGE.CLASSIFICATION, clsSummary.status, clsSummary.detail);
+
+          // ── page_disposition ── RS-3: say what happened to EVERY page.
+          //
+          // Everything above reasons about the upload as ONE document. Real uploads are packets — a
+          // contract, an assignment, two statements and a scanned separator sheet in one PDF — and
+          // until now nothing said what became of page 7. Not assigned, not excluded, nobody asked:
+          // simply never mentioned, which on every surface is indistinguishable from fine.
+          //
+          // Each page now lands as assigned / excluded (provably blank) / manual_review, and the
+          // per-page rows are persisted (db/330) so "3 pages need a person" says WHICH three. The
+          // fallback is always manual_review, so the accounting cannot fail to total — that is the
+          // point, not a weakness: an unplaceable page is escalated, never dropped.
+          //
+          // Deliberately NOT a gate on extraction. The architecture's "no extraction until every
+          // page is dispositioned" is satisfied by construction here, so making the evidence step
+          // wait on a check that can never fail would be theatre. What it IS, is the record that
+          // makes a silently-skipped page impossible.
+          const readPages = (routed && routed.result && Array.isArray(routed.result.pages)) ? routed.result.pages : [];
+          const disp = pageDisposition.dispositionPages({
+            pages: readPages,
+            segments: (clsSummary.artifact && clsSummary.artifact.segments) || [],
+            // Only a classification that actually reached a verdict gives a basis to ASSIGN. When it
+            // did not (switched off, untrained, vendor error) the honest answer is not-applicable —
+            // marking a whole packet 'manual_review' because a switch is off would bury the pages
+            // that genuinely need a person under every page that does not.
+            classified: clsSummary.status === 'completed',
+          });
+          if (disp.pages.length) {
+            try { await jq.recordPages(db, jobId, disp.pages); } catch (_e) { /* per-page rows are best-effort; the stage still states the totals */ }
+          }
+          await safeStage(STAGE.PAGE_DISPOSITION, disp.status, disp.detail);
         }
       } else {
         await safeStage(STAGE.OCR_LAYOUT, 'not_applicable', { note: 'shadow: read not run' });
         await safeStage(STAGE.CLASSIFICATION, 'not_applicable', { note: 'shadow: read not run' });
         await safeStage(STAGE.EVIDENCE, 'not_applicable', { note: 'shadow: read not run' });
+        await safeStage(STAGE.PAGE_DISPOSITION, 'not_applicable', { note: 'shadow: read not run' });
       }
 
       // VSLICE-5 — evaluate the full stage MANIFEST and FAIL CLOSED. In 'read' mode (real adapters

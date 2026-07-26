@@ -292,6 +292,85 @@ function fakeRouter(plan, recorded) {
     ok(sawBuffer && sawBuffer.toString() === '%PDF-ONCE', 'the classifier receives the same bytes the read used');
   }
 
+  /* ---- RS-3: EVERY page is dispositioned, and the per-page rows are written ------------------
+     The unit rules live in test-page-disposition-pure.js. What is proved here is the WIRING: the
+     processor feeds the classifier's page map and the read's own pages into the accounting, records
+     the stage, and persists one row per page — and a packet that needs a human still completes,
+     because a page awaiting a person is not a reason to throw away a paid-for read. */
+  {
+    // A three-page packet: pages 1-2 are a contract, page 3 is claimed by nobody and holds text.
+    const packetRouter = (recorded) => ({
+      ...fakeRouter(readPlan, recorded),
+      routeDocument: async () => ({
+        outcome: 'completed',
+        result: {
+          documentType: 'purchase_contract', confidence: 0.9,
+          pages: [{ text: 'page one' }, { text: 'page two' }, { text: 'an orphan page' }],
+          fields: [{ key: 'seller', value: 'Acme LLC', confidence: 0.9, page: 1 }],
+        },
+      }),
+    });
+    const classifier = {
+      classifierConfigured: () => true,
+      classify: async () => ({ ok: true, segments: [{ docType: 'purchase_contract', rawLabel: 'contract', confidence: 0.93, pages: [1, 2] }] }),
+    };
+    const jq = fakeJq(); const recorded = [];
+    const pageWrites = [];
+    jq.recordPages = async (_db, _id, rows) => { pageWrites.push(rows); };
+    const proc = PC.makePacketControlProcessor({
+      router: packetRouter(recorded),
+      adapters: [{ provider: 'azure', service: 'document_intelligence', analyze: async () => ({}) }],
+      loadBytes: okBytes, classifier,
+    });
+    const out = await proc({ ...job, payload: { ...job.payload, features: { docType: 'purchase_contract' } } }, { db: {}, jq });
+    const keys = jq.stages.map((s) => s.key + ':' + s.status);
+    ok(keys.includes('page_disposition:manual_required'),
+      'a packet with an unclaimed page records page_disposition as manual_required');
+    ok(out.status === 'completed',
+      'and the job STILL COMPLETES — a page awaiting a person never discards a successful read');
+    const st = jq.stages.find((s) => s.key === 'page_disposition');
+    ok(st && st.detail.pageCount === 3 && st.detail.assigned === 2 && st.detail.manualReview === 1,
+      'the stage detail states the whole accounting: 3 pages, 2 placed, 1 for a person');
+    ok(st && Array.isArray(st.detail.manualPages) && st.detail.manualPages[0] === 3,
+      'and names the page NUMBER, so someone can go and look at it');
+    ok(pageWrites.length === 1 && pageWrites[0].length === 3,
+      'one durable row is written per page — "3 pages need review" has to say WHICH three');
+    ok(pageWrites[0][2].disposition === 'manual_review' && pageWrites[0][2].page === 3,
+      'the orphan page is the one persisted as needing a person');
+  }
+
+  // RS-3: the classifier being off must NOT dump the whole packet on a person.
+  {
+    const jq = fakeJq(); const recorded = [];
+    const proc = PC.makePacketControlProcessor({
+      router: readRouter(recorded),
+      adapters: [{ provider: 'azure', service: 'document_intelligence', analyze: async () => ({}) }],
+      loadBytes: okBytes, classifier: null,
+    });
+    await proc(job, { db: {}, jq });
+    const keys = jq.stages.map((s) => s.key + ':' + s.status);
+    ok(keys.includes('page_disposition:not_applicable'),
+      'no classifier → page_disposition not_applicable (no basis to assign), never a wholesale manual dump');
+  }
+
+  // RS-3: a page-row write that fails must never fail the job — the stage totals still stand.
+  {
+    const jq = fakeJq(); const recorded = [];
+    jq.recordPages = async () => { throw new Error('page table down'); };
+    const classifier = {
+      classifierConfigured: () => true,
+      classify: async () => ({ ok: true, segments: [{ docType: 'bank_statement', confidence: 0.9, pages: [1] }] }),
+    };
+    const proc = PC.makePacketControlProcessor({
+      router: readRouter(recorded),
+      adapters: [{ provider: 'azure', service: 'document_intelligence', analyze: async () => ({}) }],
+      loadBytes: okBytes, classifier,
+    });
+    const out = await proc(job, { db: {}, jq });
+    ok(out.status === 'completed', 'a failing per-page write is swallowed — the job still completes');
+    ok(jq.stages.some((s) => s.key === 'page_disposition'), 'and the stage totals are still recorded');
+  }
+
   // ---- payload.docType shorthand (no features object) still builds features ----
   {
     const jq = fakeJq(); const recorded = [];

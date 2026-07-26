@@ -22,6 +22,7 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
       { stage_key: 'route_plan', status: 'completed' },
       { stage_key: 'ocr_layout', status: 'not_applicable' },
       { stage_key: 'classification', status: 'not_applicable' },
+      { stage_key: 'page_disposition', status: 'completed' },
     ], { mode: 'shadow' });
     ok(r.complete === true, 'shadow: intake+route_plan completed → complete (ocr not required)');
     ok(r.mode === 'shadow', 'mode echoed');
@@ -41,6 +42,7 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
       { stage_key: 'ocr_layout', status: 'completed' },
       { stage_key: 'evidence', status: 'completed' },
       { stage_key: 'classification', status: 'pending' },
+      { stage_key: 'page_disposition', status: 'completed' },
     ], { mode: 'read' });
     ok(done.complete === true, 'read: ocr_layout + evidence completed → complete (classification pending is not required)');
 
@@ -126,6 +128,9 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
     const base = [
       { stage_key: 'intake', status: 'completed' }, { stage_key: 'route_plan', status: 'completed' },
       { stage_key: 'ocr_layout', status: 'completed' }, { stage_key: 'evidence', status: 'completed' },
+      // RS-3: page_disposition is required-PRESENT too, so it has to be here for these cases to be
+      // about classification's verdict rather than about a second missing stage.
+      { stage_key: 'page_disposition', status: 'completed' },
     ];
     for (const st of ['failed_terminal', 'failed_retryable', 'not_applicable']) {
       const r = SM.evaluateManifest(base.concat([{ stage_key: 'classification', status: st }]), { mode: 'read' });
@@ -146,6 +151,37 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
   {
     const r = SM.evaluateManifest({ intake: 'completed', route_plan: 'completed' }, { mode: 'shadow' });
     ok(r.complete === true, 'accepts a {key:status} map');
+  }
+
+  /* ---- RS-3: page_disposition sits on the required-PRESENT tier -------------------------------
+     Same shape as classification, for the same reason plus one: the failure this stage exists to
+     catch is a page nobody mentioned, so the stage NOT BEING RECORDED is precisely the defect —
+     while its VERDICT ('a person has pages to place') must never throw away a paid-for read. */
+  {
+    ok(!SM.requiredStages('read').includes('page_disposition'),
+      'page_disposition is not in the must-COMPLETE set — a page needing a human is not a failed job');
+    ok(SM.requiredPresentStages('read').includes('page_disposition'),
+      'page_disposition IS in the must-be-RECORDED set for a real read');
+    ok(!SM.requiredPresentStages('shadow').includes('page_disposition'),
+      'shadow mode requires nothing of it — there was no read, so there were no pages');
+
+    const base = [
+      { stage_key: 'intake', status: 'completed' }, { stage_key: 'route_plan', status: 'completed' },
+      { stage_key: 'ocr_layout', status: 'completed' }, { stage_key: 'evidence', status: 'completed' },
+      { stage_key: 'classification', status: 'completed' },
+    ];
+    const manual = SM.evaluateManifest(base.concat([{ stage_key: 'page_disposition', status: 'manual_required' }]), { mode: 'read' });
+    ok(manual.complete === true,
+      "a packet with pages awaiting a person still COMPLETES — the read and the evidence are good work");
+    ok(manual.advisory.some((a) => a.stage === 'page_disposition' && a.status === 'manual_required'),
+      'and it is surfaced as an advisory so the shadow screen can show the pages owed');
+
+    const na = SM.evaluateManifest(base.concat([{ stage_key: 'page_disposition', status: 'not_applicable' }]), { mode: 'read' });
+    ok(na.complete === true, "not-applicable (nothing to account for) does not fail the job either");
+
+    const never = SM.evaluateManifest(base, { mode: 'read' });
+    ok(never.complete === false && never.missing.includes('page_disposition'),
+      'but a page accounting that NEVER RAN fails the job closed — a silently unaccounted packet is the defect');
   }
 
   // ---- never throws / fails closed on garbage ----

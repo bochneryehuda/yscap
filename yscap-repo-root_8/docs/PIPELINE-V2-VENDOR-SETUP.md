@@ -159,7 +159,14 @@ Recorded plainly so nothing here reads as more finished than it is:
   sorting step is recorded as pending.
 - **Evidence recording is best-effort**, so a job can currently finish even if evidence wasn't durably
   saved. This should become fail-closed (a job that recorded no evidence is not "complete").
-- **Page-by-page accounting is not mandatory** — every page of a packet should have to be dispositioned.
+- ~~**Page-by-page accounting is not mandatory**~~ — DONE (RS-3): every page of a read is now
+  dispositioned as assigned / excluded (provably blank) / manual_review, the accounting is a
+  recorded stage that fails the job closed if it never ran, and the per-page rows are persisted
+  (`document_pipeline_pages`, db/330) so "3 pages need a person" says which three. What it does NOT
+  do is block extraction: the fallback is always manual_review, so the accounting can never fail to
+  total, and a gate that cannot fire would be theatre. Assignment still depends on the classifier —
+  with `UW_PIPELINE_V2_CLASSIFY` off there is no basis to place a page, and the stage says so
+  rather than dumping the packet on a person.
 - **No senior-underwriter-approved end-to-end test corpus** has been proven against real files.
 - Custom extraction, packet analysis, and split adjudication exist as libraries but are **not on the
   production path**.
