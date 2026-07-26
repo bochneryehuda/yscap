@@ -1,12 +1,21 @@
-# Render Blueprint. package.json is at the REPO ROOT, so no Root Directory
-# override is needed. If your repo nests the project in a subfolder, set
-# `rootDir:` below (or the dashboard's Root Directory) to that folder.
+# Render Blueprint — REFERENCE CONFIGURATION, not the live wiring.
+#
+# READ THIS BEFORE TRUSTING THIS FILE:
+#  1. Render only auto-applies a Blueprint named render.yaml at the GIT ROOT. This project lives in
+#     the nested `yscap-repo-root_8/` folder (see CLAUDE.md), so this file is NOT at the git root
+#     and Render does not apply it. Hence `rootDir:` on every service below — needed if this is
+#     ever moved up and applied.
+#  2. The live web service was created BY HAND in the dashboard, so its real settings are whatever
+#     the dashboard says — not what is written here. Treat this file as the documented intent and
+#     the checklist for creating a service, and change the dashboard when you change this.
+# Adding the worker service therefore means creating it in the dashboard using the values below;
+# merging this file does not create it.
 services:
   - type: web
     name: ys-capital-portal
     runtime: node
     plan: starter
-    # rootDir: ys-capital-portal        # uncomment ONLY if the project is nested
+    rootDir: yscap-repo-root_8          # the project is nested — package.json lives here
     buildCommand: npm install && npm --prefix app ci && npm --prefix app run build
     startCommand: npm run start
     healthCheckPath: /api/health
@@ -25,7 +34,24 @@ services:
       # concurrent logins doesn't queue up behind a small pool.
       - key: UV_THREADPOOL_SIZE
         value: "8"
-      # Store documents on the persistent disk mounted above.
+      # Documents live in Cloudflare R2 (owner completed the cutover 2026-07-26). This MUST match
+      # the worker service below: if the web service saved to local disk while the worker read from
+      # R2, the worker would find nothing — the split-brain the shared object store exists to
+      # prevent. The S3_* values are dashboard-only (secrets are never committed).
+      - key: STORAGE_PROVIDER
+        value: s3
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ENDPOINT
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_REGION
+        value: auto
+      # Kept as the dual-read fallback for documents saved BEFORE the R2 cutover: a read that
+      # misses in the bucket falls back to this disk, so old files still download.
       - key: STORAGE_DIR
         value: /var/data/uploads
       # DATABASE_URL must point at your Postgres instance (named "yscap").
@@ -129,6 +155,7 @@ services:
     name: ys-capital-pipeline-worker
     runtime: node
     plan: starter
+    rootDir: yscap-repo-root_8          # the project is nested — package.json lives here
     buildCommand: npm install
     startCommand: npm run worker
     envVars:
@@ -171,9 +198,13 @@ services:
         sync: false
       - key: UW_PIPELINE_V2_READ
         sync: false
-      # SSN decryption key — the reader must decrypt nothing today, but the shared
-      # config refuses a dev default in production, so give it the real value.
+      # The shared config does NOT refuse a missing secret — it generates an ephemeral value and
+      # prints a SECURITY warning on every boot. Set these so the worker's logs stay quiet and a
+      # real warning is never lost in the noise. The worker verifies no tokens and decrypts nothing
+      # today, so the values only need to exist.
       - key: SSN_ENCRYPTION_KEY
+        sync: false
+      - key: JWT_SECRET
         sync: false
 databases:
   - name: yscap

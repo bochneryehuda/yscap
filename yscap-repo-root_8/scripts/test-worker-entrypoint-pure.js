@@ -38,8 +38,12 @@ stub('src/config', {
   pipeline: { workerEnabled: true, v2ReadEnabled: false },
 });
 stub('src/db', { query: async () => ({ rows: [] }) });
+// waitForDb RESOLVES {ok:...} — it never rejects. The stub must mirror that contract exactly:
+// the first version returned undefined, which is what let the real bug (entrypoint ignoring the
+// result and idling forever on an unreachable database) pass this test.
+let dbReady = { ok: true };
 stub('src/migrate-boot', {
-  waitForDb: async () => { calls.waitForDb++; },
+  waitForDb: async () => { calls.waitForDb++; return dbReady; },
   // If the entrypoint ever calls this, the test FAILS loudly — that is the whole point.
   ensureSchema: async () => { calls.ensureSchema++; },
   bootstrapAdmin: async () => {},
@@ -96,6 +100,20 @@ console.log = () => {};
   // The entrypoint must not auto-run on require — otherwise importing it anywhere (like here)
   // would start a real worker.
   ok(typeof worker.main === 'function', 'exports main() for testing without auto-starting');
+
+  // (1b) THE UNREACHABLE-DATABASE CONTRACT. waitForDb RESOLVES {ok:false} rather than throwing, so
+  // an entrypoint that only try/catches it will happily log "database reachable" and idle forever
+  // with no health check to notice — the precise "running but doing nothing" failure this whole
+  // service exists to eliminate. It must EXIT so the platform restarts it.
+  dbReady = { ok: false, error: 'ECONNREFUSED (simulated)' };
+  let exitedWith = null;
+  const realExit = process.exit;
+  process.exit = (code) => { exitedWith = code; throw new Error('__exit__'); };   // trap, don't die
+  const realErr = console.error; console.error = () => {};
+  try { await worker.main(); } catch (e) { if (!/__exit__/.test(e.message)) throw e; }
+  console.error = realErr; process.exit = realExit;
+  ok(exitedWith === 1, `an unreachable database EXITS non-zero (saw ${JSON.stringify(exitedWith)}) `
+    + '— it must never stay up pretending to work');
 
   console.log(`test-worker-entrypoint-pure: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

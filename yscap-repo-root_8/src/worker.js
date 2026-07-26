@@ -35,9 +35,12 @@ const cfg = require('./config');
 // How often the keepalive ticks. It does no work — its ONLY job is to be a ref'd handle so Node
 // keeps the process alive between the worker's own (unref'd) polls. Long enough to be free.
 const KEEPALIVE_MS = 60000;
-// How long an in-flight job gets to finish its last write after SIGTERM before we close the pool.
-// Render's default shutdown grace is 30s, so stay well inside it.
-const SHUTDOWN_GRACE_MS = 5000;
+// UPPER BOUND on shutdown, not the mechanism. We now AWAIT the worker's in-flight drain pass
+// (stop() returns a promise); this timer only stops us hanging if that never settles. It was 5s,
+// which was both too short to let a real read finish AND based on a false premise — a single
+// document read is bounded at ~150s, so no timer inside Render's 30s window can "let it finish".
+// The honest design is: ask the worker to stop, wait for it, and cap the wait.
+const SHUTDOWN_GRACE_MS = 20000;
 
 async function main() {
   const started = new Date().toISOString();
@@ -52,14 +55,23 @@ async function main() {
   }
 
   // Wait for the database, but do NOT migrate — see (1) above.
+  //
+  // waitForDb RESOLVES `{ok:false, error}` after its retry budget — it NEVER rejects (its own
+  // header says so). So a try/catch around it is dead code: with a wrong DATABASE_URL this would
+  // have printed "database reachable", started the worker, and idled forever draining nothing,
+  // with no health check on a Render worker to notice. That is precisely the "started fine,
+  // processes nothing, no error anywhere" state this service exists to eliminate — so the RESULT
+  // must be checked, not the absence of a throw.
   const db = require('./db');
-  try {
-    await require('./migrate-boot').waitForDb();
-    console.log('[worker] database reachable (schema is owned by the web service — not migrating)');
-  } catch (e) {
-    console.error(`[worker] could not reach the database: ${(e && e.message) || e}`);
-    process.exit(1);                    // let Render restart us rather than idle without a DB
+  let ready = null;
+  try { ready = await require('./migrate-boot').waitForDb(); }
+  catch (e) { ready = { ok: false, error: (e && e.message) || String(e) }; }   // belt and braces
+  if (!ready || ready.ok !== true) {
+    console.error(`[worker] could not reach the database: ${(ready && ready.error) || 'unknown error'}. `
+      + 'Exiting so the platform restarts this service rather than leaving it up and idle.');
+    process.exit(1);
   }
+  console.log('[worker] database reachable (schema is owned by the web service — not migrating)');
 
   const handle = require('./pipeline/start').startPipelineWorker({ db, cfg, log: console });
   if (!handle || handle.enabled === false) {
@@ -75,27 +87,40 @@ async function main() {
     if (shuttingDown) return;           // a second SIGTERM must not double-stop
     shuttingDown = true;
     console.log(`[worker] ${signal} received — stopping cleanly; in-flight jobs finish first.`);
-    try { if (handle && typeof handle.stop === 'function') handle.stop(); }
-    catch (e) { console.warn(`[worker] stop() failed: ${(e && e.message) || e}`); }
     clearInterval(keepalive);           // (3) release the loop so the process can exit on its own
 
-    // Stopping the worker + clearing the keepalive is NOT enough on its own: the pg pool's idle
-    // sockets are themselves ref'd handles, so the process would sit there until Render lost
-    // patience and SIGKILLed it — the hard kill we are trying to avoid. Verified against a real
-    // database: without this the process was still running well after SIGTERM. So close the pool
-    // too, after a short grace period that lets an in-flight job finish its last write.
-    setTimeout(() => {
-      Promise.resolve(db && db.pool && db.pool.end ? db.pool.end() : null)
-        .then(() => console.log('[worker] database pool closed — exiting.'))
-        .catch((e) => console.warn(`[worker] pool close failed: ${(e && e.message) || e}`));
-    }, SHUTDOWN_GRACE_MS).unref();      // unref'd: this timer must not itself keep us alive
+    // Ask the worker to stop and WAIT for the in-flight pass, capped by the grace budget. Closing
+    // the pool while a job is mid-write would make its completion write throw, stranding the job in
+    // 'processing' on a 300s lease and burning a retry attempt — the exact "killed mid-flight"
+    // outcome this shutdown path exists to prevent. Whichever settles first wins.
+    //
+    // Closing the pool is NOT optional: its idle sockets are themselves ref'd handles, so without
+    // it the process sits there until the platform SIGKILLs it (verified against a real database —
+    // it was still running long after SIGTERM).
+    let stopping = Promise.resolve();
+    try { if (handle && typeof handle.stop === 'function') stopping = Promise.resolve(handle.stop()); }
+    catch (e) { console.warn(`[worker] stop() failed: ${(e && e.message) || e}`); }
+
+    const cap = new Promise((r) => { const t = setTimeout(r, SHUTDOWN_GRACE_MS); if (t.unref) t.unref(); });
+    Promise.race([stopping.catch(() => {}), cap])
+      .then(() => (db && db.pool && db.pool.end ? db.pool.end() : null))
+      .then(() => console.log('[worker] database pool closed — exiting.'))
+      .catch((e) => console.warn(`[worker] pool close failed: ${(e && e.message) || e}`));
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
 
-  // A crash in a background job must not take the whole reader down silently.
+  // A rejected promise in a background job must not take the whole reader down.
   process.on('unhandledRejection', (r) => console.error('[worker] unhandled rejection:', r));
-  process.on('uncaughtException', (e) => console.error('[worker] uncaught exception:', e));
+  // An uncaught EXCEPTION is different: installing a handler OVERRIDES Node's default exit, so
+  // without the explicit exit below a process that has corrupted itself would log one line and then
+  // run forever — claiming and failing jobs, with no health check on a worker service to notice.
+  // Combined with the ref'd keepalive there would be NO condition under which this process is ever
+  // replaced. Log it, then die and let the platform start a clean one.
+  process.on('uncaughtException', (e) => {
+    console.error('[worker] uncaught exception — exiting so the platform replaces this process:', e);
+    process.exit(1);
+  });
 }
 
 // Exported for the contract test; only auto-runs when this file IS the entrypoint, so requiring it
