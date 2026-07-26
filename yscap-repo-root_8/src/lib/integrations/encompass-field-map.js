@@ -70,9 +70,24 @@ const REGISTRY = Object.freeze([
   pull({ key: 'property_type', encompassFieldId: '1041', loanPath: 'property.propertyType', altFieldId: 'CX.PROPERTYTYPE', type: 'enum', compare: 'enum', gate: GATE.ADVISORY, valueMap: 'propertyType', our: 'column:property_type', note: 'Subject property type (std 1041; CX.PROPERTYTYPE is the tenant cross-check). Our range-category (SFR / Multi 2-4 / Multi 5+ / Condo / Townhouse / Mixed Use) vs Encompass wording is lossy — value-mapped' }),
   pull({ key: 'units', encompassFieldId: '16', loanPath: ['property.financedNumberOfUnits', 'property.numberOfUnits', 'property.financedUnits'], type: 'int', category: 'program', compare: 'int', verified: false, our: 'column:units', note: 'Number of units — EXACT match (owner-directed 2026-07-26). Encompass standard field 16 ("No. of Units"). loanPath candidates need live confirmation against the tenant loan JSON; if it reads blank the field shows "no data to compare" (staff must enter it in Encompass)' }),
   pull({ key: 'deal_type', encompassFieldId: 'CX.DEALPROJECTTYPE', type: 'enum', compare: 'enum', gate: GATE.ADVISORY, valueMap: 'dealType', our: 'derive from applications.program + loan_type (no deal_type column)', note: 'Deal/project type — value-mapped (§6). Advisory: our side is derived heuristically from program/loan_type, so a disagreement surfaces but never hard-blocks' }),
-  pull({ key: 'exit_plan', encompassFieldId: 'CX.EXITPLAN', type: 'enum', compare: 'reference', gate: GATE.REFERENCE, valueMap: 'exitPlan', our: 'none (no column; inferable from deal_type)', note: 'Exit plan — reference only (owner: advisory, no matching); value map kept for context' }),
+  // Exit plan is a REAL match (owner-directed 2026-07-26 — was reference-only): our
+  // program/deal type IMPLIES the exit, so fix & flip ≡ Sale and fix & hold / rental
+  // ≡ Rental/Refinance. buildOurValues derives it (exitPlanFor) — we have no column,
+  // but the deal type is unambiguous, so it is compared rather than merely displayed.
+  // `naWhenOursMissing`: a BRIDGE or GROUND-UP deal has no exit plan we can derive —
+  // there is nothing for staff to "go enter", so an underivable OUR side means NOT
+  // APPLICABLE, not missing data, and summarize() skips it instead of holding the
+  // term sheet. (Without this the enum promotion would hard-block every Bridge /
+  // Ground-Up file — the same trap funded_date was left as reference to avoid.)
+  pull({ key: 'exit_plan', encompassFieldId: 'CX.EXITPLAN', type: 'enum', compare: 'enum', gate: GATE.ADVISORY, valueMap: 'exitPlan', naWhenOursMissing: true, our: 'derived from program/loan_type (flip→sell, hold/rental→hold)', note: 'Exit plan — matched: fix & flip → Sale; fix & hold / DSCR rental → Rental/Refinance' }),
   pull({ key: 'loan_to_be_vested', encompassFieldId: 'CX.LOANTOBEVESTED', type: 'enum', compare: 'enum', gate: GATE.ADVISORY, valueMap: 'vesting', our: 'derive(applications.llc_id present → entity)', note: 'Entity vs individual vesting flag' }),
-  pull({ key: 'vesting_llc', encompassFieldId: '1859', type: 'text', category: 'identity', compare: 'name', our: 'llcs.name via applications.llc_id', note: 'Subject LLC / vesting NAME — owner-confirmed standard field 1859 (matches our subject LLC vesting). Name-normalized compare (punctuation-insensitive); the authoritative match uses IDENTITY_MAP.nameEquals in WO-C' }),
+  // ROOT-CAUSE FIX (owner-reported 2026-07-26: "1859 is fully set in Encompass but
+  // our system says no data"). 1859 is a NUMBERED STANDARD field, not a custom
+  // field — and it had NO loanPath, so flattenLoan (which reads customFields[] or a
+  // loanPath, nothing else) could NEVER see it no matter what Encompass held. The
+  // candidate paths below are tried in order; the first one present wins, and an
+  // absent path still degrades to "no data" rather than a wrong value.
+  pull({ key: 'vesting_llc', encompassFieldId: '1859', loanPath: ['vesting.entityName', 'vesting.trustName', 'vesting.vestingEntityName', 'vestingEntityName', 'vesting.nameOfTrustOrEntity'], type: 'text', category: 'identity', compare: 'name', our: 'llcs.name via applications.llc_id', note: 'Subject LLC / vesting NAME — owner-confirmed standard field 1859 (matches our subject LLC vesting). Name-normalized compare (punctuation-insensitive); the authoritative match uses IDENTITY_MAP.nameEquals in WO-C' }),
 
   // ── Loan amount / initial advance / rehab (money) ─────────────────────────
   pull({ key: 'loan_amount', encompassFieldId: '1109', loanPath: 'baseLoanAmount', type: 'money', category: 'loan', compare: 'money', our: 'column:loan_amount', note: 'Total loan amount (Borrower Requested Loan Amount)' }),
@@ -85,8 +100,8 @@ const REGISTRY = Object.freeze([
   pull({ key: 'purchase_price', encompassFieldId: '136', loanPath: 'purchasePriceAmount', type: 'money', category: 'loan', compare: 'money', our: 'column:purchase_price', note: 'Real final purchase price (build-spec §5). NOTE: the discovery doc read 136/purchasePriceAmount as the EFFECTIVE price on assignment deals — confirm which the tenant populates before relying on this on an assignment file' }),
   pull({ key: 'effective_purchase', encompassFieldId: 'CX.EFFECTIVEPURCHASE', type: 'money', category: 'cost', compare: 'money', our: 'quote:assignment.recognizedPrice (seller price + financeable fee)', note: 'Effective purchase (LTC basis) — compute-only' }),
   pull({ key: 'contract_price', encompassFieldId: 'CX.ORIGINALCONTRACTPURCHASEP', type: 'money', category: 'cost', compare: 'money', our: 'column:underlying_contract_price (falls back to purchase_price when no assignment)', note: 'Seller / underlying contract price (assignment basis)' }),
-  pull({ key: 'assignment_fee', encompassFieldId: 'CX.ASSIGNMENTFEE', type: 'money', category: 'cost', compare: 'money', our: 'column:assignment_fee', note: 'Assignment fee (financeable per frozen engine: lesser of 15% of contract / $75k)' }),
-  pull({ key: 'financed_interest_reserve', encompassFieldId: 'CX.FINANCEDINTERESTRESERVE', type: 'money', category: 'cost', compare: 'money', our: 'quote:financedReserve$ (from requested_ir_months / requested_ir_amount)', note: 'Financed interest reserve $ — compute-only; can be 0' }),
+  pull({ key: 'assignment_fee', encompassFieldId: 'CX.ASSIGNMENTFEE', type: 'money', category: 'cost', compare: 'money', zeroMeansNone: true, our: 'column:assignment_fee', note: 'Assignment fee (financeable per frozen engine: lesser of 15% of contract / $75k)' }),
+  pull({ key: 'financed_interest_reserve', encompassFieldId: 'CX.FINANCEDINTERESTRESERVE', type: 'money', category: 'cost', compare: 'money', zeroMeansNone: true, our: 'quote:financedReserve$ (from requested_ir_months / requested_ir_amount)', note: 'Financed interest reserve $ — compute-only; can be 0' }),
   pull({ key: 'total_cost', encompassFieldId: 'CX.TOTALCOST', type: 'money', category: 'cost', compare: 'money', our: 'derive(effective purchase + rehab + financed reserve + program extras)', note: 'Total cost (LTC basis) — no column, derive' }),
 
   // ── Valuation (money + percent) ───────────────────────────────────────────
@@ -103,7 +118,9 @@ const REGISTRY = Object.freeze([
 
   // ── Rate / origination / term / maturity ──────────────────────────────────
   pull({ key: 'note_rate', encompassFieldId: '3', loanPath: 'requestedInterestRatePercent', type: 'rate', category: 'interest', compare: 'percent', our: 'column:rate_pct', note: 'Interest rate — PERCENT on both sides. WO-B MUST source applications.rate_pct (a percent, e.g. 10.99), NOT the fractional whole-loan-context note_rate (0.1099), or every loan false-mismatches' }),
-  pull({ key: 'origination_pct', encompassFieldId: '388', type: 'percent', category: 'cost', compare: 'percent', our: 'quote:origination % (e.g. 1.25)', note: 'Origination fee % (field 388: 1.0 = 1%)' }),
+  // Same root cause as 1859 — a numbered STANDARD field with no loanPath could never
+  // be read out of the loan JSON, so origination always showed "no data to compare".
+  pull({ key: 'origination_pct', encompassFieldId: '388', loanPath: ['originationFeePercent', 'closingCost.originationFeePercent', 'loanProductData.originationFeePercent', 'originationFeePercentage'], type: 'percent', category: 'cost', compare: 'percent', our: 'quote:origination % (e.g. 1.25)', note: 'Origination fee % (field 388: 1.0 = 1%)' }),
   pull({ key: 'term_months', encompassFieldId: '4', loanPath: 'loanAmortizationTermMonths', type: 'int', category: 'loan', compare: 'int', our: 'column:term (text → int)', note: 'Term in months' }),
   pull({ key: 'maturity_date', encompassFieldId: '78', loanPath: 'maturityDate', type: 'date', category: 'loan', compare: 'date', our: 'column:maturity_date', note: 'Maturity date — read from full loan (maturityDate), not pipeline' }),
   // Funded date — the closing-workflow 3-system reconciliation reads this (field
@@ -182,16 +199,26 @@ const VALUE_MAPS = Object.freeze({
   },
   // CX.EXITPLAN (reference/advisory — kept for staff context)
   exitPlan: {
-    'sale': 'sell', 'sell': 'sell', 'fix and flip': 'sell', 'flip': 'sell',
-    'refinance: rental': 'hold', 'refinance': 'hold', 'refi': 'hold', 'rent': 'hold', 'rental': 'hold', 'hold': 'hold',
+    'sale': 'sell', 'sell': 'sell', 'sell/sale': 'sell', 'sale/sell': 'sell', 'resale': 'sell',
+    'fix and flip': 'sell', 'fix & flip': 'sell', 'flip': 'sell', 'sell property': 'sell', 'market sale': 'sell',
+    'refinance: rental': 'hold', 'refinance: long term': 'hold', 'refinance - rental': 'hold',
+    'refinance': 'hold', 'refi': 'hold', 'rent': 'hold', 'rental': 'hold', 'hold': 'hold',
+    'rent/refinance': 'hold', 'refinance/rental': 'hold', 'long term rental': 'hold', 'buy and hold': 'hold',
   },
   // CX.REHABTYPE ↔ applications.rehab_type (Cosmetic/Moderate/Heavy/Adding SF/Ground-up)
+  // Owner-directed 2026-07-26: Encompass only has Light / Heavy / Expansion, so our
+  // finer buckets COLLAPSE onto that vocabulary — Cosmetic AND Moderate both mean
+  // LIGHT rehab in Encompass (previously 'moderate' mapped to its own token that
+  // Encompass could never produce, so a moderate file was permanently "no data").
+  // A square-footage ADDITION is Expansion (see rehabTypeFor in reconcile.js, which
+  // upgrades a file flagged for sqft addition to 'expansion').
   rehabType: {
     'light rehab': 'light', 'light': 'light', 'cosmetic': 'light', 'cosmetic / light': 'light', 'cosmetic/light': 'light',
-    'moderate': 'moderate', 'medium': 'moderate', 'moderate rehab': 'moderate',
-    'heavy rehab': 'heavy', 'heavy': 'heavy',
-    'expansion': 'expansion', 'adding sf': 'expansion', 'add sf': 'expansion', 'adding square footage': 'expansion',
-    'ground-up': 'ground-up', 'ground up': 'ground-up', 'new construction': 'ground-up',
+    'moderate': 'light', 'medium': 'light', 'moderate rehab': 'light',
+    'heavy rehab': 'heavy', 'heavy': 'heavy', 'heavy / gut rehab': 'heavy', 'heavy/gut rehab': 'heavy', 'gut rehab': 'heavy', 'gut': 'heavy', 'heavy gut rehab': 'heavy',
+    'expansion': 'expansion', 'adding sf': 'expansion', 'add sf': 'expansion', 'adding square footage': 'expansion', 'adding square feet': 'expansion',
+    'sqft addition': 'expansion', 'square footage expansion': 'expansion', 'adding square feet': 'expansion',
+    'ground-up': 'ground-up', 'ground up': 'ground-up', 'new construction': 'ground-up', 'ground-up construction': 'ground-up', 'ground up construction': 'ground-up', 'groundup': 'ground-up',
   },
   // CX.ACCRUALTYPE ↔ applications.accrual_type (non_dutch | dutch). NOTE: the
   // Encompass vocabulary differs from term-options.resolveAccrual — 'Note' means
@@ -264,6 +291,10 @@ function flattenLoan(rawLoan) {
   const cfs = Array.isArray(rawLoan.customFields) ? rawLoan.customFields : [];
   for (const cf of cfs) {
     if (!cf || !cf.fieldName || !KNOWN_FIELD_IDS.has(cf.fieldName)) continue;
+    // Skip an EMPTY cell: recording it would occupy the id and shadow a perfectly
+    // good standard-field loanPath below (which is exactly how 1859 / 388 read as
+    // "no data"). A blank custom field carries no information — the loanPath wins.
+    if (cf.value === undefined || cf.value === null || cf.value === '') continue;
     out[cf.fieldName] = { value: cf.value, format: cf.format };
   }
 
@@ -273,7 +304,9 @@ function flattenLoan(rawLoan) {
     const paths = Array.isArray(e.loanPath) ? e.loanPath : [e.loanPath];
     for (const p of paths) {
       const v = getPath(rawLoan, p);
-      if (v !== undefined && v !== null && v !== '') { out[e.encompassFieldId] = { value: v }; break; }
+      // Do NOT clobber a value already read from customFields[] — a candidate
+      // loanPath that happens to exist must never override the real custom field.
+      if (v !== undefined && v !== null && v !== '') { if (!(e.encompassFieldId in out)) out[e.encompassFieldId] = { value: v }; break; }
     }
   }
 
@@ -390,6 +423,9 @@ function compareField(entryOrKey, ourValue, encValue) {
     category: e.category || null,
     compare: e.compare,
     gate: e.gate,
+    // Surfaced so summarize() can treat an underivable OUR side as "not
+    // applicable" rather than "missing data" (see the exit_plan entry).
+    naWhenOursMissing: !!e.naWhenOursMissing,
     ours: ourValue == null ? null : ourValue,
     theirs: encValue == null ? null : encValue,
     oursNorm: null,
@@ -401,7 +437,22 @@ function compareField(entryOrKey, ourValue, encValue) {
 
   const kind = e.compare;
   if (kind === 'money' || kind === 'percent' || kind === 'int') {
-    const a = num(ourValue); const b = num(encValue);
+    let a = num(ourValue); let b = num(encValue);
+    // Owner-directed 2026-07-26: EMPTY and ZERO mean the same thing on a field where
+    // zero legitimately means "there is none of this" — the assignment fee on a
+    // non-assignment, a financed interest reserve of nil. Encompass writes 0 where
+    // our column is simply blank, which used to read as "no data to compare" and
+    // hold the term sheet forever. So a blank on ONE side is read as 0 when the
+    // OTHER side is exactly 0 — but ONLY for entries explicitly flagged
+    // `zeroMeansNone`. It is NOT applied to fields where 0 is nonsense (loan
+    // amount, purchase price, as-is value, ARV, units, rehab budget): there a
+    // placeholder 0 in Encompass against our blank must keep reading "no data — go
+    // enter it", never a false match on a block-gated number.
+    // Blank-vs-a-real-number and blank-vs-blank always stay incomparable.
+    if (e.zeroMeansNone) {
+      if (a === null && b === 0) a = 0;
+      else if (b === null && a === 0) b = 0;
+    }
     base.oursNorm = a; base.theirsNorm = b;
     if (a === null || b === null) return base; // incomparable
     const tol = kind === 'money' ? MONEY_TOL : kind === 'percent' ? PERCENT_TOL : 0;

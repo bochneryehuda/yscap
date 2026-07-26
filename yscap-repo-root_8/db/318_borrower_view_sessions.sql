@@ -1,5 +1,5 @@
 -- ============================================================================
--- 317 — BORROWER VIEW (staff "view as borrower") session register + the
+-- 318 — BORROWER VIEW (staff "view as borrower") session register + the
 -- impersonator stamp on both audit trails (owner-directed 2026-07-26).
 --
 -- A loan officer / processor / admin can step INTO a borrower's portal and see

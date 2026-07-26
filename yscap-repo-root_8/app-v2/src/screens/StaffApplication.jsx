@@ -676,7 +676,7 @@ function useStickyFilter(key, fallback) {
   return [v, set];
 }
 
-function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview, appId, onChanged }) {
+function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview, appId, onChanged, canImportCredit }) {
   const [open, setOpen] = useState(false);
   const [notes, setNotes] = useState(it.notes || '');
   // Collapse-when-complete: once YOUR role-action is done the row renders as a
@@ -750,7 +750,10 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
       </div>
 
       {it.template_code === 'rtl_cond_credit' && (
-        <CreditCondition appId={appId} canPull={completer} onChanged={onChanged} />
+        // The import button follows the SERVER's canImport (the pull_credit gate);
+        // `canPull` is only the pre-load fallback, so pass the same capability a loan
+        // officer now has — never `completer` (that would flash the button off for LOs).
+        <CreditCondition appId={appId} canPull={canImportCredit} onChanged={onChanged} />
       )}
 
       {/* The credit condition's PDF/XML are managed by <CreditCondition> above
@@ -3338,7 +3341,7 @@ export default function StaffApplication() {
                   : vis.map(it => (
                     <Item key={it.id} it={it} team={team} onPatch={patch} role={role}
                       docs={docs} onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
-                      dlBusy={dlBusy} onPreview={openPreview} appId={id} onChanged={load} />))}
+                      dlBusy={dlBusy} onPreview={openPreview} appId={id} onChanged={load} canImportCredit={can('pull_credit')} />))}
             </>);
           })()}
         </div>
@@ -3368,7 +3371,7 @@ export default function StaffApplication() {
                 <div className="muted small" style={{ textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>{phaseName(k)}</div>
                 {arr.map(it => <Item key={it.id} it={it} team={team} onPatch={patch} role={role}
                   docs={docs} onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
-                  dlBusy={dlBusy} onPreview={openPreview} appId={id} onChanged={load} />)}
+                  dlBusy={dlBusy} onPreview={openPreview} appId={id} onChanged={load} canImportCredit={can('pull_credit')} />)}
               </div>
             ))}
         </div>

@@ -94,6 +94,12 @@ function fmtAgo(iso) {
 function statusOf(f) {
   if (f.status === 'match') return { fg: V.good, bg: V.goodBg, text: f.resolution === 'replaced' ? 'Matches (pulled)' : 'Matches' };
   if (f.status === 'reference') return { fg: V.muted, bg: V.paper, text: 'Reference (not checked)' };
+  // NOT APPLICABLE — this field can't exist on this kind of loan (an exit plan on a
+  // bridge / ground-up deal). There is nothing to go and enter, and the section does
+  // NOT wait on it, so it must not look like an attention-needed "no data" row.
+  if (f.status === 'incomparable' && f.naWhenOursMissing && (f.oursNorm === null || f.oursNorm === undefined)) {
+    return { fg: V.muted, bg: V.paper, text: "Doesn't apply to this loan" };
+  }
   if (f.status === 'incomparable') return { fg: V.amber, bg: V.amberBg, text: 'No data to compare' };
   // mismatch — any difference now needs to be fixed so the two sides match
   if (f.resolution === 'accepted') return { fg: V.crit, bg: V.critBg, text: 'Still differs' };

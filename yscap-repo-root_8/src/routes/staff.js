@@ -3278,12 +3278,13 @@ router.post('/mismo/create', async (req, res) => {
 // ════════════════════════════════════════════════════════════════════════════
 
 // The stored credit-details section for a file (latest report + history).
-// `canImport` reflects the REAL server gate (sign_off_conditions — includes
-// closers + per-person capability grants) so the button matches the API exactly.
+// `canImport` reflects the REAL server gate (pull_credit — held by loan officers,
+// processors, underwriters, coordinators, closers, admins + per-person grants) so
+// the button matches the API exactly.
 router.get('/applications/:id/credit', async (req, res) => {
   try {
     const out = await require('../lib/credit').fileCredit(req.params.id);
-    out.canImport = can(req.actor, 'sign_off_conditions');
+    out.canImport = can(req.actor, 'pull_credit');
     res.json(out);
   } catch (e) { res.status(e.status || 500).json({ error: e.userMessage || 'server error' }); }
 });
@@ -3294,11 +3295,13 @@ router.get('/applications/:id/credit/preview', async (req, res) => {
   catch (e) { res.status(e.status || 500).json({ error: e.userMessage || 'server error' }); }
 });
 
-// Pull / reissue (or import a downloaded XML+PDF). Gated on sign_off_conditions:
-// pulling a live credit report is a regulated, billable action (processor /
-// underwriter / admin). Every field is re-read server-side — the client is never trusted.
+// Pull / reissue (or import a downloaded XML+PDF). Gated on pull_credit: pulling a
+// live credit report is a regulated, billable action the LOAN OFFICER does at point
+// of sale (owner-directed 2026-07-23) — plus processor / underwriter / coordinator /
+// closer / admin. It does NOT require sign_off_conditions (the processor still signs
+// the condition off). Every field is re-read server-side — the client is never trusted.
 router.post('/applications/:id/credit/import', async (req, res) => {
-  if (!can(req.actor, 'sign_off_conditions')) return res.status(403).json({ error: 'You don’t have permission to pull credit on this file.' });
+  if (!can(req.actor, 'pull_credit')) return res.status(403).json({ error: 'You don’t have permission to pull credit on this file.' });
   const b = req.body || {};
   try {
     const out = await require('../lib/credit').importCredit(req.params.id, {

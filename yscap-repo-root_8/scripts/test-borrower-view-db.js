@@ -167,7 +167,7 @@ const actorFor = (id, role, perms) => ({ id, kind: 'staff', role, perms: new Set
   ok(all.some((h) => h.staff_id === loA) && all.some((h) => h.staff_id === admin),
     'view_audit_log widens the register to the whole team');
 
-  // ---- the audit stamp columns really exist (db/317) ----
+  // ---- the audit stamp columns really exist (db/318) ----
   const cols = await db.query(
     `SELECT column_name FROM information_schema.columns
       WHERE table_name IN ('audit_log','request_audit_log') AND column_name LIKE 'impersonator%'`);

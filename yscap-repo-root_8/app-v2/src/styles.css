@@ -3182,12 +3182,15 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .cl-table th{text-align:left;color:var(--muted);font-weight:600;font-size:12px;padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
 .cl-table td{padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}
 .cl-row-muted{color:var(--muted)}
-.cl-quicklinks{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+.cl-quicklinks{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
 .cl-ql-group{border:1px solid var(--line);border-radius:var(--radius);padding:10px;background:var(--ink-1)}
 .cl-ql-head{font-weight:600;margin-bottom:5px}
 /* Flex row so ONLY the filename ellipsizes — the Executed/Draft tag must never
    be clipped (an e-sign filename is ~58 chars and would swallow it). */
-.cl-ql-doc{display:flex;align-items:center;gap:6px;text-align:left;max-width:100%}
+/* justify-content:flex-start is REQUIRED: .btn sets justify-content:center,
+   which was inert while this was display:block but goes live under flex and
+   would center short filenames. */
+.cl-ql-doc{display:flex;align-items:center;justify-content:flex-start;gap:6px;text-align:left;max-width:100%}
 .cl-ql-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* Explicit dark text on white (portal is white-first — never rely on a var()
    that might resolve light). The .on badge is white on solid teal, which is a
