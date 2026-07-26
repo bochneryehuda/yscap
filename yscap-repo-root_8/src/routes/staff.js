@@ -2025,30 +2025,65 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
 
 // Request an EXCEPTION to a guideline that the deal otherwise follows — e.g. to
 // finance MORE of an assignment fee than the 15% cap (a bigger loan), or any
-// other over-guideline ask (owner-directed 2026-07-21). This does NOT change the
-// registered product; it raises an escalation into the super-admin Workflow +
-// Escalations box for review. A super-admin grants it by applying the relevant
-// admin override (e.g. the approved effective purchase price) and re-registering.
+// other over-guideline ask (owner-directed 2026-07-21; redesigned 2026-07-24).
+// This does NOT change the registered product. It now writes a FIRST-CLASS
+// pricing_exception record into the loan_exceptions register (previously this
+// was a dead-end: a workflow hand-off + a notification and NO reviewable
+// record), AND still raises the escalation into the super-admin Workflow box —
+// both surfaces survive. A super-admin decides the record in the Exceptions
+// box; the GRANT itself remains the existing studio action (the relevant admin
+// override, e.g. the approved effective purchase price, then re-register) —
+// nothing here touches a frozen pricing-engine number.
 router.post('/applications/:id/pricing/request-exception', async (req, res) => {
   const appId = req.params.id;
   try {
     const note = String((req.body && req.body.note) || '').slice(0, 1000).trim();
     if (!note) return res.status(400).json({ error: 'Describe the exception you’re requesting.' });
+    const already = await loanExceptions.openForApp(appId, 'pricing_exception');
+    if (already) return res.status(409).json({ error: 'A pricing exception is already awaiting super-admin review on this file — add to it in the Exceptions box instead of filing a second one.' });
+
+    // A fresh ask after a denial/withdrawal links back to the prior attempt so
+    // the reviewer sees the chain (industry-standard re-request trail).
+    const prior = loanExceptions.presentExpiry(await loanExceptions.latestForApp(appId, 'pricing_exception'));
+    const reRequestOf = prior && ['denied', 'withdrawn', 'expired'].includes(prior.status) ? prior.id : null;
+
+    const client = await db.getClient();
+    let row;
+    try {
+      await client.query('BEGIN');
+      row = await loanExceptions.requestPricingException(client, {
+        appId,
+        reasonCode: req.body && req.body.reasonCode,
+        reasonNote: note,
+        requestedBy: req.actor.id,
+        compensatingFactors: loanExceptions.sanitizeCompensatingFactors(req.body && req.body.compensatingFactors),
+        reRequestOf,
+      });
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+
     const ctx = await notify.fileContext(appId);
     const wfNote = `Exception request: ${note}`;
     await workflowAuto.onEscalationOpened(appId, { fromStaffId: req.actor.id, note: wfNote });
     try {
       await notify.notifyAdmins({
-        type: 'manual_escalation',
-        title: 'Exception request needs super-admin review',
-        body: `${req.actor.name || 'A team member'} requested an exception on ${ctx ? ctx.label : 'a file'}: ${note}`,
+        type: 'pricing_exception',
+        title: 'Pricing exception needs super-admin review',
+        body: `${req.actor.name || 'A team member'} requested a pricing/guideline exception on ${ctx ? ctx.label : 'a file'}: ${note}`,
         meta: (ctx && ctx.meta) || undefined, applicationId: appId,
-        link: '/internal/escalations', ctaLabel: 'Open the Escalations box',
+        link: `/internal/exceptions?app=${appId}`, ctaLabel: 'Open the Exceptions box',
       });
     } catch (_) { /* best-effort */ }
-    await audit(req, 'pricing_exception_requested', 'application', appId, { note });
-    res.json({ ok: true });
-  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+    await audit(req, 'pricing_exception_requested', 'application', appId, { exceptionId: row.id, reasonCode: row.reason_code, note });
+    res.json({ ok: true, exception: row });
+  } catch (e) {
+    // Two staff submitting at once race on the uq_loan_exc_open_per_app partial
+    // index; the loser's INSERT is a unique violation — that's the "already
+    // pending" case, not a server error (same handling as the esign request).
+    if (e && e.code === '23505') return res.status(409).json({ error: 'A pricing exception is already awaiting super-admin review on this file.' });
+    console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
+  }
 });
 
 // ---- Co-borrower GUARANTY WAIVER exception (owner-directed 2026-07-22) ----
@@ -2060,7 +2095,9 @@ router.post('/applications/:id/pricing/request-exception', async (req, res) => {
 // routes (state / request / withdraw) are file-scoped; the decide lives in
 // /api/admin/exceptions (super-admin only).
 
-// The file's current guaranty-waiver state — for the studio + file view.
+// The file's exception state — the guaranty-waiver card fields (back-compat)
+// PLUS the full per-file exception REGISTER (every type, every status — the
+// "what deviations does this loan carry" answer) and the per-type reason maps.
 router.get('/applications/:id/exceptions', async (req, res) => {
   const appId = req.params.id;
   try {
@@ -2070,13 +2107,23 @@ router.get('/applications/:id/exceptions', async (req, res) => {
          FROM applications a
          LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id
         WHERE a.id=$1`, [appId])).rows[0] || {};
-    const latest = await loanExceptions.latestForApp(appId, 'guaranty_waiver');
+    const [latest, register] = await Promise.all([
+      loanExceptions.latestForApp(appId, 'guaranty_waiver'),
+      loanExceptions.registerForApp(appId),
+    ]);
+    const reasonCodesByType = {};
+    for (const t of Object.keys(loanExceptions.EXCEPTION_TYPES)) reasonCodesByType[t] = loanExceptions.reasonCodesFor(t);
     res.json({
       hasCoBorrower: !!a.co_borrower_id,
       coBorrowerName: [a.cb_first, a.cb_last].filter(Boolean).join(' ') || null,
       coBorrowerPgWaived: !!a.co_borrower_pg_waived,
       guarantyWaiver: latest || null,
       reasonCodes: loanExceptions.REASON_CODES,
+      register,
+      reasonCodesByType,
+      typeLabels: Object.fromEntries(Object.entries(loanExceptions.EXCEPTION_TYPES).map(([k, v]) => [k, v.label])),
+      compensatingFactors: loanExceptions.COMPENSATING_FACTORS,
+      pricingReasonCodes: loanExceptions.PRICING_EXCEPTION_REASONS,
     });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
@@ -2098,12 +2145,18 @@ router.post('/applications/:id/exceptions/guaranty-waiver', async (req, res) => 
     const reasonNote = String((req.body && req.body.reasonNote) || '').slice(0, 2000).trim();
     if (!reasonNote) return res.status(400).json({ error: 'Add a short note explaining why the co-borrower’s guaranty should be waived.' });
 
+    // A fresh ask after a denial links back to the prior attempt (re-request chain).
+    const prior = loanExceptions.presentExpiry(await loanExceptions.latestForApp(appId, 'guaranty_waiver'));
+    const reRequestOf = prior && ['denied', 'withdrawn', 'expired'].includes(prior.status) ? prior.id : null;
+
     const client = await db.getClient();
     let row;
     try {
       await client.query('BEGIN');
       row = await loanExceptions.requestGuarantyWaiver(client, {
         appId, subjectBorrowerId: a.co_borrower_id, reasonCode, reasonNote, requestedBy: req.actor.id,
+        compensatingFactors: loanExceptions.sanitizeCompensatingFactors(req.body && req.body.compensatingFactors),
+        reRequestOf,
       });
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
@@ -2122,20 +2175,38 @@ router.post('/applications/:id/exceptions/guaranty-waiver', async (req, res) => 
     } catch (_) { /* best-effort */ }
     await audit(req, 'guaranty_exception_requested', 'application', appId, { exceptionId: row.id, reasonCode: row.reason_code });
     res.json({ ok: true, exception: row });
-  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+  } catch (e) {
+    // Concurrent double-submit races on uq_loan_exc_open_per_app — the loser's
+    // INSERT is a unique violation, i.e. "already pending", not a server error
+    // (same mapping as the esign + pricing request routes).
+    if (e && e.code === '23505') return res.status(409).json({ error: 'A guaranty-waiver request is already awaiting super-admin review on this file.' });
+    console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
+  }
 });
 
-// Withdraw an OPEN guaranty-waiver request (the requester or an admin, file-scoped).
+// Withdraw an OPEN exception request — the REQUESTER or an admin/super-admin
+// only (file-scoped). Previously any staffer with file access could withdraw
+// anyone's request; this enforces the stated intent. Works for every type.
 router.post('/applications/:id/exceptions/:eid/withdraw', async (req, res) => {
   const appId = req.params.id;
   try {
     const exc = await loanExceptions.getById(req.params.eid);
     if (!exc || exc.application_id !== appId) return res.status(404).json({ error: 'That exception was not found on this file.' });
     if (exc.status !== 'requested') return res.status(409).json({ error: 'That exception is not open, so it can’t be withdrawn.' });
+    const isAdmin = req.actor.role === 'super_admin' || req.actor.role === 'admin';
+    const isRequester = exc.requested_by && exc.requested_by === req.actor.id;
+    if (!isAdmin && !isRequester) {
+      return res.status(403).json({ error: 'Only the person who requested this exception (or an admin) can withdraw it.' });
+    }
     const row = await loanExceptions.withdrawException(req.params.eid, req.actor.id);
     if (!row) return res.status(409).json({ error: 'That exception is no longer open.' });
-    const wdAction = exc.exception_type === 'esign_before_ctc' ? 'esign_before_ctc_exception_withdrawn' : 'guaranty_exception_withdrawn';
-    await audit(req, wdAction, 'application', appId, { exceptionId: row.id, exceptionType: exc.exception_type });
+    const WITHDRAW_ACTION = {
+      guaranty_waiver: 'guaranty_exception_withdrawn',
+      esign_before_ctc: 'esign_before_ctc_exception_withdrawn',
+      pricing_exception: 'pricing_exception_withdrawn',
+    };
+    await audit(req, WITHDRAW_ACTION[exc.exception_type] || 'loan_exception_withdrawn', 'application', appId,
+      { exceptionId: row.id, exceptionType: exc.exception_type });
     res.json({ ok: true, exception: row });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
@@ -2176,11 +2247,19 @@ router.post('/applications/:id/exceptions/esign-before-ctc', async (req, res) =>
       outstanding: (g.outstanding || []).map((o) => ({ code: o.code, label: o.label, reason: o.reason || null, tier: o.tier })),
     };
 
+    // A fresh ask after a denial links back to the prior attempt (re-request chain).
+    const prior = loanExceptions.presentExpiry(await loanExceptions.latestForApp(appId, 'esign_before_ctc'));
+    const reRequestOf = prior && ['denied', 'withdrawn', 'expired'].includes(prior.status) ? prior.id : null;
+
     const client = await db.getClient();
     let row;
     try {
       await client.query('BEGIN');
-      row = await loanExceptions.requestEsignBeforeCtc(client, { appId, reasonCode, reasonNote, requestedBy: req.actor.id, gateSnapshot });
+      row = await loanExceptions.requestEsignBeforeCtc(client, {
+        appId, reasonCode, reasonNote, requestedBy: req.actor.id, gateSnapshot,
+        compensatingFactors: loanExceptions.sanitizeCompensatingFactors(req.body && req.body.compensatingFactors),
+        reRequestOf,
+      });
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
     finally { client.release(); }
@@ -2794,6 +2873,7 @@ router.get('/applications/:id/export/tpr', async (req, res) => {
     }
     if (issuance.override && issuance.override.applied) {
       await audit(req, 'issuance_override', 'application', req.params.id, { action: 'export_tpr', tier: issuance.tier, reason: issuance.override.reason });
+      await loanExceptions.recordIssuanceOverride({ appId: req.params.id, staffId: req.actor.id, note: `export_tpr: ${issuance.override.reason || 'no reason given'}`, snapshot: { action: 'export_tpr', tier: issuance.tier || null, at: new Date().toISOString() } });
     }
     const { zip, filename } = await require('../lib/tpr-export').buildTprExport(req.params.id);
     await audit(req, 'export_tpr', 'application', req.params.id, { bytes: zip.length });
@@ -2848,6 +2928,7 @@ router.get('/applications/:id/export/mismo', async (req, res) => {
     }
     if (issuance.override && issuance.override.applied) {
       await audit(req, 'issuance_override', 'application', req.params.id, { action: 'export_mismo', tier: issuance.tier, reason: issuance.override.reason });
+      await loanExceptions.recordIssuanceOverride({ appId: req.params.id, staffId: req.actor.id, note: `export_mismo: ${issuance.override.reason || 'no reason given'}`, snapshot: { action: 'export_mismo', tier: issuance.tier || null, at: new Date().toISOString() } });
     }
     const mismo = require('../lib/mismo');
     const xml = await mismo.exportApplicationXml(req.params.id);
@@ -6746,6 +6827,10 @@ router.patch('/applications/:id', async (req, res) => {
     if (issuance && issuance.override && issuance.override.applied) {
       await audit(req, 'issuance_override', 'application', req.params.id,
         { action: issuance.action, tier: issuance.tier, reason: issuance.override.reason });
+      // Exception-register record (2026-07-24): the override also lands in the
+      // loan_exceptions register (born approved) so the file's exception history
+      // and the diligence export show it. Best-effort — never blocks the status.
+      await loanExceptions.recordIssuanceOverride({ appId: req.params.id, staffId: req.actor.id, note: `${issuance.action}: ${issuance.override.reason || 'no reason given'}`, snapshot: { action: issuance.action, tier: issuance.tier || null, at: new Date().toISOString() } });
     }
     // Status is a rule-engine field (e.g. "when the file reaches underwriting").
     try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'status_change' }); } catch (_) {}
@@ -6784,6 +6869,7 @@ router.post('/applications/:id/internal-status', async (req, res) => {
     if (r.issuance && r.issuance.override && r.issuance.override.applied) {
       await audit(req, 'issuance_override', 'application', req.params.id,
         { action: r.issuance.action, tier: r.issuance.tier, reason: r.issuance.override.reason });
+      await loanExceptions.recordIssuanceOverride({ appId: req.params.id, staffId: req.actor.id, note: `${r.issuance.action}: ${r.issuance.override.reason || 'no reason given'}`, snapshot: { action: r.issuance.action, tier: r.issuance.tier || null, at: new Date().toISOString() } });
     }
     res.json({ ok: true, internal_status: r.internal_status, status: r.status, issuance: r.issuance || undefined });
   } catch (e) {
@@ -6998,12 +7084,19 @@ router.get('/workflow/count', async (req, res) => {
 // digging into each file. `status`: open (default) | all-active | approved | denied | cleared | all.
 router.get('/my-exceptions', async (req, res) => {
   try {
-    const status = ['open', 'all-active', 'approved', 'denied', 'withdrawn', 'cleared', 'all'].includes(req.query.status) ? req.query.status : 'open';
+    const status = ['open', 'all-active', 'approved', 'denied', 'withdrawn', 'expired', 'cleared', 'all'].includes(req.query.status) ? req.query.status : 'open';
     const [rows, openCount] = await Promise.all([
       loanExceptions.listForRequester(req.actor.id, { status }),
       loanExceptions.requesterOpenCount(req.actor.id),
     ]);
-    res.json({ exceptions: rows, openCount, reasonCodes: loanExceptions.REASON_CODES });
+    const reasonCodesByType = {};
+    for (const t of Object.keys(loanExceptions.EXCEPTION_TYPES)) reasonCodesByType[t] = loanExceptions.reasonCodesFor(t);
+    res.json({
+      exceptions: rows, openCount,
+      reasonCodes: loanExceptions.REASON_CODES, reasonCodesByType,
+      typeLabels: Object.fromEntries(Object.entries(loanExceptions.EXCEPTION_TYPES).map(([k, v]) => [k, v.label])),
+      compensatingFactors: loanExceptions.COMPENSATING_FACTORS,
+    });
   } catch (e) { console.warn('[my-exceptions] list error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 

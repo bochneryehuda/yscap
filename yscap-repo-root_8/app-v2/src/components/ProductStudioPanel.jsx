@@ -329,6 +329,25 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   const [exceptionInfo, setExceptionInfo] = useState(null);   // server exception_required payload (MANUAL scenario)
   const [excReq, setExcReq] = useState('');                   // "request an exception" note
   const [excReqOpen, setExcReqOpen] = useState(false);
+  // Redesign 2026-07-24: the pricing exception is a first-class register record.
+  // Staff pick a structured reason + compensating factors; the panel shows the
+  // file's current pricing-exception state (open/approved/denied) inline.
+  const [excReason, setExcReason] = useState('other');
+  const [excFactors, setExcFactors] = useState([]);           // [{code}] picked
+  const [excMaps, setExcMaps] = useState(null);               // {pricingReasonCodes, compensatingFactors, register}
+  useEffect(() => {
+    if (!excReqOpen || !isStaff || excMaps) return;
+    api.fileExceptions(appId)
+      .then((d) => setExcMaps({
+        pricingReasonCodes: d.pricingReasonCodes || {},
+        compensatingFactors: d.compensatingFactors || {},
+        register: d.register || [],
+      }))
+      .catch(() => setExcMaps({ pricingReasonCodes: {}, compensatingFactors: {}, register: [] }));
+    // eslint-disable-next-line
+  }, [excReqOpen, isStaff]);
+  const latestPricingExc = excMaps && excMaps.register
+    ? excMaps.register.find((r) => (r.type || r.exception_type) === 'pricing_exception') : null;
   const [adminKey, setAdminKey] = useState('');   // set after a correct admin-mode password (borrower)
   const [adminOpen, setAdminOpen] = useState(false); // is the admin zone VISIBLE right now
   const [savedStudio, setSavedStudio] = useState(undefined);   // undefined = still loading, null = none saved
@@ -748,10 +767,16 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
     if (!note) { setErr('Describe the exception you’re requesting.'); return; }
     setBusy(true); setErr(''); setMsg('');
     try {
-      if (isStaff) await api.staffRequestException(appId, note);
-      else await api.borrowerRequestException(appId, note);
-      setExcReq(''); setExcReqOpen(false);
-      setMsg('Exception request sent — a super-admin will review it in the Escalations box.');
+      if (isStaff) {
+        // First-class register record (redesign 2026-07-24): structured reason +
+        // compensating factors travel with the request into the Exceptions box.
+        await api.staffRequestException(appId, note, excReason,
+          excFactors.length ? excFactors.map((code) => ({ code })) : undefined);
+      } else await api.borrowerRequestException(appId, note);
+      setExcReq(''); setExcReqOpen(false); setExcFactors([]); setExcMaps(null);
+      setMsg(isStaff
+        ? 'Exception request filed — it now has its own record a super-admin reviews in the Exceptions box (you can track it under "My exceptions").'
+        : 'Exception request sent — your loan team will review it and get back to you.');
     } catch (e) { setErr(e.message || 'Could not send the exception request'); }
     finally { setBusy(false); }
   }
@@ -905,16 +930,51 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
               <div className="muted small" style={{ marginBottom: 6 }}>
                 Ask a super-admin to make an exception to a guideline — for example, to finance more of an
                 assignment fee than the 15% cap (a bigger loan). This doesn’t change your current terms; it
-                goes to the Escalations box for review.
+                {isStaff ? ' files a tracked request into the Exceptions box for review.' : ' goes to your loan team for review.'}
               </div>
+              {/* The file's current pricing-exception state, so nobody double-files. */}
+              {isStaff && latestPricingExc && (
+                <div className={`notice ${latestPricingExc.status === 'approved' ? 'ok' : latestPricingExc.status === 'requested' ? 'warn' : ''}`} style={{ marginBottom: 8 }}>
+                  {latestPricingExc.status === 'requested' && <>A pricing exception is already <b>awaiting review</b> on this file — add to that one in the Exceptions box instead of filing a second.</>}
+                  {latestPricingExc.status === 'approved' && <>The latest pricing exception on this file was <b>approved</b>{latestPricingExc.decision_note ? ` — ${latestPricingExc.decision_note}` : ''}. A super-admin applies it in the studio and re-registers.</>}
+                  {['denied', 'withdrawn', 'expired', 'cleared'].includes(latestPricingExc.status) && <>The last pricing exception on this file was <b>{latestPricingExc.status}</b> — a new request will link back to it.</>}
+                </div>
+              )}
+              {isStaff && excMaps && (
+                <div className="row" style={{ gap: 8, marginBottom: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <label className="muted small" htmlFor="excReason">What kind of exception?</label>
+                  <select id="excReason" className="input" style={{ width: 'auto', maxWidth: '100%' }}
+                    value={excReason} onChange={(e) => setExcReason(e.target.value)}>
+                    {Object.entries(excMaps.pricingReasonCodes).map(([k, label]) => (
+                      <option key={k} value={k}>{label}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <textarea className="input" rows={2} style={{ width: '100%' }}
                 placeholder="What exception are you requesting, and why?"
                 value={excReq} onChange={(e) => setExcReq(e.target.value)} />
+              {/* Compensating factors — what offsets the risk. Ticking them makes the
+                  ask reviewable (and the register diligence-ready). */}
+              {isStaff && excMaps && Object.keys(excMaps.compensatingFactors).length > 0 && (
+                <div style={{ marginTop: 8 }}>
+                  <div className="muted small" style={{ marginBottom: 4 }}>What offsets the risk? (tick any that apply)</div>
+                  <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                    {Object.entries(excMaps.compensatingFactors).filter(([k]) => k !== 'other').map(([k, label]) => (
+                      <label key={k} className="muted small" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        <input type="checkbox" checked={excFactors.includes(k)}
+                          onChange={(e) => setExcFactors((s) => e.target.checked ? [...s, k] : s.filter((x) => x !== k))} />
+                        {label}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
               <div className="row" style={{ gap: 8, marginTop: 8 }}>
                 <button className="btn primary small" disabled={busy || !excReq.trim()} onClick={requestException}>
                   {busy ? 'Sending…' : 'Send request'}
                 </button>
-                <button className="btn ghost small" onClick={() => { setExcReqOpen(false); setExcReq(''); }}>Cancel</button>
+                <button className="btn ghost small" onClick={() => { setExcReqOpen(false); setExcReq(''); setExcFactors([]); }}>Cancel</button>
               </div>
             </div>
           )}

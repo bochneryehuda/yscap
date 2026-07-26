@@ -38,6 +38,12 @@ const KICKER_OF = {
   guaranty_exception: 'Guaranty exception', guaranty_exception_decided: 'Guaranty exception',
   guaranty_exception_comment: 'Exception comment',
   esign_before_ctc_exception: 'Send-before-CTC exception', esign_before_ctc_exception_decided: 'Send-before-CTC exception',
+  // Exception-workflow redesign (2026-07-24): the pricing/guideline exception is
+  // a first-class register record; comments got a type-generic kicker; the aging
+  // + expiry digests nudge the reviewers/team.
+  pricing_exception: 'Pricing exception', pricing_exception_decided: 'Pricing exception',
+  exception_comment: 'Exception comment',
+  exception_aging: 'Exceptions waiting', exception_expired: 'Exception expired',
   message: 'New message', mention: 'You were mentioned', reminder: 'Reminder',
   llc_verified: 'Your entity', llc_unverified: 'Your entity',
   track_record_unverified: 'Track record',
@@ -436,6 +442,12 @@ const CATEGORY_OF = {
   guaranty_exception: 'conditions', guaranty_exception_decided: 'conditions',
   guaranty_exception_comment: 'conditions',
   esign_before_ctc_exception: 'conditions', esign_before_ctc_exception_decided: 'conditions',
+  // Exception-workflow redesign (2026-07-24) — action-bearing staff events (a
+  // super-admin review request, the decision back to the team, thread comments,
+  // the aging/expiry digests), so they email like the guaranty/esign ones.
+  pricing_exception: 'conditions', pricing_exception_decided: 'conditions',
+  exception_comment: 'conditions',
+  exception_aging: 'conditions', exception_expired: 'conditions',
   // Major-fraud / authenticity alert (R3.14, owner-directed 2026-07-22).
   // Action-bearing — admins ARE emailed (owner explicitly asked).
   workflow_alert: 'conditions',
