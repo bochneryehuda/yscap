@@ -100,6 +100,12 @@ async function shadowJobDetail(db, jobId) {
     // best-effort → an empty summary if there's nothing to resolve. Advisory (no decision/condition).
     let canonicalFacts = { facts: [], factCount: 0, contestedCount: 0 };
     try { canonicalFacts = require('./canonical-facts').selectCanonicalFacts(evidence); } catch (_) { canonicalFacts = { facts: [], factCount: 0, contestedCount: 0 }; }
+    // VSLICE-6 — the REAL V1-vs-V2 difference for this document: field-by-field, what the existing
+    // (V1) pipeline extracted vs what V2 settled on as canonical facts (agree / disagree / only-one-
+    // side). Computed FRESH so it reflects the current V1 + V2 state. Best-effort (never throws) →
+    // an empty diff if there's nothing to compare. Advisory: reads only, writes nothing.
+    let v1v2Diff = null;
+    try { v1v2Diff = await require('./v1v2-diff').computeDiffForDocument(db, { documentId: job.document_id }); } catch (_) { v1v2Diff = null; }
     return {
       job: {
         id: job.id, documentId: job.document_id, loanId: job.loan_id, family: job.document_family,
@@ -117,6 +123,7 @@ async function shadowJobDetail(db, jobId) {
       })),
       evidence,
       canonicalFacts,
+      v1v2Diff,
     };
   } catch (e) {
     try { console.warn('[shadow-report] shadowJobDetail failed:', (e && e.message) || e); } catch (_) { /* ignore */ }
