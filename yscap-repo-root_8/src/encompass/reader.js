@@ -236,6 +236,23 @@ async function pullLoanForApplication(appId) {
   try { loan = await client.getLoan(guid); }
   catch (e) { return _stampError(appId, `getLoan: ${e.message}`); }
 
+  // Read every mapped field BY FIELD NUMBER (owner sign-off 2026-07-26). The same
+  // field number lives at a DIFFERENT JSON path from loan to loan — 1859 sat in
+  // closingDocument.finalVestingDescription on one loan and was absent on the next
+  // (the LLC name was in borrowerUnparsedName1), and 388's real value appears at no
+  // stable path at all (the path we read held a different fee). Asking Encompass for
+  // the NUMBERS is the only way to be right on every loan. Best-effort: a failure
+  // leaves `_fieldValues` unset and the path-based extract still works exactly as
+  // before, so a fieldReader outage degrades rather than breaks the pull.
+  try {
+    const ids = require('../lib/integrations/encompass-field-map').allFieldIds();
+    const vals = await client.readFields(guid, ids);
+    if (vals && typeof vals === 'object' && Object.keys(vals).length) loan._fieldValues = vals;
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('[encompass] fieldReader unavailable, falling back to loan paths:', e && e.message);
+  }
+
   const scrubbed = _scrubForStorage(loan);
   const jsonText = JSON.stringify(scrubbed);
   await db.query(
