@@ -38,9 +38,16 @@ function attachSeasoning(loan, opts = {}) {
   return loan;
 }
 const {
-  BuyerMismatchError, TapeNotFoundError, LoanNotFoundError,
-  loanBuyerKey, buyerMatches, assertBuyer, tapeAvailability,
+  BuyerMismatchError, NotRegisteredError, ProgramMismatchError, ManualAdminOnlyError,
+  TapeNotFoundError, LoanNotFoundError,
+  loanBuyerKey, buyerMatches, assertBuyer, exportGate, assertExportAllowed, tapeAvailability,
 } = require('./buyer-rule');
+
+// The loan's registered program (product_registrations.program) drives the
+// non-admin export gate; null/'none' when the loan isn't registered yet.
+function loanRegisteredProgram(loan) {
+  return (loan && loan.registration && loan.registration.program) || null;
+}
 
 // Cache each template's bytes once (the file never changes at runtime).
 const _tplCache = Object.create(null);
@@ -55,7 +62,10 @@ async function buildTape(appId, tapeKey, db, opts = {}) {
   if (!tape) throw new TapeNotFoundError(tapeKey);
   const loan = await assembleTapeLoan(appId, db);
   if (!loan.found) throw new LoanNotFoundError(appId);
-  if (!opts.skipBuyerCheck) assertBuyer(loan, tape);
+  // The capital-provider + program + manual-admin-only gate (owner-directed).
+  // An admin bypasses it; a non-admin needs a registered loan whose provider AND
+  // program line up. skipBuyerCheck stays a full bypass for internal callers.
+  if (!opts.skipBuyerCheck) assertExportAllowed(loan, tape, { isAdmin: opts.isAdmin, registeredProgram: loanRegisteredProgram(loan) });
 
   attachSeasoning(loan, { asOf: opts.asOf, overrides: opts.seasonedOverrides });
   const row = tape.buildRow(loan);
@@ -71,10 +81,11 @@ async function buildTape(appId, tapeKey, db, opts = {}) {
 }
 
 // ---- bulk tape (many loans, one workbook) ----------------------------------
-// Every requested loan must belong to the tape's capital provider; the whole
-// export is rejected (with the offending files listed) if any does not — the
-// same rule as a single export, just batched. Returns { buf, filename, count }.
-async function buildBulkTape(tapeKey, appIds, db) {
+// Every requested loan must pass the SAME export gate as a single export (admin
+// bypass; else registered + provider-match + program-match, manual admin-only);
+// the whole export is rejected (with the offending files + reasons listed) if any
+// does not. Returns { buf, filename, count }. opts.isAdmin bypasses the pairing.
+async function buildBulkTape(tapeKey, appIds, db, opts = {}) {
   const tape = registry.getTape(tapeKey);
   if (!tape) throw new TapeNotFoundError(tapeKey);
   const ids = Array.from(new Set((appIds || []).filter(Boolean)));
@@ -86,15 +97,23 @@ async function buildBulkTape(tapeKey, appIds, db) {
   for (const id of ids) {
     const loan = await assembleTapeLoan(id, db);
     if (!loan.found) { missing.push(id); continue; }
-    if (!buyerMatches(loan, tape)) {
-      mismatches.push({ id, loanNo: loan.app.ys_loan_number || loan.app.investor_loan_number || null, currentBuyer: loan.noteBuyerRaw || null });
+    const gate = exportGate(loan, tape, { isAdmin: opts.isAdmin, registeredProgram: loanRegisteredProgram(loan) });
+    if (!gate.ok) {
+      mismatches.push({
+        id,
+        loanNo: loan.app.ys_loan_number || loan.app.investor_loan_number || null,
+        currentBuyer: loan.noteBuyerRaw || null,
+        code: gate.error && gate.error.code,
+        reason: gate.error && gate.error.message,
+      });
       continue;
     }
     loans.push(loan);
   }
   if (mismatches.length) {
-    const e = new BuyerMismatchError(tape, mismatches[0].currentBuyer);
-    e.message = `${mismatches.length} of the selected loan(s) are not assigned to ${tape.fullName} and were not exported. Switch their capital provider to ${tape.name}, or remove them from the selection.`;
+    const e = new Error(`${mismatches.length} of the selected loan(s) can't be exported on the ${tape.name} tape and were skipped. Each must be registered with a matching program and capital provider (${tape.fullName}); manual files are admin-only.`);
+    e.code = 'bulk_gate_failed';
+    e.status = 409;
     e.mismatches = mismatches;
     throw e;
   }
@@ -214,8 +233,15 @@ module.exports = {
   buyerMatches,
   loanBuyerKey,
   assertBuyer,
+  exportGate,
+  assertExportAllowed,
+  loanRegisteredProgram,
   BuyerMismatchError,
+  NotRegisteredError,
+  ProgramMismatchError,
+  ManualAdminOnlyError,
   TapeNotFoundError,
   LoanNotFoundError,
+  programProvider: require('./program-provider'),
   registry,
 };

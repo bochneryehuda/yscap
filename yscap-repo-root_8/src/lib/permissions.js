@@ -44,6 +44,11 @@ const CAPABILITIES = [
   { key: 'waive_conditions', label: 'Waive conditions', hint: 'Waive a condition with a reason instead of clearing it.' },
   { key: 'delete_files', label: 'Delete / restore files', hint: 'Soft-delete a loan file and restore it.' },
   { key: 'manage_vendors', label: 'Manage the vendor directory', hint: 'Title & insurance vendor list.' },
+  // Capital-provider data tapes (owner-directed 2026-07-26). Only processors,
+  // underwriters and admins may reach the tape-export tools by default; a loan
+  // officer does NOT get it unless an admin grants it to that individual here on
+  // the Team screen. (super_admin has every capability implicitly.)
+  { key: 'export_data_tapes', label: 'Export capital-provider data tapes', hint: 'Download a loan\'s data tape for its capital provider (Fidelis / Blue Lake / EMCAP …). Off for loan officers unless granted per-person.' },
   { key: 'manage_team', label: 'Manage the team', hint: 'Add staff, set roles, set passwords.' },
   { key: 'platform_setup', label: 'Platform setup', hint: 'Integrations, email config, and other software setup.' },
   { key: 'view_audit_log', label: 'View the system audit log', hint: 'The company-wide trail of every action across every file and borrower.' },
@@ -54,16 +59,19 @@ const CAP_KEYS = CAPABILITIES.map((c) => c.key);
 // too by default but is still a distinct, revocable role.
 const ROLE_DEFAULTS = {
   super_admin: CAP_KEYS.slice(),
-  admin: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'manage_conditions', 'manage_pricing', 'manage_draws', 'waive_conditions', 'delete_files', 'manage_vendors', 'manage_team', 'platform_setup', 'view_audit_log'],
+  admin: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'manage_conditions', 'manage_pricing', 'manage_draws', 'waive_conditions', 'delete_files', 'manage_vendors', 'export_data_tapes', 'manage_team', 'platform_setup', 'view_audit_log'],
   // Underwriters run per-file conditions + sign-off + waive; the GLOBAL studio
   // (manage_conditions) is admin/software-setup by default but an admin can
-  // grant it to a specific underwriter from the Team screen.
-  underwriter: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'waive_conditions'],
+  // grant it to a specific underwriter from the Team screen. They also export
+  // capital-provider data tapes (owner-directed 2026-07-26).
+  underwriter: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'waive_conditions', 'export_data_tapes'],
   loan_coordinator: ['see_all_files', 'review_conditions', 'sign_off_conditions'],
   // The Draw Coordinator persona (default holder Lisa Katz): runs the Sitewire draw
   // desk across all files. Admin-overridable per the coordinator rules.
   draw_coordinator: ['see_all_files', 'manage_draws', 'review_conditions'],
-  processor: ['review_conditions', 'sign_off_conditions', 'manage_draws'],
+  // Processors sign off conditions, manage draws, and export data tapes
+  // (owner-directed 2026-07-26).
+  processor: ['review_conditions', 'sign_off_conditions', 'manage_draws', 'export_data_tapes'],
   // Loan officers can REVIEW conditions (the lighter stamp) but NOT sign them off.
   // They do NOT manage draws by default (owner-directed 2026-07-20): pushing a file to Sitewire, deleting/
   // re-pushing it, approving draws and recording releases require the manage_draws capability, which is held

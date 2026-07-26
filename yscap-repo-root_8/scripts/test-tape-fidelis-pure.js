@@ -178,10 +178,12 @@ ok(threw && threw.code === 'buyer_mismatch' && /Blue Lake/.test(threw.message) &
 let threwNone = null;
 try { buyerRule.assertBuyer(synthLoan({ noteBuyerRaw: null }), fidelis); } catch (e) { threwNone = e; }
 ok(threwNone && /no capital provider set/i.test(threwNone.message), 'no-buyer error explains what to set');
-const avail = buyerRule.tapeAvailability('bluelake', 'Blue Lake');
+// A registered Blue Lake (gold) loan: the Fidelis tape is blocked (wrong provider).
+const avail = buyerRule.tapeAvailability('bluelake', 'Blue Lake', { isAdmin: false, registeredProgram: 'gold' });
 const availFidelis = avail.find((t) => t.key === 'fidelis');
 ok(availFidelis && availFidelis.available === false && /switch it to Fidelis/i.test(availFidelis.reason), 'availability blocks the Fidelis tape for a non-Fidelis buyer with a reason');
-ok(buyerRule.tapeAvailability('fidelis', 'Fidelis').find((t) => t.key === 'fidelis').available === true, 'availability allows matching buyer');
+// A registered Standard (fidelis) loan: the Fidelis tape is available.
+ok(buyerRule.tapeAvailability('fidelis', 'Fidelis', { isAdmin: false, registeredProgram: 'standard' }).find((t) => t.key === 'fidelis').available === true, 'availability allows a matching buyer + program');
 
 // ---- 5. Registry ----------------------------------------------------------
 ok(registry.getTape('fidelis') === fidelis, 'registry resolves fidelis');

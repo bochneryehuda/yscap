@@ -172,7 +172,8 @@ ok(registry.tapesForBuyer('bluelake').length === 1 && registry.tapesForBuyer('bl
 ok(buyerRule.buyerMatches(loan, bluelake) === true, 'Blue Lake loan matches Blue Lake tape');
 ok(buyerRule.buyerMatches(loan, registry.getTape('fidelis')) === false, 'Blue Lake loan does NOT match Fidelis tape');
 ok(buyerRule.buyerMatches(synthLoan({ noteBuyerRaw: 'Fidelis' }), bluelake) === false, 'Fidelis loan does NOT match Blue Lake tape');
-const avail = buyerRule.tapeAvailability('bluelake', 'Blue Lake');
+// A registered Gold (Blue Lake) loan: the Blue Lake tape is available, Fidelis isn't.
+const avail = buyerRule.tapeAvailability('bluelake', 'Blue Lake', { isAdmin: false, registeredProgram: 'gold' });
 ok(avail.find((t) => t.key === 'bluelake').available === true && avail.find((t) => t.key === 'fidelis').available === false, 'availability: bluelake yes, fidelis no');
 
 console.log(`test-tape-bluelake-pure: OK (${passed} assertions)`);

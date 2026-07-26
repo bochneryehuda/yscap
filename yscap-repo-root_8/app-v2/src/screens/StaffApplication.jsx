@@ -2939,7 +2939,9 @@ export default function StaffApplication() {
     { id: 'sec-orders', label: 'Orders (title & insurance)', group: 'Signing & documents',
       badge: (() => { const n = docs.filter(d => ['title_order_return', 'insurance_order_return'].includes(d.doc_kind) && !d.slot_label && d.is_current !== false).length; return n ? `${n} to assign` : ''; })() },
     { id: 'sec-documents', label: 'Documents & exports', group: 'Signing & documents', badge: docs.length || '' },
-    { id: 'sec-tapes', label: 'Capital-provider data tapes', group: 'Signing & documents' },
+    // Data tapes are visible only to staff who may export them (processor /
+    // underwriter / admin by default; a loan officer only if granted per-person).
+    ...(can('export_data_tapes') ? [{ id: 'sec-tapes', label: 'Capital-provider data tapes', group: 'Signing & documents' }] : []),
     { id: 'sec-track', label: 'Track record', group: 'Signing & documents' },
     { id: 'sec-messages', label: 'Communication & history', group: 'Communication' },
     // Construction draws is the LAST phase (post-funding), so it's the LAST section.
@@ -3449,10 +3451,12 @@ export default function StaffApplication() {
       <MismoExport appId={id} />
       </Section>
 
+      {can('export_data_tapes') && (
       <Section id="sec-tapes" title="Capital-provider data tapes" defaultOpen
         info="Export this loan onto a capital provider's own tape (their Excel workbook with this loan's figures filled in). You can only export the tape for the provider this loan is currently set to; to export a different one, change the loan's capital provider first. For a seasoned loan you'll confirm the current balance, next payment date and interest reserve before it downloads.">
       <TapeExport appId={id} />
       </Section>
+      )}
 
       <Section id="sec-track" title="Track record" defaultOpen={false}
         info="The borrower's live track record — one record shared by every file. Add, edit, verify and attach closing docs; changes save automatically.">
@@ -3801,8 +3805,9 @@ function TapeExport({ appId }) {
                   <button className="btn small" disabled title={t.reason}>Export the {t.name} tape</button>
                   <span>{t.reason || `This loan isn't set to ${t.name}.`}</span>
                   <button type="button" onClick={() => goToSection('sec-overview')}
+                    title="Jump to File overview to change the capital provider or register the correct program, then come back to export"
                     style={{ background: 'none', border: 'none', color: 'var(--teal)', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit' }}>
-                    switch this loan to {t.name} →
+                    open the file overview →
                   </button>
                 </span>
               )}
