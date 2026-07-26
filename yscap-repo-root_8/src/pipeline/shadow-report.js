@@ -95,6 +95,11 @@ async function shadowJobDetail(db, jobId) {
     // job with no evidence yet just carries an empty list.
     let evidence = [];
     try { evidence = (await require('./evidence-candidate').listCandidates(db, { jobId })).candidates; } catch (_) { evidence = []; }
+    // VSLICE-4 — the RESOLVED verified facts: version resolution + canonical selection over those raw
+    // candidates (drop superseded, pick the best-trusted value per fact, flag disagreements). Pure +
+    // best-effort → an empty summary if there's nothing to resolve. Advisory (no decision/condition).
+    let canonicalFacts = { facts: [], factCount: 0, contestedCount: 0 };
+    try { canonicalFacts = require('./canonical-facts').selectCanonicalFacts(evidence); } catch (_) { canonicalFacts = { facts: [], factCount: 0, contestedCount: 0 }; }
     return {
       job: {
         id: job.id, documentId: job.document_id, loanId: job.loan_id, family: job.document_family,
@@ -111,6 +116,7 @@ async function shadowJobDetail(db, jobId) {
         warnings: r.warnings, createdAt: r.created_at,
       })),
       evidence,
+      canonicalFacts,
     };
   } catch (e) {
     try { console.warn('[shadow-report] shadowJobDetail failed:', (e && e.message) || e); } catch (_) { /* ignore */ }
