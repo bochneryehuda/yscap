@@ -41,13 +41,20 @@ const STAGE = Object.freeze({
  * contract: ctx = { db, jq, holder }; returns { status:'completed'|'failed', retryable?, result?, error? }.
  *
  * opts:
- *   router   — the DocumentProcessingRouter (default require('./processing-router'))
- *   adapters — real DocumentProvider adapters to actually READ with. When absent (shadow), the
- *              route is planned + recorded but the read stages are recorded not_applicable.
+ *   router    — the DocumentProcessingRouter (default require('./processing-router'))
+ *   adapters  — real DocumentProvider adapters to actually READ with. When absent (shadow), the
+ *               route is planned + recorded but the read stages are recorded not_applicable.
+ *   loadBytes — async (db, documentId) → { buffer, base64, mimeType, filename } | null. Loads the
+ *               real document bytes so the primary adapter can read for real (Phase 3b). Defaults
+ *               to require('./document-bytes').loadDocumentBytes; injectable for tests. Only used
+ *               when `adapters` are present AND the job payload carries no request bytes already.
  */
 function makePacketControlProcessor(opts = {}) {
   const router = opts.router || require('./processing-router');
   const adapters = Array.isArray(opts.adapters) ? opts.adapters : null;
+  const loadBytes = (typeof opts.loadBytes === 'function')
+    ? opts.loadBytes
+    : ((db, documentId) => require('./document-bytes').loadDocumentBytes(db, documentId));
 
   return async function packetControlProcessor(job, ctx = {}) {
     const db = ctx.db;
@@ -94,18 +101,37 @@ function makePacketControlProcessor(opts = {}) {
       // injected AND the router's primary is a real adapter engine; otherwise SHADOW = not run.
       const primaryKey = plan.primary && plan.primary.adapterKey;
       if (adapters && primaryKey) {
-        // A real read path exists — route the document through the primary adapter.
-        const routed = await router.routeDocument({
-          features, request: payload.request || {}, adapters,
-          recordDb: db, documentId, jobId, loanId,
-        });
-        const okRead = routed && routed.outcome === 'completed';
-        await safeStage(STAGE.OCR_LAYOUT, okRead ? 'completed' : 'failed_retryable', {
-          outcome: routed ? routed.outcome : 'unknown',
-          confidence: routed && routed.result ? routed.result.confidence : null,
-        });
-        // Classification is deferred to a later phase even on the read path; mark pending.
-        await safeStage(STAGE.CLASSIFICATION, 'pending', { note: 'classifier stage not yet wired' });
+        // A real read path exists — load the document bytes (Phase 3b) so the primary adapter
+        // can read for REAL. The bytes come from the SAME storage V1 serves (in-process worker),
+        // so this reads the real document; it still only writes V2 audit tables (advisory).
+        let request = payload.request || {};
+        const hasBytes = !!(request && (request.buffer || request.base64));
+        if (!hasBytes && documentId) {
+          const loaded = await loadBytes(db, documentId);
+          if (loaded && (loaded.buffer || loaded.base64)) {
+            request = { buffer: loaded.buffer, base64: loaded.base64, mimeType: loaded.mimeType, filename: loaded.filename };
+          }
+        }
+        const stillNoBytes = !(request && (request.buffer || request.base64));
+        if (stillNoBytes) {
+          // No bytes to read (document/storage unavailable) — record the read as not-run rather
+          // than call the adapter with an empty request (which would look like a failed vendor read).
+          await safeStage(STAGE.OCR_LAYOUT, 'not_applicable', { note: 'read skipped: document bytes unavailable' });
+          await safeStage(STAGE.CLASSIFICATION, 'not_applicable', { note: 'read skipped: document bytes unavailable' });
+        } else {
+          // Route the document through the primary adapter with the real bytes.
+          const routed = await router.routeDocument({
+            features, request, adapters,
+            recordDb: db, documentId, jobId, loanId,
+          });
+          const okRead = routed && routed.outcome === 'completed';
+          await safeStage(STAGE.OCR_LAYOUT, okRead ? 'completed' : 'failed_retryable', {
+            outcome: routed ? routed.outcome : 'unknown',
+            confidence: routed && routed.result ? routed.result.confidence : null,
+          });
+          // Classification is deferred to a later phase even on the read path; mark pending.
+          await safeStage(STAGE.CLASSIFICATION, 'pending', { note: 'classifier stage not yet wired' });
+        }
       } else {
         await safeStage(STAGE.OCR_LAYOUT, 'not_applicable', { note: 'shadow: read not run' });
         await safeStage(STAGE.CLASSIFICATION, 'not_applicable', { note: 'shadow: read not run' });
