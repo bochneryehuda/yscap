@@ -57,13 +57,19 @@ function exitPlanFor(dealType) {
 // is an EXPANSION regardless of the bucket the file was typed as — the sqft flag is
 // the stronger statement about the work. Any of the repo's sqft-addition column
 // spellings counts; a file with none falls back to its own rehab_type.
+// The sqft-addition signal is NOT a boolean column — it is the SAME definition the
+// pricing layer already uses (src/lib/pricing.js buildInputs `sqftAddition`): the
+// rehab type mentions square footage / an addition, OR the post-rehab square
+// footage exceeds the pre-rehab square footage (applications.sqft_pre/sqft_post,
+// db/029). Reusing that one definition keeps the comparison in lock-step with how
+// the deal was actually priced instead of inventing a second, drifting rule.
 function rehabTypeFor(app) {
   const a = app || {};
-  const sqft = a.sqft_addition === true || a.adding_sqft === true || a.is_sqft_addition === true
-    || a.square_footage_addition === true || a.sqft_expansion === true;
-  if (sqft) return 'expansion';
-  const v = a.rehab_type;
-  return (v === null || v === undefined || v === '') ? undefined : v;
+  const t = String(a.rehab_type == null ? '' : a.rehab_type);
+  const pre = Number(a.sqft_pre), post = Number(a.sqft_post);
+  const grew = Number.isFinite(pre) && Number.isFinite(post) && post > pre;
+  if (/square|(^|\W)sf(\W|$)|addition/i.test(t) || grew) return 'expansion';
+  return t.trim() === '' ? undefined : a.rehab_type;
 }
 
 // ── Pure: our-side values keyed by registry field key ───────────────────────

@@ -107,8 +107,14 @@ assert.strictEqual(recon.buildOurValues({ purchase_price: 300000 }, null).effect
   'no assignment → effective purchase = purchase price');
 assert.strictEqual(ours.effective_purchase, 450500, 'the capped recognized price still wins when it exists');
 // A square-footage addition is an EXPANSION in Encompass regardless of our bucket.
-assert.strictEqual(recon.buildOurValues({ rehab_type: 'Cosmetic', sqft_addition: true }, null).rehab_type, 'expansion',
-  'a sqft addition reads as Expansion');
+// Uses the SAME signal the pricing layer uses: sqft_post > sqft_pre, or a rehab
+// type that names an addition (never an invented boolean column).
+assert.strictEqual(recon.buildOurValues({ rehab_type: 'Cosmetic', sqft_pre: 1200, sqft_post: 1800 }, null).rehab_type, 'expansion',
+  'square footage grew → Expansion');
+assert.strictEqual(recon.buildOurValues({ rehab_type: 'Adding SF' }, null).rehab_type, 'expansion',
+  'a rehab type naming an addition → Expansion');
+assert.strictEqual(recon.buildOurValues({ rehab_type: 'Cosmetic', sqft_pre: 1200, sqft_post: 1200 }, null).rehab_type, 'Cosmetic',
+  'same square footage is NOT an expansion');
 assert.strictEqual(recon.buildOurValues({ rehab_type: 'Cosmetic' }, null).rehab_type, 'Cosmetic');
 // deal_type is DERIVED from program/loan_type (no deal_type column on applications)
 assert.strictEqual(ours.deal_type, 'flip', '"Fix & Flip w/ Construction" → flip');
