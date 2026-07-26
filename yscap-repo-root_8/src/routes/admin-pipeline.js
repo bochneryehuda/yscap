@@ -28,7 +28,6 @@ router.use(requireAuth, requireStaff);
 function flagSnapshot() {
   const p = cfg.pipeline || {};
   return {
-    version: p.version || 'v1',
     v2Enabled: !!p.v2Enabled,
     v2Shadow: !!p.v2Shadow,
     v2Families: Array.isArray(p.v2Families) ? p.v2Families : [],
