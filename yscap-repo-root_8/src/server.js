@@ -265,6 +265,10 @@ app.use('/api/underwriting', require('./routes/underwriting'));
   app.use('/api/admin/labeling', requireAuth, requireStaff, require('./routes/admin-labeling'));
   // Sovereign Insights portfolio dashboard (owner-directed 2026-07-22, R2.6).
   app.use('/api/admin/insights', requireAuth, requireStaff, require('./routes/admin-insights'));
+  // Pipeline V2 vendor health (owner-directed 2026-07-26, Phase 1e): a LIVE reachability
+  // check for every document/AI vendor reached through the new Layer-2 adapter contract, so
+  // the owner can prove each key works once entered. Read-only; the router adds requireStaff.
+  app.use('/api/admin/pipeline', requireAuth, requireStaff, require('./routes/admin-pipeline'));
   app.use('/api/admin', requireAuth, requireStaff, require('./routes/admin'));
 }
 // SSE stream (live chat/presence/receipts). Mounted OUTSIDE the authenticated
