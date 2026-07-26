@@ -144,8 +144,9 @@ async function apiGet(path) {
 //   {
 //     "loanIds":   [ "guid1", "guid2", ... ],           // OR
 //     "loanFolders": [ "My Pipeline", "Prospects" ],     // OR
-//     "filter":    { "operator":"and", "terms":[...] }, // OR (simple form)
-//                  { "canonicalName":"...", "value":"...", "matchType":"exact" }
+//     "filter":    { "canonicalName":"...", "value":"...", "matchType":"Exact" } // simple form (ONE term)
+//               or  { "operator":"and", "terms":[...] }  // complex form — operator only with 2+ terms
+//                   // (a single-term list must NOT carry an operator; Encompass 400s otherwise)
 //     "sortOrder": [ { "canonicalName":"Loan.LastModified", "order":"Descending" } ],
 //     "fields":    [ "Loan.LoanNumber", ... ],
 //     "orgType": "Internal", "loanOwnership": "AllLoans"  // optional
@@ -177,7 +178,17 @@ async function pipelineSearch(request, { limit, start } = {}) {
     if (request.filter && typeof request.filter === 'object') {
       const f = request.filter;
       // Accept both shapes; only include if it actually carries a term.
-      if ((Array.isArray(f.terms) && f.terms.length > 0) || f.canonicalName) {
+      if (Array.isArray(f.terms) && f.terms.length > 0) {
+        // Complex form ({operator,terms:[...]}). Encompass REFUSES an `operator`
+        // when only ONE term is supplied ("If only one filter term is supplied in
+        // the list 'Terms', 'Operator' does not apply." — live 400, 2026-07-26), so
+        // send `operator` ONLY with 2+ terms; a single-term list goes bare. This
+        // is a read-shaped body normalization only — no write path, same endpoint.
+        const filt = { ...f };
+        if (f.terms.length < 2) delete filt.operator;
+        body.filter = filt;
+      } else if (f.canonicalName) {
+        // Simple form — a single {canonicalName,value,matchType} term; no operator.
         body.filter = f;
       }
     }
