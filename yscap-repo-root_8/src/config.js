@@ -716,6 +716,13 @@ module.exports = {
       // file. Turning it on spends real vendor OCR budget on every shadow document, so it is a
       // deliberate, separate switch (UW_PIPELINE_V2_READ=1).
       v2ReadEnabled:     on(process.env.UW_PIPELINE_V2_READ),
+      // RS-2 — CLASSIFY the shadow documents (a SECOND full-document Azure Document Intelligence
+      // call, on top of the OCR read above). Default OFF, and deliberately its own switch for the
+      // same reason `v2ReadEnabled` is: without it, an owner who has trained the classifier for
+      // V1's package splitter (AZURE_DOCINT_CLASSIFIER_ID) would silently start paying for a
+      // second vendor call on every shadow document, having opted into nothing. ADVISORY either
+      // way — the classification writes only V2 audit tables and never gates a job.
+      v2ClassifyEnabled: on(process.env.UW_PIPELINE_V2_CLASSIFY),
       workerEnabled:     on(process.env.UW_WORKER_ENABLED),        // start the durable-job background worker (default OFF)
       workerConcurrency: Math.max(1, parseInt(process.env.UW_WORKER_CONCURRENCY || '2', 10) || 2),
       jobMaxAttempts:    Math.max(1, parseInt(process.env.UW_JOB_MAX_ATTEMPTS || '5', 10) || 5),

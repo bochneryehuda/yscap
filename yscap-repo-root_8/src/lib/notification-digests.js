@@ -33,6 +33,59 @@ const STATUS_LABEL = {
 };
 const TERMINAL = ['funded', 'declined', 'withdrawn'];
 
+/* ── The throttle belongs in the QUERY, not only in the loop (audit finding, 2026-07-26) ──
+ *
+ * Ordering a capped batch was only half the fix. Every one of these digests sorts by a "how long
+ * has this been waiting" timestamp that SENDING DOES NOT ADVANCE — the delivered_at of an
+ * un-accepted finding, the wire_due_at of an unpaid release, the status_changed_at of a stalled
+ * file. So the same rows sort to the front on every single pass, the batch's membership never
+ * rotates, and past the cap a file waits not on a queue but on an EVENT THE DIGEST ITSELF CANNOT
+ * CAUSE (the borrower accepting, the wire going out, the file moving stage). Deterministic, and
+ * still starved — for the tail, strictly worse than the arbitrary batch it replaced.
+ *
+ * The real fix is to stop already-notified rows from consuming a slot at all. Each digest is
+ * self-gated to at most one send per file per period; expressing that SAME throttle in the WHERE
+ * clause means the cap now bounds only rows that still NEED work. With 200 slots × 8 passes/day ×
+ * a 3-day gate, every waiting file is reached long before its next send is even due — so the cap
+ * genuinely delays a file instead of hiding it, which is what the ordering was for.
+ *
+ * `_gate` remains the authority (it is atomic across instances and fails closed); this predicate is
+ * a cheap pre-filter over the same audit_log stamp, never a replacement for it.
+ */
+const DIGEST_ACTION = Object.freeze({
+  BORROWER_OUTSTANDING: 'borrower_outstanding_digest',
+  STALE_FILE: 'stale_file_alert',
+  DRAW_FINDINGS_REMINDER: 'draw_findings_reminder',
+  TRUSTPOINT_UNRELEASED: 'trustpoint_unreleased',
+  DRAW_RELEASE_OVERDUE: 'draw_release_overdue',
+  // Per-FILE stamp for the direct-source sweep (the sweep's other stamp,
+  // `direct_source_sweep_daily`, is global and only prevents overlapping runs).
+  DIRECT_SOURCE_FILE: 'direct_source_file_verified',
+});
+
+/**
+ * SQL fragment: this file has NOT been stamped with `action` inside `intervalSql`.
+ * @param {string} idExpr      the application-id expression in the outer query (e.g. 'a.id')
+ * @param {string} action      a DIGEST_ACTION value — an internal constant, never user input
+ * @param {string} intervalSql an interval expression (e.g. `interval '3 days'`, `($1||' hours')::interval`)
+ */
+function notThrottled(idExpr, action, intervalSql) {
+  // The action names are module constants, inlined so each caller keeps its own $-numbering. This
+  // assertion is the guard that keeps it that way: anything but a bare identifier is a programming
+  // error here, and must never become a path for interpolated input.
+  if (!/^[a-z][a-z0-9_]*$/.test(String(action))) throw new Error(`notThrottled: unsafe action ${action}`);
+  // `entity_type` is pinned even though `action` already implies it: without the LEADING column of
+  // the existing (entity_type, entity_id) index, Postgres cannot use that index at all and falls
+  // back to scanning the whole action partition once PER CANDIDATE ROW (measured at 7.7x on a tiny
+  // local table — and audit_log is append-only, never pruned, so it only gets worse). Every
+  // per-file gate stamp is written with entity_type='application' (it is `claimOncePerPeriod`'s
+  // default and no digest overrides it), so this narrows nothing and unlocks the index.
+  return `NOT EXISTS (SELECT 1 FROM audit_log l
+                       WHERE l.entity_type = 'application' AND l.action = '${action}'
+                         AND l.entity_id = ${idExpr}
+                         AND l.created_at > now() - ${intervalSql})`;
+}
+
 // Current hour + weekday in the team's timezone (America/New_York, matching the
 // ClickUp date convention) so digests land in the morning / on Monday, not 3am.
 function nyParts(now = new Date()) {
@@ -87,22 +140,55 @@ async function weeklyBorrowerOutstandingOnce() {
   // Ordering by the file's LAST digest (never-digested first, then longest-ago) makes the queue
   // both deterministic and fair: whoever has waited longest goes first, and every file comes up
   // eventually. `id` breaks ties so two files stamped in the same instant still have a stable order.
+  //
+  // AUDIT FIX (2026-07-26) — ordering alone made this WORSE, and could zero the digest entirely.
+  // The sort key is the file's last digest stamp, written by `_gate` — which is claimed only AFTER
+  // the open-item list comes back non-empty (deliberately: a file with nothing outstanding must not
+  // burn its 6-day throttle, owner audit 2026-07-20). So a file that has never had an open item
+  // NEVER gets a stamp, keeps last_digest NULL forever, and `NULLS FIRST` pins it at the head of
+  // every pass for the life of the file. With 500+ such files — new applications, files whose items
+  // were all satisfied before a digest ran — the whole batch is files with nothing to say, the loop
+  // sends ZERO emails, and the truncation warning below reports a perfectly healthy-looking pass.
+  //
+  // So the candidate set is now narrowed in SQL to files that actually HAVE something outstanding
+  // (mirroring reminders.outstandingItems) and are not already inside their 6-day throttle. The JS
+  // `if (!items.length) continue` guard stays: this predicate is a superset (outstandingItems also
+  // drops entries that format to nothing), so SQL narrows, JS decides.
+  const hasOpenBorrowerItem = `(
+       EXISTS (SELECT 1 FROM checklist_items ci
+                WHERE ci.application_id = a.id AND ci.audience IN ('borrower','both')
+                  AND ci.status IN ('outstanding','requested','issue'))
+    OR EXISTS (SELECT 1 FROM conditions c
+                WHERE c.application_id = a.id AND c.audience IN ('borrower','both')
+                  AND c.borrower_title IS NOT NULL AND c.status IN ('open','borrower_responded')))`;
   const apps = await db.query(
-    `SELECT a.id,
-            (SELECT max(l.created_at) FROM audit_log l
-              WHERE l.action = 'borrower_outstanding_digest' AND l.entity_id = a.id) AS last_digest
+    // The last-digest stamp is read ONCE in a LATERAL and used for BOTH the throttle and the sort,
+    // so the fair-rotation key and the "already sent recently" test can never disagree.
+    `SELECT a.id, d.at AS last_digest
        FROM applications a
+       LEFT JOIN LATERAL (
+         SELECT max(l.created_at) AS at FROM audit_log l
+          WHERE l.entity_type = 'application' AND l.action = '${DIGEST_ACTION.BORROWER_OUTSTANDING}' AND l.entity_id = a.id
+       ) d ON true
       WHERE a.deleted_at IS NULL AND a.borrower_id IS NOT NULL
         AND a.status <> ALL($1)
+        AND (d.at IS NULL OR d.at < now() - interval '6 days')
+        AND ${hasOpenBorrowerItem}
       ORDER BY last_digest ASC NULLS FIRST, a.id
       LIMIT 500`, [TERMINAL]);
   // Say so when the cap truncates. A silently-dropped tail is what made this invisible for so long;
   // an operator can now see that the portfolio has outgrown one pass.
   if (apps.rows.length >= 500) {
     try {
+      // Count the SAME population the batch was drawn from (due + something outstanding), not every
+      // eligible file — a total that counts files with nothing to send would overstate the backlog
+      // and make an ordinary pass look like a truncated one.
       const total = (await db.query(
-        `SELECT count(*)::int AS n FROM applications
-          WHERE deleted_at IS NULL AND borrower_id IS NOT NULL AND status <> ALL($1)`, [TERMINAL])).rows[0];
+        `SELECT count(*)::int AS n
+           FROM applications a
+          WHERE a.deleted_at IS NULL AND a.borrower_id IS NOT NULL AND a.status <> ALL($1)
+            AND ${notThrottled('a.id', DIGEST_ACTION.BORROWER_OUTSTANDING, "interval '6 days'")}
+            AND ${hasOpenBorrowerItem}`, [TERMINAL])).rows[0];
       if (total && total.n > apps.rows.length) {
         console.warn(`[digests] borrower digest considered ${apps.rows.length} of ${total.n} eligible files this pass `
           + '(oldest-waiting first; the rest come up on following passes)');
@@ -116,7 +202,7 @@ async function weeklyBorrowerOutstandingOnce() {
       // rest of the window once it gains an item (owner-reported audit 2026-07-20).
       const items = await outstandingItems(a.id);
       if (!items.length) continue;
-      if (!(await _gate('borrower_outstanding_digest', a.id, '6 days'))) continue;
+      if (!(await _gate(DIGEST_ACTION.BORROWER_OUTSTANDING, a.id, '6 days'))) continue;
       const shown = items.slice(0, 12);
       const lines = shown.map((l, i) => `${i + 1}. ${l}`);
       if (items.length > shown.length) lines.push(`…and ${items.length - shown.length} more, all listed in your portal.`);
@@ -139,7 +225,7 @@ async function weeklyBorrowerOutstandingOnce() {
         progress: progress || undefined,
         lines,
         applicationId: a.id, link: `/app/${a.id}`, ctaLabel: 'Complete your items' });
-      await _stamp('borrower_outstanding_digest', a.id, { open: items.length });
+      await _stamp(DIGEST_ACTION.BORROWER_OUTSTANDING, a.id, { open: items.length });
       sent++;
     } catch (e) { console.error('[digest] borrower-outstanding', a.id, e && e.message); }
   }
@@ -165,7 +251,11 @@ async function dailyPipelineDigestOnce() {
            FROM applications a
            JOIN application_assignees aa ON aa.application_id=a.id AND aa.staff_id=$1 AND aa.removed_at IS NULL
           WHERE a.deleted_at IS NULL AND a.status <> ALL($2)
-          ORDER BY a.status_changed_at ASC NULLS FIRST
+          -- a.id is the TIE-BREAK, not decoration: status_changed_at is far from unique (a bulk
+          -- status move stamps many files the same second, and NULLs all tie), so without it the
+          -- officer's 40-file snapshot still varies run to run among tied rows. An ORDER BY that
+          -- does not end in a unique column is not a total order (audit finding 2026-07-26).
+          ORDER BY a.status_changed_at ASC NULLS FIRST, a.id
           LIMIT 40`, [st.id, TERMINAL]);
       if (!files.rows.length) continue;
       // Claim the once-per-day gate only once we know there's content to send
@@ -200,18 +290,27 @@ async function staleFileAlertsOnce() {
     `SELECT a.id, a.status, a.status_changed_at
        FROM applications a
       WHERE a.deleted_at IS NULL AND a.status <> ALL($1) AND a.status <> 'file_intake'
+        -- A PAUSED file is not a stalled one. on_hold is inactive everywhere else in the system
+        -- (INACTIVE_FILE_STATUSES: KPIs, tasks, reminders, borrower notifications) and it was the
+        -- one place still alerting on it — so a deliberately-parked file emailed its team "stalled
+        -- for 380 days" every 3 days. Worse, db/319 preserves the ORIGINAL status_changed_at when
+        -- it heals an on-hold file, so those ancient timestamps sort to the very front and would
+        -- occupy the cap ahead of every genuinely stuck live file.
+        AND a.status <> 'on_hold'
         AND a.status_changed_at IS NOT NULL
         AND a.status_changed_at < now() - ($2 || ' days')::interval
         AND EXISTS (SELECT 1 FROM application_assignees aa WHERE aa.application_id=a.id AND aa.removed_at IS NULL)
-      -- Same defect as the borrower digest: an unordered LIMIT meant an arbitrary 200 of the stale
-      -- files got alerted each pass, so a file could sit past the threshold and never raise one.
+        -- Already alerted inside the 3-day gate → do not consume a slot (see notThrottled).
+        -- status_changed_at does NOT advance when the alert is sent, so without this the same 200
+        -- files sort to the front of every pass forever and file 201 is never reached at all.
+        AND ${notThrottled('a.id', DIGEST_ACTION.STALE_FILE, "interval '3 days'")}
       -- STALEST FIRST is both deterministic and the right priority here — the file that has waited
       -- longest is the one most worth telling somebody about.
       ORDER BY a.status_changed_at ASC, a.id
       LIMIT 200`, [TERMINAL, String(staleDays)]);
   for (const f of files.rows) {
     try {
-      if (!(await _gate('stale_file_alert', f.id, '3 days'))) continue;
+      if (!(await _gate(DIGEST_ACTION.STALE_FILE, f.id, '3 days'))) continue;
       const d = daysAt(f.status_changed_at);
       await notify.notifyAppStaff(f.id, {
         type: 'digest',
@@ -219,7 +318,7 @@ async function staleFileAlertsOnce() {
         badge: { text: 'Needs attention', tone: 'action' },
         body: `This file hasn’t changed stages in ${d} days. A quick check-in may be needed to keep it on track — the file details are below.`,
         applicationId: f.id, link: `/internal/app/${f.id}`, ctaLabel: 'Open the loan file' });
-      await _stamp('stale_file_alert', f.id, { days: d, status: f.status });
+      await _stamp(DIGEST_ACTION.STALE_FILE, f.id, { days: d, status: f.status });
       sent++;
     } catch (e) { console.error('[digest] stale', f.id, e && e.message); }
   }
@@ -284,7 +383,7 @@ async function weeklyTopRiskyFilesOnce() {
         GROUP BY a.id, a.ys_loan_number, a.property_address, a.status, a.program,
                  u.full_name, u.email, b.first_name, b.last_name
        HAVING COUNT(*) > 0
-        ORDER BY score DESC
+        ORDER BY score DESC, a.id
         LIMIT 5`);
   } catch (_) { return 0; }
   if (!top.rows.length) { await _stamp('admin_weekly_top_risky', null, { none: true }); return 0; }
@@ -341,7 +440,7 @@ async function qaDeskAuditOnce() {
             AND ci.status IN ('outstanding','requested','received','issue')
           GROUP BY a.id, a.property_address, t.code
          HAVING COUNT(*) > 1
-          ORDER BY n DESC
+          ORDER BY n DESC, t.code
           LIMIT 25`),
       // 2) a document condition cleared with no current document attached.
       db.query(
@@ -367,7 +466,7 @@ async function qaDeskAuditOnce() {
             AND s.status IN ('open','marked_important','escalated','asked_admin')
             AND a.status IN ('approved','clear_to_close','funded')
           GROUP BY a.id, a.property_address, a.status
-          ORDER BY open_fatal DESC
+          ORDER BY open_fatal DESC, a.id
           LIMIT 25`),
     ]);
   } catch (_) { await _stamp('qa_desk_audit', null, { error: true }); return 0; }
@@ -449,7 +548,7 @@ async function weeklyLoAiDigestOnce() {
             AND a.status NOT IN ('withdrawn','cancelled','declined','funded')
             AND s.status IN ('open','marked_important','escalated','asked_admin')
           GROUP BY a.id, a.property_address, b.first_name, b.last_name
-          ORDER BY score DESC
+          ORDER BY score DESC, a.id
           LIMIT 10`, [lo.id]);
     } catch (_) { continue; }
     if (!files.rows.length) { await _stamp('lo_weekly_ai_digest', lo.id, { files: 0 }); continue; }
@@ -494,7 +593,7 @@ async function weeklyAdminAiQuestionsOnce() {
          JOIN applications a ON a.id = q.application_id AND a.deleted_at IS NULL
          LEFT JOIN borrowers b ON b.id = a.borrower_id
         WHERE q.answered_at IS NULL
-        ORDER BY q.asked_at ASC
+        ORDER BY q.asked_at ASC, q.id
         LIMIT 50`);
   } catch (_) { return 0; }   // schema not present yet on this deploy
   if (!pending.rows.length) { await _stamp('admin_weekly_ai_questions', null, { pending: 0 }); return 0; }
@@ -550,6 +649,10 @@ async function drawFindingsAwaitingBorrowerOnce() {
         AND f.delivered_at < now() - ($1 || ' hours')::interval
         AND EXISTS (SELECT 1 FROM sitewire_property_links pl WHERE pl.application_id=f.application_id
                       AND pl.matched_by='created' AND COALESCE(pl.lifecycle_state,'active')='active')
+        -- Nudged inside the last waitHours → not due, so it must not consume a slot. delivered_at
+        -- only moves when the BORROWER acts, so without this the longest-stuck borrowers hold the
+        -- front of the queue indefinitely and a newer delivery past the cap is never nudged at all.
+        AND ${notThrottled('f.application_id', DIGEST_ACTION.DRAW_FINDINGS_REMINDER, "($1 || ' hours')::interval")}
       GROUP BY f.application_id
       -- Deterministic order (same defect class as the borrower digest): an unordered LIMIT lets
       -- Postgres return an arbitrary 300 of the waiting files, so past the cap a borrower could be
@@ -560,7 +663,7 @@ async function drawFindingsAwaitingBorrowerOnce() {
     try {
       // At most one nudge per `waitHours` per file (the atomic gate), so within the
       // business-hours window the borrower is reminded every few hours until they act.
-      if (!(await _gate('draw_findings_reminder', r.application_id, `${waitHours} hours`))) continue;
+      if (!(await _gate(DIGEST_ACTION.DRAW_FINDINGS_REMINDER, r.application_id, `${waitHours} hours`))) continue;
       await notify.notifyAppBorrowers(r.application_id, {
         type: 'draw_findings',
         title: r.n === 1 ? 'Your draw inspection result is waiting for you' : `${r.n} draw inspection results are waiting for you`,
@@ -568,7 +671,7 @@ async function drawFindingsAwaitingBorrowerOnce() {
         body: `Your inspection result${r.n === 1 ? ' is' : 's are'} ready and waiting for you. Your draw is released once you review and accept ${r.n === 1 ? 'it' : 'them'} — please take a moment to review ${r.n === 1 ? 'it' : 'them'} (or dispute a line) in your portal.`,
         callout: { title: 'Why this matters', body: 'The release clock for your draw only starts once you accept — reviewing promptly gets your money to you sooner.', tone: 'action' },
         applicationId: r.application_id, link: `/app/${r.application_id}`, ctaLabel: 'Review your draw' });
-      await _stamp('draw_findings_reminder', r.application_id, { awaiting: r.n, hours: waitHours });
+      await _stamp(DIGEST_ACTION.DRAW_FINDINGS_REMINDER, r.application_id, { awaiting: r.n, hours: waitHours });
       sent++;
     } catch (e) { console.error('[digest] draw-findings-await', r.application_id, e && e.message); }
   }
@@ -606,6 +709,9 @@ async function trustpointUnreleasedOnce() {
           AND NOT EXISTS (SELECT 1 FROM sitewire_property_links pl
                             WHERE pl.application_id = t.application_id
                               AND COALESCE(pl.lifecycle_state,'active') <> 'active')
+          -- Chased inside the 2-day gate → not due; do not consume a slot. approved_at/first_seen_at
+          -- never advance from chasing, so the same files would otherwise hold the front forever.
+          AND ${notThrottled('t.application_id', DIGEST_ACTION.TRUSTPOINT_UNRELEASED, "interval '2 days'")}
         GROUP BY t.application_id
         -- Deterministic order: an unordered LIMIT could skip the same waiting file forever.
         ORDER BY oldest ASC, t.application_id
@@ -613,7 +719,7 @@ async function trustpointUnreleasedOnce() {
   } catch (_) { return 0; }
   for (const r of rows) {
     try {
-      if (!(await _gate('trustpoint_unreleased', r.application_id, '2 days'))) continue;
+      if (!(await _gate(DIGEST_ACTION.TRUSTPOINT_UNRELEASED, r.application_id, '2 days'))) continue;
       const d = daysAt(r.oldest);
       await notify.notifyAppStaff(r.application_id, {
         type: 'draw',
@@ -621,7 +727,7 @@ async function trustpointUnreleasedOnce() {
         badge: { text: 'Chase release', tone: 'action' },
         body: `${r.n === 1 ? 'A draw' : `${r.n} draws`} on this file ${r.n === 1 ? 'was' : 'were'} approved by the draw administrator ${d != null && d > 0 ? `${d} day${d === 1 ? '' : 's'} ago ` : ''}but no funds release has been observed yet. The wire comes from the note buyer's side — please follow up with them so the borrower isn't left waiting.`,
         applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk' });
-      await _stamp('trustpoint_unreleased', r.application_id, { unreleased: r.n, days: d });
+      await _stamp(DIGEST_ACTION.TRUSTPOINT_UNRELEASED, r.application_id, { unreleased: r.n, days: d });
       sent++;
     } catch (e) { console.error('[digest] trustpoint-unreleased', r.application_id, e && e.message); }
   }
@@ -640,13 +746,16 @@ async function drawReleaseOverdueOnce() {
                             AND dd.sitewire_draw_id = f.sitewire_draw_id)
         AND EXISTS (SELECT 1 FROM sitewire_property_links pl WHERE pl.application_id=f.application_id
                       AND pl.matched_by='created' AND COALESCE(pl.lifecycle_state,'active')='active')
+        -- Alerted inside the 2-day gate → not due; do not consume a slot. wire_due_at is a fixed
+        -- date that never advances, so the most-overdue files would otherwise hold every slot.
+        AND ${notThrottled('f.application_id', DIGEST_ACTION.DRAW_RELEASE_OVERDUE, "interval '2 days'")}
       GROUP BY f.application_id
       -- Deterministic order: most-overdue wire first, so the cap can never hide the same file forever.
       ORDER BY due ASC, f.application_id
       LIMIT 300`)).rows;
   for (const r of rows) {
     try {
-      if (!(await _gate('draw_release_overdue', r.application_id, '2 days'))) continue;
+      if (!(await _gate(DIGEST_ACTION.DRAW_RELEASE_OVERDUE, r.application_id, '2 days'))) continue;
       const d = daysAt(r.due);
       await notify.notifyAppStaff(r.application_id, {
         type: 'draw',
@@ -654,7 +763,7 @@ async function drawReleaseOverdueOnce() {
         badge: { text: 'Overdue', tone: 'action' },
         body: `The borrower accepted ${r.n === 1 ? 'a draw' : `${r.n} draws`} and the release ${d != null && d > 0 ? `is ${d} day${d === 1 ? '' : 's'} past the target` : 'is now due'}, but no release has been recorded in PILOT yet. Please confirm the wire and record the release.`,
         applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk' });
-      await _stamp('draw_release_overdue', r.application_id, { overdue: r.n, days: d });
+      await _stamp(DIGEST_ACTION.DRAW_RELEASE_OVERDUE, r.application_id, { overdue: r.n, days: d });
       sent++;
     } catch (e) { console.error('[digest] draw-release-overdue', r.application_id, e && e.message); }
   }
@@ -725,7 +834,7 @@ async function section1071SweepOnce() {
     const targets = await db.query(
       `SELECT id FROM applications
         WHERE deleted_at IS NULL AND status NOT IN ('withdrawn','cancelled','declined')
-        ORDER BY updated_at DESC`);
+        ORDER BY updated_at DESC, id`);
     for (const row of targets.rows) {
       try {
         const client = await db.getClient();
@@ -831,22 +940,60 @@ async function directSourceSweepOnce() {
     const configuredCount = Object.values(hub.CONNECTORS || {}).filter((c) => { try { return c.configured(); } catch { return false; } }).length;
     if (configuredCount === 0) { await _stamp('direct_source_sweep_daily', null, { skipped: 'no vendor keys configured' }); return 0; }
     const targets = await db.query(
-      `SELECT id FROM applications
-        WHERE deleted_at IS NULL AND status NOT IN ('withdrawn','cancelled','funded','declined')
-          AND status IS DISTINCT FROM 'file_intake'
-        ORDER BY updated_at DESC
+      // AUDIT FIX (2026-07-26) — this was the worst instance of the whole class. `ORDER BY
+      // updated_at DESC LIMIT 40` means the sweep re-verifies the 40 most RECENTLY TOUCHED files,
+      // over and over, and a file outside that window is never direct-source verified at all — not
+      // "eventually", never. Busy files were being re-checked daily while quiet ones went unchecked
+      // for their entire life, and each re-check is a paid vendor call.
+      //
+      // Now it is a real queue: LEAST-RECENTLY-VERIFIED first (never-verified first), with files
+      // verified inside the last 7 days excluded so they do not consume a slot. Every active file
+      // is reached, none is re-billed within the week, and the batch rotates on its own.
+      `SELECT a.id, v.at AS last_verified
+         FROM applications a
+         LEFT JOIN LATERAL (
+           SELECT max(l.created_at) AS at FROM audit_log l
+            WHERE l.entity_type = 'application' AND l.action = '${DIGEST_ACTION.DIRECT_SOURCE_FILE}' AND l.entity_id = a.id
+         ) v ON true
+        WHERE a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','cancelled','funded','declined')
+          AND a.status IS DISTINCT FROM 'file_intake'
+          AND (v.at IS NULL OR v.at < now() - interval '7 days')
+        ORDER BY last_verified ASC NULLS FIRST, a.id
         LIMIT $1`, [BATCH]);
     for (const row of targets.rows) {
       try {
+        // Claim the per-file slot BEFORE spending money on vendor calls. This is the same atomic
+        // claim every other digest uses, and it is what makes the ordering above a real rotation:
+        // the stamp it writes is the sort key, so a verified file moves to the back of the queue.
+        if (!(await _gate(DIGEST_ACTION.DIRECT_SOURCE_FILE, row.id, '7 days'))) continue;
         const client = await db.getClient();
+        let verified = false;
         try {
           await client.query('BEGIN');
           const r = await hub.verifyFile(client, row.id, {});
           await client.query('COMMIT');
           files += 1;
           calls += (r && r.results ? r.results.filter((x) => x.ok || x.reason).length : 0);
+          // Did ANY connector actually return something? `verifyFile` swallows connector errors and
+          // reports them as {ok:false, reason}, so a vendor outage or a rotated key does not throw —
+          // it comes back as a full set of failures.
+          verified = !!(r && Array.isArray(r.results) && r.results.some((x) => x && x.ok));
         } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
         finally { client.release(); }
+        // RELEASE THE CLAIM when nothing was verified (audit finding, 2026-07-26). Claiming BEFORE
+        // the spend is deliberate and right — it is what makes the queue rotate, it prevents
+        // double-billing if the process dies mid-call, and it is atomic across instances. But the
+        // claim is committed in its own transaction, so a total failure would otherwise leave the
+        // file stamped "verified" and excluded for 7 days having been verified by nobody. One key
+        // rotation during a 40-file pass would silently park all 40 for a week. So on a total
+        // failure the stamp is withdrawn and the file returns to the queue on the next pass.
+        if (!verified) {
+          await db.query(
+            `DELETE FROM audit_log
+              WHERE action = $1 AND entity_id = $2 AND entity_type = 'application'
+                AND created_at > now() - interval '1 hour'`,
+            [DIGEST_ACTION.DIRECT_SOURCE_FILE, row.id]).catch(() => {});
+        }
       } catch (e) { console.error('[digests] direct-source-sweep', row.id, e && e.message); }
     }
     await _stamp('direct_source_sweep_daily', null, { files, calls, configuredCount });
@@ -920,7 +1067,7 @@ async function autoCommitteeReviewOnce() {
         WHERE df.status='open' AND df.severity='fatal'
           AND df.committee_reviewed_at IS NULL
           AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','cancelled','funded')
-        ORDER BY df.created_at DESC
+        ORDER BY df.created_at DESC, df.id
         LIMIT $1`, [BATCH_LIMIT]);
     for (const f of q.rows) {
       try {
@@ -989,7 +1136,7 @@ async function aiCrossdocSweepOnce() {
                             WHERE al.entity_type='application' AND al.entity_id=a.id
                               AND al.action='ai_crossdoc_sweep_ran'
                               AND al.created_at > now() - interval '30 days')
-        ORDER BY a.updated_at DESC
+        ORDER BY a.updated_at DESC, a.id
         LIMIT $1`, [BATCH]);
     for (const row of q.rows) {
       const c = await db.getClient();
@@ -999,7 +1146,7 @@ async function aiCrossdocSweepOnce() {
         // the nightly cross-doc sweep saw zero extractions on every file.
         const exts = await c.query(
           `SELECT doc_type, document_id, fields FROM document_extractions
-            WHERE application_id=$1 AND is_current AND status='analyzed' ORDER BY created_at DESC LIMIT 40`, [row.id]);
+            WHERE application_id=$1 AND is_current AND status='analyzed' ORDER BY created_at DESC, document_id LIMIT 40`, [row.id]);
         if (exts.rows.length >= 2) {
           await require('./underwriting/ai-cross-doc').analyzeFile(c, {
             applicationId: row.id, extractions: exts.rows,
@@ -1052,7 +1199,7 @@ async function conditionFreshnessReopenOnce() {
         AND ci.waived_at IS NULL
         AND a.deleted_at IS NULL
         AND a.status NOT IN ('funded','declined','withdrawn')
-      ORDER BY ci.signed_off_at ASC
+      ORDER BY ci.signed_off_at ASC, ci.id
       LIMIT 400`, [codes]);
   const plans = freshness.planFreshnessReopens(rows.rows, { now: new Date(), limit: 25 });
   let reopened = 0;
