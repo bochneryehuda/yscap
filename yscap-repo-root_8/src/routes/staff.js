@@ -7469,10 +7469,14 @@ router.post('/applications/:id/closing-workflow', async (req, res) => {
       return res.status(403).json({ error: 'Only the closer (or an admin) can close, reconcile, or move a file to purchasing.' });
 
     // Reconciliation gate — the funded date must match across PILOT + ClickUp (and
-    // Encompass when present) before "fully reconciled".
+    // Encompass when a value is present) before "fully reconciled". A super_admin may
+    // deliberately force past a genuine conflict (audited), mirroring the platform's
+    // super_admin override philosophy.
     if (stage === 'fully_reconciled') {
       const rec = await closing.reconcileClosingDates(req.params.id);
-      if (!rec.ok) return res.status(422).json({ error: 'not_reconciled', reason: rec.reason, reconciliation: rec });
+      const forced = req.body && req.body.force === true && req.actor.role === 'super_admin';
+      if (!rec.ok && !forced) return res.status(422).json({ error: 'not_reconciled', reason: rec.reason, reconciliation: rec });
+      if (!rec.ok && forced) await audit(req, 'closing_reconcile_forced', 'application', req.params.id, { reason: rec.reason });
     }
     // Purchasing hand-off requires investor delivery signed off + the file reconciled.
     if (stage === 'in_purchasing') {

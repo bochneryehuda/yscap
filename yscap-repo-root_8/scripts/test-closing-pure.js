@@ -66,9 +66,11 @@ ok(/ClickUp/.test(r.reason), 'reason names ClickUp');
 r = closing.decideReconcile({ ours: '2026-07-10', clickup: '2026-07-11', encompass: '2026-07-10', encLinked: true });
 ok(!r.ok, 'blocked on PILOT vs ClickUp mismatch');
 
-// Encompass leg: linked but empty → blocked (must be set).
+// Encompass leg: linked but empty → ADVISORY, not blocking (field 1401 is
+// tenant-dependent; its absence must never permanently stall reconciliation).
 r = closing.decideReconcile({ ours: '2026-07-10', clickup: '2026-07-10', encompass: null, encLinked: true });
-ok(!r.ok && r.encStatus === 'missing', 'linked-but-empty Encompass blocks');
+ok(r.ok && r.encStatus === 'missing', 'linked-but-empty Encompass is advisory, not blocking');
+ok(r.advisory && /Encompass/.test(r.advisory), 'linked-but-empty Encompass surfaces an advisory');
 
 // Encompass leg: NOT linked → graceful N/A, PILOT+ClickUp enough.
 r = closing.decideReconcile({ ours: '2026-07-10', clickup: '2026-07-10', encompass: null, encLinked: false });

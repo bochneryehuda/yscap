@@ -181,17 +181,25 @@ function readEncompassFundedDate(app) {
 // value is present (graceful N/A when the file isn't in Encompass yet).
 function decideReconcile({ ours, clickup, encompass, encLinked }) {
   const o = dayStr(ours); const cu = dayStr(clickup); const enc = dayStr(encompass);
-  const reasons = [];
+  const reasons = [];     // HARD — these block "fully reconciled"
+  const advisories = [];  // shown to the closer, but never block
   if (!o) reasons.push('Set the funded date in PILOT first.');
-  if (!cu) reasons.push('The actual funding date is not set in ClickUp yet.');
+  if (!cu) reasons.push('The actual closing / funding date is not set in ClickUp yet.');
   if (o && cu && !sameDay(o, cu)) reasons.push(`Funded dates disagree — PILOT ${o} vs ClickUp ${cu}.`);
   let encStatus;
   if (enc == null) encStatus = encLinked ? 'missing' : 'na';
   else encStatus = sameDay(o, enc) ? 'match' : 'mismatch';
-  if (encStatus === 'missing') reasons.push('The funded date is not set in Encompass yet.');
-  if (encStatus === 'mismatch') reasons.push(`Funded dates disagree — PILOT ${o} vs Encompass ${enc}.`);
+  // Encompass leg: a PRESENT-but-disagreeing funded date blocks (a real conflict);
+  // a linked-but-EMPTY date is ADVISORY only — Encompass field 1401 population is
+  // tenant-dependent, so its absence must never permanently stall reconciliation.
+  if (encStatus === 'missing') advisories.push('Encompass has no funded date yet — confirm it there once it posts.');
+  if (encStatus === 'mismatch' && o) reasons.push(`Funded dates disagree — PILOT ${o} vs Encompass ${enc}.`);
   const ok = reasons.length === 0;
-  return { ok, ours: o, clickup: cu, encompass: enc, encStatus, encLinked: !!encLinked, reason: ok ? null : reasons.join(' ') };
+  return {
+    ok, ours: o, clickup: cu, encompass: enc, encStatus, encLinked: !!encLinked,
+    reason: ok ? null : reasons.join(' '),
+    advisory: advisories.length ? advisories.join(' ') : null,
+  };
 }
 
 async function reconcileClosingDates(appId, client) {
