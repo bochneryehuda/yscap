@@ -30,9 +30,12 @@ const STAGE_LABEL = {
   fully_closed: 'Closed (funded)', fully_reconciled: 'Reconciled', in_purchasing: 'In purchasing',
 };
 const QUICKLINK_LABEL = {
-  insurance: 'Insurance', contract: 'Purchase contract', assignment: 'Assignment of contract',
-  llc: 'LLC documents', bank_statement: 'Bank statements', title: 'Title',
+  term_sheet: 'Term sheet', insurance: 'Insurance', contract: 'Purchase contract',
+  assignment: 'Assignment of contract', llc: 'LLC documents', bank_statement: 'Bank statements', title: 'Title',
 };
+// The signed/executed final term sheet vs the draft — labeled so the closer can
+// tell which link is the executed one.
+const tsTag = (d) => (d.doc_kind === 'term_sheet_signed' ? 'Executed' : d.doc_kind === 'term_sheet' ? 'Draft' : '');
 
 export default function ClosingPanel({ appId, app, can, onDownloadDoc, onPreview, onChanged }) {
   const [ws, setWs] = useState(null);
@@ -120,10 +123,13 @@ export default function ClosingPanel({ appId, app, can, onDownloadDoc, onPreview
               return (
                 <div key={k} className="cl-ql-group">
                   <div className="cl-ql-head">{QUICKLINK_LABEL[k]} <span className="muted small">({docs.length})</span></div>
-                  {docs.length === 0 ? <div className="muted small">None on file</div>
+                  {docs.length === 0 ? <div className="muted small">{k === 'term_sheet' ? 'No term sheet on file yet' : 'None on file'}</div>
                     : docs.map((d) => (
                       <button key={d.id} className="btn link small cl-ql-doc" title={d.filename}
-                        onClick={() => (onPreview ? onPreview(d) : onDownloadDoc && onDownloadDoc(d))}>{d.filename}</button>
+                        onClick={() => (onPreview ? onPreview(d) : onDownloadDoc && onDownloadDoc(d))}>{d.filename}
+                        {k === 'term_sheet' && tsTag(d)
+                          ? <span className={`cl-ts-tag ${d.doc_kind === 'term_sheet_signed' ? 'on' : ''}`}>{tsTag(d)}</span>
+                          : null}</button>
                     ))}
                 </div>
               );

@@ -134,6 +134,16 @@ const ok = (c, n) => { assert.ok(c, n); console.log(`  ok  ${n}`); passed++; };
       `SELECT checked, checked_by FROM closing_checklist_items WHERE id=$1`, [item0])).rows[0];
     ok(uncheckedRow.checked === false && uncheckedRow.checked_by === null, 'checklist item un-check clears the actor');
 
+    // Term-sheet quick-link: the executed (signed) sheet + the draft both surface,
+    // executed FIRST (the closer needs a direct link to the signed final sheet).
+    await client.query(
+      `INSERT INTO documents (application_id, filename, doc_kind, is_current) VALUES
+         ($1,'term-sheet-draft.pdf','term_sheet',true),
+         ($1,'term-sheet-EXECUTED.pdf','term_sheet_signed',true)`, [appId]);
+    const ql = await closing.readQuickLinks(appId, null, client);
+    ok(Array.isArray(ql.term_sheet) && ql.term_sheet.length === 2, 'term-sheet quick-link groups the executed sheet + the draft');
+    ok(ql.term_sheet[0].doc_kind === 'term_sheet_signed', 'the executed (signed) term sheet is listed first');
+
     await client.query('ROLLBACK');
     console.log(`test-closing-db: ${passed} checks passed`);
   } catch (e) {

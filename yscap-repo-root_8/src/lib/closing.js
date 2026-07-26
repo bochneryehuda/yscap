@@ -225,7 +225,7 @@ async function readQuickLinks(appId, llcId, client) {
   const c = client || db;
   const r = await c.query(
     `SELECT d.id, d.filename, d.content_type, d.checklist_item_id, d.slot_label, d.created_at,
-            t.code AS template_code, ci.label AS item_label
+            d.doc_kind, t.code AS template_code, ci.label AS item_label
        FROM documents d
        LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
        LEFT JOIN checklist_templates t ON t.id = ci.template_id
@@ -236,12 +236,19 @@ async function readQuickLinks(appId, llcId, client) {
       ORDER BY d.created_at DESC`, [appId, llcId || null]);
   const groups = {};
   for (const key of Object.keys(QUICKLINK_GROUPS)) groups[key] = [];
+  // The term sheet is keyed by doc_kind (not a condition): the SIGNED/executed
+  // copy (term_sheet_signed, filed by the e-sign integration) and the draft
+  // (term_sheet). The closer needs a direct link to the executed final sheet.
+  groups.term_sheet = [];
   const codeToGroup = {};
   for (const [group, codes] of Object.entries(QUICKLINK_GROUPS)) for (const code of codes) codeToGroup[code] = group;
   for (const d of r.rows) {
     const g = d.template_code && codeToGroup[d.template_code];
     if (g) groups[g].push(d);
+    if (d.doc_kind === 'term_sheet_signed' || d.doc_kind === 'term_sheet') groups.term_sheet.push(d);
   }
+  // Executed copy first, then draft, newest within each (each already newest-first).
+  groups.term_sheet.sort((a, b) => (a.doc_kind === 'term_sheet_signed' ? 0 : 1) - (b.doc_kind === 'term_sheet_signed' ? 0 : 1));
   return groups;
 }
 
