@@ -685,7 +685,12 @@ module.exports = {
     const on = (v) => { const s = String(v || '').trim().toLowerCase(); return s === '1' || s === 'true'; };
     const csv = (v) => String(v || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
     return {
-      version:           (process.env.UNDERWRITING_PIPELINE_VERSION || 'v1').trim(),  // v1 | v2 (the exposed pipeline)
+      // There is intentionally NO `version` / UNDERWRITING_PIPELINE_VERSION selector (VSLICE-8):
+      // Pipeline V2 is ADVISORY-ONLY, so V1 is ALWAYS the exposed pipeline and V2 only ever runs in
+      // shadow. A settable "exposed pipeline = v1|v2" flag implied a V2-exposure capability that does
+      // not (and must not yet) exist — flipping it changed nothing, which was the defect. The real
+      // switches below are the only controls; the go-live exposure switch will be introduced
+      // deliberately as part of the eventual cutover, never left as a dead knob.
       v2Enabled:         on(process.env.UW_PIPELINE_V2_ENABLED),   // build/run v2 at all (default OFF)
       v2Shadow:          on(process.env.UW_PIPELINE_V2_SHADOW),    // run v2 beside v1, never expose (default OFF)
       v2Families:        csv(process.env.UW_PIPELINE_V2_FAMILIES), // families promoted to v2, e.g. bank_statement,insurance ('all'/'*' = every family)

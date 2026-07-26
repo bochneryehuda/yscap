@@ -51,7 +51,8 @@ function shadowGate(family, pipelineCfg) {
  * @param {object} opts   { documentId, loanId?, family, pipelineCfg? }
  */
 async function maybeEnqueueUpload(db, { documentId = null, loanId = null, family = null, pipelineCfg = null } = {}) {
-  const gate = shadowGate(family, pipelineCfg);
+  const p = pipelineCfg || cfg.pipeline || {};
+  const gate = shadowGate(family, p);
   if (!gate.on) return { enqueued: false, reason: gate.reason };
   if (!documentId) return { enqueued: false, reason: 'no_document' };
   try {
@@ -60,6 +61,11 @@ async function maybeEnqueueUpload(db, { documentId = null, loanId = null, family
       documentId, loanId,
       pipelineVersion: 'v2',
       documentFamily: fam(family),
+      // VSLICE-8: the configured retry cap actually controls the durable job now — the enqueue
+      // passes UW_JOB_MAX_ATTEMPTS (cfg.pipeline.jobMaxAttempts) through instead of always letting
+      // the table's default win. Absent (test config) → null, so job-queue's COALESCE keeps the
+      // table default, i.e. behavior-identical when the flag isn't set.
+      maxAttempts: (p.jobMaxAttempts != null ? p.jobMaxAttempts : null),
       // Idempotent per document+family: a re-upload/re-read never spawns a duplicate shadow job.
       idempotencyKey: `shadow:${documentId}:${fam(family)}`,
       payload: { shadow: true, features: { docType: fam(family) }, documentId, loanId },

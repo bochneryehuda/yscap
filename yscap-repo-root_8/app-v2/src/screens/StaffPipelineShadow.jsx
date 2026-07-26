@@ -87,7 +87,7 @@ export default function StaffPipelineShadow() {
         <strong>{shadowOn ? 'Shadow mode is ON' : 'Shadow mode is OFF'}</strong>
         {flags && (
           <div className="muted" style={{ marginTop: 4, fontSize: 13 }}>
-            Exposed pipeline: <b>{flags.version || 'v1'}</b>
+            Exposed pipeline: <b>V1</b> <span className="muted">(the new pipeline runs in shadow only)</span>
             {' · '}Families in shadow: <b>{(flags.v2Families && flags.v2Families.length) ? flags.v2Families.join(', ') : '(none)'}</b>
             {' · '}Background worker: <b>{flags.workerEnabled ? 'on' : 'off'}</b>
           </div>

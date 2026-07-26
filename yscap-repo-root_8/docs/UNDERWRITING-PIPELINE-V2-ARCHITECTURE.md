@@ -421,7 +421,9 @@ AZURE_OPENAI_API_VERSION                      (have)
 **AZURE_OPENAI_VISION_DEPLOYMENT**            (name of the vision deployment)
 
 # --- Pipeline control (new, safe defaults) ---
-UNDERWRITING_PIPELINE_VERSION=v1              (v1 until v2 is promoted; v2 shadow runs regardless)
+# NOTE (VSLICE-8): UNDERWRITING_PIPELINE_VERSION was REMOVED — while V2 is advisory-only it selected
+# nothing (V1 is always the exposed pipeline; V2 runs in shadow). Setting it does nothing; the go-live
+# exposure switch will be (re)introduced deliberately at cutover. Use the UW_PIPELINE_V2_* flags below.
 
 # --- Xactus (credit) --- already present; no change; Plaid intentionally skipped
 ```
@@ -626,8 +628,7 @@ GOOGLE_DOCAI_PROCESSOR_ID= / GOOGLE_DOCAI_SPLITTER_PROCESSOR_ID= / _SPLITTER_PRO
 # Azure OpenAI (v1 base path)
 AZURE_OPENAI_BASE_URL= / AZURE_OPENAI_KEY=
 AZURE_OPENAI_EXTRACTION_DEPLOYMENT= / _REASONING_DEPLOYMENT= / _VISION_DEPLOYMENT=   # may map to one deployment now
-# Pipeline controls
-UNDERWRITING_PIPELINE_VERSION=v1
+# Pipeline controls  (UNDERWRITING_PIPELINE_VERSION removed in VSLICE-8 — dead knob; V1 always exposed, V2 shadow-only)
 UW_PIPELINE_V2_ENABLED=true / UW_PIPELINE_V2_SHADOW=true / UW_PIPELINE_V2_FAMILIES=bank_statement,insurance
 UW_WORKER_ENABLED=true / UW_WORKER_CONCURRENCY=2 / UW_JOB_MAX_ATTEMPTS=5 / UW_JOB_LEASE_SECONDS=300
 ```

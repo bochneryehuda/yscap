@@ -126,6 +126,17 @@ const STAR = { v2Shadow: true, v2Enabled: false, v2Families: ['*'] };
   const r7 = await EU.enqueueUploadedDocument(throwAll, { documentId: 'd7', docKind: 'insurance', pipelineCfg: ALL });
   ok(r7.enqueued === false && r7.reason === 'error', 'upload: throwing db → swallowed to error (never throws)');
 
+  // ================= VSLICE-8: jobMaxAttempts now actually controls the durable job =================
+  // job-queue.enqueue INSERT params order: [documentId, loanId, pipelineVersion, documentFamily,
+  // idempotencyKey, maxAttempts, payload] → index 5 is the retry cap the enqueue passes.
+  const dbCap = makeDb();
+  await EU.maybeEnqueueUpload(dbCap, { documentId: 'dcap', family: 'insurance', pipelineCfg: { v2Shadow: true, v2Families: ['all'], jobMaxAttempts: 9 } });
+  ok(dbCap.insertParams && dbCap.insertParams[5] === 9, 'jobMaxAttempts: the configured cap (9) is passed to the enqueue');
+
+  const dbNoCap = makeDb();
+  await EU.maybeEnqueueUpload(dbNoCap, { documentId: 'dncap', family: 'insurance', pipelineCfg: { v2Shadow: true, v2Families: ['all'] } });
+  ok(dbNoCap.insertParams && dbNoCap.insertParams[5] === null, 'jobMaxAttempts: absent in cfg → null (job-queue keeps the table default — behavior-identical)');
+
   console.log(`test-enqueue-on-upload-pure: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });
