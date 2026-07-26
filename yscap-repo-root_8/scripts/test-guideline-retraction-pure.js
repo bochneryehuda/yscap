@@ -92,6 +92,36 @@ function stubClient(rowCount = 0) {
     `every payload carries a dedupeKey the retraction can preserve (${JSON.stringify(keys)})`);
   ok(new Set(keys).size === keys.length, 'the keys are distinct, so none masks another');
 
+  // ---------- THE DESTRUCTIVE CASE: the desk FAILED, it did not "say nothing" ----------
+  // runInvestorGuidelineDesk returns a well-formed EMPTY result on ANY internal failure (a require
+  // error, a loadRuleContext throw, a null load) — identical in shape to a genuine "nothing
+  // applies". If retraction ran on that, a transient database blip during one file view would
+  // silently CLOSE EVERY open guideline finding on the file. Wiping real findings on a hiccup is
+  // far worse than leaving a stale one up for one more cycle, so retraction demands positive
+  // evidence the desk actually evaluated rules.
+  const failedDesk = {
+    noteBuyer: { key: null, name: null }, verdicts: [], unhappy: [],
+    summary: { applicable: 0 }, empty: true,          // exactly what the desk returns on failure
+  };
+  const c3 = stubClient(9);
+  const r3 = await sync.syncInvestorGuidelineFindings(c3, 'app-6', { desk: failedDesk });
+  ok(r3.retracted === 0,
+    `a desk that FAILED (empty result) retracts NOTHING (got ${r3.retracted}) — a transient error must never wipe a file's findings`);
+  ok(r3.assessed === false, 'the failed/empty desk is reported as not assessed');
+  ok(!c3.calls.some((k) => /UPDATE ai_suggestions/.test(k.text)),
+    'no UPDATE is even issued when the desk did not assess');
+
+  // ...but a desk that genuinely ASSESSED and found nothing unhappy DOES converge.
+  const cleanDesk = {
+    noteBuyer: { key: 'bluelake', name: 'Blue Lake Capital' },
+    verdicts: [{ cond_no: 1, verdict: 'satisfied' }],   // it really evaluated a rule
+    unhappy: [],
+  };
+  const c4 = stubClient(4);
+  const r4 = await sync.syncInvestorGuidelineFindings(c4, 'app-7', { desk: cleanDesk });
+  ok(r4.assessed === true && r4.retracted === 4,
+    `a desk that assessed and is now HAPPY retracts its stale rows (assessed=${r4.assessed}, retracted=${r4.retracted})`);
+
   console.log(`test-guideline-retraction-pure: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });

@@ -143,9 +143,23 @@ async function syncInvestorGuidelineFindings(client, appId, opts) {
     //
     // So the desk's output is now the AUTHORITY for its own rows: anything open under this source
     // that is not in the current set is retracted.
-    const retracted = await retractStale(client, appId, payloads.map((p) => p.dedupeKey));
-    return { raised, fatal, retracted };
-  } catch (_e) { return { raised: 0, fatal: 0, retracted: 0 }; }
+    // ...but ONLY when the desk demonstrably ASSESSED the file.
+    //
+    // `runInvestorGuidelineDesk` returns a well-formed EMPTY result on any internal failure — a
+    // require error, a loadRuleContext throw, a null load — indistinguishable in shape from a
+    // genuine "nothing applies". Retracting on that would mean a transient database blip during a
+    // file view silently CLOSES EVERY open guideline finding on the file. Wiping real findings on a
+    // hiccup is far worse than leaving a stale one visible for one more cycle, so retraction
+    // requires positive evidence the desk actually evaluated rules: at least one verdict.
+    //
+    // Cost of being conservative: a file whose rules genuinely all stopped applying keeps its stale
+    // rows until the desk has something to say. That is the right side to err on.
+    const assessed = !!(desk && Array.isArray(desk.verdicts) && desk.verdicts.length);
+    const retracted = assessed
+      ? await retractStale(client, appId, payloads.map((p) => p.dedupeKey))
+      : 0;
+    return { raised, fatal, retracted, assessed };
+  } catch (_e) { return { raised: 0, fatal: 0, retracted: 0, assessed: false }; }
 }
 
 /**
