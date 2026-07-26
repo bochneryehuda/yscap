@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import ExceptionCard from '../components/ExceptionCard.jsx';
@@ -167,6 +167,11 @@ export default function StaffExceptions() {
           ? 'Approve or deny with a short note; on time-boxable types you can set how long the approval stays valid. Clear an exception when it’s handled. You can’t approve your own request — another admin does that.'
           : 'You can review the queue and comment; an admin approves or denies.'}
       </p>
+      <div className="notice" style={{ marginTop: 4, marginBottom: 4 }}>
+        <b>Not the same as “Manual / Escalations.”</b> That box is only for pricing a deal <b>outside the guidelines</b>
+        {' '}(custom leverage / below-minimum) with the counter-offer haggle. Everything else — guaranty waivers, early
+        sends, one-off pricing/guideline exceptions, overrides — is <b>here</b>. → <Link to="/internal/escalations">Open Manual / Escalations</Link>
+      </div>
 
       {/* The register report — how many, how fast, how often granted. */}
       {metrics && (

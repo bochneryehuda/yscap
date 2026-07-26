@@ -159,6 +159,12 @@ export default function StaffEscalations() {
   return (
     <div>
       <div className="page-head"><h1>Manual programs &amp; escalations</h1></div>
+      <p className="muted small" style={{ marginTop: -6, marginBottom: 12 }}>
+        This box is only for <b>manual-program pricing</b> — deals structured <b>outside the guidelines</b> (custom
+        leverage / below-minimum), where an admin approves, declines, or <b>counter-offers</b> (proposes different
+        terms). Guaranty waivers, early term-sheet sends, and other one-off rule exceptions live in{' '}
+        <Link to="/internal/exceptions">Exceptions</Link>.
+      </p>
       {msg && <div className={`notice ${msg.ok ? 'ok' : 'err'}`} style={{ marginBottom: 12 }}>{msg.text}</div>}
       {/* A deep-link pointed here but this file has no manual escalation — the
           ask is almost certainly a pricing/guideline EXCEPTION, which lives in
