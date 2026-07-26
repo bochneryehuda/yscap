@@ -142,4 +142,48 @@ const notReady = (n) => ({
   probe() { return { ok: false, base: null, configured: CONFIGURED, persistent: false, error: n + ' not configured' }; },
 });
 
-module.exports = ({ local, s3: notReady('s3'), sharepoint: notReady('sharepoint') }[cfg.storageProvider] || local);
+/**
+ * DUAL-READ wrapper (owner-directed 2026-07-26): when we cut over to S3, documents saved BEFORE the
+ * cutover still live on the old local disk. This wraps the S3 provider so a READ that misses in S3
+ * (404) transparently falls back to the local disk — so no historical download ever breaks during
+ * the migration. NEW writes always go to S3. Once every old document is copied into S3 (the one-time
+ * migrate job) the fallback simply never fires. save/remove/probe are S3's; read/stream/stat try S3
+ * then local.
+ */
+function dualRead(primary, fallback) {
+  const is404 = (e) => e && (e.statusCode === 404 || e.statusCode === 403);
+  return {
+    name: primary.name,
+    get base() { return primary.base; },
+    save: (...a) => primary.save(...a),
+    remove: (...a) => primary.remove(...a),
+    probe: () => primary.probe(),
+    ping: primary.ping ? (() => primary.ping()) : undefined,
+    async read(ref) {
+      try { return await primary.read(ref); }
+      catch (e) { if (is404(e)) { try { return await fallback.read(ref); } catch (_f) { throw e; } } throw e; }
+    },
+    async stream(ref) {
+      try { return await primary.stream(ref); }
+      catch (e) { if (is404(e)) { try { return await fallback.stream(ref); } catch (_f) { throw e; } } throw e; }
+    },
+    async stat(ref) {
+      const s = await primary.stat(ref);
+      if (s) return s;
+      try { return await fallback.stat(ref); } catch (_f) { return null; }
+    },
+  };
+}
+
+// Lazy-build S3 only when selected (so its module never loads on the default local path).
+function pickProvider() {
+  if (cfg.storageProvider === 's3') {
+    const s3 = require('./storage-s3');
+    return dualRead(s3, local);   // reads fall back to the old local disk during the migration
+  }
+  if (cfg.storageProvider === 'sharepoint') return notReady('sharepoint');
+  return local;
+}
+
+module.exports = pickProvider();
+module.exports._local = local;   // exposed for the one-time local→S3 copy job
