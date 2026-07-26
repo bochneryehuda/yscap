@@ -1,5 +1,5 @@
 -- ============================================================================
--- 324_encompass_profile_enrichment.sql
+-- 326_encompass_profile_enrichment.sql
 --
 -- ENCOMPASS BUILDS THE PROFILE — and its disagreements go to manual review
 -- (owner-directed 2026-07-26).

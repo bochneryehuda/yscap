@@ -31,13 +31,24 @@ const ARTIFACT_VERSIONS = Object.freeze({
   //     invalidates every cached extraction, forcing a re-read with the new brain) ---
   ocr:              'docint-2024-11-30',   // OCR engine + model
   model:            'gpt5',                // extraction model / deployment
+  // DELIBERATELY still r1 even though the credit-report schema gained mortgageLateDetails
+  // (2026-07-26). Bumping this invalidates the cached extraction of EVERY document of EVERY type —
+  // appraisals, contracts, bank statements — and re-reads the entire portfolio at the AI vendors'
+  // expense. The new field is additive and only credit reports use it: a stored r1 extraction
+  // simply has no tradeline detail, and the finding then says so honestly ("does not break out
+  // which account") instead of inventing one. Old credit reports pick the detail up the next time
+  // they are read. Bumping this is an owner cost decision, not a code decision.
   extractionSchema: 'uw-schema-r1',        // schema + per-type prompt revision
 
   // --- provenance-only artifacts (versioned for the certificate / stack tile; NOT part of
   //     ANALYZER_VERSION, so bumping these never wipes the extraction cache) ---
   splitter:        'azure-custom-splitter-r1',
   classifier:      'azure-custom-classifier-r1',
-  deterministic:   'uw-checks-r1',         // the deterministic per-doc + cross-doc checks
+  // r2: mortgagee notice address is now a three-way answer (ours / unrecognised / none), the
+  //     chain-of-title hops are derived from the visible path, the risk-score signals carry their
+  //     own plain sentences, and name variations are explained honestly. Findings are recomputed
+  //     from stored extractions, so this is what makes those reach documents already on file.
+  deterministic:   'uw-checks-r2',         // the deterministic per-doc + cross-doc checks
   normalizers:     'twin-normalizers-r1',  // fact normalization (names/money/dates/entities)
   sourceHierarchy: 'twin-source-hierarchy-r1',
   guideline:       'program-guidelines-r1',

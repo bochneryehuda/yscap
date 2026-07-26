@@ -143,7 +143,7 @@ async function computeRecheck(row, opts) {
   let borrowerId = row.borrower_id || null;
   let taskId = row.task_id || null;
   const appId = row.application_id || null;
-  // An ENCOMPASS row (db/324) has a namespaced `encompass:<loanGuid>` in
+  // An ENCOMPASS row (db/326) has a namespaced `encompass:<loanGuid>` in
   // task_id, not a ClickUp task. "Look again" here would mean re-reading the
   // weekly Encompass mirror, which this module has no business doing — and
   // handing that string to `clickup.getTask` would fail every time. The next

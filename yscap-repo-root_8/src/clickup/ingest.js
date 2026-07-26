@@ -1132,7 +1132,7 @@ async function ingestTask(task, options = {}, opts = {}) {
   // `primary_officer_id` cannot express that — it is fill-only (it must be;
   // stealing an existing relationship would be worse), so whoever got there first
   // owned the person and every OTHER officer they did business with stayed locked
-  // out. `borrower_officers` (db/325) records EVERY (borrower, officer) pair this
+  // out. `borrower_officers` (db/327) records EVERY (borrower, officer) pair this
   // sync sees, from EVERY card in EVERY status, and is what the staff borrower
   // scope actually reads. `primary_officer_id` keeps its old meaning: the
   // borrower's PRIMARY/CRM owner.

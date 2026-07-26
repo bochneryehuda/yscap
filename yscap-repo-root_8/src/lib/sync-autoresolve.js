@@ -187,7 +187,7 @@ async function journalResolveWrite(appId, taskId, fieldId, fieldKey, oldVal, new
 
 /**
  * Resolve a review row that came from the READ-ONLY Encompass enrichment pass
- * (db/324). Deliberately small and separate from the ClickUp resolver: there is
+ * (db/326). Deliberately small and separate from the ClickUp resolver: there is
  * no second system to write, so the only question is what PILOT should hold.
  *
  *   winner 'encompass' → adopt the value Encompass holds (stored on the row —
@@ -255,7 +255,7 @@ async function applyReviewWinner(row, winner, customValue) {
   const custom = winner === 'custom' ? String(customValue == null ? '' : customValue).trim() : null;
   if (winner === 'custom' && !custom) throw httpError(400, 'a value is required to resolve with a custom value');
 
-  // ---- ENCOMPASS-sourced rows (db/324) are settled FIRST and never fall
+  // ---- ENCOMPASS-sourced rows (db/326) are settled FIRST and never fall
   // through to the ClickUp branches below. The row's `task_id` is a namespaced
   // `encompass:<loanGuid>`, not a ClickUp task — handing it to `clickup.getTask`
   // would 404 and make the row permanently unresolvable. Encompass is READ-ONLY

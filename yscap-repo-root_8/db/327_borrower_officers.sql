@@ -1,5 +1,5 @@
 -- ============================================================================
--- 325_borrower_officers.sql
+-- 327_borrower_officers.sql
 --
 -- WHO ARE MY BORROWERS? — the many-to-many answer (owner-directed 2026-07-26).
 --

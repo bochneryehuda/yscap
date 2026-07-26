@@ -205,7 +205,7 @@ function scopeClause(req, alias = 'a') {
 // Requires the borrowers alias to expose id + primary_officer_id.
 // A borrower belongs to EVERY officer they have done business with, not just one
 // (owner-directed 2026-07-26 follow-up: "he should see every borrower where he
-// closed any file in the past in ClickUp"). `borrower_officers` (db/325) is the
+// closed any file in the past in ClickUp"). `borrower_officers` (db/327) is the
 // many-to-many relationship the ClickUp sync records from EVERY card in EVERY
 // status; `primary_officer_id` stays the single CRM owner. Both are honored, plus
 // the visible_officer_ids delegation, plus any file the staffer can already see.
@@ -218,7 +218,7 @@ const VISIBLE_BORROWER_SQL = (alias, p) =>
   ` WHERE (a2.borrower_id=${alias}.id OR a2.co_borrower_id=${alias}.id) AND a2.deleted_at IS NULL` +
   ` AND ${VISIBLE_OFFICERS_SQL('a2', p)}))`;
 
-// An ENCOMPASS review row (db/324) hangs on a BORROWER and never on a file, and
+// An ENCOMPASS review row (db/326) hangs on a BORROWER and never on a file, and
 // the borrower it is about may have no loan file at all — a DSCR-only client the
 // officer closed with in ClickUp. Scoping it the file way would hide the card
 // from the ONE person who can answer it. It follows the borrower scope instead,
@@ -9755,6 +9755,24 @@ async function canSeeDocument(req, doc) {
       [doc.borrower_id, req.actor.id]);
     if (r.rows[0]) return true;
   }
+  if (doc.llc_id) {
+    // The file's own VESTING ENTITY (audit 2026-07-26). PILOT now reads the entity's operating
+    // agreement / EIN / articles for a file that vests into it, even when the entity is filed under
+    // a different borrower record — so a finding raised from those documents was appearing on the
+    // desk with an "open the source document" link that returned 403 for the very staff the fix was
+    // for (an assigned officer or processor; see-all roles were unaffected). A finding you cannot
+    // open is against the whole point of the findings surface.
+    //
+    // Scoped exactly like the read side: only an entity that a file THIS staffer is assigned to
+    // actually vests into. It grants nothing beyond the documents PILOT is already reading on their
+    // behalf, and no wider than the borrower branch above.
+    const r = await db.query(
+      `SELECT 1 FROM applications a WHERE a.llc_id=$1 AND a.deleted_at IS NULL
+          AND ${VISIBLE_OFFICERS_SQL('a', '$2')}
+        LIMIT 1`,
+      [doc.llc_id, req.actor.id]);
+    if (r.rows[0]) return true;
+  }
   return false;
 }
 
@@ -10697,7 +10715,7 @@ router.post('/sync-reviews/:id/resolve', async (req, res) => {
   try {
     const winner = String((req.body && req.body.winner) || '');
     // 'encompass' is the winner name on a row the READ-ONLY Encompass enrichment
-    // pass raised (db/324) — the resolver refuses the wrong name for the row's
+    // pass raised (db/326) — the resolver refuses the wrong name for the row's
     // source, so a mixed-up client gets a clear message instead of a bad write.
     if (!['clickup', 'portal', 'custom', 'encompass'].includes(winner)) return res.status(400).json({ error: "winner must be 'clickup', 'portal', 'encompass', or 'custom' (with a value)" });
     const row = await loadReviewFor(req, res);

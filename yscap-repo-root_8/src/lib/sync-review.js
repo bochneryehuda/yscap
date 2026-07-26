@@ -50,7 +50,7 @@ async function queueReview({ applicationId, borrowerId, taskId, direction, field
   // runs one) must queue on THEIR connection, or the insert cannot see the rows
   // that transaction created and fails its foreign key. Defaults to the pool.
   const q = dbc || db;
-  // WHICH SYSTEM is on the other side (db/324). Defaults to 'clickup' — every
+  // WHICH SYSTEM is on the other side (db/326). Defaults to 'clickup' — every
   // existing caller. An 'encompass' row's `task_id` is a namespaced
   // `encompass:<loanGuid>`, NOT a ClickUp task, and no resolver may ever hand it
   // to the ClickUp client; the resolvers branch on this column, not on a guess.

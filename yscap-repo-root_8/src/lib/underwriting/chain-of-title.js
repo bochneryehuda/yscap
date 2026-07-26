@@ -93,9 +93,23 @@ function buildChainOfTitle(ctx = {}, exts = []) {
   const finalBuyer = (lastAssignee[0] || contractBuyer[0]) || null;
 
   const findings = [];
-  const hops = [];
   const verdictOf = (r) => (r === true ? 'ok' : r === false ? 'break' : 'unknown');
-  const hop = (from, to, kind, verdict) => hops.push({ from, to, kind, verdict });
+
+  // THE MARK MUST LAND ON THE STEP IT DESCRIBES (owner-reported 2026-07-26).
+  //
+  // On their file the chain read Michael Moran → Michael Moran → Moshe Weil, which is CONSISTENT,
+  // and the real break is the next step (a person buying, an LLC vesting). The ✗ was drawn between
+  // the seller and the buyer instead. Root cause: the display walks the path and pairs each node
+  // with `hops[i-1]`, but hops were pushed ad hoc — the SALE itself (seller → buyer) was never one
+  // of them, and a node with no name is dropped from the path while its hop stayed in the list. Any
+  // gap shifted every later mark one step to the left, so the marks described the wrong steps and
+  // the last step had no mark at all.
+  //
+  // So the link is recorded AGAINST THE NODE IT ARRIVES AT, and the hop list is built at the end by
+  // walking the nodes actually shown. One hop per adjacent visible pair, by construction — the two
+  // can no longer drift apart.
+  const linkInto = {};
+  const hop = (from, to, kind, verdict) => { linkInto[to.role] = { kind, verdict }; };
 
   // ── 1. Owner of record  ↔  seller on contract (SAME PARTY expected) ───────
   if (ownerOfRecord.length && contractSeller.length) {
@@ -113,6 +127,13 @@ function buildChainOfTitle(ctx = {}, exts = []) {
   } else {
     hop({ role: 'Owner of record', name: ownerOfRecord[0] || null }, { role: 'Seller on contract', name: contractSeller[0] || null }, 'same_party', 'unknown');
   }
+
+  // ── 1b. The SALE itself: seller → buyer is a TRANSFER, not a name match ───
+  // This step was missing entirely. It is the one link in the chain that is SUPPOSED to change
+  // hands, and leaving it out is what shifted every later mark onto the wrong step.
+  hop({ role: 'Seller on contract', name: contractSeller[0] || null },
+    { role: 'Buyer on contract', name: contractBuyer[0] || null },
+    'transfer', contractBuyer.length ? 'ok' : 'unknown');
 
   // ── 2. Each assignment: assignor must be the party who held it after the previous hop ──
   // priorHolder starts as the contract buyer (the first assignor should be the contract buyer).
@@ -168,7 +189,7 @@ function buildChainOfTitle(ctx = {}, exts = []) {
   if (vesting && finalBuyer) {
     const r = sameParty(finalBuyer, vesting);
     reachesVesting = r === true ? true : (r === false ? false : null);
-    hop({ role: priorRole, name: finalBuyer }, { role: 'Vesting entity', name: vesting }, 'same_party', verdictOf(r));
+    hop({ role: priorRole, name: finalBuyer }, { role: 'Vesting entity (our borrower)', name: vesting }, 'same_party', verdictOf(r));
     const isPersonal = person ? sameParty(finalBuyer, person) === true : false;
     // The personal-name case is seller-chain's `contract_in_personal_name` — don't duplicate it.
     if (r === false && !isPersonal) {
@@ -181,14 +202,22 @@ function buildChainOfTitle(ctx = {}, exts = []) {
       }));
     }
   } else if (vesting || finalBuyer) {
-    hop({ role: priorRole, name: finalBuyer || null }, { role: 'Vesting entity', name: vesting || null }, 'same_party', 'unknown');
+    hop({ role: priorRole, name: finalBuyer || null }, { role: 'Vesting entity (our borrower)', name: vesting || null }, 'same_party', 'unknown');
   }
+
+  // ── 3b. The displayed chain: one hop per adjacent VISIBLE node, in order ──
+  const shownNodes = path.filter((n) => n.present);
+  const hops = hopsAlongPath(shownNodes, linkInto);
 
   // ── 4. Uncomparable hop → advisory INFO (never guess a break) ─────────────
   // Only when there is a real chain to speak of (a contract or an assignment on file) and at least
   // one same-party hop couldn't be confirmed — so a bare file with no docs stays silent.
   const hasChain = !!contract || assignments.length > 0;
-  const unknownSameParty = hops.some((h) => h.kind === 'same_party' && h.verdict === 'unknown');
+  // Judged on every comparison ATTEMPTED, not only the ones that ended up on screen. A step whose
+  // node has no name is dropped from the display, but the fact that we could not check it is exactly
+  // what this notice is for — reading the trimmed display list would silence it.
+  const links = Object.keys(linkInto).map((k) => linkInto[k]);
+  const unknownSameParty = links.some((h) => h.kind === 'same_party' && h.verdict === 'unknown');
   if (hasChain && unknownSameParty && !findings.some((f) => f.severity === 'warning')) {
     findings.push(mk({
       code: 'cot_unverified_hop', severity: 'info', field: 'chain',
@@ -199,12 +228,33 @@ function buildChainOfTitle(ctx = {}, exts = []) {
     }));
   }
 
-  const anyBreak = hops.some((h) => h.verdict === 'break');
-  const anyUnknown = hops.some((h) => h.kind === 'same_party' && h.verdict === 'unknown');
+  const anyBreak = links.some((h) => h.verdict === 'break');
+  const anyUnknown = unknownSameParty;
   const status = anyBreak ? 'broken' : (reachesVesting === true && !anyUnknown ? 'intact' : 'incomplete');
 
-  const ownershipPath = path.filter((n) => n.present).map((n) => ({ role: n.role, name: n.name, source: n.source }));
+  const ownershipPath = shownNodes.map((n) => ({ role: n.role, name: n.name, source: n.source }));
   return { hops, ownershipPath, finalBuyer, reachesVesting, status, findings };
+}
+
+// Build the displayed hops from the nodes ACTUALLY SHOWN — one per adjacent pair, in order. This is
+// what keeps each mark on the step it describes: the reader pairs node[i] with hops[i-1], so the two
+// lists have to be the same length and the same shape, and deriving one from the other is the only
+// way to guarantee that as documents come and go from a file.
+function hopsAlongPath(nodes, linkInto) {
+  const out = [];
+  for (let i = 1; i < nodes.length; i++) {
+    const prev = nodes[i - 1], node = nodes[i];
+    const link = linkInto[node.role] || null;
+    out.push({
+      from: { role: prev.role, name: prev.name },
+      to: { role: node.role, name: node.name },
+      // No recorded link means the step in between could not be checked — say so rather than
+      // borrowing the verdict of a different step.
+      kind: link ? link.kind : 'same_party',
+      verdict: link ? link.verdict : 'unknown',
+    });
+  }
+  return out;
 }
 
 module.exports = { buildChainOfTitle, _internals: { orderedAssignments } };

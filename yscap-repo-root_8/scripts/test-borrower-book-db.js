@@ -12,7 +12,7 @@
  *      every status, no date window, resumable, and it NEVER creates a loan file.
  *   2. OWNERSHIP. `borrowers.primary_officer_id` is single-valued and fill-only,
  *      so the FIRST officer to touch a person owned them and every other officer
- *      they closed with stayed locked out. `borrower_officers` (db/325) makes the
+ *      they closed with stayed locked out. `borrower_officers` (db/327) makes the
  *      relationship many-to-many, and it is what the staff borrower scope reads.
  *
  * Asserted against a REAL database and the REAL ingest path (a synthetic ClickUp
