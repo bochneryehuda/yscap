@@ -29,6 +29,15 @@ router.get('/', async (req, res) => {
   const tv = row ? row.token_version : null;
   if (tv === null || tv !== (claims.tv || 0)) return res.status(401).json({ error: 'session expired' });
   if (claims.kind === 'staff' && !row.is_active) return res.status(401).json({ error: 'account disabled' });
+  // Per-device sign-out (db/321) must close the live stream too, or a "signed
+  // out" tab keeps receiving chat/presence events. Fails OPEN — a stream is not
+  // worth a hard failure if the table is briefly unavailable.
+  if (claims.sid) {
+    try {
+      const rv = await db.query(`SELECT 1 FROM revoked_sessions WHERE sid=$1`, [claims.sid]);
+      if (rv.rows.length) return res.status(401).json({ error: 'signed out' });
+    } catch (_) { /* revocation table unavailable — token_version still applied above */ }
+  }
   // BORROWER VIEW (src/lib/borrower-view.js): a borrower-view token authorizes
   // TWO identities, so this endpoint — which re-implements the auth middleware's
   // checks — must re-implement the staff-side check too. Otherwise a revoked or
