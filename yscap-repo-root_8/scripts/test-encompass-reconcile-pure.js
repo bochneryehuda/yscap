@@ -28,11 +28,17 @@ const app = {
   rehab_type: 'Cosmetic', accrual_type: 'non_dutch',
   requested_exp_flips: 10, requested_exp_holds: 0, requested_exp_ground: 0,
 };
+// NOTE (owner-reported 2026-07-26): the frozen engines emit every leverage ratio as
+// a FRACTION (ltcPct = totalLoan / ltcBasis; caps are multipliers), which is what
+// pricing.js stores on the quote. This fixture used to (wrongly) supply percents,
+// which is exactly why the live "0.67425 vs 67.425" mismatch was never caught.
+// It now mirrors the REAL engine output; buildOurValues converts to Encompass's
+// percent vocabulary at the comparison boundary.
 const quote = {
   origPct: 0.0125,
   assignment: { recognizedPrice: 450500 },
-  sizing: { initialAdvance: 405450, rehabHoldback: 120000, financedReserve: 0, costBasis: 570500, ltcPct: 92.1034, arvPct: 70.06, acqLtvPct: 90 },
-  guidelines: { caps: { maxAcqLtv: 90, maxArvLtv: 75, maxLtc: 92.5 } },
+  sizing: { initialAdvance: 405450, rehabHoldback: 120000, financedReserve: 0, costBasis: 570500, ltcPct: 0.921034, arvPct: 0.7006, acqLtvPct: 0.90 },
+  guidelines: { caps: { maxAcqLtv: 0.90, maxArvLtv: 0.75, maxLtc: 0.925 } },
 };
 const llcName = 'ABC Holdings LLC';
 
@@ -58,6 +64,7 @@ const loan = {
     { fieldName: 'CX.MAXARV', value: '75.0' },
     { fieldName: 'CX.MAXLTC', value: '92.5' },
     { fieldName: 'CX.DEALPROJECTTYPE', value: 'Fix and Flip' },
+    { fieldName: 'CX.EXITPLAN', value: 'Sale' },   // exit plan is a real match now (flip → Sale)
     { fieldName: 'CX.REHABTYPE', value: 'Light Rehab' },
     { fieldName: 'CX.ACCRUALTYPE', value: 'Drawn' },
     { fieldName: 'CX.TOTALEXPERIENCEDEALS', value: '10' },
@@ -82,9 +89,47 @@ assert.strictEqual(ours.term_months, 12, 'text term → int');
 assert.strictEqual(ours.total_experience_deals, 10);
 assert.strictEqual(ours.loan_to_be_vested, 'Entity', 'llc_id present → entity');
 assert.strictEqual(ours.vesting_llc, 'ABC Holdings LLC');
-assert.strictEqual(ours.actual_ltc, 92.1034);
-assert.strictEqual(ours.max_ltc, 92.5);
-assert.strictEqual(ours.exit_plan, undefined, 'no exit_plan column');
+// Engine FRACTIONS are converted to Encompass's PERCENT vocabulary (the 0.67425
+// vs 67.425 root cause). The frozen engine math is untouched — only the value we
+// hand to the comparison is translated.
+assert.strictEqual(ours.actual_ltc, 92.1034, 'engine fraction 0.921034 → 92.1034%');
+assert.strictEqual(ours.actual_arv_ltv, 70.06, 'engine fraction 0.7006 → 70.06%');
+assert.strictEqual(ours.max_ltc, 92.5, 'cap fraction 0.925 → 92.5%');
+assert.strictEqual(ours.max_arv_ltv, 75, 'cap fraction 0.75 → 75%');
+assert.strictEqual(ours.actual_initial_ltv, 90, 'applications.ltv is already a percent — left as-is');
+// applications.ltv is NEVER re-scaled: a genuinely small LTV stays small (re-scaling
+// would read 1% as 100%), and the "use Encompass value" pull-in round-trips.
+assert.strictEqual(recon.buildOurValues({ ltv: 1.0 }, null).actual_initial_ltv, 1, 'a 1% stored LTV is not inflated to 100');
+assert.strictEqual(recon.buildOurValues({ ltv: 90 }, null).actual_initial_ltv, 90);
+// Exit plan on a BRIDGE / GROUND-UP deal is NOT APPLICABLE — it must never hold the
+// term sheet (there is nothing for staff to enter anywhere).
+{
+  const bridge = recon.buildOurValues({ program: 'Bridge' }, null);
+  const r = recon.compareAll(bridge, { exit_plan: 'Sale' }, {});
+  assert.ok(!r.summary.notPassingKeys.includes('exit_plan'), 'a bridge file is NOT blocked by exit plan');
+  const flip = recon.buildOurValues({ program: 'Fix & Flip' }, null);
+  const r2 = recon.compareAll(flip, { exit_plan: 'Refinance: Rental' }, {});
+  assert.ok(r2.summary.notPassingKeys.includes('exit_plan'), 'a flip whose Encompass exit disagrees still flags');
+}
+assert.strictEqual(recon.buildOurValues({ program: 'Fix & Flip' }, null).exit_plan, 'sell', 'flip → sell');
+assert.strictEqual(recon.buildOurValues({ program: 'DSCR' }, null).exit_plan, 'hold', 'rental → hold');
+assert.strictEqual(recon.buildOurValues({ program: 'Bridge' }, null).exit_plan, undefined, 'bridge exit is not guessed');
+assert.strictEqual(ours.exit_plan, 'sell', 'a flip file exits by sale');
+// Effective purchase falls back to the purchase price when there is no assignment
+// haircut, so a straight purchase MATCHES instead of reading "no data to compare".
+assert.strictEqual(recon.buildOurValues({ purchase_price: 300000 }, null).effective_purchase, 300000,
+  'no assignment → effective purchase = purchase price');
+assert.strictEqual(ours.effective_purchase, 450500, 'the capped recognized price still wins when it exists');
+// A square-footage addition is an EXPANSION in Encompass regardless of our bucket.
+// Uses the SAME signal the pricing layer uses: sqft_post > sqft_pre, or a rehab
+// type that names an addition (never an invented boolean column).
+assert.strictEqual(recon.buildOurValues({ rehab_type: 'Cosmetic', sqft_pre: 1200, sqft_post: 1800 }, null).rehab_type, 'expansion',
+  'square footage grew → Expansion');
+assert.strictEqual(recon.buildOurValues({ rehab_type: 'Adding SF' }, null).rehab_type, 'expansion',
+  'a rehab type naming an addition → Expansion');
+assert.strictEqual(recon.buildOurValues({ rehab_type: 'Cosmetic', sqft_pre: 1200, sqft_post: 1200 }, null).rehab_type, 'Cosmetic',
+  'same square footage is NOT an expansion');
+assert.strictEqual(recon.buildOurValues({ rehab_type: 'Cosmetic' }, null).rehab_type, 'Cosmetic');
 // deal_type is DERIVED from program/loan_type (no deal_type column on applications)
 assert.strictEqual(ours.deal_type, 'flip', '"Fix & Flip w/ Construction" → flip');
 assert.strictEqual(recon.buildOurValues({ program: 'Bridge' }).deal_type, 'bridge');

@@ -41,6 +41,39 @@ function deriveDealType(program, loanType) {
   return undefined;                                              // defer — never guess
 }
 
+// Exit plan implied by the deal type (owner-directed 2026-07-26). Fix & flip exits
+// by SALE; fix & hold and DSCR/rental exit by RENTAL (refinance into a rental).
+// A deal type we can't read confidently (bridge, ground-up, unknown) returns
+// undefined → the compare DEFERS it rather than guessing an exit we don't know.
+function exitPlanFor(dealType) {
+  if (dealType === 'flip') return 'sell';
+  if (dealType === 'fix-and-hold' || dealType === 'rental') return 'hold';
+  return undefined;
+}
+
+// Rehab type in ENCOMPASS's vocabulary (owner-directed 2026-07-26). Encompass has
+// Light / Heavy / Expansion only. Our Cosmetic + Moderate both mean LIGHT (handled
+// by the rehabType value map), Heavy means HEAVY, and a file adding SQUARE FOOTAGE
+// is an EXPANSION regardless of the bucket the file was typed as — the sqft flag is
+// the stronger statement about the work.
+// The sqft-addition signal mirrors the definition the
+// pricing layer already uses (src/lib/pricing.js buildInputs `sqftAddition`): the
+// rehab type mentions square footage / an addition, OR the post-rehab square
+// footage exceeds the pre-rehab square footage (applications.sqft_pre/sqft_post,
+// db/029). Reusing that one definition keeps the comparison in lock-step with how
+// the deal was actually priced instead of inventing a second, drifting rule.
+function rehabTypeFor(app) {
+  const a = app || {};
+  const t = String(a.rehab_type == null ? '' : a.rehab_type);
+  // Require BOTH values to be genuinely present — Number(null) is 0, so a missing
+  // sqft_pre against a real sqft_post would otherwise read as an addition and flip
+  // an ordinary cosmetic file to Expansion (a mismatch nobody can clear here).
+  const has = (v) => v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v));
+  const grew = has(a.sqft_pre) && has(a.sqft_post) && Number(a.sqft_post) > Number(a.sqft_pre);
+  if (/square|(^|\W)sf(\W|$)|addition/i.test(t) || grew) return 'expansion';
+  return t.trim() === '' ? undefined : a.rehab_type;
+}
+
 // ── Pure: our-side values keyed by registry field key ───────────────────────
 // Reads from the application row, the current pricing quote (computed OUTPUTS —
 // initial advance, effective purchase, caps, actual leverage), and the vesting
@@ -53,6 +86,29 @@ function buildOurValues(app, quote, llcName) {
   const sizing = q.sizing || {};
   const caps = (q.guidelines && q.guidelines.caps) || {};
   const nz = (v) => (v === null || v === undefined || v === '' ? undefined : v);
+  // ROOT CAUSE FIX (owner-reported 2026-07-26: "our system says 0.67425 and
+  // Encompass says 67.425"). The frozen pricing engines express every leverage
+  // ratio as a FRACTION (ltcPct = totalLoan / ltcBasis; caps are multipliers used
+  // as `c.maxARLTV * arv`), while Encompass stores the same figure as a PERCENT.
+  // We were shipping the raw fraction into a percent-vs-percent compare, so EVERY
+  // leverage field (actual ARV-LTV, actual LTC, actual/max initial LTV, max ARV,
+  // max LTC) mismatched on every file. The engines are FROZEN — their math is
+  // untouched — so the conversion belongs here, at the comparison boundary, where
+  // we translate our vocabulary into Encompass's. `pctOf` is deliberately
+  // scale-TOLERANT: a value ≤ 1.5 is a fraction (a real leverage ratio is never
+  // 1.5% — the smallest meaningful LTC/LTV/ARV is double digits), anything larger
+  // is already a percent. That keeps it correct for engine fractions AND for any
+  // value that already arrives as a percent (e.g. applications.ltv, which
+  // product-registration stores as acqLtvPct*100), so the two can never diverge again.
+  const pctOf = (v) => {
+    const n = Number(v);
+    if (v === null || v === undefined || v === '' || !Number.isFinite(n)) return undefined;
+    if (Math.abs(n) > 1.5) return n;                       // already a percent
+    // ×100 in binary floating point leaves noise (0.921034*100 = 92.10340000000001).
+    // Round to 4 decimals — far finer than the 0.01-point compare tolerance, so it
+    // never masks a real difference, but it keeps the value clean for display.
+    return Math.round(n * 100 * 1e4) / 1e4;
+  };
   const claimedExp = (Number(a.requested_exp_flips) || 0) + (Number(a.requested_exp_holds) || 0) + (Number(a.requested_exp_ground) || 0);
 
   return {
@@ -61,7 +117,10 @@ function buildOurValues(app, quote, llcName) {
     property_type: nz(a.property_type),
     units: nz(a.units),
     deal_type: deriveDealType(a.program, a.loan_type),
-    exit_plan: undefined, // no column — reference-only
+    // Exit plan is DERIVED and now genuinely matched (owner-directed 2026-07-26):
+    // a fix & flip exits by SALE; a fix & hold / DSCR rental exits by RENTAL/refi.
+    // Anything we can't read confidently stays undefined → "no data", never a guess.
+    exit_plan: exitPlanFor(deriveDealType(a.program, a.loan_type)),
     loan_to_be_vested: a.llc_id ? 'Entity' : (a.borrower_id ? 'Individual' : undefined),
     vesting_llc: nz(llcName),
 
@@ -74,7 +133,16 @@ function buildOurValues(app, quote, llcName) {
 
     // purchase / assignment / cost (money)
     purchase_price: nz(a.purchase_price),
-    effective_purchase: nz(q.assignment && q.assignment.recognizedPrice),
+    // Owner-directed 2026-07-26: the effective (recognized) purchase price EQUALS the
+    // purchase price whenever there is no assignment haircut — a straight purchase,
+    // or an assignment whose fee is within the financeable cap. Encompass always
+    // carries a value in its effective-purchase field, so falling back to the
+    // purchase price makes those files a real MATCH instead of "no data to compare".
+    // The quote's recognizedPrice still WINS whenever it exists (that is the capped
+    // basis all frozen sizing math uses) — this only fills the no-assignment case.
+    effective_purchase: nz(q.assignment && q.assignment.recognizedPrice) !== undefined
+      ? q.assignment.recognizedPrice
+      : nz(a.purchase_price),
     contract_price: nz(a.underlying_contract_price) !== undefined ? a.underlying_contract_price : nz(a.purchase_price),
     assignment_fee: nz(a.assignment_fee),
     financed_interest_reserve: nz(sizing.financedReserve),
@@ -83,14 +151,19 @@ function buildOurValues(app, quote, llcName) {
     // valuation
     as_is_value: nz(a.as_is_value),
     arv: nz(a.arv),
-    actual_arv_ltv: nz(sizing.arvPct),
+    actual_arv_ltv: pctOf(sizing.arvPct),
 
-    // sizing / leverage (percent)
-    actual_ltc: nz(sizing.ltcPct),
-    actual_initial_ltv: nz(a.ltv) !== undefined ? a.ltv : nz(sizing.acqLtvPct),
-    max_initial_ltv: nz(caps.maxAcqLtv),
-    max_arv_ltv: nz(caps.maxArvLtv),
-    max_ltc: nz(caps.maxLtc),
+    // sizing / leverage (percent — see pctOf: engine fractions → Encompass percents)
+    actual_ltc: pctOf(sizing.ltcPct),
+    // applications.ltv is ALREADY stored as a percent (product-registration writes
+    // acqLtvPct*100), so it is used VERBATIM — never re-scaled. Re-scaling it would
+    // corrupt a genuinely small LTV (a ~1% initial advance would read as 100%) and
+    // would break the "use Encompass value" pull-in, which writes the raw Encompass
+    // percent straight into this column. Only the quote-sourced FRACTION is converted.
+    actual_initial_ltv: nz(a.ltv) !== undefined ? Number(a.ltv) : pctOf(sizing.acqLtvPct),
+    max_initial_ltv: pctOf(caps.maxAcqLtv),
+    max_arv_ltv: pctOf(caps.maxArvLtv),
+    max_ltc: pctOf(caps.maxLtc),
 
     // rate / origination / term
     note_rate: nz(a.rate_pct),
@@ -101,7 +174,7 @@ function buildOurValues(app, quote, llcName) {
 
     // experience / rehab-type / accrual
     total_experience_deals: claimedExp > 0 ? claimedExp : undefined,
-    rehab_type: nz(a.rehab_type),
+    rehab_type: rehabTypeFor(a),
     accrual_type: nz(a.accrual_type),
   };
 }
@@ -160,6 +233,9 @@ function compareAll(ours, theirs, resolutions) {
       category: e.category || null,
       compare: cmp.compare,
       gate: cmp.gate,
+      // Carried through so summarize() can tell NOT APPLICABLE (an underivable
+      // our-side, e.g. exit plan on a bridge deal) from genuinely missing data.
+      naWhenOursMissing: cmp.naWhenOursMissing,
       ours: cmp.ours,
       theirs: cmp.theirs,
       oursNorm: cmp.oursNorm,
@@ -185,6 +261,12 @@ function summarize(fields) {
   const notPassingKeys = [];
   for (const f of fields) {
     if (f.compare === 'reference' || f.status === 'reference') continue;
+    // NOT APPLICABLE ≠ missing data. A field flagged `naWhenOursMissing` whose OUR
+    // side can't be derived at all (exit plan on a bridge / ground-up deal) has
+    // nothing for staff to enter anywhere, so it is skipped rather than counted as
+    // "no data to compare" — otherwise it would hold the term sheet forever with no
+    // way to clear it. A field we CAN derive still has to match.
+    if (f.naWhenOursMissing && f.status === 'incomparable' && (f.oursNorm === null || f.oursNorm === undefined)) continue;
     compared += 1;
     if (f.status === 'match') { matched += 1; continue; }
     notPassingKeys.push(f.key);                    // anything that is not an exact match
@@ -217,13 +299,35 @@ function summarize(fields) {
 // (added next). These rows are compare-only — we NEVER overwrite borrower PII
 // from a read — and BLOCK-gated (must match to pass). Pure — no DB.
 function _digits(v) { return String(v == null ? '' : v).replace(/\D/g, ''); }
+// A ZIP+4 is the SAME zip as its 5-digit form (owner-reported 2026-07-26: Encompass
+// carries 11230-1234 where we carry 11230 — "technically the same address"). Compare
+// on the 5-digit base so a formatting difference is never a mismatch; the extra 4
+// are a postal routing detail, not a different place.
+function _zip5(v) {
+  const d = String(v == null ? '' : v).replace(/\D/g, '');
+  return d ? d.slice(0, 5) : '';
+}
+// Strip a trailing ZIP+4 down to the 5-digit zip anywhere in a free-text address,
+// so a one-line "…, NY 11230-1234" equals a structured "… NY 11230".
+function _stripPlus4(s) { return String(s == null ? '' : s).replace(/\b(\d{5})-\d{4}\b/g, '$1'); }
 function _addrStr(a) {
   if (a == null) return '';
-  if (typeof a === 'string') return a.trim();
-  if (typeof a !== 'object') return String(a);
+  if (typeof a === 'string') return _stripPlus4(a.trim());
+  if (typeof a !== 'object') return _stripPlus4(String(a));
+  // Prefer a structured build; fall back to a one-line/formatted string when the
+  // object only carries that (an Encompass/ClickUp formatted address), so a
+  // one-line-only side is compared instead of reading as "no data".
   const street = a.street || a.line1 || a.address1 || a.streetAddress || a.addressStreetLine1 || a.address || '';
-  const parts = [street, a.city, a.state, (a.zip || a.postalCode || a.zipCode || a.postal_code)];
-  return parts.map((x) => (x == null ? '' : String(x).trim())).filter((x) => x !== '').join(' ');
+  const zip = _zip5(a.zip || a.postalCode || a.zipCode || a.postal_code);
+  const parts = [street, a.city, a.state, zip];
+  const oneLine = _stripPlus4(String(a.oneLine || a.formatted_address || a.formattedAddress || a.fullAddress || a.display || '').trim());
+  // Require a STREET before trusting the structured build: without it we would be
+  // comparing a fragment (zip only, or state only), and two thin records would
+  // report a false MATCH on a block-gated identity row. With no street, fall back
+  // to a one-line address if there is one, else report nothing to compare.
+  if (!String(street || '').trim()) return oneLine;
+  const built = parts.map((x) => (x == null ? '' : String(x).trim())).filter((x) => x !== '').join(' ');
+  return _stripPlus4(built) || oneLine;
 }
 function _named(p) { return !!(p && ((p.firstName && String(p.firstName).trim()) || (p.lastName && String(p.lastName).trim()))); }
 function compareIdentity(row, loan) {
@@ -244,10 +348,13 @@ function compareIdentity(row, loan) {
   const push = (key, label, compare, ours, theirs) => {
     const norm = (v) => {
       if (v == null || v === '') return null;
-      if (compare === 'name') return N.normName(v);
+      // Address joins `name` on the punctuation-insensitive normalizer so
+      // "12 Main St, Brooklyn NY" ≡ "12 Main St Brooklyn NY" (commas/periods are
+      // formatting, not a different address) — same spirit as the ZIP+4 fix.
+      if (compare === 'name' || compare === 'address') return N.normName(v);
       if (compare === 'date') return N.normDate(v);
       if (compare === 'phone') { const d = _digits(v); return d === '' ? null : d.slice(-10); }
-      return N.normText(v); // email / address / text
+      return N.normText(v); // email / text
     };
     const oursNorm = norm(ours);
     const theirsNorm = norm(theirs);
@@ -349,7 +456,7 @@ async function computeFindings(appId, dbc) {
             a.loan_amount, a.purchase_price, a.underlying_contract_price, a.assignment_fee,
             a.rehab_budget, a.as_is_value, a.arv, a.ltv, a.rate_pct, a.term, a.maturity_date, a.funded_date,
             a.program, a.loan_type, a.rehab_type, a.accrual_type, a.property_type,
-            a.units, a.property_address, a.co_borrower_id,
+            a.units, a.property_address, a.co_borrower_id, a.sqft_pre, a.sqft_post,
             a.requested_exp_flips, a.requested_exp_holds, a.requested_exp_ground,
             l.llc_name AS llc_name,
             b.first_name AS b_first_name, b.last_name AS b_last_name,
