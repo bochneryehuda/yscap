@@ -1023,10 +1023,14 @@ function BankLiquidity({ bankLiquidity }) {
           confusing as the double-count it replaced, and this is the exact table where that was
           found. It also gives the underwriter the one thing PILOT cannot decide for them: whether an
           unnumbered statement really is a separate account. */}
-      {(bankLiquidity.notCountedTwice || []).length > 0 && (
+      {/* becameRepresentative means this statement ended up BEING the month counted in the table
+          above — its balance is in the total, so listing it here would tell the owner the very
+          number they are looking at was not counted. The server's own shortfall text already
+          filters on this flag; the table must agree with it. */}
+      {(bankLiquidity.notCountedTwice || []).filter((n) => !n.becameRepresentative).length > 0 && (
         <div style={{ marginTop: 10, fontSize: 12, color: 'var(--muted,#4B585C)' }}>
           <div style={{ fontWeight: 700, marginBottom: 3 }}>Not counted again</div>
-          {(bankLiquidity.notCountedTwice || []).map((n, i) => (
+          {(bankLiquidity.notCountedTwice || []).filter((n) => !n.becameRepresentative).map((n, i) => (
             <div key={i} style={{ padding: '2px 0' }}>
               {n.holder}{n.bankName ? ` (${n.bankName})` : ''}: {money(n.ending)} —{' '}
               {n.ambiguous

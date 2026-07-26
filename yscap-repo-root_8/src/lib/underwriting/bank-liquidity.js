@@ -91,15 +91,31 @@ function periodEndOf(statementPeriod) {
 // in two different formats produce two different timestamps outside UTC. Comparing calendar days
 // instead removes the timezone from the question entirely. Parsing is done by hand (no Date at all)
 // so nothing can drift; a token that doesn't resolve to a real day is dropped rather than guessed.
-const MONTH_NO = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+// Only real month names/abbreviations. A loose 3-letter prefix would read "Marcus 15, 2026" as a
+// March date — and a token that resolves to a date it is not lets two unrelated statements compare
+// as the same month, which is the direction that ADDS money.
+const MONTH_NO = {
+  jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3, apr: 4, april: 4, may: 5,
+  jun: 6, june: 6, jul: 7, july: 7, aug: 8, august: 8, sep: 9, sept: 9, september: 9,
+  oct: 10, october: 10, nov: 11, november: 11, dec: 12, december: 12,
+};
+// A 2-digit year on a bank statement is always the current century — "26" is 2026. This matches the
+// repo-wide rule (src/lib/fields.js normalizeTypedDate, kind 'generic': `y += 2000`), which exists
+// because a typed/printed 2-digit year that resolves to a DIFFERENT year than the rest of the system
+// shows is exactly the class the 2026-07-15 date incident was about.
 function fullYear(y) {
   const n = Number(y);
   if (!Number.isFinite(n)) return null;
-  if (n >= 100) return n;
-  return n < 70 ? 2000 + n : 1900 + n;   // "26" → 2026, "98" → 1998 (the repo-wide 2-digit pivot)
+  return n >= 100 ? n : 2000 + n;
 }
+const DAYS_IN_MONTH = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];   // Feb generous: leap check below
 function dayString(y, m, d) {
-  if (!(y >= 1900 && y <= 2200) || !(m >= 1 && m <= 12) || !(d >= 1 && d <= 31)) return null;
+  if (!(y >= 1900 && y <= 2200) || !(m >= 1 && m <= 12) || !(d >= 1)) return null;
+  // A REAL calendar day. "February 31" is not a date, and letting it through would make two
+  // statements that do not share a month compare as if they did.
+  let max = DAYS_IN_MONTH[m - 1];
+  if (m === 2 && !((y % 4 === 0 && y % 100 !== 0) || y % 400 === 0)) max = 28;
+  if (d > max) return null;
   return `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
 }
 function periodEndDay(statementPeriod) {
@@ -117,7 +133,7 @@ function periodEndDay(statementPeriod) {
   for (const tok of s.match(/[A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{2,4}/g) || []) {
     const mm = /^([A-Za-z]{3,9})\.?\s+(\d{1,2}),?\s+(\d{2,4})$/.exec(tok.trim());
     if (!mm) continue;
-    const mo = MONTH_NO[mm[1].slice(0, 3).toLowerCase()];
+    const mo = MONTH_NO[mm[1].toLowerCase()];      // the WHOLE word must be a month, not just its start
     if (!mo) continue;
     const v = dayString(fullYear(mm[3]), mo, Number(mm[2])); if (v) days.push(v);
   }
@@ -163,7 +179,12 @@ function accountKey(s) {
 // because it is exactly the part that drifts.
 const BANK_NOISE = /\b(bank|banking|na|n a|national association|trust|company|co|corp|corporation|inc|incorporated|fsb|federal|savings|credit union|cu|financial|services|group|usa|us)\b/g;
 function bankStem(s) {
-  const raw = String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  const letters = String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  // "U.S. Bank" and "US Bank" are the same bank, but stripping the punctuation leaves "u s bank"
+  // against "us bank" — two different word sets, so two months of one account never reunited and the
+  // balance was counted twice (found by ground-truth fuzzing, 2026-07-26). Run-together initials are
+  // one token: "u s" → "us", "j p morgan" → "jpmorgan", "m t" → "mt".
+  const raw = letters.replace(/\b([a-z])\s+(?=[a-z]\b)/g, '$1');
   const stripped = raw.replace(BANK_NOISE, ' ').replace(/\s+/g, ' ').trim();
   // "US Bank", "Trust Bank", "Credit Union" are made ENTIRELY of words the noise list removes, so
   // stripping leaves nothing and every comparison bailed out — two statements from the same US Bank
@@ -200,7 +221,8 @@ function sameBank(a, b) {
  * them. Anything less certain (different periods, a missing period, equal balances) is left to fold,
  * which errs toward under-counting.
  *
- * Two things this has to get right, both found in audit:
+ * Four things this has to get right. Every one of them, got wrong, ADDS money that is not there —
+ * the direction this module calls fatal, because an inflated total clears a shortfall that is real.
  *
  *   · EVERY statement pair, not just the two representatives. A group holds all the months on file
  *     for one account and its `rep` is only the LATEST one. A checking account with January and
@@ -208,31 +230,66 @@ function sameBank(a, b) {
  *     against January — different periods, no proof, and the savings balance is silently folded away.
  *     Comparing every pair across the two groups finds the January-vs-January overlap that proves it.
  *
- *   · A MATERIAL gap, not any gap. A statement whose account number failed to read is a poorly
- *     scanned one, and the same scan read twice drifts — by cents, and on a large balance by a few
- *     dollars. Calling that drift proof of a second account is the owner's double-count coming back
- *     in the one direction that is fatal: INFLATING liquidity. So the gap must be at least a dollar
- *     AND at least a hundredth of a percent of the balance ($8.85 on $88,454). Two genuinely
- *     different accounts at one bank differ by far more; when they don't, we fold and UNDER-count,
- *     which a human clears.
+ *   · INSIDE A NUMBERED ACCOUNT, ONLY THE NUMBERED STATEMENTS MAY TESTIFY. A statement that carries
+ *     an account number says which account it is; one that does not is in that group only because we
+ *     decided it belonged. Letting a folded-in guess then act as proof against the NEXT fold turns
+ *     "a fact off the two documents" into a guess built on a guess — and a second month of the same
+ *     account gets refused and counted twice.
+ *
+ *   · A BALANCE OF ZERO PROVES NOTHING. An extraction that failed to find the ending balance is far
+ *     likelier to yield 0 than an account genuinely is empty, and 0-against-$88,454 looks like the
+ *     biggest gap there is. That single mis-read manufactured the owner's exact $177,928 back out of
+ *     a file that holds one account. Only two positive balances can prove anything.
+ *
+ *   · A gap wide enough that a BAD SCAN cannot explain it. The whole population here is statements
+ *     whose account number would not scan — i.e. bad scans — and the characteristic OCR failure is a
+ *     misread or transposed DIGIT, not a rounding cent: $88,454 read as $88,545, or an "available"
+ *     balance picked up instead of the "ending" one. Those land hundreds of dollars apart, so a
+ *     hair-thin threshold reads them as a second account and hands the money back twice. The gap must
+ *     be at least 5% of the balance. Two genuinely different accounts at one bank are far further
+ *     apart than that; when they are not, we fold and UNDER-count, which a human clears.
+ *
+ *     Deliberately NOT capped at some maximum dollar figure. On a $10,000,000 account 5% is $500,000,
+ *     so two real accounts closer together than that would fold and one would be dropped — wrong, but
+ *     wrong in the safe direction. Capping it would make a single transposed digit on a large balance
+ *     ($10,000,000 read as $9,000,000) "prove" a second seven-figure account. Between under-stating
+ *     one large account and inventing one, this module always chooses to under-state.
  */
+const MATERIAL_GAP_FRACTION = 0.05;
 function materialGap(a, b) {
-  return Math.max(1, 0.0001 * Math.max(Math.abs(a), Math.abs(b)));
+  return Math.max(1, MATERIAL_GAP_FRACTION * Math.max(Math.abs(a), Math.abs(b)));
 }
-function differentAccountsSamePeriod(a, b) {
-  for (const sa of a.sts) {
-    const pa = periodEndDay(sa.f.statementPeriod);
-    if (pa == null) continue;                                  // can't date this one → no proof from it
-    const ba = num(sa.f.closingBalance);
-    if (ba == null) continue;                                  // can't compare balances → no proof
-    for (const sb of b.sts) {
-      if (periodEndDay(sb.f.statementPeriod) !== pa) continue;  // only the SAME month proves anything
-      const bb = num(sb.f.closingBalance);
-      if (bb == null) continue;
-      if (Math.abs(ba - bb) > materialGap(ba, bb)) return true; // same month, different money → two accounts
+// What this group can offer as EVIDENCE about which account a month belongs to. A numbered account
+// speaks only through the statements that actually carry its number — anything folded in later is a
+// conclusion, not a document. An un-numbered group has no numbers at all, so its own bank and holder
+// are the whole of its identity and every month it holds counts.
+function evidenceStatements(g) {
+  const sts = (g && g.sts) || [];
+  if (!String((g && g.key) || '').startsWith('#')) return sts;
+  return sts.filter((s) => maskAcct(s.f));
+}
+// The statements of `b` that are PROVEN not to belong to `a` — i.e. b's months where a holds the
+// same month at a materially different positive balance. Returned rather than just counted, because
+// which months those are is itself the evidence: see the fold below.
+function conflictingStatements(a, b) {
+  const as = evidenceStatements(a), bs = evidenceStatements(b);
+  const out = [];
+  for (const sb of bs) {
+    const pb = periodEndDay(sb.f.statementPeriod);
+    if (pb == null) continue;                                  // can't date this one → no proof from it
+    const bb = num(sb.f.closingBalance);
+    if (!(bb > 0)) continue;                                   // missing or zero → no proof (see above)
+    for (const sa of as) {
+      if (periodEndDay(sa.f.statementPeriod) !== pb) continue;  // only the SAME month proves anything
+      const ba = num(sa.f.closingBalance);
+      if (!(ba > 0)) continue;
+      if (Math.abs(ba - bb) > materialGap(ba, bb)) { out.push(sb); break; }  // same month, different money
     }
   }
-  return false;
+  return out;
+}
+function differentAccountsSamePeriod(a, b) {
+  return conflictingStatements(a, b).length > 0;
 }
 
 function holderStem(s) {
@@ -293,9 +350,10 @@ function assessBankLiquidity(ctx = {}, extractions = [], opts = {}) {
     // representative's, but the same-period proof below has to be able to look at the months a group
     // is not currently representing — comparing only the two latest months misses the overlap that
     // proves a checking and a savings apart (audit 2026-07-26).
-    if (!prev) { byAccount.set(key, { rep: st, repEnd: rank[0] === -Infinity ? null : rank[0], rank, count: 1, sts: [st] }); continue; }
+    if (!prev) { byAccount.set(key, { key, rep: st, repEnd: rank[0] === -Infinity ? null : rank[0], rank, count: 1, sts: [st] }); continue; }
     const better = rankGt(rank, prev.rank);
     byAccount.set(key, {
+      key,
       rep: better ? st : prev.rep,
       repEnd: better ? (rank[0] === -Infinity ? null : rank[0]) : prev.repEnd,
       rank: better ? rank : prev.rank,
@@ -303,6 +361,88 @@ function assessBankLiquidity(ctx = {}, extractions = [], opts = {}) {
       sts: prev.sts.concat([st]),
     });
   }
+
+  // ---- REUNITE THE LEFTOVER FRAGMENTS OF ONE UN-NUMBERED ACCOUNT ----
+  //
+  // A statement with no readable account number is grouped on its bank and holder strings VERBATIM,
+  // while sameBank/sameHolder are deliberately tolerant of exactly the drift those strings carry
+  // month to month ("Chase" one month, "Chase Bank" the next; "MOSES WEIL" then "MOSES A WEIL"). So
+  // three months of ONE un-numbered account can land in three separate groups, and nothing else ever
+  // compares two un-numbered groups with each other — leaving each fragment counted as its own
+  // account, the owner's money added two and three times over off perfectly clean statements
+  // (audit 2026-07-26, second round).
+  //
+  // RUNS BEFORE THE FOLD, so what reaches the fold is whole accounts rather than pieces of one.
+  // Measured both ways against files built from a known set of accounts: reuniting first leaves 46
+  // over-counts in 4,000 files ($4.2M), folding first leaves 116 ($7.8M) — because a lone fragment
+  // rarely contradicts a numbered account, so it folds in and drags that account's counted balance
+  // to a month it does not own. Reuniting first costs more under-counting (861 files vs 619), which
+  // is the direction this module is required to fail in.
+  const notCountedTwice = [];   // groups that were folded away or could not be attributed
+  const reuniteLooseFragments = () => {
+  const looseKeys = [...byAccount.keys()].filter((k) => k.startsWith('~'));
+  const loose = looseKeys.map((k) => byAccount.get(k)).filter(Boolean);
+  const nearby = (a, b) => sameBank(a.rep.f.bankName, b.rep.f.bankName)
+    && sameHolder(a.rep.f.accountHolderName, b.rep.f.accountHolderName);
+  // Every pair, decided ONCE up front: unrelated (different bank or holder), conflict (two positive
+  // balances for one month — really two accounts), or compatible (could be the same account).
+  const rel = new Map();
+  const relOf = (i, j) => rel.get(i + ',' + j) || 'unrelated';
+  for (let i = 0; i < loose.length; i++) {
+    for (let j = i + 1; j < loose.length; j++) {
+      const r = !nearby(loose[i], loose[j]) ? 'unrelated'
+        : (differentAccountsSamePeriod(loose[i], loose[j]) ? 'conflict' : 'compatible');
+      rel.set(i + ',' + j, r); rel.set(j + ',' + i, r);
+    }
+  }
+  // A fragment that could equally join TWO fragments which are proven to be different accounts is
+  // not attributable to either. Reuniting it with whichever came first is a coin-flip, and losing
+  // that flip leaves the other account's months split across two rows and counted twice. So it adds
+  // nothing — the same downward resolution an unattributable statement has always taken.
+  const undecidable = new Set();
+  for (let i = 0; i < loose.length; i++) {
+    const comp = [];
+    for (let j = 0; j < loose.length; j++) if (j !== i && relOf(i, j) === 'compatible') comp.push(j);
+    outer: for (let a = 0; a < comp.length; a++) {
+      for (let b = a + 1; b < comp.length; b++) {
+        if (relOf(comp[a], comp[b]) === 'conflict') { undecidable.add(i); break outer; }
+      }
+    }
+  }
+  for (const i of undecidable) {
+    const g = loose[i];
+    byAccount.delete(g.key);
+    notCountedTwice.push({ holder: g.rep.f.accountHolderName || '(unnamed)', bankName: g.rep.f.bankName || null,
+      ending: num(g.rep.f.closingBalance), matchedAccounts: [], ambiguous: true, unattributable: true,
+      becameRepresentative: false });
+  }
+  for (let i = 0; i < loose.length; i++) {
+    if (undecidable.has(i)) continue;
+    let g = byAccount.get(loose[i].key);
+    if (!g) continue;                                   // already absorbed into an earlier fragment
+    for (let j = i + 1; j < loose.length; j++) {
+      if (undecidable.has(j) || relOf(i, j) !== 'compatible') continue;
+      const og = byAccount.get(loose[j].key);
+      if (!og || og === g) continue;
+      // Re-check against the group as it stands NOW: absorbing a fragment brings in months that may
+      // contradict the next candidate, and the comparison has to see them.
+      if (!nearby(g, og) || differentAccountsSamePeriod(g, og)) continue;
+      byAccount.delete(loose[j].key);
+      const better = rankGt(og.rank, g.rank);
+      g = {
+        key: g.key,
+        rep: better ? og.rep : g.rep,
+        repEnd: better ? og.repEnd : g.repEnd,
+        rank: better ? og.rank : g.rank,
+        count: g.count + og.count,
+        sts: g.sts.concat(og.sts),
+      };
+      byAccount.set(g.key, g);
+    }
+  }
+  };
+
+  reuniteLooseFragments();
 
   // FOLD number-less statements into the numbered account they belong to (see sameBank/sameHolder
   // above — the owner's Vanderbilt double-count). Done AFTER grouping so it works on whole accounts
@@ -322,15 +462,17 @@ function assessBankLiquidity(ctx = {}, extractions = [], opts = {}) {
   };
   const numberedKeys = [];
   for (const key of byAccount.keys()) if (key.startsWith('#')) numberedKeys.push(key);
-  const notCountedTwice = [];   // number-less groups that were folded away, for the breakdown
+
   for (const [key, g] of [...byAccount]) {
     if (!key.startsWith('~')) continue;
     const f = g.rep.f;
-    const matches = numberedKeys
+    const candidates = numberedKeys
       .map((k) => ({ key: k, g: byAccount.get(k) }))
       .filter(({ g: ng }) => ng
         && sameBank(ng.rep.f.bankName, f.bankName)
-        && sameHolder(ng.rep.f.accountHolderName, f.accountHolderName)
+        && sameHolder(ng.rep.f.accountHolderName, f.accountHolderName));
+    const matches = candidates
+      .filter(({ g: ng }) => true
         // TWO BALANCES FOR ONE PERIOD PROVE TWO ACCOUNTS. One account cannot end the same statement
         // period at two different numbers — so when the periods match and the balances don't, these
         // are a checking and a savings at the same bank under the same name, not one account read
@@ -338,7 +480,49 @@ function assessBankLiquidity(ctx = {}, extractions = [], opts = {}) {
         // table, that it was "the same account" — a false statement about their money. This needs no
         // guesswork: it is the one thing the two statements can definitively tell us.
         && !differentAccountsSamePeriod(ng, g));
-    if (!matches.length) continue;                       // a genuinely separate un-numbered account
+    if (!matches.length) {
+      // COUNT ONLY THE MONTHS THE DOCUMENTS PROVE THIS ACCOUNT OWNS.
+      //
+      // Reaching here two ways, and they are not the same thing. If NO numbered account shares this
+      // bank and holder, this is simply a separate account nobody can confuse — count its latest
+      // month, as always. But if one DID match and the same-period proof pushed it away, all we
+      // actually know is that the month which did the pushing belongs to some other account. The
+      // group's other months could still be the numbered account's — an un-numbered statement carries
+      // no identity of its own, and the reunion above joins fragments on nothing stronger than a bank
+      // name and a holder name, so a blob can hold months of two different accounts.
+      //
+      // Counting the blob's LATEST month then puts one account's newer month on top of another
+      // account's older month and reports both. So the counted month becomes the latest month we can
+      // PROVE is not the numbered account's. Everything else falls away — under-counting, which a
+      // human clears, instead of overstating, which clears a shortfall that is real.
+      const provenBy = [];
+      for (const c of candidates) {
+        const sts = conflictingStatements(c.g, g);
+        if (sts.length) provenBy.push({ key: c.key, g: c.g, sts });
+      }
+      // Pushed away by TWO different numbered accounts: its months disagree with one account AND
+      // with another, which is what a blob holding months of two different accounts looks like.
+      // Nothing here can say which month belongs to which, so it adds nothing at all — the same
+      // downward resolution an unattributable statement has always taken.
+      if (provenBy.length > 1) {
+        byAccount.delete(key);
+        notCountedTwice.push({ holder: f.accountHolderName || '(unnamed)', bankName: f.bankName || null,
+          ending: num(f.closingBalance), matchedAccounts: provenBy.map((p) => groupMask(p.g)).filter(Boolean),
+          ambiguous: true, unattributable: true, becameRepresentative: false });
+        continue;
+      }
+      if (provenBy.length === 1) {
+        let best = null, bestRank = null;
+        for (const s of provenBy[0].sts) {
+          const r = rankOf(s);
+          if (!best || rankGt(r, bestRank)) { best = s; bestRank = r; }
+        }
+        byAccount.set(key, Object.assign({}, g, {
+          rep: best, rank: bestRank, repEnd: bestRank[0] === -Infinity ? null : bestRank[0],
+        }));
+      }
+      continue;
+    }
     byAccount.delete(key);
     const holder = f.accountHolderName || '(unnamed)';
     const entry = { holder, bankName: f.bankName || null, ending: num(f.closingBalance),
@@ -356,6 +540,7 @@ function assessBankLiquidity(ctx = {}, extractions = [], opts = {}) {
     entry._key = matches[0].key;
     entry._rep = g.rep;
     byAccount.set(matches[0].key, {
+      key: matches[0].key,
       rep: better ? g.rep : target.rep,
       repEnd: better ? g.repEnd : target.repEnd,
       rank: better ? g.rank : target.rank,
