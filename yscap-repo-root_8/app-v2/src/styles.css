@@ -3211,3 +3211,7 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 @media(max-width:720px){
   .cl-grid,.cl-facts,.cl-money-tiles,.cl-quicklinks,.cl-recon-grid{grid-template-columns:1fr}
 }
+/* Closing workspace — spacing polish for a few companion labels (audit follow-up) */
+.cl-dates{margin-top:8px}
+.cl-recon-head{margin-bottom:2px}
+.cl-tile-sub{margin-top:3px}

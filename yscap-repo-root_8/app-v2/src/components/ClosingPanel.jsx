@@ -472,7 +472,7 @@ function NotesSection({ appId, notes, onChanged, setErr }) {
             : notes.map((n) => (
               <div key={n.id} className="cl-note">
                 <div className="cl-note-body">{n.body}</div>
-                <div className="muted small">{n.author_name || 'Someone'} · {new Date(n.created_at).toLocaleString()}</div>
+                <div className="muted small">{n.author_name || 'Someone'}{n.created_at ? ` · ${new Date(n.created_at).toLocaleString()}` : ''}</div>
               </div>
             ))}
         </div>
