@@ -119,7 +119,7 @@ LOCATION & IDENTIFIERS
 
 NOTE BUYER — STAFF ONLY, NEVER SHOWN TO A BORROWER
 - note_buyer (stored as applications.lender) = the capital partner the loan is sold to
-  (bluelake = Blue Lake, corrfirst = CorrFirst, fidelis = Fidelis, ...). This name is STAFF-ONLY.
+  (bluelake = Blue Lake, corrfirst = CorrFirst, emcap = EMCAP, fidelis = Fidelis, ...). This name is STAFF-ONLY.
   NEVER expose a note buyer / capital partner name in any borrower-facing text, email, or PDF —
   borrower-facing copy calls it "the Gold Standard program". It drives internal rules only.
 
