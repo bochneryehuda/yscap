@@ -59,10 +59,16 @@ async function audit(req, action, entity_type, entity_id, detail) {
   let d = detail;
   if (d != null && typeof d !== 'object') d = { note: String(d) };
   try {
+    // BORROWER VIEW: when a staffer is standing inside this borrower's portal
+    // the action really was theirs. The row stays actor_kind='borrower' (the
+    // identity it was performed under, which is what a GLBA trail must record)
+    // and ALSO names the human — otherwise a staffer's clicks would be
+    // indistinguishable from the borrower's own.
     await db.query(
-      `INSERT INTO audit_log (actor_kind,actor_id,action,entity_type,entity_id,ip_address,user_agent,detail)
-       VALUES ('borrower',$1,$2,$3,$4,$5,$6,$7)`,
-      [me(req), action, entity_type, entity_id || null, req.ip, req.get('user-agent') || null, d || null]);
+      `INSERT INTO audit_log (actor_kind,actor_id,action,entity_type,entity_id,ip_address,user_agent,detail,impersonator_staff_id)
+       VALUES ('borrower',$1,$2,$3,$4,$5,$6,$7,$8)`,
+      [me(req), action, entity_type, entity_id || null, req.ip, req.get('user-agent') || null, d || null,
+       (req.impersonation && req.impersonation.staffId) || null]);
   } catch (e) {   // best-effort — a log write must never fail a completed action
     console.warn(`[audit] failed to log ${action}: ${db.describeError ? db.describeError(e) : e.message}`);
   }
@@ -1880,6 +1886,11 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
     // an approval-gated change request that the loan officer + processor rule on.
     // Personal fields (below) stay directly editable either way.
     const locked = await changeRequests.isBorrowerLocked(req.params.id);
+    // #FNM1025: an appraisal FORM number ("FNM1025") is not a property type — it is
+    // the name of the report. Refuse it here too (and before opening a change
+    // request), so no door can put a form code into the category.
+    const ptProblem = require('../lib/property-type').propertyTypeProblem(b.property_type);
+    if (ptProblem) return res.status(400).json({ error: ptProblem });
     const requested = [];
     const appVals = [req.params.id], appSets = [], appKeys = [];
     for (const [k, t] of Object.entries(B_COMPLETE_APP)) {
@@ -2851,7 +2862,13 @@ router.get('/messages', async (req, res) => {
   }
   // Opening the thread clears the "new message" badge for staff replies —
   // legacy read_at plus the new per-member watermark (035).
-  if (req.query.applicationId) {
+  // NOT inside a borrower view (owner-directed 2026-07-26): a staffer opening
+  // the thread to see what the borrower sees must not mark the borrower's
+  // messages as READ — that would tell the rest of the team the borrower has
+  // seen a reply they have never opened, and clear the borrower's own unread
+  // badge from under them. Everything is still DISPLAYED identically; only the
+  // receipt write is skipped.
+  if (req.query.applicationId && !req.impersonation) {
     await db.query(`UPDATE messages SET read_at=now() WHERE application_id=$1 AND borrower_id=$2 AND sender_kind='staff' AND read_at IS NULL`,
       [req.query.applicationId, me(req)]);
     try {
@@ -3217,7 +3234,7 @@ async function inviteCoBorrower(appId, primaryName, co) {
   const cb = await db.query(
     `INSERT INTO borrowers (first_name,last_name,email,cell_phone,fico)
      VALUES ($1,$2,$3,$4,$5)
-     ON CONFLICT (email) DO UPDATE SET updated_at=now(), fico=COALESCE(borrowers.fico, EXCLUDED.fico) RETURNING id`,
+     ON CONFLICT (email) WHERE shares_email = false DO UPDATE SET updated_at=now(), fico=COALESCE(borrowers.fico, EXCLUDED.fico) RETURNING id`,
     [co.firstName || 'Co-Borrower', co.lastName || '', co.email, co.phone || null,
      require('../lib/fields').sanitizeFico(co.fico)]);
   const coId = cb.rows[0].id;

@@ -24,7 +24,7 @@
  *     healBorrowerFields, all FILL-ONLY: a real stored value is never overwritten)
  *   ✓ their ENTITIES — every distinct LLC name/EIN across all their cards
  *   ✓ their TRACK RECORD — the property address of every CLOSED/funded card
- *   ✓ the OFFICER relationship — `borrower_officers` (db/322), many-to-many, so
+ *   ✓ the OFFICER relationship — `borrower_officers` (db/325), many-to-many, so
  *     every officer who ever closed with them can see the profile
  *   ✗ loan FILES. `createFile:false` on every call, always. The owner was
  *     explicit: "we don't need to start looking on the DSCR files for real
