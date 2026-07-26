@@ -269,6 +269,103 @@ router.get('/applications/export', async (req, res) => {
   } catch (e) { console.error('[export pipeline]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
+// ---------------- Capital-provider data tapes (collection level) -------------
+// Registered BEFORE the /applications/:id scope middleware. These are the
+// provider-centric endpoints (list tape types, list a provider's loans, bulk
+// export); the per-loan endpoints live under /applications/:id (scoped there).
+
+// List the tape types the system knows how to export (one per capital provider).
+router.get('/tapes', async (req, res) => {
+  try { res.json({ tapes: require('../lib/tapes').registry.listTapes() }); }
+  catch (e) { console.error('[tapes list]', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+// List the loans eligible for a provider's BULK tape — i.e. every non-deleted
+// file whose capital provider (normalized) matches this tape's buyer, scoped to
+// what the staffer may see. This is the picker the bulk-export screen shows.
+router.get('/tapes/:tapeKey/loans', async (req, res) => {
+  try {
+    const tape = require('../lib/tapes').registry.getTape(req.params.tapeKey);
+    if (!tape) return res.status(404).json({ error: 'unknown tape type' });
+    // Normalize applications.lender in SQL exactly like normNoteBuyer:
+    // LOWERCASE FIRST, then strip non-alphanumerics — the same order as the JS
+    // (String(raw).toLowerCase().replace(/[^a-z0-9]/g,'')) and the repo's existing
+    // sitewire_partner_links normalization, so the free-text label matches the key.
+    const params = [tape.buyerKey];
+    let scopeSql = '';
+    if (!seesAll(req)) { params.push(req.actor.id); scopeSql = ' AND ' + VISIBLE_OFFICERS_SQL('a', '$' + params.length); }
+    const sql = `
+      SELECT a.id, a.ys_loan_number, a.investor_loan_number, a.lender, a.status,
+             COALESCE(a.property_address->>'oneLine',
+                      NULLIF(concat_ws(', ', a.property_address->>'line1', a.property_address->>'city',
+                                       a.property_address->>'state', a.property_address->>'zip'), '')) AS address,
+             a.loan_amount, b.first_name, b.last_name
+        FROM applications a JOIN borrowers b ON b.id = a.borrower_id
+       WHERE a.deleted_at IS NULL
+         AND regexp_replace(lower(coalesce(a.lender,'')), '[^a-z0-9]', '', 'g') = $1${scopeSql}
+       ORDER BY a.updated_at DESC LIMIT 1000`;
+    const r = await db.query(sql, params);
+    res.json({ tape: require('../lib/tapes').registry.publicTape(tape), count: r.rows.length, loans: r.rows });
+  } catch (e) { console.error('[tape loans]', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+// Export a BULK tape (many loans on one workbook) for :tapeKey. Body:
+// { applicationIds: [uuid, ...] }. Every loan must belong to this provider (the
+// builder rejects the whole batch, listing any that don't); the requested ids
+// are first narrowed to what the staffer may see.
+router.post('/tapes/:tapeKey/export/bulk', async (req, res) => {
+  try {
+    const tapes = require('../lib/tapes');
+    const tape = tapes.registry.getTape(req.params.tapeKey);
+    if (!tape) return res.status(404).json({ error: 'unknown tape type' });
+    const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const requested = Array.isArray(req.body && req.body.applicationIds)
+      ? req.body.applicationIds.filter((x) => UUID.test(String(x))) : [];
+    if (!requested.length) return res.status(400).json({ error: 'no loans selected' });
+    // Guard: one bulk export can't ask for more than the picker can show (1000),
+    // so a single request can never fan out into an unbounded pile of DB reads.
+    if (requested.length > 1000) return res.status(400).json({ error: 'too many loans (max 1000 per bulk tape)' });
+    // Narrow to files the staffer may see (a scoped user can't bulk-export files
+    // outside their book); see-all users keep the full requested set.
+    let visible = requested;
+    if (!seesAll(req)) {
+      const vr = await db.query(
+        `SELECT id FROM applications a WHERE a.id = ANY($1::uuid[]) AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$2')}`,
+        [requested, req.actor.id]);
+      visible = vr.rows.map((x) => x.id);
+    }
+    if (!visible.length) return res.status(403).json({ error: 'forbidden' });
+    // Confirmed-fatal issuance backstop — PARITY with the single-file tape export
+    // (and TPR/MISMO): a fatal file's tape must not leave in bulk either without a
+    // super-admin override. Check each visible file; a super-admin's overrideReason
+    // proceeds+records per file, otherwise the whole batch is blocked with the list.
+    const blockedFatal = [];
+    for (const id of visible) {
+      const issuance = await issuanceBackstop.backstopForRun(id, 'term_sheet', db, { actorRole: req.actor.role, overrideReason: req.query && req.query.overrideReason });
+      if (issuance.hardWarning && !issuance.proceed) { blockedFatal.push({ id, tier: issuance.tier || null }); continue; }
+      if (issuance.override && issuance.override.applied) {
+        await audit(req, 'issuance_override', 'application', id, { action: 'export_tape_bulk', tape: tape.key, tier: issuance.tier, reason: issuance.override.reason });
+        await loanExceptions.recordIssuanceOverride({ appId: id, staffId: req.actor.id, note: `export_tape_bulk ${tape.key}: ${issuance.override.reason || 'no reason given'}`, snapshot: { action: 'export_tape_bulk', tape: tape.key, tier: issuance.tier || null, at: new Date().toISOString() } });
+      }
+    }
+    if (blockedFatal.length) {
+      return res.status(409).json({ error: 'blocked', action: 'export_tape_bulk', message: `${blockedFatal.length} of the selected loan(s) have a confirmed fatal issue and can't be exported without a super-admin override. Remove them from the selection, or have a super-admin export.`, blocked: blockedFatal });
+    }
+    const { buf, filename, contentType, count } = await tapes.buildBulkTape(req.params.tapeKey, visible, db);
+    await audit(req, 'export_tape_bulk', 'application', null, { tape: tape.key, count, requested: requested.length });
+    res.set('Content-Type', contentType);
+    res.set('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(buf);
+  } catch (e) {
+    if (e && e.code === 'buyer_mismatch') {
+      return res.status(409).json({ error: 'buyer_mismatch', message: e.message, mismatches: e.mismatches || [] });
+    }
+    if (e && e.code === 'no_loans') return res.status(400).json({ error: e.message });
+    console.error('[export tape bulk]', e && e.message);
+    res.status(500).json({ error: 'export failed' });
+  }
+});
+
 router.use('/applications/:id', async (req, res, next) => {
   try {
     if (seesAll(req)) return next();
@@ -2943,6 +3040,90 @@ router.get('/applications/:id/export/mismo', async (req, res) => {
     res.send(xml);
   } catch (e) {
     console.error('[mismo] export failed:', db.describeError ? db.describeError(e) : e.message);
+    res.status(500).json({ error: 'export failed' });
+  }
+});
+
+// ============================ Capital-provider data tapes =====================
+// A "data tape" is one capital provider's required loan export — their own Excel
+// workbook with our loan's figures typed into its data-entry row so the provider's
+// own pricing/eligibility tabs recalculate. The provider's sheet is preserved
+// exactly (formulas + hidden lookup engines untouched); we only fill the input row.
+// The whole engine + per-provider column maps live in src/lib/tapes.
+//
+// THE RULE (owner-directed): a loan may only export the tape of the capital
+// provider it is CURRENTLY assigned to (applications.lender). Switch the loan's
+// capital provider to export a different provider's tape. Enforced in the builder.
+
+// Which tape(s) can THIS loan export (based on its current capital provider),
+// and for the ones it can't, a plain-language reason. Scoped by the :id middleware.
+router.get('/applications/:id/tapes', async (req, res) => {
+  try {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.id)) return res.status(404).json({ error: 'not found' });
+    const tapes = require('../lib/tapes');
+    const r = await db.query('SELECT lender FROM applications WHERE id=$1 AND deleted_at IS NULL', [req.params.id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    const lender = r.rows[0].lender || null;
+    const key = require('../lib/conditions/field-registry').normNoteBuyer(lender);
+    res.json({ currentBuyer: lender, buyerKey: key, tapes: tapes.tapeAvailability(key, lender) });
+  } catch (e) { console.error('[tape eligibility]', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+// Which extra questions (if any) this loan needs answered before its tape can be
+// filled — chiefly the New-Construction-only Fidelis fields. Returns the still-
+// unanswered ones (with dropdown options); the export UI asks these, then exports
+// with the answers. Empty for a loan whose tape needs nothing extra.
+router.get('/applications/:id/export/tape/:tapeKey/questions', async (req, res) => {
+  try {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.id)) return res.status(404).json({ error: 'not found' });
+    const tapes = require('../lib/tapes');
+    const q = await tapes.tapeQuestions(req.params.id, req.params.tapeKey, db);
+    res.json(q);
+  } catch (e) {
+    if (e && (e.code === 'loan_not_found' || e.code === 'tape_not_found')) return res.status(404).json({ error: e.message });
+    console.error('[tape questions]', e && e.message);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+// Export ONE loan's tape for :tapeKey. Streams the provider's .xlsx. Scoped +
+// audited; the confirmed-fatal issuance backstop applies exactly as it does to
+// the TPR / MISMO exports (a note-buyer tape must not leave a fatal file without
+// a super-admin override). The capital-provider match is enforced in buildTape.
+// New-construction questionnaire answers ride in as query params and are saved
+// to the loan (so a later export doesn't re-ask) before the tape is built.
+router.get('/applications/:id/export/tape/:tapeKey', async (req, res) => {
+  try {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.id)) return res.status(404).json({ error: 'not found' });
+    const tapes = require('../lib/tapes');
+    const tape = tapes.registry.getTape(req.params.tapeKey);
+    if (!tape) return res.status(404).json({ error: 'unknown tape type' });
+    const issuance = await issuanceBackstop.backstopForRun(req.params.id, 'term_sheet', db, { actorRole: req.actor.role, overrideReason: req.query && req.query.overrideReason });
+    if (issuance.hardWarning && !issuance.proceed) {
+      return res.status(409).json({ error: 'blocked', action: 'export_tape', message: 'This file has a confirmed fatal issue, so its tape can\'t be exported without a super-admin override.', issuance });
+    }
+    if (issuance.override && issuance.override.applied) {
+      await audit(req, 'issuance_override', 'application', req.params.id, { action: 'export_tape', tape: tape.key, tier: issuance.tier, reason: issuance.override.reason });
+      await loanExceptions.recordIssuanceOverride({ appId: req.params.id, staffId: req.actor.id, note: `export_tape ${tape.key}: ${issuance.override.reason || 'no reason given'}`, snapshot: { action: 'export_tape', tape: tape.key, tier: issuance.tier || null, at: new Date().toISOString() } });
+    }
+    // Persist any questionnaire answers (validated) BEFORE building, so the tape
+    // fills from them and a later export never re-asks. A no-op when none present.
+    const savedSupplemental = await tapes.persistSupplemental(req.params.id, req.params.tapeKey, req.query, db);
+    // A seasoned-loan export may carry the human-confirmed current balance / next
+    // due / interest reserve as query params — applied to THIS export only (never
+    // persisted, since the live figures re-compute from the draws each time).
+    const seasonedOverrides = tapes.seasonedOverridesFromQuery(req.query);
+    const { buf, filename, contentType } = await tapes.buildTape(req.params.id, req.params.tapeKey, db, { seasonedOverrides });
+    await audit(req, 'export_tape', 'application', req.params.id, { tape: tape.key, bytes: buf.length, supplemental: Object.keys(savedSupplemental), seasoned: !!seasonedOverrides });
+    res.set('Content-Type', contentType);
+    res.set('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(buf);
+  } catch (e) {
+    if (e && e.code === 'buyer_mismatch') {
+      return res.status(409).json({ error: 'buyer_mismatch', message: e.message, currentBuyer: e.currentBuyer, requiredBuyer: e.requiredBuyer, tape: e.tapeName });
+    }
+    if (e && (e.code === 'loan_not_found' || e.code === 'tape_not_found')) return res.status(404).json({ error: e.message });
+    console.error('[export tape]', e && e.message);
     res.status(500).json({ error: 'export failed' });
   }
 });
