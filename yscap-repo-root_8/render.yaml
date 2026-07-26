@@ -1,12 +1,21 @@
-# Render Blueprint. package.json is at the REPO ROOT, so no Root Directory
-# override is needed. If your repo nests the project in a subfolder, set
-# `rootDir:` below (or the dashboard's Root Directory) to that folder.
+# Render Blueprint — REFERENCE CONFIGURATION, not the live wiring.
+#
+# READ THIS BEFORE TRUSTING THIS FILE:
+#  1. Render only auto-applies a Blueprint named render.yaml at the GIT ROOT. This project lives in
+#     the nested `yscap-repo-root_8/` folder (see CLAUDE.md), so this file is NOT at the git root
+#     and Render does not apply it. Hence `rootDir:` on every service below — needed if this is
+#     ever moved up and applied.
+#  2. The live web service was created BY HAND in the dashboard, so its real settings are whatever
+#     the dashboard says — not what is written here. Treat this file as the documented intent and
+#     the checklist for creating a service, and change the dashboard when you change this.
+# Adding the worker service therefore means creating it in the dashboard using the values below;
+# merging this file does not create it.
 services:
   - type: web
     name: ys-capital-portal
     runtime: node
     plan: starter
-    # rootDir: ys-capital-portal        # uncomment ONLY if the project is nested
+    rootDir: yscap-repo-root_8          # the project is nested — package.json lives here
     buildCommand: npm install && npm --prefix app ci && npm --prefix app run build
     startCommand: npm run start
     healthCheckPath: /api/health
@@ -25,7 +34,24 @@ services:
       # concurrent logins doesn't queue up behind a small pool.
       - key: UV_THREADPOOL_SIZE
         value: "8"
-      # Store documents on the persistent disk mounted above.
+      # Documents live in Cloudflare R2 (owner completed the cutover 2026-07-26). This MUST match
+      # the worker service below: if the web service saved to local disk while the worker read from
+      # R2, the worker would find nothing — the split-brain the shared object store exists to
+      # prevent. The S3_* values are dashboard-only (secrets are never committed).
+      - key: STORAGE_PROVIDER
+        value: s3
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ENDPOINT
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_REGION
+        value: auto
+      # Kept as the dual-read fallback for documents saved BEFORE the R2 cutover: a read that
+      # misses in the bucket falls back to this disk, so old files still download.
       - key: STORAGE_DIR
         value: /var/data/uploads
       # DATABASE_URL must point at your Postgres instance (named "yscap").
@@ -103,6 +129,83 @@ services:
       # SharePoint one-way sync (Pipeline Drive mirror — docs/SHAREPOINT-POLICY.md):
       # SHAREPOINT_BACKUP_ENABLED=1, SHAREPOINT_DRIVE_ID, and optionally
       # MS_CLIENT_CERT_PEM_B64 (certificate auth, preferred over the secret).
+      # The document reader runs as its OWN service (below), so the web service must
+      # NOT also drain the queue — otherwise reading competes with borrower page loads
+      # for this process, which is the whole problem the split fixes.
+      - key: UW_WORKER_ENABLED
+        value: "false"
+
+  # ---------------------------------------------------------------------------
+  # Pipeline V2 document reader — a SEPARATE service (owner defect #7).
+  #
+  # Same repo, same build, different entrypoint. It drains document_pipeline_jobs
+  # and writes ONLY the V2 audit tables — it is ADVISORY and never writes a
+  # condition, status, finding, or anything else on a real loan file.
+  #
+  # It deliberately has NO disk: documents live in Cloudflare R2 (STORAGE_PROVIDER=s3),
+  # which is exactly what makes two services possible — both reach the same files.
+  # If storage were still the web service's local disk, this service could not read
+  # anything the web service saved.
+  #
+  # It does NOT run migrations: the web service owns the schema (src/worker.js waits
+  # for the DB via waitForDb() without applying it). Two services racing the same
+  # migration chain on a deploy is a real corruption hazard.
+  # ---------------------------------------------------------------------------
+  - type: worker
+    name: ys-capital-pipeline-worker
+    runtime: node
+    plan: starter
+    rootDir: yscap-repo-root_8          # the project is nested — package.json lives here
+    buildCommand: npm install
+    startCommand: npm run worker
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Same database as the web service.
+      - key: DATABASE_URL
+        fromDatabase: { name: yscap, property: connectionString }
+      # THIS is the service that drains the queue.
+      - key: UW_WORKER_ENABLED
+        value: "true"
+      # Shared object storage — the reason a second service can see the documents at
+      # all. These must match the web service's values exactly; set them in the
+      # dashboard (secrets are never committed).
+      - key: STORAGE_PROVIDER
+        value: s3
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ENDPOINT
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_REGION
+        value: auto
+      # Reading engines — same credentials as the web service (dashboard-only).
+      - key: AZURE_DOCINT_ENDPOINT
+        sync: false
+      - key: AZURE_DOCINT_KEY
+        sync: false
+      - key: AZURE_DOCINT_API_VERSION
+        value: "2024-11-30"
+      # Pipeline switches. Shadow + advisory; UW_PIPELINE_V2_READ turns on real reading.
+      - key: UW_PIPELINE_V2_ENABLED
+        sync: false
+      - key: UW_PIPELINE_V2_SHADOW
+        sync: false
+      - key: UW_PIPELINE_V2_FAMILIES
+        sync: false
+      - key: UW_PIPELINE_V2_READ
+        sync: false
+      # The shared config does NOT refuse a missing secret — it generates an ephemeral value and
+      # prints a SECURITY warning on every boot. Set these so the worker's logs stay quiet and a
+      # real warning is never lost in the noise. The worker verifies no tokens and decrypts nothing
+      # today, so the values only need to exist.
+      - key: SSN_ENCRYPTION_KEY
+        sync: false
+      - key: JWT_SECRET
+        sync: false
 databases:
   - name: yscap
     plan: basic-1gb

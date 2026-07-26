@@ -69,14 +69,22 @@ function sameValue(incoming, current) {
   return Number.isFinite(a) && Number.isFinite(b) && a === b;
 }
 
-// Per-field semantic comparators layered on top of sameValue. `term` is free
-// TEXT written in different spellings by different doors ("12" vs "12 Months")
-// — compare it by MEANING so a ClickUp echo of the very same term is never held
-// as a frozen-economics conflict (same root cause as the db/288 trigger fix).
+// Per-field semantic comparators layered on top of sameValue. `term` and
+// `property_type` are free TEXT written in different spellings by different doors
+// ("12" vs "12 Months"; "Multi 2-4" vs "Multi 2–4" vs "multi_2_4") — compare them
+// by MEANING so a ClickUp echo of the very same value is never held as a
+// frozen-economics conflict (same root cause as the db/288 + db/322 trigger fixes).
 const { termsEquivalent } = require('./term-text');
+const { propertyTypesEquivalent, isAppraisalFormCode } = require('./property-type');
 function fieldSame(field, incoming, current) {
   if (sameValue(incoming, current)) return true;
   if (field === 'term') return termsEquivalent(incoming, current);
+  if (field === 'property_type') {
+    // A stored appraisal FORM number was never a property type, so replacing it
+    // with a real one is a REPAIR of bad data, not a frozen-economics conflict.
+    if (isAppraisalFormCode(current)) return true;
+    return propertyTypesEquivalent(incoming, current);
+  }
   return false;
 }
 

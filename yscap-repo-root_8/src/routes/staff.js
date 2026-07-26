@@ -6887,6 +6887,13 @@ router.patch('/applications/:id/details', async (req, res) => {
     if (n != null && !isFinite(n)) return res.status(400).json({ error: `${k} must be a number` });
     sets.push(`${col}=$${i++}`); vals.push(n); touchedCols.push(col);
   }
+  // #FNM1025: an appraisal FORM number ("FNM1025") is not a property type — it is
+  // the name of the report. Refuse it at the door and say why, rather than storing
+  // a value that corrupts the category for pricing, ClickUp and every guideline.
+  if ('propertyType' in b) {
+    const ptProblem = require('../lib/property-type').propertyTypeProblem(b.propertyType);
+    if (ptProblem) return res.status(400).json({ error: ptProblem });
+  }
   for (const [k, col] of Object.entries(STR)) if (k in b) { const raw = b[k] === '' ? null : String(b[k]).slice(0, 200); sets.push(`${col}=$${i++}`); vals.push(col === 'loan_type' ? require('../lib/fields').sanitizeLoanType(raw) : raw); touchedCols.push(col); }   // #95: loan_type never a program
   for (const [k, col] of Object.entries(DATE)) if (k in b) {
     // sanitizeDateOnly enforces a REAL calendar date with a 4-digit year in
@@ -7292,6 +7299,9 @@ async function completeFields(req, res, borrowerScoped) {
     const brRow = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id]);
     if (!brRow.rows[0]) return res.status(404).json({ error: 'not found' });
     const bid = brRow.rows[0].borrower_id;
+    // #FNM1025: an appraisal FORM number is not a property type (see PATCH /details).
+    const ptProblem = require('../lib/property-type').propertyTypeProblem(b.property_type);
+    if (ptProblem) return res.status(400).json({ error: ptProblem });
     const appVals = [req.params.id]; const appSets = []; const appKeys = [];
     for (const [k, t] of Object.entries(COMPLETE_APP_FIELDS)) {
       if (!(k in b) || b[k] === '' || b[k] == null) continue;
@@ -9631,6 +9641,24 @@ async function canSeeDocument(req, doc) {
           AND ${VISIBLE_OFFICERS_SQL('a', '$2')}
         LIMIT 1`,
       [doc.borrower_id, req.actor.id]);
+    if (r.rows[0]) return true;
+  }
+  if (doc.llc_id) {
+    // The file's own VESTING ENTITY (audit 2026-07-26). PILOT now reads the entity's operating
+    // agreement / EIN / articles for a file that vests into it, even when the entity is filed under
+    // a different borrower record — so a finding raised from those documents was appearing on the
+    // desk with an "open the source document" link that returned 403 for the very staff the fix was
+    // for (an assigned officer or processor; see-all roles were unaffected). A finding you cannot
+    // open is against the whole point of the findings surface.
+    //
+    // Scoped exactly like the read side: only an entity that a file THIS staffer is assigned to
+    // actually vests into. It grants nothing beyond the documents PILOT is already reading on their
+    // behalf, and no wider than the borrower branch above.
+    const r = await db.query(
+      `SELECT 1 FROM applications a WHERE a.llc_id=$1 AND a.deleted_at IS NULL
+          AND ${VISIBLE_OFFICERS_SQL('a', '$2')}
+        LIMIT 1`,
+      [doc.llc_id, req.actor.id]);
     if (r.rows[0]) return true;
   }
   return false;

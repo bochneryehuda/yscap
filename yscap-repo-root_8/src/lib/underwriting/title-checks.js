@@ -8,7 +8,7 @@
  * Pure. `title` = fields for the TITLE schema; `file` = { property_address }.
  */
 const { addrMatches, addrLine, norm, daysBetween, toISODate, num } = require('./compare');
-const { clauseNamesLender, clauseHasAddress, LENDER_MORTGAGEE_CLAUSE } = require('./lender');
+const { clauseNamesLender, clauseAddressState, LENDER_MORTGAGEE_CLAUSE } = require('./lender');
 
 const SEASONING_DAYS = 90;   // FHA anti-flip line; a resale inside this window is a flip signal.
 const money = (n) => (num(n) == null ? null : `$${num(n).toLocaleString('en-US')}`);
@@ -163,11 +163,12 @@ function computeTitleFindings(title, file, opts = {}) {
       title: 'Title does not name the lender with the correct mortgagee clause',
       howTo: `Schedule A must name the lender as proposed insured with the exact clause "${LENDER_MORTGAGEE_CLAUSE.replace(/\n/g, ', ')}". Have the title company correct it before funding.`,
       actions: ['request_document', 'post_condition', 'dismiss'], opensCondition: 'underwriting_review_cleared' }));
-  } else if (namesLender === true && clauseHasAddress(title.mortgageeClause) === false) {
+  } else if (namesLender === true && clauseAddressState(title.mortgageeClause) === 'none') {
+    // Same rule as the insurance side: silent once an address is printed, whatever its wording.
     out.push(finding({ code: 'title_mortgagee_address', severity: 'info', field: 'mortgagee_clause',
       docValue: title.mortgageeClause, fileValue: LENDER_MORTGAGEE_CLAUSE,
-      title: 'Confirm the lender notice address on the title mortgagee clause',
-      howTo: `The title names the lender but the notice address doesn't match "${LENDER_MORTGAGEE_CLAUSE.replace(/\n/g, ', ')}". Confirm the correct address is on Schedule A.`,
+      title: 'The TITLE mortgagee clause has no notice address',
+      howTo: `On the title commitment's Schedule A, the proposed-insured clause names the lender but prints no address under it. Ask the title company to add "${LENDER_MORTGAGEE_CLAUSE.replace(/\n/g, ', ')}". (This is about the title document; the insurance policy's clause is checked separately.)`,
       actions: ['acknowledge', 'request_document', 'dismiss'] }));
   }
 

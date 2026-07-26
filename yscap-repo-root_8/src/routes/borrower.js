@@ -1886,6 +1886,11 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
     // an approval-gated change request that the loan officer + processor rule on.
     // Personal fields (below) stay directly editable either way.
     const locked = await changeRequests.isBorrowerLocked(req.params.id);
+    // #FNM1025: an appraisal FORM number ("FNM1025") is not a property type — it is
+    // the name of the report. Refuse it here too (and before opening a change
+    // request), so no door can put a form code into the category.
+    const ptProblem = require('../lib/property-type').propertyTypeProblem(b.property_type);
+    if (ptProblem) return res.status(400).json({ error: ptProblem });
     const requested = [];
     const appVals = [req.params.id], appSets = [], appKeys = [];
     for (const [k, t] of Object.entries(B_COMPLETE_APP)) {
