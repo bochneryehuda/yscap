@@ -60,7 +60,7 @@ function addrString(a) {
   if (!a) return '';
   if (typeof a === 'string') return a;
   return a.formatted_address || a.oneLine
-    || [a.street, a.city, [a.state, a.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+    || [a.street || a.line1, a.city, [a.state, a.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
 }
 function normAddr(a) {
   const raw = addrString(a);
@@ -146,7 +146,12 @@ async function addTrackRecordIfAbsent(dbc, borrowerId, addr) {
     }
   }
 
-  // Atomic guard against a concurrent Encompass insert of the same canonical key.
+  // Single-statement WHERE-NOT-EXISTS on the canonical key — collapses the old
+  // read-then-insert into one guarded write. The enrichment worker is single-pass
+  // (sequential, days apart), so this is sufficient in practice; there is no
+  // unique index on (borrower_id, address_key) — adding one is unsafe on live data
+  // that may already carry duplicate keys (it would fail the migration), so this
+  // narrows the window rather than making truly-concurrent inserts impossible.
   const r = await dbc.query(
     `INSERT INTO track_records (borrower_id, property_address, is_verified, origin, inferred, address_key, notes)
      SELECT $1,$2::jsonb,false,'encompass',true,$3,$4
