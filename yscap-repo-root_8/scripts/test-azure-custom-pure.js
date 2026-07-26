@@ -105,6 +105,21 @@ const azc = require('../src/lib/ai/azure-custom');
   const extractorSubmit = calls.find(c => c.method === 'POST' && /pilot-bank-statement/.test(c.url));
   assert.ok(/pages=1-2/.test(extractorSubmit.url), 'pages param propagated');
 
+  // ---- Route correctness (Azure v4): classifier vs model routes are DIFFERENT ----
+  // classify() must hit the CLASSIFIER route with automatic splitting; extract() the MODEL route.
+  const classifierSubmit = calls.find(c => c.method === 'POST' && /pilot-doc-splitter/.test(c.url));
+  assert.ok(/\/documentintelligence\/documentClassifiers\/pilot-doc-splitter:analyze/.test(classifierSubmit.url),
+    'classify() must use the documentClassifiers route');
+  assert.ok(/[?&]split=auto\b/.test(classifierSubmit.url), 'classify() must request split=auto');
+  assert.ok(!/documentModels/.test(classifierSubmit.url), 'classify() must NOT use the documentModels route');
+  assert.ok(/\/documentintelligence\/documentModels\/pilot-bank-statement:analyze/.test(extractorSubmit.url),
+    'extract() must still use the documentModels route');
+  // Pure URL-builder checks
+  assert.ok(/documentClassifiers\/cid:analyze\?api-version=[\d-]+&split=auto$/.test(azc._internals.classifyUrl('cid')),
+    'classifyUrl shape');
+  assert.ok(/documentModels\/mid:analyze\?_overload=analyzeDocument/.test(azc._internals.analyzeUrl('mid')),
+    'analyzeUrl shape (extractors unchanged)');
+
   // ---- extract() for an unconfigured type is a clean failure ----
   const bad = await azc.extract({ docType: 'insurance', buffer: buf });
   assert.strictEqual(bad.ok, false);

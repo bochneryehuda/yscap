@@ -84,6 +84,18 @@ function analyzeUrl(modelId) {
   return `${base}/documentintelligence/documentModels/${encodeURIComponent(modelId)}:analyze?_overload=analyzeDocument&api-version=${ver}`;
 }
 
+// A CLASSIFIER is a different Azure v4 resource than a document MODEL, on a
+// different route: `/documentClassifiers/{id}:analyze`, NOT `/documentModels/`.
+// It also does NOT split a composite (multi-document) file by default — `split=auto`
+// must be requested explicitly so Azure returns one `documents[]` entry per detected
+// logical document (including multiple instances of the same type). Using the
+// documentModels route for a classifier silently mis-analyzes the packet.
+function classifyUrl(classifierId) {
+  const base = String(cfg.docint.endpoint || '').replace(/\/+$/, '');
+  const ver = (cfg.docint.apiVersion || '2024-11-30');
+  return `${base}/documentintelligence/documentClassifiers/${encodeURIComponent(classifierId)}:analyze?api-version=${ver}&split=auto`;
+}
+
 async function attemptSubmit(url, b64) {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), 30000);
@@ -158,7 +170,7 @@ async function classify({ buffer, base64, appId, documentId, trace } = {}) {
     input: { sizeBytes: size, classifierId: cfg.azureCustom.classifierId },
   });
 
-  const submit = await runWithRetry(() => attemptSubmit(analyzeUrl(cfg.azureCustom.classifierId), b64), {
+  const submit = await runWithRetry(() => attemptSubmit(classifyUrl(cfg.azureCustom.classifierId), b64), {
     breaker: breakerFor('azure-docint-custom'), deadlineMs: SUBMIT_DEADLINE_MS, label: 'the splitter',
   });
   if (!submit.ok) { g.end({ level: 'ERROR', statusMessage: submit.reason }); return { ok: false, reason: submit.reason }; }
@@ -261,5 +273,5 @@ async function ping() {
 
 module.exports = {
   DOC_TYPES, normalizeType, classifierConfigured, extractorConfigured, extractorFor,
-  classify, extract, ping, _internals: { analyzeUrl, attemptSubmit, pollResult },
+  classify, extract, ping, _internals: { analyzeUrl, classifyUrl, attemptSubmit, pollResult },
 };
