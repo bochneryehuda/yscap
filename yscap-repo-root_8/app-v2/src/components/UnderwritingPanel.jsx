@@ -2578,10 +2578,20 @@ function AISuggestionCard({ appId, suggestion, onChanged, disabled }) {
   const [noteText, setNoteText] = React.useState('');
   const [dismissOpen, setDismissOpen] = React.useState(false);
   const [dismissReason, setDismissReason] = React.useState('');
+  const [preview, setPreview] = React.useState(null);
   const tint = SOURCE_TINT[suggestion.source] || { fg: 'var(--muted,#4B585C)', bg: 'var(--paper,#F6F3EC)' };
   const sourceLabel = SOURCE_LABEL[suggestion.source] || suggestion.source;
   const evidence = suggestion.evidence || {};
   const pages = Array.isArray(evidence.pages) ? evidence.pages : null;
+  const evDocId = suggestion.document_id || evidence.sourceDocumentId || null;
+  const evPage = (pages && pages.length ? pages[0] : (evidence.pageNumber ?? evidence.page ?? 1)) || 1;
+  // Same in-place evidence viewer R5.17 gave the Finding + fact rows: open the
+  // source document scrolled to the page (exact box if the span carries one),
+  // instead of the dead #/staff/documents/:id hash link.
+  const previewBoxes = React.useMemo(
+    () => (Array.isArray(evidence.polygon) && evidence.polygon.length ? [{ page: evPage, polygon: evidence.polygon }] : undefined),
+    [evidence.polygon, evPage],
+  );
   const isClosed = suggestion.status !== 'open' && suggestion.status !== 'asked_admin';
 
   const doAction = React.useCallback(async (action, extra = {}) => {
@@ -2650,13 +2660,23 @@ function AISuggestionCard({ appId, suggestion, onChanged, disabled }) {
       {suggestion.body && <div style={{ fontSize: 12.5, color: 'var(--ivory,#141B22)', marginBottom: 6, whiteSpace: 'pre-wrap' }}>{suggestion.body}</div>}
       {(pages || evidence.sourceDocumentId || suggestion.document_id || suggestion.trace_url) && (
         <div style={{ fontSize: 11.5, color: 'var(--muted,#4B585C)', marginBottom: 6 }}>
-          {(suggestion.document_id || evidence.sourceDocumentId) && (
-            <span>Document: <a href={`#/staff/documents/${suggestion.document_id || evidence.sourceDocumentId}`} style={{ color: 'var(--teal-deep,#256168)' }}>open</a>{pages ? ` · page(s) ${pages.join(', ')}` : ''}</span>
+          {evDocId && (
+            <span>Document: <a href="#" onClick={(e) => { e.preventDefault(); setPreview({ docId: evDocId, page: evPage, quote: evidence.quote || undefined }); }} style={{ color: 'var(--teal-deep,#256168)' }}>open</a>{pages ? ` · page(s) ${pages.join(', ')}` : ''}</span>
           )}
           {suggestion.trace_url && (
             <> · <a href={suggestion.trace_url} target="_blank" rel="noreferrer" style={{ color: 'var(--teal-deep,#256168)' }}>AI reasoning trace →</a></>
           )}
         </div>
+      )}
+      {preview && (
+        <DocPreview
+          title={`Source document${preview.page ? ` · page ${preview.page}` : ''}`}
+          load={() => api.staffDownloadDoc(preview.docId)}
+          initialPage={preview.page || 1}
+          highlight={preview.quote || undefined}
+          highlightBoxes={previewBoxes}
+          onClose={() => setPreview(null)}
+        />
       )}
       {Array.isArray(suggestion.notes) && suggestion.notes.length > 0 && (
         <div style={{ borderTop: '1px dashed var(--paper,#E9E4D3)', marginTop: 6, paddingTop: 6, fontSize: 11.5, color: 'var(--muted,#4B585C)' }}>
