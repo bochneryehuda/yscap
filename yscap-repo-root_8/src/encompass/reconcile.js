@@ -97,6 +97,7 @@ function buildOurValues(app, quote, llcName) {
     origination_pct: (q.origPct === null || q.origPct === undefined) ? undefined : Number(q.origPct) * 100,
     term_months: a.term != null && String(a.term).trim() !== '' ? parseInt(String(a.term), 10) : undefined,
     maturity_date: nz(a.maturity_date),
+    funded_date: nz(a.funded_date),
 
     // experience / rehab-type / accrual
     total_experience_deals: claimedExp > 0 ? claimedExp : undefined,
@@ -279,7 +280,7 @@ function compareIdentity(row, loan) {
   // correctly flags that the two systems disagree on the co-borrower.
   const ourCoName = [row.cb_first_name, row.cb_last_name].filter((x) => x && String(x).trim()).join(' ').trim();
   const theirCoName = [coBor.firstName, coBor.lastName].filter((x) => x && String(x).trim()).join(' ').trim();
-  const hasCo = !!(row.co_borrower_id || ourCoName || theirCoName || coBor.birthDate || coBor.emailAddressText || coBor.mobilePhone);
+  const hasCo = !!(row.co_borrower_id || ourCoName || theirCoName || coBor.birthDate || coBor.emailAddressText || coBor.mobilePhone || coBor.homePhoneNumber);
   if (hasCo) {
     push('id_coborrower_name', 'Co-borrower name', 'name', ourCoName || null, theirCoName || null);
     push('id_coborrower_dob', 'Co-borrower date of birth', 'date', row.cb_dob || null, coBor.birthDate || null);
@@ -299,7 +300,7 @@ async function computeFindings(appId, dbc) {
     `SELECT a.id, a.ys_loan_number, a.encompass_loan_guid, a.encompass_extra,
             a.encompass_last_pulled_at, a.encompass_last_error, a.borrower_id, a.llc_id,
             a.loan_amount, a.purchase_price, a.underlying_contract_price, a.assignment_fee,
-            a.rehab_budget, a.as_is_value, a.arv, a.ltv, a.rate_pct, a.term, a.maturity_date,
+            a.rehab_budget, a.as_is_value, a.arv, a.ltv, a.rate_pct, a.term, a.maturity_date, a.funded_date,
             a.program, a.loan_type, a.rehab_type, a.accrual_type, a.property_type,
             a.units, a.property_address, a.co_borrower_id,
             a.requested_exp_flips, a.requested_exp_holds, a.requested_exp_ground,

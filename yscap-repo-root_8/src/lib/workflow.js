@@ -326,6 +326,43 @@ async function listQueue(staffId, { tab = 'next', sort = 'received', type = null
   return r.rows;
 }
 
+// The roles that HAVE a workflow queue (for the admin/super_admin oversight
+// picker). Each is viewed as its OWN separate workflow — never merged together.
+const WORKFLOW_ROLES = ['processor', 'closer', 'draw_coordinator', 'underwriter', 'super_admin'];
+
+// ADMIN/SUPER_ADMIN oversight: every live item in ONE role's workflow (all people
+// who hold that role + that role's unclaimed inbox). This is a SEPARATE per-workflow
+// view (the closer workflow, the processing workflow, the draw workflow…), not a
+// merged "everyone" list. Returns the same row shape as the personal queue PLUS
+// `to_name`/`to_staff_role` (whose queue each item is in).
+async function listByRole(role, { sort = 'received', type = null } = {}, client = db) {
+  const params = [role];
+  let typeClause = '';
+  if (type && TYPES[type]) { params.push(type); typeClause = ` AND w.submission_type = $${params.length}`; }
+  const orderBy = SORTS[sort] || SORTS.received;
+  const r = await client.query(
+    `SELECT w.id, w.application_id, w.submission_type, w.status, w.priority, w.note,
+            w.est_closing_date, w.received_at, w.picked_up_at, w.to_role, w.due_at, w.auto,
+            EXTRACT(EPOCH FROM (now() - w.received_at)) AS age_seconds,
+            CASE WHEN w.due_at IS NULL THEN NULL
+                 WHEN now() >= w.due_at THEN 'overdue'
+                 WHEN now() >= w.received_at + (w.due_at - w.received_at) * 0.75 THEN 'at_risk'
+                 ELSE 'ok' END AS sla_state,
+            a.ys_loan_number, a.property_address, a.status AS app_status,
+            b.first_name, b.last_name,
+            fr.full_name AS from_name, ts.full_name AS to_name, ts.role AS to_staff_role
+       FROM workflow_items w
+       JOIN applications a ON a.id = w.application_id
+       JOIN borrowers b ON b.id = a.borrower_id
+       LEFT JOIN staff_users fr ON fr.id = w.from_staff_id
+       LEFT JOIN staff_users ts ON ts.id = w.to_staff_id
+      WHERE w.status IN ('open','in_progress') AND a.deleted_at IS NULL
+        AND (ts.role = $1 OR (w.to_staff_id IS NULL AND w.to_role = $1))
+        ${typeClause}
+      ORDER BY ${orderBy}`, params);
+  return r.rows;
+}
+
 // Recipients with overdue live items — for the scheduled aging nudge (db/213).
 // Returns [{ to_staff_id, full_name, email, overdue }]. Best-effort read.
 async function overdueByRecipient(client = db) {
@@ -369,10 +406,11 @@ async function queueCounts(staffId, client = db) {
 // fully_reconciled. The route drives the linked ClickUp status via the status
 // door (fully_closed → funded). Here we just record the stage + timestamps.
 // ---------------------------------------------------------------------------
-const CLOSING_STAGES = ['estimated', 'ready_for_docs', 'wire_sent', 'fully_closed', 'fully_reconciled'];
+const CLOSING_STAGES = ['estimated', 'ready_for_docs', 'wire_sent', 'fully_closed', 'fully_reconciled', 'in_purchasing'];
 const CLOSING_STAGE_AT = {
   ready_for_docs: 'ready_for_docs_at', wire_sent: 'wire_sent_at',
   fully_closed: 'fully_closed_at', fully_reconciled: 'fully_reconciled_at',
+  in_purchasing: 'purchasing_at',
 };
 // The ClickUp internal status each closing stage maps to (null = leave status).
 const CLOSING_STAGE_STATUS = {
@@ -380,6 +418,8 @@ const CLOSING_STAGE_STATUS = {
   wire_sent: 'active closing',
   fully_closed: 'closed (6-email funded)',
   fully_reconciled: 'closed reconciled',
+  // Investor delivery + reconciled → the file goes to purchasing / post-closing.
+  in_purchasing: 'in purchase review',
 };
 
 async function getClosing(appId, client = db) {
@@ -387,16 +427,33 @@ async function getClosing(appId, client = db) {
   return r.rows[0] || null;
 }
 
-// Create/refresh the closing row at 'estimated' with the estimated closing date.
-async function openClosing(client, { appId, workflowItemId, estClosingDate, actorId }) {
+// Create/refresh the closing row at 'estimated' with the estimated closing date,
+// plus the loan officer's submit answers (investor CTC'd, closing date confirmed
+// with all parties). The two flags are captured on the officer's submit and stamp
+// _at/_by when set true; a false/omitted flag never clears an existing true.
+async function openClosing(client, { appId, workflowItemId, estClosingDate, actorId, investorCtc, closingDateConfirmed }) {
+  const setCtc = investorCtc === true;
+  const setConf = closingDateConfirmed === true;
   const r = await client.query(
-    `INSERT INTO closing_workflow (application_id, workflow_item_id, stage, est_closing_date, updated_by)
-     VALUES ($1,$2,'estimated',$3,$4)
+    `INSERT INTO closing_workflow
+       (application_id, workflow_item_id, stage, est_closing_date, updated_by,
+        investor_ctc, investor_ctc_at, investor_ctc_by,
+        closing_date_confirmed, closing_date_confirmed_at, closing_date_confirmed_by)
+     VALUES ($1,$2,'estimated',$3,$4,
+        $5, CASE WHEN $5 THEN now() END, CASE WHEN $5 THEN $4 END,
+        $6, CASE WHEN $6 THEN now() END, CASE WHEN $6 THEN $4 END)
      ON CONFLICT (application_id) DO UPDATE
         SET workflow_item_id = EXCLUDED.workflow_item_id,
             est_closing_date = COALESCE(EXCLUDED.est_closing_date, closing_workflow.est_closing_date),
+            investor_ctc = closing_workflow.investor_ctc OR EXCLUDED.investor_ctc,
+            investor_ctc_at = COALESCE(closing_workflow.investor_ctc_at, EXCLUDED.investor_ctc_at),
+            investor_ctc_by = COALESCE(closing_workflow.investor_ctc_by, EXCLUDED.investor_ctc_by),
+            closing_date_confirmed = closing_workflow.closing_date_confirmed OR EXCLUDED.closing_date_confirmed,
+            closing_date_confirmed_at = COALESCE(closing_workflow.closing_date_confirmed_at, EXCLUDED.closing_date_confirmed_at),
+            closing_date_confirmed_by = COALESCE(closing_workflow.closing_date_confirmed_by, EXCLUDED.closing_date_confirmed_by),
             updated_by = EXCLUDED.updated_by, updated_at = now()
-     RETURNING *`, [appId, workflowItemId || null, estClosingDate || null, actorId || null]);
+     RETURNING *`,
+    [appId, workflowItemId || null, estClosingDate || null, actorId || null, setCtc, setConf]);
   return r.rows[0];
 }
 
@@ -421,6 +478,6 @@ module.exports = {
   TYPES, TYPE_KEYS, typeConfig, OUTCOME_LABELS, SLA_HOURS, slaHoursFor,
   candidatesForRole, allActiveStaff,
   conditionsClearedPct, fileLiveItems, fileTimeline,
-  submitItem, pickItem, returnItem, listQueue, queueCounts, overdueByRecipient,
+  submitItem, pickItem, returnItem, listQueue, listByRole, WORKFLOW_ROLES, queueCounts, overdueByRecipient,
   CLOSING_STAGES, getClosing, openClosing, advanceClosing,
 };
