@@ -598,7 +598,17 @@ if (require.main === module) {
       const db = require('./db');
       const { startWorker } = require('./pipeline/worker');
       const { makePacketControlProcessor } = require('./pipeline/packet-control-processor');
-      startWorker({ db, cfg, processor: makePacketControlProcessor() });
+      // Phase 3b — when UW_PIPELINE_V2_READ is on, inject the REAL document-provider adapters so
+      // the shadow worker READS each document for real (loads its bytes → primary OCR engine) and
+      // records the actual read outcome. This stays ADVISORY: the read writes only the V2 audit
+      // tables, never a loan file. With the switch OFF (default) no adapters are injected, so the
+      // shadow line only PLANS a route — behavior-identical to before. Kill-switch: unset the var.
+      let adapters = null;
+      if (cfg.pipeline && cfg.pipeline.v2ReadEnabled) {
+        try { adapters = require('./pipeline/provider-adapters').buildDocumentAdapters(); }
+        catch (e2) { console.warn('pipeline v2 adapters not built:', e2.message); adapters = null; }
+      }
+      startWorker({ db, cfg, processor: makePacketControlProcessor(adapters ? { adapters } : {}) });
     } catch (e) { console.warn('pipeline worker not started:', e.message); }
     // Loan-officer Notification Center drainer — schedules parked drafts,
     // auto-sends the untouched ones past the SLA, wakes snoozed rows. Kill-switch
