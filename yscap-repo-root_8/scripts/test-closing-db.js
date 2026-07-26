@@ -112,6 +112,28 @@ const ok = (c, n) => { assert.ok(c, n); console.log(`  ok  ${n}`); passed++; };
     ok(lists.length === 1 && lists[0].items.length === 2, 'closer checklist create + read works');
     ok(lists[0].provider === 'Blue Lake', 'per-capital-provider checklist label preserved');
 
+    // Check off a checklist item — the SAME UPDATE the toggle route runs. The
+    // actor id ($3) is a bare parameter inside CASE WHEN…THEN, so without a ::uuid
+    // cast Postgres pins it to text and the uuid column write throws a 500.
+    const item0 = lists[0].items[0].id;
+    await client.query(
+      `UPDATE closing_checklist_items SET checked=$2,
+          checked_by = CASE WHEN $2 THEN $3::uuid ELSE NULL END,
+          checked_at = CASE WHEN $2 THEN now() ELSE NULL END WHERE id=$1`,
+      [item0, true, actor.id]);
+    const checkedRow = (await client.query(
+      `SELECT checked, checked_by FROM closing_checklist_items WHERE id=$1`, [item0])).rows[0];
+    ok(checkedRow.checked === true && checkedRow.checked_by === actor.id, 'checklist item check-off stamps the actor (no uuid/text type error)');
+    // Un-check must also not throw (the ELSE NULL branch).
+    await client.query(
+      `UPDATE closing_checklist_items SET checked=$2,
+          checked_by = CASE WHEN $2 THEN $3::uuid ELSE NULL END,
+          checked_at = CASE WHEN $2 THEN now() ELSE NULL END WHERE id=$1`,
+      [item0, false, actor.id]);
+    const uncheckedRow = (await client.query(
+      `SELECT checked, checked_by FROM closing_checklist_items WHERE id=$1`, [item0])).rows[0];
+    ok(uncheckedRow.checked === false && uncheckedRow.checked_by === null, 'checklist item un-check clears the actor');
+
     await client.query('ROLLBACK');
     console.log(`test-closing-db: ${passed} checks passed`);
   } catch (e) {
