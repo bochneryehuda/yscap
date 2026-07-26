@@ -39,7 +39,7 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
     const { id: jobId } = await jq.enqueue(pool, { documentFamily: 'bank_statement', idempotencyKey: MARK, payload: {} });
     // Record a couple of stages + a route (as the processor would).
     await jq.recordStage(pool, jobId, 'intake', 'completed', { note: 'ok' });
-    await jq.recordStage(pool, jobId, 'packet_control', 'completed', { primary: 'azure' });
+    await jq.recordStage(pool, jobId, 'route_plan', 'completed', { primary: 'azure' });
     await jq.recordStage(pool, jobId, 'ocr_layout', 'not_applicable', { note: 'shadow' });
     await require(R + '/src/pipeline/processing-router').recordRoute(pool, {
       jobId, documentFamily: 'bank_statement', provider: 'azure', service: 'document_intelligence',

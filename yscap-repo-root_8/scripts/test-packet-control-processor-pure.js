@@ -3,7 +3,7 @@
  * Pipeline V2 (owner-directed 2026-07-26) — packet-control job processor
  * (src/pipeline/packet-control-processor.js). Pure: no DB, no network.
  *
- * Proves: the processor records the stage manifest in order (intake→packet_control→ocr_layout→
+ * Proves: the processor records the stage manifest in order (intake→route_plan→ocr_layout→
  * classification); in SHADOW (no adapters) it plans + records the route but records the read
  * stages not_applicable; with adapters it drives the real read path; and it NEVER throws — a
  * router that throws → the stage is recorded failed_retryable and a retryable outcome returned.
@@ -46,13 +46,13 @@ function fakeRouter(plan, recorded) {
     ok(out.status === 'completed', 'shadow: processor completes');
     const keys = jq.stages.map((s) => s.key + ':' + s.status);
     ok(keys[0] === 'intake:completed', 'first stage: intake completed');
-    ok(keys.includes('packet_control:running') && keys.includes('packet_control:completed'), 'packet_control running→completed recorded');
+    ok(keys.includes('route_plan:running') && keys.includes('route_plan:completed'), 'route_plan running→completed recorded');
     ok(keys.includes('ocr_layout:not_applicable') && keys.includes('classification:not_applicable'), 'shadow: read stages not_applicable');
     ok(recorded.length === 1 && recorded[0].provider === 'azure' && recorded[0].outcome === 'planned', 'shadow: one route row recorded, planned');
     ok(recorded[0].jobId === 'job-1' && recorded[0].documentId === 'doc-1' && recorded[0].loanId === 'loan-1', 'route row links job/document/loan from the job');
-    // ordering: intake before packet_control before read stages
+    // ordering: intake before route_plan before read stages
     const order = jq.stages.map((s) => s.key);
-    ok(order.indexOf('intake') < order.indexOf('packet_control') && order.indexOf('packet_control') < order.indexOf('ocr_layout'), 'stage order intake→packet_control→ocr_layout');
+    ok(order.indexOf('intake') < order.indexOf('route_plan') && order.indexOf('route_plan') < order.indexOf('ocr_layout'), 'stage order intake→route_plan→ocr_layout');
   }
 
   // ---- READ PATH: adapters injected + a real adapter engine + bytes loaded → ocr_layout completed ----
@@ -156,7 +156,7 @@ function fakeRouter(plan, recorded) {
     const proc = PC.makePacketControlProcessor({ router: throwingRouter });
     const out = await proc(job, { db: {}, jq });
     ok(out.status === 'failed' && out.retryable === true, 'router throw → failed retryable outcome (never throws)');
-    ok(jq.stages.some((s) => s.key === 'packet_control' && s.status === 'failed_retryable'), 'router throw → packet_control failed_retryable recorded');
+    ok(jq.stages.some((s) => s.key === 'route_plan' && s.status === 'failed_retryable'), 'router throw → route_plan failed_retryable recorded');
   }
 
   // ---- recordStage that throws is swallowed (best-effort) — processor still completes ----
