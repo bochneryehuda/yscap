@@ -116,3 +116,46 @@ Every finding, from every producer:
 
 **Backfill:** all of this must apply to EXISTING files, not just new ones — per the standing
 "previous AND future" rule.
+
+---
+
+## CORRECTION to ROOT 2, after reading the code (2026-07-26)
+
+The per-rule dispositions the owner dictated are **already implemented and already correct**. Every
+rule they named carries an explicit disposition in `corrfirst-fnf-spec.js` (scope
+`all_note_buyers`, which is why they render under "Blue Lake Capital requires…"):
+
+| Rule | cond_no | disposition already set |
+|---|---|---|
+| E-mail address for borrower | 1009 | `file_data` + `data_field: borrower_email` |
+| Appraisal transfer requirements | 3349 | `appraisal` + `concern_field: appraisal_transferred` |
+| Occupancy cert | 10023 | `closing_package` |
+| Rural property verification | 3345 | domain `rural` → APPRAISAL |
+| Non-arms-length | 3333 | domain `non_arms_length` → CONCERN |
+
+`dispositionOf()` honours an explicit disposition first, the seed writes the column, and
+`db/304` created it. So the engine STOPPED raising these on 2026-07-24.
+
+**The owner's findings are timestamped 7/23/2026 11:17 PM — the day BEFORE that fix.** They are
+stale rows, not fresh output.
+
+### The actual defect: nothing ever RETRACTS a guideline finding
+
+`desk-sync.js` only ever INSERTS (`recordSuggestion` with a `dedupeKey`). There is no path that
+closes a previously-recorded coverage gap when the engine stops raising it. So:
+
+- every blank notice recorded before 2026-07-24 is still open on every file that had one, forever
+- any future rule change has the same problem — fixing a rule never cleans up what it already wrote
+- the owner sees a fix as "not fixed", because the screen is showing history, not current judgement
+
+This is why they said *"fix this also for all the previous files"* — and it is a much smaller,
+sharper fix than rewriting rules that are already right.
+
+**REVISED ITEM 2:** make the guideline sync CONVERGENT rather than append-only. On each run,
+compute the set of gaps/conflicts/concerns the desk currently raises for the file and CLOSE any
+open `investor_guideline_desk` row whose dedupeKey is not in that set — untouched rows only, so a
+human decision (escalated / converted to a condition / dismissed) is never overwritten. Then a
+one-time backfill applies it to every existing file.
+
+**Do NOT rewrite the dispositions.** They are correct. Verify with a test that each named rule stays
+silent, so the correctness is pinned, then build the retraction.
