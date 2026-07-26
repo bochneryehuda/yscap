@@ -25,8 +25,11 @@ import PdfViewer from './PdfViewer.jsx';
  *   onClose    () => void
  *   initialPage optional 1-based page to open a PDF at (findings "open the
  *               source document to page N").
+ *   highlight   optional string — text to soft-highlight (see PdfViewer).
+ *   highlightBoxes optional [{page,polygon}] — precise evidence boxes (R5.17),
+ *               passed straight to PdfViewer.
  */
-export default function DocPreview({ title, filename, contentType, load, onDownload, onClose, initialPage, highlight }) {
+export default function DocPreview({ title, filename, contentType, load, onDownload, onClose, initialPage, highlight, highlightBoxes }) {
   const [state, setState] = useState({ status: 'loading' });   // loading | ready | error
   const urlRef = useRef(null);
 
@@ -92,7 +95,7 @@ export default function DocPreview({ title, filename, contentType, load, onDownl
         <div style={{ flex: 1, minHeight: 320, background: 'var(--ink-2)', borderRadius: 10, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           {state.status === 'loading' && <span className="muted">Loading preview…</span>}
           {state.status === 'error' && <span className="notice err" style={{ margin: 16 }}>{state.error}</span>}
-          {state.status === 'ready' && state.kind === 'pdf' && <PdfViewer data={state.data} onError={pdfFailed} initialPage={initialPage} highlight={highlight} />}
+          {state.status === 'ready' && state.kind === 'pdf' && <PdfViewer data={state.data} onError={pdfFailed} initialPage={initialPage} highlight={highlight} highlightBoxes={highlightBoxes} />}
           {state.status === 'ready' && state.kind === 'pdf-native' && (
             // The browser's native PDF viewer honors the #page=N fragment.
             <iframe title={state.filename || 'document'} src={initialPage ? `${state.pdfUrl}#page=${initialPage}` : state.pdfUrl}
