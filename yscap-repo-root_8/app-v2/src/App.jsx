@@ -83,6 +83,17 @@ function StaffPrivate({ children }) {
   return <StaffLayout>{children}</StaffLayout>;
 }
 
+/* Internal ADMIN-only area (admin + super_admin). A non-admin staffer who lands
+   here directly (typed URL / old bookmark) is bounced to the staff home. */
+function StaffAdminPrivate({ children }) {
+  const { isAuthed, isStaff, role } = useAuth();
+  const loc = useLocation();
+  if (!isAuthed) return <Navigate to="/internal/login" state={{ from: loc.pathname + loc.search }} replace />;
+  if (!isStaff) return <Navigate to="/dashboard" replace />;
+  if (role !== 'admin' && role !== 'super_admin') return <Navigate to="/internal" replace />;
+  return <StaffLayout>{children}</StaffLayout>;
+}
+
 /* Anyone hitting an unknown path: route by who they are. */
 function Fallback() {
   const { isAuthed, isStaff } = useAuth();
@@ -172,7 +183,7 @@ export default function App() {
           <Route path="/internal/clickup" element={<StaffPrivate><StaffClickup /></StaffPrivate>} />
           <Route path="/internal/draws" element={<StaffPrivate><StaffDraws /></StaffPrivate>} />
           <Route path="/internal/draw-rules" element={<StaffPrivate><StaffDrawRules /></StaffPrivate>} />
-          <Route path="/internal/tapes" element={<StaffPrivate><StaffTapes /></StaffPrivate>} />
+          <Route path="/internal/tapes" element={<StaffAdminPrivate><StaffTapes /></StaffAdminPrivate>} />
           <Route path="/internal/audit" element={<StaffPrivate><StaffAuditLog /></StaffPrivate>} />
           <Route path="/internal/sync-reviews" element={<StaffPrivate><SyncReviews /></StaffPrivate>} />
           <Route path="/internal/esign" element={<StaffPrivate><EsignDashboard /></StaffPrivate>} />

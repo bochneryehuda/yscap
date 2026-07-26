@@ -275,7 +275,7 @@ router.get('/applications/export', async (req, res) => {
 // export); the per-loan endpoints live under /applications/:id (scoped there).
 
 // List the tape types the system knows how to export (one per capital provider).
-router.get('/tapes', async (req, res) => {
+router.get('/tapes', requireRole('admin'), async (req, res) => {
   try { res.json({ tapes: require('../lib/tapes').registry.listTapes() }); }
   catch (e) { console.error('[tapes list]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
@@ -283,7 +283,7 @@ router.get('/tapes', async (req, res) => {
 // List the loans eligible for a provider's BULK tape — i.e. every non-deleted
 // file whose capital provider (normalized) matches this tape's buyer, scoped to
 // what the staffer may see. This is the picker the bulk-export screen shows.
-router.get('/tapes/:tapeKey/loans', async (req, res) => {
+router.get('/tapes/:tapeKey/loans', requireRole('admin'), async (req, res) => {
   try {
     const tape = require('../lib/tapes').registry.getTape(req.params.tapeKey);
     if (!tape) return res.status(404).json({ error: 'unknown tape type' });
@@ -313,7 +313,7 @@ router.get('/tapes/:tapeKey/loans', async (req, res) => {
 // { applicationIds: [uuid, ...] }. Every loan must belong to this provider (the
 // builder rejects the whole batch, listing any that don't); the requested ids
 // are first narrowed to what the staffer may see.
-router.post('/tapes/:tapeKey/export/bulk', async (req, res) => {
+router.post('/tapes/:tapeKey/export/bulk', requireRole('admin'), async (req, res) => {
   try {
     const tapes = require('../lib/tapes');
     const tape = tapes.registry.getTape(req.params.tapeKey);
@@ -3101,7 +3101,7 @@ router.get('/applications/:id/export/mismo', async (req, res) => {
 
 // Which tape(s) can THIS loan export (based on its current capital provider),
 // and for the ones it can't, a plain-language reason. Scoped by the :id middleware.
-router.get('/applications/:id/tapes', async (req, res) => {
+router.get('/applications/:id/tapes', requireRole('admin'), async (req, res) => {
   try {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.id)) return res.status(404).json({ error: 'not found' });
     const tapes = require('../lib/tapes');
@@ -3117,7 +3117,7 @@ router.get('/applications/:id/tapes', async (req, res) => {
 // filled — chiefly the New-Construction-only Fidelis fields. Returns the still-
 // unanswered ones (with dropdown options); the export UI asks these, then exports
 // with the answers. Empty for a loan whose tape needs nothing extra.
-router.get('/applications/:id/export/tape/:tapeKey/questions', async (req, res) => {
+router.get('/applications/:id/export/tape/:tapeKey/questions', requireRole('admin'), async (req, res) => {
   try {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.id)) return res.status(404).json({ error: 'not found' });
     const tapes = require('../lib/tapes');
@@ -3136,7 +3136,7 @@ router.get('/applications/:id/export/tape/:tapeKey/questions', async (req, res) 
 // a super-admin override). The capital-provider match is enforced in buildTape.
 // New-construction questionnaire answers ride in as query params and are saved
 // to the loan (so a later export doesn't re-ask) before the tape is built.
-router.get('/applications/:id/export/tape/:tapeKey', async (req, res) => {
+router.get('/applications/:id/export/tape/:tapeKey', requireRole('admin'), async (req, res) => {
   try {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.id)) return res.status(404).json({ error: 'not found' });
     const tapes = require('../lib/tapes');
