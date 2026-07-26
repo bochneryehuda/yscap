@@ -109,6 +109,31 @@ function buildOurValues(app, quote, llcName) {
 // real value move does.
 function snap(v) { return v === null || v === undefined ? '' : String(v); }
 
+// The registry fields a user may "pull the Encompass value into our file" for
+// (WO-C). Each maps a field key → the SINGLE applications column it writes and a
+// coercion of the (already-extracted) Encompass value into that column's shape.
+// ONLY fields with an unambiguous single-column home + a safe value translation
+// are here — compute-only (quote-derived), reference, and heuristically-derived
+// (deal_type) fields are intentionally NOT writable. The column names are fixed
+// constants (never from the request), so interpolating `w.col` into the UPDATE
+// is injection-safe. `map._internals.num`/`normDate` + `map.mapValue` do the
+// coercion so our column stays in OUR vocabulary (e.g. Encompass 'Drawn' →
+// 'non_dutch'). This is the ONLY write the sync makes — into our own column.
+const WRITABLE = {
+  loan_amount:        { col: 'loan_amount',                to: (t) => map._internals.num(t) },
+  purchase_price:     { col: 'purchase_price',             to: (t) => map._internals.num(t) },
+  contract_price:     { col: 'underlying_contract_price',  to: (t) => map._internals.num(t) },
+  assignment_fee:     { col: 'assignment_fee',             to: (t) => map._internals.num(t) },
+  rehab_budget:       { col: 'rehab_budget',               to: (t) => map._internals.num(t) },
+  as_is_value:        { col: 'as_is_value',                to: (t) => map._internals.num(t) },
+  arv:                { col: 'arv',                        to: (t) => map._internals.num(t) },
+  actual_initial_ltv: { col: 'ltv',                        to: (t) => map._internals.num(t) },
+  note_rate:          { col: 'rate_pct',                   to: (t) => map._internals.num(t) },
+  term_months:        { col: 'term',                       to: (t) => { const n = map._internals.num(t); return n == null ? null : String(Math.round(n)); } },
+  maturity_date:      { col: 'maturity_date',              to: (t) => map._internals.normDate(t) },
+  accrual_type:       { col: 'accrual_type',               to: (t) => map.mapValue('accrual', t) },
+};
+
 // ── Pure: compare all registry fields, fold in persisted resolutions ────────
 // `theirs` = extractFields(encompass_extra); `ours` = buildOurValues(...);
 // `resolutions` = { field_key: { resolution, ours_snapshot, theirs_snapshot } }.
@@ -135,7 +160,10 @@ function compareAll(ours, theirs, resolutions) {
       gate: cmp.gate,
       ours: cmp.ours,
       theirs: cmp.theirs,
+      oursNorm: cmp.oursNorm,
+      theirsNorm: cmp.theirsNorm,
       status: cmp.status,          // match | mismatch | incomparable | reference
+      writable: Object.prototype.hasOwnProperty.call(WRITABLE, e.key), // can "use Encompass value"?
       open,                        // an unresolved mismatch
       resolution,                  // 'replaced' | 'accepted' | null
     });
@@ -232,6 +260,70 @@ async function isClear(appId, dbc) {
   return { clear: c.summary.clear, hasLoan: c.hasLoan, openBlocking: c.summary.openBlocking, openBlockingKeys: c.summary.openBlockingKeys };
 }
 
+// ── Pull one Encompass value into our column (WO-C) ─────────────────────────
+// One-directional (Encompass → us), writes exactly ONE applications column,
+// records the resolution as provenance, and returns the refreshed field. Any
+// assigned staff may do this (owner-directed). Never writes to Encompass.
+async function replaceField(appId, fieldKey, staffId, dbc) {
+  // hasOwnProperty (not `WRITABLE[fieldKey]`) so a prototype key like '__proto__'
+  // or 'constructor' can never resolve to a truthy inherited value.
+  if (!Object.prototype.hasOwnProperty.call(WRITABLE, fieldKey)) return { ok: false, reason: 'not_writable' };
+  // A caller-supplied client (e.g. the DB test) already owns its transaction — run
+  // on it directly. Otherwise wrap the column write + the resolution/provenance
+  // INSERT in ONE transaction so they commit atomically (never a pulled value
+  // without its recorded resolution).
+  if (dbc) return _doReplace(dbc, appId, fieldKey, staffId);
+  const db = require('../db');
+  const client = await db.getClient();
+  try {
+    await client.query('BEGIN');
+    const r = await _doReplace(client, appId, fieldKey, staffId);
+    await client.query(r.ok ? 'COMMIT' : 'ROLLBACK');
+    return r;
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+async function _doReplace(c, appId, fieldKey, staffId) {
+  const w = WRITABLE[fieldKey];
+  const cur = await computeFindings(appId, c);
+  if (!cur.found) return { ok: false, reason: 'not_found' };
+  if (!cur.hasLoan) return { ok: false, reason: 'no_loan' };
+  const f = cur.fields.find((x) => x.key === fieldKey);
+  if (!f) return { ok: false, reason: 'unknown_field' };
+  if (f.theirs === null || f.theirs === undefined || f.theirs === '') return { ok: false, reason: 'no_encompass_value' };
+  const writeVal = w.to(f.theirs);
+  if (writeVal === null || writeVal === undefined) return { ok: false, reason: 'uncoercible' };
+  const before = f.ours;
+
+  // w.col is a fixed constant from WRITABLE (never request-derived) → injection-safe.
+  await c.query(`UPDATE applications SET ${w.col} = $1, updated_at = now() WHERE id = $2 AND deleted_at IS NULL`, [writeVal, appId]);
+
+  // Recompute to snapshot the now-normalized pair and confirm the field settled.
+  const after = await computeFindings(appId, c);
+  const nf = after.fields.find((x) => x.key === fieldKey) || f;
+  await c.query(
+    `INSERT INTO encompass_sync_resolutions (application_id, field_key, resolution, ours_snapshot, theirs_snapshot, resolved_by, note)
+       VALUES ($1,$2,'replaced',$3,$4,$5,$6)
+     ON CONFLICT (application_id, field_key) DO UPDATE
+       SET resolution='replaced', ours_snapshot=EXCLUDED.ours_snapshot, theirs_snapshot=EXCLUDED.theirs_snapshot,
+           resolved_by=EXCLUDED.resolved_by, resolved_at=now(), note=EXCLUDED.note`,
+    [appId, fieldKey, snap(nf.oursNorm), snap(nf.theirsNorm), staffId || null, 'pulled from Encompass']);
+
+  return { ok: true, field: nf, column: w.col, before, wrote: writeVal, status: nf.status };
+}
+
+// Manual READ-ONLY re-pull + fresh comparison (WO-C /refresh).
+async function refresh(appId, dbc) {
+  const pull = await onLoanNumberSet(appId); // read-only, best-effort
+  const findings = await computeFindings(appId, dbc);
+  return Object.assign({ pull }, findings);
+}
+
 // ── The immediate pull at loan-number set (WO-B) ────────────────────────────
 // Best-effort: pull the matching Encompass loan so a freshly-numbered file syncs
 // at once. NEVER throws — a pull failure is stamped by the reader into
@@ -253,6 +345,9 @@ module.exports = {
   summarize,
   computeFindings,
   isClear,
+  replaceField,
+  refresh,
   onLoanNumberSet,
-  _internals: { snap },
+  WRITABLE,
+  _internals: { snap, deriveDealType },
 };

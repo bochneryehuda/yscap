@@ -6374,6 +6374,58 @@ router.post('/applications/:id/loan-number', async (req, res) => {
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
+// ── Encompass sync (READ-ONLY per-file reconcile) — WO-C ─────────────────────
+// All four live under the `/applications/:id` middleware (line ~272), so any
+// staff assigned to the file may read the comparison, refresh it, or pull a
+// value into our column (owner-directed: not admin-only). None of these ever
+// writes to Encompass — /refresh does a READ-ONLY pull; /replace writes exactly
+// one of OUR columns.
+router.get('/applications/:id/encompass/status', async (req, res) => {
+  try {
+    const c = await require('../encompass/reconcile').computeFindings(req.params.id);
+    if (!c.found) return res.status(404).json({ error: 'application not found' });
+    res.json({ hasLoan: c.hasLoan, guid: c.guid, loanNumber: c.loanNumber, pulledAt: c.pulledAt, lastError: c.lastError, priced: c.priced, summary: c.summary });
+  } catch (e) { console.warn('[staff] encompass status:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+router.get('/applications/:id/encompass/findings', async (req, res) => {
+  try {
+    const c = await require('../encompass/reconcile').computeFindings(req.params.id);
+    if (!c.found) return res.status(404).json({ error: 'application not found' });
+    res.json(c);
+  } catch (e) { console.warn('[staff] encompass findings:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/applications/:id/encompass/refresh', async (req, res) => {
+  try {
+    const c = await require('../encompass/reconcile').refresh(req.params.id);
+    if (!c.found) return res.status(404).json({ error: 'application not found' });
+    await audit(req, 'encompass_refresh', 'application', req.params.id, { pulled: !!(c.pull && c.pull.ok), reason: (c.pull && c.pull.reason) || null });
+    res.json(c);
+  } catch (e) { console.warn('[staff] encompass refresh:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/applications/:id/encompass/replace', async (req, res) => {
+  try {
+    const fieldKey = String((req.body || {}).fieldKey || '').trim();
+    if (!fieldKey) return res.status(400).json({ error: 'fieldKey is required' });
+    const r = await require('../encompass/reconcile').replaceField(req.params.id, fieldKey, req.actor && req.actor.id);
+    if (!r.ok) {
+      const msg = {
+        not_writable: 'This field can’t be pulled from Encompass directly.',
+        not_found: 'Application not found.',
+        no_loan: 'No Encompass loan has been pulled for this file yet.',
+        unknown_field: 'Unknown field.',
+        no_encompass_value: 'Encompass has no value for this field.',
+        uncoercible: 'The Encompass value could not be read into our field.',
+      }[r.reason] || 'Could not pull this value.';
+      return res.status(r.reason === 'not_found' ? 404 : 400).json({ error: msg, reason: r.reason });
+    }
+    await audit(req, 'encompass_field_replace', 'application', req.params.id, { field: fieldKey, column: r.column, from: r.before, to: r.wrote });
+    res.json(r);
+  } catch (e) { console.warn('[staff] encompass replace:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
 // Nudge the borrower with a friendly reminder of what's still outstanding on
 // their file (borrower-facing checklist items + open borrower conditions).
 router.post('/applications/:id/nudge', async (req, res) => {

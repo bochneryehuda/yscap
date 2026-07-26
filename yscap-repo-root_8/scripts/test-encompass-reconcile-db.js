@@ -1,6 +1,7 @@
 'use strict';
 /*
- * WO-B — DB-gated test for the Encompass reconcile service's LIVE query.
+ * WO-B / WO-C — DB-gated test for the Encompass reconcile service's LIVE query
+ * and the "pull one Encompass value into our column" write path.
  *
  * computeFindings runs a real SELECT over applications + llcs (and
  * product_registrations + encompass_sync_resolutions). A pure test mocks the DB,
@@ -83,8 +84,40 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
     assert.strictEqual(gate.clear, false, 'isClear agrees the findings tab is not clear');
     ok('a money change opens a blocking finding and un-clears the term-sheet gate');
 
+    // 4. Pull the Encompass value into our column (WO-C) → our column is updated,
+    //    the field matches, the gate clears, and a resolution row is recorded.
+    const rep = await recon.replaceField(app.id, 'loan_amount', null, client);
+    assert.strictEqual(rep.ok, true, 'replaceField succeeded');
+    assert.strictEqual(rep.wrote, 525450, 'wrote the Encompass value into our column');
+    const col = (await client.query(`SELECT loan_amount FROM applications WHERE id=$1`, [app.id])).rows[0];
+    assert.strictEqual(Number(col.loan_amount), 525450, 'applications.loan_amount now equals Encompass');
+    const after = await recon.computeFindings(app.id, client);
+    assert.strictEqual(after.fields.find((f) => f.key === 'loan_amount').status, 'match', 'the field now matches');
+    assert.strictEqual(after.summary.clear, true, 'the gate clears once the value is pulled');
+    const resn = (await client.query(`SELECT resolution FROM encompass_sync_resolutions WHERE application_id=$1 AND field_key='loan_amount'`, [app.id])).rows[0];
+    assert.strictEqual(resn.resolution, 'replaced', 'a "replaced" resolution row was recorded');
+    // a compute-only field is NOT writable
+    const bad = await recon.replaceField(app.id, 'final_initial_loan', null, client);
+    assert.strictEqual(bad.ok, false, 'a compute-only field cannot be pulled');
+    assert.strictEqual(bad.reason, 'not_writable');
+    ok('replaceField pulls one Encompass value into our column, clears the gate, and blocks non-writable fields');
+
+    // 5. Enum coercion: our 'dutch' vs Encompass 'Drawn' → pulling writes our token 'non_dutch'.
+    await client.query(`UPDATE applications SET accrual_type = 'dutch' WHERE id = $1`, [app.id]);
+    assert.strictEqual((await recon.computeFindings(app.id, client)).fields.find((f) => f.key === 'accrual_type').status, 'mismatch', 'accrual now differs');
+    const repAcc = await recon.replaceField(app.id, 'accrual_type', null, client);
+    assert.strictEqual(repAcc.ok, true, 'accrual replace succeeded');
+    assert.strictEqual(repAcc.wrote, 'non_dutch', 'Encompass "Drawn" → our "non_dutch" token');
+    assert.strictEqual((await client.query(`SELECT accrual_type FROM applications WHERE id=$1`, [app.id])).rows[0].accrual_type, 'non_dutch', 'accrual column updated to our vocabulary');
+
+    // 6. A writable field Encompass did not return → no_encompass_value (never a garbage write).
+    const noVal = await recon.replaceField(app.id, 'assignment_fee', null, client);
+    assert.strictEqual(noVal.ok, false);
+    assert.strictEqual(noVal.reason, 'no_encompass_value', 'refused a field with no Encompass value');
+    ok('replace coerces an enum to our vocabulary and refuses a field Encompass has no value for');
+
     await client.query('ROLLBACK');
-    console.log(`\nWO-B Encompass reconcile DB — ${passed} checks passed`);
+    console.log(`\nWO-B/C Encompass reconcile DB — ${passed} checks passed`);
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('FAIL test-encompass-reconcile-db:', e && e.message ? e.message : e);
