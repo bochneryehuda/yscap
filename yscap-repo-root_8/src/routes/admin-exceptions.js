@@ -31,15 +31,20 @@
  *                            be withdrawn or decided first — never buried).
  *   • GET/POST /:id/comments — the staff-only thread (type-aware copy).
  *
- * Segregation of duties: the approver cannot be the requester (enforced here).
- * The super-admin-only decide gate is owner policy — do NOT relax it without
- * the owner's explicit written direction. Requesting + withdrawing are
- * file-scoped and live in staff.js behind the /applications/:id middleware.
+ * Segregation of duties: the approver cannot be the requester (enforced here) —
+ * this stays regardless of who may decide.
+ * Decide gate = `manage_pricing` (admins + super-admins). Owner-directed
+ * 2026-07-26 ("let any Admin approve") — WIDENED from the original
+ * super-admin-only rule. Narrowing it again is an owner decision; the
+ * requester≠approver control above is independent and must not be removed
+ * without separate owner direction. Requesting + withdrawing are file-scoped
+ * and live in staff.js behind the /applications/:id middleware.
  */
 
 const router = require('express').Router();
 const db = require('../db');
-const { requirePermission, requireRole } = require('../auth');
+const { requirePermission } = require('../auth');
+const { can } = require('../lib/permissions');
 const loanExceptions = require('../lib/loan-exceptions');
 const notify = require('../lib/notify');
 const { buildXlsx } = require('../lib/xlsx');
@@ -87,8 +92,9 @@ function registryPayload() {
 
 // The list carries borrower/property identity for every file, so it is gated to
 // manage_pricing (admins + super-admins) — never a file-scoped LO/processor.
-// Deciding is super-admin only (below). `canDecide` tells the UI which buttons
-// to show.
+// Deciding is also manage_pricing now (owner-directed 2026-07-26: "let any Admin
+// approve" — widened from super-admin-only; requester≠approver still enforced
+// below). `canDecide` tells the UI which buttons to show.
 router.get('/', requirePermission('manage_pricing'), async (req, res) => {
   try {
     const status = ['open', 'approved', 'denied', 'withdrawn', 'cleared', 'expired', 'all'].includes(req.query.status) ? req.query.status : 'open';
@@ -100,7 +106,7 @@ router.get('/', requirePermission('manage_pricing'), async (req, res) => {
     res.json({
       exceptions: rows,
       pendingCount: pending,
-      canDecide: req.actor.role === 'super_admin',
+      canDecide: can(req.actor, 'manage_pricing'),
       actorId: req.actor.id,
       ...registryPayload(),
     });
@@ -175,7 +181,7 @@ router.get('/export.xlsx', requirePermission('manage_pricing'), async (req, res)
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
-router.post('/:id/decide', requireRole('super_admin'), async (req, res) => {
+router.post('/:id/decide', requirePermission('manage_pricing'), async (req, res) => {
   try {
     const decision = req.body && req.body.decision === 'approved' ? 'approved' : 'denied';
     const note = req.body && req.body.note;
@@ -283,8 +289,8 @@ router.post('/:id/decide', requireRole('super_admin'), async (req, res) => {
           type: 'guaranty_exception_decided',
           title: decision === 'approved' ? 'Guaranty waiver approved' : 'Guaranty waiver denied',
           body: decision === 'approved'
-            ? `The request to waive ${subject}'s personal guaranty on ${ctx ? ctx.label : 'the file'} was APPROVED by a super-admin${note ? ` — ${String(note).slice(0, 200)}` : ''}. ${subject} will show as a member of the borrowing entity (not a personal guarantor). Re-issue the term sheet so it reflects the change.`
-            : `The request to waive ${subject}'s personal guaranty on ${ctx ? ctx.label : 'the file'} was DENIED by a super-admin${note ? ` — ${String(note).slice(0, 200)}` : ''}. Both borrowers remain personal guarantors (full recourse).`,
+            ? `The request to waive ${subject}'s personal guaranty on ${ctx ? ctx.label : 'the file'} was APPROVED by an administrator${note ? ` — ${String(note).slice(0, 200)}` : ''}. ${subject} will show as a member of the borrowing entity (not a personal guarantor). Re-issue the term sheet so it reflects the change.`
+            : `The request to waive ${subject}'s personal guaranty on ${ctx ? ctx.label : 'the file'} was DENIED by an administrator${note ? ` — ${String(note).slice(0, 200)}` : ''}. Both borrowers remain personal guarantors (full recourse).`,
           meta: (ctx && ctx.meta) || undefined, applicationId: row.application_id,
           link: `/internal/app/${row.application_id}`, ctaLabel: 'Open the loan file',
         });
@@ -296,8 +302,8 @@ router.post('/:id/decide', requireRole('super_admin'), async (req, res) => {
           type: 'pricing_exception_decided',
           title: decision === 'approved' ? 'Pricing exception approved' : 'Pricing exception denied',
           body: decision === 'approved'
-            ? `The pricing/guideline exception on ${ctx ? ctx.label : 'the file'} (EX-${row.exception_seq}) was APPROVED by a super-admin${note ? ` — ${String(note).slice(0, 200)}` : ''}.${validityLine} To put it into effect, a super-admin applies the approved terms in the Term Sheet Studio (admin override) and re-registers the file — the approval itself changes no numbers.`
-            : `The pricing/guideline exception on ${ctx ? ctx.label : 'the file'} (EX-${row.exception_seq}) was DENIED by a super-admin${note ? ` — ${String(note).slice(0, 200)}` : ''}. The registered product stands exactly as the program prices it.`,
+            ? `The pricing/guideline exception on ${ctx ? ctx.label : 'the file'} (EX-${row.exception_seq}) was APPROVED by an administrator${note ? ` — ${String(note).slice(0, 200)}` : ''}.${validityLine} To put it into effect, an admin applies the approved terms in the Term Sheet Studio (admin override) and re-registers the file — the approval itself changes no numbers.`
+            : `The pricing/guideline exception on ${ctx ? ctx.label : 'the file'} (EX-${row.exception_seq}) was DENIED by an administrator${note ? ` — ${String(note).slice(0, 200)}` : ''}. The registered product stands exactly as the program prices it.`,
           meta: (ctx && ctx.meta) || undefined, applicationId: row.application_id,
           link: `/internal/app/${row.application_id}#sec-pricing`, ctaLabel: 'Open the loan file',
         });
@@ -313,8 +319,8 @@ router.post('/:id/decide', requireRole('super_admin'), async (req, res) => {
           type: 'esign_before_ctc_exception_decided',
           title: decision === 'approved' ? 'Send-before-clear-to-close approved' : 'Send-before-clear-to-close denied',
           body: decision === 'approved'
-            ? `A super-admin APPROVED an exception on ${ctx ? ctx.label : 'the file'}${note ? ` — ${String(note).slice(0, 200)}` : ''}. Waived: ${waivedList || 'nothing (already resolved)'}.${requiredList ? ` STILL REQUIRED before the package can send: ${requiredList}.` : ' Every other requirement is met — the package can be sent now.'}${validityLine}`
-            : `A super-admin DENIED sending the term-sheet package on ${ctx ? ctx.label : 'the file'} early${note ? ` — ${String(note).slice(0, 200)}` : ''}. Finish the outstanding items, then it can be sent.`,
+            ? `An administrator APPROVED an exception on ${ctx ? ctx.label : 'the file'}${note ? ` — ${String(note).slice(0, 200)}` : ''}. Waived: ${waivedList || 'nothing (already resolved)'}.${requiredList ? ` STILL REQUIRED before the package can send: ${requiredList}.` : ' Every other requirement is met — the package can be sent now.'}${validityLine}`
+            : `An administrator DENIED sending the term-sheet package on ${ctx ? ctx.label : 'the file'} early${note ? ` — ${String(note).slice(0, 200)}` : ''}. Finish the outstanding items, then it can be sent.`,
           meta: (ctx && ctx.meta) || undefined, applicationId: row.application_id,
           link: `/internal/app/${row.application_id}#sec-esign`, ctaLabel: 'Open the loan file',
         });
@@ -337,10 +343,12 @@ router.post('/:id/clear', async (req, res) => {
     if (exc.status === 'requested') {
       return res.status(409).json({ error: 'This exception is still awaiting review — withdraw it (or decide it) instead of clearing it.' });
     }
-    const isSuper = req.actor.role === 'super_admin';
+    // Clearing tracks the decide policy: anyone who can decide (manage_pricing —
+    // admins + super-admins) or the person who requested it can archive a handled one.
+    const canManage = can(req.actor, 'manage_pricing');
     const isRequester = exc.requested_by && exc.requested_by === req.actor.id;
-    if (!isSuper && !isRequester) {
-      return res.status(403).json({ error: 'Only a super-admin or the person who requested it can clear an exception.' });
+    if (!canManage && !isRequester) {
+      return res.status(403).json({ error: 'Only an admin/super-admin or the person who requested it can clear an exception.' });
     }
     const note = req.body && req.body.note;
     const row = await loanExceptions.clearException(req.params.id, req.actor.id, note);
@@ -443,7 +451,7 @@ router.get('/:id/gate', async (req, res) => {
       requestSnapshot: exc.gate_snapshot || null,
       decidedGate: exc.decided_gate || null,
       waivedCodes: Array.isArray(exc.waived_codes) ? exc.waived_codes : null,
-      canDecide: req.actor.role === 'super_admin' && exc.status === 'requested'
+      canDecide: can(req.actor, 'manage_pricing') && exc.status === 'requested'
         && !(exc.requested_by && exc.requested_by === req.actor.id),
     });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
