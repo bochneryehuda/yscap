@@ -19,6 +19,7 @@
 const express = require('express');
 const router = require('../lib/safe-router')();
 const db = require('../db');
+const cfg = require('../config');
 const C = require('../lib/crypto');
 const mail = require('../lib/email/catalog');
 const perms = require('../lib/permissions');
@@ -46,20 +47,68 @@ async function issueEmailToken({ borrowerId = null, staffId = null, email = null
 }
 
 // ---------------- middleware ----------------
+/**
+ * Answer a session-level 401 with a MACHINE-READABLE reason, and log it.
+ *
+ * Every 401 the SPA sees is treated as "your session is dead" — it wipes the
+ * stored token and bounces to the login screen. So a 401 must (a) only ever be
+ * a real session problem (see the res.status chokepoint below) and (b) say
+ * WHICH problem, so the user reads "your account was turned off" instead of the
+ * catch-all "your session expired" and support isn't guessing (owner-reported
+ * 2026-07-26: staff signed out with no way to tell why).
+ */
+/* Has db/318 (revoked_sessions) landed yet? Unknown until the first query.
+   The per-device revocation check rides inside the main auth query, so if that
+   table were missing every authenticated request would 503 — a total outage on
+   a migration hiccup. Instead we FAIL OPEN once: the first failure drops the
+   sid sub-select for the life of the process (per-device sign-out degrades to
+   "the token stays valid until it expires"; nothing else changes), and the
+   query is retried immediately so the request still succeeds. */
+let _sidRevocationReady = null;   // null = unprobed, true = live, false = degraded
+
+async function sessionQuery(claims) {
+  const sid = claims.sid || null;
+  const withSid = _sidRevocationReady !== false && !!sid;
+  const revoked = withSid
+    ? `, EXISTS(SELECT 1 FROM revoked_sessions WHERE sid=$2) AS sid_revoked`
+    : `, false AS sid_revoked`;
+  const params = withSid ? [claims.sub, sid] : [claims.sub];
+  const sql = claims.kind === 'staff'
+    ? `SELECT token_version, role, permissions, is_active${revoked} FROM staff_users WHERE id=$1`
+    : `SELECT token_version${revoked} FROM borrower_auth WHERE borrower_id=$1`;
+  try {
+    const r = await db.query(sql, params);
+    if (withSid) _sidRevocationReady = true;
+    return r;
+  } catch (e) {
+    if (!withSid || _sidRevocationReady === true) throw e;   // a real DB problem
+    console.error('[auth] per-device session revocation unavailable, falling back:', db.describeError(e));
+    _sidRevocationReady = false;
+    return sessionQuery(claims);
+  }
+}
+
+function sessionDenied(req, res, code, message) {
+  // One line per rejection, so "why was I signed out" is answerable from the
+  // logs instead of reconstructed. No token, no PII — id + reason only.
+  console.warn('[auth] 401', code, req.method, req.path);
+  return res.status(401).json({ error: message, code, session: 'invalid' });
+}
+
 async function authenticate(req, res, next) {
   const raw = (req.get('authorization') || '').replace(/^Bearer\s+/i, '');
   const claims = C.verifyJwt(raw);
-  if (!claims) return res.status(401).json({ error: 'unauthenticated' });
+  if (!claims) return sessionDenied(req, res, 'bad_token', 'unauthenticated');
   // A pending-MFA challenge is NOT an access token — it only authorizes the
   // /mfa/verify step. Reject it here or the second factor is bypassable.
-  if (claims.mfa) return res.status(401).json({ error: 'mfa not completed' });
+  if (claims.mfa) return sessionDenied(req, res, 'mfa_incomplete', 'mfa not completed');
   // Access tokens are ONLY 'staff' or 'borrower'. Any other kind — the e-sign
   // magic-link tokens ('esign_magic'/'esign_return'), or any future special-purpose
   // signed token — must NEVER be usable as a Bearer session, even if its `sub`
   // happened to collide with a real id. Belt-and-suspenders alongside those tokens
   // deliberately carrying a non-borrower `sub`.
   if (claims.kind !== 'staff' && claims.kind !== 'borrower')
-    return res.status(401).json({ error: 'unauthenticated' });
+    return sessionDenied(req, res, 'wrong_token_kind', 'unauthenticated');
   // token_version check (revocation). This runs on EVERY authenticated request,
   // so a DB blip here must answer 503 fast — never reject and hang the request.
   const tbl = claims.kind === 'staff' ? 'staff_users' : 'borrower_auth';
@@ -69,37 +118,67 @@ async function authenticate(req, res, next) {
     // For staff, also read the CURRENT role + permission overrides so a role or
     // grant change takes effect immediately (not only after re-login) and so
     // capability gates can run synchronously off req.actor.perms.
-    r = claims.kind === 'staff'
-      ? await db.query(`SELECT token_version, role, permissions, is_active FROM staff_users WHERE id=$1`, [claims.sub])
-      : await db.query(`SELECT token_version FROM ${tbl} WHERE ${idCol}=$1`, [claims.sub]);
+    // The per-device `sid` revocation (db/318) rides along in the SAME query so
+    // signing out on one device costs no extra round-trip on every request.
+    r = await sessionQuery(claims);
   } catch (e) {
     console.error('[auth] token check failed (db):', db.describeError(e));
     return res.status(503).json({ error: 'The service is briefly unavailable — please try again in a moment.' });
   }
   const tv = r.rows[0] ? r.rows[0].token_version : null;
   if (tv === null || tv !== (claims.tv || 0))
-    return res.status(401).json({ error: 'session expired' });
+    return sessionDenied(req, res, 'session_revoked',
+      'You were signed out on all devices (a password change, or "sign out everywhere"). Please sign in again.');
+  // This device was signed out. Only this one — every other device the person
+  // is signed in on keeps working (that's the whole point of db/318).
+  if (r.rows[0].sid_revoked === true)
+    return sessionDenied(req, res, 'signed_out', 'You signed out on this device. Please sign in again.');
   // SECURITY: a deactivated staffer must lose access immediately. Deactivation
   // (admin toggle) doesn't bump token_version, so without this check an existing
   // session would keep renewing (sliding token) and retain access to loan files,
   // borrower PII and decrypted SSNs until a separate password reset.
   if (claims.kind === 'staff' && r.rows[0].is_active === false)
-    return res.status(401).json({ error: 'account deactivated' });
-  req.actor = { id: claims.sub, kind: claims.kind, role: claims.role };
+    return sessionDenied(req, res, 'account_deactivated',
+      'This account has been turned off. Ask an admin to re-enable it.');
+  // CHOKEPOINT — past this line the SESSION IS PROVEN GOOD, so nothing
+  // downstream may answer 401. The SPA reads any 401 as "the session died" and
+  // signs the user out; several routes relay an UPSTREAM integration's HTTP
+  // status verbatim (`res.status(e.status)`), so a 401 from Sitewire/ClickUp/
+  // TrustPoint/a vendor whose token rotated used to sign the STAFFER out of
+  // PILOT. Three modules worked around it one at a time (sync-file-review.js,
+  // clickup/relink.js, sync-autoresolve.js all document the trap); this kills
+  // the whole class in one place, for every route that exists today or later.
+  // 502 = "an upstream system refused us", which is what it actually is.
+  const _status = res.status.bind(res);
+  res.status = (code) => _status(code === 401 ? 502 : code);
+  req.actor = { id: claims.sub, kind: claims.kind, role: claims.role, sid: claims.sid || null };
   if (claims.kind === 'staff') {
     // Trust the DB role over the JWT claim (role can change mid-session).
     req.actor.role = r.rows[0].role || claims.role;
     req.actor.perms = perms.effectivePermissions(req.actor.role, r.rows[0].permissions);
   }
-  // Sliding session: past the token's half-life, hand back a fresh token so an
-  // active user never gets logged out mid-work. The SPA stores it from this
-  // header on every response; revocation still wins because tv is re-checked.
+  // Sliding session: hand back a fresh token so an active user never gets
+  // logged out mid-work. The SPA stores it from this header on every response;
+  // revocation still wins because tv (and the sid) are re-checked every request.
+  //
+  // This used to wait for the token's HALF-LIFE, which meant a token was only
+  // renewed after days of use — anyone whose tab happened to be running an
+  // older token got no benefit from being active. Now it renews once the token
+  // is older than cfg.sessionRefreshAfterSec (12h by default) OR past half-life,
+  // whichever comes first, so a person who signs in every day is riding a token
+  // that is never more than a day old and can never age out under them.
+  // The `sid` is CARRIED OVER, not re-minted: the refreshed token is the same
+  // session, so "sign out on this device" still revokes it.
   const nowSec = Math.floor(Date.now() / 1000);
-  if (claims.exp && claims.iat && (claims.exp - nowSec) < (claims.exp - claims.iat) / 2) {
-    const fresh = claims.kind === 'staff'
-      ? staffToken(claims.sub, claims.role, tv)
-      : borrowerToken(claims.sub, tv);
-    res.set('X-Refresh-Token', fresh);
+  if (claims.exp && claims.iat) {
+    const life = claims.exp - claims.iat;
+    const age  = nowSec - claims.iat;
+    if (age > Math.min(cfg.sessionRefreshAfterSec, life / 2)) {
+      const fresh = claims.kind === 'staff'
+        ? staffToken(claims.sub, r.rows[0].role || claims.role, tv, claims.sid)
+        : borrowerToken(claims.sub, tv, claims.sid);
+      res.set('X-Refresh-Token', fresh);
+    }
   }
   // Presence heartbeat (best-effort, non-blocking, throttled to ~1 write/min per
   // user) so chat can show who is currently online.
@@ -139,8 +218,12 @@ const requireStaff = (req, res, next) =>
   req.actor?.kind === 'staff' ? next() : res.status(403).json({ error: 'staff only' });
 
 // ---------------- token helpers ----------------
-const borrowerToken = (id, tv) => C.signJwt({ sub: id, kind: 'borrower', role: 'borrower', tv });
-const staffToken    = (id, role, tv) => C.signJwt({ sub: id, kind: 'staff', role, tv });
+// `sid` = this DEVICE's session id. Minted fresh on every real sign-in and
+// CARRIED OVER by the sliding refresh, so signing out on one device revokes
+// exactly that device (db/318) instead of every session the person has.
+const newSid = () => C.randomToken(12);
+const borrowerToken = (id, tv, sid) => C.signJwt({ sub: id, kind: 'borrower', role: 'borrower', tv, sid: sid || newSid() });
+const staffToken    = (id, role, tv, sid) => C.signJwt({ sub: id, kind: 'staff', role, tv, sid: sid || newSid() });
 
 /**
  * Mint a real borrower access session for an existing borrower id (reads the CURRENT
@@ -370,8 +453,16 @@ async function completeMfa(req, res) {
     const v = await verifyMfaStep(claims.kind, claims.sub, code);
     if (!v.ok) return res.status(v.status).json({ error: v.error });
     if (claims.kind === 'staff') {
-      const r = await db.query(`SELECT role, token_version FROM staff_users WHERE id=$1`, [claims.sub]);
+      const r = await db.query(`SELECT role, token_version, is_active FROM staff_users WHERE id=$1`, [claims.sub]);
       if (!r.rows[0]) return res.status(401).json({ error: 'invalid code' });
+      // The password path filters `is_active=true`, but this one didn't — so a
+      // DEACTIVATED staffer with 2FA could finish signing in, get a valid-looking
+      // token, and then be bounced by authenticate()'s is_active check on the very
+      // first API call. That reads as "I sign in and I'm instantly signed out,
+      // every time" (owner-reported 2026-07-26). Refuse at the door instead, with
+      // a reason they can act on.
+      if (r.rows[0].is_active === false)
+        return res.status(403).json({ error: 'This account has been turned off. Ask an admin to re-enable it.', code: 'account_deactivated' });
       return res.json({ token: staffToken(claims.sub, r.rows[0].role, r.rows[0].token_version), usedBackup: v.usedBackup || undefined, backupRemaining: v.backupRemaining });
     }
     const tv = await db.query(`SELECT token_version FROM borrower_auth WHERE borrower_id=$1`, [claims.sub]);
@@ -870,11 +961,37 @@ router.post('/accept', async (req, res, next) => {
 });
 
 // ---------------- logout (revoke) + me ----------------
+/**
+ * Sign out. THIS DEVICE ONLY by default.
+ *
+ * It used to bump token_version, the global counter — so signing out on a phone
+ * silently killed the desktop session too, and the desktop reported it as the
+ * generic "your session expired". Now the current session's `sid` is revoked
+ * (db/318) and every other device keeps working. `{everywhere:true}` still
+ * gives the full hammer, and a legacy token minted before db/318 has no sid, so
+ * it falls back to the global bump (it has nothing finer to revoke).
+ */
 router.post('/logout', requireAuth, async (req, res) => {
   const tbl = req.actor.kind === 'staff' ? 'staff_users' : 'borrower_auth';
   const idCol = req.actor.kind === 'staff' ? 'id' : 'borrower_id';
-  await db.query(`UPDATE ${tbl} SET token_version = token_version + 1 WHERE ${idCol}=$1`, [req.actor.id]);
-  res.json({ ok: true });
+  const everywhere = (req.body && req.body.everywhere === true) || !req.actor.sid;
+  if (everywhere) {
+    await db.query(`UPDATE ${tbl} SET token_version = token_version + 1 WHERE ${idCol}=$1`, [req.actor.id]);
+    return res.json({ ok: true, scope: 'all_devices' });
+  }
+  try {
+    await db.query(
+      `INSERT INTO revoked_sessions (sid, actor_kind, actor_id) VALUES ($1,$2,$3)
+       ON CONFLICT (sid) DO NOTHING`,
+      [req.actor.sid, req.actor.kind, req.actor.id]);
+  } catch (e) {
+    // Never leave someone unable to sign out. If the per-device table is
+    // unavailable, fall back to the global revocation — signing out MUST work.
+    console.error('[auth] per-device logout failed, revoking everywhere:', db.describeError(e));
+    await db.query(`UPDATE ${tbl} SET token_version = token_version + 1 WHERE ${idCol}=$1`, [req.actor.id]);
+    return res.json({ ok: true, scope: 'all_devices' });
+  }
+  res.json({ ok: true, scope: 'this_device' });
 });
 
 router.get('/me', requireAuth, async (req, res) => {

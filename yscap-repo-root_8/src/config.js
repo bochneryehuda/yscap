@@ -95,11 +95,21 @@ module.exports = {
   // is missing and sessions/SSNs won't survive a restart. Fix the env.
   jwtSecretGenerated: generatedSecrets.has('JWT_SECRET'),
   ssnKeyGenerated:    generatedSecrets.has('SSN_ENCRYPTION_KEY'),
-  // Session lifetime. Tokens slide: any authenticated request past the halfway
-  // point returns a fresh token in X-Refresh-Token (picked up by the SPA), so
-  // this is effectively an IDLE timeout, not an absolute one. Revocation still
-  // works instantly via token_version (logout / password reset).
-  accessTtlSec:  parseInt(process.env.ACCESS_TTL_SEC || '604800', 10),    // 7d idle timeout
+  // Session lifetime. Tokens SLIDE: an authenticated request on a token older
+  // than sessionRefreshAfterSec hands back a fresh one in X-Refresh-Token
+  // (picked up by the SPA), so this is an IDLE timeout, not an absolute one —
+  // someone who uses PILOT at least once a month is never signed out by the
+  // clock. Raised 7d -> 30d (owner-directed 2026-07-26: "we need longer
+  // sessions available; it should not automatically log out once you're logged
+  // in"). Revocation is unaffected and still instant: per-device via the token's
+  // sid (db/318, plain sign-out) and account-wide via token_version (password
+  // change/reset, admin deactivation, "sign out everywhere").
+  accessTtlSec:  parseInt(process.env.ACCESS_TTL_SEC || '2592000', 10),   // 30d idle timeout
+  // How stale a token may get before an authenticated request renews it. Small
+  // enough that an active user always rides a fresh token; large enough that we
+  // aren't re-signing a JWT on every single request. Also capped at half the
+  // token's life, so a deliberately SHORT ACCESS_TTL_SEC still slides properly.
+  sessionRefreshAfterSec: parseInt(process.env.SESSION_REFRESH_AFTER_SEC || '43200', 10),  // 12h
   refreshTtlSec: parseInt(process.env.REFRESH_TTL_SEC || '2592000', 10),  // 30d
 
   // --- site integration ---
