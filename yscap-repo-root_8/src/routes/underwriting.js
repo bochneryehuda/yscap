@@ -561,12 +561,18 @@ router.get('/:appId', async (req, res, next) => {
         // bridge's documentId, violating the ai_suggestions.document_id FK
         // (23503) on ANY file with a bank finding — so the whole post-view
         // detector sync recorded NOTHING on those files, every render.
+        // Returns what `fn` returned, so a step whose RESULT matters (the guideline sync reports
+        // whether it had to skip its retraction) can actually be inspected. It awaited but discarded
+        // the value before — which silently made that inspection dead code, the very same
+        // "return value goes nowhere" defect it was added to fix, one layer up. On a failed step the
+        // return is undefined, which every caller must tolerate.
         const step = async (fn) => {
           try {
             await c.query('SAVEPOINT view_sync');
-            await fn();
+            const out = await fn();
             await c.query('RELEASE SAVEPOINT view_sync');
-          } catch (_) { await c.query('ROLLBACK TO SAVEPOINT view_sync').catch(() => {}); }
+            return out;
+          } catch (_) { await c.query('ROLLBACK TO SAVEPOINT view_sync').catch(() => {}); return undefined; }
         };
         try {
           await c.query('BEGIN');
@@ -722,6 +728,10 @@ router.get('/:appId', async (req, res, next) => {
       bankLiquidity: { requiredLiquidity: bankLiquidity.requiredLiquidity, qualifyingTotal: bankLiquidity.qualifyingTotal,
         excludedTotal: bankLiquidity.excludedTotal, shortfall: bankLiquidity.shortfall,
         accounts: bankLiquidity.accounts, statementsCount: bankLiquidity.statementsCount,
+        // Statements recognized as an account already on the table. Without this the assets table
+        // just quietly loses a row and the total drops with no stated reason — which is as confusing
+        // as the double-count it replaced, and on the very screen where the owner found that bug.
+        notCountedTwice: bankLiquidity.notCountedTwice,
         findings: bankLiquidity.findings.map(decorate) },
       experience: experience ? { demandTier: experience.demandTier, demandLabel: experience.demandLabel,
         requiredLabel: experience.requiredLabel, gated: experience.gated, hasVerifiedAnchor: experience.hasVerifiedAnchor,

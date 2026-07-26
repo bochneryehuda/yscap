@@ -1018,6 +1018,24 @@ function BankLiquidity({ bankLiquidity }) {
           </tbody>
         </table>
       </div>
+      {/* A statement recognized as an account already listed above. Shown because otherwise a row
+          simply disappears from this table and the total drops with no stated reason — which is as
+          confusing as the double-count it replaced, and this is the exact table where that was
+          found. It also gives the underwriter the one thing PILOT cannot decide for them: whether an
+          unnumbered statement really is a separate account. */}
+      {(bankLiquidity.notCountedTwice || []).length > 0 && (
+        <div style={{ marginTop: 10, fontSize: 12, color: 'var(--muted,#4B585C)' }}>
+          <div style={{ fontWeight: 700, marginBottom: 3 }}>Not counted again</div>
+          {(bankLiquidity.notCountedTwice || []).map((n, i) => (
+            <div key={i} style={{ padding: '2px 0' }}>
+              {n.holder}{n.bankName ? ` (${n.bankName})` : ''}: {money(n.ending)} —{' '}
+              {n.ambiguous
+                ? `this statement carries no readable account number and could be either ${(n.matchedAccounts || []).join(' or ') || 'of two accounts above'}, so it was not added. Attribute it by hand if it is a separate account.`
+                : `read as the same account as ${(n.matchedAccounts || []).join(', ') || 'one above'} — its own number was not legible, so it is not added again. If it is a separate account, add it by hand.`}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

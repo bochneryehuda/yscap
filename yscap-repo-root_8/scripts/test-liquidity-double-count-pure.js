@@ -68,8 +68,13 @@ for (const [a, b] of [['Chase', 'Citibank'], ['Wells Fargo', 'Wachovia'], ['TD',
 // A missing bank name proves nothing and must never license a fold.
 ok(sameBank(null, 'Chase') === false && sameBank('', 'Chase') === false, 'a blank bank name never folds');
 // A name that is ALL legal-form noise leaves an empty stem, which must not match everything.
-ok(bankStem('Bank, N.A.') === '' && sameBank('Bank, N.A.', 'Chase') === false,
-  'a name made only of legal-form words is not evidence of anything');
+// A name made ENTIRELY of generic words ("Bank, N.A.", "US Bank", "Credit Union") is still a name —
+// it compares as itself rather than as nothing, so two statements from the same US Bank account DO
+// fold, while it still never matches a differently-named bank.
+ok(bankStem('Bank, N.A.') === 'bank n a', 'an all-generic name keeps its own text as the stem');
+ok(sameBank('Bank, N.A.', 'Chase') === false, 'and it still does not match a different bank');
+ok(sameBank('US Bank', 'US Bank') === true, '"US Bank" matches itself — every word of it is generic');
+ok(sameBank('US Bank', 'Trust Bank') === false, 'two different all-generic names still do not match');
 // The trap a substring or prefix test falls into: these are two different banks.
 ok(sameBank('Citibank', 'Citizens Bank') === false, '"Citi" is not "Citizens" — whole words, not substrings');
 
@@ -118,8 +123,10 @@ const ambiguous = run([
     closingBalance: 88454, statementPeriod: 'July 1 - July 31, 2026' }),
   stmt('d2', { accountHolderName: 'MOSES WEIL', bankName: 'Vanderbilt', accountNumber: '004477',
     closingBalance: 20000, statementPeriod: 'July 1 - July 31, 2026' }),
+  // A DIFFERENT month, so the same-period proof below cannot separate it — it really could be
+  // either account.
   stmt('d3', { accountHolderName: 'MOSES WEIL', bankName: 'Vanderbilt', accountNumber: null,
-    closingBalance: 75000, statementPeriod: 'July 1 - July 31, 2026' }),
+    closingBalance: 75000, statementPeriod: 'August 1 - August 31, 2026' }),
 ]);
 ok(ambiguous.qualifyingTotal === 108454,
   `an unattributable statement adds NOTHING rather than inflating (got ${ambiguous.qualifyingTotal}, must be 108454)`);
@@ -137,6 +144,70 @@ const short = run([
 ok(short.qualifyingTotal === 89474, 'the counted total is the single latest balance');
 ok(short.findings.some((f) => f.code === 'bank_liquidity_short'),
   'a REAL shortfall is now reported — the double-count had been hiding it');
+
+// ---------- AUDIT 2026-07-26 ----------
+
+// TWO BALANCES FOR ONE PERIOD PROVE TWO ACCOUNTS. The riskiest over-fold needs no name fuzziness:
+// a checking and a savings at the same bank under the same name, only the savings' number
+// unreadable. One account cannot end the same month at two different balances.
+const checkingAndSavings = run([
+  stmt('d1', { accountHolderName: 'MOSES WEIL', bankName: 'Chase Bank', accountNumber: '001234',
+    closingBalance: 50000, statementPeriod: 'January 1 - January 31, 2026' }),
+  stmt('d2', { accountHolderName: 'MOSES WEIL', bankName: 'Chase', accountNumber: null,
+    closingBalance: 75000, statementPeriod: 'January 1 - January 31, 2026' }),
+]);
+ok(checkingAndSavings.qualifyingTotal === 125000,
+  `a checking and a savings at one bank stay TWO accounts (got ${checkingAndSavings.qualifyingTotal}, must be 125000) — same month, different balances proves it`);
+ok(checkingAndSavings.accountsCount === 2, 'and both appear on the assets table');
+
+// …but the SAME month at the SAME balance is a duplicate of one statement, and still folds.
+const sameMonthSameBalance = run([
+  stmt('d1', { accountHolderName: 'MOSES WEIL', bankName: 'Chase Bank', accountNumber: '001234',
+    closingBalance: 50000, statementPeriod: 'January 1 - January 31, 2026' }),
+  stmt('d2', { accountHolderName: 'MOSES WEIL', bankName: 'Chase', accountNumber: null,
+    closingBalance: 50000, statementPeriod: 'January 1 - January 31, 2026' }),
+]);
+ok(sameMonthSameBalance.qualifyingTotal === 50000,
+  `the same month at the same balance is one account (got ${sameMonthSameBalance.qualifyingTotal})`);
+
+// THE ACCOUNT NUMBER BELONGS TO THE ACCOUNT, NOT TO A MONTH. When the number-less statement is the
+// latest month it becomes the counted one — and the table must still show ••0120.
+const numberSurvives = run([
+  stmt('d1', { accountHolderName: 'MOSES WEIL', bankName: 'Vanderbilt', accountNumber: '000120',
+    closingBalance: 88454, statementPeriod: 'June 1 - June 30, 2026' }),
+  stmt('d2', { accountHolderName: 'MOSES WEIL', bankName: 'Vanderbilt', accountNumber: null,
+    closingBalance: 89474, statementPeriod: 'July 1 - July 31, 2026' }),
+]);
+ok(numberSurvives.accounts[0].accountNumber === '••0120',
+  `the account number survives the fold (got ${JSON.stringify(numberSurvives.accounts[0].accountNumber)}) — the owner's own "missing account numbers" fix must not be undone`);
+
+// MULTI-FOLD MUST USE LIVE STATE. Two number-less statements folding into one numbered account:
+// the second fold has to compare against the group as it stands AFTER the first, or it can keep an
+// older month than the file actually holds.
+const multiFold = run([
+  stmt('d1', { accountHolderName: 'MOSES WEIL', bankName: 'Vanderbilt Bank', accountNumber: '000120',
+    closingBalance: 10000, statementPeriod: 'January 1 - January 31, 2026' }),
+  stmt('d2', { accountHolderName: 'MOSES WEIL', bankName: 'Vanderbilt', accountNumber: null,
+    closingBalance: 30000, statementPeriod: 'March 1 - March 31, 2026' }),
+  stmt('d3', { accountHolderName: 'MOSES A WEIL', bankName: 'Vanderbilt Bank', accountNumber: null,
+    closingBalance: 20000, statementPeriod: 'February 1 - February 28, 2026' }),
+]);
+ok(multiFold.accountsCount === 1, `all three statements are one account (got ${multiFold.accountsCount})`);
+ok(multiFold.qualifyingTotal === 30000,
+  `the LATEST month wins across multiple folds (got ${multiFold.qualifyingTotal}, must be 30000 — March, not February)`);
+ok(multiFold.accounts[0].statementCount === 3, `and all three months are counted as on file (got ${multiFold.accounts[0].statementCount})`);
+ok(multiFold.accounts[0].accountNumber === '••0120', 'the number still shows');
+
+// "US BANK" — every word of it is generic, so stripping used to leave nothing and the fold bailed,
+// putting the owner's double-count straight back.
+const usBank = run([
+  stmt('d1', { accountHolderName: 'MOSES WEIL', bankName: 'US Bank', accountNumber: '000120',
+    closingBalance: 88454, statementPeriod: 'June 1 - June 30, 2026' }),
+  stmt('d2', { accountHolderName: 'MOSES WEIL', bankName: 'US Bank', accountNumber: null,
+    closingBalance: 89474, statementPeriod: 'July 1 - July 31, 2026' }),
+]);
+ok(usBank.qualifyingTotal === 89474,
+  `two US Bank statements of one account fold (got ${usBank.qualifyingTotal}, must be 89474 — not 177928)`);
 
 console.log(`test-liquidity-double-count-pure: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

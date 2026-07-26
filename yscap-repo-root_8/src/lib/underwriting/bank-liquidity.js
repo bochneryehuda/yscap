@@ -122,8 +122,13 @@ function accountKey(s) {
 // because it is exactly the part that drifts.
 const BANK_NOISE = /\b(bank|banking|na|n a|national association|trust|company|co|corp|corporation|inc|incorporated|fsb|federal|savings|credit union|cu|financial|services|group|usa|us)\b/g;
 function bankStem(s) {
-  return String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim()
-    .replace(BANK_NOISE, ' ').replace(/\s+/g, ' ').trim();
+  const raw = String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  const stripped = raw.replace(BANK_NOISE, ' ').replace(/\s+/g, ' ').trim();
+  // "US Bank", "Trust Bank", "Credit Union" are made ENTIRELY of words the noise list removes, so
+  // stripping leaves nothing and every comparison bailed out — two statements from the same US Bank
+  // account never folded and the owner's double-count came straight back (audit 2026-07-26). A name
+  // that is entirely generic is still a name: compare it as itself rather than as nothing.
+  return stripped || raw;
 }
 function sameBank(a, b) {
   const x = bankStem(a), y = bankStem(b);
@@ -140,6 +145,28 @@ function sameBank(a, b) {
   for (const w of small) if (!big.has(w)) return false;
   return true;
 }
+/**
+ * TWO BALANCES FOR ONE PERIOD PROVE TWO ACCOUNTS (audit 2026-07-26).
+ *
+ * The riskiest over-fold needs no name fuzziness at all: one holder, one bank, a CHECKING and a
+ * SAVINGS, and only the savings' account number unreadable. Bank and holder match, so the fold
+ * would drop a real balance — and then state in the owner's assets table that it was "the same
+ * account", which is a false statement about their money.
+ *
+ * One account cannot end the same statement period at two different balances. So when the periods
+ * are the same and the balances differ, these are demonstrably different accounts. That is a fact
+ * off the two documents, not a heuristic — and it is the only thing here that can distinguish them.
+ * Anything less certain (different periods, a missing period, equal balances) is left to fold, which
+ * errs toward under-counting.
+ */
+function differentAccountsSamePeriod(a, b) {
+  const pa = periodEndOf(a.rep.f.statementPeriod), pb = periodEndOf(b.rep.f.statementPeriod);
+  if (pa == null || pb == null || pa !== pb) return false;   // can't compare periods → no proof
+  const ba = num(a.rep.f.closingBalance), bb = num(b.rep.f.closingBalance);
+  if (ba == null || bb == null) return false;                // can't compare balances → no proof
+  return Math.abs(ba - bb) > 0.005;                          // same month, different money → two accounts
+}
+
 function holderStem(s) {
   return String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
 }
@@ -207,20 +234,36 @@ function assessBankLiquidity(ctx = {}, extractions = [], opts = {}) {
   // FOLD number-less statements into the numbered account they belong to (see sameBank/sameHolder
   // above — the owner's Vanderbilt double-count). Done AFTER grouping so it works on whole accounts
   // rather than statement-by-statement, and so the fold can see every numbered account on the file.
-  const numbered = [];
-  for (const [key, g] of byAccount) if (key.startsWith('#')) numbered.push({ key, g });
+  // The numbered account KEYS, not the group objects — a fold replaces the group at a key, and a
+  // second number-less statement folding into the same account must see the UPDATED group, not the
+  // one that existed before the first fold. Holding the objects meant the second fold compared its
+  // date against a stale rank and could keep an OLDER month than the file actually holds, which is
+  // precisely the frozen "count the most recent statement, not the old one" rule.
+  const numberedKeys = [];
+  for (const key of byAccount.keys()) if (key.startsWith('#')) numberedKeys.push(key);
   const notCountedTwice = [];   // number-less groups that were folded away, for the breakdown
   for (const [key, g] of [...byAccount]) {
     if (!key.startsWith('~')) continue;
     const f = g.rep.f;
-    const matches = numbered.filter(({ g: ng }) =>
-      sameBank(ng.rep.f.bankName, f.bankName) && sameHolder(ng.rep.f.accountHolderName, f.accountHolderName));
+    const matches = numberedKeys
+      .map((k) => ({ key: k, g: byAccount.get(k) }))
+      .filter(({ g: ng }) => ng
+        && sameBank(ng.rep.f.bankName, f.bankName)
+        && sameHolder(ng.rep.f.accountHolderName, f.accountHolderName)
+        // TWO BALANCES FOR ONE PERIOD PROVE TWO ACCOUNTS. One account cannot end the same statement
+        // period at two different numbers — so when the periods match and the balances don't, these
+        // are a checking and a savings at the same bank under the same name, not one account read
+        // twice. Folding them would DROP a real balance and then assert, in the owner's own assets
+        // table, that it was "the same account" — a false statement about their money. This needs no
+        // guesswork: it is the one thing the two statements can definitively tell us.
+        && !differentAccountsSamePeriod(ng, g));
     if (!matches.length) continue;                       // a genuinely separate un-numbered account
     byAccount.delete(key);
     const holder = f.accountHolderName || '(unnamed)';
-    notCountedTwice.push({ holder, bankName: f.bankName || null, ending: num(f.closingBalance),
+    const entry = { holder, bankName: f.bankName || null, ending: num(f.closingBalance),
       matchedAccounts: matches.map(({ g: ng }) => maskAcct(ng.rep.f)).filter(Boolean),
-      ambiguous: matches.length > 1 });
+      ambiguous: matches.length > 1, becameRepresentative: false };
+    notCountedTwice.push(entry);
     if (matches.length > 1) continue;                    // ambiguous → resolve DOWNWARD, count nothing
     // Exactly one numbered account matches: this IS that account, so its statement joins the group
     // and competes normally to be the counted (latest) month.
@@ -229,12 +272,18 @@ function assessBankLiquidity(ctx = {}, extractions = [], opts = {}) {
     // When the folded statement is the LATER month it becomes the one counted — so its balance did
     // not "go uncounted", the two statements simply merged. Saying "not counted again" about the
     // very number shown in the total would read as an error.
-    notCountedTwice[notCountedTwice.length - 1].becameRepresentative = better;
+    entry.becameRepresentative = better;
     byAccount.set(matches[0].key, {
       rep: better ? g.rep : target.rep,
       repEnd: better ? g.repEnd : target.repEnd,
       rank: better ? g.rank : target.rank,
       count: target.count + g.count,
+      // THE ACCOUNT NUMBER BELONGS TO THE ACCOUNT, NOT TO A MONTH. If the number-less statement wins
+      // as the latest month, the group's representative has no number — and the assets table would
+      // stop showing ••0120 even though it is right there on the other statement. That silently
+      // undoes the owner's own "the assets table was missing account numbers" fix, on their exact
+      // headline case. Carry it from whichever statement in the group actually has one.
+      acctFrom: target.acctFrom || (maskAcct(target.rep.f) ? target.rep.f : null) || (maskAcct(f) ? f : null),
     });
   }
 
@@ -242,14 +291,17 @@ function assessBankLiquidity(ctx = {}, extractions = [], opts = {}) {
   let qualifyingTotal = 0;      // ending balances of tied accounts (the borrower's real liquid assets)
   let excludedTotal = 0;        // ending balances sitting in accounts NOT tied to the borrower/entity
   const missingEnding = [];     // readable accounts with no ending balance to count
-  for (const { rep, count } of byAccount.values()) {
+  for (const { rep, count, acctFrom } of byAccount.values()) {
     const f = rep.f;
     const holder = f.accountHolderName;
     const tied = holderMatchesFile(holder, subject);
     const ending = num(f.closingBalance);
     accounts.push({
       holder, bankName: f.bankName || null, tied, ending,
-      accountNumber: maskAcct(f),   // #244 (owner: the assets table was "missing accounts number") — last-4 only
+      // #244 (owner: the assets table was "missing accounts number") — last-4 only. Read from the
+      // group's carried source when the counted month's own statement has no number on it, so a
+      // fold can never make an account number disappear from the table.
+      accountNumber: maskAcct(f) || maskAcct(acctFrom),
       holderIsBusiness: f.holderIsBusiness === true, statementCount: count,
       // R5.59 — the month actually counted for this account (the latest of `count` months).
       countedPeriod: f.statementPeriod || null,
@@ -301,7 +353,7 @@ function assessBankLiquidity(ctx = {}, extractions = [], opts = {}) {
       .filter((n) => !n.becameRepresentative)
       .map((n) => `  · ${n.holder}${n.bankName ? ` (${n.bankName})` : ''}: ${money(n.ending)} — ${n.ambiguous
         ? `could not be matched to one account (${n.matchedAccounts.join(' / ') || 'several'}), so it was NOT added`
-        : `the same account as ${n.matchedAccounts.join(', ') || 'one above'} (its number was not readable), so it is not added again`}`)
+        : `read as the same account as ${n.matchedAccounts.join(', ') || 'one above'} — its own number was not legible, so it is not added again. If this is a separate account, add it by hand.`}`)
       .join('\n');
     const mathNote = tiedLines
       ? ` Counted (latest statement per account, no month counted twice):\n${tiedLines}\n  = ${money(qualifyingTotal)} total.`
