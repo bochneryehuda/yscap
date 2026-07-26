@@ -77,10 +77,38 @@ const addrOf = (pa) => { pa = pa || {}; return pa.oneLine || pa.street || pa.lin
 /* 1) Weekly "what's still needed" — per borrower file with open items. */
 async function weeklyBorrowerOutstandingOnce() {
   let sent = 0;
+  // ORDER BY, not just LIMIT (found 2026-07-26). A bare `LIMIT 500` lets Postgres return ANY 500
+  // rows, and a DIFFERENT 500 on the next run. Past 500 open files that means each run digests an
+  // arbitrary, unstable subset — a borrower can be skipped over and over and simply never receive
+  // the "here's what's still needed" email, with nothing anywhere saying so. The 6-day throttle
+  // made it worse rather than better: the files that DID get picked burned their gate, so the
+  // rotation was not even fair by accident.
+  //
+  // Ordering by the file's LAST digest (never-digested first, then longest-ago) makes the queue
+  // both deterministic and fair: whoever has waited longest goes first, and every file comes up
+  // eventually. `id` breaks ties so two files stamped in the same instant still have a stable order.
   const apps = await db.query(
-    `SELECT id FROM applications
-      WHERE deleted_at IS NULL AND borrower_id IS NOT NULL
-        AND status <> ALL($1) LIMIT 500`, [TERMINAL]);
+    `SELECT a.id,
+            (SELECT max(l.created_at) FROM audit_log l
+              WHERE l.action = 'borrower_outstanding_digest' AND l.entity_id = a.id) AS last_digest
+       FROM applications a
+      WHERE a.deleted_at IS NULL AND a.borrower_id IS NOT NULL
+        AND a.status <> ALL($1)
+      ORDER BY last_digest ASC NULLS FIRST, a.id
+      LIMIT 500`, [TERMINAL]);
+  // Say so when the cap truncates. A silently-dropped tail is what made this invisible for so long;
+  // an operator can now see that the portfolio has outgrown one pass.
+  if (apps.rows.length >= 500) {
+    try {
+      const total = (await db.query(
+        `SELECT count(*)::int AS n FROM applications
+          WHERE deleted_at IS NULL AND borrower_id IS NOT NULL AND status <> ALL($1)`, [TERMINAL])).rows[0];
+      if (total && total.n > apps.rows.length) {
+        console.warn(`[digests] borrower digest considered ${apps.rows.length} of ${total.n} eligible files this pass `
+          + '(oldest-waiting first; the rest come up on following passes)');
+      }
+    } catch (_) { /* the count is only for visibility — never block the digest on it */ }
+  }
   for (const a of apps.rows) {
     try {
       // Compute content FIRST, then claim the gate — otherwise a file with zero
@@ -175,6 +203,11 @@ async function staleFileAlertsOnce() {
         AND a.status_changed_at IS NOT NULL
         AND a.status_changed_at < now() - ($2 || ' days')::interval
         AND EXISTS (SELECT 1 FROM application_assignees aa WHERE aa.application_id=a.id AND aa.removed_at IS NULL)
+      -- Same defect as the borrower digest: an unordered LIMIT meant an arbitrary 200 of the stale
+      -- files got alerted each pass, so a file could sit past the threshold and never raise one.
+      -- STALEST FIRST is both deterministic and the right priority here — the file that has waited
+      -- longest is the one most worth telling somebody about.
+      ORDER BY a.status_changed_at ASC, a.id
       LIMIT 200`, [TERMINAL, String(staleDays)]);
   for (const f of files.rows) {
     try {
@@ -518,6 +551,10 @@ async function drawFindingsAwaitingBorrowerOnce() {
         AND EXISTS (SELECT 1 FROM sitewire_property_links pl WHERE pl.application_id=f.application_id
                       AND pl.matched_by='created' AND COALESCE(pl.lifecycle_state,'active')='active')
       GROUP BY f.application_id
+      -- Deterministic order (same defect class as the borrower digest): an unordered LIMIT lets
+      -- Postgres return an arbitrary 300 of the waiting files, so past the cap a borrower could be
+      -- skipped on every single pass and never nudged. Oldest-waiting first, id as the tie-break.
+      ORDER BY oldest ASC, f.application_id
       LIMIT 300`, [String(waitHours)])).rows;
   for (const r of rows) {
     try {
@@ -570,6 +607,8 @@ async function trustpointUnreleasedOnce() {
                             WHERE pl.application_id = t.application_id
                               AND COALESCE(pl.lifecycle_state,'active') <> 'active')
         GROUP BY t.application_id
+        -- Deterministic order: an unordered LIMIT could skip the same waiting file forever.
+        ORDER BY oldest ASC, t.application_id
         LIMIT 200`, [String(days)])).rows;
   } catch (_) { return 0; }
   for (const r of rows) {
@@ -602,6 +641,8 @@ async function drawReleaseOverdueOnce() {
         AND EXISTS (SELECT 1 FROM sitewire_property_links pl WHERE pl.application_id=f.application_id
                       AND pl.matched_by='created' AND COALESCE(pl.lifecycle_state,'active')='active')
       GROUP BY f.application_id
+      -- Deterministic order: most-overdue wire first, so the cap can never hide the same file forever.
+      ORDER BY due ASC, f.application_id
       LIMIT 300`)).rows;
   for (const r of rows) {
     try {
@@ -726,7 +767,7 @@ async function autoReadSweepOnce() {
     // document uploaded in the last 24h that has no current extraction and whose
     // application is active. Cheap indexed query.
     const targets = await db.query(
-      `SELECT DISTINCT a.id
+      `SELECT a.id, min(d.created_at) AS oldest_doc
          FROM applications a
          JOIN documents d ON (d.application_id = a.id
                               OR EXISTS (SELECT 1 FROM checklist_items ci WHERE ci.id = d.checklist_item_id AND ci.application_id = a.id))
@@ -739,6 +780,11 @@ async function autoReadSweepOnce() {
             SELECT 1 FROM document_extractions ex
              WHERE ex.document_id = d.id AND ex.application_id = a.id AND ex.is_current
           )
+        GROUP BY a.id
+        -- GROUP BY (not DISTINCT) so the batch can be ORDERED: an unordered LIMIT let Postgres
+        -- return an arbitrary BATCH of the waiting files, so with more than BATCH files waiting a
+        -- document could be passed over on every sweep and never read. Longest-waiting first.
+        ORDER BY oldest_doc ASC, a.id
         LIMIT $1`, [BATCH]);
     for (const row of targets.rows) {
       try {

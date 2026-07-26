@@ -203,6 +203,43 @@ const to = (e) => sent.find((x) => (Array.isArray(x.to) ? x.to : [x.to]).include
   await db.query(`DELETE FROM staff_users WHERE id=$1`, [st.id]).catch(() => {});
   await db.query(`DELETE FROM borrowers WHERE id=$1`, [br.id]).catch(() => {});
 
+  /* EVERY work-selecting LIMIT must be ORDERED (found 2026-07-26).
+     A bare `LIMIT n` lets Postgres return ANY n rows and a different n next time. On a portfolio
+     larger than the cap that means each pass picks an arbitrary, unstable subset — a borrower can
+     be skipped repeatedly and never receive their "what's still needed" email, and a stale file can
+     sit past the threshold and never raise an alert. Both were live here, and both were SILENT.
+     This is a source-level check on purpose: it guards the whole CLASS, and it keeps guarding after
+     someone adds the next digest, which a data-shaped test on a small CI database cannot do. */
+  {
+    const src = require('fs').readFileSync(require('path').resolve(__dirname, '../src/lib/notification-digests.js'), 'utf8');
+    // Each SQL literal in the module, checked independently.
+    const sqls = src.split('`').filter((chunk) => /\bSELECT\b/i.test(chunk) && /\bFROM\b/i.test(chunk))
+      // Strip `--` comments FIRST — they are not SQL. Several of these queries explain the very
+      // defect this guard checks for ("an unordered LIMIT lets Postgres return an arbitrary 300…"),
+      // and that prose would otherwise be matched as the statement's LIMIT clause, making a
+      // correctly-ordered query read as an offender.
+      .map((chunk) => chunk.replace(/--[^\n]*/g, ' '));
+    const offenders = [];
+    for (const sql of sqls) {
+      // Only the OUTER limit matters — a subquery's `ORDER BY … LIMIT 1` is already deterministic.
+      const m = /\bLIMIT\b\s*(\$?\d+)?[^)]*$/i.exec(sql);
+      if (!m) continue;
+      const head = sql.slice(0, m.index);
+      // Balanced-paren check: an ORDER BY inside a subquery does not order the outer statement.
+      // Strip to a FIXED POINT — one pass only removes the innermost level, so a nested subquery
+      // (`… EXISTS (SELECT … (…) … ORDER BY x)`) would keep its ORDER BY and wrongly read as
+      // ordering the outer statement.
+      let bare = head, prev = null;
+      while (bare !== prev) { prev = bare; bare = bare.replace(/\([^()]*\)/g, ' '); }
+      const outerOrderBy = /\bORDER\s+BY\b/i.test(bare);
+      if (!outerOrderBy) offenders.push(sql.replace(/\s+/g, ' ').trim().slice(0, 110));
+    }
+    assert.ok(offenders.length === 0,
+      `every capped digest query must be ORDERED so the same rows are not silently skipped forever.\nUnordered:\n  - ${offenders.join('\n  - ')}`);
+    console.log(`  ok - all ${sqls.length} digest queries with a LIMIT are deterministically ordered`);
+    n += 1;
+  }
+
   console.log(`\nAll ${n} notification-digest checks passed.`);
   await db.pool.end();
 })().catch((e) => { console.error('FAIL:', e.message, e.stack); process.exit(1); });
