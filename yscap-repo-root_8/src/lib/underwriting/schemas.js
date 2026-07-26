@@ -483,16 +483,46 @@ const BACKGROUND_REPORT = {
     "You are reviewing a background / OFAC / fraud screening report for a loan file. Extract the subject " +
     "name and (if present) the entity name screened, the screen date, the OFAC/sanctions result " +
     "(clear / potential_match / confirmed_match), whether there is a PEP hit, and whether there are any " +
-    "criminal records or fraud flags. Use null for anything absent or unreadable — do NOT guess. " +
-    "readable=false if poor.",
+    "criminal records or fraud flags. " +
+    // READ THE WHOLE REPORT, NOT THE FIRST PAGE (owner-reported 2026-07-26). PILOT told the owner
+    // the borrowing entity was never screened while the report's own WATCH LIST section listed it by
+    // name. The old schema had ONE `entityName` slot, so a report that screens a person plus several
+    // entities could not be represented — the reader answered about the header and the rest of the
+    // document was invisible. Same for alerts an admin had already cleared, with the reason printed
+    // on the following page: PILOT kept demanding they be cleared.
+    "IMPORTANT — these reports list MANY parties and their sections are not in a fixed order. " +
+    "Search the ENTIRE document, including any 'Watch List', 'Screened Parties', 'Subjects Searched' " +
+    "or similar table (often deep in the report), and return EVERY name that was screened in " +
+    "`screenedParties` — people AND businesses, exactly as printed. Set `screenedPartiesComplete` to " +
+    "true ONLY if you actually found and read such a list; false if you could not locate one (then an " +
+    "absent name proves nothing). " +
+    "Also look for a 'Cleared Variance' / 'Resolved' / 'Adjudicated' section — alerts a reviewer has " +
+    "ALREADY dispositioned, usually with a written reason such as 'the borrower is a professional " +
+    "investor'. Return those in `clearedVariances` with the alert text and the reason given, and do " +
+    "NOT repeat them in `fraudFlags`; `fraudFlags` is for alerts that are still OPEN. " +
+    "Use null for anything absent or unreadable — do NOT guess. readable=false if poor.",
   schema: obj({
     subjectName: { type: ['string', 'null'] },
     entityName: { type: ['string', 'null'] },
+    // Every party the report actually screened, from wherever in the document it is listed.
+    screenedParties: { type: 'array', items: { type: 'string' } },
+    // Whether a screened-parties list was FOUND. Without it, a name's absence is not evidence.
+    screenedPartiesComplete: { type: ['boolean', 'null'] },
     screenDate: { type: ['string', 'null'] },
     ofacResult: { type: ['string', 'null'] },               // clear | potential_match | confirmed_match
     pepHit: { type: ['boolean', 'null'] },
     hasCriminalRecord: { type: ['boolean', 'null'] },
-    fraudFlags: { type: 'array', items: { type: 'string' } },
+    fraudFlags: { type: 'array', items: { type: 'string' } },   // still OPEN alerts only
+    // Alerts a reviewer already dispositioned, with the reason they gave.
+    clearedVariances: {
+      type: 'array',
+      items: obj({
+        alert: { type: ['string', 'null'] },
+        reason: { type: ['string', 'null'] },
+        clearedBy: { type: ['string', 'null'] },
+        clearedDate: { type: ['string', 'null'] },
+      }),
+    },
     readable: { type: 'boolean' },
     notes: { type: ['string', 'null'] },
   }),

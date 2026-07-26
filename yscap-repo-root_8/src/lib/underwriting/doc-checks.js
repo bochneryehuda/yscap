@@ -14,6 +14,9 @@ const { num, withinMoney, namesMatchLoose, entityMatch, daysBetween, toISODate, 
 const { clauseNamesLender, clauseHasAddress, LENDER_MORTGAGEE_CLAUSE } = require('./lender');
 const { provenAbsent, wrongDocument, affirmed } = require('./absence');
 const insLoanKey = (s) => String(s == null ? '' : s).toUpperCase().replace(/[^A-Z0-9]/g, '');
+// Loose text identity for matching one alert string against another (punctuation and spacing
+// drift between an alert's line in the alert table and its line in the cleared-variance table).
+const normText = (s) => String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
 function mk(source, f) {
   return Object.assign(
@@ -542,11 +545,43 @@ function computeBackgroundFindings(b, subject, opts = {}) {
   // On an ENTITY deal, the borrowing entity must ALSO be screened (an LLC can itself be sanctioned).
   const en = subject && subject.entity_name;
   if (en) {
-    if (!b.entityName) {
+    // SEARCH THE WHOLE REPORT BEFORE SAYING THE ENTITY WASN'T SCREENED (owner-reported 2026-07-26).
+    // PILOT told the owner the borrowing entity was never screened while the report's own WATCH LIST
+    // section listed MW TRADING LLC by name, about 23 pages in. The check was reading a single
+    // `entityName` header field, which one report can only fill with one name — so a report that
+    // screens a person plus several entities looked, to this check, like a report that screened no
+    // entity at all. Their words: *"you can do a control F and search entity name."*
+    //
+    // So the entity now counts as screened if it appears ANYWHERE the report says it screened
+    // something — the header field OR the enumerated screened-parties list.
+    const screened = Array.isArray(b.screenedParties) ? b.screenedParties.filter(Boolean) : [];
+    const inList = screened.some((n) => entityMatch(n, en) === true);
+    const headerMatches = b.entityName && entityMatch(b.entityName, en) === true;
+    if (headerMatches || inList) {
+      // Screened. Nothing to raise.
+    } else if (!b.entityName && !screened.length) {
+      // Nothing in the header AND no screened-parties list was found. Whether the entity was screened
+      // is UNKNOWN, not absent — the same rule as everywhere else: an absence claim needs proof the
+      // document was the kind that would have shown it. `screenedPartiesComplete === false` is the
+      // reader explicitly saying it could not find such a list.
+      const searched = b.screenedPartiesComplete === true;
+      out.push(mk('background_report', searched
+        ? { code: 'background_entity_not_screened', severity: 'warning', field: 'entity',
+            docValue: '(no entity screened)', fileValue: en,
+            title: 'The borrowing entity was not screened',
+            howTo: `This is an entity deal (vesting entity "${en}"), but the background/OFAC report screened no entity. The borrowing LLC must be screened too — an entity can itself be on a sanctions list. Run the screen on "${en}" and add it to the file.`,
+            actions: ['request_document', 'post_condition', 'dismiss'] }
+        : { code: 'background_screened_parties_unreadable', severity: 'info', field: 'entity',
+            docValue: '(the list of screened parties could not be found)', fileValue: en,
+            title: `Confirm "${en}" is on the report's screened-party list`,
+            howTo: `The report's list of screened parties could not be located, so whether the borrowing entity "${en}" was screened cannot be confirmed from the reading. These reports carry it in a "Watch List" or "Subjects Searched" table that can sit deep in the document — check it by hand, or request a report that states the screened parties clearly.`,
+            actions: ['acknowledge', 'request_document', 'dismiss'] }));
+    } else if (screened.length && !inList && !b.entityName) {
+      // A list WAS read and the entity is not on it — a real, evidenced gap.
       out.push(mk('background_report', { code: 'background_entity_not_screened', severity: 'warning', field: 'entity',
-        docValue: '(no entity screened)', fileValue: en,
+        docValue: `screened: ${screened.slice(0, 6).join(', ')}`, fileValue: en,
         title: 'The borrowing entity was not screened',
-        howTo: `This is an entity deal (vesting entity "${en}"), but the background/OFAC report screened no entity. The borrowing LLC must be screened too — an entity can itself be on a sanctions list. Run the screen on "${en}" and add it to the file.`,
+        howTo: `The report lists the parties it screened (${screened.slice(0, 6).join(', ')}) and the vesting entity "${en}" is not among them. The borrowing LLC must be screened too — an entity can itself be on a sanctions list. Run the screen on "${en}" and add it to the file.`,
         actions: ['request_document', 'post_condition', 'dismiss'] }));
     } else if (entityMatch(b.entityName, en) === false) {
       out.push(mk('background_report', { code: 'background_entity_mismatch', severity: 'warning', field: 'entity',
@@ -561,12 +596,26 @@ function computeBackgroundFindings(b, subject, opts = {}) {
   // A fraud report can come back "clear" on OFAC yet carry HIGH alerts (SSN issued before DOB, ID
   // flagged, address is a known mail-drop, identity-theft alert). Any fraud flag has to be
   // adjudicated to zero before closing — surface them so none is silently accepted.
-  const flags = Array.isArray(b.fraudFlags) ? b.fraudFlags.filter((s) => String(s || '').trim()) : [];
+  // AN ALERT SOMEONE ALREADY CLEARED IS NOT AN OPEN ALERT (owner-reported 2026-07-26). PILOT kept
+  // telling the owner the fraud alerts "must be cleared" when an admin had already dispositioned
+  // them, with the reason printed on the following page — *"The borrower is a professional
+  // investor"*, *"backed by the appraisal"*. Reading only the alert table and never the Cleared
+  // Variance section turns finished work into an open item, which is the noise that made the
+  // findings surface unusable.
+  const cleared = Array.isArray(b.clearedVariances) ? b.clearedVariances.filter(Boolean) : [];
+  const clearedText = cleared.map((c) => normText(c && c.alert)).filter(Boolean);
+  const flags = (Array.isArray(b.fraudFlags) ? b.fraudFlags.filter((x) => String(x || '').trim()) : [])
+    // Belt-and-braces: the reader is told not to repeat a cleared alert in fraudFlags, but if it
+    // does, the disposition wins. An alert cannot be both open and resolved.
+    .filter((x) => !clearedText.includes(normText(x)));
   if (flags.length) {
+    const clearedNote = cleared.length
+      ? ` (${cleared.length} other alert${cleared.length === 1 ? '' : 's'} on this report ${cleared.length === 1 ? 'has' : 'have'} already been cleared and ${cleared.length === 1 ? 'is' : 'are'} not repeated here.)`
+      : '';
     out.push(mk('background_report', { code: 'background_fraud_alerts', severity: 'warning', field: 'fraud',
       docValue: flags.slice(0, 6).join(' | '), fileValue: null,
       title: 'The fraud report has alerts that must be cleared',
-      howTo: `The report returned ${flags.length} fraud alert(s): ${flags.slice(0, 6).join(' | ')}. Every high alert must be adjudicated and cleared (documented) before clear-to-close — an open fraud alert can indicate identity theft or a straw borrower.`,
+      howTo: `The report returned ${flags.length} fraud alert(s) that are still open: ${flags.slice(0, 6).join(' | ')}. Every high alert must be adjudicated and cleared (documented) before clear-to-close — an open fraud alert can indicate identity theft or a straw borrower.${clearedNote}`,
       actions: ['post_condition', 'request_document', 'grant_exception', 'dismiss'] }));
   }
   if (b.pepHit === true) {
