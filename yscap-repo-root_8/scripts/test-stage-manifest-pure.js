@@ -39,9 +39,50 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
       { stage_key: 'intake', status: 'completed' },
       { stage_key: 'route_plan', status: 'completed' },
       { stage_key: 'ocr_layout', status: 'completed' },
+      { stage_key: 'evidence', status: 'completed' },
       { stage_key: 'classification', status: 'pending' },
     ], { mode: 'read' });
-    ok(done.complete === true, 'read: ocr_layout completed → complete (classification pending is not required)');
+    ok(done.complete === true, 'read: ocr_layout + evidence completed → complete (classification pending is not required)');
+
+    // ---- RS-1: reading a document and recording NOTHING is not a completed job ----
+    // The evidence write used to sit inside a swallow-everything catch, so a failed or empty
+    // recording was invisible and the job still reported clean. It is a required stage now.
+    const readNoEvidence = SM.evaluateManifest([
+      { stage_key: 'intake', status: 'completed' },
+      { stage_key: 'route_plan', status: 'completed' },
+      { stage_key: 'ocr_layout', status: 'completed' },
+      { stage_key: 'evidence', status: 'failed' },
+    ], { mode: 'read' });
+    ok(readNoEvidence.complete === false,
+      'read: a successful read that recorded NO evidence is INCOMPLETE — the job has no result to report');
+    ok(readNoEvidence.incomplete.some((x) => x.stage === 'evidence'),
+      'and the evidence stage is the one named as incomplete');
+
+    const readEvidenceThrew = SM.evaluateManifest([
+      { stage_key: 'intake', status: 'completed' },
+      { stage_key: 'route_plan', status: 'completed' },
+      { stage_key: 'ocr_layout', status: 'completed' },
+      { stage_key: 'evidence', status: 'failed_retryable' },
+    ], { mode: 'read' });
+    ok(readEvidenceThrew.complete === false, 'read: an evidence write that threw is also incomplete');
+
+    const readEvidenceMissing = SM.evaluateManifest([
+      { stage_key: 'intake', status: 'completed' },
+      { stage_key: 'route_plan', status: 'completed' },
+      { stage_key: 'ocr_layout', status: 'completed' },
+    ], { mode: 'read' });
+    ok(readEvidenceMissing.complete === false && readEvidenceMissing.missing.includes('evidence'),
+      'read: no evidence row at all → missing → incomplete (never silently complete)');
+
+    // SHADOW must NOT require it — there is no read to turn into evidence, and requiring it would
+    // fail every shadow job, the same mistake as requiring the not-yet-wired classifier.
+    const shadowNoEvidence = SM.evaluateManifest([
+      { stage_key: 'intake', status: 'completed' },
+      { stage_key: 'route_plan', status: 'completed' },
+      { stage_key: 'ocr_layout', status: 'not_applicable' },
+      { stage_key: 'evidence', status: 'not_applicable' },
+    ], { mode: 'shadow' });
+    ok(shadowNoEvidence.complete === true, 'shadow: a planned job with no read and no evidence is still complete');
 
     const notRead = SM.evaluateManifest([
       { stage_key: 'intake', status: 'completed' },
@@ -66,6 +107,8 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
   }
 
   // ---- required-stage sets ----
+  ok(SM.requiredStages('read').includes('evidence') && !SM.requiredStages('shadow').includes('evidence'),
+    'evidence is required in read mode and not in shadow mode');
   ok(SM.requiredStages('read').includes('ocr_layout') && !SM.requiredStages('shadow').includes('ocr_layout'),
     'ocr_layout required in read mode, not in shadow');
   ok(!SM.requiredStages('read').includes('classification'), 'classification is not required (not yet wired)');

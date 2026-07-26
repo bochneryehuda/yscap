@@ -28,12 +28,24 @@ const STAGE = Object.freeze({
   ROUTE_PLAN: 'route_plan',   // was mis-named 'packet_control' (defect #4): this stage PLANS the read route
   OCR_LAYOUT: 'ocr_layout',
   CLASSIFICATION: 'classification',
+  EVIDENCE: 'evidence',       // RS-1: the read was turned into recorded evidence
 });
 
 // The stages that MUST reach 'completed' for a job to count as a complete run, per mode.
+//
+// RS-1 (2026-07-26) adds `evidence` to the READ set. Reading a document and recording nothing is
+// the same defect as not reading it at all, one step later: the pipeline is evidence-first, so a
+// job that produced no evidence produced no result, and reporting it 'completed' says the opposite.
+// The recording used to sit inside a swallow-everything try/catch, so a failed or empty write was
+// invisible and the job still completed clean. It is now a stage like any other and runs through
+// this same fail-closed gate.
+//
+// Shadow mode does NOT require it: with no adapters injected there is no read to turn into
+// evidence, and requiring it would fail every shadow job — the same mistake as requiring the
+// not-yet-wired classifier.
 const REQUIRED = Object.freeze({
   shadow: [STAGE.INTAKE, STAGE.ROUTE_PLAN],
-  read: [STAGE.INTAKE, STAGE.ROUTE_PLAN, STAGE.OCR_LAYOUT],
+  read: [STAGE.INTAKE, STAGE.ROUTE_PLAN, STAGE.OCR_LAYOUT, STAGE.EVIDENCE],
 });
 
 function requiredStages(mode) {
