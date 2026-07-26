@@ -3,7 +3,7 @@
  * Pipeline V2 (owner-directed 2026-07-26) — packet-control job processor
  * (src/pipeline/packet-control-processor.js). Pure: no DB, no network.
  *
- * Proves: the processor records the stage manifest in order (intake→packet_control→ocr_layout→
+ * Proves: the processor records the stage manifest in order (intake→route_plan→ocr_layout→
  * classification); in SHADOW (no adapters) it plans + records the route but records the read
  * stages not_applicable; with adapters it drives the real read path; and it NEVER throws — a
  * router that throws → the stage is recorded failed_retryable and a retryable outcome returned.
@@ -46,13 +46,13 @@ function fakeRouter(plan, recorded) {
     ok(out.status === 'completed', 'shadow: processor completes');
     const keys = jq.stages.map((s) => s.key + ':' + s.status);
     ok(keys[0] === 'intake:completed', 'first stage: intake completed');
-    ok(keys.includes('packet_control:running') && keys.includes('packet_control:completed'), 'packet_control running→completed recorded');
+    ok(keys.includes('route_plan:running') && keys.includes('route_plan:completed'), 'route_plan running→completed recorded');
     ok(keys.includes('ocr_layout:not_applicable') && keys.includes('classification:not_applicable'), 'shadow: read stages not_applicable');
     ok(recorded.length === 1 && recorded[0].provider === 'azure' && recorded[0].outcome === 'planned', 'shadow: one route row recorded, planned');
     ok(recorded[0].jobId === 'job-1' && recorded[0].documentId === 'doc-1' && recorded[0].loanId === 'loan-1', 'route row links job/document/loan from the job');
-    // ordering: intake before packet_control before read stages
+    // ordering: intake before route_plan before read stages
     const order = jq.stages.map((s) => s.key);
-    ok(order.indexOf('intake') < order.indexOf('packet_control') && order.indexOf('packet_control') < order.indexOf('ocr_layout'), 'stage order intake→packet_control→ocr_layout');
+    ok(order.indexOf('intake') < order.indexOf('route_plan') && order.indexOf('route_plan') < order.indexOf('ocr_layout'), 'stage order intake→route_plan→ocr_layout');
   }
 
   // ---- READ PATH: adapters injected + a real adapter engine + bytes loaded → ocr_layout completed ----
@@ -80,9 +80,10 @@ function fakeRouter(plan, recorded) {
   {
     const jq = fakeJq(); const recorded = [];
     const plan = { primary: { provider: 'azure', service: 'document_intelligence', adapterKey: 'azure/document_intelligence' }, challenger: null, reason: 'r', materiality: 'high', specialHandling: [] };
-    // db.query is only ever called by evidence-candidate.recordCandidate (INSERT INTO document_pipeline_evidence).
+    // Count only the candidate INSERTs (evidence-candidate.recordCandidate). Other reads on the same
+    // table (e.g. VSLICE-6's diff SELECTs document_pipeline_evidence via listCandidates) must not count.
     const evidenceInserts = [];
-    const db = { query: async (sql, params) => { if (/document_pipeline_evidence/.test(sql)) evidenceInserts.push({ sql, params }); return { rows: [{ id: 'ev1' }] }; } };
+    const db = { query: async (sql, params) => { if (/INSERT INTO document_pipeline_evidence/.test(sql)) evidenceInserts.push({ sql, params }); return { rows: [{ id: 'ev1' }] }; } };
     const router = {
       ...fakeRouter(plan, recorded),
       routeDocument: async () => ({
@@ -113,11 +114,16 @@ function fakeRouter(plan, recorded) {
     const router = { ...fakeRouter(plan, recorded), routeDocument: async () => { routed = true; return { outcome: 'completed', result: {} }; } };
     const proc = PC.makePacketControlProcessor({ router, adapters: [{ provider: 'azure', service: 'document_intelligence', analyze: async () => ({}) }], loadBytes: async () => null });
     const out = await proc(job, { db: {}, jq });
-    ok(out.status === 'completed', 'bytes unavailable: still completes (never throws)');
+    // VSLICE-5 — a READ-mode job whose read didn't happen (no bytes → ocr_layout not_applicable)
+    // now FAILS CLOSED instead of falsely "completing" (the "marked completed when nothing was
+    // read" defect). Not transient (bytes won't appear on retry) → non-retryable → terminal.
+    ok(out.status === 'failed' && out.retryable === false, 'bytes unavailable: FAILS CLOSED, non-retryable (nothing was read)');
+    ok(out.result && out.result.manifest && out.result.manifest.complete === false, 'bytes unavailable: result carries an incomplete stage manifest');
     const keys = jq.stages.map((s) => s.key + ':' + s.status);
     ok(keys.includes('ocr_layout:not_applicable') && keys.includes('classification:not_applicable'), 'bytes unavailable: read stages recorded not_applicable');
     ok(routed === false, 'bytes unavailable: the adapter is NOT called with an empty request');
-    ok(jq.artifacts.length === 0, 'bytes unavailable: no ocr_result artifact recorded (nothing was read)');
+    ok(!jq.artifacts.some((a) => a.kind === 'ocr_result'), 'bytes unavailable: no ocr_result artifact (nothing was read)');
+    ok(jq.artifacts.some((a) => a.kind === 'stage_manifest'), 'bytes unavailable: a stage_manifest artifact IS recorded (for the shadow view)');
   }
 
   // ---- READ PATH with bytes ALREADY in the payload.request → loadBytes is not called ----
@@ -150,7 +156,7 @@ function fakeRouter(plan, recorded) {
     const proc = PC.makePacketControlProcessor({ router: throwingRouter });
     const out = await proc(job, { db: {}, jq });
     ok(out.status === 'failed' && out.retryable === true, 'router throw → failed retryable outcome (never throws)');
-    ok(jq.stages.some((s) => s.key === 'packet_control' && s.status === 'failed_retryable'), 'router throw → packet_control failed_retryable recorded');
+    ok(jq.stages.some((s) => s.key === 'route_plan' && s.status === 'failed_retryable'), 'router throw → route_plan failed_retryable recorded');
   }
 
   // ---- recordStage that throws is swallowed (best-effort) — processor still completes ----

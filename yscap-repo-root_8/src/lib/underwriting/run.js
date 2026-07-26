@@ -587,6 +587,52 @@ async function gatherInvestorInputs(applicationId, db) {
     }
   } catch (_) { /* app row / track_records read error → omit claimed_exp+verified_exp */ }
 
+  // EMCAP rental signals (owner-directed 2026-07-26) — feed the fix-and-hold 1007
+  // WARNING and the exact rent-match WARNING (both audience:'emcap', so they are
+  // inert for every other note buyer). NEVER-FALSE-FIRE: is_fix_hold is emitted only
+  // for a KNOWN strategy (true/false; unknown → omit); loan_estimated_rent only when
+  // a real positive rent is on file; each read is its own try/catch and omits on error.
+  try {
+    const fieldRegistry = require('../conditions/field-registry');
+    const ar = await db.query(
+      `SELECT program, loan_type, rehab_type, estimated_rental_income FROM applications WHERE id = $1`, [applicationId]);
+    const app = ar.rows[0];
+    if (app) {
+      const strat = fieldRegistry.normStrategy([app.program, app.loan_type, app.rehab_type].filter(Boolean).join(' '));
+      if (strat) out.is_fix_hold = strat === 'fix_hold';   // known → true/false; unknown → omit
+      const rent = Number(app.estimated_rental_income);
+      if (Number.isFinite(rent) && rent > 0) out.loan_estimated_rent = rent; // omit blank/zero
+    }
+  } catch (_) { /* app read error → omit is_fix_hold / loan_estimated_rent */ }
+
+  // Appraisal rental facts for EMCAP — the form type (a 1025 INCLUDES the rent
+  // schedule, so it satisfies the 1007 requirement) and the appraiser's estimated
+  // MONTHLY market rent (the subject figure, else the summed per-unit rents from a
+  // 1025 rent schedule). A KNOWN form type sets true/false; an unread form / blank
+  // rent stays OMITTED so neither warning can false-fire on missing data.
+  try {
+    const ap = await db.query(
+      `SELECT id, form_type, est_market_monthly_rent FROM appraisals
+         WHERE application_id = $1 AND superseded = false ORDER BY imported_at DESC LIMIT 1`, [applicationId]);
+    const r = ap.rows[0];
+    if (r) {
+      const ft = String(r.form_type == null ? '' : r.form_type).trim().toUpperCase();
+      if (ft) out.appraisal_is_1025 = ft.indexOf('1025') > -1; // known form → true/false; blank → omit
+      let mr = Number(r.est_market_monthly_rent);
+      if (!(Number.isFinite(mr) && mr > 0)) {
+        // Fall back to the sum of per-unit market rents (a 1025 rent schedule).
+        try {
+          const u = await db.query(
+            `SELECT COALESCE(SUM(market_rent),0) AS total, COUNT(market_rent) AS n
+               FROM appraisal_units WHERE appraisal_id = $1`, [r.id]);
+          const t = Number(u.rows[0] && u.rows[0].total);
+          if (Number(u.rows[0] && u.rows[0].n) > 0 && Number.isFinite(t) && t > 0) mr = t;
+        } catch (_) { /* appraisal_units optional → no fallback */ }
+      }
+      if (Number.isFinite(mr) && mr > 0) out.appraisal_market_rent = mr; // omit blank/zero
+    }
+  } catch (_) { /* est_market_monthly_rent column optional → omit appraisal rent signals */ }
+
   return out;
 }
 

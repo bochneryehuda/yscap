@@ -166,7 +166,7 @@ const FIELDS = [
   { key: 'note_buyer', label: 'Note buyer (capital partner)', group: 'Loan & program', type: 'enum',
     options: [
       { v: 'bluelake', label: 'Blue Lake' }, { v: 'corrfirst', label: 'CorrFirst' },
-      { v: 'fidelis', label: 'Fidelis' }],
+      { v: 'emcap', label: 'EMCAP' }, { v: 'fidelis', label: 'Fidelis' }],
     description: 'The note buyer / capital partner the file is sold to (from ClickUp; staff-only, never shown to the borrower).' },
   // YS loan number (applications.ys_loan_number). Referenced by the rule engine so
   // the "loan number missing" internal condition can attach while it is blank and

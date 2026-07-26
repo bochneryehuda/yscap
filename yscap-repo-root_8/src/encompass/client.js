@@ -33,17 +33,22 @@ async function getLoan(guid, { entities } = {}) {
   return encompass.apiGet(`/encompass/v3/loans/${encodeURIComponent(guid)}${qs}`);
 }
 
-// Pipeline SEARCH by loan number. Returns [{loanGuid, fields:{...}}, ...].
+// Pipeline SEARCH by loan number. Encompass Developer Connect v3 returns each row
+// as [{loanId:"<GUID>", fields:{"Loan.Guid":..., "Loan.LoanNumber":...}}, ...] —
+// the GUID is `loanId` (NOT `loanGuid`) and field values are NESTED under `fields`.
+// reader.js reads it via its shape-tolerant row accessors (`_rowGuid`/`_rowField`).
 // The one and only way to find a loan without knowing its GUID up front.
 async function findLoanByLoanNumber(loanNumber, { extraFields } = {}) {
   if (!loanNumber) throw new Error('findLoanByLoanNumber: loanNumber is required.');
   const rows = await encompass.pipelineSearch({
-    filter: {
-      operator: 'and',
-      terms: [
-        { canonicalName: 'Loan.LoanNumber', value: String(loanNumber), matchType: 'exact' },
-      ],
-    },
+    // Single-term SIMPLE filter form ({canonicalName,value,matchType}) — NOT the
+    // complex {operator,terms:[...]} form. Encompass REFUSES a complex filter that
+    // carries an `operator` with only one term ("If only one filter term is supplied
+    // in the list 'Terms', 'Operator' does not apply." — live 400, 2026-07-26), which
+    // is why the by-loan-number lookup never matched even for files WITH a loan number.
+    // matchType is PascalCase 'Exact' to match the tenant's proven casing convention
+    // (cf. the live-diagnosed MATCH_ALL_FILTER 'GreaterThan' in reader.js).
+    filter: { canonicalName: 'Loan.LoanNumber', value: String(loanNumber), matchType: 'Exact' },
     fields: ['Loan.Guid', 'Loan.LoanNumber', 'Loan.LoanFolder', 'Loan.LastModified', ...(extraFields || [])],
   }, { limit: 5 });
   return Array.isArray(rows) ? rows : [];

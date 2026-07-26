@@ -9,10 +9,13 @@
  *
  *   intake          — the file was validated + hashed + stored in the HTTP request (Layer 1);
  *                     this stage just confirms the job carries what it needs.
- *   packet_control  — plan the processing ROUTE via the DocumentProcessingRouter (Phase 1f):
+ *   route_plan      — plan the processing ROUTE via the DocumentProcessingRouter (Phase 1f):
  *                     which vendor would read this document, why, and the challenger; record a
  *                     document_processing_routes row. (The route is PLANNED here; the heavy OCR /
- *                     split / extraction read is deferred — see the shadow note below.)
+ *                     split / extraction read is deferred — see the shadow note below.) NOTE: this
+ *                     stage was formerly mis-named `packet_control`; the route planner is now
+ *                     recorded under its own honest stage key `route_plan` (packet splitting /
+ *                     assembly is a distinct, not-yet-wired concept, never conflated with routing).
  *   ocr_layout      — the real vendor read. In SHADOW (no adapters injected) this is recorded
  *   classification    not_applicable ("shadow: read not run"); the real read is wired once the
  *                     storage model (a separate Render worker can't reach the web service's
@@ -31,7 +34,7 @@
 
 const STAGE = Object.freeze({
   INTAKE: 'intake',
-  PACKET_CONTROL: 'packet_control',
+  ROUTE_PLAN: 'route_plan',
   OCR_LAYOUT: 'ocr_layout',
   CLASSIFICATION: 'classification',
 });
@@ -93,7 +96,11 @@ function makePacketControlProcessor(opts = {}) {
     const documentId = (job && job.document_id) || payload.documentId || null;
     const loanId = (job && job.loan_id) || payload.loanId || null;
 
+    // Track the recorded status of each stage locally so we can evaluate the stage MANIFEST at the
+    // end (VSLICE-5): a job only "completes" if it actually finished the stages it was supposed to.
+    const stageStatus = {};
     const safeStage = async (key, status, detail) => {
+      stageStatus[key] = status;
       try { await jq.recordStage(db, jobId, key, status, detail || {}); } catch (_e) { /* stage recording is best-effort */ }
     };
     // Best-effort artifact recorder (Phase 3c) — persists a compact summary of WHAT the read
@@ -109,8 +116,8 @@ function makePacketControlProcessor(opts = {}) {
       // ── intake ── the HTTP request already validated + hashed + stored the file.
       await safeStage(STAGE.INTAKE, 'completed', { note: 'validated + stored in request', family: features.docType || null });
 
-      // ── packet_control ── plan the route (never throws) + record it.
-      await safeStage(STAGE.PACKET_CONTROL, 'running', {});
+      // ── route_plan ── plan the route (never throws) + record it.
+      await safeStage(STAGE.ROUTE_PLAN, 'running', {});
       const plan = router.planFor(features);
       let routeId = null;
       try {
@@ -127,7 +134,7 @@ function makePacketControlProcessor(opts = {}) {
           outcome: 'planned',
         });
       } catch (_e) { routeId = null; }
-      await safeStage(STAGE.PACKET_CONTROL, 'completed', {
+      await safeStage(STAGE.ROUTE_PLAN, 'completed', {
         primary: plan.primary ? plan.primary.provider : null,
         challenger: plan.challenger ? plan.challenger.provider : null,
         reason: plan.reason, routeId,
@@ -182,6 +189,13 @@ function makePacketControlProcessor(opts = {}) {
               for (const cand of candidates) { await ec.recordCandidate(db, cand); }
             } catch (_e) { /* evidence recording is best-effort */ }
           }
+          // VSLICE-6 — record a durable snapshot of the V1-vs-V2 result difference for this document
+          // (what the existing pipeline extracted vs what V2 read), as a `v1_v2_diff` artifact for
+          // the shadow view. Best-effort + never throws; advisory (writes only the V2 artifact table).
+          try {
+            const diff = await require('./v1v2-diff').computeDiffForDocument(db, { documentId });
+            await safeArtifact('v1_v2_diff', diff);
+          } catch (_e) { /* diff artifact is best-effort */ }
           // Classification is deferred to a later phase even on the read path; mark pending.
           await safeStage(STAGE.CLASSIFICATION, 'pending', { note: 'classifier stage not yet wired' });
         }
@@ -190,10 +204,28 @@ function makePacketControlProcessor(opts = {}) {
         await safeStage(STAGE.CLASSIFICATION, 'not_applicable', { note: 'shadow: read not run' });
       }
 
-      return { status: 'completed', result: { planned: true, primary: plan.primary ? plan.primary.provider : null, routeId } };
+      // VSLICE-5 — evaluate the full stage MANIFEST and FAIL CLOSED. In 'read' mode (real adapters
+      // injected → a real vendor read was expected) the ocr_layout stage MUST have completed; a job
+      // whose read was skipped / not-applicable / failed is INCOMPLETE and must NEVER be reported
+      // completed (the owner-flagged "marked completed when no document was read" defect). In shadow
+      // mode (no adapters) the read stages are legitimately not required, so a planned job completes.
+      const mode = (adapters && primaryKey) ? 'read' : 'shadow';
+      const manifest = require('./stage-manifest').evaluateManifest(stageStatus, { mode });
+      await safeArtifact('stage_manifest', manifest);
+      if (!manifest.complete) {
+        // Retry only when the incompleteness is a TRANSIENT stage failure (failed_*); a missing /
+        // not_applicable required stage (e.g. no document bytes) won't improve on retry → terminal.
+        const anyTransient = manifest.incomplete.some((x) => String(x.status || '').startsWith('failed_'));
+        return {
+          status: 'failed', retryable: anyTransient,
+          error: 'stage manifest incomplete — ' + manifest.reason,
+          result: { planned: true, primary: plan.primary ? plan.primary.provider : null, routeId, manifest },
+        };
+      }
+      return { status: 'completed', result: { planned: true, primary: plan.primary ? plan.primary.provider : null, routeId, manifest } };
     } catch (e) {
       // A genuinely unexpected error — record it + let the worker retry (never crash the worker).
-      await safeStage(STAGE.PACKET_CONTROL, 'failed_retryable', { error: (e && e.message) ? String(e.message).slice(0, 300) : 'packet-control threw' });
+      await safeStage(STAGE.ROUTE_PLAN, 'failed_retryable', { error: (e && e.message) ? String(e.message).slice(0, 300) : 'packet-control threw' });
       return { status: 'failed', retryable: true, error: (e && e.message) ? String(e.message).slice(0, 300) : 'packet-control threw' };
     }
   };
