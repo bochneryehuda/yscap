@@ -67,4 +67,15 @@ function wrongDocument(flag, markers) {
   return flag === false && !hasEvidence(markers);
 }
 
-module.exports = { provenAbsent, wrongDocument, hasEvidence };
+/**
+ * affirmed(flag) → `true` when the reader positively said yes, `null` otherwise.
+ *
+ * `hasEvidence` deliberately counts `false` and `0` as real readings, because a policy that says
+ * "builders risk: no" or shows $0 coverage still proves it IS a policy. That is exactly wrong for a
+ * SIGNATURE flag: "signed: false" is not proof we are holding the executed package — it is the
+ * opposite. Wrap any yes/no marker in this so the distinction is stated at the call site instead of
+ * living in a `x === true ? true : null` ternary that the next caller will forget to write.
+ */
+function affirmed(flag) { return flag === true ? true : null; }
+
+module.exports = { provenAbsent, wrongDocument, hasEvidence, affirmed };

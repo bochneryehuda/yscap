@@ -12,7 +12,7 @@
  */
 const { num, withinMoney, namesMatchLoose, entityMatch, daysBetween, toISODate, addrMatches, addrLine } = require('./compare');
 const { clauseNamesLender, clauseHasAddress, LENDER_MORTGAGEE_CLAUSE } = require('./lender');
-const { provenAbsent, wrongDocument } = require('./absence');
+const { provenAbsent, wrongDocument, affirmed } = require('./absence');
 const insLoanKey = (s) => String(s == null ? '' : s).toUpperCase().replace(/[^A-Z0-9]/g, '');
 
 function mk(source, f) {
@@ -400,12 +400,29 @@ function computeInsuranceInvoiceFindings(inv, subject, opts = {}) {
 function computeFloodFindings(fl, subject, opts = {}) {
   const out = []; if (!fl) return out;
   if (unreadable('flood', fl, ['floodZone', 'inSfha'])) return [verify('flood', 'flood determination')];
+  // SAME CLASS AS THE MORTGAGEE CLAUSE, at fatal severity (audit 2026-07-26). The old test was
+  // `policyPresent !== true`, so a NULL fired it — and a FEMA flood determination (the document this
+  // slot is for) does not report whether a flood POLICY exists anywhere, so `policyPresent` is null
+  // on essentially every one of them. The file was being told "flood insurance is not on file" by a
+  // document structurally incapable of knowing that.
+  //
+  // The flood ZONE itself is proven, and flood insurance in a Special Flood Hazard Area is a federal
+  // requirement — so this stays blocking either way. What changes is the claim: we only say "not on
+  // file" when the document actually said so, and otherwise ask for the confirmation we genuinely
+  // need. Same gate, honest wording.
   if (fl.inSfha === true && fl.policyPresent !== true) {
-    out.push(mk('flood', { code: 'flood_insurance_required', severity: 'fatal', field: 'flood_insurance',
-      docValue: fl.floodZone || 'SFHA', fileValue: null,
-      title: 'Flood insurance is required but not on file',
-      howTo: `The property is in a Special Flood Hazard Area (zone ${fl.floodZone || 'A/V'}). Federal law requires flood insurance — obtain a flood policy before closing.`,
-      actions: ['request_document', 'post_condition', 'dismiss'] }));
+    const proven = fl.policyPresent === false;
+    out.push(mk('flood', proven
+      ? { code: 'flood_insurance_required', severity: 'fatal', field: 'flood_insurance',
+          docValue: fl.floodZone || 'SFHA', fileValue: null,
+          title: 'Flood insurance is required but not on file',
+          howTo: `The property is in a Special Flood Hazard Area (zone ${fl.floodZone || 'A/V'}). Federal law requires flood insurance — obtain a flood policy before closing.`,
+          actions: ['request_document', 'post_condition', 'dismiss'] }
+      : { code: 'flood_insurance_confirm', severity: 'fatal', field: 'flood_insurance',
+          docValue: fl.floodZone || 'SFHA', fileValue: null,
+          title: 'The property is in a flood zone — confirm the flood policy is on the file',
+          howTo: `The determination puts the property in a Special Flood Hazard Area (zone ${fl.floodZone || 'A/V'}), where federal law requires flood insurance. The determination itself does not say whether a policy exists, so confirm the flood policy is on the file before closing.`,
+          actions: ['request_document', 'post_condition', 'dismiss'] }));
   }
   return out;
 }
@@ -800,7 +817,19 @@ function computeSignedApplicationFindings(a, subject, opts = {}) {
   // package is simply still out for signature. The signature is what proves this is the executed
   // disclosure package and therefore the document that WOULD carry the certification; without it
   // the honest finding is the one already raised above (`application_unsigned`), not a second one.
-  if (provenAbsent(a.businessPurposePresent, [a.signaturePresent === true ? true : null, a.signedDate])) {
+  const EXECUTED_MARKERS = [affirmed(a.signaturePresent), a.signedDate];
+  if (wrongDocument(a.businessPurposePresent, EXECUTED_MARKERS)) {
+    // The reader says there is no certification AND nothing shows this document was ever executed —
+    // no signature, no signature date. That is a blank application form, or the wrong document in the
+    // slot, not a compliance defect in the loan. It must still SAY something: going silent here was a
+    // release blocker in the first version of this guard (a fatal that used to fire produced nothing
+    // at all when `signaturePresent` came back null, which the schema treats as an ordinary answer).
+    out.push(mk('signed_application', { code: 'application_not_the_signed_package', severity: 'warning', field: 'document',
+      docValue: 'no signature and no signature date on this document', fileValue: null,
+      title: 'This looks like a blank application, not the executed disclosure package',
+      howTo: 'The business-purpose / non-owner-occupied certification comes back with the SIGNED package — a blank or unexecuted application never carries it, so nothing can be confirmed from this document. Obtain the borrower-executed package (or file this copy under the application slot).',
+      actions: ['request_document', 'post_condition', 'dismiss'] }));
+  } else if (provenAbsent(a.businessPurposePresent, EXECUTED_MARKERS)) {
     // FATAL: the business-purpose / non-owner-occupied certification is the legal basis for this loan
     // being exempt from consumer-mortgage regulation (TILA/RESPA/ATR). Closing without it is a real
     // compliance exposure, so it blocks CTC — but it's a stored per-doc finding, so a senior can

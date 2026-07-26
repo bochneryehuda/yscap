@@ -15,7 +15,7 @@
  * Pure: no DB, no AI, no network.
  */
 const R = require('path').resolve(__dirname, '..');
-const { provenAbsent, wrongDocument, hasEvidence } = require(R + '/src/lib/underwriting/absence');
+const { provenAbsent, wrongDocument, hasEvidence, affirmed } = require(R + '/src/lib/underwriting/absence');
 const DC = require(R + '/src/lib/underwriting/doc-checks');
 
 let pass = 0, fail = 0;
@@ -119,6 +119,56 @@ const dateOnly = DC.computeSignedApplicationFindings(
   { borrowerName: 'X', signaturePresent: null, signedDate: '2026-07-20', businessPurposePresent: false, readable: true },
   {}, {});
 ok(has(dateOnly, 'application_no_business_purpose'), 'a signature date alone proves the package was executed');
+
+// ---------- the hole the first version of this guard left (audit 2026-07-26) ----------
+// `signaturePresent` is typed ['boolean','null'] and the reader is told to use null for anything it
+// cannot commit on. So null + "no business-purpose certification" is an ORDINARY answer — and the
+// first version of the guard turned a blocking fatal into TOTAL SILENCE for it. A guard that
+// silences a finding must always leave something in its place.
+ok(affirmed(true) === true, 'affirmed passes a real yes through');
+ok(affirmed(false) === null, 'affirmed refuses to treat "signed: no" as proof the package was executed');
+ok(affirmed(null) === null && affirmed(undefined) === null, 'affirmed treats unread as no proof');
+ok(provenAbsent(false, [affirmed(false), null]) === false,
+  'a "signed: no" flag can never on its own license an absence finding');
+
+const blankApp = DC.computeSignedApplicationFindings(
+  { borrowerName: 'Moses Weil', signaturePresent: null, signedDate: null, businessPurposePresent: false, readable: true },
+  {}, {});
+ok(blankApp.length > 0,
+  `an unread signature flag never produces SILENCE (got ${JSON.stringify(codes(blankApp))})`);
+ok(has(blankApp, 'application_not_the_signed_package'),
+  'it says what is actually wrong — this is not the executed package');
+ok(!has(blankApp, 'application_no_business_purpose'),
+  'and it does not accuse the file of a compliance defect');
+const bw = blankApp.find((f) => f.code === 'application_not_the_signed_package');
+ok(bw && bw.severity === 'warning' && bw.blocksCtc === false, 'the wrong-document notice does not block clear-to-close');
+
+// ---------- the same class at FATAL severity: flood ----------
+// A FEMA determination says what ZONE the property is in. It does not say whether a flood POLICY
+// exists anywhere on the file — so `policyPresent` is null on essentially every real one, and the
+// old `!== true` test told the file "flood insurance is not on file" on the strength of a document
+// that cannot know. The zone is proven and the coverage is a federal requirement, so it still
+// blocks; only the claim changes.
+const floodUnknown = DC.computeFloodFindings(
+  { inSfha: true, floodZone: 'AE', policyPresent: null, readable: true }, {}, {});
+ok(!has(floodUnknown, 'flood_insurance_required'),
+  `a determination that cannot see a policy no longer claims one is missing (got ${JSON.stringify(codes(floodUnknown))})`);
+ok(has(floodUnknown, 'flood_insurance_confirm'), 'it asks for the confirmation actually needed');
+const fc = floodUnknown.find((f) => f.code === 'flood_insurance_confirm');
+ok(fc && fc.severity === 'fatal' && fc.blocksCtc === true,
+  'and it STILL blocks clear-to-close — flood cover in a Special Flood Hazard Area is federal law');
+
+const floodProven = DC.computeFloodFindings(
+  { inSfha: true, floodZone: 'AE', policyPresent: false, readable: true }, {}, {});
+ok(has(floodProven, 'flood_insurance_required'),
+  'a document that positively says there is no policy still raises the original finding');
+ok(floodProven.find((f) => f.code === 'flood_insurance_required').blocksCtc === true, 'and it blocks');
+
+const floodCovered = DC.computeFloodFindings(
+  { inSfha: true, floodZone: 'AE', policyPresent: true, readable: true }, {}, {});
+ok(floodCovered.length === 0, `an SFHA property with a policy confirmed raises nothing (got ${JSON.stringify(codes(floodCovered))})`);
+const notFlood = DC.computeFloodFindings({ inSfha: false, floodZone: 'X', readable: true }, {}, {});
+ok(notFlood.length === 0, 'a property outside the flood zone raises nothing');
 
 console.log(`test-absence-wrong-document-pure: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

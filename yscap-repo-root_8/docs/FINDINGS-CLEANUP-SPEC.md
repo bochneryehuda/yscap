@@ -159,3 +159,39 @@ one-time backfill applies it to every existing file.
 
 **Do NOT rewrite the dispositions.** They are correct. Verify with a test that each named rule stays
 silent, so the correctness is pinned, then build the retraction.
+
+---
+
+## ROOT 3 generalized (2026-07-26) — "it isn't there" needs the RIGHT DOCUMENT
+
+The mortgagee-clause false FATAL is one instance of a class, not a one-off. A check asks "is X
+present?", the reader honestly answers `false` about a document that never carries X, and the check
+turns that into an accusation about the LOAN. `src/lib/underwriting/absence.js` is the chokepoint:
+an "X is missing" finding now requires positive proof the document is the KIND that carries X.
+
+**Fixed so far**
+
+| Finding | Was | Now |
+|---|---|---|
+| `insurance_no_mortgagee` | FATAL off an insurance INVOICE | needs a policy-only marker (coverage / effective / expiration / builders-risk); otherwise `insurance_not_the_policy` (warning, "get the binder") |
+| `application_no_business_purpose` | FATAL off a blank 1003 | needs a signature or signature date; otherwise `application_not_the_signed_package` (warning) |
+| `flood_insurance_required` | FATAL off `policyPresent !== true` — a FEMA determination cannot know whether a policy exists, so NULL fired it on essentially every one | asserts "not on file" only when the document says so; otherwise `flood_insurance_confirm`, still FATAL/blocking (flood cover in an SFHA is federal law) but honest about the claim |
+
+**Still to do — same class, ranked** (found by the pre-merge audit; each needs its own
+never-under-reach test before shipping):
+
+1. `assignment_unsigned` (`doc-checks.js`, FATAL, blocks CTC) — `assignorSigned === false` off a
+   signature-page-missing scan or a draft copy accuses the file of an unexecuted assignment.
+2. `oa_unsigned` (FATAL, blocks CTC) — articles of organization or an OA excerpt in the
+   operating-agreement slot reads as `signed: false`.
+3. `background_entity_not_screened` (warning) — a per-document absence asserting a FILE-level fact;
+   on a two-report file the individual report still says the entity was never screened.
+4. `oa_no_borrowing_authority`, `application_unsigned`, `term_sheet_unsigned` (warnings).
+5. `title_missing_condo_endorsement` / `title_multiparcel_contiguity` — absence from a possibly
+   unread `endorsements` array; already softened by "Confirm…" wording.
+
+Correct already (leave alone): `amendment_unexecuted` is gated on `changesSomething` — a real
+document-kind marker, and the pattern `absence.js` generalizes. The `voided_check_no_routing` /
+`title_seller_unreadable` / `contract_seller_unreadable` family is phrased as a READ problem, not an
+accusation. Anything comparing two present values (name / address / money mismatches) is a different
+class entirely and must not be touched.
