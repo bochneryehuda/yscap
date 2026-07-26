@@ -224,10 +224,20 @@ function _addrStr(a) {
   const parts = [street, a.city, a.state, (a.zip || a.postalCode || a.zipCode || a.postal_code)];
   return parts.map((x) => (x == null ? '' : String(x).trim())).filter((x) => x !== '').join(' ');
 }
+function _named(p) { return !!(p && ((p.firstName && String(p.firstName).trim()) || (p.lastName && String(p.lastName).trim()))); }
 function compareIdentity(row, loan) {
   const N = map._internals;
-  const app0 = loan && Array.isArray(loan.applications) ? loan.applications[0] : null;
+  const apps = (loan && Array.isArray(loan.applications)) ? loan.applications : [];
+  const app0 = apps[0] || null;
   const bor = (app0 && app0.borrower) ? app0.borrower : {};
+  // Encompass models a second person TWO ways (owner-directed 2026-07-26): as the
+  // CO-BORROWER in the same borrower pair (applications[0].coBorrower), OR as a
+  // SECOND borrower pair (applications[1].borrower). Read whichever actually
+  // carries the co-borrower — same-pair coBorrower first, else the 2nd pair's
+  // borrower — so our single co_borrower_id matches either representation.
+  const coInPair = (app0 && app0.coBorrower) ? app0.coBorrower : {};
+  const coInSecondPair = (apps[1] && apps[1].borrower) ? apps[1].borrower : {};
+  const coBor = _named(coInPair) ? coInPair : (_named(coInSecondPair) ? coInSecondPair : coInPair);
   const prop = (loan && loan.property) ? loan.property : {};
   const out = [];
   const push = (key, label, compare, ours, theirs) => {
@@ -253,6 +263,7 @@ function compareIdentity(row, loan) {
       writable: false, open: status === 'mismatch', resolution: null,
     });
   };
+  // Primary borrower + subject property address.
   const ourName = [row.b_first_name, row.b_last_name].filter((x) => x && String(x).trim()).join(' ').trim();
   const theirName = [bor.firstName, bor.lastName].filter((x) => x && String(x).trim()).join(' ').trim();
   push('id_borrower_name', 'Borrower name', 'name', ourName || null, theirName || null);
@@ -260,6 +271,21 @@ function compareIdentity(row, loan) {
   push('id_email', 'Email', 'email', row.b_email || null, bor.emailAddressText || null);
   push('id_phone', 'Phone', 'phone', row.b_cell_phone || null, (bor.mobilePhone || bor.homePhoneNumber) || null);
   push('id_property_address', 'Property address', 'address', _addrStr(row.property_address), _addrStr(prop));
+
+  // Co-borrower — surfaced ONLY when a co-borrower exists on EITHER side (our
+  // co_borrower_id, or an Encompass co-borrower / 2nd-pair borrower). A single-
+  // borrower file has none → we surface nothing (never a false "no data" block).
+  // A co-borrower present on only one side stays incomparable → not-passing, which
+  // correctly flags that the two systems disagree on the co-borrower.
+  const ourCoName = [row.cb_first_name, row.cb_last_name].filter((x) => x && String(x).trim()).join(' ').trim();
+  const theirCoName = [coBor.firstName, coBor.lastName].filter((x) => x && String(x).trim()).join(' ').trim();
+  const hasCo = !!(row.co_borrower_id || ourCoName || theirCoName || coBor.birthDate || coBor.emailAddressText || coBor.mobilePhone);
+  if (hasCo) {
+    push('id_coborrower_name', 'Co-borrower name', 'name', ourCoName || null, theirCoName || null);
+    push('id_coborrower_dob', 'Co-borrower date of birth', 'date', row.cb_dob || null, coBor.birthDate || null);
+    push('id_coborrower_email', 'Co-borrower email', 'email', row.cb_email || null, coBor.emailAddressText || null);
+    push('id_coborrower_phone', 'Co-borrower phone', 'phone', row.cb_cell_phone || null, (coBor.mobilePhone || coBor.homePhoneNumber) || null);
+  }
   return out;
 }
 
@@ -275,14 +301,17 @@ async function computeFindings(appId, dbc) {
             a.loan_amount, a.purchase_price, a.underlying_contract_price, a.assignment_fee,
             a.rehab_budget, a.as_is_value, a.arv, a.ltv, a.rate_pct, a.term, a.maturity_date,
             a.program, a.loan_type, a.rehab_type, a.accrual_type, a.property_type,
-            a.units, a.property_address,
+            a.units, a.property_address, a.co_borrower_id,
             a.requested_exp_flips, a.requested_exp_holds, a.requested_exp_ground,
             l.llc_name AS llc_name,
             b.first_name AS b_first_name, b.last_name AS b_last_name,
-            b.date_of_birth AS b_dob, b.email AS b_email, b.cell_phone AS b_cell_phone
+            b.date_of_birth AS b_dob, b.email AS b_email, b.cell_phone AS b_cell_phone,
+            cb.first_name AS cb_first_name, cb.last_name AS cb_last_name,
+            cb.date_of_birth AS cb_dob, cb.email AS cb_email, cb.cell_phone AS cb_cell_phone
        FROM applications a
        LEFT JOIN llcs l ON l.id = a.llc_id
        LEFT JOIN borrowers b ON b.id = a.borrower_id
+       LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id
       WHERE a.id = $1 AND a.deleted_at IS NULL
       LIMIT 1`, [appId])).rows[0];
   if (!row) return { found: false, hasLoan: false, fields: [], summary: summarize([]) };
@@ -335,7 +364,14 @@ async function isClear(appId, dbc) {
   const c = await computeFindings(appId, dbc);
   // A file with no Encompass loan pulled is NOT "blocked" by Encompass — the gate
   // only blocks on an OPEN blocking mismatch against a loan we actually have.
-  return { clear: c.summary.clear, hasLoan: c.hasLoan, openBlocking: c.summary.openBlocking, openBlockingKeys: c.summary.openBlockingKeys };
+  // At the GATE BOUNDARY `openBlocking` is the count of EVERY not-passing field
+  // (mismatch, advisory, OR "no data to compare"), i.e. exactly the length of
+  // `openBlockingKeys`. It deliberately does NOT use `summary.openBlocking`, which
+  // counts only the open block-gate MISMATCHES and would print "0 fields don't
+  // match" in precisely the advisory / no-data / accepted-but-differing cases the
+  // owner-directed match-all gate blocks on (2026-07-26).
+  const keys = c.summary.openBlockingKeys || [];
+  return { clear: c.summary.clear, hasLoan: c.hasLoan, openBlocking: keys.length, openBlockingKeys: keys };
 }
 
 // WO-E — the term-sheet issuance gate decision. `block` is true ONLY when there
@@ -347,7 +383,10 @@ async function isClear(appId, dbc) {
 async function issuanceGate(appId, dbc) {
   try {
     const g = await isClear(appId, dbc);
-    return { block: !!(g.hasLoan && !g.clear), hasLoan: g.hasLoan, openBlocking: g.openBlocking || 0, openBlockingKeys: g.openBlockingKeys || [] };
+    const keys = g.openBlockingKeys || [];
+    // `openBlocking` == keys.length so every display/log site prints the true
+    // number of fields that don't agree (never an under-count).
+    return { block: !!(g.hasLoan && !g.clear), hasLoan: g.hasLoan, openBlocking: keys.length, openBlockingKeys: keys };
   } catch (_) {
     return { block: false, hasLoan: false, openBlocking: 0, openBlockingKeys: [] };
   }

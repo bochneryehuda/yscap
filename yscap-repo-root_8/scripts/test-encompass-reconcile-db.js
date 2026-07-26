@@ -38,6 +38,10 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
          VALUES ('Enc','Recon',$1,'1985-03-10','555-123-4567') RETURNING id`, [email])).rows[0];
     const llc = (await client.query(
       `INSERT INTO llcs (borrower_id, llc_name) VALUES ($1,'ABC Holdings LLC') RETURNING id`, [b.id])).rows[0];
+    const email2 = 'enccorecon+' + Buffer.from(String(process.pid)).toString('hex') + '@example.com';
+    const cb = (await client.query(
+      `INSERT INTO borrowers (first_name,last_name,email,date_of_birth,cell_phone)
+         VALUES ('Coe','Recon',$1,'1990-07-15','555-987-6543') RETURNING id`, [email2])).rows[0];
 
     // The Encompass loan we "pulled" (full loan shape: customFields[] + standard
     // props + the applications[].borrower identity subtree + subject property).
@@ -46,7 +50,10 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
       propertyAppraisedValueAmount: '750000.0000', loanAmortizationTermMonths: 12,
       requestedInterestRatePercent: '8.0', maturityDate: '2027-06-22', loanNumber: 'YSCAP-DBT',
       property: { propertyType: 'Single Family', financedNumberOfUnits: 2, streetAddress: '12 Main St', city: 'Brooklyn', state: 'NY', postalCode: '11230' },
-      applications: [{ borrower: { firstName: 'Enc', lastName: 'Recon', birthDate: '1985-03-10', emailAddressText: email, mobilePhone: '(555) 123-4567' } }],
+      applications: [{
+        borrower: { firstName: 'Enc', lastName: 'Recon', birthDate: '1985-03-10', emailAddressText: email, mobilePhone: '(555) 123-4567' },
+        coBorrower: { firstName: 'Coe', lastName: 'Recon', birthDate: '1990-07-15', emailAddressText: email2, mobilePhone: '(555) 987-6543' },
+      }],
       customFields: [
         { fieldName: 'CX.REHABBUDGET', value: '120000.0000' },
         { fieldName: 'CX.ASISVALUE', value: '500000.0000' },
@@ -58,16 +65,16 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
     // An application that uses the REAL columns the reconcile query SELECTs.
     const app = (await client.query(
       `INSERT INTO applications
-         (borrower_id, llc_id, ys_loan_number, property_address, units, program, loan_type,
+         (borrower_id, llc_id, co_borrower_id, ys_loan_number, property_address, units, program, loan_type,
           loan_amount, purchase_price, as_is_value, arv, rehab_budget, rate_pct, term,
           property_type, rehab_type, accrual_type, encompass_extra,
           encompass_last_pulled_at)
-       VALUES ($1,$2,'YSCAP-DBT',
+       VALUES ($1,$2,$4,'YSCAP-DBT',
                '{"street":"12 Main St","city":"Brooklyn","state":"NY","zip":"11230"}'::jsonb, 2,
                'Fix & Flip w/ Construction','Purchase',
                525450, 450500, 500000, 750000, 120000, 8.0, '12',
                'SFR', 'Cosmetic', 'non_dutch', $3::jsonb, now())
-       RETURNING id`, [b.id, llc.id, JSON.stringify(loan)])).rows[0];
+       RETURNING id`, [b.id, llc.id, JSON.stringify(loan), cb.id])).rows[0];
 
     // 1. The real query runs without throwing (the phantom-column guard) and reads the loan.
     //    This now also exercises a.units / a.property_address + the borrowers JOIN.
@@ -97,6 +104,27 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
     assert.strictEqual(byKey.id_property_address.status, 'match', 'subject property address matches (canonical)');
     assert.strictEqual(byKey.id_borrower_name.writable, false, 'identity is compare-only (never overwrite borrower PII from a read)');
     ok('borrower identity + subject address are compared, matched, and never writable');
+
+    // 2c. The CO-BORROWER identity is compared too — matched via the coBorrower
+    //     representation AND via the 2nd-borrower-pair representation.
+    assert.strictEqual(byKey.id_coborrower_name.status, 'match', 'co-borrower name matches (Coe Recon)');
+    assert.strictEqual(byKey.id_coborrower_dob.status, 'match', 'co-borrower DOB matches (1990-07-15)');
+    assert.strictEqual(byKey.id_coborrower_email.status, 'match', 'co-borrower email matches');
+    assert.strictEqual(byKey.id_coborrower_phone.status, 'match', 'co-borrower phone matches');
+    // Same co-borrower expressed as a SECOND borrower pair (applications[1].borrower).
+    const loan2 = JSON.parse(JSON.stringify(loan));
+    delete loan2.applications[0].coBorrower;
+    loan2.applications.push({ borrower: { firstName: 'Coe', lastName: 'Recon', birthDate: '1990-07-15', emailAddressText: email2, mobilePhone: '(555) 987-6543' } });
+    await client.query(`UPDATE applications SET encompass_extra=$2::jsonb WHERE id=$1`, [app.id, JSON.stringify(loan2)]);
+    const cPair = {}; for (const f of (await recon.computeFindings(app.id, client)).fields) cPair[f.key] = f;
+    assert.strictEqual(cPair.id_coborrower_name.status, 'match', 'co-borrower matches via the 2nd-borrower-pair representation too');
+    assert.strictEqual(cPair.id_coborrower_dob.status, 'match', 'co-borrower DOB matches via the 2nd-pair representation');
+    await client.query(`UPDATE applications SET encompass_extra=$2::jsonb WHERE id=$1`, [app.id, JSON.stringify(loan)]); // restore
+    ok('the co-borrower is compared and matched via BOTH the coBorrower and the 2nd-borrower-pair representations');
+
+    // Re-read after restoring so later steps see the original loan.
+    for (const k in byKey) delete byKey[k];
+    for (const f of (await recon.computeFindings(app.id, client)).fields) byKey[f.key] = f;
 
     // 3. A money change opens a finding → the field is not-passing and the gate blocks.
     await client.query(`UPDATE applications SET loan_amount = 525000 WHERE id = $1`, [app.id]);
