@@ -1,5 +1,5 @@
 -- ============================================================================
--- 313 — CLOSING WORKFLOW expansion (owner-directed 2026-07-26).
+-- 315 — CLOSING WORKFLOW expansion (owner-directed 2026-07-26).
 --
 -- Builds the closer's real working surface ON TOP of the existing workflow
 -- scaffold (db/212): the closer role, closer_id pointer, and the closing_workflow

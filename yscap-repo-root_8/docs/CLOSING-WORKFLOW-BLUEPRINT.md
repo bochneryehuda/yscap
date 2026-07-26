@@ -37,7 +37,7 @@ loan (repaying the warehouse advance). The tracking number the closer records is
   investor-CTC'd, closing-date-confirmed-with-all-parties, and notes. That is the officer's
   "closing workflow" — they open the same Closing section and keep those fields current.
 
-## Data model (migration `313_closing_workflow.sql`, idempotent + backfilled)
+## Data model (migration `315_closing_workflow.sql`, idempotent + backfilled)
 
 - `applications.funded_date date` — our system's authoritative funded date (the designed-but-
   unbuilt column from `docs/ENCOMPASS-DATA-MAPPING.md`). Read into the Encompass reconciler.

@@ -1,5 +1,5 @@
 -- ============================================================================
--- 314 — DEFAULT CLOSER = Malky Katz (owner-directed 2026-07-26).
+-- 316 — DEFAULT CLOSER = Malky Katz (owner-directed 2026-07-26).
 --
 -- "Closer on file" is applications.closer_id; the DEFAULT closer is whoever holds
 -- the `closer` role (the submit-to-closing route auto-routes to the sole closer and
