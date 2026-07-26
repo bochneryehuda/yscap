@@ -1329,6 +1329,8 @@ router.get('/:appId/twin/fact/:factKey', async (req, res, next) => {
           spanType: s.span_type || null,
           supportType: s.support_type || null,
           documentId: s.document_id || null,
+          // R5.17 — precise normalized 0..1 box for the page overlay (null → text fallback).
+          polygon: Array.isArray(s.polygon) && s.polygon.length ? s.polygon : null,
         }));
       }));
     } catch (_e) { /* evidence enrichment is additive — never breaks the drilldown */ }
@@ -1506,6 +1508,10 @@ router.get('/:appId/findings/:fid/evidence', async (req, res, next) => {
         spanType: s.span_type || null,
         role: s.role || null,
         documentId: s.document_id || null,
+        // R5.17 — the exact normalized 0..1 bounding polygon so the viewer can
+        // draw the precise box on the page (null → the UI falls back to a
+        // text-search highlight of the quote).
+        polygon: Array.isArray(s.polygon) && s.polygon.length ? s.polygon : null,
       })).filter((s) => s.quote);
     } catch (_e) { /* evidence is additive — return an empty list, never an error */ }
     res.json({ ok: true, findingId: f.id, spans });

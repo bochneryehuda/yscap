@@ -26,8 +26,14 @@ import { findHighlightItems } from '../lib/pdfHighlight.js';
  *               few money/name forms) and draw a soft box over the matching
  *               words. No match → nothing drawn (the page still opens to
  *               initialPage). Never selectable text — a pure visual cue.
+ *   highlightBoxes optional [{ page, polygon }] — precise evidence boxes (R5.17).
+ *               `polygon` is a normalized 0..1 bounding polygon ([{x,y},…] or
+ *               [[x,y],…]) captured by the OCR layout, so the box lands on the
+ *               EXACT spot we read the value regardless of render zoom. Drawn on
+ *               its `page` in addition to any text `highlight`. Malformed/empty →
+ *               skipped silently (the text-search highlight still applies).
  */
-export default function PdfViewer({ data, onError, initialPage, highlight }) {
+export default function PdfViewer({ data, onError, initialPage, highlight, highlightBoxes }) {
   const [status, setStatus] = useState('loading');   // loading | ready | error
   const [numPages, setNumPages] = useState(0);
   const [page, setPage] = useState(1);
@@ -114,10 +120,44 @@ export default function PdfViewer({ data, onError, initialPage, highlight }) {
               }
             } catch (_) { /* highlighting is best-effort */ }
           }
+          // R5.17 — draw the precise evidence box(es) for this page from the
+          // stored normalized 0..1 polygon. Independent of the text-search
+          // highlight above (a span carries the exact geometry, so we don't
+          // need to re-find the words). Multiply blend keeps the page legible.
+          if (Array.isArray(highlightBoxes) && highlightBoxes.length) {
+            try {
+              for (const b of highlightBoxes) {
+                if (!b || Number(b.page) !== n) continue;
+                const poly = b.polygon;
+                if (!Array.isArray(poly) || !poly.length) continue;
+                let minX = 1, minY = 1, maxX = 0, maxY = 0, ok = false;
+                for (const p of poly) {
+                  const px = Array.isArray(p) ? Number(p[0]) : Number(p && p.x);
+                  const py = Array.isArray(p) ? Number(p[1]) : Number(p && p.y);
+                  if (!Number.isFinite(px) || !Number.isFinite(py)) continue;
+                  minX = Math.min(minX, px); minY = Math.min(minY, py);
+                  maxX = Math.max(maxX, px); maxY = Math.max(maxY, py);
+                  ok = true;
+                }
+                if (!ok || maxX <= minX || maxY <= minY) continue;
+                const box = document.createElement('div');
+                box.className = 'pdf-hl pdf-hl-box';
+                const left = minX * viewport.width;
+                const top = minY * viewport.height;
+                const w = (maxX - minX) * viewport.width;
+                const h = (maxY - minY) * viewport.height;
+                box.style.cssText = `position:absolute;left:${left}px;top:${top}px;`
+                  + `width:${Math.max(w, 4)}px;height:${Math.max(h, 4)}px;`
+                  + 'background:rgba(255,213,0,0.30);border:1.5px solid rgba(214,158,0,0.85);'
+                  + 'border-radius:2px;pointer-events:none;mix-blend-mode:multiply;';
+                wrap.appendChild(box);
+              }
+            } catch (_) { /* box overlay is best-effort */ }
+          }
         } catch (_) { /* one bad page never kills the rest */ }
       }
     })();
-  }, [status, scale, numPages, highlight]);
+  }, [status, scale, numPages, highlight, highlightBoxes]);
 
   // Auto-jump to a requested page once it has actually rendered (its wrapper has
   // real height). Pages render sequentially + async, so poll a few frames until

@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { AppraisalFinding } from './AppraisalPanel.jsx';
 import DocCompare from './DocCompare.jsx';
+import DocPreview from './DocPreview.jsx';
 import AiReasoningChat from './AiReasoningChat.jsx';
 import { useAuth } from '../lib/auth.jsx';
 
@@ -94,6 +95,27 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
   const [simAction, setSimAction] = useState('dismiss');
   const [simNote, setSimNote] = useState('');
   const [evidence, setEvidence] = useState(null); // R5.17: { loading, spans } | null — grounded quote(s) behind this finding
+  // R5.17 — the in-place document viewer, opened to the page + exact box where a
+  // value was read. `{ docId, page, quote, polygon }` | null. Replaces the old
+  // dead `#/staff/documents/:id` hash link (there is no such route).
+  const [preview, setPreview] = useState(null);
+  // Memoized so an unrelated parent re-render while a preview is open doesn't
+  // hand PdfViewer a brand-new array each time (its render effect keys on this),
+  // which would needlessly re-rasterize every page.
+  const previewBoxes = React.useMemo(
+    () => (preview?.polygon ? [{ page: preview.page || 1, polygon: preview.polygon }] : undefined),
+    [preview],
+  );
+  const openEvidence = (sp) => {
+    const d = (sp && sp.documentId) || docId;
+    if (!d) return;
+    setPreview({
+      docId: d,
+      page: sp && sp.pageNumber != null ? sp.pageNumber : (pageNumber != null ? pageNumber : 1),
+      quote: sp && sp.quote ? String(sp.quote) : null,
+      polygon: sp && Array.isArray(sp.polygon) && sp.polygon.length ? sp.polygon : null,
+    });
+  };
   const loadEvidence = async () => {
     if (!f.id) return;
     if (evidence) { setEvidence(null); return; }   // toggle closed
@@ -253,13 +275,26 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
             <div key={i} style={{ fontSize: 11.5, color: 'var(--muted,#4B585C)', borderLeft: '2px solid var(--gold,#AE8746)', paddingLeft: 8, marginTop: 3 }}>
               <span style={{ fontStyle: 'italic', overflowWrap: 'anywhere' }}>“{sp.quote}”</span>
               {sp.pageNumber != null && (
-                <span> · {sp.documentId
-                  ? <a href={`#/staff/documents/${sp.documentId}`} style={{ color: 'var(--teal-deep,#256168)' }}>page {sp.pageNumber}</a>
+                <span> · {(sp.documentId || docId)
+                  // R5.17 — open the document IN PLACE, scrolled to this page with the
+                  // exact box drawn where we read the quote (was a dead #/staff/documents link).
+                  ? <a href="#" onClick={(e) => { e.preventDefault(); openEvidence(sp); }} style={{ color: 'var(--teal-deep,#256168)', textDecoration: 'underline' }}>page {sp.pageNumber}</a>
                   : `page ${sp.pageNumber}`}</span>
               )}
             </div>
           ))}
         </div>
+      )}
+      {preview && (
+        <DocPreview
+          title={`Source document${preview.page ? ` · page ${preview.page}` : ''}`}
+          load={() => api.staffDownloadDoc(preview.docId)}
+          initialPage={preview.page || 1}
+          highlight={preview.quote || undefined}
+          highlightBoxes={previewBoxes}
+          onClose={() => setPreview(null)}
+          onDownload={openSourceDoc}
+        />
       )}
       {openableCompare.length >= 2 && (
         <div style={{ fontSize: 12, margin: '4px 0 6px' }}>
@@ -1095,6 +1130,22 @@ function SovereignCockpit({ twinFacts, cureProofs, appId, canIssueCerts, canConf
   const [factHistory, setFactHistory] = useState({});   // fact_key → { loading, canonical, observations, events }
   const [confirmInputs, setConfirmInputs] = useState({}); // fact_key → { value, reason }
   const [confirmBusy, setConfirmBusy] = useState(null);
+  // R5.17 — in-place evidence viewer for a fact's observation span (was a dead
+  // #/staff/documents link). { docId, page, quote, polygon } | null.
+  const [factPreview, setFactPreview] = useState(null);
+  const factPreviewBoxes = React.useMemo(
+    () => (factPreview?.polygon ? [{ page: factPreview.page || 1, polygon: factPreview.polygon }] : undefined),
+    [factPreview],
+  );
+  const openFactSpan = (s) => {
+    if (!s || !s.documentId) return;
+    setFactPreview({
+      docId: s.documentId,
+      page: s.pageNumber != null ? s.pageNumber : 1,
+      quote: s.quote ? String(s.quote) : null,
+      polygon: Array.isArray(s.polygon) && s.polygon.length ? s.polygon : null,
+    });
+  };
   const toggleFact = async (factKey) => {
     if (expandedFact === factKey) { setExpandedFact(null); return; }
     setExpandedFact(factKey);
@@ -1217,7 +1268,7 @@ function SovereignCockpit({ twinFacts, cureProofs, appId, canIssueCerts, canConf
                                             <span style={{ fontStyle: 'italic', overflowWrap: 'anywhere' }}>“{s.quote}”</span>
                                             {s.pageNumber != null && (
                                               <span> · {s.documentId
-                                                ? <a href={`#/staff/documents/${s.documentId}`} onClick={(e) => e.stopPropagation()} style={{ color: 'var(--teal-deep,#256168)' }}>page {s.pageNumber}</a>
+                                                ? <a href="#" onClick={(e) => { e.preventDefault(); e.stopPropagation(); openFactSpan(s); }} style={{ color: 'var(--teal-deep,#256168)', textDecoration: 'underline' }}>page {s.pageNumber}</a>
                                                 : `page ${s.pageNumber}`}</span>
                                             )}
                                           </div>
@@ -1326,6 +1377,16 @@ function SovereignCockpit({ twinFacts, cureProofs, appId, canIssueCerts, canConf
       {appId && <SovereignAiCostSection appId={appId} />}
       {appId && <SovereignKnowledgeGraphSection appId={appId} />}
       {appId && <SovereignAskAdminSection appId={appId} />}
+      {factPreview && (
+        <DocPreview
+          title={`Source document${factPreview.page ? ` · page ${factPreview.page}` : ''}`}
+          load={() => api.staffDownloadDoc(factPreview.docId)}
+          initialPage={factPreview.page || 1}
+          highlight={factPreview.quote || undefined}
+          highlightBoxes={factPreviewBoxes}
+          onClose={() => setFactPreview(null)}
+        />
+      )}
     </div>
   );
 }
