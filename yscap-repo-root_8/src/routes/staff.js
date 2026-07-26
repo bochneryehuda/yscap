@@ -335,6 +335,22 @@ router.post('/tapes/:tapeKey/export/bulk', async (req, res) => {
       visible = vr.rows.map((x) => x.id);
     }
     if (!visible.length) return res.status(403).json({ error: 'forbidden' });
+    // Confirmed-fatal issuance backstop — PARITY with the single-file tape export
+    // (and TPR/MISMO): a fatal file's tape must not leave in bulk either without a
+    // super-admin override. Check each visible file; a super-admin's overrideReason
+    // proceeds+records per file, otherwise the whole batch is blocked with the list.
+    const blockedFatal = [];
+    for (const id of visible) {
+      const issuance = await issuanceBackstop.backstopForRun(id, 'term_sheet', db, { actorRole: req.actor.role, overrideReason: req.query && req.query.overrideReason });
+      if (issuance.hardWarning && !issuance.proceed) { blockedFatal.push({ id, tier: issuance.tier || null }); continue; }
+      if (issuance.override && issuance.override.applied) {
+        await audit(req, 'issuance_override', 'application', id, { action: 'export_tape_bulk', tape: tape.key, tier: issuance.tier, reason: issuance.override.reason });
+        await loanExceptions.recordIssuanceOverride({ appId: id, staffId: req.actor.id, note: `export_tape_bulk ${tape.key}: ${issuance.override.reason || 'no reason given'}`, snapshot: { action: 'export_tape_bulk', tape: tape.key, tier: issuance.tier || null, at: new Date().toISOString() } });
+      }
+    }
+    if (blockedFatal.length) {
+      return res.status(409).json({ error: 'blocked', action: 'export_tape_bulk', message: `${blockedFatal.length} of the selected loan(s) have a confirmed fatal issue and can't be exported without a super-admin override. Remove them from the selection, or have a super-admin export.`, blocked: blockedFatal });
+    }
     const { buf, filename, contentType, count } = await tapes.buildBulkTape(req.params.tapeKey, visible, db);
     await audit(req, 'export_tape_bulk', 'application', null, { tape: tape.key, count, requested: requested.length });
     res.set('Content-Type', contentType);
@@ -3063,7 +3079,7 @@ router.get('/applications/:id/export/tape/:tapeKey', async (req, res) => {
     if (!tape) return res.status(404).json({ error: 'unknown tape type' });
     const issuance = await issuanceBackstop.backstopForRun(req.params.id, 'term_sheet', db, { actorRole: req.actor.role, overrideReason: req.query && req.query.overrideReason });
     if (issuance.hardWarning && !issuance.proceed) {
-      return res.status(409).json({ error: 'blocked', action: 'export_tape', issuance });
+      return res.status(409).json({ error: 'blocked', action: 'export_tape', message: 'This file has a confirmed fatal issue, so its tape can\'t be exported without a super-admin override.', issuance });
     }
     if (issuance.override && issuance.override.applied) {
       await audit(req, 'issuance_override', 'application', req.params.id, { action: 'export_tape', tape: tape.key, tier: issuance.tier, reason: issuance.override.reason });

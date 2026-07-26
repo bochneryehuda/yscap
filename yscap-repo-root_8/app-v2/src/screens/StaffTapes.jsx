@@ -123,7 +123,9 @@ export default function StaffTapes() {
                     <thead>
                       <tr style={{ textAlign: 'left', borderBottom: '1px solid var(--line, #ddd)' }}>
                         <th style={{ padding: '6px 8px' }}>
-                          <input type="checkbox" checked={sel.size > 0 && sel.size === loans.length} onChange={toggleAll} aria-label="Select all" />
+                          <input type="checkbox"
+                            ref={(el) => { if (el) el.indeterminate = sel.size > 0 && sel.size < loans.length; }}
+                            checked={loans.length > 0 && sel.size === loans.length} onChange={toggleAll} aria-label="Select all" />
                         </th>
                         <th style={{ padding: '6px 8px' }}>Loan #</th>
                         <th style={{ padding: '6px 8px' }}>Property</th>

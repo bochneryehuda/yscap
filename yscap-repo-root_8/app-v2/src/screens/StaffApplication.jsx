@@ -3705,7 +3705,7 @@ function TprExport({ appId }) {
 function TapeExport({ appId }) {
   const [state, setState] = useState(null);
   const [busy, setBusy] = useState(null);
-  useEffect(() => { api.staffTapesForApp(appId).then(setState).catch(() => setState({ tapes: [], currentBuyer: null })); }, [appId]);
+  useEffect(() => { api.staffTapesForApp(appId).then(setState).catch(() => setState({ tapes: [], currentBuyer: null, error: true })); }, [appId]);
   async function download(tapeKey, name) {
     setBusy(tapeKey);
     try { const { blob, filename } = await api.staffTapeExport(appId, tapeKey); saveBlob(blob, filename || `${name}-tape.xlsx`); }
@@ -3724,7 +3724,9 @@ function TapeExport({ appId }) {
         so their pricing tab recalculates. You can only export the tape for the provider this loan is set to; to export a
         different one, change the loan's capital provider first.
       </p>
-      {!state ? <p className="muted small">Loading…</p> : (state.tapes || []).length === 0 ? (
+      {!state ? <p className="muted small">Loading…</p> : state.error ? (
+        <p className="muted small" style={{ color: 'var(--gold)' }}>Couldn’t load the available tapes. Refresh to try again.</p>
+      ) : (state.tapes || []).length === 0 ? (
         <p className="muted small">No tapes configured yet.</p>
       ) : (
         <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
