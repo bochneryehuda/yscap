@@ -58,6 +58,35 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
     ok(routes.length === 1, 'exactly one route row recorded');
     ok(routes[0].provider === 'azure' && routes[0].document_family === 'bank_statement' && routes[0].outcome === 'planned', 'route row: azure / bank_statement / planned');
 
+    /* AUDIT REGRESSION (2026-07-26) — every status the code can record must be a status the TABLE
+       ACCEPTS. `document_pipeline_stages` has a CHECK constraint, and `safeStage` wraps the write in
+       a swallow-everything catch: a status outside that constraint is therefore not an error anyone
+       sees — the INSERT is rejected and the row is simply never written, so the stage looks like it
+       never ran while the in-memory manifest believes it did. RS-1 shipped exactly that ('failed',
+       which is not in the constraint) and 108 passing PURE assertions could not see it, because they
+       all mock recordStage. This is the test that can. */
+    {
+      const CODE_STATUSES = ['completed', 'not_applicable', 'failed_retryable', 'failed_terminal'];
+      const { id: probe } = await jq.enqueue(pool, {
+        documentFamily: 'bank_statement', idempotencyKey: MARK + '-probe',
+        payload: { features: { docType: 'bank_statement' } },
+      });
+      for (const st of CODE_STATUSES) {
+        await jq.recordStage(pool, probe, 'classification', st, { probe: true });
+        const got = (await q(
+          `SELECT status FROM document_pipeline_stages WHERE job_id=$1 AND stage_key='classification'`, [probe])).rows[0];
+        ok(got && got.status === st, `recordStage actually PERSISTS status '${st}' (not silently rejected by the CHECK constraint)`);
+      }
+      // And prove the guard has teeth: a status outside the constraint really is rejected, which is
+      // why the swallowed catch made it invisible.
+      let rejected = false;
+      try {
+        await q(`INSERT INTO document_pipeline_stages (job_id, stage_key, status) VALUES ($1,'probe_bad','failed')`, [probe]);
+      } catch (_e) { rejected = true; }
+      ok(rejected, "a status outside the CHECK constraint ('failed') is rejected by the database");
+      await q(`DELETE FROM document_pipeline_jobs WHERE id=$1`, [probe]);
+    }
+
     // Cleanup (cascade removes stages + routes).
     await q(`DELETE FROM document_pipeline_jobs WHERE id=$1`, [jobId]);
 

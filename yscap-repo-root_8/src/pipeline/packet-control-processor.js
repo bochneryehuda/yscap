@@ -104,9 +104,6 @@ function makePacketControlProcessor(opts = {}) {
     // Track the recorded status of each stage locally so we can evaluate the stage MANIFEST at the
     // end (VSLICE-5): a job only "completes" if it actually finished the stages it was supposed to.
     const stageStatus = {};
-    // RS-2 — was a trained classifier actually reachable for this job? Reported to the manifest so
-    // `classification` is required exactly when it was possible (see stage-manifest.requiredStages).
-    let classifierAvailable = false;
     const safeStage = async (key, status, detail) => {
       stageStatus[key] = status;
       try { await jq.recordStage(db, jobId, key, status, detail || {}); } catch (_e) { /* stage recording is best-effort */ }
@@ -206,7 +203,15 @@ function makePacketControlProcessor(opts = {}) {
               });
               const ec = require('./evidence-candidate');
               for (const cand of candidates) { await ec.recordCandidate(db, cand); recorded += 1; }
-              await safeStage(STAGE.EVIDENCE, recorded > 0 ? 'completed' : 'failed', {
+              // 'failed_terminal', NOT 'failed' (audit 2026-07-26). `document_pipeline_stages` has a
+              // CHECK constraint that does not include 'failed', so the INSERT was rejected — and
+              // `safeStage` swallows the error, so the row was never written at all. The job then
+              // dead-lettered citing a stage that does not exist in the manifest table, and the
+              // shadow surface showed no evidence stage: indistinguishable from the stage never
+              // having run. Exactly the class this whole RS-1/RS-2 work is about, one level down.
+              // 'failed_terminal' is also the semantically right one — `recordStage` stamps
+              // `ended_at` for it, which a bare 'failed' would not have got.
+              await safeStage(STAGE.EVIDENCE, recorded > 0 ? 'completed' : 'failed_terminal', {
                 recorded,
                 note: recorded > 0
                   ? 'read turned into recorded evidence'
@@ -249,11 +254,13 @@ function makePacketControlProcessor(opts = {}) {
           // and nothing else; a mismatch is a fact on the shadow surface, never an action on the file.
           const cls = await classifyDoc.classifyDocument({
             classifier, request, documentId, loanId,
+            // An INJECTED classifier is an explicit instruction from the caller, so it drives the
+            // stage directly; only the default (real vendor) path consults the spend switch.
+            enabled: classifier !== undefined ? true : undefined,
           });
           const clsSummary = classifyDoc.summarizeClassification(cls, { expectedFamily: features.docType || null });
           if (clsSummary.artifact) await safeArtifact('classification', clsSummary.artifact);
           await safeStage(STAGE.CLASSIFICATION, clsSummary.status, clsSummary.detail);
-          classifierAvailable = cls && cls.available === true;
         }
       } else {
         await safeStage(STAGE.OCR_LAYOUT, 'not_applicable', { note: 'shadow: read not run' });
@@ -267,11 +274,9 @@ function makePacketControlProcessor(opts = {}) {
       // completed (the owner-flagged "marked completed when no document was read" defect). In shadow
       // mode (no adapters) the read stages are legitimately not required, so a planned job completes.
       const mode = (adapters && primaryKey) ? 'read' : 'shadow';
-      // RS-2 — report the CAPABILITY, not a policy: `classification` joins the required set only when
-      // a trained classifier was genuinely reachable for this job. The manifest owns the rule; this
-      // is the fact it needs. Until the classifier is trained, classifierAvailable stays false and
-      // the required set is exactly what it was.
-      const manifest = require('./stage-manifest').evaluateManifest(stageStatus, { mode, classifierAvailable });
+      // `classification` is REQUIRED-PRESENT, not required-completed (see stage-manifest): it must
+      // have been recorded, but an advisory stage's verdict must never throw away a successful read.
+      const manifest = require('./stage-manifest').evaluateManifest(stageStatus, { mode });
       await safeArtifact('stage_manifest', manifest);
       if (!manifest.complete) {
         // Retry only when the incompleteness is a TRANSIENT stage failure (failed_*); a missing /

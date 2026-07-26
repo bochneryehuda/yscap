@@ -35,10 +35,17 @@
  * everything itself.
  */
 
-/** The stage outcomes this module can produce, matching the worker/manifest vocabulary. */
+/**
+ * The stage outcomes this module can produce. These are not free text — `document_pipeline_stages`
+ * has a CHECK constraint (db/307) and `recordStage`'s write is wrapped in a swallow-everything
+ * catch, so a status outside the constraint is not an error anyone sees: the row is simply never
+ * written, and the stage looks like it never ran. Every value here must be in that constraint.
+ */
 const OUTCOME = Object.freeze({
   COMPLETED: 'completed',
-  FAILED: 'failed',
+  // 'failed_terminal', not 'failed' — 'failed' is NOT in the CHECK constraint. It also carries the
+  // right meaning (terminal, not worth retrying) and gets an `ended_at` stamp from recordStage.
+  FAILED: 'failed_terminal',
   FAILED_RETRYABLE: 'failed_retryable',
   NOT_APPLICABLE: 'not_applicable',
 });
@@ -68,7 +75,10 @@ function normalizeSegment(seg) {
  * there is nothing to choose from.
  */
 function dominantSegment(segments) {
-  const list = Array.isArray(segments) ? segments.filter(Boolean) : [];
+  // A segment covering ZERO pages can never be the dominant type: a claim supported by no page is
+  // not evidence that the document IS that type. (The real vendor already filters these out; this
+  // keeps the contract true for any other classifier injected later.)
+  const list = Array.isArray(segments) ? segments.filter((s) => s && Array.isArray(s.pages) && s.pages.length > 0) : [];
   if (!list.length) return null;
   let best = null;
   for (const s of list) {
@@ -80,22 +90,44 @@ function dominantSegment(segments) {
   return best ? best.s : null;
 }
 
+/** Canonicalize a document-family name through the classifier's OWN vocabulary. Injectable so the
+    pure tests never need the vendor module; falls back to identity if it cannot be loaded. */
+function canonicalFamily(name, normalize) {
+  const s = str(name);
+  if (!s) return null;
+  let fn = normalize;
+  if (typeof fn !== 'function') {
+    try { fn = require('../lib/ai/azure-custom').normalizeType; } catch (_e) { fn = null; }
+  }
+  if (typeof fn === 'function') {
+    try { const c = fn(s); if (c) return String(c).trim().toLowerCase(); } catch (_e) { /* fall through */ }
+  }
+  return null;
+}
+
 /**
  * PURE — does what the classifier READ match the family the document was filed under?
  *
- * Returns 'match' | 'mismatch' | 'unknown'. `unknown` is the honest answer whenever either side is
- * missing — a document uploaded with no declared family cannot disagree with anything, and neither
- * can a classifier result with no type. Comparison is on the normalized type only; the raw vendor
- * label is recorded but never compared (its spelling is the model's business, not ours).
+ * Returns 'match' | 'mismatch' | 'unknown'.
+ *
+ * BOTH SIDES ARE CANONICALIZED, and that is the whole subtlety (audit 2026-07-26). The DETECTED
+ * side arrives already normalized through the classifier's `normalizeType`; the EXPECTED side is
+ * the raw pipeline family from the checklist condition map. Those two vocabularies are NOT the same
+ * — the ID condition expects `government_id` while the classifier's canonical label is
+ * `drivers_license` (the module even carries `photo_id -> drivers_license` as a known alias). A
+ * naive string compare therefore reported EVERY correctly-filed, correctly-classified driver's
+ * licence as "reads as a different type than the one it was filed under": a fabricated
+ * disagreement, and precisely the signal this stage exists to produce.
+ *
+ * A family the classifier's vocabulary does not contain is 'unknown', never 'mismatch' — the model
+ * could not have emitted that label under any circumstances, so its silence proves nothing. Same
+ * for a missing side: a document filed with no declared family cannot disagree with anything.
  */
-function familyVerdict(expectedFamily, detectedType) {
-  const exp = str(expectedFamily);
-  const got = str(detectedType);
+function familyVerdict(expectedFamily, detectedType, normalize) {
+  const exp = canonicalFamily(expectedFamily, normalize);
+  const got = canonicalFamily(detectedType, normalize);
   if (!exp || !got) return 'unknown';
-  const a = exp.trim().toLowerCase();
-  const b = got.trim().toLowerCase();
-  if (!a || !b) return 'unknown';
-  return a === b ? 'match' : 'mismatch';
+  return exp === got ? 'match' : 'mismatch';
 }
 
 /**
@@ -157,7 +189,7 @@ function summarizeClassification(res, opts = {}) {
 
   const dominant = dominantSegment(segments);
   const detectedFamily = dominant ? dominant.docType : null;
-  const familyMatch = familyVerdict(expectedFamily, detectedFamily);
+  const familyMatch = familyVerdict(expectedFamily, detectedFamily, opts && opts.normalizeType);
   const pageCount = new Set(segments.flatMap((s) => s.pages)).size;
 
   const artifact = {
@@ -199,6 +231,18 @@ function summarizeClassification(res, opts = {}) {
  */
 async function classifyDocument(args = {}) {
   const { request, documentId, loanId } = args;
+
+  // SPEND GATE. This is a SECOND full-document Azure Document Intelligence call on top of the OCR
+  // read, and the credential that would enable it (AZURE_DOCINT_CLASSIFIER_ID) is one the owner sets
+  // for V1's package splitter — so without its own switch, turning on V2 reading would silently
+  // double the per-document vendor bill for someone who opted into nothing. Mirrors the deliberate
+  // separate switch on the read itself. `enabled:true` bypasses it for tests (no vendor involved).
+  if (args.enabled !== true) {
+    let on = false;
+    try { on = !!(require('../config').pipeline || {}).v2ClassifyEnabled; } catch (_e) { on = false; }
+    if (!on) return { available: false, ok: false, reason: 'document classification is switched off (UW_PIPELINE_V2_CLASSIFY)', segments: [] };
+  }
+
   let classifier = args.classifier;
   if (classifier === undefined) {
     try { classifier = require('../lib/ai/azure-custom'); } catch (_e) { classifier = null; }
@@ -224,9 +268,16 @@ async function classifyDocument(args = {}) {
       appId: loanId || undefined, documentId: documentId || undefined,
     });
     if (!out || out.ok !== true) {
-      return { available: true, ok: false, reason: (out && str(out.reason)) || 'the classifier returned no result', segments: [] };
+      const why = (out && str(out.reason)) || 'the classifier returned no result';
+      return { available: true, ok: false, reason: why.slice(0, 300), segments: [] };
     }
-    return { available: true, ok: true, reason: null, segments: Array.isArray(out.segments) ? out.segments : [] };
+    if (!Array.isArray(out.segments)) {
+      // A response that is "ok" but carries no segments ARRAY is a malformed vendor payload, not a
+      // verdict about the document. Coercing it to [] would read as "the classifier could not place
+      // this" and bucket a vendor problem as permanently unplaceable.
+      return { available: true, ok: false, reason: 'the classifier returned a malformed response', segments: [] };
+    }
+    return { available: true, ok: true, reason: null, segments: out.segments };
   } catch (e) {
     return { available: true, ok: false, reason: (e && e.message) ? String(e.message).slice(0, 300) : 'the classifier threw', segments: [] };
   }

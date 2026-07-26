@@ -18,10 +18,10 @@
  *   - 'read'   (real adapters injected → a real vendor read was attempted): the read MUST have
  *     completed. ocr_layout is required; a job whose read was skipped/failed/not-applicable is
  *     INCOMPLETE → fail closed (the "completed but nothing was read" defect).
- * `classification` (RS-2) is required in 'read' mode ONLY when the caller reports that a trained
- * classifier was actually available for the job (`classifierAvailable:true`) — see requiredStages.
- * Until the owner trains the model, no classifier is reachable, the stage records not_applicable,
- * and requiring it would fail every job for a capability the environment does not have.
+ * `classification` (RS-2) is REQUIRED-PRESENT in 'read' mode, not required-completed: it must have
+ * been recorded with some real outcome, but its verdict never decides whether the job's work is
+ * kept. See REQUIRED_PRESENT below for why — an advisory stage that dead-letters a successful read
+ * loses a good record and re-bills the vendor on every retry.
  */
 
 const STAGE = Object.freeze({
@@ -50,26 +50,37 @@ const REQUIRED = Object.freeze({
 });
 
 /**
- * RS-2 (2026-07-26) — `classification` is required WHEN A CLASSIFIER WAS ACTUALLY AVAILABLE, and
- * only then. This is the same shape as `read` mode itself: `read` is not a setting, it is the fact
- * that real adapters were injected, and a job is held to what it was actually equipped to do.
+ * RS-2 (2026-07-26, revised after audit) — stages that must be RECORDED, but need not have SUCCEEDED.
  *
- * Both alternatives are wrong. Requiring it unconditionally would fail every job in an environment
- * where the owner has not trained the Azure classifier yet — the mistake the original code warned
- * about. Never requiring it re-creates the defect this whole gate exists for: the stage could fail
- * on every document forever and the job would still report a clean run, which is exactly how
- * classification sat recording "not yet wired" long after a classifier existed.
+ * There are two different questions, and conflating them was a real defect:
+ *   "did this stage run?"      — a stage that records nothing is invisible; that is the dark-code
+ *                                failure this whole gate exists to catch.
+ *   "did this stage succeed?"  — a different question, and for an ADVISORY stage the answer must
+ *                                not decide whether the job's work is kept.
  *
- * So the CAPABILITY is reported by the caller (was a trained classifier reachable for this job?) and
- * the RULE stays here, with the rest of the manifest. Callers report facts; this module decides.
+ * The first version required `classification` to reach 'completed'. That dead-lettered a document
+ * whose OCR read AND evidence write had both succeeded, because the classifier could not place it —
+ * and since `enqueue` adopts the existing job for a document, that document's V2 record stayed dead
+ * even after the model was retrained. It also meant a misconfigured classifier re-ran the whole
+ * processor (including the already-successful, already-paid-for OCR read) on every retry.
+ *
+ * Classification is advisory: it tells a human what the document looks like. Its verdict must never
+ * throw away a good read. So it must be PRESENT — recorded with some real outcome — and its status
+ * is reported as advisory rather than gating. A stage that is present but not completed shows up in
+ * `advisory` for the surface to display; a stage that was never recorded still fails the job closed.
  */
-function requiredStages(mode, opts = {}) {
-  const base = REQUIRED[mode] ? REQUIRED[mode].slice() : REQUIRED.shadow.slice();
-  const isRead = REQUIRED[mode] === REQUIRED.read;
-  if (isRead && opts && opts.classifierAvailable === true && !base.includes(STAGE.CLASSIFICATION)) {
-    base.push(STAGE.CLASSIFICATION);
-  }
-  return base;
+const REQUIRED_PRESENT = Object.freeze({
+  shadow: [],
+  read: [STAGE.CLASSIFICATION],
+});
+
+function requiredStages(mode) {
+  return REQUIRED[mode] ? REQUIRED[mode].slice() : REQUIRED.shadow.slice();
+}
+
+/** Stages that must appear in the manifest with SOME outcome (see REQUIRED_PRESENT). */
+function requiredPresentStages(mode) {
+  return REQUIRED_PRESENT[mode] ? REQUIRED_PRESENT[mode].slice() : REQUIRED_PRESENT.shadow.slice();
 }
 
 // Normalize a mixed list of stage rows ([{stage_key|stage, status}] or a plain {key:status} map)
@@ -93,33 +104,45 @@ function stageStatusMap(stages) {
  * PURE — evaluate the recorded stages against the mode's required manifest. FAILS CLOSED.
  * @param {Array|object} stages  the recorded stage rows (or a {key:status} map)
  * @param {object} opts          { mode: 'shadow'|'read' } (default 'shadow')
- * @returns {{ mode, complete, required, missing, incomplete, reason }}
- *   complete   = true ONLY if every required stage is present AND its status === 'completed'.
- *   missing    = required stages with no recorded row.
- *   incomplete = required stages recorded but not 'completed' ([{stage,status}]).
+ * @returns {{ mode, complete, required, requiredPresent, missing, incomplete, advisory, reason }}
+ *   complete        = true ONLY if every required stage is present AND 'completed', AND every
+ *                     required-PRESENT stage was recorded at all (with any outcome).
+ *   missing         = required (or required-present) stages with no recorded row.
+ *   incomplete      = required stages recorded but not 'completed' ([{stage,status}]).
+ *   advisory        = required-PRESENT stages recorded with a non-completed outcome. These are
+ *                     reported for the surface and do NOT make the job incomplete — an advisory
+ *                     stage's verdict must never throw away a read that succeeded.
  */
 function evaluateManifest(stages, opts = {}) {
   try {
     const mode = (opts && opts.mode === 'read') ? 'read' : 'shadow';
-    const required = requiredStages(mode, { classifierAvailable: !!(opts && opts.classifierAvailable) });
+    const required = requiredStages(mode);
+    const present = requiredPresentStages(mode);
     const byKey = stageStatusMap(stages);
     const missing = [];
     const incomplete = [];
+    const advisory = [];
     for (const key of required) {
       if (!byKey.has(key)) { missing.push(key); continue; }
       const st = byKey.get(key);
       if (st !== 'completed') incomplete.push({ stage: key, status: st });
+    }
+    for (const key of present) {
+      // Never recorded at all → the stage did not run, which is the defect this gate exists for.
+      if (!byKey.has(key)) { missing.push(key); continue; }
+      const st = byKey.get(key);
+      if (st !== 'completed') advisory.push({ stage: key, status: st });
     }
     const complete = missing.length === 0 && incomplete.length === 0;
     let reason;
     if (complete) reason = 'all required stages completed';
     else if (missing.length) reason = `missing required stage(s): ${missing.join(', ')}`;
     else reason = `required stage(s) not completed: ${incomplete.map((x) => `${x.stage}=${x.status}`).join(', ')}`;
-    return { mode, complete, required, missing, incomplete, reason };
+    return { mode, complete, required, requiredPresent: present, missing, incomplete, advisory, reason };
   } catch (_e) {
     // Fail CLOSED on any evaluation error — an unevaluable manifest is not "complete".
-    return { mode: 'shadow', complete: false, required: requiredStages('shadow'), missing: [], incomplete: [], reason: 'manifest evaluation error' };
+    return { mode: 'shadow', complete: false, required: requiredStages('shadow'), requiredPresent: requiredPresentStages('shadow'), missing: [], incomplete: [], advisory: [], reason: 'manifest evaluation error' };
   }
 }
 
-module.exports = { STAGE, REQUIRED, requiredStages, evaluateManifest, _internals: { stageStatusMap } };
+module.exports = { STAGE, REQUIRED, REQUIRED_PRESENT, requiredStages, requiredPresentStages, evaluateManifest, _internals: { stageStatusMap } };

@@ -241,11 +241,14 @@ function fakeRouter(plan, recorded) {
     const proc = PC.makePacketControlProcessor({ router: readRouter(recorded), adapters: [{ provider: 'azure', service: 'document_intelligence', analyze: async () => ({}) }], loadBytes: okBytes, classifier });
     const out = await proc(job, { db: {}, jq });
     const keys = jq.stages.map((s) => s.key + ':' + s.status);
-    ok(keys.includes('classification:failed'), 'classified as nothing → failed');
+    // 'failed_terminal', not 'failed': the stages table's CHECK constraint has no 'failed', and the
+    // stage write is swallowed — a bare 'failed' meant no row was written at all.
+    ok(keys.includes('classification:failed_terminal'), 'classified as nothing → failed_terminal');
     ok(!keys.includes('classification:failed_retryable'), 'classified as nothing is NOT retryable (a paid re-call reaches the same answer)');
-    // A classifier WAS available, so the manifest requires the stage — an unclassifiable document
-    // must not report a clean run.
-    ok(out.status !== 'completed', 'a required-but-failed classification fails the job closed');
+    // AUDIT FIX: this must NOT dead-letter the job. The read and the evidence write both succeeded;
+    // an advisory stage's verdict never throws away a good record (and a dead-lettered job is never
+    // re-created for that document, so it would stay dead even after the model was retrained).
+    ok(out.status === 'completed', 'a document the classifier cannot place still keeps its successful read');
   }
 
   // d) classifier THREW → failed_retryable (a transport blip is worth another attempt)
@@ -256,7 +259,9 @@ function fakeRouter(plan, recorded) {
     const out = await proc(job, { db: {}, jq });
     const keys = jq.stages.map((s) => s.key + ':' + s.status);
     ok(keys.includes('classification:failed_retryable'), 'a classifier that throws → failed_retryable');
-    ok(out.status !== 'completed' && out.retryable === true, 'a vendor failure leaves the job retryable, never completed');
+    // Also advisory: a vendor blip must not re-run the whole processor (including the already-paid
+    // OCR read) on every retry, nor discard a document whose read succeeded.
+    ok(out.status === 'completed', 'a classifier outage does not fail a job whose read + evidence succeeded');
   }
 
   // e) NO trained classifier → not_applicable, the job still completes, and the stage is NOT required.
