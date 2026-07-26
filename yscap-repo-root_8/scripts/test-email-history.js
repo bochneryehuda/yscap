@@ -81,14 +81,16 @@ const uniq = `eh-${process.pid}-${Date.now()}`;
   // database carrying more than `limit` un-mirrored notifications they are not in the first batch,
   // and asserting after a single call failed for a reason that had nothing to do with the code
   // under test. Drain to empty (bounded, so a genuine stall still fails rather than hangs).
-  let bf = { notifs: 0 }, drained = 0;
+  let drained = 0, inboundDrained = 0;
   for (let i = 0; i < 60; i += 1) {
     const pass = await emailLog.backfillEmailHistoryOnce(1000);
     drained += pass.notifs || 0;
-    if (!pass.notifs) break;
-    bf = pass;
+    inboundDrained += pass.inbound || 0;
+    // Both halves drain independently — stop only when NEITHER moved, or an inbound backlog
+    // larger than one batch would be left behind while the notification half reported empty.
+    if (!pass.notifs && !pass.inbound) break;
   }
-  bf = { notifs: drained };
+  const bf = { notifs: drained, inbound: inboundDrained };
   assert(bf.notifs >= 2, `backfill mirrored historical notifications (${bf.notifs})`);
   const bfRows = await db.query(
     `SELECT notification_id, status, reconstructed, direction, subject FROM email_messages WHERE application_id=$1 ORDER BY occurred_at`, [appId]);

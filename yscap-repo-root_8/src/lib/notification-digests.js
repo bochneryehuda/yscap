@@ -967,14 +967,33 @@ async function directSourceSweepOnce() {
         // the stamp it writes is the sort key, so a verified file moves to the back of the queue.
         if (!(await _gate(DIGEST_ACTION.DIRECT_SOURCE_FILE, row.id, '7 days'))) continue;
         const client = await db.getClient();
+        let verified = false;
         try {
           await client.query('BEGIN');
           const r = await hub.verifyFile(client, row.id, {});
           await client.query('COMMIT');
           files += 1;
           calls += (r && r.results ? r.results.filter((x) => x.ok || x.reason).length : 0);
+          // Did ANY connector actually return something? `verifyFile` swallows connector errors and
+          // reports them as {ok:false, reason}, so a vendor outage or a rotated key does not throw —
+          // it comes back as a full set of failures.
+          verified = !!(r && Array.isArray(r.results) && r.results.some((x) => x && x.ok));
         } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
         finally { client.release(); }
+        // RELEASE THE CLAIM when nothing was verified (audit finding, 2026-07-26). Claiming BEFORE
+        // the spend is deliberate and right — it is what makes the queue rotate, it prevents
+        // double-billing if the process dies mid-call, and it is atomic across instances. But the
+        // claim is committed in its own transaction, so a total failure would otherwise leave the
+        // file stamped "verified" and excluded for 7 days having been verified by nobody. One key
+        // rotation during a 40-file pass would silently park all 40 for a week. So on a total
+        // failure the stamp is withdrawn and the file returns to the queue on the next pass.
+        if (!verified) {
+          await db.query(
+            `DELETE FROM audit_log
+              WHERE action = $1 AND entity_id = $2 AND entity_type = 'application'
+                AND created_at > now() - interval '1 hour'`,
+            [DIGEST_ACTION.DIRECT_SOURCE_FILE, row.id]).catch(() => {});
+        }
       } catch (e) { console.error('[digests] direct-source-sweep', row.id, e && e.message); }
     }
     await _stamp('direct_source_sweep_daily', null, { files, calls, configuredCount });

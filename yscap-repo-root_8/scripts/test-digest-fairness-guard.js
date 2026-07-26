@@ -117,28 +117,69 @@ const compact = (s) => s.replace(/\s+/g, ' ').trim().slice(0, 110);
   ok('every capped digest query orders by a unique tie-break (a total order, not just an order)');
 }
 
-/* ── (c) a self-gated digest expresses the SAME throttle in its WHERE ────────────────────── */
+/* ── (c) a self-gated digest expresses the SAME throttle, with the SAME window, in its WHERE ── */
 {
   // Each digest claims an audit_log stamp before sending (`_gate`). If that stamp is not ALSO a
   // filter in the query, an already-notified row keeps consuming a slot in the capped batch on
   // every pass — which is how ordering by a never-advancing key starves the tail. Pairing the two
   // is the property that makes the cap a delay rather than a wall.
-  const actions = [...src.matchAll(/^\s*([A-Z_]+):\s*'([a-z_]+)',/gm)]
-    .filter((m) => /^(BORROWER_OUTSTANDING|STALE_FILE|DRAW_FINDINGS_REMINDER|TRUSTPOINT_UNRELEASED|DRAW_RELEASE_OVERDUE|DIRECT_SOURCE_FILE)$/.test(m[1]))
+  //
+  // The list is DERIVED, not whitelisted (audit finding 2026-07-26). The first version hard-coded
+  // the six names that existed when it was written, so the next digest someone added was silently
+  // not examined — flatly contradicting this guard's own promise to keep guarding as digests are
+  // added. Every DIGEST_ACTION constant is now checked, and adding one to the map is enough to
+  // bring it under the guard.
+  const actions = [...src.matchAll(/^\s*([A-Z][A-Z0-9_]*):\s*'([a-z][a-z0-9_]*)',/gm)]
+    .filter((m) => new RegExp(`_gate\\(DIGEST_ACTION\\.${m[1]}\\b`).test(src)
+                || new RegExp(`notThrottled\\([^)]*DIGEST_ACTION\\.${m[1]}\\b`).test(src))
     .map((m) => m[1]);
-  assert.ok(actions.length === 6, `expected the 6 per-file DIGEST_ACTION constants, found ${actions.length}: ${actions.join(', ')}`);
+  assert.ok(actions.length >= 6,
+    `expected to DERIVE the per-file DIGEST_ACTION constants from the module, found ${actions.length}: ${actions.join(', ')}`);
+
+  /** Normalize an interval to a comparable "<n> <unit>" — `interval '3 days'`, `'3 days'`,
+      `($1 || ' hours')::interval` with $1 = waitHours, and `` `${waitHours} hours` `` must all be
+      recognized as the same window when they are. */
+  function windowOf(text) {
+    if (!text) return null;
+    const lit = /(\d+)\s*(second|minute|hour|day|week|month)s?/i.exec(text);
+    if (lit) return `${Number(lit[1])} ${lit[2].toLowerCase()}`;
+    // A variable-driven interval: compare on the VARIABLE + unit, e.g. "waitHours hours".
+    const dyn = /\$\{?\s*([A-Za-z_$][\w$]*)\s*\}?[^']*'\s*(second|minute|hour|day|week|month)s?/i.exec(text)
+             || /\$\d+\s*\|\|\s*'\s*(second|minute|hour|day|week|month)s?/i.exec(text);
+    if (dyn) return dyn.length > 2 ? `var ${dyn[2].toLowerCase()}` : `var ${dyn[1].toLowerCase()}`;
+    return null;
+  }
+
   const missing = [];
+  const skewed = [];
   for (const key of actions) {
-    const gated = new RegExp(`_gate\\(DIGEST_ACTION\\.${key}\\b`).test(src);
-    // The filter is either the shared helper or, where the stamp is ALSO the sort key, the LATERAL
-    // that reads it once for both purposes — both express the same "not inside its window" test.
-    const filtered = new RegExp(`notThrottled\\([^)]*DIGEST_ACTION\\.${key}\\b`).test(src)
-      || new RegExp(`l\\.action = '\\$\\{DIGEST_ACTION\\.${key}\\}'`).test(src);
-    if (gated && !filtered) missing.push(key);
+    const gate = new RegExp(`_gate\\(\\s*DIGEST_ACTION\\.${key}\\s*,([^;]{0,200}?)\\)`).exec(src);
+    if (!gate) continue;                       // filter-only constant (no send to throttle)
+    const thr = new RegExp(`notThrottled\\([^,]*,\\s*DIGEST_ACTION\\.${key}\\s*,([^;]{0,200}?)\\)\\s*\\}`).exec(src)
+      || new RegExp(`notThrottled\\([^,]*,\\s*DIGEST_ACTION\\.${key}\\s*,\\s*("[^"]*"|'[^']*')`).exec(src);
+    // The LATERAL form reads the stamp ONCE for both the throttle and the sort key.
+    const lateral = new RegExp(`l\\.action = '\\$\\{DIGEST_ACTION\\.${key}\\}'`).test(src);
+    if (!thr && !lateral) { missing.push(key); continue; }
+
+    // The two windows must AGREE. A filter SHORTER than the gate re-admits rows the gate will then
+    // reject — burning slots, which is the exact starvation this guard exists to prevent. A filter
+    // LONGER than the gate suppresses sends that are genuinely due. Both are silent.
+    const gateWin = windowOf(gate[1]);
+    if (thr) {
+      const thrWin = windowOf(thr[1]);
+      if (gateWin && thrWin && gateWin !== thrWin) skewed.push(`${key}: gate=${gateWin} filter=${thrWin}`);
+    } else if (gateWin) {
+      // LATERAL form: the window lives in the query body next to the action name.
+      const body = new RegExp(`l\\.action = '\\$\\{DIGEST_ACTION\\.${key}\\}'[\\s\\S]{0,400}`).exec(src);
+      const bodyWin = body ? windowOf((/now\(\)\s*-\s*([^)\n]{0,60})/.exec(body[0]) || [])[1]) : null;
+      if (bodyWin && bodyWin !== gateWin) skewed.push(`${key}: gate=${gateWin} filter=${bodyWin}`);
+    }
   }
   assert.ok(missing.length === 0,
     `a digest that self-gates per file must ALSO filter on that stamp in its query, or an already-notified file keeps consuming a slot in the capped batch forever.\nGated but not filtered:\n  - ${missing.join('\n  - ')}`);
-  ok(`all ${actions.length} per-file digests filter on their own throttle stamp in SQL (the cap delays, it cannot hide)`);
+  assert.ok(skewed.length === 0,
+    `the SQL throttle window must match the window its _gate claims — a shorter filter burns slots on rows the gate rejects, a longer one suppresses due sends.\nSkewed:\n  - ${skewed.join('\n  - ')}`);
+  ok(`all ${actions.length} per-file digests filter on their own throttle stamp in SQL, with a matching window`);
 }
 
 /* ── the guard's own parser, pinned against the shapes that used to slip through ─────────── */
