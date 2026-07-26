@@ -25,6 +25,7 @@
 const db = require('../db');
 const reader = require('../encompass/reader');
 const client = require('../encompass/client');
+const enrich = require('../encompass/enrich');
 const cfg = require('../config');
 
 let started = false;
@@ -36,6 +37,16 @@ function _envSec(name, def) {
 
 const CATALOG_INTERVAL_MS = _envSec('ENCOMPASS_CATALOG_HOURS', 24) * 3600 * 1000;
 const POLL_INTERVAL_MS = _envSec('ENCOMPASS_POLL_MIN', 15) * 60 * 1000;
+// Part 2 — the borrower-profile enrichment pass runs every few days (default 3),
+// separately opt-in (ENCOMPASS_ENRICH_ENABLED=1) on top of ENCOMPASS_ENABLED so
+// the profile writes can be turned on independently of the read-only pulls.
+const ENRICH_INTERVAL_MS = _envSec('ENCOMPASS_ENRICH_DAYS', 3) * 24 * 3600 * 1000;
+const _flagOn = (name) => { const v = String(process.env[name] || '').trim().toLowerCase(); return v === '1' || v === 'true'; };
+const enrichEnabled = () => _flagOn('ENCOMPASS_ENRICH_ENABLED');
+// Whether the enrichment pass also refreshes the full-tenant snapshot first
+// (a heavy read of every loan). Off by default — enrichment reads whatever the
+// snapshot already holds; turn on to "read everything from Encompass" each pass.
+const enrichBulkEnabled = () => _flagOn('ENCOMPASS_ENRICH_BULK');
 
 async function refreshCatalogOnce() {
   if (!client.configured()) return null;
@@ -73,6 +84,29 @@ async function pullOldestActiveOnce() {
   }
 }
 
+// Part 2 — one borrower-profile enrichment pass: (optionally) refresh the
+// read-only snapshot of ALL Encompass loans, then additively + dedupedly enrich
+// borrower profiles (prior-deal addresses → track record, LLCs → entity library)
+// from it. Writes only OUR tables (never Encompass); never replaces existing
+// rows. Best-effort — a failure is logged, never thrown.
+async function enrichPassOnce() {
+  if (!enrichEnabled()) return null;
+  if (!client.configured()) return null;
+  try {
+    if (enrichBulkEnabled()) {
+      console.log('[encompass] enrichment: refreshing full-tenant snapshot (read-only)…');
+      try { await reader.bulkPullAllLoans({ perRequestDelayMs: 350 }); }
+      catch (e) { console.warn('[encompass] enrichment bulk pull failed (continuing on existing snapshot):', e.message); }
+    }
+    const summary = await enrich.enrichAllOnce();
+    console.log('[encompass] borrower-profile enrichment:', JSON.stringify(summary));
+    return summary;
+  } catch (e) {
+    console.warn('[encompass] enrichment pass failed:', e.message);
+    return null;
+  }
+}
+
 function start() {
   if (started) return;
   const encEnabled = String(process.env.ENCOMPASS_ENABLED || '').trim();
@@ -89,6 +123,14 @@ function start() {
 
   setInterval(refreshCatalogOnce, CATALOG_INTERVAL_MS);
   setInterval(pullOldestActiveOnce, POLL_INTERVAL_MS);
+
+  // Part 2 — borrower-profile enrichment (opt-in, every few days).
+  if (enrichEnabled()) {
+    console.log('[encompass] borrower-profile enrichment ON — every %sd%s',
+      Math.round(ENRICH_INTERVAL_MS / 86400000), enrichBulkEnabled() ? ' (with full-tenant snapshot refresh)' : '');
+    setTimeout(() => { enrichPassOnce(); }, 60000); // one-shot warm, well after the pulls
+    setInterval(enrichPassOnce, ENRICH_INTERVAL_MS);
+  }
 }
 
-module.exports = { start, refreshCatalogOnce, pullOldestActiveOnce };
+module.exports = { start, refreshCatalogOnce, pullOldestActiveOnce, enrichPassOnce };
