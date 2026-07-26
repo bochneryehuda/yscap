@@ -866,6 +866,10 @@ export const api = {
   findingEscalations:         (status) => req('GET', `/api/underwriting/escalations${status ? `?status=${status}` : ''}`),
   findingEscalationsCount:    () => req('GET', '/api/underwriting/escalations/count'),
   decideFindingEscalation:    (id, decision, note) => req('POST', `/api/underwriting/escalations/${id}/decide`, { decision, note }),
+  // Take a REAL underwriting action (post a condition / request a document / fix the file /
+  // grant an exception / clear / dismiss / decline …) straight from the review queue: it
+  // resolves the finding ON THE FILE and closes the queue item in one call.
+  applyFindingEscalation:     (id, b) => req('POST', `/api/underwriting/escalations/${id}/apply`, b),
   // Portfolio-wide "training" report: which finding types turned out real vs false alarms.
   underwritingFeedback:       () => req('GET', '/api/underwriting/insights/feedback'),
 
