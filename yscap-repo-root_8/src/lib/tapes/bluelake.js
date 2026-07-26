@@ -30,7 +30,7 @@ const path = require('path');
 const reg = require('../conditions/field-registry');
 
 // The originator/seller name as it appears on the MLPA (Blue Lake column E).
-// TODO(owner): confirm the exact legal entity name on the Blue Lake MLPA.
+// Owner-directed: use our company name.
 const SELLER_NAME = 'YS Capital Group';
 
 const n = (v) => { if (v == null || v === '') return null; const x = Number(v); return isFinite(x) ? x : null; };
@@ -118,6 +118,9 @@ function economics(loan) {
       : (loan.appraisal && (n(loan.appraisal.as_is_value) != null ? n(loan.appraisal.as_is_value) : n(loan.appraisal.appraised_value))),
     arv: n(a.arv) != null ? n(a.arv) : (loan.appraisal && n(loan.appraisal.arv_value)),
     interestRate: q.noteRate != null ? toFraction(q.noteRate) : toFraction(a.rate_pct),
+    // Total Points = the origination fee %, as a fraction (the registered quote's
+    // origination percentage the borrower is charged at close).
+    origPct: n(q.origPct),
   };
 }
 
@@ -178,8 +181,8 @@ const COLUMNS = [
   ['AZ', 'n', null, (l, e) => e.interestRate],                                    // Interest Rate
   ['BA', 's', null, () => ''],                                                     // Purchase Rate — Blue Lake completes
   ['BB', 's', null, () => ''],                                                     // Lender Retained Spread — Blue Lake completes
-  ['BC', 's', null, () => ''],                                                     // Total Points — TODO(owner): source
-  ['BD', 's', null, () => ''],                                                     // Borrower Liquidity — TODO(owner): verified liquidity source
+  ['BC', 'n', null, (l, e) => e.origPct],                                          // Total Points = origination fee % (fraction)
+  ['BD', 's', null, () => ''],                                                     // Borrower Liquidity — left blank (owner-directed)
   // FICO — the PRIMARY guarantor's score (per the dictionary), which is the named
   // guarantor (BQ); falls back to the pricing FICO if the primary's isn't stored.
   ['BE', 'n', null, (l) => ((l.borrower && l.borrower.fico) != null ? l.borrower.fico : l.fico)],

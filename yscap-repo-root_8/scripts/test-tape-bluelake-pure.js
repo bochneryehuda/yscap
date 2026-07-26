@@ -43,7 +43,7 @@ function synthLoan(overrides = {}) {
     coBorrower: null,
     vesting: { llc: '123 LLC' },
     registration: { total_loan: 350000 },
-    quote: { noteRate: 0.1029, sizing: { totalLoan: 350000, initialAdvance: 275000, rehabHoldback: 75000, financedReserve: 0 } },
+    quote: { noteRate: 0.1029, origPct: 0.025, sizing: { totalLoan: 350000, initialAdvance: 275000, rehabHoldback: 75000, financedReserve: 0 } },
     appraisal: { effective_date: '2025-12-15', as_is_value: 350000, arv_value: 500000, units: 1 },
     exp: { verifiedTotal: 2, total: 2 },
     repeatBorrower: true,
@@ -104,8 +104,11 @@ ok(cellOf(loan, 'AE').type === 'f' && cellOf(loan, 'AE').value === 'IFERROR(X{r}
 ok(cellOf(loan, 'AJ').type === 'f' && cellOf(loan, 'AJ').value === 'AF{r}+AH{r}', 'AJ total project costs is a formula');
 ok(cellOf(loan, 'AN').type === 'f' && cellOf(loan, 'AO').type === 'f' && cellOf(loan, 'AP').type === 'f', 'AN/AO/AP ratios are formulas');
 
-// Blue-Lake-completes columns are blank
+// Blue-Lake-completes columns are blank; Borrower Liquidity intentionally blank
 ok(cellOf(loan, 'BA').value === '' && cellOf(loan, 'BB').value === '', 'Purchase Rate / Lender Spread left for Blue Lake');
+ok(cellOf(loan, 'BD').value === '', 'Borrower Liquidity left blank (owner-directed)');
+ok(cellOf(loan, 'BC').value === 0.025 && cellOf(loan, 'BC').type === 'n', 'BC Total Points = origination fee % (from quote.origPct)');
+ok(cellOf(loan, 'E').value === 'YS Capital Group', 'E Seller = our company name');
 
 // ---- 2. fill: fidelity + formulas + inherited styles -----------------------
 const out = fillXlsxTemplate(TEMPLATE, { sheetPart: SHEET, firstRow: 3, rows: [bluelake.buildRow(loan)], lastCol: 'BS', inheritStyles: true });

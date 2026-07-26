@@ -42,11 +42,11 @@ currency/date/percent formatting without hardcoding a style per column.
 
 Blue Lake's buyer key is `bluelake` (display "Blue Lake", full "Blue Lake
 Capital"). It has no questionnaire — every column is derived or defaulted.
-Two columns are intentionally left blank because the Data Dictionary marks them
-"to be completed by Blue Lake" (Purchase Rate, Lender Retained Spread). A few we
-don't yet source cleanly are left blank and flagged in `bluelake.js`: Seller (the
-exact MLPA legal name), Total Points, and Borrower Liquidity (verified pre-close
-liquidity).
+Owner-directed field decisions: **Seller** = our company name ("YS Capital
+Group"); **Total Points** = the loan's origination fee % (`quote.origPct`);
+**Borrower Liquidity** = left blank. Two columns stay blank because the Data
+Dictionary marks them "to be completed by Blue Lake" (Purchase Rate, Lender
+Retained Spread).
 
 ## The rule (owner-directed)
 
