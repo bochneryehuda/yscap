@@ -119,7 +119,25 @@ function startWorker({ db, cfg, holder, intervalMs = 3000, processor = shadowNoo
   return {
     enabled: true,
     holder: myHolder,
-    stop() { stopped = true; if (timer) clearInterval(timer); },
+    /**
+     * Stop claiming new work. Returns a PROMISE that resolves once the in-flight drain pass has
+     * finished, so a caller shutting the process down can WAIT for real completion instead of
+     * guessing with a timer. (The standalone worker service does exactly that on SIGTERM; the web
+     * service never calls stop(), so its behaviour is unchanged.)
+     *
+     * Back-compat: callers that ignore the return value behave exactly as before.
+     */
+    stop() {
+      stopped = true;
+      if (timer) clearInterval(timer);
+      if (!running) return Promise.resolve();
+      // Poll rather than plumb a deferred through every path — the pass sets `running=false` in a
+      // `finally`, so this always settles. Bounded by the caller's own shutdown budget.
+      return new Promise((resolve) => {
+        const iv = setInterval(() => { if (!running) { clearInterval(iv); resolve(); } }, 100);
+        if (iv.unref) iv.unref();     // never let the watcher itself hold the process open
+      });
+    },
   };
 }
 

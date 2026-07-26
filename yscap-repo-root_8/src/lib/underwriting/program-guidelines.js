@@ -42,8 +42,12 @@ function canonProgram(program) {
 /**
  * Compose the program guideline snapshot for a file.
  * @param {string|null} program  the REGISTERED program key ('gold'|'standard'|'manual') or null
- * @param {{assetMonths?:number, sowContingencyRequired?:boolean}} [opts]
+ * @param {{assetMonths?:number, sowContingencyRequired?:boolean, noteBuyer?:string}} [opts]
  *   assetMonths — manual-program stated liquidity months (ignored for Gold/Standard);
+ *   noteBuyer — the file's note buyer (applications.lender). A buyer may RAISE the bank-statement
+ *   month count above the program's (Blue Lake asks for 2 where Standard asks for 1) and never
+ *   lower it. Without it this snapshot printed "Requires 1 month" on a file whose condition
+ *   actually asks for 2 — the desk and the checklist disagreeing about the same number;
  *   sowContingencyRequired — the AUTHORITATIVE requirement resolved by the caller from
  *   rehab-budget.sowContingencyRequired (Gold OR a Blue Lake note buyer). When omitted, the
  *   snapshot falls back to the program arm only (Gold), which under-reports a Blue Lake Standard
@@ -58,7 +62,7 @@ function programGuidelineSnapshot(program, opts = {}) {
   const key = canonProgram(program);
   const label = key ? PROGRAM_KEYS[key] : null;
   const rule = ownerRuleFor(key);                          // {pct, label, treatment} — canonical KYC map
-  const months = bankStatementMonths(key, opts.assetMonths); // canonical program month count
+  const months = bankStatementMonths(key, opts.assetMonths, opts.noteBuyer); // canonical program+buyer month count
   // The 5%-of-construction SOW contingency is required when rehab-budget.sowContingencyRequired is
   // true (Gold OR a Blue Lake note buyer). Prefer the authoritative value the caller resolved;
   // absent it, fall back to the program arm (Gold) — the note-buyer arm is still enforced

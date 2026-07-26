@@ -305,7 +305,20 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
         </div>
       )}
       {compare && <DocCompare title={f.title} field={f.field} sources={compare} onClose={() => setCompare(null)} />}
-      {howTo && <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', marginBottom: resolvable ? 10 : 0 }}>{howTo}</div>}
+      {/* pre-wrap, like the suggestion body below: several findings write howTo as a LIST — the risk
+          score's per-signal arithmetic, the per-tradeline mortgage lates — and without this the
+          newlines collapse and the whole point of breaking them out is lost on screen. */}
+      {howTo && <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', marginBottom: resolvable ? 10 : 0, whiteSpace: 'pre-wrap' }}>{howTo}</div>}
+      {/* When several reviews independently reached the same conclusion, this is the ONE item they
+          collapsed into (finding-claims.dedupeByClaim). Saying so turns the merge from something
+          invisible into something an underwriter can weigh — three desks agreeing is a stronger
+          signal than one — and leaves an auditor able to see nothing was quietly dropped. */}
+      {Array.isArray(f.mergedFrom) && f.mergedFrom.length > 0 && (
+        <div style={{ fontSize: 11.5, color: 'var(--muted,#4B585C)', marginBottom: resolvable ? 10 : 0 }}>
+          Also reached by {f.mergedFrom.length} other review{f.mergedFrom.length === 1 ? '' : 's'} of this file
+          — shown once here instead of repeated.
+        </div>
+      )}
       {resolvable && actions.length > 0 && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
           {actions.map((a) => (
@@ -1008,6 +1021,28 @@ function BankLiquidity({ bankLiquidity }) {
           </tbody>
         </table>
       </div>
+      {/* A statement recognized as an account already listed above. Shown because otherwise a row
+          simply disappears from this table and the total drops with no stated reason — which is as
+          confusing as the double-count it replaced, and this is the exact table where that was
+          found. It also gives the underwriter the one thing PILOT cannot decide for them: whether an
+          unnumbered statement really is a separate account. */}
+      {/* becameRepresentative means this statement ended up BEING the month counted in the table
+          above — its balance is in the total, so listing it here would tell the owner the very
+          number they are looking at was not counted. The server's own shortfall text already
+          filters on this flag; the table must agree with it. */}
+      {(bankLiquidity.notCountedTwice || []).filter((n) => !n.becameRepresentative).length > 0 && (
+        <div style={{ marginTop: 10, fontSize: 12, color: 'var(--muted,#4B585C)' }}>
+          <div style={{ fontWeight: 700, marginBottom: 3 }}>Not counted again</div>
+          {(bankLiquidity.notCountedTwice || []).filter((n) => !n.becameRepresentative).map((n, i) => (
+            <div key={i} style={{ padding: '2px 0' }}>
+              {n.holder}{n.bankName ? ` (${n.bankName})` : ''}: {money(n.ending)} —{' '}
+              {n.ambiguous
+                ? `this statement carries no readable account number and could be either ${(n.matchedAccounts || []).join(' or ') || 'of two accounts above'}, so it was not added. Attribute it by hand if it is a separate account.`
+                : `read as the same account as ${(n.matchedAccounts || []).join(', ') || 'one above'} — its own number was not legible, so it is not added again. If it is a separate account, add it by hand.`}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
