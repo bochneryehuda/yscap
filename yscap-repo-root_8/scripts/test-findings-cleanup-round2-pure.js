@@ -54,7 +54,7 @@ ok(stepNames.join(' → ') === 'Michael Moran → Michael Moran → Moshe Weil �
   `the buyer is not skipped over (got ${stepNames.join(' → ')})`);
 // The reader pairs step i with link i-1. Check what each link actually says about its own step.
 const linkInto = (name) => weilFile.hops[weilFile.ownershipPath.findIndex((n) => n.name === name) - 1];
-ok(linkInto('Michael Moran') === undefined || true, '(the first step has no incoming link)');
+ok(linkInto('Michael Moran') === undefined, 'the first step has no incoming link');
 ok(linkInto('Moshe Weil').verdict !== 'break',
   `owner → seller → buyer is consistent, so nothing is marked broken there (got ${linkInto('Moshe Weil').verdict})`);
 ok(linkInto('Moshe Weil').kind === 'transfer',
@@ -97,6 +97,37 @@ if (typeof identity.analyze === 'function') {
   ok(!!nv, 'a different given name is still raised');
   ok(nv && /given name|different people/i.test(nv.howTo),
     `and it says WHAT KIND of difference it is, not just that they differ (got "${nv && nv.howTo}")`);
+
+  // The reorder rule must not swallow the two cases where word ORDER is not the whole story.
+  const nameVariation = (a, b) => (run([
+    { doc_type: 'drivers_license', fields: { fullName: a } },
+    { doc_type: 'loan_application', fields: { borrowerName: b } },
+  ]) || {}).issues && ((run([
+    { doc_type: 'drivers_license', fields: { fullName: a } },
+    { doc_type: 'loan_application', fields: { borrowerName: b } },
+  ]) || {}).issues || []).find((i) => i.code === 'identity_name_variation');
+
+  // A generation suffix is the ENTIRE difference between a father and a son. Stripping it before
+  // comparing made "SMITH JOHN JR" and "John Smith Sr" the same words in a different order.
+  ok(!!nameVariation('John Smith Jr', 'SMITH JOHN SR'),
+    'Jr and Sr are not the same person, however the words are ordered');
+  // Entity names are positional — "SMITH HOLDINGS LLC" is not "HOLDINGS SMITH LLC".
+  ok(!!nameVariation('SMITH HOLDINGS LLC', 'HOLDINGS SMITH LLC'),
+    'a company name is not reorderable the way a person\'s is');
+
+  // …and the sentence must be TRUE of the two names printed beside it.
+  const explain = (a, b) => {
+    const f = nameVariation(a, b);
+    return f ? String(f.howTo || '') : '';
+  };
+  // Two DIFFERENT middle initials is the classic father/son pair, not a formatting difference.
+  const initials = explain('John A Smith', 'John B Smith');
+  ok(!/formatting difference/i.test(initials),
+    `a different middle initial is not called a formatting difference (got "${initials}")`);
+  // The shared word here is the GIVEN name, so nothing may claim a shared surname.
+  const surnames = explain('John Smith Adams', 'John Brown Wells');
+  ok(!/share a surname/i.test(surnames),
+    `it never claims a shared surname when the surnames differ (got "${surnames}")`);
 } else {
   ok(false, 'the identity chain is not reachable for testing');
 }
@@ -131,8 +162,8 @@ const creditSubject = { borrower_name: 'Moses Weil' };
 const withDetail = computeCreditFindings({
   readable: true, subjectName: 'Moses Weil', ficoScore: 700, mortgageLates: true,
   mortgageLateDetails: [
-    { creditor: 'PENNYMAC', accountLast4: '4417', count30: 2, count60: 1, worstLate: 60, mostRecentLate: '2026-03', page: 12 },
-    { creditor: 'ROCKET MORTGAGE', count30: 1, worstLate: 30, mostRecentLate: '2025-08', page: 14 },
+    { creditorName: 'PENNYMAC', accountLast4: '4417', count30: 2, count60: 1, worstLate: 60, mostRecentLate: '2026-03' },
+    { creditorName: 'ROCKET MORTGAGE', count30: 1, worstLate: 30, mostRecentLate: '2025-08' },
   ],
 }, creditSubject, {});
 const late = withDetail.find((f) => f.code === 'credit_mortgage_lates');
@@ -141,8 +172,39 @@ ok(/PENNYMAC/.test(late.howTo) && /ROCKET MORTGAGE/.test(late.howTo), 'it names 
 ok(/••4417/.test(late.howTo), 'and the account it can identify');
 ok(/2026-03/.test(late.howTo) && /2025-08/.test(late.howTo), 'and WHEN each one last went late');
 ok(/2×30-day/.test(late.howTo) && /1×60-day/.test(late.howTo), 'and how many, how bad');
-ok(/page 12/.test(late.howTo) && /page 14/.test(late.howTo), 'and where to look in the report');
-ok(/most recent 2026-03/.test(late.title) || /2026-03/.test(late.title), 'the headline carries the most recent late');
+ok(!/page \d/.test(late.howTo),
+  'and never cites a page number — the extractor is handed flat text and could only guess one');
+ok(/payment-history grid/.test(late.howTo), 'it says where to look instead');
+ok(/most recent 2026-03/.test(late.title), 'the headline carries the most recent late');
+
+// A month comparison, not a string sort: '2024-9' must not outrank '2024-10'.
+const lexi = computeCreditFindings({
+  readable: true, subjectName: 'Moses Weil', ficoScore: 700, mortgageLates: true,
+  mortgageLateDetails: [
+    { creditorName: 'PENNYMAC', count30: 1, worstLate: 30, mostRecentLate: '2024-9' },
+    { creditorName: 'ROCKET MORTGAGE', count30: 1, worstLate: 30, mostRecentLate: '2024-10' },
+  ],
+}, creditSubject, {}).find((f) => f.code === 'credit_mortgage_lates');
+ok(/most recent 2024-10/.test(lexi.title),
+  `October outranks September even though "2024-9" sorts higher as text (got "${lexi.title}")`);
+
+// A month we cannot parse is left OUT of the headline rather than printed as if it were the answer.
+const junkMonth = computeCreditFindings({
+  readable: true, subjectName: 'Moses Weil', ficoScore: 700, mortgageLates: true,
+  mortgageLateDetails: [{ creditorName: 'PENNYMAC', count30: 1, worstLate: 30, mostRecentLate: 'March 2026' }],
+}, creditSubject, {}).find((f) => f.code === 'credit_mortgage_lates');
+ok(!/most recent March 2026/.test(junkMonth.title),
+  `an unparseable month never becomes the headline (got "${junkMonth.title}")`);
+
+// A tradeline with no creditor names no account an underwriter could go find, so it is not printed
+// as if it did — the honest answer is the same as having read nothing.
+const nameless = computeCreditFindings({
+  readable: true, subjectName: 'Moses Weil', ficoScore: 700, mortgageLates: true,
+  mortgageLateDetails: [{ creditorName: null, accountLast4: '8842', count30: 3, worstLate: 30, mostRecentLate: '2026-03' }],
+}, creditSubject, {}).find((f) => f.code === 'credit_mortgage_lates');
+ok(/does not break out which account/i.test(nameless.howTo),
+  'an unnamed tradeline is reported as "not broken out", never as a named account');
+ok(!/8842/.test(nameless.howTo), 'and its account digits are not shown beside a creditor we do not have');
 // When the reader could NOT break it out, say so plainly instead of dressing up the same bare fact.
 const noDetail = computeCreditFindings({
   readable: true, subjectName: 'Moses Weil', ficoScore: 700, mortgageLates: true,
@@ -159,13 +221,19 @@ ok(!computeCreditFindings({ readable: true, subjectName: 'Moses Weil', ficoScore
 // "Must say WHICH document they refer to, and should auto-clear when an address is present."
 ok(clauseAddressState('YS CAPITAL GROUP ISAOA/ATIMA 5 NEW MONROSE AVE #BSMT BROOKLYN NY 11211') === 'ours',
   'our address, spelled our way, is recognised');
-ok(clauseAddressState('YS Capital Group ISAOA/ATIMA, 5 New Monrose Avenue, Basement, Brooklyn, New York 11211') !== 'none',
-  'the same address spelled differently ("Avenue", "Basement", "New York") is still an address');
+ok(clauseAddressState('YS Capital Group ISAOA/ATIMA, 5 New Monrose Avenue, Basement, Brooklyn, New York 11211') === 'ours',
+  'the same address spelled differently ("Avenue", "Basement", "New York") is still recognised as OURS');
 ok(clauseAddressState('YS CAPITAL GROUP ISAOA/ATIMA, PO BOX 1234, BROOKLYN NY 11211') === 'present',
   'so does any other address printed under the lender name');
 ok(clauseAddressState('YS CAPITAL GROUP ISAOA/ATIMA') === 'none', 'a clause with no address at all is "none"');
 ok(clauseAddressState('') === null && clauseAddressState(null) === null,
   'and nothing captured stays unknown — never an accusation off a document we could not read');
+// A loan / policy / coverage number is NOT an address. Reading one as an address would silence the
+// very finding the owner asked for, on the clause that most needs it.
+ok(clauseAddressState('YS CAPITAL GROUP ISAOA/ATIMA, Policy No. NY-84213') === 'none',
+  'a policy number is not a notice address');
+ok(clauseAddressState('YS CAPITAL GROUP ISAOA/ATIMA Loan #10023456 Dwelling Coverage $450,000 Effective 01/15/2026') === 'none',
+  'and neither is a loan number beside a coverage amount');
 
 const insWithAddr = computeInsuranceFindings({
   readable: true, dwellingCoverage: 500000, policyEffective: '2026-01-01', policyExpiration: '2027-01-01',
@@ -182,6 +250,21 @@ const insFind = insNoAddr.find((f) => f.code === 'insurance_mortgagee_address');
 ok(!!insFind, 'a clause with no address at all still asks for one');
 ok(/INSURANCE/.test(insFind.title), `and says it is about the insurance (got "${insFind.title}")`);
 ok(/title policy/i.test(insFind.howTo), 'and points out that the title document is a separate check');
+
+// SOMEONE ELSE'S address is not the same as ours, and must not be silent: loss notices would go to
+// a party we never hear from. 'ours' stays quiet; 'present' gets its own confirm-this line.
+const insOtherAddr = computeInsuranceFindings({
+  readable: true, dwellingCoverage: 500000, policyEffective: '2026-01-01', policyExpiration: '2027-01-01',
+  mortgageeClausePresent: true,
+  mortgageeClause: 'YS Capital Group LLC ISAOA/ATIMA, 1 Executive Dr, Fort Lee, NJ 07024',
+}, { borrower_name: 'Moses Weil' }, {});
+const otherFind = insOtherAddr.find((f) => f.code === 'insurance_mortgagee_address_unrecognized');
+ok(!!otherFind, 'an address we do not recognise is raised, not silently accepted');
+ok(otherFind && !/insurance_mortgagee_address$/.test(otherFind.code),
+  'and it is its own finding, not the "no address at all" one');
+ok(otherFind && /do not recognise/i.test(otherFind.title), `and says so plainly (got "${otherFind && otherFind.title}")`);
+ok(!insWithAddr.some((f) => f.code === 'insurance_mortgagee_address_unrecognized'),
+  'while OUR address, however spelled, still says nothing at all');
 
 const titleBase = { readable: true, propertyAddress: { street: '1 Main St' }, vestedOwners: ['Michael Moran'] };
 const titleNoAddr = computeTitleFindings(

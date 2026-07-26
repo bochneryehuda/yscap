@@ -36,9 +36,13 @@ function clauseHasAddress(text) {
 // `clauseHasAddress` above answers a much narrower question — does the clause carry OUR address,
 // spelled our way. A binder that reads "5 New Monrose Avenue, Basement, Brooklyn, New York 11211"
 // answers false to that and used to raise a notice claiming the address "doesn't match", when what
-// actually happened is that the wording differs. The clause already names US, so an address sitting
-// next to our name IS our notice address as the agent typed it; the only thing genuinely worth a
-// nudge is a clause with no address on it whatsoever.
+// actually happened is that the wording differs. That nag is what the owner asked us to stop.
+//
+// But "an address is printed" is NOT the same as "our address is printed" (audit 2026-07-26). A
+// clause can name us and carry the borrower's address, or the previous lender's — and then loss
+// notices go somewhere we never see, which is the exact harm the check exists to prevent. So this
+// stays a THREE-way answer and the caller must handle all three: 'ours' is silent, 'none' asks for
+// an address, and 'present' gets a quiet confirm-this line rather than nothing at all.
 //
 // Returns 'ours' | 'present' | 'none', or null when nothing was captured (never an accusation off a
 // document we could not read).
@@ -46,11 +50,16 @@ function clauseAddressState(text) {
   const n = norm(text);
   if (!n) return null;
   if (clauseHasAddress(text)) return 'ours';
-  // Any street line (a number followed by a word) or any 5-digit ZIP counts as an address being
-  // printed. Deliberately generous: this decides whether to STAY QUIET, and the clause has already
-  // been confirmed to name the lender.
-  const hasStreet = /\b\d+\s+[a-z]/.test(n);
-  const hasZip = /\b\d{5}\b/.test(n);
+  // What counts as an address being PRINTED. Both patterns are deliberately anchored: a bare
+  // "number followed by a word" matches "loan 12345 mortgagee", and a bare 5-digit run matches a
+  // loan or policy number — either would have read a clause with NO address as having one and
+  // silenced the very finding the owner wants.
+  const hasStreet = /\b\d+\s+[a-z][a-z ]*?\b(ave|avenue|st|street|rd|road|blvd|boulevard|ln|lane|dr|drive|way|pl|place|ct|court|ter|terrace|pkwy|parkway|hwy|highway|box)\b/.test(n);
+  // A ZIP only counts in "<city> <ST> <5 digits>" shape. "policy no ny 84213" would satisfy
+  // anything looser, and reading a policy number as an address silences the finding on the very
+  // clause that most needs it. A clause carrying a full state NAME and no street is not matched
+  // here — in practice such a clause prints a street too, which the rule above catches.
+  const hasZip = /\b[a-z]{3,}\s+[a-z]{2}\s+\d{5}\b/.test(n);
   return (hasStreet || hasZip) ? 'present' : 'none';
 }
 

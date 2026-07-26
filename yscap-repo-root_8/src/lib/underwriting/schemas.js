@@ -459,9 +459,12 @@ const CREDIT_REPORT = {
     "any bankruptcies, foreclosures, judgments, or tax liens. " +
     "When there ARE mortgage lates, also fill mortgageLateDetails: one entry per MORTGAGE tradeline that " +
     "shows a late, with the creditor name as printed, the last 4 of the account number if shown, the counts " +
-    "of 30/60/90-day lates on that tradeline, the WORST late (30, 60, or 90), the month the MOST RECENT late " +
-    "occurred (YYYY-MM), and the page it is printed on. Read the payment-history grid, not just the summary. " +
-    "Leave the array empty if the report only summarises lates without saying which account. " +
+    "of 30/60/90-day lates on that tradeline, the WORST late (30, 60, or 90), and the month the MOST RECENT " +
+    "late occurred, written as YYYY-MM. Read the payment-history grid, not just the summary. " +
+    "Leave the array EMPTY unless you can read an individual tradeline and name its creditor. Empty is the " +
+    "right answer whenever the report only summarises lates without saying which account, the payment grid " +
+    "is illegible or cut off, or you cannot tell which tradelines are mortgages — an underwriter is told to " +
+    "go find these accounts in the report, so an invented creditor or account number is worse than nothing. " +
     "Do NOT extract the full SSN. Use null for anything absent or unreadable — do NOT guess. " +
     "readable=false if poor.",
   schema: obj({
@@ -476,15 +479,25 @@ const CREDIT_REPORT = {
     mortgageLates: { type: ['boolean', 'null'] },
     // WHICH mortgage, WHEN, and how bad — a bare "there are lates somewhere" is not something an
     // underwriter can act on or explain to a note buyer (owner-reported 2026-07-26).
+    //
+    // `creditorName`, not `creditor`: grounding.js's CRITICAL fragment list keys on `name`, so the
+    // shorter spelling meant a model-invented servicer was never graded and never quarantined — it
+    // reached the desk as fact (audit 2026-07-26). The name is the one field an underwriter uses to
+    // go find the tradeline, so it is exactly the field that must be checkable against the OCR text.
+    //
+    // There is deliberately NO `page`. The extractor is handed flat OCR text with no page markers
+    // (engine.js passes `ocr.text`, truncated), so a page number here could only ever be guessed —
+    // and every other page number in the system comes from evidence-page.js, which promises never a
+    // wrong page. A citation that sends an underwriter to the wrong page of a 40-page report is
+    // worse than no citation at all.
     mortgageLateDetails: { type: 'array', items: obj({
-      creditor: { type: ['string', 'null'] },
+      creditorName: { type: ['string', 'null'] },
       accountLast4: { type: ['string', 'null'] },
       count30: { type: ['number', 'null'] },
       count60: { type: ['number', 'null'] },
       count90: { type: ['number', 'null'] },
       worstLate: { type: ['number', 'null'] },        // 30 | 60 | 90
       mostRecentLate: { type: ['string', 'null'] },   // 'YYYY-MM'
-      page: { type: ['number', 'null'] },
     }) },
     hasBankruptcy: { type: ['boolean', 'null'] },
     hasForeclosure: { type: ['boolean', 'null'] },

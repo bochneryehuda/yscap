@@ -34,12 +34,15 @@ const money2 = (n) => (n == null || isNaN(Number(n))) ? '—' : '$' + Number(n).
 // normalizer the conditions engine and the guideline desk use, so one spelling of a note buyer is
 // never treated as two. Whichever is stricter wins — a note buyer's requirement can raise the count,
 // never lower it below what the program already asks for.
-const NOTE_BUYER_MONTHS = { bluelake: 2 };
+// Object.create(null), not {}: a lender literally recorded as "constructor" would otherwise look up
+// Object.prototype.constructor and make the month count NaN. Cheap to prevent, ugly to debug.
+const NOTE_BUYER_MONTHS = Object.assign(Object.create(null), { bluelake: 2 });
 function noteBuyerMonths(noteBuyer) {
   if (!noteBuyer) return 0;
   let key = '';
   try { key = require('./conditions/field-registry').normNoteBuyer(noteBuyer) || ''; } catch (_) { key = ''; }
-  return NOTE_BUYER_MONTHS[key] || 0;
+  const m = NOTE_BUYER_MONTHS[key];
+  return typeof m === 'number' && Number.isFinite(m) ? m : 0;
 }
 function bankStatementMonths(program, assetMonths, noteBuyer) {
   const byBuyer = noteBuyerMonths(noteBuyer);

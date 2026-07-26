@@ -433,7 +433,7 @@ async function loadCureContext(appId, client) {
   let row = {};
   try {
     const r = await client.query(
-      `SELECT a.loan_amount, a.expected_closing, a.program AS app_program,
+      `SELECT a.loan_amount, a.expected_closing, a.program AS app_program, a.lender,
               b.first_name, b.last_name,
               l.llc_name,
               reg.program AS registered_program
@@ -450,7 +450,13 @@ async function loadCureContext(appId, client) {
   // test runs with no DB. bankStatementMonths is the canonical Gold=2/Standard=1
   // helper — never a second copy of that number (CLAUDE.md).
   const { bankStatementMonths } = require('../liquidity');
-  const requiredMonths = program ? bankStatementMonths(program) : null;
+  // The note buyer must go in too (audit 2026-07-26). `syncLiquidityCondition` records the note
+  // buyer's higher count on the condition, but this is what the cure engine COMPARES the uploaded
+  // statements against — and a Blue Lake file whose condition says 2 months was clearing on one
+  // statement because the expectation here was still the program's 1. That is a FALSE CLEAR: the
+  // clearance preview reported it satisfied and the weak-proof sign-off warning, which exists to
+  // catch exactly this, stayed silent. `a.lender` is the note buyer (field-registry.normNoteBuyer).
+  const requiredMonths = program ? bankStatementMonths(program, null, row.lender) : null;
   const borrowerName = [row.first_name, row.last_name].filter(Boolean).join(' ').trim() || null;
   const entityName = row.llc_name || null;
   const expected = {

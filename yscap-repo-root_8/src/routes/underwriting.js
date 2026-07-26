@@ -456,7 +456,7 @@ router.get('/:appId', async (req, res, next) => {
       const contReq = await require('../lib/rehab-budget').sowContingencyRequired(app.id);
       sowContingencyReq = contReq && contReq.required;
     } catch (_) { sowContingencyReq = undefined; }
-    const programGuidelines = programGuidelineSnapshot(uwProgram, { assetMonths, sowContingencyRequired: sowContingencyReq });
+    const programGuidelines = programGuidelineSnapshot(uwProgram, { assetMonths, sowContingencyRequired: sowContingencyReq, noteBuyer: a.lender });
 
     const metrics = computeMetrics({
       loanAmount: a.loan_amount, initialAdvance: reg ? reg.initialAdvance : null,

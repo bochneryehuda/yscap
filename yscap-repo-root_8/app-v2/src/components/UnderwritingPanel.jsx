@@ -305,7 +305,10 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
         </div>
       )}
       {compare && <DocCompare title={f.title} field={f.field} sources={compare} onClose={() => setCompare(null)} />}
-      {howTo && <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', marginBottom: resolvable ? 10 : 0 }}>{howTo}</div>}
+      {/* pre-wrap, like the suggestion body below: several findings write howTo as a LIST — the risk
+          score's per-signal arithmetic, the per-tradeline mortgage lates — and without this the
+          newlines collapse and the whole point of breaking them out is lost on screen. */}
+      {howTo && <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', marginBottom: resolvable ? 10 : 0, whiteSpace: 'pre-wrap' }}>{howTo}</div>}
       {/* When several reviews independently reached the same conclusion, this is the ONE item they
           collapsed into (finding-claims.dedupeByClaim). Saying so turns the merge from something
           invisible into something an underwriter can weigh — three desks agreeing is a stronger
