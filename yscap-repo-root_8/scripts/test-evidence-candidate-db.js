@@ -55,7 +55,7 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
   try {
     await q(fs.readFileSync(R + '/db/307_document_pipeline_jobs.sql', 'utf8'));
     await q(fs.readFileSync(R + '/db/309_document_pipeline_evidence.sql', 'utf8'));
-    await q(fs.readFileSync(R + '/db/310_document_pipeline_evidence_provenance.sql', 'utf8'));
+    await q(fs.readFileSync(R + '/db/311_document_pipeline_evidence_provenance.sql', 'utf8'));
 
     const MARK = 'test-ec-' + process.pid;
     const { id: jobId } = await jq.enqueue(pool, { documentFamily: 'bank_statement', idempotencyKey: MARK, payload: {} });
