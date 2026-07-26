@@ -7807,11 +7807,7 @@ router.patch('/applications/:id/closing/checklist-items/:iid', async (req, res) 
       `SELECT ci.id FROM closing_checklist_items ci JOIN closing_checklists cl ON cl.id=ci.checklist_id
         WHERE ci.id=$1 AND cl.application_id=$2`, [req.params.iid, req.params.id])).rows[0];
     if (!own) return res.status(404).json({ error: 'item not found' });
-    await db.query(
-      `UPDATE closing_checklist_items SET checked=$2,
-          checked_by = CASE WHEN $2 THEN $3 ELSE NULL END,
-          checked_at = CASE WHEN $2 THEN now() ELSE NULL END WHERE id=$1`,
-      [req.params.iid, checked, req.actor.id]);
+    await closing.setChecklistItemChecked(db, req.params.iid, checked, req.actor.id);
     res.json({ ok: true, checklists: await closing.readChecklists(req.params.id) });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });

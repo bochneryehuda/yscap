@@ -225,7 +225,7 @@ async function readQuickLinks(appId, llcId, client) {
   const c = client || db;
   const r = await c.query(
     `SELECT d.id, d.filename, d.content_type, d.checklist_item_id, d.slot_label, d.created_at,
-            t.code AS template_code, ci.label AS item_label
+            d.doc_kind, t.code AS template_code, ci.label AS item_label
        FROM documents d
        LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
        LEFT JOIN checklist_templates t ON t.id = ci.template_id
@@ -236,12 +236,19 @@ async function readQuickLinks(appId, llcId, client) {
       ORDER BY d.created_at DESC`, [appId, llcId || null]);
   const groups = {};
   for (const key of Object.keys(QUICKLINK_GROUPS)) groups[key] = [];
+  // The term sheet is keyed by doc_kind (not a condition): the SIGNED/executed
+  // copy (term_sheet_signed, filed by the e-sign integration) and the draft
+  // (term_sheet). The closer needs a direct link to the executed final sheet.
+  groups.term_sheet = [];
   const codeToGroup = {};
   for (const [group, codes] of Object.entries(QUICKLINK_GROUPS)) for (const code of codes) codeToGroup[code] = group;
   for (const d of r.rows) {
     const g = d.template_code && codeToGroup[d.template_code];
     if (g) groups[g].push(d);
+    if (d.doc_kind === 'term_sheet_signed' || d.doc_kind === 'term_sheet') groups.term_sheet.push(d);
   }
+  // Executed copy first, then draft, newest within each (each already newest-first).
+  groups.term_sheet.sort((a, b) => (a.doc_kind === 'term_sheet_signed' ? 0 : 1) - (b.doc_kind === 'term_sheet_signed' ? 0 : 1));
   return groups;
 }
 
@@ -276,6 +283,19 @@ async function readChecklists(appId, client) {
     `SELECT id, checklist_id, label, checked, checked_by, checked_at, sort_order
        FROM closing_checklist_items WHERE checklist_id = ANY($1::uuid[]) ORDER BY sort_order, created_at`, [ids])).rows;
   return lists.map((l) => ({ ...l, items: items.filter((i) => String(i.checklist_id) === String(l.id)) }));
+}
+
+// Check / un-check ONE closer checklist item. Lives here (not inline in the
+// route) so the regression test exercises the SHIPPED statement — the `$3::uuid`
+// cast is load-bearing: a bare param inside CASE WHEN…THEN resolves to text and
+// the uuid column write throws (a 500 on every check-off).
+async function setChecklistItemChecked(client, itemId, checked, actorId) {
+  const c = client || db;
+  await c.query(
+    `UPDATE closing_checklist_items SET checked=$2,
+        checked_by = CASE WHEN $2 THEN $3::uuid ELSE NULL END,
+        checked_at = CASE WHEN $2 THEN now() ELSE NULL END WHERE id=$1`,
+    [itemId, !!checked, actorId || null]);
 }
 
 async function readNotes(appId, client) {
@@ -348,5 +368,6 @@ module.exports = {
   readClosingConditions,
   readChecklists,
   readNotes,
+  setChecklistItemChecked,
   getClosingWorkspace,
 };
