@@ -21,7 +21,7 @@
  */
 const R = require('path').resolve(__dirname, '..');
 const BL = require(R + '/src/lib/underwriting/bank-liquidity');
-const { sameBank, sameHolder, bankStem } = BL._internals;
+const { sameBank, sameHolder, bankStem, periodEndDay } = BL._internals;
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', m); } };
@@ -208,6 +208,155 @@ const usBank = run([
 ]);
 ok(usBank.qualifyingTotal === 89474,
   `two US Bank statements of one account fold (got ${usBank.qualifyingTotal}, must be 89474 — not 177928)`);
+
+// ---------- AUDIT 2026-07-26, SECOND ROUND ----------
+// The same-period proof above is the ONE thing that keeps a real second account from being folded
+// away. Both of these were found in re-audit, and BOTH fail in the fatal direction — they hand the
+// owner back the double-count they called "a major major major major issue".
+
+// (a) A PENNY IS NOT A SECOND ACCOUNT. A statement whose account number would not scan is a poorly
+// scanned statement, and the same scan read twice drifts. Treating that drift as proof of a second
+// account re-inflates the total by a whole month's balance.
+const centDrift = run([
+  stmt('d1', { accountHolderName: 'MOSES WEIL', bankName: 'Vanderbilt', accountNumber: '000120',
+    closingBalance: 88454.00, statementPeriod: 'July 1 - July 31, 2026' }),
+  stmt('d2', { accountHolderName: 'MOSES WEIL', bankName: 'Vanderbilt', accountNumber: null,
+    closingBalance: 88454.01, statementPeriod: 'July 1 - July 31, 2026' }),
+]);
+ok(centDrift.accountsCount === 1,
+  `two reads of one month a PENNY apart are one account (got ${centDrift.accountsCount} accounts, $${centDrift.qualifyingTotal})`);
+ok(centDrift.qualifyingTotal < 90000, 'and the balance is never counted twice');
+
+// A few dollars apart on a large balance is the same story — a misread digit, not a second account.
+const dollarDrift = run([
+  stmt('d1', { accountHolderName: 'MOSES WEIL', bankName: 'Vanderbilt', accountNumber: '000120',
+    closingBalance: 88454, statementPeriod: 'July 1 - July 31, 2026' }),
+  stmt('d2', { accountHolderName: 'MOSES WEIL', bankName: 'Vanderbilt', accountNumber: null,
+    closingBalance: 88458, statementPeriod: 'July 1 - July 31, 2026' }),
+]);
+ok(dollarDrift.accountsCount === 1,
+  `$4 apart on an $88k balance is scan drift, not a second account (got ${dollarDrift.accountsCount})`);
+
+// …and the other half stays intact: a MATERIAL difference still proves two accounts.
+ok(run([
+  stmt('d1', { accountHolderName: 'MOSES WEIL', bankName: 'Vanderbilt', accountNumber: '000120',
+    closingBalance: 88454, statementPeriod: 'July 1 - July 31, 2026' }),
+  stmt('d2', { accountHolderName: 'MOSES WEIL', bankName: 'Vanderbilt', accountNumber: null,
+    closingBalance: 88900, statementPeriod: 'July 1 - July 31, 2026' }),
+]).accountsCount === 2, 'a real difference on the same month is still two accounts');
+ok(run([
+  stmt('d1', { accountHolderName: 'MOSES WEIL', bankName: 'Chase', accountNumber: '001234',
+    closingBalance: 900, statementPeriod: 'July 1 - July 31, 2026' }),
+  stmt('d2', { accountHolderName: 'MOSES WEIL', bankName: 'Chase', accountNumber: null,
+    closingBalance: 1500, statementPeriod: 'July 1 - July 31, 2026' }),
+]).accountsCount === 2, 'and the dollar floor does not swallow small real accounts either');
+
+// (b) EVERY PAIR OF MONTHS, NOT JUST THE LATEST TWO. A group's representative is only its newest
+// month. A checking account with two months on file, next to a savings with one, compared newest-to-
+// newest is February against January — no overlap, no proof, and $50,000 of real savings is folded
+// away and reported as "the same account".
+const twoMonthsVsOne = run([
+  stmt('d1', { accountHolderName: 'MOSES WEIL', bankName: 'Chase Bank', accountNumber: '001234',
+    closingBalance: 20000, statementPeriod: 'January 1 - January 31, 2026' }),
+  stmt('d2', { accountHolderName: 'MOSES WEIL', bankName: 'Chase Bank', accountNumber: '001234',
+    closingBalance: 25000, statementPeriod: 'February 1 - February 28, 2026' }),
+  // The savings account — same bank, same name, only January on file, number unreadable.
+  stmt('d3', { accountHolderName: 'MOSES WEIL', bankName: 'Chase', accountNumber: null,
+    closingBalance: 50000, statementPeriod: 'January 1 - January 31, 2026' }),
+]);
+ok(twoMonthsVsOne.accountsCount === 2,
+  `the savings account survives even though the checking has a newer month (got ${twoMonthsVsOne.accountsCount} accounts)`);
+ok(twoMonthsVsOne.qualifyingTotal === 75000,
+  `and its $50,000 is still counted (got ${twoMonthsVsOne.qualifyingTotal}, must be 75000 — 25000 + 50000)`);
+
+// The same shape where the statements really ARE one account (matching January) still folds.
+const twoMonthsSameAccount = run([
+  stmt('d1', { accountHolderName: 'MOSES WEIL', bankName: 'Chase Bank', accountNumber: '001234',
+    closingBalance: 20000, statementPeriod: 'January 1 - January 31, 2026' }),
+  stmt('d2', { accountHolderName: 'MOSES WEIL', bankName: 'Chase Bank', accountNumber: '001234',
+    closingBalance: 25000, statementPeriod: 'February 1 - February 28, 2026' }),
+  stmt('d3', { accountHolderName: 'MOSES WEIL', bankName: 'Chase', accountNumber: null,
+    closingBalance: 20000, statementPeriod: 'January 1 - January 31, 2026' }),
+]);
+ok(twoMonthsSameAccount.accountsCount === 1 && twoMonthsSameAccount.qualifyingTotal === 25000,
+  `a re-uploaded January of the SAME account still folds (got ${twoMonthsSameAccount.accountsCount} / ${twoMonthsSameAccount.qualifyingTotal})`);
+
+// (c) THE SAME MONTH PRINTED TWO WAYS IS THE SAME MONTH. Statements print a period end as
+// "2026-01-31", "01/31/2026" or "January 31, 2026"; read as clock times those are three different
+// instants outside UTC, which silently disarms the proof above and folds a real account away.
+ok(periodEndDay('2026-01-01 to 2026-01-31') === '2026-01-31', 'an ISO period ends on the 31st');
+ok(periodEndDay('01/01/2026 - 01/31/2026') === '2026-01-31', 'so does a US-format one');
+ok(periodEndDay('January 1 - January 31, 2026') === '2026-01-31', 'so does a written-out one');
+ok(periodEndDay('Jan. 1 - Jan. 31, 26') === '2026-01-31', 'an abbreviated month and 2-digit year too');
+ok(periodEndDay('') === null && periodEndDay('statement period') === null,
+  'and nothing parseable is left null, never guessed');
+const mixedFormat = run([
+  stmt('d1', { accountHolderName: 'MOSES WEIL', bankName: 'Chase Bank', accountNumber: '001234',
+    closingBalance: 50000, statementPeriod: '2026-01-01 to 2026-01-31' }),
+  stmt('d2', { accountHolderName: 'MOSES WEIL', bankName: 'Chase', accountNumber: null,
+    closingBalance: 75000, statementPeriod: 'January 1 - January 31, 2026' }),
+]);
+ok(mixedFormat.qualifyingTotal === 125000,
+  `two accounts whose statements print the month differently stay two (got ${mixedFormat.qualifyingTotal}, must be 125000)`);
+// Proven in a real non-UTC clock, not argued: the container runs UTC, which hides this entirely.
+const { execFileSync } = require('child_process');
+const tzTotal = (tz) => execFileSync(process.execPath, ['-e', `
+  const BL = require(${JSON.stringify(R + '/src/lib/underwriting/bank-liquidity')});
+  const s = (f) => ({ doc_type: 'bank_statement', fields: f });
+  const r = BL.assessBankLiquidity({ borrower: { first_name: 'Moses', last_name: 'Weil' } }, [
+    s({ accountHolderName: 'MOSES WEIL', bankName: 'Chase Bank', accountNumber: '001234',
+        closingBalance: 50000, statementPeriod: '2026-01-01 to 2026-01-31' }),
+    s({ accountHolderName: 'MOSES WEIL', bankName: 'Chase', accountNumber: null,
+        closingBalance: 75000, statementPeriod: 'January 1 - January 31, 2026' }),
+  ], {});
+  process.stdout.write(String(r.qualifyingTotal));`],
+{ env: Object.assign({}, process.env, { TZ: tz }), encoding: 'utf8' });
+for (const tz of ['UTC', 'America/New_York', 'Pacific/Kiritimati']) {
+  ok(tzTotal(tz) === '125000', `the accounts stay separate on a ${tz} clock (got ${tzTotal(tz)})`);
+}
+
+// (d) THE ACCOUNT NUMBER COMES FROM THE ACCOUNT, WHICHEVER MONTH CARRIES IT. Once a fold has made a
+// number-less statement the representative, a LATER ambiguous statement must still be told both
+// account numbers it might belong to — otherwise the underwriter is asked to attribute a balance by
+// hand with the identifiers removed.
+const ambiguousAfterFold = run([
+  stmt('d1', { accountHolderName: 'MOSES WEIL', bankName: 'Vanderbilt', accountNumber: '000120',
+    closingBalance: 10000, statementPeriod: 'January 1 - January 31, 2026' }),
+  stmt('d2', { accountHolderName: 'MOSES WEIL', bankName: 'Vanderbilt', accountNumber: null,
+    closingBalance: 30000, statementPeriod: 'March 1 - March 31, 2026' }),
+  // A second numbered account at the same bank. Its March balance is materially different, which is
+  // what tells d2 apart from it — so d2 folds unambiguously into ••0120 and becomes its counted month.
+  stmt('d3', { accountHolderName: 'MOSES WEIL', bankName: 'Vanderbilt', accountNumber: '004477',
+    closingBalance: 5000, statementPeriod: 'March 1 - March 31, 2026' }),
+  stmt('d4', { accountHolderName: 'MOSES A WEIL', bankName: 'Vanderbilt Bank', accountNumber: null,
+    closingBalance: 40000, statementPeriod: 'April 1 - April 30, 2026' }),
+]);
+const amb = ambiguousAfterFold.notCountedTwice.find((n) => n.ambiguous);
+ok(amb && amb.matchedAccounts.length === 2 && amb.matchedAccounts.includes('••0120') && amb.matchedAccounts.includes('••4477'),
+  `an ambiguous statement names BOTH candidate accounts (got ${JSON.stringify(amb && amb.matchedAccounts)})`);
+ok(ambiguousAfterFold.qualifyingTotal === 35000,
+  `and it still adds nothing (got ${ambiguousAfterFold.qualifyingTotal}, must be 35000 — 30000 + 5000)`);
+
+// (e) THE EXPLANATION MUST MATCH THE FINAL TABLE, WHATEVER ORDER THE STATEMENTS ARRIVED IN. When two
+// number-less statements fold into one account, only the month that ends up counted may be described
+// as having become the representative — otherwise the same file explains itself two different ways.
+const foldPair = [
+  stmt('d1', { accountHolderName: 'MOSES WEIL', bankName: 'Vanderbilt', accountNumber: '000120',
+    closingBalance: 10000, statementPeriod: 'January 1 - January 31, 2026' }),
+  stmt('d2', { accountHolderName: 'MOSES WEIL', bankName: 'Vanderbilt', accountNumber: null,
+    closingBalance: 20000, statementPeriod: 'February 1 - February 28, 2026' }),
+  stmt('d3', { accountHolderName: 'MOSES A WEIL', bankName: 'Vanderbilt Bank', accountNumber: null,
+    closingBalance: 30000, statementPeriod: 'March 1 - March 31, 2026' }),
+];
+for (const [label, list] of [['as uploaded', foldPair], ['in reverse', foldPair.slice().reverse()]]) {
+  const r = run(list);
+  const feb = r.notCountedTwice.find((n) => n.ending === 20000);
+  const mar = r.notCountedTwice.find((n) => n.ending === 30000);
+  ok(r.qualifyingTotal === 30000, `${label}: the March balance is the one counted (got ${r.qualifyingTotal})`);
+  ok(mar && mar.becameRepresentative === true, `${label}: March is described as the month that was counted`);
+  ok(feb && feb.becameRepresentative === false,
+    `${label}: February is NOT — its balance is not in the total, so it must be listed as not counted again`);
+}
 
 console.log(`test-liquidity-double-count-pure: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

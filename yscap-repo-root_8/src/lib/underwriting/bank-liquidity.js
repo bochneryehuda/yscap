@@ -85,6 +85,47 @@ function periodEndOf(statementPeriod) {
   return best;
 }
 
+// The same period end, as a CALENDAR DAY ("2026-01-31"), for the same-period proof below.
+// `periodEndOf` above goes through Date.parse, which reads an ISO "2026-01-31" as UTC midnight but
+// "January 31, 2026" / "01/31/2026" as LOCAL midnight — so two statements printing the SAME month end
+// in two different formats produce two different timestamps outside UTC. Comparing calendar days
+// instead removes the timezone from the question entirely. Parsing is done by hand (no Date at all)
+// so nothing can drift; a token that doesn't resolve to a real day is dropped rather than guessed.
+const MONTH_NO = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+function fullYear(y) {
+  const n = Number(y);
+  if (!Number.isFinite(n)) return null;
+  if (n >= 100) return n;
+  return n < 70 ? 2000 + n : 1900 + n;   // "26" → 2026, "98" → 1998 (the repo-wide 2-digit pivot)
+}
+function dayString(y, m, d) {
+  if (!(y >= 1900 && y <= 2200) || !(m >= 1 && m <= 12) || !(d >= 1 && d <= 31)) return null;
+  return `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+function periodEndDay(statementPeriod) {
+  const s = String(statementPeriod || '').trim();
+  if (!s) return null;
+  const days = [];
+  for (const tok of s.match(/\d{4}-\d{1,2}-\d{1,2}/g) || []) {
+    const [y, m, d] = tok.split('-').map(Number);
+    const v = dayString(y, m, d); if (v) days.push(v);
+  }
+  for (const tok of s.match(/\d{1,2}\/\d{1,2}\/\d{2,4}/g) || []) {
+    const [m, d, y] = tok.split('/');
+    const v = dayString(fullYear(y), Number(m), Number(d)); if (v) days.push(v);
+  }
+  for (const tok of s.match(/[A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{2,4}/g) || []) {
+    const mm = /^([A-Za-z]{3,9})\.?\s+(\d{1,2}),?\s+(\d{2,4})$/.exec(tok.trim());
+    if (!mm) continue;
+    const mo = MONTH_NO[mm[1].slice(0, 3).toLowerCase()];
+    if (!mo) continue;
+    const v = dayString(fullYear(mm[3]), mo, Number(mm[2])); if (v) days.push(v);
+  }
+  let best = null;
+  for (const d of days) if (best == null || d > best) best = d;   // zero-padded → plain string compare
+  return best;
+}
+
 function accountKey(s) {
   const acct = String(s.accountNumber || '').replace(/\D/g, '');
   // Key on the LAST 4 digits — that's how account numbers are stored (masked to last-4), so a month
@@ -154,17 +195,44 @@ function sameBank(a, b) {
  * account", which is a false statement about their money.
  *
  * One account cannot end the same statement period at two different balances. So when the periods
- * are the same and the balances differ, these are demonstrably different accounts. That is a fact
- * off the two documents, not a heuristic — and it is the only thing here that can distinguish them.
- * Anything less certain (different periods, a missing period, equal balances) is left to fold, which
- * errs toward under-counting.
+ * are the same and the balances differ MATERIALLY, these are demonstrably different accounts. That is
+ * a fact off the two documents, not a heuristic — and it is the only thing here that can distinguish
+ * them. Anything less certain (different periods, a missing period, equal balances) is left to fold,
+ * which errs toward under-counting.
+ *
+ * Two things this has to get right, both found in audit:
+ *
+ *   · EVERY statement pair, not just the two representatives. A group holds all the months on file
+ *     for one account and its `rep` is only the LATEST one. A checking account with January and
+ *     February on file, next to a savings account with only January, compared rep-to-rep is February
+ *     against January — different periods, no proof, and the savings balance is silently folded away.
+ *     Comparing every pair across the two groups finds the January-vs-January overlap that proves it.
+ *
+ *   · A MATERIAL gap, not any gap. A statement whose account number failed to read is a poorly
+ *     scanned one, and the same scan read twice drifts — by cents, and on a large balance by a few
+ *     dollars. Calling that drift proof of a second account is the owner's double-count coming back
+ *     in the one direction that is fatal: INFLATING liquidity. So the gap must be at least a dollar
+ *     AND at least a hundredth of a percent of the balance ($8.85 on $88,454). Two genuinely
+ *     different accounts at one bank differ by far more; when they don't, we fold and UNDER-count,
+ *     which a human clears.
  */
+function materialGap(a, b) {
+  return Math.max(1, 0.0001 * Math.max(Math.abs(a), Math.abs(b)));
+}
 function differentAccountsSamePeriod(a, b) {
-  const pa = periodEndOf(a.rep.f.statementPeriod), pb = periodEndOf(b.rep.f.statementPeriod);
-  if (pa == null || pb == null || pa !== pb) return false;   // can't compare periods → no proof
-  const ba = num(a.rep.f.closingBalance), bb = num(b.rep.f.closingBalance);
-  if (ba == null || bb == null) return false;                // can't compare balances → no proof
-  return Math.abs(ba - bb) > 0.005;                          // same month, different money → two accounts
+  for (const sa of a.sts) {
+    const pa = periodEndDay(sa.f.statementPeriod);
+    if (pa == null) continue;                                  // can't date this one → no proof from it
+    const ba = num(sa.f.closingBalance);
+    if (ba == null) continue;                                  // can't compare balances → no proof
+    for (const sb of b.sts) {
+      if (periodEndDay(sb.f.statementPeriod) !== pa) continue;  // only the SAME month proves anything
+      const bb = num(sb.f.closingBalance);
+      if (bb == null) continue;
+      if (Math.abs(ba - bb) > materialGap(ba, bb)) return true; // same month, different money → two accounts
+    }
+  }
+  return false;
 }
 
 function holderStem(s) {
@@ -221,13 +289,18 @@ function assessBankLiquidity(ctx = {}, extractions = [], opts = {}) {
     const key = accountKey(f);
     const rank = rankOf(st);
     const prev = byAccount.get(key);
-    if (!prev) { byAccount.set(key, { rep: st, repEnd: rank[0] === -Infinity ? null : rank[0], rank, count: 1 }); continue; }
+    // `sts` keeps EVERY statement in the group, not just the winner. The counted balance is still the
+    // representative's, but the same-period proof below has to be able to look at the months a group
+    // is not currently representing — comparing only the two latest months misses the overlap that
+    // proves a checking and a savings apart (audit 2026-07-26).
+    if (!prev) { byAccount.set(key, { rep: st, repEnd: rank[0] === -Infinity ? null : rank[0], rank, count: 1, sts: [st] }); continue; }
     const better = rankGt(rank, prev.rank);
     byAccount.set(key, {
       rep: better ? st : prev.rep,
       repEnd: better ? (rank[0] === -Infinity ? null : rank[0]) : prev.repEnd,
       rank: better ? rank : prev.rank,
       count: prev.count + 1,
+      sts: prev.sts.concat([st]),
     });
   }
 
@@ -239,6 +312,14 @@ function assessBankLiquidity(ctx = {}, extractions = [], opts = {}) {
   // one that existed before the first fold. Holding the objects meant the second fold compared its
   // date against a stale rank and could keep an OLDER month than the file actually holds, which is
   // precisely the frozen "count the most recent statement, not the old one" rule.
+  // THE ACCOUNT NUMBER BELONGS TO THE ACCOUNT, NOT TO A MONTH. Read it from whichever statement in
+  // the group actually carries one, so a fold (or a month whose number was smudged) can never make an
+  // account number vanish from the owner's assets table — their own "the table was missing account
+  // numbers" fix, on the exact case that produced it.
+  const groupMask = (g) => {
+    for (const s of (g && g.sts) || []) { const m = maskAcct(s.f); if (m) return m; }
+    return null;
+  };
   const numberedKeys = [];
   for (const key of byAccount.keys()) if (key.startsWith('#')) numberedKeys.push(key);
   const notCountedTwice = [];   // number-less groups that were folded away, for the breakdown
@@ -261,7 +342,7 @@ function assessBankLiquidity(ctx = {}, extractions = [], opts = {}) {
     byAccount.delete(key);
     const holder = f.accountHolderName || '(unnamed)';
     const entry = { holder, bankName: f.bankName || null, ending: num(f.closingBalance),
-      matchedAccounts: matches.map(({ g: ng }) => maskAcct(ng.rep.f)).filter(Boolean),
+      matchedAccounts: matches.map(({ g: ng }) => groupMask(ng)).filter(Boolean),
       ambiguous: matches.length > 1, becameRepresentative: false };
     notCountedTwice.push(entry);
     if (matches.length > 1) continue;                    // ambiguous → resolve DOWNWARD, count nothing
@@ -269,39 +350,45 @@ function assessBankLiquidity(ctx = {}, extractions = [], opts = {}) {
     // and competes normally to be the counted (latest) month.
     const target = matches[0].g;
     const better = rankGt(g.rank, target.rank);
-    // When the folded statement is the LATER month it becomes the one counted — so its balance did
-    // not "go uncounted", the two statements simply merged. Saying "not counted again" about the
-    // very number shown in the total would read as an error.
-    entry.becameRepresentative = better;
+    // Which statement ends up representing the merged account is only known once EVERY fold is done —
+    // a later number-less statement can take the representative slot from this one. Remember what to
+    // check and settle it in one pass afterwards, so the explanation always matches the final table.
+    entry._key = matches[0].key;
+    entry._rep = g.rep;
     byAccount.set(matches[0].key, {
       rep: better ? g.rep : target.rep,
       repEnd: better ? g.repEnd : target.repEnd,
       rank: better ? g.rank : target.rank,
       count: target.count + g.count,
-      // THE ACCOUNT NUMBER BELONGS TO THE ACCOUNT, NOT TO A MONTH. If the number-less statement wins
-      // as the latest month, the group's representative has no number — and the assets table would
-      // stop showing ••0120 even though it is right there on the other statement. That silently
-      // undoes the owner's own "the assets table was missing account numbers" fix, on their exact
-      // headline case. Carry it from whichever statement in the group actually has one.
-      acctFrom: target.acctFrom || (maskAcct(target.rep.f) ? target.rep.f : null) || (maskAcct(f) ? f : null),
+      sts: target.sts.concat(g.sts),
     });
+  }
+  // When the folded statement ended up being the month actually counted, its balance did not "go
+  // uncounted" — the two statements simply merged. Saying "not counted again" about the very number
+  // shown in the total would read as an error. Settled against the FINAL representative, so the same
+  // file never explains itself two different ways depending on the order the statements arrived.
+  for (const entry of notCountedTwice) {
+    const finalGroup = entry._key ? byAccount.get(entry._key) : null;
+    entry.becameRepresentative = !!(finalGroup && finalGroup.rep === entry._rep);
+    delete entry._key; delete entry._rep;
   }
 
   const accounts = [];
   let qualifyingTotal = 0;      // ending balances of tied accounts (the borrower's real liquid assets)
   let excludedTotal = 0;        // ending balances sitting in accounts NOT tied to the borrower/entity
   const missingEnding = [];     // readable accounts with no ending balance to count
-  for (const { rep, count, acctFrom } of byAccount.values()) {
+  for (const group of byAccount.values()) {
+    const { rep, count } = group;
     const f = rep.f;
     const holder = f.accountHolderName;
     const tied = holderMatchesFile(holder, subject);
     const ending = num(f.closingBalance);
     accounts.push({
       holder, bankName: f.bankName || null, tied, ending,
-      // #244 (owner: the assets table was "missing accounts number") — last-4 only. Read from the
-      // group's carried source when the counted month's own statement has no number on it, so a
-      // fold can never make an account number disappear from the table.
-      accountNumber: maskAcct(f) || maskAcct(acctFrom),
+      // #244 (owner: the assets table was "missing accounts number") — last-4 only. Read from ANY
+      // month of this account when the counted month's own statement has no number on it, so neither
+      // a fold nor a smudged scan can make an account number disappear from the table.
+      accountNumber: maskAcct(f) || groupMask(group),
       holderIsBusiness: f.holderIsBusiness === true, statementCount: count,
       // R5.59 — the month actually counted for this account (the latest of `count` months).
       countedPeriod: f.statementPeriod || null,
@@ -401,4 +488,5 @@ async function readRequiredLiquidity(client, appId) {
   } catch (_) { return null; }
 }
 
-module.exports = { assessBankLiquidity, readRequiredLiquidity, _internals: { accountKey, periodEndOf, sameBank, sameHolder, bankStem } };
+module.exports = { assessBankLiquidity, readRequiredLiquidity,
+  _internals: { accountKey, periodEndOf, periodEndDay, sameBank, sameHolder, bankStem, materialGap } };
