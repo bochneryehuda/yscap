@@ -6367,8 +6367,9 @@ router.post('/applications/:id/loan-number', async (req, res) => {
     // A newly-numbered file syncs from Encompass at once (READ-ONLY pull; the
     // match is by this loan number). Best-effort + fire-and-forget — a pull
     // failure is stamped into encompass_last_error and shown in the sync panel;
-    // it must never break setting the loan number.
-    require('../encompass/reconcile').onLoanNumberSet(req.params.id).catch(() => {});
+    // it must never break setting the loan number. The require is wrapped so even
+    // a module-load failure can't turn the already-committed write into a 500.
+    try { require('../encompass/reconcile').onLoanNumberSet(req.params.id).catch(() => {}); } catch (_) { /* sync hook is best-effort */ }
     res.json({ ok: true, loanNumber: upd.rows[0].ys_loan_number });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });

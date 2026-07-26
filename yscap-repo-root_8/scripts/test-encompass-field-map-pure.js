@@ -129,7 +129,8 @@ ok('reference fields are surfaced but never produce a finding');
 
 // ── Gate classification (WO-E) ──────────────────────────────────────────────
 assert.strictEqual(m.BY_KEY.loan_amount.gate, m.GATE.BLOCK, 'money mismatch blocks the term sheet');
-assert.strictEqual(m.BY_KEY.deal_type.gate, m.GATE.BLOCK, 'a clean-mapped deal-type disagreement blocks');
+assert.strictEqual(m.BY_KEY.maturity_date.gate, m.GATE.BLOCK, 'a maturity-date disagreement blocks');
+assert.strictEqual(m.BY_KEY.deal_type.gate, m.GATE.ADVISORY, 'deal type is advisory (derived heuristically from program/loan_type)');
 assert.strictEqual(m.BY_KEY.accrual_type.gate, m.GATE.ADVISORY, 'accrual is advisory (owner)');
 // every "actual" leverage percent is advisory (consistency — no odd one blocks)
 for (const k of ['actual_ltc', 'actual_arv_ltv', 'actual_initial_ltv', 'max_ltc', 'max_arv_ltv', 'max_initial_ltv']) {
@@ -139,7 +140,7 @@ for (const k of ['actual_ltc', 'actual_arv_ltv', 'actual_initial_ltv', 'max_ltc'
 assert.strictEqual(m.BY_KEY.property_type.gate, m.GATE.ADVISORY, 'property type is advisory (lossy category)');
 assert.strictEqual(m.BY_KEY.rehab_type.gate, m.GATE.ADVISORY, 'rehab type is advisory (5 buckets vs 3)');
 assert.strictEqual(m.BY_KEY.exit_plan.gate, m.GATE.REFERENCE);
-ok('gate classification: money/deal-type block; all actual/cap percents + lossy enums advisory; leftovers reference');
+ok('gate classification: money/date block; all actual/cap percents + lossy/derived enums advisory; leftovers reference');
 
 // ── property_type compares MEANING (value-mapped), not raw strings ──────────
 assert.strictEqual(m.compareField('property_type', 'SFR', 'Single Family').status, 'match', 'SFR ≡ Single Family');

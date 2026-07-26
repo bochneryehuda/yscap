@@ -23,8 +23,7 @@ CREATE TABLE IF NOT EXISTS encompass_sync_resolutions (
   note             text,
   CONSTRAINT encompass_sync_resolutions_resolution_chk
     CHECK (resolution IN ('replaced', 'accepted')),
+  -- The composite PK (application_id, field_key) already indexes the
+  -- `WHERE application_id = $1` lookups, so no separate index is needed.
   PRIMARY KEY (application_id, field_key)
 );
-
-CREATE INDEX IF NOT EXISTS idx_encompass_resolutions_app
-  ON encompass_sync_resolutions(application_id);

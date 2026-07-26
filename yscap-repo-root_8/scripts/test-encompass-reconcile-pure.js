@@ -20,7 +20,8 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
 
 // ── Fixtures: a fully-agreeing flip file ────────────────────────────────────
 const app = {
-  ys_loan_number: 'YSCAP1', property_type: 'SFR', deal_type: 'flip',
+  ys_loan_number: 'YSCAP1', property_type: 'SFR',
+  program: 'Fix & Flip w/ Construction', loan_type: 'Purchase', // deal_type is derived from these
   llc_id: 'llc-1', borrower_id: 'b-1',
   loan_amount: 525450, purchase_price: 450500, underlying_contract_price: 425000, assignment_fee: 25500,
   rehab_budget: 120000, as_is_value: 500000, arv: 750000, ltv: 90, rate_pct: 8.0, term: '12 months', maturity_date: '2027-06-22',
@@ -84,7 +85,13 @@ assert.strictEqual(ours.vesting_llc, 'ABC Holdings LLC');
 assert.strictEqual(ours.actual_ltc, 92.1034);
 assert.strictEqual(ours.max_ltc, 92.5);
 assert.strictEqual(ours.exit_plan, undefined, 'no exit_plan column');
-ok('buildOurValues maps columns + quote outputs (deferring what it lacks)');
+// deal_type is DERIVED from program/loan_type (no deal_type column on applications)
+assert.strictEqual(ours.deal_type, 'flip', '"Fix & Flip w/ Construction" → flip');
+assert.strictEqual(recon.buildOurValues({ program: 'Bridge' }).deal_type, 'bridge');
+assert.strictEqual(recon.buildOurValues({ loan_type: 'Ground up' }).deal_type, 'ground-up');
+assert.strictEqual(recon.buildOurValues({ program: 'DSCR' }).deal_type, 'rental');
+assert.strictEqual(recon.buildOurValues({ program: 'Something Else' }).deal_type, undefined, 'unrecognized → defer, never guess');
+ok('buildOurValues maps columns + quote outputs; deal_type derives from program/loan_type');
 
 // ── A fully-agreeing file is CLEAR ──────────────────────────────────────────
 let r = recon.compareAll(ours, theirs, {});

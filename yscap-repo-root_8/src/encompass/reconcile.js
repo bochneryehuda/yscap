@@ -24,6 +24,23 @@
 // (repo convention — see the draw-report lazy-require note in CLAUDE.md).
 const map = require('../lib/integrations/encompass-field-map');
 
+// Our-side deal type is NOT a column — applications stores it as `program`
+// ("Fix & Flip w/ Construction" / "Bridge" / "DSCR") + `loan_type` ("Ground up"
+// / "Purchase" / …). Derive a canonical token (which the dealType value map
+// self-normalizes) from confident substrings; anything unrecognized returns
+// undefined → the compare DEFERS it (never a heuristic-driven false finding).
+// The registry keeps deal_type ADVISORY for exactly this reason.
+function deriveDealType(program, loanType) {
+  const s = `${program || ''} ${loanType || ''}`.toLowerCase();
+  if (!s.trim()) return undefined;
+  if (s.includes('bridge')) return 'bridge';
+  if (s.includes('dscr') || s.includes('rental')) return 'rental';
+  if (s.includes('flip')) return 'flip';                         // "fix & flip w/ construction"
+  if (s.includes('hold') || s.includes('brrr')) return 'fix-and-hold';
+  if (s.includes('ground') || s.includes('new construction')) return 'ground-up';
+  return undefined;                                              // defer — never guess
+}
+
 // ── Pure: our-side values keyed by registry field key ───────────────────────
 // Reads from the application row, the current pricing quote (computed OUTPUTS —
 // initial advance, effective purchase, caps, actual leverage), and the vesting
@@ -42,7 +59,7 @@ function buildOurValues(app, quote, llcName) {
     // identity / program
     ys_loan_number: nz(a.ys_loan_number),
     property_type: nz(a.property_type),
-    deal_type: nz(a.deal_type),
+    deal_type: deriveDealType(a.program, a.loan_type),
     exit_plan: undefined, // no column — reference-only
     loan_to_be_vested: a.llc_id ? 'Entity' : (a.borrower_id ? 'Individual' : undefined),
     vesting_llc: nz(llcName),
@@ -161,9 +178,9 @@ async function computeFindings(appId, dbc) {
             a.encompass_last_pulled_at, a.encompass_last_error, a.borrower_id, a.llc_id,
             a.loan_amount, a.purchase_price, a.underlying_contract_price, a.assignment_fee,
             a.rehab_budget, a.as_is_value, a.arv, a.ltv, a.rate_pct, a.term, a.maturity_date,
-            a.deal_type, a.rehab_type, a.accrual_type, a.property_type,
+            a.program, a.loan_type, a.rehab_type, a.accrual_type, a.property_type,
             a.requested_exp_flips, a.requested_exp_holds, a.requested_exp_ground,
-            l.name AS llc_name
+            l.llc_name AS llc_name
        FROM applications a
        LEFT JOIN llcs l ON l.id = a.llc_id
       WHERE a.id = $1 AND a.deleted_at IS NULL
