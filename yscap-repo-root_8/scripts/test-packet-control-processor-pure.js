@@ -62,7 +62,7 @@ function fakeRouter(plan, recorded) {
     let loadedFor = null;
     const loadBytes = async (_db, documentId) => { loadedFor = documentId; return { buffer: Buffer.from('%PDF-1.4 test'), base64: 'JVBERi0x', mimeType: 'application/pdf', filename: 'x.pdf' }; };
     let sawRequest = null;
-    const router = { ...fakeRouter(plan, recorded), routeDocument: async (args) => { sawRequest = args.request; return { outcome: 'completed', result: { confidence: 0.88 } }; } };
+    const router = { ...fakeRouter(plan, recorded), routeDocument: async (args) => { sawRequest = args.request; return { outcome: 'completed', result: { confidence: 0.88, documentType: 'bank_statement', segments: [{ pages: [1], confidence: 0.9 }] } }; } };
     const proc = PC.makePacketControlProcessor({ router, adapters: [{ provider: 'azure', service: 'document_intelligence', analyze: async () => ({}) }], loadBytes });
     const out = await proc(job, { db: {}, jq });
     ok(out.status === 'completed', 'read path: completes');
@@ -135,7 +135,14 @@ function fakeRouter(plan, recorded) {
     const jobWithBytes = { id: 'job-b', document_id: 'doc-1', payload: { features: { docType: 'bank_statement' }, request: { base64: 'QUJD' } } };
     const proc = PC.makePacketControlProcessor({ router, adapters: [{ provider: 'azure', service: 'document_intelligence', analyze: async () => ({}) }], loadBytes: async () => { loadCalled = true; return null; } });
     const out = await proc(jobWithBytes, { db: {}, jq });
-    ok(out.status === 'completed' && loadCalled === false, 'payload already carries bytes → loadBytes not called, read proceeds');
+    // The point of this case is the BYTES path: the payload already carries them, so the loader
+    // must not be called. Kept as its own assertion rather than bundled with the job outcome.
+    ok(loadCalled === false, 'payload already carries bytes → loadBytes is not called');
+    // RS-1: this fixture's read returns {} — literally nothing — so the job must NOT complete.
+    // Reading a document and recording no evidence is not a finished job, and saying otherwise is
+    // the "completed but nothing came out" defect one step further down the pipeline.
+    ok(out.status !== 'completed',
+      `a read that produced nothing does not complete (got ${out.status})`);
     ok(jq.stages.map((s) => s.key + ':' + s.status).includes('ocr_layout:completed'), 'payload bytes → ocr_layout completed');
   }
 
