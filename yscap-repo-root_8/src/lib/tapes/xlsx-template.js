@@ -132,9 +132,13 @@ function rowXml(rowNum, cells, templateRowAttrs, spans) {
     .map((c) => c.xml)
     .join('');
   // Clone attrs from the template data row but force our own r= and spans=.
+  // Strip a trailing "/" too: if the template's data row is SELF-CLOSING
+  // (<row r="2" .../>), the attr capture includes the slash — leaving it would
+  // emit a self-closing tag with dangling cells.
   let attrs = (templateRowAttrs || '')
     .replace(/\s*\br="\d+"/, '')
     .replace(/\s*\bspans="[^"]*"/, '')
+    .replace(/\/\s*$/, '')
     .trim();
   const spansAttr = spans ? ` spans="${spans}"` : '';
   return `<row r="${rowNum}"${spansAttr}${attrs ? ' ' + attrs : ''}>${parts}</row>`;
@@ -178,12 +182,16 @@ function fillXlsxTemplate(templateBuf, opts) {
   rows.forEach((cells, i) => {
     const rowNum = firstRow + i;
     const newRow = rowXml(rowNum, cells, templateRowAttrs, spans);
-    const openRe = new RegExp(`<row r="${rowNum}"[^>]*>[\\s\\S]*?</row>`);
+    // A self-closing row (<row r="N" .../>) must be matched FIRST: it also
+    // satisfies the open/close regex (whose `[^>]*` eats the slash and whose
+    // `[\s\S]*?</row>` then runs into the NEXT row), which would swallow every
+    // row in between and corrupt the sheet. Test the self-closing form first.
     const selfClose = new RegExp(`<row r="${rowNum}"[^>]*/>`);
-    if (openRe.test(xml)) {
-      xml = xml.replace(openRe, newRow);
-    } else if (selfClose.test(xml)) {
+    const openRe = new RegExp(`<row r="${rowNum}"[^>]*>[\\s\\S]*?</row>`);
+    if (selfClose.test(xml)) {
       xml = xml.replace(selfClose, newRow);
+    } else if (openRe.test(xml)) {
+      xml = xml.replace(openRe, newRow);
     } else {
       // Row doesn't exist in the template — insert it in row order just before
       // </sheetData> (rows beyond the template's pre-existing ones, e.g. bulk).

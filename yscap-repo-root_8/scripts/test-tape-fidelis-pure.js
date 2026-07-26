@@ -155,4 +155,26 @@ ok(/<c r="A2"[^>]*>[\s\S]*?FID-1/.test(bulkXml) && /<c r="A4"[^>]*>[\s\S]*?FID-3
 ok(bulkXml.indexOf('sqref="AC2:AC4"') > -1, 'bulk widened AC dropdown to all rows');
 ok(/<dimension ref="A1:AV4"\/>/.test(bulkXml), 'bulk dimension covers all rows');
 
+// ---- 7. Engine handles a SELF-CLOSING template data row without corruption ---
+// (A future investor template might leave the input row un-preformatted, e.g.
+// <row r="2"/>, with rows below it. The filler must replace only row 2 and keep
+// the rows after it intact — not swallow them.)
+{
+  const { zip } = require('../src/lib/zip');
+  const sheet = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    + '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+    + '<dimension ref="A1:A3"/><sheetData>'
+    + '<row r="1"><c r="A1" t="inlineStr"><is><t>Header</t></is></c></row>'
+    + '<row r="2" s="5" customFormat="1"/>'                       // self-closing input row
+    + '<row r="3"><c r="A3" t="inlineStr"><is><t>KEEPME</t></is></c></row>'
+    + '</sheetData></worksheet>';
+  const mini = zip([{ name: 'xl/worksheets/test.xml', data: Buffer.from(sheet, 'utf8') }]);
+  const out = fillXlsxTemplate(mini, { sheetPart: 'xl/worksheets/test.xml', firstRow: 2, rows: [[{ col: 'A', value: 'FILLED', type: 's' }]], lastCol: 'A', forceFullCalc: false });
+  const sx = unzip(out).find((p) => p.name === 'xl/worksheets/test.xml').data.toString('utf8');
+  ok(/<row r="2"[^>]*>[\s\S]*?FILLED[\s\S]*?<\/row>/.test(sx), 'self-closing row 2 replaced with a proper open/close row');
+  ok(!/<row r="2"[^>]*\/>/.test(sx), 'row 2 is no longer self-closing');
+  ok(sx.indexOf('KEEPME') > -1, 'row 3 after a self-closing row 2 is NOT swallowed');
+  ok((sx.match(/<\/row>/g) || []).length === 3, 'all three rows well-formed (no swallowed close tags)');
+}
+
 console.log(`test-tape-fidelis-pure: OK (${passed} assertions)`);

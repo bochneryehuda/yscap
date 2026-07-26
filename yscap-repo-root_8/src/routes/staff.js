@@ -3059,6 +3059,7 @@ router.get('/applications/:id/export/mismo', async (req, res) => {
 // and for the ones it can't, a plain-language reason. Scoped by the :id middleware.
 router.get('/applications/:id/tapes', async (req, res) => {
   try {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.id)) return res.status(404).json({ error: 'not found' });
     const tapes = require('../lib/tapes');
     const r = await db.query('SELECT lender FROM applications WHERE id=$1 AND deleted_at IS NULL', [req.params.id]);
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
@@ -3074,6 +3075,7 @@ router.get('/applications/:id/tapes', async (req, res) => {
 // a super-admin override). The capital-provider match is enforced in buildTape.
 router.get('/applications/:id/export/tape/:tapeKey', async (req, res) => {
   try {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.id)) return res.status(404).json({ error: 'not found' });
     const tapes = require('../lib/tapes');
     const tape = tapes.registry.getTape(req.params.tapeKey);
     if (!tape) return res.status(404).json({ error: 'unknown tape type' });

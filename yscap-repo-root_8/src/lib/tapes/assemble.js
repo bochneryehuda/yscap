@@ -33,7 +33,7 @@ async function assembleTapeLoan(appId, db) {
        LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id
        LEFT JOIN llcs l ON l.id = a.llc_id
        LEFT JOIN staff_users lo ON lo.id = a.loan_officer_id
-      WHERE a.id = $1`, [appId]);
+      WHERE a.id = $1 AND a.deleted_at IS NULL`, [appId]);
   const app = a.rows[0];
   if (!app) return { found: false };
 

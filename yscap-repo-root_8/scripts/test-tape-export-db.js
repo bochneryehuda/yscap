@@ -69,6 +69,12 @@ async function main() {
     try { await tapes.buildBulkTape('fidelis', [fidelisApp, bluelakeApp], db); } catch (e) { mixErr = e; }
     assert.ok(mixErr && mixErr.code === 'buyer_mismatch' && Array.isArray(mixErr.mismatches) && mixErr.mismatches.length === 1, 'mixed bulk rejected with the offending file listed');
 
+    // 6) a soft-deleted file is not exportable (parity with the eligibility route)
+    await db.query('UPDATE applications SET deleted_at = now() WHERE id=$1', [fidelisApp2]);
+    let delErr = null;
+    try { await tapes.buildTape(fidelisApp2, 'fidelis', db); } catch (e) { delErr = e; }
+    assert.ok(delErr && delErr.code === 'loan_not_found', 'soft-deleted file is not exportable');
+
     console.log('test-tape-export-db: OK');
   } finally {
     await db.query('DELETE FROM applications WHERE id = ANY($1::uuid[])', [created.apps]).catch(() => {});
