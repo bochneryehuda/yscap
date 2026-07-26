@@ -180,10 +180,43 @@ function guessFromFormCode(raw) {
   return null;
 }
 
+/**
+ * WHAT THE APPRAISAL FORM ITSELF PROVES (owner-directed 2026-07-26: "if it's a 1025 appraisal it
+ * must match with property type 2–4; if it's a 1073 then it must match with condo; if it's a 1004
+ * then it must match with single family").
+ *
+ * The form number is the single most reliable property-type fact on an appraisal, and it is the one
+ * we were not using. An appraiser cannot report a duplex on a 1004 or a condo on a 1025 — the forms
+ * are written for a category and Fannie/Freddie will not accept them otherwise. That makes the form
+ * a HARD statement about the property, unlike the free-text style word ("Detached"), which is
+ * decorative and is deliberately compared against nothing.
+ *
+ * Each entry gives both what the form says about the CATEGORY and what it says about the UNIT
+ * COUNT, because those are two separate claims:
+ *   1004 URAR                     → single family, exactly 1 unit
+ *   1073 Individual Condominium   → condo,         exactly 1 unit
+ *   1025 Small Residential Income → 2–4 family,    2 to 4 units
+ * Anything else (2055 exterior-only, 1007 rent schedule, 216 operating income) says nothing
+ * definite about the category, so it is absent from the map and every caller stays silent rather
+ * than guessing.
+ */
+const FORM_EXPECTATION = Object.freeze({
+  sfr:       { minUnits: 1, maxUnits: 1 },
+  condo:     { minUnits: 1, maxUnits: 1 },
+  multi_2_4: { minUnits: 2, maxUnits: 4 },
+});
+function appraisalFormExpectation(raw) {
+  const key = guessFromFormCode(raw);
+  if (!key) return null;
+  const u = FORM_EXPECTATION[key];
+  return u ? { propertyKey: key, label: LABEL_OF[key] || key, minUnits: u.minUnits, maxUnits: u.maxUnits } : null;
+}
+
 module.exports = {
   PROPERTY_TYPES,
   LABEL_OF,
   isAppraisalFormCode,
+  appraisalFormExpectation,
   propertyTypeKey,
   propertyTypeCompareKey,
   propertyTypesEquivalent,
