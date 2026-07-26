@@ -93,6 +93,25 @@ async function assembleTapeLoan(appId, db) {
     repeatBorrower = (rb.rows[0] && rb.rows[0].n > 0) || false;
   } catch (_) { repeatBorrower = false; }
 
+  // Released rehab draws (our own money ledger — draw_disbursements). Each row is
+  // a wired draw; we sum the GROSS approved amount (what converts from the rehab
+  // holdback into outstanding principal) with its release date (falling back to
+  // when the row was recorded when the wire date is blank), for the seasoned-loan
+  // "current balance / current rehab" snapshot. Cents in the ledger → dollars.
+  // Best-effort: any error (or a DB without the draw system) → no draws → the tape
+  // stays at origination values.
+  let releases = [];
+  try {
+    const dr = await db.query(
+      `SELECT approved_cents, COALESCE(release_date, created_at::date) AS rdate
+         FROM draw_disbursements
+        WHERE application_id = $1 AND kind = 'draw' AND funded_status = 'released'
+        ORDER BY COALESCE(release_date, created_at::date)`, [appId]);
+    releases = dr.rows
+      .map((r) => ({ date: r.rdate ? String(r.rdate).slice(0, 10) : null, amount: (Number(r.approved_cents) || 0) / 100 }))
+      .filter((r) => r.amount > 0);
+  } catch (_) { releases = []; }
+
   // Property address is a jsonb blob on the application (no separate table).
   const addr = app.property_address || {};
 
@@ -118,6 +137,10 @@ async function assembleTapeLoan(appId, db) {
     exp,
     repeatBorrower,
     noteBuyerRaw: app.lender || null,
+    // Released rehab draws for the seasoned-loan snapshot (see seasoning.js).
+    releases,
+    // Funding date proxy — the platform-wide "when the loan closed/funded" date.
+    fundingDate: app.actual_closing || null,
     // Staff-entered answers for tape columns we can't derive (e.g. the Fidelis
     // New-Construction-only fields). Keyed by tape field key; see db/309.
     supplemental: app.tape_supplemental || {},

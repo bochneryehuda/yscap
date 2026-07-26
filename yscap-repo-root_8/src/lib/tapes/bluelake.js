@@ -129,14 +129,15 @@ function economics(loan) {
 // becomes the row number). style is null → inherited from the sample row.
 const COLUMNS = [
   ['B', 'd', null, (l) => l.asOf || new Date()],                                   // As-of Date (export date)
-  ['C', 's', null, () => ''],                                                      // Pre-Approval Flag (only if pre-approved)
+  ['C', 's', null, () => 'Y'],                                                     // Pre-Approval Flag — always flagged (owner-directed)
   ['D', 's', null, (l) => l.app.ys_loan_number || l.app.investor_loan_number || ''], // Loan ID (our loan #)
   ['E', 's', null, () => SELLER_NAME],                                             // Seller (lender per MLPA)
   ['F', 's', null, (l) => l.vesting.llc || ''],                                    // Borrowing Entity
   ['G', 's', null, (l) => l.vesting.llc || guarantorNameBQ(l)],                    // Mortgagor
   ['H', 'd', null, (l) => l.app.actual_closing || l.app.est_closing_date || l.app.expected_closing], // Origination/Note Date
   ['I', 's', null, (l) => nonCashflowingI(l)],                                     // Non-Cashflowing Flag
-  ['J', 'n', null, (l, e) => e.holdbackInEscrow],                                  // Holdback Funded in Escrow (Dutch)
+  // Holdback still funded in escrow — Dutch only; drops as draws are released.
+  ['J', 'n', null, (l, e) => (l.seasoning ? (dutch(l) ? l.seasoning.undisbursedHoldback : 0) : e.holdbackInEscrow)],
   ['K', 's', null, (l) => loanTypeK(l)],                                           // Loan Type
   ['L', 's', null, (l) => yn(isNewConstruction(l))],                               // New Construction Flag
   ['M', 's', null, (l) => l.address.line1 || ''],                                  // Street
@@ -150,18 +151,21 @@ const COLUMNS = [
   ['U', 'n', null, (l, e) => e.holdback],                                         // Holdback Loan Amount
   ['V', 'n', null, (l, e) => e.ir],                                               // Interest Reserve
   ['W', 'n', null, (l, e) => e.totalLoan],                                        // Total Loan Amount
-  ['X', 'n', null, (l, e) => e.disbursedHoldback],                               // Disbursed Holdback
-  ['Y', 'n', null, (l, e) => e.undisbursedHoldback],                             // Undisbursed Holdback
-  ['Z', 'n', null, (l, e) => e.disbursedIR],                                      // Disbursed Interest Reserve
-  ['AA', 'n', null, (l, e) => e.undisbursedIR],                                   // Undisbursed Interest Reserve
-  ['AB', 'n', null, (l, e) => e.totalDisbursed],                                  // Total Loan Amount Disbursed
-  ['AC', 'n', null, (l, e) => e.interestBearing],                                 // Interest Bearing Balance
-  ['AD', 'n', null, (l, e) => e.upb],                                             // UPB
+  // Disbursement snapshot — SEASONING: draws released + interest reserve used to
+  // date. For a fresh loan the snapshot equals origination (disbursed 0, UPB =
+  // day-1). A direct buildRow with no snapshot falls back to the origination econ.
+  ['X', 'n', null, (l, e) => (l.seasoning ? l.seasoning.disbursedHoldback : e.disbursedHoldback)],   // Disbursed Holdback
+  ['Y', 'n', null, (l, e) => (l.seasoning ? l.seasoning.undisbursedHoldback : e.undisbursedHoldback)], // Undisbursed Holdback
+  ['Z', 'n', null, (l, e) => (l.seasoning ? l.seasoning.disbursedReserve : e.disbursedIR)],          // Disbursed Interest Reserve
+  ['AA', 'n', null, (l, e) => (l.seasoning ? l.seasoning.undisbursedReserve : e.undisbursedIR)],     // Undisbursed Interest Reserve
+  ['AB', 'n', null, (l, e) => (l.seasoning ? l.seasoning.currentBalance : e.totalDisbursed)],        // Total Loan Amount Disbursed
+  ['AC', 'n', null, (l, e) => (l.seasoning ? l.seasoning.interestBearing : e.interestBearing)],      // Interest Bearing Balance
+  ['AD', 'n', null, (l, e) => (l.seasoning ? l.seasoning.currentBalance : e.upb)],                   // UPB (current balance)
   ['AE', 'f', null, () => 'IFERROR(X{r}/U{r},"")'],                                // Completion Percentage (formula)
   ['AF', 'n', null, (l, e) => e.purchasePrice],                                   // Purchase Price
   ['AG', 'd', null, (l) => l.app.acquisition_date || l.app.actual_closing || l.app.est_closing_date], // Purchase Date
   ['AH', 'n', null, (l, e) => e.rehabBudget],                                     // Rehab Budget
-  ['AI', 'n', null, (l, e) => e.costIncurred],                                    // Cost Incurred to Date
+  ['AI', 'n', null, () => null],                                                  // Cost Incurred to Date — blank for now (owner-directed). This is for REFINANCES where renovation is already partly complete; we don't populate it yet.
   ['AJ', 'f', null, () => 'AF{r}+AH{r}'],                                          // Total Project Costs (formula)
   ['AK', 'n', null, (l, e) => e.aiv],                                             // AIV
   ['AL', 'n', null, (l, e) => e.arv],                                             // ARV
@@ -175,7 +179,7 @@ const COLUMNS = [
   ['AT', 'd', null, (l) => l.app.first_payment_date],                            // First Payment Date
   ['AU', 'd', null, (l) => l.app.maturity_date],                                 // Original Maturity Date
   ['AV', 'd', null, (l) => l.app.maturity_date],                                 // Current Maturity Date
-  ['AW', 'd', null, (l) => l.app.first_payment_date],                            // Next Due Date
+  ['AW', 'd', null, (l) => ((l.seasoning && l.seasoning.nextDue) || l.app.first_payment_date)], // Next Due Date (advances for a seasoned loan)
   ['AX', 's', null, (l) => yn(dutch(l))],                                         // Dutch Flag
   ['AY', 's', null, () => '30/360'],                                              // Interest Days Method
   ['AZ', 'n', null, (l, e) => e.interestRate],                                    // Interest Rate

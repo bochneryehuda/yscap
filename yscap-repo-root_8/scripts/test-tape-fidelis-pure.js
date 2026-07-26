@@ -68,7 +68,7 @@ ok(cellOf(loan, 'F').value === 'IL', 'F state normalized Illinois → IL');
 ok(cellOf(loan, 'G').value === '02108' && cellOf(loan, 'G').type === 's', 'G zip is a string (leading zero safe)');
 ok(cellOf(loan, 'H').value === 480000 && cellOf(loan, 'H').style === 57, 'H loan amount currency-styled');
 ok(cellOf(loan, 'I').value === 120000, 'I financed rehab');
-ok(cellOf(loan, 'N').value === 0, 'N OOP rehab = total(120k) - financed(120k) = 0');
+ok(cellOf(loan, 'N').value === null, 'N OOP rehab BLANK when whole rehab is financed (total 120k = financed 120k → nothing out of pocket)');
 ok(cellOf(loan, 'O').value === 120000, 'O total rehab');
 ok(cellOf(loan, 'K').value === 360000, 'K current balance = initial advance');
 ok(cellOf(loan, 'Q').value === 738, 'Q fico');
@@ -94,6 +94,35 @@ ok(cellOf(fracLoan, 'W').value === 0.095, 'note rate 9.5 (percent) → 0.095 fra
 const refi = synthLoan({ app: Object.assign({}, synthLoan().app, { loan_type: 'Refinance Cash-Out', program: 'Bridge' }) });
 ok(cellOf(refi, 'AC').value === 'Refinance', 'cash-out refi → Refinance');
 ok(cellOf(refi, 'AM').value === 'Bridge', 'bridge program → Bridge');
+
+// ---- 2b. Seasoned loan: released draws + reserve used move J/K/M/Y ----------
+// A fresh loan (no snapshot attached) reports origination values; once a seasoning
+// snapshot is attached (released draws + interest reserve used), the CURRENT
+// columns move while the ORIGINATION columns (I financed rehab, L financed IR, Z
+// first payment) stay put.
+const seasoning = require('../src/lib/tapes/seasoning');
+const sloan = synthLoan();
+sloan.app.actual_closing = '2026-01-01';
+sloan.app.first_payment_date = '2026-03-01';
+sloan.fundingDate = '2026-01-01';
+sloan.releases = [{ date: '2026-04-01', amount: 30000 }];
+sloan.seasoning = seasoning.computeSeasoning(seasoning.seasoningInputs(sloan, '2026-07-01'));
+ok(cellOf(sloan, 'I').value === 120000, 'seasoned: I financed rehab stays at origination');
+ok(cellOf(sloan, 'J').value === 90000, 'seasoned: J current rehab = 120k − 30k released');
+ok(cellOf(sloan, 'K').value > 360000, 'seasoned: K current balance rose above the day-1 advance');
+ok(cellOf(sloan, 'L').value === 24000, 'seasoned: L financed IR stays at origination');
+ok(cellOf(sloan, 'M').value < 24000 && cellOf(sloan, 'M').value > 0, 'seasoned: M current IR dropped below the financed reserve');
+ok(cellOf(sloan, 'Y').value === '2026-07-01', 'seasoned: Y next due advanced to the current payment');
+ok(cellOf(sloan, 'Z').value === '2026-03-01', 'seasoned: Z first payment date unchanged');
+// A confirmed override wins over the computed value.
+const oloan = synthLoan();
+oloan.app.actual_closing = '2026-01-01'; oloan.app.first_payment_date = '2026-03-01';
+oloan.fundingDate = '2026-01-01'; oloan.releases = [{ date: '2026-04-01', amount: 30000 }];
+oloan.seasoning = seasoning.applySeasonedOverrides(
+  seasoning.computeSeasoning(seasoning.seasoningInputs(oloan, '2026-07-01')),
+  { current_balance: 401234, next_due: '2026-08-01' });
+ok(cellOf(oloan, 'K').value === 401234, 'seasoned override: K uses the confirmed current balance');
+ok(cellOf(oloan, 'Y').value === '2026-08-01', 'seasoned override: Y uses the confirmed next due date');
 
 // ---- 3. Template fidelity: only Data Tape + workbook calc flag change -------
 const single = fillXlsxTemplate(TEMPLATE, { sheetPart: SHEET, firstRow: 2, rows: [fidelis.buildRow(loan)], lastCol: 'AV' });

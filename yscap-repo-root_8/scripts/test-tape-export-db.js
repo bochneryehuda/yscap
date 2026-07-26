@@ -124,6 +124,42 @@ async function main() {
     assert.ok(bmErr2 && bmErr2.code === 'buyer_mismatch', 'a Blue Lake loan is blocked from the Fidelis tape');
     const blQ = await tapes.tapeQuestions(bluelakeApp, 'bluelake', db);
     assert.ok(blQ.questions.length === 0, 'Blue Lake tape asks no supplemental questions');
+    // A brand-new Fidelis file (no draws, no payment dates) is NOT seasoned.
+    assert.ok(q3.seasoned === null, 'a fresh loan needs no seasoned confirmation');
+
+    // 9) SEASONED loan: a released draw + past payment dates move the CURRENT
+    //    columns. This exercises the real draw_disbursements query in assemble.js
+    //    (a pure test can't catch a wrong column name).
+    const seasonedApp = uuid();
+    created.apps.push(seasonedApp);
+    await db.query(
+      `INSERT INTO applications (id,borrower_id,status,ys_loan_number,lender,property_address,rehab_budget,requested_ir_amount,property_type,loan_type,units,purchase_price,as_is_value,arv,loan_amount,rate_pct,term,accrual_type,actual_closing,first_payment_date,maturity_date)
+       VALUES ($1,$2,'funded',$3,'Fidelis',$4,80000,12000,'Single Family','Purchase',1,300000,310000,450000,360000,10.5,'12 months','non_dutch','2026-01-01','2026-03-01','2027-02-01')`,
+      [seasonedApp, bId, `YSCAP-TP-${SUFFIX}-SZ`, JSON.stringify({ line1: '9 Season St', city: 'Newark', state: 'NJ', zip: '07104' })]);
+    // Record a $30,000 released rehab draw (integer cents), dated a few months ago.
+    await db.query(
+      `INSERT INTO draw_disbursements (application_id, approved_cents, net_release_cents, funded_status, kind, release_date)
+       VALUES ($1, 3000000, 3000000, 'released', 'draw', '2026-04-01')`, [seasonedApp]);
+    // Also a NON-released (pending) draw that must NOT be counted.
+    await db.query(
+      `INSERT INTO draw_disbursements (application_id, approved_cents, net_release_cents, funded_status, kind, release_date)
+       VALUES ($1, 1000000, 1000000, 'pending', 'draw', '2026-05-01')`, [seasonedApp]);
+
+    const sq = await tapes.tapeQuestions(seasonedApp, 'fidelis', db);
+    assert.ok(sq.seasoned && sq.seasoned.isSeasoned === true, 'seasoned loan flagged for confirmation');
+    assert.ok(sq.seasoned.fields.length === 3, 'seasoned confirmation asks 3 values (balance / reserve / next due)');
+    assert.ok(sq.seasoned.breakdown.releasedDraws === 30000, `only the RELEASED draw counts ($30k, got ${sq.seasoned.breakdown.releasedDraws})`);
+    assert.ok(sq.seasoned.breakdown.day1 === 268000, `day-1 advance = 360k − 80k holdback − 12k reserve (got ${sq.seasoned.breakdown.day1})`);
+
+    const szTape = await tapes.buildTape(seasonedApp, 'fidelis', db);
+    const szSheet = unzip(szTape.buf).find((p) => p.name === 'xl/worksheets/sheet5.xml').data.toString('utf8');
+    assert.ok(/<c r="J2"[^>]*><v>50000<\/v><\/c>/.test(szSheet), 'seasoned: J current rehab = 80k − 30k released = 50k');
+    assert.ok(/<c r="I2"[^>]*><v>80000<\/v><\/c>/.test(szSheet), 'seasoned: I financed rehab stays at 80k');
+
+    // A confirmed override rides through the export and wins over the computed value.
+    const szOver = await tapes.buildTape(seasonedApp, 'fidelis', db, { seasonedOverrides: { current_balance: 305000 } });
+    const szOverSheet = unzip(szOver.buf).find((p) => p.name === 'xl/worksheets/sheet5.xml').data.toString('utf8');
+    assert.ok(/<c r="K2"[^>]*><v>305000<\/v><\/c>/.test(szOverSheet), 'seasoned override: K current balance uses the confirmed value');
 
     console.log('test-tape-export-db: OK');
   } finally {

@@ -71,6 +71,36 @@ ok(cellOf(loan, 'X').value === 0 && cellOf(loan, 'Y').value === 75000, 'X disbur
 ok(cellOf(loan, 'AB').value === 275000 && cellOf(loan, 'AD').value === 275000, 'AB disbursed / AD UPB = day-1 at origination');
 ok(cellOf(loan, 'AC').value === 275000, 'AC interest-bearing = disbursed for non-Dutch');
 ok(cellOf(loan, 'J').value === 0, 'J holdback-in-escrow = 0 for non-Dutch');
+
+// ---- 1b. Seasoned loan: draws + reserve move X/Y/Z/AA/AC/AD/AW --------------
+const seasoning = require('../src/lib/tapes/seasoning');
+const bs = synthLoan();
+bs.app.rate_pct = 12; bs.app.actual_closing = '2026-01-01'; bs.app.first_payment_date = '2026-03-01';
+bs.registration = { total_loan: 370000 };
+bs.quote = { noteRate: 0.12, origPct: 0.025, sizing: { totalLoan: 370000, initialAdvance: 275000, rehabHoldback: 75000, financedReserve: 20000 } };
+bs.fundingDate = '2026-01-01';
+bs.releases = [{ date: '2026-04-01', amount: 25000 }];
+bs.seasoning = seasoning.computeSeasoning(seasoning.seasoningInputs(bs, '2026-07-01'));
+ok(cellOf(bs, 'T').value === 275000, 'seasoned: T day-1 stays at origination');
+ok(cellOf(bs, 'U').value === 75000, 'seasoned: U holdback stays at origination');
+ok(cellOf(bs, 'V').value === 20000, 'seasoned: V interest reserve stays at origination');
+ok(cellOf(bs, 'X').value === 25000, 'seasoned: X disbursed holdback = released draws');
+ok(cellOf(bs, 'Y').value === 50000, 'seasoned: Y undisbursed holdback = 75k − 25k');
+ok(cellOf(bs, 'Z').value > 0 && cellOf(bs, 'Z').value < 20000, 'seasoned: Z disbursed reserve between 0 and the financed reserve');
+ok(cellOf(bs, 'AA').value < 20000 && cellOf(bs, 'AA').value > 0, 'seasoned: AA undisbursed reserve dropped');
+ok(cellOf(bs, 'AD').value > 275000, 'seasoned: AD UPB rose above the day-1 advance');
+ok(cellOf(bs, 'AC').value === cellOf(bs, 'AD').value, 'seasoned non-Dutch: AC interest-bearing = UPB');
+ok(cellOf(bs, 'AW').value === '2026-07-01', 'seasoned: AW next due advanced to the current payment');
+ok(cellOf(bs, 'AT').value === '2026-03-01', 'seasoned: AT first payment date unchanged');
+// Dutch: interest-bearing = whole note; escrow holdback = undisbursed holdback.
+const bd = synthLoan();
+bd.app.rate_pct = 12; bd.app.accrual_type = 'dutch'; bd.app.actual_closing = '2026-01-01'; bd.app.first_payment_date = '2026-03-01';
+bd.registration = { total_loan: 370000 };
+bd.quote = { noteRate: 0.12, origPct: 0.025, sizing: { totalLoan: 370000, initialAdvance: 275000, rehabHoldback: 75000, financedReserve: 20000 } };
+bd.fundingDate = '2026-01-01'; bd.releases = [{ date: '2026-04-01', amount: 25000 }];
+bd.seasoning = seasoning.computeSeasoning(seasoning.seasoningInputs(bd, '2026-07-01'));
+ok(cellOf(bd, 'AC').value === 370000, 'seasoned Dutch: AC interest-bearing = whole note');
+ok(cellOf(bd, 'J').value === 50000, 'seasoned Dutch: J holdback-in-escrow = undisbursed holdback');
 ok(cellOf(loan, 'AX').value === 'N', 'AX dutch flag N');
 ok(cellOf(loan, 'AZ').value === 0.1029, 'AZ interest rate as fraction');
 ok(cellOf(loan, 'BE').value === 764, 'BE fico');
@@ -109,6 +139,8 @@ ok(cellOf(loan, 'BA').value === '' && cellOf(loan, 'BB').value === '', 'Purchase
 ok(cellOf(loan, 'BD').value === '', 'Borrower Liquidity left blank (owner-directed)');
 ok(cellOf(loan, 'BC').value === 0.025 && cellOf(loan, 'BC').type === 'n', 'BC Total Points = origination fee % (from quote.origPct)');
 ok(cellOf(loan, 'E').value === 'YS Capital Group', 'E Seller = our company name');
+ok(cellOf(loan, 'C').value === 'Y', 'C Pre-Approval Flag always flagged (owner-directed)');
+ok(cellOf(loan, 'AI').value === null, 'AI Cost Incurred to Date blank for now (owner-directed)');
 
 // ---- 2. fill: fidelity + formulas + inherited styles -----------------------
 const out = fillXlsxTemplate(TEMPLATE, { sheetPart: SHEET, firstRow: 3, rows: [bluelake.buildRow(loan)], lastCol: 'BS', inheritStyles: true });

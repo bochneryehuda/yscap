@@ -3109,8 +3109,12 @@ router.get('/applications/:id/export/tape/:tapeKey', async (req, res) => {
     // Persist any questionnaire answers (validated) BEFORE building, so the tape
     // fills from them and a later export never re-asks. A no-op when none present.
     const savedSupplemental = await tapes.persistSupplemental(req.params.id, req.params.tapeKey, req.query, db);
-    const { buf, filename, contentType } = await tapes.buildTape(req.params.id, req.params.tapeKey, db);
-    await audit(req, 'export_tape', 'application', req.params.id, { tape: tape.key, bytes: buf.length, supplemental: Object.keys(savedSupplemental) });
+    // A seasoned-loan export may carry the human-confirmed current balance / next
+    // due / interest reserve as query params — applied to THIS export only (never
+    // persisted, since the live figures re-compute from the draws each time).
+    const seasonedOverrides = tapes.seasonedOverridesFromQuery(req.query);
+    const { buf, filename, contentType } = await tapes.buildTape(req.params.id, req.params.tapeKey, db, { seasonedOverrides });
+    await audit(req, 'export_tape', 'application', req.params.id, { tape: tape.key, bytes: buf.length, supplemental: Object.keys(savedSupplemental), seasoned: !!seasonedOverrides });
     res.set('Content-Type', contentType);
     res.set('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(buf);

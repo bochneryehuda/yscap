@@ -17,7 +17,26 @@
 const fs = require('fs');
 const { fillXlsxTemplate } = require('./xlsx-template');
 const { assembleTapeLoan } = require('./assemble');
+const seasoning = require('./seasoning');
 const registry = require('./registry');
+
+// Today's calendar day (UTC) as 'YYYY-MM-DD' — the default as-of date for a tape.
+function todayYMD() { return new Date().toISOString().slice(0, 10); }
+
+// Compute the seasoned "current state" snapshot for a loan and attach it (plus
+// the as-of date) so a tape's column getters can read current balance / rehab /
+// reserve / next-due. Pure + best-effort — any failure leaves the tape at
+// origination values (loan.seasoning stays undefined → getters fall back).
+function attachSeasoning(loan, opts = {}) {
+  try {
+    const asOf = opts.asOf || todayYMD();
+    loan.asOf = asOf;
+    let snap = seasoning.computeSeasoning(seasoning.seasoningInputs(loan, asOf));
+    if (opts.overrides) snap = seasoning.applySeasonedOverrides(snap, opts.overrides);
+    loan.seasoning = snap;
+  } catch (_) { /* leave loan at origination values */ }
+  return loan;
+}
 const {
   BuyerMismatchError, TapeNotFoundError, LoanNotFoundError,
   loanBuyerKey, buyerMatches, assertBuyer, tapeAvailability,
@@ -38,6 +57,7 @@ async function buildTape(appId, tapeKey, db, opts = {}) {
   if (!loan.found) throw new LoanNotFoundError(appId);
   if (!opts.skipBuyerCheck) assertBuyer(loan, tape);
 
+  attachSeasoning(loan, { asOf: opts.asOf, overrides: opts.seasonedOverrides });
   const row = tape.buildRow(loan);
   const buf = fillXlsxTemplate(loadTemplate(tape), {
     sheetPart: tape.sheetPart,
@@ -80,7 +100,8 @@ async function buildBulkTape(tapeKey, appIds, db) {
   }
   if (!loans.length) { const e = new Error('None of the selected loans could be found.'); e.code = 'no_loans'; e.status = 400; e.missing = missing; throw e; }
 
-  const rows = loans.map((loan) => tape.buildRow(loan));
+  const asOf = todayYMD();
+  const rows = loans.map((loan) => tape.buildRow(attachSeasoning(loan, { asOf })));
   const buf = fillXlsxTemplate(loadTemplate(tape), {
     sheetPart: tape.sheetPart,
     firstRow: tape.firstRow,
@@ -104,12 +125,46 @@ async function tapeQuestions(appId, tapeKey, db) {
   const loan = await assembleTapeLoan(appId, db);
   if (!loan.found) throw new LoanNotFoundError(appId);
   const missing = tape.missingSupplemental ? tape.missingSupplemental(loan) : [];
+  attachSeasoning(loan);
   return {
     newConstruction: tape.isNewConstruction ? !!tape.isNewConstruction(loan) : false,
     questions: missing.map((f) => ({
       key: f.key, label: f.label, type: f.type, options: f.options || null,
       current: (loan.supplemental && loan.supplemental[f.key] != null) ? loan.supplemental[f.key] : '',
     })),
+    // For a SEASONED loan (already funded, being sold later) the export asks a
+    // human to confirm the current balance, next due date and interest reserve
+    // before the file leaves — pre-filled with what we computed from the released
+    // draws + interest accrued. Null for a fresh loan (no confirmation needed).
+    seasoned: seasonedConfirmation(loan),
+  };
+}
+
+// Round to whole dollars for the confirmation pre-fill (the tape's currency cells
+// show whole dollars); a human can still type any value.
+function roundDollars(v) { const n = Number(v); return isFinite(n) ? Math.round(n) : null; }
+
+function seasonedConfirmation(loan) {
+  const s = loan.seasoning;
+  if (!s || !s.isSeasoned) return null;
+  const currentBalance = roundDollars(s.currentBalance);
+  const currentReserve = roundDollars(s.currentReserve);
+  return {
+    isSeasoned: true,
+    asOf: s.asOf,
+    // A plain breakdown so a staffer can sanity-check the proposed numbers.
+    breakdown: {
+      day1: roundDollars(s.day1),
+      releasedDraws: roundDollars(s.disbursedHoldback),
+      reserveUsed: roundDollars(s.disbursedReserve),
+      financedReserve: roundDollars(s.financedReserve),
+      accrual: s.accrual,
+    },
+    fields: [
+      { key: 'seasoned_current_balance', label: 'Current loan balance', type: 'number', current: currentBalance },
+      { key: 'seasoned_current_reserve', label: 'Interest reserve remaining', type: 'number', current: currentReserve },
+      { key: 'seasoned_next_due', label: 'Next payment due date', type: 'date', current: s.nextDue || '' },
+    ],
   };
 }
 
@@ -136,11 +191,25 @@ async function persistSupplemental(appId, tapeKey, answers, db) {
   return clean;
 }
 
+// Pull the seasoned-loan confirmation overrides out of an export request's query
+// (the three values a staffer confirmed in the modal). Only present keys are
+// forwarded; validation/clamping happens in seasoning.applySeasonedOverrides.
+// Returns null when none were supplied (→ the tape uses the computed values).
+function seasonedOverridesFromQuery(q) {
+  if (!q || typeof q !== 'object') return null;
+  const out = {};
+  if (q.seasoned_current_balance != null && q.seasoned_current_balance !== '') out.current_balance = q.seasoned_current_balance;
+  if (q.seasoned_current_reserve != null && q.seasoned_current_reserve !== '') out.current_reserve = q.seasoned_current_reserve;
+  if (q.seasoned_next_due != null && q.seasoned_next_due !== '') out.next_due = q.seasoned_next_due;
+  return Object.keys(out).length ? out : null;
+}
+
 module.exports = {
   buildTape,
   buildBulkTape,
   tapeQuestions,
   persistSupplemental,
+  seasonedOverridesFromQuery,
   tapeAvailability,
   buyerMatches,
   loanBuyerKey,

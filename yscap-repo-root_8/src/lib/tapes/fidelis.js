@@ -201,9 +201,17 @@ function economics(loan) {
     : (loan.registration && n(loan.registration.total_loan) != null ? n(loan.registration.total_loan) : n(a.loan_amount));
   const financedRehab = n(s.rehabHoldback) != null ? n(s.rehabHoldback) : n(a.rehab_budget);
   const totalRehab = n(a.rehab_budget) != null ? n(a.rehab_budget) : financedRehab;
+  // Out-of-pocket rehab = the slice of the rehab budget we do NOT finance
+  // (total rehab − financed rehab). Today we finance the WHOLE rehab, so this is
+  // always $0 → we leave the column BLANK rather than print $0. The logic is
+  // built for the day a loan finances only part of the rehab: e.g. a $100k
+  // construction budget where we finance $75k has $25k out of pocket, which would
+  // then surface here automatically. Only a genuine, positive unfinanced amount
+  // ever fills this column.
   let oopRehab = null;
-  if (totalRehab != null && financedRehab != null) oopRehab = Math.max(0, totalRehab - financedRehab);
-  else if (totalRehab != null && financedRehab == null) oopRehab = totalRehab;
+  if (totalRehab != null && financedRehab != null && totalRehab - financedRehab > 0) {
+    oopRehab = totalRehab - financedRehab;
+  }
   const financedIR = n(s.financedReserve) != null ? n(s.financedReserve) : n(a.requested_ir_amount);
   const initialAdvance = n(s.initialAdvance);
   return {
@@ -236,10 +244,14 @@ const COLUMNS = [
   ['G', 's', null, (l) => l.address.zip || ''], // text: leading-zero-safe
   ['H', 'n', S.CURRENCY, (l, e) => e.loanAmount],
   ['I', 'n', S.CURRENCY, (l, e) => e.financedRehab],
-  ['J', 'n', S.CURRENCY, (l, e) => e.financedRehab], // current rehab = original at origination
-  ['K', 'n', S.CURRENCY, (l, e) => e.currentBalance],
+  // Current rehab / balance / interest reserve reflect SEASONING (released draws +
+  // interest reserve used); for a fresh loan the snapshot equals origination. When
+  // no snapshot is attached (e.g. a direct buildRow in a unit test) we fall back
+  // to the origination figures.
+  ['J', 'n', S.CURRENCY, (l, e) => (l.seasoning ? l.seasoning.currentRehab : e.financedRehab)],
+  ['K', 'n', S.CURRENCY, (l, e) => (l.seasoning ? l.seasoning.currentBalance : e.currentBalance)],
   ['L', 'n', S.CURRENCY, (l, e) => e.financedIR],
-  ['M', 'n', S.CURRENCY, (l, e) => e.financedIR], // current IR = original at origination
+  ['M', 'n', S.CURRENCY, (l, e) => (l.seasoning ? l.seasoning.currentReserve : e.financedIR)],
   ['N', 'n', S.CURRENCY, (l, e) => e.oopRehab],
   ['O', 'n', S.CURRENCY, (l, e) => e.totalRehab],
   ['P', 'n', null, (l) => l.exp.total],
@@ -251,7 +263,9 @@ const COLUMNS = [
   ['V', 's', null, (l) => appraisalTypeV(l)],
   ['W', 'n', S.PERCENT, (l, e) => e.noteRate],
   ['X', 'd', S.DATE, (l) => l.app.actual_closing || l.app.est_closing_date || l.app.expected_closing],
-  ['Y', 'd', S.DATE, (l) => l.app.first_payment_date],       // next due = first due at origination
+  // Next payment due — the next scheduled payment for a SEASONED loan; equals the
+  // first payment date at origination. Z is the (unchanging) first payment date.
+  ['Y', 'd', S.DATE, (l) => ((l.seasoning && l.seasoning.nextDue) || l.app.first_payment_date)],
   ['Z', 'd', S.DATE, (l) => l.app.first_payment_date],
   ['AA', 'd', S.DATE, (l) => l.app.maturity_date],
   ['AB', 'n', null, (l) => termMonths(l)],

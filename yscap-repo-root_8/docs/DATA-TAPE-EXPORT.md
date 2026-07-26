@@ -131,6 +131,50 @@ All under `/api/staff` (staff auth + file scoping):
   internal projects exited (AE), years of experience (AF), multi-property /
   cross-collateralized flags (AP/AQ). These are the obvious next data sources.
 
+## Seasoned loans — the "current state" snapshot
+
+A tape normally shows a loan's ORIGINATION numbers. But when we sell a loan that
+has already funded and is partway through its rehab (a **seasoned** loan), the
+tape must show where the loan stands **today**. `src/lib/tapes/seasoning.js`
+computes that current snapshot (pure, no DB); `assemble.js` gathers the released
+rehab draws from our own money ledger; `index.js` attaches the snapshot to the
+loan before the column getters read it.
+
+What moves for a seasoned loan (everything else stays at origination):
+
+- **Current balance** = day-1 advance **+** rehab draws released so far **+**
+  interest reserve used so far. (Fidelis **K**, Blue Lake **AD**/UPB + **AB**.)
+- **Current rehab (holdback still available)** = original holdback **−** draws
+  released; the *original* rehab is unchanged. (Fidelis **J**, Blue Lake **Y**;
+  disbursed holdback in Blue Lake **X**.)
+- **Current interest reserve** = financed reserve **−** reserve used; the original
+  financed reserve is unchanged. (Fidelis **M**, Blue Lake **AA**; disbursed in **Z**.)
+- **Next payment due** — the next scheduled monthly payment on/after today, not the
+  first payment. (Fidelis **Y**, Blue Lake **AW**; the first-payment date stays.)
+- **Interest-bearing balance** — the whole note under **Dutch**; only the advanced
+  balance under **as-drawn** (non-Dutch). (Blue Lake **AC**; Dutch escrow holdback **J**.)
+
+Draws come from `draw_disbursements` (our wire ledger): rows with
+`kind='draw'` and `funded_status='released'`, summing the gross `approved_cents`
+(what converts holdback → outstanding principal), dated by `release_date`
+(falling back to when the wire was recorded). A draw that's approved in Sitewire
+but not yet wired is **not** counted.
+
+**Interest reserve used** is not stored anywhere, so we ESTIMATE it as the
+interest paid to date. Reserve is only drawn down once payments begin (nothing
+before the first payment date), and the interest depends on the accrual method
+(`applications.accrual_type`): **Dutch** accrues on the whole note; **as-drawn**
+accrues on the day-1 advance and steps up on each draw's release date (US 30/360).
+
+Because the reserve figure is an estimate and a seasoned sale is money-sensitive,
+a seasoned single export **asks a human to confirm** the current balance, next
+due date and interest reserve before the file leaves — pre-filled with the
+computed values (`TapeQuestionsModal`'s seasoned section). The confirmed values
+ride the export as query params and apply to **that export only** (never
+persisted — the live figures re-compute from the draws each time). A bulk export
+uses the computed values without a per-loan prompt. A fresh loan (before its
+first payment, no draws) is not seasoned and its tape is unchanged.
+
 ## New-construction questionnaire (supplemental fields)
 
 The New-Construction-only columns (asset purchased AR, entitlement status AS,

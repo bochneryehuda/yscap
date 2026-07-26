@@ -3708,13 +3708,17 @@ function TapeExport({ appId }) {
   const [busy, setBusy] = useState(null);
   const [pending, setPending] = useState(null); // { tapeKey, name, questions } — questionnaire modal
   useEffect(() => { api.staffTapesForApp(appId).then(setState).catch(() => setState({ tapes: [], currentBuyer: null, error: true })); }, [appId]);
-  // Click → check whether this loan needs extra details (New-Construction fields);
-  // if so, open the questionnaire; otherwise export straight away.
+  // Click → check whether this loan needs extra details before exporting:
+  //  • New-Construction-only fields (ground-up loans), and/or
+  //  • a seasoned-loan confirmation (current balance / next due / reserve).
+  // If either applies, open the modal; otherwise export straight away.
   async function start(tapeKey, name) {
     setBusy(tapeKey);
     try {
       const q = await api.staffTapeQuestions(appId, tapeKey);
-      if (q && q.questions && q.questions.length) { setPending({ tapeKey, name, questions: q.questions }); setBusy(null); return; }
+      const questions = (q && q.questions) || [];
+      const seasoned = q && q.seasoned && q.seasoned.isSeasoned ? q.seasoned : null;
+      if (questions.length || seasoned) { setPending({ tapeKey, name, questions, seasoned }); setBusy(null); return; }
       await runExport(tapeKey, name, undefined);
     } catch (e) { alert((e.data && e.data.message) || e.message || 'Export failed'); setBusy(null); }
   }
@@ -3755,9 +3759,10 @@ function TapeExport({ appId }) {
       )}
       {pending && (
         <TapeQuestionsModal
-          title={`${pending.name} tape — new construction details`}
-          subtitle="This is a ground-up loan. Fill these in and they'll be saved on the file, so we won't ask again."
+          title={pending.questions.length ? `${pending.name} tape — a few details` : `${pending.name} tape — confirm current numbers`}
+          subtitle={pending.questions.length ? "This is a ground-up loan. Fill these in and they'll be saved on the file, so we won't ask again." : undefined}
           questions={pending.questions}
+          seasoned={pending.seasoned}
           busy={busy === pending.tapeKey}
           onCancel={() => setPending(null)}
           onSubmit={(answers) => runExport(pending.tapeKey, pending.name, answers)}
