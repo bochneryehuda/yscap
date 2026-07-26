@@ -131,8 +131,52 @@ async function syncInvestorGuidelineFindings(client, appId, opts) {
         if (p.severity === 'fatal') fatal += 1;
       } catch (_e) { /* one bad row never stops the rest */ }
     }
-    return { raised, fatal };
-  } catch (_e) { return { raised: 0, fatal: 0 }; }
+    // CONVERGE — close what the desk no longer says (owner-reported 2026-07-26).
+    //
+    // This sync only ever INSERTED. Nothing retracted a guideline finding when the rule stopped
+    // raising it, so every notice written before a rule was corrected stayed open on that file
+    // FOREVER. The owner reviewed a file on 2026-07-26 and saw blank "Blue Lake requires X"
+    // notices whose rules had been given their correct dispositions on 2026-07-24 — the fix was
+    // real and completely invisible, because the screen was showing history rather than the
+    // system's current judgement. That is also why they said "fix this also for all the previous
+    // files": append-only means every future rule fix has exactly the same problem.
+    //
+    // So the desk's output is now the AUTHORITY for its own rows: anything open under this source
+    // that is not in the current set is retracted.
+    const retracted = await retractStale(client, appId, payloads.map((p) => p.dedupeKey));
+    return { raised, fatal, retracted };
+  } catch (_e) { return { raised: 0, fatal: 0, retracted: 0 }; }
 }
 
-module.exports = { deskToSuggestions, syncInvestorGuidelineFindings, SOURCE };
+/**
+ * Close every OPEN row from this desk whose dedupeKey the desk no longer raises.
+ *
+ * UNTOUCHED ROWS ONLY (`status='open'`). The moment a human escalates, notes, dismisses, converts
+ * to a condition or task, marks important, or asks an admin, the row stops being ours to withdraw —
+ * their decision is a record of a judgement made, and silently deleting it would be far worse than
+ * the noise this fixes. Those statuses are all excluded by the `status='open'` predicate.
+ *
+ * Marked `dismissed` with a status_reason naming the retraction, so the audit trail shows WHY it
+ * closed rather than it simply vanishing. Never throws — a failed retraction must not break the
+ * file view (worst case the stale row stays one more cycle).
+ */
+async function retractStale(client, appId, currentKeys) {
+  try {
+    const keys = (currentKeys || []).filter(Boolean);
+    const r = await client.query(
+      `UPDATE ai_suggestions
+          SET status = 'dismissed',
+              status_reason = 'Retracted automatically: the guideline desk no longer raises this for '
+                              || 'the file (the rule was corrected, or the file changed).',
+              updated_at = now()
+        WHERE application_id = $1
+          AND source = $2
+          AND status = 'open'
+          AND NOT (dedupe_key = ANY($3::text[]))
+        RETURNING id`,
+      [appId, SOURCE, keys]);
+    return r.rowCount || 0;
+  } catch (_e) { return 0; }
+}
+
+module.exports = { deskToSuggestions, syncInvestorGuidelineFindings, retractStale, SOURCE };
