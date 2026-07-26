@@ -872,4 +872,13 @@ export const api = {
   loNotifClearOverride:(appId, key) => req('DELETE', `/api/staff/notification-center/overrides?applicationId=${encodeURIComponent(appId)}&key=${encodeURIComponent(key)}`),
   loNotifCompose:      (b) => req('POST', '/api/staff/notification-center/compose', b),
   loNotifAnalytics:    (days) => req('GET',  `/api/staff/notification-center/analytics${days ? `?days=${days}` : ''}`),
+
+  // ---- Borrower view: stand inside a borrower's portal (owner-directed 2026-07-26) ----
+  // The flow itself lives in lib/auth.jsx (startBorrowerView / exitBorrowerView),
+  // which swaps the stored token — screens should call THOSE, not these directly.
+  borrowerViewEligible: (q) => req('GET', '/api/borrower-view/eligible' + qs({ q })),
+  borrowerViewStart:    (borrowerId, applicationId) => req('POST', '/api/borrower-view/start', { borrowerId, applicationId: applicationId || null }),
+  borrowerViewSession:  () => req('GET', '/api/borrower-view/session'),
+  borrowerViewExit:     () => req('POST', '/api/borrower-view/exit'),
+  borrowerViewHistory:  (limit) => req('GET', '/api/borrower-view/history' + qs({ limit })),
 };
