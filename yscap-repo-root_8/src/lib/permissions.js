@@ -76,8 +76,13 @@ const ROLE_DEFAULTS = {
   // desk across all files. Admin-overridable per the coordinator rules.
   draw_coordinator: ['see_all_files', 'manage_draws', 'review_conditions'],
   // Processors sign off conditions, manage draws, export data tapes
-  // (owner-directed 2026-07-26), and pull credit.
-  processor: ['review_conditions', 'sign_off_conditions', 'pull_credit', 'manage_draws', 'export_data_tapes'],
+  // (owner-directed 2026-07-26), and pull credit. They ALSO hold waive_conditions
+  // (owner-directed 2026-07-26): a processor handling a finding must be able to finish
+  // it — including clearing a clear-to-close-blocking dealbreaker with a recorded reason
+  // — instead of being forced to escalate it to a super-admin. The decision is still
+  // fully attributed (who/why/when on the finding + the audit log), and an admin can
+  // revoke it for a specific person from the Team screen.
+  processor: ['review_conditions', 'sign_off_conditions', 'pull_credit', 'manage_draws', 'export_data_tapes', 'waive_conditions'],
   // Loan officers can REVIEW conditions (the lighter stamp) but NOT sign them off.
   // They CAN pull_credit (owner-directed 2026-07-23): the LO pulls credit at point of
   // sale, then marks the credit condition Done (the reviewed stamp) — the processor
