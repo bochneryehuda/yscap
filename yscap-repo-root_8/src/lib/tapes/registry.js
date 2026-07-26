@@ -18,8 +18,9 @@
  *   buildRow / filename / template metadata used by index.js to produce bytes
  */
 const fidelis = require('./fidelis');
+const bluelake = require('./bluelake');
 
-const TAPES = [fidelis];
+const TAPES = [fidelis, bluelake];
 const BY_KEY = Object.create(null);
 for (const t of TAPES) BY_KEY[t.key] = t;
 

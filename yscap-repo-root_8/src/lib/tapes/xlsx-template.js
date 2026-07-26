@@ -82,15 +82,31 @@ function toExcelSerial(value) {
 
 // ---- single-cell XML ------------------------------------------------------
 // spec: { col:'H', value, type, style }
-//   type: 'n' number | 'd' date | 's' inline string | 'b' bool | 'auto' (default)
+//   type: 'n' number | 'd' date | 's' inline string | 'b' bool | 'f' formula | 'auto'
 //   style: numeric cellXfs index from the template's styles.xml (optional)
+//   styleMap: {col: styleIndex} inherited from the template row (fallback style)
 // Returns { idx, xml } or null when the cell should be omitted entirely.
-function cellXml(spec, rowNum) {
+function cellXml(spec, rowNum, styleMap) {
   const idx = colToIndex(spec.col);
   const ref = spec.col + rowNum;
-  const sAttr = (spec.style != null && spec.style !== '') ? ` s="${spec.style}"` : '';
+  // Style: an explicit spec.style wins; otherwise inherit the template row's own
+  // style for this column (styleMap) so a wide sheet keeps its per-column formats
+  // (currency/date/percent) without the caller hardcoding every index.
+  const styleIdx = (spec.style != null && spec.style !== '') ? spec.style
+    : (styleMap && styleMap[spec.col] != null ? styleMap[spec.col] : null);
+  const sAttr = styleIdx != null ? ` s="${styleIdx}"` : '';
   let type = spec.type || 'auto';
   let v = spec.value;
+
+  // Formula cell: a per-row formula. `{r}` is replaced with this row's number so
+  // each loan row references its own cells (e.g. "AF{r}+AH{r}"). No cached value —
+  // fullCalcOnLoad recomputes it on open. Escape only XML specials, not quotes.
+  if (type === 'f') {
+    if (v == null || v === '') return sAttr ? { idx, xml: `<c r="${ref}"${sAttr}/>` } : null;
+    const f = String(v).replace(/\{r\}/g, String(rowNum))
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return { idx, xml: `<c r="${ref}"${sAttr}><f>${f}</f></c>` };
+  }
 
   const isBlank = v == null || v === '';
   if (isBlank) {
@@ -124,9 +140,9 @@ function cellXml(spec, rowNum) {
 // Build one <row> element for rowNum from an array of cell specs, cloning the
 // row-level attributes (style, height, customFormat) from a template row's
 // opening tag so injected/added rows look identical to the template's data row.
-function rowXml(rowNum, cells, templateRowAttrs, spans) {
+function rowXml(rowNum, cells, templateRowAttrs, spans, styleMap) {
   const parts = cells
-    .map((c) => cellXml(c, rowNum))
+    .map((c) => cellXml(c, rowNum, styleMap))
     .filter(Boolean)
     .sort((a, b) => a.idx - b.idx)
     .map((c) => c.xml)
@@ -154,6 +170,9 @@ function rowXml(rowNum, cells, templateRowAttrs, spans) {
  *   lastCol     {string}  last column letter (e.g. 'AV') — used for dimension/spans
  *   extendValidations {boolean} widen each dataValidation sqref to cover all rows
  *   forceFullCalc {boolean} set fullCalcOnLoad on workbook.xml (default true)
+ *   inheritStyles {boolean} inherit each column's style from the template's first
+ *                 data row (so a wide sheet keeps its per-column formats without
+ *                 the caller specifying every style index)
  */
 function fillXlsxTemplate(templateBuf, opts) {
   const {
@@ -163,6 +182,7 @@ function fillXlsxTemplate(templateBuf, opts) {
     lastCol = 'AV',
     extendValidations = true,
     forceFullCalc = true,
+    inheritStyles = false,
   } = opts || {};
   if (!sheetPart) throw new Error('fillXlsxTemplate: sheetPart is required');
 
@@ -178,10 +198,24 @@ function fillXlsxTemplate(templateBuf, opts) {
   const firstRowOpen = xml.match(new RegExp(`<row r="${firstRow}"([^>]*)>`));
   const templateRowAttrs = firstRowOpen ? firstRowOpen[1] : ' customFormat="1"';
 
+  // Optionally learn the template row's per-column styles once (from the ORIGINAL
+  // xml, before any replacement) so every written row — including bulk rows the
+  // template doesn't physically have — inherits the sample row's exact formats.
+  let styleMap = null;
+  if (inheritStyles) {
+    styleMap = {};
+    const rowM = xml.match(new RegExp(`<row r="${firstRow}"[^>]*>[\\s\\S]*?</row>`));
+    if (rowM) {
+      const re = /<c r="([A-Z]+)\d+"[^>]*?\bs="(\d+)"/g;
+      let m;
+      while ((m = re.exec(rowM[0]))) styleMap[m[1]] = Number(m[2]);
+    }
+  }
+
   // Build and splice each data row.
   rows.forEach((cells, i) => {
     const rowNum = firstRow + i;
-    const newRow = rowXml(rowNum, cells, templateRowAttrs, spans);
+    const newRow = rowXml(rowNum, cells, templateRowAttrs, spans, styleMap);
     // A self-closing row (<row r="N" .../>) must be matched FIRST: it also
     // satisfies the open/close regex (whose `[^>]*` eats the slash and whose
     // `[\s\S]*?</row>` then runs into the NEXT row), which would swallow every

@@ -49,7 +49,8 @@ async function assembleTapeLoan(appId, db) {
   let appraisal = null;
   try {
     appraisal = (await db.query(
-      `SELECT form_type, as_is_value, arv_value, appraised_value, units, gla, beds, baths_full, baths_half
+      `SELECT form_type, as_is_value, arv_value, appraised_value, units, gla, beds, baths_full, baths_half,
+              effective_date, report_signed_date
          FROM appraisals WHERE application_id = $1 AND superseded = false
          ORDER BY imported_at DESC LIMIT 1`, [appId])).rows[0] || null;
   } catch (_) { appraisal = null; }

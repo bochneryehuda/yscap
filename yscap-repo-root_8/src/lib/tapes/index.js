@@ -44,6 +44,7 @@ async function buildTape(appId, tapeKey, db, opts = {}) {
     firstRow: tape.firstRow,
     rows: [row],
     lastCol: tape.lastCol,
+    inheritStyles: !!tape.inheritStyles,
     forceFullCalc: true,
   });
   return { buf, filename: tape.filename(loan), contentType: tape.contentType, tape: registry.publicTape(tape) };
@@ -85,6 +86,7 @@ async function buildBulkTape(tapeKey, appIds, db) {
     firstRow: tape.firstRow,
     rows,
     lastCol: tape.lastCol,
+    inheritStyles: !!tape.inheritStyles,
     extendValidations: true,
     forceFullCalc: true,
   });

@@ -107,6 +107,24 @@ async function main() {
     const stored = (await db.query('SELECT tape_supplemental FROM applications WHERE id=$1', [fidelisApp])).rows[0].tape_supplemental;
     assert.ok(!stored || Object.keys(stored).length === 0, 'non-NC loan has no supplemental written');
 
+    // 8) Blue Lake tape end-to-end + cross-tape buyer rule
+    const bl = await tapes.buildTape(bluelakeApp, 'bluelake', db);
+    assert.ok(Buffer.isBuffer(bl.buf) && bl.buf.length > 20000, 'Blue Lake tape produced bytes');
+    assert.ok(/BlueLake-BidTape-.*\.xlsx/.test(bl.filename), `Blue Lake filename shaped: ${bl.filename}`);
+    const blSheet = unzip(bl.buf).find((p) => p.name === 'xl/worksheets/sheet1.xml').data.toString('utf8');
+    assert.ok(blSheet.indexOf(`YSCAP-TP-${SUFFIX}-C`) > -1, 'Blue Lake Bid Tape carries the loan number');
+    assert.ok(/<c r="AJ3"[^>]*><f>AF3\+AH3<\/f><\/c>/.test(blSheet), 'Blue Lake per-row formula (total project costs) preserved');
+    assert.ok(unzip(bl.buf).find((p) => p.name === 'xl/media/image1.png'), 'Blue Lake logo image preserved');
+
+    let bmErr = null;
+    try { await tapes.buildTape(fidelisApp, 'bluelake', db); } catch (e) { bmErr = e; }
+    assert.ok(bmErr && bmErr.code === 'buyer_mismatch', 'a Fidelis loan is blocked from the Blue Lake tape');
+    let bmErr2 = null;
+    try { await tapes.buildTape(bluelakeApp, 'fidelis', db); } catch (e) { bmErr2 = e; }
+    assert.ok(bmErr2 && bmErr2.code === 'buyer_mismatch', 'a Blue Lake loan is blocked from the Fidelis tape');
+    const blQ = await tapes.tapeQuestions(bluelakeApp, 'bluelake', db);
+    assert.ok(blQ.questions.length === 0, 'Blue Lake tape asks no supplemental questions');
+
     console.log('test-tape-export-db: OK');
   } finally {
     await db.query('DELETE FROM applications WHERE id = ANY($1::uuid[])', [created.apps]).catch(() => {});

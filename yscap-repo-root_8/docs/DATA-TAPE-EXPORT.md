@@ -9,7 +9,11 @@ their own pricing/eligibility formulas built in. Our job on export is to take on
 of our loan files and drop its numbers into the provider's sheet **exactly** —
 same layout, same formulas — just with our loan's figures filled in.
 
-We start with **Fidelis**. Fidelis supplied a workbook ("Fidelis Pricing Matrix &
+Two providers are wired today: **Fidelis** and **Blue Lake Capital**.
+
+### Fidelis
+
+Fidelis supplied a workbook ("Fidelis Pricing Matrix &
 Data Tape") with:
 
 - **Buy Rate** (visible tab A) — auto-prices the loan and checks guideline
@@ -22,6 +26,27 @@ Data Tape") with:
 
 When Fidelis opens the exported file, the Buy Rate tab recalculates itself from
 our Data Tape row and shows their price/eligibility for the loan.
+
+### Blue Lake Capital
+
+Blue Lake supplied their "RTL Sample Tape" (the **Bid Tape**). Its data grid has
+headers on row 2 and one loan per row starting at **row 3** (a sample loan ships
+in row 3). We fill row 3 (rows 3..N for bulk). Five columns are **per-row
+formulas** (Completion %, Total Project Costs, LTAIV, LTC, LTARV) — we re-emit
+them as formulas (row-number substituted) so they compute for our loan, exactly
+like the sample. The workbook's Data Dictionary tab, hidden calc tabs (Settlement
+Statement / Pricing Confirm / Rate Sheet, which reference the Bid Tape row), logo
+and dropdowns are all preserved byte-for-byte. Every column's format is inherited
+from the sample row (`inheritStyles`), so the ~70-column sheet keeps its
+currency/date/percent formatting without hardcoding a style per column.
+
+Blue Lake's buyer key is `bluelake` (display "Blue Lake", full "Blue Lake
+Capital"). It has no questionnaire — every column is derived or defaulted.
+Two columns are intentionally left blank because the Data Dictionary marks them
+"to be completed by Blue Lake" (Purchase Rate, Lender Retained Spread). A few we
+don't yet source cleanly are left blank and flagged in `bluelake.js`: Seller (the
+exact MLPA legal name), Total Points, and Borrower Liquidity (verified pre-close
+liquidity).
 
 ## The rule (owner-directed)
 

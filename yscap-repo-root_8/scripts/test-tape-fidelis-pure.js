@@ -135,8 +135,9 @@ let threwNone = null;
 try { buyerRule.assertBuyer(synthLoan({ noteBuyerRaw: null }), fidelis); } catch (e) { threwNone = e; }
 ok(threwNone && /no capital provider set/i.test(threwNone.message), 'no-buyer error explains what to set');
 const avail = buyerRule.tapeAvailability('bluelake', 'Blue Lake');
-ok(avail.length === 1 && avail[0].available === false && /switch it to Fidelis/i.test(avail[0].reason), 'availability blocks non-matching buyer with reason');
-ok(buyerRule.tapeAvailability('fidelis', 'Fidelis')[0].available === true, 'availability allows matching buyer');
+const availFidelis = avail.find((t) => t.key === 'fidelis');
+ok(availFidelis && availFidelis.available === false && /switch it to Fidelis/i.test(availFidelis.reason), 'availability blocks the Fidelis tape for a non-Fidelis buyer with a reason');
+ok(buyerRule.tapeAvailability('fidelis', 'Fidelis').find((t) => t.key === 'fidelis').available === true, 'availability allows matching buyer');
 
 // ---- 5. Registry ----------------------------------------------------------
 ok(registry.getTape('fidelis') === fidelis, 'registry resolves fidelis');
