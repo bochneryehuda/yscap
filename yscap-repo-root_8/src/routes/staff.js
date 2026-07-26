@@ -218,6 +218,15 @@ const VISIBLE_BORROWER_SQL = (alias, p) =>
   ` WHERE (a2.borrower_id=${alias}.id OR a2.co_borrower_id=${alias}.id) AND a2.deleted_at IS NULL` +
   ` AND ${VISIBLE_OFFICERS_SQL('a2', p)}))`;
 
+// An ENCOMPASS review row (db/324) hangs on a BORROWER and never on a file, and
+// the borrower it is about may have no loan file at all — a DSCR-only client the
+// officer closed with in ClickUp. Scoping it the file way would hide the card
+// from the ONE person who can answer it. It follows the borrower scope instead,
+// which is exactly who is allowed to see that person's profile anyway.
+const ENCOMPASS_REVIEW_SCOPE = (p) =>
+  ` OR (q.source = 'encompass' AND q.borrower_id IS NOT NULL AND EXISTS (
+        SELECT 1 FROM borrowers eb WHERE eb.id = q.borrower_id AND ${VISIBLE_BORROWER_SQL('eb', p)}))`;
+
 // Guard every /applications/:id* route: a non-privileged staffer may only touch
 // a file they are the loan officer or processor on. (Borrower :id routes live
 // under /borrowers/:id and are unaffected by this path-scoped middleware.)
@@ -6174,6 +6183,77 @@ router.post('/borrowers/:id/ssn', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
+// ---------------- duplicate profiles: compare + merge ----------------
+// The sync deliberately OVER-SPLITS (an email it can't corroborate creates a
+// distinct profile rather than risk attaching one person's loans to another), so
+// genuine duplicates happen and there was no way to put them back together.
+// Merging re-points every file, document, condition and message and then removes
+// a profile, so it is scoped like every other borrower action, fully audited, and
+// the losing profile is snapshotted first (see src/lib/borrower-merge.js).
+router.get('/borrowers/:id/duplicates', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const all = await require('../lib/borrower-merge').findDuplicates(req.params.id);
+    // Only offer people this staffer is actually allowed to see — a merge screen
+    // must never become a way to read another officer's borrower.
+    const out = [];
+    for (const c of all) if (await canSeeBorrowerId(req, c.id)) out.push(c);
+    res.json(out);
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+
+router.get('/borrowers/:id/compare/:otherId', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    if (!(await canSeeBorrowerId(req, req.params.otherId))) return res.status(403).json({ error: 'forbidden' });
+    res.json(await require('../lib/borrower-merge').compare(req.params.id, req.params.otherId));
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+
+// Absorb `mergeId` INTO :id. `choices` names the winning side for each field the
+// two disagree on; a field only one side has needs no choice. One transaction —
+// a failure leaves both profiles exactly as they were.
+router.post('/borrowers/:id/merge', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const b = req.body || {};
+    if (!b.mergeId) return res.status(400).json({ error: 'mergeId is required' });
+    if (!(await canSeeBorrowerId(req, b.mergeId))) return res.status(403).json({ error: 'forbidden' });
+    // Nothing may be merged blind: the caller must have SEEN the conflicts and
+    // decided each one, or the survivor could silently lose a real value.
+    const cmp = await require('../lib/borrower-merge').compare(req.params.id, b.mergeId);
+    const choices = b.choices || {};
+    const undecided = cmp.fields.filter((f) => f.conflict && !['survivor', 'merged'].includes(choices[f.key]));
+    if (undecided.length) {
+      return res.status(409).json({
+        error: 'these profiles disagree — choose which value should survive for each one',
+        undecided: undecided.map((f) => ({ key: f.key, label: f.label, survivor: f.survivor, merged: f.merged })),
+      });
+    }
+    const out = await require('../lib/borrower-merge').mergeBorrowers({
+      survivorId: req.params.id, mergedId: b.mergeId, choices, actorId: req.actor.id });
+    await audit(req, 'merge_borrowers', 'borrower', req.params.id,
+      { mergedId: b.mergeId, choices: out.choices, moved: out.moved });
+    res.json(out);
+  } catch (e) {
+    console.warn('[staff] merge failed:', db.describeError ? db.describeError(e) : (e && e.message));
+    res.status(e.status || 500).json({ error: e.status ? e.message : 'could not merge those profiles — nothing was changed' });
+  }
+});
+
+// What was absorbed into this profile (so a surprising record can be explained).
+router.get('/borrowers/:id/merges', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const r = await db.query(
+      `SELECT m.id, m.merged_id, m.merged_name, m.merged_email, m.field_choices, m.moved, m.created_at,
+              s.full_name AS merged_by_name
+         FROM borrower_merges m LEFT JOIN staff_users s ON s.id=m.merged_by
+        WHERE m.survivor_id=$1 ORDER BY m.created_at DESC LIMIT 50`, [req.params.id]);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // ---------------- primary contact details ----------------
 // Every synced file may bring another email / phone for the same person, and
 // they ACCUMULATE on the profile (borrower_contacts) rather than overwriting the
@@ -10492,7 +10572,8 @@ router.get('/sync-reviews', async (req, res) => {
                        OR (q.application_id IS NULL AND q.borrower_id IS NOT NULL AND EXISTS (
                              SELECT 1 FROM applications a2
                               WHERE a2.borrower_id = q.borrower_id AND a2.deleted_at IS NULL
-                                AND ${VISIBLE_OFFICERS_SQL('a2', '$2')})))` : ''}
+                                AND ${VISIBLE_OFFICERS_SQL('a2', '$2')}))
+                       ${ENCOMPASS_REVIEW_SCOPE('$2')})` : ''}
         ORDER BY q.created_at DESC LIMIT 500`,
       scoped ? [status, req.actor.id] : [status]);
     res.json({ reviews: r.rows });
@@ -10514,7 +10595,8 @@ router.get('/sync-reviews/count', async (req, res) => {
                        OR (q.application_id IS NULL AND q.borrower_id IS NOT NULL AND EXISTS (
                              SELECT 1 FROM applications a2
                               WHERE a2.borrower_id = q.borrower_id AND a2.deleted_at IS NULL
-                                AND ${VISIBLE_OFFICERS_SQL('a2', '$1')})))` : ''}`,
+                                AND ${VISIBLE_OFFICERS_SQL('a2', '$1')}))
+                       ${ENCOMPASS_REVIEW_SCOPE('$1')})` : ''}`,
       scoped ? [req.actor.id] : []);
     res.json({ open: r.rows[0].n });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
@@ -10604,7 +10686,10 @@ router.post('/sync-reviews/:id/approve', async (req, res) => {
 router.post('/sync-reviews/:id/resolve', async (req, res) => {
   try {
     const winner = String((req.body && req.body.winner) || '');
-    if (!['clickup', 'portal', 'custom'].includes(winner)) return res.status(400).json({ error: "winner must be 'clickup', 'portal', or 'custom' (with a value)" });
+    // 'encompass' is the winner name on a row the READ-ONLY Encompass enrichment
+    // pass raised (db/324) — the resolver refuses the wrong name for the row's
+    // source, so a mixed-up client gets a clear message instead of a bad write.
+    if (!['clickup', 'portal', 'custom', 'encompass'].includes(winner)) return res.status(400).json({ error: "winner must be 'clickup', 'portal', 'encompass', or 'custom' (with a value)" });
     const row = await loadReviewFor(req, res);
     if (!row) return;
     const out = await require('../lib/sync-autoresolve').applyReviewWinner(row, winner, req.body && req.body.value);
@@ -10736,8 +10821,8 @@ router.post('/sync-reviews/bulk', async (req, res) => {
     if (!ids.length) return res.status(400).json({ error: 'ids required' });
     if (!['reject', 'resolve'].includes(action)) return res.status(400).json({ error: "action must be 'reject' or 'resolve'" });
     const winner = String(b.winner || '');
-    if (action === 'resolve' && !['clickup', 'portal'].includes(winner)) {
-      return res.status(400).json({ error: "bulk resolve needs winner 'clickup' or 'portal' (custom values are per-row)" });
+    if (action === 'resolve' && !['clickup', 'portal', 'encompass'].includes(winner)) {
+      return res.status(400).json({ error: "bulk resolve needs winner 'clickup', 'portal', or 'encompass' (custom values are per-row)" });
     }
     const results = [];
     for (const id of ids) {

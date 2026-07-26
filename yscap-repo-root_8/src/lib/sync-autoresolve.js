@@ -186,6 +186,53 @@ async function journalResolveWrite(appId, taskId, fieldId, fieldKey, oldVal, new
 }
 
 /**
+ * Resolve a review row that came from the READ-ONLY Encompass enrichment pass
+ * (db/324). Deliberately small and separate from the ClickUp resolver: there is
+ * no second system to write, so the only question is what PILOT should hold.
+ *
+ *   winner 'encompass' → adopt the value Encompass holds (stored on the row —
+ *                        Encompass is a weekly mirror, so the row's snapshot IS
+ *                        the value; nothing is re-fetched from Encompass here,
+ *                        which keeps the read-only surface exactly as frozen);
+ *   winner 'portal'    → keep what PILOT already has; nothing is written;
+ *   winner 'custom'    → the reviewer types the right answer (neither side is).
+ *
+ * Whatever PILOT ends up holding is pushed on to the borrower's ClickUp cards,
+ * because ClickUp is our two-way system of record — otherwise the next inbound
+ * pull would read the old card value straight back over the decision.
+ */
+async function applyEncompassWinner(row, winner, custom, borrowerId, appId) {
+  if (!['encompass', 'portal', 'custom'].includes(winner)) {
+    throw httpError(400, "this review came from Encompass — the winner must be 'encompass', 'portal', or a typed value");
+  }
+  if (row.field_key !== 'current_address') {
+    throw httpError(422, `resolving '${row.field_key}' from Encompass is not supported yet — use approve/reject`);
+  }
+  if (!borrowerId) throw httpError(422, 'no borrower on this review');
+  if (winner === 'portal') return { fieldKey: row.field_key, winner, value: row.portal_value || null, wrote: false };
+
+  const text = String(winner === 'custom' ? custom : (row.proposed_value || row.clickup_value || '')).trim();
+  if (!text) throw httpError(422, 'that side has no readable address — keep PILOT’s value, or type the correct one');
+  await db.query(
+    `UPDATE borrowers SET current_address=$2::jsonb, updated_at=now() WHERE id=$1`,
+    [borrowerId, JSON.stringify({ formatted_address: text, oneLine: text })]);
+  // Best-effort onward push to every linked card. A failure here must not undo a
+  // decision the reviewer already made — the portal value is the outcome.
+  try {
+    const apps = (await db.query(
+      `SELECT id FROM applications WHERE (borrower_id=$1 OR co_borrower_id=$1)
+         AND deleted_at IS NULL AND clickup_pipeline_task_id IS NOT NULL`, [borrowerId])).rows;
+    const orch = require('../clickup/orchestrator');
+    for (const a of apps) {
+      // eslint-disable-next-line no-await-in-loop
+      await orch.pushApplication(a.id, { only: ['current_address'], approvedReview: true, force: true })
+        .catch((e) => console.warn('[sync-autoresolve] encompass address push failed', a.id, e.message));
+    }
+  } catch (e) { console.warn('[sync-autoresolve] encompass address push skipped:', e.message); }
+  return { fieldKey: row.field_key, winner, value: text, wrote: true, appId: appId || undefined };
+}
+
+/**
  * Apply a review winner to BOTH systems. row = the sync_review_queue row;
  * winner = 'clickup' | 'portal'. Throws {status:4xx} for unusable states so
  * the route can surface a clear message. Returns a summary for the audit row.
@@ -207,6 +254,15 @@ async function applyReviewWinner(row, winner, customValue) {
   // same sanitizers and appliers as an adopted side — never new machinery.
   const custom = winner === 'custom' ? String(customValue == null ? '' : customValue).trim() : null;
   if (winner === 'custom' && !custom) throw httpError(400, 'a value is required to resolve with a custom value');
+
+  // ---- ENCOMPASS-sourced rows (db/324) are settled FIRST and never fall
+  // through to the ClickUp branches below. The row's `task_id` is a namespaced
+  // `encompass:<loanGuid>`, not a ClickUp task — handing it to `clickup.getTask`
+  // would 404 and make the row permanently unresolvable. Encompass is READ-ONLY
+  // and stays that way: winning as 'encompass' adopts the value Encompass
+  // already holds INTO PILOT; winning as 'portal' keeps ours and writes nothing
+  // anywhere (there is nothing to correct at the source from here).
+  if (row.source === 'encompass') return applyEncompassWinner(row, winner, custom, borrowerId, appId);
 
   // ---- DOB: borrower-level; the adopter writes the portal + every linked task.
   if (fieldKey === 'date_of_birth') {
