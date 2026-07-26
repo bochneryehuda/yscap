@@ -15,6 +15,7 @@ const R = require('path').resolve(__dirname, '..');
 const fs = require('fs');
 const jq = require(R + '/src/pipeline/job-queue');
 const SR = require(R + '/src/pipeline/shadow-report');
+const EC = require(R + '/src/pipeline/evidence-candidate');
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', m); } };
@@ -32,6 +33,7 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
   try {
     await q(fs.readFileSync(R + '/db/307_document_pipeline_jobs.sql', 'utf8'));
     await q(fs.readFileSync(R + '/db/308_document_processing_routes.sql', 'utf8'));
+    await q(fs.readFileSync(R + '/db/309_document_pipeline_evidence.sql', 'utf8'));
 
     const MARK = 'test-sr-' + process.pid;
     const { id: jobId } = await jq.enqueue(pool, { documentFamily: 'bank_statement', idempotencyKey: MARK, payload: {} });
@@ -43,6 +45,12 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
       jobId, documentFamily: 'bank_statement', provider: 'azure', service: 'document_intelligence',
       reason: 'table-dense', challengerProvider: 'google', confidence: 0.9, latencyMs: 12, costCents: 4,
       materiality: 'high', outcome: 'planned',
+    });
+    // Record a Stage-5 evidence candidate for this job (the reader would have produced it).
+    await EC.recordCandidate(pool, {
+      jobId, documentFamily: 'bank_statement', fieldKey: 'account_holder', fieldLabel: 'Account holder',
+      valueText: 'John Smith', provider: 'azure', service: 'document_intelligence', confidence: 0.9,
+      status: 'verified', reason: 'Azure and Google agree.',
     });
     // Mirror a fully-processed shadow job (the worker would have completed it).
     await q(`UPDATE document_pipeline_jobs SET status='completed' WHERE id=$1`, [jobId]);
@@ -60,6 +68,9 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
     ok(detail && detail.job.id === jobId, 'detail: job header');
     ok(detail.stages.length === 3 && detail.stages[0].stage === 'intake', 'detail: ordered stage manifest');
     ok(detail.routes.length === 1 && detail.routes[0].provider === 'azure' && detail.routes[0].outcome === 'planned', 'detail: route rows');
+    ok(Array.isArray(detail.evidence) && detail.evidence.length === 1
+      && detail.evidence[0].fieldKey === 'account_holder' && detail.evidence[0].status === 'verified'
+      && detail.evidence[0].valueText === 'John Smith', 'detail: Stage-5 evidence candidates');
     ok((await SR.shadowJobDetail(pool, '00000000-0000-0000-0000-000000000000')) === null, 'detail: unknown job → null');
 
     // shadowSummary counts by family + status.

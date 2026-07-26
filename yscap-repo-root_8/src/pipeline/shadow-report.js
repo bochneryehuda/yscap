@@ -90,6 +90,11 @@ async function shadowJobDetail(db, jobId) {
               confidence, latency_ms, cost_cents, materiality, special_handling, outcome, warnings, created_at
          FROM document_processing_routes WHERE job_id = $1 ORDER BY created_at ASC`,
       [jobId]);
+    // Stage 5 (Phase 2c) — the canonical-truth EVIDENCE the pipeline recorded for this document:
+    // per fact, the value + which reader + how much we trust it. Best-effort (never throws), so a
+    // job with no evidence yet just carries an empty list.
+    let evidence = [];
+    try { evidence = (await require('./evidence-candidate').listCandidates(db, { jobId })).candidates; } catch (_) { evidence = []; }
     return {
       job: {
         id: job.id, documentId: job.document_id, loanId: job.loan_id, family: job.document_family,
@@ -105,6 +110,7 @@ async function shadowJobDetail(db, jobId) {
         materiality: r.materiality, specialHandling: r.special_handling, outcome: r.outcome,
         warnings: r.warnings, createdAt: r.created_at,
       })),
+      evidence,
     };
   } catch (e) {
     try { console.warn('[shadow-report] shadowJobDetail failed:', (e && e.message) || e); } catch (_) { /* ignore */ }
