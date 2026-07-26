@@ -217,7 +217,7 @@ export default function StaffExceptions() {
         return (
           <ExceptionCard key={r.id} r={r} reasonCodes={perTypeReasons} compFactors={compFactors} gateSelect={gateSelect}
             highlight={highlightId === r.id} forwardRef={(el) => { rowRefs.current[r.id] = el; }}>
-            {(open && canDecide) || canClear ? (
+            {(open || canClear) ? (
               <div style={{ marginTop: 10, borderTop: '1px solid var(--hair,#e7e2d6)', paddingTop: 10 }}>
                 {open && canDecide && ownRequest && (
                   <div className="muted small" style={{ marginBottom: 6 }}>You requested this exception — another super-admin must approve or deny it.</div>
@@ -235,15 +235,29 @@ export default function StaffExceptions() {
                         <span className="muted small">Past this date the approval expires on its own and grants nothing. Blank = no expiry.</span>
                       </div>
                     )}
+                    {/* Buttons stay CLICKABLE even with an empty note — decide() flashes
+                        "Add a short note" so a click always gives feedback instead of a
+                        silently-greyed button that reads as "nothing happens". */}
                     <div className="row" style={{ gap: 8, marginTop: 8 }}>
-                      <button className="btn primary small" disabled={busy === r.id || !(notes[r.id] || '').trim()} onClick={() => decide(r, 'approved')}>
+                      <button className="btn primary small" disabled={busy === r.id} onClick={() => decide(r, 'approved')}>
                         {busy === r.id ? 'Saving…' : (isEsign || type === 'pricing_exception' ? 'Approve' : 'Approve waiver')}
                       </button>
-                      <button className="btn ghost small" disabled={busy === r.id || !(notes[r.id] || '').trim()} onClick={() => decide(r, 'denied')}>Deny</button>
+                      <button className="btn ghost small" disabled={busy === r.id} onClick={() => decide(r, 'denied')}>Deny</button>
                     </div>
                   </>
                 )}
-                {open && !canDecide && <div className="muted small">Only a super-admin can approve or deny this request.</div>}
+                {/* A viewer who CAN'T decide (admin / non-super, or a non-requester
+                    on someone else's open request) still gets a clear reason on the
+                    row — previously this line lived inside a block that never rendered
+                    for an admin on an open item, so the card showed no buttons AND no
+                    explanation ("nothing happens"). */}
+                {open && !canDecide && (
+                  <div className="notice" style={{ marginBottom: 0 }}>
+                    Only a <b>super-admin</b> can approve or deny an exception. You’re signed in as{' '}
+                    <b>{(role || 'staff').replace(/_/g, ' ')}</b>, so you can review it here and add a comment —
+                    a super-admin makes the decision. {ownRequest ? 'You can withdraw it from “My exceptions”.' : ''}
+                  </div>
+                )}
                 {canClear && (
                   <div className="row" style={{ gap: 8, marginTop: open && canDecide && !ownRequest ? 8 : 0, alignItems: 'center' }}>
                     <button className="btn ghost small" disabled={busy === r.id} onClick={() => clear(r)}>Clear (archive)</button>
