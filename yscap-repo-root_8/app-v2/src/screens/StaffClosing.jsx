@@ -10,7 +10,6 @@ const STAGE_LABEL = {
   estimated: 'Submitted', ready_for_docs: 'Ready for docs', wire_sent: 'Wire sent',
   fully_closed: 'Closed (funded)', fully_reconciled: 'Reconciled', in_purchasing: 'In purchasing',
 };
-const money0 = (v) => (v == null || v === '' ? '—' : '$' + Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 }));
 const day = (v) => (v ? String(v).slice(0, 10) : '—');
 function fmtAddr(a) {
   if (!a) return '—';
