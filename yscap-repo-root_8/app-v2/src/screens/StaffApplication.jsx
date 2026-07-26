@@ -3792,7 +3792,25 @@ function TapeExport({ appId }) {
       saveBlob(blob, filename || `${name}-tape.xlsx`);
       setPending(null);
       setMsg(`Exported the ${name} tape. Check your downloads.`);
-    } catch (e) { alert((e.data && e.data.message) || e.message || 'Export failed'); }
+    } catch (e) {
+      const d = (e && e.data) || {};
+      // Encompass reconciliation gate (owner-directed 2026-07-26): the file must be
+      // in Encompass and fully matching before its tape leaves. An admin may
+      // override with a logged reason; a non-admin is told to reconcile first.
+      if (d.code === 'encompass_unreconciled' || d.code === 'encompass_override_reason_required') {
+        if (d.canOverride) {
+          const reason = window.prompt(`${d.message || 'This loan doesn’t fully match Encompass yet.'}\n\nTo export it anyway, type a short reason (this is logged):`, '');
+          if (reason && reason.trim()) {
+            await runExport(tapeKey, name, { ...(answers || {}), encompassOverrideReason: reason.trim() });
+            return;
+          }
+        } else {
+          alert(d.message || 'This loan isn’t reconciled with Encompass yet. Finish the Encompass sync first.');
+        }
+        return;
+      }
+      alert(d.message || e.message || 'Export failed');
+    }
     finally { setBusy(null); }
   }
   return (
@@ -3811,6 +3829,20 @@ function TapeExport({ appId }) {
         export the tape for the provider this loan is <strong>currently set to</strong>. To export a different provider's
         tape, use “Change capital provider” above, switch it on the file, then come back here and export.
       </p>
+      {state && state.encompass && state.encompass.blocked && (
+        <div className="small" role="alert" style={{ margin: '8px 0', padding: '10px 12px', borderRadius: 8, border: '1px solid #E0B84C', background: '#FCF6E6', color: '#141B22' }}>
+          <strong style={{ color: '#141B22' }}>Finish the Encompass check before exporting.</strong>{' '}
+          <span style={{ color: '#3A4550' }}>{state.encompass.message}</span>{' '}
+          <button type="button" onClick={() => goToSection('sec-encompass')}
+            title="Jump to the Encompass sync section, reconcile every field, then come back to export"
+            style={{ background: 'none', border: 'none', color: '#0B6B63', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit' }}>
+            Open the Encompass section →
+          </button>
+          {state.encompass.canOverride && (
+            <div style={{ marginTop: 4, color: '#4B585C' }}>As an admin you can still export — you'll be asked for a reason, which is logged.</div>
+          )}
+        </div>
+      )}
       {msg && <p className="small" role="status" style={{ color: 'var(--teal)', fontWeight: 600 }}>✓ {msg}</p>}
       {!state ? <p className="muted small">Loading…</p> : state.error ? (
         <p className="muted small" style={{ color: 'var(--gold)' }}>Couldn’t load the available tapes. Refresh to try again.</p>
