@@ -117,6 +117,15 @@ app.get('/api/health', async (req, res) => {
   }
   let storageInfo;
   try { storageInfo = require('./lib/storage').probe(); } catch (e) { storageInfo = { ok: false, error: e.message }; }
+  // Storage CARD (owner-directed 2026-07-26, after the R2 cutover). The flat storage* fields
+  // below only say whether the settings are present; for an object store that is not the same
+  // as "the bucket answers". This does a real, time-bounded round-trip when the provider
+  // supports one, so a revoked token surfaces here instead of on a borrower's upload.
+  let storageCard;
+  try {
+    storageCard = await require('./lib/storage-health')
+      .readStorageHealth(require('./lib/storage'), cfg.storageProvider);
+  } catch (e) { storageCard = { provider: cfg.storageProvider, reachable: null, reason: 'unavailable' }; }
   // Missing-conditions tripwire (owner-directed 2026-07-14, after the breach):
   // a LIVE file sitting at zero checklist items, or an RTL file without its
   // purchase-contract condition, must be impossible — if it ever happens again
@@ -161,6 +170,9 @@ app.get('/api/health', async (req, res) => {
     storageWritable: storageInfo && storageInfo.ok,
     storagePersistent: storageInfo && storageInfo.persistent,
     storageBase: storageInfo && storageInfo.base,
+    // The full card (provider, live reachability, dual-read migration state). The four flat
+    // fields above are kept verbatim for back-compat with anything already reading them.
+    storageHealth: storageCard,
     // SharePoint one-way sync status (config + last reconciliation pass; cheap —
     // no live Graph call on the health path).
     sharepointSync: (() => { try { return require('./lib/sharepoint-backup').health(); } catch (e) { return { enabled: false, error: e.message }; } })(),
