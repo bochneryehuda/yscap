@@ -51,6 +51,7 @@ const ALLOWLIST = new Set([
   'src/lib/esign/draw-wire.js',      // e-sign / draw-wire condition
   'src/lib/raise-issue.js',          // staff "raise an issue" on an entity
   'src/lib/product-registration.js', // product registration -> first-class conditions row (db/022)
+  'src/lib/closing.js',              // closing workspace -> HUD/ALTA + closed-package + tracking conditions (fixed templates, closer workflow)
   'src/routes/admin-conditions.js',  // admin Condition Studio (checklist_templates)
   'src/routes/underwriting.js',      // ensureUnderwritingCondition + human convert_to_condition (vetted template)
   'src/routes/borrower.js',          // initial checklist generated from templates on registration
