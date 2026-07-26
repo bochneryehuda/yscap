@@ -6364,6 +6364,11 @@ router.post('/applications/:id/loan-number', async (req, res) => {
     if (!upd.rows.length) return res.status(404).json({ error: 'application not found' });
     await audit(req, 'set_loan_number', 'application', req.params.id, { from: existing || null, to: ln });
     enqueueClickupPush(req.params.id, ['ys_loan_number']).catch(() => {});   // keep ClickUp/LOS in sync (self-gates; no-op when unmapped/unlinked)
+    // A newly-numbered file syncs from Encompass at once (READ-ONLY pull; the
+    // match is by this loan number). Best-effort + fire-and-forget — a pull
+    // failure is stamped into encompass_last_error and shown in the sync panel;
+    // it must never break setting the loan number.
+    require('../encompass/reconcile').onLoanNumberSet(req.params.id).catch(() => {});
     res.json({ ok: true, loanNumber: upd.rows[0].ys_loan_number });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
