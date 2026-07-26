@@ -310,9 +310,10 @@ router.get('/tapes/:tapeKey/loans', async (req, res) => {
     let gateSql = '';
     if (!tapeAdmin(req)) {
       const wantProg = tapes.programProvider.programForProvider(tape.buyerKey);
-      if (!wantProg) {
-        // No live program is paired to this provider (e.g. EMCAP↔Silver is parked)
-        // → no loan is non-admin-exportable; return an empty picker with a note.
+      // No live program is paired to this provider, OR the paired program is PARKED
+      // (e.g. EMCAP↔Silver — a recognized name, not yet registerable) → no loan is
+      // non-admin-exportable; return an empty picker flagged admin-only.
+      if (!wantProg || tapes.programProvider.PARKED_PROGRAMS.has(wantProg)) {
         return res.json({ tape: tapes.registry.publicTape(tape), count: 0, loans: [], adminOnly: true });
       }
       params.push(wantProg);

@@ -43,6 +43,11 @@ ok(!pp.programMatchesBuyer('manual', 'fidelis'), 'manual matches nothing');
 ok(!pp.programMatchesBuyer(null, 'fidelis'), 'null program matches nothing');
 ok(pp.PARKED_PROGRAMS.has('silver'), 'silver is a parked program');
 ok(!pp.PARKED_PROGRAMS.has('gold'), 'gold is not parked');
+// The bulk picker flags a provider "admin-only" when its paired program is absent
+// OR parked — EMCAP↔Silver is parked, so a non-admin EMCAP picker is admin-only;
+// Fidelis↔Standard is live, so it is not.
+ok(pp.PARKED_PROGRAMS.has(pp.programForProvider('emcap')), 'EMCAP is admin-only (its program Silver is parked)');
+ok(!pp.PARKED_PROGRAMS.has(pp.programForProvider('fidelis')), 'Fidelis is NOT admin-only (Standard is live)');
 eq(pp.programLabel('gold'), 'Gold', 'label gold');
 eq(pp.programLabel('manual'), 'Manual', 'label manual');
 
