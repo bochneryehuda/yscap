@@ -32,6 +32,13 @@ const CATEGORY_LABEL = {
   program: 'Program & identity', identity: 'Program & identity', loan: 'Loan & terms', interest: 'Loan & terms',
   valuation: 'Valuation', sizing: 'Sizing & leverage', cost: 'Purchase & cost', rehab: 'Rehab', experience: 'Experience',
 };
+// A few fields carry no category on the server — pin them to a group by key.
+const KEY_GROUP = {
+  property_type: 'Program & identity', deal_type: 'Program & identity', exit_plan: 'Program & identity',
+  loan_to_be_vested: 'Program & identity', ys_loan_number: 'Program & identity',
+};
+const GROUP_ORDER = ['Program & identity', 'Loan & terms', 'Valuation', 'Sizing & leverage', 'Purchase & cost', 'Rehab', 'Experience', 'Other'];
+function groupOf(f) { return CATEGORY_LABEL[f.category] || KEY_GROUP[f.key] || 'Other'; }
 
 const V = {
   ink: 'var(--ink,#141B22)', muted: 'var(--muted,#4B585C)', line: 'var(--line,#E7E1D3)', paper: 'var(--paper,#F6F3EC)',
@@ -157,10 +164,10 @@ export default function EncompassSyncPanel({ appId }) {
       {flash && <div style={{ fontSize: 12, color: V.good, marginBottom: 8 }}>{flash}</div>}
       {err && <div style={{ fontSize: 12, color: V.crit, marginBottom: 8 }}>{err}</div>}
 
-      {!hasLoan && (
+      {data && !hasLoan && (
         <div style={{ color: V.muted, fontSize: 12.5, background: V.paper, border: `1px solid ${V.line}`, borderRadius: 8, padding: '10px 12px' }}>
           No Encompass loan is linked to this file yet. Set the file's loan number (it pulls automatically), or press “Refresh from Encompass”.
-          {data && data.lastError ? <div style={{ marginTop: 5, color: V.crit }}>Last attempt: {data.lastError}</div> : null}
+          {data.lastError ? <div style={{ marginTop: 5, color: V.crit }}>Last attempt: {data.lastError}</div> : null}
         </div>
       )}
 
@@ -191,10 +198,43 @@ export default function EncompassSyncPanel({ appId }) {
   );
 }
 
-// The grouped comparison table. Inserts a category subheader when the category
-// changes (the fields arrive in registry order, already grouped logically).
+// One comparison row.
+function Row({ f, busy, onReplace, withActions }) {
+  const s = statusOf(f);
+  const canReplace = withActions && f.writable && f.status === 'mismatch' && f.open && f.theirs != null && f.theirs !== '';
+  return (
+    <tr style={{ borderTop: `1px solid ${V.line}` }}>
+      <td style={{ padding: '7px 10px', color: V.ink }}>{label(f)}</td>
+      <td style={{ padding: '7px 10px', color: V.ink, fontVariantNumeric: 'tabular-nums' }}>{fmtVal(f, 'ours')}</td>
+      <td style={{ padding: '7px 10px', color: f.status === 'mismatch' && f.open ? V.ink : V.muted, fontVariantNumeric: 'tabular-nums' }}>{fmtVal(f, 'theirs')}</td>
+      <td style={{ padding: '7px 10px' }}><Pill s={s} /></td>
+      {withActions && (
+        <td style={{ padding: '7px 10px', textAlign: 'right' }}>
+          {canReplace ? (
+            <button onClick={() => onReplace(f.key)} disabled={!!busy}
+              style={{ fontSize: 11, fontWeight: 700, color: '#fff', background: V.teal, border: 'none', borderRadius: 7, padding: '4px 9px', cursor: busy ? 'default' : 'pointer', whiteSpace: 'nowrap' }}>
+              {busy === f.key ? 'Pulling…' : 'Use Encompass value'}
+            </button>
+          ) : null}
+        </td>
+      )}
+    </tr>
+  );
+}
+
+// The comparison table. With actions, fields are COLLECTED into display groups
+// (each subheader appears once, in GROUP_ORDER); the reference table is flat.
 function ComparisonTable({ fields, busy, onReplace, withActions }) {
-  let lastCat = null;
+  const cols = withActions ? 5 : 4;
+  // Collect into groups (registry order preserved within each group).
+  const byGroup = {};
+  for (const f of fields) {
+    const g = withActions ? groupOf(f) : '__flat';
+    (byGroup[g] = byGroup[g] || []).push(f);
+  }
+  const order = withActions
+    ? GROUP_ORDER.filter((g) => byGroup[g]).concat(Object.keys(byGroup).filter((g) => !GROUP_ORDER.includes(g)))
+    : ['__flat'];
   return (
     <div style={{ overflowX: 'auto', border: `1px solid ${V.line}`, borderRadius: 8 }}>
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, minWidth: 560 }}>
@@ -208,35 +248,14 @@ function ComparisonTable({ fields, busy, onReplace, withActions }) {
           </tr>
         </thead>
         <tbody>
-          {fields.map((f) => {
-            const s = statusOf(f);
-            const showCat = withActions && f.category && CATEGORY_LABEL[f.category] && CATEGORY_LABEL[f.category] !== lastCat;
-            if (showCat) lastCat = CATEGORY_LABEL[f.category];
-            const canReplace = withActions && f.writable && f.status === 'mismatch' && f.open && f.theirs != null && f.theirs !== '';
-            return (
-              <React.Fragment key={f.key}>
-                {showCat && (
-                  <tr><td colSpan={withActions ? 5 : 4} style={{ padding: '8px 10px 3px', fontSize: 10.5, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: V.muted, background: V.paper }}>{lastCat}</td></tr>
-                )}
-                <tr style={{ borderTop: `1px solid ${V.line}` }}>
-                  <td style={{ padding: '7px 10px', color: V.ink }}>{label(f)}</td>
-                  <td style={{ padding: '7px 10px', color: V.ink, fontVariantNumeric: 'tabular-nums' }}>{fmtVal(f, 'ours')}</td>
-                  <td style={{ padding: '7px 10px', color: f.status === 'mismatch' && f.open ? V.ink : V.muted, fontVariantNumeric: 'tabular-nums' }}>{fmtVal(f, 'theirs')}</td>
-                  <td style={{ padding: '7px 10px' }}><Pill s={s} /></td>
-                  {withActions && (
-                    <td style={{ padding: '7px 10px', textAlign: 'right' }}>
-                      {canReplace ? (
-                        <button onClick={() => onReplace(f.key)} disabled={!!busy}
-                          style={{ fontSize: 11, fontWeight: 700, color: '#fff', background: V.teal, border: 'none', borderRadius: 7, padding: '4px 9px', cursor: busy ? 'default' : 'pointer', whiteSpace: 'nowrap' }}>
-                          {busy === f.key ? 'Pulling…' : 'Use Encompass value'}
-                        </button>
-                      ) : null}
-                    </td>
-                  )}
-                </tr>
-              </React.Fragment>
-            );
-          })}
+          {order.map((g) => (
+            <React.Fragment key={g}>
+              {withActions && (
+                <tr><td colSpan={cols} style={{ padding: '8px 10px 3px', fontSize: 10.5, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: V.muted, background: V.paper }}>{g}</td></tr>
+              )}
+              {byGroup[g].map((f) => <Row key={f.key} f={f} busy={busy} onReplace={onReplace} withActions={withActions} />)}
+            </React.Fragment>
+          ))}
         </tbody>
       </table>
     </div>
