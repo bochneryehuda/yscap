@@ -601,8 +601,8 @@ export function CreditCondition({ appId, canPull, onChanged }) {
 
   const report = data && data.report;
   const provider = (data && data.provider) || {};
-  // Prefer the server's real permission (sign_off_conditions) once loaded; fall
-  // back to the role-based prop for the brief moment before the fetch returns.
+  // Prefer the server's real permission (pull_credit) once loaded; fall back to
+  // the capability prop for the brief moment before the fetch returns.
   const canImport = data && typeof data.canImport === 'boolean' ? data.canImport : canPull;
 
   const showFlash = (msg, tone) => {
@@ -683,7 +683,7 @@ export function CreditCondition({ appId, canPull, onChanged }) {
       <div className="crx-bar">
         {canImport
           ? <button className="crx-btn primary sm" onClick={() => setShowModal(true)}>{report ? '↻ Import again' : '⬇ Import credit'}</button>
-          : !report && <span className="crx-muted">A processor can import the credit report here.</span>}
+          : !report && <span className="crx-muted">The loan officer or a processor can import the credit report here.</span>}
         {canImport && !provider.configured && <span className="crx-pill" title="The shared Xactus login is not set yet">Live pull: not set up</span>}
         <span className="crx-bar-spacer" />
         {report && report.pdfDocumentId && (

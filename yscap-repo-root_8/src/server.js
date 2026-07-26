@@ -203,6 +203,18 @@ app.get('/api/health', async (req, res) => {
     ts: Date.now(),
   });
 });
+// BORROWER VIEW guard (owner-directed 2026-07-26) — mounted GLOBALLY, ABOVE
+// every router (including /auth), so the handful of actions a staffer may not
+// perform while standing inside a borrower's portal are refused STRUCTURALLY:
+// executing an e-signature in the borrower's name, changing their two-factor
+// settings, signing the REAL borrower out of their own devices (/auth/logout
+// bumps their token_version), or nesting another borrower view. Position
+// matters — mounted after /auth it would not cover the /auth routes at all.
+// A borrower route added tomorrow inherits the guard automatically; there is no
+// per-handler check to forget. Inert for every ordinary request: it returns on
+// the first line unless the bearer token actually carries a borrower-view
+// envelope. See src/lib/borrower-view.js.
+app.use(require('./lib/borrower-view').guard);
 app.use('/auth', require('./auth').router);
 app.use('/api/roster', require('./routes/roster'));   // public team roster (site dropdown + ?lo branding)
 // Public company pricing defaults — the marketing term-sheet generator + the
@@ -230,6 +242,9 @@ app.use('/api/esign', require('./routes/esign-public'));
 // Public token-authenticated draw-findings accept (the one-click "Accept" link we email the
 // borrower — the reply_token is the capability; no login needed to release their own money).
 app.use('/api/public/draw-findings', rateLimit({ bucket: 'draw-public', windowMs: 60000, max: 60 }), require('./routes/draw-findings-public'));
+// Start / leave / audit a borrower view. Mounted outside /api/staff because the
+// leave + status calls are made while holding a BORROWER-kind token.
+app.use('/api/borrower-view', require('./routes/borrower-view'));
 app.use('/api/borrower', require('./routes/borrower'));
 app.use('/api/borrower', require('./routes/borrower-draws')); // borrower draw status + findings accept/dispute + change requests
 app.use('/api/staff', require('./routes/staff'));

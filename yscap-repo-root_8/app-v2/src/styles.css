@@ -3182,10 +3182,21 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .cl-table th{text-align:left;color:var(--muted);font-weight:600;font-size:12px;padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
 .cl-table td{padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}
 .cl-row-muted{color:var(--muted)}
-.cl-quicklinks{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.cl-quicklinks{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
 .cl-ql-group{border:1px solid var(--line);border-radius:var(--radius);padding:10px;background:var(--ink-1)}
 .cl-ql-head{font-weight:600;margin-bottom:5px}
-.cl-ql-doc{display:block;text-align:left;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Flex row so ONLY the filename ellipsizes — the Executed/Draft tag must never
+   be clipped (an e-sign filename is ~58 chars and would swallow it). */
+/* justify-content:flex-start is REQUIRED: .btn sets justify-content:center,
+   which was inert while this was display:block but goes live under flex and
+   would center short filenames. */
+.cl-ql-doc{display:flex;align-items:center;justify-content:flex-start;gap:6px;text-align:left;max-width:100%}
+.cl-ql-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Explicit dark text on white (portal is white-first — never rely on a var()
+   that might resolve light). The .on badge is white on solid teal, which is a
+   colored pill, not body text. */
+.cl-ts-tag{flex:0 0 auto;display:inline-block;padding:0 6px;border-radius:999px;font-size:11px;font-weight:600;border:1px solid var(--line);color:#4B585C;background:#FFFFFF}
+.cl-ts-tag.on{color:#FFFFFF;background:#2F7F86;border-color:#2F7F86}
 .cl-cond{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;border-bottom:1px solid var(--line);padding:10px 0}
 .cl-cond:last-child{border-bottom:none}
 .cl-cond-main{display:flex;flex-direction:column;gap:4px;min-width:0}
@@ -3215,3 +3226,44 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .cl-dates{margin-top:8px}
 .cl-recon-head{margin-bottom:2px}
 .cl-tile-sub{margin-top:3px}
+
+/* ── BORROWER VIEW (owner-directed 2026-07-26) ────────────────────────────
+   The pinned "you are inside <borrower>'s portal" bar + the staff picker.
+   Deliberately loud: it is the ONE thing separating "I am looking at my own
+   console" from "I am about to press Upload inside somebody else's account."
+   All text is explicit dark ink or white-on-gold (never a var() that might
+   resolve light) per the dark-text-on-white house rule. */
+.bview-bar{position:sticky;top:0;z-index:900;display:flex;align-items:center;gap:12px;
+  flex-wrap:wrap;padding:9px 16px;background:#AE8746;color:#fff;
+  font-size:14px;line-height:1.35;box-shadow:0 1px 0 rgba(20,27,34,.14)}
+.bview-bar strong{color:#fff;font-weight:700}
+.bview-dot{flex:none;width:9px;height:9px;border-radius:50%;background:#fff;
+  box-shadow:0 0 0 3px rgba(255,255,255,.35);animation:bview-pulse 2.4s ease-in-out infinite}
+@keyframes bview-pulse{0%,100%{opacity:1}50%{opacity:.45}}
+@media(prefers-reduced-motion:reduce){.bview-dot{animation:none}}
+.bview-text{flex:1 1 320px;min-width:0;color:#fff}
+.bview-sep{margin:0 6px;opacity:.7}
+.bview-clock{flex:none;font-size:12px;padding:3px 9px;border-radius:999px;
+  background:rgba(255,255,255,.2);color:#fff;font-variant-numeric:tabular-nums}
+.bview-exit{flex:none;cursor:pointer;border:0;border-radius:8px;padding:7px 14px;
+  background:#fff;color:#141B22;font-weight:600;font-size:13px;font-family:inherit}
+.bview-exit:hover:not(:disabled){background:#F6F3EC}
+.bview-exit:disabled{opacity:.65;cursor:default}
+/* The whole borrower shell gets a gold hairline while a view is active, so even
+   a screenshot of the middle of a page reads as "this is a borrower view". */
+.shell-bview{box-shadow:inset 0 0 0 2px #AE8746}
+
+/* Staff picker list */
+.bview-list{display:flex;flex-direction:column}
+.bview-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  padding:13px 2px;border-bottom:1px solid var(--line)}
+.bview-row:last-child{border-bottom:0}
+.bview-who{flex:1 1 260px;min-width:0}
+.bview-name{font-weight:600;color:#141B22;font-size:15px}
+.bview-meta{margin-top:2px;font-size:13px;color:#4B585C}
+.bview-open{color:#8A5A00;font-weight:600}
+.bview-nologin{color:#8A5A00}
+@media(max-width:720px){
+  .bview-bar{font-size:13px;padding:8px 12px}
+  .bview-exit{width:100%}
+}

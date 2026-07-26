@@ -70,7 +70,7 @@ async function siteIntake(p, opts = {}) {
     const b = await client.query(
       `INSERT INTO borrowers (first_name,last_name,email,cell_phone,citizenship)
        VALUES ($1,$2,$3,$4,$5)
-       ON CONFLICT (email) DO UPDATE SET
+       ON CONFLICT (email) WHERE shares_email = false DO UPDATE SET
          -- A real submitted name heals a placeholder row; never a real one.
          first_name=CASE WHEN lower(btrim(coalesce(borrowers.first_name,''))) IN ('','unknown','co-borrower')
                           AND lower(btrim(EXCLUDED.first_name)) NOT IN ('','unknown')
@@ -221,7 +221,7 @@ async function siteIntake(p, opts = {}) {
             const cb = await db.query(
               `INSERT INTO borrowers (first_name,last_name,email,cell_phone,citizenship)
                VALUES ($1,$2,$3,$4,$5)
-               ON CONFLICT (email) DO UPDATE SET
+               ON CONFLICT (email) WHERE shares_email = false DO UPDATE SET
                  first_name=CASE WHEN lower(btrim(coalesce(borrowers.first_name,''))) IN ('','unknown','co-borrower')
                                   AND lower(btrim(EXCLUDED.first_name)) NOT IN ('','unknown')
                                  THEN EXCLUDED.first_name ELSE borrowers.first_name END,

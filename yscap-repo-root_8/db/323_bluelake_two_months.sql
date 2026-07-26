@@ -1,4 +1,4 @@
--- 318 — Blue Lake files ask for TWO months of bank statements, on EXISTING files too
+-- 323 — Blue Lake files ask for TWO months of bank statements, on EXISTING files too
 -- (owner-directed 2026-07-26: "Blue Lake needs 2 months of bank statements, not 1. The rule text
 -- says 1.").
 --

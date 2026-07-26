@@ -859,13 +859,10 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // Encompass mismatches. A borrower can never override (admin-only); they must
     // wait for the team to reconcile. Dormant until Encompass is live + a loan is
     // pulled; fails OPEN on any reconcile error.
-    {
-      const encGate = await require('../encompass/reconcile').issuanceGate(appId);
-      if (encGate.block) return refuse(422, {
-        error: 'Your file is being finalized with our loan system — your team will have your updated terms shortly.',
-        code: 'encompass_findings_open',
-      }, 'encompass_findings_open', { openBlocking: encGate.openBlocking });
-    }
+    // Owner-directed 2026-07-26 (CORRECTION): registering a product / issuing a term
+    // sheet is NOT gated on the Encompass match. The ONLY action that waits for the
+    // two systems to agree is SENDING the DocuSign term-sheet package (staff.js
+    // esign/send). This block is intentionally removed.
     // Same optimistic-concurrency guard as the staff route (#148): a stale
     // studio session must never re-register economics the file no longer has.
     if (b.econVersion && b.econVersion !== pricing.econVersionFor(f.app)) {

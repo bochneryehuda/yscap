@@ -151,7 +151,7 @@ export default function StaffBorrowers() {
                         </span>
                       </td>
                       <td>
-                        <div className="small">{b.email || '—'}</div>
+                        <div className="small">{b.email && !/@clickup\.local$/i.test(b.email) ? b.email : '—'}</div>
                         <div className="muted small">{b.cell_phone || ''}</div>
                       </td>
                       <td className="mut">{b.loan_officer_name || <span className="muted">—</span>}</td>
@@ -159,6 +159,14 @@ export default function StaffBorrowers() {
                         {b.latest_file_id
                           ? <Link to={`/internal/app/${b.latest_file_id}`} title="Open the most recent file">{b.files}</Link>
                           : b.files}
+                        {/* DSCR / long-term deals never become loan files here, so a client
+                            who has only ever done that business would read as "0 files" and
+                            look like an empty record (owner-directed 2026-07-26). */}
+                        {b.other_deals ? (
+                          <div className="muted small" title="DSCR / long-term deals from ClickUp — not fix-and-flip loan files">
+                            +{b.other_deals} other
+                          </div>
+                        ) : null}
                       </td>
                       <td>
                         {b.has_account

@@ -1,22 +1,32 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { api } from '../lib/api';
+import { useAuth } from '../lib/auth.jsx';
 
 /**
- * WO-D — Encompass sync: a live, full data-comparison screen (READ-ONLY sync).
+ * Encompass sync — the live, full data-comparison screen (READ-ONLY sync).
  *
  * Shows EVERY mapped field side-by-side: our file's value vs the value read live
- * from Encompass, with a status (matches / doesn't match / no data to compare /
- * reference). A mismatch a user wants to adopt can be pulled into our column with
- * one click ("Use Encompass value") — one direction only, Encompass → us, never
- * the reverse. A red banner shows when open mismatches are blocking the term
- * sheet; advisory differences surface but never block. Staff-only surface.
+ * from Encompass, with a plain-language status. Owner-directed 2026-07-26: this
+ * section PASSES only when EVERY field MATCHES — a difference, an advisory
+ * difference, or a "no data to compare" (Encompass doesn't have it yet) all count
+ * as NOT passing, and a term sheet cannot be issued until the section passes. When
+ * a file has no loan number, staff type it right here and it syncs on the spot.
+ * A mismatch a user wants to fix our-side can be pulled from Encompass with one
+ * click ("Use Encompass value") — one direction only, Encompass → us. Staff-only.
  */
 
-// Short, human labels (the registry `note` is verbose) — falls back to a
-// prettified key for anything not listed.
+// Short, human labels (falls back to a prettified key for anything not listed).
 const LABELS = {
-  ys_loan_number: 'Loan number', property_type: 'Property type', deal_type: 'Deal / project type',
-  exit_plan: 'Exit plan', loan_to_be_vested: 'Vesting (entity / individual)', vesting_llc: 'Subject LLC / vesting',
+  ys_loan_number: 'Loan number', property_type: 'Property type', units: '# of units',
+  deal_type: 'Deal / project type', exit_plan: 'Exit plan', loan_to_be_vested: 'Vesting (entity / individual)',
+  vesting_llc: 'Subject LLC / vesting', capital_provider: 'Note buyer / capital provider',
+  // Borrower + co-borrower identity + subject address
+  id_borrower_name: 'Borrower name', id_dob: 'Date of birth', id_email: 'Email',
+  id_phone: 'Phone', id_property_address: 'Property address',
+  id_ssn: 'Social Security number',
+  id_coborrower_name: 'Co-borrower name', id_coborrower_dob: 'Co-borrower date of birth',
+  id_coborrower_email: 'Co-borrower email', id_coborrower_phone: 'Co-borrower phone',
+  id_coborrower_ssn: 'Co-borrower Social Security number',
   loan_amount: 'Loan amount', max_total_loan: 'Max total loan', final_initial_loan: 'Initial advance',
   rehab_budget: 'Rehab / construction budget', financed_rehab_budget: 'Financed rehab',
   purchase_price: 'Purchase price', effective_purchase: 'Effective purchase price', contract_price: 'Seller / contract price',
@@ -25,27 +35,34 @@ const LABELS = {
   actual_initial_ltv: 'Actual initial LTV %', max_initial_ltv: 'Max initial LTV %', max_arv_ltv: 'Max ARV-LTV %',
   max_ltc: 'Max LTC %', note_rate: 'Interest rate %', origination_pct: 'Origination fee %', term_months: 'Term (months)',
   maturity_date: 'Maturity date', total_experience_deals: 'Experience (deals)', rehab_type: 'Rehab type',
-  accrual_type: 'Accrual type', ref_pitia: 'PITIA', ref_cash_to_close: 'Est. cash to close', ref_down_payment: 'Down payment',
+  accrual_type: 'Accrual type', ref_cash_to_close: 'Est. cash to close', ref_down_payment: 'Down payment',
   ref_table_funder: 'Table funder', ref_cross_collateralized: 'Cross-collateralized', ref_multi_property: 'Multi-property',
 };
 const CATEGORY_LABEL = {
-  program: 'Program & identity', identity: 'Program & identity', loan: 'Loan & terms', interest: 'Loan & terms',
+  program: 'Program & identity', identity: 'Borrower & property', loan: 'Loan & terms', interest: 'Loan & terms',
   valuation: 'Valuation', sizing: 'Sizing & leverage', cost: 'Purchase & cost', rehab: 'Rehab', experience: 'Experience',
 };
 // A few fields carry no category on the server — pin them to a group by key.
 const KEY_GROUP = {
-  property_type: 'Program & identity', deal_type: 'Program & identity', exit_plan: 'Program & identity',
-  loan_to_be_vested: 'Program & identity', ys_loan_number: 'Program & identity',
+  property_type: 'Program & identity', units: 'Program & identity', deal_type: 'Program & identity',
+  exit_plan: 'Program & identity', loan_to_be_vested: 'Program & identity', ys_loan_number: 'Program & identity',
 };
-const GROUP_ORDER = ['Program & identity', 'Loan & terms', 'Valuation', 'Sizing & leverage', 'Purchase & cost', 'Rehab', 'Experience', 'Other'];
+const GROUP_ORDER = ['Program & identity', 'Borrower & property', 'Loan & terms', 'Valuation', 'Sizing & leverage', 'Purchase & cost', 'Rehab', 'Experience', 'Other'];
 function groupOf(f) { return CATEGORY_LABEL[f.category] || KEY_GROUP[f.key] || 'Other'; }
 
+// EXPLICIT dark colors — never `var(--x)` here. The portal is white-first, and
+// leaning on CSS variables rendered this whole panel white-on-white (owner report
+// 2026-07-26) because `--ink`/`--muted`/… resolved light in this container. Per
+// the CLAUDE.md hard rule, all portal text is dark on white — so every text color
+// below is a concrete dark value that can never render light. `line`/`paper` and
+// the *Bg values are the only light values (borders / subtle pill backgrounds).
 const V = {
-  ink: 'var(--ink,#141B22)', muted: 'var(--muted,#4B585C)', line: 'var(--line,#E7E1D3)', paper: 'var(--paper,#F6F3EC)',
-  good: 'var(--good,#3F7A5B)', crit: 'var(--crit,#B4483C)', amber: 'var(--amber,#B7791F)', teal: 'var(--teal,#2F7F86)',
+  ink: '#141B22', muted: '#3A4550', line: '#D9D2C4', paper: '#F4F1E9',
+  good: '#2E6B4A', crit: '#A83A2F', amber: '#7A5510', teal: '#25636A',
+  critBg: '#F7E7E4', amberBg: '#F6EEDD', goodBg: '#E6F0EA',
 };
 
-function label(f) { return LABELS[f.key] || f.key.replace(/_/g, ' '); }
+function label(f) { return LABELS[f.key] || f.key.replace(/^id_/, '').replace(/_/g, ' '); }
 
 function fmtVal(f, which) {
   const v = f[which];
@@ -72,31 +89,177 @@ function fmtAgo(iso) {
   return `${Math.round(h / 24)}d ago`;
 }
 
-// The status pill for one field.
+// The status pill for one field. Owner-directed 2026-07-26: everything must MATCH,
+// so a difference OR a "no data to compare" both read as attention-needed — only a
+// real match is green.
 function statusOf(f) {
-  if (f.status === 'match') return { fg: V.good, bg: 'rgba(63,122,91,.10)', text: f.resolution ? 'Matches (pulled)' : 'Matches' };
-  if (f.status === 'reference') return { fg: V.muted, bg: V.paper, text: 'Reference' };
-  if (f.status === 'incomparable') return { fg: V.muted, bg: V.paper, text: 'No data to compare' };
-  // mismatch
-  if (!f.open) return { fg: V.good, bg: 'rgba(63,122,91,.10)', text: f.resolution === 'replaced' ? 'Resolved (pulled)' : 'Resolved' };
-  if (f.gate === 'advisory') return { fg: V.amber, bg: 'var(--amber-bg,#F6EEDD)', text: 'Differs (advisory)' };
-  return { fg: V.crit, bg: 'var(--crit-bg,#F6E7E4)', text: "Doesn't match" };
+  if (f.status === 'match') return { fg: V.good, bg: V.goodBg, text: f.resolution === 'replaced' ? 'Matches (pulled)' : 'Matches' };
+  if (f.status === 'reference') return { fg: V.muted, bg: V.paper, text: 'Reference (not checked)' };
+  // NOT APPLICABLE — this field can't exist on this kind of loan (an exit plan on a
+  // bridge / ground-up deal). There is nothing to go and enter, and the section does
+  // NOT wait on it, so it must not look like an attention-needed "no data" row.
+  if (f.status === 'incomparable' && f.naWhenOursMissing && (f.oursNorm === null || f.oursNorm === undefined)) {
+    return { fg: V.muted, bg: V.paper, text: "Doesn't apply to this loan" };
+  }
+  if (f.status === 'incomparable') return { fg: V.amber, bg: V.amberBg, text: 'No data to compare' };
+  // mismatch — any difference now needs to be fixed so the two sides match
+  if (f.resolution === 'accepted') return { fg: V.crit, bg: V.critBg, text: 'Still differs' };
+  return { fg: V.crit, bg: V.critBg, text: "Doesn't match" };
 }
 
 function Pill({ s }) {
   return (
-    <span style={{ fontSize: 10.5, fontWeight: 800, color: s.fg, background: s.bg, border: `1px solid ${s.fg}44`, borderRadius: 999, padding: '2px 9px', whiteSpace: 'nowrap' }}>
+    <span style={{ fontSize: 10.5, fontWeight: 800, color: s.fg, background: s.bg, border: `1px solid ${s.fg}55`, borderRadius: 999, padding: '2px 9px', whiteSpace: 'nowrap' }}>
       {s.text}
     </span>
   );
 }
 
+// A short plain-language legend so staff know what each status means.
+function Legend() {
+  const item = (fg, bg, title, desc) => (
+    <div style={{ display: 'flex', alignItems: 'baseline', gap: 7, marginBottom: 3 }}>
+      <span style={{ flex: '0 0 auto', fontSize: 10, fontWeight: 800, color: fg, background: bg, border: `1px solid ${fg}55`, borderRadius: 999, padding: '1px 8px', whiteSpace: 'nowrap' }}>{title}</span>
+      <span style={{ color: V.muted, fontSize: 11.5 }}>{desc}</span>
+    </div>
+  );
+  return (
+    <details style={{ marginBottom: 10, background: V.paper, border: `1px solid ${V.line}`, borderRadius: 8, padding: '8px 11px' }}>
+      <summary style={{ cursor: 'pointer', color: V.ink, fontWeight: 700, fontSize: 12 }}>What these mean</summary>
+      <div style={{ marginTop: 7 }}>
+        {item(V.good, V.goodBg, 'Matches', 'Our file and Encompass agree on this — good.')}
+        {item(V.crit, V.critBg, "Doesn't match", 'The two do not agree. Fix it (on either side) so they match — this holds the term sheet.')}
+        {item(V.amber, V.amberBg, 'No data to compare', 'Encompass has nothing entered for this. Add it in Encompass so it can be checked — an empty field is NOT a pass.')}
+        {item(V.muted, V.paper, 'Reference', 'Shown for context only — not checked, never holds the term sheet.')}
+        <div style={{ color: V.ink, fontSize: 11.5, fontWeight: 700, marginTop: 6 }}>
+          Every checked field must say “Matches” before a term sheet can be issued.
+        </div>
+      </div>
+    </details>
+  );
+}
+
+
+// SUPER-ADMIN troubleshooting view (owner-directed 2026-07-26). Shows the RAW data
+// Encompass actually sent for this file, what each piece maps to, and a plain
+// sentence for why a row isn't matching — so a wrong/missing field id is obvious
+// instead of guessed at. Read-only; SSN values are redacted server-side.
+function RawTroubleshoot({ appId }) {
+  const [open, setOpen] = useState(false);
+  const [d, setD] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const load = useCallback(async () => {
+    setBusy(true); setErr('');
+    try { setD(await api.encompassRaw(appId)); }
+    catch (e) { setErr(e && e.message ? e.message : 'Could not load the raw data.'); }
+    finally { setBusy(false); }
+  }, [appId]);
+  const th = { textAlign: 'left', padding: '5px 8px', color: V.muted, fontWeight: 800, fontSize: 10.5, borderBottom: `1px solid ${V.line}`, whiteSpace: 'nowrap' };
+  const td = { padding: '5px 8px', color: V.ink, fontSize: 11.5, borderBottom: `1px solid ${V.line}`, verticalAlign: 'top' };
+  return (
+    <div style={{ marginTop: 14, border: `1px solid ${V.line}`, borderRadius: 8, background: V.paper }}>
+      <button
+        type="button"
+        onClick={() => { const n = !open; setOpen(n); if (n && !d && !busy) load(); }}
+        style={{ width: '100%', textAlign: 'left', background: 'transparent', border: 0, cursor: 'pointer', padding: '9px 11px', color: V.ink, fontWeight: 800, fontSize: 12 }}
+      >
+        {open ? '▾' : '▸'} Troubleshoot — show the raw Encompass data (super-admin)
+      </button>
+      {open && (
+        <div style={{ padding: '0 11px 11px' }}>
+          <div style={{ color: V.muted, fontSize: 11.5, marginBottom: 8 }}>
+            Exactly what Encompass sent us for this file, what each value maps to, and why a row isn’t matching.
+            Read-only. Social Security numbers are never shown here.
+          </div>
+          {busy && <div style={{ color: V.muted, fontSize: 12 }}>Loading…</div>}
+          {err && <div style={{ color: V.crit, fontSize: 12 }}>{err}</div>}
+          {d && (
+            <>
+              <div style={{ color: V.ink, fontSize: 11.5, marginBottom: 6 }}>
+                Encompass returned <b>{d.rawFieldCount}</b> mapped field(s).{' '}
+                {d.missingFromEncompass && d.missingFromEncompass.length > 0 && (
+                  <span style={{ color: V.amber }}>
+                    <b>{d.missingFromEncompass.length}</b> field(s) came back empty — see “Nothing came back” below.
+                  </span>
+                )}
+              </div>
+              {d.missingFromEncompass && d.missingFromEncompass.length > 0 && (
+                <details style={{ marginBottom: 10 }}>
+                  <summary style={{ cursor: 'pointer', color: V.ink, fontWeight: 700, fontSize: 12 }}>
+                    Nothing came back from Encompass ({d.missingFromEncompass.length})
+                  </summary>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 6, background: '#fff' }}>
+                    <thead><tr><th style={th}>Field</th><th style={th}>Encompass field id</th><th style={th}>Our value</th></tr></thead>
+                    <tbody>
+                      {d.missingFromEncompass.map((r) => (
+                        <tr key={r.key}>
+                          <td style={td}>{LABELS[r.key] || r.label || r.key}</td>
+                          <td style={td}><code>{r.encompassFieldId || '—'}</code></td>
+                          <td style={td}>{r.ours == null || r.ours === '' ? '—' : String(r.ours)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </details>
+              )}
+              <details style={{ marginBottom: 10 }}>
+                <summary style={{ cursor: 'pointer', color: V.ink, fontWeight: 700, fontSize: 12 }}>
+                  Raw values Encompass sent ({d.rawFieldCount})
+                </summary>
+                <div style={{ maxHeight: 320, overflow: 'auto', marginTop: 6 }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', background: '#fff' }}>
+                    <thead><tr><th style={th}>Encompass field</th><th style={th}>Raw value</th><th style={th}>Maps to</th></tr></thead>
+                    <tbody>
+                      {d.raw.map((r) => (
+                        <tr key={r.encompassFieldId}>
+                          <td style={td}><code>{r.encompassFieldId}</code></td>
+                          <td style={{ ...td, wordBreak: 'break-word' }}>{typeof r.rawValue === 'object' ? JSON.stringify(r.rawValue) : String(r.rawValue)}</td>
+                          <td style={td}>{r.mapsToField ? (LABELS[r.mapsToField] || r.mapsToField) : <span style={{ color: V.muted }}>not mapped</span>}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+              <details>
+                <summary style={{ cursor: 'pointer', color: V.ink, fontWeight: 700, fontSize: 12 }}>
+                  Why each field is / isn’t matching ({d.rows.length})
+                </summary>
+                <div style={{ maxHeight: 360, overflow: 'auto', marginTop: 6 }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', background: '#fff' }}>
+                    <thead><tr><th style={th}>Field</th><th style={th}>Ours</th><th style={th}>Encompass</th><th style={th}>After tidying up</th><th style={th}>Why</th></tr></thead>
+                    <tbody>
+                      {d.rows.map((r) => (
+                        <tr key={r.key}>
+                          <td style={td}>{LABELS[r.key] || r.label || r.key}<div style={{ color: V.muted, fontSize: 10 }}><code>{r.encompassFieldId || '—'}</code></div></td>
+                          <td style={td}>{r.ours == null || r.ours === '' ? '—' : String(r.ours)}</td>
+                          <td style={td}>{r.theirs == null || r.theirs === '' ? '—' : String(r.theirs)}</td>
+                          <td style={{ ...td, color: V.muted }}>{String(r.oursNorm ?? '—')} vs {String(r.theirsNorm ?? '—')}</td>
+                          <td style={td}>{r.why}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function EncompassSyncPanel({ appId }) {
+  const { role } = useAuth();
+  const isSuper = role === 'super_admin';
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
-  const [busy, setBusy] = useState('');       // fieldKey being replaced, or 'refresh'
+  const [busy, setBusy] = useState('');       // fieldKey being replaced, 'refresh', or 'loan'
   const [flash, setFlash] = useState('');
+  const [loanInput, setLoanInput] = useState('');
 
   const load = useCallback(async () => {
     setErr('');
@@ -121,18 +284,34 @@ export default function EncompassSyncPanel({ appId }) {
     finally { setBusy(''); }
   }, [appId, load]);
 
+  // Type the loan number → set it (the server saves it AND pulls Encompass) → reload.
+  const submitLoan = useCallback(async () => {
+    const v = (loanInput || '').trim();
+    if (!v) return;
+    setBusy('loan'); setErr(''); setFlash('');
+    try {
+      await api.staffSetLoanNumber(appId, v);
+      await load();  // the set-loan-number route pulls Encompass, so the results appear
+      setLoanInput('');
+      setFlash('Loan number saved — syncing with Encompass.');
+    } catch (e) {
+      setErr(e.message || 'Could not set the loan number.');
+    } finally { setBusy(''); }
+  }, [appId, loanInput, load]);
+
   if (loading) return <div style={{ color: V.muted, fontSize: 13 }}>Loading the Encompass comparison…</div>;
 
   const fields = (data && Array.isArray(data.fields)) ? data.fields : [];
   const sum = (data && data.summary) || {};
   const hasLoan = !!(data && data.hasLoan);
+  const notPassing = Number(sum.notPassing || 0);
 
   // Gate banner.
   let banner = null;
-  if (hasLoan && sum.openBlocking > 0) {
-    banner = { fg: V.crit, bg: 'var(--crit-bg,#F6E7E4)', text: `${sum.openBlocking} field${sum.openBlocking === 1 ? '' : 's'} must match (or be resolved) before a term sheet can be issued.` };
+  if (hasLoan && notPassing > 0) {
+    banner = { fg: V.crit, bg: V.critBg, text: `${notPassing} field${notPassing === 1 ? '' : 's'} must match Encompass (or have their data entered in Encompass) before a term sheet can be issued.` };
   } else if (hasLoan) {
-    banner = { fg: V.good, bg: 'rgba(63,122,91,.10)', text: 'Encompass findings are clear — nothing here is blocking the term sheet.' };
+    banner = { fg: V.good, bg: V.goodBg, text: 'Everything matches Encompass — this section is passed. A term sheet can be issued.' };
   }
 
   // Split reference-only fields to the bottom.
@@ -140,58 +319,77 @@ export default function EncompassSyncPanel({ appId }) {
   const refFields = fields.filter((f) => f.compare === 'reference');
 
   return (
-    <div style={{ fontSize: 13 }}>
+    <div style={{ fontSize: 13, color: V.ink }}>
       {/* header */}
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10, marginBottom: 10 }}>
         <div style={{ flex: 1, minWidth: 200 }}>
           <div style={{ fontSize: 12, color: V.muted }}>
             {data && data.loanNumber ? <>Loan #<b style={{ color: V.ink }}>{data.loanNumber}</b> · </> : null}
             {hasLoan ? <>read from Encompass {fmtAgo(data.pulledAt)}</> : 'no Encompass loan pulled yet'}
-            {data && data.priced === false ? ' · file not yet priced (some fields deferred)' : ''}
+            {data && data.priced === false ? ' · file not yet priced (some fields will show no data)' : ''}
           </div>
         </div>
-        <button onClick={refresh} disabled={!!busy}
-          style={{ fontSize: 12, fontWeight: 700, color: V.teal, background: 'transparent', border: `1px solid ${V.teal}66`, borderRadius: 8, padding: '5px 11px', cursor: busy ? 'default' : 'pointer' }}>
-          {busy === 'refresh' ? 'Refreshing…' : '↻ Refresh from Encompass'}
-        </button>
+        {hasLoan && (
+          <button onClick={refresh} disabled={!!busy}
+            style={{ fontSize: 12, fontWeight: 700, color: V.teal, background: 'transparent', border: `1px solid ${V.teal}66`, borderRadius: 8, padding: '5px 11px', cursor: busy ? 'default' : 'pointer' }}>
+            {busy === 'refresh' ? 'Refreshing…' : '↻ Refresh from Encompass'}
+          </button>
+        )}
       </div>
 
       {banner && (
-        <div style={{ fontSize: 12.5, fontWeight: 700, color: banner.fg, background: banner.bg, border: `1px solid ${banner.fg}44`, borderRadius: 8, padding: '8px 11px', marginBottom: 10 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: banner.fg, background: banner.bg, border: `1px solid ${banner.fg}55`, borderRadius: 8, padding: '8px 11px', marginBottom: 10 }}>
           {banner.text}
         </div>
       )}
       {flash && <div style={{ fontSize: 12, color: V.good, marginBottom: 8 }}>{flash}</div>}
       {err && <div style={{ fontSize: 12, color: V.crit, marginBottom: 8 }}>{err}</div>}
 
+      {hasLoan && <Legend />}
+
       {data && !hasLoan && (
-        <div style={{ color: V.muted, fontSize: 12.5, background: V.paper, border: `1px solid ${V.line}`, borderRadius: 8, padding: '10px 12px' }}>
-          No Encompass loan is linked to this file yet. Set the file's loan number (it pulls automatically), or press “Refresh from Encompass”.
-          {data.lastError ? <div style={{ marginTop: 5, color: V.crit }}>Last attempt: {data.lastError}</div> : null}
+        <div style={{ color: V.ink, fontSize: 12.5, background: V.paper, border: `1px solid ${V.line}`, borderRadius: 8, padding: '12px 13px' }}>
+          <div style={{ fontWeight: 700, marginBottom: 6 }}>No Encompass loan is linked to this file yet.</div>
+          <div style={{ color: V.muted, marginBottom: 9 }}>Type the loan number below — it saves and syncs with Encompass right away, and the comparison appears here.</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+            <input
+              value={loanInput}
+              onChange={(e) => setLoanInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') submitLoan(); }}
+              placeholder="Loan number (e.g. YSCAP…)"
+              disabled={busy === 'loan'}
+              style={{ flex: '1 1 220px', minWidth: 180, fontSize: 15, color: V.ink, background: '#fff', border: `1px solid ${V.line}`, borderRadius: 8, padding: '8px 10px' }}
+            />
+            <button onClick={submitLoan} disabled={busy === 'loan' || !loanInput.trim()}
+              style={{ fontSize: 13, fontWeight: 700, color: '#fff', background: V.teal, border: 'none', borderRadius: 8, padding: '9px 15px', cursor: (busy === 'loan' || !loanInput.trim()) ? 'default' : 'pointer', whiteSpace: 'nowrap' }}>
+              {busy === 'loan' ? 'Syncing…' : 'Sync with Encompass'}
+            </button>
+          </div>
+          {data.lastError ? <div style={{ marginTop: 8, color: V.crit, fontSize: 12 }}>Last attempt: {data.lastError}</div> : null}
         </div>
       )}
 
       {hasLoan && (
         <>
           {/* summary chips */}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8, fontSize: 11 }}>
-            <span style={{ color: V.muted }}>{sum.compared} compared:</span>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8, fontSize: 11, alignItems: 'baseline' }}>
+            <span style={{ color: V.muted }}>{sum.compared} checked:</span>
             <span style={{ color: V.good, fontWeight: 700 }}>{sum.matched} match</span>
-            {sum.openBlocking > 0 && <span style={{ color: V.crit, fontWeight: 700 }}>· {sum.openBlocking} don't match</span>}
-            {sum.openAdvisory > 0 && <span style={{ color: V.amber, fontWeight: 700 }}>· {sum.openAdvisory} advisory</span>}
-            {sum.resolved > 0 && <span style={{ color: V.good, fontWeight: 700 }}>· {sum.resolved} resolved</span>}
-            {sum.incomparable > 0 && <span style={{ color: V.muted }}>· {sum.incomparable} no data</span>}
+            {sum.mismatched - (sum.resolved || 0) > 0 && <span style={{ color: V.crit, fontWeight: 700 }}>· {sum.mismatched - (sum.resolved || 0)} don&apos;t match</span>}
+            {sum.resolved > 0 && <span style={{ color: V.crit, fontWeight: 700 }}>· {sum.resolved} still differ</span>}
+            {sum.incomparable > 0 && <span style={{ color: V.amber, fontWeight: 700 }}>· {sum.incomparable} no data</span>}
           </div>
 
           <ComparisonTable fields={compareFields} busy={busy} onReplace={replace} withActions />
           {refFields.length > 0 && (
             <div style={{ marginTop: 12 }}>
               <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: V.muted, margin: '0 0 4px' }}>
-                Reference (read from Encompass, not matched)
+                Reference (read from Encompass, not checked)
               </div>
               <ComparisonTable fields={refFields} busy={busy} onReplace={replace} withActions={false} />
             </div>
           )}
+          {isSuper && <RawTroubleshoot appId={appId} />}
         </>
       )}
     </div>
@@ -206,7 +404,7 @@ function Row({ f, busy, onReplace, withActions }) {
     <tr style={{ borderTop: `1px solid ${V.line}` }}>
       <td style={{ padding: '7px 10px', color: V.ink }}>{label(f)}</td>
       <td style={{ padding: '7px 10px', color: V.ink, fontVariantNumeric: 'tabular-nums' }}>{fmtVal(f, 'ours')}</td>
-      <td style={{ padding: '7px 10px', color: f.status === 'mismatch' && f.open ? V.ink : V.muted, fontVariantNumeric: 'tabular-nums' }}>{fmtVal(f, 'theirs')}</td>
+      <td style={{ padding: '7px 10px', color: V.ink, fontVariantNumeric: 'tabular-nums' }}>{fmtVal(f, 'theirs')}</td>
       <td style={{ padding: '7px 10px' }}><Pill s={s} /></td>
       {withActions && (
         <td style={{ padding: '7px 10px', textAlign: 'right' }}>
@@ -237,7 +435,7 @@ function ComparisonTable({ fields, busy, onReplace, withActions }) {
     : ['__flat'];
   return (
     <div style={{ overflowX: 'auto', border: `1px solid ${V.line}`, borderRadius: 8 }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, minWidth: 560 }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, minWidth: 560, color: V.ink }}>
         <thead>
           <tr style={{ textAlign: 'left', color: V.muted, fontSize: 11 }}>
             <th style={{ padding: '6px 10px', fontWeight: 700 }}>Field</th>

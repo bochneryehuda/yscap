@@ -26,6 +26,8 @@
 
 const client = require('./client');
 const db = require('../db');
+const cfg = require('../config');
+const identity = require('../clickup/identity');
 
 // Fields the pipeline-search response should return alongside the loan GUID.
 // Keeping this modest keeps the response small and gives us the natural key +
@@ -111,17 +113,33 @@ const PII_SCRUB_PATHS = [
   ['applications', '*', 'coBorrower', 'taxIdentificationIdentifier'],
 ];
 
+// Replace a party's plaintext SSN with a PII-SAFE keyed HMAC hash + last-4 BEFORE
+// it is stored, so applications.encompass_extra can support a hash-based SSN
+// comparison (owner-directed 2026-07-26: compare borrower AND co-borrower SSN)
+// WITHOUT ever persisting the raw number. `_ssnHash` is HMAC-SHA256 of the 9
+// digits under cfg.ssnMatchKey — the SAME keyed hash our own borrowers.ssn_hash
+// uses (src/clickup/identity.ssnHash), so the two are directly comparable; it is
+// one-way (not reversible without the key). `_ssnLast4` is the last four for
+// masked display only. The full `taxIdentificationIdentifier` is always deleted.
+function _hashAndStripSsn(party) {
+  if (!party || typeof party !== 'object') return;
+  const raw = party.taxIdentificationIdentifier;
+  if (raw != null && raw !== '') {
+    const h = identity.ssnHash(raw, cfg.ssnMatchKey);
+    if (h) party._ssnHash = h;
+    const d = String(raw).replace(/\D/g, '');
+    if (d.length >= 4) party._ssnLast4 = d.slice(-4);
+  }
+  delete party.taxIdentificationIdentifier; // never store the plaintext SSN
+}
+
 function _scrubForStorage(loan) {
   if (!loan || typeof loan !== 'object') return loan;
   const out = JSON.parse(JSON.stringify(loan));
   const apps = Array.isArray(out.applications) ? out.applications : [];
   for (const app of apps) {
-    if (app && app.borrower && typeof app.borrower === 'object') {
-      delete app.borrower.taxIdentificationIdentifier;
-    }
-    if (app && app.coBorrower && typeof app.coBorrower === 'object') {
-      delete app.coBorrower.taxIdentificationIdentifier;
-    }
+    if (app && app.borrower && typeof app.borrower === 'object') _hashAndStripSsn(app.borrower);
+    if (app && app.coBorrower && typeof app.coBorrower === 'object') _hashAndStripSsn(app.coBorrower);
   }
   return out;
 }

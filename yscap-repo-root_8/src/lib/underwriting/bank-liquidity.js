@@ -184,7 +184,15 @@ function bankStem(s) {
   // against "us bank" — two different word sets, so two months of one account never reunited and the
   // balance was counted twice (found by ground-truth fuzzing, 2026-07-26). Run-together initials are
   // one token: "u s" → "us", "j p morgan" → "jpmorgan", "m t" → "mt".
-  const raw = letters.replace(/\b([a-z])\s+(?=[a-z]\b)/g, '$1');
+  //
+  // The ampersand has to go first. "M&T Bank" loses its "&" to the punctuation strip and becomes
+  // "m t bank", but "M and T Bank" keeps a spelled-out "and" in the middle — so collapsing initials
+  // gave "mt" against "m and t" and the two spellings of ONE bank stopped matching, which is the
+  // owner's double-count all over again. Caught in re-audit: this is a case the code got RIGHT before
+  // the initials collapse was added, so the collapse has to handle it rather than trade one bank for
+  // another. A standalone "and" between initials is punctuation, not a word.
+  const joined = letters.replace(/\b([a-z])\s+and\s+(?=[a-z]\b)/g, '$1 ');
+  const raw = joined.replace(/\b([a-z])\s+(?=[a-z]\b)/g, '$1');
   const stripped = raw.replace(BANK_NOISE, ' ').replace(/\s+/g, ' ').trim();
   // "US Bank", "Trust Bank", "Credit Union" are made ENTIRELY of words the noise list removes, so
   // stripping leaves nothing and every comparison bailed out — two statements from the same US Bank
@@ -517,9 +525,18 @@ function assessBankLiquidity(ctx = {}, extractions = [], opts = {}) {
           const r = rankOf(s);
           if (!best || rankGt(r, bestRank)) { best = s; bestRank = r; }
         }
-        byAccount.set(key, Object.assign({}, g, {
-          rep: best, rank: bestRank, repEnd: bestRank[0] === -Infinity ? null : bestRank[0],
-        }));
+        // ONLY EVER DOWNWARD. Narrowing to the proven month is meant to drop the months that might
+        // belong to the numbered account — so it may lower the counted balance, never raise it. When
+        // the proven month happens to hold MORE than the month currently counted, swapping it in
+        // would invent money: found in re-audit on a group whose balances fall month to month
+        // (Feb $50,000 proven, March $10,000 actually latest — the rewrite reported $50,000).
+        const provenBal = num(best && best.f.closingBalance);
+        const repBal = num(g.rep.f.closingBalance);
+        if (best && (repBal == null || (provenBal != null && provenBal <= repBal))) {
+          byAccount.set(key, Object.assign({}, g, {
+            rep: best, rank: bestRank, repEnd: bestRank[0] === -Infinity ? null : bestRank[0],
+          }));
+        }
       }
       continue;
     }

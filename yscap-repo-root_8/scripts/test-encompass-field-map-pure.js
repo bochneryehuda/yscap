@@ -106,7 +106,10 @@ assert.strictEqual(m.compareField('deal_type', 'flip', 'Fix and Flip').status, '
 assert.strictEqual(m.compareField('deal_type', 'flip', 'Rehab').status, 'match', 'Rehab → flip (owner)');
 assert.strictEqual(m.compareField('deal_type', 'fix-and-hold', 'Fix and Hold').status, 'match');
 assert.strictEqual(m.compareField('deal_type', 'flip', 'New Construction').status, 'mismatch');
-assert.strictEqual(m.compareField('rehab_type', 'Cosmetic', 'Light Rehab').status, 'match', 'Cosmetic ≡ Light');
+assert.strictEqual(m.compareField('rehab_type', 'Cosmetic', 'Cosmetic Rehab').status, 'match', 'Cosmetic ≡ Cosmetic Rehab');
+assert.strictEqual(m.compareField('rehab_type', 'Moderate', 'Light Rehab').status, 'match', 'Moderate ≡ Light Rehab');
+assert.strictEqual(m.compareField('rehab_type', 'Ground-up construction', 'New construction').status, 'match', 'ground-up ≡ New construction');
+assert.strictEqual(m.compareField('rehab_type', 'Cosmetic', 'Light Rehab').status, 'mismatch', 'Cosmetic is NOT light any more');
 assert.strictEqual(m.compareField('rehab_type', 'Adding SF', 'Expansion').status, 'match', 'Adding SF ≡ Expansion');
 assert.strictEqual(m.compareField('rehab_type', 'Heavy', 'Heavy Rehab').status, 'match');
 assert.strictEqual(m.compareField('accrual_type', 'non_dutch', 'Drawn').status, 'match');
@@ -120,12 +123,94 @@ assert.strictEqual(m.compareField('maturity_date', '2027-06-22', '2027-06-22T00:
 assert.strictEqual(m.compareField('maturity_date', '2027-06-22', '2027-06-23').status, 'mismatch');
 ok('date compares to the day (tolerates a time component)');
 
-// ── Reference fields: surfaced, never compared ──────────────────────────────
-assert.strictEqual(m.compareField('exit_plan', 'sell', 'Refinance: Rental').status, 'reference');
-assert.strictEqual(m.compareField('ref_pitia', 1, 2).status, 'reference');
-assert.strictEqual(m.compareField('ys_loan_number', 'A', 'B').status, 'reference', 'the natural key is not a finding');
+// ── Exit plan is now a REAL match (owner-directed 2026-07-26) ───────────────
+// fix & flip ≡ Sale; fix & hold / rental ≡ Rental/Refinance.
+assert.strictEqual(m.compareField('exit_plan', 'sell', 'Sale').status, 'match', 'flip → Sale matches');
+assert.strictEqual(m.compareField('exit_plan', 'hold', 'Refinance: Rental').status, 'match', 'hold → Rental matches');
+assert.strictEqual(m.compareField('exit_plan', 'sell', 'Refinance: Rental').status, 'mismatch', 'a real exit disagreement still mismatches');
+ok('exit plan is matched (flip→Sale, hold→Rental), no longer reference-only');
+
+// ── Empty ↔ zero is a MATCH on a numeric field (owner-directed 2026-07-26) ──
+assert.strictEqual(m.compareField('assignment_fee', null, 0).status, 'match', 'our blank vs Encompass 0 is a match');
+assert.strictEqual(m.compareField('assignment_fee', 0, null).status, 'match', 'our 0 vs Encompass blank is a match');
+assert.strictEqual(m.compareField('financed_interest_reserve', null, 0).status, 'match', 'blank vs 0 reserve matches');
+assert.strictEqual(m.compareField('assignment_fee', null, 25500).status, 'incomparable', 'blank vs a REAL number is still "no data"');
+// The empty==zero rule is SCOPED to fields where 0 legitimately means "none".
+// On a block-gated number where 0 is nonsense, a placeholder 0 must NOT read as a match.
+for (const k of ['loan_amount', 'purchase_price', 'as_is_value', 'arv', 'units', 'rehab_budget']) {
+  assert.strictEqual(m.compareField(k, null, 0).status, 'incomparable', `${k}: blank vs a placeholder 0 is NOT a match`);
+}
+assert.strictEqual(m.compareField('assignment_fee', null, null).status, 'incomparable', 'blank on both sides stays "no data"');
+ok('an empty value equals zero on money fields; blank-vs-a-real-number still defers');
+
+// ── Owner re-mapped 2026-07-26: Cosmetic is its OWN Encompass bucket now ───
+assert.strictEqual(m.compareField('rehab_type', 'Cosmetic', 'Cosmetic Rehab').status, 'match');
+assert.strictEqual(m.compareField('rehab_type', 'Moderate', 'Light Rehab').status, 'match', 'moderate collapses onto Encompass Light');
+assert.strictEqual(m.compareField('rehab_type', 'Heavy', 'Heavy Rehab').status, 'match');
+assert.strictEqual(m.compareField('rehab_type', 'expansion', 'Expansion').status, 'match');
+assert.strictEqual(m.compareField('rehab_type', 'Heavy', 'Light Rehab').status, 'mismatch');
+// The app's REAL dropdown values (EditFileDetails REHAB_TYPES) must all resolve —
+// 'Heavy / gut rehab' and 'Ground-up construction' previously mapped to NOTHING, so
+// every heavy / ground-up file read "no data to compare" forever.
+assert.strictEqual(m.compareField('rehab_type', 'Heavy / gut rehab', 'Heavy Rehab').status, 'match');
+
+assert.strictEqual(m.compareField('rehab_type', 'Adding square footage', 'Expansion').status, 'match');
+assert.strictEqual(m.compareField('rehab_type', 'Heavy / gut rehab', 'Light Rehab').status, 'mismatch');
+ok('every real rehab-type dropdown value resolves (heavy/gut + ground-up construction no longer dark)');
+
+// LIVE-VERIFIED 2026-07-26 against the tenant instance: vesting (1859) and
+// origination (388) live at these exact paths, and Encompass appends the entity's
+// LEGAL DESCRIPTION to the vesting name. Both were previously unreadable.
+{
+  const live = m.extractFields({
+    closingDocument: { finalVestingDescription: 'LAYBACK LLC, A LIMITED LIABILITY COMPANY' },
+    closingCost: { gfe2010: { loanOriginationPercentage: 2 } },
+  });
+  assert.strictEqual(live.vesting_llc, 'LAYBACK LLC, A LIMITED LIABILITY COMPANY', 'vesting reads from closingDocument.finalVestingDescription');
+  assert.strictEqual(live.origination_pct, 2, 'origination reads from closingCost.gfe2010.loanOriginationPercentage (already a percent)');
+  // A full loan with NO customFields[] must still resolve its standard fields.
+  assert.strictEqual(m.extractFields({ loanNumber: 'YS-1' }).ys_loan_number, 'YS-1');
+  // …and a flat {fields:{}} envelope is still read as-is (back-compat).
+  assert.strictEqual(m.extractFields({ fields: { '1109': { value: '450000' } } }).loan_amount, 450000);
+}
+// The appended legal description must not defeat the name match.
+assert.strictEqual(m.compareField('vesting_llc', 'Layback LLC', 'LAYBACK LLC, A LIMITED LIABILITY COMPANY').status, 'match');
+assert.strictEqual(m.compareField('vesting_llc', 'ABC Holdings LLC', 'ABC HOLDINGS LLC, A NEW YORK LIMITED LIABILITY COMPANY').status, 'match');
+assert.strictEqual(m.compareField('vesting_llc', 'Layback LLC', 'OTHER HOLDINGS LLC, A LIMITED LIABILITY COMPANY').status, 'mismatch', 'a genuinely different entity still mismatches');
+ok('vesting (1859) + origination (388) read from their LIVE-VERIFIED paths; the legal description never defeats the match');
+
+// A BLANK customFields cell must not shadow a good standard-field loanPath —
+// that is precisely how vesting (1859) / origination (388) read as "no data".
+{
+  const withBlank = m.extractFields({
+    customFields: [{ fieldName: '1859', value: '' }, { fieldName: '388', value: '' }],
+    vesting: { entityName: 'ABC Holdings LLC' }, originationFeePercent: 1.25,
+  });
+  assert.strictEqual(withBlank.vesting_llc, 'ABC Holdings LLC', 'blank custom cell falls through to the loanPath');
+  assert.strictEqual(withBlank.origination_pct, 1.25);
+  // A REAL custom value still wins over the loanPath.
+  const withReal = m.extractFields({
+    customFields: [{ fieldName: '388', value: '2.5' }], originationFeePercent: 1.25,
+  });
+  assert.strictEqual(withReal.origination_pct, 2.5, 'a real custom-field value is never overridden by a loanPath');
+}
+ok('rehab type maps onto Encompass Light / Heavy / Expansion');
+
+// ── Reference fields: surfaced, never compared; PITIA removed ───────────────
+assert.strictEqual(m.compareField('ref_cash_to_close', 1, 2).status, 'reference');
+assert.ok(!m.BY_KEY.ref_pitia, 'PITIA was removed from the registry (owner-directed 2026-07-26 — wrong field)');
 assert.ok(m.comparableKeys().every((k) => m.BY_KEY[k].compare !== 'reference'), 'comparableKeys excludes reference fields');
-ok('reference fields are surfaced but never produce a finding');
+ok('reference fields are surfaced but never produce a finding; PITIA is gone');
+
+// ── Loan number + units are now MATCHED (owner-directed 2026-07-26) ──────────
+assert.strictEqual(m.BY_KEY.ys_loan_number.gate, m.GATE.BLOCK, 'loan number is now a matched (block) field, not reference');
+assert.strictEqual(m.compareField('ys_loan_number', 'YSCAP1', 'YSCAP1').status, 'match', 'equal loan numbers match');
+assert.strictEqual(m.compareField('ys_loan_number', 'YSCAP1', 'YSCAP2').status, 'mismatch', 'different loan numbers mismatch');
+assert.ok(m.BY_KEY.units, 'units is now a registry field');
+assert.strictEqual(m.BY_KEY.units.encompassFieldId, '16', 'units maps to Encompass field 16');
+assert.strictEqual(m.compareField('units', 3, 3).status, 'match');
+assert.strictEqual(m.compareField('units', 2, 4).status, 'mismatch');
+ok('loan number + units (field 16) are matched fields now');
 
 // ── Gate classification (WO-E) ──────────────────────────────────────────────
 assert.strictEqual(m.BY_KEY.loan_amount.gate, m.GATE.BLOCK, 'money mismatch blocks the term sheet');
@@ -139,7 +224,8 @@ for (const k of ['actual_ltc', 'actual_arv_ltv', 'actual_initial_ltv', 'max_ltc'
 // lossy-vocabulary enums surface but never block
 assert.strictEqual(m.BY_KEY.property_type.gate, m.GATE.ADVISORY, 'property type is advisory (lossy category)');
 assert.strictEqual(m.BY_KEY.rehab_type.gate, m.GATE.ADVISORY, 'rehab type is advisory (5 buckets vs 3)');
-assert.strictEqual(m.BY_KEY.exit_plan.gate, m.GATE.REFERENCE);
+assert.strictEqual(m.BY_KEY.exit_plan.gate, m.GATE.ADVISORY, 'exit plan is now matched (advisory gate), no longer reference-only');
+assert.strictEqual(m.BY_KEY.exit_plan.compare, 'enum', 'exit plan is a real enum compare');
 ok('gate classification: money/date block; all actual/cap percents + lossy/derived enums advisory; leftovers reference');
 
 // ── property_type compares MEANING (value-mapped), not raw strings ──────────
@@ -165,13 +251,26 @@ assert.ok('CX.REHABBUDGET' in flatPII.fields, 'a registry custom field IS surfac
 ok('flattenLoan surfaces only registry fields (unmapped/PII custom fields dropped)');
 
 // ── PII governance ──────────────────────────────────────────────────────────
-assert.ok(!m.REGISTRY.some((e) => /MIDDLESCORE|\bFICO\b|SSN|TAXIDENT|CAPITALPROVIDER|WHICHINVESTOR/i.test(e.encompassFieldId)),
+assert.ok(!m.REGISTRY.some((e) => /MIDDLESCORE|\bFICO\b|SSN|TAXIDENT|WHICHINVESTOR/i.test(e.encompassFieldId)),
   'no credit / SSN / capital-partner fields in the economics registry');
 const ssn = m.IDENTITY_MAP.find((e) => e.key === 'ssn');
 const dob = m.IDENTITY_MAP.find((e) => e.key === 'date_of_birth');
 assert.ok(ssn && ssn.sensitive === true && ssn.match === 'ssnHash', 'SSN identity is hash-only + sensitive');
 assert.ok(dob && dob.sensitive === true, 'DOB identity is flagged sensitive');
 assert.ok(m.IDENTITY_MAP.find((e) => e.key === 'vesting_llc'), 'identity map includes the 1859 vesting match');
+// Capital provider IS in the registry now (owner-directed 2026-07-26) — a
+// deliberate STAFF-ONLY comparison so the note buyer can't silently disagree with
+// Encompass. Credit score / SSN / tax id stay excluded.
+assert.ok(m.BY_KEY.capital_provider, 'note buyer / capital provider is compared');
+assert.strictEqual(m.BY_KEY.capital_provider.gate, m.GATE.ADVISORY, 'capital provider is advisory (our side is free text)');
+// Encompass dropdown read LIVE 2026-07-26 — every option must resolve.
+for (const [ours, theirs] of [['Fidelis', 'Fidelis Investors'], ['Blue Lake', 'BlueLake'], ['CorrFirst', 'CorrFirst'],
+  ['EMCAP', 'EMCAP'], ['RCN', 'RCN'], ['Roc Capital', 'Roc Capital'], ['Temple View Capital', 'Temple View Capital']]) {
+  assert.strictEqual(m.compareField('capital_provider', ours, theirs).status, 'match', `${ours} should match ${theirs}`);
+}
+assert.strictEqual(m.compareField('capital_provider', 'Fidelis', 'BlueLake').status, 'mismatch', 'a genuinely different buyer still flags');
+ok('note buyer maps onto the live Encompass capital-provider dropdown (Fidelis ≡ Fidelis Investors, EMCAP, …)');
+
 ok('PII governance: economics registry is PII-free; SSN/DOB sensitive; 1859 vesting in identity map');
 
 console.log(`\nWO-A Encompass field-map pure — ${passed} checks passed`);
