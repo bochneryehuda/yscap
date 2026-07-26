@@ -80,6 +80,13 @@ const REGISTRY = Object.freeze([
   // term sheet. (Without this the enum promotion would hard-block every Bridge /
   // Ground-Up file — the same trap funded_date was left as reference to avoid.)
   pull({ key: 'exit_plan', encompassFieldId: 'CX.EXITPLAN', type: 'enum', compare: 'enum', gate: GATE.ADVISORY, valueMap: 'exitPlan', naWhenOursMissing: true, our: 'derived from program/loan_type (flip→sell, hold/rental→hold)', note: 'Exit plan — matched: fix & flip → Sale; fix & hold / DSCR rental → Rental/Refinance' }),
+  // NOTE BUYER / capital provider (owner-directed 2026-07-26 — a deliberate,
+  // documented exception to the 'no capital-partner fields in the registry' rule).
+  // It is compared so a file's note buyer and Encompass's capital provider cannot
+  // silently disagree. STAFF-ONLY by construction: the only surface that renders
+  // these fields is the staff Encompass panel — this name must NEVER reach a
+  // borrower. ADVISORY: our side is free text, so a difference surfaces for a human.
+  pull({ key: 'capital_provider', encompassFieldId: 'CX.CAPITALPROVIDER', type: 'enum', category: 'program', compare: 'enum', gate: GATE.ADVISORY, valueMap: 'capitalProvider', verified: true, our: 'column:lender (note buyer)', note: 'Note buyer / capital provider — STAFF-ONLY. Encompass dropdown read live 2026-07-26: Fidelis Investors / RCN / Roc Capital / Temple View Capital / CorrFirst / BlueLake / EMCAP / Other' }),
   pull({ key: 'loan_to_be_vested', encompassFieldId: 'CX.LOANTOBEVESTED', type: 'enum', compare: 'enum', gate: GATE.ADVISORY, valueMap: 'vesting', our: 'derive(applications.llc_id present → entity)', note: 'Entity vs individual vesting flag' }),
   // ROOT-CAUSE FIX (owner-reported 2026-07-26: "1859 is fully set in Encompass but
   // our system says no data"). 1859 is a NUMBERED STANDARD field, not a custom
@@ -204,6 +211,23 @@ const VALUE_MAPS = Object.freeze({
     'refinance: rental': 'hold', 'refinance: long term': 'hold', 'refinance - rental': 'hold',
     'refinance': 'hold', 'refi': 'hold', 'rent': 'hold', 'rental': 'hold', 'hold': 'hold',
     'rent/refinance': 'hold', 'refinance/rental': 'hold', 'long term rental': 'hold', 'buy and hold': 'hold',
+  },
+  // CX.CAPITALPROVIDER ↔ applications.lender (the NOTE BUYER — STAFF-ONLY, never
+  // shown to a borrower). Encompass's dropdown was read LIVE 2026-07-26:
+  //   Fidelis Investors | RCN | Roc Capital | Temple View Capital | CorrFirst |
+  //   BlueLake | Other | EMCAP
+  // Our names are shorter free text ("Fidelis", "Blue Lake"), so both sides
+  // normalize onto one token. "Fidelis" vs "Fidelis Investors" was the real
+  // mismatch; spacing ("Blue Lake" vs "BlueLake") already collapsed.
+  capitalProvider: {
+    'fidelis': 'fidelis', 'fidelis investors': 'fidelis', 'fidelis investments': 'fidelis', 'fidelis investments llc': 'fidelis',
+    'blue lake': 'bluelake', 'bluelake': 'bluelake', 'blue lake capital': 'bluelake',
+    'corrfirst': 'corrfirst', 'corr first': 'corrfirst',
+    'emcap': 'emcap', 'em cap': 'emcap',
+    'rcn': 'rcn', 'rcn capital': 'rcn',
+    'roc capital': 'roccapital', 'roc': 'roccapital', 'roc360': 'roccapital',
+    'temple view capital': 'templeview', 'temple view': 'templeview', 'templeview': 'templeview',
+    'other': 'other',
   },
   // CX.REHABTYPE ↔ applications.rehab_type (Cosmetic/Moderate/Heavy/Adding SF/Ground-up)
   // Owner-directed 2026-07-26: Encompass only has Light / Heavy / Expansion, so our

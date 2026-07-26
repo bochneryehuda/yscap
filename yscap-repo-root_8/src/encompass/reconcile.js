@@ -121,6 +121,8 @@ function buildOurValues(app, quote, llcName) {
     // a fix & flip exits by SALE; a fix & hold / DSCR rental exits by RENTAL/refi.
     // Anything we can't read confidently stays undefined → "no data", never a guess.
     exit_plan: exitPlanFor(deriveDealType(a.program, a.loan_type)),
+    // Note buyer ↔ Encompass capital provider (STAFF-ONLY — never borrower-facing).
+    capital_provider: nz(a.lender),
     loan_to_be_vested: a.llc_id ? 'Entity' : (a.borrower_id ? 'Individual' : undefined),
     vesting_llc: nz(llcName),
 
@@ -456,7 +458,7 @@ async function computeFindings(appId, dbc) {
             a.loan_amount, a.purchase_price, a.underlying_contract_price, a.assignment_fee,
             a.rehab_budget, a.as_is_value, a.arv, a.ltv, a.rate_pct, a.term, a.maturity_date, a.funded_date,
             a.program, a.loan_type, a.rehab_type, a.accrual_type, a.property_type,
-            a.units, a.property_address, a.co_borrower_id, a.sqft_pre, a.sqft_post,
+            a.units, a.property_address, a.co_borrower_id, a.sqft_pre, a.sqft_post, a.lender,
             a.requested_exp_flips, a.requested_exp_holds, a.requested_exp_ground,
             l.llc_name AS llc_name,
             b.first_name AS b_first_name, b.last_name AS b_last_name,
