@@ -37,6 +37,34 @@ const STAGE = Object.freeze({
 });
 
 /**
+ * PURE — build a COMPACT summary of what a real read produced, for the shadow surface + audit
+ * trail (Phase 3c). Captures only counts + metadata (NO document text, NO PII): provider, model,
+ * confidence, latency, page count, and a rough character count if the pages carry text. Defensive
+ * against any adapter result shape. Returns a small plain object suitable for the artifact `meta`.
+ */
+function summarizeRead(routed) {
+  const r = (routed && routed.result) || {};
+  const pages = Array.isArray(r.pages) ? r.pages : [];
+  let charCount = 0;
+  for (const p of pages) {
+    const t = p && (p.text || p.content);
+    if (typeof t === 'string') charCount += t.length;
+  }
+  return {
+    outcome: (routed && routed.outcome) || 'unknown',
+    provider: (routed && routed.plan && routed.plan.primary && routed.plan.primary.provider) || null,
+    service: (routed && routed.plan && routed.plan.primary && routed.plan.primary.service) || null,
+    modelId: r.modelId || null,
+    modelVersion: r.modelVersion || null,
+    confidence: (typeof r.confidence === 'number' && Number.isFinite(r.confidence)) ? r.confidence : null,
+    latencyMs: (typeof r.latencyMs === 'number' && Number.isFinite(r.latencyMs)) ? r.latencyMs : null,
+    pageCount: pages.length,
+    charCount,
+    warnings: Array.isArray(r.warnings) ? r.warnings.slice(0, 10) : [],
+  };
+}
+
+/**
  * Build the packet-control processor. Returns an async processor(job, ctx) matching the worker's
  * contract: ctx = { db, jq, holder }; returns { status:'completed'|'failed', retryable?, result?, error? }.
  *
@@ -67,6 +95,14 @@ function makePacketControlProcessor(opts = {}) {
 
     const safeStage = async (key, status, detail) => {
       try { await jq.recordStage(db, jobId, key, status, detail || {}); } catch (_e) { /* stage recording is best-effort */ }
+    };
+    // Best-effort artifact recorder (Phase 3c) — persists a compact summary of WHAT the read
+    // produced into document_pipeline_artifacts (a V2 audit table). Never throws; a recording
+    // failure never fails the read. Advisory-only: writes no loan file, no V1 table.
+    const safeArtifact = async (kind, meta) => {
+      try {
+        if (typeof jq.recordArtifact === 'function') await jq.recordArtifact(db, jobId, { kind, meta: meta || {} });
+      } catch (_e) { /* artifact recording is best-effort */ }
     };
 
     try {
@@ -129,6 +165,10 @@ function makePacketControlProcessor(opts = {}) {
             outcome: routed ? routed.outcome : 'unknown',
             confidence: routed && routed.result ? routed.result.confidence : null,
           });
+          // Phase 3c — persist a compact summary of WHAT the read produced (counts + metadata
+          // only, no document text/PII) so the shadow surface can show the real read output.
+          // Advisory: writes only the V2 artifact table. Best-effort (never fails the read).
+          await safeArtifact('ocr_result', summarizeRead(routed));
           // Classification is deferred to a later phase even on the read path; mark pending.
           await safeStage(STAGE.CLASSIFICATION, 'pending', { note: 'classifier stage not yet wired' });
         }
@@ -146,4 +186,4 @@ function makePacketControlProcessor(opts = {}) {
   };
 }
 
-module.exports = { makePacketControlProcessor, STAGE };
+module.exports = { makePacketControlProcessor, STAGE, _internals: { summarizeRead } };

@@ -15,10 +15,15 @@ const PC = require(R + '/src/pipeline/packet-control-processor');
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', m); } };
 
-// Fake job-queue that captures recordStage calls.
+// Fake job-queue that captures recordStage + recordArtifact calls.
 function fakeJq() {
   const stages = [];
-  return { stages, recordStage: async (_db, _id, key, status, detail) => { stages.push({ key, status, detail }); } };
+  const artifacts = [];
+  return {
+    stages, artifacts,
+    recordStage: async (_db, _id, key, status, detail) => { stages.push({ key, status, detail }); },
+    recordArtifact: async (_db, _id, { kind, meta }) => { artifacts.push({ kind, meta }); },
+  };
 }
 // Fake router with a controllable plan + a recordRoute spy.
 function fakeRouter(plan, recorded) {
@@ -66,6 +71,9 @@ function fakeRouter(plan, recorded) {
     ok(keys.includes('classification:pending'), 'read path: classification pending (not yet wired)');
     ok(loadedFor === 'doc-1', 'read path: loadBytes called with the job document id');
     ok(sawRequest && sawRequest.buffer && sawRequest.mimeType === 'application/pdf', 'read path: the loaded bytes are passed to routeDocument as the request');
+    const art = jq.artifacts.find((a) => a.kind === 'ocr_result');
+    ok(!!art, 'read path: an ocr_result artifact is recorded (Phase 3c)');
+    ok(art && art.meta && art.meta.confidence === 0.88 && art.meta.outcome === 'completed', 'read path: artifact meta carries the read confidence + outcome');
   }
 
   // ---- READ PATH but bytes UNAVAILABLE (loadBytes → null) → read stages not_applicable, no adapter call ----
@@ -80,6 +88,7 @@ function fakeRouter(plan, recorded) {
     const keys = jq.stages.map((s) => s.key + ':' + s.status);
     ok(keys.includes('ocr_layout:not_applicable') && keys.includes('classification:not_applicable'), 'bytes unavailable: read stages recorded not_applicable');
     ok(routed === false, 'bytes unavailable: the adapter is NOT called with an empty request');
+    ok(jq.artifacts.length === 0, 'bytes unavailable: no ocr_result artifact recorded (nothing was read)');
   }
 
   // ---- READ PATH with bytes ALREADY in the payload.request → loadBytes is not called ----
