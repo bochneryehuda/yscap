@@ -187,6 +187,29 @@ function scopeClause(req, alias = 'a') {
   return { where: `AND ${VISIBLE_OFFICERS_SQL(alias, '$SCOPE')}`, params: [req.actor.id] };
 }
 
+// Which BORROWERS (people, not files) a staffer may see. Owner-reported
+// 2026-07-26: "a loan officer looking at his borrowers section only sees the
+// people who took an RTL file with him." That was literally true — this scope
+// used to be `EXISTS (a loan FILE assigned to me)` and nothing else, and only
+// RTL ClickUp cards ever become loan files. Every DSCR / long-term card builds a
+// complete borrower profile (name, contact, address, housing, entity, SSN) and
+// no file, so those clients were invisible to the officer who owns them: absent
+// from the borrower list, absent from the new-file name typeahead, so nothing
+// auto-filled and a duplicate profile got typed in instead.
+//
+// A person is now the staffer's when EITHER is true:
+//   • they are on a file the staffer can see (unchanged), OR
+//   • the profile itself points at them (`primary_officer_id`) — which the
+//     ClickUp sync now stamps from EVERY card, RTL or not (src/clickup/ingest),
+//     with the same visible_officer_ids delegation the file scope honors.
+// Requires the borrowers alias to expose id + primary_officer_id.
+const VISIBLE_BORROWER_SQL = (alias, p) =>
+  `(${alias}.primary_officer_id=${p}` +
+  ` OR ${alias}.primary_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=${p})` +
+  ` OR EXISTS (SELECT 1 FROM applications a2` +
+  ` WHERE (a2.borrower_id=${alias}.id OR a2.co_borrower_id=${alias}.id) AND a2.deleted_at IS NULL` +
+  ` AND ${VISIBLE_OFFICERS_SQL('a2', p)}))`;
+
 // Guard every /applications/:id* route: a non-privileged staffer may only touch
 // a file they are the loan officer or processor on. (Borrower :id routes live
 // under /borrowers/:id and are unaffected by this path-scoped middleware.)
@@ -786,8 +809,7 @@ router.get('/search', async (req, res) => {
     let bScope = '';
     if (!seesAllBorrowers(req)) {
       bParams.push(meId);
-      bScope = `AND EXISTS (SELECT 1 FROM applications a WHERE a.borrower_id=b.id
-                              AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$2')})`;
+      bScope = `AND ${VISIBLE_BORROWER_SQL('b', '$2')}`;
     }
     const borrowers = await db.query(
       `SELECT b.id, b.first_name, b.last_name, b.email, b.cell_phone
@@ -803,8 +825,7 @@ router.get('/search', async (req, res) => {
     let lScope = '';
     if (!seesAllBorrowers(req)) {
       lParams.push(meId);
-      lScope = `AND EXISTS (SELECT 1 FROM applications a WHERE a.borrower_id=l.borrower_id
-                              AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$2')})`;
+      lScope = `AND ${VISIBLE_BORROWER_SQL('b', '$2')}`;
     }
     const llcs = await db.query(
       `SELECT l.id, l.llc_name, l.ein, l.borrower_id, b.first_name, b.last_name
@@ -972,22 +993,63 @@ router.get('/lead-capture', async (req, res) => {
 async function emailAdoptionConflict(email, firstName, lastName) {
   if (!email) return null;
   const identity = require('../clickup/identity');
+  // Only the address OWNER can be adopted (db/318): a `shares_email` profile is
+  // a deliberate second person on the same mailbox, never an upsert target.
   const r = await db.query(
-    `SELECT id, first_name, last_name FROM borrowers WHERE email=$1 LIMIT 1`,
+    `SELECT id, first_name, last_name FROM borrowers WHERE email=$1 AND shares_email=false LIMIT 1`,
     [String(email).toLowerCase().trim()]);
   const ex = r.rows[0];
   if (!ex) return null;
   if (!identity.nameConflict(firstName, lastName, ex.first_name, ex.last_name)) return null;
   return ex;
 }
-function emailAdoptionError(res, ex, email) {
+function emailAdoptionError(res, ex, email, { canShare = true } = {}) {
   const who = [ex.first_name, ex.last_name].filter(Boolean).join(' ') || 'another person';
   return res.status(409).json({
-    error: `The email ${email} already belongs to ${who} — a different name. ` +
-      `If this really is the same person, open their existing profile and start the file from there; ` +
-      `otherwise use a different email for this borrower. Two people are never merged on a shared email.`,
+    // Owner-directed 2026-07-26: a shared mailbox is a NORMAL situation (husband
+    // and wife), so opening a FILE on one is now a choice, not a dead end. The
+    // two profiles are still kept separate — sharing an address is never a merge.
+    // A portal INVITE is the exception (canShare:false): a sign-in has to resolve
+    // to exactly one person, so the second person needs their own address to log
+    // in with — their profile and files work fine without one.
+    error: canShare
+      ? `The email ${email} already belongs to ${who} — a different name. `
+        + `If this really is the same person, open their existing profile and start the file from there. `
+        + `If they are two different people who share one mailbox, confirm and PILOT will keep BOTH profiles on that address.`
+      : `The email ${email} already belongs to ${who} — a different name, and that profile holds the portal sign-in for it. `
+        + `Two people can share a mailbox on their profiles, but only one of them can log in with it. `
+        + `Use a different email for this person's portal invite.`,
     existingBorrowerId: ex.id, existingName: who,
+    sharedEmail: { canShare },
   });
+}
+/** Create a SECOND person on an address someone else already owns (db/318).
+ *  Outside the partial unique index, so it never collides; the owner keeps the
+ *  portal login. Both directions of the profile link are recorded so a login on
+ *  either side still sees both people's files. */
+async function createSharedEmailBorrower({ firstName, lastName, email, phone, officerId, ownerId, actorId }) {
+  const addr = String(email).toLowerCase().trim();
+  // Reuse a person already recorded on this mailbox rather than stacking a third
+  // profile every time a file is opened for the same spouse.
+  const identity = require('../clickup/identity');
+  const existing = await db.query(
+    `SELECT id, first_name, last_name FROM borrowers WHERE email=$1 AND shares_email=true`, [addr]);
+  for (const row of existing.rows) {
+    if (!identity.nameConflict(firstName, lastName, row.first_name, row.last_name)) return row.id;
+  }
+  const ins = await db.query(
+    `INSERT INTO borrowers (first_name,last_name,email,cell_phone,primary_officer_id,shares_email)
+     VALUES ($1,$2,$3,$4,$5,true) RETURNING id`,
+    [firstName || 'Unknown', lastName || '', addr, phone || null, officerId || null]);
+  const id = ins.rows[0].id;
+  if (ownerId) {
+    for (const [x, y] of [[id, ownerId], [ownerId, id]]) {
+      await db.query(
+        `INSERT INTO borrower_profile_links (borrower_id, linked_borrower_id, reason, created_by)
+         VALUES ($1,$2,'shared_email_allowed',$3) ON CONFLICT DO NOTHING`, [x, y, actorId || null]).catch(() => {});
+    }
+  }
+  return id;
 }
 
 // ---------------- staff originates a mortgage file (borrower need not exist) ----------------
@@ -1009,17 +1071,22 @@ router.post('/applications', async (req, res) => {
   try {
     // Same email + a DIFFERENT person's name → refuse the silent merge (409).
     const exConflict = await emailAdoptionConflict(email, firstName, lastName);
-    if (exConflict) return emailAdoptionError(res, exConflict, email);
+    if (exConflict && !b.allowSharedEmail) return emailAdoptionError(res, exConflict, email);
     // Match-or-create the borrower. Never overwrite existing PII — only fill
-    // blank fields — so an existing borrower record is preserved intact.
-    const br = await db.query(
-      `INSERT INTO borrowers (first_name,last_name,email,cell_phone)
+    // blank fields — so an existing borrower record is preserved intact. When the
+    // staffer has confirmed a genuinely shared mailbox, the second person gets
+    // their OWN profile on the same address instead of being refused.
+    const br = exConflict
+      ? { rows: [{ id: await createSharedEmailBorrower({
+          firstName, lastName, email, phone: bo.phone, ownerId: exConflict.id, actorId: req.actor.id }), created: true }] }
+      : await db.query(
+        `INSERT INTO borrowers (first_name,last_name,email,cell_phone)
        VALUES ($1,$2,$3,$4)
-       ON CONFLICT (email) DO UPDATE SET
+       ON CONFLICT (email) WHERE shares_email = false DO UPDATE SET
          cell_phone = COALESCE(borrowers.cell_phone, EXCLUDED.cell_phone),
          updated_at = now()
        RETURNING id, (xmax=0) AS created`,
-      [firstName, lastName || '', email, bo.phone || null]);
+        [firstName, lastName || '', email, bo.phone || null]);
     const borrowerId = br.rows[0].id;
 
     // A borrower may have MANY files (one per property) and any staffer may open
@@ -1241,13 +1308,15 @@ router.post('/invite-to-portal', async (req, res) => {
     // (Inviting "Chaim Mendelovits" on an email that belongs to "Noach
     // Mendelovits" must not overlay one person's lead on the other's profile.)
     const exConflict = await emailAdoptionConflict(email, first, last);
-    if (exConflict) return emailAdoptionError(res, exConflict, email);
+    // This route ISSUES A PORTAL LOGIN, so a shared mailbox can't be offered here
+    // — a sign-in must resolve to exactly one person (db/318 enforces it).
+    if (exConflict) return emailAdoptionError(res, exConflict, email, { canShare: false });
     // 1) upsert the borrower profile by email; set the owning officer only when the
     // borrower doesn't already have one (never steal an existing relationship).
     const bor = await db.query(
       `INSERT INTO borrowers (first_name,last_name,email,cell_phone,primary_officer_id)
        VALUES ($1,$2,$3,$4,$5)
-       ON CONFLICT (email) DO UPDATE SET
+       ON CONFLICT (email) WHERE shares_email = false DO UPDATE SET
          first_name=CASE WHEN lower(btrim(coalesce(borrowers.first_name,''))) IN ('','unknown')
                           AND lower(btrim(EXCLUDED.first_name)) NOT IN ('','unknown')
                          THEN EXCLUDED.first_name ELSE borrowers.first_name END,
@@ -1407,7 +1476,7 @@ async function attachCoBorrowerToApp(appId, primaryBorrowerId, b) {
       const ins = await db.query(
         `INSERT INTO borrowers (first_name,last_name,email,cell_phone,date_of_birth,ssn_encrypted,ssn_last4,ssn_hash,origin)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'co_borrower')
-         ON CONFLICT (email) DO UPDATE SET
+         ON CONFLICT (email) WHERE shares_email = false DO UPDATE SET
            -- Staff-typed identity beats a PLACEHOLDER ('Unknown'/'Co-Borrower' are
            -- our own not-null fillers, never data) — but never a real stored name.
            first_name=CASE WHEN lower(btrim(coalesce(borrowers.first_name,''))) IN ('','unknown','co-borrower')
@@ -5153,12 +5222,11 @@ async function canSeeBorrowerId(req, borrowerId) {
   const r = await db.query(
     // Match a file where this person is the primary OR the CO-borrower — a
     // co-borrower is a party on the staffer's file, so an assigned loan officer /
-    // processor may see (and invite) them. Fails-safe: still requires the staffer
-    // be assigned to a file the borrower is actually on.
-    `SELECT 1 FROM applications a
-      WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND a.deleted_at IS NULL
-        AND ${VISIBLE_OFFICERS_SQL('a', '$2')}
-      LIMIT 1`,
+    // processor may see (and invite) them — OR a profile that names this staffer
+    // as its owning officer (the ClickUp-sourced client who has only ever done
+    // non-RTL business with them, so there is no file to match on). Fails-safe:
+    // still requires a real, recorded relationship to the person.
+    `SELECT 1 FROM borrowers b WHERE b.id=$1 AND ${VISIBLE_BORROWER_SQL('b', '$2')} LIMIT 1`,
     [borrowerId, req.actor.id]);
   return !!r.rows[0];
 }
@@ -5217,17 +5285,24 @@ router.get('/borrowers/search', async (req, res) => {
     let scope = '';
     if (!seesAll(req)) {
       params.push(req.actor.id);
-      scope = `AND EXISTS (SELECT 1 FROM applications a
-                            WHERE a.borrower_id=b.id AND a.deleted_at IS NULL
-                              AND ${VISIBLE_OFFICERS_SQL('a', '$2')})`;
+      scope = `AND ${VISIBLE_BORROWER_SQL('b', '$2')}`;
     }
+    // Matching on EMAIL too (owner-directed 2026-07-26): the typeahead is what
+    // stops a second profile being typed for someone we already have, and an
+    // officer very often starts from the borrower's email rather than a name
+    // whose spelling varies ("Leib"/"Leibish"/"Leon"). `prior_files` counts the
+    // person's loan files; `other_deals` counts their non-RTL ClickUp cards, so
+    // a DSCR-only client no longer looks brand new.
     const r = await db.query(
       `SELECT b.id, b.first_name, b.last_name, b.email, b.cell_phone,
               (SELECT count(*)::int FROM applications
-                 WHERE borrower_id=b.id AND deleted_at IS NULL) AS prior_files
+                 WHERE borrower_id=b.id AND deleted_at IS NULL) AS prior_files,
+              (SELECT count(*)::int FROM clickup_task_index t
+                 WHERE t.borrower_id=b.id AND t.kind='data_only') AS other_deals
          FROM borrowers b
         WHERE (b.first_name ILIKE $1 OR b.last_name ILIKE $1
-               OR (b.first_name||' '||b.last_name) ILIKE $1)
+               OR (b.first_name||' '||b.last_name) ILIKE $1
+               OR COALESCE(b.email,'') ILIKE $1)
           ${scope}
         ORDER BY b.last_name, b.first_name
         LIMIT 10`, params);
@@ -5247,17 +5322,23 @@ router.get('/borrowers', async (req, res) => {
     let scope = '';
     if (!seesAllBorrowers(req)) {
       params.push(req.actor.id);
-      scope = `WHERE EXISTS (SELECT 1 FROM applications a
-                              WHERE a.borrower_id=b.id AND a.deleted_at IS NULL
-                                AND ${VISIBLE_OFFICERS_SQL('a', '$1')})`;
+      scope = `WHERE ${VISIBLE_BORROWER_SQL('b', '$1')}`;
     }
+    // `other_deals` = the person's non-RTL (DSCR / long-term) ClickUp cards, which
+    // never become loan files. Without it a client who has only ever done DSCR
+    // business shows "0 files" and reads as an empty record; the officer needs to
+    // see that there IS history behind the profile (owner-directed 2026-07-26).
+    // The officer column falls back to the profile's own owning officer so a
+    // fileless client still shows who they belong to.
     const r = await db.query(
       `SELECT b.id, b.first_name, b.last_name, b.email, b.cell_phone, b.tier, b.created_at,
               (ba.borrower_id IS NOT NULL) AS has_account,
               ba.last_login_at, b.last_seen_at,
               (SELECT count(*)::int FROM applications WHERE borrower_id=b.id AND deleted_at IS NULL) AS files,
+              (SELECT count(*)::int FROM clickup_task_index t
+                 WHERE t.borrower_id=b.id AND t.kind='data_only') AS other_deals,
               lf.id AS latest_file_id,
-              off.full_name AS loan_officer_name
+              COALESCE(off.full_name, powner.full_name) AS loan_officer_name
          FROM borrowers b
          LEFT JOIN borrower_auth ba ON ba.borrower_id=b.id
          LEFT JOIN LATERAL (
@@ -5266,6 +5347,7 @@ router.get('/borrowers', async (req, res) => {
             ORDER BY created_at DESC LIMIT 1
          ) lf ON true
          LEFT JOIN staff_users off ON off.id = lf.loan_officer_id
+         LEFT JOIN staff_users powner ON powner.id = b.primary_officer_id
         ${scope}
         ORDER BY COALESCE(ba.last_login_at, b.last_seen_at) DESC NULLS LAST, b.last_name, b.first_name
         LIMIT 500`, params);
@@ -5275,12 +5357,35 @@ router.get('/borrowers', async (req, res) => {
 
 // Invite a borrower to the portal — binds to their most recent file and emails
 // the set-password link. Re-inviting just issues a fresh link.
+// Two people may share one mailbox (db/318), but a SIGN-IN has to resolve to
+// exactly one person — every login / reset / verify lookup is "the borrower with
+// this email who has a password". So the first profile on an address keeps the
+// login and the other one is told plainly, up front, instead of failing later at
+// the accept-invite step. Returns a message when the login is unavailable, else
+// null. (The database enforces the same rule as a backstop.)
+async function sharedEmailLoginBlock(borrowerId) {
+  const r = await db.query(
+    `SELECT b2.first_name, b2.last_name
+       FROM borrowers b
+       JOIN borrowers b2 ON b2.email = b.email AND b2.id <> b.id
+       JOIN borrower_auth ba ON ba.borrower_id = b2.id
+      WHERE b.id = $1
+        AND NOT EXISTS (SELECT 1 FROM borrower_auth me WHERE me.borrower_id = b.id)
+      LIMIT 1`, [borrowerId]).catch(() => ({ rows: [] }));
+  const other = r.rows[0];
+  if (!other) return null;
+  const who = [other.first_name, other.last_name].filter(Boolean).join(' ') || 'another borrower';
+  return `${who} already signs in with this email address. Two people can share a mailbox on their profiles, `
+    + `but only one of them can have the portal login. Give this person their own email address first.`;
+}
+
 router.post('/borrowers/:id/portal-invite', async (req, res) => {
   try {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
     const b = (await db.query(`SELECT id, email, first_name FROM borrowers WHERE id=$1`, [req.params.id])).rows[0];
     if (!b) return res.status(404).json({ error: 'not found' });
     if (!b.email) return res.status(400).json({ error: 'this borrower has no email on file' });
+    { const w = await sharedEmailLoginBlock(b.id); if (w) return res.status(409).json({ error: w }); }
     // Match files where they are the primary OR the CO-borrower (owner-directed
     // 2026-07-14): a co-borrower is its own borrower record and gets its own
     // portal login with full (OR-gated) access to the shared loan — but the
@@ -5321,6 +5426,7 @@ router.post('/borrowers/:id/set-password', async (req, res) => {
     { const w = C.passwordProblem(pw); if (w) return res.status(400).json({ error: w }); }
     const b = (await db.query(`SELECT id, email, first_name FROM borrowers WHERE id=$1`, [req.params.id])).rows[0];
     if (!b) return res.status(404).json({ error: 'not found' });
+    { const w = await sharedEmailLoginBlock(b.id); if (w) return res.status(409).json({ error: w }); }
     const hash = await C.hashPassword(pw);
     const existing = await db.query(`SELECT 1 FROM borrower_auth WHERE borrower_id=$1`, [req.params.id]);
     // Staff-provisioned credentials are trusted the same way an invite-accept is
@@ -5351,8 +5457,10 @@ router.get('/borrowers/:id', async (req, res) => {
     const r = await db.query(
       `SELECT b.id, b.first_name, b.last_name, b.email, b.cell_phone, b.date_of_birth,
               b.ssn_last4, b.fico, b.citizenship, b.marital_status, b.dependents_count, b.tier,
-              b.current_address, b.mailing_address, b.years_at_residence, b.months_at_residence, b.residence_since,
-              b.housing_status, b.housing_payment, b.contact_type, b.primary_officer_id,
+              b.current_address, b.mailing_address, b.prior_address,
+              b.years_at_residence, b.months_at_residence, b.residence_since,
+              b.housing_status, b.housing_payment, b.employment_type, b.employer,
+              b.contact_type, b.primary_officer_id, b.shares_email,
               b.photo_id_document_id, b.created_at, b.last_seen_at,
               (SELECT last_login_at FROM borrower_auth WHERE borrower_id=b.id) AS last_login_at,
               (b.ssn_encrypted IS NOT NULL) AS has_ssn,
@@ -5366,10 +5474,33 @@ router.get('/borrowers/:id', async (req, res) => {
     // (owner-directed 2026-07-15 night: every synced file may bring more
     // phones/emails — they ADD to the profile, never replace the primary).
     const contacts = (await db.query(
-      `SELECT kind, value, source, created_at FROM borrower_contacts
-        WHERE borrower_id=$1 ORDER BY created_at DESC LIMIT 50`, [req.params.id]).catch(() => ({ rows: [] }))).rows;
+      `SELECT id, kind, value, source, is_primary, created_at FROM borrower_contacts
+        WHERE borrower_id=$1 ORDER BY is_primary DESC, created_at DESC LIMIT 50`, [req.params.id]).catch(() => ({ rows: [] }))).rows;
+    // Anyone else sharing this mailbox (db/318). A husband and wife on one email
+    // are two separate profiles; the profile says so plainly instead of looking
+    // like a duplicate somebody should merge.
+    const sharing = (await db.query(
+      `SELECT b2.id, b2.first_name, b2.last_name, b2.shares_email
+         FROM borrowers b2
+        WHERE b2.email = (SELECT email FROM borrowers WHERE id=$1) AND b2.id <> $1
+        ORDER BY b2.shares_email, b2.last_name LIMIT 10`, [req.params.id]).catch(() => ({ rows: [] }))).rows;
+    // The person's NON-RTL ClickUp deals (DSCR / long-term). These never become
+    // loan files, so without this the profile of a DSCR-only client looked empty
+    // (owner-directed 2026-07-26: "build up the entire profile from ClickUp for
+    // all the information available, even if they never took an RTL loan").
+    // Read-only, from the masked snapshot the sync already stores.
+    const otherDeals = (await db.query(
+      `SELECT t.task_id, t.task_name, t.internal_status, t.program, t.last_seen,
+              t.snapshot->'app'->'property_address'->>'oneLine' AS property,
+              t.snapshot->>'rawProgram' AS raw_program,
+              (t.snapshot->'app'->>'loan_amount') AS loan_amount,
+              off.full_name AS loan_officer_name
+         FROM clickup_task_index t
+         LEFT JOIN staff_users off ON off.id = t.loan_officer_id
+        WHERE t.borrower_id=$1 AND t.kind='data_only'
+        ORDER BY t.last_seen DESC LIMIT 50`, [req.params.id]).catch(() => ({ rows: [] }))).rows;
     // Live residence duration from the anchored move-in date (owner-directed 2026-07-14).
-    res.json({ ...require('../lib/residence').withLiveResidence(r.rows[0]), contacts });
+    res.json({ ...require('../lib/residence').withLiveResidence(r.rows[0]), contacts, sharing, otherDeals });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
@@ -5390,6 +5521,31 @@ router.patch('/borrowers/:id', async (req, res) => {
     if (b.currentAddress !== undefined) put('current_address', b.currentAddress ? JSON.stringify(b.currentAddress) : null);
     if (b.mailingAddress !== undefined) put('mailing_address', b.mailingAddress ? JSON.stringify(b.mailingAddress) : null);
     if (b.primaryOfficerId !== undefined) put('primary_officer_id', b.primaryOfficerId || null);
+    // HOUSING + EMPLOYMENT on the profile (owner-directed 2026-07-26: "the
+    // housing details of where he lives, how much rent he pays, if he owns, if
+    // he rents — all those details should be included in the profile as well,
+    // linked to the borrower"). These columns already existed and already sync
+    // BOTH ways with ClickUp's Primary Housing / Years-at-Residence fields
+    // (clickup/mapper FIELD_MAP) — the borrower could edit them in their own
+    // portal, but staff had no way in at all. `residence_since` is re-anchored
+    // from the years/months the same way the borrower's own edit does it, so the
+    // duration keeps counting up instead of freezing at the typed number.
+    const money = (v) => (v === '' || v == null ? null : Number(String(v).replace(/[^0-9.]/g, '')) || null);
+    if (b.housingStatus !== undefined) put('housing_status', b.housingStatus ? String(b.housingStatus).trim() : null);
+    if (b.housingPayment !== undefined) put('housing_payment', money(b.housingPayment));
+    if (b.employmentType !== undefined) put('employment_type', b.employmentType ? String(b.employmentType).trim() : null);
+    if (b.employer !== undefined) put('employer', b.employer ? String(b.employer).trim() : null);
+    if (b.dependentsCount !== undefined) {
+      const n = b.dependentsCount === '' || b.dependentsCount == null ? null : parseInt(b.dependentsCount, 10);
+      put('dependents_count', Number.isFinite(n) && n >= 0 ? n : null);
+    }
+    if (b.yearsAtResidence !== undefined || b.monthsAtResidence !== undefined) {
+      const y = b.yearsAtResidence === '' || b.yearsAtResidence == null ? null : Number(b.yearsAtResidence);
+      const m = b.monthsAtResidence === '' || b.monthsAtResidence == null ? null : parseInt(b.monthsAtResidence, 10);
+      put('years_at_residence', Number.isFinite(y) ? y : null);
+      put('months_at_residence', Number.isFinite(m) ? m : null);
+      put('residence_since', (y || m) ? require('../lib/residence').moveInFrom(y, m) : null);
+    }
     // DOB from the borrower-profile edit (owner-directed 2026-07-15 night: DOB
     // must be fully editable from PILOT — the profile screen previously showed
     // it read-only with no way to add or fix it). Validated as a real adult
@@ -5407,8 +5563,31 @@ router.patch('/borrowers/:id', async (req, res) => {
       try {
         await db.query(`UPDATE borrowers SET ${sets.join(', ')} WHERE id=$1`, vals);
       } catch (e) {
-        if (e.code === '23505') return res.status(409).json({ error: 'that email is already in use by another borrower' });
-        throw e;
+        // A shared mailbox is now legitimate (owner-directed 2026-07-26: a
+        // husband and wife often use one address). The address still has ONE
+        // owner — the profile that holds the portal login — so the 409 explains
+        // the choice instead of just refusing, and `allowSharedEmail` records the
+        // deliberate "yes, two different people, same mailbox" decision.
+        if (e.code === '23505') {
+          if (!b.allowSharedEmail) {
+            const other = (await db.query(
+              `SELECT id, first_name, last_name FROM borrowers
+                WHERE email=$1 AND id<>$2 AND shares_email=false LIMIT 1`,
+              [String(b.email || '').trim().toLowerCase(), req.params.id]).catch(() => ({ rows: [] }))).rows[0];
+            return res.status(409).json({
+              error: other
+                ? `${[other.first_name, other.last_name].filter(Boolean).join(' ')} already uses that email address. If these are two different people who share one mailbox (a husband and wife, for example), save again to keep both.`
+                : 'that email is already in use by another borrower',
+              sharedEmail: { canShare: true, otherBorrowerId: other ? other.id : null },
+            });
+          }
+          try {
+            await db.query(`UPDATE borrowers SET ${sets.join(', ')}, shares_email=true WHERE id=$1`, vals);
+          } catch (e2) {
+            if (e2.code === '23505') return res.status(409).json({ error: 'this profile holds the portal login for that email — give it a different address first' });
+            throw e2;
+          }
+        } else throw e;
       }
     }
     let dobResult;
@@ -5424,6 +5603,16 @@ router.patch('/borrowers/:id', async (req, res) => {
     if (b.email != null) pushKeys.push('email');
     if (b.cellPhone != null) pushKeys.push('cell_phone');
     if (b.currentAddress !== undefined) pushKeys.push('current_address');
+    // Housing / employment are BOTH-way mapped ClickUp fields, so a profile edit
+    // must reach the ClickUp cards too — otherwise the next inbound pull would
+    // read the old ClickUp value back over what was just typed here.
+    if (b.housingStatus !== undefined) pushKeys.push('housing_status');
+    if (b.housingPayment !== undefined) pushKeys.push('housing_payment');
+    if (b.employmentType !== undefined) pushKeys.push('employment_type');
+    if (b.employer !== undefined) pushKeys.push('employer');
+    if (b.dependentsCount !== undefined) pushKeys.push('dependents_count');
+    if (b.yearsAtResidence !== undefined || b.monthsAtResidence !== undefined) pushKeys.push('years_at_residence');
+    if (b.citizenship != null) pushKeys.push('citizenship');
     if (pushKeys.length) {
       try {
         const apps = (await db.query(
@@ -5891,14 +6080,86 @@ router.post('/borrowers/:id/llcs', async (req, res) => {
 // masked before/after, and propagated to every linked PRIMARY-borrower task
 // as a scoped 'ssn' push (the staff-typed value IS the human decision;
 // journaled + no-op-suppressed like every write).
+// THE CONFLICT IS NOW SHOWN, NOT JUST REFUSED (owner-reported 2026-07-26, Leib
+// Lichtman): a staffer typed a returning borrower's SSN and got "it's already
+// linked to a different borrower profile" — with no way to see WHICH profile,
+// and the SSN nowhere to be found on the profile they were looking at. The
+// number really was on file: PILOT had TWO profiles for the same person (a
+// second one is minted whenever an inbound ClickUp card carries an email we
+// can't corroborate — see resolveBorrower), and the SSN had landed on the other
+// one. From the officer's seat that is an unexplained, unfixable dead end.
+//
+// So the 409 now NAMES the other profile (when the staffer is allowed to see it)
+// and says whether it looks like the same person, and `resolveConflict:
+// 'same_person'` MOVES the number here — both sides audited, the pair recorded
+// as a duplicate to merge, and the profiles linked so nothing is orphaned. The
+// underlying over-split is separately reduced at the source: a shared email no
+// longer forces a shadow profile at all (db/318 + resolveBorrower).
 router.post('/borrowers/:id/ssn', async (req, res) => {
   try {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
     const store = C.ssnForStorage((req.body || {}).ssn);
     if (!store) return res.status(400).json({ error: 'a full 9-digit Social Security number is required' });
     const hash = require('../clickup/identity').ssnHash(store.digits, cfg.ssnMatchKey);
-    const clash = await db.query(`SELECT id FROM borrowers WHERE ssn_hash=$1 AND id<>$2 LIMIT 1`, [hash, req.params.id]);
-    if (clash.rows[0]) return res.status(409).json({ error: 'another borrower already carries this Social Security number — check for a duplicate profile' });
+    const clash = (await db.query(
+      `SELECT b.id, b.first_name, b.last_name, b.email, b.shares_email, b.origin,
+              (b.ssn_encrypted IS NOT NULL) AS has_ssn,
+              EXISTS (SELECT 1 FROM borrower_auth ba WHERE ba.borrower_id=b.id) AS has_login,
+              (SELECT count(*)::int FROM applications a
+                WHERE (a.borrower_id=b.id OR a.co_borrower_id=b.id) AND a.deleted_at IS NULL) AS files
+         FROM borrowers b WHERE b.ssn_hash=$1 AND b.id<>$2 LIMIT 1`,
+      [hash, req.params.id])).rows[0];
+    if (clash) {
+      const me = (await db.query(`SELECT first_name, last_name FROM borrowers WHERE id=$1`, [req.params.id])).rows[0] || {};
+      const sameLast = String(clash.last_name || '').trim().toLowerCase() === String(me.last_name || '').trim().toLowerCase()
+        && String(me.last_name || '').trim() !== '';
+      const visible = await canSeeBorrowerId(req, clash.id);
+      const otherName = [clash.first_name, clash.last_name].filter(Boolean).join(' ').trim() || 'an unnamed profile';
+      if (!(req.body || {}).resolveConflict) {
+        return res.status(409).json({
+          error: visible
+            ? `This Social Security number is already on the profile for ${otherName}${clash.files ? ` (${clash.files} file${clash.files === 1 ? '' : 's'})` : ' (no files)'}.`
+              + (sameLast ? ' The last name matches, so this is probably the same person recorded twice — you can move the number onto this profile.'
+                          : ' The names do not match, so check carefully before moving it.')
+            : 'This Social Security number is already on another borrower profile you do not have access to. Ask an admin to check for a duplicate profile.',
+          conflict: {
+            borrowerId: visible ? clash.id : null,
+            name: visible ? otherName : null,
+            email: visible ? clash.email : null,
+            files: visible ? clash.files : null,
+            sameLastName: sameLast,
+            // A profile the SYNC created that nobody has ever logged into and
+            // that carries no files is a shadow, not a person — moving the number
+            // off it costs nothing.
+            looksLikeShadow: !clash.has_login && !clash.files && clash.origin === 'clickup_backfill',
+            canResolve: visible,
+          },
+        });
+      }
+      if (!visible) return res.status(403).json({ error: 'you do not have access to the other profile — an admin has to move this number' });
+      // Deliberate "these are the same person" decision: take the number off the
+      // other profile so this one can hold it. Reversible (it can be typed back)
+      // and fully audited on BOTH profiles.
+      await db.query(
+        `UPDATE borrowers SET ssn_encrypted=NULL, ssn_last4=NULL, ssn_hash=NULL, updated_at=now() WHERE id=$1`,
+        [clash.id]);
+      await audit(req, 'move_borrower_ssn_from', 'borrower', clash.id,
+        { toBorrowerId: req.params.id, last4: store.last4, sameLastName: sameLast });
+      // Record the pair so the duplicate is worked, not just worked around, and
+      // link the profiles so a portal login on either still sees both people's
+      // files (same mechanism as the "allow — same email" action).
+      try {
+        await db.query(
+          `INSERT INTO borrower_dedup_candidates (borrower_id, matched_borrower_id, reason)
+           VALUES ($1,$2,'ssn_moved_same_person') ON CONFLICT (borrower_id, matched_borrower_id) DO NOTHING`,
+          [req.params.id, clash.id]);
+        for (const [x, y] of [[req.params.id, clash.id], [clash.id, req.params.id]]) {
+          await db.query(
+            `INSERT INTO borrower_profile_links (borrower_id, linked_borrower_id, reason, created_by)
+             VALUES ($1,$2,'same_person_ssn_moved',$3) ON CONFLICT DO NOTHING`, [x, y, req.actor.id]);
+        }
+      } catch (_) { /* best-effort — the move itself is what matters */ }
+    }
     const before = (await db.query(`SELECT ssn_last4 FROM borrowers WHERE id=$1`, [req.params.id])).rows[0];
     if (!before) return res.status(404).json({ error: 'not found' });
     await db.query(
@@ -5912,9 +6173,95 @@ router.post('/borrowers/:id/ssn', async (req, res) => {
         [req.params.id])).rows;
       for (const a of apps) enqueueClickupPush(a.id, ['ssn']).catch(() => {});
     } catch (_) { /* best-effort */ }
-    res.json({ ok: true, last4: store.last4 });
+    res.json({ ok: true, last4: store.last4, movedFrom: clash ? clash.id : undefined });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
+
+// ---------------- primary contact details ----------------
+// Every synced file may bring another email / phone for the same person, and
+// they ACCUMULATE on the profile (borrower_contacts) rather than overwriting the
+// one on the file. Until now that list was read-only, so a staffer could see a
+// better number but had no way to make it the one PILOT actually uses, and no
+// way to add one at all (owner-directed 2026-07-26: "we don't have the ability
+// to enter his primary contact over there"). These two routes close that: add a
+// contact, and promote any known contact to be the profile's primary — which
+// writes it to `borrowers.email` / `cell_phone` (the value every email, term
+// sheet and ClickUp push reads) and syncs it out to the linked cards.
+router.post('/borrowers/:id/contacts', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const b = req.body || {};
+    const kind = b.kind === 'phone' ? 'phone' : b.kind === 'email' ? 'email' : null;
+    const raw = String(b.value == null ? '' : b.value).trim();
+    if (!kind) return res.status(400).json({ error: 'kind must be email or phone' });
+    if (!raw) return res.status(400).json({ error: 'a value is required' });
+    if (kind === 'email' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)) return res.status(400).json({ error: 'that does not look like an email address' });
+    const value = kind === 'email' ? raw.toLowerCase() : raw;
+    if (kind === 'phone' && value.replace(/\D/g, '').length < 10) return res.status(400).json({ error: 'a phone number needs at least 10 digits' });
+    await db.query(
+      `INSERT INTO borrower_contacts (borrower_id, kind, value, source)
+       VALUES ($1,$2,$3,'staff') ON CONFLICT (borrower_id, kind, value) DO NOTHING`,
+      [req.params.id, kind, value]);
+    await audit(req, 'add_borrower_contact', 'borrower', req.params.id, { kind });
+    if (b.makePrimary) return promoteContact(req, res, kind, value);
+    res.status(201).json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/borrowers/:id/contacts/primary', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const b = req.body || {};
+    const kind = b.kind === 'phone' ? 'phone' : b.kind === 'email' ? 'email' : null;
+    const value = String(b.value == null ? '' : b.value).trim();
+    if (!kind || !value) return res.status(400).json({ error: 'kind and value are required' });
+    const known = await db.query(
+      `SELECT 1 FROM borrower_contacts WHERE borrower_id=$1 AND kind=$2 AND value=$3`,
+      [req.params.id, kind, kind === 'email' ? value.toLowerCase() : value]);
+    if (!known.rows[0]) return res.status(404).json({ error: 'that contact is not on this profile — add it first' });
+    return promoteContact(req, res, kind, kind === 'email' ? value.toLowerCase() : value);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Shared by both routes above. Promoting an EMAIL can collide with the address
+// owner (db/318) — same rule as the profile edit: refuse with an explanation
+// unless the staffer confirms the two people really do share the mailbox.
+async function promoteContact(req, res, kind, value) {
+  const col = kind === 'email' ? 'email' : 'cell_phone';
+  const prev = (await db.query(`SELECT email, cell_phone FROM borrowers WHERE id=$1`, [req.params.id])).rows[0];
+  if (!prev) return res.status(404).json({ error: 'not found' });
+  try {
+    await db.query(`UPDATE borrowers SET ${col}=$2, updated_at=now() WHERE id=$1`, [req.params.id, value]);
+  } catch (e) {
+    if (e.code === '23505') {
+      if (!(req.body || {}).allowSharedEmail) {
+        return res.status(409).json({
+          error: 'another borrower already uses that email address. If these are two different people who share one mailbox, confirm and PILOT will keep both.',
+          sharedEmail: { canShare: true },
+        });
+      }
+      await db.query(`UPDATE borrowers SET ${col}=$2, shares_email=true, updated_at=now() WHERE id=$1`, [req.params.id, value]);
+    } else throw e;
+  }
+  // Keep the OLD primary in the contact list — it is still a way to reach them.
+  const old = kind === 'email' ? prev.email : prev.cell_phone;
+  if (old && !/@clickup\.local$/i.test(String(old))) {
+    await db.query(
+      `INSERT INTO borrower_contacts (borrower_id, kind, value, source)
+       VALUES ($1,$2,$3,'previous_primary') ON CONFLICT (borrower_id, kind, value) DO NOTHING`,
+      [req.params.id, kind, String(old).toLowerCase()]).catch(() => {});
+  }
+  await db.query(`UPDATE borrower_contacts SET is_primary=(kind=$2 AND value=$3) WHERE borrower_id=$1 AND kind=$2`,
+    [req.params.id, kind, value]).catch(() => {});
+  await audit(req, 'set_primary_borrower_contact', 'borrower', req.params.id, { kind, from: old || null });
+  try {
+    const apps = (await db.query(
+      `SELECT id FROM applications WHERE borrower_id=$1 AND deleted_at IS NULL AND clickup_pipeline_task_id IS NOT NULL`,
+      [req.params.id])).rows;
+    for (const a of apps) enqueueClickupPush(a.id, [kind === 'email' ? 'email' : 'cell_phone']).catch(() => {});
+  } catch (_) { /* best-effort */ }
+  return res.json({ ok: true, primary: value });
+}
 
 // Fill in / correct an entity's details on the borrower's behalf. Mirrors the
 // borrower's PATCH /llcs/:id, including the verified-lock: a verified entity
@@ -6267,7 +6614,13 @@ router.post('/llcs/:id/raise-issue', async (req, res) => {
 });
 
 // ---------------- advance application status ----------------
-const APP_STATUS = ['file_intake', 'new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'declined', 'withdrawn'];
+// on_hold belongs here (owner-directed 2026-07-26). It was missing, so PILOT had
+// no way to PARK a file at all: the only route in was an inbound ClickUp pull of
+// the "inactive / on hold" card, and a staffer looking at a held file could not
+// set the status they were looking at. On hold is a real borrower-facing status —
+// off the active board (INACTIVE_FILE_STATUSES), out of the task / reminder /
+// digest lists, and silent to the borrower (notify.notifyAppBorrowers).
+const APP_STATUS = ['file_intake', 'new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'on_hold', 'declined', 'withdrawn'];
 // Borrower-facing status labels, the DECISION-milestone email set, the
 // plain-language explanations, and the journey path all live in ONE shared
 // module (src/lib/status-notify.js) so the borrower sees identical copy whether
@@ -7094,8 +7447,25 @@ async function applyInternalStatus(appId, internalStatus, opts = {}) {
   const external = statusMap.externalFor(internalStatus);
   const cur = await db.query(`SELECT status, internal_status FROM applications WHERE id=$1`, [appId]);
   if (!cur.rows[0]) { const e = new Error('not found'); e.code = 'not_found'; throw e; }
-  if (statusMap.norm(cur.rows[0].internal_status) === statusMap.norm(internalStatus))
+  if (statusMap.norm(cur.rows[0].internal_status) === statusMap.norm(internalStatus)) {
+    // SELF-HEAL (owner-reported 2026-07-26). The two halves can drift apart: a
+    // file that entered PILOT while its card said "starting" derives to
+    // file_intake, and if the card is later parked but the inbound pull never
+    // lands (nobody touches a held card, and the reconcile poll is windowed on
+    // date_updated) PILOT keeps showing INTAKE for a file ClickUp says is ON
+    // HOLD. Picking the status it already has was then a no-op that fixed
+    // nothing. The internal status is the ClickUp mirror and the external one is
+    // DERIVED from it, so a disagreement is always the derived side being stale
+    // — re-assert it. Silent: `status_notified_external` moves with it, so
+    // correcting months of history never emails anyone.
+    if (external && external !== cur.rows[0].status) {
+      await db.query(
+        `UPDATE applications SET status=$2, status_notified_external=$2, updated_at=now() WHERE id=$1`,
+        [appId, external]);
+      return { ok: true, internal_status: internalStatus, status: external, healed: true };
+    }
     return { unchanged: true, internal_status: internalStatus, status: external };
+  }
   if (DECISION_STATUSES.has(external) && !opts.canDecide)
     return { forbidden: true, reason: 'Only an underwriter or admin can move a file to this status.' };
   let forced = false;
@@ -7194,6 +7564,22 @@ router.patch('/applications/:id', async (req, res) => {
       `SELECT status, borrower_id, loan_officer_id, processor_id FROM applications WHERE id=$1`, [req.params.id]);
     if (!cur.rows[0]) return res.status(404).json({ error: 'not found' });
     if (cur.rows[0].status === status) return res.json({ ok: true, unchanged: true, status });
+    // ON HOLD is the one borrower-facing status that maps 1:1 onto a single
+    // ClickUp status, so parking a file here must park the ClickUp card too
+    // (owner-directed 2026-07-26: "the entire status of the file should be an
+    // on-hold file in our system as well, not only in ClickUp" — and the reverse
+    // has to hold, or the two sides drift straight back apart). Delegating to the
+    // shared internal-status door gives the ClickUp push, the file timeline entry
+    // and the notification handling in one place instead of a second copy here.
+    if (status === 'on_hold') {
+      const r = await applyInternalStatus(req.params.id, statusMap.ON_HOLD_INTERNAL, {
+        actorId: req.actor.id, canDecide: seesAll(req), actorRole: req.actor.role,
+      });
+      if (r.forbidden) return res.status(403).json({ error: r.reason });
+      await audit(req, 'status_change', 'application', req.params.id,
+        { from: cur.rows[0].status, to: 'on_hold', internal: statusMap.ON_HOLD_INTERNAL });
+      return res.json({ ok: true, status: r.status, internal_status: r.internal_status });
+    }
     if (DECISION_STATUSES.has(status) && !seesAll(req))
       return res.status(403).json({ error: 'Only an underwriter or admin can move a file to this status.' });
     // Gate the underwriting-critical transitions on conditions-to-close + gate items.
@@ -8638,7 +9024,7 @@ router.post('/leads/:id/convert', async (req, res) => {
     const br = await db.query(
       `INSERT INTO borrowers (first_name,last_name,email,cell_phone,fico)
        VALUES ($1,$2,$3,$4,$5)
-       ON CONFLICT (email) DO UPDATE SET cell_phone=COALESCE(borrowers.cell_phone, EXCLUDED.cell_phone),
+       ON CONFLICT (email) WHERE shares_email = false DO UPDATE SET cell_phone=COALESCE(borrowers.cell_phone, EXCLUDED.cell_phone),
                                          fico=COALESCE(borrowers.fico, EXCLUDED.fico), updated_at=now()
        RETURNING id`,
       [firstName, lastName || '', email, lead.phone || null, econFico]);

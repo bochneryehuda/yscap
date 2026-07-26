@@ -340,7 +340,7 @@ async function applyFileReviewAction({ row, action, targetApplicationId, targetT
     const ins = await db.query(
       `INSERT INTO borrowers (first_name,last_name,email,cell_phone,date_of_birth,current_address,origin)
        VALUES ($1,$2,$3,$4,$5,$6,'clickup_backfill')
-       ON CONFLICT (email) DO UPDATE SET updated_at=now() RETURNING id`,
+       ON CONFLICT (email) WHERE shares_email = false DO UPDATE SET updated_at=now() RETURNING id`,
       [person.first_name, person.last_name || '', email,
        role === 'borrower' ? (person.cell_phone || null) : null,
        role === 'borrower' ? F.sanitizeDob(person.date_of_birth) : null,

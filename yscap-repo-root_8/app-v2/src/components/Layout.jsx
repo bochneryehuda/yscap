@@ -3,6 +3,7 @@ import { NavLink, useNavigate, Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import ChatBubble from './ChatBubble.jsx';
+import BorrowerViewBanner from './BorrowerViewBanner.jsx';
 import { useStaleBuild, StaleBuildBanner } from '../lib/useStaleBuild.jsx';
 
 export function Brand({ console: consoleLabel = 'Borrower console', to = '/dashboard', ariaLabel = 'PILOT by YS Capital', external = false }) {
@@ -51,7 +52,7 @@ export function BrandLockup() {
 }
 
 export default function Layout({ children }) {
-  const { signOut } = useAuth();
+  const { signOut, isBorrowerView, exitBorrowerView } = useAuth();
   const nav = useNavigate();
   const [unread, setUnread] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -68,7 +69,9 @@ export default function Layout({ children }) {
   }, []);
 
   return (
-    <div className="shell">
+    <div className={`shell${isBorrowerView ? ' shell-bview' : ''}`}>
+      {/* Pinned above everything: whose portal am I in, and the way out. */}
+      <BorrowerViewBanner />
       <StaleBuildBanner stale={staleBuild} />
       <header className="header">
         <div className="wrap">
@@ -88,7 +91,13 @@ export default function Layout({ children }) {
               aria-label={unread > 0 ? `Notifications — ${unread} unread` : 'Notifications'}>
               🔔{unread > 0 && <span className="badge" aria-hidden="true">{unread}</span>}
             </Link>
-            <button className="btn ghost small" onClick={() => { signOut(); nav('/login'); }}>Sign out</button>
+            {/* In a borrower view "Sign out" would revoke the REAL borrower's
+                sessions (it bumps their token_version — it would knock them off
+                their own phone mid-upload). The server refuses that call
+                outright; here the button simply becomes the way back. */}
+            {isBorrowerView
+              ? <button className="btn ghost small" onClick={async () => { const ok = await exitBorrowerView(); nav(ok ? '/internal/borrower-view' : '/internal/login'); }}>Leave borrower view</button>
+              : <button className="btn ghost small" onClick={() => { signOut(); nav('/login'); }}>Sign out</button>}
           </nav>
         </div>
       </header>

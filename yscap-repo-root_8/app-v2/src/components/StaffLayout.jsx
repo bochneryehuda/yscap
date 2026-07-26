@@ -25,6 +25,8 @@ const NAV_ICON = {
   chat: <path d="M5 4h14a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 19 15h-7l-4 4v-4H5a1.5 1.5 0 0 1-1.5-1.5v-8A1.5 1.5 0 0 1 5 4Z" />,
   leads: <><circle cx="9" cy="8" r="3.5" /><path d="M3.5 19a5.5 5.5 0 0 1 11 0" /><path d="M18.5 7.5v5M21 10h-5" /></>,
   borrowers: <><circle cx="12" cy="8" r="4" /><path d="M5 20a7 7 0 0 1 14 0" /></>,
+  // Borrower view — an eye over a person: "look through their eyes".
+  borrowerView: <><path d="M2.5 12S6 6.5 12 6.5 21.5 12 21.5 12 18 17.5 12 17.5 2.5 12 2.5 12Z" /><circle cx="12" cy="12" r="2.6" /></>,
   conditions: <><rect x="5" y="4" width="14" height="17" rx="2" /><path d="M9 4.5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1V6H9V4.5Z" /><path d="m9 13 2 2 4-4" /></>,
   pricing: <><circle cx="12" cy="12" r="9" /><path d="M12 7v10" /><path d="M14.5 9.2c-.6-.7-1.6-1-2.6-1-1.4 0-2.4.8-2.4 1.9 0 2.6 5.2 1.4 5.2 4 0 1.2-1.1 2-2.6 2-1.1 0-2.1-.4-2.7-1.1" /></>,
   vendors: <><rect x="3" y="7.5" width="18" height="12.5" rx="2" /><path d="M8.5 7.5V6a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v1.5" /><path d="M3 12.5h18" /></>,
@@ -420,6 +422,7 @@ export default function StaffLayout({ children }) {
 
         <div className="sb-sec">Files</div>
         <NavLink className="sb-link" to="/internal/borrowers" title="Your borrowers — invite to PILOT, reset or set a password, see last login"><NavIcon name="borrowers" />Borrowers</NavLink>
+        <NavLink className="sb-link" to="/internal/borrower-view" title="Borrower view — step into a borrower's portal and see PILOT exactly as they see it, so you can walk them through a screen live. One click brings you back."><NavIcon name="borrowerView" />Borrower view</NavLink>
         <NavLink className="sb-link" to="/internal/emails" title="Email Center — every email & notification sent across your files, to exactly whom, with its full body, delivery status, and replies"><NavIcon name="emails" />Email Center</NavLink>
         <NavLink className="sb-link" to="/internal/notifications" title="Notification Center — the master control for every notification your borrowers receive: turn any single one off, keep it automatic, or park it as a draft to review before it goes out">
           <NavIcon name="emails" />Notifications

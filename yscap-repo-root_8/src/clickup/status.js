@@ -103,6 +103,23 @@ function isKnownInternal(internalStatus) {
   return Object.prototype.hasOwnProperty.call(EXTERNAL_FOR, norm(internalStatus));
 }
 
+// The ClickUp status the team uses to PARK a file. Owner-directed 2026-07-26:
+// "inactive / on hold" is a real pause — not an intake stage — and the whole
+// file must go on hold in PILOT too (off the active board, out of the task and
+// reminder lists, notification emails silenced), not only in ClickUp.
+const ON_HOLD_INTERNAL = 'inactive / on hold';
+
+/**
+ * True when a ClickUp status means the file is PARKED. Uses the same rule as
+ * the borrower-facing derive (exact map first, then the `hold` keyword), so a
+ * renamed or newly-added hold status is recognized without a code change.
+ */
+function isOnHold(internalStatus) {
+  const n = norm(internalStatus);
+  if (!n) return false;
+  return externalFor(n) === 'on_hold';
+}
+
 /**
  * True when a ClickUp status means the deal is FINISHED — funded, declined, or
  * withdrawn/cancelled. A terminal deal's task will never be re-addressed, so
@@ -123,4 +140,4 @@ function isTerminal(internalStatus) {
   return e === 'funded' || e === 'declined' || e === 'withdrawn';
 }
 
-module.exports = { EXTERNAL, EXTERNAL_FOR, externalFor, isKnownInternal, isTerminal, norm };
+module.exports = { EXTERNAL, EXTERNAL_FOR, externalFor, isKnownInternal, isTerminal, isOnHold, ON_HOLD_INTERNAL, norm };

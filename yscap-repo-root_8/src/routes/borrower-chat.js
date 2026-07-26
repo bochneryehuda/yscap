@@ -158,6 +158,11 @@ router.post('/conversations/:cid/read', async (req, res) => {
   const conv = await loadConv(req, res); if (!conv) return;
   const seq = Number((req.body || {}).seq);
   if (!isFinite(seq) || seq < 0) return res.status(400).json({ error: 'seq required' });
+  // Inside a BORROWER VIEW the staffer is looking at the borrower's thread —
+  // they must not consume the borrower's unread state on their behalf (same
+  // rule as the legacy /messages read stamp in borrower.js). The thread renders
+  // identically; only the receipt write is skipped.
+  if (req.impersonation) return res.json({ ok: true, skipped: 'borrower_view' });
   res.json({ ok: true, ...(await chat.markRead(conv, borrowerActor(req), seq) || { skipped: true }) });
 });
 router.post('/conversations/:cid/unread', async (req, res) => {

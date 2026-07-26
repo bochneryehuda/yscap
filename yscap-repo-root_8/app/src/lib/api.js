@@ -29,13 +29,40 @@ function friendlyError(status, data) {
   return `Something went wrong (HTTP ${status}) — please try again.`;
 }
 
-// Session expired mid-use: clear the token ONCE, remember why, and let the
-// router (which watches ys:auth-changed) bounce to the correct login screen.
-function sessionExpired() {
+// Session ended mid-use: clear the token ONCE, remember WHY, and let the router
+// (which watches ys:auth-changed) bounce to the correct login screen.
+// Mirrors app-v2/src/lib/api.js — see the long note there. V1 is frozen at /v1
+// but shares the backend, so it gets the same "never sign someone out on one
+// unconfirmed 401" protection (owner-directed all-surfaces rule).
+const DEFAULT_NOTICE = 'You were signed out because your session expired. Please sign in again.';
+function sessionExpired(reason) {
   if (!getToken()) return;
   clearToken();
-  try { sessionStorage.setItem(NOTICE_KEY, 'You were signed out because your session expired. Please sign in again.'); } catch { /* private mode */ }
+  try { sessionStorage.setItem(NOTICE_KEY, reason || DEFAULT_NOTICE); } catch { /* private mode */ }
   window.dispatchEvent(new Event('ys:auth-changed'));
+}
+
+/* Confirm the SESSION is dead before acting on a 401 — /auth/me answers for the
+   session and nothing else. Plain fetch so it can never recurse. Anything but a
+   clean 401 means keep the session. */
+async function confirmSessionDead(token) {
+  try {
+    const res = await fetch('/auth/me', { headers: { Authorization: `Bearer ${token}` } });
+    if (res.status !== 401) return null;
+    let data = null; try { data = await res.json(); } catch { /* empty */ }
+    return { dead: true, reason: (data && data.error) || '' };
+  } catch { return null; }
+}
+
+let deadCheck = null;   // one probe at a time, however many calls 401 at once
+async function handle401(data) {
+  const token = getToken();
+  if (!token) return;
+  if (!deadCheck) deadCheck = confirmSessionDead(token).finally(() => { deadCheck = null; });
+  const verdict = await deadCheck;
+  if (!verdict || !verdict.dead) return;
+  if (getToken() !== token) return;
+  sessionExpired(verdict.reason || (data && data.error) || DEFAULT_NOTICE);
 }
 
 // One fetch with retry-on-transient-failure (only for GETs — retrying a write
@@ -60,7 +87,10 @@ async function resilientFetch(path, opts, { isAuthCall = false } = {}) {
     }
     const fresh = res.headers.get('X-Refresh-Token');
     if (fresh && getToken()) setToken(fresh);
-    if (res.status === 401 && !isAuthCall && getToken()) sessionExpired();
+    if (res.status === 401 && !isAuthCall && getToken()) {
+      let data = null; try { data = await res.clone().json(); } catch { /* empty */ }
+      handle401(data);   // not awaited — the caller's error path shouldn't wait on the probe
+    }
     return res;
   }
 }
