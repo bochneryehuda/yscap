@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { api } from '../lib/api';
+import { useAuth } from '../lib/auth.jsx';
 
 /**
  * Encompass sync — the live, full data-comparison screen (READ-ONLY sync).
@@ -18,7 +19,7 @@ import { api } from '../lib/api';
 const LABELS = {
   ys_loan_number: 'Loan number', property_type: 'Property type', units: '# of units',
   deal_type: 'Deal / project type', exit_plan: 'Exit plan', loan_to_be_vested: 'Vesting (entity / individual)',
-  vesting_llc: 'Subject LLC / vesting',
+  vesting_llc: 'Subject LLC / vesting', capital_provider: 'Note buyer / capital provider',
   // Borrower + co-borrower identity + subject address
   id_borrower_name: 'Borrower name', id_dob: 'Date of birth', id_email: 'Email',
   id_phone: 'Phone', id_property_address: 'Property address',
@@ -138,7 +139,121 @@ function Legend() {
   );
 }
 
+
+// SUPER-ADMIN troubleshooting view (owner-directed 2026-07-26). Shows the RAW data
+// Encompass actually sent for this file, what each piece maps to, and a plain
+// sentence for why a row isn't matching — so a wrong/missing field id is obvious
+// instead of guessed at. Read-only; SSN values are redacted server-side.
+function RawTroubleshoot({ appId }) {
+  const [open, setOpen] = useState(false);
+  const [d, setD] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const load = useCallback(async () => {
+    setBusy(true); setErr('');
+    try { setD(await api.encompassRaw(appId)); }
+    catch (e) { setErr(e && e.message ? e.message : 'Could not load the raw data.'); }
+    finally { setBusy(false); }
+  }, [appId]);
+  const th = { textAlign: 'left', padding: '5px 8px', color: V.muted, fontWeight: 800, fontSize: 10.5, borderBottom: `1px solid ${V.line}`, whiteSpace: 'nowrap' };
+  const td = { padding: '5px 8px', color: V.ink, fontSize: 11.5, borderBottom: `1px solid ${V.line}`, verticalAlign: 'top' };
+  return (
+    <div style={{ marginTop: 14, border: `1px solid ${V.line}`, borderRadius: 8, background: V.paper }}>
+      <button
+        type="button"
+        onClick={() => { const n = !open; setOpen(n); if (n && !d && !busy) load(); }}
+        style={{ width: '100%', textAlign: 'left', background: 'transparent', border: 0, cursor: 'pointer', padding: '9px 11px', color: V.ink, fontWeight: 800, fontSize: 12 }}
+      >
+        {open ? '▾' : '▸'} Troubleshoot — show the raw Encompass data (super-admin)
+      </button>
+      {open && (
+        <div style={{ padding: '0 11px 11px' }}>
+          <div style={{ color: V.muted, fontSize: 11.5, marginBottom: 8 }}>
+            Exactly what Encompass sent us for this file, what each value maps to, and why a row isn’t matching.
+            Read-only. Social Security numbers are never shown here.
+          </div>
+          {busy && <div style={{ color: V.muted, fontSize: 12 }}>Loading…</div>}
+          {err && <div style={{ color: V.crit, fontSize: 12 }}>{err}</div>}
+          {d && (
+            <>
+              <div style={{ color: V.ink, fontSize: 11.5, marginBottom: 6 }}>
+                Encompass returned <b>{d.rawFieldCount}</b> mapped field(s).{' '}
+                {d.missingFromEncompass && d.missingFromEncompass.length > 0 && (
+                  <span style={{ color: V.amber }}>
+                    <b>{d.missingFromEncompass.length}</b> field(s) came back empty — see “Nothing came back” below.
+                  </span>
+                )}
+              </div>
+              {d.missingFromEncompass && d.missingFromEncompass.length > 0 && (
+                <details style={{ marginBottom: 10 }}>
+                  <summary style={{ cursor: 'pointer', color: V.ink, fontWeight: 700, fontSize: 12 }}>
+                    Nothing came back from Encompass ({d.missingFromEncompass.length})
+                  </summary>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 6, background: '#fff' }}>
+                    <thead><tr><th style={th}>Field</th><th style={th}>Encompass field id</th><th style={th}>Our value</th></tr></thead>
+                    <tbody>
+                      {d.missingFromEncompass.map((r) => (
+                        <tr key={r.key}>
+                          <td style={td}>{LABELS[r.key] || r.label || r.key}</td>
+                          <td style={td}><code>{r.encompassFieldId || '—'}</code></td>
+                          <td style={td}>{r.ours == null || r.ours === '' ? '—' : String(r.ours)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </details>
+              )}
+              <details style={{ marginBottom: 10 }}>
+                <summary style={{ cursor: 'pointer', color: V.ink, fontWeight: 700, fontSize: 12 }}>
+                  Raw values Encompass sent ({d.rawFieldCount})
+                </summary>
+                <div style={{ maxHeight: 320, overflow: 'auto', marginTop: 6 }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', background: '#fff' }}>
+                    <thead><tr><th style={th}>Encompass field</th><th style={th}>Raw value</th><th style={th}>Maps to</th></tr></thead>
+                    <tbody>
+                      {d.raw.map((r) => (
+                        <tr key={r.encompassFieldId}>
+                          <td style={td}><code>{r.encompassFieldId}</code></td>
+                          <td style={{ ...td, wordBreak: 'break-word' }}>{typeof r.rawValue === 'object' ? JSON.stringify(r.rawValue) : String(r.rawValue)}</td>
+                          <td style={td}>{r.mapsToField ? (LABELS[r.mapsToField] || r.mapsToField) : <span style={{ color: V.muted }}>not mapped</span>}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+              <details>
+                <summary style={{ cursor: 'pointer', color: V.ink, fontWeight: 700, fontSize: 12 }}>
+                  Why each field is / isn’t matching ({d.rows.length})
+                </summary>
+                <div style={{ maxHeight: 360, overflow: 'auto', marginTop: 6 }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', background: '#fff' }}>
+                    <thead><tr><th style={th}>Field</th><th style={th}>Ours</th><th style={th}>Encompass</th><th style={th}>After tidying up</th><th style={th}>Why</th></tr></thead>
+                    <tbody>
+                      {d.rows.map((r) => (
+                        <tr key={r.key}>
+                          <td style={td}>{LABELS[r.key] || r.label || r.key}<div style={{ color: V.muted, fontSize: 10 }}><code>{r.encompassFieldId || '—'}</code></div></td>
+                          <td style={td}>{r.ours == null || r.ours === '' ? '—' : String(r.ours)}</td>
+                          <td style={td}>{r.theirs == null || r.theirs === '' ? '—' : String(r.theirs)}</td>
+                          <td style={{ ...td, color: V.muted }}>{String(r.oursNorm ?? '—')} vs {String(r.theirsNorm ?? '—')}</td>
+                          <td style={td}>{r.why}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function EncompassSyncPanel({ appId }) {
+  const { role } = useAuth();
+  const isSuper = role === 'super_admin';
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
@@ -274,6 +389,7 @@ export default function EncompassSyncPanel({ appId }) {
               <ComparisonTable fields={refFields} busy={busy} onReplace={replace} withActions={false} />
             </div>
           )}
+          {isSuper && <RawTroubleshoot appId={appId} />}
         </>
       )}
     </div>
