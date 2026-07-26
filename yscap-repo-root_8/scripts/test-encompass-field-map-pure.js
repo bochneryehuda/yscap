@@ -146,6 +146,30 @@ assert.strictEqual(m.compareField('rehab_type', 'Moderate', 'Light Rehab').statu
 assert.strictEqual(m.compareField('rehab_type', 'Heavy', 'Heavy Rehab').status, 'match');
 assert.strictEqual(m.compareField('rehab_type', 'expansion', 'Expansion').status, 'match');
 assert.strictEqual(m.compareField('rehab_type', 'Heavy', 'Light Rehab').status, 'mismatch');
+// The app's REAL dropdown values (EditFileDetails REHAB_TYPES) must all resolve —
+// 'Heavy / gut rehab' and 'Ground-up construction' previously mapped to NOTHING, so
+// every heavy / ground-up file read "no data to compare" forever.
+assert.strictEqual(m.compareField('rehab_type', 'Heavy / gut rehab', 'Heavy Rehab').status, 'match');
+assert.strictEqual(m.compareField('rehab_type', 'Ground-up construction', 'New Construction').status, 'match');
+assert.strictEqual(m.compareField('rehab_type', 'Adding square footage', 'Expansion').status, 'match');
+assert.strictEqual(m.compareField('rehab_type', 'Heavy / gut rehab', 'Light Rehab').status, 'mismatch');
+ok('every real rehab-type dropdown value resolves (heavy/gut + ground-up construction no longer dark)');
+
+// A BLANK customFields cell must not shadow a good standard-field loanPath —
+// that is precisely how vesting (1859) / origination (388) read as "no data".
+{
+  const withBlank = m.extractFields({
+    customFields: [{ fieldName: '1859', value: '' }, { fieldName: '388', value: '' }],
+    vesting: { entityName: 'ABC Holdings LLC' }, originationFeePercent: 1.25,
+  });
+  assert.strictEqual(withBlank.vesting_llc, 'ABC Holdings LLC', 'blank custom cell falls through to the loanPath');
+  assert.strictEqual(withBlank.origination_pct, 1.25);
+  // A REAL custom value still wins over the loanPath.
+  const withReal = m.extractFields({
+    customFields: [{ fieldName: '388', value: '2.5' }], originationFeePercent: 1.25,
+  });
+  assert.strictEqual(withReal.origination_pct, 2.5, 'a real custom-field value is never overridden by a loanPath');
+}
 ok('rehab type maps onto Encompass Light / Heavy / Expansion');
 
 // ── Reference fields: surfaced, never compared; PITIA removed ───────────────

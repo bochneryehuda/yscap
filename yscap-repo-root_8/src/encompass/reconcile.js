@@ -55,9 +55,8 @@ function exitPlanFor(dealType) {
 // Light / Heavy / Expansion only. Our Cosmetic + Moderate both mean LIGHT (handled
 // by the rehabType value map), Heavy means HEAVY, and a file adding SQUARE FOOTAGE
 // is an EXPANSION regardless of the bucket the file was typed as — the sqft flag is
-// the stronger statement about the work. Any of the repo's sqft-addition column
-// spellings counts; a file with none falls back to its own rehab_type.
-// The sqft-addition signal is the SAME definition the
+// the stronger statement about the work.
+// The sqft-addition signal mirrors the definition the
 // pricing layer already uses (src/lib/pricing.js buildInputs `sqftAddition`): the
 // rehab type mentions square footage / an addition, OR the post-rehab square
 // footage exceeds the pre-rehab square footage (applications.sqft_pre/sqft_post,
@@ -66,8 +65,11 @@ function exitPlanFor(dealType) {
 function rehabTypeFor(app) {
   const a = app || {};
   const t = String(a.rehab_type == null ? '' : a.rehab_type);
-  const pre = Number(a.sqft_pre), post = Number(a.sqft_post);
-  const grew = Number.isFinite(pre) && Number.isFinite(post) && post > pre;
+  // Require BOTH values to be genuinely present — Number(null) is 0, so a missing
+  // sqft_pre against a real sqft_post would otherwise read as an addition and flip
+  // an ordinary cosmetic file to Expansion (a mismatch nobody can clear here).
+  const has = (v) => v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v));
+  const grew = has(a.sqft_pre) && has(a.sqft_post) && Number(a.sqft_post) > Number(a.sqft_pre);
   if (/square|(^|\W)sf(\W|$)|addition/i.test(t) || grew) return 'expansion';
   return t.trim() === '' ? undefined : a.rehab_type;
 }
@@ -325,7 +327,7 @@ function _addrStr(a) {
   // to a one-line address if there is one, else report nothing to compare.
   if (!String(street || '').trim()) return oneLine;
   const built = parts.map((x) => (x == null ? '' : String(x).trim())).filter((x) => x !== '').join(' ');
-  return built || oneLine;
+  return _stripPlus4(built) || oneLine;
 }
 function _named(p) { return !!(p && ((p.firstName && String(p.firstName).trim()) || (p.lastName && String(p.lastName).trim()))); }
 function compareIdentity(row, loan) {

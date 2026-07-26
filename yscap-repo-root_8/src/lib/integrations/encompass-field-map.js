@@ -215,10 +215,10 @@ const VALUE_MAPS = Object.freeze({
   rehabType: {
     'light rehab': 'light', 'light': 'light', 'cosmetic': 'light', 'cosmetic / light': 'light', 'cosmetic/light': 'light',
     'moderate': 'light', 'medium': 'light', 'moderate rehab': 'light',
-    'heavy rehab': 'heavy', 'heavy': 'heavy',
-    'expansion': 'expansion', 'adding sf': 'expansion', 'add sf': 'expansion', 'adding square footage': 'expansion',
+    'heavy rehab': 'heavy', 'heavy': 'heavy', 'heavy / gut rehab': 'heavy', 'heavy/gut rehab': 'heavy', 'gut rehab': 'heavy', 'gut': 'heavy', 'heavy gut rehab': 'heavy',
+    'expansion': 'expansion', 'adding sf': 'expansion', 'add sf': 'expansion', 'adding square footage': 'expansion', 'adding square feet': 'expansion',
     'sqft addition': 'expansion', 'square footage expansion': 'expansion', 'adding square feet': 'expansion',
-    'ground-up': 'ground-up', 'ground up': 'ground-up', 'new construction': 'ground-up',
+    'ground-up': 'ground-up', 'ground up': 'ground-up', 'new construction': 'ground-up', 'ground-up construction': 'ground-up', 'ground up construction': 'ground-up', 'groundup': 'ground-up',
   },
   // CX.ACCRUALTYPE ↔ applications.accrual_type (non_dutch | dutch). NOTE: the
   // Encompass vocabulary differs from term-options.resolveAccrual — 'Note' means
@@ -291,6 +291,10 @@ function flattenLoan(rawLoan) {
   const cfs = Array.isArray(rawLoan.customFields) ? rawLoan.customFields : [];
   for (const cf of cfs) {
     if (!cf || !cf.fieldName || !KNOWN_FIELD_IDS.has(cf.fieldName)) continue;
+    // Skip an EMPTY cell: recording it would occupy the id and shadow a perfectly
+    // good standard-field loanPath below (which is exactly how 1859 / 388 read as
+    // "no data"). A blank custom field carries no information — the loanPath wins.
+    if (cf.value === undefined || cf.value === null || cf.value === '') continue;
     out[cf.fieldName] = { value: cf.value, format: cf.format };
   }
 
