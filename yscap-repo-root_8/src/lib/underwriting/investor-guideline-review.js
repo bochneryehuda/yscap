@@ -171,8 +171,11 @@ const RULES = [
 
   { code: 'isg_emcap_rent_mismatch', audience: 'emcap', severity: 'warning',
     title: 'Appraisal market rent does not match the loan’s estimated rent (EMCAP)', governing_rule: 'EMCAP: the appraiser’s market rent must equal the estimated rental income on the loan',
+    // EXACT match (owner-directed): flag any difference. Compared to the CENT (both
+    // columns are numeric(_,2)) — rounding to whole dollars would silently accept a
+    // sub-dollar mismatch. Rounding the ×100 avoids binary-float noise.
     when: (x) => (x.appraisal_market_rent == null || x.loan_estimated_rent == null) ? null
-      : Math.round(x.appraisal_market_rent) !== Math.round(x.loan_estimated_rent),
+      : Math.round(x.appraisal_market_rent * 100) !== Math.round(x.loan_estimated_rent * 100),
     expected: (x) => money(x.loan_estimated_rent), actual: (x) => money(x.appraisal_market_rent),
     detail: (x) => `The appraisal’s market rent ${money(x.appraisal_market_rent)} does not match the estimated rental income on the loan ${money(x.loan_estimated_rent)}. Reconcile them before submitting to EMCAP.` },
 

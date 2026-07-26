@@ -163,6 +163,9 @@ console.log('investor-guideline-review pure tests');
   // Rent mismatch is EXACT: any difference warns; an exact match is clean.
   assert.ok(byCode(emcap({ appraisal_is_1025: false, appraisal_market_rent: 2500, loan_estimated_rent: 2400 }), 'isg_emcap_rent_mismatch'), 'exact rent mismatch warns');
   assert.ok(!byCode(emcap({ appraisal_is_1025: true, appraisal_market_rent: 2500, loan_estimated_rent: 2500 }), 'isg_emcap_rent_mismatch'), 'an exact rent match is clean');
+  // "Exact" is to the CENT — a sub-dollar difference still flags (not rounded away).
+  assert.ok(byCode(emcap({ appraisal_is_1025: true, appraisal_market_rent: 2500.5, loan_estimated_rent: 2500 }), 'isg_emcap_rent_mismatch'), 'a sub-dollar rent difference (2500.50 vs 2500.00) warns');
+  assert.ok(!byCode(emcap({ appraisal_is_1025: true, appraisal_market_rent: 2500.1, loan_estimated_rent: 2500.1 }), 'isg_emcap_rent_mismatch'), 'equal-to-the-cent rents are clean (no float noise)');
   // Not fix-and-hold → the 1007 rule is inert; missing a signal → silent.
   assert.ok(!byCode(g.review({ note_buyer: 'EMCAP', is_fix_hold: false, appraisal_present: true, appraisal_is_1025: false }), 'isg_emcap_missing_1007'), 'a non-fix-hold EMCAP loan needs no 1007');
   assert.ok(g.review({ note_buyer: 'EMCAP' }).length === 0, 'EMCAP with no signals → no findings (omit-don’t-guess)');
