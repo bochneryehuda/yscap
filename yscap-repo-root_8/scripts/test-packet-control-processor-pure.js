@@ -113,11 +113,16 @@ function fakeRouter(plan, recorded) {
     const router = { ...fakeRouter(plan, recorded), routeDocument: async () => { routed = true; return { outcome: 'completed', result: {} }; } };
     const proc = PC.makePacketControlProcessor({ router, adapters: [{ provider: 'azure', service: 'document_intelligence', analyze: async () => ({}) }], loadBytes: async () => null });
     const out = await proc(job, { db: {}, jq });
-    ok(out.status === 'completed', 'bytes unavailable: still completes (never throws)');
+    // VSLICE-5 — a READ-mode job whose read didn't happen (no bytes → ocr_layout not_applicable)
+    // now FAILS CLOSED instead of falsely "completing" (the "marked completed when nothing was
+    // read" defect). Not transient (bytes won't appear on retry) → non-retryable → terminal.
+    ok(out.status === 'failed' && out.retryable === false, 'bytes unavailable: FAILS CLOSED, non-retryable (nothing was read)');
+    ok(out.result && out.result.manifest && out.result.manifest.complete === false, 'bytes unavailable: result carries an incomplete stage manifest');
     const keys = jq.stages.map((s) => s.key + ':' + s.status);
     ok(keys.includes('ocr_layout:not_applicable') && keys.includes('classification:not_applicable'), 'bytes unavailable: read stages recorded not_applicable');
     ok(routed === false, 'bytes unavailable: the adapter is NOT called with an empty request');
-    ok(jq.artifacts.length === 0, 'bytes unavailable: no ocr_result artifact recorded (nothing was read)');
+    ok(!jq.artifacts.some((a) => a.kind === 'ocr_result'), 'bytes unavailable: no ocr_result artifact (nothing was read)');
+    ok(jq.artifacts.some((a) => a.kind === 'stage_manifest'), 'bytes unavailable: a stage_manifest artifact IS recorded (for the shadow view)');
   }
 
   // ---- READ PATH with bytes ALREADY in the payload.request → loadBytes is not called ----

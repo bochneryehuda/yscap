@@ -57,6 +57,34 @@ const MATCH_ALL_FILTER = Object.freeze({
   precision: 'Day',
 });
 
+// A pipeline-search response row. Encompass Developer Connect v3 returns each
+// row as { loanId: "<GUID>", fields: { "Loan.Guid": ..., "Loan.LoanNumber": ... } }
+// — the GUID is `loanId` (NOT `loanGuid`) and the requested field values are
+// NESTED under `fields`, keyed by canonical name. Earlier code (and the unit-test
+// mocks) assumed { loanGuid } with the values flattened onto the row, so a real
+// response came back "without a GUID" (2026-07-26 live). These accessors read
+// BOTH shapes so a real row is never dropped or stored with null fields.
+function _rowFields(hit) {
+  return (hit && typeof hit.fields === 'object' && hit.fields) ? hit.fields : (hit || {});
+}
+function _rowGuid(hit) {
+  if (!hit || typeof hit !== 'object') return null;
+  const f = _rowFields(hit);
+  return hit.loanGuid || hit.loanId || hit.guid
+    || f['Loan.Guid'] || f['Loan.LoanGuid'] || f.loanGuid || f.loanId || null;
+}
+function _rowField(hit, canonicalName) {
+  const f = _rowFields(hit);
+  return f[canonicalName] != null ? f[canonicalName] : null;
+}
+// Row key names only (never values) — safe to surface in an error so an
+// unexpected response shape is diagnosable without leaking PII.
+function _rowShape(hit) {
+  const top = Object.keys(hit || {});
+  const nested = (hit && typeof hit.fields === 'object' && hit.fields) ? Object.keys(hit.fields) : [];
+  return `row keys: ${top.join(',') || 'none'}${nested.length ? '; fields: ' + nested.join(',') : ''}`;
+}
+
 // Try to list every folder name — but SWALLOW a 403 (or any other error) and
 // return []. Callers decide whether to fall back to the match-all filter.
 async function _fetchAllFolderNames() {
@@ -178,8 +206,8 @@ async function pullLoanForApplication(appId) {
     catch (e) { return _stampError(appId, `pipeline search: ${e.message}`); }
     if (!hits.length) return _stampError(appId, `no Encompass loan for loan# ${row.ys_loan_number}`);
     if (hits.length > 1) return _stampError(appId, `ambiguous Encompass match: ${hits.length} loans share loan# ${row.ys_loan_number}`);
-    guid = hits[0].loanGuid || hits[0].guid;
-    if (!guid) return _stampError(appId, 'pipeline search returned a row without a GUID');
+    guid = _rowGuid(hits[0]);
+    if (!guid) return _stampError(appId, `pipeline search returned a row without a GUID (${_rowShape(hits[0])})`);
     await db.query(
       `UPDATE applications SET encompass_loan_guid=$1, updated_at=now() WHERE id=$2 AND encompass_loan_guid IS NULL`,
       [guid, appId],
@@ -260,7 +288,7 @@ async function superDump({ sampleN = 20 } = {}) {
   // Full-fat loan pulls for the sample (raw JSON, PII-scrubbed).
   const loans = [];
   for (const hit of recent.slice(0, n)) {
-    const guid = hit.loanGuid || hit.guid;
+    const guid = _rowGuid(hit);
     if (!guid) continue;
     try {
       const raw = await client.getLoan(guid);
@@ -335,12 +363,12 @@ async function bulkPullAllLoans({ perRequestDelayMs = 350, startedByStaffId = nu
       if (totalReported === null) totalReported = page.length;  // running estimate
 
       for (const hit of page) {
-        const guid = hit.loanGuid || hit.guid;
-        const loanNumber = hit['Loan.LoanNumber'] || hit.loanNumber || null;
-        const folder = hit['Loan.LoanFolder'] || null;
-        const borrowerLast = hit['Loan.BorrowerLastName'] || null;
-        const loanAmount = Number(hit['Loan.LoanAmount']) || null;
-        const lastMod = hit['Loan.LastModified'] || null;
+        const guid = _rowGuid(hit);
+        const loanNumber = _rowField(hit, 'Loan.LoanNumber') || hit.loanNumber || null;
+        const folder = _rowField(hit, 'Loan.LoanFolder');
+        const borrowerLast = _rowField(hit, 'Loan.BorrowerLastName');
+        const loanAmount = Number(_rowField(hit, 'Loan.LoanAmount')) || null;
+        const lastMod = _rowField(hit, 'Loan.LastModified');
         if (!guid) continue;
         try {
           const raw = await client.getLoan(guid);

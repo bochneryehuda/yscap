@@ -93,7 +93,11 @@ function makePacketControlProcessor(opts = {}) {
     const documentId = (job && job.document_id) || payload.documentId || null;
     const loanId = (job && job.loan_id) || payload.loanId || null;
 
+    // Track the recorded status of each stage locally so we can evaluate the stage MANIFEST at the
+    // end (VSLICE-5): a job only "completes" if it actually finished the stages it was supposed to.
+    const stageStatus = {};
     const safeStage = async (key, status, detail) => {
+      stageStatus[key] = status;
       try { await jq.recordStage(db, jobId, key, status, detail || {}); } catch (_e) { /* stage recording is best-effort */ }
     };
     // Best-effort artifact recorder (Phase 3c) — persists a compact summary of WHAT the read
@@ -190,7 +194,25 @@ function makePacketControlProcessor(opts = {}) {
         await safeStage(STAGE.CLASSIFICATION, 'not_applicable', { note: 'shadow: read not run' });
       }
 
-      return { status: 'completed', result: { planned: true, primary: plan.primary ? plan.primary.provider : null, routeId } };
+      // VSLICE-5 — evaluate the full stage MANIFEST and FAIL CLOSED. In 'read' mode (real adapters
+      // injected → a real vendor read was expected) the ocr_layout stage MUST have completed; a job
+      // whose read was skipped / not-applicable / failed is INCOMPLETE and must NEVER be reported
+      // completed (the owner-flagged "marked completed when no document was read" defect). In shadow
+      // mode (no adapters) the read stages are legitimately not required, so a planned job completes.
+      const mode = (adapters && primaryKey) ? 'read' : 'shadow';
+      const manifest = require('./stage-manifest').evaluateManifest(stageStatus, { mode });
+      await safeArtifact('stage_manifest', manifest);
+      if (!manifest.complete) {
+        // Retry only when the incompleteness is a TRANSIENT stage failure (failed_*); a missing /
+        // not_applicable required stage (e.g. no document bytes) won't improve on retry → terminal.
+        const anyTransient = manifest.incomplete.some((x) => String(x.status || '').startsWith('failed_'));
+        return {
+          status: 'failed', retryable: anyTransient,
+          error: 'stage manifest incomplete — ' + manifest.reason,
+          result: { planned: true, primary: plan.primary ? plan.primary.provider : null, routeId, manifest },
+        };
+      }
+      return { status: 'completed', result: { planned: true, primary: plan.primary ? plan.primary.provider : null, routeId, manifest } };
     } catch (e) {
       // A genuinely unexpected error — record it + let the worker retry (never crash the worker).
       await safeStage(STAGE.PACKET_CONTROL, 'failed_retryable', { error: (e && e.message) ? String(e.message).slice(0, 300) : 'packet-control threw' });
