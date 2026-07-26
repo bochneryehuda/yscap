@@ -25,13 +25,22 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
-// @babel/parser ships inside the app's own toolchain; if it isn't installed (a backend-only
-// checkout) the guard SKIPS rather than failing the suite for an unrelated reason.
+// `@babel/parser` is a ROOT devDependency on purpose. CI runs `npm ci` in this folder ONLY — it
+// never installs app-v2/node_modules — so resolving the parser from the app's toolchain made this
+// guard SKIP in CI, i.e. look green while gating nothing. A guard that quietly opts out of the one
+// place it matters is worse than no guard. Root first, app-v2 second (a dev who has the frontend
+// toolchain but an older root install still gets coverage).
 let parser = null;
-try { parser = require(path.join(ROOT, 'app-v2/node_modules/@babel/parser')); } catch (_e) { /* below */ }
+for (const spec of ['@babel/parser', path.join(ROOT, 'app-v2/node_modules/@babel/parser')]) {
+  try { parser = require(spec); break; } catch (_e) { /* try the next */ }
+}
 if (!parser) {
-  console.log('test-react-hook-order: SKIPPED (app-v2 toolchain not installed)');
-  process.exit(0);
+  // Deliberately a FAILURE, not a skip: the parser is a declared devDependency, so a missing one
+  // means the install is broken — and silently passing would re-open the hole described above.
+  console.log('test-react-hook-order: FAILED — @babel/parser could not be resolved. It is a root '
+    + 'devDependency; run `npm ci` in yscap-repo-root_8. (Never turn this back into a skip: this '
+    + 'guard is the only thing standing between a misplaced hook and a full-page outage.)');
+  process.exit(1);
 }
 
 const HOOK_NAME = /^use[A-Z]/;
